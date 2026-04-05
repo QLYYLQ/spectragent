@@ -1,0 +1,286 @@
+"""Shared base for all OpenAI-compatible providers.
+
+Provides common fields, client creation, usage extraction, and a standard
+ainvoke path (text + response_format structured output).
+"""
+
+# NOTE: 不使用 from __future__ import annotations —— conscribe 0.5 的
+# _extract_params_by_level 需要通过 get_type_hints() 拿到真实的 Annotated
+# 类型对象来做 __config_annotated_only__ 过滤；future annotations 会导致
+# 跨模块类型解析失败，使 get_origin() 返回 None。
+
+import logging
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Annotated, Any, TypeVar, overload
+
+import httpx
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
+from openai.types.chat import ChatCompletionContentPartTextParam
+from openai.types.chat.chat_completion import ChatCompletion
+from openai.types.responses import Response
+from openai.types.shared.chat_model import ChatModel
+from openai.types.shared_params.response_format_json_schema import (
+    JSONSchema,
+    ResponseFormatJSONSchema,
+)
+from pydantic import BaseModel, Field
+
+from spectragent.core.llm._registrar import ChatModelBase
+from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+
+logger = logging.getLogger(__name__)
+T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass
+class OpenAICompatBase(ChatModelBase):
+    """Abstract base for all OpenAI-compatible providers."""
+
+    __abstract__ = True
+    __registry_key__ = "openai"
+
+    # --- Model ---
+    model: Annotated[str, Field(description="Model name")]
+
+    # --- Generation params ---
+    temperature: Annotated[float | None, Field(description="Sampling temperature")] = 0.2
+    frequency_penalty: Annotated[float | None, Field(description="Frequency penalty")] = 0.3
+    reasoning_effort: Annotated[str, Field(description="Reasoning effort level")] = "low"
+    seed: Annotated[int | None, Field(description="Random seed")] = None
+    service_tier: Annotated[str | None, Field(description="Service tier")] = None
+    top_p: Annotated[float | None, Field(description="Top-p sampling")] = None
+
+    # --- Structured output options ---
+    add_schema_to_system_prompt: Annotated[bool, Field(description="Add JSON schema to system prompt")] = False
+    dont_force_structured_output: Annotated[bool, Field(description="Skip forcing structured output")] = False
+    remove_min_items_from_schema: Annotated[bool, Field(description="Remove minItems from JSON schema")] = False
+    remove_defaults_from_schema: Annotated[bool, Field(description="Remove defaults from JSON schema")] = False
+
+    # --- Client params ---
+    api_key: Annotated[str | None, Field(description="API key")] = None
+    base_url: Annotated[str | None, Field(description="Custom API base URL")] = None
+    timeout: Annotated[float | None, Field(description="Request timeout")] = None
+    max_retries: Annotated[int, Field(description="Max retry attempts")] = 5
+    max_completion_tokens: Annotated[int | None, Field(description="Max completion tokens")] = 4096
+
+    # --- Non-config internal fields (no Annotated[..., Field()] → excluded from schema) ---
+    websocket_base_url: str | httpx.URL | None = None
+    default_headers: Mapping[str, str] | None = None
+    default_query: Mapping[str, object] | None = None
+    http_client: httpx.AsyncClient | None = None
+    _strict_response_validation: bool = False
+    reasoning_models: list[ChatModel | str] | None = field(
+        default_factory=lambda: [
+            "o4-mini", "o3", "o3-mini", "o1", "o1-pro", "o3-pro",
+            "gpt-5", "gpt-5-mini", "gpt-5-nano",
+        ]
+    )
+
+    @property
+    def model_type(self) -> str:
+        return "openai"
+
+    @property
+    def name(self) -> str:
+        return str(self.model)
+
+    @property
+    def provider(self) -> str:
+        """Override in sub-classes to return the sub-provider name."""
+        return ""
+
+    # ------------------------------------------------------------------
+    # Client creation — default AsyncOpenAI, override for custom clients
+    # ------------------------------------------------------------------
+    def get_client(self) -> AsyncOpenAI:
+        params: dict[str, Any] = {"api_key": self.api_key, "max_retries": self.max_retries}
+        if self.base_url:
+            params["base_url"] = self.base_url
+        if self.websocket_base_url:
+            params["websocket_base_url"] = self.websocket_base_url
+        if self.timeout:
+            params["timeout"] = self.timeout
+        if self.default_headers:
+            params["default_headers"] = self.default_headers
+        if self.default_query:
+            params["default_query"] = self.default_query
+        if self.http_client:
+            params["http_client"] = self.http_client
+        return AsyncOpenAI(**params)
+
+    # ------------------------------------------------------------------
+    # Usage extraction
+    # ------------------------------------------------------------------
+    def _get_usage(self, response: ChatCompletion) -> ChatInvokeUsage | None:
+        if response.usage is None:
+            return None
+        return ChatInvokeUsage(
+            prompt_tokens=response.usage.prompt_tokens,
+            prompt_cached_tokens=(
+                response.usage.prompt_tokens_details.cached_tokens
+                if response.usage.prompt_tokens_details else None
+            ),
+            prompt_cache_creation_tokens=None,
+            prompt_image_tokens=None,
+            completion_tokens=response.usage.completion_tokens,
+            total_tokens=response.usage.total_tokens,
+        )
+
+    def _get_usage_from_responses(self, response: Response) -> ChatInvokeUsage | None:
+        if response.usage is None:
+            return None
+        cached = None
+        if response.usage.input_tokens_details is not None:
+            cached = getattr(response.usage.input_tokens_details, "cached_tokens", None)
+        return ChatInvokeUsage(
+            prompt_tokens=response.usage.input_tokens,
+            prompt_cached_tokens=cached,
+            prompt_cache_creation_tokens=None,
+            prompt_image_tokens=None,
+            completion_tokens=response.usage.output_tokens,
+            total_tokens=response.usage.total_tokens,
+        )
+
+    # ------------------------------------------------------------------
+    # Model params helper
+    # ------------------------------------------------------------------
+    def _common_model_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if self.temperature is not None:
+            params["temperature"] = self.temperature
+        if self.frequency_penalty is not None:
+            params["frequency_penalty"] = self.frequency_penalty
+        if self.max_completion_tokens is not None:
+            params["max_completion_tokens"] = self.max_completion_tokens
+        if self.top_p is not None:
+            params["top_p"] = self.top_p
+        if self.seed is not None:
+            params["seed"] = self.seed
+        if self.service_tier is not None:
+            params["service_tier"] = self.service_tier
+
+        # Handle reasoning models
+        if self.reasoning_models and any(
+            str(m).lower() in str(self.model).lower() for m in self.reasoning_models
+        ):
+            params["reasoning_effort"] = self.reasoning_effort
+            params.pop("temperature", None)
+            params.pop("frequency_penalty", None)
+
+        return params
+
+    # ------------------------------------------------------------------
+    # Standard ainvoke — text + response_format structured output
+    # ------------------------------------------------------------------
+    async def _standard_ainvoke(
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        """Standard OpenAI-compatible ainvoke with error handling."""
+        openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
+        try:
+            model_params = self._common_model_params()
+            extra = extra_kwargs or {}
+
+            if output_format is None:
+                response = await self.get_client().chat.completions.create(
+                    model=self.model, messages=openai_messages,
+                    **model_params, **extra,
+                )
+                choice = response.choices[0] if response.choices else None
+                if choice is None:
+                    raise ModelProviderError(
+                        message="Invalid response: missing or empty `choices`.",
+                        status_code=502, model=self.name,
+                    )
+                return ChatInvokeCompletion(
+                    completion=choice.message.content or "",
+                    usage=self._get_usage(response),
+                    stop_reason=choice.finish_reason,
+                )
+            else:
+                return await self._structured_response_format(
+                    openai_messages, output_format, model_params, extra,
+                )
+
+        except ModelProviderError:
+            raise
+        except RateLimitError as e:
+            raise ModelRateLimitError(message=e.message, model=self.name) from e
+        except APIConnectionError as e:
+            raise ModelProviderError(message=str(e), model=self.name) from e
+        except APIStatusError as e:
+            raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+        except Exception as e:
+            raise ModelProviderError(message=str(e), model=self.name) from e
+
+    # ------------------------------------------------------------------
+    # Structured output: response_format (shared by multiple providers)
+    # ------------------------------------------------------------------
+    async def _structured_response_format(
+        self, openai_messages, output_format: type[T], model_params: dict, extra_kwargs: dict,
+    ) -> ChatInvokeCompletion[T]:
+        response_format: JSONSchema = {
+            "name": "agent_output",
+            "strict": True,
+            "schema": SchemaOptimizer.create_optimized_json_schema(
+                output_format,
+                remove_min_items=self.remove_min_items_from_schema,
+                remove_defaults=self.remove_defaults_from_schema,
+            ),
+        }
+
+        if self.add_schema_to_system_prompt and openai_messages and openai_messages[0]["role"] == "system":
+            schema_text = f"\n<json_schema>\n{response_format}\n</json_schema>"
+            if isinstance(openai_messages[0]["content"], str):
+                openai_messages[0]["content"] += schema_text
+            elif isinstance(openai_messages[0]["content"], Iterable):
+                openai_messages[0]["content"] = list(openai_messages[0]["content"]) + [
+                    ChatCompletionContentPartTextParam(text=schema_text, type="text")
+                ]
+
+        if self.dont_force_structured_output:
+            response = await self.get_client().chat.completions.create(
+                model=self.model, messages=openai_messages, **model_params, **extra_kwargs,
+            )
+        else:
+            response = await self.get_client().chat.completions.create(
+                model=self.model, messages=openai_messages,
+                response_format=ResponseFormatJSONSchema(json_schema=response_format, type="json_schema"),
+                **model_params, **extra_kwargs,
+            )
+
+        choice = response.choices[0] if response.choices else None
+        if choice is None or choice.message.content is None:
+            raise ModelProviderError(message="Failed to parse structured output", status_code=500, model=self.name)
+
+        return ChatInvokeCompletion(
+            completion=output_format.model_validate_json(choice.message.content),
+            usage=self._get_usage(response),
+            stop_reason=choice.finish_reason,
+        )
+
+    # ------------------------------------------------------------------
+    # Default ainvoke — delegates to _standard_ainvoke
+    # ------------------------------------------------------------------
+    @overload
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+    ) -> ChatInvokeCompletion[str]: ...
+
+    @overload
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+    ) -> ChatInvokeCompletion[T]: ...
+
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+    ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        return await self._standard_ainvoke(messages, output_format)

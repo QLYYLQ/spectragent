@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Testing
+.pytest_cache/
+mock_test/
+
+# Claude Code
+.claude/
+
+# Temp
+tmp/
+
+# macOS
+.DS_Store
+
+# Demo scripts
+demo_*.py
+test_*.py
+demo.py
+browser_api.txt

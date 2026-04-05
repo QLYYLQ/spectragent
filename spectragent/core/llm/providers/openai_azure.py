@@ -1,0 +1,156 @@
+"""ChatAzureOpenAI — Azure OpenAI provider."""
+
+# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
+# 的 nested config 类型提取机制（详见 openai_base.py 注释）。
+
+import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Annotated, Any, TypeVar, overload
+
+import httpx
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
+from openai import AsyncAzureOpenAI as AsyncAzureOpenAIClient
+from openai.types.responses import Response
+from pydantic import BaseModel, Field
+
+from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.providers.openai_base import OpenAICompatBase
+from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+from spectragent.core.llm.serializers.openai_responses import ResponsesAPIMessageSerializer
+from spectragent.core.llm.views import ChatInvokeCompletion
+
+logger = logging.getLogger(__name__)
+T = TypeVar("T", bound=BaseModel)
+
+# Azure models that require the Responses API
+RESPONSES_API_ONLY_MODELS: list[str] = [
+    "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.1-codex-max",
+    "gpt-5-codex", "codex-mini-latest", "computer-use-preview",
+]
+
+
+@dataclass
+class ChatAzureOpenAI(OpenAICompatBase):
+    """Azure OpenAI provider."""
+
+    __registry_key__ = "openai.azure"
+
+    # --- Azure-specific fields ---
+    api_version: Annotated[str | None, Field(description="Azure API version")] = None
+    azure_endpoint: Annotated[str | None, Field(description="Azure endpoint URL")] = None
+    azure_deployment: Annotated[str | None, Field(description="Azure deployment name")] = None
+    azure_ad_token: Annotated[str | None, Field(description="Azure AD token")] = None
+    azure_ad_token_provider: Any | None = None
+    use_responses_api: Annotated[str, Field(description="Use Responses API: true, false, or auto")] = "auto"
+
+    @property
+    def provider(self) -> str:
+        return "azure"
+
+    def get_client(self) -> AsyncAzureOpenAIClient:
+        import os
+        self.api_key = self.api_key or os.getenv("AZURE_OPENAI_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
+        self.azure_endpoint = self.azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
+        self.azure_deployment = self.azure_deployment or os.getenv("AZURE_OPENAI_DEPLOYMENT")
+
+        params: dict[str, Any] = {}
+        for k, v in {
+            "api_key": self.api_key,
+            "api_version": self.api_version or "2024-12-01-preview",
+            "azure_endpoint": self.azure_endpoint,
+            "azure_deployment": self.azure_deployment,
+            "base_url": self.base_url,
+            "azure_ad_token": self.azure_ad_token,
+            "azure_ad_token_provider": self.azure_ad_token_provider,
+            "http_client": self.http_client,
+        }.items():
+            if v is not None:
+                params[k] = v
+        if self.default_headers:
+            params["default_headers"] = self.default_headers
+        if self.default_query:
+            params["default_query"] = self.default_query
+        if "http_client" not in params:
+            params["http_client"] = httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=6)
+            )
+        return AsyncAzureOpenAIClient(**params)
+
+    def _should_use_responses_api(self) -> bool:
+        if isinstance(self.use_responses_api, bool):
+            return self.use_responses_api
+        model_lower = str(self.model).lower()
+        return any(m.lower() in model_lower for m in RESPONSES_API_ONLY_MODELS)
+
+    async def _ainvoke_responses_api(
+        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+    ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        input_messages = ResponsesAPIMessageSerializer.serialize_messages(messages)
+        model_params: dict[str, Any] = {"model": self.model, "input": input_messages}
+        if self.temperature is not None:
+            model_params["temperature"] = self.temperature
+        if self.max_completion_tokens is not None:
+            model_params["max_output_tokens"] = self.max_completion_tokens
+        if self.top_p is not None:
+            model_params["top_p"] = self.top_p
+        if self.service_tier is not None:
+            model_params["service_tier"] = self.service_tier
+        if self.reasoning_models and any(str(m).lower() in str(self.model).lower() for m in self.reasoning_models):
+            model_params["reasoning"] = {"effort": self.reasoning_effort}
+            model_params.pop("temperature", None)
+
+        try:
+            if output_format is None:
+                response = await self.get_client().responses.create(**model_params)
+                return ChatInvokeCompletion(
+                    completion=response.output_text or "",
+                    usage=self._get_usage_from_responses(response),
+                    stop_reason=response.status if response.status else None,
+                )
+            else:
+                json_schema = SchemaOptimizer.create_optimized_json_schema(
+                    output_format,
+                    remove_min_items=self.remove_min_items_from_schema,
+                    remove_defaults=self.remove_defaults_from_schema,
+                )
+                model_params["text"] = {
+                    "format": {"type": "json_schema", "name": "agent_output", "strict": True, "schema": json_schema}
+                }
+                if self.dont_force_structured_output:
+                    model_params.pop("text", None)
+                response = await self.get_client().responses.create(**model_params)
+                if not response.output_text:
+                    raise ModelProviderError(message="Failed to parse structured output", status_code=500, model=self.name)
+                usage = self._get_usage_from_responses(response)
+                return ChatInvokeCompletion(
+                    completion=output_format.model_validate_json(response.output_text),
+                    usage=usage,
+                    stop_reason=response.status if response.status else None,
+                )
+        except RateLimitError as e:
+            raise ModelRateLimitError(message=e.message, model=self.name) from e
+        except APIConnectionError as e:
+            raise ModelProviderError(message=str(e), model=self.name) from e
+        except APIStatusError as e:
+            raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+        except Exception as e:
+            raise ModelProviderError(message=str(e), model=self.name) from e
+
+    @overload
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+    ) -> ChatInvokeCompletion[str]: ...
+
+    @overload
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+    ) -> ChatInvokeCompletion[T]: ...
+
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+    ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        if self._should_use_responses_api():
+            return await self._ainvoke_responses_api(messages, output_format, **kwargs)
+        return await self._standard_ainvoke(messages, output_format)

@@ -1,0 +1,204 @@
+import json
+from dataclasses import dataclass
+from os import getenv
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Annotated, Any, TypeVar, overload
+
+from pydantic import BaseModel, Field
+
+from spectragent.core.llm._registrar import ChatModelBase
+from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.serializers.bedrock_format import AWSBedrockMessageSerializer
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+
+if TYPE_CHECKING:
+    from boto3 import client as AwsClient  # type: ignore
+    from boto3.session import Session  # type: ignore
+
+T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass
+class ChatBedrock(ChatModelBase):
+    __registry_key__ = "bedrock.default"
+    """AWS Bedrock chat model using the boto3 converse API."""
+
+    model: Annotated[str, Field(description="Bedrock model identifier")] = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    max_tokens: Annotated[int | None, Field(description="Maximum tokens to generate")] = 4096
+    temperature: Annotated[float | None, Field(description="Sampling temperature")] = None
+    top_p: Annotated[float | None, Field(description="Top-p sampling parameter")] = None
+    seed: Annotated[int | None, Field(description="Random seed for reproducibility")] = None
+    stop_sequences: Annotated[list[str] | None, Field(description="Stop sequences")] = None
+
+    # AWS credentials
+    aws_access_key_id: Annotated[str | None, Field(description="AWS access key ID")] = None
+    aws_secret_access_key: Annotated[str | None, Field(description="AWS secret access key")] = None
+    aws_session_token: Annotated[str | None, Field(description="AWS session token")] = None
+    aws_region: Annotated[str | None, Field(description="AWS region")] = None
+    aws_sso_auth: Annotated[bool, Field(description="Use AWS SSO authentication")] = False
+    session: "Session | None" = None
+
+    request_params: dict[str, Any] | None = None
+
+    @property
+    def model_type(self) -> str:
+        return "bedrock"
+
+    @property
+    def name(self) -> str:
+        return str(self.model)
+
+    def _get_client(self) -> "AwsClient":  # type: ignore
+        try:
+            from boto3 import client as AwsClient  # type: ignore
+        except ImportError as e:
+            raise ImportError(
+                "`boto3` not installed. Install with: pip install browser-use[aws]"
+            ) from e
+
+        if self.session:
+            return self.session.client("bedrock-runtime")
+
+        access_key = self.aws_access_key_id or getenv("AWS_ACCESS_KEY_ID")
+        secret_key = self.aws_secret_access_key or getenv("AWS_SECRET_ACCESS_KEY")
+        session_token = self.aws_session_token or getenv("AWS_SESSION_TOKEN")
+        region = self.aws_region or getenv("AWS_REGION") or getenv("AWS_DEFAULT_REGION")
+
+        if self.aws_sso_auth:
+            return AwsClient(service_name="bedrock-runtime", region_name=region)
+
+        if not access_key or not secret_key:
+            raise ModelProviderError(
+                message="AWS credentials not found. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.",
+                model=self.name,
+            )
+        return AwsClient(
+            service_name="bedrock-runtime",
+            region_name=region,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            aws_session_token=session_token,
+        )
+
+    def _get_inference_config(self) -> dict[str, Any]:
+        config: dict[str, Any] = {}
+        if self.max_tokens is not None:
+            config["maxTokens"] = self.max_tokens
+        if self.temperature is not None:
+            config["temperature"] = self.temperature
+        if self.top_p is not None:
+            config["topP"] = self.top_p
+        if self.stop_sequences is not None:
+            config["stopSequences"] = self.stop_sequences
+        if self.seed is not None:
+            config["seed"] = self.seed
+        return config
+
+    def _format_tools_for_request(self, output_format: type[BaseModel]) -> list[dict[str, Any]]:
+        schema = output_format.model_json_schema()
+        properties = {
+            name: {"type": info.get("type", "string"), "description": info.get("description", "")}
+            for name, info in schema.get("properties", {}).items()
+        }
+        required = schema.get("required", [])
+        return [
+            {
+                "toolSpec": {
+                    "name": f"extract_{output_format.__name__.lower()}",
+                    "description": f"Extract information in the format of {output_format.__name__}",
+                    "inputSchema": {"json": {"type": "object", "properties": properties, "required": required}},
+                }
+            }
+        ]
+
+    def _get_usage(self, response: dict[str, Any]) -> ChatInvokeUsage | None:
+        if "usage" not in response:
+            return None
+        u = response["usage"]
+        return ChatInvokeUsage(
+            prompt_tokens=u.get("inputTokens", 0),
+            completion_tokens=u.get("outputTokens", 0),
+            total_tokens=u.get("totalTokens", 0),
+            prompt_cached_tokens=None,
+            prompt_cache_creation_tokens=None,
+            prompt_image_tokens=None,
+        )
+
+    @overload
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+    ) -> ChatInvokeCompletion[str]: ...
+
+    @overload
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+    ) -> ChatInvokeCompletion[T]: ...
+
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+    ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        try:
+            from botocore.exceptions import ClientError  # type: ignore
+        except ImportError as e:
+            raise ImportError("`boto3` not installed.") from e
+
+        bedrock_messages, system_message = AWSBedrockMessageSerializer.serialize_messages(messages)
+
+        try:
+            body: dict[str, Any] = {}
+            if system_message:
+                body["system"] = system_message
+            inference_config = self._get_inference_config()
+            if inference_config:
+                body["inferenceConfig"] = inference_config
+            if output_format is not None:
+                body["toolConfig"] = {"tools": self._format_tools_for_request(output_format)}
+            if self.request_params:
+                body.update(self.request_params)
+            body = {k: v for k, v in body.items() if v is not None}
+
+            client = self._get_client()
+            response = client.converse(modelId=self.model, messages=bedrock_messages, **body)
+            usage = self._get_usage(response)
+
+            if "output" in response and "message" in response["output"]:
+                message = response["output"]["message"]
+                content = message.get("content", [])
+
+                if output_format is None:
+                    text_content = [item["text"] for item in content if "text" in item]
+                    return ChatInvokeCompletion(completion="\n".join(text_content), usage=usage)
+                else:
+                    for item in content:
+                        if "toolUse" in item:
+                            tool_input = item["toolUse"].get("input", {})
+                            try:
+                                return ChatInvokeCompletion(
+                                    completion=output_format.model_validate(tool_input), usage=usage,
+                                )
+                            except Exception as e:
+                                if isinstance(tool_input, str):
+                                    data = json.loads(tool_input)
+                                    return ChatInvokeCompletion(
+                                        completion=output_format.model_validate(data), usage=usage,
+                                    )
+                                raise ModelProviderError(
+                                    message=f"Failed to validate structured output: {e}", model=self.name,
+                                ) from e
+                    raise ModelProviderError(
+                        message="Expected structured output but no tool use found", model=self.name,
+                    )
+
+            if output_format is None:
+                return ChatInvokeCompletion(completion="", usage=usage)
+            raise ModelProviderError(message="No valid content found in response", model=self.name)
+
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_message = e.response.get("Error", {}).get("Message", str(e))
+            if error_code in ("ThrottlingException", "TooManyRequestsException"):
+                raise ModelRateLimitError(message=error_message, model=self.name) from e
+            raise ModelProviderError(message=error_message, model=self.name) from e
+        except Exception as e:
+            raise ModelProviderError(message=str(e), model=self.name) from e

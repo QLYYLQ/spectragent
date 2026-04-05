@@ -1,0 +1,101 @@
+"""ChatCerebras — Cerebras provider via OpenAI-compatible base."""
+
+# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
+# 的 nested config 类型提取机制（详见 openai_base.py 注释）。
+
+import json
+import re
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Annotated, Any, TypeVar, overload
+
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
+from pydantic import BaseModel, Field
+
+from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.providers.openai_base import OpenAICompatBase
+from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
+from spectragent.core.llm.views import ChatInvokeCompletion
+
+T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass
+class ChatCerebras(OpenAICompatBase):
+    """Cerebras provider — prompt-injection fallback for structured output."""
+
+    __registry_key__ = "openai.cerebras"
+
+    # --- Cerebras-specific ---
+    client_params: Annotated[dict[str, Any] | None, Field(description="Extra client params")] = None
+
+    @property
+    def provider(self) -> str:
+        return "cerebras"
+
+    def get_client(self) -> AsyncOpenAI:
+        effective_base_url = self.base_url or "https://api.cerebras.ai/v1"
+        params: dict[str, Any] = {
+            "api_key": self.api_key, "max_retries": self.max_retries,
+            "base_url": effective_base_url,
+        }
+        if self.client_params:
+            params.update(self.client_params)
+        return AsyncOpenAI(**params)
+
+    @overload
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+    ) -> ChatInvokeCompletion[str]: ...
+
+    @overload
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+    ) -> ChatInvokeCompletion[T]: ...
+
+    async def ainvoke(
+        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+    ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        if output_format is None:
+            return await self._standard_ainvoke(messages)
+
+        # Cerebras: prompt injection fallback for structured output
+        openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
+        try:
+            model_params = self._common_model_params()
+            schema = output_format.model_json_schema()
+            json_prompt = f"\nPlease respond with a JSON object that follows this exact schema:\n{json.dumps(schema, indent=2)}\nYour response must be valid JSON only, no other text.\n"
+
+            if openai_messages and openai_messages[-1]["role"] == "user":
+                if isinstance(openai_messages[-1]["content"], str):
+                    openai_messages[-1]["content"] += json_prompt
+                elif isinstance(openai_messages[-1]["content"], list):
+                    openai_messages[-1]["content"].append({"type": "text", "text": json_prompt})
+            else:
+                openai_messages.append({"role": "user", "content": json_prompt})
+
+            resp = await self.get_client().chat.completions.create(
+                model=self.model, messages=openai_messages, **model_params,
+            )
+            content = resp.choices[0].message.content
+            if not content:
+                raise ModelProviderError("Empty response from Cerebras", model=self.name)
+
+            json_match = re.search(r"\{.*\}", content, re.DOTALL)
+            json_str = json_match.group(0) if json_match else content
+            return ChatInvokeCompletion(
+                completion=output_format.model_validate_json(json_str),
+                usage=self._get_usage(resp),
+            )
+
+        except ModelProviderError:
+            raise
+        except RateLimitError as e:
+            raise ModelRateLimitError(message=e.message, model=self.name) from e
+        except APIConnectionError as e:
+            raise ModelProviderError(message=str(e), model=self.name) from e
+        except APIStatusError as e:
+            raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+        except Exception as e:
+            raise ModelProviderError(message=str(e), model=self.name) from e
