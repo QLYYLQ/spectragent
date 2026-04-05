@@ -71,61 +71,51 @@ _ACTION_DESCRIPTORS: list[ActionDescriptor] = [
         name="click",
         description="Click a DOM element by its index in the selector map.",
         params={"index": "int -- element index from selector_map"},
-        env_types=["browser"],
     ),
     ActionDescriptor(
         name="click_coordinate",
         description="Click at absolute screen coordinates.",
         params={"coordinate_x": "int", "coordinate_y": "int"},
-        env_types=["browser"],
     ),
     ActionDescriptor(
         name="type",
         description="Type text into a DOM element.",
         params={"index": "int -- element index", "text": "str", "clear": "bool = True"},
-        env_types=["browser"],
     ),
     ActionDescriptor(
         name="scroll",
         description="Scroll the page or a specific element.",
         params={"direction": "up|down|left|right", "amount": "int = 300"},
-        env_types=["browser"],
     ),
     ActionDescriptor(
         name="navigate",
         description="Navigate to a URL.",
         params={"url": "str"},
-        env_types=["browser"],
     ),
     ActionDescriptor(
         name="send_keys",
         description="Send keyboard keys (e.g. Enter, Escape, Ctrl+A).",
         params={"keys": "str"},
-        env_types=["browser"],
     ),
     ActionDescriptor(
         name="go_back",
         description="Navigate back in browser history.",
         params={},
-        env_types=["browser"],
     ),
     ActionDescriptor(
         name="go_forward",
         description="Navigate forward in browser history.",
         params={},
-        env_types=["browser"],
     ),
     ActionDescriptor(
         name="switch_tab",
         description="Switch to a different browser tab.",
         params={"target_id": "str | None -- None = most recent"},
-        env_types=["browser"],
     ),
     ActionDescriptor(
         name="done",
         description="Signal that the task is complete.",
         params={"extracted_content": "str | None"},
-        env_types=["browser"],
     ),
 ]
 
@@ -135,7 +125,6 @@ _BROWSER_WATCHDOGS = {"crash", "downloads"}
 
 # Scope ID for browser-level (non-tab-specific) watchdogs.
 _GLOBAL_SCOPE_ID = "__browser__"
-
 
 class BrowserSession:
     """Core browser session -- implements Environment protocol.

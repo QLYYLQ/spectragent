@@ -20,7 +20,6 @@ from spectragent.schemas.action import Action, ActionDescriptor
 # ── Prompt directory ─────────────────────────────────────────
 _PROMPT_DIR = PROMPT_PATH / "browser" / "agents" / "browser_use"
 
-
 def _is_anthropic_4_5_model(model_name: str | None) -> bool:
     """Check if the model is Claude Opus 4.5 or Haiku 4.5."""
     if not model_name:
@@ -29,7 +28,6 @@ def _is_anthropic_4_5_model(model_name: str | None) -> bool:
     is_opus_4_5 = "opus" in model_lower and ("4.5" in model_lower or "4-5" in model_lower)
     is_haiku_4_5 = "haiku" in model_lower and ("4.5" in model_lower or "4-5" in model_lower)
     return is_opus_4_5 or is_haiku_4_5
-
 
 @dataclass
 class BrowserUseAgent(BaseReactAgent):
@@ -153,43 +151,36 @@ class BrowserUseAgent(BaseReactAgent):
                 name="click_element",
                 description="Click on an element by index",
                 params={"index": "int"},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="input_text",
                 description="Type text into an element",
                 params={"index": "int", "text": "str"},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="scroll",
                 description="Scroll the page",
                 params={"direction": "str", "amount": "int"},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="go_to_url",
                 description="Navigate to a URL",
                 params={"url": "str"},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="go_back",
                 description="Navigate back",
                 params={},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="extract_content",
                 description="Extract page content",
                 params={"selector": "str"},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="done",
                 description="Signal task completion",
                 params={"success": "bool", "text": "str"},
-                env_types=["browser"],
             ),
         ]
 

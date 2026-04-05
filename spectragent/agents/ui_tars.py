@@ -20,7 +20,6 @@ from spectragent.schemas.action import Action, ActionDescriptor
 # ── Prompt directory ─────────────────────────────────────────
 _PROMPT_DIR = PROMPT_PATH / "browser" / "agents" / "ui_tars"
 
-
 @dataclass
 class UITarsAgent(BaseReactAgent):
     """UI-TARS style agent — vision-based with AST action parsing."""
@@ -74,49 +73,40 @@ class UITarsAgent(BaseReactAgent):
                 name="click",
                 description="Click at screen coordinates",
                 params={"point": "str"},
-                env_types=["browser", "desktop"],
             ),
             ActionDescriptor(
                 name="type",
                 description="Type text at coordinates",
                 params={"content": "str", "point": "str"},
-                env_types=["browser", "desktop"],
             ),
             ActionDescriptor(
                 name="scroll",
                 description="Scroll at coordinates",
                 params={"point": "str", "direction": "str"},
-                env_types=["browser", "desktop"],
             ),
             ActionDescriptor(
                 name="hotkey",
                 description="Press a keyboard shortcut",
                 params={"key": "str"},
-                env_types=["browser", "desktop"],
             ),
             ActionDescriptor(
                 name="drag",
                 description="Drag from one point to another",
                 params={"start_point": "str", "end_point": "str"},
-                env_types=["browser", "desktop"],
             ),
             ActionDescriptor(
                 name="wait",
                 description="Wait for the page to settle",
                 params={},
-                env_types=["browser", "desktop"],
             ),
             ActionDescriptor(
                 name="finished",
                 description="Signal task completion",
                 params={"content": "str"},
-                env_types=["browser", "desktop"],
             ),
         ]
 
-
 # ── AST-based action parser ───────────────────────────────────
-
 
 def _parse_ui_tars_response(text: str) -> list[Action]:
     """Parse UI-TARS text output into Action objects using AST parsing.
@@ -149,7 +139,6 @@ def _parse_ui_tars_response(text: str) -> list[Action]:
                 actions.append(action)
 
     return actions if actions else [Action(name="wait", params={})]
-
 
 def _parse_single_action(action_str: str) -> Action | None:
     """Parse a single action call using Python AST."""

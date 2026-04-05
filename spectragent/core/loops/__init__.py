@@ -1,10 +1,10 @@
-"""AgentLoop registry + compatibility Protocols — M03.
+"""AgentLoop registry + compatibility Protocols — M03 + M09.
 
 Separates Agent (domain knowledge) from Loop (execution strategy) into
 two independent registries. Each Loop declares which Protocol it requires
 from Agents via ``__requires_protocol__``.
 
-See docs/architecture_design.md §4.1 and docs/execution_dag.md M03.
+See docs/architecture_design.md §4.1 and docs/execution_dag.md M03/M09.
 """
 
 from spectragent.core.loops._registrar import AgentLoopBase, AgentLoopRegistrar
@@ -15,6 +15,7 @@ from spectragent.core.loops.compatibility import (
     PlanExecCompatible,
     ReactCompatible,
 )
+from spectragent.core.loops.react import ReactLoop
 from spectragent.core.loops.validation import (
     IncompatibleError,
     validate_compatibility,
@@ -28,6 +29,7 @@ __all__ = [
     "CodeActCompatible",
     "FuncCallCompatible",
     "PlanExecCompatible",
+    "ReactLoop",
     "validate_compatibility",
     "IncompatibleError",
 ]

@@ -22,7 +22,6 @@ from spectragent.schemas.step_record import StepRecord
 # ── Prompt directory ─────────────────────────────────────────
 _PROMPT_DIR = PROMPT_PATH / "browser" / "agents" / "skyvern"
 
-
 @dataclass
 class SkyvernAgent(BaseReactAgent):
     """Skyvern-style agent using element tree and action history."""
@@ -133,43 +132,36 @@ class SkyvernAgent(BaseReactAgent):
                 name="click",
                 description="Click an element by ID",
                 params={"element_id": "str"},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="input_text",
                 description="Type text into an element",
                 params={"element_id": "str", "text": "str"},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="select_option",
                 description="Select a dropdown option",
                 params={"element_id": "str", "value": "str"},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="scroll",
                 description="Scroll the page or element",
                 params={"direction": "str"},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="wait",
                 description="Wait for page to load",
                 params={},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="go_back",
                 description="Navigate back",
                 params={},
-                env_types=["browser"],
             ),
             ActionDescriptor(
                 name="done",
                 description="Signal task completion",
                 params={"success": "bool", "text": "str"},
-                env_types=["browser"],
             ),
         ]
         if self.enable_totp:
@@ -178,7 +170,7 @@ class SkyvernAgent(BaseReactAgent):
                     name="totp",
                     description="Generate and input a TOTP code",
                     params={"element_id": "str", "secret": "str"},
-                    env_types=["browser"],
+    
                 )
             )
         return actions
