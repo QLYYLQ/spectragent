@@ -17,8 +17,8 @@ tmp/
 # macOS
 .DS_Store
 
-# Demo scripts
-demo_*.py
-test_*.py
-demo.py
-browser_api.txt
+# Demo scripts (root-level only)
+/demo_*.py
+/test_*.py
+/demo.py
+/browser_api.txt
