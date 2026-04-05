@@ -1,5 +1,7 @@
 """Environment and ActionHandler Protocol stubs.
 
+# TODO: deprecated — replaced by core/environments/base.py, remove after M14
+
 Agents program against these Protocols -- they never import concrete
 environment implementations.  The real Environment layer will be built
 separately and injected at runtime.

@@ -1,4 +1,8 @@
-"""BaseReactAgent — abstract ReAct (Reason + Act) loop for all agents."""
+"""BaseReactAgent — abstract ReAct (Reason + Act) loop for all agents.
+
+# TODO: deprecated — run()/step() replaced by ReactLoop (core/loops/react.py)
+#       + AgentRuntime (core/runtime.py), remove after M14
+"""
 
 import asyncio
 import logging
