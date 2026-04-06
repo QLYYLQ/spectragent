@@ -51,12 +51,19 @@ def _atomic_write(path: Path, data: bytes) -> None:
         raise
 
 
+def _default_json(obj: Any) -> Any:
+    """JSON default handler for Pydantic models and other non-serializable types."""
+    if isinstance(obj, BaseModel):
+        return obj.model_dump()
+    return str(obj)
+
+
 def _serialize_fragment(data: Any) -> bytes:
     """Serialize a fragment value to bytes.
 
     - Pydantic BaseModel -> .model_dump_json() -> UTF-8 bytes
     - bytes -> as-is (screenshots, binary data)
-    - dict/list -> json.dumps -> UTF-8 bytes
+    - dict/list -> json.dumps -> UTF-8 bytes (with Pydantic model support)
     - str -> UTF-8 encode
     """
     if isinstance(data, BaseModel):
@@ -64,11 +71,11 @@ def _serialize_fragment(data: Any) -> bytes:
     if isinstance(data, bytes):
         return data
     if isinstance(data, (dict, list)):
-        return json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        return json.dumps(data, ensure_ascii=False, indent=2, default=_default_json).encode("utf-8")
     if isinstance(data, str):
         return data.encode("utf-8")
-    # Fallback: try JSON serialization
-    return json.dumps(data, ensure_ascii=False, default=str, indent=2).encode("utf-8")
+    # Fallback
+    return json.dumps(data, ensure_ascii=False, default=_default_json, indent=2).encode("utf-8")
 
 
 class WALWriter:
