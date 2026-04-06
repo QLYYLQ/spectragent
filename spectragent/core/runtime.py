@@ -91,17 +91,18 @@ class AgentRuntime:
         # Step 2: Observation three-party negotiation
         negotiated_obs = self._negotiate_observation(agent, loop, env)
 
-        # Step 3: Action negotiation + guarded_act
-        all_descriptors = env.get_action_space()
-        active_descriptors, act_fn = build_guarded_act(
-            env.act, all_descriptors, action_filter,
-        )
-
-        # Step 4: AOP weaving
+        # Step 3: AOP weaving (must happen before guarded_act so
+        #          act_fn captures wrapped_env.act, enabling AOP intercepts)
         weaver = Weaver(self._hooks)
         wrapped_agent = weaver.wrap(agent, role="agent")
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
+
+        # Step 4: Action negotiation + guarded_act (uses wrapped env)
+        all_descriptors = env.get_action_space()
+        active_descriptors, act_fn = build_guarded_act(
+            wrapped_env.act, all_descriptors, action_filter,
+        )
 
         # Step 5: Hook lifecycle — run_start
         await self._dispatch_lifecycle(
