@@ -1,0 +1,789 @@
+{
+  "$defs": {
+    "AgentbayBrowser_ProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "AgentBay API key (env: AGENTBAY_API_KEY)",
+          "title": "Api Key"
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "AgentBay RPC endpoint (env: AGENTBAY_ENDPOINT)",
+          "title": "Endpoint"
+        },
+        "stealth": {
+          "default": false,
+          "description": "Enable stealth browsing mode",
+          "title": "Stealth",
+          "type": "boolean"
+        },
+        "enable_recording": {
+          "default": true,
+          "description": "Enable browser session recording",
+          "title": "Enable Recording",
+          "type": "boolean"
+        },
+        "proxy_country": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Managed proxy country code (e.g. 'US')",
+          "title": "Proxy Country"
+        },
+        "context_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Context ID for persistence across sessions",
+          "title": "Context Id"
+        },
+        "provider_id": {
+          "const": "agentbay",
+          "default": "agentbay",
+          "title": "Provider Id",
+          "type": "string"
+        }
+      },
+      "title": "AgentbayBrowser_ProviderConfig",
+      "type": "object"
+    },
+    "AirtopBrowser_ProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Airtop API key (env: AIRTOP_API_KEY)",
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "API base URL override",
+          "title": "Base Url"
+        },
+        "profile_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Browser profile name to restore",
+          "title": "Profile Name"
+        },
+        "solve_captcha": {
+          "default": false,
+          "description": "Enable automatic CAPTCHA solving",
+          "title": "Solve Captcha",
+          "type": "boolean"
+        },
+        "proxy_country": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Managed proxy country code (e.g. 'US')",
+          "title": "Proxy Country"
+        },
+        "provider_id": {
+          "const": "airtop",
+          "default": "airtop",
+          "title": "Provider Id",
+          "type": "string"
+        }
+      },
+      "title": "AirtopBrowser_ProviderConfig",
+      "type": "object"
+    },
+    "BrowserUseBrowser_ProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Browser-Use API key (env: BROWSER_USE_API_KEY)",
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "API base URL override",
+          "title": "Base Url"
+        },
+        "proxy_country": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Managed proxy country code (e.g. 'US')",
+          "title": "Proxy Country"
+        },
+        "proxy_server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Custom proxy server URL (e.g. 'http://proxy:8080')",
+          "title": "Proxy Server"
+        },
+        "screen_width": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Browser screen width in pixels",
+          "title": "Screen Width"
+        },
+        "screen_height": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Browser screen height in pixels",
+          "title": "Screen Height"
+        },
+        "provider_id": {
+          "const": "browser_use",
+          "default": "browser_use",
+          "title": "Provider Id",
+          "type": "string"
+        }
+      },
+      "title": "BrowserUseBrowser_ProviderConfig",
+      "type": "object"
+    },
+    "HyperbrowserBrowser_ProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hyperbrowser API key (env: HYPERBROWSER_API_KEY)",
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "API base URL override",
+          "title": "Base Url"
+        },
+        "stealth": {
+          "default": true,
+          "description": "Enable stealth browsing mode",
+          "title": "Stealth",
+          "type": "boolean"
+        },
+        "solve_captchas": {
+          "default": false,
+          "description": "Enable automatic CAPTCHA solving",
+          "title": "Solve Captchas",
+          "type": "boolean"
+        },
+        "adblock": {
+          "default": false,
+          "description": "Enable ad / tracker blocking",
+          "title": "Adblock",
+          "type": "boolean"
+        },
+        "enable_recording": {
+          "default": false,
+          "description": "Enable web session recording",
+          "title": "Enable Recording",
+          "type": "boolean"
+        },
+        "proxy_country": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Managed proxy country code (e.g. 'US')",
+          "title": "Proxy Country"
+        },
+        "proxy_server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Custom proxy server URL (e.g. 'http://proxy:8080')",
+          "title": "Proxy Server"
+        },
+        "provider_id": {
+          "const": "hyperbrowser",
+          "default": "hyperbrowser",
+          "title": "Provider Id",
+          "type": "string"
+        }
+      },
+      "title": "HyperbrowserBrowser_ProviderConfig",
+      "type": "object"
+    },
+    "LexmountBrowser_ProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Lexmount API key (env: LEXMOUNT_API_KEY)",
+          "title": "Api Key"
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Lexmount project ID (env: LEXMOUNT_PROJECT_ID)",
+          "title": "Project Id"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "API base URL override",
+          "title": "Base Url"
+        },
+        "browser_mode": {
+          "default": "normal",
+          "description": "Browser mode: 'normal' or 'light'",
+          "title": "Browser Mode",
+          "type": "string"
+        },
+        "context_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Context ID for persistence across sessions",
+          "title": "Context Id"
+        },
+        "context_mode": {
+          "default": "read_write",
+          "description": "Context access mode: 'read_write' or 'read_only'",
+          "title": "Context Mode",
+          "type": "string"
+        },
+        "provider_id": {
+          "const": "lexmount",
+          "default": "lexmount",
+          "title": "Provider Id",
+          "type": "string"
+        }
+      },
+      "title": "LexmountBrowser_ProviderConfig",
+      "type": "object"
+    },
+    "LocalChromeBrowser_ProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "executable_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Chrome / Chromium binary path (auto-detected if None). Env: CHROME_EXECUTABLE_PATH",
+          "title": "Executable Path"
+        },
+        "headless": {
+          "default": true,
+          "description": "Run in headless mode (--headless=new)",
+          "title": "Headless",
+          "type": "boolean"
+        },
+        "window_width": {
+          "default": 1280,
+          "description": "Browser window width in pixels",
+          "title": "Window Width",
+          "type": "integer"
+        },
+        "window_height": {
+          "default": 720,
+          "description": "Browser window height in pixels",
+          "title": "Window Height",
+          "type": "integer"
+        },
+        "start_maximized": {
+          "default": false,
+          "description": "Start browser maximized (ignored in headless mode)",
+          "title": "Start Maximized",
+          "type": "boolean"
+        },
+        "user_data_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Chrome profile directory. A temp dir is created if None. Env: CHROME_USER_DATA_DIR",
+          "title": "User Data Dir"
+        },
+        "profile_directory": {
+          "default": "Default",
+          "description": "Profile subdirectory name inside user_data_dir",
+          "title": "Profile Directory",
+          "type": "string"
+        },
+        "incognito": {
+          "default": false,
+          "description": "Launch in incognito mode (--incognito)",
+          "title": "Incognito",
+          "type": "boolean"
+        },
+        "proxy_server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proxy server URL, e.g. 'socks5://127.0.0.1:1080' or 'http://proxy:8080'",
+          "title": "Proxy Server"
+        },
+        "proxy_bypass_list": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated hosts to bypass proxy (e.g. 'localhost,127.0.0.1')",
+          "title": "Proxy Bypass List"
+        },
+        "disable_security": {
+          "default": false,
+          "description": "Disable web security (--disable-web-security, --ignore-certificate-errors). Use for testing only!",
+          "title": "Disable Security",
+          "type": "boolean"
+        },
+        "no_sandbox": {
+          "default": false,
+          "description": "Disable Chrome sandbox (--no-sandbox). Required in Docker / rootless.",
+          "title": "No Sandbox",
+          "type": "boolean"
+        },
+        "load_extensions": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Paths to unpacked Chrome extensions to load",
+          "title": "Load Extensions"
+        },
+        "disable_gpu": {
+          "default": false,
+          "description": "Disable GPU acceleration (--disable-gpu)",
+          "title": "Disable Gpu",
+          "type": "boolean"
+        },
+        "disable_dev_shm_usage": {
+          "default": false,
+          "description": "Disable /dev/shm usage (--disable-dev-shm-usage). Recommended in Docker.",
+          "title": "Disable Dev Shm Usage",
+          "type": "boolean"
+        },
+        "user_agent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Custom user-agent string",
+          "title": "User Agent"
+        },
+        "disable_background_networking": {
+          "default": true,
+          "description": "Disable background network requests",
+          "title": "Disable Background Networking",
+          "type": "boolean"
+        },
+        "disable_popup_blocking": {
+          "default": true,
+          "description": "Disable popup blocking",
+          "title": "Disable Popup Blocking",
+          "type": "boolean"
+        },
+        "disable_translate": {
+          "default": true,
+          "description": "Disable built-in translation",
+          "title": "Disable Translate",
+          "type": "boolean"
+        },
+        "disable_sync": {
+          "default": true,
+          "description": "Disable Chrome sync",
+          "title": "Disable Sync",
+          "type": "boolean"
+        },
+        "disable_automation_controlled": {
+          "default": true,
+          "description": "Hide automation flag from navigator.webdriver (--disable-blink-features=AutomationControlled)",
+          "title": "Disable Automation Controlled",
+          "type": "boolean"
+        },
+        "mute_audio": {
+          "default": true,
+          "description": "Mute all audio output (--mute-audio)",
+          "title": "Mute Audio",
+          "type": "boolean"
+        },
+        "no_first_run": {
+          "default": true,
+          "description": "Skip first-run experience (--no-first-run)",
+          "title": "No First Run",
+          "type": "boolean"
+        },
+        "disable_default_apps": {
+          "default": true,
+          "description": "Don't install default Chrome apps (--disable-default-apps)",
+          "title": "Disable Default Apps",
+          "type": "boolean"
+        },
+        "deterministic_rendering": {
+          "default": false,
+          "description": "Force deterministic rendering (fixed seed, font hinting off). Useful for visual regression.",
+          "title": "Deterministic Rendering",
+          "type": "boolean"
+        },
+        "force_device_scale_factor": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Override device scale factor (e.g. 1.0, 2.0)",
+          "title": "Force Device Scale Factor"
+        },
+        "remote_debugging_port": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fixed CDP debugging port. Auto-allocated if None.",
+          "title": "Remote Debugging Port"
+        },
+        "extra_args": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Additional raw Chrome CLI flags (e.g. ['--disable-features=Foo', '--enable-logging'])",
+          "title": "Extra Args"
+        },
+        "ignore_default_args": {
+          "default": false,
+          "description": "If True, skip all CHROME_DEFAULT_ARGS and only use flags from explicit config",
+          "title": "Ignore Default Args",
+          "type": "boolean"
+        },
+        "startup_url": {
+          "default": "about:blank",
+          "description": "URL to open on startup",
+          "title": "Startup Url",
+          "type": "string"
+        },
+        "cdp_wait_timeout": {
+          "default": 30.0,
+          "description": "Seconds to wait for Chrome CDP endpoint to become ready",
+          "title": "Cdp Wait Timeout",
+          "type": "number"
+        },
+        "shutdown_timeout": {
+          "default": 5.0,
+          "description": "Seconds to wait for graceful Chrome shutdown before SIGKILL",
+          "title": "Shutdown Timeout",
+          "type": "number"
+        },
+        "provider_id": {
+          "const": "local_chrome",
+          "default": "local_chrome",
+          "title": "Provider Id",
+          "type": "string"
+        }
+      },
+      "title": "LocalChromeBrowser_ProviderConfig",
+      "type": "object"
+    },
+    "SkyvernBrowser_ProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Skyvern API key (env: SKYVERN_API_KEY)",
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "API base URL override",
+          "title": "Base Url"
+        },
+        "timeout_minutes": {
+          "default": 60,
+          "description": "Session timeout in minutes (5-1440)",
+          "title": "Timeout Minutes",
+          "type": "integer"
+        },
+        "solve_captcha": {
+          "default": false,
+          "description": "Enable automatic CAPTCHA solving",
+          "title": "Solve Captcha",
+          "type": "boolean"
+        },
+        "adblock": {
+          "default": false,
+          "description": "Enable ad / tracker blocking",
+          "title": "Adblock",
+          "type": "boolean"
+        },
+        "proxy_country": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Managed proxy country code (e.g. 'US')",
+          "title": "Proxy Country"
+        },
+        "provider_id": {
+          "const": "skyvern",
+          "default": "skyvern",
+          "title": "Provider Id",
+          "type": "string"
+        }
+      },
+      "title": "SkyvernBrowser_ProviderConfig",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "agentbay": "#/$defs/AgentbayBrowser_ProviderConfig",
+      "airtop": "#/$defs/AirtopBrowser_ProviderConfig",
+      "browser_use": "#/$defs/BrowserUseBrowser_ProviderConfig",
+      "hyperbrowser": "#/$defs/HyperbrowserBrowser_ProviderConfig",
+      "lexmount": "#/$defs/LexmountBrowser_ProviderConfig",
+      "local_chrome": "#/$defs/LocalChromeBrowser_ProviderConfig",
+      "skyvern": "#/$defs/SkyvernBrowser_ProviderConfig"
+    },
+    "propertyName": "provider_id"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/AgentbayBrowser_ProviderConfig"
+    },
+    {
+      "$ref": "#/$defs/AirtopBrowser_ProviderConfig"
+    },
+    {
+      "$ref": "#/$defs/BrowserUseBrowser_ProviderConfig"
+    },
+    {
+      "$ref": "#/$defs/HyperbrowserBrowser_ProviderConfig"
+    },
+    {
+      "$ref": "#/$defs/LexmountBrowser_ProviderConfig"
+    },
+    {
+      "$ref": "#/$defs/LocalChromeBrowser_ProviderConfig"
+    },
+    {
+      "$ref": "#/$defs/SkyvernBrowser_ProviderConfig"
+    }
+  ],
+  "x-discriminator": "provider_id"
+}

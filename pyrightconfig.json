@@ -1,0 +1,18 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": false,
+  "include": [
+    "spectragent",
+    "tests"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".venv"
+  ],
+  "extraPaths": [
+    "."
+  ]
+}

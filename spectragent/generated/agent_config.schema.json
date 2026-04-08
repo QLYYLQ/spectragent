@@ -1,0 +1,248 @@
+{
+  "$defs": {
+    "BrowserUseAgentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_steps": {
+          "default": 100,
+          "description": "Maximum steps",
+          "title": "Max Steps",
+          "type": "integer"
+        },
+        "max_actions_per_step": {
+          "default": 3,
+          "description": "Max actions per step",
+          "title": "Max Actions Per Step",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 300,
+          "description": "Timeout in seconds",
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "flash_mode": {
+          "default": true,
+          "description": "Skip thinking for speed",
+          "title": "Flash Mode",
+          "type": "boolean"
+        },
+        "use_vision": {
+          "default": false,
+          "description": "Include screenshots",
+          "title": "Use Vision",
+          "type": "boolean"
+        },
+        "vision_detail": {
+          "default": "low",
+          "description": "Screenshot detail level",
+          "enum": [
+            "auto",
+            "low",
+            "high"
+          ],
+          "title": "Vision Detail",
+          "type": "string"
+        },
+        "use_thinking": {
+          "default": true,
+          "description": "Enable extended thinking",
+          "title": "Use Thinking",
+          "type": "boolean"
+        },
+        "is_browser_use_model": {
+          "default": false,
+          "description": "Using fine-tuned browser-use model",
+          "title": "Is Browser Use Model",
+          "type": "boolean"
+        },
+        "is_anthropic": {
+          "default": false,
+          "description": "Using Anthropic model",
+          "title": "Is Anthropic",
+          "type": "boolean"
+        },
+        "model_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Model name for prompt selection",
+          "title": "Model Name"
+        },
+        "override_system_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Override the entire system prompt",
+          "title": "Override System Message"
+        },
+        "extend_system_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Append text to system prompt",
+          "title": "Extend System Message"
+        },
+        "agent_id": {
+          "const": "browser_use",
+          "default": "browser_use",
+          "title": "Agent Id",
+          "type": "string"
+        }
+      },
+      "title": "BrowserUseAgentConfig",
+      "type": "object"
+    },
+    "SkyvernAgentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_steps": {
+          "default": 50,
+          "description": "Maximum steps",
+          "title": "Max Steps",
+          "type": "integer"
+        },
+        "action_history_window": {
+          "default": 5,
+          "description": "Number of recent actions to include in prompt",
+          "title": "Action History Window",
+          "type": "integer"
+        },
+        "enable_totp": {
+          "default": false,
+          "description": "Enable TOTP 2FA support",
+          "title": "Enable Totp",
+          "type": "boolean"
+        },
+        "prompt_template": {
+          "default": "extract-action",
+          "description": "Skyvern template name (without extension)",
+          "title": "Prompt Template",
+          "type": "string"
+        },
+        "navigation_payload": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Navigation payload for task",
+          "title": "Navigation Payload"
+        },
+        "complete_criterion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Criterion for task completion",
+          "title": "Complete Criterion"
+        },
+        "terminate_criterion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Criterion for task termination",
+          "title": "Terminate Criterion"
+        },
+        "verification_code_check": {
+          "default": false,
+          "description": "Enable verification code checking",
+          "title": "Verification Code Check",
+          "type": "boolean"
+        },
+        "agent_id": {
+          "const": "skyvern",
+          "default": "skyvern",
+          "title": "Agent Id",
+          "type": "string"
+        }
+      },
+      "title": "SkyvernAgentConfig",
+      "type": "object"
+    },
+    "UiTarsAgentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_steps": {
+          "default": 40,
+          "description": "Maximum steps",
+          "title": "Max Steps",
+          "type": "integer"
+        },
+        "prompt_template": {
+          "default": "COMPUTER_USE",
+          "description": "Prompt template: COMPUTER_USE, MOBILE_USE, or GROUNDING",
+          "title": "Prompt Template",
+          "type": "string"
+        },
+        "language": {
+          "default": "English",
+          "description": "Thinking language",
+          "title": "Language",
+          "type": "string"
+        },
+        "agent_id": {
+          "const": "ui_tars",
+          "default": "ui_tars",
+          "title": "Agent Id",
+          "type": "string"
+        }
+      },
+      "title": "UiTarsAgentConfig",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "browser_use": "#/$defs/BrowserUseAgentConfig",
+      "skyvern": "#/$defs/SkyvernAgentConfig",
+      "ui_tars": "#/$defs/UiTarsAgentConfig"
+    },
+    "propertyName": "agent_id"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/BrowserUseAgentConfig"
+    },
+    {
+      "$ref": "#/$defs/SkyvernAgentConfig"
+    },
+    {
+      "$ref": "#/$defs/UiTarsAgentConfig"
+    }
+  ],
+  "x-discriminator": "agent_id"
+}

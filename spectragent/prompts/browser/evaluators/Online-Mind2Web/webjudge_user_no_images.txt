@@ -1,0 +1,6 @@
+User Task: {task}
+
+Key Points: {key_points}
+
+Action History:
+{last_actions}

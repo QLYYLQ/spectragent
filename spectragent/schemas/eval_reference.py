@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from spectragent.schemas.browser_task import TaskReference
+from spectragent.schemas.task import TaskReference
 
 
 class EvalReference(BaseModel):
@@ -14,7 +14,7 @@ class EvalReference(BaseModel):
 
     This is the "eval view" of benchmark data: it contains only the fields
     needed for evaluation (expected answers, rubrics, scoring criteria).
-    The complementary "task view" is ``BrowserTask``.
+    The complementary "task view" is ``TaskDefinition``.
     """
 
     model_config = ConfigDict(extra="allow")

@@ -11,14 +11,15 @@ from spectragent.schemas.agent_result import (
     AgentResult,
     AgentUsage,
 )
-from spectragent.schemas.browser_task import (
+from spectragent.schemas.config import BenchConfig, RunConfig
+from spectragent.schemas.task import (
     BrowserSetup,
-    BrowserTask,
     ScoringItem,
     ScoringRubric,
+    TaskDefinition,
     TaskReference,
+    TaskSetup,
 )
-from spectragent.schemas.config import BenchConfig, RunConfig, TaskDefinition
 from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.eval_result import (
     AgentResultRef,
@@ -52,14 +53,14 @@ __all__ = [
     "TokenUsage",
     # Login
     "LoginSnapshot",
-    # Browser task
-    "BrowserTask",
+    # Task
+    "TaskDefinition",
+    "TaskSetup",
     "BrowserSetup",
     "TaskReference",
     "ScoringRubric",
     "ScoringItem",
     # Config
-    "TaskDefinition",
     "RunConfig",
     "BenchConfig",
     # Prompt

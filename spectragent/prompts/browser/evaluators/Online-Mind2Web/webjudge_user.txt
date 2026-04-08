@@ -1,0 +1,9 @@
+User Task: {task}
+
+Key Points: {key_points}
+
+Action History:
+{last_actions}
+
+The potentially important snapshots of the webpage in the agent's trajectory and their reasons:
+{thoughts}

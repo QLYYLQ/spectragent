@@ -1,0 +1,2490 @@
+{
+  "$defs": {
+    "AnthropicAwsLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "anthropic",
+          "default": "anthropic",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "max_tokens": {
+          "default": 8192,
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "top_k": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top K"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "stop_sequences": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stop Sequences"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "auth_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auth Token"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "max_retries": {
+          "default": 10,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "provider": {
+          "$ref": "#/$defs/AwsProviderConfig",
+          "default": {
+            "name": "aws",
+            "aws_access_key": null,
+            "aws_secret_key": null,
+            "aws_session_token": null,
+            "aws_region": null
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "AnthropicAwsLLMConfig",
+      "type": "object"
+    },
+    "AnthropicDirectLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "anthropic",
+          "default": "anthropic",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "max_tokens": {
+          "default": 8192,
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "top_k": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top K"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "stop_sequences": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stop Sequences"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "auth_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Auth Token"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "max_retries": {
+          "default": 10,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "provider": {
+          "$ref": "#/$defs/conscribe__config__builder__DirectProviderConfig__1",
+          "default": {
+            "name": "direct"
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "AnthropicDirectLLMConfig",
+      "type": "object"
+    },
+    "AwsProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "aws",
+          "default": "aws",
+          "title": "Name",
+          "type": "string"
+        },
+        "aws_access_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aws Access Key"
+        },
+        "aws_secret_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aws Secret Key"
+        },
+        "aws_session_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aws Session Token"
+        },
+        "aws_region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aws Region"
+        }
+      },
+      "title": "AwsProviderConfig",
+      "type": "object"
+    },
+    "AzureProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "azure",
+          "default": "azure",
+          "title": "Name",
+          "type": "string"
+        },
+        "api_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Version"
+        },
+        "azure_endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Azure Endpoint"
+        },
+        "azure_deployment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Azure Deployment"
+        },
+        "azure_ad_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Azure Ad Token"
+        },
+        "use_responses_api": {
+          "default": "auto",
+          "title": "Use Responses Api",
+          "type": "string"
+        }
+      },
+      "title": "AzureProviderConfig",
+      "type": "object"
+    },
+    "BedrockDefaultLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "bedrock",
+          "default": "bedrock",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "default": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+          "title": "Model",
+          "type": "string"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4096,
+          "title": "Max Tokens"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temperature"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "stop_sequences": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stop Sequences"
+        },
+        "aws_access_key_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aws Access Key Id"
+        },
+        "aws_secret_access_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aws Secret Access Key"
+        },
+        "aws_session_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aws Session Token"
+        },
+        "aws_region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Aws Region"
+        },
+        "aws_sso_auth": {
+          "default": false,
+          "title": "Aws Sso Auth",
+          "type": "boolean"
+        },
+        "provider": {
+          "$ref": "#/$defs/DefaultProviderConfig",
+          "default": {
+            "name": "default"
+          }
+        }
+      },
+      "title": "BedrockDefaultLLMConfig",
+      "type": "object"
+    },
+    "BrowserUseDefaultLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "browser_use",
+          "default": "browser_use",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "default": "bu-latest",
+          "title": "Model",
+          "type": "string"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "timeout": {
+          "default": 120.0,
+          "title": "Timeout",
+          "type": "number"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "retry_base_delay": {
+          "default": 1.0,
+          "title": "Retry Base Delay",
+          "type": "number"
+        },
+        "retry_max_delay": {
+          "default": 60.0,
+          "title": "Retry Max Delay",
+          "type": "number"
+        },
+        "provider": {
+          "$ref": "#/$defs/DefaultProviderConfig",
+          "default": {
+            "name": "default"
+          }
+        }
+      },
+      "title": "BrowserUseDefaultLLMConfig",
+      "type": "object"
+    },
+    "CerebrasProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "cerebras",
+          "default": "cerebras",
+          "title": "Name",
+          "type": "string"
+        },
+        "client_params": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Params"
+        }
+      },
+      "title": "CerebrasProviderConfig",
+      "type": "object"
+    },
+    "DeepseekProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "deepseek",
+          "default": "deepseek",
+          "title": "Name",
+          "type": "string"
+        },
+        "client_params": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Client Params"
+        }
+      },
+      "title": "DeepseekProviderConfig",
+      "type": "object"
+    },
+    "DefaultProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "default",
+          "default": "default",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "DefaultProviderConfig",
+      "type": "object"
+    },
+    "GoogleDefaultLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "google",
+          "default": "google",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.5,
+          "title": "Temperature"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "thinking_budget": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Budget"
+        },
+        "thinking_level": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking Level"
+        },
+        "max_output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 8096,
+          "title": "Max Output Tokens"
+        },
+        "include_system_in_user": {
+          "default": false,
+          "title": "Include System In User",
+          "type": "boolean"
+        },
+        "supports_structured_output": {
+          "default": true,
+          "title": "Supports Structured Output",
+          "type": "boolean"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "retry_base_delay": {
+          "default": 1.0,
+          "title": "Retry Base Delay",
+          "type": "number"
+        },
+        "retry_max_delay": {
+          "default": 60.0,
+          "title": "Retry Max Delay",
+          "type": "number"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "vertexai": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vertexai"
+        },
+        "project": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location"
+        },
+        "provider": {
+          "$ref": "#/$defs/DefaultProviderConfig",
+          "default": {
+            "name": "default"
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "GoogleDefaultLLMConfig",
+      "type": "object"
+    },
+    "GroqProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "groq",
+          "default": "groq",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "GroqProviderConfig",
+      "type": "object"
+    },
+    "MistralDefaultLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "mistral",
+          "default": "mistral",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "default": "mistral-medium-latest",
+          "title": "Model",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.2,
+          "title": "Temperature"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4096,
+          "title": "Max Tokens"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "safe_prompt": {
+          "default": false,
+          "title": "Safe Prompt",
+          "type": "boolean"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "default": "https://api.mistral.ai/v1",
+          "title": "Base Url",
+          "type": "string"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "provider": {
+          "$ref": "#/$defs/DefaultProviderConfig",
+          "default": {
+            "name": "default"
+          }
+        }
+      },
+      "title": "MistralDefaultLLMConfig",
+      "type": "object"
+    },
+    "OciDefaultLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "oci",
+          "default": "oci",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model_id": {
+          "title": "Model Id",
+          "type": "string"
+        },
+        "service_endpoint": {
+          "title": "Service Endpoint",
+          "type": "string"
+        },
+        "compartment_id": {
+          "title": "Compartment Id",
+          "type": "string"
+        },
+        "oci_provider": {
+          "default": "meta",
+          "title": "Oci Provider",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1.0,
+          "title": "Temperature"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 600,
+          "title": "Max Tokens"
+        },
+        "frequency_penalty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.0,
+          "title": "Frequency Penalty"
+        },
+        "presence_penalty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.0,
+          "title": "Presence Penalty"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.75,
+          "title": "Top P"
+        },
+        "top_k": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0,
+          "title": "Top K"
+        },
+        "auth_type": {
+          "default": "API_KEY",
+          "title": "Auth Type",
+          "type": "string"
+        },
+        "auth_profile": {
+          "default": "DEFAULT",
+          "title": "Auth Profile",
+          "type": "string"
+        },
+        "timeout": {
+          "default": 60.0,
+          "title": "Timeout",
+          "type": "number"
+        },
+        "provider": {
+          "$ref": "#/$defs/DefaultProviderConfig",
+          "default": {
+            "name": "default"
+          }
+        }
+      },
+      "required": [
+        "model_id",
+        "service_endpoint",
+        "compartment_id"
+      ],
+      "title": "OciDefaultLLMConfig",
+      "type": "object"
+    },
+    "OllamaDefaultLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "ollama",
+          "default": "ollama",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "provider": {
+          "$ref": "#/$defs/DefaultProviderConfig",
+          "default": {
+            "name": "default"
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OllamaDefaultLLMConfig",
+      "type": "object"
+    },
+    "OpenaiAzureLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.2,
+          "title": "Temperature"
+        },
+        "frequency_penalty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.3,
+          "title": "Frequency Penalty"
+        },
+        "reasoning_effort": {
+          "default": "low",
+          "title": "Reasoning Effort",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "service_tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Tier"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "add_schema_to_system_prompt": {
+          "default": false,
+          "title": "Add Schema To System Prompt",
+          "type": "boolean"
+        },
+        "dont_force_structured_output": {
+          "default": false,
+          "title": "Dont Force Structured Output",
+          "type": "boolean"
+        },
+        "remove_min_items_from_schema": {
+          "default": false,
+          "title": "Remove Min Items From Schema",
+          "type": "boolean"
+        },
+        "remove_defaults_from_schema": {
+          "default": false,
+          "title": "Remove Defaults From Schema",
+          "type": "boolean"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "max_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4096,
+          "title": "Max Completion Tokens"
+        },
+        "provider": {
+          "$ref": "#/$defs/AzureProviderConfig",
+          "default": {
+            "name": "azure",
+            "api_version": null,
+            "azure_endpoint": null,
+            "azure_deployment": null,
+            "azure_ad_token": null,
+            "use_responses_api": "auto"
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OpenaiAzureLLMConfig",
+      "type": "object"
+    },
+    "OpenaiCerebrasLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.2,
+          "title": "Temperature"
+        },
+        "frequency_penalty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.3,
+          "title": "Frequency Penalty"
+        },
+        "reasoning_effort": {
+          "default": "low",
+          "title": "Reasoning Effort",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "service_tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Tier"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "add_schema_to_system_prompt": {
+          "default": false,
+          "title": "Add Schema To System Prompt",
+          "type": "boolean"
+        },
+        "dont_force_structured_output": {
+          "default": false,
+          "title": "Dont Force Structured Output",
+          "type": "boolean"
+        },
+        "remove_min_items_from_schema": {
+          "default": false,
+          "title": "Remove Min Items From Schema",
+          "type": "boolean"
+        },
+        "remove_defaults_from_schema": {
+          "default": false,
+          "title": "Remove Defaults From Schema",
+          "type": "boolean"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "max_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4096,
+          "title": "Max Completion Tokens"
+        },
+        "provider": {
+          "$ref": "#/$defs/CerebrasProviderConfig",
+          "default": {
+            "name": "cerebras",
+            "client_params": null
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OpenaiCerebrasLLMConfig",
+      "type": "object"
+    },
+    "OpenaiDeepseekLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.2,
+          "title": "Temperature"
+        },
+        "frequency_penalty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.3,
+          "title": "Frequency Penalty"
+        },
+        "reasoning_effort": {
+          "default": "low",
+          "title": "Reasoning Effort",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "service_tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Tier"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "add_schema_to_system_prompt": {
+          "default": false,
+          "title": "Add Schema To System Prompt",
+          "type": "boolean"
+        },
+        "dont_force_structured_output": {
+          "default": false,
+          "title": "Dont Force Structured Output",
+          "type": "boolean"
+        },
+        "remove_min_items_from_schema": {
+          "default": false,
+          "title": "Remove Min Items From Schema",
+          "type": "boolean"
+        },
+        "remove_defaults_from_schema": {
+          "default": false,
+          "title": "Remove Defaults From Schema",
+          "type": "boolean"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "max_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4096,
+          "title": "Max Completion Tokens"
+        },
+        "provider": {
+          "$ref": "#/$defs/DeepseekProviderConfig",
+          "default": {
+            "name": "deepseek",
+            "client_params": null
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OpenaiDeepseekLLMConfig",
+      "type": "object"
+    },
+    "OpenaiDirectLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.2,
+          "title": "Temperature"
+        },
+        "frequency_penalty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.3,
+          "title": "Frequency Penalty"
+        },
+        "reasoning_effort": {
+          "default": "low",
+          "title": "Reasoning Effort",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "service_tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Tier"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "add_schema_to_system_prompt": {
+          "default": false,
+          "title": "Add Schema To System Prompt",
+          "type": "boolean"
+        },
+        "dont_force_structured_output": {
+          "default": false,
+          "title": "Dont Force Structured Output",
+          "type": "boolean"
+        },
+        "remove_min_items_from_schema": {
+          "default": false,
+          "title": "Remove Min Items From Schema",
+          "type": "boolean"
+        },
+        "remove_defaults_from_schema": {
+          "default": false,
+          "title": "Remove Defaults From Schema",
+          "type": "boolean"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "max_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4096,
+          "title": "Max Completion Tokens"
+        },
+        "provider": {
+          "$ref": "#/$defs/conscribe__config__builder__DirectProviderConfig__2",
+          "default": {
+            "name": "direct",
+            "organization": null,
+            "project": null
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OpenaiDirectLLMConfig",
+      "type": "object"
+    },
+    "OpenaiGroqLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.2,
+          "title": "Temperature"
+        },
+        "frequency_penalty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.3,
+          "title": "Frequency Penalty"
+        },
+        "reasoning_effort": {
+          "default": "low",
+          "title": "Reasoning Effort",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "service_tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Tier"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "add_schema_to_system_prompt": {
+          "default": false,
+          "title": "Add Schema To System Prompt",
+          "type": "boolean"
+        },
+        "dont_force_structured_output": {
+          "default": false,
+          "title": "Dont Force Structured Output",
+          "type": "boolean"
+        },
+        "remove_min_items_from_schema": {
+          "default": false,
+          "title": "Remove Min Items From Schema",
+          "type": "boolean"
+        },
+        "remove_defaults_from_schema": {
+          "default": false,
+          "title": "Remove Defaults From Schema",
+          "type": "boolean"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "max_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4096,
+          "title": "Max Completion Tokens"
+        },
+        "provider": {
+          "$ref": "#/$defs/GroqProviderConfig",
+          "default": {
+            "name": "groq"
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OpenaiGroqLLMConfig",
+      "type": "object"
+    },
+    "OpenaiOpenrouterLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.2,
+          "title": "Temperature"
+        },
+        "frequency_penalty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.3,
+          "title": "Frequency Penalty"
+        },
+        "reasoning_effort": {
+          "default": "low",
+          "title": "Reasoning Effort",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "service_tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Tier"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "add_schema_to_system_prompt": {
+          "default": false,
+          "title": "Add Schema To System Prompt",
+          "type": "boolean"
+        },
+        "dont_force_structured_output": {
+          "default": false,
+          "title": "Dont Force Structured Output",
+          "type": "boolean"
+        },
+        "remove_min_items_from_schema": {
+          "default": false,
+          "title": "Remove Min Items From Schema",
+          "type": "boolean"
+        },
+        "remove_defaults_from_schema": {
+          "default": false,
+          "title": "Remove Defaults From Schema",
+          "type": "boolean"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "max_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4096,
+          "title": "Max Completion Tokens"
+        },
+        "provider": {
+          "$ref": "#/$defs/OpenrouterProviderConfig",
+          "default": {
+            "name": "openrouter",
+            "http_referer": null,
+            "extra_body": null
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OpenaiOpenrouterLLMConfig",
+      "type": "object"
+    },
+    "OpenaiVercelLLMConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model_type": {
+          "const": "openai",
+          "default": "openai",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.2,
+          "title": "Temperature"
+        },
+        "frequency_penalty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.3,
+          "title": "Frequency Penalty"
+        },
+        "reasoning_effort": {
+          "default": "low",
+          "title": "Reasoning Effort",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "service_tier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Tier"
+        },
+        "top_p": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top P"
+        },
+        "add_schema_to_system_prompt": {
+          "default": false,
+          "title": "Add Schema To System Prompt",
+          "type": "boolean"
+        },
+        "dont_force_structured_output": {
+          "default": false,
+          "title": "Dont Force Structured Output",
+          "type": "boolean"
+        },
+        "remove_min_items_from_schema": {
+          "default": false,
+          "title": "Remove Min Items From Schema",
+          "type": "boolean"
+        },
+        "remove_defaults_from_schema": {
+          "default": false,
+          "title": "Remove Defaults From Schema",
+          "type": "boolean"
+        },
+        "api_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Api Key"
+        },
+        "base_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base Url"
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout"
+        },
+        "max_retries": {
+          "default": 5,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "max_completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 4096,
+          "title": "Max Completion Tokens"
+        },
+        "provider": {
+          "$ref": "#/$defs/VercelProviderConfig",
+          "default": {
+            "name": "vercel",
+            "provider_options": null
+          }
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "OpenaiVercelLLMConfig",
+      "type": "object"
+    },
+    "OpenrouterProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "openrouter",
+          "default": "openrouter",
+          "title": "Name",
+          "type": "string"
+        },
+        "http_referer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Http Referer"
+        },
+        "extra_body": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extra Body"
+        }
+      },
+      "title": "OpenrouterProviderConfig",
+      "type": "object"
+    },
+    "VercelProviderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "vercel",
+          "default": "vercel",
+          "title": "Name",
+          "type": "string"
+        },
+        "provider_options": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Options"
+        }
+      },
+      "title": "VercelProviderConfig",
+      "type": "object"
+    },
+    "conscribe__config__builder__DirectProviderConfig__1": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "direct",
+          "default": "direct",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "title": "DirectProviderConfig",
+      "type": "object"
+    },
+    "conscribe__config__builder__DirectProviderConfig__2": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "const": "direct",
+          "default": "direct",
+          "title": "Name",
+          "type": "string"
+        },
+        "organization": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Organization"
+        },
+        "project": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project"
+        }
+      },
+      "title": "DirectProviderConfig",
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/AnthropicAwsLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/AnthropicDirectLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/BedrockDefaultLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/BrowserUseDefaultLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/GoogleDefaultLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/MistralDefaultLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/OciDefaultLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/OllamaDefaultLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/OpenaiAzureLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/OpenaiCerebrasLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/OpenaiDeepseekLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/OpenaiDirectLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/OpenaiGroqLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/OpenaiOpenrouterLLMConfig"
+    },
+    {
+      "$ref": "#/$defs/OpenaiVercelLLMConfig"
+    }
+  ],
+  "x-discriminator": "model_type",
+  "x-discriminator-fields": [
+    "model_type",
+    "provider"
+  ],
+  "x-key-separator": "."
+}

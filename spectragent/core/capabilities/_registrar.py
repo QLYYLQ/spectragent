@@ -68,18 +68,34 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
 
         Both required and optional keys are included in the provides set.
         """
-        obs_wiring = self.__wiring__.get("observation")
-        if obs_wiring is None:
+        return self._wiring_keys("observation")
+
+    @property
+    def provided_actions(self) -> frozenset[str]:
+        """Derive provided action names from ``__wiring__["action"]``.
+
+        Symmetric to :attr:`provided_fragments`. Supports the same
+        conscribe wiring modes.
+        """
+        return self._wiring_keys("action")
+
+    def _wiring_keys(self, wiring_key: str) -> frozenset[str]:
+        """Collect all keys declared under ``__wiring__[wiring_key]``.
+
+        Shared implementation for ``provided_fragments`` and
+        ``provided_actions``. Returns required ∪ optional when Mode 3 is
+        used, or just the required list in Mode 2. Returns an empty set
+        for Mode 1 (bare string) or absent entries.
+        """
+        wiring = self.__wiring__.get(wiring_key)
+        if wiring is None or isinstance(wiring, str):
             return frozenset()
-        if isinstance(obs_wiring, str):
-            return frozenset()
-        # Mode 2: (registry, [keys]) or Mode 3: (registry, [required], [optional])
-        if isinstance(obs_wiring, tuple):
-            if len(obs_wiring) == 2:
-                _, keys = obs_wiring
+        if isinstance(wiring, tuple):
+            if len(wiring) == 2:
+                _, keys = wiring
                 return frozenset(keys)
-            elif len(obs_wiring) == 3:
-                _, required, optional = obs_wiring
+            if len(wiring) == 3:
+                _, required, optional = wiring
                 return frozenset(required) | frozenset(optional)
         return frozenset()
 

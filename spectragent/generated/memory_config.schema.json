@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "SimpleMemoryConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_messages": {
+          "default": 1000,
+          "description": "Maximum messages to retain",
+          "title": "Max Messages",
+          "type": "integer"
+        },
+        "memory_id": {
+          "const": "simple",
+          "default": "simple",
+          "title": "Memory Id",
+          "type": "string"
+        }
+      },
+      "title": "SimpleMemoryConfig",
+      "type": "object"
+    },
+    "SlidingWindowMemoryConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "window_size": {
+          "default": 20,
+          "description": "Number of recent messages to keep",
+          "title": "Window Size",
+          "type": "integer"
+        },
+        "keep_system": {
+          "default": true,
+          "description": "Always keep system messages",
+          "title": "Keep System",
+          "type": "boolean"
+        },
+        "memory_id": {
+          "const": "sliding_window",
+          "default": "sliding_window",
+          "title": "Memory Id",
+          "type": "string"
+        }
+      },
+      "title": "SlidingWindowMemoryConfig",
+      "type": "object"
+    },
+    "SummaryMemoryConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "summary_interval": {
+          "default": 5,
+          "description": "Summarise after this many new non-system messages",
+          "title": "Summary Interval",
+          "type": "integer"
+        },
+        "max_tokens": {
+          "default": 4000,
+          "description": "Max tokens for context (approx)",
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "memory_id": {
+          "const": "summary",
+          "default": "summary",
+          "title": "Memory Id",
+          "type": "string"
+        }
+      },
+      "title": "SummaryMemoryConfig",
+      "type": "object"
+    },
+    "TokenBudgetMemoryConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_tokens": {
+          "default": 8000,
+          "description": "Token budget for context messages",
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "token_estimator": {
+          "default": "char_ratio",
+          "description": "Token estimation method: 'char_ratio'",
+          "title": "Token Estimator",
+          "type": "string"
+        },
+        "memory_id": {
+          "const": "token_budget",
+          "default": "token_budget",
+          "title": "Memory Id",
+          "type": "string"
+        }
+      },
+      "title": "TokenBudgetMemoryConfig",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "simple": "#/$defs/SimpleMemoryConfig",
+      "sliding_window": "#/$defs/SlidingWindowMemoryConfig",
+      "summary": "#/$defs/SummaryMemoryConfig",
+      "token_budget": "#/$defs/TokenBudgetMemoryConfig"
+    },
+    "propertyName": "memory_id"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SlidingWindowMemoryConfig"
+    },
+    {
+      "$ref": "#/$defs/TokenBudgetMemoryConfig"
+    },
+    {
+      "$ref": "#/$defs/SimpleMemoryConfig"
+    },
+    {
+      "$ref": "#/$defs/SummaryMemoryConfig"
+    }
+  ],
+  "x-discriminator": "memory_id"
+}

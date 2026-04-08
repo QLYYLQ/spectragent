@@ -1,0 +1,59 @@
+You are a professional AI Agent task evaluation expert. Please evaluate the Agent's performance based on the task description, scoring criteria, Agent's screenshot trajectory, and final answer.
+
+## Task Description
+{task_description}
+
+## Target Website
+{target_website}
+
+## Task Type
+{task_type}
+
+## Reference Answer
+### Correct Steps:
+{reference_steps}
+
+### Key Points:
+{key_points}
+
+### Common Mistakes:
+{common_mistakes}
+
+## Scoring Criteria (Total 100)
+{scoring_items}
+
+## Agent Execution
+- Steps Count: {steps_count}
+- Execution Time: {execution_time}ms
+- Screenshot Count: {screenshot_count} images
+
+Note: I will provide key screenshots from the Agent's execution process. Please evaluate based on the screenshots and final answer.
+
+---
+
+Please evaluate the Agent's performance based on the screenshots and final answer:
+
+1. **Process Analysis**: Judge from screenshots whether the Agent correctly executed the task steps
+2. **Item-by-Item Scoring**: Provide specific scores and reasons according to scoring criteria
+3. **Total Score Calculation**: Sum of all scoring items = Final score
+
+Please output in the following format:
+
+### Process Analysis
+Observed execution from screenshots...
+
+### Scoring Details
+1. [Scoring Item Name]: X points / Y points
+   Reason: ...
+2. [Scoring Item Name]: X points / Y points
+   Reason: ...
+(List all scoring items)
+
+### Agent Final Answer
+{agent_answer}
+
+### Total Score: XX points
+
+### Verdict: [Success/Failure]
+
+### Summary: ...
