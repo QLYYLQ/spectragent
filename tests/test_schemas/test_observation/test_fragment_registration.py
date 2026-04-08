@@ -1,0 +1,112 @@
+"""Tests for ObservationFragment registration via conscribe bridge."""
+
+import pytest
+
+from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
+from spectragent.schemas.observation.fragments import (
+    ActionResultObs,
+    BrowserMetaObs,
+    DOMObs,
+    ScreenshotObs,
+    TerminalObs,
+    ToolResultObs,
+)
+
+
+class TestFragmentRegistration:
+    """All 6 first-batch fragments should be auto-registered."""
+
+    def test_dom_registered(self) -> None:
+        assert ObservationRegistrar.get("dom") is DOMObs
+
+    def test_screenshot_registered(self) -> None:
+        assert ObservationRegistrar.get("screenshot") is ScreenshotObs
+
+    def test_browser_meta_registered(self) -> None:
+        assert ObservationRegistrar.get("browser_meta") is BrowserMetaObs
+
+    def test_action_result_registered(self) -> None:
+        assert ObservationRegistrar.get("action_result") is ActionResultObs
+
+    def test_terminal_registered(self) -> None:
+        assert ObservationRegistrar.get("terminal") is TerminalObs
+
+    def test_tool_result_registered(self) -> None:
+        assert ObservationRegistrar.get("tool_result") is ToolResultObs
+
+    def test_all_six_keys_present(self) -> None:
+        keys = set(ObservationRegistrar.keys())
+        expected = {"dom", "screenshot", "browser_meta", "action_result",
+                    "terminal", "tool_result"}
+        assert expected.issubset(keys)
+
+
+class TestFragmentSource:
+    """__source__ correctly distinguishes env vs loop sourced fragments."""
+
+    def test_env_sourced(self) -> None:
+        for cls in [DOMObs, ScreenshotObs, BrowserMetaObs, TerminalObs, ToolResultObs]:
+            assert cls.__source__ == "env", f"{cls.__name__} should be env-sourced"
+
+    def test_loop_sourced(self) -> None:
+        assert ActionResultObs.__source__ == "loop"
+
+
+class TestFragmentIsPydanticModel:
+    """Fragments should be valid Pydantic models (bridge worked)."""
+
+    def test_terminal_instantiation(self) -> None:
+        obs = TerminalObs(stdout="hello world", cwd="/tmp")
+        assert obs.stdout == "hello world"
+        assert obs.stderr == ""
+        assert obs.exit_code == 0
+        assert obs.cwd == "/tmp"
+
+    def test_terminal_json_roundtrip(self) -> None:
+        obs = TerminalObs(stdout="hi", stderr="err", exit_code=1, cwd="/")
+        data = obs.model_dump()
+        restored = TerminalObs(**data)
+        assert restored.stdout == "hi"
+        assert restored.exit_code == 1
+
+    def test_action_result_instantiation(self) -> None:
+        obs = ActionResultObs(last_action="click", success=True)
+        assert obs.last_action == "click"
+        assert obs.success is True
+        assert obs.error is None
+
+    def test_screenshot_default_construction(self) -> None:
+        # M13: image_path and image_bytes are both optional. Consumers
+        # must populate at least one in practice, but the schema allows
+        # default construction so the lazy-batch resolver can build the
+        # fragment incrementally.
+        obs = ScreenshotObs()
+        assert obs.image_path is None
+        assert obs.image_bytes is None
+
+    def test_screenshot_with_path(self) -> None:
+        obs = ScreenshotObs(
+            image_path="/tmp/s.png", viewport_width=1920, viewport_height=1080
+        )
+        assert obs.image_path == "/tmp/s.png"
+
+    def test_screenshot_with_bytes(self) -> None:
+        obs = ScreenshotObs(
+            image_bytes=b"\x89PNG\r\n\x1a\n",
+            viewport_width=1280,
+            viewport_height=720,
+        )
+        assert obs.image_bytes is not None
+        assert obs.image_bytes.startswith(b"\x89PNG")
+        assert obs.image_path is None
+
+    def test_fragment_id_property(self) -> None:
+        obs = TerminalObs(stdout="x", cwd="/")
+        assert obs.fragment_id == "terminal"
+
+
+class TestFragmentBaseAbstract:
+    """FragmentBase itself should NOT be registered."""
+
+    def test_base_not_in_registry(self) -> None:
+        assert ObservationRegistrar.get_or_none("fragment_base") is None

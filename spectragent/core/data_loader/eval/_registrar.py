@@ -1,7 +1,8 @@
-"""Browser eval loader registry using conscribe.
+"""Eval loader registry using conscribe.
 
 Stateful loaders: data is loaded into memory at ``__post_init__``,
-queries accept only ``task_id``.
+queries accept only ``task_id``. Subclasses register automatically via
+the ``EvalLoaderRegistrar`` metaclass.
 """
 
 import logging
@@ -16,22 +17,22 @@ from spectragent.core.data_loader._common import (
     parse_file,
     resolve_data_dir,
 )
-from spectragent.core.data_loader.eval.base import BaseBrowserEvalLoader
-from spectragent.schemas.browser_task import TaskReference
+from spectragent.core.data_loader.eval.base import BaseEvalLoader
 from spectragent.schemas.eval_reference import EvalReference
+from spectragent.schemas.task import TaskReference
 
 logger = logging.getLogger(__name__)
 
 EvalLoaderRegistrar = create_registrar(
-    "browser_eval_loader",
-    BaseBrowserEvalLoader,
+    "eval_loader",
+    BaseEvalLoader,
     discriminator_field="benchmark_name",
 )
 
 
 @dataclass
 class EvalLoaderBase(metaclass=EvalLoaderRegistrar.Meta):
-    """Stateful browser eval loader base.
+    """Stateful eval loader base.
 
     Subclasses auto-register via conscribe. Override ``subset`` type
     annotation with a ``Literal[...]`` for precise config stub generation.

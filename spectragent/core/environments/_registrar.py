@@ -82,6 +82,19 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             fragments |= cap.provided_fragments
         return frozenset(fragments)
 
+    @property
+    def provided_actions(self) -> frozenset[str]:
+        """Union of all capabilities' provided_actions.
+
+        Symmetric to :attr:`provided_fragments`. Composite environments
+        expose this as the unprefixed action names; prefix routing is
+        applied separately in :meth:`get_action_space` / :meth:`act`.
+        """
+        actions: set[str] = set()
+        for cap in self._capabilities.values():
+            actions |= cap.provided_actions
+        return frozenset(actions)
+
     # ── Action space aggregation ──────────────────────────────
 
     def get_action_space(self, **context: Any) -> list[ActionDescriptor]:

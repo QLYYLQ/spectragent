@@ -13,7 +13,7 @@ from pydantic import Field
 from spectragent.schemas.observation._registrar import FragmentBase
 
 if TYPE_CHECKING:
-    from spectragent.core.browser.dom.models import DOMState
+    from spectragent.core.capabilities.browser.dom.models import DOMState
 
 
 # ── Browser fragments ──────────────────────────────────────────────
@@ -30,14 +30,19 @@ class DOMObs(FragmentBase):
 
 
 class ScreenshotObs(FragmentBase):
-    """Screenshot observation from browser or desktop capability."""
+    """Screenshot observation from browser or desktop capability.
+
+    Either ``image_path`` (on-disk PNG) or ``image_bytes`` (in-memory PNG)
+    must be set; consumers prefer ``image_path`` when both are present.
+    """
 
     __registry_key__ = "screenshot"
     __source__: ClassVar[Literal["env", "loop"]] = "env"
 
-    image_path: str
-    viewport_width: int
-    viewport_height: int
+    image_path: str | None = None
+    image_bytes: bytes | None = None
+    viewport_width: int = 0
+    viewport_height: int = 0
 
 
 class BrowserMetaObs(FragmentBase):

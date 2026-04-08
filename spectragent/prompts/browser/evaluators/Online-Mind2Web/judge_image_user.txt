@@ -1,0 +1,5 @@
+**Task**: {task}
+
+**Key Points for Task Completion**: {key_points}
+
+The snapshot of the web page is shown in the image.

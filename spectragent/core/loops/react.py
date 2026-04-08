@@ -81,8 +81,18 @@ class ReactLoop(AgentLoopBase):
         memory = kwargs["memory"]
         act_fn = kwargs["act_fn"]
         negotiated_obs = kwargs.get("negotiated_obs")
+        active_descriptors = kwargs.get("active_descriptors", [])
         session_id: str | None = kwargs.get("session_id")
         task_id: str = kwargs.get("task_id", "unknown")
+
+        # Optional one-shot agent setup. ReactCompatible agents may
+        # define ``prepare(task, action_descriptors)`` to seed their
+        # system prompt and internal state before the first
+        # ``build_react_prompt`` call. The Protocol does not require
+        # this method, so we only call it if present.
+        prepare = getattr(agent, "prepare", None)
+        if callable(prepare):
+            prepare(task=task, action_descriptors=active_descriptors)
 
         start_time = time.monotonic()
         step_records: list[StepRecord] = []

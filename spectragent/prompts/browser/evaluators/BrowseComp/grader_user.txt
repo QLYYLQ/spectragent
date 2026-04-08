@@ -1,0 +1,11 @@
+Judge whether the following [response] to [question] is correct or not based on the precise and unambiguous [correct_answer] below.
+
+[question]: {question}
+
+[correct_answer]: {correct_answer}
+
+[response]: {response}
+
+Your response should be in the format:
+Reasoning: {{your reasoning}}
+Correct: {{yes or no}}

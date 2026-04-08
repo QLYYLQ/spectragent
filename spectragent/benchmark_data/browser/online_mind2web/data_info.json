@@ -1,0 +1,11 @@
+{
+  "split": {
+    "All": "Online_Mind2Web.json",
+    "Hard": "hard.json"
+  },
+  "huggingface": {
+    "repo_id": "osunlp/Online-Mind2Web",
+    "private": true,
+    "path_prefix": ""
+  }
+}

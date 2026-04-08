@@ -1,0 +1,11 @@
+{
+    "split": {
+        "All": "tasks.jsonl"
+    },
+    "browsecomp": {
+        "csv_url": "https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv",
+        "hf_repo_id": "MultiturnRL/BrowseComp",
+        "hf_path_prefix": "data",
+        "hf_filename": "browsecomp-00000-of-00001.parquet"
+    }
+}

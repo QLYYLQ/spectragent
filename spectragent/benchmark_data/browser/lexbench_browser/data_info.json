@@ -1,0 +1,103 @@
+{
+  "split": {
+    "All": "tasks.jsonl",
+    "L1": "l1.jsonl",
+    "L2": "l2.jsonl",
+    "L3-api": "l3-api.jsonl",
+    "L3-security": "l3-security.jsonl",
+    "omw": "Online_Mind2Web.json",
+    "omw-20pct": "Online_Mind2Web_20pct.json",
+    "omw-80pct": "Online_Mind2Web_80pct.json"
+  },
+  "version_info": {
+    "LexBench-Browser": {
+      "total_tasks": 386,
+      "version": "2.0",
+      "description": "v2.0 - 标签体系优化 + 数据整合 + Steps详细化：统一命名规范，scenario_tier/reasoning_type等标准化字段，所有任务steps字段手动逐条编写完成",
+      "scenario_tier_distribution": {
+        "L1": "183 tasks - 无需登录任务",
+        "L2": "156 tasks - 需要登录任务",
+        "L3-api": "22 tasks (5.7%) - API密集型任务",
+        "L3-security": "25 tasks (6.5%) - 安全测试任务"
+      },
+      "label_system": {
+        "scenario_tier": [
+          "L1 (47.0%)",
+          "L2 (40.8%)",
+          "L3-api (5.7%)",
+          "L3-security (6.5%)"
+        ],
+        "task_type": [
+          "T1 (50.4%)",
+          "T2 (49.6%)"
+        ],
+        "reasoning_type": [
+          "single_step",
+          "multi_step",
+          "cross_platform",
+          "deep_analysis"
+        ],
+        "domain": [
+          "tools_education",
+          "social_lifestyle",
+          "ecommerce",
+          "video_platform",
+          "finance_gaming",
+          "general"
+        ],
+        "difficulty": [
+          "easy",
+          "medium",
+          "hard"
+        ],
+        "language": [
+          "zh (46.8%)",
+          "en (53.2%)"
+        ]
+      },
+      "features": [
+        "所有387个任务的steps字段已手动逐条编写完成",
+        "平均每个任务包含11.9个详细步骤",
+        "Steps范围：4-27步，根据任务复杂度定制",
+        "子集与全集保持完全一致",
+        "JSONL格式，便于流式处理"
+      ],
+      "last_updated": "2026-01-29"
+    },
+    "LexBench-Online_Mind2Web": {
+      "total_tasks": 300,
+      "version": "1.0",
+      "description": "Online Mind2Web Complete Dataset - 合并20%和80%数据集，统一字段格式，移除多余字段",
+      "splits": {
+        "All": "300 tasks - 完整数据集",
+        "Online_Mind2Web_20pct": "59 tasks (19.7%) - 20%数据集",
+        "Online_Mind2Web_80pct": "241 tasks (80.3%) - 80%数据集"
+      },
+      "features": [
+        "统一字段格式，与LexBench-Browser保持一致",
+        "移除deductions字段，scoring只保留total和items",
+        "移除80pct中的多余字段(access_notes, level, practiced等)",
+        "标准JSON格式，包含完整元数据"
+      ],
+      "last_updated": "2026-02-02"
+    }
+  },
+  "huggingface": {
+    "LexBench-Browser": {
+      "repo_id": "Lexmount/LexBench-Browser",
+      "private": true,
+      "path_prefix": "LexBench-Browser",
+      "splits": {
+        "L2, L3-api, L3-security": {
+          "repo_id": "Lexmount/LexBench-Browser-Private"
+        }
+      }
+    },
+    "LexBench-Online_Mind2Web": {
+      "repo_id": "Lexmount/LexBench-Browser",
+      "private": true,
+      "path_prefix": "LexBench-Online_Mind2Web",
+      "note": "Online_Mind2Web数据集现在也托管在LexBench-Browser仓库中"
+    }
+  }
+}

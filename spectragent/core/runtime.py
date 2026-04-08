@@ -18,6 +18,11 @@ import logging
 from typing import Any
 
 from spectragent.core.action_guard import build_guarded_act
+from spectragent.core.actions.negotiation import (
+    ActionNegotiationResult,
+    extract_action_wiring,
+    negotiate_actions,
+)
 from spectragent.core.aop.weaver import Weaver
 from spectragent.core.hooks.base import RuntimeHook
 from spectragent.core.loops.validation import validate_compatibility
@@ -91,6 +96,11 @@ class AgentRuntime:
         # Step 2: Observation three-party negotiation
         negotiated_obs = self._negotiate_observation(agent, loop, env)
 
+        # Step 2.5: Action two-party negotiation (symmetric to obs)
+        # Config errors surface here — before any LLM call — so YAML
+        # mistakes are caught at runtime start, not mid-rollout.
+        negotiated_actions = self._negotiate_actions(agent, env)
+
         # Step 3: AOP weaving (must happen before guarded_act so
         #          act_fn captures wrapped_env.act, enabling AOP intercepts)
         weaver = Weaver(self._hooks)
@@ -98,10 +108,15 @@ class AgentRuntime:
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
 
-        # Step 4: Action negotiation + guarded_act (uses wrapped env)
+        # Step 4: Narrow descriptors via the action negotiation result,
+        # then optionally apply the legacy ``action_filter`` sugar on top.
         all_descriptors = env.get_action_space()
+        narrowed_descriptors = [
+            d for d in all_descriptors
+            if d.name in negotiated_actions.active_actions
+        ]
         active_descriptors, act_fn = build_guarded_act(
-            wrapped_env.act, all_descriptors, action_filter,
+            wrapped_env.act, narrowed_descriptors, action_filter,
         )
 
         # Step 5: Hook lifecycle — run_start
@@ -192,6 +207,23 @@ class AgentRuntime:
             agent_optional=agent_optional,
             loop_required=loop_required,
             loop_optional=loop_optional,
+        )
+
+    def _negotiate_actions(
+        self, agent: Any, env: Any,
+    ) -> ActionNegotiationResult:
+        """Run two-party action negotiation.
+
+        Loops do not participate — actions are all env-sourced and loops
+        are just drivers. Raises ``IncompatibleActionError`` if the agent
+        requires an action that no capability provides.
+        """
+        env_provides = set(env.provided_actions)
+        agent_required, agent_optional = extract_action_wiring(type(agent))
+        return negotiate_actions(
+            env_provides=env_provides,
+            agent_required=agent_required,
+            agent_optional=agent_optional,
         )
 
     async def _dispatch_lifecycle(

@@ -23,7 +23,12 @@ def main() -> None:
     # Trigger auto-registration of all Capability subclasses
     discover("spectragent.core.capabilities")
 
-    source = generate_layer_config_source(CapabilityRegistrar)
+    result = CapabilityRegistrar.build_config()
+    keys = CapabilityRegistrar.keys()
+    print(f"Registered {len(keys)} capabilities: {keys}")
+
+    _GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+    source = generate_layer_config_source(result)
     out = _GENERATED_DIR / "capability_config.py"
     out.write_text(source, encoding="utf-8")
     print(f"Generated {out}")

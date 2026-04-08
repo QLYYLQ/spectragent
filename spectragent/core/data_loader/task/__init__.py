@@ -1,10 +1,10 @@
-"""Browser task data loader infrastructure."""
+"""Task data loader infrastructure."""
 
 from spectragent.core.data_loader.task._registrar import (
     TaskLoaderBase,
     TaskLoaderRegistrar,
 )
-from spectragent.core.data_loader.task.base import BaseBrowserTaskLoader
+from spectragent.core.data_loader.task.base import BaseTaskLoader
 
 # Trigger auto-registration
 from spectragent.core.data_loader.task.browsecomp import BrowseCompTaskLoader  # noqa: F401
@@ -12,7 +12,7 @@ from spectragent.core.data_loader.task.lexbench_browser import LexBenchBrowserTa
 from spectragent.core.data_loader.task.online_mind2web import OnlineMind2WebTaskLoader  # noqa: F401
 
 __all__ = [
-    "BaseBrowserTaskLoader",
+    "BaseTaskLoader",
     "TaskLoaderBase",
     "TaskLoaderRegistrar",
     "BrowseCompTaskLoader",

@@ -1,0 +1,4308 @@
+{
+  "benchmark_name": "Online-Mind2Web",
+  "version": "1.0",
+  "description": "Online Mind2Web 20% tasks - Playwright validated version",
+  "last_updated": "2026-02-02",
+  "total_tasks": 59,
+  "tasks": [
+    {
+      "task_id": "1",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Show me the shared rooms in any university in Melbourne that has a private bathroom wifi, and gas included in the bills.",
+      "language": "en",
+      "start_url": "www.student.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.student.com/",
+          "On the homepage click the Melbourne button or use the search box to search for Melbourne",
+          "Click 'View all properties in Melbourne' to go to the full list page",
+          "Click 'All Filters' button to open the filters dialog",
+          "In the Room Type section check the 'Shared Room' option",
+          "In the Bathroom section check the 'Private' option",
+          "In the Bills Include section check the 'Wifi' option",
+          "In the Bills Include section check the 'Gas' option",
+          "Click 'Apply Filters' button to apply the filter criteria"
+        ],
+        "key_points": [
+          "Must simultaneously satisfy 4 filter criteria: shared room type + private bathroom + wifi bills included + gas bills included",
+          "Bills Include Wifi and Facilities & Security Wifi are different options, must select Bills Include",
+          "Filters will display real-time matching number of results (22→2→2→2)",
+          "Final URL will contain all filter parameters: category[]=shared-room&bathroom_type[]=private&facility[]=gas_any&facility[]=wifi_any",
+          "Some properties may show Sold Out status, need to pay attention",
+          "Can select any properties near any university matching the criteria, task does not specify a specific university"
+        ],
+        "common_mistakes": [
+          "Did not check all 4 required filter criteria, causing inaccurate results",
+          "Confused Bills Include and Facilities Wifi options",
+          "Did not wait for filter results to fully load before extracting information",
+          "Ignored properties with Sold Out status",
+          "Did not click Apply Filters and assumed the filter was applied"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully locate Melbourne area",
+              "score": 15,
+              "description": "Correctly navigate to Melbourne properties list page"
+            },
+            {
+              "name": "Correctly set Shared Room filter",
+              "score": 20,
+              "description": "Check Shared Room type"
+            },
+            {
+              "name": "Correctly set Private Bathroom filter",
+              "score": 20,
+              "description": "Check Private Bathroom option"
+            },
+            {
+              "name": "Correctly set Wifi+Gas Bills Include",
+              "score": 25,
+              "description": "In Bills Include section check Wifi and Gas"
+            },
+            {
+              "name": "Successfully apply filter and view result",
+              "score": 20,
+              "description": "Click Apply Filters and view final 2 properties"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "2",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find an editor's choice review with a score of 10 in the boardgame category on ign.",
+      "language": "en",
+      "start_url": "www.ign.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "video_platform",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.ign.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "3",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Within 25 Miles of 96817, find a nursing home that accepts medicare.",
+      "language": "en",
+      "start_url": "medicare.gov",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://medicare.gov",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "4",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find Ohio City apartments with parking, a fitness center, and an elevator.",
+      "language": "en",
+      "start_url": "www.apartments.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.apartments.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "5",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Help me identify a pink round pill with 150 written on it.",
+      "language": "en",
+      "start_url": "www.webmd.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.webmd.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "6",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Create a list of drip coffee makers that are on sale and within $25-60 and have a black finish.",
+      "language": "en",
+      "start_url": "www.google.com/shopping?udm=28",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "ecommerce",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T2"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.google.com/shopping?udm=28",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "7",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Track the details of order 12345 with email 12345@gmail.com. My last name is Johnson.",
+      "language": "en",
+      "start_url": "www.michaels.com",
+      "setup": {
+        "login_required": true,
+        "login_type": "account_password",
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "ecommerce",
+      "tags": [
+        "L2",
+        "multi_step",
+        "T2"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.michaels.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "8",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find me a gluten-free diet to lose weight for a pregnant woman.",
+      "language": "en",
+      "start_url": "www.healthline.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.healthline.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "9",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Show me the code for the company that is the top mover in the Cboe Europe Technology Sector Index (BEPTEC) as of the latest market close.",
+      "language": "en",
+      "start_url": "www.cboe.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "finance_gaming",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.cboe.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "10",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Browse used Audi cars made before 2015 and sort by lowest price on KBB.",
+      "language": "en",
+      "start_url": "www.kbb.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.kbb.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "11",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Tell me information about what identification I need to bring on my trip on Amtrak.",
+      "language": "en",
+      "start_url": "www.amtrak.com",
+      "setup": {
+        "login_required": true,
+        "login_type": "account_password",
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "tools_education",
+      "tags": [
+        "L2",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.amtrak.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "12",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the most experienced real estate agent in St Augustine, FL, and open his or her profile page.",
+      "language": "en",
+      "start_url": "www.remax.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.remax.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "13",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Compare two pescatarian diets for eating healthier.",
+      "language": "en",
+      "start_url": "www.healthline.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.healthline.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "14",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find a nationwide nearest animal shelter for birds around zip 10012.",
+      "language": "en",
+      "start_url": "www.adoptapet.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.adoptapet.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "15",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Compare the U.S. ETP Odd Lot Rate (%) between Quartile 1 and Quartile 4, viewing quartiles by price, and display the chart with a logarithmic scale on the vertical axis.",
+      "language": "en",
+      "start_url": "www.sec.gov",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "finance_gaming",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.sec.gov/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "16",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Calculate the price to ship a large flat-rate box from 77449 to 77084 at the first available date and time.",
+      "language": "en",
+      "start_url": "www.usps.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "deep_analysis",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.usps.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "17",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Browse senior spayed/neutered dogs near zip code 90028.",
+      "language": "en",
+      "start_url": "www.adoptapet.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.adoptapet.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "18",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find young cats in Seattle and show off the newest additions.",
+      "language": "en",
+      "start_url": "www.petfinder.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.petfinder.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "19",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the park that offers the cheapest paddling permits.",
+      "language": "en",
+      "start_url": "www.recreation.gov",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.recreation.gov/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "20",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the procedure to get the license for Athletic Trainer.",
+      "language": "en",
+      "start_url": "ohio.gov",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://ohio.gov/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "21",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find support services jobs in Bentonville, in the state of Arkansas.",
+      "language": "en",
+      "start_url": "careers.walmart.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "ecommerce",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://careers.walmart.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "22",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the cheapest travel deal or discount to Thailand that lasts more than 10 days, departs in next month, and show the total price.",
+      "language": "en",
+      "start_url": "www.tourradar.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.tourradar.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "23",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Pass the first trending chess puzzle.",
+      "language": "en",
+      "start_url": "www.chess.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "video_platform",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T2"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.chess.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "24",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the side effects of taking Montelukast.",
+      "language": "en",
+      "start_url": "www.drugs.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.drugs.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "25",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Create a meme with a frog as the background and leave the only text with \"Enjoy your life\".",
+      "language": "en",
+      "start_url": "imgur.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T2"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://imgur.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "26",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the tech specs of the MacBook Pro 16-inch introduced in November 2023.",
+      "language": "en",
+      "start_url": "www.apple.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "ecommerce",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.apple.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "27",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Browse the upcoming SuperBike events taking place in Italy.",
+      "language": "en",
+      "start_url": "www.redbull.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "ecommerce",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.redbull.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information",
+          "Extract required data",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "28",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the store location and hours of the closest Trader Joe's to zip code 90028 and set it as my home store.",
+      "language": "en",
+      "start_url": "www.traderjoes.com",
+      "setup": {
+        "login_required": true,
+        "login_type": "account_password",
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "ecommerce",
+      "tags": [
+        "L2",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.traderjoes.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load",
+          "Locate target information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "29",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Add a $50 Uber gift card to the cart.",
+      "language": "en",
+      "start_url": "www.bestbuy.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "ecommerce",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T2"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.bestbuy.com/",
+          "Locate search or navigate function",
+          "Enter search condition or select category",
+          "View result and extract information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "30",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Show me historical data for EUR/USD.",
+      "language": "en",
+      "start_url": "finance.yahoo.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "finance_gaming",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://finance.yahoo.com/",
+          "Locate search or navigate function",
+          "Enter search condition or select category",
+          "View result and extract information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "31",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "find electricians near 10203.",
+      "language": "en",
+      "start_url": "www.thumbtack.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "single_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.thumbtack.com/",
+          "Locate search or navigate function",
+          "Enter search condition or select category"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "32",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find Farms land in Wilkes County, NC with the lowest price.",
+      "language": "en",
+      "start_url": "www.landwatch.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.landwatch.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "33",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the latest climate news.",
+      "language": "en",
+      "start_url": "www.theweathernetwork.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "single_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.theweathernetwork.com/",
+          "Locate search or navigate function",
+          "Enter search condition or select category"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "34",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Show me the monthly weather forecast for Florida City.",
+      "language": "en",
+      "start_url": "www.accuweather.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "single_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.accuweather.com/",
+          "Locate search or navigate function",
+          "Enter search condition or select category"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "35",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the NYSE Rule 605 Market Center Files data for July 2024.",
+      "language": "en",
+      "start_url": "www.nyse.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "finance_gaming",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.nyse.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "36",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find out how many assists Chris Paul has been averaging in the current season.",
+      "language": "en",
+      "start_url": "www.nba.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "video_platform",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.nba.com/",
+          "Locate search or navigate function",
+          "Enter search condition or select category",
+          "View result and extract information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "37",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find a shelter or rescue group near zip code 90011.",
+      "language": "en",
+      "start_url": "www.adoptapet.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.adoptapet.com/",
+          "Locate search or navigate function",
+          "Enter search condition or select category",
+          "View result and extract information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "38",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the closing stock price for Tesla on March 17, 2023.",
+      "language": "en",
+      "start_url": "finance.yahoo.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "finance_gaming",
+      "tags": [
+        "L1",
+        "single_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://finance.yahoo.com/",
+          "Locate search or navigate function",
+          "Enter search condition or select category"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "39",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Browse the list of Civil Division forms.",
+      "language": "en",
+      "start_url": "www.justice.gov",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.justice.gov/",
+          "Locate search or navigate function",
+          "Enter search condition or select category",
+          "View result and extract information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "40",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find Florida internship programs in the Mayo Clinic College of Medicine and Science.",
+      "language": "en",
+      "start_url": "www.mayoclinic.org",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.mayoclinic.org/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "41",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Can you play the recap from the most recent NBA game?",
+      "language": "en",
+      "start_url": "www.espn.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "video_platform",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T2"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.espn.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "42",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the stock price for WWE over the last month.",
+      "language": "en",
+      "start_url": "www.google.com/finance",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "finance_gaming",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.google.com/finance/",
+          "Locate search or navigate function",
+          "Enter search condition or select category",
+          "View result and extract information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "43",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Check the current standings for MLS on Fox Sports.",
+      "language": "en",
+      "start_url": "www.foxsports.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "easy",
+      "domain": "video_platform",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.foxsports.com/",
+          "Locate search or navigate function",
+          "Enter search condition or select category",
+          "View result and extract information"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "44",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the current league leader in total blocked shots.",
+      "language": "en",
+      "start_url": "www.nba.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "medium",
+      "domain": "video_platform",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.nba.com/",
+          "Locate the search or filter function",
+          "Enter search keywords",
+          "Apply necessary filters",
+          "Wait for results to load"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "45",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Get a part-time job within 5 miles of Moscow, Idaho in the accommodation and food services industry, as a chef, and show jobs for corporate only.",
+      "language": "en",
+      "start_url": "ohiomeansjobs.ohio.gov",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://ohiomeansjobs.ohio.gov/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "46",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "What are the benefits and financial support a single person living in England, over the state pension age, unemployed, with no health conditions, or caring for someone with one, can get?",
+      "language": "en",
+      "start_url": "www.gov.uk",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.gov.uk/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "47",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the most viewed TED talk on the topic of robots that lasts between 12 and 18 minutes.",
+      "language": "en",
+      "start_url": "www.ted.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.ted.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "48",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the best Audiologist within 50 miles of New York, NY, with a rating of 4 and above.",
+      "language": "en",
+      "start_url": "doctor.webmd.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://doctor.webmd.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "49",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Show me the page with average wait times for U.S. citizens arriving at Raleigh-Durham International Airport on 2025-03-12.",
+      "language": "en",
+      "start_url": "www.cbp.gov",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.cbp.gov/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "50",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Browse the latest negative reviews from players with over 100 hours of playtime for the game that won the 2023 VR Game of the Year Award.",
+      "language": "en",
+      "start_url": "store.steampowered.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "video_platform",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T2"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://store.steampowered.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "51",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Display the figure comparing unemployment trends among women in Illinois and Michigan.",
+      "language": "en",
+      "start_url": "www.americashealthrankings.org",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "general",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T2"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.americashealthrankings.org/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "52",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "See the prediction about the girl child's height, whose current height at seven years is 4 feet and whose weight is 55 lbs, her mother is 5 feet 2, and her father is 5 feet 8.",
+      "language": "en",
+      "start_url": "www.babycenter.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "tools_education",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.babycenter.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "53",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Browse used Mercedes-Benz cars from model years 2004 to 2012 on KBB and sort by highest price.",
+      "language": "en",
+      "start_url": "www.kbb.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.kbb.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "54",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Search for a job in Miami, Florida, in Human Resources on target.",
+      "language": "en",
+      "start_url": "www.target.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "ecommerce",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.target.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "55",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Search for 33 to 49inch Qled gaming monitor with a 240hz refresh rate that is within $1000 to $2000.",
+      "language": "en",
+      "start_url": "www.bestbuy.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "ecommerce",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.bestbuy.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "56",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find parking near the San Francisco Museum of Modern Art for next Sunday from 1:00 PM to 5:00 PM. I'm driving a Ford F-150 and need a garage that allows in-and-out privileges. If there are multiple options, show me the details of the one with the lowest price.",
+      "language": "en",
+      "start_url": "spothero.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://spothero.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "57",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find and open an animal learning course on YouTube Kids for my 6-year-old without login in. As a parent born in 1992, I would prefer not to enable search.",
+      "language": "en",
+      "start_url": "www.youtube.com",
+      "setup": {
+        "login_required": true,
+        "login_type": "account_password",
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "video_platform",
+      "tags": [
+        "L2",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.youtube.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "58",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find the cheapest used hatchback car listing in Madison which has black interiors with a heated seat option and premium sound system.",
+      "language": "en",
+      "start_url": "www.cars.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.cars.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "task_id": "59",
+      "benchmark": "lexbench_browser",
+      "env_type": "browser",
+      "task_text": "Find UA or AA flights from London to New York that arrive between 8:00 PM and 11:00 PM on FlightAware.",
+      "language": "en",
+      "start_url": "www.flightaware.com",
+      "setup": {
+        "login_required": false,
+        "login_type": null,
+        "risk_control": false,
+        "risk_control_types": []
+      },
+      "difficulty": "hard",
+      "domain": "social_lifestyle",
+      "tags": [
+        "L1",
+        "multi_step",
+        "T1"
+      ],
+      "reference": {
+        "steps": [
+          "Visit https://www.flightaware.com/",
+          "Locate the main search or filter entry",
+          "Enter first search condition",
+          "Apply first group of filter conditions",
+          "Apply second group of filter conditions",
+          "Apply third group of filter conditions",
+          "Wait for filter results to fully load",
+          "View result list that meets all conditions",
+          "Select target result",
+          "Extract detailed information",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result",
+          "Complete final operation and verify result"
+        ],
+        "key_points": [
+          "Ensure website can be accessed normally (some websites have regional/IP restrictions)",
+          "Accurately understand all conditions and requirements in the task",
+          "Correctly use the website's search and filter functions",
+          "Wait for page to fully load before performing operations",
+          "Verify result meets all conditions of the task"
+        ],
+        "common_mistakes": [
+          "Website access failed or blocked by anti-bot measures",
+          "Search conditions misunderstood or key requirements missed",
+          "Filter not used correctly",
+          "Did not wait for page to load completely",
+          "Selected result does not meet all conditions"
+        ],
+        "scoring": {
+          "total": 100,
+          "threshold": 60,
+          "items": [
+            {
+              "name": "Successfully visit website",
+              "score": 20,
+              "description": "Website loads normally"
+            },
+            {
+              "name": "Correctly execute search",
+              "score": 30,
+              "description": "Search conditions are accurate"
+            },
+            {
+              "name": "Locate target result",
+              "score": 30,
+              "description": "Successfully locate target"
+            },
+            {
+              "name": "Extract correct information",
+              "score": 20,
+              "description": "Information accurate"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

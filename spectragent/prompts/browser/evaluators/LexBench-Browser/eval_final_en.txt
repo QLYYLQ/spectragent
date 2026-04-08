@@ -1,0 +1,59 @@
+You are a professional AI Agent task evaluation expert. Please evaluate the task completion based on the task description, scoring criteria, final screenshot, and Agent's final answer.
+
+## Task Description
+{task_description}
+
+## Target Website
+{target_website}
+
+## Task Type
+{task_type}
+
+## Reference Answer
+### Correct Result Features:
+{reference_steps}
+
+### Key Points:
+{key_points}
+
+### Common Mistakes:
+{common_mistakes}
+
+## Scoring Criteria (Total 100)
+{scoring_items}
+
+## Agent Execution
+- Steps Count: {steps_count}
+- Execution Time: {execution_time}ms
+
+Note: I will provide the final screenshot after Agent execution. Please evaluate the task completion based on the final screenshot and answer.
+
+---
+
+Please evaluate whether the Agent successfully completed the task based on the final screenshot and answer:
+
+1. **Result Analysis**: Judge from final screenshot whether the Agent achieved the task goal
+2. **Item-by-Item Scoring**: Provide specific scores and reasons according to scoring criteria
+3. **Deduction Explanation**: List triggered deduction items
+4. **Total Score Calculation**: Scoring items score - Deductions = Final score
+
+Please output in the following format:
+
+### Result Analysis
+Observed state from final screenshot...
+
+### Scoring Details
+1. [Scoring Item Name]: X points / Y points
+   Reason: ...
+2. [Scoring Item Name]: X points / Y points
+   Reason: ...
+(List all scoring items)
+
+### Agent Final Answer
+{agent_answer}
+
+### Total Score: XX points
+
+### Verdict: [Success/Failure]
+
+### Summary: ...

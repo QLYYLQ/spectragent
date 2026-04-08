@@ -1,4 +1,9 @@
-"""Browser eval loader protocol."""
+"""Eval loader protocol.
+
+``BaseEvalLoader`` is the structural-typing contract every eval data
+loader must satisfy. Loaders return ``EvalReference`` instances keyed
+by ``task_id``.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +13,8 @@ from spectragent.schemas.eval_reference import EvalReference
 
 
 @runtime_checkable
-class BaseBrowserEvalLoader(Protocol):
-    """Protocol for stateful browser eval data loaders."""
+class BaseEvalLoader(Protocol):
+    """Protocol for stateful eval data loaders."""
 
     @property
     def benchmark_name(self) -> str: ...
