@@ -7,6 +7,7 @@ from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.negotiation import NegotiationResult
+from tests._helpers.assembly import make_env
 
 
 class _TestFragObs(FragmentBase):
@@ -25,7 +26,7 @@ class ObsCap(CapabilityBase):
 
 class TestObserveDelegation:
     def setup_method(self):
-        self.env = EnvironmentBase({"obs_test_cap": ObsCap()})
+        self.env = make_env(EnvironmentBase, {"obs_test_cap": ObsCap()})
 
     def test_provided_fragments(self) -> None:
         assert "test_env_obs_frag" in self.env.provided_fragments

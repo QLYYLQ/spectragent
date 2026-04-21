@@ -39,7 +39,8 @@ class AgentBase(metaclass=AgentRegistrar.Meta):
 
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": "agent_loop",  # Mode 1: auto-discovery, allows all loops
-        "llm": "llm",               # Mode 1: auto-discovery, allows all LLMs
+        "llm": "llm",  # Mode 1: auto-discovery, allows all LLMs
+        "memory": "memory",  # Mode 1: auto-discovery, allows all memories
     }
 
     @property

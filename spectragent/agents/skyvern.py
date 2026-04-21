@@ -1,6 +1,6 @@
 """SkyvernAgent — element-tree based agent with action history window.
 
-M14 refactor: Skyvern is now a passive ReactCompatible domain provider.
+M14 refactor: Skyvern is now a passive domain-knowledge provider.
 Jinja2 prompt templating, action_history_window, and TOTP/2FA support
 remain as agent config; the runtime/loop drive execution.
 """
@@ -17,10 +17,8 @@ from pydantic import Field as PydanticField
 
 from spectragent.agents._output_models import SkyvernOutput
 from spectragent.agents._registrar import AgentBase
-from spectragent.agents.memory.base import BaseMemoryManager
-from spectragent.agents.memory.token_budget import TokenBudgetMemory
-from spectragent.core.llm.base import BaseChatModel
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
+from spectragent.core.loops.errors import ParseError
 from spectragent.prompts import PROMPT_PATH
 from spectragent.schemas.action import Action, ActionDescriptor
 
@@ -47,8 +45,7 @@ class SkyvernAgent(AgentBase):
         "action": (
             "action",
             ["click", "type", "done"],
-            ["scroll", "send_keys", "go_back", "go_forward",
-             "select_dropdown", "extract_content"],
+            ["scroll", "send_keys", "go_back", "go_forward", "select_dropdown", "extract_content"],
         ),
         "llm": "llm",
     }
@@ -75,13 +72,6 @@ class SkyvernAgent(AgentBase):
         bool, PydanticField(description="Enable verification code checking")
     ] = False
 
-    # ── injected dependencies ──────────────────────────────────
-    # [TODO M17] Memory becomes runtime-injected in M17. Until then it
-    # lives as a per-agent field accessed only by ``prepare`` and
-    # ``build_react_prompt``.
-    llm: BaseChatModel = field(default=None, repr=False)  # type: ignore[assignment]
-    memory: BaseMemoryManager = field(default=None, repr=False)  # type: ignore[assignment]
-
     # ── internal state ─────────────────────────────────────────
     _action_history: list[str] = field(default_factory=list, init=False, repr=False)
     _task: str = field(default="", init=False, repr=False)
@@ -92,9 +82,8 @@ class SkyvernAgent(AgentBase):
     _prompt_path: str = field(default="", init=False, repr=False)
     _prompt_snapshot: Any = field(default=None, init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        if self.memory is None:
-            self.memory = TokenBudgetMemory(max_tokens=8000)
+    # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
+    # ``AgentBase``) via conscribe's ``WiredField`` descriptors.
 
     # ── BaseAgent properties ───────────────────────────────────
 
@@ -119,29 +108,23 @@ class SkyvernAgent(AgentBase):
 
     # ── Lifecycle hook called by ReactLoop ─────────────────────
 
-    def prepare(
-        self, task: str, action_descriptors: list[ActionDescriptor]
-    ) -> None:
+    def prepare(self, task: str, action_descriptors: list[ActionDescriptor]) -> None:
         """One-shot setup. Builds the Jinja-rendered system prompt and
         seeds memory."""
         self._task = task
         self._action_descriptors = list(action_descriptors)
         self._action_history.clear()
-        self._system_prompt_text = self._build_system_prompt(
-            task, self._action_descriptors
-        )
+        self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
         from spectragent.schemas.prompt import PromptRef, TextPrompt
 
         self._prompt_snapshot = TextPrompt(
-            ref=PromptRef(
-                path=self._prompt_path or "<runtime>", content_hash=""
-            ),
+            ref=PromptRef(path=self._prompt_path or "<runtime>", content_hash=""),
             text=self._system_prompt_text,
         )
         self.memory.clear()
         self.memory.add_message(SystemMessage(content=self._system_prompt_text))
 
-    # ── ReactCompatible Protocol ───────────────────────────────
+    # ── ReactLoop slots ────────────────────────────────────────
 
     def build_react_prompt(self, observation: Any) -> list[BaseMessage]:
         """Format the observation, append to memory, return full message list.
@@ -177,9 +160,7 @@ class SkyvernAgent(AgentBase):
                 # Translate Skyvern's training vocabulary to the canonical
                 # BrowserCapability action names. Only ``input_text`` is
                 # known to differ today; other names pass through unchanged.
-                canonical_name = (
-                    "type" if item.action_type == "input_text" else item.action_type
-                )
+                canonical_name = "type" if item.action_type == "input_text" else item.action_type
                 params: dict[str, Any] = {"reasoning": item.reasoning}
                 if item.element_id is not None:
                     params["element_id"] = item.element_id
@@ -191,7 +172,12 @@ class SkyvernAgent(AgentBase):
             for a in actions:
                 self._action_history.append(f"{a.name}({a.params})")
 
-            return actions if actions else [Action(name="wait", params={})]
+            if not actions:
+                raise ParseError(
+                    "LLM returned a valid SkyvernOutput but with an empty actions list.",
+                    raw_output=str(llm_output)[:500],
+                )
+            return actions
 
         # Fallback: try to parse as JSON
         try:
@@ -199,26 +185,22 @@ class SkyvernAgent(AgentBase):
             data = json.loads(text)
             parsed = SkyvernOutput.model_validate(data)
             return self.parse_react_output(parsed)
-        except json.JSONDecodeError:
-            # H1: do not silently turn parse failures into "done" —
-            # that masquerades as success. Emit a wait so the loop
-            # retries on the next step.
-            return [Action(name="wait", params={})]
+        except (json.JSONDecodeError, Exception) as exc:
+            raise ParseError(
+                f"Failed to parse LLM output: {type(exc).__name__}: {exc}",
+                raw_output=text[:500] if isinstance(text, str) else None,
+            ) from exc
 
     def get_react_output_model(self) -> type[BaseModel] | None:
         return SkyvernOutput
 
     # ── private helpers ────────────────────────────────────────
 
-    def _build_system_prompt(
-        self, task: str, action_space: list[ActionDescriptor]
-    ) -> str:
+    def _build_system_prompt(self, task: str, action_space: list[ActionDescriptor]) -> str:
         actions_text = "\n".join(
             f"- {a.name}: {a.description} (params: {a.params})" for a in action_space
         )
-        history_text = (
-            "\n".join(self._action_history[-self.action_history_window :]) or "(none)"
-        )
+        history_text = "\n".join(self._action_history[-self.action_history_window :]) or "(none)"
 
         prompt_file = _PROMPT_DIR / f"{self.prompt_template}.md"
         self._prompt_path = str(prompt_file.relative_to(PROMPT_PATH))

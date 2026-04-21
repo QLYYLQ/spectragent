@@ -69,5 +69,11 @@ class TestHookRegistration:
                 Intercept("observe", role="env", advice="before"),
             ]
 
+            async def after_ainvoke(self, result, *, args, kwargs, **ctx):
+                pass
+
+            async def before_observe(self, *, args, kwargs, **ctx):
+                pass
+
         assert len(IntHook.__intercepts__) == 2
         HookRegistrar.unregister("test_int_hook")

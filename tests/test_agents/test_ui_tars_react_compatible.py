@@ -1,4 +1,4 @@
-"""Tests for the M14 UITarsAgent ReactCompatible adaptation.
+"""Tests for the M14 UITarsAgent ReactLoop slot adaptation.
 
 UITars is the most special case: pure-vision (no DOM observation),
 free-form text output, AST coordinate parsing, and an action vocabulary
@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
+
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.llm.messages import (
@@ -17,7 +19,7 @@ from spectragent.core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
-from spectragent.core.loops.compatibility import ReactCompatible
+from spectragent.core.loops import ReactLoop
 from spectragent.schemas.action import Action
 
 
@@ -37,13 +39,16 @@ class _FakeObservation:
 
 
 def _make_agent(**overrides: Any) -> UITarsAgent:
-    return UITarsAgent(memory=SimpleMemory(max_messages=100), **overrides)
+    from tests._helpers.assembly import make_agent
+    return make_agent(
+        UITarsAgent, memory=SimpleMemory(max_messages=100), **overrides,
+    )
 
 
-class TestProtocolConformance:
-    def test_satisfies_react_compatible(self) -> None:
+class TestSlotConformance:
+    def test_has_required_react_slots(self) -> None:
         agent = _make_agent()
-        assert isinstance(agent, ReactCompatible)
+        ReactLoop()._validate_slots(agent)  # Should not raise
 
     def test_legacy_methods_removed(self) -> None:
         agent = _make_agent()
@@ -154,21 +159,23 @@ class TestParseReactOutput:
         assert actions[0].name == "type"
         assert actions[0].params.get("content") == "hello world"
 
-    def test_returns_wait_when_no_action_present(self) -> None:
+    def test_no_action_pattern_raises_parse_error(self) -> None:
+        from spectragent.core.loops.errors import ParseError
+
         agent = _make_agent()
         text = "Thought: I should wait for the page to settle."
-        actions = agent.parse_react_output(text)
-        assert len(actions) == 1
-        assert actions[0].name == "wait"
+        with pytest.raises(ParseError, match="No 'Action:"):
+            agent.parse_react_output(text)
 
-    def test_invalid_click_coordinate_returns_no_actions(self) -> None:
+    def test_invalid_click_coordinate_raises_parse_error(self) -> None:
         # If the coordinate parser cannot extract x/y, the click is dropped
-        # and we fall through to "wait".
+        # and no valid actions remain → ParseError.
+        from spectragent.core.loops.errors import ParseError
+
         agent = _make_agent()
         text = "Action: click(point='invalid')"
-        actions = agent.parse_react_output(text)
-        assert len(actions) == 1
-        assert actions[0].name == "wait"
+        with pytest.raises(ParseError, match="none were parseable"):
+            agent.parse_react_output(text)
 
 
 class TestOutputModel:

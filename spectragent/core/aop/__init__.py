@@ -12,10 +12,13 @@ See docs/architecture_design.md §4.6 and docs/execution_dag.md M04.
 """
 
 from spectragent.core.aop.advice import AdviceType, Intercept
+from spectragent.core.aop.errors import MissingHandlerError, UnsupportedAdviceError
 from spectragent.core.aop.weaver import Weaver
 
 __all__ = [
     "AdviceType",
     "Intercept",
+    "MissingHandlerError",
+    "UnsupportedAdviceError",
     "Weaver",
 ]

@@ -1,7 +1,7 @@
-"""Tests for the M14 BrowserUseAgent ReactCompatible adaptation.
+"""Tests for the M14 BrowserUseAgent ReactLoop slot adaptation.
 
 These tests verify:
-- BrowserUseAgent satisfies the ReactCompatible Protocol
+- BrowserUseAgent has the required ReactLoop slots
 - ``__wiring__`` declares the correct cross-registry constraints
 - ``prepare()`` builds the system prompt and seeds memory
 - ``build_react_prompt(observation)`` formats fragment-based observations
@@ -31,7 +31,7 @@ from spectragent.core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
-from spectragent.core.loops.compatibility import ReactCompatible
+from spectragent.core.loops import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor
 
 
@@ -79,16 +79,20 @@ class _FakeObservation:
 
 
 def _make_agent(**overrides: Any) -> BrowserUseAgent:
-    return BrowserUseAgent(memory=SimpleMemory(max_messages=100), **overrides)
+    from tests._helpers.assembly import make_agent
+    return make_agent(
+        BrowserUseAgent, memory=SimpleMemory(max_messages=100), **overrides,
+    )
 
 
 # ── Protocol conformance ──────────────────────────────────────────────
 
 
-class TestProtocolConformance:
-    def test_satisfies_react_compatible(self) -> None:
+class TestSlotConformance:
+    def test_has_required_react_slots(self) -> None:
         agent = _make_agent()
-        assert isinstance(agent, ReactCompatible)
+        loop = ReactLoop()
+        loop._validate_slots(agent)  # Should not raise
 
     def test_legacy_execution_methods_removed(self) -> None:
         agent = _make_agent()
@@ -305,23 +309,25 @@ class TestParseReactOutput:
         assert actions[1].name == "type"
         assert actions[2].name == "navigate"
 
-    def test_returns_wait_when_no_actions(self) -> None:
+    def test_empty_actions_raises_parse_error(self) -> None:
+        from spectragent.core.loops.errors import ParseError
+
         agent = _make_agent()
         out = BrowserUseOutput(
             current_state=BrowserUseStateAssessment(), actions=[]
         )
-        actions = agent.parse_react_output(out)
-        assert len(actions) == 1
-        assert actions[0].name == "wait"
+        with pytest.raises(ParseError, match="empty actions"):
+            agent.parse_react_output(out)
 
-    def test_unparseable_text_returns_wait_not_done(self) -> None:
+    def test_unparseable_text_raises_parse_error(self) -> None:
         # H1 regression: parse failures used to return a "done" action
         # that silently classified the task as successful. They now
-        # return "wait" so ReactLoop continues without false completion.
+        # raise ParseError so ReactLoop handles retry/termination.
+        from spectragent.core.loops.errors import ParseError
+
         agent = _make_agent()
-        actions = agent.parse_react_output("not valid json at all")
-        assert len(actions) == 1
-        assert actions[0].name == "wait"
+        with pytest.raises(ParseError, match="Failed to parse"):
+            agent.parse_react_output("not valid json at all")
 
     def test_done_uses_extracted_content_key(self) -> None:
         # C2 regression: the ``done`` action's answer text must be

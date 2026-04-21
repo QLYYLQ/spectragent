@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from spectragent.core.aop.advice import AdviceType
+from spectragent.core.aop.errors import UnsupportedAdviceError
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +43,7 @@ class AOPProxy:
         for method_name, interceptors in method_interceptors.items():
             original = getattr(target, method_name, None)
             if original is not None:
-                wrapped[method_name] = _build_wrapped_method(
-                    original, interceptors, method_name
-                )
+                wrapped[method_name] = _build_wrapped_method(original, interceptors, method_name)
         object.__setattr__(self, "_wrapped_methods", wrapped)
 
     def __getattr__(self, name: str) -> Any:
@@ -77,8 +77,13 @@ def _build_wrapped_method(
             # Around hooks wrap the entire chain
             if around_hooks:
                 return await _apply_around_chain(
-                    around_hooks, original, before_hooks, after_hooks,
-                    method_name, args, kwargs,
+                    around_hooks,
+                    original,
+                    before_hooks,
+                    after_hooks,
+                    method_name,
+                    args,
+                    kwargs,
                 )
 
             # Before hooks
@@ -87,8 +92,7 @@ def _build_wrapped_method(
                     await handler(args=args, kwargs=kwargs)
                 else:
                     asyncio.create_task(
-                        _safe_call(handler, hook, method_name, "before",
-                                   args=args, kwargs=kwargs)
+                        _safe_call(handler, hook, method_name, "before", args=args, kwargs=kwargs)
                     )
 
             # Original call
@@ -100,8 +104,9 @@ def _build_wrapped_method(
                     await handler(result, args=args, kwargs=kwargs)
                 else:
                     asyncio.create_task(
-                        _safe_call(handler, hook, method_name, "after",
-                                   result, args=args, kwargs=kwargs)
+                        _safe_call(
+                            handler, hook, method_name, "after", result, args=args, kwargs=kwargs
+                        )
                     )
 
             return result
@@ -109,12 +114,53 @@ def _build_wrapped_method(
         return wrapped_async
 
     else:
-        # Synchronous methods — wrap in sync (before/after hooks still async)
+        # Synchronous target method — all handlers must be plain callables.
+        # Nested ``asyncio.run`` on an already-running loop would deadlock,
+        # and ``around`` advice is also ill-defined on sync methods.
+        if around_hooks:
+            raise UnsupportedAdviceError(
+                f"around advice is not supported on synchronous method "
+                f"{method_name!r} (around chains must be async)."
+            )
+        for _hook, fn in before_hooks + after_hooks:
+            if asyncio.iscoroutinefunction(fn):
+                raise UnsupportedAdviceError(
+                    f"Async handler {fn.__qualname__!r} cannot intercept "
+                    f"synchronous method {method_name!r}. Make the handler "
+                    f"a plain ``def`` or the target method ``async def``."
+                )
+
         @functools.wraps(original)
         def wrapped_sync(*args: Any, **kwargs: Any) -> Any:
-            # For sync methods, we can't easily run async hooks.
-            # Return the original result; hooks on sync methods are a future extension.
-            return original(*args, **kwargs)
+            for hook, handler in before_hooks:
+                try:
+                    handler(args=args, kwargs=kwargs)
+                except Exception:
+                    if hook.blocking:
+                        raise
+                    hook_id = getattr(hook, "hook_id", type(hook).__name__)
+                    logger.exception(
+                        "Non-blocking before hook '%s' failed on sync method '%s'",
+                        hook_id,
+                        method_name,
+                    )
+
+            result = original(*args, **kwargs)
+
+            for hook, handler in after_hooks:
+                try:
+                    handler(result, args=args, kwargs=kwargs)
+                except Exception:
+                    if hook.blocking:
+                        raise
+                    hook_id = getattr(hook, "hook_id", type(hook).__name__)
+                    logger.exception(
+                        "Non-blocking after hook '%s' failed on sync method '%s'",
+                        hook_id,
+                        method_name,
+                    )
+
+            return result
 
         return wrapped_sync
 
@@ -137,8 +183,7 @@ async def _apply_around_chain(
                 await handler(args=args, kwargs=kwargs)
             else:
                 asyncio.create_task(
-                    _safe_call(handler, hook, method_name, "before",
-                               args=args, kwargs=kwargs)
+                    _safe_call(handler, hook, method_name, "before", args=args, kwargs=kwargs)
                 )
 
         result = await original(*args, **kwargs)
@@ -149,8 +194,9 @@ async def _apply_around_chain(
                 await handler(result, args=args, kwargs=kwargs)
             else:
                 asyncio.create_task(
-                    _safe_call(handler, hook, method_name, "after",
-                               result, args=args, kwargs=kwargs)
+                    _safe_call(
+                        handler, hook, method_name, "after", result, args=args, kwargs=kwargs
+                    )
                 )
 
         return result
@@ -183,5 +229,7 @@ async def _safe_call(
         hook_id = getattr(hook, "hook_id", type(hook).__name__)
         logger.exception(
             "Non-blocking %s hook '%s' failed on method '%s'",
-            advice_type, hook_id, method_name,
+            advice_type,
+            hook_id,
+            method_name,
         )

@@ -1,12 +1,16 @@
 """AgentRuntime — the framework's central orchestration engine.
 
-AgentRuntime is loop-agnostic: it handles compatibility validation,
+AgentRuntime is loop-agnostic: it handles slot validation,
 three-party observation negotiation, action negotiation + guarded_act,
-AOP hook weaving, timeout control, and error handling. The actual
-observe-think-act cycle is delegated to the Loop.
+AOP hook weaving, loop weaving, timeout control, and error handling.
+
+``prepare()`` assembles all dependencies and weaves the Loop into the
+agent instance — after which ``agent.run(task)`` is self-contained.
+``execute()`` is a convenience wrapper that calls ``prepare()`` then
+drives ``agent.run()`` with timeout + lifecycle hooks.
 
 Not a registrar component — each framework has one AgentRuntime.
-Not a singleton — each ``execute()`` call is an independent context.
+Not a singleton — each ``execute()`` / ``prepare()`` call is independent.
 
 See docs/architecture_design.md §4.2 and docs/execution_dag.md M08.
 """
@@ -15,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC
 from typing import Any
 
 from spectragent.core.action_guard import build_guarded_act
@@ -24,8 +29,8 @@ from spectragent.core.actions.negotiation import (
     negotiate_actions,
 )
 from spectragent.core.aop.weaver import Weaver
+from spectragent.core.composer import ComposedRun
 from spectragent.core.hooks.base import RuntimeHook
-from spectragent.core.loops.validation import validate_compatibility
 from spectragent.schemas.observation.negotiation import (
     extract_observation_wiring,
     negotiate,
@@ -38,67 +43,57 @@ class AgentRuntime:
     """Loop-agnostic orchestration engine.
 
     Responsibilities:
-    1. Validate Agent-Loop compatibility
+    1. Validate Agent-Loop slot compatibility
     2. Run three-party observation negotiation
     3. Aggregate action space + build guarded_act
     4. Weave AOP hooks into agent/env/llm proxies
-    5. Drive Loop.run() with timeout control
-    6. Dispatch hook lifecycle callbacks (run_start/end/error)
+    5. Weave Loop execution logic into agent.run
+    6. (execute only) Drive agent.run() with timeout + lifecycle hooks
 
     Args:
         hooks: Active RuntimeHook instances for this run.
     """
 
-    def __init__(self, hooks: list[RuntimeHook] | None = None) -> None:
-        self._hooks = hooks or []
+    def __init__(self, run: ComposedRun) -> None:
+        self._run = run
+        self._hooks: list[RuntimeHook] = list(run.hooks)
 
-    async def execute(
+    # -- Factory ----------------------------------------------
+
+    @classmethod
+    def from_composed(cls, run: ComposedRun) -> AgentRuntime:
+        """Build an AgentRuntime from a :class:`ComposedRun`."""
+        return cls(run)
+
+    # -- prepare: assembly phase -------------------------------
+
+    def prepare(
         self,
-        agent: Any,
-        loop: Any,
-        env: Any,
-        task: str,
         *,
-        llm: Any,
-        memory: Any,
-        timeout: float = 300,
         session_id: str | None = None,
         task_id: str = "unknown",
         action_filter: list[str] | None = None,
-        config: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Execute the full agent pipeline.
+        """Assemble all dependencies and weave Loop into agent.run.
 
-        All components (agent, loop, env, llm, memory) are injected
-        by the caller. AgentRuntime does not instantiate any component.
-
-        Args:
-            agent: Agent instance (must satisfy loop's required Protocol).
-            loop: AgentLoop instance (e.g. ReactLoop).
-            env: Environment instance (EnvironmentBase subclass).
-            task: Task description string.
-            llm: BaseChatModel instance.
-            memory: BaseMemoryManager instance.
-            timeout: Maximum execution time in seconds.
-            session_id: Optional session/tab routing.
-            task_id: Task identifier for result tracking.
-            action_filter: Optional action name allowlist for ablation.
-            config: Optional config snapshot for hooks.
-            **kwargs: Passed through to Loop.run().
-
-        Returns:
-            AgentResult from the Loop.
+        Reads ``agent``, ``loop``, ``env``, ``llm``, ``memory`` off the
+        ``ComposedRun`` bound at construction time.  After return,
+        ``run.agent.run(task)`` is fully self-contained.
         """
-        # Step 1: Compatibility validation
-        validate_compatibility(agent, loop)
+        run = self._run
+        agent = run.agent
+        loop = run.loop
+        env = run.env
+        llm = run.llm
+        memory = run.memory
+        # Step 1: Slot validation
+        loop._validate_slots(agent)
 
         # Step 2: Observation three-party negotiation
         negotiated_obs = self._negotiate_observation(agent, loop, env)
 
-        # Step 2.5: Action two-party negotiation (symmetric to obs)
-        # Config errors surface here — before any LLM call — so YAML
-        # mistakes are caught at runtime start, not mid-rollout.
+        # Step 2.5: Action two-party negotiation
         negotiated_actions = self._negotiate_actions(agent, env)
 
         # Step 3: AOP weaving (must happen before guarded_act so
@@ -108,50 +103,77 @@ class AgentRuntime:
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
 
-        # Step 4: Narrow descriptors via the action negotiation result,
-        # then optionally apply the legacy ``action_filter`` sugar on top.
-        all_descriptors = env.get_action_space()
-        narrowed_descriptors = [
-            d for d in all_descriptors
-            if d.name in negotiated_actions.active_actions
-        ]
+        # Step 4: Narrow descriptors via the action negotiation result.
+        narrowed_descriptors = wrapped_env.get_action_space(
+            active_actions=negotiated_actions.active_actions,
+        )
         active_descriptors, act_fn = build_guarded_act(
-            wrapped_env.act, narrowed_descriptors, action_filter,
+            wrapped_env.act,
+            narrowed_descriptors,
+            action_filter,
         )
 
-        # Step 5: Hook lifecycle — run_start
+        # Step 5: Loop weaving — patches wrapped_agent.run
+        loop.weave(
+            wrapped_agent,
+            env=wrapped_env,
+            llm=wrapped_llm,
+            memory=memory,
+            act_fn=act_fn,
+            negotiated_obs=negotiated_obs,
+            active_descriptors=active_descriptors,
+            session_id=session_id,
+            task_id=task_id,
+            **kwargs,
+        )
+
+        return wrapped_agent
+
+    # -- execute: convenience one-shot -------------------------
+
+    async def execute(
+        self,
+        task: str,
+        *,
+        timeout: float = 300,
+        session_id: str | None = None,
+        task_id: str = "unknown",
+        action_filter: list[str] | None = None,
+        config: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """One-shot: prepare + run + lifecycle hooks + timeout."""
+        run = self._run
+        prepared_agent = self.prepare(
+            session_id=session_id,
+            task_id=task_id,
+            action_filter=action_filter,
+            **kwargs,
+        )
+
+        # Hook lifecycle — run_start
         await self._dispatch_lifecycle(
             "on_run_start",
-            agent=agent, env=env, task=task, config=config or {},
+            agent=run.agent,
+            env=run.env,
+            task=task,
+            config=config or {},
         )
 
-        # Step 6: Drive Loop with timeout
+        # Drive agent.run with timeout
         try:
             result = await asyncio.wait_for(
-                loop.run(
-                    wrapped_agent,
-                    wrapped_env,
-                    task,
-                    llm=wrapped_llm,
-                    memory=memory,
-                    act_fn=act_fn,
-                    negotiated_obs=negotiated_obs,
-                    active_descriptors=active_descriptors,
-                    session_id=session_id,
-                    task_id=task_id,
-                    **kwargs,
-                ),
+                prepared_agent.run(task),
                 timeout=timeout,
             )
 
-            # Step 7a: Success — notify hooks
+            # Success — notify hooks
             await self._dispatch_lifecycle("on_run_end", result=result)
             return result
 
-        except asyncio.TimeoutError:
-            # Step 7b: Timeout — build timeout result, notify hooks
+        except TimeoutError:
             logger.warning("AgentRuntime: execution timed out after %.1fs", timeout)
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
             from spectragent.schemas.agent_result import (
@@ -163,7 +185,7 @@ class AgentRuntime:
             timeout_result = AgentResult(
                 task_id=task_id,
                 task=task,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 env_status=EnvironmentStatus.SUCCESS,
                 agent_done=AgentDoneStatus.TIMEOUT,
                 error=f"Execution timed out after {timeout}s",
@@ -174,28 +196,30 @@ class AgentRuntime:
                 ),
             )
             await self._dispatch_lifecycle(
-                "on_run_error", error=asyncio.TimeoutError(), partial_steps=[],
+                "on_run_error",
+                error=TimeoutError(),
+                partial_steps=[],
             )
             return timeout_result
 
         except Exception as exc:
-            # Step 7c: Error — notify hooks, re-raise
             logger.exception("AgentRuntime: execution failed")
             await self._dispatch_lifecycle(
-                "on_run_error", error=exc, partial_steps=[],
+                "on_run_error",
+                error=exc,
+                partial_steps=[],
             )
             raise
 
-    # ── Private helpers ───────────────────────────────────────
+    # -- Private helpers ---------------------------------------
 
     def _negotiate_observation(
-        self, agent: Any, loop: Any, env: Any,
+        self,
+        agent: Any,
+        loop: Any,
+        env: Any,
     ) -> Any:
-        """Run three-party observation negotiation.
-
-        Collects provides from Environment's capabilities and
-        requires from Agent and Loop ``__wiring__`` declarations.
-        """
+        """Run three-party observation negotiation."""
         env_provides = set(env.provided_fragments)
 
         agent_required, agent_optional = extract_observation_wiring(type(agent))
@@ -210,14 +234,11 @@ class AgentRuntime:
         )
 
     def _negotiate_actions(
-        self, agent: Any, env: Any,
+        self,
+        agent: Any,
+        env: Any,
     ) -> ActionNegotiationResult:
-        """Run two-party action negotiation.
-
-        Loops do not participate — actions are all env-sourced and loops
-        are just drivers. Raises ``IncompatibleActionError`` if the agent
-        requires an action that no capability provides.
-        """
+        """Run two-party action negotiation."""
         env_provides = set(env.provided_actions)
         agent_required, agent_optional = extract_action_wiring(type(agent))
         return negotiate_actions(
@@ -227,14 +248,11 @@ class AgentRuntime:
         )
 
     async def _dispatch_lifecycle(
-        self, method_name: str, **kwargs: Any,
+        self,
+        method_name: str,
+        **kwargs: Any,
     ) -> None:
-        """Dispatch a lifecycle callback to all hooks.
-
-        Blocking hooks are awaited sequentially; non-blocking hooks
-        are fired as background tasks. Blocking hook exceptions
-        propagate; non-blocking hook exceptions are logged.
-        """
+        """Dispatch a lifecycle callback to all hooks."""
         for hook in self._hooks:
             handler = getattr(hook, method_name, None)
             if handler is None:
@@ -243,13 +261,14 @@ class AgentRuntime:
             if hook.blocking:
                 await handler(**kwargs)
             else:
-                asyncio.create_task(
-                    self._safe_lifecycle_call(hook, handler, method_name, kwargs)
-                )
+                asyncio.create_task(self._safe_lifecycle_call(hook, handler, method_name, kwargs))
 
     @staticmethod
     async def _safe_lifecycle_call(
-        hook: Any, handler: Any, method_name: str, kwargs: dict[str, Any],
+        hook: Any,
+        handler: Any,
+        method_name: str,
+        kwargs: dict[str, Any],
     ) -> None:
         """Call a non-blocking hook lifecycle method, catching exceptions."""
         try:
@@ -258,5 +277,6 @@ class AgentRuntime:
             hook_id = getattr(hook, "hook_id", type(hook).__name__)
             logger.exception(
                 "Non-blocking hook '%s' failed on lifecycle '%s'",
-                hook_id, method_name,
+                hook_id,
+                method_name,
             )

@@ -10,10 +10,12 @@ mock_test/
 
 # Claude Code
 .claude/
-
+.idea/
 # Temp
 tmp/
-
+CLAUDE.md
+*.txt
+.env
 # macOS
 .DS_Store
 

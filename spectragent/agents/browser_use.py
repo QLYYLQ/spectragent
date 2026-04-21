@@ -1,9 +1,8 @@
 """BrowserUseAgent — multi-action, flash-mode, vision-capable browser agent.
 
-M14 refactor: BrowserUseAgent is now a passive domain-knowledge provider
-that satisfies ``ReactCompatible``. Execution is driven by ``ReactLoop``
-+ ``AgentRuntime``; this class only knows how to (1) build prompts and
-(2) parse LLM output.
+M14 refactor: BrowserUseAgent is now a passive domain-knowledge provider.
+Execution is driven by ``ReactLoop`` (weaved via ``AgentRuntime``);
+this class only knows how to (1) build prompts and (2) parse LLM output.
 
 Memory access is intentionally localized to ``_format_observation`` and
 ``build_react_prompt`` so the M17 migration (memory injected by
@@ -20,10 +19,8 @@ from pydantic import Field as PydanticField
 
 from spectragent.agents._output_models import BrowserUseOutput
 from spectragent.agents._registrar import AgentBase
-from spectragent.agents.memory.base import BaseMemoryManager
-from spectragent.agents.memory.sliding_window import SlidingWindowMemory
-from spectragent.core.llm.base import BaseChatModel
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
+from spectragent.core.loops.errors import ParseError
 from spectragent.prompts import PROMPT_PATH
 from spectragent.schemas.action import Action, ActionDescriptor
 
@@ -74,8 +71,7 @@ class BrowserUseAgent(AgentBase):
         "action": (
             "action",
             ["click", "type", "navigate", "done"],
-            ["scroll", "send_keys", "extract_content",
-             "go_back", "go_forward", "switch_tab"],
+            ["scroll", "send_keys", "extract_content", "go_back", "go_forward", "switch_tab"],
         ),
         "llm": "llm",  # auto-discovery — any registered LLM
     }
@@ -104,16 +100,6 @@ class BrowserUseAgent(AgentBase):
         str | None, PydanticField(description="Append text to system prompt")
     ] = None
 
-    # ── injected dependencies ──────────────────────────────────
-    # [TODO M17] Memory becomes a negotiated, runtime-injected component
-    # in M17. Until then it lives as a per-agent field. Three call sites
-    # touch ``self.memory``: ``prepare`` (seeds system prompt),
-    # ``build_react_prompt`` (appends user observation), and
-    # ``_add_vision_message`` (multi-modal observation helper). When
-    # M17 lands, replace all three with method parameters.
-    llm: BaseChatModel = field(default=None, repr=False)  # type: ignore[assignment]
-    memory: BaseMemoryManager = field(default=None, repr=False)  # type: ignore[assignment]
-
     # ── internal state populated by prepare() ──────────────────
     _task: str = field(default="", init=False, repr=False)
     _action_descriptors: list[ActionDescriptor] = field(
@@ -123,9 +109,11 @@ class BrowserUseAgent(AgentBase):
     _prompt_path: str = field(default="", init=False, repr=False)
     _prompt_snapshot: Any = field(default=None, init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        if self.memory is None:
-            self.memory = SlidingWindowMemory(window_size=20)
+    # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
+    # ``AgentBase``). conscribe's metaclass attaches ``WiredField``
+    # descriptors at class creation; the Composer populates them via
+    # setattr at wire time. Reading them before injection raises
+    # ``AttributeError`` with a clear message.
 
     # ── BaseAgent properties ───────────────────────────────────
 
@@ -156,9 +144,7 @@ class BrowserUseAgent(AgentBase):
 
     # ── Lifecycle hook called by ReactLoop ─────────────────────
 
-    def prepare(
-        self, task: str, action_descriptors: list[ActionDescriptor]
-    ) -> None:
+    def prepare(self, task: str, action_descriptors: list[ActionDescriptor]) -> None:
         """One-shot setup invoked by ReactLoop before the first step.
 
         Builds the system prompt and seeds memory with it.
@@ -169,22 +155,18 @@ class BrowserUseAgent(AgentBase):
         """
         self._task = task
         self._action_descriptors = list(action_descriptors)
-        self._system_prompt_text = self._build_system_prompt(
-            task, self._action_descriptors
-        )
+        self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
         # Snapshot for trace introspection.
         from spectragent.schemas.prompt import PromptRef, TextPrompt
 
         self._prompt_snapshot = TextPrompt(
-            ref=PromptRef(
-                path=self._prompt_path or "<runtime>", content_hash=""
-            ),
+            ref=PromptRef(path=self._prompt_path or "<runtime>", content_hash=""),
             text=self._system_prompt_text,
         )
         self.memory.clear()
         self.memory.add_message(SystemMessage(content=self._system_prompt_text))
 
-    # ── ReactCompatible Protocol ───────────────────────────────
+    # ── ReactLoop slots ────────────────────────────────────────
 
     def build_react_prompt(self, observation: Any) -> list[BaseMessage]:
         """Format the observation, append to memory, return full message list.
@@ -212,7 +194,8 @@ class BrowserUseAgent(AgentBase):
             actions: list[Action] = []
             for item in llm_output.actions:
                 canonical_name = _LLM_VOCABULARY_TO_CANONICAL.get(
-                    item.action_name, item.action_name,
+                    item.action_name,
+                    item.action_name,
                 )
                 params: dict[str, Any] = {}
 
@@ -237,7 +220,12 @@ class BrowserUseAgent(AgentBase):
                         params["direction"] = item.direction
 
                 actions.append(Action(name=canonical_name, params=params))
-            return actions if actions else [Action(name="wait", params={})]
+            if not actions:
+                raise ParseError(
+                    "LLM returned a valid BrowserUseOutput but with an empty actions list.",
+                    raw_output=str(llm_output)[:500],
+                )
+            return actions
 
         # Fallback: try to parse plain text as JSON
         import json
@@ -247,12 +235,11 @@ class BrowserUseAgent(AgentBase):
             data = json.loads(text)
             parsed = BrowserUseOutput.model_validate(data)
             return self.parse_react_output(parsed)
-        except json.JSONDecodeError:
-            # Genuinely unparseable output — emit a wait so ReactLoop
-            # continues but does NOT report task success. (H1: we
-            # previously emitted a ``done`` here which silently
-            # classified parse failures as successful completions.)
-            return [Action(name="wait", params={})]
+        except (json.JSONDecodeError, Exception) as exc:
+            raise ParseError(
+                f"Failed to parse LLM output: {type(exc).__name__}: {exc}",
+                raw_output=text[:500] if isinstance(text, str) else None,
+            ) from exc
 
     def get_react_output_model(self) -> type[BaseModel] | None:
         return BrowserUseOutput
@@ -282,7 +269,9 @@ class BrowserUseAgent(AgentBase):
             return "system_prompt_no_thinking.md"
 
     def _build_system_prompt(
-        self, task: str, action_space: list[ActionDescriptor]  # noqa: ARG002
+        self,
+        task: str,
+        action_space: list[ActionDescriptor],  # noqa: ARG002
     ) -> str:
         if self.override_system_message:
             text = self.override_system_message
@@ -323,9 +312,7 @@ class BrowserUseAgent(AgentBase):
                 image_bytes = f.read()
         if image_bytes is None:
             # Defensive — shouldn't happen because we checked above.
-            self.memory.add_message(
-                UserMessage(content=self._format_observation(observation))
-            )
+            self.memory.add_message(UserMessage(content=self._format_observation(observation)))
             return
 
         b64 = base64.b64encode(image_bytes).decode()
@@ -334,7 +321,8 @@ class BrowserUseAgent(AgentBase):
             ContentPartTextParam(text=obs_text),
             ContentPartImageParam(
                 image_url=ImageURL(
-                    url=f"data:image/png;base64,{b64}", detail=self.vision_detail,
+                    url=f"data:image/png;base64,{b64}",
+                    detail=self.vision_detail,
                 ),
             ),
         ]
@@ -360,8 +348,7 @@ class BrowserUseAgent(AgentBase):
             tabs = getattr(meta, "tabs", None) or []
             if tabs:
                 tab_info = ", ".join(
-                    f"[{t.get('tab_id', '?')}] {t.get('title', '')} "
-                    f"({t.get('url', '')})"
+                    f"[{t.get('tab_id', '?')}] {t.get('title', '')} ({t.get('url', '')})"
                     for t in tabs
                 )
                 parts.append(f"Tabs: {tab_info}")

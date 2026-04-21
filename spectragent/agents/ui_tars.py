@@ -1,6 +1,6 @@
 """UITarsAgent — vision-based agent with coordinate actions and AST parsing.
 
-M14 refactor: UITars is now a passive ReactCompatible domain provider.
+M14 refactor: UITars is now a passive domain-knowledge provider.
 Pure-vision (no DOM) wiring, AST coordinate parser, and prompt template
 selection (COMPUTER_USE / MOBILE_USE) remain agent-side.
 """
@@ -16,9 +16,6 @@ from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
 from spectragent.agents._registrar import AgentBase
-from spectragent.agents.memory.base import BaseMemoryManager
-from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.core.llm.base import BaseChatModel
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -27,6 +24,7 @@ from spectragent.core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
+from spectragent.core.loops.errors import ParseError
 from spectragent.prompts import PROMPT_PATH
 from spectragent.schemas.action import Action, ActionDescriptor
 
@@ -60,18 +58,9 @@ class UITarsAgent(AgentBase):
     max_steps: Annotated[int, PydanticField(description="Maximum steps")] = 40
     prompt_template: Annotated[
         str,
-        PydanticField(
-            description="Prompt template: COMPUTER_USE, MOBILE_USE, or GROUNDING"
-        ),
+        PydanticField(description="Prompt template: COMPUTER_USE, MOBILE_USE, or GROUNDING"),
     ] = "COMPUTER_USE"
-    language: Annotated[
-        str, PydanticField(description="Thinking language")
-    ] = "English"
-
-    # ── injected dependencies ──────────────────────────────────
-    # [TODO M17] Memory becomes runtime-injected in M17.
-    llm: BaseChatModel = field(default=None, repr=False)  # type: ignore[assignment]
-    memory: BaseMemoryManager = field(default=None, repr=False)  # type: ignore[assignment]
+    language: Annotated[str, PydanticField(description="Thinking language")] = "English"
 
     # ── internal state ─────────────────────────────────────────
     _task: str = field(default="", init=False, repr=False)
@@ -82,9 +71,8 @@ class UITarsAgent(AgentBase):
     _prompt_path: str = field(default="", init=False, repr=False)
     _prompt_snapshot: Any = field(default=None, init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        if self.memory is None:
-            self.memory = SimpleMemory(max_messages=100)
+    # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
+    # ``AgentBase``) via conscribe's ``WiredField`` descriptors.
 
     # ── BaseAgent properties ───────────────────────────────────
 
@@ -109,28 +97,22 @@ class UITarsAgent(AgentBase):
 
     # ── Lifecycle hook called by ReactLoop ─────────────────────
 
-    def prepare(
-        self, task: str, action_descriptors: list[ActionDescriptor]
-    ) -> None:
+    def prepare(self, task: str, action_descriptors: list[ActionDescriptor]) -> None:
         """One-shot setup. Builds the templated system prompt and
         seeds memory."""
         self._task = task
         self._action_descriptors = list(action_descriptors)
-        self._system_prompt_text = self._build_system_prompt(
-            task, self._action_descriptors
-        )
+        self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
         from spectragent.schemas.prompt import PromptRef, TextPrompt
 
         self._prompt_snapshot = TextPrompt(
-            ref=PromptRef(
-                path=self._prompt_path or "<runtime>", content_hash=""
-            ),
+            ref=PromptRef(path=self._prompt_path or "<runtime>", content_hash=""),
             text=self._system_prompt_text,
         )
         self.memory.clear()
         self.memory.add_message(SystemMessage(content=self._system_prompt_text))
 
-    # ── ReactCompatible Protocol ───────────────────────────────
+    # ── ReactLoop slots ────────────────────────────────────────
 
     def build_react_prompt(self, observation: Any) -> list[BaseMessage]:
         """Append a screenshot user-message to memory and return the full list.
@@ -151,9 +133,7 @@ class UITarsAgent(AgentBase):
                     image_bytes = f.read()
 
         if image_bytes is None:
-            self.memory.add_message(
-                UserMessage(content="(no screenshot available)")
-            )
+            self.memory.add_message(UserMessage(content="(no screenshot available)"))
         else:
             import base64
 
@@ -162,7 +142,8 @@ class UITarsAgent(AgentBase):
                 ContentPartTextParam(text=f"Task: {self._task}"),
                 ContentPartImageParam(
                     image_url=ImageURL(
-                        url=f"data:image/png;base64,{b64}", detail="high",
+                        url=f"data:image/png;base64,{b64}",
+                        detail="high",
                     ),
                 ),
             ]
@@ -181,16 +162,12 @@ class UITarsAgent(AgentBase):
 
     # ── private helpers ────────────────────────────────────────
 
-    def _build_system_prompt(
-        self, task: str, action_space: list[ActionDescriptor]
-    ) -> str:
+    def _build_system_prompt(self, task: str, action_space: list[ActionDescriptor]) -> str:
         variant = self.prompt_template.lower()  # "COMPUTER_USE" → "computer_use"
         prompt_file = _PROMPT_DIR / f"{variant}.md"
         self._prompt_path = str(prompt_file.relative_to(PROMPT_PATH))
         template = prompt_file.read_text()
-        actions_text = "\n".join(
-            f"- {a.name}: {a.description}" for a in action_space
-        )
+        actions_text = "\n".join(f"- {a.name}: {a.description}" for a in action_space)
         return template.format(task=task, action_space=actions_text)
 
 
@@ -208,7 +185,10 @@ def _parse_ui_tars_response(text: str) -> list[Action]:
     matches = action_pattern.findall(text)
 
     if not matches:
-        return [Action(name="wait", params={})]
+        raise ParseError(
+            "No 'Action: ...' pattern found in UI-TARS output.",
+            raw_output=text[:500],
+        )
 
     actions: list[Action] = []
     for action_str in matches:
@@ -225,7 +205,12 @@ def _parse_ui_tars_response(text: str) -> list[Action]:
             if action is not None:
                 actions.append(action)
 
-    return actions if actions else [Action(name="wait", params={})]
+    if not actions:
+        raise ParseError(
+            "UI-TARS output contained 'Action:' lines but none were parseable.",
+            raw_output=text[:500],
+        )
+    return actions
 
 
 def _parse_single_action(action_str: str) -> Action | None:

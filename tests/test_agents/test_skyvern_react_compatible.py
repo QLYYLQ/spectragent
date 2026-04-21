@@ -1,4 +1,4 @@
-"""Tests for the M14 SkyvernAgent ReactCompatible adaptation."""
+"""Tests for the M14 SkyvernAgent ReactLoop slot adaptation."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from spectragent.core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
-from spectragent.core.loops.compatibility import ReactCompatible
+from spectragent.core.loops import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor
 
 
@@ -46,13 +46,16 @@ class _FakeObservation:
 
 
 def _make_agent(**overrides: Any) -> SkyvernAgent:
-    return SkyvernAgent(memory=SimpleMemory(max_messages=100), **overrides)
+    from tests._helpers.assembly import make_agent
+    return make_agent(
+        SkyvernAgent, memory=SimpleMemory(max_messages=100), **overrides,
+    )
 
 
-class TestProtocolConformance:
-    def test_satisfies_react_compatible(self) -> None:
+class TestSlotConformance:
+    def test_has_required_react_slots(self) -> None:
         agent = _make_agent()
-        assert isinstance(agent, ReactCompatible)
+        ReactLoop()._validate_slots(agent)  # Should not raise
 
     def test_legacy_methods_removed(self) -> None:
         agent = _make_agent()
