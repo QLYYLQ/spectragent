@@ -1,7 +1,6 @@
 """Tests for AgentLoop registrar and base class."""
 
 from spectragent.core.loops._registrar import AgentLoopBase, AgentLoopRegistrar
-from spectragent.core.loops.compatibility import ReactCompatible
 
 
 class TestLoopRegistration:
@@ -10,9 +9,9 @@ class TestLoopRegistration:
     def test_register_concrete_loop(self) -> None:
         class DummyLoop(AgentLoopBase):
             __registry_key__ = "test_dummy"
-            __requires_protocol__ = ReactCompatible
+            __required_slots__ = {"build_react_prompt"}
 
-            async def run(self, agent, env, task, **kwargs):
+            async def _execute(self, agent, task, **kwargs):
                 return {"done": True}
 
         assert AgentLoopRegistrar.get("test_dummy") is DummyLoop
@@ -28,30 +27,30 @@ class TestLoopRegistration:
         class IdLoop(AgentLoopBase):
             __registry_key__ = "test_id_loop"
 
-            async def run(self, agent, env, task, **kwargs):
+            async def _execute(self, agent, task, **kwargs):
                 return {}
 
         instance = IdLoop()
         assert instance.loop_id == "test_id_loop"
         AgentLoopRegistrar.unregister("test_id_loop")
 
-    def test_requires_protocol_default_none(self) -> None:
-        class NoProtoLoop(AgentLoopBase):
-            __registry_key__ = "test_no_proto"
+    def test_required_slots_default_empty(self) -> None:
+        class NoSlotLoop(AgentLoopBase):
+            __registry_key__ = "test_no_slot"
 
-            async def run(self, agent, env, task, **kwargs):
+            async def _execute(self, agent, task, **kwargs):
                 return {}
 
-        assert NoProtoLoop.__requires_protocol__ is None
-        AgentLoopRegistrar.unregister("test_no_proto")
+        assert NoSlotLoop.__required_slots__ == set()
+        AgentLoopRegistrar.unregister("test_no_slot")
 
-    def test_requires_protocol_set(self) -> None:
-        class ProtoLoop(AgentLoopBase):
-            __registry_key__ = "test_proto"
-            __requires_protocol__ = ReactCompatible
+    def test_required_slots_declared(self) -> None:
+        class SlotLoop(AgentLoopBase):
+            __registry_key__ = "test_slot"
+            __required_slots__ = {"build_react_prompt", "parse_react_output"}
 
-            async def run(self, agent, env, task, **kwargs):
+            async def _execute(self, agent, task, **kwargs):
                 return {}
 
-        assert ProtoLoop.__requires_protocol__ is ReactCompatible
-        AgentLoopRegistrar.unregister("test_proto")
+        assert SlotLoop.__required_slots__ == {"build_react_prompt", "parse_react_output"}
+        AgentLoopRegistrar.unregister("test_slot")

@@ -145,33 +145,44 @@ class TestActionWiringAndProvidedActions:
 
 
 class TestDefaultActionInstantiation:
-    """``__post_init__`` materialises the default action set."""
+    """``__post_init__`` materialises actions from wiring + overrides."""
 
-    def test_default_actions_instantiated_when_yaml_omits(self) -> None:
+    def test_default_actions_instantiated_when_no_overrides(self) -> None:
         cap = BrowserCapability()
-        names = [a.action_id for a in cap.actions]
-        assert len(names) == 12
-        assert set(names) == cap.provided_actions
+        assert len(cap._actions_by_name) == 12
+        assert set(cap._actions_by_name) == cap.provided_actions
 
-    def test_custom_actions_override_defaults(self) -> None:
-        from spectragent.core.capabilities.browser.actions.done import DoneAction
-        from spectragent.core.capabilities.browser.actions.scroll import (
-            ScrollAction,
-        )
-
+    def test_action_overrides_apply_kwargs(self) -> None:
         cap = BrowserCapability(
-            actions=[DoneAction(), ScrollAction(default_amount=777)]
+            action_overrides={"scroll": {"default_amount": 777, "max_amount": 9999}}
         )
-        assert [a.action_id for a in cap.actions] == ["done", "scroll"]
         scroll = cap._actions_by_name["scroll"]
         assert scroll.default_amount == 777  # type: ignore[attr-defined]
+        assert scroll.max_amount == 9999  # type: ignore[attr-defined]
+        # All 12 actions still materialised — overrides are additive.
+        assert len(cap._actions_by_name) == 12
 
-    def test_get_action_descriptors_derives_from_self_actions(self) -> None:
-        from spectragent.core.capabilities.browser.actions.done import DoneAction
+    def test_unknown_override_raises(self) -> None:
+        import pytest
 
-        cap = BrowserCapability(actions=[DoneAction()])
-        names = [d.name for d in cap.get_action_descriptors()]
-        assert names == ["done"]
+        with pytest.raises(ValueError, match="not in __wiring__"):
+            BrowserCapability(action_overrides={"rogue_action": {"x": 1}})
+
+    def test_provided_actions_matches_dispatch_map(self) -> None:
+        """Core invariant: provided_actions == _actions_by_name.keys()."""
+        cap = BrowserCapability()
+        assert cap.provided_actions == frozenset(cap._actions_by_name)
+
+    def test_provided_actions_matches_with_overrides(self) -> None:
+        cap = BrowserCapability(
+            action_overrides={"navigate": {"timeout_ms": 5000}}
+        )
+        assert cap.provided_actions == frozenset(cap._actions_by_name)
+
+    def test_get_action_descriptors_derives_from_dispatch_map(self) -> None:
+        cap = BrowserCapability()
+        names = {d.name for d in cap.get_action_descriptors()}
+        assert names == set(cap._actions_by_name)
 
 
 class TestExecuteActionDispatch:

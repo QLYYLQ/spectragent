@@ -55,10 +55,18 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
     __registry_key__: ClassVar[str]
     __wiring__: ClassVar[dict[str, Any]] = {}
 
-    def __init__(self, capabilities: dict[str, BaseCapability]) -> None:
-        self._capabilities = capabilities
-        self._is_composite = len(capabilities) > 1
+    # dict-form annotation tells the Composer this wired receptor is multi-
+    # instance — each capability in ``__wiring__["_capabilities"]`` becomes
+    # an entry keyed by its ``capability_id``.
+    _capabilities: dict[str, BaseCapability]
+
+    def __init__(self) -> None:
         self._fragment_router: dict[str, BaseCapability] | None = None
+
+    @property
+    def _is_composite(self) -> bool:
+        """True when more than one capability is wired."""
+        return len(self._capabilities) > 1
 
     # ── Registry property ─────────────────────────────────────
 
@@ -97,16 +105,38 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 
     # ── Action space aggregation ──────────────────────────────
 
-    def get_action_space(self, **context: Any) -> list[ActionDescriptor]:
+    def get_action_space(
+        self,
+        *,
+        active_actions: frozenset[str] | None = None,
+        **context: Any,
+    ) -> list[ActionDescriptor]:
         """Aggregate descriptors from all capabilities.
 
         Multi-capability environments auto-prefix each descriptor
         with the capability ID (e.g. ``click`` → ``browser.click``).
         Single-capability environments pass names through unchanged.
+
+        Args:
+            active_actions: Optional set of unprefixed action names
+                (as produced by :func:`negotiate_actions`). When
+                provided, descriptors whose *unprefixed* name is not
+                in the set are filtered out **before** the prefix is
+                applied. This is the single source of truth for action
+                narrowing — upstream callers must not strip prefixes
+                themselves. ``None`` means "no narrowing" (all
+                descriptors pass through).
+            **context: Forwarded to each capability's
+                ``get_action_descriptors`` call.
         """
         descriptors: list[ActionDescriptor] = []
         for cap_id, cap in self._capabilities.items():
             for desc in cap.get_action_descriptors(**context):
+                # Narrowing happens on the *unprefixed* name so the
+                # contract stays symmetric with ``provided_actions``
+                # and the negotiation result.
+                if active_actions is not None and desc.name not in active_actions:
+                    continue
                 if self._is_composite:
                     descriptors.append(desc.with_prefix(cap_id))
                 else:
@@ -116,7 +146,9 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
     # ── Action execution (prefix routing) ─────────────────────
 
     async def act(
-        self, action: Action, session_id: str | None = None,
+        self,
+        action: Action,
+        session_id: str | None = None,
     ) -> ActionResult:
         """Route action to the correct Capability.
 
@@ -155,7 +187,9 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
     # ── Observation delegation ────────────────────────────────
 
     async def observe(
-        self, negotiated: Any, session_id: str | None = None,
+        self,
+        negotiated: Any,
+        session_id: str | None = None,
     ) -> Any:
         """Resolve observation by delegating to Capability resolvers.
 
@@ -180,7 +214,8 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             cap = self._fragment_router.get(frag_key)
             if cap is not None:
                 fragment = await cap.resolve_fragment(
-                    frag_key, session_id=session_id,
+                    frag_key,
+                    session_id=session_id,
                 )
                 field_values[frag_key] = fragment
 

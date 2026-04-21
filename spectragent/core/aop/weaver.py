@@ -49,8 +49,7 @@ class Weaver:
                 handler = getattr(hook, handler_name, None)
                 if handler is None:
                     logger.warning(
-                        "Hook '%s' declares intercept %s.%s(%s) but has no "
-                        "method '%s'",
+                        "Hook '%s' declares intercept %s.%s(%s) but has no method '%s'",
                         getattr(hook, "hook_id", type(hook).__name__),
                         intercept.role,
                         intercept.method,

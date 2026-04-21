@@ -45,7 +45,9 @@ class Environment(Protocol):
     # ── Observation ───────────────────────────────────────────
 
     async def observe(
-        self, negotiated: Any, session_id: str | None = None,
+        self,
+        negotiated: Any,
+        session_id: str | None = None,
     ) -> Any:
         """Return the current observation, delegating to Capability resolvers.
 
@@ -62,15 +64,30 @@ class Environment(Protocol):
     # ── Action execution ──────────────────────────────────────
 
     async def act(
-        self, action: Action, session_id: str | None = None,
+        self,
+        action: Action,
+        session_id: str | None = None,
     ) -> ActionResult:
         """Execute an action, routing via prefix for composite environments."""
         ...
 
-    def get_action_space(self, **context: Any) -> list[ActionDescriptor]:
+    def get_action_space(
+        self,
+        *,
+        active_actions: frozenset[str] | None = None,
+        **context: Any,
+    ) -> list[ActionDescriptor]:
         """Aggregate action descriptors from all capabilities.
 
         Multi-capability environments auto-prefix descriptors.
+
+        Args:
+            active_actions: Optional set of unprefixed action names
+                (from two-party action negotiation). Descriptors are
+                filtered by unprefixed name *before* any prefix is
+                applied, keeping the contract symmetric with
+                :attr:`provided_actions`.
+            **context: Forwarded to each capability.
         """
         ...
 

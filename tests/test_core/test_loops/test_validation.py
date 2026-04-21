@@ -1,24 +1,35 @@
-"""Tests for compatibility validation logic."""
+"""Tests for slot-based compatibility validation."""
 
 import pytest
 
-from spectragent.core.loops.compatibility import ReactCompatible
+from spectragent.core.loops._registrar import AgentLoopBase, AgentLoopRegistrar
 from spectragent.core.loops.validation import IncompatibleError, validate_compatibility
 
 
-class _MockLoop:
-    """Mock loop for testing."""
+class _SlotLoop(AgentLoopBase):
+    __registry_key__ = "test_slot_validation"
+    __required_slots__ = {"build_react_prompt", "parse_react_output"}
+    __optional_slots__ = {"get_react_output_model"}
 
-    def __init__(self, requires_protocol=None):
-        self.__requires_protocol__ = requires_protocol
-        self.loop_id = "mock_loop"
-
-    async def run(self, agent, env, task, **kwargs):
+    async def _execute(self, agent, task, **kwargs):
         return {}
 
 
-class TestValidateCompatibility:
-    """validate_compatibility reads __requires_protocol__ from loop."""
+class _NoSlotLoop(AgentLoopBase):
+    __registry_key__ = "test_no_slot_validation"
+    __required_slots__ = set()
+
+    async def _execute(self, agent, task, **kwargs):
+        return {}
+
+
+def teardown_module():
+    AgentLoopRegistrar.unregister("test_slot_validation")
+    AgentLoopRegistrar.unregister("test_no_slot_validation")
+
+
+class TestValidateSlots:
+    """_validate_slots checks required slots on agent."""
 
     def test_compatible_passes(self) -> None:
         class GoodAgent:
@@ -27,41 +38,64 @@ class TestValidateCompatibility:
                 return []
             def parse_react_output(self, llm_output):
                 return []
-            def get_react_output_model(self):
-                return None
 
-        loop = _MockLoop(requires_protocol=ReactCompatible)
-        validate_compatibility(GoodAgent(), loop)  # Should not raise
+        _SlotLoop()._validate_slots(GoodAgent())  # Should not raise
 
     def test_incompatible_raises(self) -> None:
         class BadAgent:
             agent_name = "bad"
 
-        loop = _MockLoop(requires_protocol=ReactCompatible)
         with pytest.raises(IncompatibleError) as exc_info:
-            validate_compatibility(BadAgent(), loop)
+            _SlotLoop()._validate_slots(BadAgent())
 
         assert "bad" in str(exc_info.value)
-        assert "ReactCompatible" in str(exc_info.value)
-        assert "mock_loop" in str(exc_info.value)
-        assert len(exc_info.value.missing_methods) > 0
+        assert "test_slot_validation" in str(exc_info.value)
+        assert len(exc_info.value.missing_slots) > 0
 
-    def test_no_protocol_always_passes(self) -> None:
+    def test_no_required_slots_always_passes(self) -> None:
         class AnyAgent:
             agent_name = "any"
 
-        loop = _MockLoop(requires_protocol=None)
-        validate_compatibility(AnyAgent(), loop)  # Should not raise
+        _NoSlotLoop()._validate_slots(AnyAgent())  # Should not raise
 
-    def test_error_lists_missing_methods(self) -> None:
+    def test_error_lists_missing_slots(self) -> None:
         class PartialAgent:
             agent_name = "partial"
             def build_react_prompt(self, observation):
                 return []
 
-        loop = _MockLoop(requires_protocol=ReactCompatible)
         with pytest.raises(IncompatibleError) as exc_info:
-            validate_compatibility(PartialAgent(), loop)
+            _SlotLoop()._validate_slots(PartialAgent())
 
-        missing = exc_info.value.missing_methods
-        assert "parse_react_output" in missing or "get_react_output_model" in missing
+        assert "parse_react_output" in exc_info.value.missing_slots
+
+    def test_optional_slot_missing_does_not_raise(self) -> None:
+        class MinimalAgent:
+            agent_name = "minimal"
+            def build_react_prompt(self, observation):
+                return []
+            def parse_react_output(self, llm_output):
+                return []
+            # get_react_output_model is optional — not implemented
+
+        _SlotLoop()._validate_slots(MinimalAgent())  # Should not raise
+
+
+class TestValidateCompatibilityWrapper:
+    """validate_compatibility() delegates to loop._validate_slots()."""
+
+    def test_delegates_to_loop(self) -> None:
+        class GoodAgent:
+            def build_react_prompt(self, observation):
+                return []
+            def parse_react_output(self, llm_output):
+                return []
+
+        validate_compatibility(GoodAgent(), _SlotLoop())  # Should not raise
+
+    def test_raises_on_missing(self) -> None:
+        class BadAgent:
+            agent_name = "bad"
+
+        with pytest.raises(IncompatibleError):
+            validate_compatibility(BadAgent(), _SlotLoop())

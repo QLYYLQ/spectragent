@@ -13,7 +13,8 @@ from typing import Any, ClassVar
 
 from conscribe import create_registrar
 
-from spectragent.core.aop.advice import Intercept
+from spectragent.core.aop.advice import AdviceType, Intercept
+from spectragent.core.aop.errors import MissingHandlerError
 from spectragent.core.hooks.base import RuntimeHook
 
 HookRegistrar = create_registrar(
@@ -55,6 +56,32 @@ class HookBase(metaclass=HookRegistrar.Meta):
     __config_annotated_only__ = True
     __registry_key__: ClassVar[str]
     __intercepts__: ClassVar[list[Intercept]] = []
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Fail fast at class creation if an Intercept's handler is missing.
+
+        ``__intercepts__`` declares ``(role, method, advice)`` tuples; the
+        Weaver later looks up ``{advice}_{method}`` on the hook instance.
+        Catching the typo at class creation (instead of at weave time)
+        keeps the error close to the source of the mistake.
+        """
+        super().__init_subclass__(**kwargs)
+        if cls.__dict__.get("__abstract__") is True:
+            return
+        for intercept in cls.__intercepts__:
+            handler = getattr(cls, intercept.handler_name, None)
+            if not callable(handler):
+                advice_val = (
+                    intercept.advice.value
+                    if isinstance(intercept.advice, AdviceType)
+                    else intercept.advice
+                )
+                raise MissingHandlerError(
+                    hook_cls=cls.__name__,
+                    method=intercept.method,
+                    advice=advice_val,
+                    handler_name=intercept.handler_name,
+                )
 
     @property
     def hook_id(self) -> str:

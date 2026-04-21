@@ -21,6 +21,7 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.loops.react import ReactLoop
+from tests._helpers.assembly import make_agent
 from spectragent.core.loops.validation import validate_compatibility
 from spectragent.schemas.observation.fragments import (
     BrowserMetaObs,
@@ -38,18 +39,18 @@ from spectragent.schemas.observation.negotiation import (
 
 class TestValidateCompatibility:
     def test_browser_use_agent_compatible_with_react_loop(self) -> None:
-        agent = BrowserUseAgent(memory=SimpleMemory(max_messages=10))
+        agent = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
         loop = ReactLoop()
         # Should not raise.
         validate_compatibility(agent, loop)
 
     def test_skyvern_agent_compatible_with_react_loop(self) -> None:
-        agent = SkyvernAgent(memory=SimpleMemory(max_messages=10))
+        agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=10))
         loop = ReactLoop()
         validate_compatibility(agent, loop)
 
     def test_ui_tars_agent_compatible_with_react_loop(self) -> None:
-        agent = UITarsAgent(memory=SimpleMemory(max_messages=10))
+        agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         loop = ReactLoop()
         validate_compatibility(agent, loop)
 
@@ -236,7 +237,7 @@ class TestAgentToCapabilityActionVocabulary:
             BrowserCapability,
         )
 
-        agent = BrowserUseAgent(memory=SimpleMemory(max_messages=10))
+        agent = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
         provided = BrowserCapability().provided_actions
 
         # Every LLM action_name the agent is expected to emit.
@@ -268,7 +269,7 @@ class TestAgentToCapabilityActionVocabulary:
             BrowserCapability,
         )
 
-        agent = UITarsAgent(memory=SimpleMemory(max_messages=10))
+        agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         actions = agent.parse_react_output(
             "Thought: click it.\nAction: click(point='(100, 200)')"
         )
@@ -289,7 +290,7 @@ class TestAgentToCapabilityActionVocabulary:
         )
 
         # BrowserUseAgent
-        bu = BrowserUseAgent(memory=SimpleMemory(max_messages=10))
+        bu = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
         bu_out = BrowserUseOutput(
             current_state=BrowserUseStateAssessment(),
             actions=[
@@ -303,7 +304,7 @@ class TestAgentToCapabilityActionVocabulary:
         assert bu_actions[0].params["extracted_content"] == "answer bu"
 
         # SkyvernAgent
-        sk = SkyvernAgent(memory=SimpleMemory(max_messages=10))
+        sk = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=10))
         sk_out = SkyvernOutput(
             actions=[],
             is_done=True,
@@ -314,7 +315,7 @@ class TestAgentToCapabilityActionVocabulary:
         assert sk_actions[0].params["extracted_content"] == "answer sk"
 
         # UITarsAgent
-        ut = UITarsAgent(memory=SimpleMemory(max_messages=10))
+        ut = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         ut_actions = ut.parse_react_output(
             "Action: finished(content='answer ut')"
         )
@@ -344,8 +345,10 @@ class TestReactLoopDriveBrowserUse:
             },
         )()
 
-        agent = BrowserUseAgent(
-            max_steps=2, memory=SimpleMemory(max_messages=100)
+        agent = make_agent(
+            BrowserUseAgent,
+            max_steps=2,
+            memory=SimpleMemory(max_messages=100),
         )
 
         out = BrowserUseOutput(
@@ -364,18 +367,12 @@ class TestReactLoopDriveBrowserUse:
         async def _act_fn(action: Any, **kw: Any) -> Any:
             return await env.act(action)
 
-        result = await loop.run(
-            agent,
-            env,
-            task="Find the answer",
-            llm=llm,
-            memory=agent.memory,
-            act_fn=_act_fn,
-            negotiated_obs=_MockNegotiated(),
-            active_descriptors=[],
-            session_id=None,
-            task_id="t1",
+        loop.ctx = dict(
+            env=env, llm=llm, memory=agent.memory,
+            act_fn=_act_fn, negotiated_obs=_MockNegotiated(),
+            active_descriptors=[], session_id=None, task_id="t1",
         )
+        result = await loop._execute(agent, task="Find the answer")
 
         # The agent emitted "done" → result should reflect that.
         assert result.task_id == "t1"

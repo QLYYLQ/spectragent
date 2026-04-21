@@ -14,8 +14,26 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from conscribe import create_registrar
+from conscribe.wiring import parse_wiring
 
 from spectragent.core.capabilities.base import BaseCapability
+
+
+def _wiring_keys_for(cls: type, registry_name: str) -> frozenset[str]:
+    """Collect ``required ∪ optional`` keys from ``cls.__wiring__`` for a registry.
+
+    Uses ``conscribe.parse_wiring`` so MRO-merged wiring, all three grammar
+    modes (Mode 1 bare string, Mode 2 2-tuple, Mode 3 3-tuple), and
+    validation errors are handled centrally.
+    """
+    for spec in parse_wiring(cls):
+        if spec.registry_name != registry_name:
+            continue
+        required = frozenset(spec.allowed_keys) if spec.allowed_keys else frozenset()
+        optional = frozenset(spec.optional_keys) if spec.optional_keys else frozenset()
+        return required | optional
+    return frozenset()
+
 
 CapabilityRegistrar = create_registrar(
     "capability",
@@ -60,44 +78,23 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
 
     @property
     def provided_fragments(self) -> frozenset[str]:
-        """Derive provided fragments from ``__wiring__["observation"]``.
-
-        Supports conscribe wiring modes:
-        - Mode 2: ``("observation", ["dom", "screenshot"])``
-        - Mode 3: ``("observation", ["dom"], ["screenshot"])``
-
-        Both required and optional keys are included in the provides set.
-        """
-        return self._wiring_keys("observation")
+        """Derive provided fragments from ``__wiring__["observation"]``."""
+        return _wiring_keys_for(type(self), "observation")
 
     @property
     def provided_actions(self) -> frozenset[str]:
-        """Derive provided action names from ``__wiring__["action"]``.
+        """Derive provided action names from the materialised dispatch map.
 
-        Symmetric to :attr:`provided_fragments`. Supports the same
-        conscribe wiring modes.
+        If the subclass has an ``_actions_by_name`` dict (built during
+        ``__post_init__``), that is the single source of truth — it
+        reflects both wiring and any ``action_overrides``.  Falls back
+        to parsing ``__wiring__["action"]`` for capability subclasses
+        that have no action dispatch (e.g. lightweight test stubs).
         """
-        return self._wiring_keys("action")
-
-    def _wiring_keys(self, wiring_key: str) -> frozenset[str]:
-        """Collect all keys declared under ``__wiring__[wiring_key]``.
-
-        Shared implementation for ``provided_fragments`` and
-        ``provided_actions``. Returns required ∪ optional when Mode 3 is
-        used, or just the required list in Mode 2. Returns an empty set
-        for Mode 1 (bare string) or absent entries.
-        """
-        wiring = self.__wiring__.get(wiring_key)
-        if wiring is None or isinstance(wiring, str):
-            return frozenset()
-        if isinstance(wiring, tuple):
-            if len(wiring) == 2:
-                _, keys = wiring
-                return frozenset(keys)
-            if len(wiring) == 3:
-                _, required, optional = wiring
-                return frozenset(required) | frozenset(optional)
-        return frozenset()
+        dispatch: dict | None = getattr(self, "_actions_by_name", None)
+        if dispatch is not None:
+            return frozenset(dispatch.keys())
+        return _wiring_keys_for(type(self), "action")
 
     # ── Default no-op lifecycle ───────────────────────────────
 
@@ -105,14 +102,10 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
         return []
 
     async def execute_action(self, action: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement execute_action()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} must implement execute_action()")
 
     async def resolve_fragment(self, fragment_key: str, **kwargs: Any) -> Any:
-        raise NotImplementedError(
-            f"{type(self).__name__} cannot resolve fragment '{fragment_key}'"
-        )
+        raise NotImplementedError(f"{type(self).__name__} cannot resolve fragment '{fragment_key}'")
 
     async def setup(self, config: dict[str, Any] | None = None, **kwargs: Any) -> None:
         pass

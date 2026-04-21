@@ -10,6 +10,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.validation import IncompatibleError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from tests._helpers.assembly import make_env, make_run
 
 
 # ── Shared fixtures ───────────────────────────────────────────
@@ -30,7 +31,7 @@ class SimpleEnv(EnvironmentBase):
 
 
 class SimpleAgent:
-    # Declare the action as required so M13-Rev's runtime negotiation
+    # Declare the action as required so runtime negotiation
     # keeps the ``done`` descriptor in the active set.
     __wiring__ = {"action": ("action", ["done"])}
 
@@ -61,37 +62,144 @@ class MockMemory:
 
 
 def _make_env():
-    return SimpleEnv({"rt_simple_cap": SimpleCap()})
+    return make_env(SimpleEnv, {"rt_simple_cap": SimpleCap()})
+
+
+# ── Composite-env fixtures ────────────────────────────────────
+
+class _ClickTypeCap(CapabilityBase):
+    __registry_key__ = "rt_composite_cap_click_type"
+    __wiring__ = {"action": ("action", ["click", "type"])}
+
+    def get_action_descriptors(self, **ctx):
+        return [
+            ActionDescriptor(name="click", description="Click"),
+            ActionDescriptor(name="type", description="Type"),
+        ]
+
+    async def execute_action(self, action, **kw):
+        return ActionResult(success=True)
+
+
+class _CompositeDoneCap(CapabilityBase):
+    __registry_key__ = "rt_composite_cap_done"
+    __wiring__ = {"action": ("action", ["done"])}
+
+    def get_action_descriptors(self, **ctx):
+        return [ActionDescriptor(name="done", description="Done")]
+
+    async def execute_action(self, action, **kw):
+        return ActionResult(
+            success=True, is_done=True, extracted_content="ok"
+        )
+
+
+def _make_composite_env():
+    return make_env(
+        SimpleEnv, {"browser": _ClickTypeCap(), "finish": _CompositeDoneCap()},
+    )
+
+
+# ── Mock loop helpers ─────────────────────────────────────────
+
+class _MockLoopBase:
+    """Minimal loop mock that supports the weave interface."""
+    __required_slots__: set[str] = set()
+    __optional_slots__: set[str] = set()
+    __requires_env__ = True
+
+    def _validate_slots(self, agent):
+        pass
+
+    def weave(self, agent, **deps):
+        self.ctx = deps
+        loop = self
+        async def run(task, **kw):
+            return await loop._execute(agent, task, **kw)
+        agent.run = run
+        return agent
+
+
+class _SlowLoop(_MockLoopBase):
+    loop_id = "slow"
+
+    async def _execute(self, agent, task, **kw):
+        await asyncio.sleep(100)
+
+
+class _SpyLoop(_MockLoopBase):
+    """Captures active_descriptors from ctx for assertion."""
+    def __init__(self, loop_id: str, seen_names: list[str]):
+        self._loop_id = loop_id
+        self._seen_names = seen_names
+
+    @property
+    def loop_id(self):
+        return self._loop_id
+
+    async def _execute(self, agent, task, **kw):
+        self._seen_names.extend(
+            d.name for d in self.ctx.get("active_descriptors", [])
+        )
+        from datetime import datetime, timezone
+        from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
+        from spectragent.schemas.agent_result import (
+            AgentMetrics, AgentResult, AgentUsage,
+        )
+        return AgentResult(
+            task_id="t",
+            task=task,
+            timestamp=datetime.now(timezone.utc),
+            env_status=EnvironmentStatus.SUCCESS,
+            agent_done=AgentDoneStatus.DONE,
+            metrics=AgentMetrics(end_to_end_ms=0, steps=0, usage=AgentUsage()),
+        )
 
 
 # ── Tests ─────────────────────────────────────────────────────
 
+def _mk(agent, loop, env, *, hooks=None):
+    """Shortcut: build a test ComposedRun with mock LLM/memory."""
+    return make_run(
+        agent=agent, loop=loop, env=env,
+        llm=MockLLM(), memory=MockMemory(), hooks=hooks,
+    )
+
+
 class TestFullPipeline:
     def test_execute_returns_done(self) -> None:
+        run = _mk(SimpleAgent(), ReactLoop(), _make_env())
         result = asyncio.run(
-            AgentRuntime().execute(
-                SimpleAgent(), ReactLoop(), _make_env(), "test",
-                llm=MockLLM(), memory=MockMemory(), task_id="t-001",
-            )
+            AgentRuntime.from_composed(run).execute("test", task_id="t-001")
         )
         assert result.agent_done.value == "done"
         assert result.answer == "answer"
         assert result.agent_success is True
 
 
+class TestPrepare:
+    def test_prepare_patches_agent_run(self) -> None:
+        agent = SimpleAgent()
+        assert not hasattr(agent, "run")
+
+        run = _mk(agent, ReactLoop(), _make_env())
+        prepared = AgentRuntime.from_composed(run).prepare()
+        assert hasattr(prepared, "run")
+        assert callable(prepared.run)
+
+    def test_prepared_agent_can_run(self) -> None:
+        agent = SimpleAgent()
+        run = _mk(agent, ReactLoop(), _make_env())
+        prepared = AgentRuntime.from_composed(run).prepare()
+        result = asyncio.run(prepared.run("test"))
+        assert result.agent_done.value == "done"
+
+
 class TestTimeout:
     def test_timeout_result(self) -> None:
-        class SlowLoop:
-            __requires_protocol__ = None
-            loop_id = "slow"
-            async def run(self, agent, env, task, **kw):
-                await asyncio.sleep(100)
-
+        run = _mk(SimpleAgent(), _SlowLoop(), _make_env())
         result = asyncio.run(
-            AgentRuntime().execute(
-                SimpleAgent(), SlowLoop(), _make_env(), "timeout",
-                llm=MockLLM(), memory=MockMemory(), timeout=0.05,
-            )
+            AgentRuntime.from_composed(run).execute("timeout", timeout=0.05)
         )
         assert result.agent_done.value == "timeout"
 
@@ -101,13 +209,9 @@ class TestCompatibility:
         class BadAgent:
             __wiring__ = {}
 
+        run = _mk(BadAgent(), ReactLoop(), _make_env())
         with pytest.raises(IncompatibleError):
-            asyncio.run(
-                AgentRuntime().execute(
-                    BadAgent(), ReactLoop(), _make_env(), "fail",
-                    llm=MockLLM(), memory=MockMemory(),
-                )
-            )
+            asyncio.run(AgentRuntime.from_composed(run).execute("fail"))
 
 
 class TestHookLifecycle:
@@ -122,12 +226,8 @@ class TestHookLifecycle:
             async def on_run_end(self, **kw): log.append("end")
             async def on_run_error(self, **kw): log.append("error")
 
-        asyncio.run(
-            AgentRuntime(hooks=[Hook()]).execute(
-                SimpleAgent(), ReactLoop(), _make_env(), "hook",
-                llm=MockLLM(), memory=MockMemory(),
-            )
-        )
+        run = _mk(SimpleAgent(), ReactLoop(), _make_env(), hooks=[Hook()])
+        asyncio.run(AgentRuntime.from_composed(run).execute("hook"))
         assert log == ["start", "end"]
 
     def test_error_called_on_timeout(self) -> None:
@@ -141,23 +241,15 @@ class TestHookLifecycle:
             async def on_run_end(self, **kw): log.append("end")
             async def on_run_error(self, **kw): log.append("error")
 
-        class SlowLoop:
-            __requires_protocol__ = None
-            loop_id = "slow2"
-            async def run(self, agent, env, task, **kw):
-                await asyncio.sleep(100)
-
+        run = _mk(SimpleAgent(), _SlowLoop(), _make_env(), hooks=[Hook()])
         asyncio.run(
-            AgentRuntime(hooks=[Hook()]).execute(
-                SimpleAgent(), SlowLoop(), _make_env(), "timeout hook",
-                llm=MockLLM(), memory=MockMemory(), timeout=0.05,
-            )
+            AgentRuntime.from_composed(run).execute("timeout hook", timeout=0.05)
         )
         assert log == ["start", "error"]
 
 
 class TestActionNegotiation:
-    """M13-Rev: ``_negotiate_actions`` runs symmetrically to obs negotiation."""
+    """_negotiate_actions runs symmetrically to obs negotiation."""
 
     def test_required_missing_raises_before_loop_runs(self) -> None:
         from spectragent.core.actions.negotiation import IncompatibleActionError
@@ -174,48 +266,15 @@ class TestActionNegotiation:
             def get_react_output_model(self):
                 return None
 
-        loop_runs: list[str] = []
+        seen: list[str] = []
 
-        class SpyLoop:
-            __requires_protocol__ = None
-            loop_id = "nego_spy"
-
-            async def run(self, *args, **kw):
-                loop_runs.append("ran")
-                from datetime import datetime, timezone
-
-                from spectragent.schemas._types import (
-                    AgentDoneStatus,
-                    EnvironmentStatus,
-                )
-                from spectragent.schemas.agent_result import (
-                    AgentMetrics,
-                    AgentResult,
-                    AgentUsage,
-                )
-
-                return AgentResult(
-                    task_id="t",
-                    task="x",
-                    timestamp=datetime.now(timezone.utc),
-                    env_status=EnvironmentStatus.SUCCESS,
-                    agent_done=AgentDoneStatus.DONE,
-                    metrics=AgentMetrics(
-                        end_to_end_ms=0, steps=0, usage=AgentUsage(),
-                    ),
-                )
-
+        run = _mk(NeedsBash(), _SpyLoop("nego_spy", seen), _make_env())
         with pytest.raises(IncompatibleActionError):
-            asyncio.run(
-                AgentRuntime().execute(
-                    NeedsBash(), SpyLoop(), _make_env(), "fail",
-                    llm=MockLLM(), memory=MockMemory(),
-                )
-            )
-        assert loop_runs == []  # loop never ran
+            asyncio.run(AgentRuntime.from_composed(run).execute("fail"))
+        assert seen == []  # loop never ran
 
     def test_optional_not_provided_is_graceful(self) -> None:
-        """Agent optional missing from env → run continues with narrower set."""
+        """Agent optional missing from env -> run continues with narrower set."""
         seen_names: list[str] = []
 
         class OptionalAgent(SimpleAgent):
@@ -223,67 +282,66 @@ class TestActionNegotiation:
                 "action": ("action", ["done"], ["click", "scroll"]),
             }
 
-        class SpyLoop:
-            __requires_protocol__ = None
-            loop_id = "opt_spy"
-
-            async def run(self, agent, env, task, **kw):
-                seen_names.extend(
-                    d.name for d in kw.get("active_descriptors", [])
-                )
-                from datetime import datetime, timezone
-
-                from spectragent.schemas._types import (
-                    AgentDoneStatus,
-                    EnvironmentStatus,
-                )
-                from spectragent.schemas.agent_result import (
-                    AgentMetrics,
-                    AgentResult,
-                    AgentUsage,
-                )
-
-                return AgentResult(
-                    task_id="t",
-                    task=task,
-                    timestamp=datetime.now(timezone.utc),
-                    env_status=EnvironmentStatus.SUCCESS,
-                    agent_done=AgentDoneStatus.DONE,
-                    metrics=AgentMetrics(
-                        end_to_end_ms=0, steps=0, usage=AgentUsage(),
-                    ),
-                )
-
-        asyncio.run(
-            AgentRuntime().execute(
-                OptionalAgent(), SpyLoop(), _make_env(), "opt",
-                llm=MockLLM(), memory=MockMemory(),
-            )
-        )
+        run = _mk(OptionalAgent(), _SpyLoop("opt_spy", seen_names), _make_env())
+        asyncio.run(AgentRuntime.from_composed(run).execute("opt"))
         # SimpleCap only provides "done"; the two optional actions are
         # not in the env, so they should NOT be active.
         assert set(seen_names) == {"done"}
 
 
+class TestCompositeEnvNarrowing:
+    """Composite envs must survive the runtime narrowing."""
+
+    def test_composite_env_preserves_prefixed_names(self) -> None:
+        seen: list[str] = []
+
+        class MultiActionAgent(SimpleAgent):
+            __wiring__ = {
+                "action": ("action", ["click", "done"], ["type"]),
+            }
+
+        run = _mk(
+            MultiActionAgent(),
+            _SpyLoop("composite_spy", seen),
+            _make_composite_env(),
+        )
+        asyncio.run(AgentRuntime.from_composed(run).execute("composite"))
+        assert set(seen) == {"browser.click", "browser.type", "finish.done"}
+
+    def test_composite_env_drops_actions_not_in_wiring(self) -> None:
+        seen: list[str] = []
+
+        run = _mk(
+            SimpleAgent(),
+            _SpyLoop("composite_spy2", seen),
+            _make_composite_env(),
+        )
+        asyncio.run(AgentRuntime.from_composed(run).execute("composite_min"))
+        assert set(seen) == {"finish.done"}
+
+    def test_composite_env_required_missing_raises(self) -> None:
+        from spectragent.core.actions.negotiation import IncompatibleActionError
+
+        class NeedsBash:
+            __wiring__ = {"action": ("action", ["bash"])}
+
+            def build_react_prompt(self, obs):
+                return [{"role": "user", "content": "go"}]
+
+            def parse_react_output(self, out):
+                return [Action(name="bash")]
+
+            def get_react_output_model(self):
+                return None
+
+        run = _mk(NeedsBash(), ReactLoop(), _make_composite_env())
+        with pytest.raises(IncompatibleActionError):
+            asyncio.run(AgentRuntime.from_composed(run).execute("fail"))
+
+
 class TestActionFilter:
     def test_filter_narrows(self) -> None:
-        seen = []
-
-        class SpyLoop:
-            __requires_protocol__ = None
-            loop_id = "spy"
-            async def run(self, agent, env, task, **kw):
-                seen.extend(kw.get("active_descriptors", []))
-                from datetime import datetime, timezone
-                from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
-                from spectragent.schemas.agent_result import AgentMetrics, AgentResult, AgentUsage
-                return AgentResult(
-                    task_id="t", task=task,
-                    timestamp=datetime.now(timezone.utc),
-                    env_status=EnvironmentStatus.SUCCESS,
-                    agent_done=AgentDoneStatus.DONE,
-                    metrics=AgentMetrics(end_to_end_ms=0, steps=0, usage=AgentUsage()),
-                )
+        seen: list[str] = []
 
         class MultiCap(CapabilityBase):
             __registry_key__ = "rt_multi_cap"
@@ -297,16 +355,13 @@ class TestActionFilter:
                 ]
 
         class MultiAgent(SimpleAgent):
-            # Agent wiring accepts every action the capability provides;
-            # the ``action_filter`` kwarg will narrow further.
             __wiring__ = {"action": ("action", ["click", "type", "done"])}
 
-        env = SimpleEnv({"rt_multi_cap": MultiCap()})
+        env = make_env(SimpleEnv, {"rt_multi_cap": MultiCap()})
+        run = _mk(MultiAgent(), _SpyLoop("spy", seen), env)
         asyncio.run(
-            AgentRuntime().execute(
-                MultiAgent(), SpyLoop(), env, "filter",
-                llm=MockLLM(), memory=MockMemory(),
-                action_filter=["click", "done"],
+            AgentRuntime.from_composed(run).execute(
+                "filter", action_filter=["click", "done"],
             )
         )
-        assert {d.name for d in seen} == {"click", "done"}
+        assert set(seen) == {"click", "done"}

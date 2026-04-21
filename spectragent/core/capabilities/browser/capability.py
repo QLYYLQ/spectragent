@@ -67,26 +67,6 @@ from spectragent.schemas.observation.fragments import (
 logger = logging.getLogger(__name__)
 
 
-# Default browser action set, used when YAML does not pin the
-# ``actions`` field. Keep in sync with ``__wiring__["action"]`` below —
-# the wiring is the authoritative declaration of what ``BrowserCapability``
-# can provide; this list is the materialised default instantiation.
-_DEFAULT_BROWSER_ACTIONS: tuple[str, ...] = (
-    "click",
-    "click_coordinate",
-    "type",
-    "navigate",
-    "scroll",
-    "send_keys",
-    "go_back",
-    "go_forward",
-    "switch_tab",
-    "select_dropdown",
-    "extract_content",
-    "done",
-)
-
-
 # Watchdog level classification.
 _TAB_WATCHDOGS = {"dom", "action", "screenshot", "popups", "security"}
 _BROWSER_WATCHDOGS = {"crash", "downloads"}
@@ -128,8 +108,8 @@ class BrowserCapability(CapabilityBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "observation": ("observation", ["dom", "screenshot", "browser_meta"]),
         # Action provides — symmetric to observation. Keep in sync with
-        # ``_DEFAULT_BROWSER_ACTIONS`` above and with the concrete classes
-        # registered under ``spectragent.core.capabilities.browser.actions``.
+        # the concrete classes registered under
+        # ``spectragent.core.capabilities.browser.actions``.
         "action": (
             "action",
             [
@@ -176,11 +156,12 @@ class BrowserCapability(CapabilityBase):
     ] = 720
 
     # ── per-action capability-side config ────────────────────────────
-    # Each element is an ActionBase subclass instance. YAML may inject
-    # a discriminated-union list keyed by ``action_id``; when omitted,
-    # ``__post_init__`` materialises the default set from
-    # ``_DEFAULT_BROWSER_ACTIONS``.
-    actions: list[ActionBase] = field(default_factory=list)
+    # Wiring (``__wiring__["action"]``) is the sole source of truth for
+    # *which* actions exist. ``action_overrides`` controls *how* each
+    # action is instantiated — keyed by canonical action name, values are
+    # dicts of constructor kwargs (e.g. ``{"scroll": {"max_amount": 5000}}``).
+    # Omitted actions get default-constructed from the registry.
+    action_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # ── internal state (excluded from config) ─────────────────────────
     _actions_by_name: dict[str, ActionBase] = field(
@@ -221,17 +202,35 @@ class BrowserCapability(CapabilityBase):
     # ── Init machinery ────────────────────────────────────────────────
 
     def __post_init__(self) -> None:
-        """Materialise the default action set when YAML omits ``actions``.
+        """Materialise actions from wiring + optional overrides.
 
-        Also builds the per-name lookup used by ``execute_action``. This
-        intentionally uses a direct registry lookup (not ``discover``) so
-        the method is safe to call inside hot-path ``setup``/runtime code.
+        Wiring is the sole source of truth for *which* actions exist.
+        ``action_overrides`` controls *how* individual actions are
+        instantiated — unknown keys (not in wiring) raise immediately.
         """
-        if not self.actions:
-            self.actions = [
-                ActionRegistrar.get(name)() for name in _DEFAULT_BROWSER_ACTIONS
-            ]
-        self._actions_by_name = {a.action_id: a for a in self.actions}
+        wiring_names: tuple[str, ...] = self.__wiring__["action"][1]
+
+        # Reject overrides for actions not declared in the wiring.
+        extras = set(self.action_overrides) - set(wiring_names)
+        if extras:
+            raise ValueError(
+                f"{type(self).__name__} received action_overrides for actions "
+                f"not in __wiring__: {sorted(extras)}. "
+                f"Wiring declares: {sorted(wiring_names)}."
+            )
+
+        # Materialise every wiring-declared action, applying overrides.
+        self._actions_by_name = {}
+        for name in wiring_names:
+            action_cls = ActionRegistrar.get(name)
+            if action_cls is None:
+                raise ValueError(
+                    f"Wiring declares action '{name}' but no class is "
+                    f"registered under ActionRegistrar. Did you forget to "
+                    f"import the action module?"
+                )
+            kwargs = self.action_overrides.get(name, {})
+            self._actions_by_name[name] = action_cls(**kwargs)
 
     # ── Properties ────────────────────────────────────────────────────
 
@@ -270,7 +269,7 @@ class BrowserCapability(CapabilityBase):
         capabilities (e.g. ``ToolSandboxCapability``) pass per-task tool
         schemas through ``**context`` to each action's ``descriptor``.
         """
-        return [a.descriptor(**context) for a in self.actions]
+        return [a.descriptor(**context) for a in self._actions_by_name.values()]
 
     async def setup(
         self, config: dict[str, Any] | None = None, **kwargs: Any

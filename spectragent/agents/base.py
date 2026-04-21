@@ -23,8 +23,8 @@ class BaseAgent(Protocol):
     logic (prompt building, output parsing). Execution is driven by
     AgentRuntime + Loop.
 
-    Loop-specific behaviour is declared via compatibility Protocols
-    (ReactCompatible, CodeActCompatible, etc.) — see core/loops/compatibility.py.
+    Loop-specific behaviour is declared via callable slots that each
+    Loop checks at weave time — see core/loops/_registrar.py.
     """
 
     @property
