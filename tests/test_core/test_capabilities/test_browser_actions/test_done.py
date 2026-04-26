@@ -8,8 +8,6 @@ down the M13-Rev contract so parse_react_output can rely on it.
 
 from __future__ import annotations
 
-import pytest
-
 from spectragent.core.capabilities.browser.actions.done import DoneAction
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -19,7 +17,7 @@ from tests.test_core.test_capabilities.test_browser_actions.conftest import (
 class TestDoneDescriptor:
     def test_descriptor_returns_extracted_content_param(self) -> None:
         desc = DoneAction().descriptor()
-        assert desc.name == "done"
+        assert desc.name == "browser.done"
         assert "extracted_content" in desc.params
 
 

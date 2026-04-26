@@ -12,10 +12,16 @@ from typing import Any
 
 from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, WatchdogBase
 
-from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerProtocol, DOMCleanerRegistrar
+from spectragent.core.capabilities.browser.dom.cleaning import (
+    DOMCleanerProtocol,
+    DOMCleanerRegistrar,
+)
 from spectragent.core.capabilities.browser.dom.cleaning.browser_use import REQUIRED_COMPUTED_STYLES
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, DOMState
-from spectragent.core.capabilities.browser.dom.serializers import DOMSerializerProtocol, DOMSerializerRegistrar
+from spectragent.core.capabilities.browser.dom.serializers import (
+    DOMSerializerProtocol,
+    DOMSerializerRegistrar,
+)
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     BrowserStateRequestEvent,

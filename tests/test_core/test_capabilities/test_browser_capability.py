@@ -23,7 +23,7 @@ class TestStaticContract:
     def test_provided_fragments(self) -> None:
         cap = BrowserCapability()
         assert cap.provided_fragments == frozenset(
-            {"dom", "screenshot", "browser_meta"}
+            {"browser.dom", "browser.screenshot", "browser.browser_meta"}
         )
 
     def test_wiring_observation(self) -> None:
@@ -32,7 +32,11 @@ class TestStaticContract:
         assert "observation" in wiring
         registry, frags = wiring["observation"]
         assert registry == "observation"
-        assert set(frags) == {"dom", "screenshot", "browser_meta"}
+        assert set(frags) == {
+            "browser.dom",
+            "browser.screenshot",
+            "browser.browser_meta",
+        }
 
     def test_wiring_backend(self) -> None:
         # Wiring declares browser_provider as the backend registry
@@ -52,12 +56,18 @@ class TestActionDescriptors:
         cap = BrowserCapability()
         names = {d.name for d in cap.get_action_descriptors()}
         # The agent must have at least these actions
-        assert {"click", "type", "scroll", "navigate", "done"} <= names
+        assert {
+            "browser.click",
+            "browser.type",
+            "browser.scroll",
+            "browser.navigate",
+            "browser.done",
+        } <= names
 
     def test_done_action_has_extracted_content_param(self) -> None:
         cap = BrowserCapability()
         done = next(
-            d for d in cap.get_action_descriptors() if d.name == "done"
+            d for d in cap.get_action_descriptors() if d.name == "browser.done"
         )
         assert "extracted_content" in done.params
 
@@ -131,9 +141,18 @@ class TestActionWiringAndProvidedActions:
         cap = BrowserCapability()
         assert cap.provided_actions == frozenset(
             {
-                "click", "click_coordinate", "type", "navigate", "scroll",
-                "send_keys", "go_back", "go_forward", "switch_tab",
-                "select_dropdown", "extract_content", "done",
+                "browser.click",
+                "browser.click_coordinate",
+                "browser.type",
+                "browser.navigate",
+                "browser.scroll",
+                "browser.send_keys",
+                "browser.go_back",
+                "browser.go_forward",
+                "browser.switch_tab",
+                "browser.select_dropdown",
+                "browser.extract_content",
+                "browser.done",
             }
         )
 
@@ -154,9 +173,11 @@ class TestDefaultActionInstantiation:
 
     def test_action_overrides_apply_kwargs(self) -> None:
         cap = BrowserCapability(
-            action_overrides={"scroll": {"default_amount": 777, "max_amount": 9999}}
+            action_overrides={
+                "browser.scroll": {"default_amount": 777, "max_amount": 9999}
+            }
         )
-        scroll = cap._actions_by_name["scroll"]
+        scroll = cap._actions_by_name["browser.scroll"]
         assert scroll.default_amount == 777  # type: ignore[attr-defined]
         assert scroll.max_amount == 9999  # type: ignore[attr-defined]
         # All 12 actions still materialised — overrides are additive.
@@ -175,7 +196,7 @@ class TestDefaultActionInstantiation:
 
     def test_provided_actions_matches_with_overrides(self) -> None:
         cap = BrowserCapability(
-            action_overrides={"navigate": {"timeout_ms": 5000}}
+            action_overrides={"browser.navigate": {"timeout_ms": 5000}}
         )
         assert cap.provided_actions == frozenset(cap._actions_by_name)
 
@@ -218,9 +239,176 @@ class TestExecuteActionDispatch:
 
         result = asyncio.run(
             cap.execute_action(
-                Action(name="done", params={"extracted_content": "answer42"}),
+                Action(name="browser.done", params={"extracted_content": "answer42"}),
                 session_id="sid_x",
             )
         )
         assert result.is_done is True
         assert result.extracted_content == "answer42"
+
+
+# ─── Backend IoC closure ──────────────────────────────────────────────
+
+
+class _FakeProvider:
+    """Minimal stand-in for a registered ``BrowserProviderBase`` instance.
+
+    Records ``open()`` / ``close()`` calls so tests can assert IoC wiring
+    actually drove the lifecycle. Returns a ``ProviderSession`` carrying
+    a synthetic CDP URL — :class:`BrowserCapability.setup` is then
+    expected to construct a CDPClient against it.
+    """
+
+    def __init__(self, cdp_url: str | None = "ws://fake-backend/devtools") -> None:
+        self.provider_id = "fake_provider"
+        self._cdp_url = cdp_url
+        self.open_calls: list[dict] = []
+        self.close_calls: list[object] = []
+
+    async def open(self, **kwargs):
+        from spectragent.schemas.provider_session import ProviderSession
+
+        self.open_calls.append(kwargs)
+        return ProviderSession(
+            session_id="fake-session-1",
+            provider_id=self.provider_id,
+            cdp_url=self._cdp_url,
+        )
+
+    async def close(self, session=None):
+        self.close_calls.append(session)
+
+
+class TestBackendIoC:
+    """ConfigComposer setattr-injects ``backend`` → setup() consumes it.
+
+    These tests stub the CDPClient so we never touch a real WebSocket; the
+    focus is the wiring contract between BrowserCapability, the wired
+    provider, and the cdp_url resolution priority documented on
+    :meth:`BrowserCapability.setup`.
+    """
+
+    @staticmethod
+    def _patch_heavy_setup(monkeypatch) -> list[str]:
+        """Stub the CDP / agent-cdp internals that need a live browser.
+
+        Returns a list that will be appended to with each constructed
+        CDP URL so tests can assert which URL drove the connection.
+        """
+        cdp_clients_constructed: list[str] = []
+
+        class _StubCDPClient:
+            def __init__(self, url: str) -> None:
+                cdp_clients_constructed.append(url)
+
+            async def start(self) -> None:
+                return None
+
+            async def stop(self) -> None:
+                return None
+
+            async def send(self, *args, **kwargs):  # noqa: ARG002
+                return {
+                    "targetInfos": [
+                        {"type": "page", "targetId": "t0", "url": ""}
+                    ]
+                }
+
+        class _StubScopeGroup:
+            """Drop-in replacement for agent_cdp ``ScopeGroup``.
+
+            Real ScopeGroup spawns an asyncio Task tied to the running
+            event loop; replaying it across two ``asyncio.run()`` calls
+            (setup + teardown) raises CancelledError. The stub just
+            records calls so we can verify lifecycle behaviour without
+            crossing event loops.
+            """
+
+            def __init__(self, _name: str) -> None:
+                self.created: list[str] = []
+                self.closed = False
+
+            async def create_scope(self, scope_id, **_kwargs):
+                self.created.append(scope_id)
+                return object()
+
+            async def close_all(self) -> None:
+                self.closed = True
+
+        monkeypatch.setattr(
+            "spectragent.core.capabilities.browser.capability.CDPClient",
+            _StubCDPClient,
+        )
+        monkeypatch.setattr(
+            "spectragent.core.capabilities.browser.capability.ScopeGroup",
+            _StubScopeGroup,
+        )
+
+        async def _fake_attach_tab(_self, _tid, _url=""):
+            return "fake-cdp-session"
+
+        monkeypatch.setattr(
+            BrowserCapability, "_attach_tab", _fake_attach_tab, raising=True
+        )
+        monkeypatch.setattr(
+            BrowserCapability,
+            "_attach_browser_level_watchdogs",
+            lambda _self, _scope: None,
+            raising=True,
+        )
+        return cdp_clients_constructed
+
+    def test_setup_consumes_backend_open(self, monkeypatch) -> None:
+        """No kwarg + no field → ``backend.open()`` is called for cdp_url."""
+        import asyncio
+
+        cap = BrowserCapability()
+        cap.backend = _FakeProvider(cdp_url="ws://from-backend/x")  # type: ignore[assignment]
+        urls = self._patch_heavy_setup(monkeypatch)
+
+        async def _drive():
+            await cap.setup()
+            assert len(cap.backend.open_calls) == 1, (  # type: ignore[union-attr]
+                "Expected backend.open() to be invoked exactly once"
+            )
+            assert urls == ["ws://from-backend/x"]
+            assert cap._session is not None
+            assert cap._session.cdp_url == "ws://from-backend/x"
+
+            await cap.teardown()
+            assert len(cap.backend.close_calls) == 1  # type: ignore[union-attr]
+            assert cap._session is None
+
+        asyncio.run(_drive())
+
+    def test_setup_priority_kwarg_over_backend(self, monkeypatch) -> None:
+        """Explicit ``cdp_url`` kwarg wins → backend.open() is NOT called."""
+        import asyncio
+
+        cap = BrowserCapability()
+        cap.backend = _FakeProvider()  # type: ignore[assignment]
+        urls = self._patch_heavy_setup(monkeypatch)
+
+        async def _drive():
+            await cap.setup(cdp_url="ws://from-kwarg/y")
+            assert cap.backend.open_calls == [], (  # type: ignore[union-attr]
+                "kwarg cdp_url must short-circuit backend.open()"
+            )
+            assert urls == ["ws://from-kwarg/y"]
+            assert cap._session is None
+            await cap.teardown()
+            # No backend session was opened, so close should NOT be called.
+            assert cap.backend.close_calls == []  # type: ignore[union-attr]
+
+        asyncio.run(_drive())
+
+    def test_setup_raises_when_no_cdp_no_backend(self) -> None:
+        """No kwarg, no field, no backend → explicit RuntimeError."""
+        import asyncio
+
+        import pytest
+
+        cap = BrowserCapability()
+        # backend defaults to None.
+        with pytest.raises(RuntimeError, match="requires a CDP URL"):
+            asyncio.run(cap.setup())

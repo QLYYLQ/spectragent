@@ -11,7 +11,6 @@ from typing import Any
 
 from agent_cdp import BaseEvent
 
-
 # ---------------------------------------------------------------------------
 # Result container for BrowserStateRequestEvent
 # ---------------------------------------------------------------------------

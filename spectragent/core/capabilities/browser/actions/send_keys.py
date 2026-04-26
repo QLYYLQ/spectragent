@@ -17,11 +17,11 @@ if TYPE_CHECKING:
 class SendKeysAction(ActionBase):
     """Send raw keyboard input (key names or chords)."""
 
-    __registry_key__ = "send_keys"
+    __registry_key__ = "browser.send_keys"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="send_keys",
+            name="browser.send_keys",
             description="Send keyboard keys (e.g. Enter, Escape, Ctrl+A).",
             params={"keys": "str"},
         )
@@ -30,7 +30,7 @@ class SendKeysAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

@@ -30,8 +30,13 @@ ActionRegistrar = create_registrar(
 class ActionBase(metaclass=ActionRegistrar.Meta):
     """Concrete base for all action implementations.
 
-    Subclasses must set:
-    - ``__registry_key__``: conscribe registration key (e.g. ``"click"``)
+    Subclasses set ``__registry_key__`` to a fully-qualified dotted key —
+    ``"{source}.{local_id}"`` (e.g. ``"browser.click"``,
+    ``"tool_sandbox.call_tool"``). The prefix makes registration across
+    capabilities collision-free (``browser.click`` vs ``desktop.click``).
+    :attr:`action_id` returns the full key (which is what environments
+    route on) and :attr:`source` returns the prefix segment for callers
+    that need the owning-capability identity.
 
     Subclasses should use ``@dataclass`` + ``Annotated[type, Field(...)]``
     fields to expose capability-side configuration to conscribe codegen.
@@ -44,7 +49,7 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
 
         @dataclass
         class ScrollAction(ActionBase):
-            __registry_key__ = "scroll"
+            __registry_key__ = "browser.scroll"
 
             default_amount: Annotated[
                 int, PydanticField(description="Default scroll px")
@@ -52,7 +57,7 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
 
             def descriptor(self, **context):
                 return ActionDescriptor(
-                    name="scroll",
+                    name=self.__registry_key__,
                     description=f"Scroll the page (default {self.default_amount}px).",
                     params={"direction": "up|down|left|right"},
                 )
@@ -67,4 +72,10 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
 
     @property
     def action_id(self) -> str:
+        """Fully-qualified registry key (e.g. ``"browser.click"``)."""
         return self.__registry_key__
+
+    @property
+    def source(self) -> str:
+        """First segment of ``__registry_key__`` — the owning capability."""
+        return self.__registry_key__.split(".", 1)[0]

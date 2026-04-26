@@ -23,17 +23,12 @@ from datetime import UTC
 from typing import Any
 
 from spectragent.core.action_guard import build_guarded_act
-from spectragent.core.actions.negotiation import (
-    ActionNegotiationResult,
-    extract_action_wiring,
-    negotiate_actions,
-)
 from spectragent.core.aop.weaver import Weaver
 from spectragent.core.composer import ComposedRun
 from spectragent.core.hooks.base import RuntimeHook
-from spectragent.schemas.observation.negotiation import (
-    extract_observation_wiring,
-    negotiate,
+from spectragent.core.negotiation import (
+    negotiate_action,
+    negotiate_observation,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,10 +86,10 @@ class AgentRuntime:
         loop._validate_slots(agent)
 
         # Step 2: Observation three-party negotiation
-        negotiated_obs = self._negotiate_observation(agent, loop, env)
+        negotiated_obs = negotiate_observation(agent, loop, env)
 
         # Step 2.5: Action two-party negotiation
-        negotiated_actions = self._negotiate_actions(agent, env)
+        negotiated_actions = negotiate_action(agent, env)
 
         # Step 3: AOP weaving (must happen before guarded_act so
         #          act_fn captures wrapped_env.act, enabling AOP intercepts)
@@ -212,40 +207,6 @@ class AgentRuntime:
             raise
 
     # -- Private helpers ---------------------------------------
-
-    def _negotiate_observation(
-        self,
-        agent: Any,
-        loop: Any,
-        env: Any,
-    ) -> Any:
-        """Run three-party observation negotiation."""
-        env_provides = set(env.provided_fragments)
-
-        agent_required, agent_optional = extract_observation_wiring(type(agent))
-        loop_required, loop_optional = extract_observation_wiring(type(loop))
-
-        return negotiate(
-            env_provides=env_provides,
-            agent_required=agent_required,
-            agent_optional=agent_optional,
-            loop_required=loop_required,
-            loop_optional=loop_optional,
-        )
-
-    def _negotiate_actions(
-        self,
-        agent: Any,
-        env: Any,
-    ) -> ActionNegotiationResult:
-        """Run two-party action negotiation."""
-        env_provides = set(env.provided_actions)
-        agent_required, agent_optional = extract_action_wiring(type(agent))
-        return negotiate_actions(
-            env_provides=env_provides,
-            agent_required=agent_required,
-            agent_optional=agent_optional,
-        )
 
     async def _dispatch_lifecycle(
         self,

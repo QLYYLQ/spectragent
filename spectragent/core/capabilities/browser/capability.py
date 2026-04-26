@@ -47,6 +47,7 @@ from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — re
     SwitchTabAction,
     TypeAction,
 )
+from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, DOMState
 from spectragent.core.capabilities.browser.profiles import (
@@ -63,6 +64,7 @@ from spectragent.schemas.observation.fragments import (
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.schemas.provider_session import ProviderSession
 
 logger = logging.getLogger(__name__)
 
@@ -106,25 +108,28 @@ class BrowserCapability(CapabilityBase):
 
     __registry_key__: ClassVar[str] = "browser"
     __wiring__: ClassVar[dict[str, Any]] = {
-        "observation": ("observation", ["dom", "screenshot", "browser_meta"]),
+        "observation": (
+            "observation",
+            ["browser.dom", "browser.screenshot", "browser.browser_meta"],
+        ),
         # Action provides — symmetric to observation. Keep in sync with
         # the concrete classes registered under
         # ``spectragent.core.capabilities.browser.actions``.
         "action": (
             "action",
             [
-                "click",
-                "click_coordinate",
-                "type",
-                "navigate",
-                "scroll",
-                "send_keys",
-                "go_back",
-                "go_forward",
-                "switch_tab",
-                "select_dropdown",
-                "extract_content",
-                "done",
+                "browser.click",
+                "browser.click_coordinate",
+                "browser.type",
+                "browser.navigate",
+                "browser.scroll",
+                "browser.send_keys",
+                "browser.go_back",
+                "browser.go_forward",
+                "browser.switch_tab",
+                "browser.select_dropdown",
+                "browser.extract_content",
+                "browser.done",
             ],
         ),
         # ``browser_provider`` is the existing conscribe registrar for
@@ -163,11 +168,25 @@ class BrowserCapability(CapabilityBase):
     # Omitted actions get default-constructed from the registry.
     action_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    # ── wired backend (IoC injection by ConfigComposer) ──────────────
+    # ``backend`` is a wired receptor managed by conscribe's metaclass.
+    # Conscribe replaces this annotation with a ``WiredField`` descriptor
+    # at class creation; ``ConfigComposer`` then calls
+    # ``setattr(cap, "backend", provider)`` to inject the chosen provider.
+    # Same pattern as ``agent.llm`` / ``agent.memory`` and
+    # ``env.capabilities``. Kept as a class-level annotation only (not a
+    # dataclass ``field()``) so dataclass leaves it alone — runtime is
+    # unaffected by the apparent "field after default" ordering.
+    backend: BaseBrowserProvider  # type: ignore[misc]
+
     # ── internal state (excluded from config) ─────────────────────────
     _actions_by_name: dict[str, ActionBase] = field(
         default_factory=dict, init=False, repr=False
     )
     _cdp: CDPClient | None = field(default=None, init=False, repr=False)
+    _session: ProviderSession | None = field(
+        default=None, init=False, repr=False
+    )
     _scope_group: ScopeGroup | None = field(default=None, init=False, repr=False)
     _scopes: dict[str, EventScope] = field(default_factory=dict, init=False, repr=False)
     _selector_maps: dict[str, DOMSelectorMap] = field(
@@ -260,6 +279,29 @@ class BrowserCapability(CapabilityBase):
         """
         self._injected_client = client
 
+    # ── Backend access ────────────────────────────────────────────────
+
+    def _resolved_backend(self) -> BaseBrowserProvider | None:
+        """Return the wired backend instance, or ``None`` if not injected.
+
+        ``self.backend`` is a conscribe ``WiredField`` descriptor until
+        ``ConfigComposer`` setattr-injects the chosen provider. Reading
+        an uninjected wired attribute raises ``AttributeError``; this
+        helper turns that into ``None`` so :meth:`setup` can branch
+        cleanly between "use the wired backend" and "no backend was
+        configured".
+        """
+        try:
+            backend = self.backend
+        except AttributeError:
+            return None
+        # Defensive: if conscribe ever stops raising on uninjected reads
+        # (or a duck-typed stand-in slips through), require the protocol
+        # surface we actually use.
+        if not callable(getattr(backend, "open", None)):
+            return None
+        return backend
+
     # ── CapabilityBase contract ──────────────────────────────────────
 
     def get_action_descriptors(self, **context: Any) -> list[ActionDescriptor]:
@@ -277,9 +319,16 @@ class BrowserCapability(CapabilityBase):
         """Initialize CDP connection, global scope, and the initial tab.
 
         ``kwargs`` is forwarded from AgentRuntime / TaskLoader and may
-        include task context (``start_url`` etc.) — currently the only
-        supported key is ``cdp_url`` which overrides the constructor
-        value (used by backends that allocate a fresh URL per session).
+        include task context (``start_url`` etc.).
+
+        CDP URL resolution priority:
+          1. ``kwargs["cdp_url"]`` (per-call override)
+          2. ``config["cdp_url"]`` (legacy explicit config dict)
+          3. ``self.cdp_url`` (conscribe field)
+          4. ``self.backend.open()`` → ``ProviderSession.cdp_url`` (IoC backend)
+
+        The backend path activates only when no explicit cdp_url is given;
+        ``self._session`` is retained so :meth:`teardown` can release it.
         """
         # Resolve profile.
         self._resolved_profile = resolve_profile(self.profile)
@@ -292,10 +341,27 @@ class BrowserCapability(CapabilityBase):
         if self._injected_client is not None:
             self._cdp = self._injected_client
         else:
+            # Last-resort: ask the wired backend to allocate a session.
+            backend = self._resolved_backend()
+            if cdp_url is None and backend is not None:
+                self._session = await backend.open(
+                    viewport={
+                        "width": self.viewport_width,
+                        "height": self.viewport_height,
+                    },
+                )
+                cdp_url = self._session.cdp_url
+                if cdp_url is None:
+                    raise RuntimeError(
+                        f"Backend {backend.provider_id!r} opened a "
+                        f"session but did not return a cdp_url — provider "
+                        f"is incompatible with BrowserCapability."
+                    )
             if cdp_url is None:
                 raise RuntimeError(
                     "BrowserCapability.setup() requires a CDP URL — set "
-                    "``cdp_url`` in config or pass it as a kwarg from the backend."
+                    "``cdp_url`` in config, pass it as a kwarg, or wire "
+                    "a ``browser_provider`` backend via __wiring__."
                 )
             self._cdp = CDPClient(cdp_url)
             await self._cdp.start()
@@ -331,7 +397,7 @@ class BrowserCapability(CapabilityBase):
         )
 
     async def teardown(self) -> None:
-        """Tear down all scopes and close CDPClient if we own it."""
+        """Tear down all scopes, close CDPClient, and release backend session."""
         self._alive = False
         if self._scope_group is not None:
             await self._scope_group.close_all()
@@ -348,6 +414,19 @@ class BrowserCapability(CapabilityBase):
             await self._cdp.stop()
         self._cdp = None
         self._scope_group = None
+
+        # Release the backend session if we opened one in setup().
+        backend = self._resolved_backend()
+        if self._session is not None and backend is not None:
+            try:
+                await backend.close(self._session)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Backend %s close() failed: %s",
+                    backend.provider_id,
+                    exc,
+                )
+        self._session = None
 
         logger.info("BrowserCapability teardown complete")
 
@@ -406,11 +485,11 @@ class BrowserCapability(CapabilityBase):
         await self._populate_cycle(sid, fragment_key)
 
         cache = self._cycle_cache[sid]
-        if fragment_key == "dom":
+        if fragment_key == "browser.dom":
             return cache.dom
-        if fragment_key == "screenshot":
+        if fragment_key == "browser.screenshot":
             return cache.screenshot
-        if fragment_key == "browser_meta":
+        if fragment_key == "browser.browser_meta":
             return cache.browser_meta
         raise ValueError(
             f"BrowserCapability cannot resolve fragment '{fragment_key}'"
@@ -441,7 +520,7 @@ class BrowserCapability(CapabilityBase):
             self._cycle_cache[sid] = cache
 
         # browser_meta has its own resolver path.
-        if fragment_key == "browser_meta":
+        if fragment_key == "browser.browser_meta":
             if cache.browser_meta is None:
                 cache.browser_meta = await self._resolve_browser_meta(sid)
             return
@@ -462,8 +541,8 @@ class BrowserCapability(CapabilityBase):
         # fragment isn't needed.
         provided = self.provided_fragments
         event = BrowserStateRequestEvent(
-            include_dom="dom" in provided,
-            include_screenshot="screenshot" in provided,
+            include_dom="browser.dom" in provided,
+            include_screenshot="browser.screenshot" in provided,
         )
         scope.emit(event)
         await event

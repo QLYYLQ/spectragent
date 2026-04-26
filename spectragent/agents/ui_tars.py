@@ -45,11 +45,11 @@ class UITarsAgent(AgentBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react"]),
         "capability": ("capability", ["browser"]),
-        "observation": ("observation", ["screenshot"], []),
+        "observation": ("observation", ["browser.screenshot"], []),
         "action": (
             "action",
-            ["click_coordinate", "type", "done"],
-            ["scroll", "send_keys", "navigate"],
+            ["browser.click_coordinate", "browser.type", "browser.done"],
+            ["browser.scroll", "browser.send_keys", "browser.navigate"],
         ),
         "llm": "llm",
     }
@@ -240,12 +240,12 @@ def _parse_single_action(action_str: str) -> Action | None:
             if kw.arg is not None:
                 kwargs[kw.arg] = ast.literal_eval(kw.value)
 
-        # Map UI-TARS verbs to standard browser action names.
+        # Map UI-TARS verbs to the fully-qualified browser action names.
         if func_name == "finished":
             # BrowserCapability/DoneEvent reads ``extracted_content``,
             # not ``text`` — rename so the answer survives.
             return Action(
-                name="done",
+                name="browser.done",
                 params={
                     "success": True,
                     "extracted_content": kwargs.get("content", ""),
@@ -256,12 +256,13 @@ def _parse_single_action(action_str: str) -> Action | None:
             x, y = _parse_point(kwargs.get("point"))
             if x is not None and y is not None:
                 return Action(
-                    name="click_coordinate",
+                    name="browser.click_coordinate",
                     params={"coordinate_x": x, "coordinate_y": y},
                 )
             return None
 
-        return Action(name=func_name, params=kwargs)
+        qualified = func_name if "." in func_name else f"browser.{func_name}"
+        return Action(name=qualified, params=kwargs)
 
     except (SyntaxError, ValueError):
         return None

@@ -1,7 +1,7 @@
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from os import getenv
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated, Any, TypeVar, overload
 
 from pydantic import BaseModel, Field

@@ -1,0 +1,71 @@
+# BrowserUseAgent + ReactLoop running against a local Chrome backend.
+#
+# Switching backend = editing only ``agent[0].capability.backend`` below.
+# Schema lives in spectragent/generated/_composed.py — regenerate with
+# `uv run python spectragent/scripts/generate_all.py` after registering
+# new actions / capabilities / providers.
+#
+# conscribe `inline_wiring=True` requires every wired child to be nested
+# inside its owning entry, so the agent block carries its loop / llm /
+# memory / capability inline.
+
+agent:
+  - agent_id: browser_use
+    max_steps: 30
+    max_actions_per_step: 1
+    flash_mode: false
+    use_vision: false
+    use_thinking: true
+    is_anthropic: false
+
+    # Wired children (Composer instantiates and setattr-injects)
+    agent_loop:
+      loop_id: react
+
+    llm:
+      model_type: openai
+      model: gpt-4o
+      provider:
+        name: direct
+
+    memory:
+      memory_id: simple
+      max_messages: 200
+
+    capability:
+      capability_id: browser
+      profile: standard
+      viewport_width: 1280
+      viewport_height: 720
+
+      # Pydantic-required declarative-only wiring (Composer skips, Pydantic validates)
+      observation: browser.dom
+      action: { action_id: browser.click }
+
+      # Execution-layer backend (IoC injection). Switch backend by editing
+      # this block only — every other section stays identical.
+      backend:
+        provider_id: local_chrome
+        headless: true
+        window_width: 1280
+        window_height: 720
+        no_sandbox: false
+        mute_audio: true
+        startup_url: about:blank
+
+    # Agent's own declarative-only wiring fields
+    observation: browser.dom
+    action: { action_id: browser.click }
+
+# BrowserEnvironment uses ``capabilities`` as a multi-instance wired
+# receptor — Composer collects every entry from the top-level
+# ``capability:`` list (above is empty here because the agent inlined
+# its own capability) and injects them as ``env.capabilities = {...}``.
+# We declare the env at top level so ComposedRun.env returns a real
+# instance (otherwise it falls back to None).
+environment:
+  - env_type: browser
+
+# capability: [] explicitly empty — agent inlines its own capability;
+# adding entries here would create separate parallel capability instances.
+capability: []

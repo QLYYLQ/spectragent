@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel
-
 from conscribe import create_registrar
+from pydantic import BaseModel
 
 from spectragent.schemas.observation.base import ObservationFragment
 

@@ -17,11 +17,11 @@ if TYPE_CHECKING:
 class SwitchTabAction(ActionBase):
     """Switch the active tab by target_id (``None`` = most recent)."""
 
-    __registry_key__ = "switch_tab"
+    __registry_key__ = "browser.switch_tab"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="switch_tab",
+            name="browser.switch_tab",
             description="Switch to a different browser tab.",
             params={"target_id": "str | None -- None = most recent"},
         )
@@ -30,7 +30,7 @@ class SwitchTabAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

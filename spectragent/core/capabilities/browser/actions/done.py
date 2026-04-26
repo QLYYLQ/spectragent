@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 class DoneAction(ActionBase):
     """Terminal action — carry the final answer out of the loop."""
 
-    __registry_key__ = "done"
+    __registry_key__ = "browser.done"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="done",
+            name="browser.done",
             description="Signal that the task is complete.",
             params={
                 "extracted_content": "str | None -- final answer / result text",
@@ -38,7 +38,7 @@ class DoneAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         return ActionResult(

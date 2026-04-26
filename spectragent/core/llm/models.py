@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from spectragent.core.llm.base import BaseChatModel
 
 
-def get_llm_by_name(model_name: str) -> "BaseChatModel":
+def get_llm_by_name(model_name: str) -> BaseChatModel:
     """废弃接口
     Factory: create an LLM instance from a string name using env vars for API keys.
 
@@ -60,7 +60,7 @@ def get_llm_by_name(model_name: str) -> "BaseChatModel":
     return cls(**kwargs)
 
 
-def __getattr__(name: str) -> "BaseChatModel":
+def __getattr__(name: str) -> BaseChatModel:
     """Create model instances on demand with API keys from environment."""
     try:
         return get_llm_by_name(name)

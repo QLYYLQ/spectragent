@@ -2,8 +2,8 @@
 
 import asyncio
 import json
-from dataclasses import dataclass
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
 
 import oci

@@ -31,11 +31,11 @@ EnvironmentRegistrar = create_registrar(
 class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
     """Concrete base for all environment implementations.
 
-    Provides prefix routing for multi-capability environments:
-    - Single capability: action names pass through unchanged
-    - Multiple capabilities: action names are auto-prefixed
-      (``browser.click``), and ``act()`` strips the prefix before
-      delegating to the matching Capability.
+    Action and observation keys are fully qualified at the registry level
+    (``source.action_id`` / ``source.fragment_id``) so the environment
+    doesn't apply any runtime prefixing. ``act()`` still routes by
+    splitting the leading segment of the action name to pick the owning
+    capability, but the action itself is passed through unchanged.
 
     Subclasses must set:
     - ``__registry_key__``: conscribe key (e.g. ``"browser"``)
@@ -56,17 +56,12 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
     __wiring__: ClassVar[dict[str, Any]] = {}
 
     # dict-form annotation tells the Composer this wired receptor is multi-
-    # instance — each capability in ``__wiring__["_capabilities"]`` becomes
+    # instance — each capability in ``__wiring__["capabilities"]`` becomes
     # an entry keyed by its ``capability_id``.
-    _capabilities: dict[str, BaseCapability]
+    capabilities: dict[str, BaseCapability]
 
     def __init__(self) -> None:
         self._fragment_router: dict[str, BaseCapability] | None = None
-
-    @property
-    def _is_composite(self) -> bool:
-        """True when more than one capability is wired."""
-        return len(self._capabilities) > 1
 
     # ── Registry property ─────────────────────────────────────
 
@@ -76,17 +71,17 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 
     # ── Capability discovery ──────────────────────────────────
 
-    def capabilities(self) -> frozenset[str]:
-        return frozenset(self._capabilities.keys())
+    def capability_ids(self) -> frozenset[str]:
+        return frozenset(self.capabilities.keys())
 
     def has_capability(self, cap_id: str) -> bool:
-        return cap_id in self._capabilities
+        return cap_id in self.capabilities
 
     @property
     def provided_fragments(self) -> frozenset[str]:
         """Union of all capabilities' provided_fragments."""
         fragments: set[str] = set()
-        for cap in self._capabilities.values():
+        for cap in self.capabilities.values():
             fragments |= cap.provided_fragments
         return frozenset(fragments)
 
@@ -94,12 +89,11 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
     def provided_actions(self) -> frozenset[str]:
         """Union of all capabilities' provided_actions.
 
-        Symmetric to :attr:`provided_fragments`. Composite environments
-        expose this as the unprefixed action names; prefix routing is
-        applied separately in :meth:`get_action_space` / :meth:`act`.
+        Keys are fully qualified (``source.action_id``) and symmetric
+        to :attr:`provided_fragments`.
         """
         actions: set[str] = set()
-        for cap in self._capabilities.values():
+        for cap in self.capabilities.values():
             actions |= cap.provided_actions
         return frozenset(actions)
 
@@ -111,36 +105,26 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         active_actions: frozenset[str] | None = None,
         **context: Any,
     ) -> list[ActionDescriptor]:
-        """Aggregate descriptors from all capabilities.
+        """Aggregate descriptors from all capabilities, narrowed by the
+        negotiation result.
 
-        Multi-capability environments auto-prefix each descriptor
-        with the capability ID (e.g. ``click`` → ``browser.click``).
-        Single-capability environments pass names through unchanged.
+        Descriptors carry the fully-qualified action name from the
+        registry (``source.action_id``); no runtime re-prefixing.
 
         Args:
-            active_actions: Optional set of unprefixed action names
-                (as produced by :func:`negotiate_actions`). When
-                provided, descriptors whose *unprefixed* name is not
-                in the set are filtered out **before** the prefix is
-                applied. This is the single source of truth for action
-                narrowing — upstream callers must not strip prefixes
-                themselves. ``None`` means "no narrowing" (all
-                descriptors pass through).
+            active_actions: Optional set of fully-qualified action names
+                produced by :func:`negotiate_action`. When provided,
+                descriptors whose name is not in the set are filtered
+                out. ``None`` disables narrowing.
             **context: Forwarded to each capability's
                 ``get_action_descriptors`` call.
         """
         descriptors: list[ActionDescriptor] = []
-        for cap_id, cap in self._capabilities.items():
+        for cap in self.capabilities.values():
             for desc in cap.get_action_descriptors(**context):
-                # Narrowing happens on the *unprefixed* name so the
-                # contract stays symmetric with ``provided_actions``
-                # and the negotiation result.
                 if active_actions is not None and desc.name not in active_actions:
                     continue
-                if self._is_composite:
-                    descriptors.append(desc.with_prefix(cap_id))
-                else:
-                    descriptors.append(desc)
+                descriptors.append(desc)
         return descriptors
 
     # ── Action execution (prefix routing) ─────────────────────
@@ -150,39 +134,32 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         action: Action,
         session_id: str | None = None,
     ) -> ActionResult:
-        """Route action to the correct Capability.
+        """Route a fully-qualified action to the owning Capability.
 
-        For composite environments, strips the prefix from the action
-        name (``browser.click`` → ``click``) and delegates to the
-        matching Capability. For single-capability environments,
-        delegates directly.
+        The capability is identified by the leading segment of
+        ``action.name`` (``browser.click`` → ``browser``). The action
+        itself is passed through unchanged — capabilities look it up by
+        its full registry key.
         """
-        if self._is_composite:
-            prefix, sep, local_name = action.name.partition(".")
-            if not sep:
-                return ActionResult(
-                    success=False,
-                    error=(
-                        f"Composite environment requires prefixed action names "
-                        f"(e.g. 'browser.click'), got '{action.name}'"
-                    ),
-                )
-            cap = self._capabilities.get(prefix)
-            if cap is None:
-                return ActionResult(
-                    success=False,
-                    error=(
-                        f"No capability handles prefix '{prefix}'. "
-                        f"Available: {sorted(self._capabilities.keys())}"
-                    ),
-                )
-            return await cap.execute_action(
-                Action(name=local_name, params=action.params),
-                session_id=session_id,
+        prefix, sep, _rest = action.name.partition(".")
+        if not sep:
+            return ActionResult(
+                success=False,
+                error=(
+                    f"Action name must be fully qualified "
+                    f"('source.action_id'), got '{action.name}'"
+                ),
             )
-        else:
-            cap = next(iter(self._capabilities.values()))
-            return await cap.execute_action(action, session_id=session_id)
+        cap = self.capabilities.get(prefix)
+        if cap is None:
+            return ActionResult(
+                success=False,
+                error=(
+                    f"No capability handles prefix '{prefix}'. "
+                    f"Available: {sorted(self.capabilities.keys())}"
+                ),
+            )
+        return await cap.execute_action(action, session_id=session_id)
 
     # ── Observation delegation ────────────────────────────────
 
@@ -217,14 +194,17 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                     frag_key,
                     session_id=session_id,
                 )
-                field_values[frag_key] = fragment
+                # Dynamic-model attribute names use the local segment of
+                # the fully-qualified key (``browser.dom`` → ``dom``), so
+                # agents keep their ``obs.dom`` access pattern.
+                field_values[frag_key.rsplit(".", 1)[-1]] = fragment
 
         return obs_model(**field_values)
 
     def _build_fragment_router(self) -> None:
         """Build reverse index: fragment_key → Capability."""
         router: dict[str, BaseCapability] = {}
-        for cap in self._capabilities.values():
+        for cap in self.capabilities.values():
             for frag_key in cap.provided_fragments:
                 router[frag_key] = cap
         self._fragment_router = router
@@ -232,13 +212,13 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
     # ── Lifecycle ─────────────────────────────────────────────
 
     async def setup(self, **kwargs: Any) -> None:
-        for cap in self._capabilities.values():
+        for cap in self.capabilities.values():
             await cap.setup(**kwargs)
 
     async def teardown(self) -> None:
-        for cap in self._capabilities.values():
+        for cap in self.capabilities.values():
             await cap.teardown()
 
     @property
     def is_alive(self) -> bool:
-        return all(cap.is_alive for cap in self._capabilities.values())
+        return all(cap.is_alive for cap in self.capabilities.values())

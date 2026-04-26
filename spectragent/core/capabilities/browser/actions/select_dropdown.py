@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 class SelectDropdownAction(ActionBase):
     """Pick an option from a dropdown by value / visible text / sub-index."""
 
-    __registry_key__ = "select_dropdown"
+    __registry_key__ = "browser.select_dropdown"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="select_dropdown",
+            name="browser.select_dropdown",
             description="Select an option from a dropdown element.",
             params={
                 "index": "int -- element index of the <select>",
@@ -40,7 +40,7 @@ class SelectDropdownAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

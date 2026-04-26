@@ -65,7 +65,7 @@ class TestCacheInvalidation:
 
         async def _go() -> ActionResult:
             return await cap.execute_action(
-                Action(name="navigate", params={"url": "https://example.com"}),
+                Action(name="browser.navigate", params={"url": "https://example.com"}),
                 session_id="fake_sid",
             )
 
@@ -96,7 +96,7 @@ class TestCacheInvalidation:
 
         async def _go() -> None:
             await cap.execute_action(
-                Action(name="navigate", params={"url": "https://x.example.com"}),
+                Action(name="browser.navigate", params={"url": "https://x.example.com"}),
                 session_id="fake_sid",
             )
 
@@ -148,9 +148,9 @@ class TestLazyBatchPopulation:
         import asyncio
 
         async def _go() -> tuple:
-            d = await cap.resolve_fragment("dom", session_id="fake_sid")
-            s = await cap.resolve_fragment("screenshot", session_id="fake_sid")
-            b = await cap.resolve_fragment("browser_meta", session_id="fake_sid")
+            d = await cap.resolve_fragment("browser.dom", session_id="fake_sid")
+            s = await cap.resolve_fragment("browser.screenshot", session_id="fake_sid")
+            b = await cap.resolve_fragment("browser.browser_meta", session_id="fake_sid")
             return d, s, b
 
         d, s, b = asyncio.run(_go())
@@ -189,7 +189,7 @@ class TestLazyBatchPopulation:
         import asyncio
 
         async def _go() -> object:
-            return await cap.resolve_fragment("dom")
+            return await cap.resolve_fragment("browser.dom")
 
         with pytest.raises(RuntimeError, match="No active browser session"):
             asyncio.run(_go())
@@ -246,8 +246,8 @@ class TestMultiTabIsolation:
         import asyncio
 
         async def _go() -> tuple:
-            a = await cap.resolve_fragment("dom", session_id="fake_sid")
-            b = await cap.resolve_fragment("dom", session_id="tab_b")
+            a = await cap.resolve_fragment("browser.dom", session_id="fake_sid")
+            b = await cap.resolve_fragment("browser.dom", session_id="tab_b")
             return a, b
 
         a, b = asyncio.run(_go())

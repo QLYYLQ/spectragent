@@ -26,8 +26,14 @@ class Environment(Protocol):
 
     # ── Capability discovery ──────────────────────────────────
 
-    def capabilities(self) -> frozenset[str]:
-        """Return capability IDs aggregated from injected capabilities."""
+    capabilities: dict[str, Any]
+    """Mapping from ``capability_id`` to the wired :class:`BaseCapability`
+    instance. Populated by :class:`ConfigComposer` via setattr at compose
+    time — same IoC pattern as ``agent.llm`` and ``capability.backend``.
+    """
+
+    def capability_ids(self) -> frozenset[str]:
+        """Return the set of registered capability IDs."""
         ...
 
     def has_capability(self, cap_id: str) -> bool:

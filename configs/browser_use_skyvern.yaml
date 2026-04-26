@@ -1,0 +1,53 @@
+# BrowserUseAgent + ReactLoop running against the hosted Skyvern backend.
+#
+# Differs from browser_use_local.yaml only in
+# ``agent[0].capability.backend`` — every other section is identical.
+# Set SKYVERN_API_KEY in your environment before running.
+
+agent:
+  - agent_id: browser_use
+    max_steps: 30
+    max_actions_per_step: 1
+    flash_mode: false
+    use_vision: false
+    use_thinking: true
+    is_anthropic: false
+
+    agent_loop:
+      loop_id: react
+
+    llm:
+      model_type: openai
+      model: gpt-4o
+      provider:
+        name: direct
+
+    memory:
+      memory_id: simple
+      max_messages: 200
+
+    capability:
+      capability_id: browser
+      profile: standard
+      viewport_width: 1280
+      viewport_height: 720
+
+      observation: browser.dom
+      action: { action_id: browser.click }
+
+      # Switch backend = edit only this block.
+      backend:
+        provider_id: skyvern
+        # Either set SKYVERN_API_KEY env var (provider reads it) or paste here:
+        # api_key: sk-...
+        timeout_minutes: 30
+        solve_captcha: false
+        adblock: false
+
+    observation: browser.dom
+    action: { action_id: browser.click }
+
+environment:
+  - env_type: browser
+
+capability: []

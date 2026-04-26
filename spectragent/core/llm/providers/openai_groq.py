@@ -51,7 +51,9 @@ class ChatGroq(OpenAICompatBase):
     async def ainvoke(
         self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
-        from groq import APIError, APIStatusError as GroqStatusError, RateLimitError as GroqRateLimitError
+        from groq import APIError
+        from groq import APIStatusError as GroqStatusError
+        from groq import RateLimitError as GroqRateLimitError
         from groq.types.chat.completion_create_params import (
             ResponseFormatResponseFormatJsonSchema,
             ResponseFormatResponseFormatJsonSchemaJsonSchema,
@@ -93,7 +95,9 @@ class ChatGroq(OpenAICompatBase):
         except GroqStatusError as e:
             if output_format is not None:
                 try:
-                    from spectragent.core.llm.providers._groq_parser import try_parse_groq_failed_generation
+                    from spectragent.core.llm.providers._groq_parser import (
+                        try_parse_groq_failed_generation,
+                    )
                     parsed = try_parse_groq_failed_generation(e, output_format)
                     return ChatInvokeCompletion(completion=parsed, usage=None)
                 except Exception:

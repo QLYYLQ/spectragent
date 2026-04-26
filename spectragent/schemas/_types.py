@@ -1,6 +1,6 @@
 """Custom Pydantic types for schema standardization."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any
 
@@ -120,12 +120,12 @@ def _ensure_utc(value: Any) -> datetime:
     - ``str``: Passed through to let Pydantic handle parsing
     """
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=timezone.utc)
+        return datetime.fromtimestamp(value, tz=UTC)
 
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     # str or other types — let Pydantic's default parsing handle it
     return value

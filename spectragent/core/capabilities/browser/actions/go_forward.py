@@ -17,11 +17,11 @@ if TYPE_CHECKING:
 class GoForwardAction(ActionBase):
     """Navigate forward in the current tab's history."""
 
-    __registry_key__ = "go_forward"
+    __registry_key__ = "browser.go_forward"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="go_forward",
+            name="browser.go_forward",
             description="Navigate forward in browser history.",
             params={},
         )
@@ -30,7 +30,7 @@ class GoForwardAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

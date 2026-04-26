@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -274,7 +274,7 @@ class ReactLoop(AgentLoopBase):
         return AgentResult(
             task_id=task_id,
             task=task,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             env_status=EnvironmentStatus(env_status),
             agent_done=AgentDoneStatus(agent_done),
             agent_success=agent_success,

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from spectragent.core.capabilities.browser.actions.navigate import NavigateAction
 from spectragent.core.capabilities.browser.watchdogs.events import (
     NavigateToUrlEvent,
