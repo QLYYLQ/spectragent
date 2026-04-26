@@ -34,7 +34,6 @@ from spectragent.core.llm.messages import (
 from spectragent.core.loops import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor
 
-
 # ── Test fixtures ─────────────────────────────────────────────────────
 
 
@@ -125,8 +124,8 @@ class TestWiring:
         # Required + optional split for browser_meta
         assert wiring["observation"] == (
             "observation",
-            ["dom", "screenshot"],
-            ["browser_meta"],
+            ["browser.dom", "browser.screenshot"],
+            ["browser.browser_meta"],
         )
 
 
@@ -268,7 +267,7 @@ class TestParseReactOutput:
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
         assert isinstance(actions[0], Action)
-        assert actions[0].name == "click"
+        assert actions[0].name == "browser.click"
         assert actions[0].params == {"index": 42}
 
     def test_translates_input_text_and_go_to_url(self) -> None:
@@ -286,9 +285,9 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 2
-        assert actions[0].name == "type"
+        assert actions[0].name == "browser.type"
         assert actions[0].params == {"index": 2, "text": "hello"}
-        assert actions[1].name == "navigate"
+        assert actions[1].name == "browser.navigate"
         assert actions[1].params == {"url": "https://x.example"}
 
     def test_multi_action_output(self) -> None:
@@ -305,9 +304,9 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 3
-        assert actions[0].name == "click"
-        assert actions[1].name == "type"
-        assert actions[2].name == "navigate"
+        assert actions[0].name == "browser.click"
+        assert actions[1].name == "browser.type"
+        assert actions[2].name == "browser.navigate"
 
     def test_empty_actions_raises_parse_error(self) -> None:
         from spectragent.core.loops.errors import ParseError
@@ -346,7 +345,7 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
-        assert actions[0].name == "done"
+        assert actions[0].name == "browser.done"
         assert actions[0].params.get("extracted_content") == "the final answer"
         assert "text" not in actions[0].params
 

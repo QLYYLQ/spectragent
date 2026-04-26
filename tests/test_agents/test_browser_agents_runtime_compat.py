@@ -21,18 +21,15 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.loops.react import ReactLoop
-from tests._helpers.assembly import make_agent
 from spectragent.core.loops.validation import validate_compatibility
+from spectragent.core.negotiation import extract_wiring
+from spectragent.core.negotiation.observation import _observation_rules
 from spectragent.schemas.observation.fragments import (
     BrowserMetaObs,
     DOMObs,
     ScreenshotObs,
 )
-from spectragent.schemas.observation.negotiation import (
-    extract_observation_wiring,
-    negotiate,
-)
-
+from tests._helpers.assembly import make_agent
 
 # ── Validate compatibility ────────────────────────────────────────────
 
@@ -64,84 +61,64 @@ class TestObservationNegotiation:
 
     def test_ui_tars_does_not_activate_dom(self) -> None:
         # Env provides everything (browser capability default).
-        env_provides = {"dom", "screenshot", "browser_meta"}
+        env_provides = {
+            "browser.dom",
+            "browser.screenshot",
+            "browser.browser_meta",
+        }
 
-        # UITars wiring: required=[screenshot], optional=[]
-        agent_required, agent_optional = extract_observation_wiring(UITarsAgent)
-        # ReactLoop has no observation wiring of its own.
-        loop_required, loop_optional = extract_observation_wiring(ReactLoop)
-
-        result = negotiate(
+        result = _observation_rules(
+            agent=extract_wiring(UITarsAgent, "observation"),
+            loop=extract_wiring(ReactLoop, "observation"),
             env_provides=env_provides,
-            agent_required=agent_required,
-            agent_optional=agent_optional,
-            loop_required=loop_required,
-            loop_optional=loop_optional,
         )
 
-        assert "screenshot" in result.active_fragments
-        assert "dom" not in result.active_fragments, (
+        assert "browser.screenshot" in result.active_fragments
+        assert "browser.dom" not in result.active_fragments, (
             "UITars must not trigger DOM resolution — wiring requires "
-            "only 'screenshot'"
+            "only 'browser.screenshot'"
         )
-        assert "browser_meta" not in result.active_fragments
+        assert "browser.browser_meta" not in result.active_fragments
 
     def test_browser_use_activates_dom_screenshot_and_meta(self) -> None:
-        env_provides = {"dom", "screenshot", "browser_meta"}
-        agent_required, agent_optional = extract_observation_wiring(
-            BrowserUseAgent
-        )
-        loop_required, loop_optional = extract_observation_wiring(ReactLoop)
-
-        result = negotiate(
+        env_provides = {
+            "browser.dom",
+            "browser.screenshot",
+            "browser.browser_meta",
+        }
+        result = _observation_rules(
+            agent=extract_wiring(BrowserUseAgent, "observation"),
+            loop=extract_wiring(ReactLoop, "observation"),
             env_provides=env_provides,
-            agent_required=agent_required,
-            agent_optional=agent_optional,
-            loop_required=loop_required,
-            loop_optional=loop_optional,
         )
-
         # dom + screenshot are required, browser_meta is optional but
         # the env provides it so it should be active too.
-        assert {"dom", "screenshot", "browser_meta"} <= result.active_fragments
+        assert {
+            "browser.dom",
+            "browser.screenshot",
+            "browser.browser_meta",
+        } <= result.active_fragments
 
     def test_skyvern_activates_dom_and_drops_unused_optionals(self) -> None:
         # When the env only provides dom (no screenshot/meta), Skyvern's
         # required dom is satisfied and the optionals are simply absent.
-        env_provides = {"dom"}
-        agent_required, agent_optional = extract_observation_wiring(
-            SkyvernAgent
+        result = _observation_rules(
+            agent=extract_wiring(SkyvernAgent, "observation"),
+            loop=extract_wiring(ReactLoop, "observation"),
+            env_provides={"browser.dom"},
         )
-        loop_required, loop_optional = extract_observation_wiring(ReactLoop)
-
-        result = negotiate(
-            env_provides=env_provides,
-            agent_required=agent_required,
-            agent_optional=agent_optional,
-            loop_required=loop_required,
-            loop_optional=loop_optional,
-        )
-
-        assert "dom" in result.active_fragments
-        assert "screenshot" not in result.active_fragments
+        assert "browser.dom" in result.active_fragments
+        assert "browser.screenshot" not in result.active_fragments
 
     def test_ui_tars_fails_when_env_lacks_screenshot(self) -> None:
         # Required fragment missing → negotiation must raise.
-        from spectragent.schemas.observation.negotiation import (
-            IncompatibleFragmentError,
-        )
-
-        env_provides: set[str] = {"dom"}
-        agent_required, agent_optional = extract_observation_wiring(UITarsAgent)
-        loop_required, loop_optional = extract_observation_wiring(ReactLoop)
+        from spectragent.core.negotiation import IncompatibleFragmentError
 
         with pytest.raises(IncompatibleFragmentError):
-            negotiate(
-                env_provides=env_provides,
-                agent_required=agent_required,
-                agent_optional=agent_optional,
-                loop_required=loop_required,
-                loop_optional=loop_optional,
+            _observation_rules(
+                agent=extract_wiring(UITarsAgent, "observation"),
+                loop=extract_wiring(ReactLoop, "observation"),
+                env_provides={"browser.dom"},
             )
 
 
@@ -198,7 +175,7 @@ class _MockEnv:
 
         self.acted.append(action)
         # First action's result triggers done.
-        is_done = action.name == "done"
+        is_done = action.name == "browser.done"
         return ActionResult(
             success=True,
             is_done=is_done,
@@ -274,8 +251,8 @@ class TestAgentToCapabilityActionVocabulary:
             "Thought: click it.\nAction: click(point='(100, 200)')"
         )
         assert len(actions) == 1
-        # click_coordinate MUST be provided by BrowserCapability
-        assert actions[0].name == "click_coordinate"
+        # browser.click_coordinate MUST be provided by BrowserCapability
+        assert actions[0].name == "browser.click_coordinate"
         assert actions[0].name in BrowserCapability().provided_actions
 
     def test_all_three_agents_done_uses_extracted_content(self) -> None:
@@ -300,7 +277,7 @@ class TestAgentToCapabilityActionVocabulary:
             ],
         )
         bu_actions = bu.parse_react_output(bu_out)
-        assert bu_actions[0].name == "done"
+        assert bu_actions[0].name == "browser.done"
         assert bu_actions[0].params["extracted_content"] == "answer bu"
 
         # SkyvernAgent
@@ -311,7 +288,7 @@ class TestAgentToCapabilityActionVocabulary:
             extracted_content="answer sk",
         )
         sk_actions = sk.parse_react_output(sk_out)
-        assert sk_actions[0].name == "done"
+        assert sk_actions[0].name == "browser.done"
         assert sk_actions[0].params["extracted_content"] == "answer sk"
 
         # UITarsAgent
@@ -319,7 +296,7 @@ class TestAgentToCapabilityActionVocabulary:
         ut_actions = ut.parse_react_output(
             "Action: finished(content='answer ut')"
         )
-        assert ut_actions[0].name == "done"
+        assert ut_actions[0].name == "browser.done"
         assert ut_actions[0].params["extracted_content"] == "answer ut"
 
 
@@ -382,7 +359,7 @@ class TestReactLoopDriveBrowserUse:
         assert result.agent_done == AgentDoneStatus.DONE
         # Env recorded the action.
         assert len(env.acted) == 1
-        assert env.acted[0].name == "done"
+        assert env.acted[0].name == "browser.done"
         # Agent's prepare() was called by the loop and seeded the
         # system prompt into memory.
         assert agent._task == "Find the answer"

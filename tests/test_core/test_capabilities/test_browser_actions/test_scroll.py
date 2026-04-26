@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from spectragent.core.capabilities.browser.actions.scroll import ScrollAction
 from spectragent.core.capabilities.browser.watchdogs.events import ScrollEvent
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (

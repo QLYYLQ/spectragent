@@ -9,9 +9,8 @@ from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
 
 import httpx
-from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
+from openai import APIConnectionError, APIStatusError, RateLimitError
 from openai import AsyncAzureOpenAI as AsyncAzureOpenAIClient
-from openai.types.responses import Response
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError

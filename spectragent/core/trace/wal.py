@@ -18,7 +18,7 @@ import hashlib
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +116,7 @@ class WALWriter:
         _atomic_write(self._run_dir / "config.json", config_bytes)
 
         # Write initial manifest
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self._manifest = TraceManifest(
             run_id=self._run_id,
             last_step_completed=-1,
@@ -196,7 +196,7 @@ class WALWriter:
         )
         self._manifest.steps.append(entry)
         self._manifest.last_step_completed = step
-        self._manifest.updated_at = datetime.now(timezone.utc)
+        self._manifest.updated_at = datetime.now(UTC)
         self._write_manifest()
 
     def write_result(self, result: Any) -> str:
@@ -213,7 +213,7 @@ class WALWriter:
             raise RuntimeError(msg)
 
         self._manifest.status = status
-        self._manifest.updated_at = datetime.now(timezone.utc)
+        self._manifest.updated_at = datetime.now(UTC)
         self._write_manifest()
 
     def _write_manifest(self) -> None:

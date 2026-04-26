@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 def resolve_index_to_backend_node_id(
-    capability: "BrowserCapability",
+    capability: BrowserCapability,
     session_id: str,
     index: Any,
 ) -> int:

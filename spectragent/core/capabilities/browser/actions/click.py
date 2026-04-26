@@ -20,11 +20,11 @@ if TYPE_CHECKING:
 class ClickAction(ActionBase):
     """Click a DOM element by its selector_map index."""
 
-    __registry_key__ = "click"
+    __registry_key__ = "browser.click"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="click",
+            name="browser.click",
             description="Click a DOM element by its index in the selector map.",
             params={"index": "int -- element index from selector_map"},
         )
@@ -33,7 +33,7 @@ class ClickAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

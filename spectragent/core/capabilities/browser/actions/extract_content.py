@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 class ExtractContentAction(ActionBase):
     """Extract text from the page or a specific element."""
 
-    __registry_key__ = "extract_content"
+    __registry_key__ = "browser.extract_content"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="extract_content",
+            name="browser.extract_content",
             description="Extract text content from the page or an element.",
             params={
                 "index": "int (optional) -- element index; omit to extract page text",
@@ -38,7 +38,7 @@ class ExtractContentAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

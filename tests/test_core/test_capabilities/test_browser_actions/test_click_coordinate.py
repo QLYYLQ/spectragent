@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from spectragent.core.capabilities.browser.actions.click_coordinate import (
     ClickCoordinateAction,
 )

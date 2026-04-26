@@ -689,10 +689,7 @@ def _assign_interactive_indices(
                 should_index = True
             # Everything else requires visibility.
             elif is_visible(node):
-                if is_interactive(node):
-                    node.is_interactive = True
-                    should_index = True
-                elif is_dropdown_container(node):
+                if is_interactive(node) or is_dropdown_container(node):
                     node.is_interactive = True
                     should_index = True
 

@@ -25,7 +25,7 @@ class BaseAction(Protocol):
 
     action_id: str
 
-    def descriptor(self, **context: Any) -> "ActionDescriptor":
+    def descriptor(self, **context: Any) -> ActionDescriptor:
         """Produce an ActionDescriptor for prompt construction.
 
         ``**context`` lets dynamic actions (e.g. tool_sandbox's
@@ -40,7 +40,7 @@ class BaseAction(Protocol):
         *,
         capability: Any,
         session_id: str,
-    ) -> "ActionResult":
+    ) -> ActionResult:
         """Execute one action instance against the injected capability.
 
         The capability is injected as a whole to avoid designing a

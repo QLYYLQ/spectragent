@@ -1,8 +1,7 @@
 """Tests for ObservationFragment registration via conscribe bridge."""
 
-import pytest
 
-from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
+from spectragent.schemas.observation._registrar import ObservationRegistrar
 from spectragent.schemas.observation.fragments import (
     ActionResultObs,
     BrowserMetaObs,
@@ -17,27 +16,33 @@ class TestFragmentRegistration:
     """All 6 first-batch fragments should be auto-registered."""
 
     def test_dom_registered(self) -> None:
-        assert ObservationRegistrar.get("dom") is DOMObs
+        assert ObservationRegistrar.get("browser.dom") is DOMObs
 
     def test_screenshot_registered(self) -> None:
-        assert ObservationRegistrar.get("screenshot") is ScreenshotObs
+        assert ObservationRegistrar.get("browser.screenshot") is ScreenshotObs
 
     def test_browser_meta_registered(self) -> None:
-        assert ObservationRegistrar.get("browser_meta") is BrowserMetaObs
+        assert ObservationRegistrar.get("browser.browser_meta") is BrowserMetaObs
 
     def test_action_result_registered(self) -> None:
-        assert ObservationRegistrar.get("action_result") is ActionResultObs
+        assert ObservationRegistrar.get("loop.action_result") is ActionResultObs
 
     def test_terminal_registered(self) -> None:
-        assert ObservationRegistrar.get("terminal") is TerminalObs
+        assert ObservationRegistrar.get("docker.terminal") is TerminalObs
 
     def test_tool_result_registered(self) -> None:
-        assert ObservationRegistrar.get("tool_result") is ToolResultObs
+        assert ObservationRegistrar.get("tool_sandbox.tool_result") is ToolResultObs
 
     def test_all_six_keys_present(self) -> None:
         keys = set(ObservationRegistrar.keys())
-        expected = {"dom", "screenshot", "browser_meta", "action_result",
-                    "terminal", "tool_result"}
+        expected = {
+            "browser.dom",
+            "browser.screenshot",
+            "browser.browser_meta",
+            "loop.action_result",
+            "docker.terminal",
+            "tool_sandbox.tool_result",
+        }
         assert expected.issubset(keys)
 
 
@@ -102,7 +107,7 @@ class TestFragmentIsPydanticModel:
 
     def test_fragment_id_property(self) -> None:
         obs = TerminalObs(stdout="x", cwd="/")
-        assert obs.fragment_id == "terminal"
+        assert obs.fragment_id == "docker.terminal"
 
 
 class TestFragmentBaseAbstract:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from spectragent.core.capabilities.browser.actions.click import ClickAction
 from spectragent.core.capabilities.browser.watchdogs.events import ClickElementEvent
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
@@ -15,7 +13,7 @@ from tests.test_core.test_capabilities.test_browser_actions.conftest import (
 class TestClickDescriptor:
     def test_descriptor_has_index_param(self) -> None:
         desc = ClickAction().descriptor()
-        assert desc.name == "click"
+        assert desc.name == "browser.click"
         assert "index" in desc.params
 
 

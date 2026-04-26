@@ -12,7 +12,8 @@ from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitErr
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
-from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam as MsgTextParam, SystemMessage
+from spectragent.core.llm.messages import BaseMessage, SystemMessage
+from spectragent.core.llm.messages import ContentPartTextParam as MsgTextParam
 from spectragent.core.llm.providers.openai_base import OpenAICompatBase
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
@@ -94,7 +95,6 @@ class ChatVercel(OpenAICompatBase):
         self, messages: Sequence[BaseMessage], output_format: type[T],
         extra_kwargs: dict[str, Any],
     ) -> ChatInvokeCompletion[T]:
-        from spectragent.core.llm.schema.gemini import fix_gemini_schema
 
         modified = [m.model_copy(deep=True) for m in messages]
         schema = SchemaOptimizer.create_gemini_optimized_schema(output_format)

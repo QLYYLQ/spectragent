@@ -263,12 +263,7 @@ class TextSerializer(DOMSerializerBase):
             # AX tree value for form elements (reflects actual typed value).
             if node.tag_name.lower() in ("input", "textarea", "select"):
                 for prop in node.ax_properties:
-                    if prop.name == "valuetext" and prop.value:
-                        val = str(prop.value).strip()
-                        if val:
-                            attrs_out["value"] = val
-                            break
-                    elif prop.name == "value" and prop.value:
+                    if prop.name == "valuetext" and prop.value or prop.name == "value" and prop.value:
                         val = str(prop.value).strip()
                         if val:
                             attrs_out["value"] = val

@@ -19,8 +19,23 @@ CLAUDE.md
 # macOS
 .DS_Store
 
-# Demo scripts (root-level only)
+# Demo / debug scripts (root-level only)
 /demo_*.py
 /test_*.py
+/debug_*.py
 /demo.py
 /browser_api.txt
+/issue.md
+
+# Build / runtime artefacts
+*.egg-info/
+/test_path/
+/traces/
+
+# conscribe codegen output (regenerate via spectragent.scripts.generate_all)
+*.pyi
+/spectragent/generated/
+
+# Local-only docs / data sets
+/docs/
+/benchmarks/

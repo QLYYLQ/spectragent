@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 class TypeAction(ActionBase):
     """Type text into a DOM element by its selector_map index."""
 
-    __registry_key__ = "type"
+    __registry_key__ = "browser.type"
 
     # ⭐ capability-side configurable side-effect
     clear_by_default: Annotated[
@@ -37,7 +37,7 @@ class TypeAction(ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="type",
+            name="browser.type",
             description="Type text into a DOM element.",
             params={
                 "index": "int -- element index",
@@ -50,7 +50,7 @@ class TypeAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

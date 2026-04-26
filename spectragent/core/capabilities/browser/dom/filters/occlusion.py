@@ -17,7 +17,7 @@ Uses a proper disjoint rect-union with splitting (matching original
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode
 

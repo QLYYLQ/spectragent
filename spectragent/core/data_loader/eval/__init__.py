@@ -8,7 +8,9 @@ from spectragent.core.data_loader.eval.base import BaseEvalLoader
 
 # Trigger auto-registration
 from spectragent.core.data_loader.eval.browsecomp import BrowseCompEvalLoader  # noqa: F401
-from spectragent.core.data_loader.eval.lexbench_browser import LexBenchBrowserEvalLoader  # noqa: F401
+from spectragent.core.data_loader.eval.lexbench_browser import (
+    LexBenchBrowserEvalLoader,  # noqa: F401
+)
 from spectragent.core.data_loader.eval.online_mind2web import OnlineMind2WebEvalLoader  # noqa: F401
 
 __all__ = [

@@ -1,6 +1,7 @@
 """Tests for AgentRuntime — full pipeline, timeout, hooks, compatibility."""
 
 import asyncio
+from datetime import UTC
 
 import pytest
 
@@ -12,15 +13,14 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from tests._helpers.assembly import make_env, make_run
 
-
 # ── Shared fixtures ───────────────────────────────────────────
 
 class SimpleCap(CapabilityBase):
     __registry_key__ = "rt_simple_cap"
-    __wiring__ = {"action": ("action", ["done"])}
+    __wiring__ = {"action": ("action", ["rt_simple_cap.done"])}
 
     def get_action_descriptors(self, **ctx):
-        return [ActionDescriptor(name="done", description="Done")]
+        return [ActionDescriptor(name="rt_simple_cap.done", description="Done")]
 
     async def execute_action(self, action, **kw):
         return ActionResult(success=True, is_done=True, extracted_content="answer")
@@ -33,13 +33,13 @@ class SimpleEnv(EnvironmentBase):
 class SimpleAgent:
     # Declare the action as required so runtime negotiation
     # keeps the ``done`` descriptor in the active set.
-    __wiring__ = {"action": ("action", ["done"])}
+    __wiring__ = {"action": ("action", ["rt_simple_cap.done"])}
 
     def build_react_prompt(self, obs):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, llm_output):
-        return [Action(name="done")]
+        return [Action(name="rt_simple_cap.done")]
 
     def get_react_output_model(self):
         return None
@@ -69,12 +69,12 @@ def _make_env():
 
 class _ClickTypeCap(CapabilityBase):
     __registry_key__ = "rt_composite_cap_click_type"
-    __wiring__ = {"action": ("action", ["click", "type"])}
+    __wiring__ = {"action": ("action", ["browser.click", "browser.type"])}
 
     def get_action_descriptors(self, **ctx):
         return [
-            ActionDescriptor(name="click", description="Click"),
-            ActionDescriptor(name="type", description="Type"),
+            ActionDescriptor(name="browser.click", description="Click"),
+            ActionDescriptor(name="browser.type", description="Type"),
         ]
 
     async def execute_action(self, action, **kw):
@@ -83,10 +83,10 @@ class _ClickTypeCap(CapabilityBase):
 
 class _CompositeDoneCap(CapabilityBase):
     __registry_key__ = "rt_composite_cap_done"
-    __wiring__ = {"action": ("action", ["done"])}
+    __wiring__ = {"action": ("action", ["finish.done"])}
 
     def get_action_descriptors(self, **ctx):
-        return [ActionDescriptor(name="done", description="Done")]
+        return [ActionDescriptor(name="finish.done", description="Done")]
 
     async def execute_action(self, action, **kw):
         return ActionResult(
@@ -141,15 +141,18 @@ class _SpyLoop(_MockLoopBase):
         self._seen_names.extend(
             d.name for d in self.ctx.get("active_descriptors", [])
         )
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
         from spectragent.schemas.agent_result import (
-            AgentMetrics, AgentResult, AgentUsage,
+            AgentMetrics,
+            AgentResult,
+            AgentUsage,
         )
         return AgentResult(
             task_id="t",
             task=task,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             env_status=EnvironmentStatus.SUCCESS,
             agent_done=AgentDoneStatus.DONE,
             metrics=AgentMetrics(end_to_end_ms=0, steps=0, usage=AgentUsage()),
@@ -252,16 +255,16 @@ class TestActionNegotiation:
     """_negotiate_actions runs symmetrically to obs negotiation."""
 
     def test_required_missing_raises_before_loop_runs(self) -> None:
-        from spectragent.core.actions.negotiation import IncompatibleActionError
+        from spectragent.core.negotiation import IncompatibleActionError
 
         class NeedsBash:
-            __wiring__ = {"action": ("action", ["bash"])}
+            __wiring__ = {"action": ("action", ["sandbox.bash"])}
 
             def build_react_prompt(self, obs):
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, out):
-                return [Action(name="bash")]
+                return [Action(name="sandbox.bash")]
 
             def get_react_output_model(self):
                 return None
@@ -279,14 +282,18 @@ class TestActionNegotiation:
 
         class OptionalAgent(SimpleAgent):
             __wiring__ = {
-                "action": ("action", ["done"], ["click", "scroll"]),
+                "action": (
+                    "action",
+                    ["rt_simple_cap.done"],
+                    ["rt_simple_cap.click", "rt_simple_cap.scroll"],
+                ),
             }
 
         run = _mk(OptionalAgent(), _SpyLoop("opt_spy", seen_names), _make_env())
         asyncio.run(AgentRuntime.from_composed(run).execute("opt"))
         # SimpleCap only provides "done"; the two optional actions are
         # not in the env, so they should NOT be active.
-        assert set(seen_names) == {"done"}
+        assert set(seen_names) == {"rt_simple_cap.done"}
 
 
 class TestCompositeEnvNarrowing:
@@ -297,7 +304,11 @@ class TestCompositeEnvNarrowing:
 
         class MultiActionAgent(SimpleAgent):
             __wiring__ = {
-                "action": ("action", ["click", "done"], ["type"]),
+                "action": (
+                    "action",
+                    ["browser.click", "finish.done"],
+                    ["browser.type"],
+                ),
             }
 
         run = _mk(
@@ -311,8 +322,20 @@ class TestCompositeEnvNarrowing:
     def test_composite_env_drops_actions_not_in_wiring(self) -> None:
         seen: list[str] = []
 
+        class FinishDoneAgent:
+            __wiring__ = {"action": ("action", ["finish.done"])}
+
+            def build_react_prompt(self, obs):
+                return [{"role": "user", "content": "go"}]
+
+            def parse_react_output(self, out):
+                return [Action(name="finish.done")]
+
+            def get_react_output_model(self):
+                return None
+
         run = _mk(
-            SimpleAgent(),
+            FinishDoneAgent(),
             _SpyLoop("composite_spy2", seen),
             _make_composite_env(),
         )
@@ -320,16 +343,16 @@ class TestCompositeEnvNarrowing:
         assert set(seen) == {"finish.done"}
 
     def test_composite_env_required_missing_raises(self) -> None:
-        from spectragent.core.actions.negotiation import IncompatibleActionError
+        from spectragent.core.negotiation import IncompatibleActionError
 
         class NeedsBash:
-            __wiring__ = {"action": ("action", ["bash"])}
+            __wiring__ = {"action": ("action", ["sandbox.bash"])}
 
             def build_react_prompt(self, obs):
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, out):
-                return [Action(name="bash")]
+                return [Action(name="sandbox.bash")]
 
             def get_react_output_model(self):
                 return None
@@ -345,23 +368,34 @@ class TestActionFilter:
 
         class MultiCap(CapabilityBase):
             __registry_key__ = "rt_multi_cap"
-            __wiring__ = {"action": ("action", ["click", "type", "done"])}
+            __wiring__ = {
+                "action": (
+                    "action",
+                    ["rt_multi_cap.click", "rt_multi_cap.type", "rt_multi_cap.done"],
+                ),
+            }
 
             def get_action_descriptors(self, **ctx):
                 return [
-                    ActionDescriptor(name="click", description="Click"),
-                    ActionDescriptor(name="type", description="Type"),
-                    ActionDescriptor(name="done", description="Done"),
+                    ActionDescriptor(name="rt_multi_cap.click", description="Click"),
+                    ActionDescriptor(name="rt_multi_cap.type", description="Type"),
+                    ActionDescriptor(name="rt_multi_cap.done", description="Done"),
                 ]
 
         class MultiAgent(SimpleAgent):
-            __wiring__ = {"action": ("action", ["click", "type", "done"])}
+            __wiring__ = {
+                "action": (
+                    "action",
+                    ["rt_multi_cap.click", "rt_multi_cap.type", "rt_multi_cap.done"],
+                ),
+            }
 
         env = make_env(SimpleEnv, {"rt_multi_cap": MultiCap()})
         run = _mk(MultiAgent(), _SpyLoop("spy", seen), env)
         asyncio.run(
             AgentRuntime.from_composed(run).execute(
-                "filter", action_filter=["click", "done"],
+                "filter",
+                action_filter=["rt_multi_cap.click", "rt_multi_cap.done"],
             )
         )
-        assert set(seen) == {"click", "done"}
+        assert set(seen) == {"rt_multi_cap.click", "rt_multi_cap.done"}

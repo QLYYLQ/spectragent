@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 class NavigateAction(ActionBase):
     """Navigate the current tab to a URL."""
 
-    __registry_key__ = "navigate"
+    __registry_key__ = "browser.navigate"
 
     # ⭐ capability-side configurable side-effects
     wait_until: Annotated[
@@ -35,7 +35,7 @@ class NavigateAction(ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="navigate",
+            name="browser.navigate",
             description="Navigate to a URL.",
             params={"url": "str"},
         )
@@ -44,7 +44,7 @@ class NavigateAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

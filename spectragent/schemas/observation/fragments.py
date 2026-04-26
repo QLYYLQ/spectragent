@@ -13,7 +13,7 @@ from pydantic import Field
 from spectragent.schemas.observation._registrar import FragmentBase
 
 if TYPE_CHECKING:
-    from spectragent.core.capabilities.browser.dom.models import DOMState
+    pass
 
 
 # ── Browser fragments ──────────────────────────────────────────────
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 class DOMObs(FragmentBase):
     """DOM tree observation from browser capability."""
 
-    __registry_key__ = "dom"
+    __registry_key__ = "browser.dom"
     __source__: ClassVar[Literal["env", "loop"]] = "env"
 
     element_tree: Any = None  # DOMState at type-check time
@@ -36,7 +36,7 @@ class ScreenshotObs(FragmentBase):
     must be set; consumers prefer ``image_path`` when both are present.
     """
 
-    __registry_key__ = "screenshot"
+    __registry_key__ = "browser.screenshot"
     __source__: ClassVar[Literal["env", "loop"]] = "env"
 
     image_path: str | None = None
@@ -48,7 +48,7 @@ class ScreenshotObs(FragmentBase):
 class BrowserMetaObs(FragmentBase):
     """Browser metadata: URL, title, tab info."""
 
-    __registry_key__ = "browser_meta"
+    __registry_key__ = "browser.browser_meta"
     __source__: ClassVar[Literal["env", "loop"]] = "env"
 
     url: str = ""
@@ -62,7 +62,7 @@ class BrowserMetaObs(FragmentBase):
 class ActionResultObs(FragmentBase):
     """Result of the last action — filled by Loop, not Environment."""
 
-    __registry_key__ = "action_result"
+    __registry_key__ = "loop.action_result"
     __source__: ClassVar[Literal["env", "loop"]] = "loop"
 
     last_action: str
@@ -76,7 +76,7 @@ class ActionResultObs(FragmentBase):
 class TerminalObs(FragmentBase):
     """Terminal output from Docker capability."""
 
-    __registry_key__ = "terminal"
+    __registry_key__ = "docker.terminal"
     __source__: ClassVar[Literal["env", "loop"]] = "env"
 
     stdout: str
@@ -91,7 +91,7 @@ class TerminalObs(FragmentBase):
 class ToolResultObs(FragmentBase):
     """Result of a tool invocation from ToolSandbox capability."""
 
-    __registry_key__ = "tool_result"
+    __registry_key__ = "tool_sandbox.tool_result"
     __source__: ClassVar[Literal["env", "loop"]] = "env"
 
     tool_name: str

@@ -5,8 +5,8 @@ from typing import ClassVar, Literal
 
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
+from spectragent.core.negotiation import ObservationNegotiationResult
 from spectragent.schemas.observation._registrar import FragmentBase
-from spectragent.schemas.observation.negotiation import NegotiationResult
 from tests._helpers.assembly import make_env
 
 
@@ -32,7 +32,7 @@ class TestObserveDelegation:
         assert "test_env_obs_frag" in self.env.provided_fragments
 
     def test_observe_resolves_fragment(self) -> None:
-        negotiated = NegotiationResult(
+        negotiated = ObservationNegotiationResult(
             active_fragments=frozenset({"test_env_obs_frag"}),
             env_sourced=frozenset({"test_env_obs_frag"}),
             loop_sourced=frozenset(),
@@ -41,7 +41,7 @@ class TestObserveDelegation:
         assert obs.test_env_obs_frag.value == "resolved_data"
 
     def test_observe_empty_negotiation(self) -> None:
-        negotiated = NegotiationResult(
+        negotiated = ObservationNegotiationResult(
             active_fragments=frozenset(),
             env_sourced=frozenset(),
             loop_sourced=frozenset(),

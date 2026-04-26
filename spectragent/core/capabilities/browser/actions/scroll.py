@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 class ScrollAction(ActionBase):
     """Scroll the viewport (or a specific element when ``index`` is given)."""
 
-    __registry_key__ = "scroll"
+    __registry_key__ = "browser.scroll"
 
     # ⭐ capability-side configurable side-effect parameters
     default_amount: Annotated[
@@ -40,7 +40,7 @@ class ScrollAction(ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="scroll",
+            name="browser.scroll",
             description=(
                 f"Scroll the page or an element "
                 f"(default {self.default_amount}px {self.default_direction})."
@@ -56,7 +56,7 @@ class ScrollAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

@@ -19,11 +19,11 @@ if TYPE_CHECKING:
 class ClickCoordinateAction(ActionBase):
     """Click at absolute viewport coordinates (used by vision-only agents)."""
 
-    __registry_key__ = "click_coordinate"
+    __registry_key__ = "browser.click_coordinate"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="click_coordinate",
+            name="browser.click_coordinate",
             description="Click at absolute screen coordinates.",
             params={"coordinate_x": "int", "coordinate_y": "int"},
         )
@@ -32,7 +32,7 @@ class ClickCoordinateAction(ActionBase):
         self,
         params: dict[str, Any],
         *,
-        capability: "BrowserCapability",
+        capability: BrowserCapability,
         session_id: str,
     ) -> ActionResult:
         try:

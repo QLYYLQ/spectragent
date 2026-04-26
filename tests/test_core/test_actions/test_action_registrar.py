@@ -9,31 +9,27 @@ with its capability-side config fields.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import Any
 
-from pydantic import Field as PydanticField
-
+# Import to trigger registration of all browser actions.
+import spectragent.core.capabilities.browser.actions as _browser_actions  # noqa: F401
 from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
 from spectragent.core.actions.base import BaseAction
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
-# Import to trigger registration of all browser actions.
-import spectragent.core.capabilities.browser.actions as _browser_actions  # noqa: F401
-
-
 _EXPECTED_BROWSER_ACTIONS = {
-    "click",
-    "click_coordinate",
-    "type",
-    "navigate",
-    "scroll",
-    "send_keys",
-    "go_back",
-    "go_forward",
-    "switch_tab",
-    "select_dropdown",
-    "extract_content",
-    "done",
+    "browser.click",
+    "browser.click_coordinate",
+    "browser.type",
+    "browser.navigate",
+    "browser.scroll",
+    "browser.send_keys",
+    "browser.go_back",
+    "browser.go_forward",
+    "browser.switch_tab",
+    "browser.select_dropdown",
+    "browser.extract_content",
+    "browser.done",
 }
 
 
@@ -42,7 +38,7 @@ class TestRegistryMembership:
 
     def test_all_browser_actions_registered(self) -> None:
         keys = set(ActionRegistrar.keys())
-        assert _EXPECTED_BROWSER_ACTIONS <= keys
+        assert keys >= _EXPECTED_BROWSER_ACTIONS
 
     def test_each_action_class_satisfies_base_action_protocol(self) -> None:
         for name in _EXPECTED_BROWSER_ACTIONS:
@@ -56,7 +52,9 @@ class TestRegistryMembership:
     def test_action_id_matches_registry_key(self) -> None:
         for name in _EXPECTED_BROWSER_ACTIONS:
             cls = ActionRegistrar.get(name)
+            # action_id returns the fully-qualified registry key.
             assert cls().action_id == name
+            assert cls().source == name.split(".", 1)[0]
 
 
 class TestDescriptorContract:
@@ -102,11 +100,11 @@ class TestAdHocRegistration:
     def test_new_subclass_is_registered(self) -> None:
         @dataclass
         class TestOnlyAction(ActionBase):
-            __registry_key__ = "_test_only_action_registrar"
+            __registry_key__ = "_test.only_action_registrar"
 
             def descriptor(self, **ctx: Any) -> ActionDescriptor:
                 return ActionDescriptor(
-                    name="_test_only_action_registrar",
+                    name="_test.only_action_registrar",
                     description="unit test only",
                     params={},
                 )
@@ -116,7 +114,7 @@ class TestAdHocRegistration:
             ) -> ActionResult:
                 return ActionResult(success=True)
 
-        cls = ActionRegistrar.get("_test_only_action_registrar")
+        cls = ActionRegistrar.get("_test.only_action_registrar")
         assert cls is TestOnlyAction
         # Clean up to avoid polluting the shared registry for other tests
-        ActionRegistrar.unregister("_test_only_action_registrar")
+        ActionRegistrar.unregister("_test.only_action_registrar")

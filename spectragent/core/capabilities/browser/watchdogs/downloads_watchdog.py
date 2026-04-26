@@ -11,7 +11,8 @@ Also supports direct callback registration for ActionWatchdog cross-concern
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from agent_cdp import (
     CDPCommandProtocol,

@@ -30,13 +30,28 @@ _PROMPT_DIR = PROMPT_PATH / "browser" / "agents" / "browser_use"
 # Local vocabulary map: browser-use LLM prompts were originally written
 # for the upstream browser-use library (``click_element`` / ``input_text``
 # / ``go_to_url``) but the canonical BrowserCapability action names are
-# ``click`` / ``type`` / ``navigate``. This dict is an implementation
-# detail of ``parse_react_output`` — agent wiring and runtime negotiation
-# only ever see the canonical vocabulary.
+# ``browser.click`` / ``browser.type`` / ``browser.navigate``. This dict
+# is an implementation detail of ``parse_react_output`` — agent wiring
+# and runtime negotiation only ever see the canonical vocabulary.
 _LLM_VOCABULARY_TO_CANONICAL: dict[str, str] = {
-    "click_element": "click",
-    "input_text": "type",
-    "go_to_url": "navigate",
+    "click_element": "browser.click",
+    "input_text": "browser.type",
+    "go_to_url": "browser.navigate",
+}
+# Short local names (stripped of the "browser." prefix) that also map
+# directly. Keeps ``parse_react_output`` resilient when the LLM emits
+# either ``"browser.click"`` or the legacy ``"click"``.
+_SHORT_TO_CANONICAL: dict[str, str] = {
+    "click": "browser.click",
+    "type": "browser.type",
+    "navigate": "browser.navigate",
+    "scroll": "browser.scroll",
+    "send_keys": "browser.send_keys",
+    "go_back": "browser.go_back",
+    "go_forward": "browser.go_forward",
+    "switch_tab": "browser.switch_tab",
+    "extract_content": "browser.extract_content",
+    "done": "browser.done",
 }
 
 
@@ -67,11 +82,22 @@ class BrowserUseAgent(AgentBase):
         "capability": ("capability", ["browser"]),
         # DOM + screenshot are required, browser_meta is optional
         # (we use it for url/title context but can run without it).
-        "observation": ("observation", ["dom", "screenshot"], ["browser_meta"]),
+        "observation": (
+            "observation",
+            ["browser.dom", "browser.screenshot"],
+            ["browser.browser_meta"],
+        ),
         "action": (
             "action",
-            ["click", "type", "navigate", "done"],
-            ["scroll", "send_keys", "extract_content", "go_back", "go_forward", "switch_tab"],
+            ["browser.click", "browser.type", "browser.navigate", "browser.done"],
+            [
+                "browser.scroll",
+                "browser.send_keys",
+                "browser.extract_content",
+                "browser.go_back",
+                "browser.go_forward",
+                "browser.switch_tab",
+            ],
         ),
         "llm": "llm",  # auto-discovery — any registered LLM
     }
@@ -195,7 +221,7 @@ class BrowserUseAgent(AgentBase):
             for item in llm_output.actions:
                 canonical_name = _LLM_VOCABULARY_TO_CANONICAL.get(
                     item.action_name,
-                    item.action_name,
+                    _SHORT_TO_CANONICAL.get(item.action_name, item.action_name),
                 )
                 params: dict[str, Any] = {}
 
@@ -204,7 +230,7 @@ class BrowserUseAgent(AgentBase):
                 # ``extracted_content`` — rename at parse time and drop
                 # the unrelated fields (index/url/direction don't belong
                 # on done).
-                if canonical_name == "done":
+                if canonical_name == "browser.done":
                     if item.text is not None:
                         params["extracted_content"] = item.text
                     if item.success is not None:

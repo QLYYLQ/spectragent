@@ -14,7 +14,6 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops import ReactLoop
-from spectragent.schemas.action import Action, ActionDescriptor
 
 
 @dataclass
@@ -84,8 +83,8 @@ class TestWiring:
         wiring = SkyvernAgent.__wiring__
         assert wiring["observation"] == (
             "observation",
-            ["dom"],
-            ["screenshot", "browser_meta"],
+            ["browser.dom"],
+            ["browser.screenshot", "browser.browser_meta"],
         )
 
 
@@ -151,7 +150,7 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
-        assert actions[0].name == "click"
+        assert actions[0].name == "browser.click"
         assert actions[0].params["element_id"] == "btn-submit"
         assert actions[0].params["reasoning"] == "submit form"
 
@@ -175,7 +174,7 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
-        assert actions[0].name == "done"
+        assert actions[0].name == "browser.done"
         # C2 regression: ``extracted_content`` is the canonical key
         # (not ``text``).
         assert actions[0].params["extracted_content"] == "answer text"
@@ -196,7 +195,7 @@ class TestParseReactOutput:
             ]
         )
         agent.parse_react_output(out)
-        assert any(entry.startswith("type(") for entry in agent._action_history)
+        assert any(entry.startswith("browser.type(") for entry in agent._action_history)
 
 
 class TestOutputModel:

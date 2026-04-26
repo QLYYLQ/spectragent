@@ -15,10 +15,9 @@ See docs/architecture_design.md §4.10 and docs/execution_dag.md M15.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # ── Setup variants ────────────────────────────────────────────────────
 
@@ -43,7 +42,7 @@ class BrowserSetup(BaseModel):
 # Discriminated union of all setup variants. Other variants
 # (DockerSetup, ToolSetup, ...) are added by future milestones.
 TaskSetup = Annotated[
-    Union[BrowserSetup],
+    BrowserSetup,
     Field(discriminator="setup_type"),
 ]
 

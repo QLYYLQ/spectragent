@@ -38,14 +38,25 @@ class SkyvernAgent(AgentBase):
         "capability": ("capability", ["browser"]),
         # DOM is required, screenshot is optional (Skyvern is mostly
         # element-tree based but can use vision when available).
-        "observation": ("observation", ["dom"], ["screenshot", "browser_meta"]),
+        "observation": (
+            "observation",
+            ["browser.dom"],
+            ["browser.screenshot", "browser.browser_meta"],
+        ),
         # Skyvern's element-tree driven vocabulary maps to the canonical
         # BrowserCapability action names (``input_text`` is translated to
         # ``type`` inside ``parse_react_output``).
         "action": (
             "action",
-            ["click", "type", "done"],
-            ["scroll", "send_keys", "go_back", "go_forward", "select_dropdown", "extract_content"],
+            ["browser.click", "browser.type", "browser.done"],
+            [
+                "browser.scroll",
+                "browser.send_keys",
+                "browser.go_back",
+                "browser.go_forward",
+                "browser.select_dropdown",
+                "browser.extract_content",
+            ],
         ),
         "llm": "llm",
     }
@@ -147,7 +158,7 @@ class SkyvernAgent(AgentBase):
                 self._action_history.append("done")
                 return [
                     Action(
-                        name="done",
+                        name="browser.done",
                         params={
                             "extracted_content": llm_output.extracted_content or "",
                             "success": True,
@@ -158,9 +169,11 @@ class SkyvernAgent(AgentBase):
             actions: list[Action] = []
             for item in llm_output.actions:
                 # Translate Skyvern's training vocabulary to the canonical
-                # BrowserCapability action names. Only ``input_text`` is
-                # known to differ today; other names pass through unchanged.
-                canonical_name = "type" if item.action_type == "input_text" else item.action_type
+                # fully-qualified BrowserCapability action names.
+                local = "type" if item.action_type == "input_text" else item.action_type
+                canonical_name = (
+                    local if "." in local else f"browser.{local}"
+                )
                 params: dict[str, Any] = {"reasoning": item.reasoning}
                 if item.element_id is not None:
                     params["element_id"] = item.element_id
