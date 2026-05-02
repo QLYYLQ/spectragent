@@ -39,3 +39,6 @@ CLAUDE.md
 # Local-only docs / data sets
 /docs/
 /benchmarks/
+
+# Vendored upstream sources kept locally for inspection only
+/ref/
