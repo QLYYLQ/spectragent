@@ -45,7 +45,11 @@ class UITarsAgent(AgentBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react"]),
         "capability": ("capability", ["browser"]),
-        "observation": ("observation", ["browser.screenshot"], []),
+        "observation": (
+            "observation",
+            ["browser.screenshot", "loop.task"],
+            ["loop.step_info"],
+        ),
         "action": (
             "action",
             ["browser.click_coordinate", "browser.type", "browser.done"],
@@ -63,7 +67,8 @@ class UITarsAgent(AgentBase):
     language: Annotated[str, PydanticField(description="Thinking language")] = "English"
 
     # ── internal state ─────────────────────────────────────────
-    _task: str = field(default="", init=False, repr=False)
+    # ``task`` reaches every step via ``obs.task.user_request`` (loop
+    # fragment); the agent does not hold its own copy.
     _action_descriptors: list[ActionDescriptor] = field(
         default_factory=list, init=False, repr=False
     )
@@ -95,12 +100,19 @@ class UITarsAgent(AgentBase):
     def get_action_space(self) -> list[ActionDescriptor]:
         return list(self._action_descriptors)
 
-    # ── Lifecycle hook called by ReactLoop ─────────────────────
+    # ── Lifecycle hook called by AgentRuntime ──────────────────
 
-    def prepare(self, task: str, action_descriptors: list[ActionDescriptor]) -> None:
-        """One-shot setup. Builds the templated system prompt and
-        seeds memory."""
-        self._task = task
+    def prepare(
+        self,
+        task: str,
+        action_descriptors: list[ActionDescriptor],
+    ) -> list[BaseMessage]:
+        """Pure builder: produce the seed messages for this run.
+
+        ``task`` is also baked into the system prompt template here, but
+        it flows through every step's observation as
+        ``obs.task.user_request`` for the per-step user message.
+        """
         self._action_descriptors = list(action_descriptors)
         self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
         from spectragent.schemas.prompt import PromptRef, TextPrompt
@@ -109,21 +121,19 @@ class UITarsAgent(AgentBase):
             ref=PromptRef(path=self._prompt_path or "<runtime>", content_hash=""),
             text=self._system_prompt_text,
         )
-        self.memory.clear()
-        self.memory.add_message(SystemMessage(content=self._system_prompt_text))
+        return [SystemMessage(content=self._system_prompt_text)]
 
     # ── ReactLoop slots ────────────────────────────────────────
 
     def build_react_prompt(self, observation: Any) -> list[BaseMessage]:
-        """Append a screenshot user-message to memory and return the full list.
+        """Pure builder: return the screenshot user-message for this step.
 
         UI-TARS is purely vision-driven, so we always include the
         screenshot. If the screenshot fragment is missing or has no
         bytes, we fall back to a text placeholder so the LLM call still
         succeeds (the agent will likely produce a `wait` action).
-
-        [TODO M17] Memory access lives here.
         """
+        task_text = observation.task.user_request
         screenshot = getattr(observation, "screenshot", None)
         image_bytes: bytes | None = None
         if screenshot is not None:
@@ -133,23 +143,21 @@ class UITarsAgent(AgentBase):
                     image_bytes = f.read()
 
         if image_bytes is None:
-            self.memory.add_message(UserMessage(content="(no screenshot available)"))
-        else:
-            import base64
+            return [UserMessage(content=f"Task: {task_text}\n(no screenshot available)")]
 
-            b64 = base64.b64encode(image_bytes).decode()
-            content: list[Any] = [
-                ContentPartTextParam(text=f"Task: {self._task}"),
-                ContentPartImageParam(
-                    image_url=ImageURL(
-                        url=f"data:image/png;base64,{b64}",
-                        detail="high",
-                    ),
+        import base64
+
+        b64 = base64.b64encode(image_bytes).decode()
+        content: list[Any] = [
+            ContentPartTextParam(text=f"Task: {task_text}"),
+            ContentPartImageParam(
+                image_url=ImageURL(
+                    url=f"data:image/png;base64,{b64}",
+                    detail="high",
                 ),
-            ]
-            self.memory.add_message(UserMessage(content=content))
-
-        return self.memory.get_context_messages()
+            ),
+        ]
+        return [UserMessage(content=content)]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
         """Parse free-form text output via AST coordinate extraction."""

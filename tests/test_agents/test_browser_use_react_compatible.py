@@ -19,11 +19,7 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents._output_models import (
-    BrowserUseActionItem,
-    BrowserUseOutput,
-    BrowserUseStateAssessment,
-)
+from spectragent.agents._output_models import BrowserUseOutput
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.core.llm.messages import (
@@ -62,8 +58,39 @@ class _FakeScreenshot:
     viewport_height: int = 0
 
 
+@dataclass
+class _FakeTask:
+    user_request: str = "navigate to example.com"
+    follow_ups: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.follow_ups is None:
+            self.follow_ups = []
+
+
+@dataclass
+class _FakeStepInfo:
+    step: int = 1
+    max_steps: int = 100
+    today: str = "2026-05-01"
+
+
+@dataclass
+class _FakeHistory:
+    items: list = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.items is None:
+            self.items = []
+
+
 class _FakeObservation:
-    """Light fragment-shaped observation used by tests."""
+    """Light fragment-shaped observation used by tests.
+
+    ``task`` defaults to a non-empty TaskObs-shape because BrowserUseAgent
+    requires it (loop-source fragment in __wiring__). Tests opt out of
+    step_info / history / browser_meta / etc by passing None.
+    """
 
     def __init__(
         self,
@@ -71,10 +98,16 @@ class _FakeObservation:
         dom: _FakeDOM | None = None,
         screenshot: _FakeScreenshot | None = None,
         browser_meta: _FakeBrowserMeta | None = None,
+        task: _FakeTask | None = None,
+        step_info: _FakeStepInfo | None = None,
+        history: _FakeHistory | None = None,
     ) -> None:
         self.dom = dom
         self.screenshot = screenshot
         self.browser_meta = browser_meta
+        self.task = task or _FakeTask()
+        self.step_info = step_info
+        self.history = history
 
 
 def _make_agent(**overrides: Any) -> BrowserUseAgent:
@@ -121,11 +154,12 @@ class TestWiring:
 
     def test_observation_wiring(self) -> None:
         wiring = BrowserUseAgent.__wiring__
-        # Required + optional split for browser_meta
+        # Required: env-source DOM/screenshot + loop-source task.
+        # Optional: browser_meta + loop-source step_info/history.
         assert wiring["observation"] == (
             "observation",
-            ["browser.dom", "browser.screenshot"],
-            ["browser.browser_meta"],
+            ["browser.dom", "browser.screenshot", "loop.task"],
+            ["browser.browser_meta", "loop.step_info", "loop.history"],
         )
 
 
@@ -133,26 +167,21 @@ class TestWiring:
 
 
 class TestPrepare:
-    def test_prepare_seeds_system_prompt_into_memory(self) -> None:
+    def test_prepare_returns_system_prompt_seed(self) -> None:
         agent = _make_agent()
         descriptors = [ActionDescriptor(name="click", description="click", params={})]
-        agent.prepare(task="navigate to example.com", action_descriptors=descriptors)
+        seed = agent.prepare(
+            task="navigate to example.com", action_descriptors=descriptors
+        )
 
-        msgs = agent.memory.get_messages()
-        assert len(msgs) == 1
-        assert isinstance(msgs[0], SystemMessage)
+        assert isinstance(seed, list)
+        assert len(seed) == 1
+        assert isinstance(seed[0], SystemMessage)
         assert agent._system_prompt_text  # populated
-        assert agent._task == "navigate to example.com"
+        assert not hasattr(agent, "_task")  # task lives on obs.task now
         assert agent._action_descriptors == descriptors
-
-    def test_prepare_clears_existing_memory(self) -> None:
-        agent = _make_agent()
-        agent.memory.add_message(UserMessage(content="stale"))
-        agent.prepare(task="t", action_descriptors=[])
-        # Only the new system message should remain.
-        msgs = agent.memory.get_messages()
-        assert len(msgs) == 1
-        assert isinstance(msgs[0], SystemMessage)
+        # prepare is a pure builder — agent memory remains untouched.
+        assert agent.memory.get_messages() == []
 
     def test_prepare_builds_prompt_snapshot(self) -> None:
         agent = _make_agent()
@@ -165,7 +194,7 @@ class TestPrepare:
 
 
 class TestBuildReactPrompt:
-    def test_returns_messages_after_prepare(self) -> None:
+    def test_returns_only_new_step_messages(self) -> None:
         agent = _make_agent()
         agent.prepare(task="t", action_descriptors=[])
 
@@ -179,9 +208,9 @@ class TestBuildReactPrompt:
 
         assert isinstance(messages, list)
         assert all(isinstance(m, BaseMessage) for m in messages)
-        # System + at least one user message
-        assert any(isinstance(m, SystemMessage) for m in messages)
-        assert any(isinstance(m, UserMessage) for m in messages)
+        # Pure builder: only the new step's user message.
+        assert len(messages) == 1
+        assert isinstance(messages[0], UserMessage)
 
     def test_observation_contains_url_and_dom(self) -> None:
         agent = _make_agent()
@@ -191,57 +220,98 @@ class TestBuildReactPrompt:
             browser_meta=_FakeBrowserMeta(
                 url="https://example.com", page_title="Example"
             ),
+            task=_FakeTask(user_request="navigate to example.com"),
         )
-        agent.build_react_prompt(obs)
-        # Locate the user message that was just added
-        user_msgs = [
-            m for m in agent.memory.get_messages() if isinstance(m, UserMessage)
-        ]
-        assert len(user_msgs) == 1
-        content = user_msgs[0].content
+        messages = agent.build_react_prompt(obs)
+        assert len(messages) == 1
+        content = messages[0].content
         assert isinstance(content, str)
         assert "https://example.com" in content
         assert "Example" in content
         assert "<DOM>tree</DOM>" in content
 
-    def test_handles_empty_observation(self) -> None:
+    def test_user_request_present_in_user_message(self) -> None:
         agent = _make_agent()
         agent.prepare(task="t", action_descriptors=[])
-        obs = _FakeObservation()
-        agent.build_react_prompt(obs)
-        user_msgs = [
-            m for m in agent.memory.get_messages() if isinstance(m, UserMessage)
-        ]
-        assert len(user_msgs) == 1
-        assert user_msgs[0].content == "(empty observation)"
+        obs = _FakeObservation(
+            task=_FakeTask(user_request="book a flight to Tokyo"),
+            browser_meta=_FakeBrowserMeta(url="https://airline.example"),
+        )
+        messages = agent.build_react_prompt(obs)
+        content = messages[0].content
+        assert isinstance(content, str)
+        assert "<user_request>" in content
+        assert "book a flight to Tokyo" in content
+        assert messages[0].cache is True
+
+    def test_step_info_block_when_present(self) -> None:
+        agent = _make_agent()
+        agent.prepare(task="t", action_descriptors=[])
+        obs = _FakeObservation(
+            task=_FakeTask(user_request="x"),
+            step_info=_FakeStepInfo(step=4, max_steps=20, today="2026-05-01"),
+        )
+        content = agent.build_react_prompt(obs)[0].content
+        assert isinstance(content, str)
+        assert "<step_info>" in content
+        assert "step 4/20" in content
+
+    def test_history_renders_step_blocks(self) -> None:
+        from spectragent.schemas.action import ActionResult
+        from spectragent.schemas.step_record import StepRecord
+
+        rec = StepRecord(
+            step=0,
+            llm_output="thinking",
+            actions=[Action(name="browser.click", params={"index": 1})],
+            action_results=[ActionResult(success=True)],
+        )
+        agent = _make_agent()
+        agent.prepare(task="t", action_descriptors=[])
+        obs = _FakeObservation(
+            task=_FakeTask(user_request="x"),
+            history=_FakeHistory(items=[rec]),
+        )
+        content = agent.build_react_prompt(obs)[0].content
+        assert isinstance(content, str)
+        assert "<step_1>" in content
+        assert "browser.click" in content
+
+    def test_handles_minimal_observation(self) -> None:
+        agent = _make_agent()
+        agent.prepare(task="t", action_descriptors=[])
+        # Only the required task fragment; no DOM / browser_meta / etc.
+        obs = _FakeObservation(task=_FakeTask(user_request="hello"))
+        messages = agent.build_react_prompt(obs)
+        assert len(messages) == 1
+        content = messages[0].content
+        assert isinstance(content, str)
+        assert "<user_request>" in content
+        assert "hello" in content
+        assert "(empty browser state)" in content
 
     def test_use_vision_attaches_screenshot_when_present(self) -> None:
         agent = _make_agent(use_vision=True)
         agent.prepare(task="t", action_descriptors=[])
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=b"\x89PNG\r\n\x1a\nfake"),
+            task=_FakeTask(user_request="vision task"),
         )
-        agent.build_react_prompt(obs)
-        user_msgs = [
-            m for m in agent.memory.get_messages() if isinstance(m, UserMessage)
-        ]
-        assert len(user_msgs) == 1
+        messages = agent.build_react_prompt(obs)
+        assert len(messages) == 1
         # Multi-modal content should be a list (text + image)
-        content = user_msgs[0].content
+        content = messages[0].content
         assert isinstance(content, list)
         assert len(content) == 2
 
     def test_use_vision_no_screenshot_falls_back_to_text(self) -> None:
         agent = _make_agent(use_vision=True)
         agent.prepare(task="t", action_descriptors=[])
-        obs = _FakeObservation()  # no screenshot
-        agent.build_react_prompt(obs)
-        user_msgs = [
-            m for m in agent.memory.get_messages() if isinstance(m, UserMessage)
-        ]
-        assert len(user_msgs) == 1
+        obs = _FakeObservation(task=_FakeTask(user_request="x"))  # no screenshot
+        messages = agent.build_react_prompt(obs)
+        assert len(messages) == 1
         # Text content (the fallback path)
-        assert isinstance(user_msgs[0].content, str)
+        assert isinstance(messages[0].content, str)
 
 
 # ── parse_react_output() ──────────────────────────────────────────────
@@ -255,14 +325,10 @@ class TestParseReactOutput:
         # navigate) before reaching execute_action.
         agent = _make_agent()
         out = BrowserUseOutput(
-            current_state=BrowserUseStateAssessment(
-                evaluation_previous_goal="success",
-                memory="mem",
-                next_goal="click button",
-            ),
-            actions=[
-                BrowserUseActionItem(action_name="click_element", index=42),
-            ],
+            evaluation_previous_goal="success",
+            memory="mem",
+            next_goal="click button",
+            action=[{"click_element": {"index": 42}}],
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
@@ -273,14 +339,9 @@ class TestParseReactOutput:
     def test_translates_input_text_and_go_to_url(self) -> None:
         agent = _make_agent()
         out = BrowserUseOutput(
-            current_state=BrowserUseStateAssessment(),
-            actions=[
-                BrowserUseActionItem(
-                    action_name="input_text", index=2, text="hello"
-                ),
-                BrowserUseActionItem(
-                    action_name="go_to_url", url="https://x.example"
-                ),
+            action=[
+                {"input_text": {"index": 2, "text": "hello"}},
+                {"go_to_url": {"url": "https://x.example"}},
             ],
         )
         actions = agent.parse_react_output(out)
@@ -293,13 +354,10 @@ class TestParseReactOutput:
     def test_multi_action_output(self) -> None:
         agent = _make_agent()
         out = BrowserUseOutput(
-            current_state=BrowserUseStateAssessment(),
-            actions=[
-                BrowserUseActionItem(action_name="click_element", index=1),
-                BrowserUseActionItem(
-                    action_name="input_text", index=2, text="hello"
-                ),
-                BrowserUseActionItem(action_name="go_to_url", url="https://x.example"),
+            action=[
+                {"click_element": {"index": 1}},
+                {"input_text": {"index": 2, "text": "hello"}},
+                {"go_to_url": {"url": "https://x.example"}},
             ],
         )
         actions = agent.parse_react_output(out)
@@ -308,14 +366,54 @@ class TestParseReactOutput:
         assert actions[1].name == "browser.type"
         assert actions[2].name == "browser.navigate"
 
-    def test_empty_actions_raises_parse_error(self) -> None:
+    def test_short_verbs_are_canonicalised(self) -> None:
+        # Upstream prompt sometimes emits the short verb directly
+        # (e.g. "navigate" instead of "go_to_url"); _SHORT_TO_CANONICAL
+        # plus the generic ``f"browser.{verb}"`` fallback should still
+        # canonicalise.
+        agent = _make_agent()
+        out = BrowserUseOutput(
+            action=[
+                {"navigate": {"url": "https://example.com"}},
+                {"scroll": {"direction": "down"}},
+            ],
+        )
+        actions = agent.parse_react_output(out)
+        assert actions[0].name == "browser.navigate"
+        assert actions[0].params == {"url": "https://example.com"}
+        assert actions[1].name == "browser.scroll"
+
+    def test_parses_raw_json_string_matching_prompt_template(self) -> None:
+        # End-to-end regression: when the LLM returns a JSON string
+        # exactly matching the prompt template (the upstream
+        # browser-use shape), parse_react_output must fall through to
+        # JSON load → model_validate → action translation without
+        # requiring a pre-built BrowserUseOutput instance.
+        import json as _json
+
+        agent = _make_agent()
+        payload = _json.dumps(
+            {
+                "thinking": "I need to navigate first.",
+                "evaluation_previous_goal": "n/a",
+                "memory": "starting on about:blank",
+                "next_goal": "navigate to example.com",
+                "action": [
+                    {"navigate": {"url": "https://www.example.com"}}
+                ],
+            }
+        )
+        actions = agent.parse_react_output(payload)
+        assert len(actions) == 1
+        assert actions[0].name == "browser.navigate"
+        assert actions[0].params == {"url": "https://www.example.com"}
+
+    def test_empty_action_list_raises_parse_error(self) -> None:
         from spectragent.core.loops.errors import ParseError
 
         agent = _make_agent()
-        out = BrowserUseOutput(
-            current_state=BrowserUseStateAssessment(), actions=[]
-        )
-        with pytest.raises(ParseError, match="empty actions"):
+        out = BrowserUseOutput(action=[])
+        with pytest.raises(ParseError, match="empty 'action' list"):
             agent.parse_react_output(out)
 
     def test_unparseable_text_raises_parse_error(self) -> None:
@@ -325,7 +423,7 @@ class TestParseReactOutput:
         from spectragent.core.loops.errors import ParseError
 
         agent = _make_agent()
-        with pytest.raises(ParseError, match="Failed to parse"):
+        with pytest.raises(ParseError, match="not valid JSON"):
             agent.parse_react_output("not valid json at all")
 
     def test_done_uses_extracted_content_key(self) -> None:
@@ -334,14 +432,7 @@ class TestParseReactOutput:
         # and DoneEvent read), not ``text``.
         agent = _make_agent()
         out = BrowserUseOutput(
-            current_state=BrowserUseStateAssessment(),
-            actions=[
-                BrowserUseActionItem(
-                    action_name="done",
-                    text="the final answer",
-                    success=True,
-                )
-            ],
+            action=[{"done": {"text": "the final answer", "success": True}}],
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 1

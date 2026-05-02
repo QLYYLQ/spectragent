@@ -2,43 +2,65 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 # ── browser-use ────────────────────────────────────────────────
-
-
-class BrowserUseStateAssessment(BaseModel):
-    """LLM's assessment of the current page state."""
-
-    evaluation_previous_goal: str = Field(default="", description="Did the previous action succeed?")
-    memory: str = Field(default="", description="Running memory / notes")
-    next_goal: str = Field(default="", description="What to do next")
-
-
-class BrowserUseActionItem(BaseModel):
-    """A single action within a browser-use multi-action step.
-
-    Uses explicit fields instead of a generic dict to ensure
-    strict JSON schema compatibility with API proxies.
-    """
-
-    action_name: str = Field(description="Name of the action to execute (e.g. click_element, input_text, scroll, go_to_url, done)")
-    index: int | None = Field(default=None, description="DOM element index (if applicable)")
-    text: str | None = Field(default=None, description="Text to type or answer content")
-    url: str | None = Field(default=None, description="URL to navigate to")
-    direction: str | None = Field(default=None, description="Scroll direction: up or down")
-    success: bool | None = Field(default=None, description="Whether done was successful (for done action)")
+#
+# Shape mirrors the upstream browser-use prompt template
+# (spectragent/prompts/browser/agents/browser_use/system_prompt*.md):
+#
+#     {
+#       "thinking": "...",
+#       "evaluation_previous_goal": "...",
+#       "memory": "...",
+#       "next_goal": "...",
+#       "current_plan_item": 0,           // optional
+#       "plan_update": ["..."],           // optional
+#       "action": [
+#         {"navigate": {"url": "..."}},
+#         {"click_element": {"index": 5}}
+#       ]
+#     }
+#
+# Each action is a single-key dict where the key is the action name
+# (browser-use vocabulary) and the value is its params dict.
+# ``BrowserUseAgent.parse_react_output`` translates these to the
+# canonical ``browser.*`` action names before they reach guarded_act.
 
 
 class BrowserUseOutput(BaseModel):
-    """Structured output for BrowserUseAgent.
+    """Structured output for BrowserUseAgent (matches the prompt template)."""
 
-    Supports multi-action: the LLM may return several actions per step.
-    """
+    # Allow extra fields so providers/proxies that inject extra metadata
+    # (e.g. anthropic 'thought_signature') don't break validation.
+    model_config = ConfigDict(extra="allow")
 
-    current_state: BrowserUseStateAssessment
-    actions: list[BrowserUseActionItem] = Field(
-        description="One or more actions to execute"
+    thinking: str = Field(default="", description="Structured reasoning block")
+    evaluation_previous_goal: str = Field(
+        default="", description="One-sentence analysis of the previous action."
+    )
+    memory: str = Field(
+        default="",
+        description="1-3 sentences of step-level memory and overall progress.",
+    )
+    next_goal: str = Field(
+        default="", description="Immediate next goal in one sentence."
+    )
+    current_plan_item: int | None = Field(
+        default=None, description="Optional plan-item index."
+    )
+    plan_update: list[str] | None = Field(
+        default=None, description="Optional updated plan."
+    )
+    action: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Action list. Each item is a single-key dict where the key is "
+            "the action name (browser-use vocabulary) and the value is the "
+            "params dict, e.g. ``{'navigate': {'url': 'https://...'}}``."
+        ),
     )
 
 

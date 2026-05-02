@@ -78,6 +78,9 @@ class _FakeMemory:
     def add_message(self, msg: Any) -> None:
         self.messages.append(msg)
 
+    def add_messages(self, msgs: Any) -> None:
+        self.messages.extend(msgs)
+
     def get_context_messages(self) -> list[Any]:
         return list(self.messages)
 

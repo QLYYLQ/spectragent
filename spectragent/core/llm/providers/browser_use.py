@@ -14,7 +14,6 @@ from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
-from spectragent.core.observability import observe
 
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -75,20 +74,16 @@ class ChatBrowserUse(ChatModelBase):
         request_type: str = "browser_agent", **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
-    @observe(name="chat_browser_use_ainvoke")
     async def ainvoke(
         self, messages: Sequence[BaseMessage], output_format: type[T] | None = None,
         request_type: str = "browser_agent", **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
-        from spectragent.core.config import CONFIG
-
         session_id = kwargs.get("session_id")
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [self._serialize_message(msg) for msg in messages],
             "fast": self.fast,
             "request_type": request_type,
-            "anonymized_telemetry": CONFIG.ANONYMIZED_TELEMETRY,
         }
         if session_id:
             payload["session_id"] = session_id

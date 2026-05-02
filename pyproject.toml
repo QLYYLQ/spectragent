@@ -21,7 +21,7 @@ classifiers = [
 
 dependencies = [
     # Core infrastructure
-    "conscribe>=1.0.0",
+    "conscribe>=1.1.1",
     "websockets>=13.0",
     "agent-cdp>=0.4.0",
     "pydantic>=2.0",
@@ -46,6 +46,7 @@ dependencies = [
     "ollama>=0.4",
     "boto3>=1.35",
     "oci>=2.100",
+    "Pillow"
 ]
 
 [project.optional-dependencies]

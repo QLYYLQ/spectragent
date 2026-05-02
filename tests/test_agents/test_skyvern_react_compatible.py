@@ -33,15 +33,36 @@ class _FakeDOM:
     selector_map: dict | None = None
 
 
+@dataclass
+class _FakeTask:
+    user_request: str = "find the login button"
+    follow_ups: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.follow_ups is None:
+            self.follow_ups = []
+
+
+@dataclass
+class _FakeStepInfo:
+    step: int = 1
+    max_steps: int = 50
+    today: str = "2026-05-01"
+
+
 class _FakeObservation:
     def __init__(
         self,
         *,
         dom: _FakeDOM | None = None,
         browser_meta: _FakeBrowserMeta | None = None,
+        task: _FakeTask | None = None,
+        step_info: _FakeStepInfo | None = None,
     ) -> None:
         self.dom = dom
         self.browser_meta = browser_meta
+        self.task = task or _FakeTask()
+        self.step_info = step_info
 
 
 def _make_agent(**overrides: Any) -> SkyvernAgent:
@@ -78,25 +99,34 @@ class TestWiring:
         assert wiring["capability"] == ("capability", ["browser"])
 
     def test_observation_wiring_dom_required_screenshot_optional(self) -> None:
-        # Skyvern is element-tree based: DOM is required, screenshot
-        # and browser_meta are optional.
+        # Skyvern is element-tree based: DOM is required + loop.task.
+        # Screenshot, browser_meta, loop.step_info, loop.history are optional.
         wiring = SkyvernAgent.__wiring__
         assert wiring["observation"] == (
             "observation",
-            ["browser.dom"],
-            ["browser.screenshot", "browser.browser_meta"],
+            ["browser.dom", "loop.task"],
+            [
+                "browser.screenshot",
+                "browser.browser_meta",
+                "loop.step_info",
+                "loop.history",
+            ],
         )
 
 
 class TestPrepare:
-    def test_seeds_jinja_rendered_prompt_into_memory(self) -> None:
+    def test_returns_jinja_rendered_system_prompt_seed(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="Find the cheapest flight", action_descriptors=[])
-        msgs = agent.memory.get_messages()
-        assert len(msgs) == 1
-        assert isinstance(msgs[0], SystemMessage)
+        seed = agent.prepare(
+            task="Find the cheapest flight", action_descriptors=[]
+        )
+        assert isinstance(seed, list)
+        assert len(seed) == 1
+        assert isinstance(seed[0], SystemMessage)
         # The Jinja template renders navigation_goal into the prompt
-        assert "Find the cheapest flight" in msgs[0].content
+        assert "Find the cheapest flight" in seed[0].content
+        # Pure builder — agent memory remains untouched.
+        assert agent.memory.get_messages() == []
 
     def test_resets_action_history(self) -> None:
         agent = _make_agent()
@@ -114,26 +144,51 @@ class TestBuildReactPrompt:
             browser_meta=_FakeBrowserMeta(
                 url="https://www.example.com", page_title="Ex"
             ),
+            task=_FakeTask(user_request="find the cheapest flight"),
         )
-        agent.build_react_prompt(obs)
-        user_msgs = [
-            m for m in agent.memory.get_messages() if isinstance(m, UserMessage)
-        ]
-        assert len(user_msgs) == 1
-        content = user_msgs[0].content
+        messages = agent.build_react_prompt(obs)
+        assert len(messages) == 1
+        assert isinstance(messages[0], UserMessage)
+        content = messages[0].content
         assert isinstance(content, str)
         assert "https://www.example.com" in content
         assert "<element>x</element>" in content
 
-    def test_returns_full_message_history(self) -> None:
+    def test_user_request_prefix(self) -> None:
+        agent = _make_agent()
+        agent.prepare(task="t", action_descriptors=[])
+        obs = _FakeObservation(
+            dom=_FakeDOM(element_tree="<x/>"),
+            task=_FakeTask(user_request="reset the user password"),
+        )
+        content = agent.build_react_prompt(obs)[0].content
+        assert isinstance(content, str)
+        assert "<user_request>" in content
+        assert "reset the user password" in content
+
+    def test_step_info_prefix_when_present(self) -> None:
+        agent = _make_agent()
+        agent.prepare(task="t", action_descriptors=[])
+        obs = _FakeObservation(
+            dom=_FakeDOM(element_tree="<x/>"),
+            task=_FakeTask(user_request="x"),
+            step_info=_FakeStepInfo(step=2, max_steps=10, today="2026-05-01"),
+        )
+        content = agent.build_react_prompt(obs)[0].content
+        assert isinstance(content, str)
+        assert "<step_info>step 2/10" in content
+        assert "today=2026-05-01" in content
+
+    def test_returns_only_new_user_message(self) -> None:
         agent = _make_agent()
         agent.prepare(task="t", action_descriptors=[])
         obs = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
         messages = agent.build_react_prompt(obs)
         assert isinstance(messages, list)
         assert all(isinstance(m, BaseMessage) for m in messages)
-        # System prompt + observation user message
-        assert len(messages) == 2
+        # Pure builder: agent emits only the new step's user message.
+        assert len(messages) == 1
+        assert isinstance(messages[0], UserMessage)
 
 
 class TestParseReactOutput:

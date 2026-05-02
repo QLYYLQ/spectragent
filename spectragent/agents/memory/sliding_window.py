@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 from pydantic import Field as PydanticField
 
 from spectragent.agents.memory._registrar import MemoryBase
+from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.llm.messages import BaseMessage, SystemMessage
 
 
@@ -21,6 +22,9 @@ class SlidingWindowMemory(MemoryBase):
     """
 
     __registry_key__ = "sliding_window"
+    supports_protocols: ClassVar[frozenset[MessageProtocol]] = frozenset(
+        {"user_assistant", "tool_call"}
+    )
 
     # ── config ─────────────────────────────────────────────────
     window_size: Annotated[int, PydanticField(description="Number of recent messages to keep")] = 20

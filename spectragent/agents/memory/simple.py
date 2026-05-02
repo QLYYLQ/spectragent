@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 from pydantic import Field as PydanticField
 
 from spectragent.agents.memory._registrar import MemoryBase
+from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.llm.messages import BaseMessage
 
 
@@ -17,6 +18,7 @@ class SimpleMemory(MemoryBase):
     """Stores all messages in a plain list, capped at *max_messages*."""
 
     __registry_key__ = "simple"
+    supports_protocols: ClassVar[frozenset[MessageProtocol]] = frozenset({"user_assistant"})
 
     # ── config ─────────────────────────────────────────────────
     max_messages: Annotated[int, PydanticField(description="Maximum messages to retain")] = 1000
