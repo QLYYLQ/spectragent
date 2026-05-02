@@ -40,8 +40,13 @@ class SkyvernAgent(AgentBase):
         # element-tree based but can use vision when available).
         "observation": (
             "observation",
-            ["browser.dom"],
-            ["browser.screenshot", "browser.browser_meta"],
+            ["browser.dom", "loop.task"],
+            [
+                "browser.screenshot",
+                "browser.browser_meta",
+                "loop.step_info",
+                "loop.history",
+            ],
         ),
         # Skyvern's element-tree driven vocabulary maps to the canonical
         # BrowserCapability action names (``input_text`` is translated to
@@ -84,8 +89,12 @@ class SkyvernAgent(AgentBase):
     ] = False
 
     # ── internal state ─────────────────────────────────────────
+    # ``task`` reaches every step via ``obs.task.user_request`` (loop
+    # fragment); the agent does not hold its own copy. ``_action_history``
+    # is kept agent-owned because Skyvern's system prompt template renders
+    # it via Jinja at prepare()-time, which is a different code path from
+    # the per-step user message.
     _action_history: list[str] = field(default_factory=list, init=False, repr=False)
-    _task: str = field(default="", init=False, repr=False)
     _action_descriptors: list[ActionDescriptor] = field(
         default_factory=list, init=False, repr=False
     )
@@ -117,12 +126,20 @@ class SkyvernAgent(AgentBase):
     def get_action_space(self) -> list[ActionDescriptor]:
         return list(self._action_descriptors)
 
-    # ── Lifecycle hook called by ReactLoop ─────────────────────
+    # ── Lifecycle hook called by AgentRuntime ──────────────────
 
-    def prepare(self, task: str, action_descriptors: list[ActionDescriptor]) -> None:
-        """One-shot setup. Builds the Jinja-rendered system prompt and
-        seeds memory."""
-        self._task = task
+    def prepare(
+        self,
+        task: str,
+        action_descriptors: list[ActionDescriptor],
+    ) -> list[BaseMessage]:
+        """Pure builder: produce the seed messages for this run.
+
+        Action history is non-memory state owned by the agent (rendered
+        into the Jinja system prompt via ``action_history_window``), so
+        the per-run reset still happens here. The per-step user message
+        gets task/step_info from observation fragments, not ``self``.
+        """
         self._action_descriptors = list(action_descriptors)
         self._action_history.clear()
         self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
@@ -132,19 +149,28 @@ class SkyvernAgent(AgentBase):
             ref=PromptRef(path=self._prompt_path or "<runtime>", content_hash=""),
             text=self._system_prompt_text,
         )
-        self.memory.clear()
-        self.memory.add_message(SystemMessage(content=self._system_prompt_text))
+        return [SystemMessage(content=self._system_prompt_text)]
 
     # ── ReactLoop slots ────────────────────────────────────────
 
     def build_react_prompt(self, observation: Any) -> list[BaseMessage]:
-        """Format the observation, append to memory, return full message list.
+        """Pure builder: return the observation user-message for this step.
 
-        [TODO M17] Memory access lives here.
+        Prefixes the page state with ``<user_request>`` (and ``<step_info>``
+        when the loop provides it) so the LLM sees the task on every
+        turn — the system prompt's task injection happens once at
+        ``prepare()`` time and would otherwise drift out of context.
         """
-        obs_text = self._format_observation(observation)
-        self.memory.add_message(UserMessage(content=obs_text))
-        return self.memory.get_context_messages()
+        task = observation.task.user_request
+        prefix_parts = [f"<user_request>\n{task}\n</user_request>"]
+        step_info = getattr(observation, "step_info", None)
+        if step_info is not None:
+            prefix_parts.append(
+                f"<step_info>step {step_info.step}/{step_info.max_steps} "
+                f"(today={step_info.today})</step_info>"
+            )
+        body = "\n".join(prefix_parts) + "\n\n" + self._render_browser_state(observation)
+        return [UserMessage(content=body, cache=True)]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
         if isinstance(llm_output, SkyvernOutput):
@@ -231,8 +257,8 @@ class SkyvernAgent(AgentBase):
         )
 
     @staticmethod
-    def _format_observation(observation: Any) -> str:
-        """Format NegotiatedObservation as a text user-message body."""
+    def _render_browser_state(observation: Any) -> str:
+        """Format the browser-state portion of the user message body."""
         parts: list[str] = []
 
         meta = getattr(observation, "browser_meta", None)
@@ -253,4 +279,4 @@ class SkyvernAgent(AgentBase):
                     dom_str = dom_str[:10000] + "\n... (truncated)"
                 parts.append(f"Element Tree:\n{dom_str}")
 
-        return "\n\n".join(parts) if parts else "(empty observation)"
+        return "\n\n".join(parts) if parts else "(empty browser state)"

@@ -84,8 +84,8 @@ class BrowserUseAgent(AgentBase):
         # (we use it for url/title context but can run without it).
         "observation": (
             "observation",
-            ["browser.dom", "browser.screenshot"],
-            ["browser.browser_meta"],
+            ["browser.dom", "browser.screenshot", "loop.task"],
+            ["browser.browser_meta", "loop.step_info", "loop.history"],
         ),
         "action": (
             "action",
@@ -127,13 +127,15 @@ class BrowserUseAgent(AgentBase):
     ] = None
 
     # ── internal state populated by prepare() ──────────────────
-    _task: str = field(default="", init=False, repr=False)
+    # ``task`` lives on every observation as ``obs.task.user_request``
+    # (loop-source fragment), so the agent never holds its own copy.
     _action_descriptors: list[ActionDescriptor] = field(
         default_factory=list, init=False, repr=False
     )
     _system_prompt_text: str = field(default="", init=False, repr=False)
     _prompt_path: str = field(default="", init=False, repr=False)
     _prompt_snapshot: Any = field(default=None, init=False, repr=False)
+    _max_history_steps: int = field(default=10, init=False, repr=False)
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``). conscribe's metaclass attaches ``WiredField``
@@ -168,104 +170,80 @@ class BrowserUseAgent(AgentBase):
         introspection."""
         return list(self._action_descriptors)
 
-    # ── Lifecycle hook called by ReactLoop ─────────────────────
+    # ── Lifecycle hook called by AgentRuntime ──────────────────
 
-    def prepare(self, task: str, action_descriptors: list[ActionDescriptor]) -> None:
-        """One-shot setup invoked by ReactLoop before the first step.
+    def prepare(
+        self,
+        task: str,
+        action_descriptors: list[ActionDescriptor],
+    ) -> list[BaseMessage]:
+        """Pure builder: produce the seed messages for this run.
 
-        Builds the system prompt and seeds memory with it.
-
-        [TODO M17] When M17 ships, system-prompt seeding will move to
-        AgentRuntime. This method should then become a pure builder
-        returning the seeded message list, with no memory side effects.
+        AgentRuntime invokes this once after negotiation and writes the
+        return value into memory; the agent does no memory IO itself.
+        ``task`` flows through every step's observation as
+        ``obs.task.user_request`` — not stored on ``self``.
         """
-        self._task = task
         self._action_descriptors = list(action_descriptors)
         self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
-        # Snapshot for trace introspection.
         from spectragent.schemas.prompt import PromptRef, TextPrompt
 
         self._prompt_snapshot = TextPrompt(
             ref=PromptRef(path=self._prompt_path or "<runtime>", content_hash=""),
             text=self._system_prompt_text,
         )
-        self.memory.clear()
-        self.memory.add_message(SystemMessage(content=self._system_prompt_text))
+        return [SystemMessage(content=self._system_prompt_text)]
 
     # ── ReactLoop slots ────────────────────────────────────────
 
     def build_react_prompt(self, observation: Any) -> list[BaseMessage]:
-        """Format the observation, append to memory, return full message list.
+        """Pure builder: return the messages to append for this step.
 
-        [TODO M17] Memory access lives here. After M17, this method
-        will accept a ``messages`` parameter built by AgentRuntime.
+        Emits an upstream-browser-use-style structured user message:
+        ``<agent_history>...</agent_history><agent_state>...</agent_state>
+        <browser_state>...</browser_state>``. ``cache=True`` lets
+        Anthropic prefix-cache the (mostly stable) task/state header.
         """
+        body = self._build_step_text(observation)
         if self.use_vision and self._observation_has_screenshot(observation):
-            self._add_vision_message(observation)
-        else:
-            obs_text = self._format_observation(observation)
-            self.memory.add_message(UserMessage(content=obs_text))
-        return self.memory.get_context_messages()
+            return [self._build_vision_message(observation, body)]
+        return [UserMessage(content=body, cache=True)]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
-        """Parse a structured ``BrowserUseOutput`` into Action objects.
+        """Parse a ``BrowserUseOutput`` into canonical Action objects.
 
-        The LLM emits the browser-use training vocabulary
-        (``click_element``, ``input_text``, ``go_to_url``); we translate
-        to the canonical ``BrowserCapability`` vocabulary here so that
-        agent wiring, runtime negotiation and ``guarded_act`` all speak
-        the same canonical names.
+        The LLM follows the upstream browser-use prompt template and
+        emits ``{"action": [{"<verb>": {<params>}}, ...]}``. We translate
+        the verb (browser-use vocabulary like ``navigate`` /
+        ``click_element`` / ``go_to_url``) to the canonical
+        ``browser.*`` action names so agent wiring, runtime negotiation
+        and ``guarded_act`` all speak the same vocabulary.
         """
         if isinstance(llm_output, BrowserUseOutput):
-            actions: list[Action] = []
-            for item in llm_output.actions:
-                canonical_name = _LLM_VOCABULARY_TO_CANONICAL.get(
-                    item.action_name,
-                    _SHORT_TO_CANONICAL.get(item.action_name, item.action_name),
-                )
-                params: dict[str, Any] = {}
+            return _items_to_actions(llm_output.action)
 
-                # The ``done`` action's answer text lives in the LLM's
-                # ``text`` field; ``DoneAction.execute`` reads it from
-                # ``extracted_content`` — rename at parse time and drop
-                # the unrelated fields (index/url/direction don't belong
-                # on done).
-                if canonical_name == "browser.done":
-                    if item.text is not None:
-                        params["extracted_content"] = item.text
-                    if item.success is not None:
-                        params["success"] = item.success
-                else:
-                    if item.index is not None:
-                        params["index"] = item.index
-                    if item.text is not None:
-                        params["text"] = item.text
-                    if item.url is not None:
-                        params["url"] = item.url
-                    if item.direction is not None:
-                        params["direction"] = item.direction
-
-                actions.append(Action(name=canonical_name, params=params))
-            if not actions:
-                raise ParseError(
-                    "LLM returned a valid BrowserUseOutput but with an empty actions list.",
-                    raw_output=str(llm_output)[:500],
-                )
-            return actions
-
-        # Fallback: try to parse plain text as JSON
+        # Fallback: parse plain-text JSON.
         import json
 
+        text = llm_output if isinstance(llm_output, str) else str(llm_output)
         try:
-            text = llm_output if isinstance(llm_output, str) else str(llm_output)
             data = json.loads(text)
-            parsed = BrowserUseOutput.model_validate(data)
-            return self.parse_react_output(parsed)
-        except (json.JSONDecodeError, Exception) as exc:
+        except json.JSONDecodeError as exc:
             raise ParseError(
-                f"Failed to parse LLM output: {type(exc).__name__}: {exc}",
-                raw_output=text[:500] if isinstance(text, str) else None,
+                f"LLM output is not valid JSON: {exc}",
+                raw_output=text[:500],
             ) from exc
+
+        try:
+            parsed = BrowserUseOutput.model_validate(data)
+        except Exception as exc:
+            raise ParseError(
+                f"LLM JSON does not match BrowserUseOutput schema: "
+                f"{type(exc).__name__}: {exc}",
+                raw_output=text[:500],
+            ) from exc
+
+        return self.parse_react_output(parsed)
 
     def get_react_output_model(self) -> type[BaseModel] | None:
         return BrowserUseOutput
@@ -321,8 +299,13 @@ class BrowserUseAgent(AgentBase):
             getattr(screenshot, "image_path", None) is not None
         )
 
-    def _add_vision_message(self, observation: Any) -> None:
-        """Append a multi-modal user message with screenshot + DOM text."""
+    def _build_vision_message(self, observation: Any, body: str) -> UserMessage:
+        """Build a multi-modal user message with body + screenshot.
+
+        Caller already checked ``_observation_has_screenshot`` so
+        ``image_bytes`` (or ``image_path``) is guaranteed present, and
+        already constructed the structured XML body.
+        """
         import base64
 
         from spectragent.core.llm.messages import (
@@ -333,18 +316,13 @@ class BrowserUseAgent(AgentBase):
 
         screenshot = observation.screenshot
         image_bytes = getattr(screenshot, "image_bytes", None)
-        if image_bytes is None and getattr(screenshot, "image_path", None):
+        if image_bytes is None:
             with open(screenshot.image_path, "rb") as f:
                 image_bytes = f.read()
-        if image_bytes is None:
-            # Defensive — shouldn't happen because we checked above.
-            self.memory.add_message(UserMessage(content=self._format_observation(observation)))
-            return
 
         b64 = base64.b64encode(image_bytes).decode()
-        obs_text = self._format_observation(observation)
         content: list[Any] = [
-            ContentPartTextParam(text=obs_text),
+            ContentPartTextParam(text=body),
             ContentPartImageParam(
                 image_url=ImageURL(
                     url=f"data:image/png;base64,{b64}",
@@ -352,17 +330,81 @@ class BrowserUseAgent(AgentBase):
                 ),
             ),
         ]
-        self.memory.add_message(UserMessage(content=content))
+        return UserMessage(content=content, cache=True)
+
+    def _build_step_text(self, observation: Any) -> str:
+        """Compose the per-step XML user-message body.
+
+        Layout (upstream browser-use prompts.py:400-416):
+            <agent_history>...</agent_history>
+            <agent_state>
+              <user_request>...</user_request>
+              <follow_up_requests>...</follow_up_requests>  (only if any)
+              <step_info>...</step_info>                    (only if known)
+            </agent_state>
+            <browser_state>URL/Title/Tabs/DOM</browser_state>
+
+        Scratchpad blocks (file_system, todo, plan, sensitive_data,
+        page_stats, recent_events, ...) are intentionally omitted —
+        their data sources land with the future ScratchpadCapability.
+        """
+        history_xml = self._render_history(getattr(observation, "history", None))
+        state_xml = self._render_agent_state(observation)
+        browser_xml = self._render_browser_state(observation)
+        return (
+            f"<agent_history>\n{history_xml}\n</agent_history>\n"
+            f"{state_xml}\n"
+            f"<browser_state>\n{browser_xml}\n</browser_state>"
+        )
+
+    def _render_agent_state(self, observation: Any) -> str:
+        task = observation.task
+        parts = [f"<user_request>\n{task.user_request}\n</user_request>"]
+        if task.follow_ups:
+            joined = "\n".join(f"- {f}" for f in task.follow_ups)
+            parts.append(f"<follow_up_requests>\n{joined}\n</follow_up_requests>")
+        step_info = getattr(observation, "step_info", None)
+        if step_info is not None:
+            parts.append(
+                f"<step_info>step {step_info.step}/{step_info.max_steps}, "
+                f"today={step_info.today}</step_info>"
+            )
+        body = "\n".join(parts)
+        return f"<agent_state>\n{body}\n</agent_state>"
+
+    def _render_history(self, history: Any) -> str:
+        items = list(getattr(history, "items", []) or [])
+        if not items:
+            return "<step_1>\n(no prior steps)\n</step_1>"
+        if len(items) > self._max_history_steps:
+            items = items[-self._max_history_steps :]
+        blocks: list[str] = []
+        for rec in items:
+            actions_str = (
+                ", ".join(f"{a.name}({a.params})" for a in rec.actions) or "(none)"
+            )
+            results_str = (
+                "; ".join(
+                    f"ok={r.success} {r.error or r.extracted_content or ''}".rstrip()
+                    for r in rec.action_results
+                )
+                or "(none)"
+            )
+            tag = f"step_{rec.step + 1}"
+            blocks.append(
+                f"<{tag}>\n"
+                f"<llm_output>{_truncate(rec.llm_output, 2000)}</llm_output>\n"
+                f"<actions>{actions_str}</actions>\n"
+                f"<results>{results_str}</results>\n"
+                f"</{tag}>"
+            )
+        return "\n".join(blocks)
 
     @staticmethod
-    def _format_observation(observation: Any) -> str:
-        """Format a NegotiatedObservation as a text user-message body.
-
-        Reads from fragment sub-models: ``observation.browser_meta`` for
-        url/title, ``observation.dom`` for the element tree.
-        """
+    def _render_browser_state(observation: Any) -> str:
+        """URL / Title / Tabs / DOM block. Mirrors upstream's <browser_state>
+        but without page_stats / page_info / recent_events (ScratchpadCapability)."""
         parts: list[str] = []
-
         meta = getattr(observation, "browser_meta", None)
         if meta is not None:
             url = getattr(meta, "url", "") or ""
@@ -388,4 +430,53 @@ class BrowserUseAgent(AgentBase):
                     dom_str = dom_str[:10000] + "\n... (truncated)"
                 parts.append(f"DOM:\n{dom_str}")
 
-        return "\n\n".join(parts) if parts else "(empty observation)"
+        return "\n\n".join(parts) if parts else "(empty browser state)"
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "... (truncated)"
+
+
+def _items_to_actions(items: list[dict[str, Any]]) -> list[Action]:
+    """Translate ``[{"<verb>": {<params>}}, ...]`` into canonical Actions.
+
+    Each item is a single-key dict (the upstream browser-use shape).
+    The key is the action verb in browser-use vocabulary; the value is
+    the params dict. We map the verb to its canonical ``browser.*``
+    name and apply minimal per-action param renames (``done.text`` →
+    ``extracted_content``).
+    """
+    if not items:
+        raise ParseError(
+            "LLM output had an empty 'action' list — at least one action is required.",
+            raw_output=str(items)[:500],
+        )
+
+    actions: list[Action] = []
+    for raw in items:
+        if not isinstance(raw, dict) or len(raw) != 1:
+            raise ParseError(
+                f"Each action must be a single-key dict like {{'navigate': {{...}}}}; "
+                f"got {raw!r}",
+                raw_output=str(items)[:500],
+            )
+        verb, params = next(iter(raw.items()))
+        if not isinstance(params, dict):
+            params = {}
+        canonical = _LLM_VOCABULARY_TO_CANONICAL.get(
+            verb, _SHORT_TO_CANONICAL.get(verb, verb if "." in verb else f"browser.{verb}")
+        )
+        # Done's answer text comes in under 'text'; DoneAction reads
+        # 'extracted_content'. Rename onto a fresh dict so we don't
+        # mutate the caller's payload.
+        params = dict(params)
+        if (
+            canonical == "browser.done"
+            and "text" in params
+            and "extracted_content" not in params
+        ):
+            params["extracted_content"] = params.pop("text")
+        actions.append(Action(name=canonical, params=params))
+    return actions

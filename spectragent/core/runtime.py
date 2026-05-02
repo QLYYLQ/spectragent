@@ -28,6 +28,7 @@ from spectragent.core.composer import ComposedRun
 from spectragent.core.hooks.base import RuntimeHook
 from spectragent.core.negotiation import (
     negotiate_action,
+    negotiate_memory,
     negotiate_observation,
 )
 
@@ -91,6 +92,9 @@ class AgentRuntime:
         # Step 2.5: Action two-party negotiation
         negotiated_actions = negotiate_action(agent, env)
 
+        # Step 2.75: Memory protocol negotiation (Loop ⊆ Memory)
+        negotiate_memory(loop, memory)
+
         # Step 3: AOP weaving (must happen before guarded_act so
         #          act_fn captures wrapped_env.act, enabling AOP intercepts)
         weaver = Weaver(self._hooks)
@@ -122,6 +126,13 @@ class AgentRuntime:
             **kwargs,
         )
 
+        # Stash the negotiation outputs on the wrapped agent so ``execute``
+        # (or any external caller) can drive the post-prepare lifecycle —
+        # ``agent.prepare(task, action_descriptors)`` then memory seeding —
+        # without re-running negotiation.
+        wrapped_agent.__active_descriptors__ = active_descriptors
+        wrapped_agent.__memory__ = memory
+
         return wrapped_agent
 
     # -- execute: convenience one-shot -------------------------
@@ -145,6 +156,18 @@ class AgentRuntime:
             action_filter=action_filter,
             **kwargs,
         )
+
+        # Agent.prepare is a pure builder: it produces seed messages for
+        # the run (typically the system prompt) and AgentRuntime owns the
+        # memory write. Skipped if the agent doesn't define ``prepare``.
+        agent_prepare = getattr(prepared_agent, "prepare", None)
+        if callable(agent_prepare):
+            seed_messages = agent_prepare(
+                task=task,
+                action_descriptors=prepared_agent.__active_descriptors__,
+            )
+            if seed_messages:
+                prepared_agent.__memory__.add_messages(seed_messages)
 
         # Hook lifecycle — run_start
         await self._dispatch_lifecycle(

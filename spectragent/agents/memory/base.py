@@ -1,8 +1,9 @@
 """BaseMemoryManager Protocol — the public contract for memory implementations."""
 
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
+from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.llm.messages import BaseMessage
 
 
@@ -14,6 +15,8 @@ class BaseMemoryManager(Protocol):
     for agent reasoning.  Different strategies (sliding window,
     token budget, summary compression) implement this Protocol.
     """
+
+    supports_protocols: ClassVar[frozenset[MessageProtocol]]
 
     @property
     def memory_type(self) -> str:

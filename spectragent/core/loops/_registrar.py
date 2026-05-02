@@ -20,6 +20,7 @@ from typing import Any, ClassVar
 
 from conscribe import create_registrar
 
+from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.loops.base import AgentLoop
 from spectragent.core.loops.validation import IncompatibleError
 
@@ -66,6 +67,7 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     __registry_key__: ClassVar[str]
     __required_slots__: ClassVar[set[str]] = set()
     __optional_slots__: ClassVar[set[str]] = set()
+    __required_message_protocols__: ClassVar[frozenset[MessageProtocol]] = frozenset()
     __requires_env__: ClassVar[bool] = True
 
     # Runtime deps bound at weave time. Empty until weave() is called.

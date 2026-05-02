@@ -27,7 +27,10 @@ from spectragent.core.negotiation.observation import _observation_rules
 from spectragent.schemas.observation.fragments import (
     BrowserMetaObs,
     DOMObs,
+    HistoryObs,
     ScreenshotObs,
+    StepInfoObs,
+    TaskObs,
 )
 from tests._helpers.assembly import make_agent
 
@@ -190,7 +193,15 @@ class _MockEnv:
 
 
 class _MockNegotiated:
-    active_fragments = {"dom", "screenshot", "browser_meta"}
+    """Minimal negotiation-result stand-in.
+
+    ``loop_sourced`` is empty here because the canned observation is a
+    plain object (not a Pydantic model) and ``populate_loop_fragments``
+    expects ``model_copy``. Tests that need the loop-fragment population
+    path live in tests/test_core/test_loops/test_react_loop_fragments.py.
+    """
+
+    active_fragments = {"dom", "screenshot", "browser_meta", "loop.task"}
     env_sourced = {"dom", "screenshot", "browser_meta"}
     loop_sourced: set[str] = set()
 
@@ -205,11 +216,7 @@ class TestAgentToCapabilityActionVocabulary:
     def test_browser_use_agent_actions_are_in_capability_provided_actions(
         self,
     ) -> None:
-        from spectragent.agents._output_models import (
-            BrowserUseActionItem,
-            BrowserUseOutput,
-            BrowserUseStateAssessment,
-        )
+        from spectragent.agents._output_models import BrowserUseOutput
         from spectragent.core.capabilities.browser.capability import (
             BrowserCapability,
         )
@@ -217,7 +224,7 @@ class TestAgentToCapabilityActionVocabulary:
         agent = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
         provided = BrowserCapability().provided_actions
 
-        # Every LLM action_name the agent is expected to emit.
+        # Every LLM action verb the agent is expected to emit.
         llm_action_names = [
             "click_element",
             "input_text",
@@ -229,10 +236,7 @@ class TestAgentToCapabilityActionVocabulary:
             "done",
         ]
         for name in llm_action_names:
-            out = BrowserUseOutput(
-                current_state=BrowserUseStateAssessment(),
-                actions=[BrowserUseActionItem(action_name=name, index=1)],
-            )
+            out = BrowserUseOutput(action=[{name: {"index": 1}}])
             parsed = agent.parse_react_output(out)
             for action in parsed:
                 assert action.name in provided, (
@@ -260,21 +264,14 @@ class TestAgentToCapabilityActionVocabulary:
         # with the ``extracted_content`` key so the answer survives the
         # capability's DoneEvent translation.
         from spectragent.agents._output_models import (
-            BrowserUseActionItem,
             BrowserUseOutput,
-            BrowserUseStateAssessment,
             SkyvernOutput,
         )
 
         # BrowserUseAgent
         bu = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
         bu_out = BrowserUseOutput(
-            current_state=BrowserUseStateAssessment(),
-            actions=[
-                BrowserUseActionItem(
-                    action_name="done", text="answer bu", success=True,
-                )
-            ],
+            action=[{"done": {"text": "answer bu", "success": True}}],
         )
         bu_actions = bu.parse_react_output(bu_out)
         assert bu_actions[0].name == "browser.done"
@@ -303,13 +300,12 @@ class TestAgentToCapabilityActionVocabulary:
 class TestReactLoopDriveBrowserUse:
     @pytest.mark.asyncio
     async def test_browser_use_one_step_done(self) -> None:
-        from spectragent.agents._output_models import (
-            BrowserUseActionItem,
-            BrowserUseOutput,
-            BrowserUseStateAssessment,
-        )
+        from spectragent.agents._output_models import BrowserUseOutput
 
         # Build a fake observation matching the fragment-based shape.
+        # ``task`` mirrors what populate_loop_fragments would inject —
+        # this driver test bypasses ReactLoop's loop-fragment path because
+        # the obs is a plain object (not a Pydantic model).
         obs = type(
             "Obs",
             (),
@@ -319,6 +315,11 @@ class TestReactLoopDriveBrowserUse:
                 "browser_meta": BrowserMetaObs(
                     url="https://example.com", page_title="Example",
                 ),
+                "task": TaskObs(user_request="Find the answer"),
+                "step_info": StepInfoObs(
+                    step=1, max_steps=2, today="2026-05-01",
+                ),
+                "history": HistoryObs(),
             },
         )()
 
@@ -329,10 +330,7 @@ class TestReactLoopDriveBrowserUse:
         )
 
         out = BrowserUseOutput(
-            current_state=BrowserUseStateAssessment(),
-            actions=[
-                BrowserUseActionItem(action_name="done", text="finished")
-            ],
+            action=[{"done": {"text": "finished"}}],
         )
         llm = _MockLLM(out)
         env = _MockEnv(obs)
@@ -343,6 +341,12 @@ class TestReactLoopDriveBrowserUse:
         # Drive the loop directly (skip AgentRuntime to avoid AOP weaving).
         async def _act_fn(action: Any, **kw: Any) -> Any:
             return await env.act(action)
+
+        # Post-M17: AgentRuntime owns the prepare → memory.add_messages
+        # handoff. Driving the loop without AgentRuntime requires the
+        # caller to replicate that step.
+        seed = agent.prepare(task="Find the answer", action_descriptors=[])
+        agent.memory.add_messages(seed)
 
         loop.ctx = dict(
             env=env, llm=llm, memory=agent.memory,
@@ -360,7 +364,8 @@ class TestReactLoopDriveBrowserUse:
         # Env recorded the action.
         assert len(env.acted) == 1
         assert env.acted[0].name == "browser.done"
-        # Agent's prepare() was called by the loop and seeded the
-        # system prompt into memory.
-        assert agent._task == "Find the answer"
+        # Agent state was populated by the explicit prepare() call above.
+        # ``_task`` was deleted; task now lives on every observation as a
+        # loop-source fragment.
+        assert not hasattr(agent, "_task")
         assert agent._system_prompt_text  # populated

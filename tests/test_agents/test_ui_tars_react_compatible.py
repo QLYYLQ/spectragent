@@ -16,6 +16,7 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.llm.messages import (
     BaseMessage,
+    ContentPartTextParam,
     SystemMessage,
     UserMessage,
 )
@@ -31,11 +32,27 @@ class _FakeScreenshot:
     viewport_height: int = 0
 
 
-class _FakeObservation:
-    """UITars only ever consumes ``screenshot`` — no DOM, no browser_meta."""
+@dataclass
+class _FakeTask:
+    user_request: str = "click the search box"
+    follow_ups: list[str] | None = None
 
-    def __init__(self, *, screenshot: _FakeScreenshot | None = None) -> None:
+    def __post_init__(self) -> None:
+        if self.follow_ups is None:
+            self.follow_ups = []
+
+
+class _FakeObservation:
+    """UITars only ever consumes ``screenshot`` + the loop ``task`` fragment."""
+
+    def __init__(
+        self,
+        *,
+        screenshot: _FakeScreenshot | None = None,
+        task: _FakeTask | None = None,
+    ) -> None:
         self.screenshot = screenshot
+        self.task = task or _FakeTask()
 
 
 def _make_agent(**overrides: Any) -> UITarsAgent:
@@ -64,9 +81,13 @@ class TestSlotConformance:
 
 class TestWiring:
     def test_pure_vision_observation_wiring(self) -> None:
-        # UI-TARS requires only screenshot, optional list is empty.
+        # UI-TARS requires screenshot + loop.task; loop.step_info optional.
         wiring = UITarsAgent.__wiring__
-        assert wiring["observation"] == ("observation", ["browser.screenshot"], [])
+        assert wiring["observation"] == (
+            "observation",
+            ["browser.screenshot", "loop.task"],
+            ["loop.step_info"],
+        )
 
     def test_does_not_require_dom(self) -> None:
         wiring = UITarsAgent.__wiring__
@@ -79,43 +100,62 @@ class TestWiring:
         assert wiring["agent_loop"] == ("agent_loop", ["react"])
 
 
+class TestPrepare:
+    def test_prepare_returns_system_prompt_seed(self) -> None:
+        agent = _make_agent()
+        seed = agent.prepare(task="t", action_descriptors=[])
+        assert isinstance(seed, list)
+        assert len(seed) == 1
+        assert isinstance(seed[0], SystemMessage)
+        # Pure builder — agent memory remains untouched.
+        assert agent.memory.get_messages() == []
+
+
 class TestBuildReactPrompt:
     def test_attaches_screenshot_when_present(self) -> None:
         agent = _make_agent()
         agent.prepare(task="click the search box", action_descriptors=[])
         obs = _FakeObservation(
-            screenshot=_FakeScreenshot(image_bytes=b"\x89PNG\r\n\x1a\nFAKE")
+            screenshot=_FakeScreenshot(image_bytes=b"\x89PNG\r\n\x1a\nFAKE"),
+            task=_FakeTask(user_request="click the search box"),
         )
         messages = agent.build_react_prompt(obs)
         assert isinstance(messages, list)
         assert all(isinstance(m, BaseMessage) for m in messages)
-        # Find the user message with multi-modal content
-        user_msgs = [m for m in messages if isinstance(m, UserMessage)]
-        assert len(user_msgs) == 1
-        content = user_msgs[0].content
+        # Pure builder: a single new user message this step.
+        assert len(messages) == 1
+        assert isinstance(messages[0], UserMessage)
+        content = messages[0].content
         # Multi-modal: list with text + image
         assert isinstance(content, list)
         assert len(content) == 2
 
+    def test_task_text_pulled_from_observation(self) -> None:
+        agent = _make_agent()
+        agent.prepare(task="ignored-old-value", action_descriptors=[])
+        obs = _FakeObservation(
+            screenshot=_FakeScreenshot(image_bytes=b"\x89PNG"),
+            task=_FakeTask(user_request="open settings menu"),
+        )
+        messages = agent.build_react_prompt(obs)
+        content = messages[0].content
+        assert isinstance(content, list)
+        text_parts = [p for p in content if isinstance(p, ContentPartTextParam)]
+        assert any("open settings menu" in p.text for p in text_parts)
+        # Confirms task does NOT come from agent state (agent has no _task).
+        assert not hasattr(agent, "_task")
+
     def test_falls_back_to_text_when_no_screenshot(self) -> None:
         agent = _make_agent()
         agent.prepare(task="t", action_descriptors=[])
-        obs = _FakeObservation()  # no screenshot
-        agent.build_react_prompt(obs)
-        user_msgs = [
-            m for m in agent.memory.get_messages() if isinstance(m, UserMessage)
-        ]
-        assert len(user_msgs) == 1
-        assert user_msgs[0].content == "(no screenshot available)"
-
-    def test_first_call_includes_system_prompt(self) -> None:
-        agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
-        obs = _FakeObservation(
-            screenshot=_FakeScreenshot(image_bytes=b"\x89PNG\r\n\x1a\n")
-        )
+        obs = _FakeObservation(task=_FakeTask(user_request="some task"))
         messages = agent.build_react_prompt(obs)
-        assert any(isinstance(m, SystemMessage) for m in messages)
+        assert len(messages) == 1
+        assert isinstance(messages[0], UserMessage)
+        content = messages[0].content
+        assert isinstance(content, str)
+        assert "some task" in content
+        assert "no screenshot available" in content
 
 
 class TestParseReactOutput:

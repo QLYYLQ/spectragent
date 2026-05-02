@@ -57,8 +57,17 @@ class MockLLM:
 
 
 class MockMemory:
-    def add_message(self, msg): pass
-    def clear(self): pass
+    supports_protocols = frozenset({"user_assistant"})
+    def __init__(self):
+        self.messages = []
+    def add_message(self, msg):
+        self.messages.append(msg)
+    def add_messages(self, msgs):
+        self.messages.extend(msgs)
+    def get_context_messages(self):
+        return list(self.messages)
+    def clear(self):
+        self.messages.clear()
 
 
 def _make_env():
@@ -196,6 +205,56 @@ class TestPrepare:
         prepared = AgentRuntime.from_composed(run).prepare()
         result = asyncio.run(prepared.run("test"))
         assert result.agent_done.value == "done"
+
+    def test_execute_invokes_agent_prepare_and_seeds_memory(self) -> None:
+        """AgentRuntime.execute() owns the prepare → memory.add_messages
+        handoff: the agent emits seed messages and the runtime writes
+        them into memory before agent.run starts."""
+        from spectragent.core.llm.messages import SystemMessage
+
+        seed = SystemMessage(content="seed")
+        prepare_calls: list[tuple[str, list]] = []
+
+        class SeedingAgent(SimpleAgent):
+            def prepare(self, task, action_descriptors):
+                prepare_calls.append((task, list(action_descriptors)))
+                return [seed]
+
+        memory = MockMemory()
+        run = make_run(
+            agent=SeedingAgent(),
+            loop=ReactLoop(),
+            env=_make_env(),
+            llm=MockLLM(),
+            memory=memory,
+        )
+        asyncio.run(
+            AgentRuntime.from_composed(run).execute("seed-task", task_id="t-seed")
+        )
+
+        assert len(prepare_calls) == 1
+        assert prepare_calls[0][0] == "seed-task"
+        assert {d.name for d in prepare_calls[0][1]} == {"rt_simple_cap.done"}
+        assert memory.messages[0] is seed
+
+    def test_execute_skips_prepare_when_agent_lacks_method(self) -> None:
+        """Agents without ``prepare`` simply skip the step; no error."""
+        memory = MockMemory()
+        run = make_run(
+            agent=SimpleAgent(),
+            loop=ReactLoop(),
+            env=_make_env(),
+            llm=MockLLM(),
+            memory=memory,
+        )
+        asyncio.run(
+            AgentRuntime.from_composed(run).execute("noop", task_id="t-noop")
+        )
+        # SimpleAgent does not define ``prepare``, so no system prompt
+        # was seeded by the runtime.
+        assert memory.messages == [] or all(
+            getattr(m, "role", None) != "system" for m in memory.messages
+        )
 
 
 class TestTimeout:

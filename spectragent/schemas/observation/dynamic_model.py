@@ -59,7 +59,16 @@ def build_observation_model(
                 f"active fragments {sorted(active_fragments)!r}. "
                 f"Cross-source local-id collisions are not supported."
             )
-        fields[field_name] = (frag_cls, ...)
+        # Loop-source fragments are filled by the Loop *after* env.observe()
+        # via populate_loop_fragments. Make them Optional with default=None
+        # so env.observe() can construct the model without these values;
+        # the Loop overwrites them before the agent ever sees the
+        # observation.
+        source = getattr(frag_cls, "__source__", "env")
+        if source == "loop":
+            fields[field_name] = (frag_cls | None, Field(default=None))
+        else:
+            fields[field_name] = (frag_cls, ...)
 
     return create_model("NegotiatedObservation", **fields)
 

@@ -15,17 +15,27 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime
-from typing import Annotated, Any
+from datetime import UTC, date, datetime
+from typing import Annotated, Any, ClassVar
 
 from pydantic import Field
 
+from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.llm.messages import AssistantMessage
+from spectragent.core.loops._loop_fragments import (
+    last_action_result_obs,
+    populate_loop_fragments,
+)
 from spectragent.core.loops._registrar import AgentLoopBase
 from spectragent.core.loops.errors import ParseError
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult, AgentUsage
+from spectragent.schemas.observation.fragments import (
+    HistoryObs,
+    StepInfoObs,
+    TaskObs,
+)
 from spectragent.schemas.step_record import StepRecord
 
 logger = logging.getLogger(__name__)
@@ -45,6 +55,9 @@ class ReactLoop(AgentLoopBase):
     __registry_key__ = "react"
     __required_slots__ = {"build_react_prompt", "parse_react_output"}
     __optional_slots__ = {"get_react_output_model", "prepare"}
+    __required_message_protocols__: ClassVar[frozenset[MessageProtocol]] = frozenset(
+        {"user_assistant"}
+    )
     __requires_env__ = True
 
     # ── conscribe config-annotated fields ─────────────────────
@@ -59,6 +72,17 @@ class ReactLoop(AgentLoopBase):
             description="Consecutive ParseError failures before termination.",
         ),
     ] = 3
+    today_override: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "ISO date string overriding 'today' in StepInfoObs. "
+                "Use for WAL replay reproducibility and deterministic tests; "
+                "leave None in production to use the real clock."
+            ),
+        ),
+    ] = None
 
     # -- AgentLoopBase._execute() implementation ----------------
 
@@ -83,43 +107,49 @@ class ReactLoop(AgentLoopBase):
         memory = ctx["memory"]
         act_fn = ctx["act_fn"]
         negotiated_obs = ctx.get("negotiated_obs")
-        active_descriptors = ctx.get("active_descriptors", [])
         session_id: str | None = ctx.get("session_id")
         task_id: str = ctx.get("task_id", "unknown")
-
-        # Optional one-shot agent setup. Agents may define
-        # ``prepare(task, action_descriptors)`` to seed their system
-        # prompt and internal state before the first
-        # ``build_react_prompt`` call (declared in __optional_slots__).
-        prepare = getattr(agent, "prepare", None)
-        if callable(prepare):
-            prepare(task=task, action_descriptors=active_descriptors)
 
         start_time = time.monotonic()
         step_records: list[StepRecord] = []
         action_history: list[str] = []
         total_usage = AgentUsage()
         parse_error_streak = 0
+        prev_step_record: StepRecord | None = None
 
         for step_idx in range(self.max_steps):
-            # 1. Observe
+            # 1. Observe — env fills env-source fragments; loop fills
+            #    loop-source fragments (task / step_info / history /
+            #    action_result) immediately after.
             if negotiated_obs is not None:
                 observation = await env.observe(negotiated_obs, session_id)
+                loop_sourced = getattr(negotiated_obs, "loop_sourced", frozenset())
+                if loop_sourced:
+                    observation = populate_loop_fragments(
+                        observation,
+                        loop_sourced=loop_sourced,
+                        builders=self._loop_fragment_builders(
+                            task=task,
+                            step_idx=step_idx,
+                            step_records=step_records,
+                            prev_step_record=prev_step_record,
+                        ),
+                    )
             else:
                 observation = await env.observe(session_id)
 
-            # 2. Agent builds prompt (domain knowledge — pure, no memory side-effect)
-            messages = agent.build_react_prompt(observation)
+            # 2. Agent builds new step messages (pure builder — returns
+            #    only what the agent wants appended this step). Loop owns
+            #    the memory write and assembles the full LLM context.
+            new_msgs = agent.build_react_prompt(observation)
+            memory.add_messages(new_msgs)
+            context = memory.get_context_messages()
 
-            # 3. Get structured output model (optional slot)
-            get_output_model = getattr(agent, "get_react_output_model", None)
-            output_model = get_output_model() if callable(get_output_model) else None
-
-            # 4. Loop drives LLM call
-            if output_model is not None:
-                completion = await llm.ainvoke(messages, output_format=output_model)
-            else:
-                completion = await llm.ainvoke(messages)
+            # 3. Loop drives LLM call. Structured-output routing via the
+            #    optional ``get_react_output_model`` slot is re-enabled in
+            #    a follow-up patch — providers currently expect plain
+            #    message lists.
+            completion = await llm.ainvoke(context)
 
             raw_output = completion.completion
 
@@ -171,6 +201,7 @@ class ReactLoop(AgentLoopBase):
                     timestamp=time.time(),
                 )
                 step_records.append(record)
+                prev_step_record = record
 
                 if parse_error_streak >= self.max_consecutive_parse_errors:
                     return self._build_result(
@@ -224,6 +255,7 @@ class ReactLoop(AgentLoopBase):
                 timestamp=time.time(),
             )
             step_records.append(record)
+            prev_step_record = record
 
             # 9. Check termination
             if last_done_result is not None:
@@ -253,6 +285,39 @@ class ReactLoop(AgentLoopBase):
         )
 
     # -- private helpers -----------------------------------------
+
+    def _today_iso(self) -> str:
+        """ISO date string for ``StepInfoObs.today``.
+
+        Honours the ``today_override`` config field so WAL replay and
+        deterministic tests reproduce identical observations.
+        """
+        return self.today_override or date.today().isoformat()
+
+    def _loop_fragment_builders(
+        self,
+        *,
+        task: str,
+        step_idx: int,
+        step_records: list[StepRecord],
+        prev_step_record: StepRecord | None,
+    ) -> dict[str, Any]:
+        """Builders for every loop-source fragment ReactLoop owns.
+
+        ``populate_loop_fragments`` only invokes the builders whose keys
+        are in the agent's negotiated ``loop_sourced`` set, so unused
+        builders incur zero cost.
+        """
+        return {
+            "loop.task": lambda: TaskObs(user_request=task),
+            "loop.step_info": lambda: StepInfoObs(
+                step=step_idx + 1,
+                max_steps=self.max_steps,
+                today=self._today_iso(),
+            ),
+            "loop.history": lambda: HistoryObs(items=list(step_records)),
+            "loop.action_result": lambda: last_action_result_obs(prev_step_record),
+        }
 
     def _build_result(
         self,

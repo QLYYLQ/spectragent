@@ -17,6 +17,10 @@ from spectragent.core.negotiation.action import (
     negotiate_action,
 )
 from spectragent.core.negotiation.engine import negotiate
+from spectragent.core.negotiation.memory import (
+    IncompatibleMemoryError,
+    negotiate_memory,
+)
 from spectragent.core.negotiation.observation import (
     IncompatibleFragmentError,
     ObservationNegotiationResult,
@@ -27,6 +31,7 @@ __all__ = [
     "ActionNegotiationResult",
     "IncompatibleActionError",
     "IncompatibleFragmentError",
+    "IncompatibleMemoryError",
     "NegotiationResult",
     "NegotiationResultBase",
     "NegotiationResultRegistrar",
@@ -34,5 +39,6 @@ __all__ = [
     "extract_wiring",
     "negotiate",
     "negotiate_action",
+    "negotiate_memory",
     "negotiate_observation",
 ]

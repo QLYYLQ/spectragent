@@ -137,7 +137,7 @@ class TestLazyBatchPopulation:
         self, cap_with_fake_session: BrowserCapability
     ) -> None:
         cap = cap_with_fake_session
-        cached_dom = DOMObs(element_tree=None, selector_map={"a": "b"})
+        cached_dom = DOMObs(element_tree=None, selector_map={1: "b"})
         cap._cycle_cache["fake_sid"] = _ObserveCycleCache(
             dom=cached_dom,
             screenshot=ScreenshotObs(image_bytes=b"X"),
@@ -235,11 +235,11 @@ class TestMultiTabIsolation:
 
         # Seed two distinct caches.
         cap._cycle_cache["fake_sid"] = _ObserveCycleCache(
-            dom=DOMObs(selector_map={"x": "1"}),
+            dom=DOMObs(selector_map={1: "x"}),
             fired=True,
         )
         cap._cycle_cache["tab_b"] = _ObserveCycleCache(
-            dom=DOMObs(selector_map={"y": "2"}),
+            dom=DOMObs(selector_map={2: "y"}),
             fired=True,
         )
 
@@ -251,5 +251,5 @@ class TestMultiTabIsolation:
             return a, b
 
         a, b = asyncio.run(_go())
-        assert a.selector_map == {"x": "1"}
-        assert b.selector_map == {"y": "2"}
+        assert a.selector_map == {1: "x"}
+        assert b.selector_map == {2: "y"}
