@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel, model_validator
 from pydantic import Field as PydanticField
 
 from spectragent.agents._output_models import BrowserUseOutput
@@ -51,6 +51,7 @@ _SHORT_TO_CANONICAL: dict[str, str] = {
     "go_forward": "browser.go_forward",
     "switch_tab": "browser.switch_tab",
     "extract_content": "browser.extract_content",
+    "wait": "browser.wait",
     "done": "browser.done",
 }
 
@@ -97,6 +98,7 @@ class BrowserUseAgent(AgentBase):
                 "browser.go_back",
                 "browser.go_forward",
                 "browser.switch_tab",
+                "browser.wait",
             ],
         ),
         "llm": "llm",  # auto-discovery — any registered LLM
@@ -131,6 +133,9 @@ class BrowserUseAgent(AgentBase):
     # (loop-source fragment), so the agent never holds its own copy.
     _action_descriptors: list[ActionDescriptor] = field(
         default_factory=list, init=False, repr=False
+    )
+    _per_run_output_model: type[BaseModel] | None = field(
+        default=None, init=False, repr=False,
     )
     _system_prompt_text: str = field(default="", init=False, repr=False)
     _prompt_path: str = field(default="", init=False, repr=False)
@@ -185,6 +190,9 @@ class BrowserUseAgent(AgentBase):
         ``obs.task.user_request`` — not stored on ``self``.
         """
         self._action_descriptors = list(action_descriptors)
+        self._per_run_output_model = _build_per_run_output_model(
+            self._action_descriptors,
+        )
         self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
         from spectragent.schemas.prompt import PromptRef, TextPrompt
 
@@ -246,7 +254,11 @@ class BrowserUseAgent(AgentBase):
         return self.parse_react_output(parsed)
 
     def get_react_output_model(self) -> type[BaseModel] | None:
-        return BrowserUseOutput
+        # ``prepare()`` builds a per-run subclass that narrows ``action``
+        # to the negotiated verb set. Falls back to the static loose
+        # model if ``prepare()`` hasn't run yet (defensive — every real
+        # call path goes through prepare first).
+        return self._per_run_output_model or BrowserUseOutput
 
     # ── private helpers ────────────────────────────────────────
 
@@ -274,8 +286,8 @@ class BrowserUseAgent(AgentBase):
 
     def _build_system_prompt(
         self,
-        task: str,
-        action_space: list[ActionDescriptor],  # noqa: ARG002
+        task: str,  # noqa: ARG002 — reserved; some prompt templates may consume it later
+        action_space: list[ActionDescriptor],
     ) -> str:
         if self.override_system_message:
             text = self.override_system_message
@@ -283,11 +295,42 @@ class BrowserUseAgent(AgentBase):
             prompt_file = _PROMPT_DIR / self._select_prompt_file()
             self._prompt_path = str(prompt_file.relative_to(PROMPT_PATH))
             template = prompt_file.read_text()
-            text = template.format(max_actions=self.max_actions_per_step)
+            text = template.format(
+                max_actions=self.max_actions_per_step,
+                action_list=self._render_action_list(action_space),
+            )
 
         if self.extend_system_message:
             text += f"\n{self.extend_system_message}"
         return text
+
+    @staticmethod
+    def _render_action_list(descriptors: list[ActionDescriptor]) -> str:
+        """Render action descriptors as a markdown bullet list for the prompt.
+
+        Each line: ``- `<canonical_name>(<params>)` — <description>``.
+
+        Canonical names (``browser.navigate`` / ``browser.click`` / ...) are
+        used so the prompt unambiguously describes the registry-key vocabulary.
+        ``parse_react_output`` accepts both canonical and short forms via
+        ``_LLM_VOCABULARY_TO_CANONICAL`` / ``_SHORT_TO_CANONICAL``, so the LLM
+        can use either when emitting actions.
+
+        Empty list yields an empty string — only happens before
+        ``prepare()`` runs or in degenerate test fixtures.
+        """
+        if not descriptors:
+            return ""
+        lines: list[str] = []
+        for d in descriptors:
+            if d.params:
+                params_part = ", ".join(
+                    f"{k}: {v}" for k, v in d.params.items()
+                )
+            else:
+                params_part = "no params"
+            lines.append(f"- `{d.name}({params_part})` — {d.description}")
+        return "\n".join(lines)
 
     @staticmethod
     def _observation_has_screenshot(observation: Any) -> bool:
@@ -425,12 +468,78 @@ class BrowserUseAgent(AgentBase):
         if dom is not None:
             element_tree = getattr(dom, "element_tree", None)
             if element_tree is not None:
-                dom_str = str(element_tree)
+                dom_str = getattr(element_tree, "serialized_dom", "") or str(element_tree)
                 if len(dom_str) > 10000:
                     dom_str = dom_str[:10000] + "\n... (truncated)"
                 parts.append(f"DOM:\n{dom_str}")
 
         return "\n\n".join(parts) if parts else "(empty browser state)"
+
+
+def _build_per_run_output_model(
+    descriptors: list[ActionDescriptor],
+) -> type[BrowserUseOutput]:
+    """Return a per-run :class:`BrowserUseOutput` subclass narrowing ``action``.
+
+    The static ``BrowserUseOutput.action`` is ``list[dict[str, Any]]`` —
+    the LLM can write any verb and the schema accepts it, so hallucinated
+    actions only get caught downstream at ``guarded_act`` with a
+    framework-level rejection. Wrapping the field with a validator that
+    knows the negotiated allowed-verb set produces:
+
+    1. **Pydantic-side rejection** at ``parse_react_output`` time: the
+       error message includes the allowed verb set so the LLM gets a
+       useful self-correction signal in the next step's history.
+    2. **Future provider-side enforcement**: when ``react.py:160`` stops
+       hardcoding ``output_format=None``, providers that support strict
+       structured output (OpenAI ``response_format`` / Anthropic tool
+       schemas) will see a tighter JSON schema and refuse to emit
+       hallucinated verbs in the first place.
+
+    The LLM-facing JSON shape is unchanged — still single-key dict
+    ``{"<verb>": {<params>}}``. Only the verb domain is narrowed.
+
+    The allowed set is the union of:
+
+    - canonical names registered for this run (``browser.click`` etc.)
+    - short aliases (``"click"`` → ``"browser.click"``) whose canonical
+      is in the run set
+    - legacy upstream browser-use aliases (``"click_element"``,
+      ``"input_text"``, ``"go_to_url"``) similarly filtered
+    """
+    canonical = {d.name for d in descriptors}
+    short_aliases = {
+        s for s, c in _SHORT_TO_CANONICAL.items() if c in canonical
+    }
+    legacy_aliases = {
+        legacy
+        for legacy, c in _LLM_VOCABULARY_TO_CANONICAL.items()
+        if c in canonical
+    }
+    allowed: frozenset[str] = frozenset(canonical | short_aliases | legacy_aliases)
+    allowed_sorted = sorted(allowed)
+
+    class _ActionItem(RootModel[dict[str, dict[str, Any]]]):
+        @model_validator(mode="after")
+        def _check(self) -> _ActionItem:
+            if len(self.root) != 1:
+                raise ValueError(
+                    f"action item must have exactly one key, got "
+                    f"{sorted(self.root)}"
+                )
+            verb = next(iter(self.root))
+            if verb not in allowed:
+                raise ValueError(
+                    f"unknown action {verb!r}; allowed: {allowed_sorted}"
+                )
+            return self
+
+    class _PerRunOutput(BrowserUseOutput):
+        action: list[_ActionItem]  # type: ignore[assignment]
+
+    _PerRunOutput.__name__ = "BrowserUseOutputForRun"
+    _PerRunOutput.__qualname__ = "BrowserUseOutputForRun"
+    return _PerRunOutput
 
 
 def _truncate(text: str, limit: int) -> str:

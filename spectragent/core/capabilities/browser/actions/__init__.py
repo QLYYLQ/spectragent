@@ -18,6 +18,7 @@ from spectragent.core.capabilities.browser.actions.extract_content import (
 from spectragent.core.capabilities.browser.actions.go_back import GoBackAction
 from spectragent.core.capabilities.browser.actions.go_forward import GoForwardAction
 from spectragent.core.capabilities.browser.actions.navigate import NavigateAction
+from spectragent.core.capabilities.browser.actions.screenshot import ScreenshotAction
 from spectragent.core.capabilities.browser.actions.scroll import ScrollAction
 from spectragent.core.capabilities.browser.actions.select_dropdown import (
     SelectDropdownAction,
@@ -25,6 +26,7 @@ from spectragent.core.capabilities.browser.actions.select_dropdown import (
 from spectragent.core.capabilities.browser.actions.send_keys import SendKeysAction
 from spectragent.core.capabilities.browser.actions.switch_tab import SwitchTabAction
 from spectragent.core.capabilities.browser.actions.type_action import TypeAction
+from spectragent.core.capabilities.browser.actions.wait import WaitAction
 
 __all__ = [
     "ClickAction",
@@ -34,9 +36,11 @@ __all__ = [
     "GoBackAction",
     "GoForwardAction",
     "NavigateAction",
+    "ScreenshotAction",
     "ScrollAction",
     "SelectDropdownAction",
     "SendKeysAction",
     "SwitchTabAction",
     "TypeAction",
+    "WaitAction",
 ]

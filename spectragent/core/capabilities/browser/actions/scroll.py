@@ -11,6 +11,7 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     resolve_index_to_backend_node_id,
 )
+from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import ScrollEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class ScrollAction(ActionBase):
+class ScrollAction(SettleableAction, ActionBase):
     """Scroll the viewport (or a specific element when ``index`` is given)."""
 
     __registry_key__ = "browser.scroll"
@@ -78,6 +79,7 @@ class ScrollAction(ActionBase):
             )
             scope.emit(event)
             await event
+            await self.settle()
             return ActionResult(success=True)
         except ValueError as exc:
             return ActionResult(success=False, error=str(exc))

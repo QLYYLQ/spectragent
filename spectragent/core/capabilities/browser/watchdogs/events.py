@@ -35,9 +35,13 @@ class NavigateToUrlEvent(BaseEvent[None]):
     """Navigate the current tab to a URL."""
 
     url: str
-    wait_until: str = "load"
+    wait_until: str = "load"  # "load" | "domcontentloaded" | "networkidle" | "" (no wait)
     new_tab: bool = False
     timeout_ms: int | None = None
+    # Lifecycle wait timeout (ms). When None, falls back to ``timeout_ms`` and
+    # then to a 30s default. Independent from ``event_timeout`` (which gates
+    # ``await event`` / handler completion, not the CDP lifecycle wait).
+    lifecycle_timeout_ms: int | None = None
     event_timeout: float = 30.0
 
 
@@ -172,6 +176,52 @@ class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
     include_dom: bool = True
     include_screenshot: bool = True
     event_timeout: float = 30.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CDP Page-domain Lifecycle Events  (CDP → CDPEventBridge → EventScope)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# These are bridged from CDP messages by ``BrowserCapability._attach_tab``:
+#
+#   Page.loadEventFired       → PageLoadEvent
+#   Page.domContentEventFired → DOMContentLoadedEvent
+#   Page.lifecycleEvent       → LifecycleEvent
+#
+# ``Page.enable`` and ``Page.setLifecycleEventsEnabled`` must be sent per
+# session for any of these to fire — that wiring also lives in _attach_tab.
+# Consumers (currently ``ActionWatchdog._on_navigate``) wait on these to
+# make ``NavigateToUrlEvent.wait_until`` actually mean something.
+
+
+class PageLoadEvent(BaseEvent[None]):
+    """``Page.loadEventFired`` — main resource and all sub-resources loaded."""
+
+    frame_id: str | None = None
+    loader_id: str | None = None
+    timestamp: float | None = None
+
+
+class DOMContentLoadedEvent(BaseEvent[None]):
+    """``Page.domContentEventFired`` — DOMContentLoaded fired on the page."""
+
+    frame_id: str | None = None
+    loader_id: str | None = None
+    timestamp: float | None = None
+
+
+class LifecycleEvent(BaseEvent[None]):
+    """``Page.lifecycleEvent`` — ``name`` is the lifecycle phase.
+
+    Common values: ``"init"``, ``"DOMContentLoaded"``, ``"load"``,
+    ``"networkAlmostIdle"``, ``"networkIdle"``, ``"firstPaint"``,
+    ``"firstContentfulPaint"``, ``"firstMeaningfulPaint"``.
+    """
+
+    name: str
+    frame_id: str | None = None
+    loader_id: str | None = None
+    timestamp: float | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

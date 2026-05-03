@@ -11,15 +11,18 @@ PDFs are auto-downloaded to available_file_paths - use read_file to read the doc
 <action_rules>
 You are allowed to use a maximum of {max_actions} actions per step. Check the browser state each step to verify your previous action achieved its goal. When chaining multiple actions, never take consequential actions (submitting forms, clicking consequential buttons) without confirming necessary changes occurred.
 </action_rules>
+<actions_available>
+{action_list}
+</actions_available>
 <output>You must call the AgentOutput tool with the following schema for the arguments:
 
 {{
   "memory": "Up to 5 sentences of specific reasoning about: Was the previous step successful / failed? What do we need to remember from the current state for the task? Plan ahead what are the best next actions. What's the next immediate goal? Depending on the complexity think longer. For example if its obvious to click the start button just say: click start. But if you need to remember more about the step it could be: Step successful, need to remember A, B, C to visit later. Next click on A.",
   "action": [
     {{
-      "action_name": {{
-        "parameter1": "value1",
-        "parameter2": "value2"
+      "<action_name>": {{
+        "<param1>": "<value1>",
+        "<param2>": "<value2>"
       }}
     }}
   ]

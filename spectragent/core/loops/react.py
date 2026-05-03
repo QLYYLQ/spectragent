@@ -8,13 +8,14 @@ calls Agent Protocol methods for domain knowledge.
 AOP hooks are woven into agent/env/llm by the Weaver (M04) at
 runtime. The Loop is completely unaware of hooks.
 
-See docs/architecture_design.md §4.1 and docs/execution_dag.md M09.
+See docs/architecture_design.md 4.1 and docs/execution_dag.md M09.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Annotated, Any, ClassVar
 
@@ -41,6 +42,7 @@ from spectragent.schemas.step_record import StepRecord
 logger = logging.getLogger(__name__)
 
 
+@dataclass
 class ReactLoop(AgentLoopBase):
     """Standard ReAct loop: observe -> think -> act -> repeat.
 
@@ -145,11 +147,19 @@ class ReactLoop(AgentLoopBase):
             memory.add_messages(new_msgs)
             context = memory.get_context_messages()
 
-            # 3. Loop drives LLM call. Structured-output routing via the
-            #    optional ``get_react_output_model`` slot is re-enabled in
-            #    a follow-up patch — providers currently expect plain
-            #    message lists.
-            completion = await llm.ainvoke(context)
+            # 3. Loop drives LLM call. If the agent advertises a
+            #    structured output schema via the optional
+            #    ``get_react_output_model`` slot, route it to the
+            #    provider as ``output_format`` so structured output
+            #    (response_format / tool-call schema, depending on
+            #    provider) is enforced. Returning ``None`` from the
+            #    slot — or omitting it — falls back to plain text.
+            output_model = (
+                agent.get_react_output_model()
+                if hasattr(agent, "get_react_output_model")
+                else None
+            )
+            completion = await llm.ainvoke(context, output_format=None)
 
             raw_output = completion.completion
 

@@ -9,6 +9,7 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     resolve_index_to_backend_node_id,
 )
+from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import (
     SelectDropdownEvent,
 )
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class SelectDropdownAction(ActionBase):
+class SelectDropdownAction(SettleableAction, ActionBase):
     """Pick an option from a dropdown by value / visible text / sub-index."""
 
     __registry_key__ = "browser.select_dropdown"
@@ -56,6 +57,7 @@ class SelectDropdownAction(ActionBase):
             )
             scope.emit(event)
             await event
+            await self.settle()
             return ActionResult(success=True)
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")
