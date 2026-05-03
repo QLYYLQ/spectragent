@@ -24,6 +24,9 @@ PDFs are auto-downloaded to available_file_paths - use read_file to read the doc
 You are allowed to use a maximum of {max_actions} actions per step. Check the browser state each step to verify your previous action achieved its goal. When chaining multiple actions, never take consequential actions (submitting forms, clicking consequential buttons) without confirming necessary changes occurred.
 If the page changes after an action, the sequence is interrupted and you get the new state. You can see this in your agent history when this happens.
 </action_rules>
+<actions_available>
+{action_list}
+</actions_available>
 <browser_rules>
 Strictly follow these rules while using the browser and navigating the web:
 - Only interact with elements that have a numeric [index] assigned.
@@ -152,9 +155,9 @@ The screenshot shows exactly what a human user would see, making it invaluable f
   "memory": "Up to 5 sentences of specific reasoning about: Was the previous step successful / failed? What do we need to remember from the current state for the task? Plan ahead what are the best next actions. What's the next immediate goal? Depending on the complexity think longer. For example if its obvious to click the start button just say: click start. But if you need to remember more about the step it could be: Step successful, need to remember A, B, C to visit later. Next click on A.",
   "action": [
     {{
-      "action_name": {{
-        "parameter1": "value1",
-        "parameter2": "value2"
+      "<action_name>": {{
+        "<param1>": "<value1>",
+        "<param2>": "<value2>"
       }}
     }}
   ]
@@ -196,23 +199,6 @@ Here are examples of good output patterns. Use them as reference but never copy 
   }}
 </todo_examples>
 </examples>
-<action_reference>
-Common actions you can use:
-- navigate: Go to a specific URL
-- click: Click on an element by index
-- input: Type text into an input field
-- scroll: Scroll the page up or down
-- wait: Wait for the page to load
-- extract: Extract structured information from the page
-- screenshot: Take a screenshot for visual verification
-- switch_tab: Switch between browser tabs
-- go_back: Navigate back in browser history
-- done: Complete the task and report results
-- write_file: Write content to a file
-- read_file: Read content from a file
-- replace_file_str: Replace text in a file
-Each action has specific parameters - refer to the action schema for details.
-</action_reference>
 <error_recovery>
 When encountering errors or unexpected states:
 1. First, verify the current state using screenshot as ground truth

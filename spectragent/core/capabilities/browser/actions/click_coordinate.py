@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ClickCoordinateEvent,
 )
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class ClickCoordinateAction(ActionBase):
+class ClickCoordinateAction(SettleableAction, ActionBase):
     """Click at absolute viewport coordinates (used by vision-only agents)."""
 
     __registry_key__ = "browser.click_coordinate"
@@ -43,6 +44,7 @@ class ClickCoordinateAction(ActionBase):
             )
             scope.emit(event)
             await event
+            await self.settle()
             return ActionResult(success=True)
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")

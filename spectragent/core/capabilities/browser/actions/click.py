@@ -9,6 +9,7 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     resolve_index_to_backend_node_id,
 )
+from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import ClickElementEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class ClickAction(ActionBase):
+class ClickAction(SettleableAction, ActionBase):
     """Click a DOM element by its selector_map index."""
 
     __registry_key__ = "browser.click"
@@ -44,6 +45,7 @@ class ClickAction(ActionBase):
             event = ClickElementEvent(backend_node_id=backend_node_id)
             scope.emit(event)
             await event
+            await self.settle()
             return ActionResult(success=True)
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")

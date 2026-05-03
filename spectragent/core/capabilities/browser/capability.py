@@ -28,7 +28,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar
 
-from agent_cdp import EventScope, ScopeGroup
+from agent_cdp import CDPEventBridge, EventScope, ScopeGroup
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
@@ -41,11 +41,13 @@ from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — re
     GoBackAction,
     GoForwardAction,
     NavigateAction,
+    ScreenshotAction,
     ScrollAction,
     SelectDropdownAction,
     SendKeysAction,
     SwitchTabAction,
     TypeAction,
+    WaitAction,
 )
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
@@ -57,6 +59,9 @@ from spectragent.core.capabilities.browser.profiles import (
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
+    DOMContentLoadedEvent,
+    LifecycleEvent,
+    PageLoadEvent,
 )
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation.fragments import (
@@ -122,6 +127,7 @@ class BrowserCapability(CapabilityBase):
                 "browser.click_coordinate",
                 "browser.type",
                 "browser.navigate",
+                "browser.screenshot",
                 "browser.scroll",
                 "browser.send_keys",
                 "browser.go_back",
@@ -129,6 +135,7 @@ class BrowserCapability(CapabilityBase):
                 "browser.switch_tab",
                 "browser.select_dropdown",
                 "browser.extract_content",
+                "browser.wait",
                 "browser.done",
             ],
         ),
@@ -160,6 +167,18 @@ class BrowserCapability(CapabilityBase):
         int, PydanticField(description="Viewport height in pixels")
     ] = 720
 
+    debug_highlight: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "If True, ActionWatchdog calls CDP Overlay.highlightNode + "
+                "short sleep before each click/type/select so a human watching "
+                "the headed Chrome can see which element the agent targeted. "
+                "Off by default — adds ~300ms per interactive action."
+            ),
+        ),
+    ] = False
+
     # ── per-action capability-side config ────────────────────────────
     # Wiring (``__wiring__["action"]``) is the sole source of truth for
     # *which* actions exist. ``action_overrides`` controls *how* each
@@ -189,6 +208,12 @@ class BrowserCapability(CapabilityBase):
     )
     _scope_group: ScopeGroup | None = field(default=None, init=False, repr=False)
     _scopes: dict[str, EventScope] = field(default_factory=dict, init=False, repr=False)
+    _bridges: dict[str, CDPEventBridge] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _main_frame_ids: dict[str, str] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _selector_maps: dict[str, DOMSelectorMap] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -399,6 +424,16 @@ class BrowserCapability(CapabilityBase):
     async def teardown(self) -> None:
         """Tear down all scopes, close CDPClient, and release backend session."""
         self._alive = False
+
+        # Close all CDP→scope bridges BEFORE closing scope_group, so late
+        # CDP events don't try to dispatch into a half-torn-down scope.
+        for sid, bridge in list(self._bridges.items()):
+            try:
+                bridge.close()
+            except Exception as exc:
+                logger.debug("Bridge close failed for %s: %s", sid, exc)
+        self._bridges.clear()
+
         if self._scope_group is not None:
             await self._scope_group.close_all()
         self._scopes.clear()
@@ -407,6 +442,7 @@ class BrowserCapability(CapabilityBase):
         self._target_to_session.clear()
         self._session_to_target.clear()
         self._cycle_cache.clear()
+        self._main_frame_ids.clear()
         self._global_scope = None
         self._default_session_id = None
 
@@ -678,6 +714,15 @@ class BrowserCapability(CapabilityBase):
         if target_id is None:
             return
 
+        # Close the CDP→scope bridge BEFORE the scope so late CDP events
+        # don't hit a half-torn-down scope.
+        bridge = self._bridges.pop(session_id, None)
+        if bridge is not None:
+            try:
+                bridge.close()
+            except Exception as exc:
+                logger.debug("Bridge close failed for %s: %s", session_id, exc)
+
         if self._scope_group is not None:
             await self._scope_group.close_scope(target_id)
 
@@ -687,6 +732,7 @@ class BrowserCapability(CapabilityBase):
         self._target_to_session.pop(target_id, None)
         self._session_to_target.pop(session_id, None)
         self._cycle_cache.pop(session_id, None)
+        self._main_frame_ids.pop(session_id, None)
 
         if self._cdp is not None:
             try:
@@ -697,7 +743,17 @@ class BrowserCapability(CapabilityBase):
                 logger.debug("Failed to close target %s: %s", target_id, exc)
 
     async def _attach_tab(self, target_id: str, url: str = "") -> str:
-        """Flatten-attach to a target, build per-tab scope + watchdogs."""
+        """Flatten-attach to a target, build per-tab scope + watchdogs.
+
+        Page lifecycle wiring (M13.5): once attached we send ``Page.enable``
+        and ``Page.setLifecycleEventsEnabled`` so ``Page.loadEventFired`` /
+        ``Page.domContentEventFired`` / ``Page.lifecycleEvent`` actually
+        fire on this session, and we build a :class:`CDPEventBridge` that
+        translates each into the matching agent-cdp ``BaseEvent``. This is
+        what lets ``ActionWatchdog._on_navigate`` honour
+        ``NavigateToUrlEvent.wait_until``. We also stash the main frame
+        id so navigate handlers can filter sub-frame lifecycle noise.
+        """
         if self._cdp is None or self._scope_group is None:
             raise RuntimeError("BrowserCapability not set up")
 
@@ -712,7 +768,45 @@ class BrowserCapability(CapabilityBase):
                 f"Target.attachToTarget returned no sessionId for target {target_id}"
             )
 
-        # 2. EventScope per tab.
+        # 2. Enable Page domain + lifecycle events for this session.
+        # Without these calls, loadEventFired / lifecycleEvent never fire.
+        # We do this before creating watchdogs so a subsequent
+        # Page.navigate's lifecycle is observable.
+        try:
+            await self._cdp.send("Page.enable", {}, session_id=cdp_session_id)
+            await self._cdp.send(
+                "Page.setLifecycleEventsEnabled",
+                {"enabled": True},
+                session_id=cdp_session_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Page.enable / setLifecycleEventsEnabled failed on %s: %s — "
+                "lifecycle-aware navigation will degrade to fire-and-forget",
+                cdp_session_id, exc,
+            )
+
+        # 3. Capture main frame id (best-effort; used by _on_navigate to
+        # filter sub-frame lifecycle events).
+        main_frame_id: str | None = None
+        try:
+            tree_result = await self._cdp.send(
+                "Page.getFrameTree", {}, session_id=cdp_session_id,
+            )
+            if tree_result:
+                main_frame_id = (
+                    tree_result.get("frameTree", {})
+                    .get("frame", {})
+                    .get("id")
+                )
+        except Exception as exc:
+            logger.debug(
+                "Page.getFrameTree failed on %s: %s", cdp_session_id, exc,
+            )
+        if main_frame_id is not None:
+            self._main_frame_ids[cdp_session_id] = main_frame_id
+
+        # 4. EventScope per tab.
         scope = await self._scope_group.create_scope(
             target_id,
             target_id=target_id,
@@ -720,14 +814,41 @@ class BrowserCapability(CapabilityBase):
             cdp_session_id=cdp_session_id,
         )
 
-        # 3. Per-tab watchdogs.
+        # 5. CDP → scope bridge for Page-domain lifecycle events.
+        bridge = CDPEventBridge(self._cdp, scope, session_id=cdp_session_id)
+        bridge.bridge(
+            "Page.loadEventFired",
+            lambda p: PageLoadEvent(
+                loader_id=p.get("loaderId"),
+                timestamp=p.get("timestamp"),
+            ),
+        )
+        bridge.bridge(
+            "Page.domContentEventFired",
+            lambda p: DOMContentLoadedEvent(
+                loader_id=p.get("loaderId"),
+                timestamp=p.get("timestamp"),
+            ),
+        )
+        bridge.bridge(
+            "Page.lifecycleEvent",
+            lambda p: LifecycleEvent(
+                name=p.get("name", ""),
+                frame_id=p.get("frameId"),
+                loader_id=p.get("loaderId"),
+                timestamp=p.get("timestamp"),
+            ),
+        )
+        self._bridges[cdp_session_id] = bridge
+
+        # 6. Per-tab watchdogs.
         watchdogs = self._create_watchdogs_for_scope(
             level="tab", cdp_session_id=cdp_session_id,
         )
         for wd in watchdogs:
             wd.attach(scope, session_id=cdp_session_id)
 
-        # 4. Register mappings.
+        # 7. Register mappings.
         self._scopes[cdp_session_id] = scope
         self._selector_maps[cdp_session_id] = {}
         self._target_to_session[target_id] = cdp_session_id
@@ -787,6 +908,14 @@ class BrowserCapability(CapabilityBase):
                 return self._selector_maps.get(cdp_session_id, {})
             return {}
 
+        # Per-tab main_frame_id getter — ``_on_navigate`` uses it to
+        # filter sub-frame Page.lifecycleEvent so we only wait on the
+        # main frame's load/networkidle.
+        def _main_frame_id_getter() -> str | None:
+            if cdp_session_id is not None:
+                return self._main_frame_ids.get(cdp_session_id)
+            return None
+
         _WATCHDOG_FACTORY: dict[str, Any] = {
             "dom": lambda: DOMWatchdog(
                 cdp,
@@ -795,7 +924,10 @@ class BrowserCapability(CapabilityBase):
                 viewport=viewport,
             ),
             "action": lambda: ActionWatchdog(
-                cdp, selector_map_getter=_selector_map_getter,
+                cdp,
+                selector_map_getter=_selector_map_getter,
+                main_frame_id_getter=_main_frame_id_getter,
+                debug_highlight=self.debug_highlight,
             ),
             "screenshot": lambda: ScreenshotWatchdog(cdp),
             "crash": lambda: CrashWatchdog(cdp),

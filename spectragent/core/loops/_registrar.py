@@ -16,6 +16,7 @@ See docs/execution_dag.md M03 for the registrar design.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from conscribe import create_registrar
@@ -33,6 +34,7 @@ AgentLoopRegistrar = create_registrar(
 )
 
 
+@dataclass
 class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     """Concrete base for all Loop implementations.
 
@@ -71,7 +73,7 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     __requires_env__: ClassVar[bool] = True
 
     # Runtime deps bound at weave time. Empty until weave() is called.
-    ctx: dict[str, Any]
+    ctx: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

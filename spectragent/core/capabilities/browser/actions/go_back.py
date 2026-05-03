@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import GoBackEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class GoBackAction(ActionBase):
+class GoBackAction(SettleableAction, ActionBase):
     """Navigate back in the current tab's history."""
 
     __registry_key__ = "browser.go_back"
@@ -38,6 +39,7 @@ class GoBackAction(ActionBase):
             event = GoBackEvent()
             scope.emit(event)
             await event
+            await self.settle()
             return ActionResult(success=True)
         except Exception as exc:  # pragma: no cover
             return ActionResult(success=False, error=str(exc))

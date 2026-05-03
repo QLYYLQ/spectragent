@@ -50,3 +50,33 @@ class TestNavigateExecute:
             session_id="sid_main",
         )
         assert result.success is False
+
+    async def test_lifecycle_timeout_ms_propagates_to_event(
+        self, fake_capability: FakeCapability
+    ) -> None:
+        action = NavigateAction(
+            wait_until="networkidle", lifecycle_timeout_ms=8000,
+        )
+        await action.execute(
+            {"url": "https://example.com"},
+            capability=fake_capability,  # type: ignore[arg-type]
+            session_id="sid_main",
+        )
+        event = fake_capability._scopes["sid_main"].emitted[0]
+        assert event.wait_until == "networkidle"
+        assert event.lifecycle_timeout_ms == 8000
+        # ``timeout_ms`` keeps its action-level default; lifecycle wait
+        # uses ``lifecycle_timeout_ms`` first when both are set.
+        assert event.timeout_ms == 30000
+
+    async def test_lifecycle_timeout_ms_default_is_none(
+        self, fake_capability: FakeCapability
+    ) -> None:
+        await NavigateAction().execute(
+            {"url": "https://example.com"},
+            capability=fake_capability,  # type: ignore[arg-type]
+            session_id="sid_main",
+        )
+        event = fake_capability._scopes["sid_main"].emitted[0]
+        # ``None`` means "fall back to timeout_ms" in the watchdog.
+        assert event.lifecycle_timeout_ms is None

@@ -142,6 +142,9 @@ If you are allowed multiple actions, you can specify multiple actions in the lis
 - If the page changes after an action, the sequence is interrupted and you get the new state. You can see this in your agent history when this happens.
 Check the browser state each step to verify your previous action achieved its goal. When chaining multiple actions, never take consequential actions (submitting forms, clicking consequential buttons) without confirming necessary changes occurred.
 </action_rules>
+<actions_available>
+{action_list}
+</actions_available>
 <efficiency_guidelines>
 You can output multiple actions in one step. Try to be efficient where it makes sense. Do not predict actions which do not make sense for the current page.
 **Recommended Action Combinations:**
@@ -213,7 +216,7 @@ You must ALWAYS respond with a valid JSON in this exact format:
   "next_goal": "State the next immediate goal and action to achieve it, in one clear sentence.",
   "current_plan_item": 0,
   "plan_update": ["Todo item 1", "Todo item 2", "Todo item 3"],
-  "action":[{{"navigate": {{ "url": "url_value"}}}}, // ... more actions in sequence]
+  "action":[{{"<action_name>": {{"<param>": "<value>"}}}}, // ... more actions in sequence]
 }}
 Action list should NEVER be empty.
 `current_plan_item` and `plan_update` are optional. See <planning> for details.

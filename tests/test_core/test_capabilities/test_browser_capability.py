@@ -6,6 +6,8 @@ the cache and lazy-batch resolution live in ``test_browser_lazy_batch.py``.
 
 from __future__ import annotations
 
+from typing import Any
+
 from spectragent.core.capabilities.base import BaseCapability
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.schemas.action import ActionDescriptor
@@ -145,6 +147,7 @@ class TestActionWiringAndProvidedActions:
                 "browser.click_coordinate",
                 "browser.type",
                 "browser.navigate",
+                "browser.screenshot",
                 "browser.scroll",
                 "browser.send_keys",
                 "browser.go_back",
@@ -152,6 +155,7 @@ class TestActionWiringAndProvidedActions:
                 "browser.switch_tab",
                 "browser.select_dropdown",
                 "browser.extract_content",
+                "browser.wait",
                 "browser.done",
             }
         )
@@ -168,7 +172,7 @@ class TestDefaultActionInstantiation:
 
     def test_default_actions_instantiated_when_no_overrides(self) -> None:
         cap = BrowserCapability()
-        assert len(cap._actions_by_name) == 12
+        assert len(cap._actions_by_name) == 14
         assert set(cap._actions_by_name) == cap.provided_actions
 
     def test_action_overrides_apply_kwargs(self) -> None:
@@ -180,8 +184,8 @@ class TestDefaultActionInstantiation:
         scroll = cap._actions_by_name["browser.scroll"]
         assert scroll.default_amount == 777  # type: ignore[attr-defined]
         assert scroll.max_amount == 9999  # type: ignore[attr-defined]
-        # All 12 actions still materialised — overrides are additive.
-        assert len(cap._actions_by_name) == 12
+        # All 14 actions still materialised — overrides are additive.
+        assert len(cap._actions_by_name) == 14
 
     def test_unknown_override_raises(self) -> None:
         import pytest
@@ -412,3 +416,209 @@ class TestBackendIoC:
         # backend defaults to None.
         with pytest.raises(RuntimeError, match="requires a CDP URL"):
             asyncio.run(cap.setup())
+
+
+# ─── Page lifecycle wiring (M13.5) ────────────────────────────────────
+
+
+class _RecordingCDPClient:
+    """CDP client stub that records every send() call.
+
+    Returns plausible result payloads for the methods _attach_tab uses
+    (Target.attachToTarget / Page.enable / Page.setLifecycleEventsEnabled
+    / Page.getFrameTree). Implements on_event/off_event so CDPEventBridge
+    can register without crashing.
+    """
+
+    def __init__(self, frame_id: str = "MAIN_FRAME_ID_42") -> None:
+        self.is_connected = True
+        self.sent: list[tuple[str, dict[str, Any], str | None]] = []
+        self.event_callbacks: dict[str, list[Any]] = {}
+        self._frame_id = frame_id
+
+    async def send(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> Any:
+        self.sent.append((method, dict(params or {}), session_id))
+        if method == "Target.attachToTarget":
+            return {"sessionId": "cdp-sid-1"}
+        if method == "Page.getFrameTree":
+            return {"frameTree": {"frame": {"id": self._frame_id}}}
+        if method == "Target.createTarget":
+            return {"targetId": "T1"}
+        if method == "Target.getTargets":
+            return {"targetInfos": []}
+        return {}
+
+    def on_event(self, method: str, callback: Any) -> None:
+        self.event_callbacks.setdefault(method, []).append(callback)
+
+    def off_event(self, method: str, callback: Any) -> None:
+        cbs = self.event_callbacks.get(method, [])
+        if callback in cbs:
+            cbs.remove(callback)
+
+
+class _RecordingScope:
+    """Stand-in for agent_cdp.EventScope — captures connect() registrations."""
+
+    def __init__(self, scope_id: str = "scope") -> None:
+        self.scope_id = scope_id
+        self.connections: list[tuple[type, Any]] = []
+        self.metadata: dict[str, Any] = {}
+
+    def connect(self, event_type: type, handler: Any, **_: Any) -> Any:
+        self.connections.append((event_type, handler))
+        class _Conn:
+            def disconnect(self) -> None:
+                pass
+        return _Conn()
+
+    def emit(self, _event: Any) -> None:
+        pass
+
+
+class _RecordingScopeGroup:
+    def __init__(self, _name: str) -> None:
+        self.scopes: list[_RecordingScope] = []
+        self.closed = False
+
+    async def create_scope(self, scope_id: str, **_: Any) -> _RecordingScope:
+        scope = _RecordingScope(scope_id)
+        self.scopes.append(scope)
+        return scope
+
+    async def close_scope(self, _scope_id: str) -> None:
+        return None
+
+    async def close_all(self) -> None:
+        self.closed = True
+
+
+class TestPageLifecycleWiring:
+    """`_attach_tab` enables Page domain + builds CDP→scope bridge.
+
+    The Page-domain wiring is what makes ``NavigateToUrlEvent.wait_until``
+    actually mean something — without ``Page.enable`` /
+    ``setLifecycleEventsEnabled``, ``loadEventFired`` and
+    ``lifecycleEvent`` never fire.
+    """
+
+    @staticmethod
+    def _make_cap_with_stub() -> tuple[
+        BrowserCapability, _RecordingCDPClient, _RecordingScopeGroup,
+    ]:
+        cap = BrowserCapability()
+        cdp = _RecordingCDPClient()
+        scope_group = _RecordingScopeGroup("test")
+        # Use the injected-client path so teardown() skips ``cdp.stop()``
+        # — our stub doesn't speak the full CDPClient lifecycle.
+        cap._inject_cdp_client(cdp)  # type: ignore[arg-type]
+        cap._cdp = cdp  # type: ignore[assignment]
+        cap._scope_group = scope_group  # type: ignore[assignment]
+        # _create_watchdogs_for_scope reads ``_resolved_profile``.
+        from spectragent.core.capabilities.browser.profiles import (
+            resolve_profile,
+        )
+        cap._resolved_profile = resolve_profile("standard")
+
+        # Skip real watchdog construction — the dom_cleaner/serializer
+        # registries are not relevant to the lifecycle wiring under test
+        # and require importing optional modules with heavy deps.
+        cap._create_watchdogs_for_scope = (  # type: ignore[method-assign]
+            lambda level="tab", cdp_session_id=None: []
+        )
+        return cap, cdp, scope_group
+
+    def test_attach_tab_sends_page_enable_and_lifecycle(self) -> None:
+        import asyncio
+
+        cap, cdp, _ = self._make_cap_with_stub()
+
+        async def _drive() -> None:
+            sid = await cap._attach_tab("T1", "https://example.com")
+            assert sid == "cdp-sid-1"
+
+        asyncio.run(_drive())
+
+        methods = [m for m, _, _ in cdp.sent]
+        # Page.enable + setLifecycleEventsEnabled must precede
+        # _create_watchdogs_for_scope (and any subsequent navigate).
+        assert "Page.enable" in methods
+        assert "Page.setLifecycleEventsEnabled" in methods
+        assert "Page.getFrameTree" in methods
+        # Each was sent against the new session id.
+        for m, _params, sid in cdp.sent:
+            if m in {
+                "Page.enable",
+                "Page.setLifecycleEventsEnabled",
+                "Page.getFrameTree",
+            }:
+                assert sid == "cdp-sid-1"
+
+    def test_attach_tab_records_main_frame_id(self) -> None:
+        import asyncio
+
+        cap, _, _ = self._make_cap_with_stub()
+        asyncio.run(cap._attach_tab("T1"))
+        assert cap._main_frame_ids["cdp-sid-1"] == "MAIN_FRAME_ID_42"
+
+    def test_attach_tab_builds_bridge(self) -> None:
+        import asyncio
+
+        cap, cdp, _ = self._make_cap_with_stub()
+        asyncio.run(cap._attach_tab("T1"))
+
+        assert "cdp-sid-1" in cap._bridges
+        # Bridge subscribed to all three Page-domain events.
+        registered = set(cdp.event_callbacks)
+        assert {
+            "Page.loadEventFired",
+            "Page.domContentEventFired",
+            "Page.lifecycleEvent",
+        } <= registered
+
+    def test_close_tab_closes_bridge_first(self) -> None:
+        import asyncio
+
+        cap, cdp, _ = self._make_cap_with_stub()
+        asyncio.run(cap._attach_tab("T1"))
+        cap._default_session_id = "another-tab"
+        asyncio.run(cap.close_tab("cdp-sid-1"))
+
+        # Bridge entry removed and its CDP callbacks unregistered.
+        assert "cdp-sid-1" not in cap._bridges
+        assert "cdp-sid-1" not in cap._main_frame_ids
+        # Each CDP method is either absent OR its callback list emptied.
+        for method in (
+            "Page.loadEventFired",
+            "Page.domContentEventFired",
+            "Page.lifecycleEvent",
+        ):
+            cbs = cdp.event_callbacks.get(method, [])
+            assert cbs == [], (
+                f"Expected {method} callbacks emptied after close_tab, "
+                f"got {cbs}"
+            )
+
+    def test_teardown_closes_all_bridges(self) -> None:
+        import asyncio
+
+        cap, cdp, scope_group = self._make_cap_with_stub()
+        asyncio.run(cap._attach_tab("T1"))
+        cap._default_session_id = "cdp-sid-1"  # so teardown clears state
+
+        asyncio.run(cap.teardown())
+
+        assert cap._bridges == {}
+        assert cap._main_frame_ids == {}
+        assert scope_group.closed is True
+        for method in (
+            "Page.loadEventFired",
+            "Page.domContentEventFired",
+            "Page.lifecycleEvent",
+        ):
+            assert cdp.event_callbacks.get(method, []) == []
