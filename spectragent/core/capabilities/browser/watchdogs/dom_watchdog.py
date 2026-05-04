@@ -76,8 +76,10 @@ class DOMWatchdog(WatchdogBase):
             return None
 
         try:
-            # 3-protocol parallel capture (+ optional 4th for JS listeners).
-            raw_dom, snapshot, ax_tree, js_listener_ids = await self._capture_cdp_data()
+            # 3-protocol parallel capture (+ optional 4th for JS listeners,
+            # plus a parallel devicePixelRatio query — CDP DOMSnapshot
+            # bounds are device pixels, every other consumer wants CSS).
+            raw_dom, snapshot, ax_tree, js_listener_ids, dpr = await self._capture_cdp_data()
 
             # Previous selector_map for new-node tracking.
             previous_map = self.selector_map if self.selector_map else None
@@ -88,6 +90,7 @@ class DOMWatchdog(WatchdogBase):
                 session_id=self._session_id,
                 js_click_listener_ids=js_listener_ids,
                 previous_selector_map=previous_map,
+                device_pixel_ratio=dpr,
             )
 
             # Serialize if serializer is configured.
@@ -111,10 +114,15 @@ class DOMWatchdog(WatchdogBase):
 
     async def _capture_cdp_data(
         self,
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], set[int] | None]:
-        """Execute 3 CDP protocols in parallel (+ optional 4th).
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], set[int] | None, float]:
+        """Execute 3 CDP protocols in parallel (+ optional 4th + DPR query).
 
-        Returns (raw_dom, snapshot, ax_tree, js_click_listener_ids).
+        Returns ``(raw_dom, snapshot, ax_tree, js_click_listener_ids, dpr)``.
+        ``dpr`` is the live ``window.devicePixelRatio`` for this target;
+        we re-query every observe rather than cache because the user may
+        zoom or move windows between physical displays mid-run, and the
+        cost (single Runtime.evaluate, run in parallel with the existing
+        gather) is well under 1ms relative to the 1-5s LLM step.
         """
         import asyncio
 
@@ -172,7 +180,26 @@ class DOMWatchdog(WatchdogBase):
                 logger.warning("JS listener detection failed: %s", e)
                 return None
 
-        raw_dom, snapshot, ax_tree, js_ids = await asyncio.gather(
-            get_document(), get_snapshot(), get_ax_tree(), get_js_listeners()
+        async def get_dpr() -> float:
+            try:
+                result = await cdp.send(
+                    "Runtime.evaluate",
+                    {
+                        "expression": "window.devicePixelRatio || 1",
+                        "returnByValue": True,
+                    },
+                    session_id=sid,
+                )
+                value = (result or {}).get("result", {}).get("value")
+                if isinstance(value, (int, float)) and value > 0:
+                    return float(value)
+                return 1.0
+            except Exception as exc:
+                logger.warning("DPR query failed for session %s: %s", sid, exc)
+                return 1.0
+
+        raw_dom, snapshot, ax_tree, js_ids, dpr = await asyncio.gather(
+            get_document(), get_snapshot(), get_ax_tree(),
+            get_js_listeners(), get_dpr(),
         )
-        return raw_dom, snapshot, ax_tree, js_ids
+        return raw_dom, snapshot, ax_tree, js_ids, dpr
