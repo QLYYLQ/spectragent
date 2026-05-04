@@ -77,6 +77,7 @@ class SkyvernCleaner(DOMCleanerBase):
         session_id: str | None = None,
         js_click_listener_ids: set[int] | None = None,
         previous_selector_map: DOMSelectorMap | None = None,
+        device_pixel_ratio: float = 1.0,
     ) -> DOMState:
         """Clean using pre-extracted JS result.
 
@@ -88,11 +89,16 @@ class SkyvernCleaner(DOMCleanerBase):
         # Check for JS-extracted elements.
         js_elements = raw_dom.get("js_elements") or raw_dom.get("elements")
         if js_elements:
+            # JS path: getBoundingClientRect on the page side already returns
+            # CSS pixels, so DPR conversion is not needed here. The kwarg is
+            # accepted for protocol parity and future-proofing only.
             return self._from_js_elements(js_elements, viewport, session_id)
 
         # Fallback: build from DOMSnapshot (less accurate for skyvern).
         logger.warning("SkyvernCleaner: No JS elements found, falling back to snapshot")
-        return await self._from_snapshot(snapshot, ax_tree, viewport, session_id)
+        return await self._from_snapshot(
+            snapshot, ax_tree, viewport, session_id, dpr=device_pixel_ratio,
+        )
 
     def _from_js_elements(
         self,
@@ -201,12 +207,17 @@ class SkyvernCleaner(DOMCleanerBase):
         ax_tree: dict[str, Any],
         viewport: tuple[int, int],
         session_id: str | None,
+        *,
+        dpr: float = 1.0,
     ) -> DOMState:
         """Fallback: build from DOMSnapshot (reuse browser-use logic)."""
         from spectragent.core.capabilities.browser.dom.cleaning.browser_use import BrowserUseCleaner
 
         fallback = BrowserUseCleaner()
-        return await fallback.clean({}, snapshot, ax_tree, viewport, session_id=session_id)
+        return await fallback.clean(
+            {}, snapshot, ax_tree, viewport,
+            session_id=session_id, device_pixel_ratio=dpr,
+        )
 
 
 def _load_extraction_script() -> str:

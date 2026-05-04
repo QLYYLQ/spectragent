@@ -28,6 +28,7 @@ class DOMCleanerProtocol(Protocol):
         session_id: str | None = None,
         js_click_listener_ids: set[int] | None = None,
         previous_selector_map: DOMSelectorMap | None = None,
+        device_pixel_ratio: float = 1.0,
     ) -> DOMState:
         """Clean and filter raw CDP DOM data into a DOMState.
 
@@ -48,6 +49,12 @@ class DOMCleanerProtocol(Protocol):
             (from optional 4th CDP call). ``None`` means detection was skipped.
         previous_selector_map:
             Previous selector_map for new-node tracking. ``None`` on first call.
+        device_pixel_ratio:
+            Live ``window.devicePixelRatio`` for the target.  CDP
+            ``DOMSnapshot`` returns ``bounds`` in **device pixels**;
+            divide by DPR to recover CSS pixels expected by every
+            downstream consumer (click coords, occlusion, serialization).
+            Default ``1.0`` keeps tests and DPR-1 environments unchanged.
         """
         ...
 

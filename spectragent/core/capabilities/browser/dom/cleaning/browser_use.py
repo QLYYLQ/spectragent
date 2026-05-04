@@ -66,12 +66,10 @@ class BrowserUseCleaner(DOMCleanerBase):
         max_occlusion_nodes: int = 5000,
         include_shadow_dom: bool = True,
         enable_compound_components: bool = True,
-        device_pixel_ratio: float = 1.0,
     ) -> None:
         self.max_occlusion_nodes = max_occlusion_nodes
         self.include_shadow_dom = include_shadow_dom
         self.enable_compound_components = enable_compound_components
-        self.device_pixel_ratio = device_pixel_ratio
 
     async def clean(
         self,
@@ -83,11 +81,12 @@ class BrowserUseCleaner(DOMCleanerBase):
         session_id: str | None = None,
         js_click_listener_ids: set[int] | None = None,
         previous_selector_map: DOMSelectorMap | None = None,
+        device_pixel_ratio: float = 1.0,
     ) -> DOMState:
         # Phase 0: Parse raw CDP data into DOMElementNode tree.
         root = _build_tree_from_cdp(
             raw_dom, snapshot, ax_tree, session_id,
-            device_pixel_ratio=self.device_pixel_ratio,
+            device_pixel_ratio=device_pixel_ratio,
             js_click_listener_ids=js_click_listener_ids,
         )
         if root is None:
@@ -130,7 +129,7 @@ class BrowserUseCleaner(DOMCleanerBase):
         logger.debug("Stage 5: %d interactive elements", len(selector_map))
 
         # Extract scroll info from snapshot.
-        scroll_info = _extract_scroll_info(snapshot, viewport, self.device_pixel_ratio)
+        scroll_info = _extract_scroll_info(snapshot, viewport, device_pixel_ratio)
 
         return DOMState(
             dom_tree=root,
@@ -220,17 +219,24 @@ def _build_snapshot_lookup(
                 computed_styles = styles if styles else None
                 cursor_style = (styles or {}).get("cursor")
 
+            # CDP DOMSnapshot returns clientRects and scrollRects already in CSS
+            # pixels — only `bounds` is in device pixels. Do NOT divide these by
+            # DPR or you get a half-size viewport that fails per-frame visibility
+            # for the right half of the page (verified empirically on
+            # xiaohongshu.com login modal: HTML clientRect was 640×290 instead
+            # of 1280×581, dropping the entire right panel including the X
+            # close button from selector_map).
             client_rect: DOMRect | None = None
             if li < len(layout_client_rects):
                 cr = layout_client_rects[li]
                 if cr and len(cr) >= 4:
-                    client_rect = DOMRect(x=cr[0] / dpr, y=cr[1] / dpr, width=cr[2] / dpr, height=cr[3] / dpr)
+                    client_rect = DOMRect(x=cr[0], y=cr[1], width=cr[2], height=cr[3])
 
             scroll_rects: DOMRect | None = None
             if li < len(layout_scroll_rects):
                 sr = layout_scroll_rects[li]
                 if sr and len(sr) >= 4:
-                    scroll_rects = DOMRect(x=sr[0] / dpr, y=sr[1] / dpr, width=sr[2] / dpr, height=sr[3] / dpr)
+                    scroll_rects = DOMRect(x=sr[0], y=sr[1], width=sr[2], height=sr[3])
 
             lookup[bid] = _SnapshotData(
                 bounds=bounds, client_rect=client_rect, scroll_rects=scroll_rects,

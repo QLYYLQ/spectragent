@@ -8,6 +8,7 @@ them into CDP commands.  Uses ``DOMWatchdog.selector_map`` to resolve
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -116,6 +117,134 @@ def _resolve_key_event(raw: str) -> tuple[dict[str, Any], str | None]:
     return ({"key": raw}, None)
 
 
+_DEBUG_OVERLAY_JS = r"""
+(function () {
+  if (window.__af_overlay_installed__) return;
+  window.__af_overlay_installed__ = true;
+
+  function ensureRoot() {
+    if (!document.documentElement) return null;
+    let root = document.getElementById('__af_overlay_root__');
+    if (root) return root;
+    root = document.createElement('div');
+    root.id = '__af_overlay_root__';
+    root.setAttribute('aria-hidden', 'true');
+    root.setAttribute('data-af-overlay', '1');
+    root.style.cssText =
+      'position:fixed;left:0;top:0;width:0;height:0;' +
+      'pointer-events:none;z-index:2147483647;';
+    (document.body || document.documentElement).appendChild(root);
+    return root;
+  }
+
+  const cursorSVG =
+    '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" ' +
+    'style="width:100%;height:100%;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.7));">' +
+    '<path d="M3 2 L3 19 L8.5 14.5 L11.5 21.5 L14.5 20.3 L11.5 13.5 L19 13.5 Z" ' +
+    'fill="#ffffff" stroke="#000000" stroke-width="1.5" stroke-linejoin="round"/>' +
+    '</svg>';
+
+  function ensureCursor() {
+    const root = ensureRoot();
+    if (!root) return null;
+    let c = document.getElementById('__af_cursor__');
+    if (c) return c;
+    c = document.createElement('div');
+    c.id = '__af_cursor__';
+    c.setAttribute('data-af-overlay', '1');
+    c.style.cssText =
+      'position:fixed;width:48px;height:48px;' +
+      'left:50vw;top:50vh;' +
+      'pointer-events:none;z-index:2147483647;' +
+      'transition:left 220ms ease-out, top 220ms ease-out;' +
+      'transform:translate(-4px,-4px);';
+    c.innerHTML = cursorSVG;
+    root.appendChild(c);
+    return c;
+  }
+
+  window.__af_move_cursor__ = function (x, y) {
+    const c = ensureCursor();
+    if (!c) return;
+    c.style.left = x + 'px';
+    c.style.top = y + 'px';
+  };
+
+  window.__af_show_click__ = function (x, y, label) {
+    const root = ensureRoot();
+    if (!root) return;
+    const oldM = document.getElementById('__af_click_marker__');
+    if (oldM) oldM.remove();
+    const oldL = document.getElementById('__af_click_label__');
+    if (oldL) oldL.remove();
+    const oldD = document.getElementById('__af_click_dot__');
+    if (oldD) oldD.remove();
+
+    // Outer pulsing ring — large and obvious.
+    const m = document.createElement('div');
+    m.id = '__af_click_marker__';
+    m.setAttribute('data-af-overlay', '1');
+    m.style.cssText =
+      'position:fixed;width:64px;height:64px;border-radius:50%;' +
+      'border:6px solid #ff3300;background:rgba(255,51,0,0.18);' +
+      'box-shadow:' +
+      '  0 0 0 4px rgba(255,51,0,0.45),' +
+      '  0 0 32px 8px rgba(255,51,0,0.65),' +
+      '  inset 0 0 0 2px rgba(255,255,255,0.85);' +
+      'pointer-events:none;z-index:2147483646;' +
+      'transform:translate(-32px,-32px);' +
+      'left:' + x + 'px;top:' + y + 'px;';
+    root.appendChild(m);
+
+    // Inner crosshair dot — pinpoints the exact click pixel.
+    const d = document.createElement('div');
+    d.id = '__af_click_dot__';
+    d.setAttribute('data-af-overlay', '1');
+    d.style.cssText =
+      'position:fixed;width:10px;height:10px;border-radius:50%;' +
+      'background:#ffffff;border:2px solid #ff3300;' +
+      'box-shadow:0 0 6px rgba(0,0,0,0.6);' +
+      'pointer-events:none;z-index:2147483646;' +
+      'transform:translate(-7px,-7px);' +
+      'left:' + x + 'px;top:' + y + 'px;';
+    root.appendChild(d);
+
+    if (label) {
+      const l = document.createElement('div');
+      l.id = '__af_click_label__';
+      l.setAttribute('data-af-overlay', '1');
+      l.style.cssText =
+        'position:fixed;background:rgba(255,51,0,0.96);color:#fff;' +
+        'padding:8px 14px;border-radius:6px;' +
+        'font:bold 16px/1.25 -apple-system,Segoe UI,Roboto,sans-serif;' +
+        'pointer-events:none;z-index:2147483646;white-space:nowrap;' +
+        'max-width:520px;overflow:hidden;text-overflow:ellipsis;' +
+        'box-shadow:0 4px 12px rgba(0,0,0,0.55);' +
+        'border:2px solid #ffffff;' +
+        'transform:translate(40px,-16px);' +
+        'left:' + x + 'px;top:' + y + 'px;';
+      l.textContent = label;
+      root.appendChild(l);
+    }
+
+    window.__af_move_cursor__(x, y);
+  };
+
+  // Visibility toggle — called by BrowserCapability around the
+  // observe cycle so injected nodes don't pollute DOM scrape /
+  // screenshot. Display:none also makes them invisible to the
+  // browser-use cleaner's CSS visibility filter.
+  window.__af_set_overlay_visible__ = function (visible) {
+    const nodes = document.querySelectorAll('[data-af-overlay="1"]');
+    const display = visible ? '' : 'none';
+    for (let i = 0; i < nodes.length; i++) {
+      nodes[i].style.display = display;
+    }
+  };
+})();
+"""
+
+
 class ActionWatchdog(WatchdogBase):
     """Executes browser actions via CDP."""
 
@@ -144,6 +273,10 @@ class ActionWatchdog(WatchdogBase):
         self._debug_highlight = debug_highlight
         self._debug_highlight_ms = debug_highlight_ms
         self._overlay_enabled = False
+        # Tracks whether the JS cursor/click overlay has been registered
+        # via Page.addScriptToEvaluateOnNewDocument for this session, so
+        # we register it at most once per tab.
+        self._overlay_script_installed = False
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._scope = scope
@@ -170,7 +303,17 @@ class ActionWatchdog(WatchdogBase):
     # -----------------------------------------------------------------------
 
     async def _on_click_element(self, event: ClickElementEvent) -> dict[str, Any] | None:
-        """Click element by backend_node_id → resolve to coordinates → click."""
+        """Click element by backend_node_id → resolve to coordinates → click.
+
+        Click coordinates come from a live ``getBoundingClientRect`` (CSS
+        viewport pixels) rather than ``node.bounds`` to immunise against
+        three known sources of drift between observe and act:
+
+        - DPR mismatch (DOMSnapshot bounds are device pixels)
+        - document vs viewport coordinate space (snapshot bounds include
+          scrollOffset; CDP Input.dispatchMouseEvent expects viewport)
+        - layout shifts that happened after the snapshot was taken
+        """
         node = self._resolve_node(event.backend_node_id)
         if node is None:
             return {"error": f"Element {event.backend_node_id} not in selector_map"}
@@ -179,15 +322,38 @@ class ActionWatchdog(WatchdogBase):
             return {"error": f"Element {event.backend_node_id} has no bounds"}
 
         await self._highlight_node(event.backend_node_id)
-        cx, cy = node.bounds.center
-        return await self._click_at(int(cx), int(cy), event.button, event.click_count)
+
+        live = await self._get_live_viewport_center(event.backend_node_id)
+        if live is not None:
+            cx, cy = live
+        else:
+            # Fallback path: post Layer-1 bounds are CSS pixels, so this is
+            # still correct for the static-page case but vulnerable to
+            # layout shift / scroll between observe and act.
+            logger.warning(
+                "Live viewport center unavailable for node %d; falling back "
+                "to snapshot bounds",
+                event.backend_node_id,
+            )
+            cx_f, cy_f = node.bounds.center
+            cx, cy = int(cx_f), int(cy_f)
+
+        return await self._click_at(
+            cx, cy, event.button, event.click_count,
+            label=self._describe_node(node),
+        )
 
     async def _on_click_coordinate(self, event: ClickCoordinateEvent) -> dict[str, Any] | None:
         """Click at absolute coordinates."""
-        return await self._click_at(event.coordinate_x, event.coordinate_y, event.button, event.click_count)
+        return await self._click_at(
+            event.coordinate_x, event.coordinate_y,
+            event.button, event.click_count,
+            label=f"({event.coordinate_x}, {event.coordinate_y})",
+        )
 
     async def _click_at(
-        self, x: int, y: int, button: str, click_count: int
+        self, x: int, y: int, button: str, click_count: int,
+        *, label: str = "",
     ) -> dict[str, Any]:
         """Execute click at (x, y) via CDP Input domain."""
         sid = self._session_id
@@ -204,6 +370,7 @@ class ActionWatchdog(WatchdogBase):
                 "button": button, "clickCount": click_count,
             }, session_id=sid)
             self._mouse_x, self._mouse_y = x, y
+            await self._paint_click(x, y, label)
             return {"clicked": True, "x": x, "y": y}
         except Exception as e:
             logger.error("Click failed at (%d, %d): %s", x, y, e)
@@ -268,10 +435,17 @@ class ActionWatchdog(WatchdogBase):
             sid = self._session_id
             if event.backend_node_id is not None:
                 node = self._resolve_node(event.backend_node_id)
-                if node and node.bounds:
-                    cx, cy = node.bounds.center
+                if node is not None:
+                    live = await self._get_live_viewport_center(event.backend_node_id)
+                    if live is not None:
+                        cx, cy = live
+                    elif node.bounds is not None:
+                        cx_f, cy_f = node.bounds.center
+                        cx, cy = int(cx_f), int(cy_f)
+                    else:
+                        return
                     await self._cdp.send("Input.dispatchMouseEvent", {
-                        "type": "mouseWheel", "x": int(cx), "y": int(cy),
+                        "type": "mouseWheel", "x": cx, "y": cy,
                         "deltaX": dx, "deltaY": dy,
                     }, session_id=sid)
             else:
@@ -626,6 +800,122 @@ class ActionWatchdog(WatchdogBase):
     # Helpers
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _describe_node(node: DOMElementNode) -> str:
+        """Build a short human label for the persistent click marker.
+
+        Picks the most useful identifying string available, in order:
+        accessible name, visible text, common attributes (aria-label,
+        title, name, value, placeholder, alt), then ``#id``/``.class``.
+        Truncates to 80 chars so the on-page label stays one line.
+        """
+        tag = (node.tag_name or "?").lower()
+        attrs = node.attributes or {}
+        candidates = [
+            (node.ax_name or "").strip(),
+            (node.text_content or "").strip(),
+            attrs.get("aria-label", "").strip(),
+            attrs.get("title", "").strip(),
+            attrs.get("placeholder", "").strip(),
+            attrs.get("value", "").strip(),
+            attrs.get("name", "").strip(),
+            attrs.get("alt", "").strip(),
+        ]
+        text = next((c for c in candidates if c), "")
+        if not text:
+            ident = ""
+            if attrs.get("id"):
+                ident = "#" + attrs["id"]
+            elif attrs.get("class"):
+                ident = "." + attrs["class"].split()[0]
+            text = ident
+        # Collapse whitespace so multi-line text content stays on one line.
+        text = " ".join(text.split())
+        if len(text) > 80:
+            text = text[:77] + "..."
+        idx = node.element_index
+        prefix = f"<{tag}>" if idx is None else f"[{idx}] <{tag}>"
+        return f"{prefix} {text}".rstrip()
+
+    async def _install_overlay_script(self) -> None:
+        """Register the JS overlay so it runs on every navigation in this tab.
+
+        Uses ``Page.addScriptToEvaluateOnNewDocument`` so the cursor +
+        click-marker installer survives reloads and SPA route changes,
+        plus a one-shot ``Runtime.evaluate`` so the *current* document
+        gets it too without waiting for the next navigation. Idempotent
+        per session.
+        """
+        if not self._debug_highlight or self._overlay_script_installed:
+            return
+        sid = self._session_id
+        try:
+            await self._cdp.send(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": _DEBUG_OVERLAY_JS},
+                session_id=sid,
+            )
+            await self._cdp.send(
+                "Runtime.evaluate",
+                {"expression": _DEBUG_OVERLAY_JS},
+                session_id=sid,
+            )
+            self._overlay_script_installed = True
+        except Exception as exc:
+            logger.debug("debug overlay install failed: %s", exc)
+
+    async def _paint_click(self, x: int, y: int, label: str) -> None:
+        """Render the persistent click marker + cursor at (x, y).
+
+        No-op when ``debug_highlight`` is off. Best-effort: any CDP
+        failure is logged at debug level — the visual aid must never
+        block the underlying action.
+        """
+        if not self._debug_highlight:
+            return
+        try:
+            await self._install_overlay_script()
+            expr = (
+                f"window.__af_show_click__ && "
+                f"window.__af_show_click__({x}, {y}, {json.dumps(label)});"
+            )
+            await self._cdp.send(
+                "Runtime.evaluate",
+                {"expression": expr},
+                session_id=self._session_id,
+            )
+        except Exception as exc:
+            logger.debug("debug overlay paint failed at (%d, %d): %s", x, y, exc)
+
+    async def set_overlay_visible(self, visible: bool) -> None:
+        """Toggle the debug overlay's visibility.
+
+        Called by :class:`BrowserCapability` around the observe cycle
+        so the injected cursor/marker/label don't appear in the DOM
+        scrape (the browser-use cleaner filters ``display:none`` via
+        its CSS visibility check) or in the screenshot fed to vision
+        agents. No-op when ``debug_highlight`` is off or the overlay
+        script has never been installed (no clicks yet → nothing to
+        hide). All failures are swallowed at debug level — the
+        observation must never fail because the visual aid is busy.
+        """
+        if not self._debug_highlight or not self._overlay_script_installed:
+            return
+        flag = "true" if visible else "false"
+        try:
+            await self._cdp.send(
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        f"window.__af_set_overlay_visible__ && "
+                        f"window.__af_set_overlay_visible__({flag});"
+                    ),
+                },
+                session_id=self._session_id,
+            )
+        except Exception as exc:
+            logger.debug("debug overlay set_visible(%s) failed: %s", flag, exc)
+
     async def _highlight_node(self, backend_node_id: int) -> None:
         """DevTools-style highlight on the target node, then sleep briefly.
 
@@ -657,6 +947,76 @@ class ActionWatchdog(WatchdogBase):
             await asyncio.sleep(self._debug_highlight_ms / 1000)
         except Exception as exc:
             logger.debug("debug_highlight failed for node %d: %s", backend_node_id, exc)
+
+    async def _get_live_viewport_center(
+        self, backend_node_id: int,
+    ) -> tuple[int, int] | None:
+        """Return the element's current viewport-relative center, or None.
+
+        Pipeline: scroll the element into view, resolve it to a JS object,
+        then read ``getBoundingClientRect()`` — those numbers are in CSS
+        viewport pixels and are exactly what ``Input.dispatchMouseEvent``
+        wants. Any failure → ``None`` so the caller can fall back to the
+        snapshot bounds path.
+        """
+        sid = self._session_id
+        try:
+            try:
+                await self._cdp.send(
+                    "DOM.scrollIntoViewIfNeeded",
+                    {"backendNodeId": backend_node_id},
+                    session_id=sid,
+                )
+            except Exception as exc:
+                # Element may already be in view, or scrolling may not apply
+                # (e.g. fixed-positioned). Continue rather than abort.
+                logger.warning(
+                    "scrollIntoViewIfNeeded failed for node %d: %s",
+                    backend_node_id, exc,
+                )
+
+            resolved = await self._cdp.send(
+                "DOM.resolveNode",
+                {"backendNodeId": backend_node_id},
+                session_id=sid,
+            )
+            if not resolved or "object" not in resolved:
+                return None
+            object_id = resolved["object"].get("objectId")
+            if not object_id:
+                return None
+
+            rect_result = await self._cdp.send(
+                "Runtime.callFunctionOn",
+                {
+                    "functionDeclaration": (
+                        "function() {"
+                        "  const r = this.getBoundingClientRect();"
+                        "  return {x: r.x, y: r.y, w: r.width, h: r.height};"
+                        "}"
+                    ),
+                    "objectId": object_id,
+                    "returnByValue": True,
+                },
+                session_id=sid,
+            )
+            value = (rect_result or {}).get("result", {}).get("value")
+            if not isinstance(value, dict):
+                return None
+            try:
+                x = float(value["x"])
+                y = float(value["y"])
+                w = float(value["w"])
+                h = float(value["h"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            return int(x + w / 2), int(y + h / 2)
+        except Exception as exc:
+            logger.warning(
+                "Live viewport center query failed for node %d: %s",
+                backend_node_id, exc,
+            )
+            return None
 
     def _resolve_node(self, backend_node_id: int) -> DOMElementNode | None:
         """Look up a node from DOMWatchdog's selector_map by backend_node_id."""

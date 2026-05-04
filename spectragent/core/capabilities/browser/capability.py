@@ -531,6 +531,25 @@ class BrowserCapability(CapabilityBase):
             f"BrowserCapability cannot resolve fragment '{fragment_key}'"
         )
 
+    def _action_watchdog_for(self, sid: str) -> Any | None:
+        """Return the ActionWatchdog instance attached to ``sid``, or ``None``.
+
+        Used by the observe cycle to ask the watchdog to hide its
+        debug overlay before the DOM/screenshot scrape so the injected
+        cursor + click marker don't leak into the agent's observation.
+        """
+        from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
+            ActionWatchdog,
+        )
+
+        target_id = self._session_to_target.get(sid)
+        if target_id is None:
+            return None
+        for wd in self._watchdogs.get(target_id, []):
+            if isinstance(wd, ActionWatchdog):
+                return wd
+        return None
+
     # ── Cycle cache machinery ─────────────────────────────────────────
 
     async def _populate_cycle(self, sid: str, fragment_key: str) -> None:
@@ -580,8 +599,22 @@ class BrowserCapability(CapabilityBase):
             include_dom="browser.dom" in provided,
             include_screenshot="browser.screenshot" in provided,
         )
-        scope.emit(event)
-        await event
+
+        # Hide the debug-highlight overlay (cursor / click marker /
+        # label) before the watchdogs scrape DOM + screenshot, so it
+        # doesn't pollute the agent's observation. Restored in the
+        # finally below — the briefly-hidden frame is invisible to a
+        # human watcher because the scrape is sub-100ms. No-op when
+        # debug_highlight is off or the overlay was never installed.
+        action_wd = self._action_watchdog_for(sid)
+        if action_wd is not None:
+            await action_wd.set_overlay_visible(False)
+        try:
+            scope.emit(event)
+            await event
+        finally:
+            if action_wd is not None:
+                await action_wd.set_overlay_visible(True)
 
         dom_state: DOMState | None = None
         screenshot: bytes | None = None
