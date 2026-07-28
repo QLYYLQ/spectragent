@@ -16,6 +16,7 @@ from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitEr
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.providers.openai_base import OpenAICompatBase
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
 
 T = TypeVar("T", bound=BaseModel)
@@ -46,19 +47,50 @@ class ChatCerebras(OpenAICompatBase):
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         if output_format is None:
-            return await self._standard_ainvoke(messages)
+            return await self._standard_ainvoke(messages, tools=tools, tool_choice=tool_choice)
+
+        # Cerebras has no native json_schema response_format, so structured output
+        # is prompt-injected ("valid JSON only, no other text") — an instruction
+        # that directly contradicts offering the model tools it may call instead.
+        self.reject_unsupported_tools(
+            tools,
+            reason=(
+                "its structured-output path injects a 'reply with JSON only' "
+                "instruction, which contradicts offering callable tools. Pass "
+                "tools without output_format, or use a provider with native "
+                "json_schema support."
+            ),
+        )
 
         # Cerebras: prompt injection fallback for structured output
         openai_messages = OpenAIMessageSerializer.serialize_messages(messages)

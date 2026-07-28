@@ -8,10 +8,14 @@ from ollama._types import Image, Message
 from spectragent.core.llm.messages import (
     AssistantMessage,
     BaseMessage,
+    Function,
     SystemMessage,
     ToolCall,
+    ToolMessage,
     UserMessage,
+    synthesize_tool_call_id,
 )
+from spectragent.core.llm.tools import ToolDefinition
 
 
 class OllamaMessageSerializer:
@@ -94,6 +98,10 @@ class OllamaMessageSerializer:
     @staticmethod
     def serialize(message: AssistantMessage) -> Message: ...
 
+    @overload
+    @staticmethod
+    def serialize(message: ToolMessage) -> Message: ...
+
     @staticmethod
     def serialize(message: BaseMessage) -> Message:
         """Serialize a custom message to an Ollama Message."""
@@ -139,6 +147,19 @@ class OllamaMessageSerializer:
 
             return ollama_message
 
+        elif isinstance(message, ToolMessage):
+            # Ollama mirrors the OpenAI wire shape: a `tool` role carrying text.
+            # It has no field for an error flag or for images in a tool result,
+            # so images are attached to the same message via `images`, which
+            # Ollama accepts on any role.
+            tool_message = Message(role="tool", content=message.text or None)
+            images = OllamaMessageSerializer._extract_images(message.content)
+            if images:
+                tool_message.images = images
+            if message.name:
+                tool_message.tool_name = message.name
+            return tool_message
+
         else:
             raise ValueError(f"Unknown message type: {type(message)}")
 
@@ -146,3 +167,50 @@ class OllamaMessageSerializer:
     def serialize_messages(messages: Sequence[BaseMessage]) -> list[Message]:
         """Serialize a list of browser_use messages to Ollama Messages."""
         return [OllamaMessageSerializer.serialize(m) for m in messages]
+
+    # region - Tool declarations
+    @staticmethod
+    def serialize_tools(tools: Sequence[ToolDefinition]) -> list[dict[str, Any]]:
+        """Convert tool declarations to Ollama's (OpenAI-shaped) tool params."""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in tools
+        ]
+
+    @staticmethod
+    def parse_tool_calls(message: Any) -> list[ToolCall]:
+        """Read tool calls off an Ollama response message.
+
+        Ollama returns no call id, so one is minted by
+        :func:`synthesize_tool_call_id` — the pairing contract needs a key that
+        is unique across the whole conversation, not just within one response.
+        """
+        raw = getattr(message, "tool_calls", None) or []
+        calls: list[ToolCall] = []
+        for call in raw:
+            function = getattr(call, "function", None)
+            if function is None:
+                continue
+            name = getattr(function, "name", "") or ""
+            arguments = getattr(function, "arguments", None) or {}
+            calls.append(
+                ToolCall(
+                    id=synthesize_tool_call_id(name),
+                    function=Function(
+                        name=name,
+                        arguments=arguments
+                        if isinstance(arguments, str)
+                        else json.dumps(arguments),
+                    ),
+                )
+            )
+        return calls
+
+    # endregion

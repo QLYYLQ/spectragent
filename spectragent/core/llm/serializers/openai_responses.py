@@ -1,7 +1,7 @@
 """Serializer for converting messages to OpenAI Responses API input format."""
 
 from collections.abc import Sequence
-from typing import overload
+from typing import NoReturn, overload
 
 from openai.types.responses.easy_input_message_param import EasyInputMessageParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
@@ -17,6 +17,7 @@ from spectragent.core.llm.messages import (
     ContentPartRefusalParam,
     ContentPartTextParam,
     SystemMessage,
+    ToolMessage,
     UserMessage,
 )
 
@@ -107,6 +108,10 @@ class ResponsesAPIMessageSerializer:
     @staticmethod
     def serialize(message: AssistantMessage) -> EasyInputMessageParam: ...
 
+    @overload
+    @staticmethod
+    def serialize(message: ToolMessage) -> NoReturn: ...
+
     @staticmethod
     def serialize(message: BaseMessage) -> EasyInputMessageParam:
         """Serialize a custom message to an OpenAI Responses API input message param."""
@@ -143,6 +148,20 @@ class ResponsesAPIMessageSerializer:
             return EasyInputMessageParam(
                 role="assistant",
                 content=content,
+            )
+
+        elif isinstance(message, ToolMessage):
+            # The Responses API represents a tool result as a `function_call_output`
+            # *item*, not an `EasyInputMessageParam`, so it cannot be expressed by
+            # this serializer's return type. Flattening it into a user turn would
+            # break the model's call/result correlation silently, so refuse:
+            # ChatAzureOpenAI reports supports_tools=False on the Responses path
+            # and its chat-completions path handles tools natively.
+            raise ValueError(
+                "ResponsesAPIMessageSerializer cannot represent a ToolMessage. "
+                "The Responses API needs a `function_call_output` input item, which "
+                "this serializer does not emit. Route tool conversations through the "
+                "chat-completions path (use_responses_api='false')."
             )
 
         else:

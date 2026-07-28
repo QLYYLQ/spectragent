@@ -2,7 +2,6 @@
 
 from spectragent.schemas._types import (
     AgentDoneStatus,
-    AgentStatus,
     EnvironmentStatus,
 )
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
@@ -32,18 +31,21 @@ from spectragent.schemas.prompt import PromptRef, PromptSnapshot, TemplatePrompt
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 from spectragent.schemas.task import (
     BrowserSetup,
+    DockerSetup,
     ScoringItem,
     ScoringRubric,
+    SetupBase,
     TaskDefinition,
     TaskReference,
     TaskSetup,
+    VMSetup,
+    setup_class_for_env,
 )
 
 __all__ = [
     # Types
     "EnvironmentStatus",
     "AgentDoneStatus",
-    "AgentStatus",  # Deprecated alias for EnvironmentStatus
     # Action
     "Action",
     "ActionDescriptor",
@@ -56,7 +58,11 @@ __all__ = [
     # Task
     "TaskDefinition",
     "TaskSetup",
+    "SetupBase",
     "BrowserSetup",
+    "DockerSetup",
+    "VMSetup",
+    "setup_class_for_env",
     "TaskReference",
     "ScoringRubric",
     "ScoringItem",

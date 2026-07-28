@@ -49,7 +49,9 @@ class TestPerRunOutputValidation:
                 "action": [{"browser.click": {"index": 1}}],
             }
         )
-        assert out.action[0].root == {"browser.click": {"index": 1}}
+        # ``action`` stays ``list[dict]`` — wire-identical to the base
+        # model, so ``_items_to_actions`` needs no unwrapping.
+        assert out.action[0] == {"browser.click": {"index": 1}}
 
     def test_accepts_short_alias(self) -> None:
         # ``"click"`` short alias is allowed when ``browser.click`` is in the

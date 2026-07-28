@@ -15,6 +15,7 @@ from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.providers.openai_base import OpenAICompatBase
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
 
 logger = logging.getLogger(__name__)
@@ -40,16 +41,34 @@ class ChatGroq(OpenAICompatBase):
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         from groq import APIError
         from groq import APIStatusError as GroqStatusError
@@ -58,6 +77,20 @@ class ChatGroq(OpenAICompatBase):
             ResponseFormatResponseFormatJsonSchema,
             ResponseFormatResponseFormatJsonSchemaJsonSchema,
         )
+
+        if output_format is not None:
+            # Groq documents "Streaming and tool use are not currently supported
+            # with Structured Outputs", so sending both bought a round trip and
+            # a vendor 400. Refuse before the request — and outside the `try`,
+            # which would otherwise relabel this as a generic provider error.
+            self.reject_unsupported_tools(
+                tools,
+                reason=(
+                    "Groq does not support tool use together with Structured "
+                    "Outputs (response_format json_schema). Pass tools without "
+                    "output_format."
+                ),
+            )
 
         groq_messages = OpenAIMessageSerializer.serialize_messages(messages)
         client = self.get_client()
@@ -68,11 +101,20 @@ class ChatGroq(OpenAICompatBase):
                     messages=groq_messages, model=self.model,
                     service_tier=self.service_tier, temperature=self.temperature,
                     top_p=self.top_p, seed=self.seed,
+                    **self._tool_kwargs(tools, tool_choice),
                 )
                 usage = self._get_usage(resp) if hasattr(resp, 'usage') else None
-                return ChatInvokeCompletion(completion=resp.choices[0].message.content or "", usage=usage)
+                return ChatInvokeCompletion(
+                    completion=resp.choices[0].message.content or "",
+                    usage=usage,
+                    tool_calls=OpenAIMessageSerializer.parse_tool_calls(
+                        getattr(resp.choices[0].message, "tool_calls", None)
+                    ),
+                )
             else:
-                schema = SchemaOptimizer.create_optimized_json_schema(output_format)
+                schema = SchemaOptimizer.create_optimized_json_schema(
+                    output_format, strict=self._use_strict_schema(output_format)
+                )
                 resp = await client.chat.completions.create(
                     model=self.model, messages=groq_messages,
                     temperature=self.temperature, top_p=self.top_p, seed=self.seed,
@@ -88,6 +130,7 @@ class ChatGroq(OpenAICompatBase):
                     raise ModelProviderError(message="No content in response", status_code=500, model=self.name)
                 parsed = output_format.model_validate_json(resp.choices[0].message.content)
                 usage = self._get_usage(resp) if hasattr(resp, 'usage') else None
+                # No `tool_calls=`: tools are refused on this path above.
                 return ChatInvokeCompletion(completion=parsed, usage=usage)
 
         except GroqRateLimitError as e:

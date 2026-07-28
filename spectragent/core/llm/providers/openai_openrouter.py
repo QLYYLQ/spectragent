@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.providers.openai_base import OpenAICompatBase
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
 
 T = TypeVar("T", bound=BaseModel)
@@ -41,20 +42,43 @@ class ChatOpenRouter(OpenAICompatBase):
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         extra_kwargs: dict[str, Any] = {}
         if self.http_referer:
             extra_kwargs["extra_headers"] = {"HTTP-Referer": self.http_referer}
         if self.extra_body:
-            extra_kwargs.update(self.extra_body)
-        return await self._standard_ainvoke(messages, output_format, extra_kwargs)
+            # `extra_body` is an OpenAI-SDK transport parameter: its contents are
+            # merged into the request JSON body. Splatting it as top-level kwargs
+            # instead makes the SDK reject every unknown key with a TypeError.
+            extra_kwargs["extra_body"] = dict(self.extra_body)
+        return await self._standard_ainvoke(
+            messages, output_format, extra_kwargs, tools=tools, tool_choice=tool_choice
+        )

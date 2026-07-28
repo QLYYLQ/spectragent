@@ -59,7 +59,6 @@ class UITarsAgent(AgentBase):
     }
 
     # ── config (conscribe visible) ─────────────────────────────
-    max_steps: Annotated[int, PydanticField(description="Maximum steps")] = 40
     prompt_template: Annotated[
         str,
         PydanticField(description="Prompt template: COMPUTER_USE, MOBILE_USE, or GROUNDING"),

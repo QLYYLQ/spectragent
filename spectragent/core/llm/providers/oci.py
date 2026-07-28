@@ -19,9 +19,10 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
-from spectragent.core.llm.messages import BaseMessage, SystemMessage
+from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, SystemMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.oci_format import OCIRawMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 T = TypeVar("T", bound=BaseModel)
@@ -170,9 +171,25 @@ class ChatOCI(ChatModelBase):
         self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
     ) -> ChatInvokeCompletion[T]: ...
 
+    @property
+    def supports_tools(self) -> bool:
+        """OCI's raw chat requests carry no tool vocabulary in this provider."""
+        return False
+
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        # This provider builds CohereChatRequest / GenericChatRequest by hand and
+        # does structured output entirely by prompt. There is nowhere to put a
+        # tool declaration, and no tool_use in the reply to parse back.
+        self.reject_unsupported_tools(tools)
+
         try:
             if output_format is None:
                 response = await self._make_request(messages)
@@ -186,10 +203,20 @@ class ChatOCI(ChatModelBase):
                     f"{json.dumps(optimized_schema, indent=2)}\n"
                     f"No extra text. Valid JSON only."
                 )
-                modified = list(messages)
-                if modified and hasattr(modified[0], "role") and modified[0].role == "system":
-                    existing = modified[0].content
-                    modified[0].content = (str(existing) + "\n\n" + system_instruction)
+                # Deep-copy: ``list(messages)`` is a shallow copy, so mutating
+                # ``modified[0].content`` would grow the *caller's* SystemMessage by a
+                # full JSON-schema block on every step — unbounded, and the mutation
+                # persists into the WAL and every later provider call.
+                modified: list[BaseMessage] = [m.model_copy(deep=True) for m in messages]
+                if modified and isinstance(modified[0], SystemMessage):
+                    head = modified[0]
+                    if isinstance(head.content, str):
+                        head.content = head.content + "\n\n" + system_instruction
+                    else:
+                        head.content = [
+                            *head.content,
+                            ContentPartTextParam(text="\n\n" + system_instruction),
+                        ]
                 else:
                     modified.insert(0, SystemMessage(content=system_instruction))
 

@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import random
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypeVar, overload
@@ -16,9 +15,18 @@ from pydantic import BaseModel, Field
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError
 from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.model_families import ModelFamily, detect_model_family
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.google_format import GoogleMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
+
+#: ``tool_choice`` spelled the Gemini way (``function_calling_config.mode``).
+_GEMINI_TOOL_MODE: dict[str, types.FunctionCallingConfigMode] = {
+    "auto": types.FunctionCallingConfigMode.AUTO,
+    "required": types.FunctionCallingConfigMode.ANY,
+    "none": types.FunctionCallingConfigMode.NONE,
+}
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 T = TypeVar("T", bound=BaseModel)
@@ -63,6 +71,11 @@ class ChatGoogle(ChatModelBase):
     @property
     def logger(self) -> logging.Logger:
         return logging.getLogger(f"spectragent.core.llm.google.{self.model}")
+
+    @property
+    def model_family(self) -> ModelFamily:
+        """Declared capabilities for this model (see ``core/llm/model_families``)."""
+        return detect_model_family(str(self.model))
 
     def _get_client_params(self) -> dict[str, Any]:
         http_options = self.http_options
@@ -177,43 +190,92 @@ class ChatGoogle(ChatModelBase):
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         contents, system_instruction = GoogleMessageSerializer.serialize_messages(
             messages, include_system_in_user=self.include_system_in_user
         )
 
+        if tools and output_format is not None:
+            # Gemini's response_schema pins the whole reply to JSON, and the
+            # prompt-JSON fallback says "reply with JSON only" — neither leaves
+            # room for a function_call part.
+            self.reject_unsupported_tools(
+                tools,
+                reason=(
+                    "Gemini's structured output constrains the whole reply to the "
+                    "response schema, leaving no room for a function_call part. "
+                    "Pass tools without output_format."
+                ),
+            )
+
         config = self._build_config(output_format)
         if system_instruction:
             config["system_instruction"] = system_instruction
+        if tools:
+            config["tools"] = list(GoogleMessageSerializer.serialize_tools(tools))
+            config["tool_config"] = types.ToolConfigDict(
+                function_calling_config=types.FunctionCallingConfigDict(
+                    mode=_GEMINI_TOOL_MODE[tool_choice]
+                )
+            )
 
         async def _make_api_call():
-            start_time = time.time()
-
             try:
                 if output_format is None:
                     response = await self.get_client().aio.models.generate_content(
                         model=self.model, contents=contents, config=config,  # type: ignore
                     )
-                    text = response.text or ""
+                    # `response.text` is a convenience accessor that concatenates
+                    # text parts; with tools advertised the reply can be a bare
+                    # function_call and the accessor is unhappy about it. The
+                    # tool calls are read off the parts directly below, so an
+                    # empty string is the right answer, not a crash.
+                    try:
+                        text = response.text or ""
+                    except (ValueError, AttributeError):
+                        text = ""
                     usage = self._get_usage(response)
                     return ChatInvokeCompletion(
-                        completion=text, usage=usage, stop_reason=self._get_stop_reason(response),
+                        completion=text,
+                        usage=usage,
+                        stop_reason=self._get_stop_reason(response),
+                        tool_calls=GoogleMessageSerializer.parse_tool_calls(response),
                     )
                 else:
                     if self.supports_structured_output:
                         config["response_mime_type"] = "application/json"
                         optimized_schema = SchemaOptimizer.create_gemini_optimized_schema(output_format)
-                        config["response_schema"] = fix_gemini_schema(optimized_schema)
+                        if self.model_family.schema_requires_gemini_fix:
+                            optimized_schema = fix_gemini_schema(optimized_schema)
+                        config["response_schema"] = optimized_schema
 
                         response = await self.get_client().aio.models.generate_content(
                             model=self.model, contents=contents, config=config,

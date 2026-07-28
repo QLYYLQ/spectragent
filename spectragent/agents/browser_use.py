@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, RootModel, model_validator
+from pydantic import AfterValidator, BaseModel
 from pydantic import Field as PydanticField
 
 from spectragent.agents._output_models import BrowserUseOutput
@@ -105,9 +105,10 @@ class BrowserUseAgent(AgentBase):
     }
 
     # ── config (conscribe visible) ─────────────────────────────
-    max_steps: Annotated[int, PydanticField(description="Maximum steps")] = 100
-    max_actions_per_step: Annotated[int, PydanticField(description="Max actions per step")] = 3
-    timeout_seconds: Annotated[int, PydanticField(description="Timeout in seconds")] = 300
+    # ``max_steps`` / ``max_actions_per_step`` / ``timeout_seconds`` are
+    # deliberately absent: the Loop owns and enforces them. AgentRuntime
+    # hands the loop's limits to ``prepare()`` so the prompt advertises
+    # exactly what will be executed.
     flash_mode: Annotated[bool, PydanticField(description="Skip thinking for speed")] = True
     use_vision: Annotated[bool, PydanticField(description="Include screenshots")] = False
     vision_detail: Annotated[
@@ -181,6 +182,7 @@ class BrowserUseAgent(AgentBase):
         self,
         task: str,
         action_descriptors: list[ActionDescriptor],
+        max_actions_per_step: int = 1,
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
 
@@ -188,12 +190,20 @@ class BrowserUseAgent(AgentBase):
         return value into memory; the agent does no memory IO itself.
         ``task`` flows through every step's observation as
         ``obs.task.user_request`` — not stored on ``self``.
+
+        ``max_actions_per_step`` comes from the Loop, which is what
+        actually truncates. The agent must not carry its own copy: the
+        prompt has to promise exactly what the loop will run.
         """
         self._action_descriptors = list(action_descriptors)
         self._per_run_output_model = _build_per_run_output_model(
             self._action_descriptors,
         )
-        self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
+        self._system_prompt_text = self._build_system_prompt(
+            task,
+            self._action_descriptors,
+            max_actions_per_step,
+        )
         from spectragent.schemas.prompt import PromptRef, TextPrompt
 
         self._prompt_snapshot = TextPrompt(
@@ -242,11 +252,16 @@ class BrowserUseAgent(AgentBase):
                 raw_output=text[:500],
             ) from exc
 
+        # Validate against the per-run model so the negotiated verb set
+        # rejects hallucinations here, on the text path too — not one
+        # step later at ``guarded_act``. Falls back to the loose base
+        # model only when ``prepare()`` has not run.
+        model = self._per_run_output_model or BrowserUseOutput
         try:
-            parsed = BrowserUseOutput.model_validate(data)
+            parsed = model.model_validate(data)
         except Exception as exc:
             raise ParseError(
-                f"LLM JSON does not match BrowserUseOutput schema: "
+                f"LLM JSON does not match {model.__name__} schema: "
                 f"{type(exc).__name__}: {exc}",
                 raw_output=text[:500],
             ) from exc
@@ -288,6 +303,7 @@ class BrowserUseAgent(AgentBase):
         self,
         task: str,  # noqa: ARG002 — reserved; some prompt templates may consume it later
         action_space: list[ActionDescriptor],
+        max_actions_per_step: int = 1,
     ) -> str:
         if self.override_system_message:
             text = self.override_system_message
@@ -296,7 +312,7 @@ class BrowserUseAgent(AgentBase):
             self._prompt_path = str(prompt_file.relative_to(PROMPT_PATH))
             template = prompt_file.read_text()
             text = template.format(
-                max_actions=self.max_actions_per_step,
+                max_actions=max_actions_per_step,
                 action_list=self._render_action_list(action_space),
             )
 
@@ -483,21 +499,28 @@ def _build_per_run_output_model(
 
     The static ``BrowserUseOutput.action`` is ``list[dict[str, Any]]`` —
     the LLM can write any verb and the schema accepts it, so hallucinated
-    actions only get caught downstream at ``guarded_act`` with a
-    framework-level rejection. Wrapping the field with a validator that
-    knows the negotiated allowed-verb set produces:
+    actions only get caught downstream at ``guarded_act``, one step and a
+    whole prompt's tokens later. Attaching a per-item validator that
+    knows the negotiated allowed-verb set moves that rejection to
+    ``parse_react_output`` time, and the error message carries the
+    allowed set so the LLM gets a self-correction signal on its next
+    turn.
 
-    1. **Pydantic-side rejection** at ``parse_react_output`` time: the
-       error message includes the allowed verb set so the LLM gets a
-       useful self-correction signal in the next step's history.
-    2. **Future provider-side enforcement**: when ``react.py:160`` stops
-       hardcoding ``output_format=None``, providers that support strict
-       structured output (OpenAI ``response_format`` / Anthropic tool
-       schemas) will see a tighter JSON schema and refuse to emit
-       hallucinated verbs in the first place.
+    **The narrowing is Python-side only.** The verb domain lives in an
+    ``AfterValidator``, which contributes nothing to
+    ``model_json_schema()`` — the field still compiles to
+    ``{"type": "array", "items": {"type": "object"}}``, byte-identical to
+    the base model. That is deliberate: the field is an open
+    ``{"<verb>": {<params>}}`` map, and JSON Schema cannot constrain a
+    map's key domain in a way the provider structured-output dialects
+    accept. Do not read this model as provider-enforced.
 
-    The LLM-facing JSON shape is unchanged — still single-key dict
-    ``{"<verb>": {<params>}}``. Only the verb domain is narrowed.
+    Keeping ``action`` typed ``list[dict[str, Any]]`` (rather than
+    wrapping items in a ``RootModel``) also keeps the two output models
+    wire-identical downstream: ``parse_react_output`` /
+    ``_items_to_actions`` see plain dicts either way, and
+    ``model_dump_json()`` round-trips without a Pydantic serializer
+    mismatch.
 
     The allowed set is the union of:
 
@@ -519,27 +542,53 @@ def _build_per_run_output_model(
     allowed: frozenset[str] = frozenset(canonical | short_aliases | legacy_aliases)
     allowed_sorted = sorted(allowed)
 
-    class _ActionItem(RootModel[dict[str, dict[str, Any]]]):
-        @model_validator(mode="after")
-        def _check(self) -> _ActionItem:
-            if len(self.root) != 1:
-                raise ValueError(
-                    f"action item must have exactly one key, got "
-                    f"{sorted(self.root)}"
-                )
-            verb = next(iter(self.root))
-            if verb not in allowed:
-                raise ValueError(
-                    f"unknown action {verb!r}; allowed: {allowed_sorted}"
-                )
-            return self
+    def _check_action_item(item: dict[str, Any]) -> dict[str, Any]:
+        if len(item) != 1:
+            raise ValueError(
+                f"action item must have exactly one key, got {sorted(item)}"
+            )
+        verb, params = next(iter(item.items()))
+        if verb not in allowed:
+            raise ValueError(
+                f"unknown action {verb!r}; allowed: {allowed_sorted}"
+            )
+        if not isinstance(params, dict):
+            raise ValueError(
+                f"params for {verb!r} must be an object, got "
+                f"{type(params).__name__}"
+            )
+        return item
 
-    class _PerRunOutput(BrowserUseOutput):
-        action: list[_ActionItem]  # type: ignore[assignment]
+    _action_description = (
+        "Action list. Each item is a single-key object where the key is the "
+        "action name and the value is its params object, e.g. "
+        "``{'browser.navigate': {'url': 'https://...'}}``. The key must be "
+        f"one of: {', '.join(allowed_sorted)}."
+    )
 
-    _PerRunOutput.__name__ = "BrowserUseOutputForRun"
-    _PerRunOutput.__qualname__ = "BrowserUseOutputForRun"
-    return _PerRunOutput
+    # Named at definition, not patched onto ``__name__`` afterwards:
+    # Pydantic freezes the class name into the core schema at creation, so
+    # a later rename left ``ValidationError`` saying ``_PerRunOutput``
+    # while every other surface said ``BrowserUseOutputForRun``. That
+    # error text is fed back to the LLM as a self-correction signal.
+    class BrowserUseOutputForRun(BrowserUseOutput):
+        # Two deliberate differences from the base field:
+        #
+        # 1. No default — ``action`` becomes ``required`` in the emitted
+        #    JSON schema, so constrained decoding forces the model to
+        #    produce one. (pyright wants an override to keep the base's
+        #    default; here losing it is the point.)
+        # 2. The description is restated. Redeclaring a field drops the
+        #    base's, and this schema is now shipped to providers, where
+        #    ``description`` is the one channel every structured-output
+        #    dialect passes to the model verbatim — so it carries the
+        #    negotiated verb set.
+        action: list[  # pyright: ignore[reportGeneralTypeIssues]
+            Annotated[dict[str, Any], AfterValidator(_check_action_item)]
+        ] = PydanticField(description=_action_description)
+
+    BrowserUseOutputForRun.__qualname__ = "BrowserUseOutputForRun"
+    return BrowserUseOutputForRun
 
 
 def _truncate(text: str, limit: int) -> str:

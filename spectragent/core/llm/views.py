@@ -1,6 +1,8 @@
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from spectragent.core.llm.messages import ToolCall
 
 T = TypeVar("T", bound=BaseModel | str)
 
@@ -46,3 +48,12 @@ class ChatInvokeCompletion(BaseModel, Generic[T]):
 
     stop_reason: str | None = None
     """The reason the model stopped generating. Common values: 'end_turn', 'max_tokens', 'stop_sequence'."""
+
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    """Tool calls the model emitted, when ``tools=`` was passed to ``ainvoke``.
+
+    Empty on every text/structured-output path, so callers that never advertise
+    tools are unaffected. A caller drives the next turn by echoing these back as
+    an :class:`AssistantMessage` and appending one :class:`ToolMessage` per call
+    — see ``ToolMessage`` for why the pair must stay together.
+    """

@@ -1,6 +1,6 @@
 import json
 from collections.abc import Sequence
-from typing import overload
+from typing import Any, overload
 
 from anthropic.types import (
     Base64ImageSourceParam,
@@ -8,6 +8,7 @@ from anthropic.types import (
     ImageBlockParam,
     MessageParam,
     TextBlockParam,
+    ToolResultBlockParam,
     ToolUseBlockParam,
     URLImageSourceParam,
 )
@@ -17,12 +18,16 @@ from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
     ContentPartTextParam,
+    Function,
     SupportedImageMediaType,
     SystemMessage,
+    ToolCall,
+    ToolMessage,
     UserMessage,
 )
+from spectragent.core.llm.tools import ToolDefinition
 
-NonSystemMessage = UserMessage | AssistantMessage
+NonSystemMessage = UserMessage | AssistantMessage | ToolMessage
 
 
 class AnthropicMessageSerializer:
@@ -175,6 +180,36 @@ class AnthropicMessageSerializer:
             )
         return blocks
 
+    @staticmethod
+    def _serialize_tool_result(message: ToolMessage) -> ToolResultBlockParam:
+        """Convert a tool result to Anthropic's ``tool_result`` block.
+
+        Anthropic has no ``tool`` role — a result is a ``tool_result`` block
+        carried by a *user* turn, correlated by ``tool_use_id``.
+        """
+        blocks: list[TextBlockParam | ImageBlockParam] = []
+        if isinstance(message.content, str):
+            blocks.append(TextBlockParam(text=message.content, type="text"))
+        else:
+            for part in message.content:
+                if part.type == "text":
+                    blocks.append(TextBlockParam(text=part.text, type="text"))
+                elif part.type == "image_url":
+                    blocks.append(
+                        AnthropicMessageSerializer._serialize_content_part_image(part)
+                    )
+
+        block = ToolResultBlockParam(
+            tool_use_id=message.tool_call_id,
+            type="tool_result",
+            content=blocks,
+            is_error=message.is_error,
+        )
+        cache_control = AnthropicMessageSerializer._serialize_cache_control(message.cache)
+        if cache_control:
+            block["cache_control"] = cache_control
+        return block
+
     # region - Serialize overloads
     @overload
     @staticmethod
@@ -277,6 +312,12 @@ class AnthropicMessageSerializer:
                 content=content,
             )
 
+        elif isinstance(message, ToolMessage):
+            return MessageParam(
+                role="user",
+                content=[AnthropicMessageSerializer._serialize_tool_result(message)],
+            )
+
         else:
             raise ValueError(f"Unknown message type: {type(message)}")
 
@@ -327,29 +368,102 @@ class AnthropicMessageSerializer:
         """
         messages = [m.model_copy(deep=True) for m in messages]
 
-        # Separate system messages from normal messages
+        # Separate system messages from normal messages.
+        # Anthropic takes a single `system` parameter, but keeping only the *last*
+        # SystemMessage meant the same message list produced a materially different
+        # prompt here than on OpenAI — and every filtering memory strategy hoists
+        # SystemMessages to the front, so multi-system lists are the normal shape.
+        # Concatenate them instead, preserving order.
         normal_messages: list[NonSystemMessage] = []
-        system_message: SystemMessage | None = None
+        system_messages: list[SystemMessage] = []
 
         for message in messages:
             if isinstance(message, SystemMessage):
-                system_message = message
+                system_messages.append(message)
             else:
                 normal_messages.append(message)
 
         # Clean cache messages so only the last cache=True message remains cached
         normal_messages = AnthropicMessageSerializer._clean_cache_messages(normal_messages)
 
-        # Serialize normal messages
+        # Serialize normal messages. Runs of ToolMessages are coalesced into a
+        # single user turn: when a model emits parallel tool calls, Anthropic
+        # expects every matching tool_result block inside *one* user message
+        # immediately after the assistant turn, not one turn per result.
         serialized_messages: list[MessageParam] = []
-        for message in normal_messages:
+        index = 0
+        while index < len(normal_messages):
+            message = normal_messages[index]
+            if isinstance(message, ToolMessage):
+                run: list[ToolResultBlockParam] = []
+                while index < len(normal_messages) and isinstance(
+                    normal_messages[index], ToolMessage
+                ):
+                    run.append(
+                        AnthropicMessageSerializer._serialize_tool_result(
+                            normal_messages[index]  # type: ignore[arg-type]
+                        )
+                    )
+                    index += 1
+                serialized_messages.append(MessageParam(role="user", content=run))
+                continue
             serialized_messages.append(AnthropicMessageSerializer.serialize(message))
+            index += 1
 
-        # Serialize system message
+        # Serialize system messages
         serialized_system_message: list[TextBlockParam] | str | None = None
-        if system_message:
+        if len(system_messages) == 1:
             serialized_system_message = AnthropicMessageSerializer._serialize_content_to_str(
-                system_message.content, use_cache=system_message.cache
+                system_messages[0].content, use_cache=system_messages[0].cache
             )
+        elif system_messages:
+            # Multiple system prompts → one list of text blocks, in order.
+            blocks: list[TextBlockParam] = []
+            for system_message in system_messages:
+                serialized = AnthropicMessageSerializer._serialize_content_to_str(
+                    system_message.content, use_cache=system_message.cache
+                )
+                if isinstance(serialized, str):
+                    blocks.append(TextBlockParam(text=serialized, type="text"))
+                else:
+                    blocks.extend(serialized)
+            serialized_system_message = blocks
 
         return serialized_messages, serialized_system_message
+
+    # region - Tool declarations
+    @staticmethod
+    def serialize_tool(tool: ToolDefinition) -> dict[str, Any]:
+        """Convert a :class:`ToolDefinition` to an Anthropic tool param.
+
+        ``strict`` has no Anthropic equivalent — the Messages API validates
+        arguments against ``input_schema`` directly — so it is not forwarded.
+        """
+        return {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.parameters,
+        }
+
+    @staticmethod
+    def serialize_tools(tools: Sequence[ToolDefinition]) -> list[dict[str, Any]]:
+        return [AnthropicMessageSerializer.serialize_tool(t) for t in tools]
+
+    @staticmethod
+    def parse_tool_calls(content: Sequence[Any]) -> list[ToolCall]:
+        """Read ``tool_use`` blocks off an Anthropic response."""
+        calls: list[ToolCall] = []
+        for block in content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            raw_input = getattr(block, "input", {})
+            arguments = raw_input if isinstance(raw_input, str) else json.dumps(raw_input)
+            calls.append(
+                ToolCall(
+                    id=getattr(block, "id", "") or "",
+                    function=Function(name=getattr(block, "name", ""), arguments=arguments),
+                )
+            )
+        return calls
+
+    # endregion

@@ -16,6 +16,7 @@ from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.providers.openai_base import OpenAICompatBase
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
 
 T = TypeVar("T", bound=BaseModel)
@@ -45,22 +46,45 @@ class ChatDeepSeek(OpenAICompatBase):
         return AsyncOpenAI(**params)
 
     def _apply_deepseek_beta(self, ds_messages: list) -> None:
-        if self.base_url and str(self.base_url).endswith("/beta"):
-            if ds_messages and isinstance(ds_messages[-1], dict) and ds_messages[-1].get("role") == "assistant":
-                ds_messages[-1]["prefix"] = True
+        if (
+            self.base_url
+            and str(self.base_url).endswith("/beta")
+            and ds_messages
+            and isinstance(ds_messages[-1], dict)
+            and ds_messages[-1].get("role") == "assistant"
+        ):
+            ds_messages[-1]["prefix"] = True
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
         self._apply_deepseek_beta(openai_messages)
@@ -70,7 +94,8 @@ class ChatDeepSeek(OpenAICompatBase):
 
             if output_format is None:
                 response = await self.get_client().chat.completions.create(
-                    model=self.model, messages=openai_messages, **model_params,
+                    model=self.model, messages=openai_messages,
+                    **self._tool_kwargs(tools, tool_choice), **model_params,
                 )
                 choice = response.choices[0] if response.choices else None
                 if choice is None:
@@ -82,24 +107,46 @@ class ChatDeepSeek(OpenAICompatBase):
                     completion=choice.message.content or "",
                     usage=self._get_usage(response),
                     stop_reason=choice.finish_reason,
+                    tool_calls=OpenAIMessageSerializer.parse_tool_calls(
+                        getattr(choice.message, "tool_calls", None)
+                    ),
                 )
             else:
-                # DeepSeek: tool calling for structured output
+                # DeepSeek: forced tool calling for structured output. The tool
+                # slot is already spoken for by the output schema, and
+                # tool_choice can only name one function, so caller tools cannot
+                # also be offered on this path.
+                self.reject_unsupported_tools(
+                    tools,
+                    reason=(
+                        "its structured-output path forces a single tool call to "
+                        "carry the schema, leaving no free tool slot. Pass tools "
+                        "without output_format."
+                    ),
+                )
                 tool_name = output_format.__name__
-                schema = SchemaOptimizer.create_optimized_json_schema(output_format)
+                schema = SchemaOptimizer.create_optimized_json_schema(
+                    output_format, strict=self._use_strict_schema(output_format)
+                )
                 schema.pop("title", None)
-                tools = [{"type": "function", "function": {"name": tool_name, "description": f"Return a JSON object of type {tool_name}", "parameters": schema}}]
-                tool_choice = {"type": "function", "function": {"name": tool_name}}
+                schema_tools = [{"type": "function", "function": {"name": tool_name, "description": f"Return a JSON object of type {tool_name}", "parameters": schema}}]
+                schema_tool_choice = {"type": "function", "function": {"name": tool_name}}
 
                 resp = await self.get_client().chat.completions.create(
-                    model=self.model, messages=openai_messages, tools=tools, tool_choice=tool_choice, **model_params,
+                    model=self.model, messages=openai_messages, tools=schema_tools, tool_choice=schema_tool_choice, **model_params,
                 )
                 msg = resp.choices[0].message
                 if not msg.tool_calls:
                     raise ValueError("Expected tool_calls in response but got none")
                 raw_args = msg.tool_calls[0].function.arguments
                 parsed = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                return ChatInvokeCompletion(completion=output_format.model_validate(parsed), usage=None)
+                return ChatInvokeCompletion(
+                    completion=output_format.model_validate(parsed),
+                    # DeepSeek returns the same `usage` block as OpenAI on the
+                    # tool-call path; reporting None discarded it.
+                    usage=self._get_usage(resp),
+                    stop_reason=resp.choices[0].finish_reason,
+                )
 
         except ModelProviderError:
             raise

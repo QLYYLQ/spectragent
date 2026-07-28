@@ -1,0 +1,153 @@
+"""Serializer regressions around system messages (§6.4.2, §6.4.7)."""
+
+from __future__ import annotations
+
+import base64
+from typing import cast
+
+from google.genai.types import Content
+
+from spectragent.core.llm.messages import (
+    AssistantMessage,
+    ContentPartImageParam,
+    ContentPartTextParam,
+    ImageURL,
+    SystemMessage,
+    UserMessage,
+)
+from spectragent.core.llm.serializers.anthropic_format import AnthropicMessageSerializer
+from spectragent.core.llm.serializers.google_format import GoogleMessageSerializer
+
+# 1x1 transparent PNG
+_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+_PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(_PNG_BYTES).decode()
+
+
+def _image_part() -> ContentPartImageParam:
+    return ContentPartImageParam(image_url=ImageURL(url=_PNG_DATA_URL, media_type="image/png"))
+
+
+def _serialize_google(messages, *, include_system_in_user: bool):
+    """Serialize and narrow ``ContentListUnion`` to the list-of-Content it really is."""
+    raw, system = GoogleMessageSerializer.serialize_messages(
+        messages, include_system_in_user=include_system_in_user
+    )
+    return cast(list[Content], raw), system
+
+
+def _all_text(content: Content) -> str:
+    return "\n".join(p.text for p in (content.parts or []) if p.text)
+
+
+class TestGoogleIncludeSystemInUser:
+    """§6.4.2 — the first user message used to be dropped entirely."""
+
+    def test_multimodal_user_message_survives(self) -> None:
+        messages = [
+            SystemMessage(content="SYS"),
+            UserMessage(
+                content=[ContentPartTextParam(text="USER TEXT"), _image_part()],
+            ),
+        ]
+        contents, system = _serialize_google(messages, include_system_in_user=True)
+
+        assert system is None
+        assert len(contents) == 1
+        parts = contents[0].parts or []
+        # system text + user text + image — the old code emitted only the first.
+        assert _all_text(contents[0]) == "SYS\nUSER TEXT"
+        assert any(p.inline_data is not None for p in parts)
+
+    def test_plain_text_user_message_is_merged(self) -> None:
+        messages = [SystemMessage(content="SYS"), UserMessage(content="USER TEXT")]
+        contents, system = _serialize_google(messages, include_system_in_user=True)
+        assert system is None
+        assert len(contents) == 1
+        assert _all_text(contents[0]) == "SYS\n\nUSER TEXT"
+
+    def test_multiple_system_messages_all_included(self) -> None:
+        messages = [
+            SystemMessage(content="SYS A"),
+            SystemMessage(content="SYS B"),
+            UserMessage(content="HELLO"),
+        ]
+        contents, _ = _serialize_google(messages, include_system_in_user=True)
+        text = _all_text(contents[0])
+        assert "SYS A" in text and "SYS B" in text and "HELLO" in text
+
+    def test_system_only_list_is_not_dropped(self) -> None:
+        contents, system = _serialize_google(
+            [SystemMessage(content="SYS")], include_system_in_user=True
+        )
+        assert system is None
+        assert len(contents) == 1
+        assert _all_text(contents[0]) == "SYS"
+
+    def test_assistant_first_gets_its_own_user_turn(self) -> None:
+        messages = [
+            SystemMessage(content="SYS"),
+            AssistantMessage(content="PRIOR"),
+            UserMessage(content="NOW"),
+        ]
+        contents, _ = _serialize_google(messages, include_system_in_user=True)
+        assert [c.role for c in contents] == ["user", "model", "user"]
+        assert _all_text(contents[0]) == "SYS"
+
+    def test_flag_off_keeps_system_separate(self) -> None:
+        messages = [SystemMessage(content="SYS"), UserMessage(content="USER TEXT")]
+        contents, system = _serialize_google(messages, include_system_in_user=False)
+        assert system == "SYS"
+        assert _all_text(contents[0]) == "USER TEXT"
+
+    def test_caller_messages_are_not_mutated(self) -> None:
+        user = UserMessage(content="USER TEXT")
+        GoogleMessageSerializer.serialize_messages(
+            [SystemMessage(content="SYS"), user], include_system_in_user=True
+        )
+        assert user.content == "USER TEXT"
+
+
+class TestAnthropicMultipleSystemMessages:
+    """§6.4.7 — only the *last* SystemMessage used to survive."""
+
+    def test_both_system_prompts_reach_the_request(self) -> None:
+        messages = [
+            SystemMessage(content="FIRST"),
+            SystemMessage(content="SECOND"),
+            UserMessage(content="hello"),
+        ]
+        _serialized, system = AnthropicMessageSerializer.serialize_messages(messages)
+
+        assert isinstance(system, list)
+        texts = [block["text"] for block in system]
+        assert texts == ["FIRST", "SECOND"]
+
+    def test_single_system_message_unchanged(self) -> None:
+        _serialized, system = AnthropicMessageSerializer.serialize_messages(
+            [SystemMessage(content="ONLY"), UserMessage(content="hi")]
+        )
+        assert system == "ONLY"
+
+    def test_no_system_message(self) -> None:
+        _serialized, system = AnthropicMessageSerializer.serialize_messages(
+            [UserMessage(content="hi")]
+        )
+        assert system is None
+
+    def test_order_matches_openai_serializer(self) -> None:
+        """The same list must not produce a different prompt on the two providers."""
+        from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
+
+        messages = [
+            SystemMessage(content="FIRST"),
+            SystemMessage(content="SECOND"),
+            UserMessage(content="hello"),
+        ]
+        _serialized, anthropic_system = AnthropicMessageSerializer.serialize_messages(messages)
+        openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
+
+        openai_system_text = [m["content"] for m in openai_messages if m["role"] == "system"]
+        anthropic_text = [b["text"] for b in anthropic_system]  # type: ignore[index]
+        assert anthropic_text == openai_system_text == ["FIRST", "SECOND"]

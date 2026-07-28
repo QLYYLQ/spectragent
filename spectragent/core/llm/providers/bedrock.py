@@ -9,7 +9,17 @@ from pydantic import BaseModel, Field
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.model_families import ModelFamily, detect_model_family
+from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.bedrock_format import AWSBedrockMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
+
+#: ``tool_choice`` spelled the Converse way. There is no "none" — Converse
+#: cannot advertise tools while forbidding their use.
+_BEDROCK_TOOL_CHOICE: dict[str, dict[str, dict]] = {
+    "auto": {"auto": {}},
+    "required": {"any": {}},
+}
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 if TYPE_CHECKING:
@@ -95,19 +105,27 @@ class ChatBedrock(ChatModelBase):
             config["seed"] = self.seed
         return config
 
+    @property
+    def model_family(self) -> ModelFamily:
+        """Declared capabilities for this model (see ``core/llm/model_families``)."""
+        return detect_model_family(str(self.model))
+
     def _format_tools_for_request(self, output_format: type[BaseModel]) -> list[dict[str, Any]]:
-        schema = output_format.model_json_schema()
-        properties = {
-            name: {"type": info.get("type", "string"), "description": info.get("description", "")}
-            for name, info in schema.get("properties", {}).items()
-        }
-        required = schema.get("required", [])
+        # Previously this rebuilt the schema one level deep: every property was
+        # collapsed to ``{"type": info.get("type", "string")}``, which turned each
+        # nested submodel (a bare ``$ref``, no ``type``) into a string and stripped
+        # ``items`` off every array. Use the shared flattener instead — it inlines
+        # ``$defs`` so the whole tree survives.
+        schema = SchemaOptimizer.create_optimized_json_schema(
+            output_format, strict=self.model_family.supports_strict_mode
+        )
+        schema.pop("title", None)
         return [
             {
                 "toolSpec": {
                     "name": f"extract_{output_format.__name__.lower()}",
                     "description": f"Extract information in the format of {output_format.__name__}",
-                    "inputSchema": {"json": {"type": "object", "properties": properties, "required": required}},
+                    "inputSchema": {"json": schema},
                 }
             }
         ]
@@ -127,16 +145,34 @@ class ChatBedrock(ChatModelBase):
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         try:
             from botocore.exceptions import ClientError  # type: ignore
@@ -144,6 +180,18 @@ class ChatBedrock(ChatModelBase):
             raise ImportError("`boto3` not installed.") from e
 
         bedrock_messages, system_message = AWSBedrockMessageSerializer.serialize_messages(messages)
+
+        if tools and output_format is not None:
+            # Converse has exactly one `toolConfig`, and structured output has
+            # already claimed it (plus its own forced tool choice).
+            self.reject_unsupported_tools(
+                tools,
+                reason=(
+                    "Converse exposes a single toolConfig, which its "
+                    "structured-output path already uses to carry the schema. "
+                    "Pass tools without output_format."
+                ),
+            )
 
         try:
             body: dict[str, Any] = {}
@@ -154,6 +202,22 @@ class ChatBedrock(ChatModelBase):
                 body["inferenceConfig"] = inference_config
             if output_format is not None:
                 body["toolConfig"] = {"tools": self._format_tools_for_request(output_format)}
+            elif tools:
+                if tool_choice not in _BEDROCK_TOOL_CHOICE:
+                    # Converse's toolChoice vocabulary is auto|any|tool — there is
+                    # no way to advertise tools while forbidding their use.
+                    self.reject_unsupported_tools(
+                        tools,
+                        reason=(
+                            f"Bedrock Converse toolChoice accepts only "
+                            f"{sorted(_BEDROCK_TOOL_CHOICE)}; tool_choice="
+                            f"{tool_choice!r} has no Converse equivalent."
+                        ),
+                    )
+                body["toolConfig"] = {
+                    "tools": AWSBedrockMessageSerializer.serialize_tools(tools),
+                    "toolChoice": _BEDROCK_TOOL_CHOICE[tool_choice],
+                }
             if self.request_params:
                 body.update(self.request_params)
             body = {k: v for k, v in body.items() if v is not None}
@@ -168,7 +232,11 @@ class ChatBedrock(ChatModelBase):
 
                 if output_format is None:
                     text_content = [item["text"] for item in content if "text" in item]
-                    return ChatInvokeCompletion(completion="\n".join(text_content), usage=usage)
+                    return ChatInvokeCompletion(
+                        completion="\n".join(text_content),
+                        usage=usage,
+                        tool_calls=AWSBedrockMessageSerializer.parse_tool_calls(content),
+                    )
                 else:
                     for item in content:
                         if "toolUse" in item:

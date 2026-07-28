@@ -13,13 +13,37 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
-from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.messages import BaseMessage, Function, ToolCall
 from spectragent.core.llm.schema.mistral import MistralSchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
+
+
+def _parse_raw_tool_calls(choice: dict[str, Any]) -> list[ToolCall]:
+    """Read tool calls off Mistral's raw JSON choice.
+
+    This provider speaks HTTP directly rather than through an SDK, so the
+    response is plain dicts rather than typed objects.
+    """
+    raw = (choice.get("message") or {}).get("tool_calls") or []
+    calls: list[ToolCall] = []
+    for call in raw:
+        function = call.get("function") or {}
+        arguments = function.get("arguments", "{}")
+        calls.append(
+            ToolCall(
+                id=call.get("id", ""),
+                function=Function(
+                    name=function.get("name", ""),
+                    arguments=arguments if isinstance(arguments, str) else json.dumps(arguments),
+                ),
+            )
+        )
+    return calls
 
 
 @dataclass
@@ -161,9 +185,30 @@ class ChatMistral(ChatModelBase):
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        if tools and output_format is not None:
+            # `response_format: json_schema` pins the whole reply to the schema.
+            self.reject_unsupported_tools(
+                tools,
+                reason=(
+                    "its structured-output path pins the reply to a json_schema "
+                    "response_format, leaving no room for a tool call. Pass tools "
+                    "without output_format."
+                ),
+            )
+
         payload: dict[str, Any] = {"model": self.model, "messages": self._serialize_messages(messages)}
+        if tools:
+            # Mistral's /chat/completions mirrors the OpenAI tool vocabulary.
+            payload["tools"] = OpenAIMessageSerializer.serialize_tools(tools)
+            payload["tool_choice"] = tool_choice
         if self.temperature is not None:
             payload["temperature"] = self.temperature
         if self.top_p is not None:
@@ -194,7 +239,11 @@ class ChatMistral(ChatModelBase):
             usage = self._build_usage(data.get("usage"))
 
             if output_format is None:
-                return ChatInvokeCompletion(completion=content_text, usage=usage)
+                return ChatInvokeCompletion(
+                    completion=content_text,
+                    usage=usage,
+                    tool_calls=_parse_raw_tool_calls(choices[0]),
+                )
             parsed = output_format.model_validate_json(content_text)
             return ChatInvokeCompletion(completion=parsed, usage=usage)
 

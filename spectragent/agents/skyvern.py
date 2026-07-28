@@ -67,7 +67,6 @@ class SkyvernAgent(AgentBase):
     }
 
     # ── config (conscribe visible) ─────────────────────────────
-    max_steps: Annotated[int, PydanticField(description="Maximum steps")] = 50
     action_history_window: Annotated[
         int, PydanticField(description="Number of recent actions to include in prompt")
     ] = 5
