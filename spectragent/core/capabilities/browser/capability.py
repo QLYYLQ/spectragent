@@ -179,6 +179,35 @@ class BrowserCapability(CapabilityBase):
         ),
     ] = False
 
+    humanize_mouse: Annotated[
+        bool,
+        PydanticField(
+            description=(
+                "If True, route clicks/scrolls (and the cursor approach before "
+                "type/select) through a human-like trajectory — curved path, "
+                "acceleration/deceleration, per-point timing — instead of an "
+                "instant jump. Off by default: adds ~200-1500ms per mouse "
+                "action; intended for anti-bot-sensitive evals, not throughput "
+                "benchmarks."
+            ),
+        ),
+    ] = False
+
+    mouse_trajectory: Annotated[
+        str,
+        PydanticField(
+            description=(
+                "Trajectory strategy when humanize_mouse is on: 'windmouse' | "
+                "'bezier' | 'instant'. Ignored when humanize_mouse is False."
+            ),
+        ),
+    ] = "windmouse"
+
+    # Per-strategy constructor overrides (e.g. ``{"gravity": 12, "seed": 7}``),
+    # forwarded to the resolved MouseTrajectory class. Omitted → strategy
+    # defaults.
+    mouse_trajectory_overrides: dict[str, Any] = field(default_factory=dict)
+
     # ── per-action capability-side config ────────────────────────────
     # Wiring (``__wiring__["action"]``) is the sole source of truth for
     # *which* actions exist. ``action_overrides`` controls *how* each
@@ -961,6 +990,10 @@ class BrowserCapability(CapabilityBase):
                 selector_map_getter=_selector_map_getter,
                 main_frame_id_getter=_main_frame_id_getter,
                 debug_highlight=self.debug_highlight,
+                humanize_mouse=self.humanize_mouse,
+                mouse_trajectory=self.mouse_trajectory,
+                viewport=viewport,
+                mouse_trajectory_kwargs=self.mouse_trajectory_overrides or None,
             ),
             "screenshot": lambda: ScreenshotWatchdog(cdp),
             "crash": lambda: CrashWatchdog(cdp),
