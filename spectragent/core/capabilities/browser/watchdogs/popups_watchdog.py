@@ -7,23 +7,29 @@ auto-cancels prompts.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from agent_cdp import (
     CDPCommandProtocol,
     CDPEventBridge,
     ConnectionType,
     EventScope,
-    WatchdogBase,
 )
 
+from spectragent.core.capabilities.browser.watchdogs.base import (
+    BrowserWatchdog,
+    WatchdogContext,
+    WatchdogLevel,
+)
 from spectragent.core.capabilities.browser.watchdogs.events import DialogOpenedEvent
 
 logger = logging.getLogger(__name__)
 
 
-class PopupsWatchdog(WatchdogBase):
+class PopupsWatchdog(BrowserWatchdog):
     """Auto-handles JavaScript dialogs (alert, confirm, prompt, beforeunload)."""
+
+    level: ClassVar[WatchdogLevel] = "tab"
 
     def __init__(
         self,
@@ -35,6 +41,10 @@ class PopupsWatchdog(WatchdogBase):
         self._auto_accept = auto_accept
         self._scope: EventScope | None = None
         self._bridge: CDPEventBridge | None = None
+
+    @classmethod
+    def build(cls, ctx: WatchdogContext) -> PopupsWatchdog:
+        return cls(ctx.cdp)
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._scope = scope
@@ -52,6 +62,20 @@ class PopupsWatchdog(WatchdogBase):
             self._on_dialog_opened,
             mode=ConnectionType.QUEUED,
         )
+
+    def detach(self) -> None:
+        """Unregister this watchdog's CDP callbacks. Idempotent.
+
+        Without this the bridge outlives its scope: ``close_tab`` /
+        ``teardown`` close the EventScope but the CDP client still holds
+        the bridge callback, and ``EventScope.emit`` raises RuntimeError
+        on a closed scope — swallowed by CDPClient's dispatch loop, so
+        the leak shows up only as recurring exception spam.
+        """
+        if self._bridge is not None:
+            self._bridge.close()
+            self._bridge = None
+        self._scope = None
 
     def _make_dialog_event(self, params: dict[str, Any]) -> DialogOpenedEvent:
         return DialogOpenedEvent(

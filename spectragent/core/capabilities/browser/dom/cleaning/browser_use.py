@@ -584,20 +584,6 @@ def _build_tree_from_cdp(
 
 
 # ---------------------------------------------------------------------------
-# JS click listener flag application
-# ---------------------------------------------------------------------------
-
-def _apply_js_listener_flags(root: DOMElementNode, ids: set[int]) -> None:
-    """Set ``has_js_click_listener`` on nodes whose backend_node_id is in *ids*."""
-    stack = [root]
-    while stack:
-        node = stack.pop()
-        if node.backend_node_id is not None and node.backend_node_id in ids:
-            node.has_js_click_listener = True
-        stack.extend(node.children)
-
-
-# ---------------------------------------------------------------------------
 # Stage 1: Simplify tree
 # ---------------------------------------------------------------------------
 

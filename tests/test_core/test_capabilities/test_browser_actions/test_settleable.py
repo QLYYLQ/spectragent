@@ -28,7 +28,6 @@ class TestSettleableMixin:
         result = await action.execute(
             {"url": "https://example.com"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         elapsed = time.perf_counter() - start
 
@@ -50,7 +49,6 @@ class TestSettleableMixin:
         result = await action.execute(
             {"index": 1},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         elapsed = time.perf_counter() - start
 
@@ -65,7 +63,6 @@ class TestSettleableMixin:
         result = await action.execute(
             {"url": "https://example.com"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         elapsed = time.perf_counter() - start
 

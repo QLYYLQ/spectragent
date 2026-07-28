@@ -8,9 +8,10 @@ DOMCleaner strategy, and returns the cleaned DOMState.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import Any, ClassVar
 
-from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, WatchdogBase
+from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 
 from spectragent.core.capabilities.browser.dom.cleaning import (
     DOMCleanerProtocol,
@@ -22,17 +23,26 @@ from spectragent.core.capabilities.browser.dom.serializers import (
     DOMSerializerProtocol,
     DOMSerializerRegistrar,
 )
+from spectragent.core.capabilities.browser.watchdogs.base import (
+    BrowserWatchdog,
+    WatchdogContext,
+    WatchdogLevel,
+)
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     BrowserStateRequestEvent,
     BrowserStateSummary,
 )
+from spectragent.schemas.observation.fragments import DOMObs
 
 logger = logging.getLogger(__name__)
 
 
-class DOMWatchdog(WatchdogBase):
+class DOMWatchdog(BrowserWatchdog):
     """Captures DOM state via 3 CDP protocols, cleans via pluggable strategy."""
+
+    level: ClassVar[WatchdogLevel] = "tab"
+    provides: ClassVar[frozenset[str]] = frozenset({"browser.dom"})
 
     def __init__(
         self,
@@ -42,6 +52,7 @@ class DOMWatchdog(WatchdogBase):
         serializer_type: str = "text",
         viewport: tuple[int, int] = (1280, 720),
         enable_js_listener_detection: bool = False,
+        selector_map_setter: Callable[[DOMSelectorMap], None] | None = None,
     ) -> None:
         self._cdp = cdp
         self._viewport = viewport
@@ -50,6 +61,9 @@ class DOMWatchdog(WatchdogBase):
         if serializer_type:
             self._serializer = DOMSerializerRegistrar.get(serializer_type)()
         self._enable_js_listeners = enable_js_listener_detection
+        # Publishes the freshly-built selector map back to the capability
+        # so ActionWatchdog can translate element index → backend_node_id.
+        self._publish_selector_map = selector_map_setter
 
         # Per-scope state (set during attach).
         self._scope: EventScope | None = None
@@ -58,6 +72,17 @@ class DOMWatchdog(WatchdogBase):
         # Latest DOM state (accessible by other watchdogs, e.g. ActionWatchdog).
         self.current_state: DOMState | None = None
         self.selector_map: DOMSelectorMap = {}
+
+    @classmethod
+    def build(cls, ctx: WatchdogContext) -> DOMWatchdog:
+        return cls(
+            ctx.cdp,
+            cleaner_type=ctx.profile.cleaner or "browser_use",
+            serializer_type=ctx.profile.serializer or "text",
+            viewport=ctx.viewport,
+            enable_js_listener_detection=ctx.profile.js_click_listener_detection,
+            selector_map_setter=ctx.selector_map_setter,
+        )
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._scope = scope
@@ -72,7 +97,7 @@ class DOMWatchdog(WatchdogBase):
         self, event: BrowserStateRequestEvent
     ) -> BrowserStateSummary | None:
         """Handle BrowserStateRequestEvent — capture + clean DOM."""
-        if not event.include_dom:
+        if not (event.fragments & self.provides):
             return None
 
         try:
@@ -100,8 +125,17 @@ class DOMWatchdog(WatchdogBase):
             # Update internal state.
             self.current_state = state
             self.selector_map = state.selector_map
+            if self._publish_selector_map is not None:
+                self._publish_selector_map(dict(state.selector_map))
 
-            return BrowserStateSummary(dom_state=state)
+            return BrowserStateSummary(
+                fragments={
+                    "browser.dom": DOMObs(
+                        element_tree=state,
+                        selector_map=dict(state.selector_map),
+                    ),
+                }
+            )
 
         except Exception as exc:
             logger.error("DOMWatchdog capture failed: %s", exc, exc_info=True)

@@ -19,7 +19,6 @@ class TestScrollConfig:
         await action.execute(
             {"direction": "down"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert isinstance(event, ScrollEvent)
@@ -33,7 +32,6 @@ class TestScrollConfig:
         await action.execute(
             {"direction": "up", "amount": 9999},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert event.amount == 500
@@ -45,7 +43,6 @@ class TestScrollConfig:
         await action.execute(
             {"direction": "down", "amount": 1200},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert event.amount == 1200
@@ -57,7 +54,6 @@ class TestScrollConfig:
         await action.execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert event.direction == "up"

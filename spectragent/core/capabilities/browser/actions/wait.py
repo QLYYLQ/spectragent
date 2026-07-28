@@ -83,7 +83,6 @@ class WaitAction(ActionBase):
         params: dict[str, Any],
         *,
         capability: BrowserCapability,
-        session_id: str,
     ) -> ActionResult:
         try:
             seconds = float(params.get("seconds", self.default_seconds))

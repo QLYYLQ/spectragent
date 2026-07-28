@@ -18,7 +18,6 @@ class TestNavigateExecute:
         await NavigateAction().execute(
             {"url": "https://example.com"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert isinstance(event, NavigateToUrlEvent)
@@ -35,7 +34,6 @@ class TestNavigateExecute:
         await action.execute(
             {"url": "https://example.com"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert event.wait_until == "networkidle"
@@ -47,7 +45,6 @@ class TestNavigateExecute:
         result = await NavigateAction().execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is False
 
@@ -60,7 +57,6 @@ class TestNavigateExecute:
         await action.execute(
             {"url": "https://example.com"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert event.wait_until == "networkidle"
@@ -75,7 +71,6 @@ class TestNavigateExecute:
         await NavigateAction().execute(
             {"url": "https://example.com"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         # ``None`` means "fall back to timeout_ms" in the watchdog.

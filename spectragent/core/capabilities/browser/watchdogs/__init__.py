@@ -1,17 +1,37 @@
-"""Browser watchdogs — event-driven CDP automation on top of agent-cdp."""
+"""Browser watchdogs — event-driven CDP automation on top of agent-cdp.
 
+Importing this package registers every watchdog under ``agent_cdp``'s
+``WatchdogRegistrar``. ``BrowserCapability`` imports it for exactly that
+side effect: it looks watchdogs up by registry key and never names a
+class, so adding a watchdog here is the whole change.
+"""
+
+from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
+    ActionWatchdog,
+)
+from spectragent.core.capabilities.browser.watchdogs.base import (
+    BrowserWatchdog,
+    WatchdogContext,
+    WatchdogLevel,
+    browser_watchdog_classes,
+    fragments_provided_by,
+    validate_watchdog_names,
+)
+from spectragent.core.capabilities.browser.watchdogs.browser_meta_watchdog import (
+    BrowserMetaWatchdog,
+)
+from spectragent.core.capabilities.browser.watchdogs.crash_watchdog import (
+    CrashWatchdog,
+)
+from spectragent.core.capabilities.browser.watchdogs.dom_watchdog import DOMWatchdog
 from spectragent.core.capabilities.browser.watchdogs.events import (
     AgentFocusChangedEvent,
     BrowserErrorEvent,
     BrowserStateRequestEvent,
     ClickCoordinateEvent,
     ClickElementEvent,
-    CloseTabEvent,
     DialogOpenedEvent,
     DOMContentLoadedEvent,
-    DownloadProgressEvent,
-    DownloadStartedEvent,
-    FileDownloadedEvent,
     GoBackEvent,
     GoForwardEvent,
     LifecycleEvent,
@@ -23,14 +43,37 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     ScreenshotRequestEvent,
     ScrollEvent,
     SendKeysEvent,
-    SwitchTabEvent,
     TabClosedEvent,
     TabCreatedEvent,
     TargetCrashedEvent,
     TypeTextEvent,
 )
+from spectragent.core.capabilities.browser.watchdogs.popups_watchdog import (
+    PopupsWatchdog,
+)
+from spectragent.core.capabilities.browser.watchdogs.screenshot_watchdog import (
+    ScreenshotWatchdog,
+)
+from spectragent.core.capabilities.browser.watchdogs.security_watchdog import (
+    SecurityWatchdog,
+)
 
 __all__ = [
+    # Registrar contract
+    "BrowserWatchdog",
+    "WatchdogContext",
+    "WatchdogLevel",
+    "browser_watchdog_classes",
+    "fragments_provided_by",
+    "validate_watchdog_names",
+    # Watchdogs
+    "ActionWatchdog",
+    "BrowserMetaWatchdog",
+    "CrashWatchdog",
+    "DOMWatchdog",
+    "PopupsWatchdog",
+    "ScreenshotWatchdog",
+    "SecurityWatchdog",
     # Action request events
     "NavigateToUrlEvent",
     "ClickElementEvent",
@@ -41,8 +84,6 @@ __all__ = [
     "GoBackEvent",
     "GoForwardEvent",
     "RefreshEvent",
-    "SwitchTabEvent",
-    "CloseTabEvent",
     "ScreenshotRequestEvent",
     "BrowserStateRequestEvent",
     # CDP Page-domain bridged events
@@ -57,10 +98,6 @@ __all__ = [
     "TargetCrashedEvent",
     "BrowserErrorEvent",
     "AgentFocusChangedEvent",
-    # Download events
-    "DownloadStartedEvent",
-    "DownloadProgressEvent",
-    "FileDownloadedEvent",
     # Dialog events
     "DialogOpenedEvent",
 ]

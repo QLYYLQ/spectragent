@@ -39,7 +39,6 @@ class DoneAction(ActionBase):
         params: dict[str, Any],
         *,
         capability: BrowserCapability,
-        session_id: str,
     ) -> ActionResult:
         return ActionResult(
             success=bool(params.get("success", True)),

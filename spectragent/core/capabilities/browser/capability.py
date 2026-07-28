@@ -7,17 +7,29 @@ plus per-fragment observation resolution to the framework.
 
 Key design points:
 
-- **Watchdog = Resolver**: ``DOMWatchdog`` resolves the ``dom`` fragment,
-  ``ScreenshotWatchdog`` resolves the ``screenshot`` fragment, etc.
+- **Watchdog = Resolver, for real**: watchdogs come from ``agent_cdp``'s
+  ``WatchdogRegistrar``. Each declares ``level`` (tab / browser) and
+  ``provides`` (the fragment keys it resolves) and is constructed from a
+  single :class:`WatchdogContext`. This module names no watchdog class
+  and holds no per-fragment branch, so adding an observation fragment is
+  one new watchdog class — ``capability.py`` does not change.
+- **Negotiation-driven cost**: the ``BrowserStateRequestEvent`` carries
+  the *negotiated* fragment set, not the capability's full provides set.
+  A vision-only agent that asked for ``browser.screenshot`` and not
+  ``browser.dom`` never triggers a DOM extraction.
 - **Lazy-batch resolution**: ``resolve_fragment()`` consults a per-tab
   per-cycle cache. The first call within a cycle fires *one*
-  ``BrowserStateRequestEvent`` with selective ``include_dom`` /
-  ``include_screenshot`` flags reflecting all fragments needed; later
-  calls in the same cycle hit the cache. The cache is invalidated by
-  ``execute_action()`` so action effects are never observed via stale
-  data.
-- **Multi-tab routing**: ``execute_action`` and ``resolve_fragment`` both
-  accept a ``session_id`` keyword. The cache is keyed by ``session_id``.
+  ``BrowserStateRequestEvent``; later calls in the same cycle hit the
+  cache. The cache is invalidated by ``execute_action()`` so action
+  effects are never observed via stale data.
+- **Multi-tab focus is capability state**: the CDP session id of the
+  focused tab lives in ``_default_session_id`` and is changed through
+  :meth:`BrowserCapability.switch_tab`. It is *not* a parameter of
+  ``execute_action`` / ``resolve_fragment``, and nothing above this
+  package knows it exists — a CDP tab handle is a browser concept, and
+  threading it through the framework's Action / Environment / Runtime /
+  Loop signatures gave every other domain a mandatory argument it could
+  neither produce nor use. The per-cycle cache is keyed by that same id.
 
 See docs/architecture_design.md §4.9 and docs/execution_dag.md M13.
 """
@@ -26,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 
 from agent_cdp import CDPEventBridge, EventScope, ScopeGroup
 from pydantic import Field as PydanticField
@@ -51,10 +63,23 @@ from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — re
 )
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
-from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, DOMState
+from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
 from spectragent.core.capabilities.browser.profiles import (
     BrowserProfileConfig,
     resolve_profile,
+)
+
+# Importing the package registers every watchdog under agent_cdp's
+# ``WatchdogRegistrar``. This module then looks them up by key — it never
+# names a watchdog class, which is what makes "one class per fragment"
+# true rather than aspirational.
+from spectragent.core.capabilities.browser.watchdogs import (
+    ActionWatchdog,
+    BrowserWatchdog,
+    WatchdogContext,
+    browser_watchdog_classes,
+    fragments_provided_by,
+    validate_watchdog_names,
 )
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
@@ -64,22 +89,21 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     PageLoadEvent,
 )
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
-from spectragent.schemas.observation.fragments import (
-    BrowserMetaObs,
-    DOMObs,
-    ScreenshotObs,
-)
 from spectragent.schemas.provider_session import ProviderSession
 
 logger = logging.getLogger(__name__)
 
 
-# Watchdog level classification.
-_TAB_WATCHDOGS = {"dom", "action", "screenshot", "popups", "security"}
-_BROWSER_WATCHDOGS = {"crash", "downloads"}
-
 # Scope ID for browser-level (non-tab-specific) watchdogs.
 _GLOBAL_SCOPE_ID = "__browser__"
+
+# How many times one observe cycle re-fires ``BrowserStateRequestEvent``
+# before giving up. A DOM/screenshot scrape can lose a race against an
+# in-flight navigation (the target is swapping documents and every CDP
+# call in the batch fails); re-firing once costs one round trip and
+# recovers that case. Exhausting the attempts raises — never serves an
+# empty fragment.
+_OBSERVE_MAX_ATTEMPTS = 2
 
 
 # ── Cache entry ───────────────────────────────────────────────────────
@@ -89,6 +113,11 @@ _GLOBAL_SCOPE_ID = "__browser__"
 class _ObserveCycleCache:
     """Per-tab cache of resolved fragments within a single observe cycle.
 
+    ``fragments`` is keyed by fully-qualified fragment key. It used to be
+    one hard-coded attribute per fragment, which forced both a schema
+    edit and an ``if/elif`` branch in ``resolve_fragment`` for every new
+    fragment; a dict needs neither.
+
     The cache is created on the first ``resolve_fragment`` call after an
     ``execute_action`` and invalidated on the next ``execute_action``.
     Multiple resolve calls within the same cycle reuse the same
@@ -96,10 +125,23 @@ class _ObserveCycleCache:
     regardless of how many fragments the agent requests per step.
     """
 
-    dom: DOMObs | None = None
-    screenshot: ScreenshotObs | None = None
-    browser_meta: BrowserMetaObs | None = None
+    fragments: dict[str, Any] = field(default_factory=dict)
     fired: bool = False  # whether the batched event has run for this cycle
+
+
+@dataclass
+class _StateEventOutcome:
+    """Aggregated replies to one ``BrowserStateRequestEvent`` emission.
+
+    ``fragments`` merges every responding watchdog's contribution.
+    ``handler_count`` / ``errors`` exist purely so the failure message can
+    distinguish "no watchdog is listening" (a config problem) from "the
+    watchdogs ran and every CDP call failed" (a live-page problem).
+    """
+
+    fragments: dict[str, Any] = field(default_factory=dict)
+    handler_count: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -113,9 +155,14 @@ class BrowserCapability(CapabilityBase):
 
     __registry_key__: ClassVar[str] = "browser"
     __wiring__: ClassVar[dict[str, Any]] = {
+        # Observation provides is *derived*, never listed. It is the union
+        # of ``provides`` over every registered browser watchdog, so a new
+        # fragment cannot drift out of sync with the class that resolves
+        # it — and adding one does not edit this file. Evaluated at class
+        # creation; ``watchdogs`` is imported above for exactly that.
         "observation": (
             "observation",
-            ["browser.dom", "browser.screenshot", "browser.browser_meta"],
+            sorted(fragments_provided_by(browser_watchdog_classes().values())),
         ),
         # Action provides — symmetric to observation. Keep in sync with
         # the concrete classes registered under
@@ -193,8 +240,20 @@ class BrowserCapability(CapabilityBase):
         ),
     ] = False
 
+    # Keys of ``MouseTrajectoryRegistrar``. Spelled out because a
+    # ``Literal`` must be static to be a type at all — and because a bare
+    # ``str`` here let a typo fall through ``input/mouse.py``'s fallback
+    # and silently disable humanized movement. Drift is impossible:
+    # ``test_mouse_trajectory_literal_matches_registry`` fails the moment
+    # a strategy is added or renamed.
+    #
+    # NOTE: this is *not* expressible as ``__wiring__``. On a dataclass
+    # capability, conscribe's metaclass runs before ``@dataclass``, so a
+    # wiring entry replaces the field's default with a ``WiredField``
+    # descriptor — it turns the field into an injected receptor rather
+    # than constraining the existing scalar.
     mouse_trajectory: Annotated[
-        str,
+        Literal["bezier", "instant", "windmouse"],
         PydanticField(
             description=(
                 "Trajectory strategy when humanize_mouse is on: 'windmouse' | "
@@ -252,7 +311,7 @@ class BrowserCapability(CapabilityBase):
     _session_to_target: dict[str, str] = field(
         default_factory=dict, init=False, repr=False
     )
-    _watchdogs: dict[str, list[Any]] = field(
+    _watchdogs: dict[str, list[BrowserWatchdog]] = field(
         default_factory=dict, init=False, repr=False
     )
     _global_scope: EventScope | None = field(default=None, init=False, repr=False)
@@ -305,7 +364,42 @@ class BrowserCapability(CapabilityBase):
             kwargs = self.action_overrides.get(name, {})
             self._actions_by_name[name] = action_cls(**kwargs)
 
+        # Resolve the profile eagerly: which watchdogs are installed
+        # decides which fragments this capability can resolve, and
+        # negotiation asks that question *before* setup() runs.
+        self._resolved_profile = resolve_profile(self.profile)
+
     # ── Properties ────────────────────────────────────────────────────
+
+    @property
+    def profile_config(self) -> BrowserProfileConfig:
+        """The resolved profile. Available from construction onwards."""
+        if self._resolved_profile is None:  # pragma: no cover — defensive
+            self._resolved_profile = resolve_profile(self.profile)
+        return self._resolved_profile
+
+    def _watchdog_classes(self) -> dict[str, type[BrowserWatchdog]]:
+        """Watchdog classes this profile installs, keyed by registry key.
+
+        Every registered watchdog minus the profile's exclusions. An
+        unregistered exclusion name is a hard error naming the watchdog —
+        it used to be a ``logger.warning`` that let the run continue and
+        resurface much later as a pydantic ``ValidationError`` about a
+        *fragment*, pointing at entirely the wrong layer.
+        """
+        excluded = validate_watchdog_names(self.profile_config.watchdogs_exclude)
+        return browser_watchdog_classes(exclude=excluded)
+
+    @property
+    def declared_fragments(self) -> frozenset[str]:
+        """Fragments the installed watchdogs can resolve.
+
+        Derived from the watchdogs the profile leaves enabled, not from
+        ``__wiring__``: the ``vision_only`` profile genuinely cannot
+        serve ``browser.dom``, so an agent that requires it must fail
+        negotiation instead of receiving an empty tree every step.
+        """
+        return fragments_provided_by(self._watchdog_classes().values())
 
     @property
     def is_alive(self) -> bool:
@@ -356,6 +450,66 @@ class BrowserCapability(CapabilityBase):
             return None
         return backend
 
+    def _session_cdp_headers(self) -> dict[str, str] | None:
+        """Auth headers the backend requires on the CDP WebSocket handshake.
+
+        Providers that gate their CDP endpoint (Skyvern's ``x-api-key``,
+        Airtop's ``Authorization: Bearer``) return them in
+        ``ProviderSession.metadata["cdp_headers"]``. Without forwarding
+        them to :class:`CDPClient` the handshake is rejected for missing
+        auth and the run dies before the first observe.
+
+        Returns ``None`` (rather than ``{}``) when there is nothing to
+        send, so ``websockets.connect`` sees its own default.
+
+        NOTE: the values are credentials — never log this dict.
+        """
+        if self._session is None:
+            return None
+        raw = self._session.metadata.get("cdp_headers")
+        if not isinstance(raw, dict) or not raw:
+            return None
+        return {str(k): str(v) for k, v in raw.items()}
+
+    async def _apply_viewport_override(self, cdp_session_id: str) -> None:
+        """Make ``viewport_width`` / ``viewport_height`` real for this tab.
+
+        Without this the configured viewport was pure fiction: it was
+        forwarded to the DOM cleaner (bounds / visibility filtering) and
+        reported on ``ScreenshotObs``, but nothing ever told the browser
+        about it — the true CSS viewport was whatever the provider or the
+        local window chrome happened to give us, so "in viewport" filtering
+        was computed against the wrong rectangle.
+
+        ``deviceScaleFactor: 0`` keeps the platform's real DPR, which the
+        DOM watchdog queries live per observe — we must not pin it here.
+        Best-effort: a provider that rejects Emulation should degrade to the
+        previous behaviour, not kill the run.
+        """
+        if self._cdp is None:
+            return
+        try:
+            await self._cdp.send(
+                "Emulation.setDeviceMetricsOverride",
+                {
+                    "width": self.viewport_width,
+                    "height": self.viewport_height,
+                    "deviceScaleFactor": 0,
+                    "mobile": False,
+                },
+                session_id=cdp_session_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Emulation.setDeviceMetricsOverride(%dx%d) failed on %s: %s — "
+                "the real viewport may differ from the configured one, so "
+                "viewport-relative DOM filtering will be approximate",
+                self.viewport_width,
+                self.viewport_height,
+                cdp_session_id,
+                exc,
+            )
+
     # ── CapabilityBase contract ──────────────────────────────────────
 
     def get_action_descriptors(self, **context: Any) -> list[ActionDescriptor]:
@@ -368,28 +522,97 @@ class BrowserCapability(CapabilityBase):
         return [a.descriptor(**context) for a in self._actions_by_name.values()]
 
     async def setup(
-        self, config: dict[str, Any] | None = None, **kwargs: Any
+        self,
+        *,
+        negotiation: Any = None,
+        cdp_url: str | None = None,
+        start_url: str | None = None,
+        login_required: bool | None = None,
+        login_type: str | None = None,
+        credentials_ref: str | None = None,
+        risk_control: bool | None = None,
+        risk_control_types: list[str] | None = None,
     ) -> None:
         """Initialize CDP connection, global scope, and the initial tab.
 
-        ``kwargs`` is forwarded from AgentRuntime / TaskLoader and may
-        include task context (``start_url`` etc.).
+        Every keyword here is a declared part of this capability's setup
+        vocabulary — that signature is what ``EnvironmentBase.setup``
+        reads to decide which task-context keys it may route here, and a
+        key nobody declares is now an error rather than a value all
+        capabilities quietly discard.
+
+        ``negotiation`` is the observation negotiation result. It narrows
+        :attr:`provided_fragments`, which is what every
+        ``BrowserStateRequestEvent`` this session fires is built from —
+        so an agent that negotiated only ``browser.screenshot`` never
+        triggers DOM extraction. Passing ``None`` keeps the full set.
 
         CDP URL resolution priority:
-          1. ``kwargs["cdp_url"]`` (per-call override)
-          2. ``config["cdp_url"]`` (legacy explicit config dict)
-          3. ``self.cdp_url`` (conscribe field)
-          4. ``self.backend.open()`` → ``ProviderSession.cdp_url`` (IoC backend)
+          1. ``cdp_url`` (per-call override)
+          2. ``self.cdp_url`` (conscribe field)
+          3. ``self.backend.open()`` → ``ProviderSession.cdp_url`` (IoC backend)
 
         The backend path activates only when no explicit cdp_url is given;
         ``self._session`` is retained so :meth:`teardown` can release it.
+
+        ``start_url`` opens the task's landing page before the agent's
+        first observe. The remaining keys are the rest of
+        :class:`BrowserSetup`'s vocabulary; they are accepted so a task
+        carrying them routes cleanly, and reported at WARNING because
+        this capability does not act on them yet.
         """
-        # Resolve profile.
+        self.apply_negotiation(negotiation)
+
+        # Re-resolve in case ``profile`` was mutated after construction,
+        # and fail loudly here on an unknown watchdog name rather than
+        # mid-run.
         self._resolved_profile = resolve_profile(self.profile)
+        installed = self._watchdog_classes()
+
+        # A fragment the run negotiated but no installed watchdog
+        # resolves would surface as a missing-field ValidationError on
+        # the negotiated observation model, several layers away from the
+        # profile that caused it. Say so now.
+        if self._negotiated_fragments is not None:
+            resolvable = fragments_provided_by(installed.values())
+            # Only fragments this capability owns at all — a composite
+            # environment negotiates fragments other capabilities serve.
+            ours = fragments_provided_by(browser_watchdog_classes().values())
+            missing = sorted((self._negotiated_fragments & ours) - resolvable)
+            if missing:
+                raise RuntimeError(
+                    f"Browser profile {self.profile!r} installs watchdogs "
+                    f"{sorted(installed)} which cannot resolve negotiated "
+                    f"fragment(s) {missing}. Either drop the fragment from "
+                    f"the agent's __wiring__ or stop excluding the watchdog "
+                    f"that provides it "
+                    f"(profile excludes: "
+                    f"{sorted(self.profile_config.watchdogs_exclude)})."
+                )
+
+        unhandled = sorted(
+            name
+            for name, value in (
+                ("login_required", login_required),
+                ("login_type", login_type),
+                ("credentials_ref", credentials_ref),
+                ("risk_control", risk_control),
+                ("risk_control_types", risk_control_types),
+            )
+            if value
+        )
+        if unhandled:
+            logger.warning(
+                "BrowserCapability: task context declares %s, which this "
+                "capability accepts but does not act on yet — the run will "
+                "proceed without it.",
+                unhandled,
+            )
+
         self._scope_group = ScopeGroup("browser-capability")
 
-        # Resolve CDP URL: kwarg > config > constructor field.
-        cdp_url = kwargs.get("cdp_url") or (config or {}).get("cdp_url") or self.cdp_url
+        # Resolve CDP URL: per-call override > constructor field.
+        cdp_url = cdp_url or self.cdp_url
 
         # 1. CDPClient (WebSocket) — either injected (tests) or fresh.
         if self._injected_client is not None:
@@ -398,12 +621,15 @@ class BrowserCapability(CapabilityBase):
             # Last-resort: ask the wired backend to allocate a session.
             backend = self._resolved_backend()
             if cdp_url is None and backend is not None:
-                self._session = await backend.open(
-                    viewport={
-                        "width": self.viewport_width,
-                        "height": self.viewport_height,
-                    },
-                )
+                # ``open()`` is called with no framework-level kwargs. Every
+                # cloud provider declares an explicit keyword-only signature
+                # of *its own* options (skyvern: timeout_minutes/adblock/...,
+                # airtop: profile_name/..., lexmount: browser_mode/...), so
+                # passing a generic ``viewport=`` here was a TypeError for all
+                # of them and a silently-ignored kwarg for LocalChrome. The
+                # viewport is a browser-level concern and is applied per tab
+                # via ``Emulation.setDeviceMetricsOverride`` in _attach_tab.
+                self._session = await backend.open()
                 cdp_url = self._session.cdp_url
                 if cdp_url is None:
                     raise RuntimeError(
@@ -417,7 +643,9 @@ class BrowserCapability(CapabilityBase):
                     "``cdp_url`` in config, pass it as a kwarg, or wire "
                     "a ``browser_provider`` backend via __wiring__."
                 )
-            self._cdp = CDPClient(cdp_url)
+            self._cdp = CDPClient(
+                cdp_url, additional_headers=self._session_cdp_headers()
+            )
             await self._cdp.start()
 
         # 2. Global scope — browser-level watchdogs.
@@ -445,6 +673,20 @@ class BrowserCapability(CapabilityBase):
         self._default_session_id = sid
         self._alive = True
 
+        # The task's landing page. Routed here by name from
+        # ``TaskLoader.get_task_context()``; before F8 it arrived in a
+        # ``**kwargs`` sink and was dropped, so every browser benchmark
+        # started the agent on about:blank.
+        if start_url:
+            result = await self.execute_action(
+                Action(name="browser.navigate", params={"url": start_url})
+            )
+            if not result.success:
+                raise RuntimeError(
+                    f"BrowserCapability.setup(): could not open start_url "
+                    f"{start_url!r} — {result.error}"
+                )
+
         logger.info(
             "BrowserCapability setup complete. Default session: %s",
             self._default_session_id,
@@ -462,6 +704,13 @@ class BrowserCapability(CapabilityBase):
             except Exception as exc:
                 logger.debug("Bridge close failed for %s: %s", sid, exc)
         self._bridges.clear()
+
+        # Watchdogs own bridges too (PopupsWatchdog, CrashWatchdog). Those
+        # live outside ``self._bridges``, so closing only the page-lifecycle
+        # bridges above left their callbacks bound to a scope that is about
+        # to close.
+        for wd_list in list(self._watchdogs.values()):
+            self._detach_watchdogs(wd_list)
 
         if self._scope_group is not None:
             await self._scope_group.close_all()
@@ -495,9 +744,24 @@ class BrowserCapability(CapabilityBase):
 
         logger.info("BrowserCapability teardown complete")
 
-    async def execute_action(
-        self, action: Action, **kwargs: Any
-    ) -> ActionResult:
+    @staticmethod
+    def _detach_watchdogs(watchdogs: list[BrowserWatchdog]) -> None:
+        """Release CDP callbacks held by watchdogs that opened their own bridge.
+
+        ``detach()`` is part of :class:`BrowserWatchdog` (a no-op unless
+        the watchdog opened a ``CDPEventBridge``), so this calls it
+        unconditionally. It used to be probed for with ``getattr``
+        because agent-cdp's ``WatchdogProtocol`` only requires ``attach``.
+        """
+        for wd in watchdogs:
+            try:
+                wd.detach()
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug(
+                    "Watchdog %s detach failed: %s", type(wd).__name__, exc
+                )
+
+    async def execute_action(self, action: Action) -> ActionResult:
         """Delegate action execution to the registered action instance.
 
         There is no central dispatch table or ``if/else`` chain here —
@@ -505,8 +769,11 @@ class BrowserCapability(CapabilityBase):
         emission. We invalidate the per-tab observe cache before
         dispatching so a subsequent ``resolve_fragment`` call will see
         the post-action page state.
+
+        The tab acted on is the focused one (:attr:`default_session_id`),
+        changed via :meth:`switch_tab`.
         """
-        sid = kwargs.get("session_id") or self._default_session_id
+        sid = self._default_session_id
         if sid is None:
             return ActionResult(success=False, error="No active browser session")
 
@@ -524,41 +791,38 @@ class BrowserCapability(CapabilityBase):
         self._cycle_cache.pop(sid, None)
 
         try:
-            return await impl.execute(
-                action.params, capability=self, session_id=sid,
-            )
+            return await impl.execute(action.params, capability=self)
         except Exception as exc:
             logger.error("Action %s failed: %s", action.name, exc, exc_info=True)
             return ActionResult(success=False, error=str(exc))
 
-    async def resolve_fragment(
-        self, fragment_key: str, **kwargs: Any
-    ) -> Any:
+    async def resolve_fragment(self, fragment_key: str) -> Any:
         """Resolve one observation fragment via the lazy-batch cache.
 
-        First call after an ``execute_action`` triggers a single
-        ``BrowserStateRequestEvent`` (with the appropriate include_*
-        flags). Subsequent calls within the same cycle hit the cache.
+        First call after an ``execute_action`` fires a single
+        ``BrowserStateRequestEvent`` carrying the negotiated fragment
+        set; subsequent calls within the same cycle hit the cache.
 
-        Supported fragment keys: ``dom``, ``screenshot``, ``browser_meta``.
+        Which keys are supported is decided by the installed watchdogs'
+        ``provides`` — there is no branch per fragment here. The tab
+        observed is the focused one (:attr:`default_session_id`).
         """
-        sid = kwargs.get("session_id") or self._default_session_id
+        sid = self._default_session_id
         if sid is None:
             raise RuntimeError("No active browser session")
 
-        # Ensure cache is populated for this cycle.
-        await self._populate_cycle(sid, fragment_key)
+        provided = self.provided_fragments
+        if fragment_key not in provided:
+            raise ValueError(
+                f"BrowserCapability cannot resolve fragment "
+                f"{fragment_key!r}. Active fragments for this run: "
+                f"{sorted(provided)}."
+            )
 
-        cache = self._cycle_cache[sid]
-        if fragment_key == "browser.dom":
-            return cache.dom
-        if fragment_key == "browser.screenshot":
-            return cache.screenshot
-        if fragment_key == "browser.browser_meta":
-            return cache.browser_meta
-        raise ValueError(
-            f"BrowserCapability cannot resolve fragment '{fragment_key}'"
-        )
+        # Ensure cache is populated for this cycle.
+        await self._populate_cycle(sid)
+
+        return self._cycle_cache[sid].fragments.get(fragment_key)
 
     def _action_watchdog_for(self, sid: str) -> Any | None:
         """Return the ActionWatchdog instance attached to ``sid``, or ``None``.
@@ -567,10 +831,6 @@ class BrowserCapability(CapabilityBase):
         debug overlay before the DOM/screenshot scrape so the injected
         cursor + click marker don't leak into the agent's observation.
         """
-        from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
-            ActionWatchdog,
-        )
-
         target_id = self._session_to_target.get(sid)
         if target_id is None:
             return None
@@ -581,35 +841,27 @@ class BrowserCapability(CapabilityBase):
 
     # ── Cycle cache machinery ─────────────────────────────────────────
 
-    async def _populate_cycle(self, sid: str, fragment_key: str) -> None:
-        """Ensure the per-tab cache contains the requested fragment.
+    async def _populate_cycle(self, sid: str) -> None:
+        """Fire one batched state event per tab per cycle and cache the result.
 
-        The first call within a cycle fires one ``BrowserStateRequestEvent``
-        with ``include_dom`` / ``include_screenshot`` set according to
-        what this capability actually provides. In practice agents that
-        request multiple fragments per step make the single-round-trip
-        batch cheaper than firing one event per resolve_fragment call.
+        The event carries :attr:`provided_fragments` — the *negotiated*
+        set, not the capability's full provides set. Every fragment the
+        run needs is therefore collected in a single round trip, and
+        nothing else is collected at all.
 
-        ``browser_meta`` does not require a state event — it's served by
-        a direct CDP call against ``Page.getNavigationHistory`` and
-        ``Target.getTargets``. We resolve it on demand.
-
-        Partial-failure semantics: if the batched event produces no
-        successful ``BrowserStateSummary`` we do NOT mark the cache as
-        fired. A subsequent resolve call in the same cycle will retry.
+        Partial-failure semantics: the event is re-fired up to
+        ``_OBSERVE_MAX_ATTEMPTS`` times while any requested fragment is
+        still missing, then raises naming the missing fragments.
+        Returning quietly (the pre-fix behaviour) left the cache entry
+        unset, and since env fragments are required fields on the
+        negotiated observation model the caller got an opaque pydantic
+        ``ValidationError`` about a missing field instead of the cause.
         """
         cache = self._cycle_cache.get(sid)
         if cache is None:
             cache = _ObserveCycleCache()
             self._cycle_cache[sid] = cache
 
-        # browser_meta has its own resolver path.
-        if fragment_key == "browser.browser_meta":
-            if cache.browser_meta is None:
-                cache.browser_meta = await self._resolve_browser_meta(sid)
-            return
-
-        # dom / screenshot share a single state event per cycle.
         if cache.fired:
             return  # Cache already populated for this cycle.
 
@@ -617,17 +869,56 @@ class BrowserCapability(CapabilityBase):
         if scope is None:
             raise RuntimeError(f"Unknown session_id: {sid}")
 
-        # Selective flags: only ask for what this capability provides
-        # on a per-fragment basis. The ``provided_fragments`` set is
-        # derived from ``__wiring__`` and covers dom + screenshot +
-        # browser_meta. The event schema supports include_dom /
-        # include_screenshot so we can skip watchdog work when the
-        # fragment isn't needed.
-        provided = self.provided_fragments
-        event = BrowserStateRequestEvent(
-            include_dom="browser.dom" in provided,
-            include_screenshot="browser.screenshot" in provided,
-        )
+        wanted = self.provided_fragments
+        outcome: _StateEventOutcome | None = None
+        for attempt in range(1, _OBSERVE_MAX_ATTEMPTS + 1):
+            outcome = await self._fire_state_event(sid, scope, wanted)
+            if wanted <= outcome.fragments.keys():
+                break
+            logger.warning(
+                "observe cycle (sid=%s): BrowserStateRequestEvent attempt "
+                "%d/%d did not produce %s (handlers responded: %d%s)",
+                sid,
+                attempt,
+                _OBSERVE_MAX_ATTEMPTS,
+                sorted(wanted - outcome.fragments.keys()),
+                outcome.handler_count,
+                f"; errors: {outcome.errors}" if outcome.errors else "",
+            )
+        else:
+            assert outcome is not None  # loop body runs at least once
+            detail = (
+                "; ".join(outcome.errors)
+                if outcome.errors
+                else "none recorded — see the watchdog errors logged above"
+            )
+            raise RuntimeError(
+                f"observe cycle (sid={sid}): no watchdog produced "
+                f"{sorted(wanted - outcome.fragments.keys())} after "
+                f"{_OBSERVE_MAX_ATTEMPTS} attempts. Handlers responded: "
+                f"{outcome.handler_count}. Errors: {detail}."
+            )
+
+        cache.fragments.update(outcome.fragments)
+        cache.fired = True
+
+    async def _fire_state_event(
+        self, sid: str, scope: EventScope, wanted: frozenset[str]
+    ) -> _StateEventOutcome:
+        """Emit one ``BrowserStateRequestEvent`` and aggregate the replies.
+
+        A fresh event instance per call — an awaited event carries its
+        handlers' results, so re-firing the same object would re-read the
+        previous attempt's answers.
+
+        ``wanted`` is the negotiated fragment set. Each watchdog returns
+        early unless its own ``provides`` intersects it, so the CDP cost
+        of a step is exactly the fragments the agent asked for. This used
+        to be computed from the capability's full provides set, which
+        meant a vision-only agent paid for a full DOM extraction every
+        step and negotiation saved nothing.
+        """
+        event = BrowserStateRequestEvent(fragments=wanted)
 
         # Hide the debug-highlight overlay (cursor / click marker /
         # label) before the watchdogs scrape DOM + screenshot, so it
@@ -645,90 +936,20 @@ class BrowserCapability(CapabilityBase):
             if action_wd is not None:
                 await action_wd.set_overlay_visible(True)
 
-        dom_state: DOMState | None = None
-        screenshot: bytes | None = None
-        url: str | None = None
-        page_title: str | None = None
-        had_success = False
-
+        # Merge every responding watchdog's fragments. The capability has
+        # no idea what any of them mean — that is the point.
+        outcome = _StateEventOutcome()
         for result_obj in event.event_results.values():
+            outcome.handler_count += 1
+            error = getattr(result_obj, "error", None)
+            if error is not None:
+                outcome.errors.append(f"{result_obj.handler_name}: {error}")
             if result_obj.is_success and isinstance(
                 result_obj.result, BrowserStateSummary
             ):
-                had_success = True
                 summary: BrowserStateSummary = result_obj.result
-                if summary.dom_state is not None:
-                    dom_state = summary.dom_state
-                if summary.screenshot is not None:
-                    screenshot = summary.screenshot
-                if summary.url is not None:
-                    url = summary.url
-                if summary.page_title is not None:
-                    page_title = summary.page_title
-
-        # M4: If no watchdog returned a successful summary, leave the
-        # cache unfired so the next resolve_fragment call retries
-        # instead of serving empty fragments forever.
-        if not had_success:
-            logger.warning(
-                "observe cycle (sid=%s): BrowserStateRequestEvent produced "
-                "no successful BrowserStateSummary — leaving cache unfired",
-                sid,
-            )
-            return
-
-        # Update per-tab selector_map (consumed by execute_action's
-        # index → backend_node_id translation).
-        if dom_state is not None:
-            self._selector_maps[sid] = dict(dom_state.selector_map)
-
-        # Build typed fragments and stash them in the cache.
-        cache.dom = DOMObs(
-            element_tree=dom_state,
-            selector_map=dict(self._selector_maps.get(sid, {})),
-        )
-        cache.screenshot = ScreenshotObs(
-            image_bytes=screenshot,
-            viewport_width=self.viewport_width,
-            viewport_height=self.viewport_height,
-        )
-        # Opportunistically populate browser_meta from the same event,
-        # so a subsequent resolve_fragment("browser_meta") doesn't need
-        # to fire its own CDP request.
-        if cache.browser_meta is None and (url is not None or page_title is not None):
-            tabs = await self._get_tabs_safe()
-            cache.browser_meta = BrowserMetaObs(
-                url=url or "",
-                page_title=page_title or "",
-                tabs=tabs,
-            )
-        cache.fired = True
-
-    async def _resolve_browser_meta(self, sid: str) -> BrowserMetaObs:
-        """Resolve ``browser_meta`` independently of the state event.
-
-        Used when an agent only requests ``browser_meta`` and never
-        triggers the dom/screenshot batch.
-        """
-        url = ""
-        page_title = ""
-        if self._cdp is not None:
-            try:
-                nav_history = await self._cdp.send(
-                    "Page.getNavigationHistory", {}, session_id=sid,
-                )
-                if nav_history is not None:
-                    entries = nav_history.get("entries", [])
-                    idx = nav_history.get("currentIndex", 0)
-                    if entries and 0 <= idx < len(entries):
-                        url = entries[idx].get("url", "")
-                        page_title = entries[idx].get("title", "")
-            except Exception as exc:
-                logger.debug(
-                    "Failed to get navigation history for %s: %s", sid, exc
-                )
-        tabs = await self._get_tabs_safe()
-        return BrowserMetaObs(url=url, page_title=page_title, tabs=tabs)
+                outcome.fragments.update(summary.fragments)
+        return outcome
 
     async def _get_tabs_safe(self) -> list[dict[str, Any]]:
         """Best-effort tab enumeration; returns empty on error."""
@@ -765,6 +986,77 @@ class BrowserCapability(CapabilityBase):
         target_id = (result or {}).get("targetId", "")
         return await self._attach_tab(target_id, url)
 
+    async def _page_target_ids(self) -> list[str]:
+        """Every open page target id, in ``Target.getTargets`` order."""
+        if self._cdp is None:
+            raise RuntimeError("BrowserCapability not set up")
+        result = await self._cdp.send("Target.getTargets", {})
+        return [
+            t["targetId"]
+            for t in (result or {}).get("targetInfos", [])
+            if t.get("type") == "page" and t.get("targetId")
+        ]
+
+    async def switch_tab(self, target_id: str | None = None) -> str:
+        """Move agent focus to another tab; returns its CDP session id.
+
+        ``target_id`` is a CDP ``targetId`` — the same string the agent
+        already sees as ``tab_id`` in the ``browser_meta`` fragment.
+        ``None`` means "the most recently opened tab other than the
+        current one", matching the action's advertised semantics.
+
+        Why this is a capability method and not a watchdog handler: agent
+        focus is capability-level state (``_default_session_id``), and a
+        watchdog is bound to exactly one tab's ``EventScope``. A handler
+        living inside tab A can attach to tab B but has no way to repoint
+        the capability at it — which is why the previous event-based
+        implementation could not have worked even with a handler attached.
+
+        Raises ``ValueError`` for an unknown or non-existent tab; the
+        caller turns that into a failed ``ActionResult`` so the agent can
+        pick a different tab instead of believing a no-op succeeded.
+        """
+        if self._cdp is None:
+            raise RuntimeError("BrowserCapability not set up")
+
+        current_target = (
+            self._session_to_target.get(self._default_session_id)
+            if self._default_session_id is not None
+            else None
+        )
+        page_targets = await self._page_target_ids()
+
+        if target_id is None:
+            candidates = [t for t in page_targets if t != current_target]
+            if not candidates:
+                raise ValueError(
+                    "switch_tab: no other tab is open — only the current "
+                    "tab exists."
+                )
+            target_id = candidates[-1]
+        elif target_id not in page_targets:
+            raise ValueError(
+                f"switch_tab: unknown tab {target_id!r}. Open tabs: "
+                f"{page_targets}"
+            )
+
+        # Attach lazily — a tab opened by the page itself (target=_blank)
+        # has no scope/watchdogs until we adopt it here.
+        sid = self._target_to_session.get(target_id)
+        if sid is None:
+            sid = await self._attach_tab(target_id)
+
+        # Bring it to the front so the page runs foreground timers,
+        # renders, and screenshots the way a user-visible tab would.
+        await self._cdp.send("Target.activateTarget", {"targetId": target_id})
+
+        self._default_session_id = sid
+        # The new tab may carry a cache from a previous cycle; the agent is
+        # about to observe it fresh.
+        self._cycle_cache.pop(sid, None)
+        logger.info("Agent focus switched to tab %s (session %s)", target_id, sid)
+        return sid
+
     async def close_tab(self, session_id: str) -> None:
         """Close a tab by its CDP session_id."""
         if session_id == self._default_session_id:
@@ -784,6 +1076,9 @@ class BrowserCapability(CapabilityBase):
                 bridge.close()
             except Exception as exc:
                 logger.debug("Bridge close failed for %s: %s", session_id, exc)
+
+        # Same for the bridges the tab's own watchdogs opened.
+        self._detach_watchdogs(self._watchdogs.get(target_id, []))
 
         if self._scope_group is not None:
             await self._scope_group.close_scope(target_id)
@@ -848,7 +1143,10 @@ class BrowserCapability(CapabilityBase):
                 cdp_session_id, exc,
             )
 
-        # 3. Capture main frame id (best-effort; used by _on_navigate to
+        # 3. Apply the configured viewport to this tab.
+        await self._apply_viewport_override(cdp_session_id)
+
+        # 4. Capture main frame id (best-effort; used by _on_navigate to
         # filter sub-frame lifecycle events).
         main_frame_id: str | None = None
         try:
@@ -868,7 +1166,7 @@ class BrowserCapability(CapabilityBase):
         if main_frame_id is not None:
             self._main_frame_ids[cdp_session_id] = main_frame_id
 
-        # 4. EventScope per tab.
+        # 5. EventScope per tab.
         scope = await self._scope_group.create_scope(
             target_id,
             target_id=target_id,
@@ -876,7 +1174,7 @@ class BrowserCapability(CapabilityBase):
             cdp_session_id=cdp_session_id,
         )
 
-        # 5. CDP → scope bridge for Page-domain lifecycle events.
+        # 6. CDP → scope bridge for Page-domain lifecycle events.
         bridge = CDPEventBridge(self._cdp, scope, session_id=cdp_session_id)
         bridge.bridge(
             "Page.loadEventFired",
@@ -903,14 +1201,14 @@ class BrowserCapability(CapabilityBase):
         )
         self._bridges[cdp_session_id] = bridge
 
-        # 6. Per-tab watchdogs.
+        # 7. Per-tab watchdogs.
         watchdogs = self._create_watchdogs_for_scope(
             level="tab", cdp_session_id=cdp_session_id,
         )
         for wd in watchdogs:
             wd.attach(scope, session_id=cdp_session_id)
 
-        # 7. Register mappings.
+        # 8. Register mappings.
         self._scopes[cdp_session_id] = scope
         self._selector_maps[cdp_session_id] = {}
         self._target_to_session[target_id] = cdp_session_id
@@ -919,56 +1217,28 @@ class BrowserCapability(CapabilityBase):
 
         return cdp_session_id
 
-    # ── Watchdog factories ────────────────────────────────────────────
+    # ── Watchdog construction ─────────────────────────────────────────
 
-    def _create_watchdogs_for_scope(
-        self,
-        level: str = "tab",
-        cdp_session_id: str | None = None,
-    ) -> list[Any]:
-        """Instantiate watchdogs according to the profile and scope level."""
-        from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
-            ActionWatchdog,
-        )
-        from spectragent.core.capabilities.browser.watchdogs.crash_watchdog import (
-            CrashWatchdog,
-        )
-        from spectragent.core.capabilities.browser.watchdogs.dom_watchdog import (
-            DOMWatchdog,
-        )
-        from spectragent.core.capabilities.browser.watchdogs.downloads_watchdog import (
-            DownloadsWatchdog,
-        )
-        from spectragent.core.capabilities.browser.watchdogs.popups_watchdog import (
-            PopupsWatchdog,
-        )
-        from spectragent.core.capabilities.browser.watchdogs.screenshot_watchdog import (
-            ScreenshotWatchdog,
-        )
-        from spectragent.core.capabilities.browser.watchdogs.security_watchdog import (
-            SecurityWatchdog,
-        )
+    def _watchdog_context(self, cdp_session_id: str | None) -> WatchdogContext:
+        """Assemble the single injection object every watchdog is built from.
 
-        target_set = _TAB_WATCHDOGS if level == "tab" else _BROWSER_WATCHDOGS
-
-        if level == "tab" and not cdp_session_id:
-            raise ValueError("Tab-level watchdogs require a cdp_session_id")
-
+        Replaces the per-watchdog lambda table: the closures below are
+        the only thing that was ever watchdog-specific, and both of them
+        exist because ``DOMWatchdog`` produces the per-tab selector map
+        that ``ActionWatchdog`` consumes.
+        """
         cdp = self._cdp
         if cdp is None:
             raise RuntimeError("BrowserCapability not set up")
 
-        profile = self._resolved_profile
-        if profile is None:
-            raise RuntimeError("Profile not resolved — call setup() first")
-
-        viewport = (self.viewport_width, self.viewport_height)
-
-        # Per-tab selector_map getter for ActionWatchdog.
         def _selector_map_getter() -> DOMSelectorMap:
             if cdp_session_id is not None:
                 return self._selector_maps.get(cdp_session_id, {})
             return {}
+
+        def _selector_map_setter(selector_map: DOMSelectorMap) -> None:
+            if cdp_session_id is not None:
+                self._selector_maps[cdp_session_id] = selector_map
 
         # Per-tab main_frame_id getter — ``_on_navigate`` uses it to
         # filter sub-frame Page.lifecycleEvent so we only wait on the
@@ -978,46 +1248,43 @@ class BrowserCapability(CapabilityBase):
                 return self._main_frame_ids.get(cdp_session_id)
             return None
 
-        _WATCHDOG_FACTORY: dict[str, Any] = {
-            "dom": lambda: DOMWatchdog(
-                cdp,
-                cleaner_type=profile.cleaner or "browser_use",
-                serializer_type=profile.serializer or "text",
-                viewport=viewport,
-            ),
-            "action": lambda: ActionWatchdog(
-                cdp,
-                selector_map_getter=_selector_map_getter,
-                main_frame_id_getter=_main_frame_id_getter,
-                debug_highlight=self.debug_highlight,
-                humanize_mouse=self.humanize_mouse,
-                mouse_trajectory=self.mouse_trajectory,
-                viewport=viewport,
-                mouse_trajectory_kwargs=self.mouse_trajectory_overrides or None,
-            ),
-            "screenshot": lambda: ScreenshotWatchdog(cdp),
-            "crash": lambda: CrashWatchdog(cdp),
-            "downloads": lambda: DownloadsWatchdog(cdp),
-            "popups": lambda: PopupsWatchdog(cdp),
-            "security": lambda: SecurityWatchdog(
-                allowed_domains=profile.security_allowed_domains,
-                blocked_domains=profile.security_blocked_domains,
-            ),
-        }
+        return WatchdogContext(
+            cdp=cdp,
+            profile=self.profile_config,
+            viewport=(self.viewport_width, self.viewport_height),
+            cdp_session_id=cdp_session_id,
+            debug_highlight=self.debug_highlight,
+            humanize_mouse=self.humanize_mouse,
+            mouse_trajectory=self.mouse_trajectory,
+            mouse_trajectory_overrides=self.mouse_trajectory_overrides or None,
+            selector_map_getter=_selector_map_getter,
+            selector_map_setter=_selector_map_setter,
+            main_frame_id_getter=_main_frame_id_getter,
+            tabs_getter=self._get_tabs_safe,
+        )
 
-        watchdogs: list[Any] = []
-        for wd_type in profile.watchdogs:
-            if wd_type not in target_set:
-                continue
-            factory = _WATCHDOG_FACTORY.get(wd_type)
-            if factory:
-                watchdogs.append(factory())
-            else:
-                logger.warning("Unknown watchdog type: %s", wd_type)
-        return watchdogs
+    def _create_watchdogs_for_scope(
+        self,
+        level: str = "tab",
+        cdp_session_id: str | None = None,
+    ) -> list[BrowserWatchdog]:
+        """Build the profile's watchdogs for one scope level.
+
+        Registry-driven: no name is written here, so a new watchdog needs
+        no edit. ``level`` and ``provides`` come off the class.
+        """
+        if level == "tab" and not cdp_session_id:
+            raise ValueError("Tab-level watchdogs require a cdp_session_id")
+
+        ctx = self._watchdog_context(cdp_session_id)
+        return [
+            wd_cls.build(ctx)
+            for wd_cls in self._watchdog_classes().values()
+            if wd_cls.level == level
+        ]
 
     def _attach_browser_level_watchdogs(self, scope: EventScope) -> None:
-        """Attach browser-level watchdogs (crash, downloads) to global scope."""
+        """Attach browser-level watchdogs (crash) to the global scope."""
         watchdogs = self._create_watchdogs_for_scope(level="browser")
         for wd in watchdogs:
             wd.attach(scope, session_id=None)

@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.capabilities.browser.actions._common import (
+    focused_scope,
+)
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import SendKeysEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -32,10 +35,9 @@ class SendKeysAction(SettleableAction, ActionBase):
         params: dict[str, Any],
         *,
         capability: BrowserCapability,
-        session_id: str,
     ) -> ActionResult:
         try:
-            scope = capability._scopes[session_id]
+            scope = focused_scope(capability)
             event = SendKeysEvent(keys=params["keys"])
             scope.emit(event)
             await event

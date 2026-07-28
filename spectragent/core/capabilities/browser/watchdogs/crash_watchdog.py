@@ -7,15 +7,20 @@ Works with SessionManager for automatic agent focus recovery.
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 from agent_cdp import (
     CDPCommandProtocol,
     CDPEventBridge,
     ConnectionType,
     EventScope,
-    WatchdogBase,
 )
 
+from spectragent.core.capabilities.browser.watchdogs.base import (
+    BrowserWatchdog,
+    WatchdogContext,
+    WatchdogLevel,
+)
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     TargetCrashedEvent,
@@ -24,14 +29,20 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 logger = logging.getLogger(__name__)
 
 
-class CrashWatchdog(WatchdogBase):
+class CrashWatchdog(BrowserWatchdog):
     """Detects browser target crashes via CDP and emits TargetCrashedEvent."""
+
+    level: ClassVar[WatchdogLevel] = "browser"
 
     def __init__(self, cdp: CDPCommandProtocol) -> None:
         self._cdp = cdp
         self._scope: EventScope | None = None
         self._session_id: str | None = None
         self._bridge: CDPEventBridge | None = None
+
+    @classmethod
+    def build(cls, ctx: WatchdogContext) -> CrashWatchdog:
+        return cls(ctx.cdp)
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._scope = scope
@@ -62,6 +73,17 @@ class CrashWatchdog(WatchdogBase):
             self._on_target_crashed,
             mode=ConnectionType.DIRECT,
         )
+
+    def detach(self) -> None:
+        """Unregister this watchdog's CDP callbacks. Idempotent.
+
+        See :meth:`PopupsWatchdog.detach` — same leak, browser-level
+        scope instead of per-tab.
+        """
+        if self._bridge is not None:
+            self._bridge.close()
+            self._bridge = None
+        self._scope = None
 
     async def _on_target_crashed(self, event: TargetCrashedEvent) -> None:
         logger.error(

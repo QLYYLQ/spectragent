@@ -10,10 +10,16 @@ Uses agent-cdp's ``event.consume()`` + ``EmitPolicy.FAIL_FAST`` pattern.
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 from urllib.parse import urlparse
 
-from agent_cdp import ConnectionType, EventScope, WatchdogBase
+from agent_cdp import ConnectionType, EventScope
 
+from spectragent.core.capabilities.browser.watchdogs.base import (
+    BrowserWatchdog,
+    WatchdogContext,
+    WatchdogLevel,
+)
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     NavigateToUrlEvent,
@@ -22,8 +28,10 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 logger = logging.getLogger(__name__)
 
 
-class SecurityWatchdog(WatchdogBase):
+class SecurityWatchdog(BrowserWatchdog):
     """Enforces domain allowlist/blocklist on navigation events."""
+
+    level: ClassVar[WatchdogLevel] = "tab"
 
     def __init__(
         self,
@@ -34,6 +42,13 @@ class SecurityWatchdog(WatchdogBase):
         self._allowed: set[str] | None = set(allowed_domains) if allowed_domains else None
         self._blocked: set[str] = set(blocked_domains) if blocked_domains else set()
         self._scope: EventScope | None = None
+
+    @classmethod
+    def build(cls, ctx: WatchdogContext) -> SecurityWatchdog:
+        return cls(
+            allowed_domains=ctx.profile.security_allowed_domains,
+            blocked_domains=ctx.profile.security_blocked_domains,
+        )
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._scope = scope

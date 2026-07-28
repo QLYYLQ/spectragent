@@ -23,7 +23,6 @@ class TestWaitExecute:
         result = await action.execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         elapsed = time.perf_counter() - start
 
@@ -42,7 +41,6 @@ class TestWaitExecute:
         result = await action.execute(
             {"seconds": 0.02},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         elapsed = time.perf_counter() - start
         assert result.success is True
@@ -54,7 +52,6 @@ class TestWaitExecute:
         result = await WaitAction().execute(
             {"seconds": -1},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is False
         assert result.error is not None and "must be >= 0" in result.error
@@ -66,7 +63,6 @@ class TestWaitExecute:
         result = await action.execute(
             {"seconds": 999},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is False
         assert result.error is not None
@@ -78,7 +74,6 @@ class TestWaitExecute:
         result = await WaitAction().execute(
             {"seconds": "not-a-number"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is False
         assert result.error is not None and "Invalid seconds" in result.error

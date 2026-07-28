@@ -9,6 +9,7 @@ from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
+    focused_scope,
     resolve_index_to_backend_node_id,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
@@ -58,7 +59,6 @@ class ScrollAction(SettleableAction, ActionBase):
         params: dict[str, Any],
         *,
         capability: BrowserCapability,
-        session_id: str,
     ) -> ActionResult:
         try:
             direction = params.get("direction") or self.default_direction
@@ -69,9 +69,9 @@ class ScrollAction(SettleableAction, ActionBase):
             backend_node_id: int | None = None
             if "index" in params and params["index"] is not None:
                 backend_node_id = resolve_index_to_backend_node_id(
-                    capability, session_id, params["index"],
+                    capability, params["index"],
                 )
-            scope = capability._scopes[session_id]
+            scope = focused_scope(capability)
             event = ScrollEvent(
                 direction=direction,
                 amount=amount,

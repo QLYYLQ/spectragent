@@ -28,7 +28,6 @@ class TestDoneExecute:
         result = await DoneAction().execute(
             {"extracted_content": "42"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.is_done is True
         assert result.success is True
@@ -40,7 +39,6 @@ class TestDoneExecute:
         result = await DoneAction().execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.is_done is True
         assert result.extracted_content is None
@@ -51,7 +49,6 @@ class TestDoneExecute:
         result = await DoneAction().execute(
             {"extracted_content": "fail", "success": False},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.is_done is True
         assert result.success is False
@@ -63,6 +60,5 @@ class TestDoneExecute:
         await DoneAction().execute(
             {"extracted_content": "x"},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert scope.emitted == []

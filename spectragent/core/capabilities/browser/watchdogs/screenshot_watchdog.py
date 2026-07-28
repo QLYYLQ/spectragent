@@ -4,24 +4,44 @@ from __future__ import annotations
 
 import base64
 import logging
+from typing import ClassVar
 
-from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, WatchdogBase
+from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 
+from spectragent.core.capabilities.browser.watchdogs.base import (
+    BrowserWatchdog,
+    WatchdogContext,
+    WatchdogLevel,
+)
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
     ScreenshotRequestEvent,
 )
+from spectragent.schemas.observation.fragments import ScreenshotObs
 
 logger = logging.getLogger(__name__)
 
 
-class ScreenshotWatchdog(WatchdogBase):
+class ScreenshotWatchdog(BrowserWatchdog):
     """Captures screenshots via CDP."""
 
-    def __init__(self, cdp: CDPCommandProtocol) -> None:
+    level: ClassVar[WatchdogLevel] = "tab"
+    provides: ClassVar[frozenset[str]] = frozenset({"browser.screenshot"})
+
+    def __init__(
+        self,
+        cdp: CDPCommandProtocol,
+        *,
+        viewport: tuple[int, int] = (1280, 720),
+    ) -> None:
         self._cdp = cdp
+        self._viewport = viewport
         self._session_id: str | None = None
+
+    @classmethod
+    def build(cls, ctx: WatchdogContext) -> ScreenshotWatchdog:
+        return cls(ctx.cdp, viewport=ctx.viewport)
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._session_id = session_id
@@ -49,11 +69,20 @@ class ScreenshotWatchdog(WatchdogBase):
         self, event: BrowserStateRequestEvent
     ) -> BrowserStateSummary | None:
         """Contribute screenshot to BrowserStateSummary."""
-        if not event.include_screenshot:
+        if not (event.fragments & self.provides):
             return None
         try:
             screenshot = await self._capture()
-            return BrowserStateSummary(screenshot=screenshot)
+            width, height = self._viewport
+            return BrowserStateSummary(
+                fragments={
+                    "browser.screenshot": ScreenshotObs(
+                        image_bytes=screenshot,
+                        viewport_width=width,
+                        viewport_height=height,
+                    ),
+                }
+            )
         except Exception as exc:
             logger.error("Screenshot capture failed: %s", exc)
             return None
