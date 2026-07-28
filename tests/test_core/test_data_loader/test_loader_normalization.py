@@ -102,6 +102,7 @@ class TestLexBenchBrowserNormalization:
         task = loader["lex_l2_001"]
         assert task.benchmark == "lexbench_browser"
         assert task.tags == ["L2", "search", "T1"]
+        assert isinstance(task.setup, BrowserSetup)
         assert task.setup.start_url == "https://realestate.example.com"
 
     def test_record_with_login_setup(self) -> None:
@@ -121,6 +122,7 @@ class TestLexBenchBrowserNormalization:
             ],
         )
         task = loader["lex_login_001"]
+        assert isinstance(task.setup, BrowserSetup)
         assert task.setup.start_url == "https://secure.example.com"
         assert task.setup.login_required is True
         assert task.setup.login_type == "account_password"

@@ -5,7 +5,6 @@ queries accept only ``task_id``. Subclasses register automatically via
 the ``TaskLoaderRegistrar`` metaclass.
 """
 
-import logging
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
@@ -13,14 +12,14 @@ from conscribe import create_registrar
 from pydantic import Field
 
 from spectragent.core.data_loader._common import (
-    load_split_map,
+    BenchmarkDataError,
     parse_file,
     resolve_data_dir,
+    resolve_split_file,
+    resolve_task_id,
 )
 from spectragent.core.data_loader.task.base import BaseTaskLoader
-from spectragent.schemas.task import BrowserSetup, TaskDefinition
-
-logger = logging.getLogger(__name__)
+from spectragent.schemas.task import TaskDefinition, setup_class_for_env
 
 TaskLoaderRegistrar = create_registrar(
     "task_loader",
@@ -37,8 +36,10 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
     annotation with a ``Literal[...]`` for precise config stub generation.
 
     Subclasses should override ``env_type`` if the loader produces tasks
-    for a non-browser environment, and may override ``_normalize_raw()``
-    to control how raw data is mapped into ``TaskDefinition``.
+    for a non-browser environment — it selects both the data directory
+    (``benchmark_data/<env_type>/<benchmark>``) and the ``TaskSetup``
+    variant. They may override ``_normalize_raw()`` to control how raw
+    data is mapped into ``TaskDefinition``.
     """
 
     __abstract__ = True
@@ -79,57 +80,67 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
     def get_task_context(self, task_id: str) -> dict[str, Any]:
         """Return task-specific runtime context.
 
-        Default implementation: for browser tasks, surface ``start_url``
-        from the task's ``BrowserSetup`` so capability setup can navigate
-        to the right page. Subclasses may override for richer context.
+        Delegates to the task's own setup variant, so each domain carries
+        its own context forward: a browser task surfaces ``start_url``, a
+        docker task surfaces its image / checkout commit / test node-ids.
         """
         task = self._tasks.get(task_id)
         if task is None:
             return {}
-        if isinstance(task.setup, BrowserSetup) and task.setup.start_url:
-            return {"start_url": task.setup.start_url}
-        return {}
+        return task.setup.to_context()
 
     # ── Data loading ─────────────────────────────────────────────────
 
     def _load(self) -> None:
-        root = resolve_data_dir(self.__registry_key__, self.data_dir)  # type: ignore[attr-defined]
-        split_map = load_split_map(root)
-        filename = split_map.get(self.subset)
-        if not filename:
-            logger.warning(
-                "Subset %r not in split map (available: %s)",
-                self.subset,
-                list(split_map),
-            )
-            return
-        for raw in parse_file(root / filename):
+        root = resolve_data_dir(
+            self.env_type,
+            self.__registry_key__,  # type: ignore[attr-defined]
+            self.data_dir,
+        )
+        for raw in parse_file(resolve_split_file(root, self.subset)):
             task = self._normalize_raw(raw)
             self._tasks[task.task_id] = task
 
     def _normalize_raw(self, raw: dict[str, Any]) -> TaskDefinition:
         """Map a raw record into a ``TaskDefinition``.
 
-        Default implementation handles browser benchmark records:
-        ``start_url`` from the top level of the raw record is moved into
-        ``setup.start_url`` (a ``BrowserSetup``). A nested ``setup`` dict
-        in the raw data is merged in as well. All other raw fields pass
-        through to ``TaskDefinition`` via Pydantic's ``extra="allow"``
-        config, so unknown fields are preserved.
+        The setup variant is selected by ``self.env_type`` (never
+        hardcoded), and each variant declares via ``__raw_keys__`` which
+        top-level raw keys belong to it — ``start_url`` for browser,
+        ``base_commit`` / ``FAIL_TO_PASS`` / ... for docker. Those are
+        moved into ``setup`` so they arrive typed instead of landing in
+        ``TaskDefinition``'s ``extra="allow"`` catch-all. A nested
+        ``setup`` dict in the raw data is merged in and wins.
 
-        Subclasses targeting non-browser benchmarks should override.
+        Everything else passes through, so unknown fields are preserved.
+        Subclasses targeting upstream record shapes should override.
         """
         raw_copy = dict(raw)
+        setup_cls = setup_class_for_env(self.env_type)
 
-        # Pull nested setup dict if present, then graft top-level
-        # browser-setup fields onto it.
+        # Identity first: resolving it must see the raw keys before any
+        # of them are grafted onto the setup (SWE-bench's ``instance_id``
+        # is both the identity and a setup field).
+        task_id = resolve_task_id(raw_copy)
+
         setup_data: dict[str, Any] = dict(raw_copy.pop("setup", {}) or {})
-        if "start_url" in raw_copy:
-            setup_data.setdefault("start_url", raw_copy.pop("start_url"))
-        setup_data.setdefault("setup_type", "browser")
+        for key in setup_cls.__raw_keys__:
+            if key in raw_copy:
+                setup_data.setdefault(key, raw_copy.pop(key))
 
+        declared = setup_data.get("setup_type")
+        expected = setup_cls.setup_type_value()
+        if declared is not None and declared != expected:
+            raise BenchmarkDataError(
+                f"Task {task_id!r}: record declares setup_type={declared!r} but "
+                f"loader env_type={self.env_type!r} selects {expected!r}."
+            )
+        setup_data["setup_type"] = expected
+
+        raw_copy["task_id"] = task_id
+        raw_copy.pop("id", None)  # folded into task_id above
         raw_copy["setup"] = setup_data
-        raw_copy.setdefault("env_type", self.env_type)
+        raw_copy["env_type"] = self.env_type  # the loader owns this identity
         raw_copy.setdefault(
             "benchmark", self.__registry_key__  # type: ignore[attr-defined]
         )
