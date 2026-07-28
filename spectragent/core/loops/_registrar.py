@@ -6,9 +6,10 @@ base class provides a universal ``_validate_slots`` check and a
 ``weave`` method that patches ``agent.run`` with the Loop's execution
 logic.
 
-At weave time, runtime dependencies (env, llm, memory, act_fn, etc.)
-are bound to the loop instance as ``self.ctx``. The loop stays
-per-instance — multi-loop uses ``copy.deepcopy`` to avoid conflicts.
+``weave()`` is stateless: runtime dependencies (env, llm, memory,
+act_fn, …) are captured in the ``agent.run`` closure, never stored on
+the loop instance. One loop instance can therefore be woven onto N
+agents without the Nth weave rewriting the 1st agent's environment.
 
 See docs/execution_dag.md M03 for the registrar design.
 """
@@ -16,10 +17,11 @@ See docs/execution_dag.md M03 for the registrar design.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from dataclasses import dataclass
+from typing import Annotated, Any, ClassVar
 
 from conscribe import create_registrar
+from pydantic import Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.loops.base import AgentLoop
@@ -46,9 +48,9 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     Optionally:
     - ``__requires_env__``: whether this loop needs an Environment (default True)
 
-    After ``weave()``, runtime deps are accessible via ``self.ctx``
-    (a plain dict). Subclass ``_execute`` reads ``self.ctx["llm"]``,
-    ``self.ctx["env"]``, etc. — no kwargs unpacking needed.
+    ``weave()`` hands runtime deps to ``_execute`` as the ``ctx``
+    parameter. Nothing is stored on the loop instance, so the same loop
+    instance can drive several agents concurrently.
 
     Example::
 
@@ -58,9 +60,9 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
             __optional_slots__ = {"get_react_output_model", "prepare"}
             __requires_env__ = True
 
-            async def _execute(self, agent, task):
-                env = self.ctx["env"]
-                llm = self.ctx["llm"]
+            async def _execute(self, agent, task, *, ctx):
+                env = ctx["env"]
+                llm = ctx["llm"]
                 ...
     """
 
@@ -72,8 +74,16 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     __required_message_protocols__: ClassVar[frozenset[MessageProtocol]] = frozenset()
     __requires_env__: ClassVar[bool] = True
 
-    # Runtime deps bound at weave time. Empty until weave() is called.
-    ctx: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+    id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Instance identity. Unique across the whole config; "
+                "defaults to '<loop_id>#<ordinal>' when omitted."
+            ),
+        ),
+    ] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -105,21 +115,21 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     # ── weave: bind deps + patch agent.run ───────────────────
 
     def weave(self, agent: Any, **deps: Any) -> Any:
-        """Validate slots, bind deps to ``self.ctx``, patch ``agent.run``.
+        """Validate slots, capture deps in a closure, patch ``agent.run``.
 
-        After weave, ``self.ctx`` holds all runtime deps (env, llm,
-        memory, act_fn, etc.) and ``agent.run(task)`` drives the loop.
+        **Stateless on purpose**: *deps* live only in the ``run`` closure
+        built here. Weaving the same loop instance onto a second agent
+        cannot retroactively rewrite the first agent's env/llm/memory.
 
         Returns the same *agent* instance (instance-level patch).
         """
         self._validate_slots(agent)
 
-        # Bind deps to loop instance — _execute reads via self.ctx
-        self.ctx = deps
+        ctx = dict(deps)
         loop = self
 
         async def run(task: str, **kw: Any) -> Any:
-            return await loop._execute(agent, task, **kw)
+            return await loop._execute(agent, task, ctx=ctx, **kw)
 
         agent.run = run  # instance-level monkey-patch
         return agent
@@ -130,11 +140,17 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
         self,
         agent: Any,
         task: str,
+        *,
+        ctx: dict[str, Any],
         **kwargs: Any,
     ) -> Any:
         """Drive the full agent loop. Subclasses MUST override.
 
-        Runtime deps are on ``self.ctx`` (bound at weave time).
-        ``**kwargs`` receives only per-run overrides from ``agent.run(task, ...)``.
+        Args:
+            agent: Agent instance satisfying this loop's required slots.
+            task: The task description string.
+            ctx: Runtime deps captured at weave time (env, llm, memory,
+                act_fn, negotiated_obs, …). Passed per call, never stored.
+            **kwargs: Per-run overrides from ``agent.run(task, ...)``.
         """
         raise NotImplementedError

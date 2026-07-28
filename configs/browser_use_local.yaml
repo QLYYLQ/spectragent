@@ -1,26 +1,38 @@
 # BrowserUseAgent + ReactLoop running against a local Chrome backend.
 #
-# Switching backend = editing only ``agent[0].capability.backend`` below.
+# Switching backend = editing only ``environment[0].capabilities[0].backend``.
 # Schema lives in spectragent/generated/_composed.py — regenerate with
-# `uv run python spectragent/scripts/generate_all.py` after registering
+# `uv run python -m spectragent.scripts.generate_all` after registering
 # new actions / capabilities / providers.
 #
-# conscribe `inline_wiring=True` requires every wired child to be nested
-# inside its owning entry, so the agent block carries its loop / llm /
-# memory / capability inline.
+# Two rules explain the layout:
+#
+# 1. conscribe `inline_wiring=True` nests every wired child inside its
+#    owning entry, so the agent block carries its loop / llm / memory
+#    inline and the environment carries its capabilities inline.
+# 2. ConfigComposer injects a wired child only when the owning class
+#    declares a slot for it (an ``__init__`` parameter or a class-level
+#    annotation). Wiring entries with no slot — the agent's
+#    ``capability`` / ``observation`` / ``action`` — are pure negotiation
+#    declarations read straight off ``__wiring__``; they are optional in
+#    the schema and omitted here.
 
 agent:
   - agent_id: browser_use
-    max_steps: 30
-    max_actions_per_step: 1
+    id: main
     flash_mode: false
     use_vision: false
     use_thinking: true
     is_anthropic: false
 
-    # Wired children (Composer instantiates and setattr-injects)
+    # Wired children (Composer instantiates and injects these).
+    # ``max_steps`` / ``max_actions_per_step`` live on the loop, which is
+    # the single source of truth: ReactLoop enforces them and advertises
+    # them to the model through StepInfoObs.
     agent_loop:
       loop_id: react
+      max_steps: 30
+      max_actions_per_step: 1
 
     llm:
       model_type: openai
@@ -32,40 +44,30 @@ agent:
       memory_id: simple
       max_messages: 200
 
-    capability:
-      capability_id: browser
-      profile: standard
-      viewport_width: 1280
-      viewport_height: 720
-
-      # Pydantic-required declarative-only wiring (Composer skips, Pydantic validates)
-      observation: browser.dom
-      action: { action_id: browser.click }
-
-      # Execution-layer backend (IoC injection). Switch backend by editing
-      # this block only — every other section stays identical.
-      backend:
-        provider_id: local_chrome
-        headless: true
-        window_width: 1280
-        window_height: 720
-        no_sandbox: false
-        mute_audio: true
-        startup_url: about:blank
-
-    # Agent's own declarative-only wiring fields
-    observation: browser.dom
-    action: { action_id: browser.click }
-
-# BrowserEnvironment uses ``capabilities`` as a multi-instance wired
-# receptor — Composer collects every entry from the top-level
-# ``capability:`` list (above is empty here because the agent inlined
-# its own capability) and injects them as ``env.capabilities = {...}``.
-# We declare the env at top level so ComposedRun.env returns a real
-# instance (otherwise it falls back to None).
+# The Environment owns the capabilities. ``capabilities`` is a list, so a
+# composite environment declares several here and each one keeps its own
+# config; action names are routed by the ``capability_id`` prefix
+# (``browser.click``).
+#
+# The list may also be omitted, in which case the env adopts every
+# compatible capability the rest of the config built. Keep it explicit
+# once a run holds more than one environment.
 environment:
   - env_type: browser
+    id: browser_env
+    capabilities:
+      - capability_id: browser
+        profile: standard
+        viewport_width: 1280
+        viewport_height: 720
 
-# capability: [] explicitly empty — agent inlines its own capability;
-# adding entries here would create separate parallel capability instances.
-capability: []
+        # Execution-layer backend (IoC injection). Switch backend by
+        # editing this block only — every other section stays identical.
+        backend:
+          provider_id: local_chrome
+          headless: true
+          window_width: 1280
+          window_height: 720
+          no_sandbox: false
+          mute_audio: true
+          startup_url: about:blank

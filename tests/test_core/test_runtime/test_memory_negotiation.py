@@ -18,7 +18,7 @@ from spectragent.core.negotiation.memory import (
 )
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
-from tests._helpers.assembly import make_env, make_run
+from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 
 class _ToolCallLoop(AgentLoopBase):
@@ -130,7 +130,7 @@ class TestPrepareRunsMemoryNegotiation:
             memory=SimpleMemory(),
         )
         with pytest.raises(IncompatibleMemoryError):
-            AgentRuntime.from_composed(run).prepare()
+            AgentRuntime.for_agent(run, AGENT_ID).prepare()
 
         # Loop weave never happened — agent.run was not patched.
         assert not hasattr(agent, "run")
@@ -145,7 +145,7 @@ class TestPrepareRunsMemoryNegotiation:
             llm=_LLM(),
             memory=SimpleMemory(),
         )
-        prepared = AgentRuntime.from_composed(run).prepare()
+        prepared = AgentRuntime.for_agent(run, AGENT_ID).prepare()
         assert hasattr(prepared, "run")
         assert callable(prepared.run)
         # Drain any coroutine state.

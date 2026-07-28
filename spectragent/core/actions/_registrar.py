@@ -62,7 +62,7 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
                     params={"direction": "up|down|left|right"},
                 )
 
-            async def execute(self, params, *, capability, session_id):
+            async def execute(self, params, *, capability):
                 ...
     """
 

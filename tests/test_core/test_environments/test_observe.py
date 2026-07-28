@@ -47,4 +47,4 @@ class TestObserveDelegation:
             loop_sourced=frozenset(),
         )
         obs = asyncio.run(self.env.observe(negotiated))
-        assert obs.timestamp == 0.0
+        assert obs.model_dump() == {}

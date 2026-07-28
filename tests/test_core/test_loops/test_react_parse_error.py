@@ -11,8 +11,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest
-
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
@@ -114,12 +112,12 @@ class TestParseErrorRecovery:
                 return None
 
         loop = _make_loop(max_steps=10, max_consecutive_parse_errors=3)
-        loop.ctx = dict(
-            env=_FakeEnv(), llm=_FakeLLM(["bad", "good"]),
-            memory=_FakeMemory(), act_fn=_FakeEnv().act,
-            session_id=None, task_id="t",
-        )
-        result = asyncio.run(loop._execute(_Agent(), "test"))
+        ctx = {
+            "env": _FakeEnv(), "llm": _FakeLLM(["bad", "good"]),
+            "memory": _FakeMemory(), "act_fn": _FakeEnv().act,
+            "task_id": "t",
+        }
+        result = asyncio.run(loop._execute(_Agent(), "test", ctx=ctx))
         assert result.agent_done.value == "done"
         assert call_count == 2
 
@@ -148,12 +146,12 @@ class TestParseErrorRecovery:
                 return None
 
         loop = _make_loop(max_steps=10, max_consecutive_parse_errors=2)
-        loop.ctx = dict(
-            env=_FakeEnv(), llm=_FakeLLM(["a"] * 10),
-            memory=_FakeMemory(), act_fn=_FakeEnv().act,
-            session_id=None, task_id="t",
-        )
-        result = asyncio.run(loop._execute(_Agent(), "test"))
+        ctx = {
+            "env": _FakeEnv(), "llm": _FakeLLM(["a"] * 10),
+            "memory": _FakeMemory(), "act_fn": _FakeEnv().act,
+            "task_id": "t",
+        }
+        result = asyncio.run(loop._execute(_Agent(), "test", ctx=ctx))
         # Should complete successfully because the streak resets.
         assert result.agent_done.value == "done"
         assert call_count == 4
@@ -176,12 +174,12 @@ class TestParseErrorTermination:
                 return None
 
         loop = _make_loop(max_steps=10, max_consecutive_parse_errors=3)
-        loop.ctx = dict(
-            env=_FakeEnv(), llm=_FakeLLM(["x"] * 10),
-            memory=_FakeMemory(), act_fn=_FakeEnv().act,
-            session_id=None, task_id="t",
-        )
-        result = asyncio.run(loop._execute(_AlwaysFail(), "test"))
+        ctx = {
+            "env": _FakeEnv(), "llm": _FakeLLM(["x"] * 10),
+            "memory": _FakeMemory(), "act_fn": _FakeEnv().act,
+            "task_id": "t",
+        }
+        result = asyncio.run(loop._execute(_AlwaysFail(), "test", ctx=ctx))
         assert result.agent_done.value == "error"
         assert "Parse failed 3 consecutive times" in (result.error or "")
 
@@ -207,12 +205,12 @@ class TestParseErrorTermination:
                 return None
 
         loop = _make_loop(max_steps=10)
-        loop.ctx = dict(
-            env=_FakeEnv(), llm=_FakeLLM(["x", "y"]),
-            memory=mem, act_fn=_FakeEnv().act,
-            session_id=None, task_id="t",
-        )
-        asyncio.run(loop._execute(_FailOnce(), "test"))
+        ctx = {
+            "env": _FakeEnv(), "llm": _FakeLLM(["x", "y"]),
+            "memory": mem, "act_fn": _FakeEnv().act,
+            "task_id": "t",
+        }
+        asyncio.run(loop._execute(_FailOnce(), "test", ctx=ctx))
         # Memory should contain the parse error feedback message.
         feedback_msgs = [
             m for m in mem.messages
@@ -243,11 +241,11 @@ class TestParseErrorTermination:
                 return None
 
         loop = _make_loop(max_steps=10)
-        loop.ctx = dict(
-            env=_FakeEnv(), llm=_FakeLLM(["x", "y"]),
-            memory=_FakeMemory(), act_fn=_FakeEnv().act,
-            session_id=None, task_id="t",
-        )
-        result = asyncio.run(loop._execute(_FailThenDone(), "test"))
+        ctx = {
+            "env": _FakeEnv(), "llm": _FakeLLM(["x", "y"]),
+            "memory": _FakeMemory(), "act_fn": _FakeEnv().act,
+            "task_id": "t",
+        }
+        result = asyncio.run(loop._execute(_FailThenDone(), "test", ctx=ctx))
         # Step 0 was parse error → empty actions, Step 1 was done.
         assert result.metrics.steps == 2

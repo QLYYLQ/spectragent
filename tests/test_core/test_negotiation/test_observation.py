@@ -7,10 +7,14 @@ from spectragent.core.negotiation import (
     ObservationNegotiationResult,
     extract_wiring,
 )
-from spectragent.core.negotiation.observation import _observation_rules
+from spectragent.core.negotiation.observation import (
+    DuplicateFragmentNameError,
+    _observation_rules,
+)
 
 # Ensure fragments are registered before negotiation tests
 from spectragent.schemas.observation import fragments as _  # noqa: F401
+from spectragent.schemas.observation._registrar import ObservationRegistrar
 
 
 def _run(
@@ -186,3 +190,162 @@ class TestExtractWiring:
         req, opt = extract_wiring(OtherWiring, "observation")
         assert req == set()
         assert opt == set()
+
+
+class TestCompleteMissingSet:
+    """§6.7.1 — report every missing fragment, not an arbitrary one.
+
+    Raising on the first miss made the user fix-and-rerun once per
+    missing fragment, and because the scan iterated an unordered ``set``
+    the fragment they were told about varied between processes.
+    ``negotiate_action`` always computed the full set; this closes the
+    asymmetry.
+    """
+
+    def test_all_missing_required_fragments_are_reported(self) -> None:
+        with pytest.raises(IncompatibleFragmentError) as exc_info:
+            _run(
+                env_provides={"browser.dom"},
+                agent_required={
+                    "browser.dom",
+                    "browser.screenshot",
+                    "browser.browser_meta",
+                },
+                agent_optional=set(),
+                loop_required=set(),
+                loop_optional=set(),
+            )
+        assert exc_info.value.missing == {"browser.screenshot", "browser.browser_meta"}
+        message = str(exc_info.value)
+        assert "browser.screenshot" in message
+        assert "browser.browser_meta" in message
+
+    def test_diagnosis_is_stable_across_runs(self) -> None:
+        """Same inputs must name the same fragments every time."""
+        seen: set[frozenset[str]] = set()
+        for _attempt in range(5):
+            with pytest.raises(IncompatibleFragmentError) as exc_info:
+                _run(
+                    env_provides=set(),
+                    agent_required={"browser.dom", "browser.screenshot"},
+                    agent_optional=set(),
+                    loop_required=set(),
+                    loop_optional=set(),
+                )
+            seen.add(frozenset(exc_info.value.missing))
+        assert len(seen) == 1
+
+
+class TestLocalNameCollision:
+    """§5.2.3 — a name clash is a config error, not a step-0 crash.
+
+    Fragment keys are fully qualified (``source.local_id``) but the
+    generated model exposes only the local segment, so ``swe.terminal``
+    and ``docker.terminal`` both want ``obs.terminal``. That was detected
+    inside ``build_observation_model`` — i.e. on the first ``env.observe()``
+    — even though negotiation had everything it needed to catch it before
+    the run started.
+    """
+
+    @staticmethod
+    def _register_colliding_pair() -> None:
+        from spectragent.schemas.observation._registrar import FragmentBase
+
+        for source in ("swe", "docker"):
+            key = f"{source}.terminal"
+            try:
+                ObservationRegistrar.get(key)
+            except Exception:
+                type(
+                    f"{source.title()}TerminalObs",
+                    (FragmentBase,),
+                    {
+                        "__registry_key__": key,
+                        "__module__": __name__,
+                        "__annotations__": {"stdout": str},
+                        "stdout": "",
+                    },
+                )
+
+    def test_collision_is_rejected_at_negotiation(self) -> None:
+        self._register_colliding_pair()
+        with pytest.raises(DuplicateFragmentNameError) as exc_info:
+            _run(
+                env_provides={"swe.terminal", "docker.terminal"},
+                agent_required={"swe.terminal", "docker.terminal"},
+                agent_optional=set(),
+                loop_required=set(),
+                loop_optional=set(),
+            )
+        assert exc_info.value.collisions == {
+            "terminal": ["docker.terminal", "swe.terminal"],
+        }
+
+    def test_one_source_alone_is_fine(self) -> None:
+        self._register_colliding_pair()
+        result = _run(
+            env_provides={"swe.terminal"},
+            agent_required={"swe.terminal"},
+            agent_optional=set(),
+            loop_required=set(),
+            loop_optional=set(),
+        )
+        assert result.active_fragments == frozenset({"swe.terminal"})
+
+
+class TestObservationModelCaching:
+    """The model is rebuilt once per fragment set, not once per step."""
+
+    def test_same_fragment_set_returns_the_same_class(self) -> None:
+        from spectragent.schemas.observation.dynamic_model import build_observation_model
+
+        keys = frozenset({"browser.dom", "browser.screenshot"})
+        assert build_observation_model(keys) is build_observation_model(keys)
+
+    def test_different_fragment_sets_get_different_classes(self) -> None:
+        from spectragent.schemas.observation.dynamic_model import build_observation_model
+
+        a = build_observation_model(frozenset({"browser.dom"}))
+        b = build_observation_model(frozenset({"browser.dom", "browser.screenshot"}))
+        assert a is not b
+
+    def test_replacing_a_fragment_class_invalidates_the_cached_model(self) -> None:
+        """Cache on the resolved classes, not on the key set alone.
+
+        Keying only on fragment *keys* handed back a model still
+        annotated with the previous class after a re-registration, so the
+        next ``observe()`` died with ``Input should be ... an instance of
+        NetA`` naming a class the registry no longer held — and nothing
+        in the repo ever called ``cache_clear()``.
+        """
+        from spectragent.schemas.observation._registrar import (
+            FragmentBase,
+            ObservationRegistrar,
+        )
+        from spectragent.schemas.observation.dynamic_model import build_observation_model
+
+        key = "cachebust.network"
+        keys = frozenset({key})
+
+        class NetA(FragmentBase):
+            __registry_key__ = key
+            request_count: int = 0
+
+        try:
+            first = build_observation_model(keys)
+            assert first is build_observation_model(keys)
+
+            ObservationRegistrar.unregister(key)
+
+            class NetB(FragmentBase):
+                __registry_key__ = key
+                request_count: int = 0
+                bytes_in: int = 0
+
+            second = build_observation_model(keys)
+            assert second is not first
+            # ... and the rebuilt model actually accepts the live class.
+            obs = second(network=NetB(request_count=3, bytes_in=9))
+            assert getattr(obs, "network").bytes_in == 9  # noqa: B009
+        finally:
+            ObservationRegistrar.unregister(key)
