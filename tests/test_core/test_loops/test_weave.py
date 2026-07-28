@@ -15,8 +15,8 @@ class _TestLoop(AgentLoopBase):
     __optional_slots__ = {"prepare"}
     __requires_env__ = True
 
-    async def _execute(self, agent, task):
-        return {"task": task, "env": self.ctx.get("env"), "agent_name": agent.name}
+    async def _execute(self, agent, task, *, ctx, **kwargs):
+        return {"task": task, "env": ctx.get("env"), "agent_name": agent.name}
 
 
 class _NoEnvLoop(AgentLoopBase):
@@ -24,7 +24,7 @@ class _NoEnvLoop(AgentLoopBase):
     __required_slots__ = {"build_plan"}
     __requires_env__ = False
 
-    async def _execute(self, agent, task):
+    async def _execute(self, agent, task, *, ctx, **kwargs):
         return {"task": task, "plan": True}
 
 
@@ -45,6 +45,11 @@ class _PlanAgent:
     name = "planner"
     def build_plan(self, obs):
         return []
+
+
+def _drive(agent: object, task: str) -> dict:
+    """Run a woven agent. ``run`` is patched onto the instance by weave."""
+    return asyncio.run(agent.run(task))  # type: ignore[attr-defined]
 
 
 class TestWeave:
@@ -73,16 +78,29 @@ class TestWeave:
         assert result["env"] == "fake_env"
         assert result["agent_name"] == "good"
 
-    def test_deps_bound_to_self_ctx(self) -> None:
+    def test_deps_reach_execute_without_loop_state(self) -> None:
         agent = _GoodAgent()
         loop = _TestLoop()
         loop.weave(agent, env="env1", llm="llm1", memory="mem1")
 
-        assert loop.ctx["env"] == "env1"
-        assert loop.ctx["llm"] == "llm1"
+        # weave is stateless — nothing is parked on the loop instance.
+        assert not hasattr(loop, "ctx")
 
         result = asyncio.run(agent.run("task"))
         assert result["env"] == "env1"
+
+    def test_second_weave_does_not_rewrite_the_first(self) -> None:
+        """One loop instance, two agents: each keeps its own deps."""
+        a1 = _GoodAgent()
+        a2 = _GoodAgent()
+        loop = _TestLoop()
+
+        loop.weave(a1, env="ENV1", llm="LLM1", memory="MEM1", act_fn="ACT1")
+        loop.weave(a2, env="ENV2", llm="LLM2", memory="MEM2", act_fn="ACT2")
+
+        assert not hasattr(loop, "ctx")
+        assert _drive(a1, "t")["env"] == "ENV1"
+        assert _drive(a2, "t")["env"] == "ENV2"
 
     def test_missing_required_slots_raises(self) -> None:
         class BadAgent:
@@ -114,8 +132,7 @@ class TestWeave:
 
     def test_deepcopy_different_loops(self) -> None:
         """deepcopy agent can be woven with different loops."""
-        agent = _GoodAgent()
-        # _GoodAgent also satisfies _NoEnvLoop? No — it needs build_plan.
+        # _GoodAgent does not satisfy _NoEnvLoop — it needs build_plan.
         # Use a dual agent.
         class DualAgent:
             name = "dual"

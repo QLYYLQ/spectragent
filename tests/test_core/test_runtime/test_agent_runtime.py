@@ -11,7 +11,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.validation import IncompatibleError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
-from tests._helpers.assembly import make_env, make_run
+from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 # ── Shared fixtures ───────────────────────────────────────────
 
@@ -182,11 +182,11 @@ class TestFullPipeline:
     def test_execute_returns_done(self) -> None:
         run = _mk(SimpleAgent(), ReactLoop(), _make_env())
         result = asyncio.run(
-            AgentRuntime.from_composed(run).execute("test", task_id="t-001")
+            AgentRuntime.for_agent(run, AGENT_ID).execute("test", task_id="t-001")
         )
         assert result.agent_done.value == "done"
         assert result.answer == "answer"
-        assert result.agent_success is True
+        assert result.agent_reported_success is True
 
 
 class TestPrepare:
@@ -195,14 +195,14 @@ class TestPrepare:
         assert not hasattr(agent, "run")
 
         run = _mk(agent, ReactLoop(), _make_env())
-        prepared = AgentRuntime.from_composed(run).prepare()
+        prepared = AgentRuntime.for_agent(run, AGENT_ID).prepare()
         assert hasattr(prepared, "run")
         assert callable(prepared.run)
 
     def test_prepared_agent_can_run(self) -> None:
         agent = SimpleAgent()
         run = _mk(agent, ReactLoop(), _make_env())
-        prepared = AgentRuntime.from_composed(run).prepare()
+        prepared = AgentRuntime.for_agent(run, AGENT_ID).prepare()
         result = asyncio.run(prepared.run("test"))
         assert result.agent_done.value == "done"
 
@@ -229,7 +229,7 @@ class TestPrepare:
             memory=memory,
         )
         asyncio.run(
-            AgentRuntime.from_composed(run).execute("seed-task", task_id="t-seed")
+            AgentRuntime.for_agent(run, AGENT_ID).execute("seed-task", task_id="t-seed")
         )
 
         assert len(prepare_calls) == 1
@@ -248,7 +248,7 @@ class TestPrepare:
             memory=memory,
         )
         asyncio.run(
-            AgentRuntime.from_composed(run).execute("noop", task_id="t-noop")
+            AgentRuntime.for_agent(run, AGENT_ID).execute("noop", task_id="t-noop")
         )
         # SimpleAgent does not define ``prepare``, so no system prompt
         # was seeded by the runtime.
@@ -261,7 +261,7 @@ class TestTimeout:
     def test_timeout_result(self) -> None:
         run = _mk(SimpleAgent(), _SlowLoop(), _make_env())
         result = asyncio.run(
-            AgentRuntime.from_composed(run).execute("timeout", timeout=0.05)
+            AgentRuntime.for_agent(run, AGENT_ID).execute("timeout", timeout=0.05)
         )
         assert result.agent_done.value == "timeout"
 
@@ -273,7 +273,7 @@ class TestCompatibility:
 
         run = _mk(BadAgent(), ReactLoop(), _make_env())
         with pytest.raises(IncompatibleError):
-            asyncio.run(AgentRuntime.from_composed(run).execute("fail"))
+            asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("fail"))
 
 
 class TestHookLifecycle:
@@ -289,7 +289,7 @@ class TestHookLifecycle:
             async def on_run_error(self, **kw): log.append("error")
 
         run = _mk(SimpleAgent(), ReactLoop(), _make_env(), hooks=[Hook()])
-        asyncio.run(AgentRuntime.from_composed(run).execute("hook"))
+        asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("hook"))
         assert log == ["start", "end"]
 
     def test_error_called_on_timeout(self) -> None:
@@ -305,9 +305,12 @@ class TestHookLifecycle:
 
         run = _mk(SimpleAgent(), _SlowLoop(), _make_env(), hooks=[Hook()])
         asyncio.run(
-            AgentRuntime.from_composed(run).execute("timeout hook", timeout=0.05)
+            AgentRuntime.for_agent(run, AGENT_ID).execute("timeout hook", timeout=0.05)
         )
-        assert log == ["start", "error"]
+        # on_run_end fires on the timeout path too — it is the only place
+        # a persistence hook writes result.json, so skipping it is what
+        # left timed-out runs as orphan traces stuck at status=running.
+        assert log == ["start", "end", "error"]
 
 
 class TestActionNegotiation:
@@ -332,7 +335,7 @@ class TestActionNegotiation:
 
         run = _mk(NeedsBash(), _SpyLoop("nego_spy", seen), _make_env())
         with pytest.raises(IncompatibleActionError):
-            asyncio.run(AgentRuntime.from_composed(run).execute("fail"))
+            asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("fail"))
         assert seen == []  # loop never ran
 
     def test_optional_not_provided_is_graceful(self) -> None:
@@ -349,7 +352,7 @@ class TestActionNegotiation:
             }
 
         run = _mk(OptionalAgent(), _SpyLoop("opt_spy", seen_names), _make_env())
-        asyncio.run(AgentRuntime.from_composed(run).execute("opt"))
+        asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("opt"))
         # SimpleCap only provides "done"; the two optional actions are
         # not in the env, so they should NOT be active.
         assert set(seen_names) == {"rt_simple_cap.done"}
@@ -375,7 +378,7 @@ class TestCompositeEnvNarrowing:
             _SpyLoop("composite_spy", seen),
             _make_composite_env(),
         )
-        asyncio.run(AgentRuntime.from_composed(run).execute("composite"))
+        asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("composite"))
         assert set(seen) == {"browser.click", "browser.type", "finish.done"}
 
     def test_composite_env_drops_actions_not_in_wiring(self) -> None:
@@ -398,7 +401,7 @@ class TestCompositeEnvNarrowing:
             _SpyLoop("composite_spy2", seen),
             _make_composite_env(),
         )
-        asyncio.run(AgentRuntime.from_composed(run).execute("composite_min"))
+        asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("composite_min"))
         assert set(seen) == {"finish.done"}
 
     def test_composite_env_required_missing_raises(self) -> None:
@@ -418,7 +421,7 @@ class TestCompositeEnvNarrowing:
 
         run = _mk(NeedsBash(), ReactLoop(), _make_composite_env())
         with pytest.raises(IncompatibleActionError):
-            asyncio.run(AgentRuntime.from_composed(run).execute("fail"))
+            asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("fail"))
 
 
 class TestActionFilter:
@@ -452,7 +455,7 @@ class TestActionFilter:
         env = make_env(SimpleEnv, {"rt_multi_cap": MultiCap()})
         run = _mk(MultiAgent(), _SpyLoop("spy", seen), env)
         asyncio.run(
-            AgentRuntime.from_composed(run).execute(
+            AgentRuntime.for_agent(run, AGENT_ID).execute(
                 "filter",
                 action_filter=["rt_multi_cap.click", "rt_multi_cap.done"],
             )

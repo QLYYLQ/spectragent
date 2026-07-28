@@ -109,9 +109,7 @@ class TestAdHocRegistration:
                     params={},
                 )
 
-            async def execute(
-                self, params, *, capability, session_id,
-            ) -> ActionResult:
+            async def execute(self, params, *, capability) -> ActionResult:
                 return ActionResult(success=True)
 
         cls = ActionRegistrar.get("_test.only_action_registrar")

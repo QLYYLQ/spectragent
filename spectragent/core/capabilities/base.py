@@ -24,9 +24,12 @@ class BaseCapability(Protocol):
 
     Attributes:
         capability_id: Registry discriminator — matches ``__registry_key__``.
+        id: Instance identity. Two capabilities of the same class can
+            coexist in one run as long as their ``id`` differs.
     """
 
     capability_id: str
+    id: str | None
 
     # ── Action group ──────────────────────────────────────────
 
@@ -40,13 +43,16 @@ class BaseCapability(Protocol):
         """
         ...
 
-    async def execute_action(
-        self, action: Action, **kwargs: Any
-    ) -> ActionResult:
-        """Execute a single **unprefixed** action.
+    async def execute_action(self, action: Action) -> ActionResult:
+        """Execute one action this capability owns.
 
-        Environment handles prefix stripping before calling this method.
-        The action name is always local to this capability's scope.
+        The Environment routes by the action name's leading segment and
+        passes the action through unchanged; the capability looks it up
+        by its full registry key.
+
+        No routing handle is passed. Sub-context selection (tab,
+        container, window) is this capability's own state, changed by one
+        of its own actions.
         """
         ...
 
@@ -54,17 +60,17 @@ class BaseCapability(Protocol):
 
     @property
     def provided_fragments(self) -> frozenset[str]:
-        """Observation fragment keys this capability can resolve.
+        """Observation fragment keys this capability will resolve.
 
-        Derived from ``__wiring__["observation"]`` on CapabilityBase
-        subclasses. Used by the negotiation engine (M02) to determine
-        which fragments are available.
+        Before ``setup()`` this is the capability's full resolver set —
+        that is what the negotiation engine (M02) consumes to decide
+        which fragments are available. Once ``setup(negotiation=...)``
+        has run it narrows to the negotiated active set, so per-step
+        resolver cost tracks what the agent and loop actually asked for.
         """
         ...
 
-    async def resolve_fragment(
-        self, fragment_key: str, **kwargs: Any
-    ) -> Any:
+    async def resolve_fragment(self, fragment_key: str) -> Any:
         """Resolve one observation fragment on demand.
 
         Called by Environment.observe() for env-sourced fragments whose
@@ -77,8 +83,23 @@ class BaseCapability(Protocol):
 
     # ── Lifecycle ─────────────────────────────────────────────
 
-    async def setup(self, config: dict[str, Any] | None = None, **kwargs: Any) -> None:
-        """Initialize the capability (e.g. launch browser, connect Docker)."""
+    async def setup(self, *, negotiation: Any = None) -> None:
+        """Initialize the capability (e.g. launch browser, connect Docker).
+
+        ``negotiation`` is the observation negotiation result for this
+        run. Capabilities use it to skip work for fragments nobody
+        requested — without it a vision-only agent still pays for a full
+        DOM extraction on every step.
+
+        **The rest of the signature is the capability's public setup
+        vocabulary.** Every task-context option a capability accepts must
+        be a named keyword-only parameter here, because that signature is
+        exactly what :meth:`Environment.setup` reads to decide which keys
+        it may route to this capability — and a key no capability names
+        is reported as an error instead of vanishing. A ``**kwargs``
+        catch-all opts out of that check and re-opens the silent-typo
+        hole; concrete capabilities should not have one.
+        """
         ...
 
     async def teardown(self) -> None:

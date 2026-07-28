@@ -9,8 +9,9 @@ agent instance — after which ``agent.run(task)`` is self-contained.
 ``execute()`` is a convenience wrapper that calls ``prepare()`` then
 drives ``agent.run()`` with timeout + lifecycle hooks.
 
-Not a registrar component — each framework has one AgentRuntime.
-Not a singleton — each ``execute()`` / ``prepare()`` call is independent.
+Not a registrar component. Not a singleton: one AgentRuntime drives one
+agent *instance*, built via ``AgentRuntime.for_agent(run, agent_id)``, so
+a multi-agent run has one runtime per agent.
 
 See docs/architecture_design.md §4.2 and docs/execution_dag.md M08.
 """
@@ -18,21 +19,39 @@ See docs/architecture_design.md §4.2 and docs/execution_dag.md M08.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
-from datetime import UTC
+import time
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.aop.weaver import Weaver
-from spectragent.core.composer import ComposedRun
+from spectragent.core.composer import ComposedRun, ComposeError
 from spectragent.core.hooks.base import RuntimeHook
 from spectragent.core.negotiation import (
     negotiate_action,
     negotiate_memory,
     negotiate_observation,
 )
+from spectragent.core.step_recorder import StepRecorder
+from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
+from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_HOOK_PRIORITY = 100
+
+
+def _model_name(agent: Any) -> str:
+    """Model identifier of an agent's LLM, for result attribution."""
+    llm = getattr(agent, "llm", None)
+    for attr in ("model", "model_name", "name"):
+        value = getattr(llm, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 class AgentRuntime:
@@ -46,48 +65,204 @@ class AgentRuntime:
     5. Weave Loop execution logic into agent.run
     6. (execute only) Drive agent.run() with timeout + lifecycle hooks
 
+    An AgentRuntime drives exactly **one** agent instance. Its loop, llm
+    and memory come from that agent's own wired receptors, never from a
+    run-global lookup — that is what lets two agents of the same class
+    keep separate configs. The Environment may legitimately be shared
+    across agents, but sharing is explicit: with more than one
+    environment in the run the caller must name one.
+
     Args:
-        hooks: Active RuntimeHook instances for this run.
+        run: The composed object graph (used for run-scoped hooks).
+        agent: The agent instance this runtime drives.
+        env: Environment for this agent, or ``None`` for env-less loops.
     """
 
-    def __init__(self, run: ComposedRun) -> None:
+    def __init__(
+        self,
+        run: ComposedRun,
+        agent: Any,
+        *,
+        env: Any | None = None,
+    ) -> None:
         self._run = run
+        self._agent = agent
+        self._env = env
         self._hooks: list[RuntimeHook] = list(run.hooks)
+        self._negotiated_obs: Any = None
+        self._active_descriptors: list[Any] = []
+        self._memory: Any = None
+        self._recorder = StepRecorder()
+        self._env_needs_teardown = False
 
     # -- Factory ----------------------------------------------
 
     @classmethod
-    def from_composed(cls, run: ComposedRun) -> AgentRuntime:
-        """Build an AgentRuntime from a :class:`ComposedRun`."""
-        return cls(run)
+    def for_agent(
+        cls,
+        run: ComposedRun,
+        agent_id: str,
+        *,
+        env_id: str | None = None,
+    ) -> AgentRuntime:
+        """Build a runtime around one agent instance of a :class:`ComposedRun`.
+
+        Args:
+            run: The composed object graph.
+            agent_id: Instance id of the agent (``ComposedRun.ids("agent")``).
+            env_id: Instance id of the environment to run against. Required
+                when the run holds more than one environment.
+        """
+        agent = run.instance("agent", agent_id)
+        if env_id is not None:
+            env = run.instance("environment", env_id)
+        else:
+            environments = run.by_layer.get("environment", {})
+            if len(environments) > 1:
+                raise ComposeError(
+                    f"Run holds {len(environments)} environments "
+                    f"({sorted(environments)}); pass env_id= to say which one "
+                    f"agent {agent_id!r} runs against."
+                )
+            env = next(iter(environments.values()), None)
+        return cls(run, agent, env=env)
+
+    # -- Bound instances ---------------------------------------
+
+    @property
+    def agent(self) -> Any:
+        return self._agent
+
+    @property
+    def env(self) -> Any | None:
+        return self._env
+
+    @property
+    def negotiated_observation(self) -> Any | None:
+        """Observation negotiation result, available after :meth:`prepare`."""
+        return self._negotiated_obs
+
+    @property
+    def active_descriptors(self) -> list[Any]:
+        """Action descriptors surviving negotiation, after :meth:`prepare`.
+
+        Lives on the runtime rather than being stamped onto the agent:
+        writing framework bookkeeping onto a domain object is how
+        ``__active_descriptors__`` ended up shadowing a proxy method.
+        """
+        return self._active_descriptors
+
+    @property
+    def step_records(self) -> list[Any]:
+        """Steps the Loop has surrendered so far — the partial trajectory."""
+        return self._recorder.records
+
+    # -- environment lifecycle ---------------------------------
+
+    async def setup_environment(
+        self, context: Mapping[str, Any] | None = None
+    ) -> None:
+        """Set up the bound environment, threading the negotiation result.
+
+        Must run after :meth:`prepare` — negotiation is what tells each
+        capability which fragments it will actually be asked for, and
+        therefore how much work an observe cycle costs. Call it before
+        ``prepare`` and capabilities fall back to resolving everything
+        they can.
+
+        ``execute()`` calls this for you. ``context`` is the task context
+        (``TaskLoader.get_task_context(task_id)``), which is how a
+        benchmark's container image, checkout commit or start URL reaches
+        a Capability. The Environment routes it per capability rather than
+        splatting it at all of them.
+        """
+        if self._env is None:
+            return
+        # Armed *before* the await, not after it. ``Environment.setup``
+        # brings capabilities up one at a time, and each one may already
+        # hold a Chrome process, a CDP websocket or a billable cloud
+        # session by the time a later one raises — as ``BrowserCapability``
+        # does, which opens the backend and connects CDP and *then* can
+        # still fail on the task's ``start_url``. Gating teardown on a
+        # *successful* setup orphaned every resource acquired before the
+        # failure, and ``BenchmarkRunner`` swallows the error and composes
+        # a fresh environment for the next task, so a sweep against a
+        # flaky start URL leaked one browser per task.
+        #
+        # The flag therefore means "the environment may be holding
+        # resources", not "setup succeeded".
+        self._env_needs_teardown = True
+        await self._env.setup(context, negotiation=self._negotiated_obs)
+
+    async def teardown_environment(self) -> None:
+        """Tear the bound environment down, at most once.
+
+        Runs after *any* attempted setup, including one that raised part
+        way through. ``teardown()`` is required to be safe on a
+        capability that never came up — every one of them is None-guarded
+        — and paying for a no-op teardown is strictly cheaper than
+        leaking the capabilities that did come up.
+        """
+        if self._env is None or not self._env_needs_teardown:
+            return
+        self._env_needs_teardown = False
+        await self._env.teardown()
 
     # -- prepare: assembly phase -------------------------------
+
+    def _loop_policy_for(self, agent_prepare: Any) -> dict[str, Any]:
+        """Loop execution limits the agent must advertise in its prompt.
+
+        The Loop is the single source of truth for how many actions a step
+        may contain — it is what actually truncates. An agent that also
+        owned the number would tell the model one thing while the loop
+        enforced another: the shipped config advertised ``max_actions=3``
+        while ``ReactLoop.max_actions_per_step`` dropped everything past
+        the first, silently, so the model kept re-issuing steps it
+        believed had run.
+
+        Passed only to agents whose ``prepare`` names the parameter, so an
+        agent that has no use for it keeps a narrow signature rather than
+        growing a ``**kwargs`` sink.
+        """
+        loop = getattr(self._agent, "agent_loop", None)
+        if loop is None:
+            return {}
+        try:
+            accepted = inspect.signature(agent_prepare).parameters
+        except (TypeError, ValueError):
+            return {}
+        policy = {"max_actions_per_step": getattr(loop, "max_actions_per_step", None)}
+        return {k: v for k, v in policy.items() if k in accepted and v is not None}
 
     def prepare(
         self,
         *,
-        session_id: str | None = None,
         task_id: str = "unknown",
         action_filter: list[str] | None = None,
         **kwargs: Any,
     ) -> Any:
         """Assemble all dependencies and weave Loop into agent.run.
 
-        Reads ``agent``, ``loop``, ``env``, ``llm``, ``memory`` off the
-        ``ComposedRun`` bound at construction time.  After return,
-        ``run.agent.run(task)`` is fully self-contained.
+        ``loop`` / ``llm`` / ``memory`` are read off the bound agent's own
+        wired receptors; ``env`` is the one bound at construction time.
+        After return, ``agent.run(task)`` is fully self-contained.
         """
-        run = self._run
-        agent = run.agent
-        loop = run.loop
-        env = run.env
-        llm = run.llm
-        memory = run.memory
+        agent = self._agent
+        loop = agent.agent_loop
+        env = self._env
+        llm = agent.llm
+        memory = agent.memory
         # Step 1: Slot validation
         loop._validate_slots(agent)
 
         # Step 2: Observation three-party negotiation
         negotiated_obs = negotiate_observation(agent, loop, env)
+        # Kept so ``setup_environment`` can hand it to the capabilities:
+        # a capability that does not know the negotiated set resolves
+        # every fragment it *could* provide, which is how a vision-only
+        # agent ends up paying for a DOM extraction on every step.
+        self._negotiated_obs = negotiated_obs
 
         # Step 2.5: Action two-party negotiation
         negotiated_actions = negotiate_action(agent, env)
@@ -101,6 +276,12 @@ class AgentRuntime:
         wrapped_agent = weaver.wrap(agent, role="agent")
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
+        # The Loop's step sink. Wrapped like any other role, so a hook
+        # observes finished steps through an ordinary method call.
+        wrapped_recorder = weaver.wrap(self._recorder, role="loop")
+        # Anything left declaring a role nobody wrapped is a config bug,
+        # and used to be a silent no-op.
+        weaver.raise_for_unclaimed_roles()
 
         # Step 4: Narrow descriptors via the action negotiation result.
         narrowed_descriptors = wrapped_env.get_action_space(
@@ -121,17 +302,15 @@ class AgentRuntime:
             act_fn=act_fn,
             negotiated_obs=negotiated_obs,
             active_descriptors=active_descriptors,
-            session_id=session_id,
+            step_recorder=wrapped_recorder,
             task_id=task_id,
             **kwargs,
         )
 
-        # Stash the negotiation outputs on the wrapped agent so ``execute``
-        # (or any external caller) can drive the post-prepare lifecycle —
-        # ``agent.prepare(task, action_descriptors)`` then memory seeding —
-        # without re-running negotiation.
-        wrapped_agent.__active_descriptors__ = active_descriptors
-        wrapped_agent.__memory__ = memory
+        # Negotiation outputs stay on the runtime — see
+        # :attr:`active_descriptors`.
+        self._active_descriptors = active_descriptors
+        self._memory = memory
 
         return wrapped_agent
 
@@ -142,20 +321,62 @@ class AgentRuntime:
         task: str,
         *,
         timeout: float = 300,
-        session_id: str | None = None,
         task_id: str = "unknown",
+        benchmark: str = "",
+        subset: str = "",
+        run_id: str | None = None,
+        env_context: Mapping[str, Any] | None = None,
         action_filter: list[str] | None = None,
         config: dict[str, Any] | None = None,
+        raise_on_error: bool = True,
         **kwargs: Any,
     ) -> Any:
-        """One-shot: prepare + run + lifecycle hooks + timeout."""
-        run = self._run
+        """One-shot: prepare + env lifecycle + run + lifecycle hooks + timeout.
+
+        The environment's ``setup``/``teardown`` are driven here rather
+        than by the caller, so the ordering — negotiate, set up, start,
+        run, score against a *live* env, tear down — is a framework
+        guarantee instead of a convention every demo re-implements
+        differently.
+
+        Every termination path (done, max_steps, timeout, exception)
+        dispatches ``on_run_end`` with a real ``AgentResult``. Persistence
+        hooks write the result there, so skipping it on the failure paths
+        is what left two thirds of the traces on disk permanently marked
+        ``running`` with no ``result.json``.
+
+        Args:
+            task: Task text handed to the agent.
+            timeout: Wall-clock budget for ``agent.run``.
+            task_id: Dataset identity of this task.
+            benchmark: Benchmark registry key, recorded in the trace so it
+                can be joined back to its ``EvalReference``.
+            subset: Benchmark subset/split.
+            run_id: Trace identity. Generated by the persistence hook when
+                omitted.
+            env_context: Task context handed to ``Environment.setup``
+                — typically ``TaskLoader.get_task_context(task_id)``. The
+                environment routes each key to the capabilities whose
+                ``setup()`` declares it; a key nobody declares raises.
+            action_filter: Optional extra narrowing of the action space.
+            config: Config snapshot recorded in the trace.
+            raise_on_error: Re-raise an unexpected exception after the
+                trace is closed out. Benchmark drivers pass ``False`` to
+                get the failed ``AgentResult`` back and keep going.
+        """
         prepared_agent = self.prepare(
-            session_id=session_id,
             task_id=task_id,
             action_filter=action_filter,
             **kwargs,
         )
+
+        # A ComposedRun may drive many tasks. Without this, task 1's whole
+        # trajectory — plus a second copy of the system prompt — leaks into
+        # task 2's context.
+        memory = self._memory
+        if memory is not None and callable(getattr(memory, "clear", None)):
+            memory.clear()
+        self._recorder.clear()
 
         # Agent.prepare is a pure builder: it produces seed messages for
         # the run (typically the system prompt) and AgentRuntime owns the
@@ -164,80 +385,170 @@ class AgentRuntime:
         if callable(agent_prepare):
             seed_messages = agent_prepare(
                 task=task,
-                action_descriptors=prepared_agent.__active_descriptors__,
+                action_descriptors=self._active_descriptors,
+                **self._loop_policy_for(agent_prepare),
             )
-            if seed_messages:
-                prepared_agent.__memory__.add_messages(seed_messages)
+            if seed_messages and memory is not None:
+                memory.add_messages(seed_messages)
 
-        # Hook lifecycle — run_start
+        # Hook lifecycle — run_start. Deliberately *before* env setup: a
+        # setup failure must still land in a trace, and that needs the
+        # trace to already exist.
         await self._dispatch_lifecycle(
             "on_run_start",
-            agent=run.agent,
-            env=run.env,
+            agent=self._agent,
+            env=self._env,
+            loop=self._agent.agent_loop,
+            llm=self._agent.llm,
             task=task,
+            task_id=task_id,
+            benchmark=benchmark,
+            subset=subset,
+            run_id=run_id,
             config=config or {},
         )
 
-        # Drive agent.run with timeout
+        started = time.monotonic()
         try:
-            result = await asyncio.wait_for(
-                prepared_agent.run(task),
-                timeout=timeout,
-            )
+            try:
+                await self.setup_environment(env_context)
+            except Exception as exc:
+                logger.exception("AgentRuntime: environment setup failed")
+                result = self._terminal_result(
+                    task=task,
+                    task_id=task_id,
+                    agent_done=AgentDoneStatus.ERROR,
+                    env_status=EnvironmentStatus.FAILED,
+                    error=f"Environment setup failed: {type(exc).__name__}: {exc}",
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+                await self._finish(result, error=exc)
+                if raise_on_error:
+                    raise
+                return result
 
-            # Success — notify hooks
-            await self._dispatch_lifecycle("on_run_end", result=result)
-            return result
+            try:
+                result = await asyncio.wait_for(
+                    prepared_agent.run(task),
+                    timeout=timeout,
+                )
+                await self._finish(result)
+                return result
 
-        except TimeoutError:
-            logger.warning("AgentRuntime: execution timed out after %.1fs", timeout)
-            from datetime import datetime
+            except TimeoutError:
+                logger.warning("AgentRuntime: execution timed out after %.1fs", timeout)
+                result = self._terminal_result(
+                    task=task,
+                    task_id=task_id,
+                    agent_done=AgentDoneStatus.TIMEOUT,
+                    env_status=self._probe_env_status(),
+                    error=f"Execution timed out after {timeout}s",
+                    elapsed_ms=int(timeout * 1000),
+                )
+                await self._finish(result, error=TimeoutError(result.error))
+                return result
 
-            from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
-            from spectragent.schemas.agent_result import (
-                AgentMetrics,
-                AgentResult,
-                AgentUsage,
-            )
-
-            timeout_result = AgentResult(
-                task_id=task_id,
-                task=task,
-                timestamp=datetime.now(UTC),
-                env_status=EnvironmentStatus.SUCCESS,
-                agent_done=AgentDoneStatus.TIMEOUT,
-                error=f"Execution timed out after {timeout}s",
-                metrics=AgentMetrics(
-                    end_to_end_ms=int(timeout * 1000),
-                    steps=0,
-                    usage=AgentUsage(),
-                ),
-            )
-            await self._dispatch_lifecycle(
-                "on_run_error",
-                error=TimeoutError(),
-                partial_steps=[],
-            )
-            return timeout_result
-
-        except Exception as exc:
-            logger.exception("AgentRuntime: execution failed")
-            await self._dispatch_lifecycle(
-                "on_run_error",
-                error=exc,
-                partial_steps=[],
-            )
-            raise
+            except Exception as exc:
+                logger.exception("AgentRuntime: execution failed")
+                result = self._terminal_result(
+                    task=task,
+                    task_id=task_id,
+                    agent_done=AgentDoneStatus.ERROR,
+                    # ``agent_done`` already says the run failed. Asking the
+                    # environment keeps ``env_status`` meaning what it says
+                    # — a crashed browser, not just a crashed run.
+                    env_status=self._probe_env_status(),
+                    error=f"{type(exc).__name__}: {exc}",
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+                await self._finish(result, error=exc)
+                if raise_on_error:
+                    raise
+                return result
+        finally:
+            # Teardown always runs, and always after on_run_end — env-state
+            # scoring needs the environment alive.
+            try:
+                await self.teardown_environment()
+            except Exception:
+                logger.exception("AgentRuntime: environment teardown failed")
 
     # -- Private helpers ---------------------------------------
+
+    async def _finish(self, result: Any, error: BaseException | None = None) -> None:
+        """Close a run out: ``on_run_end`` first, then error detail."""
+        await self._dispatch_lifecycle("on_run_end", result=result, env=self._env)
+        if error is not None:
+            await self._dispatch_lifecycle(
+                "on_run_error",
+                error=error,
+                partial_steps=self._recorder.records,
+                env=self._env,
+            )
+
+    def _terminal_result(
+        self,
+        *,
+        task: str,
+        task_id: str,
+        agent_done: AgentDoneStatus,
+        env_status: EnvironmentStatus,
+        error: str,
+        elapsed_ms: int,
+    ) -> AgentResult:
+        """Build the result for a run the Loop never got to finish.
+
+        ``usage=None`` is the honest value: the Loop is the only component
+        that sees completions, and it did not return one. A zero-filled
+        ``AgentUsage`` here would claim the run was measured.
+        """
+        return AgentResult(
+            task_id=task_id,
+            task=task,
+            timestamp=datetime.now(UTC),
+            env_status=env_status,
+            agent_done=agent_done,
+            error=error,
+            model_id=_model_name(self._agent),
+            metrics=AgentMetrics(
+                end_to_end_ms=elapsed_ms,
+                steps=self._recorder.step_count,
+                usage=None,
+            ),
+        )
+
+    def _probe_env_status(self) -> EnvironmentStatus:
+        """Ask the environment whether it is still healthy.
+
+        A run that timed out because the browser died and one that timed
+        out because the task was hard are different failures, and used to
+        be indistinguishable in the artifacts.
+        """
+        if self._env is None:
+            return EnvironmentStatus.SUCCESS
+        try:
+            alive = getattr(self._env, "is_alive", True)
+        except Exception:
+            return EnvironmentStatus.FAILED
+        return EnvironmentStatus.SUCCESS if alive else EnvironmentStatus.FAILED
 
     async def _dispatch_lifecycle(
         self,
         method_name: str,
         **kwargs: Any,
     ) -> None:
-        """Dispatch a lifecycle callback to all hooks."""
-        for hook in self._hooks:
+        """Dispatch a lifecycle callback to all hooks, in priority order.
+
+        Ordering is load-bearing: an enricher that mutates ``result``
+        must run before a writer that serializes it. Relying on YAML order
+        meant ``hook: [trace_writer, metrics]`` silently wrote
+        ``total_tokens: 0`` into every ``result.json``.
+        """
+        ordered = sorted(
+            self._hooks,
+            key=lambda h: getattr(h, "priority", _DEFAULT_HOOK_PRIORITY),
+        )
+        for hook in ordered:
             handler = getattr(hook, method_name, None)
             if handler is None:
                 continue

@@ -8,10 +8,11 @@ Key design: Loop's ``_execute()`` has NO emitter/hook parameter. AOP hooks
 are woven into agent/env/llm methods by the Weaver (M04) at runtime.
 The Loop is completely unaware of hooks.
 
-``weave()`` binds runtime deps to ``self.ctx`` and patches the Loop's
+``weave()`` captures runtime deps in a closure and patches the Loop's
 execution logic onto the agent instance as ``agent.run``, making the Loop
 both an IoC container (controls the execution flow) and an AOP-style
-enhancer (injects behaviour into the agent at runtime).
+enhancer (injects behaviour into the agent at runtime). It stores
+nothing on the Loop, so one Loop instance can drive many agents.
 
 See docs/architecture_design.md §4.1 for the Agent-Loop separation design.
 """
@@ -29,25 +30,25 @@ class AgentLoop(Protocol):
     PlanExecute). Each Loop declares its required agent method slots via
     ``__required_slots__`` / ``__optional_slots__`` on the base class.
 
-    ``weave()`` validates slots, binds deps to ``self.ctx``, and patches
-    ``agent.run`` with a closure that drives ``_execute()``.
+    ``weave()`` validates slots, captures deps in a closure, and patches
+    ``agent.run`` with that closure, which drives ``_execute()``.
     """
 
     loop_id: str
-    ctx: dict[str, Any]
+    id: str | None
 
     def weave(
         self,
         agent: Any,
         **deps: Any,
     ) -> Any:
-        """Validate slots, bind deps to ``self.ctx``, patch ``agent.run``.
+        """Validate slots, capture deps in a closure, patch ``agent.run``.
 
         Args:
             agent: Agent instance whose method slots are checked against
                    ``__required_slots__``.
             **deps: Runtime dependencies (env, llm, memory, act_fn, etc.)
-                    bound to ``self.ctx`` for ``_execute`` to read.
+                    handed to ``_execute`` as ``ctx`` on every call.
 
         Returns:
             The same agent instance (with ``run`` patched).
@@ -61,16 +62,17 @@ class AgentLoop(Protocol):
         self,
         agent: Any,
         task: str,
+        *,
+        ctx: dict[str, Any],
         **kwargs: Any,
     ) -> Any:
         """Drive the full agent loop (internal — called via ``agent.run``).
 
-        Runtime deps are on ``self.ctx`` (bound at weave time).
-        ``**kwargs`` receives only per-run overrides from ``agent.run(task, ...)``.
-
         Args:
             agent: Agent instance satisfying this Loop's required slots.
             task: The task description string.
+            ctx: Runtime deps captured at weave time. Passed per call so
+                the Loop instance stays stateless.
             **kwargs: Per-run overrides (rare).
 
         Returns:

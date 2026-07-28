@@ -1,13 +1,13 @@
 # BrowserUseAgent + ReactLoop running against the hosted Skyvern backend.
 #
 # Differs from browser_use_local.yaml only in
-# ``agent[0].capability.backend`` — every other section is identical.
-# Set SKYVERN_API_KEY in your environment before running.
+# ``environment[0].capabilities[0].backend`` — every other section is
+# identical. Set SKYVERN_API_KEY in your environment before running.
+# See browser_use_local.yaml for what the layout rules mean.
 
 agent:
   - agent_id: browser_use
-    max_steps: 30
-    max_actions_per_step: 1
+    id: main
     flash_mode: false
     use_vision: false
     use_thinking: true
@@ -15,6 +15,8 @@ agent:
 
     agent_loop:
       loop_id: react
+      max_steps: 30
+      max_actions_per_step: 1
 
     llm:
       model_type: openai
@@ -26,28 +28,20 @@ agent:
       memory_id: simple
       max_messages: 200
 
-    capability:
-      capability_id: browser
-      profile: standard
-      viewport_width: 1280
-      viewport_height: 720
-
-      observation: browser.dom
-      action: { action_id: browser.click }
-
-      # Switch backend = edit only this block.
-      backend:
-        provider_id: skyvern
-        # Either set SKYVERN_API_KEY env var (provider reads it) or paste here:
-        # api_key: sk-...
-        timeout_minutes: 30
-        solve_captcha: false
-        adblock: false
-
-    observation: browser.dom
-    action: { action_id: browser.click }
-
 environment:
   - env_type: browser
+    id: browser_env
+    capabilities:
+      - capability_id: browser
+        profile: standard
+        viewport_width: 1280
+        viewport_height: 720
 
-capability: []
+        # Switch backend = edit only this block.
+        backend:
+          provider_id: skyvern
+          # Either set SKYVERN_API_KEY env var (provider reads it) or paste here:
+          # api_key: sk-...
+          timeout_minutes: 30
+          solve_captcha: false
+          adblock: false

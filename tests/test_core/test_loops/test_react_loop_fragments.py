@@ -122,16 +122,15 @@ class _CapturingAgent:
 
 def _drive(loop: ReactLoop, agent: _CapturingAgent, env: _FakeEnv,
            negotiated: _FakeNegotiated, completions: list[str], task: str = "t") -> Any:
-    loop.ctx = {
+    ctx = {
         "env": env,
         "llm": _FakeLLM(completions),
         "memory": _FakeMemory(),
         "act_fn": env.act,
         "negotiated_obs": negotiated,
-        "session_id": None,
         "task_id": "task-1",
     }
-    return asyncio.run(loop._execute(agent, task))
+    return asyncio.run(loop._execute(agent, task, ctx=ctx))
 
 
 # ── Tests ─────────────────────────────────────────────────────────

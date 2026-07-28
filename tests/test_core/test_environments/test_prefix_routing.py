@@ -7,6 +7,9 @@ segment without any runtime re-prefixing.
 """
 
 import asyncio
+from typing import Any
+
+import pytest
 
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
@@ -141,3 +144,52 @@ class TestActiveActionsNarrowing:
         assert len(env.get_action_space(active_actions=None)) == len(
             env.get_action_space()
         )
+
+
+class TestDuplicateCapabilityInstances:
+    """Two instances of one capability class cannot be routed apart.
+
+    ``capabilities`` is keyed by capability *instance* id, but every
+    routing key the environment exposes — action prefixes
+    (``prefix_cap_a.click``) and observation fragment keys — is scoped to
+    the capability *class*. The reverse index used to be a last-wins
+    comprehension, so a second instance composed and started (in
+    production: a whole second Chrome) and was then unreachable for every
+    action and every fragment, silently, for the entire run.
+    """
+
+    def test_colliding_capability_ids_are_rejected_at_construction(self) -> None:
+        with pytest.raises(ValueError) as exc_info:
+            make_env(EnvironmentBase, {"a#0": CapA(), "a#1": CapA()})
+
+        message = str(exc_info.value)
+        assert "prefix_cap_a" in message
+        assert "a#0" in message and "a#1" in message
+
+    def test_distinct_classes_still_compose(self) -> None:
+        env = make_env(EnvironmentBase, {"a#0": CapA(), "b#0": CapB()})
+        assert env.capability_ids() == frozenset({"prefix_cap_a", "prefix_cap_b"})
+
+    def test_collision_is_caught_before_any_capability_is_set_up(self) -> None:
+        """The deferred-injection path: capabilities arrive by setattr.
+
+        ``ConfigComposer`` setattrs ``capabilities`` when the YAML omits
+        the block, which bypasses ``__init__`` entirely. ``setup()``
+        re-checks before it starts anything, so no capability is acquired
+        and then stranded.
+        """
+        started: list[str] = []
+
+        class _RecordingCap(CapA):
+            __registry_key__ = "prefix_dup_recording"
+
+            async def setup(self, *, negotiation=None):
+                started.append(self.capability_id)
+
+        caps: dict[str, Any] = {"x#0": _RecordingCap(), "x#1": _RecordingCap()}
+        env = EnvironmentBase()
+        env.capabilities = caps
+
+        with pytest.raises(ValueError, match="prefix_dup_recording"):
+            asyncio.run(env.setup())
+        assert started == []

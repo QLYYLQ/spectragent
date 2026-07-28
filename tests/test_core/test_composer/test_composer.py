@@ -20,6 +20,8 @@ from spectragent.core.composer import (
     ComposedRun,
     ComposeError,
     ConfigComposer,
+    DuplicateInstanceIdError,
+    UnresolvedWiringError,
 )
 
 # ── Shared fixture: fresh protocol/registrar per test module ───────
@@ -87,6 +89,7 @@ class _CapBase(metaclass=CapReg.Meta):
     __abstract__ = True
     __config_annotated_only__ = True
     __wiring__: ClassVar[dict[str, Any]] = {}
+    id: Annotated[str | None, Field(description="Instance id")] = None
 
 
 @dataclass
@@ -137,7 +140,11 @@ class _AgentBaseForTest(metaclass=AgentReg.Meta):
     __wiring__: ClassVar[dict[str, Any]] = {
         "memory": "cmp_mem",  # single
         "capabilities": ("cmp_cap", ["browser"]),  # dict-form multi
+        # Declaration-only: no attribute slot anywhere on the class, so
+        # the Composer must build nothing and set nothing for it.
+        "backend": "cmp_backend",
     }
+    id: Annotated[str | None, Field(description="Instance id")] = None
 
 
 @dataclass
@@ -207,14 +214,16 @@ class TestBasicCompose:
                             "memory_id": "simple",
                             "max_messages": 3,
                         },
-                        "capabilities": {
-                            "capability_id": "browser",
-                            "viewport_width": 800,
-                            "backend": {
-                                "name": "local",
-                                "port": 9999,
+                        "capabilities": [
+                            {
+                                "capability_id": "browser",
+                                "viewport_width": 800,
+                                "backend": {
+                                    "name": "local",
+                                    "port": 9999,
+                                },
                             },
-                        },
+                        ],
                     },
                 ],
             },
@@ -233,7 +242,7 @@ class TestBasicCompose:
         assert isinstance(agent.memory, _WindowMem)
         assert agent.memory.window_size == 99
 
-    def test_dict_form_wiring_produces_dict_keyed_by_registry_key(
+    def test_dict_form_wiring_produces_dict_keyed_by_instance_id(
         self,
         composer: ConfigComposer,
     ) -> None:
@@ -241,8 +250,10 @@ class TestBasicCompose:
         agent = run.single("cmp_agent")
         caps = agent.capabilities
         assert isinstance(caps, dict)
-        assert set(caps) == {"browser"}
-        assert isinstance(caps["browser"], _BrowserCap)
+        # Instance id, not registry key — that is what lets two
+        # capabilities of the same class coexist.
+        assert set(caps) == {"browser#0"}
+        assert isinstance(caps["browser#0"], _BrowserCap)
 
     def test_nested_single_wired_field_on_capability(
         self,
@@ -250,19 +261,138 @@ class TestBasicCompose:
     ) -> None:
         run = _compose_minimal(composer, backend_port=12345)
         agent = run.single("cmp_agent")
-        backend = agent.capabilities["browser"].backend
+        backend = agent.capabilities["browser#0"].backend
         assert isinstance(backend, _LocalBackend)
         assert backend.port == 12345
 
-    def test_by_layer_populated(
+    def test_by_layer_keyed_by_instance_id(
         self,
         composer: ConfigComposer,
     ) -> None:
         run = _compose_minimal(composer)
-        assert set(run.by_layer["cmp_cap"]) == {"browser"}
-        assert set(run.by_layer["cmp_backend"]) == {"local"}
-        assert set(run.by_layer["cmp_mem"]) == {"simple"}
-        assert set(run.by_layer["cmp_agent"]) == {"single"}
+        assert set(run.by_layer["cmp_cap"]) == {"browser#0"}
+        assert set(run.by_layer["cmp_backend"]) == {"local#0"}
+        assert set(run.by_layer["cmp_mem"]) == {"simple#0"}
+        assert set(run.by_layer["cmp_agent"]) == {"single#0"}
+
+    def test_declaration_only_wiring_is_not_injected(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        """``backend`` is wired on the agent but has no slot on the class.
+
+        The old ``is_receptor`` heuristic accepted it (conscribe attaches a
+        ``WiredField`` descriptor to *every* wiring entry), which is how a
+        stray action instance ended up setattr'd onto every agent.
+        """
+        run = _compose_minimal(composer)
+        agent = run.single("cmp_agent")
+        assert "backend" not in agent.__dict__
+        # ... and no orphan instance was built for it either: the only
+        # backend in the run is the ``local`` one the capability wired.
+        assert set(run.by_layer["cmp_backend"]) == {"local#0"}
+
+    def test_populated_declaration_only_wiring_raises(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        """A *filled-in* slotless wiring block must not be dropped in silence.
+
+        Pass A skips wiring names with no receptor slot and Pass B skips
+        every name that appears in ``__wiring__`` at all, so a populated
+        block for a slotless entry fell through both passes: ``compose()``
+        returned clean, nothing was built, and the value was gone — the
+        exact silent drop the ``UnresolvedWiringError`` for non-wiring
+        orphan fields already existed to prevent.
+        """
+        entry = _agent_entry()
+        entry["backend"] = {"name": "remote", "url": "wss://never-used"}
+
+        with pytest.raises(UnresolvedWiringError) as exc_info:
+            composer.compose({"cmp_agent": [entry]})
+
+        message = str(exc_info.value)
+        assert "cmp_agent[0].backend" in message
+        assert "silently dropped" in message
+        # The dropped block really would have vanished: no _RemoteBackend
+        # is anywhere in the run, which is why this has to be an error.
+        assert "cmp_backend" in message
+
+
+class TestInstanceIdentity:
+    def test_explicit_id_becomes_the_key_and_the_attribute(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        run = composer.compose(
+            {"cmp_agent": [_agent_entry(id_="orch", max_steps=7)]},
+        )
+        assert run.ids("cmp_agent") == ["orch"]
+        agent = run.instance("cmp_agent", "orch")
+        assert agent.id == "orch"
+        assert agent.max_steps == 7
+
+    def test_ordinal_fallback_when_id_omitted(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        run = composer.compose(
+            {"cmp_agent": [_agent_entry(), _agent_entry()]},
+        )
+        assert run.ids("cmp_agent") == ["single#0", "single#1"]
+
+    def test_two_instances_of_one_class_keep_their_own_children(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        run = composer.compose(
+            {
+                "cmp_agent": [
+                    _agent_entry(id_="orch", max_steps=30, max_messages=200),
+                    _agent_entry(id_="worker", max_steps=99, max_messages=5),
+                ],
+            },
+        )
+        orch, worker = run.instances("cmp_agent")
+        assert (orch.max_steps, worker.max_steps) == (30, 99)
+        assert orch.memory is not worker.memory
+        assert orch.memory.max_messages == 200
+        assert worker.memory.max_messages == 5
+        assert orch.capabilities != worker.capabilities
+
+    def test_duplicate_id_is_a_hard_error(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        with pytest.raises(DuplicateInstanceIdError, match="dup"):
+            composer.compose(
+                {
+                    "cmp_agent": [
+                        _agent_entry(id_="dup"),
+                        _agent_entry(id_="dup"),
+                    ],
+                },
+            )
+
+    def test_id_collides_with_ordinal_fallback(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        with pytest.raises(DuplicateInstanceIdError):
+            composer.compose(
+                {
+                    "cmp_agent": [
+                        _agent_entry(),  # -> single#0
+                        _agent_entry(id_="single#0"),
+                    ],
+                },
+            )
+
+    def test_instance_lookup_by_id(self, composer: ConfigComposer) -> None:
+        run = composer.compose({"cmp_agent": [_agent_entry(id_="a")]})
+        assert run.instance("cmp_agent", "a").id == "a"
+        with pytest.raises(ComposeError, match="no instance"):
+            run.instance("cmp_agent", "missing")
 
 
 class TestErrors:
@@ -291,6 +421,31 @@ class TestErrors:
             composer.compose({"cmp_agent": [{"agent_id": "nope"}]})
 
 
+def _agent_entry(
+    *,
+    id_: str | None = None,
+    max_steps: int = 5,
+    max_messages: int = 10,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "agent_id": "single",
+        "max_steps": max_steps,
+        "memory": {"memory_id": "simple", "max_messages": max_messages},
+        "capabilities": [
+            {
+                "capability_id": "browser",
+                "backend": {"name": "local"},
+            },
+        ],
+        # ``backend`` is declaration-only on the agent and is deliberately
+        # *omitted*: the schema makes it optional, and populating it is a
+        # hard error (see ``test_populated_declaration_only_wiring_raises``).
+    }
+    if id_ is not None:
+        entry["id"] = id_
+    return entry
+
+
 def _compose_minimal(
     composer: ConfigComposer,
     *,
@@ -309,10 +464,12 @@ def _compose_minimal(
                 {
                     "agent_id": "single",
                     "memory": mem_cfg,
-                    "capabilities": {
-                        "capability_id": "browser",
-                        "backend": {"name": "local", "port": backend_port},
-                    },
+                    "capabilities": [
+                        {
+                            "capability_id": "browser",
+                            "backend": {"name": "local", "port": backend_port},
+                        },
+                    ],
                 },
             ],
         },

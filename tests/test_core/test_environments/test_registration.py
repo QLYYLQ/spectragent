@@ -21,7 +21,7 @@ class TestEnvironmentRegistration:
         class TypeEnv(EnvironmentBase):
             __registry_key__ = "test_type_env"
 
-        instance = TypeEnv()
-        instance.capabilities = {}
+        instance = TypeEnv(capabilities={})
         assert instance.env_type == "test_type_env"
+        assert instance.id is None
         EnvironmentRegistrar.unregister("test_type_env")

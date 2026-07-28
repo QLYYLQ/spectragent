@@ -39,13 +39,26 @@ class BaseAction(Protocol):
         params: dict[str, Any],
         *,
         capability: Any,
-        session_id: str,
     ) -> ActionResult:
-        """Execute one action instance against the injected capability.
+        """Execute one action instance against its owning capability.
 
-        The capability is injected as a whole to avoid designing a
-        per-action "dependency bag". Actions are conceptually internals
-        of their capability, so they may touch its private state
-        (``_scopes``, ``_selector_maps``, ``_cdp``, etc.).
+        The capability is injected whole rather than as a per-action
+        "dependency bag": an action belongs to exactly one capability,
+        the two ship together, and the capability is therefore free to
+        offer its actions whatever surface it likes.
+
+        **What that surface is, is the capability's business.** This
+        Protocol prescribes no shape for it and names no attribute of
+        any particular domain. Nothing outside a capability's own
+        package should read it.
+
+        Note there is no per-call routing argument. Which sub-context an
+        action lands in — tab, container, window, device — is capability
+        *state*, selected by an action of that capability (``switch_tab``
+        and friends) and remembered until changed. A scalar handle
+        threaded through this signature would be a single global slot
+        that only one domain could ever fill; a capability that truly
+        needs per-call routing takes an opaque mapping keyed by
+        ``capability_id``, never a bare id.
         """
         ...

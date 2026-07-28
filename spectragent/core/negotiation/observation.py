@@ -18,7 +18,14 @@ from spectragent.schemas.observation._registrar import ObservationRegistrar
 
 
 class IncompatibleFragmentError(Exception):
-    """Raised when required fragments cannot be satisfied by the environment."""
+    """Raised when required fragments cannot be satisfied by the environment.
+
+    Reports the *complete* missing set, matching
+    :class:`~spectragent.core.negotiation.action.IncompatibleActionError`.
+    Raising on the first miss made the user fix-and-rerun once per missing
+    fragment, and — because the scan iterated an unordered ``set`` — the
+    one they were told about varied between processes.
+    """
 
     def __init__(self, required: set[str], provided: set[str]) -> None:
         missing = required - provided
@@ -31,6 +38,29 @@ class IncompatibleFragmentError(Exception):
         self.missing = missing
         self.provided = provided
         self.required = required
+
+
+class DuplicateFragmentNameError(Exception):
+    """Raised when two active fragments collapse to the same local name.
+
+    Fragment keys are fully qualified (``source.local_id``) but the
+    generated observation model exposes only the local segment, so
+    ``swe.terminal`` and ``docker.terminal`` would both want ``obs.terminal``.
+    Detected here, at negotiation time, rather than on the first
+    ``env.observe()`` call — a config error should surface before the run
+    starts, not at step 0.
+    """
+
+    def __init__(self, collisions: dict[str, list[str]]) -> None:
+        # Sort the payload too, not just the message — callers assert on
+        # ``.collisions`` and frozenset iteration order is not stable.
+        collisions = {name: sorted(keys) for name, keys in sorted(collisions.items())}
+        detail = "; ".join(f"{name!r} ← {keys}" for name, keys in collisions.items())
+        super().__init__(
+            f"Active observation fragments collapse to the same local name: {detail}. "
+            f"Cross-source local-id collisions are not supported."
+        )
+        self.collisions = collisions
 
 
 @dataclass(frozen=True)
@@ -66,8 +96,10 @@ def _observation_rules(
 
     env_sourced: set[str] = set()
     loop_sourced: set[str] = set()
+    missing: set[str] = set()
 
-    for frag_key in all_requested:
+    # Sorted so the diagnosis is identical between processes.
+    for frag_key in sorted(all_requested):
         frag_cls = ObservationRegistrar.get(frag_key)
         source = getattr(frag_cls, "__source__", "env")
 
@@ -76,12 +108,26 @@ def _observation_rules(
         elif frag_key in env_provides:
             env_sourced.add(frag_key)
         elif frag_key in all_required:
-            raise IncompatibleFragmentError(
-                required={frag_key},
-                provided=env_provides,
-            )
+            missing.add(frag_key)
+
+    if missing:
+        raise IncompatibleFragmentError(
+            required=missing,
+            provided=env_provides,
+        )
 
     active = frozenset(env_sourced | loop_sourced)
+
+    # The generated model exposes fragments under their local name only,
+    # so two sources claiming one local id cannot coexist. Fail here
+    # rather than inside build_observation_model on the first observe().
+    by_local: dict[str, list[str]] = {}
+    for frag_key in active:
+        by_local.setdefault(frag_key.rsplit(".", 1)[-1], []).append(frag_key)
+    collisions = {name: keys for name, keys in by_local.items() if len(keys) > 1}
+    if collisions:
+        raise DuplicateFragmentNameError(collisions)
+
     return ObservationNegotiationResult(
         active_fragments=active,
         env_sourced=frozenset(env_sourced),
