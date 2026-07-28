@@ -1,5 +1,15 @@
 """
 Utilities for creating optimized Pydantic schemas for LLM usage.
+
+Two policies live here and they are deliberately separate:
+
+* **Flattening** — inline every ``$ref``/``$defs`` and drop metadata the models
+  do not need. Every provider wants this.
+* **Strict-mode compatibility** — force ``required`` to list *all* properties.
+  Only OpenAI-style ``"strict": true`` structured outputs want this, so it is
+  opt-in via ``strict=True``. Applying it unconditionally encoded one agent's
+  output shape as global policy for every caller and silently made genuinely
+  optional fields mandatory.
 """
 
 from typing import Any
@@ -12,20 +22,25 @@ class SchemaOptimizer:
     def create_optimized_json_schema(
         model: type[BaseModel],
         *,
+        strict: bool = False,
         remove_min_items: bool = False,
         remove_defaults: bool = False,
     ) -> dict[str, Any]:
         """
         Create the most optimized schema by flattening all $ref/$defs while preserving
-        FULL descriptions and ALL action definitions. Also ensures OpenAI strict mode compatibility.
+        FULL descriptions and ALL action definitions.
 
         Args:
                 model: The Pydantic model to optimize
+                strict: If True, rewrite every object's ``required`` to list all of its
+                        properties, as OpenAI's ``"strict": true`` structured outputs
+                        demand. Leave False for tool-use / prompt-JSON / Gemini paths,
+                        which honour the model's own optionality.
                 remove_min_items: If True, remove minItems from the schema
                 remove_defaults: If True, remove default values from the schema
 
         Returns:
-                Optimized schema with all $refs resolved and strict mode compatibility
+                Optimized schema with all $refs resolved
         """
         # Generate original schema
         original_schema = model.model_json_schema()
@@ -43,8 +58,8 @@ class SchemaOptimizer:
                 optimized: dict[str, Any] = {}
                 flattened_ref: dict[str, Any] | None = None
 
-                # Skip unnecessary fields AND $defs (we'll inline everything)
-                skip_fields = ["additionalProperties", "$defs"]
+                # Inline $defs rather than carrying them along
+                skip_fields = ["$defs"]
 
                 for key, value in obj.items():
                     if key in skip_fields:
@@ -76,6 +91,14 @@ class SchemaOptimizer:
                             # Get the referenced definition and flatten it
                             referenced_def = defs_lookup[ref_path]
                             flattened_ref = optimize_schema(referenced_def, defs_lookup)
+
+                    # Preserve typed-map value schemas (``dict[str, X]`` compiles to
+                    # ``additionalProperties: {...}``). Dropping it and then forcing
+                    # ``False`` turned every typed map into "no keys allowed".
+                    # Bare booleans are re-derived by _apply_object_policy below.
+                    elif key == "additionalProperties":
+                        if isinstance(value, dict):
+                            optimized[key] = optimize_schema(value, defs_lookup)
 
                     # Skip minItems/min_items and default if requested (check BEFORE processing)
                     elif key in ("minItems", "min_items") and remove_min_items:
@@ -137,13 +160,9 @@ class SchemaOptimizer:
                             result[key] = value
 
                     return result
-                else:
-                    # No $ref, just return the optimized object
-                    # CRITICAL: Add additionalProperties: false to ALL objects for OpenAI strict mode
-                    if optimized.get("type") == "object":
-                        optimized["additionalProperties"] = False
 
-                    return optimized
+                # No $ref, just return the optimized object
+                return optimized
 
             elif isinstance(obj, list):
                 return [
@@ -159,25 +178,7 @@ class SchemaOptimizer:
 
         optimized_schema: dict[str, Any] = optimized_result
 
-        # Additional pass to ensure ALL objects have additionalProperties: false
-        def ensure_additional_properties_false(obj: Any) -> None:
-            """Ensure all objects have additionalProperties: false"""
-            if isinstance(obj, dict):
-                # If it's an object type, ensure additionalProperties is false
-                if obj.get("type") == "object":
-                    obj["additionalProperties"] = False
-
-                # Recursively apply to all values
-                for value in obj.values():
-                    if isinstance(value, (dict, list)):
-                        ensure_additional_properties_false(value)
-            elif isinstance(obj, list):
-                for item in obj:
-                    if isinstance(item, (dict, list)):
-                        ensure_additional_properties_false(item)
-
-        ensure_additional_properties_false(optimized_schema)
-        SchemaOptimizer._make_strict_compatible(optimized_schema)
+        SchemaOptimizer._apply_object_policy(optimized_schema, strict=strict)
 
         # Final pass to remove minItems/min_items and default values if requested
         if remove_min_items or remove_defaults:
@@ -205,23 +206,73 @@ class SchemaOptimizer:
         return optimized_schema
 
     @staticmethod
-    def _make_strict_compatible(schema: dict[str, Any] | list[Any]) -> None:
-        """Ensure all properties are required for OpenAI strict mode"""
+    def _apply_object_policy(schema: dict[str, Any] | list[Any], *, strict: bool) -> None:
+        """Normalise every object node in place.
+
+        Objects that declare ``properties`` come from a closed Pydantic model, so
+        ``additionalProperties: false`` is always right for them. Objects *without*
+        ``properties`` are free-form maps (``dict[str, Any]``) or typed maps
+        (``dict[str, int]``) — forcing ``additionalProperties: false`` on those is
+        what made ``list[dict[str, Any]]`` compile to a schema whose only legal
+        value is ``[{}]``, silently discarding every tool call's arguments.
+
+        ``required`` is only rewritten under *strict*, where the API mandates that
+        every property be listed.
+        """
         if isinstance(schema, dict):
-            # First recursively apply to nested objects
+            # Recurse first so nested objects are handled regardless of this level.
             for key, value in schema.items():
                 if isinstance(value, (dict, list)) and key != "required":
-                    SchemaOptimizer._make_strict_compatible(value)
+                    SchemaOptimizer._apply_object_policy(value, strict=strict)
 
-            # Then update required for this level
-            if "properties" in schema and "type" in schema and schema["type"] == "object":
-                # Add all properties to required array
-                all_props = list(schema["properties"].keys())
-                schema["required"] = all_props  # Set all properties as required
+            if schema.get("type") == "object" and "properties" in schema:
+                schema["additionalProperties"] = False
+                if strict:
+                    schema["required"] = list(schema["properties"].keys())
 
         elif isinstance(schema, list):
             for item in schema:
-                SchemaOptimizer._make_strict_compatible(item)
+                SchemaOptimizer._apply_object_policy(item, strict=strict)
+
+    @staticmethod
+    def is_strict_compatible(schema: dict[str, Any] | list[Any]) -> bool:
+        """Whether *schema* can legally ship under OpenAI's ``"strict": true``.
+
+        The strict dialect requires every object node to declare ``properties``
+        and to close itself with ``additionalProperties: false``. Two shapes
+        cannot comply, and both are produced by ordinary Pydantic models:
+
+        * **open maps** — ``dict[str, Any]`` compiles to an object node with no
+          ``properties`` at all (``BrowserUseOutput.action`` is one).
+        * **typed maps** — ``dict[str, int]`` compiles to
+          ``additionalProperties: {...}``, which strict forbids outright.
+
+        Rewriting either to satisfy strict is what silently discarded every
+        tool call's arguments, so the schema stays honest and the *request*
+        gives up ``strict`` instead. Callers pair this with the model-family
+        capability: strict is emitted only when the model supports it **and**
+        the compiled schema can express it.
+        """
+        if isinstance(schema, dict):
+            if schema.get("type") == "object":
+                if "properties" not in schema:
+                    return False
+                if isinstance(schema.get("additionalProperties"), dict):
+                    return False
+            return all(
+                SchemaOptimizer.is_strict_compatible(value)
+                for key, value in schema.items()
+                if isinstance(value, (dict, list)) and key != "required"
+            )
+
+        if isinstance(schema, list):
+            return all(
+                SchemaOptimizer.is_strict_compatible(item)
+                for item in schema
+                if isinstance(item, (dict, list))
+            )
+
+        return True
 
     @staticmethod
     def create_gemini_optimized_schema(model: type[BaseModel]) -> dict[str, Any]:
@@ -235,4 +286,6 @@ class SchemaOptimizer:
         Returns:
                 Optimized schema suitable for Gemini structured output
         """
-        return SchemaOptimizer.create_optimized_json_schema(model)
+        # Gemini has no strict mode — keep the model's own `required`, which is
+        # exactly what this method's name promises.
+        return SchemaOptimizer.create_optimized_json_schema(model, strict=False)

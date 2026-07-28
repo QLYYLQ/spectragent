@@ -10,10 +10,13 @@ from spectragent.core.llm.messages import (
     ContentPartImageParam,
     ContentPartRefusalParam,
     ContentPartTextParam,
+    Function,
     SystemMessage,
     ToolCall,
+    ToolMessage,
     UserMessage,
 )
+from spectragent.core.llm.tools import ToolDefinition
 
 
 class AWSBedrockMessageSerializer:
@@ -251,8 +254,62 @@ class AWSBedrockMessageSerializer:
                 "content": content_blocks,
             }
 
+        elif isinstance(message, ToolMessage):
+            return {
+                "role": "user",
+                "content": [AWSBedrockMessageSerializer._serialize_tool_result(message)],
+            }
+
         else:
             raise ValueError(f"Unknown message type: {type(message)}")
+
+    @staticmethod
+    def _serialize_tool_result(message: ToolMessage) -> dict[str, Any]:
+        """Convert a tool result to a Bedrock Converse ``toolResult`` block.
+
+        Bedrock has no ``tool`` role — results ride on a user turn, correlated
+        by ``toolUseId``, and carry an explicit success/error status.
+        """
+        return {
+            "toolResult": {
+                "toolUseId": message.tool_call_id,
+                "content": AWSBedrockMessageSerializer._serialize_user_content(message.content),
+                "status": "error" if message.is_error else "success",
+            }
+        }
+
+    @staticmethod
+    def serialize_tools(tools: Sequence[ToolDefinition]) -> list[dict[str, Any]]:
+        """Convert tool declarations to Bedrock Converse ``toolSpec`` entries."""
+        return [
+            {
+                "toolSpec": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": {"json": tool.parameters},
+                }
+            }
+            for tool in tools
+        ]
+
+    @staticmethod
+    def parse_tool_calls(content_blocks: Sequence[dict[str, Any]]) -> list[ToolCall]:
+        """Read ``toolUse`` blocks off a Bedrock Converse response."""
+        calls: list[ToolCall] = []
+        for block in content_blocks:
+            tool_use = block.get("toolUse")
+            if not tool_use:
+                continue
+            calls.append(
+                ToolCall(
+                    id=tool_use.get("toolUseId", ""),
+                    function=Function(
+                        name=tool_use.get("name", ""),
+                        arguments=json.dumps(tool_use.get("input", {})),
+                    ),
+                )
+            )
+        return calls
 
     @staticmethod
     def serialize_messages(
@@ -268,15 +325,30 @@ class AWSBedrockMessageSerializer:
         bedrock_messages: list[dict[str, Any]] = []
         system_message: list[dict[str, Any]] | None = None
 
-        for message in messages:
+        index = 0
+        while index < len(messages):
+            message = messages[index]
             if isinstance(message, SystemMessage):
                 # Extract system message content
                 system_message = AWSBedrockMessageSerializer._serialize_system_content(
                     message.content
                 )
+                index += 1
+            elif isinstance(message, ToolMessage):
+                # Bedrock wants every toolResult answering one assistant turn in
+                # a single user turn, so coalesce runs of parallel results.
+                run: list[dict[str, Any]] = []
+                while index < len(messages) and isinstance(messages[index], ToolMessage):
+                    run.append(
+                        AWSBedrockMessageSerializer._serialize_tool_result(
+                            messages[index]  # type: ignore[arg-type]
+                        )
+                    )
+                    index += 1
+                bedrock_messages.append({"role": "user", "content": run})
             else:
                 # Serialize and add to regular messages
-                serialized = AWSBedrockMessageSerializer.serialize(message)
-                bedrock_messages.append(serialized)
+                bedrock_messages.append(AWSBedrockMessageSerializer.serialize(message))
+                index += 1
 
         return bedrock_messages, system_message

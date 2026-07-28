@@ -18,6 +18,7 @@ from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.providers.openai_base import OpenAICompatBase
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_responses import ResponsesAPIMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,10 @@ RESPONSES_API_ONLY_MODELS: list[str] = [
     "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.1-codex-max",
     "gpt-5-codex", "codex-mini-latest", "computer-use-preview",
 ]
+
+# Accepted spellings for the tri-state `use_responses_api` YAML field.
+_RESPONSES_API_TRUE = frozenset({"true", "1", "yes", "on"})
+_RESPONSES_API_FALSE = frozenset({"false", "0", "no", "off"})
 
 
 @dataclass
@@ -78,8 +83,26 @@ class ChatAzureOpenAI(OpenAICompatBase):
         return AsyncAzureOpenAIClient(**params)
 
     def _should_use_responses_api(self) -> bool:
-        if isinstance(self.use_responses_api, bool):
-            return self.use_responses_api
+        """Resolve the tri-state ``use_responses_api`` field.
+
+        The field is typed ``str`` (it comes from YAML), so the previous
+        ``isinstance(..., bool)`` test never fired and ``"true"``/``"false"``
+        were both silently treated as ``"auto"``.
+        """
+        mode = self.use_responses_api
+        if isinstance(mode, bool):
+            return mode
+        normalized = str(mode).strip().lower()
+        if normalized in _RESPONSES_API_TRUE:
+            return True
+        if normalized in _RESPONSES_API_FALSE:
+            return False
+        if normalized != "auto":
+            raise ValueError(
+                f"Invalid use_responses_api={mode!r}. "
+                f"Expected 'auto', one of {sorted(_RESPONSES_API_TRUE)}, "
+                f"or one of {sorted(_RESPONSES_API_FALSE)}."
+            )
         model_lower = str(self.model).lower()
         return any(m.lower() in model_lower for m in RESPONSES_API_ONLY_MODELS)
 
@@ -109,13 +132,15 @@ class ChatAzureOpenAI(OpenAICompatBase):
                     stop_reason=response.status if response.status else None,
                 )
             else:
+                strict = self._use_strict_schema(output_format)
                 json_schema = SchemaOptimizer.create_optimized_json_schema(
                     output_format,
+                    strict=strict,
                     remove_min_items=self.remove_min_items_from_schema,
                     remove_defaults=self.remove_defaults_from_schema,
                 )
                 model_params["text"] = {
-                    "format": {"type": "json_schema", "name": "agent_output", "strict": True, "schema": json_schema}
+                    "format": {"type": "json_schema", "name": "agent_output", "strict": strict, "schema": json_schema}
                 }
                 if self.dont_force_structured_output:
                     model_params.pop("text", None)
@@ -137,19 +162,57 @@ class ChatAzureOpenAI(OpenAICompatBase):
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
 
+    @property
+    def supports_tools(self) -> bool:
+        """False on the Responses API path — see :meth:`_ainvoke_responses_api`."""
+        return not self._should_use_responses_api()
+
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         if self._should_use_responses_api():
+            # The Responses API models tool traffic as `function_call` /
+            # `function_call_output` *items*, not chat messages, which
+            # ResponsesAPIMessageSerializer does not emit. Flattening them into
+            # text would break call/result correlation invisibly.
+            self.reject_unsupported_tools(
+                tools,
+                reason=(
+                    f"model={self.model!r} is routed to the Responses API, whose "
+                    f"tool traffic uses function_call/function_call_output items "
+                    f"rather than chat messages. Set use_responses_api='false' to "
+                    f"drive tools through chat completions."
+                ),
+            )
             return await self._ainvoke_responses_api(messages, output_format, **kwargs)
-        return await self._standard_ainvoke(messages, output_format)
+        return await self._standard_ainvoke(
+            messages, output_format, tools=tools, tool_choice=tool_choice
+        )

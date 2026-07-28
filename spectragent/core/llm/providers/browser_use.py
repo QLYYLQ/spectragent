@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.messages import BaseMessage
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
 
 T = TypeVar("T", bound=BaseModel)
@@ -32,6 +33,7 @@ class ChatBrowserUse(ChatModelBase):
         max_retries: Annotated[int, Field(description="Maximum retry attempts")] = 5,
         retry_base_delay: Annotated[float, Field(description="Base delay for exponential backoff")] = 1.0,
         retry_max_delay: Annotated[float, Field(description="Maximum delay between retries")] = 60.0,
+        request_type: Annotated[str, Field(description="Browser-use API request_type tag")] = "browser_agent",
         **kwargs,
     ):
         valid_models = ["bu-latest", "bu-1-0", "bu-2-0"]
@@ -47,6 +49,7 @@ class ChatBrowserUse(ChatModelBase):
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self.retry_max_delay = retry_max_delay
+        self.request_type = request_type
 
         if not self.api_key:
             raise ValueError(
@@ -65,25 +68,39 @@ class ChatBrowserUse(ChatModelBase):
     @overload
     async def ainvoke(
         self, messages: Sequence[BaseMessage], output_format: None = None,
-        request_type: str = "browser_agent", **kwargs: Any,
+        request_type: str | None = None, **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
         self, messages: Sequence[BaseMessage], output_format: type[T],
-        request_type: str = "browser_agent", **kwargs: Any,
+        request_type: str | None = None, **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
+
+    @property
+    def supports_tools(self) -> bool:
+        """The cloud endpoint exposes a fixed browser-agent contract, not tools."""
+        return False
 
     async def ainvoke(
         self, messages: Sequence[BaseMessage], output_format: type[T] | None = None,
-        request_type: str = "browser_agent", **kwargs: Any,
+        request_type: str | None = None, *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
+        # The Browser Use cloud endpoint answers a fixed browser-agent request
+        # shape; it has no field for caller-supplied tool declarations.
+        self.reject_unsupported_tools(tools)
+
         session_id = kwargs.get("session_id")
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [self._serialize_message(msg) for msg in messages],
             "fast": self.fast,
-            "request_type": request_type,
+            # Configurable: previously hardwired to "browser_agent" with no way to
+            # override it from config, so every caller was tagged as a browser run.
+            "request_type": request_type if request_type is not None else self.request_type,
         }
         if session_id:
             payload["session_id"] = session_id
@@ -119,14 +136,12 @@ class ChatBrowserUse(ChatModelBase):
             raise RuntimeError("Retry loop completed without return or exception")
 
         if output_format is not None:
-            completion_data = result["completion"]
-            if isinstance(completion_data, dict) and "action" in completion_data:
-                actions = completion_data["action"]
-                if actions and isinstance(actions[0], dict):
-                    from typing import get_args
-                    action_model_type = get_args(output_format.model_fields["action"].annotation)[0]
-                    completion_data["action"] = [action_model_type.model_validate(d) for d in actions]
-            completion = output_format.model_validate(completion_data)
+            # Pydantic already coerces nested models, including discriminated
+            # unions inside list fields. The old pre-pass hardcoded the field name
+            # "action" and validated *every* element against `get_args(...)[0]` —
+            # i.e. an arbitrary member of the union — so heterogeneous action lists
+            # were coerced to the wrong type.
+            completion = output_format.model_validate(result["completion"])
         else:
             completion = result["completion"]
 

@@ -14,6 +14,7 @@ from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
     SystemMessage,
+    ToolMessage,
     UserMessage,
 )
 
@@ -145,6 +146,16 @@ class OCIRawMessageSerializer:
                             contents.append(text_content)
                     if contents:
                         oci_message.content = contents
+            elif isinstance(message, ToolMessage):
+                raise ValueError(
+                    "ChatOCI cannot represent tool results: this provider drives the "
+                    "OCI Generative AI raw chat requests, which carry no tool "
+                    "vocabulary here, and its structured output is prompt-based. "
+                    "Rendering the result as a user turn would let the model answer "
+                    "from a fabricated conversation. Use a provider whose "
+                    "`supports_tools` is True."
+                )
+
             else:
                 # Fallback for any message format issues
                 oci_message.role = "USER"
@@ -224,6 +235,11 @@ class OCIRawMessageSerializer:
                     content = " ".join(text_parts)
 
                 conversation_parts.append(f"Assistant: {content}")
+            elif isinstance(message, ToolMessage):
+                raise ValueError(
+                    "ChatOCI cannot represent tool results — see "
+                    "OCIRawMessageSerializer.serialize_messages."
+                )
             else:
                 # Fallback
                 conversation_parts.append(f"User: {str(message)}")

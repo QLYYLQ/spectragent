@@ -4,6 +4,7 @@ This implementation is based on the OpenAI types, while removing all the parts t
 
 # region - Content parts
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -103,9 +104,35 @@ class Function(BaseModel):
         return f"Function(name={repr(self.name)}, arguments={args_repr})"
 
 
+def synthesize_tool_call_id(name: str) -> str:
+    """Mint a conversation-unique id for a provider that returns none.
+
+    Gemini and Ollama emit function calls with no id at all, but the whole
+    :class:`ToolCall` / :class:`ToolMessage` pairing is keyed by one, so it has
+    to be invented. It must be unique across the *conversation*, not merely
+    within one response: an agent that calls ``search`` on every step would
+    otherwise reuse the same id each turn, and every id-keyed consumer — memory
+    pairing repair above all — would silently mismatch groups.
+
+    That rules out anything derived from the call itself (name, position,
+    arguments): two identical calls in two turns are genuinely indistinguishable
+    by content. Random entropy is the only source of cross-turn uniqueness, and
+    it is free of the module-level counter that would otherwise be global state.
+    The tool name is kept as a prefix purely so traces stay readable; nothing
+    parses it, and the id is never sent to these providers (Gemini correlates by
+    name, Ollama sends no id at all).
+    """
+    return f"{name}_{uuid4().hex[:16]}"
+
+
 class ToolCall(BaseModel):
     id: str
-    """The ID of the tool call."""
+    """The ID of the tool call.
+
+    Unique within a conversation. Providers that supply their own id (OpenAI,
+    Anthropic, Bedrock, Mistral) already guarantee that; for the ones that do
+    not, use :func:`synthesize_tool_call_id`.
+    """
     function: Function
     """The function that the model called."""
     type: Literal["function"] = "function"
@@ -125,7 +152,7 @@ class ToolCall(BaseModel):
 class _MessageBase(BaseModel):
     """Base class for all message types"""
 
-    role: Literal["user", "system", "assistant"]
+    role: Literal["user", "system", "assistant", "tool"]
 
     cache: bool = False
     """Whether to cache this message. This is only applicable when using Anthropic models.
@@ -233,6 +260,74 @@ class AssistantMessage(_MessageBase):
         return f"AssistantMessage(content={repr(self.text)})"
 
 
-BaseMessage = UserMessage | SystemMessage | AssistantMessage
+class ToolMessage(_MessageBase):
+    """The inbound half of a function call — the result of executing a tool.
+
+    Pairs with :attr:`AssistantMessage.tool_calls` via ``tool_call_id``. Every
+    provider that supports function calling correlates the two the same way,
+    only the wire spelling differs:
+
+    ==============  ====================================================
+    OpenAI          ``{"role": "tool", "tool_call_id": ..., "content": ...}``
+    Anthropic       a *user* turn containing a ``tool_result`` block keyed
+                    by ``tool_use_id``, with an ``is_error`` flag
+    Gemini          a ``function_response`` part keyed by tool **name**
+    Bedrock         a *user* turn containing ``toolResult`` keyed by
+                    ``toolUseId``, with ``status: success|error``
+    Ollama          ``{"role": "tool", "content": ...}``
+    ==============  ====================================================
+
+    The fields below are the union of what those five need, and nothing more.
+    """
+
+    role: Literal["tool"] = "tool"
+    """The role of the messages author, in this case `tool`."""
+
+    tool_call_id: str
+    """The id of the :class:`ToolCall` this message answers."""
+
+    content: str | list[ContentPartTextParam | ContentPartImageParam]
+    """The result of the tool call.
+
+    Images are permitted because Anthropic, OpenAI and Bedrock all accept image
+    blocks inside a tool result (the shape computer-use / screenshot tools need).
+    """
+
+    name: str | None = None
+    """The tool's name.
+
+    Optional on the id-correlated APIs, which is why it is not required here.
+    Gemini has *no* id correlation and keys its ``function_response`` by name —
+    :class:`GoogleMessageSerializer` recovers it from the matching
+    :class:`ToolCall` when it is absent, and raises when it cannot.
+    """
+
+    is_error: bool = False
+    """Whether the tool call failed.
+
+    Anthropic (``is_error``) and Bedrock (``status``) carry this on the wire.
+    OpenAI has no field for it, so it is folded into the text there. Tool
+    failures are part of the trajectory for tau-bench-style evaluation, so
+    they must survive as data rather than as an unmarked string.
+    """
+
+    @property
+    def text(self) -> str:
+        """The textual part of the result, mirroring the other message types."""
+        if isinstance(self.content, str):
+            return self.content
+        return "\n".join(part.text for part in self.content if part.type == "text")
+
+    def __str__(self) -> str:
+        return f"ToolMessage(tool_call_id={self.tool_call_id}, content={_truncate(self.text)})"
+
+    def __repr__(self) -> str:
+        return (
+            f"ToolMessage(tool_call_id={self.tool_call_id!r}, name={self.name!r}, "
+            f"is_error={self.is_error!r}, content={_truncate(repr(self.text), 50)})"
+        )
+
+
+BaseMessage = UserMessage | SystemMessage | AssistantMessage | ToolMessage
 
 # endregion

@@ -134,9 +134,3 @@ def _ensure_utc(value: Any) -> datetime:
 UTCDatetime = Annotated[datetime, BeforeValidator(_ensure_utc)]
 NormalizedEnvironmentStatus = Annotated[EnvironmentStatus, BeforeValidator(_normalize_env_status)]
 NormalizedAgentDoneStatus = Annotated[AgentDoneStatus, BeforeValidator(_normalize_agent_done)]
-
-# Deprecated aliases for backward compatibility
-AgentStatus = EnvironmentStatus
-NormalizedAgentStatus = NormalizedEnvironmentStatus
-_normalize_status = _normalize_env_status
-_STATUS_ALIASES = _ENV_STATUS_ALIASES

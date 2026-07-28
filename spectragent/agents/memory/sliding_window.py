@@ -9,6 +9,7 @@ from typing import Annotated, ClassVar
 from pydantic import Field as PydanticField
 
 from spectragent.agents.memory._registrar import MemoryBase
+from spectragent.agents.memory._tool_pairing import drop_broken_tool_groups
 from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.llm.messages import BaseMessage, SystemMessage
 
@@ -19,6 +20,11 @@ class SlidingWindowMemory(MemoryBase):
 
     When *keep_system* is ``True`` (default), system messages are always
     included at the front regardless of window limits.
+
+    The window boundary can land in the middle of a tool-call group, so the
+    context view is repaired by :func:`drop_broken_tool_groups` before it is
+    returned — that is what makes the advertised ``tool_call`` protocol true
+    rather than aspirational.
     """
 
     __registry_key__ = "sliding_window"
@@ -53,10 +59,19 @@ class SlidingWindowMemory(MemoryBase):
         if self.keep_system:
             system_msgs = [m for m in self._messages if isinstance(m, SystemMessage)]
             non_system = [m for m in self._messages if not isinstance(m, SystemMessage)]
-            windowed = non_system[-self.window_size :] if len(non_system) > self.window_size else non_system
-            return system_msgs + windowed
+            windowed = (
+                non_system[-self.window_size :]
+                if len(non_system) > self.window_size
+                else non_system
+            )
+            return system_msgs + drop_broken_tool_groups(windowed)
 
-        return self._messages[-self.window_size :] if len(self._messages) > self.window_size else list(self._messages)
+        selected = (
+            self._messages[-self.window_size :]
+            if len(self._messages) > self.window_size
+            else list(self._messages)
+        )
+        return drop_broken_tool_groups(selected)
 
     def clear(self) -> None:
         self._messages.clear()

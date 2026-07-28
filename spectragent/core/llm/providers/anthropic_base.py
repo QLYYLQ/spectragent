@@ -8,7 +8,7 @@
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, TypeVar, overload
+from typing import Annotated, Any, ClassVar, TypeVar, overload
 
 import httpx
 from anthropic import (
@@ -31,6 +31,7 @@ from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitEr
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.anthropic_format import AnthropicMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 T = TypeVar("T", bound=BaseModel)
@@ -51,7 +52,16 @@ class AnthropicCompatBase(ChatModelBase):
     temperature: Annotated[float | None, Field(description="Sampling temperature")] = None
     top_p: Annotated[float | None, Field(description="Nucleus sampling top-p")] = None
     top_k: Annotated[int | None, Field(description="Top-k sampling parameter")] = None
-    seed: Annotated[int | None, Field(description="Random seed for determinism")] = None
+    seed: Annotated[
+        int | None,
+        Field(
+            description=(
+                "UNSUPPORTED by the Anthropic Messages API — must be left as None. "
+                "Setting it raises at construction rather than silently giving you "
+                "non-reproducible runs."
+            )
+        ),
+    ] = None
     stop_sequences: Annotated[list[str] | None, Field(description="Stop sequences")] = None
 
     # --- Structured output ---
@@ -79,6 +89,19 @@ class AnthropicCompatBase(ChatModelBase):
     default_query: Mapping[str, object] | None = None
     http_client: httpx.AsyncClient | None = None
 
+    def __post_init__(self) -> None:
+        # `AsyncMessages.create` has no `seed` parameter and no `**kwargs`, so
+        # forwarding it raised TypeError on *every* call — which the catch-all
+        # below then repackaged as an opaque ModelProviderError. Anthropic has no
+        # determinism seed at all, so silently dropping it is worse than failing:
+        # it would hand a reproducibility researcher a false guarantee.
+        if self.seed is not None:
+            raise ValueError(
+                f"The Anthropic Messages API has no `seed` parameter, so "
+                f"seed={self.seed!r} cannot be honoured. Remove `seed` from this "
+                f"LLM's config (model={self.model!r})."
+            )
+
     @property
     def model_type(self) -> str:
         return "anthropic"
@@ -91,6 +114,26 @@ class AnthropicCompatBase(ChatModelBase):
     def provider(self) -> str:
         return ""
 
+    # ``model_family`` and ``_use_strict_schema`` come from ``ChatModelBase``.
+
+    #: ``tool_choice`` spelled the Anthropic way.
+    _TOOL_CHOICE: ClassVar[dict[str, dict[str, str]]] = {
+        "auto": {"type": "auto"},
+        "required": {"type": "any"},
+        "none": {"type": "none"},
+    }
+
+    def _tool_kwargs(
+        self, tools: Sequence[ToolDefinition] | None, tool_choice: ToolChoice
+    ) -> dict[str, Any]:
+        """Request kwargs advertising *tools*, or empty when there are none."""
+        if not tools:
+            return {}
+        return {
+            "tools": AnthropicMessageSerializer.serialize_tools(tools),
+            "tool_choice": self._TOOL_CHOICE[tool_choice],
+        }
+
     def _get_invoke_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if self.temperature is not None:
@@ -101,8 +144,6 @@ class AnthropicCompatBase(ChatModelBase):
             params["top_p"] = self.top_p
         if self.top_k is not None:
             params["top_k"] = self.top_k
-        if self.seed is not None:
-            params["seed"] = self.seed
         if self.stop_sequences is not None:
             params["stop_sequences"] = self.stop_sequences
         return params
@@ -123,18 +164,55 @@ class AnthropicCompatBase(ChatModelBase):
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         anthropic_messages, system_prompt = AnthropicMessageSerializer.serialize_messages(messages)
+
+        # Checked before the try: this is a caller contract error, and the
+        # catch-all below would otherwise launder it into an opaque
+        # ModelProviderError that points at the transport rather than the call.
+        if tools and output_format is not None:
+            self.reject_unsupported_tools(
+                tools,
+                reason=(
+                    "output_config.format constrains the whole response to the "
+                    "output schema, leaving the model no way to emit a tool_use "
+                    "block. Pass tools without output_format."
+                )
+                if self.use_native_structured_output
+                else (
+                    "its forced tool-use fallback (use_native_structured_output="
+                    "False) reserves tool_choice for the output schema. Pass "
+                    "tools without output_format."
+                ),
+            )
 
         try:
             if output_format is None:
@@ -142,6 +220,7 @@ class AnthropicCompatBase(ChatModelBase):
                     model=self.model,
                     messages=anthropic_messages,
                     system=system_prompt or omit,
+                    **self._tool_kwargs(tools, tool_choice),
                     **self._get_invoke_params(),
                 )
 
@@ -152,14 +231,28 @@ class AnthropicCompatBase(ChatModelBase):
                     )
 
                 usage = self._get_usage(response)
-                first_content = response.content[0]
-                text = first_content.text if isinstance(first_content, TextBlock) else str(first_content)
-                return ChatInvokeCompletion(completion=text, usage=usage, stop_reason=response.stop_reason)
+                # With tools advertised the model may answer with tool_use blocks
+                # and no text at all, so the first block is not necessarily text.
+                text_blocks = [b for b in response.content if isinstance(b, TextBlock)]
+                if text_blocks:
+                    text = "".join(b.text for b in text_blocks)
+                elif response.content:
+                    text = "" if tools else str(response.content[0])
+                else:
+                    text = ""
+                return ChatInvokeCompletion(
+                    completion=text,
+                    usage=usage,
+                    stop_reason=response.stop_reason,
+                    tool_calls=AnthropicMessageSerializer.parse_tool_calls(response.content),
+                )
 
             elif self.use_native_structured_output:
                 # Native structured outputs via output_config.format (constrained
                 # decoding) — returns JSON directly in a text block, no tool round-trip.
-                schema = SchemaOptimizer.create_optimized_json_schema(output_format)
+                schema = SchemaOptimizer.create_optimized_json_schema(
+                    output_format, strict=self._use_strict_schema(output_format)
+                )
                 schema.pop("title", None)
 
                 create_kwargs: dict[str, Any] = dict(
@@ -196,7 +289,9 @@ class AnthropicCompatBase(ChatModelBase):
 
             else:
                 tool_name = output_format.__name__
-                schema = SchemaOptimizer.create_optimized_json_schema(output_format)
+                schema = SchemaOptimizer.create_optimized_json_schema(
+                    output_format, strict=self._use_strict_schema(output_format)
+                )
                 schema.pop("title", None)
 
                 tool = ToolParam(
@@ -205,14 +300,17 @@ class AnthropicCompatBase(ChatModelBase):
                     input_schema=schema,
                     cache_control=CacheControlEphemeralParam(type="ephemeral"),
                 )
-                tool_choice = ToolChoiceToolParam(type="tool", name=tool_name)
+                # Named `schema_tool_choice` rather than `tool_choice`: the
+                # latter is now a parameter of this method, and shadowing it
+                # here would read as if the caller's choice were being honoured.
+                schema_tool_choice = ToolChoiceToolParam(type="tool", name=tool_name)
 
                 response = await self.get_client().messages.create(
                     model=self.model,
                     messages=anthropic_messages,
                     tools=[tool],
                     system=system_prompt or omit,
-                    tool_choice=tool_choice,
+                    tool_choice=schema_tool_choice,
                     **self._get_invoke_params(),
                 )
 
@@ -247,4 +345,7 @@ class AnthropicCompatBase(ChatModelBase):
         except APIStatusError as e:
             raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
         except Exception as e:
-            raise ModelProviderError(message=str(e), model=self.name) from e
+            # Include the concrete exception type: a bare str(e) turned client-side
+            # contract bugs (TypeError from an unsupported kwarg) into an opaque
+            # "provider error" that pointed nowhere.
+            raise ModelProviderError(message=f"{type(e).__name__}: {e}", model=self.name) from e

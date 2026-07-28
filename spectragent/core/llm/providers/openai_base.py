@@ -31,6 +31,7 @@ from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitEr
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
+from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,21 @@ class OpenAICompatBase(ChatModelBase):
     def provider(self) -> str:
         """Override in sub-classes to return the sub-provider name."""
         return ""
+
+    # ``model_family`` and ``_use_strict_schema`` are inherited from
+    # ``ChatModelBase`` — the declarative capability table plus a compiled-schema
+    # check, rather than an inline substring test on the model name.
+
+    def _tool_kwargs(
+        self, tools: Sequence[ToolDefinition] | None, tool_choice: ToolChoice
+    ) -> dict[str, Any]:
+        """Request kwargs advertising *tools*, or empty when there are none."""
+        if not tools:
+            return {}
+        return {
+            "tools": OpenAIMessageSerializer.serialize_tools(tools),
+            "tool_choice": tool_choice,
+        }
 
     # ------------------------------------------------------------------
     # Client creation — default AsyncOpenAI, override for custom clients
@@ -182,12 +198,33 @@ class OpenAICompatBase(ChatModelBase):
         messages: Sequence[BaseMessage],
         output_format: type[T] | None = None,
         extra_kwargs: dict[str, Any] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         """Standard OpenAI-compatible ainvoke with error handling."""
+        if output_format is not None:
+            # OpenAI accepts `tools` alongside `response_format` on the wire, but
+            # the two outcomes it then permits — structured JSON, or a tool call
+            # with `content: null` — cannot both be returned from here:
+            # `ChatInvokeCompletion.completion` is non-optional, so there is no
+            # value that means "called a tool instead of answering". Forwarding
+            # them anyway spent a round trip and then turned the tool-call reply
+            # into a 500-shaped parse failure with the calls discarded, which is
+            # strictly worse than refusing up front.
+            self.reject_unsupported_tools(
+                tools,
+                reason=(
+                    "structured output and tools cannot be combined: a tool-call "
+                    "reply carries no content, and ChatInvokeCompletion.completion "
+                    "has no value that can represent it. Pass tools without "
+                    "output_format."
+                ),
+            )
         openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
         try:
             model_params = self._common_model_params()
-            extra = extra_kwargs or {}
+            extra = {**(extra_kwargs or {}), **self._tool_kwargs(tools, tool_choice)}
 
             if output_format is None:
                 response = await self.get_client().chat.completions.create(
@@ -204,6 +241,9 @@ class OpenAICompatBase(ChatModelBase):
                     completion=choice.message.content or "",
                     usage=self._get_usage(response),
                     stop_reason=choice.finish_reason,
+                    tool_calls=OpenAIMessageSerializer.parse_tool_calls(
+                        getattr(choice.message, "tool_calls", None)
+                    ),
                 )
             else:
                 return await self._structured_response_format(
@@ -227,11 +267,17 @@ class OpenAICompatBase(ChatModelBase):
     async def _structured_response_format(
         self, openai_messages, output_format: type[T], model_params: dict, extra_kwargs: dict,
     ) -> ChatInvokeCompletion[T]:
+        # Strict is only requested when the *compiled schema* can satisfy the
+        # strict dialect. An open map (``dict[str, Any]``) compiles to an object
+        # node with no ``properties``; asking for strict alongside it ships a
+        # schema OpenAI rejects outright.
+        strict = self._use_strict_schema(output_format)
         response_format: JSONSchema = {
             "name": "agent_output",
-            "strict": True,
+            "strict": strict,
             "schema": SchemaOptimizer.create_optimized_json_schema(
                 output_format,
+                strict=strict,
                 remove_min_items=self.remove_min_items_from_schema,
                 remove_defaults=self.remove_defaults_from_schema,
             ),
@@ -261,6 +307,8 @@ class OpenAICompatBase(ChatModelBase):
         if choice is None or choice.message.content is None:
             raise ModelProviderError(message="Failed to parse structured output", status_code=500, model=self.name)
 
+        # No `tool_calls=` here: `_standard_ainvoke` refuses tools on the
+        # structured path, so a compliant provider cannot return any.
         return ChatInvokeCompletion(
             completion=output_format.model_validate_json(choice.message.content),
             usage=self._get_usage(response),
@@ -272,15 +320,35 @@ class OpenAICompatBase(ChatModelBase):
     # ------------------------------------------------------------------
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T], **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None, **kwargs: Any
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        *,
+        tools: Sequence[ToolDefinition] | None = None,
+        tool_choice: ToolChoice = "auto",
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
-        return await self._standard_ainvoke(messages, output_format)
+        return await self._standard_ainvoke(
+            messages, output_format, tools=tools, tool_choice=tool_choice
+        )

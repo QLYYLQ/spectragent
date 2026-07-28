@@ -323,9 +323,9 @@ class TestReactLoopDriveBrowserUse:
             },
         )()
 
+        # ``max_steps`` is set on the loop below — it is the only source.
         agent = make_agent(
             BrowserUseAgent,
-            max_steps=2,
             memory=SimpleMemory(max_messages=100),
         )
 
@@ -348,12 +348,12 @@ class TestReactLoopDriveBrowserUse:
         seed = agent.prepare(task="Find the answer", action_descriptors=[])
         agent.memory.add_messages(seed)
 
-        loop.ctx = dict(
+        ctx = dict(
             env=env, llm=llm, memory=agent.memory,
             act_fn=_act_fn, negotiated_obs=_MockNegotiated(),
             active_descriptors=[], session_id=None, task_id="t1",
         )
-        result = await loop._execute(agent, task="Find the answer")
+        result = await loop._execute(agent, task="Find the answer", ctx=ctx)
 
         # The agent emitted "done" → result should reflect that.
         assert result.task_id == "t1"

@@ -65,10 +65,6 @@ _LAZY_IMPORTS = {
     "ChatMistral": ("spectragent.core.llm.providers.mistral", "ChatMistral"),
     "ChatOCI": ("spectragent.core.llm.providers.oci", "ChatOCI"),
     "ChatBrowserUse": ("spectragent.core.llm.providers.browser_use", "ChatBrowserUse"),
-    # --- Legacy aliases ---
-    "ChatAnthropicBedrock": ("spectragent.core.llm.providers.anthropic_aws", "ChatAnthropicAWS"),
-    "ChatAWSBedrock": ("spectragent.core.llm.providers.bedrock", "ChatBedrock"),
-    "ChatOCIRaw": ("spectragent.core.llm.providers.oci", "ChatOCI"),
 }
 
 # Cache for model instances - only created when accessed
