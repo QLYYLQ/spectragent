@@ -5,12 +5,18 @@ can import a stable surface::
 
     from spectragent.generated import ComposedConfig
 
-The import is guarded: during ``spectragent-gen`` itself the file is
-momentarily absent while the script wipes-and-regenerates, so the
-surface degrades to ``None`` rather than blowing up ``discover()``.
+The import is guarded, but **only** against the file being absent:
+``spectragent-gen`` wipes before it regenerates, and ``discover()`` must
+survive that window. Anything else — a ``NameError`` from a codegen bug,
+a ``SyntaxError`` from a malformed emit — propagates.
+
+This used to be a bare ``except Exception``, which silently degraded the
+surface to ``None`` and hid a real defect: the committed ``_composed.py``
+raised ``NameError: name 'AwsProviderConfig' is not defined`` at import
+for months while every caller just saw ``ComposedConfig is None``.
 """
 
 try:  # pragma: no cover — trivial bootstrap
     from spectragent.generated._composed import ComposedConfig  # noqa: F401
-except Exception:  # noqa: BLE001 — codegen may be mid-update or have latent issues
+except ImportError:  # the wipe-and-regenerate window, nothing else
     ComposedConfig = None  # type: ignore[assignment]

@@ -15,6 +15,8 @@ mock_test/
 tmp/
 CLAUDE.md
 *.txt
+# ...but the shipped prompt tree is runtime data, not scratch text.
+!/spectragent/prompts/**/*.txt
 .env
 # macOS
 .DS_Store
@@ -29,6 +31,9 @@ CLAUDE.md
 
 # Build / runtime artefacts
 *.egg-info/
+# setuptools reuses build/lib without pruning — a stale tree silently ships
+# deleted modules into the wheel.
+/build/
 /test_path/
 /traces/
 

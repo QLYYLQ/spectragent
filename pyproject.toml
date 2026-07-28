@@ -21,7 +21,7 @@ classifiers = [
 
 dependencies = [
     # Core infrastructure
-    "conscribe>=1.1.1",
+    "conscribe>=1.2.0",
     "websockets>=13.0",
     "agent-cdp>=0.4.0",
     "pydantic>=2.0",
@@ -66,11 +66,22 @@ dev = [
 
 [project.scripts]
 spectragent-gen = "spectragent.scripts.generate_all:main"
+spectragent-bench = "spectragent.core.benchmark_runner:main"
 
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["spectragent*"]
+
+# Runtime data files. `spectragent/prompts/**` is read at runtime by every agent's
+# `_build_system_prompt` (`prompt_file.read_text()`), and `spectragent/benchmark_data/**`
+# is read by the task/eval loaders. Without this the wheel ships zero non-.py files
+# and an installed (non-editable) spectragent raises FileNotFoundError on first prepare().
+[tool.setuptools.package-data]
+"spectragent" = ["prompts/**/*", "benchmark_data/**/*"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["**/__pycache__/*", "**/*.pyc"]
 
 # ========== Pytest ==========
 
