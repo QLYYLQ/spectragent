@@ -5,23 +5,21 @@ queries accept only ``task_id``. Subclasses register automatically via
 the ``EvalLoaderRegistrar`` metaclass.
 """
 
-import logging
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, Any
 
 from conscribe import create_registrar
 from pydantic import Field
 
 from spectragent.core.data_loader._common import (
-    load_split_map,
     parse_file,
     resolve_data_dir,
+    resolve_split_file,
+    resolve_task_id,
 )
 from spectragent.core.data_loader.eval.base import BaseEvalLoader
 from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.task import TaskReference
-
-logger = logging.getLogger(__name__)
 
 EvalLoaderRegistrar = create_registrar(
     "eval_loader",
@@ -36,6 +34,11 @@ class EvalLoaderBase(metaclass=EvalLoaderRegistrar.Meta):
 
     Subclasses auto-register via conscribe. Override ``subset`` type
     annotation with a ``Literal[...]`` for precise config stub generation.
+
+    Subclasses should override ``env_type`` when the benchmark's data
+    lives outside ``benchmark_data/browser/``, and may override
+    ``_normalize_raw()`` to map an upstream record shape into
+    ``EvalReference`` — the mirror of the task loader's hook.
     """
 
     __abstract__ = True
@@ -48,6 +51,9 @@ class EvalLoaderBase(metaclass=EvalLoaderRegistrar.Meta):
     _refs: dict[str, EvalReference] = field(
         default_factory=dict, init=False, repr=False
     )
+
+    # Default environment type — selects the data directory segment.
+    env_type: str = "browser"
 
     def __post_init__(self) -> None:
         self._load()
@@ -73,28 +79,31 @@ class EvalLoaderBase(metaclass=EvalLoaderRegistrar.Meta):
     # ── Data loading ─────────────────────────────────────────────────
 
     def _load(self) -> None:
-        root = resolve_data_dir(self.__registry_key__, self.data_dir)  # type: ignore[attr-defined]
-        split_map = load_split_map(root)
-        filename = split_map.get(self.subset)
-        if not filename:
-            logger.warning(
-                "Subset %r not in split map (available: %s)",
-                self.subset,
-                list(split_map),
-            )
-            return
-        for raw in parse_file(root / filename):
-            ref = EvalReference(
-                task_id=raw["task_id"],
-                benchmark=raw.get("benchmark", self.__registry_key__),  # type: ignore[attr-defined]
-                expected_answer=raw.get("expected_answer"),
-                reference=(
-                    TaskReference(**raw["reference"])
-                    if raw.get("reference")
-                    else None
-                ),
-                difficulty=raw.get("difficulty"),
-                tags=raw.get("tags", []),
-                metadata=raw.get("metadata", {}),
-            )
+        root = resolve_data_dir(
+            self.env_type,
+            self.__registry_key__,  # type: ignore[attr-defined]
+            self.data_dir,
+        )
+        for raw in parse_file(resolve_split_file(root, self.subset)):
+            ref = self._normalize_raw(raw)
             self._refs[ref.task_id] = ref
+
+    def _normalize_raw(self, raw: dict[str, Any]) -> EvalReference:
+        """Map a raw record into an ``EvalReference``.
+
+        Identity is resolved through the same key precedence as the task
+        side (``task_id`` > ``id`` > ``instance_id``), so upstream files
+        that never adopted ``task_id`` load rather than raising.
+
+        Subclasses targeting upstream record shapes should override.
+        """
+        reference = raw.get("reference")
+        return EvalReference(
+            task_id=resolve_task_id(raw),
+            benchmark=raw.get("benchmark", self.__registry_key__),  # type: ignore[attr-defined]
+            expected_answer=raw.get("expected_answer"),
+            reference=TaskReference(**reference) if reference else None,
+            difficulty=raw.get("difficulty"),
+            tags=raw.get("tags", []),
+            metadata=raw.get("metadata", {}),
+        )

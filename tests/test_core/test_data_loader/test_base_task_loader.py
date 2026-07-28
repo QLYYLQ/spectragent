@@ -110,6 +110,7 @@ class TestNormalization:
             ]
         )
         task = loader["t1"]
+        assert isinstance(task.setup, BrowserSetup)
         assert task.setup.login_required is True
         assert task.setup.login_type == "sso"
         assert task.setup.credentials_ref == "creds_a"
@@ -126,6 +127,7 @@ class TestNormalization:
             ]
         )
         task = loader["t1"]
+        assert isinstance(task.setup, BrowserSetup)
         assert task.setup.start_url == "https://flights.example.com"
         assert task.setup.login_required is True
 

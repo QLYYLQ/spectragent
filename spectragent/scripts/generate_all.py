@@ -48,20 +48,33 @@ def _collect_registrars() -> dict[str, type]:
     from spectragent.agents.memory._registrar import MemoryRegistrar
     from spectragent.core.actions._registrar import ActionRegistrar
     from spectragent.core.capabilities._registrar import CapabilityRegistrar
+    from spectragent.core.capabilities.browser.backends._registrar import (
+        BrowserProviderRegistrar,
+    )
+    from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerRegistrar
+    from spectragent.core.capabilities.browser.dom.serializers import (
+        DOMSerializerRegistrar,
+    )
+    from spectragent.core.capabilities.browser.input import MouseTrajectoryRegistrar
     from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
     from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
     from spectragent.core.environments._registrar import EnvironmentRegistrar
     from spectragent.core.hooks._registrar import HookRegistrar
     from spectragent.core.llm._registrar import LLMRegistrar
     from spectragent.core.loops._registrar import AgentLoopRegistrar
-    from spectragent.core.capabilities.browser.backends._registrar import (
-        BrowserProviderRegistrar,
-    )
+    from spectragent.evaluator._registrar import EvaluatorRegistrar
 
     return {
         # Leaves of the wiring DAG first — not load-bearing but keeps
         # the generated union ordering stable under rename.
         "browser_provider": BrowserProviderRegistrar,
+        # Browser-internal strategy axes. Excluding them left their
+        # config surface untyped — most visibly ``mouse_trajectory``,
+        # which was emitted as a bare ``str`` so a typo was silently
+        # downgraded to the instant (non-humanized) strategy.
+        "mouse_trajectory": MouseTrajectoryRegistrar,
+        "dom_cleaner": DOMCleanerRegistrar,
+        "dom_serializer": DOMSerializerRegistrar,
         "action": ActionRegistrar,
         "capability": CapabilityRegistrar,
         "agent_loop": AgentLoopRegistrar,
@@ -71,6 +84,11 @@ def _collect_registrars() -> dict[str, type]:
         "hook": HookRegistrar,
         "task_loader": TaskLoaderRegistrar,
         "eval_loader": EvalLoaderRegistrar,
+        # Scoring. An optional layer — a config that only runs an agent
+        # omits it — but a *layer*, so the judge model, its prompts and
+        # its thresholds are chosen in YAML like everything else instead
+        # of living in a per-benchmark script outside the package.
+        "evaluator": EvaluatorRegistrar,
         "agent": AgentRegistrar,
     }
 

@@ -7,7 +7,8 @@
     "L3-security": "l3-security.jsonl",
     "omw": "Online_Mind2Web.json",
     "omw-20pct": "Online_Mind2Web_20pct.json",
-    "omw-80pct": "Online_Mind2Web_80pct.json"
+    "omw-80pct": "Online_Mind2Web_80pct.json",
+    "private": "tasks_private.jsonl"
   },
   "version_info": {
     "LexBench-Browser": {
