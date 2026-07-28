@@ -1,7 +1,14 @@
 """TraceWriter — RuntimeHook for full WAL-based trace persistence.
 
-Intercepts env.observe and llm.ainvoke via AOP to capture all data
-per step, then commits to disk via WALWriter.
+The commit point is ``loop.record_step``: the moment the Loop finishes a
+step and surrenders its :class:`StepRecord`. Everything a step consists
+of is known then — the observation the agent actually saw, the actions it
+chose, what they returned, what the step cost — so the writer serializes
+facts instead of reconstructing them.
+
+It used to commit on ``llm.ainvoke`` instead, which is the wrong event
+twice over: it fires before the actions exist, and it fires once per LLM
+call rather than once per step.
 
 Registered via conscribe as hook_id="trace_writer".
 
@@ -21,26 +28,40 @@ from spectragent.core.aop.advice import Intercept
 from spectragent.core.hooks._registrar import HookBase
 from spectragent.core.trace.models import RunStatus, TraceConfig
 from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas._types import AgentDoneStatus
+from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.observation.dynamic_model import iter_fragments
 
 logger = logging.getLogger(__name__)
+
+# Terminal states that mean "the agent stopped without a clean finish".
+# The manifest must say so: a trace stuck at ``running`` is a trace no
+# evaluator will touch, and 9 of the first 14 real traces were exactly
+# that because the timeout path never reached a finalizer.
+_ERROR_DONE_STATES = frozenset({AgentDoneStatus.TIMEOUT, AgentDoneStatus.ERROR})
 
 
 class TraceWriter(HookBase):
     """Full-trace WAL persistence hook.
 
-    Captures observation fragments (after_observe) and LLM messages
-    (after_ainvoke), writes them to disk, and commits the manifest
-    at each step boundary.
+    Buffers LLM messages (``after_ainvoke``) and commits a complete step —
+    observation fragments, messages, step record, manifest — when the Loop
+    hands over its ``StepRecord`` (``after_record_step``).
 
-    Step boundary: after_ainvoke is the commit point — LLM reasoning
-    is the most expensive, non-retryable part of each step.
+    A run that dies between the completion and the step (timeout, crash)
+    never reaches that commit point, so run end drains whatever is still
+    buffered as *unfinished* messages instead of dropping it.
     """
 
     __registry_key__ = "trace_writer"
     __intercepts__ = [
-        Intercept("observe", role="env", advice="after"),
         Intercept("ainvoke", role="llm", advice="after"),
+        Intercept("record_step", role="loop", advice="after"),
     ]
+
+    # Serializing must happen after every enricher has finished mutating
+    # the result.
+    priority = HookBase.PRIORITY_PERSIST
 
     # ── conscribe config-annotated fields ─────────────────────
     trace_dir: Annotated[
@@ -49,123 +70,234 @@ class TraceWriter(HookBase):
 
     # ── internal state (not config) ───────────────────────────
     _wal: WALWriter | None = None
-    _current_step: int = 0
-    _pending_observation: Any = None
+    _steps_written: int = 0
+    # [(input_msgs, output)] for the LLM calls made since the last commit
+    _pending_messages: list[tuple[Any, Any]]
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._pending_messages = []
 
     @property
     def blocking(self) -> bool:
         return True
 
+    @property
+    def run_dir(self) -> Path | None:
+        """Directory this run is being written to — the evaluator seam."""
+        return self._wal.run_dir if self._wal is not None else None
+
     # ── lifecycle hooks ───────────────────────────────────────
 
     async def on_run_start(
-        self, *, agent: Any, env: Any, task: str, config: Any, **kwargs: Any
+        self,
+        *,
+        agent: Any = None,
+        env: Any = None,
+        loop: Any = None,
+        llm: Any = None,
+        task: str = "",
+        task_id: str = "",
+        benchmark: str = "",
+        subset: str = "",
+        run_id: str | None = None,
+        config: Any = None,
+        **kwargs: Any,
     ) -> None:
-        run_id = str(uuid.uuid4())[:8]
+        resolved_run_id = run_id or str(uuid.uuid4())[:8]
         base_dir = Path(self.trace_dir)
 
-        self._wal = WALWriter(base_dir, run_id)
-        self._current_step = 0
-        self._pending_observation = None
+        self._wal = WALWriter(base_dir, resolved_run_id)
+        self._steps_written = 0
+        self._pending_messages = []
 
         trace_config = TraceConfig(
             agent_id=getattr(agent, "agent_id", getattr(agent, "agent_name", "")),
-            loop_id="",  # Loop info not directly available here
+            loop_id=getattr(loop, "loop_id", ""),
             env_type=getattr(env, "env_type", ""),
+            llm_model=_model_name(llm),
+            benchmark=benchmark,
+            subset=subset,
             task=task,
-            task_id=kwargs.get("task_id", ""),
+            task_id=task_id,
             extra=config if isinstance(config, dict) else {},
         )
         self._wal.init_run(trace_config)
-        logger.info("TraceWriter: initialized run %s at %s", run_id, self._wal.run_dir)
+        logger.info(
+            "TraceWriter: initialized run %s at %s", resolved_run_id, self._wal.run_dir
+        )
 
-    async def on_run_end(self, *, result: Any, **kwargs: Any) -> None:
+    async def on_run_end(self, *, result: Any = None, env: Any = None, **kwargs: Any) -> None:
+        """Write result.json and finalize — on every termination path."""
         if self._wal is None:
             return
+        self._flush_pending_messages()
         self._wal.write_result(result)
-        self._wal.finalize(RunStatus.COMPLETED)
+        self._wal.finalize(_status_for(result))
         logger.info(
             "TraceWriter: finalized run at %s (%d steps)",
             self._wal.run_dir,
-            self._current_step,
+            self._steps_written,
         )
 
     async def on_run_error(
-        self, *, error: BaseException, partial_steps: Any, **kwargs: Any
+        self,
+        *,
+        error: BaseException | None = None,
+        partial_steps: Any = None,
+        env: Any = None,
+        **kwargs: Any,
     ) -> None:
         if self._wal is None:
             return
+        # Idempotent: ``on_run_end`` normally drains first, but a driver
+        # that only dispatches ``on_run_error`` must not lose the buffer.
+        self._flush_pending_messages()
         self._wal.finalize(RunStatus.ERROR)
         logger.warning(
-            "TraceWriter: run errored at step %d: %s", self._current_step, error
+            "TraceWriter: run errored after %d steps: %s", self._steps_written, error
         )
 
     # ── AOP intercept handlers ────────────────────────────────
 
-    async def after_observe(
-        self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
-    ) -> None:
-        """Buffer observation data — will be written at commit (after_ainvoke)."""
-        self._pending_observation = result
-
     async def after_ainvoke(
         self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
     ) -> None:
-        """Commit point: write observation + messages + step record to WAL."""
+        """Buffer one LLM call; it is written when the step commits."""
+        # args[0] is the messages list passed to ainvoke()
+        input_msgs = args[0] if args else kwargs.get("messages")
+        self._pending_messages.append((input_msgs, result))
+
+    async def after_record_step(
+        self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
+    ) -> None:
+        """Commit point: observation + messages + real step record."""
         if self._wal is None:
             return
 
-        step = self._current_step
-        obs_files: list[str] = []
+        record = args[0] if args else kwargs.get("record")
+        if record is None:
+            return
+        observation = kwargs.get("observation")
+        step = int(getattr(record, "step", self._steps_written))
 
-        # Write buffered observation fragments
-        if self._pending_observation is not None:
-            obs = self._pending_observation
-            # If observation is a Pydantic model with fragment fields, serialize each
-            if hasattr(obs, "model_fields"):
-                for field_name in obs.model_fields:
-                    value = getattr(obs, field_name, None)
-                    if value is not None:
-                        rel = self._wal.write_observation(step, field_name, value)
-                        obs_files.append(rel)
-            else:
-                # Fallback: serialize the whole observation
-                rel = self._wal.write_observation(step, "observation", obs)
-                obs_files.append(rel)
-            self._pending_observation = None
+        obs_files = self._write_observation(step, observation)
 
-        # Write LLM messages
-        # args[0] is the messages list passed to ainvoke()
-        input_msgs = args[0] if args else None
-        in_rel, out_rel = self._wal.write_messages(step, input_msgs, result)
+        message_files: list[str] = []
+        first_in: str | None = None
+        first_out: str | None = None
+        for call_idx, (input_msgs, output) in enumerate(self._pending_messages):
+            in_rel, out_rel = self._wal.write_messages(
+                step, input_msgs, output, call=call_idx
+            )
+            message_files.extend((in_rel, out_rel))
+            if call_idx == 0:
+                first_in, first_out = in_rel, out_rel
+        self._pending_messages = []
 
-        # Write step record skeleton
-        step_record = {
-            "step": step,
-            "llm_output": _extract_completion_text(result),
-        }
-        step_rel = self._wal.write_step_record(step, step_record)
+        step_rel = self._wal.write_step_record(step, record)
 
         # Atomic commit
         self._wal.commit_step(
             step=step,
             step_file=step_rel,
             observation_files=obs_files,
-            message_input_file=in_rel,
-            message_output_file=out_rel,
+            message_input_file=first_in,
+            message_output_file=first_out,
+            message_files=message_files,
         )
 
-        self._current_step += 1
+        self._steps_written += 1
         logger.debug("TraceWriter: committed step %d", step)
 
+    # ── internals ─────────────────────────────────────────────
 
-def _extract_completion_text(result: Any) -> str:
-    """Extract text from a ChatInvokeCompletion or similar result."""
-    if hasattr(result, "completion"):
-        comp = result.completion
-        if isinstance(comp, str):
-            return comp
-        if hasattr(comp, "model_dump_json"):
-            return comp.model_dump_json()
-        return str(comp)
-    return str(result)
+    def _flush_pending_messages(self) -> None:
+        """Persist LLM calls the Loop never got to surrender as a step.
+
+        ``after_record_step`` is the only *commit* point, but it is not
+        the only *termination* point: a run can be killed by the timeout,
+        or crash in parsing or action execution, after the completion has
+        already come back. Dropping the buffer there discards precisely
+        the exchange you need to see what the agent was doing when the
+        run died — and abnormal termination is the common case, not the
+        exception, in this project's real traces.
+
+        The files are written under the step index that *would* have been
+        next, so ``RunTrace.get_messages(step)`` finds them by path, and
+        listed in the manifest as unfinished rather than committed.
+        """
+        if self._wal is None or not self._pending_messages:
+            return
+
+        # The step index the Loop was working on. Derived from the
+        # manifest rather than a local counter so it stays right for a
+        # Loop that numbers its steps from something other than 0.
+        manifest = self._wal.manifest
+        step = (
+            manifest.last_step_completed + 1 if manifest is not None else self._steps_written
+        )
+
+        files: list[str] = []
+        for call_idx, (input_msgs, output) in enumerate(self._pending_messages):
+            in_rel, out_rel = self._wal.write_messages(
+                step, input_msgs, output, call=call_idx
+            )
+            files.extend((in_rel, out_rel))
+        pending = len(self._pending_messages)
+        self._pending_messages = []
+
+        self._wal.commit_unfinished_messages(files)
+        logger.info(
+            "TraceWriter: flushed %d unfinished LLM call(s) as step %d", pending, step
+        )
+
+    def _write_observation(self, step: int, observation: Any) -> list[str]:
+        """Write every populated fragment; binaries land as real files."""
+        if self._wal is None or observation is None:
+            return []
+
+        obs_files: list[str] = []
+        fragments = list(iter_fragments(observation))
+        if not fragments:
+            # Not a fragment model — persist it whole rather than lose it.
+            return [self._wal.write_observation(step, "observation", observation)]
+
+        for field_name, fragment in fragments:
+            payload: Any = fragment
+            binary = fragment.trace_binary() if isinstance(fragment, FragmentBase) else None
+
+            if binary is not None:
+                suffix, data = binary
+                obs_files.append(
+                    self._wal.write_observation(step, field_name, data, suffix=suffix)
+                )
+                # JSON sidecar without the bytes, plus a pointer to them.
+                payload = fragment.model_dump(
+                    mode="json", exclude=fragment.trace_json_exclude()
+                )
+                payload["artifact_file"] = f"{step:03d}_{field_name}{suffix}"
+
+            obs_files.append(self._wal.write_observation(step, field_name, payload))
+        return obs_files
+
+
+def _status_for(result: Any) -> RunStatus:
+    """Map a terminal AgentResult onto a manifest status."""
+    done = getattr(result, "agent_done", None)
+    if done is not None and done in _ERROR_DONE_STATES:
+        return RunStatus.ERROR
+    if getattr(result, "error", None):
+        return RunStatus.ERROR
+    return RunStatus.COMPLETED
+
+
+def _model_name(llm: Any) -> str:
+    """Best-effort model identifier for the config snapshot."""
+    if llm is None:
+        return ""
+    for attr in ("model", "model_name", "name"):
+        value = getattr(llm, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""

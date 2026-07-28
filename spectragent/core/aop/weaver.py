@@ -22,6 +22,7 @@ import logging
 from typing import Any
 
 from spectragent.core.aop.advice import AdviceType, Intercept
+from spectragent.core.aop.errors import UnclaimedRoleError
 from spectragent.core.aop.proxy import AOPProxy, InterceptorEntry
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class Weaver:
     def __init__(self, active_hooks: list[Any]) -> None:
         self._hooks = active_hooks
         self._index: dict[tuple[str, str], list[InterceptorEntry]] = {}
+        self._claimed_roles: set[str] = set()
         self._build_index()
 
     def _build_index(self) -> None:
@@ -72,23 +74,66 @@ class Weaver:
         Only methods that have interceptors for the given role are wrapped.
         If no interceptors apply, returns the original target unchanged.
 
+        Calling this marks *role* as claimed, whether or not anything was
+        actually wrapped — see :meth:`raise_for_unclaimed_roles`.
+
         Args:
-            target: The object to wrap (agent, env, llm).
-            role: The role identifier (``"env"``, ``"agent"``, ``"llm"``).
+            target: The object to wrap (agent, env, llm, loop). ``None``
+                is allowed (env-less runs): the role still counts as
+                claimed and nothing is wrapped.
+            role: The role identifier (``"env"``, ``"agent"``, ``"llm"``,
+                ``"loop"``).
 
         Returns:
             An AOPProxy wrapping the target, or the original target if
             no interceptors apply.
         """
+        self._claimed_roles.add(role)
+
         method_interceptors: dict[str, list[InterceptorEntry]] = {}
         for (r, method), interceptors in self._index.items():
             if r == role:
                 method_interceptors[method] = interceptors
 
-        if not method_interceptors:
+        if target is None or not method_interceptors:
             return target
 
-        return AOPProxy(target, method_interceptors)
+        # Whether the target can serve a declared method is *not* decided
+        # here: the proxy resolves lazily, and ``Loop.weave()`` installs
+        # ``agent.run`` after wrapping. The proxy warns at resolution
+        # time, when the answer is actually known.
+        return AOPProxy(target, method_interceptors, role=role)
+
+    def raise_for_unclaimed_roles(self) -> None:
+        """Fail if any declared role was never handed to :meth:`wrap`.
+
+        Roles are a closed set decided by whoever drives the weaving
+        (AgentRuntime wraps agent/env/llm/loop). A hook that declares any
+        other role is either a typo or a request for a plug point that
+        does not exist; both deserve an exception, not silence.
+        """
+        unclaimed: dict[str, list[str]] = {}
+        for (role, _method), interceptors in self._index.items():
+            if role in self._claimed_roles:
+                continue
+            hook_ids = [getattr(h, "hook_id", type(h).__name__) for h, _, _ in interceptors]
+            unclaimed.setdefault(role, []).extend(hook_ids)
+
+        if unclaimed:
+            raise UnclaimedRoleError(
+                unclaimed=unclaimed,
+                claimed=sorted(self._claimed_roles),
+            )
+
+    @property
+    def claimed_roles(self) -> frozenset[str]:
+        """Roles handed to :meth:`wrap` so far."""
+        return frozenset(self._claimed_roles)
+
+    @property
+    def declared_roles(self) -> frozenset[str]:
+        """Roles any active hook declares an interception for."""
+        return frozenset(role for role, _ in self._index)
 
     @property
     def intercepted_methods(self) -> dict[str, list[str]]:

@@ -15,7 +15,14 @@ from spectragent.schemas.prompt import PromptSnapshot
 
 
 class AgentUsage(BaseModel):
-    """Token usage statistics from the agent's LLM calls."""
+    """Token usage statistics from the agent's LLM calls.
+
+    ``AgentMetrics.usage is None`` is the "not measured" sentinel. Never
+    substitute a zero-filled ``AgentUsage()`` for it: that makes a run
+    nobody instrumented indistinguishable from a run that genuinely
+    consumed zero tokens, and every downstream ``if usage is not None``
+    guard passes while reading zeros.
+    """
 
     model_config = ConfigDict(extra="allow")
 
@@ -41,15 +48,66 @@ class AgentUsage(BaseModel):
             self.total_tokens = self.total_prompt_tokens + self.total_completion_tokens
         return self
 
+    def add_llm_usage(self, usage: Any, *, model: str = "") -> None:
+        """Accumulate one LLM call's usage in place.
+
+        *usage* is duck-typed against ``ChatInvokeUsage`` (``prompt_tokens``,
+        ``completion_tokens``, ``prompt_cached_tokens``, ``total_tokens``)
+        so providers that report a subset — or a different object entirely
+        — still contribute what they have. ``None`` is a no-op, which is
+        how a provider that reports no usage leaves ``entry_count`` behind
+        as evidence that a call happened.
+        """
+        self.entry_count += 1
+        if usage is None:
+            return
+
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion = int(getattr(usage, "completion_tokens", 0) or 0)
+        cached = int(getattr(usage, "prompt_cached_tokens", 0) or 0)
+        total = int(getattr(usage, "total_tokens", 0) or 0) or (prompt + completion)
+
+        self.total_prompt_tokens += prompt
+        self.total_completion_tokens += completion
+        self.total_prompt_cached_tokens += cached
+        self.total_tokens += total
+
+        if not model:
+            return
+        by_model = self.by_model if self.by_model is not None else {}
+        entry = by_model.setdefault(
+            model,
+            {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "cached_tokens": 0,
+                "total_tokens": 0,
+                "calls": 0,
+            },
+        )
+        entry["prompt_tokens"] += prompt
+        entry["completion_tokens"] += completion
+        entry["cached_tokens"] += cached
+        entry["total_tokens"] += total
+        entry["calls"] += 1
+        self.by_model = by_model
+
 
 class AgentMetrics(BaseModel):
-    """Performance metrics from agent execution."""
+    """Performance metrics from agent execution.
+
+    ``steps`` and ``llm_calls`` are deliberately separate quantities: a
+    loop that reflects, retries or self-consistency-samples issues many
+    LLM calls per step, and conflating them silently corrupts every
+    per-step average computed from a trace.
+    """
 
     model_config = ConfigDict(extra="allow")
 
     ttft_ms: int | None = None
     end_to_end_ms: int
     steps: int
+    llm_calls: int | None = None
     usage: AgentUsage | None = None
 
 
@@ -63,7 +121,9 @@ class AgentResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Version
-    schema_version: Literal["1.0", "1.1", "2.0"] = "2.0"
+    # 2.1 renamed ``agent_success`` -> ``agent_reported_success``. Traces
+    # written before that carry 2.0 and the old key; they are legacy.
+    schema_version: Literal["1.0", "1.1", "2.0", "2.1"] = "2.1"
 
     # Identity
     task_id: str
@@ -77,11 +137,18 @@ class AgentResult(BaseModel):
     env_status: NormalizedEnvironmentStatus
     # agent_done: how the agent finished the task
     agent_done: NormalizedAgentDoneStatus
-    # agent_success: agent's self-reported success/failure from done(success=...)
+    # agent_reported_success: the agent's *self-report*, read verbatim out of
+    #   ``done(success=...)``. It is NOT a verdict — some agents hardcode
+    #   ``True`` — and no scorer should treat it as one. The verdict belongs
+    #   to ``EvalResult.predicted_label``, produced by an Evaluator from the
+    #   recorded trace.
     #   True  = agent called done(success=true)
     #   False = agent called done(success=false)
-    #   None  = agent didn't call done (timeout, max_steps, error), and agent_done is not "done"
-    agent_success: bool | None = None
+    #   None  = agent never called done (timeout, max_steps, error)
+    agent_reported_success: bool | None = None
+    # answer: the agent's best final output. Valid on *every* termination
+    #   path — an agent that produced a correct patch and then ran out of
+    #   steps must not lose the patch just because it never called done().
     answer: str = ""
     error: str | None = None
 
@@ -96,7 +163,8 @@ class AgentResult(BaseModel):
     # Performance
     metrics: AgentMetrics
 
-    # Agent-specific opaque data (eval scripts must not read this)
+    # Agent-specific opaque data. Not part of the scoring contract: an
+    # Evaluator reads the trace, not this dict.
     agent_metadata: dict[str, Any] = Field(default_factory=dict)
 
     # Prompt snapshot
@@ -109,9 +177,14 @@ class AgentResult(BaseModel):
     def _validate_result_consistency(self) -> "AgentResult":
         if self.env_status == EnvironmentStatus.SUCCESS and self.agent_done == AgentDoneStatus.DONE and self.error is not None:
             raise ValueError("env_status is 'success' and agent_done is 'done' but error is not None")
-        if self.agent_success is not None and self.agent_done != AgentDoneStatus.DONE:
+        # A self-report can only exist if the agent actually called done().
+        # This constrains the *self-report*, never the ``answer`` — which is
+        # exactly why the verdict lives in EvalResult and not here.
+        if self.agent_reported_success is not None and self.agent_done != AgentDoneStatus.DONE:
             raise ValueError(
-                f"agent_success must be None when agent_done is '{self.agent_done}', "
-                f"got {self.agent_success}"
+                f"agent_reported_success must be None when agent_done is "
+                f"'{self.agent_done}' (the agent never called done); "
+                f"got {self.agent_reported_success}. Record the outcome in "
+                f"'answer' and let an Evaluator produce the verdict."
             )
         return self

@@ -33,8 +33,14 @@ class StepManifestEntry(BaseModel):
     step: int
     step_file: str  # relative path, e.g. "steps/000.json"
     observation_files: list[str] = Field(default_factory=list)
+    # Canonical (first) LLM call of the step — kept as scalars so simple
+    # readers stay simple.
     message_input_file: str | None = None
     message_output_file: str | None = None
+    # Every LLM call of the step, in order. A loop that reflects or
+    # retries issues more than one call per step; those extra calls used
+    # to overwrite each other on disk.
+    message_files: list[str] = Field(default_factory=list)
 
 
 class TraceManifest(BaseModel):
@@ -53,12 +59,24 @@ class TraceManifest(BaseModel):
     updated_at: UTCDatetime
     config_hash: str = ""
     steps: list[StepManifestEntry] = Field(default_factory=list)
+    # LLM calls that belong to a step the Loop never surrendered — a run
+    # killed by the timeout or an exception between the completion and
+    # ``record_step``. They are not a completed step, so they get no
+    # ``StepManifestEntry``; they are listed here so the last exchange
+    # before the run died is still findable.
+    unfinished_message_files: list[str] = Field(default_factory=list)
 
 
 class TraceConfig(BaseModel):
     """Frozen configuration snapshot for a run.
 
-    Captures enough context to reproduce or understand the run.
+    Captures enough context to reproduce or understand the run — and,
+    critically, enough to *join* the trace back to the dataset it came
+    from. ``(benchmark, subset, task_id)`` is the key an Evaluator needs
+    to look up ground truth:
+    ``EvalLoaderRegistrar.get(benchmark)(subset=subset)[task_id]``.
+    Without all three, a trace directory is an orphan — you cannot even
+    say which task it ran.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -67,6 +85,8 @@ class TraceConfig(BaseModel):
     loop_id: str = ""
     env_type: str = ""
     llm_model: str = ""
+    benchmark: str = ""
+    subset: str = ""
     task: str = ""
     task_id: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)

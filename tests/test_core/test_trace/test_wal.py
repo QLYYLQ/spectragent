@@ -31,6 +31,38 @@ class TestAtomicWrite:
         tmp_files = list(tmp_path.glob("*.tmp"))
         assert tmp_files == []
 
+    def test_rename_failure_surfaces_the_real_error(self, tmp_path, monkeypatch):
+        """The caller must see the disk error, not EBADF from the cleanup.
+
+        Closing the fd manually and then probing it with
+        ``os.get_inheritable`` in the error handler raised
+        ``OSError(EBADF)`` first, masking the actual failure.
+        """
+        import os
+
+        target = tmp_path / "test.json"
+
+        def boom(*a, **kw):
+            raise OSError("DISK FULL")
+
+        monkeypatch.setattr(os, "replace", boom)
+        with pytest.raises(OSError, match="DISK FULL"):
+            _atomic_write(target, b"data")
+
+    def test_no_leftover_tmp_on_failure(self, tmp_path, monkeypatch):
+        import os
+
+        target = tmp_path / "test.json"
+
+        def boom(*a, **kw):
+            raise OSError("DISK FULL")
+
+        monkeypatch.setattr(os, "replace", boom)
+        with pytest.raises(OSError):
+            _atomic_write(target, b"data")
+        assert list(tmp_path.glob("*.tmp")) == []
+        assert not target.exists()
+
 
 # ── _serialize_fragment ──────────────────────────────────────
 

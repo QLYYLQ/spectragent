@@ -8,6 +8,8 @@ See docs/architecture_design.md §4.4 "动态生成 Observation Model".
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, create_model
@@ -26,6 +28,18 @@ def build_observation_model(
     Each fragment becomes a required sub-model field. The resulting model
     supports nested access like ``obs.terminal.stdout``.
 
+    The result is cached: the sole production caller is
+    ``EnvironmentBase.observe``, which runs **once per step**, and the set
+    is frozen by negotiation before the run starts — so rebuilding the
+    class every step was pure waste.
+
+    Registry lookup happens *here*, outside the cache, so the cache key is
+    the resolved fragment **classes**, not just their keys. Keying on the
+    key set alone meant re-registering a fragment under an existing key
+    handed back a model still annotated with the old class, and the next
+    ``observe()`` failed with ``Input should be ... an instance of NetA``
+    pointing at a class the registry no longer holds.
+
     Args:
         active_fragments: Fragment keys to include (from ObservationNegotiationResult).
 
@@ -41,22 +55,32 @@ def build_observation_model(
         )
         assert obs.terminal.stdout == "hello"
     """
-    fields: dict[str, Any] = {
-        "timestamp": (float, Field(default=0.0)),
-    }
+    return _build_observation_model(
+        tuple((key, ObservationRegistrar.get(key)) for key in sorted(active_fragments))
+    )
+
+
+@lru_cache(maxsize=64)
+def _build_observation_model(
+    resolved: tuple[tuple[str, type], ...],
+) -> type[BaseModel]:
+    """Cached constructor keyed on ``(fragment_key, fragment_class)`` pairs."""
+    # No synthetic ``timestamp`` field: nothing ever assigned it, so every
+    # step wrote a junk ``NNN_timestamp.json`` containing ``0.0``. Step
+    # timing lives on StepRecord, which is actually written by the loop.
+    fields: dict[str, Any] = {}
 
     # Fragment keys are fully qualified (``source.local_id``). The
     # pydantic attribute name is the local segment so agents keep
     # reading ``obs.dom`` / ``obs.terminal``. Cross-source collisions on
     # the same local name (e.g. ``browser.screenshot`` AND
     # ``desktop.screenshot`` both active) are rejected here.
-    for key in sorted(active_fragments):
-        frag_cls = ObservationRegistrar.get(key)
+    for key, frag_cls in resolved:
         field_name = key.rsplit(".", 1)[-1]
         if field_name in fields:
             raise ValueError(
                 f"Duplicate observation field name '{field_name}' from "
-                f"active fragments {sorted(active_fragments)!r}. "
+                f"active fragments {[k for k, _ in resolved]!r}. "
                 f"Cross-source local-id collisions are not supported."
             )
         # Loop-source fragments are filled by the Loop *after* env.observe()
@@ -78,3 +102,39 @@ def build_observation_model_from_result(
 ) -> type[BaseModel]:
     """Convenience wrapper: build model directly from an ObservationNegotiationResult."""
     return build_observation_model(result.active_fragments)
+
+
+def iter_fragments(obs: Any) -> Iterator[tuple[str, Any]]:
+    """Yield ``(field_name, fragment)`` for every populated fragment on *obs*.
+
+    Iterates ``type(obs).model_fields`` — accessing ``model_fields`` on an
+    *instance* is deprecated in pydantic 2.11 and removed in 3.0.
+    """
+    model_fields = getattr(type(obs), "model_fields", None)
+    if not model_fields:
+        return
+    for field_name in model_fields:
+        value = getattr(obs, field_name, None)
+        if value is not None:
+            yield field_name, value
+
+
+def summarize_observation(obs: Any) -> str:
+    """One-line digest of an observation, for ``StepRecord.observation_summary``.
+
+    Each fragment contributes its own :meth:`FragmentBase.summary`; the
+    ones that return empty are skipped. This is what makes a trace
+    skimmable without loading megabytes of DOM per step.
+    """
+    parts: list[str] = []
+    for field_name, fragment in iter_fragments(obs):
+        summary_fn = getattr(fragment, "summary", None)
+        if not callable(summary_fn):
+            continue
+        try:
+            text = summary_fn()
+        except Exception:  # a broken summary must never break a run
+            continue
+        if text:
+            parts.append(f"{field_name}={text}")
+    return "; ".join(parts)

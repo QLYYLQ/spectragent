@@ -77,6 +77,9 @@ class DOMObs(FragmentBase):
     # stringifies keys for JSON output (where dict keys must be strings).
     selector_map: dict[int, Any] = Field(default_factory=dict)
 
+    def summary(self) -> str:
+        return f"{len(self.selector_map)} interactive elements"
+
     @field_serializer("element_tree")
     def _serialize_element_tree(self, value: Any) -> Any:
         return _dom_value_to_dict(value, set())
@@ -110,6 +113,20 @@ class ScreenshotObs(FragmentBase):
 
         return base64.b64encode(value).decode("ascii")
 
+    def trace_binary(self) -> tuple[str, bytes] | None:
+        """Persist the PNG as a real ``.png`` file, not base64 inside JSON."""
+        if self.image_bytes is None:
+            return None
+        return ".png", self.image_bytes
+
+    def trace_json_exclude(self) -> set[str]:
+        return {"image_bytes"}
+
+    def summary(self) -> str:
+        if not self.viewport_width and not self.viewport_height:
+            return ""
+        return f"{self.viewport_width}x{self.viewport_height}"
+
 
 class BrowserMetaObs(FragmentBase):
     """Browser metadata: URL, title, tab info."""
@@ -120,6 +137,11 @@ class BrowserMetaObs(FragmentBase):
     url: str = ""
     page_title: str = ""
     tabs: list[dict[str, Any]] = Field(default_factory=list)
+
+    def summary(self) -> str:
+        if not self.url and not self.page_title:
+            return ""
+        return f"{self.page_title or '(untitled)'} <{self.url}>"
 
 
 # ── Loop-sourced fragments ─────────────────────────────────────────
@@ -194,6 +216,9 @@ class TerminalObs(FragmentBase):
     stderr: str = ""
     exit_code: int = 0
     cwd: str = ""
+
+    def summary(self) -> str:
+        return f"exit={self.exit_code} cwd={self.cwd or '?'}"
 
 
 # ── Tool-Use fragments ────────────────────────────────────────────

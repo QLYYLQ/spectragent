@@ -66,6 +66,7 @@ class TestTaskDefinition:
             tags=["L2", "search"],
             metadata={"raw_id": "abc"},
         )
+        assert isinstance(task.setup, BrowserSetup)
         assert task.setup.start_url == "https://flights.example.com"
         assert task.expected_answer == "$199"
         assert task.tags == ["L2", "search"]

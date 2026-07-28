@@ -49,3 +49,35 @@ class FragmentBase(_BridgeBase):  # type: ignore[misc]
     @property
     def fragment_id(self) -> str:
         return self.__registry_key__
+
+    # ── trace persistence contract ────────────────────────────
+    #
+    # A fragment owns how it lands on disk. Binary payloads (screenshots,
+    # audio, video frames) must NOT be base64'd into the JSON record: it
+    # inflates the file ~33%, and every reader that globs for the real
+    # extension silently finds nothing. A fragment that carries bytes
+    # overrides ``trace_binary`` to hand them over verbatim and
+    # ``trace_json_exclude`` to keep them out of the JSON sidecar.
+
+    def trace_binary(self) -> tuple[str, bytes] | None:
+        """Binary artifact as ``(file_suffix, payload)``, or ``None``.
+
+        The suffix includes the dot (e.g. ``".png"``). The writer stores it
+        beside the JSON sidecar under the same step + fragment key.
+        """
+        return None
+
+    def trace_json_exclude(self) -> set[str]:
+        """Field names to omit from the JSON sidecar.
+
+        Use for anything already persisted by :meth:`trace_binary`.
+        """
+        return set()
+
+    def summary(self) -> str:
+        """One-line human-readable digest for ``StepRecord.observation_summary``.
+
+        Empty means "nothing worth summarising" and the fragment is
+        omitted from the step's summary line.
+        """
+        return ""
