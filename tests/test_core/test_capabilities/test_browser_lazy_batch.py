@@ -52,9 +52,11 @@ class TestCacheInvalidation:
     ) -> None:
         cap = cap_with_fake_session
         cache = _ObserveCycleCache(
-            dom=DOMObs(element_tree=None, selector_map={}),
-            screenshot=ScreenshotObs(),
-            browser_meta=BrowserMetaObs(),
+            fragments={
+                "browser.dom": DOMObs(element_tree=None, selector_map={}),
+                "browser.screenshot": ScreenshotObs(),
+                "browser.browser_meta": BrowserMetaObs(),
+            },
             fired=True,
         )
         cap._cycle_cache["fake_sid"] = cache
@@ -66,7 +68,6 @@ class TestCacheInvalidation:
         async def _go() -> ActionResult:
             return await cap.execute_action(
                 Action(name="browser.navigate", params={"url": "https://example.com"}),
-                session_id="fake_sid",
             )
 
         result = asyncio.run(_go())
@@ -86,7 +87,7 @@ class TestCacheInvalidation:
         cap._scopes["other_sid"] = object()  # type: ignore[assignment]
         cap._selector_maps["other_sid"] = {}
         other_cache = _ObserveCycleCache(
-            dom=DOMObs(element_tree=None, selector_map={}),
+            fragments={"browser.dom": DOMObs(element_tree=None, selector_map={})},
             fired=True,
         )
         cap._cycle_cache["other_sid"] = other_cache
@@ -97,7 +98,6 @@ class TestCacheInvalidation:
         async def _go() -> None:
             await cap.execute_action(
                 Action(name="browser.navigate", params={"url": "https://x.example.com"}),
-                session_id="fake_sid",
             )
 
         asyncio.run(_go())
@@ -121,7 +121,6 @@ class TestCacheInvalidation:
         async def _go() -> ActionResult:
             return await cap.execute_action(
                 Action(name="totally_made_up", params={}),
-                session_id="fake_sid",
             )
 
         result = asyncio.run(_go())
@@ -139,26 +138,31 @@ class TestLazyBatchPopulation:
         cap = cap_with_fake_session
         cached_dom = DOMObs(element_tree=None, selector_map={1: "b"})
         cap._cycle_cache["fake_sid"] = _ObserveCycleCache(
-            dom=cached_dom,
-            screenshot=ScreenshotObs(image_bytes=b"X"),
-            browser_meta=BrowserMetaObs(url="https://cached.example.com"),
+            fragments={
+                "browser.dom": cached_dom,
+                "browser.screenshot": ScreenshotObs(image_bytes=b"X"),
+                "browser.browser_meta": BrowserMetaObs(
+                    url="https://cached.example.com"
+                ),
+            },
             fired=True,  # mark as already populated
         )
 
         import asyncio
 
         async def _go() -> tuple:
-            d = await cap.resolve_fragment("browser.dom", session_id="fake_sid")
-            s = await cap.resolve_fragment("browser.screenshot", session_id="fake_sid")
-            b = await cap.resolve_fragment("browser.browser_meta", session_id="fake_sid")
+            d = await cap.resolve_fragment("browser.dom")
+            s = await cap.resolve_fragment("browser.screenshot")
+            b = await cap.resolve_fragment("browser.browser_meta")
             return d, s, b
 
         d, s, b = asyncio.run(_go())
         # All three should come from the cache (no event fired because
         # ``fired=True`` short-circuits ``_populate_cycle``).
+        cached = cap._cycle_cache["fake_sid"].fragments
         assert d is cached_dom
-        assert s is cap._cycle_cache["fake_sid"].screenshot
-        assert b is cap._cycle_cache["fake_sid"].browser_meta
+        assert s is cached["browser.screenshot"]
+        assert b is cached["browser.browser_meta"]
         assert b.url == "https://cached.example.com"
 
     def test_resolve_unknown_fragment_raises(
@@ -166,9 +170,11 @@ class TestLazyBatchPopulation:
     ) -> None:
         cap = cap_with_fake_session
         cap._cycle_cache["fake_sid"] = _ObserveCycleCache(
-            dom=DOMObs(),
-            screenshot=ScreenshotObs(),
-            browser_meta=BrowserMetaObs(),
+            fragments={
+                "browser.dom": DOMObs(),
+                "browser.screenshot": ScreenshotObs(),
+                "browser.browser_meta": BrowserMetaObs(),
+            },
             fired=True,
         )
 
@@ -176,7 +182,7 @@ class TestLazyBatchPopulation:
 
         async def _go() -> object:
             return await cap.resolve_fragment(
-                "totally_made_up_fragment", session_id="fake_sid"
+                "totally_made_up_fragment"
             )
 
         with pytest.raises(ValueError, match="cannot resolve fragment"):
@@ -195,36 +201,143 @@ class TestLazyBatchPopulation:
             asyncio.run(_go())
 
 
-class TestCachePartialFailure:
-    """M4 regression: if the batched event fires but no watchdog
-    produced a successful BrowserStateSummary, the cache must NOT be
-    marked as ``fired`` — otherwise subsequent resolve_fragment calls
-    return empty fragments forever. The cache should be unfired so the
-    next call retries.
+class _ReplayScope:
+    """Fake EventScope that answers BrowserStateRequestEvent from a script.
+
+    ``replies`` is one entry per expected emission: either a
+    ``BrowserStateSummary`` (handler succeeded) or ``None`` (handler ran
+    but produced nothing — exactly what DOMWatchdog / ScreenshotWatchdog
+    do when their CDP calls fail, since both swallow and return None).
+    The event is born-completed, so ``await event`` returns immediately
+    and results are read straight off ``event_results``.
     """
 
-    def test_cache_marked_unfired_when_all_results_fail(self) -> None:
-        # Seed the cache with an empty state that has fired=False to
-        # simulate the post-failure state. The test verifies that after
-        # a failed cycle, the cache remains unfired (ready for retry).
+    def __init__(self, replies: list[object]) -> None:
+        self._replies = list(replies)
+        self.emissions = 0
+
+    def emit(self, event: object) -> None:
+        reply = self._replies[self.emissions] if self.emissions < len(self._replies) else None
+        self.emissions += 1
+        event.record_result(  # type: ignore[attr-defined]
+            connection_id=f"conn-{self.emissions}",
+            handler_name="FakeWatchdog",
+            result=reply,
+        )
+
+
+class TestCachePartialFailure:
+    """A cycle missing a requested fragment retries, then raises.
+
+    Pre-fix, ``_populate_cycle`` just returned. ``cache.dom`` stayed
+    ``None``, ``resolve_fragment`` handed that ``None`` to the negotiated
+    observation model where env fragments are required, and the caller
+    saw an opaque pydantic ValidationError about a missing field. The
+    "next call retries" the comment promised never happened either:
+    ``browser.dom`` is resolved exactly once per step.
+
+    The retry predicate is now per-fragment rather than "did *any*
+    watchdog answer", so a cycle where the screenshot lands and the DOM
+    scrape loses a race against navigation still re-fires.
+    """
+
+    @staticmethod
+    def _cap_with_scope(replies: list[object]) -> tuple[BrowserCapability, _ReplayScope]:
         cap = BrowserCapability()
         cap._default_session_id = "fake_sid"
-        cap._scopes["fake_sid"] = object()  # type: ignore[assignment]
+        scope = _ReplayScope(replies)
+        cap._scopes["fake_sid"] = scope  # type: ignore[assignment]
         cap._selector_maps["fake_sid"] = {}
-        cap._cycle_cache["fake_sid"] = _ObserveCycleCache(fired=False)
+        # Narrow to the one fragment under test, the way negotiation does.
+        cap.apply_negotiation({"browser.dom"})
+        return cap, scope
 
-        # A subsequent resolve request (had fired=False) will re-enter
-        # _populate_cycle. Without a real scope/event this would raise,
-        # but the pre-check we care about is that fired=False means
-        # "retry next time". Directly assert the cache state.
-        cache = cap._cycle_cache["fake_sid"]
-        assert cache.fired is False
-        assert cache.dom is None
-        assert cache.screenshot is None
+    def test_retries_and_recovers_on_second_attempt(self) -> None:
+        import asyncio
+
+        from spectragent.core.capabilities.browser.watchdogs.events import (
+            BrowserStateSummary,
+        )
+
+        cap, scope = self._cap_with_scope(
+            [
+                None,
+                BrowserStateSummary(
+                    fragments={"browser.dom": DOMObs(element_tree="TREE")}
+                ),
+            ]
+        )
+
+        dom = asyncio.run(cap.resolve_fragment("browser.dom"))
+
+        assert scope.emissions == 2, "a failed cycle must actually re-fire"
+        assert dom is not None
+        assert dom.element_tree == "TREE"
+        assert cap._cycle_cache["fake_sid"].fired is True
+
+    def test_partial_reply_still_retries(self) -> None:
+        """A summary that omits the requested fragment is not a success."""
+        import asyncio
+
+        from spectragent.core.capabilities.browser.watchdogs.events import (
+            BrowserStateSummary,
+        )
+
+        cap, scope = self._cap_with_scope(
+            [
+                # Screenshot landed, DOM did not — the old ``had_success``
+                # predicate accepted this and served an empty DOM.
+                BrowserStateSummary(
+                    fragments={"browser.screenshot": ScreenshotObs(image_bytes=b"PNG")}
+                ),
+                BrowserStateSummary(
+                    fragments={"browser.dom": DOMObs(element_tree="TREE")}
+                ),
+            ]
+        )
+
+        dom = asyncio.run(cap.resolve_fragment("browser.dom"))
+
+        assert scope.emissions == 2
+        assert dom.element_tree == "TREE"
+
+    def test_raises_with_diagnostics_when_all_attempts_fail(self) -> None:
+        import asyncio
+
+        cap, scope = self._cap_with_scope([None, None])
+
+        # The error names the missing *fragment*, so the message points at
+        # the thing that is actually absent.
+        with pytest.raises(RuntimeError, match=r"no watchdog produced \['browser.dom'\]"):
+            asyncio.run(cap.resolve_fragment("browser.dom"))
+
+        assert scope.emissions == 2
+        # Never serve a half-built fragment: the cache stays unfired.
+        assert cap._cycle_cache["fake_sid"].fired is False
+        assert cap._cycle_cache["fake_sid"].fragments == {}
+
+    def test_failure_never_returns_none_dom(self) -> None:
+        """The bug's actual symptom: a None fragment reaching the caller."""
+        import asyncio
+
+        cap, _ = self._cap_with_scope([None, None])
+
+        async def _go() -> object:
+            try:
+                return await cap.resolve_fragment("browser.dom")
+            except RuntimeError:
+                return "raised"
+
+        assert asyncio.run(_go()) == "raised"
 
 
 class TestMultiTabIsolation:
-    """Per-tab caches must not bleed across tabs."""
+    """Per-tab caches must not bleed across tabs.
+
+    Which tab is read comes from the capability's own focus, not from a
+    caller-supplied handle: ``resolve_fragment`` takes no session
+    argument, so switching tabs means moving the focus.
+    """
 
     def test_two_tabs_have_independent_caches(
         self, cap_with_fake_session: BrowserCapability
@@ -235,19 +348,20 @@ class TestMultiTabIsolation:
 
         # Seed two distinct caches.
         cap._cycle_cache["fake_sid"] = _ObserveCycleCache(
-            dom=DOMObs(selector_map={1: "x"}),
+            fragments={"browser.dom": DOMObs(selector_map={1: "x"})},
             fired=True,
         )
         cap._cycle_cache["tab_b"] = _ObserveCycleCache(
-            dom=DOMObs(selector_map={2: "y"}),
+            fragments={"browser.dom": DOMObs(selector_map={2: "y"})},
             fired=True,
         )
 
         import asyncio
 
         async def _go() -> tuple:
-            a = await cap.resolve_fragment("browser.dom", session_id="fake_sid")
-            b = await cap.resolve_fragment("browser.dom", session_id="tab_b")
+            a = await cap.resolve_fragment("browser.dom")
+            cap._default_session_id = "tab_b"  # what switch_tab() does
+            b = await cap.resolve_fragment("browser.dom")
             return a, b
 
         a, b = asyncio.run(_go())

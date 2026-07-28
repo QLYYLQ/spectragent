@@ -6,7 +6,7 @@ objects. The selector_map lookup happens at handler time in each watchdog.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from agent_cdp import BaseEvent
@@ -17,13 +17,15 @@ from agent_cdp import BaseEvent
 
 @dataclass(slots=True)
 class BrowserStateSummary:
-    """Aggregated browser state returned by DOMWatchdog + ScreenshotWatchdog."""
+    """One watchdog's contribution to an observe cycle.
 
-    dom_state: Any | None = None
-    screenshot: bytes | None = None
-    url: str | None = None
-    page_title: str | None = None
-    tabs: list[dict[str, Any]] | None = None
+    Keyed by fully-qualified fragment key (``"browser.dom"``), valued by
+    the built fragment instance. The producing watchdog builds its own
+    fragment — the capability only merges the dicts, so it needs no
+    per-fragment knowledge and does not change when a fragment is added.
+    """
+
+    fragments: dict[str, Any] = field(default_factory=dict)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -133,22 +135,14 @@ class DoneEvent(BaseEvent[None]):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Tab Management Events
+# Tab Management
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-class SwitchTabEvent(BaseEvent[str | None]):
-    """Switch agent focus to a different tab."""
-
-    target_id: str | None = None  # None = switch to most recent
-    event_timeout: float = 10.0
-
-
-class CloseTabEvent(BaseEvent[None]):
-    """Close a specific tab."""
-
-    target_id: str
-    event_timeout: float = 10.0
+#
+# There are deliberately no tab-management *events*. Opening, closing and
+# focusing tabs all mutate capability-level state (the scope/watchdog
+# registry and ``_default_session_id``), which a tab-scoped watchdog
+# handler cannot reach. They are plain ``BrowserCapability`` methods:
+# ``create_tab`` / ``close_tab`` / ``switch_tab``.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -167,14 +161,21 @@ class ScreenshotRequestEvent(BaseEvent[bytes]):
 
 
 class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
-    """Request full browser state (DOM + screenshot + metadata).
+    """Request exactly the observation fragments this run negotiated.
 
-    DOMWatchdog and ScreenshotWatchdog both handle this event.
-    Results are aggregated by the session layer.
+    ``fragments`` carries fully-qualified fragment keys. Every fragment
+    watchdog answers only when its own ``provides`` intersects the set,
+    so a vision-only agent that negotiated ``browser.screenshot`` but not
+    ``browser.dom`` never pays for a DOM extraction.
+
+    This replaced fixed ``include_dom`` / ``include_screenshot`` flags:
+    those made the event schema one of the places a new fragment had to
+    edit, and they were computed from the capability's *full* provides
+    set rather than the negotiated one — which cancelled out the entire
+    cost-saving purpose of negotiation.
     """
 
-    include_dom: bool = True
-    include_screenshot: bool = True
+    fragments: frozenset[str] = frozenset()
     event_timeout: float = 30.0
 
 
@@ -279,38 +280,6 @@ class AgentFocusChangedEvent(BaseEvent[None]):
     target_id: str
     url: str = ""
     reason: str = ""  # "user_switch" | "crash_recovery" | "new_tab"
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Download Events
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-class DownloadStartedEvent(BaseEvent[None]):
-    """File download started (Browser.downloadWillBegin)."""
-
-    guid: str
-    url: str
-    suggested_filename: str = ""
-
-
-class DownloadProgressEvent(BaseEvent[None]):
-    """File download progress update (Browser.downloadProgress)."""
-
-    guid: str
-    received_bytes: int = 0
-    total_bytes: int = 0
-    state: str = ""  # "inProgress" | "completed" | "canceled"
-
-
-class FileDownloadedEvent(BaseEvent[None]):
-    """File download completed."""
-
-    guid: str | None = None
-    url: str = ""
-    path: str = ""
-    file_name: str = ""
-    file_size: int = 0
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -27,7 +27,6 @@ class TestClickExecute:
         result = await ClickAction().execute(
             {"index": 42},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is True
         scope = fake_capability._scopes["sid_main"]
@@ -42,7 +41,6 @@ class TestClickExecute:
         result = await ClickAction().execute(
             {"index": 99},  # not in selector_map
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is False
         assert "99" in (result.error or "")
@@ -53,6 +51,5 @@ class TestClickExecute:
         result = await ClickAction().execute(
             {},  # no index
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is False

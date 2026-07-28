@@ -20,7 +20,6 @@ class TestClickCoordinate:
         await ClickCoordinateAction().execute(
             {"coordinate_x": 100, "coordinate_y": 200},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert isinstance(event, ClickCoordinateEvent)
@@ -33,7 +32,6 @@ class TestClickCoordinate:
         result = await ClickCoordinateAction().execute(
             {"coordinate_x": 10},  # missing coordinate_y
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is False
 
@@ -44,6 +42,5 @@ class TestClickCoordinate:
         result = await ClickCoordinateAction().execute(
             {"coordinate_x": 1, "coordinate_y": 2},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is True

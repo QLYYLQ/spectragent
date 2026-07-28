@@ -29,6 +29,9 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.capabilities.browser.actions._common import (
+    focused_scope,
+)
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ScreenshotRequestEvent,
 )
@@ -108,10 +111,9 @@ class ScreenshotAction(ActionBase):
         params: dict[str, Any],
         *,
         capability: BrowserCapability,
-        session_id: str,
     ) -> ActionResult:
         try:
-            scope = capability._scopes[session_id]
+            scope = focused_scope(capability)
             full_page = bool(params.get("full_page", self.default_full_page))
             fmt = params.get("format") or self.default_format
             quality = params.get("quality", self.default_quality)
@@ -142,7 +144,7 @@ class ScreenshotAction(ActionBase):
                 out_dir.mkdir(parents=True, exist_ok=True)
                 stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
                 ext = "jpg" if fmt == "jpeg" else fmt
-                file_path = out_dir / f"{stamp}_{session_id[:8]}.{ext}"
+                file_path = out_dir / f"{stamp}_{capability.default_session_id[:8]}.{ext}"
                 file_path.write_bytes(png_bytes)
                 parts.append(f"saved={file_path} bytes={len(png_bytes)}")
 

@@ -10,7 +10,14 @@ from spectragent.core.capabilities.browser.input.mouse import HumanMouse
 
 
 class RecordCDP:
-    """Records every ``send`` call; returns empty results."""
+    """Records every ``send`` call; returns empty results.
+
+    Structurally satisfies ``agent_cdp.CDPCommandProtocol`` — including
+    the positional ``session_id`` and the event-subscription half — so
+    HumanMouse can be constructed with it without a type error.
+    """
+
+    is_connected = True
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -19,11 +26,16 @@ class RecordCDP:
         self,
         method: str,
         params: dict[str, Any] | None = None,
-        *,
         session_id: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append((method, params or {}))
         return {}
+
+    def on_event(self, method: str, callback: Any) -> None:
+        return None
+
+    def off_event(self, method: str, callback: Any) -> None:
+        return None
 
     def mouse_events(self) -> list[dict[str, Any]]:
         return [p for m, p in self.calls if m == "Input.dispatchMouseEvent"]
@@ -171,17 +183,57 @@ class TestHumanizedMode:
         assert (last["x"], last["y"]) == (500, 400)
 
 
-class TestUnknownStrategyFallback:
-    async def test_unknown_trajectory_falls_back_to_instant(self, no_sleep: list[float]) -> None:
+class TestUnknownStrategyIsHardError:
+    """A misspelled strategy must fail loudly, never degrade to instant.
+
+    Silent fallback (the pre-fix behavior) meant a typo in
+    ``mouse_trajectory`` turned humanized movement off while the run
+    reported success — the config error was invisible.
+    """
+
+    def test_unknown_trajectory_raises_and_lists_options(self) -> None:
+        with pytest.raises(ValueError, match="Unknown mouse_trajectory") as exc:
+            HumanMouse(
+                RecordCDP(),
+                session_id_getter=lambda: None,
+                trajectory_type="does_not_exist",
+                humanize=True,
+            )
+        # The message must name the real options so the fix is one edit away.
+        for key in ("instant", "windmouse", "bezier"):
+            assert key in str(exc.value)
+
+    def test_unknown_trajectory_raises_even_when_humanize_off(self) -> None:
+        # ``mouse_trajectory`` is ignored when humanize is off, but an
+        # unregistered name is still a config error worth surfacing.
+        with pytest.raises(ValueError, match="Unknown mouse_trajectory"):
+            HumanMouse(
+                RecordCDP(),
+                session_id_getter=lambda: None,
+                trajectory_type="does_not_exist",
+                humanize=False,
+            )
+
+    def test_bad_overrides_raise(self) -> None:
+        with pytest.raises(ValueError, match="rejected"):
+            HumanMouse(
+                RecordCDP(),
+                session_id_getter=lambda: None,
+                trajectory_type="windmouse",
+                humanize=True,
+                trajectory_kwargs={"not_a_real_kwarg": 1},
+            )
+
+    async def test_overrides_ignored_when_humanize_off(self, no_sleep: list[float]) -> None:
+        # Overrides target the configured strategy; with humanize off the
+        # forced ``instant`` strategy must not be handed kwargs it cannot take.
         cdp = RecordCDP()
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: None,
-            trajectory_type="does_not_exist",
-            humanize=True,
+            trajectory_type="windmouse",
+            humanize=False,
+            trajectory_kwargs={"seed": 7},
         )
         await mouse.click(40, 50, "left", 1)
-        # Falls back to instant → exactly three events at target.
         assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]
-        for ev in cdp.mouse_events():
-            assert (ev["x"], ev["y"]) == (40, 50)

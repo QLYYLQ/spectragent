@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.capabilities.browser.actions._common import (
+    focused_scope,
+)
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ClickCoordinateEvent,
@@ -34,10 +37,9 @@ class ClickCoordinateAction(SettleableAction, ActionBase):
         params: dict[str, Any],
         *,
         capability: BrowserCapability,
-        session_id: str,
     ) -> ActionResult:
         try:
-            scope = capability._scopes[session_id]
+            scope = focused_scope(capability)
             event = ClickCoordinateEvent(
                 coordinate_x=int(params["coordinate_x"]),
                 coordinate_y=int(params["coordinate_y"]),

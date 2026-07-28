@@ -225,7 +225,7 @@ class TestExecuteActionDispatch:
 
         result = asyncio.run(
             cap.execute_action(
-                Action(name="does_not_exist"), session_id="sid_x",
+                Action(name="does_not_exist"),
             )
         )
         assert result.success is False
@@ -244,7 +244,6 @@ class TestExecuteActionDispatch:
         result = asyncio.run(
             cap.execute_action(
                 Action(name="browser.done", params={"extracted_content": "answer42"}),
-                session_id="sid_x",
             )
         )
         assert result.is_done is True
@@ -263,9 +262,14 @@ class _FakeProvider:
     expected to construct a CDPClient against it.
     """
 
-    def __init__(self, cdp_url: str | None = "ws://fake-backend/devtools") -> None:
+    def __init__(
+        self,
+        cdp_url: str | None = "ws://fake-backend/devtools",
+        metadata: dict | None = None,
+    ) -> None:
         self.provider_id = "fake_provider"
         self._cdp_url = cdp_url
+        self._metadata = metadata or {}
         self.open_calls: list[dict] = []
         self.close_calls: list[object] = []
 
@@ -277,6 +281,7 @@ class _FakeProvider:
             session_id="fake-session-1",
             provider_id=self.provider_id,
             cdp_url=self._cdp_url,
+            metadata=dict(self._metadata),
         )
 
     async def close(self, session=None):
@@ -292,18 +297,25 @@ class TestBackendIoC:
     :meth:`BrowserCapability.setup`.
     """
 
+    constructed_kwargs: list[dict] = []
+
     @staticmethod
     def _patch_heavy_setup(monkeypatch) -> list[str]:
         """Stub the CDP / agent-cdp internals that need a live browser.
 
         Returns a list that will be appended to with each constructed
-        CDP URL so tests can assert which URL drove the connection.
+        CDP URL so tests can assert which URL drove the connection. The
+        constructor kwargs of each client land in
+        ``TestBackendIoC.constructed_kwargs``.
         """
         cdp_clients_constructed: list[str] = []
+        TestBackendIoC.constructed_kwargs = []
+        recorded_kwargs = TestBackendIoC.constructed_kwargs
 
         class _StubCDPClient:
-            def __init__(self, url: str) -> None:
+            def __init__(self, url: str, **kwargs) -> None:
                 cdp_clients_constructed.append(url)
+                recorded_kwargs.append(kwargs)
 
             async def start(self) -> None:
                 return None
@@ -416,6 +428,90 @@ class TestBackendIoC:
         # backend defaults to None.
         with pytest.raises(RuntimeError, match="requires a CDP URL"):
             asyncio.run(cap.setup())
+
+    def test_setup_passes_no_framework_kwargs_to_open(self, monkeypatch) -> None:
+        """``backend.open()`` gets nothing the provider did not declare.
+
+        Regression: setup() used to pass ``viewport={...}``. Only
+        LocalChromeProvider has ``open(self, **kwargs)``; the six cloud
+        providers declare explicit keyword-only signatures of their own
+        options, so every one of them raised TypeError at setup — which
+        made the shipped ``configs/browser_use_skyvern.yaml`` unrunnable.
+        """
+        import asyncio
+
+        cap = BrowserCapability(viewport_width=1920, viewport_height=1080)
+        cap.backend = _FakeProvider()  # type: ignore[assignment]
+        self._patch_heavy_setup(monkeypatch)
+
+        asyncio.run(cap.setup())
+        assert cap.backend.open_calls == [{}]  # type: ignore[union-attr]
+
+    def test_strict_signature_provider_survives_setup(self, monkeypatch) -> None:
+        """A provider with a Skyvern-shaped signature must not TypeError."""
+        import asyncio
+
+        from spectragent.schemas.provider_session import ProviderSession
+
+        class _StrictProvider:
+            """Mirrors SkyvernProvider.open — keyword-only, no **kwargs."""
+
+            provider_id = "strict"
+
+            async def open(  # noqa: D102
+                self,
+                *,
+                timeout_minutes: int | None = None,
+                solve_captcha: bool | None = None,
+                adblock: bool | None = None,
+                proxy_country: str | None = None,
+            ) -> ProviderSession:
+                return ProviderSession(
+                    session_id="s1",
+                    provider_id=self.provider_id,
+                    cdp_url="ws://strict/devtools",
+                )
+
+            async def close(self, session=None) -> None:
+                return None
+
+        cap = BrowserCapability()
+        cap.backend = _StrictProvider()  # type: ignore[assignment]
+        urls = self._patch_heavy_setup(monkeypatch)
+
+        asyncio.run(cap.setup())
+        assert urls == ["ws://strict/devtools"]
+
+    def test_cdp_auth_headers_are_forwarded(self, monkeypatch) -> None:
+        """``metadata["cdp_headers"]`` reaches the CDP WebSocket handshake.
+
+        Skyvern (x-api-key) and Airtop (Bearer) both compute these; before
+        the fix nothing read them, so their handshake was rejected for
+        missing auth.
+        """
+        import asyncio
+
+        cap = BrowserCapability()
+        cap.backend = _FakeProvider(  # type: ignore[assignment]
+            metadata={"cdp_headers": {"x-api-key": "secret-123"}},
+        )
+        self._patch_heavy_setup(monkeypatch)
+
+        asyncio.run(cap.setup())
+        assert self.constructed_kwargs == [
+            {"additional_headers": {"x-api-key": "secret-123"}}
+        ]
+
+    def test_no_headers_when_backend_supplies_none(self, monkeypatch) -> None:
+        """Providers without CDP auth must not get an empty-dict header set."""
+        import asyncio
+
+        cap = BrowserCapability()
+        cap.backend = _FakeProvider()  # type: ignore[assignment]
+        self._patch_heavy_setup(monkeypatch)
+
+        asyncio.run(cap.setup())
+        assert self.constructed_kwargs == [{"additional_headers": None}]
 
 
 # ─── Page lifecycle wiring (M13.5) ────────────────────────────────────
@@ -559,6 +655,70 @@ class TestPageLifecycleWiring:
             }:
                 assert sid == "cdp-sid-1"
 
+    def test_attach_tab_applies_viewport_override(self) -> None:
+        """The configured viewport is pushed to the browser, not just assumed.
+
+        Regression: ``viewport_width`` / ``viewport_height`` were fed to
+        the DOM cleaner and reported on ScreenshotObs but never sent to
+        the browser (zero ``setDeviceMetricsOverride`` in the repo), so
+        viewport-relative filtering ran against the wrong rectangle.
+        """
+        import asyncio
+
+        cap = BrowserCapability(viewport_width=1024, viewport_height=768)
+        cdp = _RecordingCDPClient()
+        scope_group = _RecordingScopeGroup("test")
+        cap._inject_cdp_client(cdp)  # type: ignore[arg-type]
+        cap._cdp = cdp  # type: ignore[assignment]
+        cap._scope_group = scope_group  # type: ignore[assignment]
+        from spectragent.core.capabilities.browser.profiles import resolve_profile
+
+        cap._resolved_profile = resolve_profile("standard")
+        cap._create_watchdogs_for_scope = (  # type: ignore[method-assign]
+            lambda level="tab", cdp_session_id=None: []
+        )
+
+        asyncio.run(cap._attach_tab("T1"))
+
+        overrides = [
+            (params, sid)
+            for m, params, sid in cdp.sent
+            if m == "Emulation.setDeviceMetricsOverride"
+        ]
+        assert len(overrides) == 1
+        params, sid = overrides[0]
+        assert params["width"] == 1024
+        assert params["height"] == 768
+        # deviceScaleFactor 0 == "keep the platform DPR"; pinning it would
+        # fight the live devicePixelRatio query the DOM watchdog does.
+        assert params["deviceScaleFactor"] == 0
+        assert sid == "cdp-sid-1"
+
+    def test_attach_tab_survives_emulation_refusal(self) -> None:
+        """A provider that rejects Emulation must degrade, not kill the tab."""
+        import asyncio
+
+        class _RefusingCDP(_RecordingCDPClient):
+            async def send(self, method, params=None, session_id=None):
+                if method == "Emulation.setDeviceMetricsOverride":
+                    raise RuntimeError("CDP error: Emulation not allowed")
+                return await super().send(method, params, session_id)
+
+        cap = BrowserCapability()
+        cdp = _RefusingCDP()
+        scope_group = _RecordingScopeGroup("test")
+        cap._inject_cdp_client(cdp)  # type: ignore[arg-type]
+        cap._cdp = cdp  # type: ignore[assignment]
+        cap._scope_group = scope_group  # type: ignore[assignment]
+        from spectragent.core.capabilities.browser.profiles import resolve_profile
+
+        cap._resolved_profile = resolve_profile("standard")
+        cap._create_watchdogs_for_scope = (  # type: ignore[method-assign]
+            lambda level="tab", cdp_session_id=None: []
+        )
+
+        assert asyncio.run(cap._attach_tab("T1")) == "cdp-sid-1"
+
     def test_attach_tab_records_main_frame_id(self) -> None:
         import asyncio
 
@@ -622,3 +782,103 @@ class TestPageLifecycleWiring:
             "Page.lifecycleEvent",
         ):
             assert cdp.event_callbacks.get(method, []) == []
+
+
+class TestFailedSetupReleasesResources:
+    """The production shape of the partial-setup leak.
+
+    ``BrowserCapability.setup`` opens the backend session and starts the
+    CDP websocket, attaches a tab, sets ``_alive = True`` — and *then*
+    navigates to the task's ``start_url``, which can fail (a
+    ``SecurityWatchdog`` allow/blocklist mismatch, or any CDP error, both
+    of which ``NavigateAction`` turns into ``success=False``). Everything
+    acquired before that raise used to stay open for the life of the
+    process, because ``AgentRuntime.teardown_environment`` was gated on a
+    setup that had *returned*.
+    """
+
+    @staticmethod
+    def _make_run(env):
+        from spectragent.core.loops import ReactLoop
+        from spectragent.schemas.action import Action
+        from tests._helpers.assembly import make_run
+
+        class _Agent:
+            __wiring__ = {"action": ("action", ["browser.done"])}
+
+            def prepare(self, *, task, action_descriptors):
+                return []
+
+            def build_react_prompt(self, obs):
+                return [{"role": "user", "content": "go"}]
+
+            def parse_react_output(self, out):
+                return [Action(name="browser.done")]
+
+            def get_react_output_model(self):
+                return None
+
+        class _Completion:
+            completion = "done"
+            usage = None
+
+        class _LLM:
+            model = "test-model"
+
+            async def ainvoke(self, messages, **kwargs):
+                return _Completion()
+
+        class _Memory:
+            supports_protocols = frozenset({"user_assistant"})
+
+            def add_message(self, m):
+                pass
+
+            def add_messages(self, ms):
+                pass
+
+            def get_context_messages(self):
+                return []
+
+            def clear(self):
+                pass
+
+        return make_run(
+            agent=_Agent(),
+            loop=ReactLoop(),
+            env=env,
+            llm=_LLM(),
+            memory=_Memory(),
+        )
+
+    async def test_start_url_failure_still_releases_the_backend_session(
+        self, monkeypatch
+    ) -> None:
+        from spectragent.core.environments.browser import BrowserEnvironment
+        from spectragent.core.runtime import AgentRuntime
+        from tests._helpers.assembly import AGENT_ID, make_env
+
+        provider = _FakeProvider(cdp_url="ws://from-backend/x")
+        cap = BrowserCapability()
+        cap.backend = provider  # type: ignore[assignment]
+        TestBackendIoC._patch_heavy_setup(monkeypatch)
+
+        env = make_env(BrowserEnvironment, {"browser#0": cap})
+        runtime = AgentRuntime.for_agent(self._make_run(env), AGENT_ID)
+
+        result = await runtime.execute(
+            "t",
+            task_id="t-1",
+            env_context={"start_url": "https://blocked.example"},
+            raise_on_error=False,
+        )
+
+        # setup() failed on the start_url, exactly as in production...
+        assert result.agent_done.value == "error"
+        assert "could not open start_url" in (result.error or "")
+        # ... after it had already opened the provider session ...
+        assert len(provider.open_calls) == 1
+        # ... and the runtime released it instead of orphaning a browser.
+        assert len(provider.close_calls) == 1
+        assert cap._session is None
+        assert cap.is_alive is False

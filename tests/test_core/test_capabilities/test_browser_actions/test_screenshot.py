@@ -48,7 +48,6 @@ class TestScreenshotExecute:
         result = await action.execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
 
         event = scope.emitted[0]
@@ -75,7 +74,6 @@ class TestScreenshotExecute:
         await action.execute(
             {"full_page": True, "format": "jpeg", "quality": 70},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
 
         event = scope.emitted[0]
@@ -99,7 +97,6 @@ class TestScreenshotExecute:
         await action.execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
 
         event = scope.emitted[0]
@@ -117,7 +114,6 @@ class TestScreenshotExecute:
         result = await action.execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
 
         assert result.success is True
@@ -136,7 +132,6 @@ class TestScreenshotExecute:
         result = await action.execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
 
         assert result.extracted_content is not None
@@ -151,7 +146,6 @@ class TestScreenshotExecute:
         result = await action.execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]
-            session_id="sid_main",
         )
         assert result.success is False
         assert result.error is not None

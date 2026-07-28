@@ -11,13 +11,18 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
-from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, WatchdogBase
+from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 from agent_cdp.events.base import BaseEvent
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMSelectorMap
 from spectragent.core.capabilities.browser.input import HumanMouse
+from spectragent.core.capabilities.browser.watchdogs.base import (
+    BrowserWatchdog,
+    WatchdogContext,
+    WatchdogLevel,
+)
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     ClickCoordinateEvent,
@@ -246,8 +251,23 @@ _DEBUG_OVERLAY_JS = r"""
 """
 
 
-class ActionWatchdog(WatchdogBase):
+class ActionWatchdog(BrowserWatchdog):
     """Executes browser actions via CDP."""
+
+    level: ClassVar[WatchdogLevel] = "tab"
+
+    @classmethod
+    def build(cls, ctx: WatchdogContext) -> ActionWatchdog:
+        return cls(
+            ctx.cdp,
+            selector_map_getter=ctx.selector_map_getter,
+            main_frame_id_getter=ctx.main_frame_id_getter,
+            debug_highlight=ctx.debug_highlight,
+            humanize_mouse=ctx.humanize_mouse,
+            mouse_trajectory=ctx.mouse_trajectory,
+            viewport=ctx.viewport,
+            mouse_trajectory_kwargs=ctx.mouse_trajectory_overrides or None,
+        )
 
     def __init__(
         self,

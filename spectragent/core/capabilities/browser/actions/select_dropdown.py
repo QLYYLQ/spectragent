@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
+    focused_scope,
     resolve_index_to_backend_node_id,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
@@ -42,13 +43,12 @@ class SelectDropdownAction(SettleableAction, ActionBase):
         params: dict[str, Any],
         *,
         capability: BrowserCapability,
-        session_id: str,
     ) -> ActionResult:
         try:
             backend_node_id = resolve_index_to_backend_node_id(
-                capability, session_id, params["index"],
+                capability, params["index"],
             )
-            scope = capability._scopes[session_id]
+            scope = focused_scope(capability)
             event = SelectDropdownEvent(
                 backend_node_id=backend_node_id,
                 value=params.get("value"),

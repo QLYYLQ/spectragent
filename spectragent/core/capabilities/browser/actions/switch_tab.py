@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from spectragent.core.actions._registrar import ActionBase
-from spectragent.core.capabilities.browser.watchdogs.events import SwitchTabEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 if TYPE_CHECKING:
@@ -15,15 +14,30 @@ if TYPE_CHECKING:
 
 @dataclass
 class SwitchTabAction(ActionBase):
-    """Switch the active tab by target_id (``None`` = most recent)."""
+    """Switch the active tab by target_id (``None`` = most recent).
+
+    Delegates to :meth:`BrowserCapability.switch_tab`, which owns the
+    ``_default_session_id`` that every later observe / act resolves
+    against. This action deliberately does not go through the watchdog
+    event bus: a watchdog is scoped to a single tab and cannot repoint
+    the capability's focus.
+    """
 
     __registry_key__ = "browser.switch_tab"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
             name="browser.switch_tab",
-            description="Switch to a different browser tab.",
-            params={"target_id": "str | None -- None = most recent"},
+            description=(
+                "Switch to a different browser tab. Subsequent actions and "
+                "observations apply to the newly focused tab."
+            ),
+            params={
+                "target_id": (
+                    "str | None -- the tab_id shown in the observation's tab "
+                    "list; omit or null for the most recently opened tab"
+                ),
+            },
         )
 
     async def execute(
@@ -31,13 +45,17 @@ class SwitchTabAction(ActionBase):
         params: dict[str, Any],
         *,
         capability: BrowserCapability,
-        session_id: str,
     ) -> ActionResult:
         try:
-            scope = capability._scopes[session_id]
-            event = SwitchTabEvent(target_id=params.get("target_id"))
-            scope.emit(event)
-            await event
-            return ActionResult(success=True)
-        except Exception as exc:  # pragma: no cover
+            new_session_id = await capability.switch_tab(params.get("target_id"))
+        except Exception as exc:
+            # Unknown tab / single-tab browser / CDP refusal — the agent
+            # must learn the switch did not happen, so it can pick another
+            # tab rather than acting blind on the old one.
             return ActionResult(success=False, error=str(exc))
+
+        target_id = capability._session_to_target.get(new_session_id, new_session_id)
+        return ActionResult(
+            success=True,
+            extracted_content=f"Switched to tab {target_id}",
+        )

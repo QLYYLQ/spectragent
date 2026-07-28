@@ -43,6 +43,18 @@ async def _maybe_await(value: Any) -> None:
         await value
 
 
+def _require_registered(key: str) -> type[MouseTrajectoryProtocol]:
+    """Return the strategy class for ``key`` or raise a listing ValueError."""
+    cls = MouseTrajectoryRegistrar.get_or_none(key)
+    if cls is None:
+        available = ", ".join(sorted(MouseTrajectoryRegistrar.keys()))
+        raise ValueError(
+            f"Unknown mouse_trajectory {key!r}. Registered strategies: "
+            f"{available}."
+        )
+    return cls
+
+
 class HumanMouse:
     """Owns cursor state + a trajectory strategy; performs move/click/wheel/drag.
 
@@ -74,10 +86,18 @@ class HumanMouse:
         self._wheel_steps = max(1, wheel_steps)
         self._wheel_step_delay_ms = wheel_step_delay_ms
 
-        # When humanize is off, force the no-op strategy regardless of type so
-        # behavior is exactly the legacy instant jump.
-        key = trajectory_type if self._humanized else "instant"
-        self._traj: MouseTrajectoryProtocol = self._resolve_strategy(key, trajectory_kwargs or {})
+        # The configured name is validated even when humanize is off — a typo
+        # is a config error, never a silent downgrade to instant.
+        _require_registered(trajectory_type)
+        if self._humanized:
+            self._traj: MouseTrajectoryProtocol = self._resolve_strategy(
+                trajectory_type, trajectory_kwargs or {}
+            )
+        else:
+            # Humanize off → the no-op strategy regardless of the configured
+            # type, so behavior is exactly the legacy instant jump. Overrides
+            # belong to the configured strategy, which is not in use here.
+            self._traj = self._resolve_strategy("instant", {})
 
         # Cursor origin. Humanized runs start from viewport centre (matching the
         # debug overlay's initial 50vw/50vh) so the first action isn't a long
@@ -89,15 +109,21 @@ class HumanMouse:
 
     @staticmethod
     def _resolve_strategy(key: str, kwargs: dict[str, Any]) -> MouseTrajectoryProtocol:
+        """Construct the registered strategy ``key``.
+
+        Both failure modes are config errors and are raised, never swallowed:
+        an unrecognised key (typo) and constructor kwargs the strategy does
+        not accept. Degrading to ``instant`` here would silently turn off the
+        very behavior the user asked for.
+        """
+        cls = _require_registered(key)
         try:
-            return MouseTrajectoryRegistrar.get(key)(**kwargs)
-        except Exception as exc:  # unknown key or bad kwargs → safe default
-            logger.warning(
-                "mouse_trajectory %r unavailable (%s); falling back to 'instant'",
-                key,
-                exc,
-            )
-            return MouseTrajectoryRegistrar.get("instant")()
+            return cls(**kwargs)
+        except TypeError as exc:
+            raise ValueError(
+                f"mouse_trajectory {key!r} rejected "
+                f"mouse_trajectory_overrides {kwargs!r}: {exc}"
+            ) from exc
 
     # ── introspection ────────────────────────────────────────────────────
     @property

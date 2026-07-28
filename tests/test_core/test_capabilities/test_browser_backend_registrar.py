@@ -113,17 +113,17 @@ class TestComposerInjectsBackend:
             },
         )
 
-        # Minimum config that satisfies Pydantic schema validation. The
-        # ``observation`` and ``action`` fields are inlined by conscribe
-        # as discriminated unions on ``BrowserCapabilityConfig`` (declared
-        # via ``__wiring__``). They're declarative-only — Composer skips
-        # them at instantiation time but Pydantic still requires a value.
+        # Minimum config that satisfies Pydantic schema validation.
+        # ``observation`` and ``action`` are inlined by conscribe as
+        # discriminated unions on ``BrowserCapabilityConfig`` (declared via
+        # ``__wiring__``) but they are declaration-only and *optional*:
+        # omitting them is the supported shape, and populating them is a
+        # hard error — see
+        # ``test_populating_a_negotiation_only_block_is_rejected``.
         raw = {
             "capability": [
                 {
                     "capability_id": "browser",
-                    "observation": "browser.dom",
-                    "action": {"action_id": "browser.click"},
                     "backend": {"provider_id": "local_chrome"},
                 }
             ],
@@ -138,15 +138,18 @@ class TestComposerInjectsBackend:
         )
         assert backend.provider_id == "local_chrome"
 
-    def test_compose_injects_mode1_wired_via_descriptor(self) -> None:
+    def test_compose_injects_mode1_wired_receptors(self) -> None:
         """Mode 1 wiring (bare ``"llm"`` / ``"memory"`` strings) on AgentBase.
 
-        Conscribe's metaclass attaches ``WiredField`` descriptors for these
-        receptors but they don't show up in ``get_type_hints`` (the descriptor
-        is a class attribute, not an annotation). ConfigComposer must detect
-        the descriptor itself so it still setattr-injects the resolved
-        instances. Without that detection, ``agent.llm`` raises
-        ``AttributeError("not been injected yet")`` after compose.
+        ``AgentReceptors`` declares ``agent_loop`` / ``llm`` / ``memory``
+        slots, so ConfigComposer setattr-injects the resolved instances and
+        ``agent.llm`` stops raising the WiredField "not injected" error.
+
+        ``capability`` is deliberately *not* a slot: it is a
+        negotiation-only wiring entry read straight off ``__wiring__``, so
+        it is omitted here — conscribe attaches a ``WiredField`` descriptor
+        to every wiring entry alike, which is why descriptor presence
+        cannot be the test for receptor-ness.
         """
         # Trigger discovery of every concrete impl across the layers we wire.
         import spectragent.core.capabilities.browser.backends.local_chrome  # noqa: F401
@@ -187,14 +190,6 @@ class TestComposerInjectsBackend:
                         "provider": {"name": "direct"},
                     },
                     "memory": {"memory_id": "simple", "max_messages": 50},
-                    "capability": {
-                        "capability_id": "browser",
-                        "observation": "browser.dom",
-                        "action": {"action_id": "browser.click"},
-                        "backend": {"provider_id": "local_chrome"},
-                    },
-                    "observation": "browser.dom",
-                    "action": {"action_id": "browser.click"},
                 }
             ],
         }
@@ -202,9 +197,43 @@ class TestComposerInjectsBackend:
 
         # Mode 1 wired fields land via setattr on the agent instance.
         # Reading should NOT raise the WiredField "not injected" error.
-        agent = run.agent
+        # ``ComposedRun`` has no singular ``.agent`` accessor — a run may
+        # hold several agents, so instances are addressed per layer.
+        agent = run.instances("agent")[0]
         assert agent.llm is not None
         assert getattr(agent.llm, "model", None) == "gpt-4o-mini"
         assert agent.memory is not None
         # The chosen memory implementation matches the YAML choice.
         assert type(agent.memory).__name__ == "SimpleMemory"
+
+    def test_populating_a_negotiation_only_block_is_rejected(self) -> None:
+        """A filled-in ``action:`` under a capability must not vanish.
+
+        ``BrowserCapability.__wiring__`` declares ``action`` so conscribe
+        can constrain the schema, but the class has no slot to receive one
+        — Pass A skipped it for having no slot and Pass B skipped it for
+        being a wiring name, so a user tuning ``ScrollAction.default_amount``
+        from YAML got a clean ``compose()``, no action instance, and a run
+        that silently used the built-in default.
+        """
+        import spectragent.core.capabilities.browser.backends.local_chrome  # noqa: F401
+        from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
+        from spectragent.scripts.generate_all import _collect_registrars
+
+        composer = ConfigComposer(registrars=_collect_registrars())
+        raw = {
+            "capability": [
+                {
+                    "capability_id": "browser",
+                    "backend": {"provider_id": "local_chrome"},
+                    "action": {"action_id": "browser.scroll", "default_amount": 999},
+                }
+            ],
+        }
+
+        with pytest.raises(UnresolvedWiringError) as exc_info:
+            composer.compose(raw)
+
+        message = str(exc_info.value)
+        assert "capability[0].action" in message
+        assert "silently dropped" in message

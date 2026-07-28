@@ -14,6 +14,7 @@ from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
+    focused_scope,
     resolve_index_to_backend_node_id,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
@@ -52,15 +53,14 @@ class TypeAction(SettleableAction, ActionBase):
         params: dict[str, Any],
         *,
         capability: BrowserCapability,
-        session_id: str,
     ) -> ActionResult:
         try:
             backend_node_id = resolve_index_to_backend_node_id(
-                capability, session_id, params["index"],
+                capability, params["index"],
             )
             text = params.get("text", "")
             clear = bool(params.get("clear", self.clear_by_default))
-            scope = capability._scopes[session_id]
+            scope = focused_scope(capability)
             event = TypeTextEvent(
                 backend_node_id=backend_node_id,
                 text=text,
