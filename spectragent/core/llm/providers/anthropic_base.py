@@ -54,6 +54,19 @@ class AnthropicCompatBase(ChatModelBase):
     seed: Annotated[int | None, Field(description="Random seed for determinism")] = None
     stop_sequences: Annotated[list[str] | None, Field(description="Stop sequences")] = None
 
+    # --- Structured output ---
+    # Default = native output_config.format (constrained decoding): ~40-60% fewer
+    # tokens than forced tool-use and returns JSON directly. Set False to fall back
+    # to tool-use for endpoints/proxies that don't forward the output_config param.
+    use_native_structured_output: Annotated[
+        bool,
+        Field(description="Use native output_config.format structured outputs instead of forced tool-use"),
+    ] = True
+    structured_outputs_beta: Annotated[
+        str | None,
+        Field(description="anthropic-beta header enabling native structured outputs (None/'' to omit)"),
+    ] = "structured-outputs-2025-12-15"
+
     # --- Client params ---
     api_key: Annotated[str | None, Field(description="Anthropic API key")] = None
     auth_token: Annotated[str | None, Field(description="Anthropic auth token")] = None
@@ -142,6 +155,44 @@ class AnthropicCompatBase(ChatModelBase):
                 first_content = response.content[0]
                 text = first_content.text if isinstance(first_content, TextBlock) else str(first_content)
                 return ChatInvokeCompletion(completion=text, usage=usage, stop_reason=response.stop_reason)
+
+            elif self.use_native_structured_output:
+                # Native structured outputs via output_config.format (constrained
+                # decoding) — returns JSON directly in a text block, no tool round-trip.
+                schema = SchemaOptimizer.create_optimized_json_schema(output_format)
+                schema.pop("title", None)
+
+                create_kwargs: dict[str, Any] = dict(
+                    model=self.model,
+                    messages=anthropic_messages,
+                    system=system_prompt or omit,
+                    output_config={"format": {"type": "json_schema", "schema": schema}},
+                    **self._get_invoke_params(),
+                )
+                if self.structured_outputs_beta:
+                    create_kwargs["extra_headers"] = {"anthropic-beta": self.structured_outputs_beta}
+
+                response = await self.get_client().messages.create(**create_kwargs)
+
+                if not isinstance(response, Message):
+                    raise ModelProviderError(
+                        message=f"Unexpected response type: {type(response).__name__}",
+                        status_code=502, model=self.name,
+                    )
+
+                usage = self._get_usage(response)
+                first_content = response.content[0] if response.content else None
+                text = first_content.text if isinstance(first_content, TextBlock) else str(first_content)
+                t = text.strip()
+                if t.startswith("```json") and t.endswith("```"):
+                    t = t[7:-3].strip()
+                elif t.startswith("```") and t.endswith("```"):
+                    t = t[3:-3].strip()
+                return ChatInvokeCompletion(
+                    completion=output_format.model_validate_json(t),
+                    usage=usage,
+                    stop_reason=response.stop_reason,
+                )
 
             else:
                 tool_name = output_format.__name__

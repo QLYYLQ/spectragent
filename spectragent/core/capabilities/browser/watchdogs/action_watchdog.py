@@ -17,6 +17,7 @@ from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, WatchdogBa
 from agent_cdp.events.base import BaseEvent
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMSelectorMap
+from spectragent.core.capabilities.browser.input import HumanMouse
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     ClickCoordinateEvent,
@@ -256,6 +257,10 @@ class ActionWatchdog(WatchdogBase):
         main_frame_id_getter: Callable[[], str | None] | None = None,
         debug_highlight: bool = False,
         debug_highlight_ms: int = 350,
+        humanize_mouse: bool = False,
+        mouse_trajectory: str = "instant",
+        viewport: tuple[int, int] = (1280, 720),
+        mouse_trajectory_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self._cdp = cdp
         self._selector_map_getter = selector_map_getter
@@ -265,9 +270,18 @@ class ActionWatchdog(WatchdogBase):
         self._scope: EventScope | None = None
         self._session_id: str | None = None
 
-        # Mouse state (persists across steps).
-        self._mouse_x: int = 0
-        self._mouse_y: int = 0
+        # Mouse middle layer — owns cursor state + the trajectory strategy and
+        # performs every move/click/wheel. With humanize off it forces the
+        # ``instant`` strategy, collapsing to the legacy instant-jump behavior.
+        self._mouse = HumanMouse(
+            cdp,
+            session_id_getter=lambda: self._session_id,
+            trajectory_type=mouse_trajectory,
+            humanize=humanize_mouse,
+            viewport=viewport,
+            move_callback=self._overlay_move_cursor if debug_highlight else None,
+            trajectory_kwargs=mouse_trajectory_kwargs,
+        )
 
         # Debug highlight state — Overlay.enable is sent lazily on first use.
         self._debug_highlight = debug_highlight
@@ -323,9 +337,10 @@ class ActionWatchdog(WatchdogBase):
 
         await self._highlight_node(event.backend_node_id)
 
+        target_w = target_h = 0.0
         live = await self._get_live_viewport_center(event.backend_node_id)
         if live is not None:
-            cx, cy = live
+            cx, cy, target_w, target_h = live
         else:
             # Fallback path: post Layer-1 bounds are CSS pixels, so this is
             # still correct for the static-page case but vulnerable to
@@ -337,10 +352,12 @@ class ActionWatchdog(WatchdogBase):
             )
             cx_f, cy_f = node.bounds.center
             cx, cy = int(cx_f), int(cy_f)
+            target_w, target_h = node.bounds.width, node.bounds.height
 
         return await self._click_at(
             cx, cy, event.button, event.click_count,
             label=self._describe_node(node),
+            target_w=target_w, target_h=target_h,
         )
 
     async def _on_click_coordinate(self, event: ClickCoordinateEvent) -> dict[str, Any] | None:
@@ -353,23 +370,19 @@ class ActionWatchdog(WatchdogBase):
 
     async def _click_at(
         self, x: int, y: int, button: str, click_count: int,
-        *, label: str = "",
+        *, label: str = "", target_w: float = 0.0, target_h: float = 0.0,
     ) -> dict[str, Any]:
-        """Execute click at (x, y) via CDP Input domain."""
-        sid = self._session_id
+        """Execute click at (x, y) via the HumanMouse middle layer.
+
+        Cursor movement (a single jump when humanize is off, a full human
+        trajectory when on) plus press/release are owned by ``self._mouse``.
+        The returned coords are the *requested* target, unchanged.
+        """
         try:
-            await self._cdp.send("Input.dispatchMouseEvent", {
-                "type": "mouseMoved", "x": x, "y": y,
-            }, session_id=sid)
-            await self._cdp.send("Input.dispatchMouseEvent", {
-                "type": "mousePressed", "x": x, "y": y,
-                "button": button, "clickCount": click_count,
-            }, session_id=sid)
-            await self._cdp.send("Input.dispatchMouseEvent", {
-                "type": "mouseReleased", "x": x, "y": y,
-                "button": button, "clickCount": click_count,
-            }, session_id=sid)
-            self._mouse_x, self._mouse_y = x, y
+            await self._mouse.click(
+                x, y, button, click_count,
+                target_w=target_w, target_h=target_h,
+            )
             await self._paint_click(x, y, label)
             return {"clicked": True, "x": x, "y": y}
         except Exception as e:
@@ -387,6 +400,7 @@ class ActionWatchdog(WatchdogBase):
             return {"error": f"Element {event.backend_node_id} not in selector_map"}
 
         await self._highlight_node(event.backend_node_id)
+        await self._approach_node(event.backend_node_id)
         sid = self._session_id
         try:
             # Focus the element.
@@ -432,28 +446,21 @@ class ActionWatchdog(WatchdogBase):
             elif event.direction == "left":
                 dx = -event.amount
 
-            sid = self._session_id
             if event.backend_node_id is not None:
                 node = self._resolve_node(event.backend_node_id)
                 if node is not None:
                     live = await self._get_live_viewport_center(event.backend_node_id)
                     if live is not None:
-                        cx, cy = live
+                        cx, cy, _w, _h = live
                     elif node.bounds is not None:
                         cx_f, cy_f = node.bounds.center
                         cx, cy = int(cx_f), int(cy_f)
                     else:
                         return
-                    await self._cdp.send("Input.dispatchMouseEvent", {
-                        "type": "mouseWheel", "x": cx, "y": cy,
-                        "deltaX": dx, "deltaY": dy,
-                    }, session_id=sid)
+                    await self._mouse.wheel(cx, cy, dx, dy)
             else:
-                await self._cdp.send("Input.dispatchMouseEvent", {
-                    "type": "mouseWheel",
-                    "x": self._mouse_x, "y": self._mouse_y,
-                    "deltaX": dx, "deltaY": dy,
-                }, session_id=sid)
+                mx, my = self._mouse.position
+                await self._mouse.wheel(mx, my, dx, dy)
         except Exception as e:
             logger.error("Scroll failed: %s", e)
 
@@ -711,6 +718,7 @@ class ActionWatchdog(WatchdogBase):
         Uses proper CDP argument binding to avoid JavaScript injection.
         """
         await self._highlight_node(event.backend_node_id)
+        await self._approach_node(event.backend_node_id)
         try:
             sid = self._session_id
             # Resolve the backend node to a remote object.
@@ -948,16 +956,58 @@ class ActionWatchdog(WatchdogBase):
         except Exception as exc:
             logger.debug("debug_highlight failed for node %d: %s", backend_node_id, exc)
 
+    async def _overlay_move_cursor(self, x: int, y: int) -> None:
+        """Drive the debug overlay's JS cursor to (x, y) for one trajectory point.
+
+        Passed to ``HumanMouse`` as its ``move_callback`` only when
+        ``debug_highlight`` is on, so a human watching headed Chrome sees the
+        cursor animate along the real path. Best-effort — any CDP failure is
+        swallowed at debug level so the overlay never blocks the action.
+        """
+        try:
+            await self._cdp.send(
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        f"window.__af_move_cursor__ && "
+                        f"window.__af_move_cursor__({x}, {y});"
+                    )
+                },
+                session_id=self._session_id,
+            )
+        except Exception as exc:
+            logger.debug("overlay cursor move to (%d,%d) failed: %s", x, y, exc)
+
+    async def _approach_node(self, backend_node_id: int) -> None:
+        """Move the humanized cursor onto an element before a keyboard/DOM action.
+
+        No-op unless ``humanize_mouse`` is on (type/select are keyboard/DOM
+        operations with no native cursor move, so we only add an approach when
+        humanizing). Best-effort: a failed coordinate resolution must not block
+        the underlying type/select.
+        """
+        if not self._mouse.humanized:
+            return
+        live = await self._get_live_viewport_center(backend_node_id)
+        if live is None:
+            return
+        cx, cy, w, h = live
+        try:
+            await self._mouse.move_to(cx, cy, target_w=w, target_h=h)
+        except Exception as exc:
+            logger.debug("cursor approach to node %d failed: %s", backend_node_id, exc)
+
     async def _get_live_viewport_center(
         self, backend_node_id: int,
-    ) -> tuple[int, int] | None:
-        """Return the element's current viewport-relative center, or None.
+    ) -> tuple[int, int, int, int] | None:
+        """Return ``(center_x, center_y, width, height)`` in viewport px, or None.
 
         Pipeline: scroll the element into view, resolve it to a JS object,
         then read ``getBoundingClientRect()`` — those numbers are in CSS
         viewport pixels and are exactly what ``Input.dispatchMouseEvent``
-        wants. Any failure → ``None`` so the caller can fall back to the
-        snapshot bounds path.
+        wants. Width/height feed the trajectory layer's Fitts's-law timing.
+        Any failure → ``None`` so the caller can fall back to the snapshot
+        bounds path.
         """
         sid = self._session_id
         try:
@@ -1010,7 +1060,7 @@ class ActionWatchdog(WatchdogBase):
                 h = float(value["h"])
             except (KeyError, TypeError, ValueError):
                 return None
-            return int(x + w / 2), int(y + h / 2)
+            return int(x + w / 2), int(y + h / 2), int(w), int(h)
         except Exception as exc:
             logger.warning(
                 "Live viewport center query failed for node %d: %s",
