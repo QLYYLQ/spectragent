@@ -14,6 +14,7 @@ See docs/execution_dag.md M10 for design details.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -32,23 +33,53 @@ from spectragent.core.trace.models import (
 )
 
 
+def _fsync_dir(path: Path) -> None:
+    """fsync a directory so a rename inside it survives power loss.
+
+    ``os.rename`` is atomic, but atomic is not durable: the directory
+    entry can still be sitting in the page cache. Without this the WAL's
+    commit point is only crash-consistent, not crash-durable. Platforms
+    that cannot open a directory (Windows) are skipped.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
-    """Write data atomically via write-tmp -> fsync -> rename.
+    """Write data atomically via write-tmp -> fsync -> rename -> fsync dir.
 
     POSIX guarantees that rename() is atomic within a filesystem.
+
+    ``os.fdopen`` takes ownership of the descriptor so it is closed
+    exactly once, on every path. The previous version closed the fd
+    manually and then tried to close it again in the error handler via
+    ``os.get_inheritable(fd)`` — which raises ``OSError(EBADF)`` on an
+    already-closed fd, replacing the *real* failure (say, a full disk
+    during rename) with a bogus "Bad file descriptor" and leaving the
+    temp file behind.
     """
     parent = path.parent
-    fd, tmp_path = tempfile.mkstemp(dir=parent, suffix=".tmp")
+    fd, tmp_name = tempfile.mkstemp(dir=parent, suffix=".tmp")
+    tmp_path = Path(tmp_name)
     try:
-        os.write(fd, data)
-        os.fsync(fd)
-        os.close(fd)
-        os.rename(tmp_path, path)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
     except BaseException:
-        os.close(fd) if not os.get_inheritable(fd) else None  # noqa: B018 — fd may already be closed
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
         raise
+    _fsync_dir(parent)
 
 
 def _default_json(obj: Any) -> Any:
@@ -127,14 +158,30 @@ class WALWriter:
         )
         self._write_manifest()
 
-    def write_observation(self, step: int, fragment_key: str, data: Any) -> str:
+    def write_observation(
+        self,
+        step: int,
+        fragment_key: str,
+        data: Any,
+        *,
+        suffix: str | None = None,
+    ) -> str:
         """Serialize a fragment to the observations directory.
+
+        Args:
+            step: Step index.
+            fragment_key: Fragment field name (e.g. ``"screenshot"``).
+            data: Payload. ``bytes`` is written verbatim.
+            suffix: File extension including the dot. Defaults to
+                ``".png"`` for bytes (back-compatible) and ``".json"``
+                otherwise. Fragments carrying non-PNG binaries pass their
+                own via :meth:`FragmentBase.trace_binary`.
 
         Returns the relative path within the trace directory.
         """
-        is_binary = isinstance(data, bytes)
-        ext = ".png" if is_binary else ".json"
-        filename = f"{step:03d}_{fragment_key}{ext}"
+        if suffix is None:
+            suffix = ".png" if isinstance(data, bytes) else ".json"
+        filename = f"{step:03d}_{fragment_key}{suffix}"
         rel_path = f"observations/{filename}"
         abs_path = self._run_dir / rel_path
 
@@ -143,14 +190,20 @@ class WALWriter:
         return rel_path
 
     def write_messages(
-        self, step: int, input_msgs: Any, output: Any
+        self, step: int, input_msgs: Any, output: Any, *, call: int = 0
     ) -> tuple[str, str]:
-        """Write LLM input and output messages for a step.
+        """Write LLM input and output messages for one call of a step.
+
+        The first call of a step (``call=0``) keeps the canonical
+        ``NNN_input.json`` / ``NNN_output.json`` names. Subsequent calls
+        are suffixed so a loop that invokes the LLM more than once per
+        step does not overwrite its own record.
 
         Returns (input_rel_path, output_rel_path).
         """
-        input_rel = f"messages/{step:03d}_input.json"
-        output_rel = f"messages/{step:03d}_output.json"
+        tag = "" if call == 0 else f"__{call}"
+        input_rel = f"messages/{step:03d}_input{tag}.json"
+        output_rel = f"messages/{step:03d}_output{tag}.json"
 
         input_bytes = _serialize_fragment(input_msgs)
         output_bytes = _serialize_fragment(output)
@@ -176,6 +229,7 @@ class WALWriter:
         observation_files: list[str] | None = None,
         message_input_file: str | None = None,
         message_output_file: str | None = None,
+        message_files: list[str] | None = None,
     ) -> None:
         """Atomic manifest update — the commit point for a step.
 
@@ -193,9 +247,30 @@ class WALWriter:
             observation_files=observation_files or [],
             message_input_file=message_input_file,
             message_output_file=message_output_file,
+            message_files=message_files or [],
         )
         self._manifest.steps.append(entry)
         self._manifest.last_step_completed = step
+        self._manifest.updated_at = datetime.now(UTC)
+        self._write_manifest()
+
+    def commit_unfinished_messages(self, files: list[str]) -> None:
+        """Record message files belonging to a step that never committed.
+
+        Deliberately *not* ``commit_step``: no ``StepRecord`` exists, so
+        claiming a completed step would put an action-less phantom in the
+        manifest and advance ``last_step_completed`` past a step that
+        never happened. The files are real and worth keeping — they are
+        the prompt and completion of whatever the agent was doing when
+        the run was killed — so they are listed on their own.
+        """
+        if self._manifest is None:
+            msg = "WALWriter not initialized — call init_run() first"
+            raise RuntimeError(msg)
+        if not files:
+            return
+
+        self._manifest.unfinished_message_files.extend(files)
         self._manifest.updated_at = datetime.now(UTC)
         self._write_manifest()
 

@@ -33,10 +33,10 @@ class TestSyncAdvice:
     def test_sync_before_and_after_execute(self) -> None:
         calls: list[str] = []
 
-        def before(*, args, kwargs):
+        def before(*, args, kwargs, **ctx):
             calls.append(f"before:{args}")
 
-        def after(result, *, args, kwargs):
+        def after(result, *, args, kwargs, **ctx):
             calls.append(f"after:{result}")
 
         wrapped = _build_wrapped_method(
@@ -53,8 +53,27 @@ class TestSyncAdvice:
         assert result == 7
         assert calls == ["before:(3,)", "after:7"]
 
+    def test_sync_handlers_receive_target_role_method(self) -> None:
+        """Handlers must be able to attribute a call to its target."""
+        seen: list[dict] = []
+
+        def after(result, *, args, kwargs, **ctx):
+            seen.append(ctx)
+
+        target = object()
+        wrapped = _build_wrapped_method(
+            _sync_target,
+            interceptors=[(_Blocking(), AdviceType.AFTER, after)],
+            method_name="_sync_target",
+            target=target,
+            role="env",
+        )
+        wrapped(1)
+
+        assert seen == [{"target": target, "role": "env", "method": "_sync_target"}]
+
     def test_sync_handler_exception_blocking_propagates(self) -> None:
-        def boom(*, args, kwargs):
+        def boom(*, args, kwargs, **ctx):
             raise RuntimeError("nope")
 
         wrapped = _build_wrapped_method(
@@ -67,7 +86,7 @@ class TestSyncAdvice:
             wrapped(1)
 
     def test_sync_handler_exception_nonblocking_logged(self, caplog) -> None:
-        def boom(*, args, kwargs):
+        def boom(*, args, kwargs, **ctx):
             raise RuntimeError("silent")
 
         wrapped = _build_wrapped_method(
@@ -94,7 +113,7 @@ class TestSyncContractViolations:
             )
 
     def test_around_on_sync_target_raises(self) -> None:
-        def around_sync(*, proceed, args, kwargs):
+        def around_sync(*, proceed, args, kwargs, **ctx):
             return proceed()
 
         with pytest.raises(UnsupportedAdviceError, match="around advice"):

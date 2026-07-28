@@ -44,3 +44,25 @@ class UnsupportedAdviceError(Exception):
     handlers attached to synchronous methods (which would need nested
     event-loop execution).
     """
+
+
+class UnclaimedRoleError(RegistryError):
+    """A Hook intercepts a role that nothing in the run ever wraps.
+
+    ``Intercept.role`` is a free-form string, so ``role="capability"`` or
+    a plain typo used to register cleanly, show up in
+    ``Weaver.intercepted_methods``, and then never fire — with no log and
+    no exception. Raising here turns a silent no-op into a config error.
+    """
+
+    def __init__(self, *, unclaimed: dict[str, list[str]], claimed: list[str]) -> None:
+        self.unclaimed = unclaimed
+        self.claimed = claimed
+        detail = "; ".join(
+            f"role={role!r} declared by {sorted(set(hooks))}" for role, hooks in sorted(unclaimed.items())
+        )
+        super().__init__(
+            f"Hook interception declared for role(s) nothing wraps: {detail}. "
+            f"Roles wrapped in this run: {sorted(claimed)}. Either fix the "
+            f"role name or wrap that object in AgentRuntime."
+        )

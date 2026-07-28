@@ -13,11 +13,17 @@ from spectragent.schemas.observation._registrar import (
     ObservationRegistrar,
 )
 from spectragent.schemas.observation.base import ObservationFragment
-from spectragent.schemas.observation.dynamic_model import build_observation_model
+from spectragent.schemas.observation.dynamic_model import (
+    build_observation_model,
+    iter_fragments,
+    summarize_observation,
+)
 
 __all__ = [
     "FragmentBase",
     "ObservationFragment",
     "ObservationRegistrar",
     "build_observation_model",
+    "iter_fragments",
+    "summarize_observation",
 ]

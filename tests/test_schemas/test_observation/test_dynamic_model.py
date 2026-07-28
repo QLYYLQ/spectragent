@@ -34,15 +34,18 @@ class TestBuildObservationModel:
         assert obs.terminal.stdout == "ok"  # type: ignore[attr-defined]
         assert obs.action_result.success is True  # type: ignore[attr-defined]
 
-    def test_timestamp_default(self) -> None:
-        Model = build_observation_model(frozenset({"docker.terminal"}))
-        obs = Model(terminal=TerminalObs(stdout="x", cwd="/"))
-        assert obs.timestamp == 0.0  # type: ignore[attr-defined]
+    def test_no_synthetic_timestamp_field(self) -> None:
+        """The model carries fragments only — nothing the loop never fills.
 
-    def test_timestamp_override(self) -> None:
+        A synthetic ``timestamp`` field was always 0.0 because nothing
+        assigned it, and the trace writer dutifully wrote a junk
+        ``NNN_timestamp.json`` every step. Step timing belongs to
+        ``StepRecord.timestamp``, which is actually set.
+        """
         Model = build_observation_model(frozenset({"docker.terminal"}))
-        obs = Model(terminal=TerminalObs(stdout="x", cwd="/"), timestamp=1.5)
-        assert obs.timestamp == 1.5  # type: ignore[attr-defined]
+        assert "timestamp" not in Model.model_fields
+        obs = Model(terminal=TerminalObs(stdout="x", cwd="/"))
+        assert not hasattr(obs, "timestamp")
 
     def test_model_name(self) -> None:
         Model = build_observation_model(frozenset({"docker.terminal"}))
@@ -51,7 +54,7 @@ class TestBuildObservationModel:
     def test_empty_fragments(self) -> None:
         Model = build_observation_model(frozenset())
         obs = Model()
-        assert obs.timestamp == 0.0  # type: ignore[attr-defined]
+        assert obs.model_dump() == {}
 
     def test_json_serialization(self) -> None:
         Model = build_observation_model(frozenset({"docker.terminal"}))

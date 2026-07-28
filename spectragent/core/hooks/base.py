@@ -23,9 +23,15 @@ class RuntimeHook(Protocol):
         blocking: If True, the hook must complete before execution continues.
             Blocking hook failures propagate (re-raise). Non-blocking hook
             failures are logged but do not interrupt execution.
+        priority: Lifecycle dispatch order, ascending — lower runs first.
+            Load-bearing whenever one hook *enriches* the result and
+            another *serializes* it: with ``hook: [trace_writer, metrics]``
+            in YAML and no priority, every ``result.json`` on disk records
+            ``total_tokens: 0``, silently.
     """
 
     hook_id: str
+    priority: int
 
     @property
     def blocking(self) -> bool:
@@ -35,17 +41,40 @@ class RuntimeHook(Protocol):
     # ── Lifecycle callbacks (AgentRuntime calls directly) ──
 
     async def on_run_start(
-        self, *, agent: Any, env: Any, task: str, config: dict[str, Any]
+        self,
+        *,
+        agent: Any,
+        env: Any,
+        loop: Any,
+        llm: Any,
+        task: str,
+        task_id: str,
+        benchmark: str,
+        subset: str,
+        run_id: str | None,
+        config: dict[str, Any],
     ) -> None:
-        """Called when AgentRuntime.execute() begins."""
+        """Called when AgentRuntime.execute() begins, before env setup."""
         ...
 
-    async def on_run_end(self, *, result: Any) -> None:
-        """Called when AgentRuntime.execute() completes successfully."""
+    async def on_run_end(self, *, result: Any, env: Any) -> None:
+        """Called on **every** termination path, before env teardown.
+
+        *env* is live here on purpose: env-state scoring (SWE-bench
+        running ``pytest FAIL_TO_PASS`` in the container, OSWorld
+        evaluating predicates against the VM) has no other moment where
+        the environment is both still alive and reachable by a
+        framework-aware component.
+        """
         ...
 
     async def on_run_error(
-        self, *, error: BaseException, partial_steps: list[Any]
+        self, *, error: BaseException, partial_steps: list[Any], env: Any
     ) -> None:
-        """Called when AgentRuntime.execute() encounters an exception."""
+        """Called when AgentRuntime.execute() encounters an exception.
+
+        Always paired with :meth:`on_run_end`, which fires first with a
+        result carrying ``agent_done=ERROR|TIMEOUT``. This callback is for
+        exception detail only.
+        """
         ...

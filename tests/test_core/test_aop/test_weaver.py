@@ -30,10 +30,10 @@ class _MockHook:
 class _MockEnv:
     """Mock environment for testing AOP wrapping."""
 
-    async def observe(self, session_id=None):
-        return {"dom": "tree", "session": session_id}
+    async def observe(self, negotiated=None):
+        return {"dom": "tree", "negotiated": negotiated}
 
-    async def act(self, action, session_id=None):
+    async def act(self, action):
         return {"success": True}
 
 
@@ -102,12 +102,12 @@ class TestAfterAdvice:
         wrapped = weaver.wrap(env, role="env")
 
         result = asyncio.run(
-            wrapped.observe(session_id="tab1")
+            wrapped.observe(negotiated="neg")
         )
 
         # Original result preserved
         assert result["dom"] == "tree"
-        assert result["session"] == "tab1"
+        assert result["negotiated"] == "neg"
 
         # Hook was called
         assert len(hook.calls) == 1

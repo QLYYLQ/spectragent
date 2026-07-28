@@ -119,6 +119,16 @@ class RunTrace:
         return input_data, output_data
 
     @cached_property
+    def unfinished_message_files(self) -> list[Path]:
+        """Messages from a step the Loop never surrendered.
+
+        Non-empty only for a run that died — timeout, crash — after the
+        LLM answered and before the step was recorded. Reading them is
+        how you see what the agent was doing when the budget ran out.
+        """
+        return [self._trace_dir / rel for rel in self._manifest.unfinished_message_files]
+
+    @cached_property
     def screenshots(self) -> list[Path]:
         """All screenshot file paths — globbed on first access."""
         obs_dir = self._trace_dir / "observations"

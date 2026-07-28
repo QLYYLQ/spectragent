@@ -57,6 +57,15 @@ class HookBase(metaclass=HookRegistrar.Meta):
     __registry_key__: ClassVar[str]
     __intercepts__: ClassVar[list[Intercept]] = []
 
+    # Lifecycle dispatch order, ascending. Deliberately a plain ClassVar
+    # and not a conscribe config field: ordering is a property of what the
+    # hook *does* (enrich vs. serialize), not a knob a run should have to
+    # get right in YAML. Enrichers sit below DEFAULT, writers above.
+    PRIORITY_ENRICH: ClassVar[int] = 10
+    PRIORITY_DEFAULT: ClassVar[int] = 100
+    PRIORITY_PERSIST: ClassVar[int] = 900
+    priority: ClassVar[int] = 100
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Fail fast at class creation if an Intercept's handler is missing.
 
