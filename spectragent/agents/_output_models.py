@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # ── browser-use ────────────────────────────────────────────────
 #
 # Shape mirrors the upstream browser-use prompt template
-# (spectragent/prompts/browser/agents/browser_use/system_prompt*.md):
+# (spectragent/prompts/agents/browser_use/system_prompt*.md):
 #
 #     {
 #       "thinking": "...",
@@ -82,7 +82,7 @@ class UITarsOutput(BaseModel):
 
 # ── Skyvern ────────────────────────────────────────────────────
 #
-# Shape mirrors spectragent/prompts/browser/agents/skyvern/system_prompt.md,
+# Shape mirrors spectragent/prompts/agents/skyvern/system_prompt.md,
 # which is the only template SkyvernAgent loads. The two are pinned together
 # by tests/test_agents/test_skyvern_prompt_action_vocabulary.py: every verb
 # the template teaches has to survive ``parse_react_output`` and be accepted

@@ -55,7 +55,6 @@ from spectragent.evaluator.base import BaseEvaluator
 from spectragent.evaluator.browsecomp import BrowseCompEvaluator
 from spectragent.evaluator.errors import (
     EvaluationError,
-    PromptNotFoundError,
     ReferenceMismatchError,
     TraceIncompleteError,
 )
@@ -75,6 +74,7 @@ from spectragent.evaluator.runner import (
 )
 from spectragent.evaluator.summary import format_summary, summarize
 from spectragent.evaluator.trace_view import TraceView
+from spectragent.prompts import PromptNotFoundError
 
 __all__ = [
     # Contract + registry

@@ -225,13 +225,21 @@ class TestPrepareWiresPerRunModel:
             ("browser.click", "Click an element.", {"index": "int"}),
             ("browser.wait", "Pause.", {"seconds": "float"}),
         )
-        agent.prepare(task="t", action_descriptors=descs)
-        text = agent.system_prompt.text  # type: ignore[union-attr]
+        seed = agent.prepare(task="t", action_descriptors=descs)
+        text = str(seed[0].content)
         assert "<actions_available>" in text
         assert "browser.click" in text
         assert "browser.wait" in text
         # Action list is the canonical, not short, names.
         assert "- `browser.click(index: int)`" in text
+
+        # The snapshot is a TemplatePrompt, so the advertised action set
+        # is a field on the trace rather than something to regex out of
+        # 200 lines of prose.
+        snapshot = agent.system_prompt
+        assert snapshot is not None
+        assert snapshot.kind == "template"  # type: ignore[union-attr]
+        assert "browser.wait" in snapshot.params["action_list"]  # type: ignore[union-attr]
 
     def test_get_react_output_model_falls_back_before_prepare(self) -> None:
         # Defensive: if anyone calls before prepare(), they get the static

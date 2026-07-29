@@ -16,20 +16,19 @@ directories to the registry keys removes the need for the map entirely:
 They also moved out from under ``browser/``. Scoring a trajectory is not
 a browser concern — SWE-bench and OSWorld evaluators will live in the
 same tree.
+
+:mod:`spectragent.agents.prompts` is this module's mirror for the agent
+half of the tree. The failure mode, the content hash and the snapshot
+constructors are shared through :mod:`spectragent.prompts` so a prompt
+behaves the same whichever side loads it.
 """
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
-from spectragent.evaluator.errors import PromptNotFoundError
-from spectragent.prompts import PROMPT_PATH
-from spectragent.schemas.prompt import (
-    PromptRef,
-    TemplatePrompt,
-    TextPrompt,
-)
+from spectragent.prompts import PROMPT_PATH, PromptNotFoundError, hash_text
+from spectragent.schemas.prompt import PromptRef
 
 EVALUATOR_PROMPT_ROOT: Path = PROMPT_PATH / "evaluators"
 """Root of the single evaluator prompt tree, keyed by ``evaluator_id``."""
@@ -61,29 +60,5 @@ def load_prompt(evaluator_id: str, name: str) -> tuple[str, PromptRef]:
             f"{available or '(directory missing)'}."
         )
     text = path.read_text("utf-8")
-    ref = PromptRef(
-        path=str(path.relative_to(PROMPT_PATH)),
-        content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-    )
+    ref = PromptRef(path=str(path.relative_to(PROMPT_PATH)), content_hash=hash_text(text))
     return text, ref
-
-
-def text_snapshot(text: str, ref: PromptRef) -> TextPrompt:
-    """Snapshot a prompt used verbatim."""
-    return TextPrompt(ref=ref, text=text)
-
-
-def template_snapshot(
-    template: str, ref: PromptRef, params: dict[str, object]
-) -> TemplatePrompt:
-    """Snapshot a prompt plus the substitutions that were applied.
-
-    Params are stringified because ``TemplatePrompt.params`` is
-    ``dict[str, str]`` — the snapshot records what the model saw, and the
-    model only ever saw strings.
-    """
-    return TemplatePrompt(
-        ref=ref,
-        template=template,
-        params={key: str(value) for key, value in params.items()},
-    )

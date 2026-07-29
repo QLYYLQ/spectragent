@@ -14,9 +14,8 @@ import re
 import pytest
 
 from spectragent.evaluator import EvaluatorRegistrar
-from spectragent.evaluator.errors import PromptNotFoundError
 from spectragent.evaluator.prompts import EVALUATOR_PROMPT_ROOT, load_prompt
-from spectragent.prompts import PROMPT_PATH
+from spectragent.prompts import PROMPT_PATH, PromptNotFoundError
 
 #: Every prompt each evaluator loads, and the placeholders it substitutes.
 _EXPECTED: dict[str, dict[str, set[str]]] = {
@@ -55,7 +54,8 @@ _LEXBENCH_TEMPLATES = [
 
 
 def test_the_dead_duplicate_tree_is_gone():
-    assert not (PROMPT_PATH / "browser" / "evaluators").exists()
+    """The whole ``browser/`` parent is gone now that agents left it too."""
+    assert not (PROMPT_PATH / "browser").exists()
 
 
 def test_scoring_prompts_are_not_under_browser():

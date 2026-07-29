@@ -23,7 +23,7 @@ import ast
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
@@ -38,12 +38,8 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops.errors import ParseError
-from spectragent.prompts import PROMPT_PATH
 from spectragent.schemas.action import Action, ActionDescriptor
-
-# ── Prompt directory ─────────────────────────────────────────
-_PROMPT_DIR = PROMPT_PATH / "browser" / "agents" / "ui_tars"
-
+from spectragent.schemas.prompt import PromptSnapshot
 
 # ── The verb vocabulary ──────────────────────────────────────
 
@@ -224,10 +220,17 @@ class UITarsAgent(AgentBase):
     }
 
     # ── config (conscribe visible) ─────────────────────────────
+    # The members are the on-disk stems, so nothing has to case-fold a
+    # config value into a filename on the way to the loader. Hand-written
+    # rather than computed from the directory: a ``Literal[tuple(...)]``
+    # renders correctly through conscribe but costs a pyright error per
+    # field. ``tests/test_agents/test_prompt_tree.py`` asserts the two
+    # agree, so a typo now fails Pydantic validation at compose time
+    # instead of ``FileNotFoundError``-ing inside ``prepare()``.
     prompt_template: Annotated[
-        str,
-        PydanticField(description="Prompt template: COMPUTER_USE, MOBILE_USE, or GROUNDING"),
-    ] = "COMPUTER_USE"
+        Literal["computer_use", "grounding", "mobile_use"],
+        PydanticField(description="Which shipped prompt variant to render"),
+    ] = "computer_use"
     language: Annotated[str, PydanticField(description="Thinking language")] = "English"
 
     # ── internal state ─────────────────────────────────────────
@@ -237,8 +240,9 @@ class UITarsAgent(AgentBase):
         default_factory=list, init=False, repr=False
     )
     _system_prompt_text: str = field(default="", init=False, repr=False)
-    _prompt_path: str = field(default="", init=False, repr=False)
-    _prompt_snapshot: Any = field(default=None, init=False, repr=False)
+    _prompt_snapshot: PromptSnapshot | None = field(
+        default=None, init=False, repr=False
+    )
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``) via conscribe's ``WiredField`` descriptors.
@@ -258,7 +262,7 @@ class UITarsAgent(AgentBase):
         return {"screenshot"}
 
     @property
-    def system_prompt(self) -> Any:
+    def system_prompt(self) -> PromptSnapshot | None:
         return self._prompt_snapshot
 
     def get_action_space(self) -> list[ActionDescriptor]:
@@ -278,12 +282,8 @@ class UITarsAgent(AgentBase):
         ``obs.task.user_request`` for the per-step user message.
         """
         self._action_descriptors = list(action_descriptors)
-        self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
-        from spectragent.schemas.prompt import PromptRef, TextPrompt
-
-        self._prompt_snapshot = TextPrompt(
-            ref=PromptRef(path=self._prompt_path or "<runtime>", content_hash=""),
-            text=self._system_prompt_text,
+        self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
+            task, self._action_descriptors
         )
         return [SystemMessage(content=self._system_prompt_text)]
 
@@ -334,13 +334,12 @@ class UITarsAgent(AgentBase):
 
     # ── private helpers ────────────────────────────────────────
 
-    def _build_system_prompt(self, task: str, action_space: list[ActionDescriptor]) -> str:
-        variant = self.prompt_template.lower()  # "COMPUTER_USE" → "computer_use"
-        prompt_file = _PROMPT_DIR / f"{variant}.md"
-        self._prompt_path = str(prompt_file.relative_to(PROMPT_PATH))
-        template = prompt_file.read_text()
-        return template.format(
-            task=task, action_space=_render_action_space(action_space)
+    def _build_system_prompt(
+        self, task: str, action_space: list[ActionDescriptor]
+    ) -> tuple[str, PromptSnapshot]:
+        return self.render(
+            self.prompt_template,
+            {"task": task, "action_space": _render_action_space(action_space)},
         )
 
 

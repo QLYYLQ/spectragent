@@ -47,13 +47,9 @@ from spectragent.core.llm.messages import (
 )
 from spectragent.core.trace.reader import RunTrace
 from spectragent.evaluator.base import BaseEvaluator
-from spectragent.evaluator.prompts import (
-    evaluator_prompt_dir,
-    load_prompt,
-    template_snapshot,
-    text_snapshot,
-)
+from spectragent.evaluator.prompts import evaluator_prompt_dir, load_prompt
 from spectragent.evaluator.trace_view import TraceView
+from spectragent.prompts import template_snapshot, text_snapshot
 from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.eval_result import (
     EvalDetails,

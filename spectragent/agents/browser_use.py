@@ -21,11 +21,14 @@ from spectragent.agents._output_models import BrowserUseOutput
 from spectragent.agents._registrar import AgentBase
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
-from spectragent.prompts import PROMPT_PATH
+from spectragent.prompts import hash_text, text_snapshot
 from spectragent.schemas.action import Action, ActionDescriptor
+from spectragent.schemas.prompt import PromptRef, PromptSnapshot
 
-# ── Prompt directory ─────────────────────────────────────────
-_PROMPT_DIR = PROMPT_PATH / "browser" / "agents" / "browser_use"
+#: ``PromptRef.path`` for a prompt that came from YAML rather than the
+#: tree. It is not a path, and it deliberately cannot be mistaken for
+#: one — the hash still pins the exact text the model was given.
+_OVERRIDE_REF_PATH = "<override_system_message>"
 
 # Local vocabulary map: browser-use LLM prompts were originally written
 # for the upstream browser-use library (``click_element`` / ``input_text``
@@ -131,8 +134,9 @@ class BrowserUseAgent(AgentBase):
         default=None, init=False, repr=False,
     )
     _system_prompt_text: str = field(default="", init=False, repr=False)
-    _prompt_path: str = field(default="", init=False, repr=False)
-    _prompt_snapshot: Any = field(default=None, init=False, repr=False)
+    _prompt_snapshot: PromptSnapshot | None = field(
+        default=None, init=False, repr=False
+    )
     _max_history_steps: int = field(default=10, init=False, repr=False)
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
@@ -159,7 +163,7 @@ class BrowserUseAgent(AgentBase):
         return types
 
     @property
-    def system_prompt(self) -> Any:
+    def system_prompt(self) -> PromptSnapshot | None:
         return self._prompt_snapshot
 
     def get_action_space(self) -> list[ActionDescriptor]:
@@ -191,16 +195,10 @@ class BrowserUseAgent(AgentBase):
         self._per_run_output_model = _build_per_run_output_model(
             self._action_descriptors,
         )
-        self._system_prompt_text = self._build_system_prompt(
+        self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
             task,
             self._action_descriptors,
             max_actions_per_step,
-        )
-        from spectragent.schemas.prompt import PromptRef, TextPrompt
-
-        self._prompt_snapshot = TextPrompt(
-            ref=PromptRef(path=self._prompt_path or "<runtime>", content_hash=""),
-            text=self._system_prompt_text,
         )
         return [SystemMessage(content=self._system_prompt_text)]
 
@@ -269,48 +267,70 @@ class BrowserUseAgent(AgentBase):
 
     # ── private helpers ────────────────────────────────────────
 
-    def _select_prompt_file(self) -> str:
-        """Select the appropriate prompt template file based on config."""
+    def select_prompt_variant(self) -> str:
+        """Which template on disk this configuration reads.
+
+        Public because it is the only description of this agent's prompt
+        surface: it has no ``prompt_template`` field, because its choice
+        is a *function* of the model and the mode, not a free one. Asking
+        YAML for both ``flash_mode: true`` and
+        ``prompt_template: system_prompt_flash`` would be two sources of
+        truth that can disagree. ``tests/test_agents/test_prompt_tree.py``
+        enumerates this over the whole config matrix to prove every file
+        in the directory is reachable and none is orphaned.
+        """
         is_anthropic_4_5 = _is_anthropic_4_5_model(self.model_name)
 
         if self.is_browser_use_model:
             if self.flash_mode:
-                return "system_prompt_browser_use_flash.md"
+                return "system_prompt_browser_use_flash"
             elif self.use_thinking:
-                return "system_prompt_browser_use.md"
+                return "system_prompt_browser_use"
             else:
-                return "system_prompt_browser_use_no_thinking.md"
+                return "system_prompt_browser_use_no_thinking"
         elif is_anthropic_4_5 and self.flash_mode:
-            return "system_prompt_anthropic_flash.md"
+            return "system_prompt_anthropic_flash"
         elif self.flash_mode and self.is_anthropic:
-            return "system_prompt_flash_anthropic.md"
+            return "system_prompt_flash_anthropic"
         elif self.flash_mode:
-            return "system_prompt_flash.md"
+            return "system_prompt_flash"
         elif self.use_thinking:
-            return "system_prompt.md"
+            return "system_prompt"
         else:
-            return "system_prompt_no_thinking.md"
+            return "system_prompt_no_thinking"
 
     def _build_system_prompt(
         self,
         task: str,  # noqa: ARG002 — reserved; some prompt templates may consume it later
         action_space: list[ActionDescriptor],
         max_actions_per_step: int = 1,
-    ) -> str:
+    ) -> tuple[str, PromptSnapshot]:
+        """Return the system prompt and the snapshot that explains it."""
+        snapshot: PromptSnapshot
         if self.override_system_message:
             text = self.override_system_message
+            snapshot = text_snapshot(
+                text,
+                PromptRef(
+                    path=_OVERRIDE_REF_PATH, content_hash=hash_text(text)
+                ),
+            )
         else:
-            prompt_file = _PROMPT_DIR / self._select_prompt_file()
-            self._prompt_path = str(prompt_file.relative_to(PROMPT_PATH))
-            template = prompt_file.read_text()
-            text = template.format(
-                max_actions=max_actions_per_step,
-                action_list=self._render_action_list(action_space),
+            text, snapshot = self.render(
+                self.select_prompt_variant(),
+                {
+                    "max_actions": max_actions_per_step,
+                    "action_list": self._render_action_list(action_space),
+                },
             )
 
         if self.extend_system_message:
+            # The extension is appended *after* substitution, so the
+            # recorded template no longer reproduces what the model saw.
+            # Record the text instead; the ref still names its source.
             text += f"\n{self.extend_system_message}"
-        return text
+            snapshot = text_snapshot(text, snapshot.ref)
+        return text, snapshot
 
     @staticmethod
     def _render_action_list(descriptors: list[ActionDescriptor]) -> str:

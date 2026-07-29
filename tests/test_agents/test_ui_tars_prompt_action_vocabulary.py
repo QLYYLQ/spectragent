@@ -32,6 +32,7 @@ from typing import Any
 import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
+from spectragent.agents.prompts import agent_prompt_variants
 from spectragent.agents.ui_tars import (
     _ACTION_TO_VERB,
     _VERB_TABLE,
@@ -51,8 +52,11 @@ from tests.test_core.test_capabilities.test_browser_actions.conftest import (
 )
 
 #: Every shipped template. All three render the same negotiated set, and
-#: all three used to teach verbs the run rejected.
-_VARIANTS = ["COMPUTER_USE", "MOBILE_USE", "GROUNDING"]
+#: all three used to teach verbs the run rejected. Derived from the
+#: directory rather than spelled out: the names are the on-disk stems now,
+#: and a case-folded copy of them passed here only because this repo's
+#: filesystem is case-insensitive.
+_VARIANTS = list(agent_prompt_variants("ui_tars"))
 
 #: A rendered action block line: ``- click(point='(x, y)')``.
 _TAUGHT_CALL = re.compile(r"^- (\w+\(.*\))$", re.MULTILINE)
@@ -122,7 +126,10 @@ def harness() -> tuple[UITarsAgent, Any, dict[str, Any]]:
     return agent, guard, {"descriptors": descriptors, "scope": fake._scopes["sid_main"]}
 
 
-def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: str) -> str:
+def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) -> str:
+    # ``Any`` because ``_VARIANTS`` is read off the disk at import time,
+    # so a checker cannot see that its members are the field's Literal —
+    # that equality is what ``test_prompt_tree`` asserts.
     agent.prompt_template = variant
     prompt = agent.prepare(task="t", action_descriptors=descriptors)[0].content
     assert isinstance(prompt, str)
@@ -166,7 +173,7 @@ class TestPromptVocabulary:
         ``index`` / ``text``: it only ever saw name and description.
         """
         agent, _guard, extra = harness
-        prompt = _rendered(agent, extra["descriptors"], "COMPUTER_USE")
+        prompt = _rendered(agent, extra["descriptors"], "computer_use")
         for descriptor in extra["descriptors"]:
             verb = _VERB_TABLE[_ACTION_TO_VERB[descriptor.name.rsplit(".", 1)[-1]]]
             for param in verb.fills:

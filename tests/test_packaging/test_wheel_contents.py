@@ -77,7 +77,7 @@ class TestRuntimeDataShips:
         installed package, so the wheel has to hold that relative layout.
         """
         for relative in (
-            "prompts/browser/agents/browser_use/system_prompt.md",
+            "prompts/agents/browser_use/system_prompt.md",
             "prompts/evaluators/browsecomp/grader_user.txt",
         ):
             source = PACKAGE_ROOT / relative

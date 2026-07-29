@@ -7,6 +7,11 @@ a missing prompt file raised a bare ``FileNotFoundError`` naming a path
 that no longer existed. A verdict produced by a different prompt than the
 one you asked for is worse than no verdict, so every one of those paths
 raises here.
+
+The missing-prompt case is the exception: it lives on
+:class:`spectragent.prompts.PromptNotFoundError`, because agents load
+from the same tree and one condition should not have two exception
+classes depending on who happened to ask.
 """
 
 from __future__ import annotations
@@ -14,10 +19,6 @@ from __future__ import annotations
 
 class EvaluationError(RuntimeError):
     """Base class for evaluator failures."""
-
-
-class PromptNotFoundError(EvaluationError):
-    """A registered evaluator asked for a prompt file that does not exist."""
 
 
 class TraceIncompleteError(EvaluationError):

@@ -5,33 +5,35 @@ Jinja2 prompt templating and the action-history window remain as agent
 config; the runtime/loop drive execution.
 
 The agent owns exactly one template,
-``prompts/browser/agents/skyvern/system_prompt.md``. It is not upstream
+``prompts/agents/skyvern/system_prompt.md``. It is not upstream
 Skyvern's: it teaches the JSON shape :class:`SkyvernOutput` declares and
 the action names this framework's ``guarded_act`` will accept, and it
 renders the *negotiated* action set rather than a hard-coded verb list.
 ``tests/test_agents/test_skyvern_prompt_action_vocabulary.py`` pins the
 two together.
+
+It is also the only agent whose template is Jinja2 rather than
+``str.format`` — the template branches on optional criteria, which
+``str.format`` cannot express. That is *declared*
+(``__prompt_engine__``), not inferred from the file's contents.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 
-import jinja2
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
 from spectragent.agents._output_models import SkyvernOutput
 from spectragent.agents._registrar import AgentBase
+from spectragent.agents.prompts import PromptEngine
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
-from spectragent.prompts import PROMPT_PATH
 from spectragent.schemas.action import Action, ActionDescriptor
-
-# ── Prompt directory ─────────────────────────────────────────
-_PROMPT_DIR = PROMPT_PATH / "browser" / "agents" / "skyvern"
+from spectragent.schemas.prompt import PromptSnapshot
 
 
 @dataclass
@@ -39,6 +41,7 @@ class SkyvernAgent(AgentBase):
     """Skyvern-style agent using element tree and action history."""
 
     __registry_key__ = "skyvern"
+    __prompt_engine__: ClassVar[PromptEngine] = "jinja2"
 
     # ── Cross-registry wiring ────────────────────────────────────
     # Capability-relative keys: the agent declares domain verbs, and
@@ -94,8 +97,15 @@ class SkyvernAgent(AgentBase):
             )
         ),
     ] = 5
+    # Hand-written rather than computed from the directory listing: a
+    # ``Literal[tuple(...)]`` renders correctly through conscribe but
+    # costs a pyright error per field ("Variable not allowed in type
+    # expression"). ``tests/test_agents/test_prompt_tree.py`` asserts it
+    # equals what is on disk, so a template added without being named
+    # here fails the suite instead of sitting unreachable.
     prompt_template: Annotated[
-        str, PydanticField(description="Skyvern template name (without extension)")
+        Literal["system_prompt"],
+        PydanticField(description="Skyvern template name (without extension)"),
     ] = "system_prompt"
     navigation_payload: Annotated[
         str | None,
@@ -143,8 +153,9 @@ class SkyvernAgent(AgentBase):
         default_factory=list, init=False, repr=False
     )
     _system_prompt_text: str = field(default="", init=False, repr=False)
-    _prompt_path: str = field(default="", init=False, repr=False)
-    _prompt_snapshot: Any = field(default=None, init=False, repr=False)
+    _prompt_snapshot: PromptSnapshot | None = field(
+        default=None, init=False, repr=False
+    )
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``) via conscribe's ``WiredField`` descriptors.
@@ -164,7 +175,7 @@ class SkyvernAgent(AgentBase):
         return {"dom", "browser_meta"}
 
     @property
-    def system_prompt(self) -> Any:
+    def system_prompt(self) -> PromptSnapshot | None:
         return self._prompt_snapshot
 
     def get_action_space(self) -> list[ActionDescriptor]:
@@ -192,14 +203,8 @@ class SkyvernAgent(AgentBase):
         """
         self._action_descriptors = list(action_descriptors)
         self._action_history.clear()
-        self._system_prompt_text = self._build_system_prompt(
+        self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
             task, self._action_descriptors, max_actions_per_step
-        )
-        from spectragent.schemas.prompt import PromptRef, TextPrompt
-
-        self._prompt_snapshot = TextPrompt(
-            ref=PromptRef(path=self._prompt_path or "<runtime>", content_hash=""),
-            text=self._system_prompt_text,
         )
         return [SystemMessage(content=self._system_prompt_text)]
 
@@ -336,19 +341,18 @@ class SkyvernAgent(AgentBase):
         task: str,
         action_space: list[ActionDescriptor],
         max_actions_per_step: int = 1,
-    ) -> str:
-        prompt_file = _PROMPT_DIR / f"{self.prompt_template}.md"
-        self._prompt_path = str(prompt_file.relative_to(PROMPT_PATH))
-        raw_template = prompt_file.read_text()
-        template = jinja2.Template(raw_template)
-        return template.render(
-            navigation_goal=task,
-            action_space=self._render_action_list(action_space),
-            max_actions_per_step=max_actions_per_step,
-            navigation_payload=self.navigation_payload or "",
-            complete_criterion=self.complete_criterion or "",
-            terminate_criterion=self.terminate_criterion or "",
-            verification_code_check=self.verification_code_check,
+    ) -> tuple[str, PromptSnapshot]:
+        return self.render(
+            self.prompt_template,
+            {
+                "navigation_goal": task,
+                "action_space": self._render_action_list(action_space),
+                "max_actions_per_step": max_actions_per_step,
+                "navigation_payload": self.navigation_payload or "",
+                "complete_criterion": self.complete_criterion or "",
+                "terminate_criterion": self.terminate_criterion or "",
+                "verification_code_check": self.verification_code_check,
+            },
         )
 
     @staticmethod
