@@ -25,7 +25,7 @@ class GoBackAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.go_back",
+            name=self.action_id,
             description="Navigate back in browser history.",
             params={},
         )

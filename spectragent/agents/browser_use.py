@@ -29,30 +29,16 @@ _PROMPT_DIR = PROMPT_PATH / "browser" / "agents" / "browser_use"
 
 # Local vocabulary map: browser-use LLM prompts were originally written
 # for the upstream browser-use library (``click_element`` / ``input_text``
-# / ``go_to_url``) but the canonical BrowserCapability action names are
-# ``browser.click`` / ``browser.type`` / ``browser.navigate``. This dict
-# is an implementation detail of ``parse_react_output`` — agent wiring
-# and runtime negotiation only ever see the canonical vocabulary.
-_LLM_VOCABULARY_TO_CANONICAL: dict[str, str] = {
-    "click_element": "browser.click",
-    "input_text": "browser.type",
-    "go_to_url": "browser.navigate",
-}
-# Short local names (stripped of the "browser." prefix) that also map
-# directly. Keeps ``parse_react_output`` resilient when the LLM emits
-# either ``"browser.click"`` or the legacy ``"click"``.
-_SHORT_TO_CANONICAL: dict[str, str] = {
-    "click": "browser.click",
-    "type": "browser.type",
-    "navigate": "browser.navigate",
-    "scroll": "browser.scroll",
-    "send_keys": "browser.send_keys",
-    "go_back": "browser.go_back",
-    "go_forward": "browser.go_forward",
-    "switch_tab": "browser.switch_tab",
-    "extract_content": "browser.extract_content",
-    "wait": "browser.wait",
-    "done": "browser.done",
+# / ``go_to_url``) but the action ids are ``click`` / ``type`` /
+# ``navigate``. This dict renames those three verbs and nothing else — it
+# is a *vocabulary* map, not a provider map. Which capability's ``click``
+# a name resolves to is decided once, at negotiation, and applied once,
+# in ``build_guarded_act``; an agent that answered that question itself
+# would be answering it for a capability set it cannot see.
+_LLM_VOCABULARY_TO_LOCAL: dict[str, str] = {
+    "click_element": "click",
+    "input_text": "type",
+    "go_to_url": "navigate",
 }
 
 
@@ -324,13 +310,13 @@ class BrowserUseAgent(AgentBase):
     def _render_action_list(descriptors: list[ActionDescriptor]) -> str:
         """Render action descriptors as a markdown bullet list for the prompt.
 
-        Each line: ``- `<canonical_name>(<params>)` — <description>``.
+        Each line: ``- `<descriptor_name>(<params>)` — <description>``.
 
-        Canonical names (``browser.navigate`` / ``browser.click`` / ...) are
-        used so the prompt unambiguously describes the registry-key vocabulary.
-        ``parse_react_output`` accepts both canonical and short forms via
-        ``_LLM_VOCABULARY_TO_CANONICAL`` / ``_SHORT_TO_CANONICAL``, so the LLM
-        can use either when emitting actions.
+        The descriptor's own name is used verbatim, so the prompt
+        advertises exactly the vocabulary ``env.act`` routes on. The
+        parser additionally accepts each action's local id and the three
+        legacy upstream verbs; a local id is resolved to a provider by
+        ``build_guarded_act``, never here.
 
         Empty list yields an empty string — only happens before
         ``prepare()`` runs or in degenerate test fixtures.
@@ -524,22 +510,24 @@ def _build_per_run_output_model(
 
     The allowed set is the union of:
 
-    - canonical names registered for this run (``browser.click`` etc.)
-    - short aliases (``"click"`` → ``"browser.click"``) whose canonical
-      is in the run set
-    - legacy upstream browser-use aliases (``"click_element"``,
-      ``"input_text"``, ``"go_to_url"``) similarly filtered
+    - the descriptor names this run negotiated (``browser.click`` etc.)
+    - their local ids (``click``), which the guard resolves back to a
+      provider
+    - legacy upstream browser-use verbs (``click_element``,
+      ``input_text``, ``go_to_url``) whose local id is in the run set
+
+    This is an *acceptance* surface, not a name-to-provider map: it says
+    which strings are worth forwarding, and never which capability one of
+    them means.
     """
-    canonical = {d.name for d in descriptors}
-    short_aliases = {
-        s for s, c in _SHORT_TO_CANONICAL.items() if c in canonical
-    }
+    advertised = {d.name for d in descriptors}
+    local_ids = {name.rsplit(".", 1)[-1] for name in advertised}
     legacy_aliases = {
         legacy
-        for legacy, c in _LLM_VOCABULARY_TO_CANONICAL.items()
-        if c in canonical
+        for legacy, local in _LLM_VOCABULARY_TO_LOCAL.items()
+        if local in local_ids
     }
-    allowed: frozenset[str] = frozenset(canonical | short_aliases | legacy_aliases)
+    allowed: frozenset[str] = frozenset(advertised | local_ids | legacy_aliases)
     allowed_sorted = sorted(allowed)
 
     def _check_action_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -598,13 +586,16 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _items_to_actions(items: list[dict[str, Any]]) -> list[Action]:
-    """Translate ``[{"<verb>": {<params>}}, ...]`` into canonical Actions.
+    """Translate ``[{"<verb>": {<params>}}, ...]`` into Actions.
 
     Each item is a single-key dict (the upstream browser-use shape).
     The key is the action verb in browser-use vocabulary; the value is
-    the params dict. We map the verb to its canonical ``browser.*``
-    name and apply minimal per-action param renames (``done.text`` →
-    ``extracted_content``).
+    the params dict. Legacy upstream verbs are renamed to the matching
+    action's local id; everything else is passed through as written, and
+    a local id is bound to a capability by ``build_guarded_act``. Minimal
+    per-action param renames (``done.text`` → ``extracted_content``) are
+    applied here because they are domain knowledge about the action, not
+    about its provider.
     """
     if not items:
         raise ParseError(
@@ -623,18 +614,16 @@ def _items_to_actions(items: list[dict[str, Any]]) -> list[Action]:
         verb, params = next(iter(raw.items()))
         if not isinstance(params, dict):
             params = {}
-        canonical = _LLM_VOCABULARY_TO_CANONICAL.get(
-            verb, _SHORT_TO_CANONICAL.get(verb, verb if "." in verb else f"browser.{verb}")
-        )
+        name = _LLM_VOCABULARY_TO_LOCAL.get(verb, verb)
         # Done's answer text comes in under 'text'; DoneAction reads
         # 'extracted_content'. Rename onto a fresh dict so we don't
         # mutate the caller's payload.
         params = dict(params)
         if (
-            canonical == "browser.done"
+            name.rsplit(".", 1)[-1] == "done"
             and "text" in params
             and "extracted_content" not in params
         ):
             params["extracted_content"] = params.pop("text")
-        actions.append(Action(name=canonical, params=params))
+        actions.append(Action(name=name, params=params))
     return actions

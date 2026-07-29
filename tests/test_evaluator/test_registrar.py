@@ -111,9 +111,9 @@ def test_every_judge_can_have_its_model_named_in_yaml(key, cls):
     ``__wiring__`` declaring ``llm`` is not enough — that is inherited and
     passes even when the *generated config* has no ``llm`` field, which is
     precisely how ``browsecomp`` ended up binding the agent's own model
-    silently. conscribe's extractor returns ``None`` for a class whose
-    ``__init__`` takes no named parameters, and bails before applying
-    ``__wiring__``; the generated model is then discriminator-only.
+    silently: a judge with no knobs of its own has a parameter-less
+    ``__init__``, and conscribe used to emit a discriminator-only model
+    for it.
 
     So this asserts on the artifact that actually drives YAML validation.
     """
@@ -129,11 +129,11 @@ def test_every_judge_can_have_its_model_named_in_yaml(key, cls):
 
 
 def test_a_text_only_judge_advertises_no_vision_knob():
-    """The fix for the above must not invent a knob that does nothing.
+    """A judge that sends no images must not advertise a vision knob.
 
-    ``image_detail`` exists on the judge base only to keep ``__init__``
-    non-empty; browsecomp sends no images, so it must stay out of its
-    config surface.
+    The judge base declares no config field at all, so a text-only grader
+    inherits only its judge receptor. ``image_detail`` is declared by the
+    image-judging evaluators that read it, in their own modules.
     """
     from spectragent.generated._composed import BrowsecompEvaluatorConfig
 

@@ -5,7 +5,7 @@ helper used by both observation (three-party) and action (two-party)
 negotiation flows. See docs/architecture_design.md §4.4 and §4.5.
 """
 
-from spectragent.core.negotiation._base import extract_wiring
+from spectragent.core.negotiation._base import AmbiguousKeyError, extract_wiring
 from spectragent.core.negotiation._registrar import (
     NegotiationResult,
     NegotiationResultBase,
@@ -13,6 +13,7 @@ from spectragent.core.negotiation._registrar import (
 )
 from spectragent.core.negotiation.action import (
     ActionNegotiationResult,
+    AmbiguousActionError,
     IncompatibleActionError,
     negotiate_action,
 )
@@ -22,6 +23,7 @@ from spectragent.core.negotiation.memory import (
     negotiate_memory,
 )
 from spectragent.core.negotiation.observation import (
+    AmbiguousFragmentError,
     IncompatibleFragmentError,
     ObservationNegotiationResult,
     negotiate_observation,
@@ -29,6 +31,9 @@ from spectragent.core.negotiation.observation import (
 
 __all__ = [
     "ActionNegotiationResult",
+    "AmbiguousActionError",
+    "AmbiguousFragmentError",
+    "AmbiguousKeyError",
     "IncompatibleActionError",
     "IncompatibleFragmentError",
     "IncompatibleMemoryError",

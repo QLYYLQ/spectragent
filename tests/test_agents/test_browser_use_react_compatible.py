@@ -333,7 +333,7 @@ class TestParseReactOutput:
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
         assert isinstance(actions[0], Action)
-        assert actions[0].name == "browser.click"
+        assert actions[0].name == "click"
         assert actions[0].params == {"index": 42}
 
     def test_translates_input_text_and_go_to_url(self) -> None:
@@ -346,9 +346,9 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 2
-        assert actions[0].name == "browser.type"
+        assert actions[0].name == "type"
         assert actions[0].params == {"index": 2, "text": "hello"}
-        assert actions[1].name == "browser.navigate"
+        assert actions[1].name == "navigate"
         assert actions[1].params == {"url": "https://x.example"}
 
     def test_multi_action_output(self) -> None:
@@ -362,15 +362,15 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 3
-        assert actions[0].name == "browser.click"
-        assert actions[1].name == "browser.type"
-        assert actions[2].name == "browser.navigate"
+        assert actions[0].name == "click"
+        assert actions[1].name == "type"
+        assert actions[2].name == "navigate"
 
-    def test_short_verbs_are_canonicalised(self) -> None:
-        # Upstream prompt sometimes emits the short verb directly
-        # (e.g. "navigate" instead of "go_to_url"); _SHORT_TO_CANONICAL
-        # plus the generic ``f"browser.{verb}"`` fallback should still
-        # canonicalise.
+    def test_short_verbs_pass_through_unqualified(self) -> None:
+        # Upstream prompt sometimes emits the action id directly
+        # ("navigate" instead of "go_to_url"). It reaches the guard as
+        # written — the parser names no capability, because it has no way
+        # to know which one this run holds.
         agent = _make_agent()
         out = BrowserUseOutput(
             action=[
@@ -379,9 +379,9 @@ class TestParseReactOutput:
             ],
         )
         actions = agent.parse_react_output(out)
-        assert actions[0].name == "browser.navigate"
+        assert actions[0].name == "navigate"
         assert actions[0].params == {"url": "https://example.com"}
-        assert actions[1].name == "browser.scroll"
+        assert actions[1].name == "scroll"
 
     def test_parses_raw_json_string_matching_prompt_template(self) -> None:
         # End-to-end regression: when the LLM returns a JSON string
@@ -405,7 +405,7 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(payload)
         assert len(actions) == 1
-        assert actions[0].name == "browser.navigate"
+        assert actions[0].name == "navigate"
         assert actions[0].params == {"url": "https://www.example.com"}
 
     def test_empty_action_list_raises_parse_error(self) -> None:
@@ -436,7 +436,7 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
-        assert actions[0].name == "browser.done"
+        assert actions[0].name == "done"
         assert actions[0].params.get("extracted_content") == "the final answer"
         assert "text" not in actions[0].params
 

@@ -55,7 +55,7 @@ class NavigateAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.navigate",
+            name=self.action_id,
             description="Navigate to a URL.",
             params={"url": "str"},
         )

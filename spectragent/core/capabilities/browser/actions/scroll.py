@@ -42,7 +42,7 @@ class ScrollAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.scroll",
+            name=self.action_id,
             description=(
                 f"Scroll the page or an element "
                 f"(default {self.default_amount}px {self.default_direction})."

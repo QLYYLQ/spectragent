@@ -25,7 +25,7 @@ class SendKeysAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.send_keys",
+            name=self.action_id,
             description="Send keyboard keys (e.g. Enter, Escape, Ctrl+A).",
             params={"keys": "str"},
         )

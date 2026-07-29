@@ -91,7 +91,7 @@ class ScreenshotAction(ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.screenshot",
+            name=self.action_id,
             description=(
                 "Capture a screenshot of the current page. The PNG is "
                 "saved to disk as a run artifact and the file path is "

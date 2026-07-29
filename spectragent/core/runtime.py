@@ -297,6 +297,7 @@ class AgentRuntime:
             wrapped_env.act,
             narrowed_descriptors,
             action_filter,
+            bindings=negotiated_actions.action_bindings,
         )
 
         # Step 5: Loop weaving — patches wrapped_agent.run

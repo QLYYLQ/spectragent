@@ -26,7 +26,7 @@ class ClickAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.click",
+            name=self.action_id,
             description="Click a DOM element by its index in the selector map.",
             params={"index": "int -- element index from selector_map"},
         )

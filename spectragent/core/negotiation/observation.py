@@ -9,12 +9,22 @@ See docs/architecture_design.md §4.4 for the full specification.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
+from spectragent.core.negotiation._base import (
+    AmbiguousKeyError,
+    bind_short_names,
+    group_by_short_name,
+    resolve_demand,
+)
 from spectragent.core.negotiation._registrar import NegotiationResultBase
 from spectragent.core.negotiation.engine import negotiate
-from spectragent.schemas.observation._registrar import ObservationRegistrar
+from spectragent.schemas.observation._registrar import (
+    FRAGMENT_KEY_SEPARATOR,
+    ObservationRegistrar,
+)
 
 
 class IncompatibleFragmentError(Exception):
@@ -25,19 +35,26 @@ class IncompatibleFragmentError(Exception):
     Raising on the first miss made the user fix-and-rerun once per missing
     fragment, and — because the scan iterated an unordered ``set`` — the
     one they were told about varied between processes.
+
+    Fragments are named as they were declared, so a capability-relative
+    declaration is reported by its short name — the string in the wiring
+    line the user has to edit.
     """
 
-    def __init__(self, required: set[str], provided: set[str]) -> None:
-        missing = required - provided
+    def __init__(self, missing: set[str], provided: set[str]) -> None:
         super().__init__(
             f"Required observation fragments not provided by environment. "
             f"Missing: {sorted(missing)}. "
-            f"Environment provides: {sorted(provided)}. "
-            f"Required: {sorted(required)}."
+            f"Environment provides: {sorted(provided)}."
         )
         self.missing = missing
         self.provided = provided
-        self.required = required
+
+
+class AmbiguousFragmentError(AmbiguousKeyError):
+    """A relative fragment key two of this environment's capabilities offer."""
+
+    kind = "observation fragment"
 
 
 class DuplicateFragmentNameError(Exception):
@@ -68,9 +85,14 @@ class ObservationNegotiationResult(NegotiationResultBase):
     """Output of the three-party observation negotiation.
 
     Attributes:
-        active_fragments: All fragments activated for this run.
+        active_fragments: All fragments activated for this run, fully
+            qualified.
         env_sourced: Subset of active_fragments provided by Capability resolvers.
         loop_sourced: Subset of active_fragments filled by the Loop itself.
+        fragment_bindings: Local name → fully-qualified key, for the
+            active set. Computed once here so nothing downstream has to
+            rediscover which capability a locally-named fragment came
+            from.
     """
 
     __registry_key__ = "observation"
@@ -78,6 +100,21 @@ class ObservationNegotiationResult(NegotiationResultBase):
     active_fragments: frozenset[str]
     env_sourced: frozenset[str]
     loop_sourced: frozenset[str]
+    fragment_bindings: Mapping[str, str] = field(default_factory=dict)
+
+
+def _loop_sourced_keys() -> frozenset[str]:
+    """Fragment keys the Loop fills in, whoever the environment is.
+
+    These have no capability behind them, so they are not in
+    ``env_provides`` — but they are still resolvable, which is why they
+    join the environment's keys to form the negotiation universe.
+    """
+    return frozenset(
+        key
+        for key, cls in ObservationRegistrar.get_all().items()
+        if getattr(cls, "__source__", "env") == "loop"
+    )
 
 
 def _observation_rules(
@@ -86,44 +123,42 @@ def _observation_rules(
     loop: tuple[set[str], set[str]],
     env_provides: set[str],
 ) -> ObservationNegotiationResult:
-    """Avro-style three-party negotiation semantics."""
+    """Avro-style three-party negotiation semantics.
+
+    Agent and Loop declare in capability-relative space unless they pin a
+    provider; resolution against this run's fragment universe turns those
+    declarations into fully-qualified keys, and everything the result
+    hands downstream is fully qualified.
+    """
     agent_required, agent_optional = agent
     loop_required, loop_optional = loop
 
-    all_required = agent_required | loop_required
-    all_optional = agent_optional | loop_optional
-    all_requested = all_required | all_optional
+    loop_keys = _loop_sourced_keys()
+    demand = resolve_demand(
+        required=agent_required | loop_required,
+        optional=agent_optional | loop_optional,
+        universe=set(env_provides) | loop_keys,
+        separator=FRAGMENT_KEY_SEPARATOR,
+        ambiguity_error=AmbiguousFragmentError,
+    )
 
-    env_sourced: set[str] = set()
-    loop_sourced: set[str] = set()
-    missing: set[str] = set()
-
-    # Sorted so the diagnosis is identical between processes.
-    for frag_key in sorted(all_requested):
-        frag_cls = ObservationRegistrar.get(frag_key)
-        source = getattr(frag_cls, "__source__", "env")
-
-        if source == "loop":
-            loop_sourced.add(frag_key)
-        elif frag_key in env_provides:
-            env_sourced.add(frag_key)
-        elif frag_key in all_required:
-            missing.add(frag_key)
-
-    if missing:
+    if demand.missing:
         raise IncompatibleFragmentError(
-            required=missing,
+            missing=set(demand.missing),
             provided=env_provides,
         )
 
-    active = frozenset(env_sourced | loop_sourced)
+    active = demand.resolved
+    loop_sourced = active & loop_keys
+    env_sourced = active - loop_keys
 
     # The generated model exposes fragments under their local name only,
     # so two sources claiming one local id cannot coexist. Fail here
     # rather than inside build_observation_model on the first observe().
-    by_local: dict[str, list[str]] = {}
-    for frag_key in active:
-        by_local.setdefault(frag_key.rsplit(".", 1)[-1], []).append(frag_key)
+    # Both providers can only be active because the wiring pinned each of
+    # them by name — a *relative* declaration would have been refused one
+    # step earlier by ``AmbiguousFragmentError``.
+    by_local = group_by_short_name(active, FRAGMENT_KEY_SEPARATOR)
     collisions = {name: keys for name, keys in by_local.items() if len(keys) > 1}
     if collisions:
         raise DuplicateFragmentNameError(collisions)
@@ -132,6 +167,7 @@ def _observation_rules(
         active_fragments=active,
         env_sourced=frozenset(env_sourced),
         loop_sourced=frozenset(loop_sourced),
+        fragment_bindings=bind_short_names(by_local),
     )
 
 

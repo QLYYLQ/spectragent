@@ -20,10 +20,21 @@ from conscribe import create_registrar
 
 from spectragent.core.actions.base import BaseAction
 
+#: Separator between the owning capability and the local action id.
+#:
+#: Declaring it is what lets conscribe expand a capability-relative
+#: ``__wiring__`` entry (``"click"``) into every provider that offers it, and
+#: what lets negotiation project the environment's fully-qualified keys down
+#: to the short names an agent declares. It does not change the
+#: discriminator: keys stay flat and fully qualified everywhere else —
+#: registration, routing, descriptors, the trace.
+ACTION_KEY_SEPARATOR = "."
+
 ActionRegistrar = create_registrar(
     "action",
     BaseAction,
     discriminator_field="action_id",
+    key_separator=ACTION_KEY_SEPARATOR,
 )
 
 
@@ -37,6 +48,13 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
     :attr:`action_id` returns the full key (which is what environments
     route on) and :attr:`source` returns the prefix segment for callers
     that need the owning-capability identity.
+
+    **Consumers do not have to spell the prefix out.** An agent needing a
+    click says ``"click"`` in its ``__wiring__``; conscribe widens that
+    to every registered provider at config-generation time, and
+    negotiation binds it to the one this run holds (or refuses two).
+    Writing ``"browser.click"`` instead pins that provider. Either way
+    the key that leaves negotiation is fully qualified.
 
     Subclasses should use ``@dataclass`` + ``Annotated[type, Field(...)]``
     fields to expose capability-side configuration to conscribe codegen.
@@ -57,7 +75,7 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
 
             def descriptor(self, **context):
                 return ActionDescriptor(
-                    name=self.__registry_key__,
+                    name=self.action_id,
                     description=f"Scroll the page (default {self.default_amount}px).",
                     params={"direction": "up|down|left|right"},
                 )

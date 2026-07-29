@@ -26,7 +26,7 @@ class DoneAction(ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.done",
+            name=self.action_id,
             description="Signal that the task is complete.",
             params={
                 "extracted_content": "str | None -- final answer / result text",

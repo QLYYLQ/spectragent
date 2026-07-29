@@ -27,7 +27,7 @@ class SwitchTabAction(ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.switch_tab",
+            name=self.action_id,
             description=(
                 "Switch to a different browser tab. Subsequent actions and "
                 "observations apply to the newly focused tab."

@@ -166,8 +166,10 @@ class TestParseReactOutput:
         assert len(actions) == 1
         action = actions[0]
         assert isinstance(action, Action)
-        # M14: UITars MUST emit browser.click_coordinate (not browser.click + index)
-        assert action.name == "browser.click_coordinate"
+        # UITars MUST emit click_coordinate (not click + index), and it
+        # must name no capability — the same coordinate click exists on
+        # a desktop VM and an Android emulator.
+        assert action.name == "click_coordinate"
         assert action.params["coordinate_x"] == 640
         assert action.params["coordinate_y"] == 360
 
@@ -176,7 +178,7 @@ class TestParseReactOutput:
         text = "Action: click(point='100,200')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
-        assert actions[0].name == "browser.click_coordinate"
+        assert actions[0].name == "click_coordinate"
         assert actions[0].params == {"coordinate_x": 100, "coordinate_y": 200}
 
     def test_parses_finished_to_done_with_extracted_content(self) -> None:
@@ -187,7 +189,7 @@ class TestParseReactOutput:
         text = "Action: finished(content='task complete')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
-        assert actions[0].name == "browser.done"
+        assert actions[0].name == "done"
         assert actions[0].params["extracted_content"] == "task complete"
         assert actions[0].params["success"] is True
 
@@ -196,7 +198,7 @@ class TestParseReactOutput:
         text = "Action: type(content='hello world', point='(100, 100)')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
-        assert actions[0].name == "browser.type"
+        assert actions[0].name == "type"
         assert actions[0].params.get("content") == "hello world"
 
     def test_no_action_pattern_raises_parse_error(self) -> None:

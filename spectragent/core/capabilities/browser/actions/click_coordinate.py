@@ -27,7 +27,7 @@ class ClickCoordinateAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.click_coordinate",
+            name=self.action_id,
             description="Click at absolute screen coordinates.",
             params={"coordinate_x": "int", "coordinate_y": "int"},
         )

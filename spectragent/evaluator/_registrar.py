@@ -13,37 +13,20 @@ uses: a Protocol (:mod:`spectragent.evaluator.base`), a registrar keyed on
 conscribe auto-registers.
 """
 
-# WARNING for anyone changing field declarations on a base class here.
-# Two independent conscribe behaviours can silently empty a subclass's
-# generated config, and they have opposite remedies.
+# WARNING for anyone adding a field declaration to a base class here: an
+# inherited ``Annotated`` field vanishes under PEP 563, silently.
 #
-# (1) An inherited ``Annotated`` field vanishes under PEP 563.
-#     conscribe derives each per-key config model from the
-#     dataclass-generated ``__init__`` and needs ``Annotated[..., Field(...)]``
-#     metadata to survive ``get_type_hints``. Under PEP 563 (the ``from
-#     __future__`` below) those annotations are *strings*, resolved against
-#     the **subclass's** module globals — a module that does not itself
-#     import ``Annotated`` and ``Field`` cannot resolve them, the extractor
-#     falls back to raw strings, and ``__config_annotated_only__`` drops
-#     the field without a word.
-#     => No base here declares an ``Annotated`` config field. Every knob is
-#     declared on the concrete evaluator that uses it, in that evaluator's
-#     own module.
+# conscribe derives each per-key config model from the dataclass-generated
+# ``__init__`` and needs the ``Annotated[..., Field(...)]`` metadata to
+# survive ``get_type_hints``. Under PEP 563 (the ``from __future__`` below)
+# those annotations are *strings*, resolved against the **subclass's**
+# module globals — a module that does not itself import ``Annotated`` and
+# ``Field`` cannot resolve them, the extractor falls back to raw strings,
+# and ``__config_annotated_only__`` drops the field without a word.
 #
-# (2) A base with *no* init parameter at all loses its wired receptors.
-#     The extractor computes the named parameters of ``__init__`` first and
-#     returns ``None`` outright when there are none — before it applies
-#     ``__wiring__``. conscribe then emits a discriminator-only model, so a
-#     receptor like ``llm`` that wiring would have injected never appears,
-#     and the dependency silently falls back to whatever the composer finds.
-#     This bit ``browsecomp``, which legitimately has no knobs of its own.
-#     => ``LLMJudgeEvaluator`` carries one plain (un-``Annotated``) init
-#     field for exactly this reason; see the note on ``image_detail``.
-#
-# The two remedies coexist because they act on different things: (1) is
-# about ``Annotated`` metadata reaching the config, (2) is only about the
-# ``__init__`` signature being non-empty. A plain builtin annotation
-# satisfies (2) while being immune to (1) and invisible to the config.
+# => No base here declares an ``Annotated`` config field. Every knob is
+# declared on the concrete evaluator that uses it, in that evaluator's own
+# module.
 from __future__ import annotations
 
 import hashlib
@@ -317,31 +300,6 @@ class LLMJudgeEvaluator(LLMJudgeReceptors, EvaluatorBase):
     __wiring__: ClassVar[dict[str, Any]] = {
         "llm": "llm",  # Mode 1: any registered LLM may serve as judge
     }
-
-    #: Vision detail level for judged screenshots.
-    #:
-    #: Two things about this declaration are load-bearing; changing either
-    #: silently unwires the judge on every subclass that declares no knobs
-    #: of its own.
-    #:
-    #: 1. It is a **real init field, not a ``ClassVar``**. conscribe's
-    #:    extractor reads ``inspect.signature(cls.__init__)`` and bails
-    #:    with ``None`` the moment it finds no named parameters — before
-    #:    it applies ``__wiring__``. A judge with an empty ``__init__``
-    #:    therefore generates a *discriminator-only* config: no ``llm``
-    #:    field, so the judge model cannot be named in YAML, and the
-    #:    composer silently binds whichever LLM happens to be in the run —
-    #:    the agent's own, i.e. the model under test grading itself. One
-    #:    init parameter on this base is what keeps that from happening to
-    #:    ``browsecomp``, which has no knobs of its own by design.
-    #: 2. It is **deliberately not ``Annotated``**. Plain ``str`` resolves
-    #:    in any module's namespace, so it is immune to the PEP 563 hazard
-    #:    described at the top of this file; and because
-    #:    ``__config_annotated_only__`` drops un-``Annotated`` params, it
-    #:    stays *out* of the generated config. A text-only grader must not
-    #:    advertise a vision knob. Image-judging evaluators redeclare it
-    #:    with ``Annotated`` in their own module to expose it.
-    image_detail: str = "high"
 
     _prompt_cache: dict[str, tuple[str, PromptRef]] = field(
         default_factory=dict, init=False, repr=False

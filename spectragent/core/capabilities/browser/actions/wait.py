@@ -62,7 +62,7 @@ class WaitAction(ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.wait",
+            name=self.action_id,
             description=(
                 f"Pause for N seconds before the next observation. Use when "
                 f"the page is still loading, a popup/modal is expected to "

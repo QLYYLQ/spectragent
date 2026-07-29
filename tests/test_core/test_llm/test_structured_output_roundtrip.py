@@ -109,7 +109,7 @@ class TestPerRunModelRoundTrip:
         assert [str(w.message) for w in caught] == []
         assert json.loads(dumped)["action"] == [{"browser.click": {"index": 1}}]
 
-    def test_aliases_still_translate_to_canonical_actions(self) -> None:
+    def test_aliases_still_translate_to_the_action_id(self) -> None:
         agent = _prepared_agent()
         model = agent.get_react_output_model()
         assert model is not None
@@ -117,8 +117,11 @@ class TestPerRunModelRoundTrip:
         out = model.model_validate(
             {"memory": "m", "action": [{"click_element": {"index": 4}}]}
         )
+        # The legacy upstream verb is renamed to the action id and stops
+        # there: which capability's ``click`` this is, is not the
+        # parser's to decide.
         assert agent.parse_react_output(out) == [
-            Action(name="browser.click", params={"index": 4})
+            Action(name="click", params={"index": 4})
         ]
 
     def test_done_text_is_renamed_on_the_structured_path(self) -> None:

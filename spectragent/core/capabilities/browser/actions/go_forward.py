@@ -25,7 +25,7 @@ class GoForwardAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.go_forward",
+            name=self.action_id,
             description="Navigate forward in browser history.",
             params={},
         )

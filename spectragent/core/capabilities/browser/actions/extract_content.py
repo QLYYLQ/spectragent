@@ -27,7 +27,7 @@ class ExtractContentAction(ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.extract_content",
+            name=self.action_id,
             description="Extract text content from the page or an element.",
             params={
                 "index": "int (optional) -- element index; omit to extract page text",

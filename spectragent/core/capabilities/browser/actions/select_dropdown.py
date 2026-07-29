@@ -28,7 +28,7 @@ class SelectDropdownAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.select_dropdown",
+            name=self.action_id,
             description="Select an option from a dropdown element.",
             params={
                 "index": "int -- element index of the <select>",

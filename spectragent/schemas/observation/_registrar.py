@@ -14,10 +14,19 @@ from pydantic import BaseModel
 
 from spectragent.schemas.observation.base import ObservationFragment
 
+#: Separator between the fragment's source and its local id.
+#:
+#: Same role as ``ACTION_KEY_SEPARATOR``: it is what makes a
+#: capability-relative ``__wiring__`` entry (``"screenshot"``) resolvable
+#: against whichever provider the assembled environment actually holds,
+#: while keys stay fully qualified everywhere else.
+FRAGMENT_KEY_SEPARATOR = "."
+
 ObservationRegistrar = create_registrar(
     "observation",
     ObservationFragment,
     discriminator_field="fragment_id",
+    key_separator=FRAGMENT_KEY_SEPARATOR,
 )
 
 # Bridge resolves BaseModel (ModelMetaclass) + AutoRegistrar metaclass conflict.

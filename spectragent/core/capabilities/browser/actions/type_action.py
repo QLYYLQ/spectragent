@@ -39,7 +39,7 @@ class TypeAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
-            name="browser.type",
+            name=self.action_id,
             description="Type text into a DOM element.",
             params={
                 "index": "int -- element index",

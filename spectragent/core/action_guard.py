@@ -11,7 +11,7 @@ See docs/architecture_design.md §4.5 "guarded_act()" for the design.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
@@ -31,8 +31,16 @@ def build_guarded_act(
     act_fn: Callable[..., Awaitable[ActionResult]],
     descriptors: list[ActionDescriptor],
     action_filter: list[str] | None = None,
+    *,
+    bindings: Mapping[str, str] | None = None,
 ) -> tuple[list[ActionDescriptor], Callable[..., Awaitable[ActionResult]]]:
     """Build a guarded action executor with optional filtering.
+
+    This is the **only** place a capability-relative action name becomes a
+    fully-qualified one. Everything past this closure — ``env.act``
+    prefix routing, ``ActionDescriptor.name``, the trace — sees the full
+    key and nothing else, so the collision-free routing the prefix exists
+    for is untouched by agents that speak short names.
 
     Args:
         act_fn: The underlying ``env.act(action, **kwargs)`` callable.
@@ -40,13 +48,19 @@ def build_guarded_act(
         action_filter: Optional allowlist of action names for ablation
             experiments. When provided, only descriptors whose name is
             in this list are retained.
+        bindings: ``ActionNegotiationResult.action_bindings`` — short name
+            → fully-qualified key for this run. An agent that emits
+            ``click`` gets it rewritten to the ``click`` this run actually
+            has. Omitted (``None``) means the caller negotiated nothing,
+            so only fully-qualified names are accepted.
 
     Returns:
         A tuple of ``(filtered_descriptors, guarded_act)``:
         - ``filtered_descriptors``: the (possibly narrowed) descriptor
           list — use this for prompt building.
-        - ``guarded_act``: an async closure that validates the action
-          name is in the active set before delegating to *act_fn*.
+        - ``guarded_act``: an async closure that resolves the action name
+          against *bindings* and validates it is in the active set before
+          delegating to *act_fn*.
     """
     if action_filter is not None:
         allowed = set(action_filter)
@@ -55,10 +69,22 @@ def build_guarded_act(
         filtered = list(descriptors)
 
     active_names = frozenset(d.name for d in filtered)
+    # An ablation can narrow the descriptors after negotiation, so a
+    # binding whose target did not survive it is dropped here rather than
+    # resolving to an action the run no longer executes.
+    resolvable = {
+        short: full
+        for short, full in (bindings or {}).items()
+        if full in active_names and short not in active_names
+    }
 
     async def guarded_act(action: Action, **kwargs: Any) -> ActionResult:
-        if action.name not in active_names:
-            return await _reject_action(action, active_names)
+        name = action.name
+        if name not in active_names:
+            full = resolvable.get(name)
+            if full is None:
+                return await _reject_action(action, active_names)
+            action = action.model_copy(update={"name": full})
         return await act_fn(action, **kwargs)
 
     return filtered, guarded_act

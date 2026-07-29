@@ -224,9 +224,12 @@ def _parse_single_action(action_str: str) -> Action | None:
     """Parse a single action call using Python AST.
 
     UI-TARS emits coordinate-based actions (``click(point='(x,y)')``);
-    we map ``click`` -> ``click_coordinate`` so the BrowserCapability
-    routes to the coordinate event class. ``finished`` -> ``done`` for
-    consistency with the standard action vocabulary.
+    we map ``click`` -> ``click_coordinate`` so the capability routes to
+    the coordinate event class. ``finished`` -> ``done`` for consistency
+    with the standard action vocabulary.
+
+    Names come out capability-relative. Binding them to the capability
+    this run holds is ``build_guarded_act``'s job.
     """
     try:
         node = ast.parse(action_str, mode="eval")
@@ -247,12 +250,16 @@ def _parse_single_action(action_str: str) -> Action | None:
             if kw.arg is not None:
                 kwargs[kw.arg] = ast.literal_eval(kw.value)
 
-        # Map UI-TARS verbs to the fully-qualified browser action names.
+        # Map UI-TARS verbs to action ids. Ids only — naming a provider
+        # here is what pinned a computer-use model to the browser: the
+        # same ``click_coordinate`` exists on a desktop VM and an Android
+        # emulator, and which one this run has is decided at negotiation,
+        # not by a string literal in a parser.
         if func_name == "finished":
-            # BrowserCapability/DoneEvent reads ``extracted_content``,
-            # not ``text`` — rename so the answer survives.
+            # DoneAction reads ``extracted_content``, not ``text`` —
+            # rename so the answer survives.
             return Action(
-                name="browser.done",
+                name="done",
                 params={
                     "success": True,
                     "extracted_content": kwargs.get("content", ""),
@@ -263,13 +270,12 @@ def _parse_single_action(action_str: str) -> Action | None:
             x, y = _parse_point(kwargs.get("point"))
             if x is not None and y is not None:
                 return Action(
-                    name="browser.click_coordinate",
+                    name="click_coordinate",
                     params={"coordinate_x": x, "coordinate_y": y},
                 )
             return None
 
-        qualified = func_name if "." in func_name else f"browser.{func_name}"
-        return Action(name=qualified, params=kwargs)
+        return Action(name=func_name, params=kwargs)
 
     except (SyntaxError, ValueError):
         return None

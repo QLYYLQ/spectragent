@@ -11,6 +11,7 @@ Verifies that all three adapted agents:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +21,7 @@ from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
     DOMObs,
@@ -27,8 +29,9 @@ from spectragent.core.capabilities.browser.observations import (
 )
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.loops.validation import validate_compatibility
-from spectragent.core.negotiation import extract_wiring
+from spectragent.core.negotiation import extract_wiring, negotiate_action
 from spectragent.core.negotiation.observation import _observation_rules
+from spectragent.schemas.action import ActionDescriptor, ActionResult
 from spectragent.schemas.observation.fragments import (
     HistoryObs,
     StepInfoObs,
@@ -208,23 +211,56 @@ class _MockNegotiated:
     loop_sourced: set[str] = set()
 
 
+class _ActionsOnlyEnv:
+    """Environment stand-in that advertises one capability's action set."""
+
+    def __init__(self, capability: Any) -> None:
+        self.provided_actions = capability.provided_actions
+
+
+def _resolve(agent: Any, action: Any, capability: Any) -> str:
+    """What ``build_guarded_act`` would send to ``env.act`` for *action*."""
+    negotiated = negotiate_action(agent, _ActionsOnlyEnv(capability))
+    descriptors = [
+        ActionDescriptor(name=name, description="")
+        for name in sorted(negotiated.active_actions)
+    ]
+    routed: list[Any] = []
+
+    async def _act(executed: Any, **_: Any) -> ActionResult:
+        routed.append(executed)
+        return ActionResult(success=True)
+
+    _kept, guard = build_guarded_act(
+        _act, descriptors, bindings=negotiated.action_bindings
+    )
+
+    async def _drive() -> ActionResult:
+        return await guard(action)
+
+    result = asyncio.run(_drive())
+    assert result.success, result.error
+    return routed[0].name
+
+
 class TestAgentToCapabilityActionVocabulary:
-    """Round-trip regression tests: every action name an agent can emit
-    must be recognised by ``BrowserCapability.provided_actions``. After
-    M13-Rev the symbol moved from a static ``_ACTION_EVENT_MAP`` to the
-    symmetric ``provided_actions`` frozenset derived from ``__wiring__``.
+    """Every action name an agent emits must reach a real capability key.
+
+    The agents name no capability — that is the whole point of
+    capability-relative keys — so the property under test is no longer
+    "the emitted string is in ``provided_actions``" but "negotiation and
+    the guard turn the emitted string into a key that is".
     """
 
-    def test_browser_use_agent_actions_are_in_capability_provided_actions(
-        self,
-    ) -> None:
+    def test_browser_use_verbs_resolve_to_capability_actions(self) -> None:
         from spectragent.agents._output_models import BrowserUseOutput
         from spectragent.core.capabilities.browser.capability import (
             BrowserCapability,
         )
 
         agent = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
-        provided = BrowserCapability().provided_actions
+        capability = BrowserCapability()
+        provided = capability.provided_actions
 
         # Every LLM action verb the agent is expected to emit.
         llm_action_names = [
@@ -239,12 +275,12 @@ class TestAgentToCapabilityActionVocabulary:
         ]
         for name in llm_action_names:
             out = BrowserUseOutput(action=[{name: {"index": 1}}])
-            parsed = agent.parse_react_output(out)
-            for action in parsed:
-                assert action.name in provided, (
-                    f"BrowserUseAgent emitted {action.name!r} but "
-                    f"BrowserCapability.provided_actions has no entry for it. "
-                    f"Provided: {sorted(provided)}"
+            for action in agent.parse_react_output(out):
+                routed = _resolve(agent, action, capability)
+                assert routed in provided, (
+                    f"BrowserUseAgent emitted {action.name!r}, which resolved "
+                    f"to {routed!r} — not in BrowserCapability."
+                    f"provided_actions {sorted(provided)}"
                 )
 
     def test_ui_tars_click_produces_click_coordinate(self) -> None:
@@ -257,9 +293,9 @@ class TestAgentToCapabilityActionVocabulary:
             "Thought: click it.\nAction: click(point='(100, 200)')"
         )
         assert len(actions) == 1
-        # browser.click_coordinate MUST be provided by BrowserCapability
-        assert actions[0].name == "browser.click_coordinate"
-        assert actions[0].name in BrowserCapability().provided_actions
+        assert actions[0].name == "click_coordinate"
+        capability = BrowserCapability()
+        assert _resolve(agent, actions[0], capability) == "browser.click_coordinate"
 
     def test_all_three_agents_done_uses_extracted_content(self) -> None:
         # C2 regression: every adapted agent must emit its done action
@@ -269,6 +305,11 @@ class TestAgentToCapabilityActionVocabulary:
             BrowserUseOutput,
             SkyvernOutput,
         )
+        from spectragent.core.capabilities.browser.capability import (
+            BrowserCapability,
+        )
+
+        capability = BrowserCapability()
 
         # BrowserUseAgent
         bu = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
@@ -276,7 +317,7 @@ class TestAgentToCapabilityActionVocabulary:
             action=[{"done": {"text": "answer bu", "success": True}}],
         )
         bu_actions = bu.parse_react_output(bu_out)
-        assert bu_actions[0].name == "browser.done"
+        assert _resolve(bu, bu_actions[0], capability) == "browser.done"
         assert bu_actions[0].params["extracted_content"] == "answer bu"
 
         # SkyvernAgent
@@ -287,7 +328,7 @@ class TestAgentToCapabilityActionVocabulary:
             extracted_content="answer sk",
         )
         sk_actions = sk.parse_react_output(sk_out)
-        assert sk_actions[0].name == "browser.done"
+        assert _resolve(sk, sk_actions[0], capability) == "browser.done"
         assert sk_actions[0].params["extracted_content"] == "answer sk"
 
         # UITarsAgent
@@ -295,7 +336,7 @@ class TestAgentToCapabilityActionVocabulary:
         ut_actions = ut.parse_react_output(
             "Action: finished(content='answer ut')"
         )
-        assert ut_actions[0].name == "browser.done"
+        assert _resolve(ut, ut_actions[0], capability) == "browser.done"
         assert ut_actions[0].params["extracted_content"] == "answer ut"
 
 
@@ -340,9 +381,26 @@ class TestReactLoopDriveBrowserUse:
         loop.max_steps = 2
         loop.max_actions_per_step = 3
 
-        # Drive the loop directly (skip AgentRuntime to avoid AOP weaving).
-        async def _act_fn(action: Any, **kw: Any) -> Any:
-            return await env.act(action)
+        # Drive the loop directly (skip AgentRuntime to avoid AOP weaving),
+        # but keep the guard: it is what turns the agent's ``done`` into
+        # the ``browser.done`` the environment routes on, and a loop
+        # driven without it would be testing a path production never
+        # takes.
+        from spectragent.core.capabilities.browser.capability import (
+            BrowserCapability,
+        )
+
+        negotiated_actions = negotiate_action(
+            agent, _ActionsOnlyEnv(BrowserCapability())
+        )
+        _kept, _act_fn = build_guarded_act(
+            env.act,
+            [
+                ActionDescriptor(name=name, description="")
+                for name in sorted(negotiated_actions.active_actions)
+            ],
+            bindings=negotiated_actions.action_bindings,
+        )
 
         # Post-M17: AgentRuntime owns the prepare → memory.add_messages
         # handoff. Driving the loop without AgentRuntime requires the
