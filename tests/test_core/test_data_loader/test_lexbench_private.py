@@ -12,6 +12,8 @@ so normalizing the upstream file must reproduce it field for field.
 
 from __future__ import annotations
 
+import pytest
+
 from spectragent.core.data_loader._lexbench_legacy import (
     is_legacy_record,
     normalize_legacy_record,
@@ -39,6 +41,7 @@ _GOLDEN_FIELDS = (
 )
 
 
+@pytest.mark.requires_benchmark_data("browser/lexbench_browser")
 class TestPrivateSplitLoads:
     def test_task_loader_loads_the_private_split(self) -> None:
         loader = LexBenchBrowserTaskLoader(subset="private")
@@ -65,6 +68,7 @@ class TestPrivateSplitLoads:
         assert task.reference.scoring.threshold == task.metadata["score_threshold"]
 
 
+@pytest.mark.requires_benchmark_data("browser/lexbench_browser")
 class TestGoldenEquivalenceWithNormalizedFile:
     def test_every_shared_task_normalizes_identically(self) -> None:
         private = LexBenchBrowserTaskLoader(subset="private")

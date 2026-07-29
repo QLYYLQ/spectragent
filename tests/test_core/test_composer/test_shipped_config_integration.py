@@ -15,7 +15,11 @@ launches a browser: instantiation and negotiation are pure, only
 
 from __future__ import annotations
 
+import copy
+import inspect
 import random
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -131,27 +135,6 @@ class TestShippedConfigs:
         assert agent.agent_loop is not None
         assert agent.llm is not None
         assert agent.memory is not None
-
-    def test_backend_reaches_the_capability(
-        self,
-        composer: ConfigComposer,
-    ) -> None:
-        run = composer.compose(yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text()))
-        cap = run.single("capability")
-        assert cap.__dict__["backend"].provider_id == "local_chrome"
-        assert cap.__dict__["backend"].headless is True
-
-    def test_loop_is_the_single_source_of_max_steps(
-        self,
-        composer: ConfigComposer,
-    ) -> None:
-        """The shipped YAML sets ``max_steps`` where it is actually read.
-
-        ``ReactLoop.max_steps`` bounds the run *and* is what the prompt
-        advertises through ``StepInfoObs``.
-        """
-        run = composer.compose(yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text()))
-        assert run.single("agent_loop").max_steps == 30
 
 
 class TestProviderSubConfig:
@@ -700,3 +683,321 @@ class TestDeclaredConfigSurfaceIsReachable:
         assert set(cap._actions_by_name) == {"browser.scroll", "browser.done"}
         assert cap._actions_by_name["browser.scroll"] is run.instances("action")[0]
         assert cap._actions_by_name["browser.scroll"].default_amount == 900
+
+
+# ── Every value the shipped YAML states must reach the object that reads it ──
+#
+# This replaces two hand-typed assertions (``backend.headless is True`` and
+# ``loop.max_steps == 30``) that had opposite, equally bad failure modes.
+# ``headless is True`` had already stopped working: ``True`` is also
+# ``LocalChromeProvider``'s class default, so the assertion held whether or
+# not the YAML value ever reached the object — deleting the key from the
+# config left the test green. ``max_steps == 30`` still had teeth, but only
+# by luck: it is a tunable, and retuning it to 100 would have made it
+# vacuous the same way, while retuning it to anything else would have failed
+# the suite for an ordinary config edit.
+#
+# The structural cause is that the right-hand side was typed by a human
+# instead of read from the artefact under test, so nothing kept the two
+# coupled. Hence the walk below: every scalar leaf of every tracked block is
+# compared against the live attribute, with no literal anywhere. Coupling
+# the gate to the YAML layout is not a cost here — the shipped layout is
+# precisely this file's subject, and a restructure should be noticed.
+#
+# A walk alone would not be enough. Where the shipped value happens to equal
+# the class default, ``getattr(obj, key) == value`` cannot tell injection
+# from fallback — and every single scalar in browser_use_local.yaml's
+# ``backend:`` block is in that state, so the whole block is unobservable to
+# a plain comparison. Hence the second half: perturb each numeric/boolean
+# knob, recompose, and require the live attribute to follow. That is what
+# makes the gate falsifiable per field, and it is why the shipped configs
+# were left untouched — tuning a production config so that a test has
+# something to look at would be backwards, and that block is there to
+# document the knobs a local run can turn.
+
+_NO_DEFAULT = object()
+
+#: Scalars deliberately outside the walk, and why.
+_UNTRACKED_SCALARS: frozenset[str] = frozenset(
+    {
+        # The provider sub-model is splatted onto the client rather than
+        # attached, so ``name`` maps to ``llm.provider``, not ``llm.name``.
+        # ``TestProviderSubConfig`` covers that hop with non-default values.
+        "agent[0].llm.provider.name",
+    }
+)
+
+#: Scalars the walk checks but cannot falsify: they restate the class
+#: default and are strings, which this schema never allows to be synthetic
+#: (they select classes, name profiles, or are filesystem paths). A new
+#: entry here means a new YAML line that proves nothing — give it a value
+#: the operator actually chose, or drop the line.
+_UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
+    "browser_use_local.yaml": frozenset(
+        {
+            "environment[0].capabilities[0].profile",
+            "environment[0].capabilities[0].backend.startup_url",
+            "hook[0].trace_dir",
+        }
+    ),
+    "browser_use_skyvern.yaml": frozenset(
+        {
+            "environment[0].capabilities[0].profile",
+            "hook[0].trace_dir",
+        }
+    ),
+}
+
+
+@dataclass(frozen=True)
+class _Block:
+    """One YAML mapping and the live object that is supposed to carry it."""
+
+    path: str
+    raw: Callable[[dict[str, Any]], dict[str, Any]]
+    live: Callable[[Any], Any]
+
+
+def _scalar_items(block: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in block.items() if not isinstance(v, dict | list)}
+
+
+def _leaf_paths(node: Any, prefix: str = "") -> Iterator[str]:
+    """Every scalar leaf in a parsed YAML document, as ``a[0].b.c``."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _leaf_paths(value, f"{prefix}.{key}" if prefix else str(key))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _leaf_paths(value, f"{prefix}[{index}]")
+    else:
+        yield prefix
+
+
+def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
+    """Resolve each shipped block to the instance that consumes it."""
+    blocks: list[_Block] = []
+
+    def agent_of(run: Any, index: int, entry_id: str | None) -> Any:
+        return (
+            run.instance("agent", entry_id)
+            if entry_id is not None
+            else run.instances("agent")[index]
+        )
+
+    def env_of(run: Any, index: int, entry_id: str | None) -> Any:
+        return (
+            run.instance("environment", entry_id)
+            if entry_id is not None
+            else run.instances("environment")[index]
+        )
+
+    for i, entry in enumerate(root.get("agent", [])):
+        aid = entry.get("id")
+        blocks.append(
+            _Block(
+                f"agent[{i}]",
+                lambda r, i=i: r["agent"][i],
+                lambda run, i=i, aid=aid: agent_of(run, i, aid),
+            )
+        )
+        for child in ("agent_loop", "llm", "memory"):
+            if child in entry:
+                blocks.append(
+                    _Block(
+                        f"agent[{i}].{child}",
+                        lambda r, i=i, c=child: r["agent"][i][c],
+                        lambda run, i=i, aid=aid, c=child: getattr(
+                            agent_of(run, i, aid), c
+                        ),
+                    )
+                )
+
+    for j, entry in enumerate(root.get("environment", [])):
+        eid = entry.get("id")
+        blocks.append(
+            _Block(
+                f"environment[{j}]",
+                lambda r, j=j: r["environment"][j],
+                lambda run, j=j, eid=eid: env_of(run, j, eid),
+            )
+        )
+        for k, cap_entry in enumerate(entry.get("capabilities", [])):
+            blocks.append(
+                _Block(
+                    f"environment[{j}].capabilities[{k}]",
+                    lambda r, j=j, k=k: r["environment"][j]["capabilities"][k],
+                    lambda run, j=j, eid=eid, k=k: list(
+                        env_of(run, j, eid).capabilities.values()
+                    )[k],
+                )
+            )
+            for child in ("mouse_trajectory", "backend"):
+                if child in cap_entry:
+                    blocks.append(
+                        _Block(
+                            f"environment[{j}].capabilities[{k}].{child}",
+                            lambda r, j=j, k=k, c=child: r["environment"][j][
+                                "capabilities"
+                            ][k][c],
+                            lambda run, j=j, eid=eid, k=k, c=child: getattr(
+                                list(env_of(run, j, eid).capabilities.values())[k], c
+                            ),
+                        )
+                    )
+
+    for h in range(len(root.get("hook", []))):
+        blocks.append(
+            _Block(
+                f"hook[{h}]",
+                lambda r, h=h: r["hook"][h],
+                lambda run, h=h: run.instances("hook")[h],
+            )
+        )
+    return blocks
+
+
+def _class_default(obj: Any, key: str) -> Any:
+    """The value ``key`` would hold if the config never reached ``obj``.
+
+    ``_NO_DEFAULT`` means there is no such value — a required constructor
+    parameter, or a property computed from the registry key — so injection
+    cannot silently fall back into it.
+    """
+    cls = type(obj)
+    try:
+        param = inspect.signature(cls.__init__).parameters.get(key)
+    except (TypeError, ValueError):
+        param = None
+    if param is not None and param.default is not inspect.Parameter.empty:
+        return param.default
+    attr = inspect.getattr_static(cls, key, _NO_DEFAULT)
+    if attr is _NO_DEFAULT or isinstance(attr, property) or callable(attr):
+        return _NO_DEFAULT
+    return attr
+
+
+def _perturb(value: Any) -> Any:
+    """A different but still valid value for a knob, or ``None`` if unsafe.
+
+    Booleans and numbers only. Every string in this schema either selects a
+    class (``provider_id``), names something that has to exist (``profile``)
+    or is an identity, so a synthetic string would be rejected by validation
+    and a rejected config proves nothing about injection.
+    """
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, int):
+        return value + 7
+    if isinstance(value, float):
+        return value + 7.0
+    return None
+
+
+class TestShippedValuesReachTheObjectsThatReadThem:
+    """The shipped YAML, key by key, against the objects it configures."""
+
+    @pytest.mark.parametrize("config_path", SHIPPED_CONFIGS, ids=lambda p: p.name)
+    def test_every_scalar_in_the_file_arrives(
+        self,
+        composer: ConfigComposer,
+        config_path: Path,
+    ) -> None:
+        root = yaml.safe_load(config_path.read_text())
+        run = composer.compose(copy.deepcopy(root))
+
+        for block in _tracked_blocks(root):
+            obj = block.live(run)
+            for key, value in _scalar_items(block.raw(root)).items():
+                assert hasattr(obj, key), (
+                    f"{config_path.name}: {block.path}.{key} is accepted by the "
+                    f"schema but {type(obj).__name__} has no such attribute — "
+                    f"the value validated and then went nowhere"
+                )
+                assert getattr(obj, key) == value, (
+                    f"{config_path.name}: {block.path}.{key} is {value!r} in the "
+                    f"YAML but {type(obj).__name__}.{key} is "
+                    f"{getattr(obj, key)!r}"
+                )
+
+    @pytest.mark.parametrize("config_path", SHIPPED_CONFIGS, ids=lambda p: p.name)
+    def test_no_scalar_escapes_the_walk(self, config_path: Path) -> None:
+        """Adding a key to a shipped config must extend the gate, not slip past it."""
+        root = yaml.safe_load(config_path.read_text())
+        covered = {
+            f"{block.path}.{key}"
+            for block in _tracked_blocks(root)
+            for key in _scalar_items(block.raw(root))
+        }
+        assert set(_leaf_paths(root)) - covered == _UNTRACKED_SCALARS
+
+    @pytest.mark.parametrize("config_path", SHIPPED_CONFIGS, ids=lambda p: p.name)
+    def test_every_knob_is_falsifiable(
+        self,
+        composer: ConfigComposer,
+        config_path: Path,
+    ) -> None:
+        """Recompose with every numeric/boolean knob changed; all must follow.
+
+        This is what the arrival test cannot do on its own. ``headless: true``
+        matches ``LocalChromeProvider.headless``'s default, so comparing them
+        is true whether or not the value was injected — the exact state the
+        old ``headless is True`` assertion had already collapsed into.
+        """
+        root = yaml.safe_load(config_path.read_text())
+        probe_root = copy.deepcopy(root)
+        blocks = _tracked_blocks(root)
+        probe_blocks = {block.path: block for block in _tracked_blocks(probe_root)}
+
+        expected: dict[str, Any] = {}
+        for block in blocks:
+            probe_raw = probe_blocks[block.path].raw(probe_root)
+            for key, value in _scalar_items(block.raw(root)).items():
+                probe = _perturb(value)
+                if probe is None:
+                    continue
+                probe_raw[key] = probe
+                expected[f"{block.path}.{key}"] = (block.path, key, probe)
+
+        assert expected, f"{config_path.name} declares no perturbable knob at all"
+
+        probe_run = composer.compose(probe_root)
+        by_path = {block.path: block for block in blocks}
+        for label, (block_path, key, probe) in expected.items():
+            obj = by_path[block_path].live(probe_run)
+            assert getattr(obj, key) == probe, (
+                f"{config_path.name}: {label} was changed to {probe!r} in the "
+                f"config and {type(obj).__name__}.{key} did not follow "
+                f"({getattr(obj, key)!r}) — the shipped value only matched "
+                f"because it equals the class default"
+            )
+
+    @pytest.mark.parametrize("config_path", SHIPPED_CONFIGS, ids=lambda p: p.name)
+    def test_the_unprovable_scalars_are_exactly_the_declared_ones(
+        self,
+        composer: ConfigComposer,
+        config_path: Path,
+    ) -> None:
+        """Keep the gate's blind spot enumerated instead of invisible.
+
+        A scalar is unprovable when it restates the class default *and* is a
+        string, so neither the arrival comparison nor a perturbation can see
+        injection break for it. That is a property of the config file, so it
+        belongs in a ledger the file's author has to update.
+        """
+        declared = _UNPROVABLE_SCALARS.get(config_path.name)
+        assert declared is not None, (
+            f"{config_path.name} is a new shipped config; add it to "
+            f"_UNPROVABLE_SCALARS (an empty set is the right answer if every "
+            f"one of its scalars is observable)"
+        )
+        root = yaml.safe_load(config_path.read_text())
+        run = composer.compose(copy.deepcopy(root))
+        unprovable = {
+            f"{block.path}.{key}"
+            for block in _tracked_blocks(root)
+            for key, value in _scalar_items(block.raw(root)).items()
+            if _perturb(value) is None
+            and _class_default(block.live(run), key) == value
+        }
+        assert unprovable == declared

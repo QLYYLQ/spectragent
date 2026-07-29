@@ -17,11 +17,13 @@ from spectragent.evaluator.browsecomp import decrypt, derive_key
 from spectragent.evaluator.errors import ReferenceMismatchError
 from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.task import TaskReference
+from tests.conftest import require_benchmark_data
 from tests.test_evaluator.conftest import FakeJudge, write_trace
 
 
 @pytest.fixture(scope="module")
 def loader() -> BrowseCompEvalLoader:
+    require_benchmark_data("browser/browsecomp")
     return BrowseCompEvalLoader()
 
 

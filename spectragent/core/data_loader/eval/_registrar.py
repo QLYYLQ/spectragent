@@ -45,7 +45,16 @@ class EvalLoaderBase(metaclass=EvalLoaderRegistrar.Meta):
     __config_annotated_only__ = True
 
     subset: Annotated[str, Field("All", description="Data subset")] = "All"
-    data_dir: Annotated[str | None, Field(None, description="Custom data dir")] = None
+    data_dir: Annotated[
+        str | None,
+        Field(
+            None,
+            description=(
+                "Data dir for this loader ('~' expanded). Overrides "
+                "$SPECTRAGENT_BENCHMARK_DATA/<env_type>/<benchmark>."
+            ),
+        ),
+    ] = None
 
     # internal storage — not a config field
     _refs: dict[str, EvalReference] = field(

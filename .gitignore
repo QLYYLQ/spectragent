@@ -44,6 +44,11 @@ CLAUDE.md
 # Local-only docs / data sets
 /docs/
 /benchmarks/
+# Benchmark data is fetched, not tracked, and no longer ships in the wheel.
+# Loaders find it via `data_dir:` or $SPECTRAGENT_BENCHMARK_DATA — see
+# configs/README.md. (Inert while the current copies are still in the index:
+# git ignores nothing it already tracks.)
+/spectragent/benchmark_data/
 
 # Vendored upstream sources kept locally for inspection only
 /ref/

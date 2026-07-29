@@ -11,10 +11,21 @@ the agent scored nothing.
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from spectragent import BENCHMARK_DATA_ROOT
+
+#: Environment variable naming an alternative benchmark-data root.
+#:
+#: The shipped tree is not part of the distribution (see
+#: ``[tool.setuptools.package-data]``), so an installed spectragent has no
+#: data at all. ``data_dir`` on the loader config only fixes one loader at
+#: a time — a run needs the same benchmark named twice, once on the task
+#: loader and once on the eval loader — so pointing the *root* somewhere
+#: else has to be expressible in one place.
+BENCHMARK_DATA_ENV: str = "SPECTRAGENT_BENCHMARK_DATA"
 
 #: Wrapper keys recognised when a JSON data file holds records under a key.
 _WRAPPER_KEYS = ("tasks", "data", "records", "items")
@@ -28,16 +39,33 @@ class BenchmarkDataError(RuntimeError):
     """Raised when benchmark data is missing, malformed, or empty."""
 
 
-def resolve_data_dir(env_type: str, registry_key: str, data_dir: str | None) -> Path:
-    """Resolve a data directory: explicit path > default convention.
+def benchmark_data_root() -> Path:
+    """The root every benchmark's data directory hangs off.
 
-    The default convention is ``benchmark_data/<env_type>/<registry_key>``,
-    which is what makes the ``desktop/`` and ``mobile/`` trees addressable
-    at all — they are unreachable if the environment segment is fixed.
+    ``$SPECTRAGENT_BENCHMARK_DATA`` wins over the in-package default so a
+    single environment variable relocates *every* loader in a run. Read on
+    each call rather than captured at import: a module-level snapshot would
+    be global state, and tests that relocate the root would need a reload.
+    """
+    override = os.environ.get(BENCHMARK_DATA_ENV)
+    if override:
+        return Path(override).expanduser()
+    return BENCHMARK_DATA_ROOT
+
+
+def resolve_data_dir(env_type: str, registry_key: str, data_dir: str | None) -> Path:
+    """Resolve a data directory: explicit path > env root > default root.
+
+    The convention below the root is ``<env_type>/<registry_key>``, which
+    is what makes the ``desktop/`` and ``mobile/`` trees addressable at
+    all — they are unreachable if the environment segment is fixed.
+
+    ``~`` is expanded on both escape hatches; a config file that cannot
+    say ``~/data`` forces absolute paths that differ per machine.
     """
     if data_dir is not None:
-        return Path(data_dir)
-    return BENCHMARK_DATA_ROOT / env_type / registry_key
+        return Path(data_dir).expanduser()
+    return benchmark_data_root() / env_type / registry_key
 
 
 def load_split_map(root: Path) -> dict[str, str]:

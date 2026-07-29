@@ -30,6 +30,10 @@ import sys
 import warnings
 from pathlib import Path
 
+import pytest
+
+from spectragent.core.data_loader._common import resolve_data_dir
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _COMPOSED = _REPO_ROOT / "spectragent" / "generated" / "_composed.py"
 
@@ -61,3 +65,86 @@ def _ensure_generated_config() -> None:
 
 
 _ensure_generated_config()
+
+
+# ── Benchmark data is an optional, out-of-band dependency ────────────
+#
+# ``spectragent/benchmark_data/`` is not part of the distribution and is
+# not guaranteed to be in a checkout. The loaders are deliberately loud
+# when it is absent (``BenchmarkDataError`` at construction) because for a
+# *run* "no data" and "broken data" both have to stop the world. A test
+# session needs the opposite: a dataset that was never fetched is not a
+# regression, and 32 red entries that all say ``No data_info.json`` drown
+# the one that says something real.
+#
+# So the tests that read shipped data declare which dataset they read and
+# skip themselves when it is absent — at fixture or class granularity,
+# never module-level: the five affected files still hold 82 tests that
+# build their own data under ``tmp_path`` and must keep running.
+
+_BENCHMARK_DATA_HINT = (
+    "Benchmark data is not shipped with spectragent. Point the loaders at a "
+    "local copy with SPECTRAGENT_BENCHMARK_DATA=<root>, or set `data_dir:` on "
+    "the individual loader — see configs/README.md."
+)
+
+
+def _missing_benchmark_data(datasets: tuple[str, ...]) -> list[str]:
+    """Return the ``<env_type>/<benchmark>`` entries that are unusable.
+
+    Resolution goes through ``resolve_data_dir`` rather than
+    ``BENCHMARK_DATA_ROOT`` so the skip decision and the loader agree about
+    where the data is — otherwise ``SPECTRAGENT_BENCHMARK_DATA`` could
+    supply the data and the tests would skip anyway. A directory counts as
+    usable only once it declares its splits, which is the same condition
+    the loaders raise on.
+    """
+    absent: list[str] = []
+    for dataset in datasets:
+        env_type, _, benchmark = dataset.partition("/")
+        if not env_type or not benchmark:
+            raise ValueError(
+                "requires_benchmark_data expects '<env_type>/<benchmark>', "
+                f"got {dataset!r}"
+            )
+        if not (resolve_data_dir(env_type, benchmark, None) / "data_info.json").is_file():
+            absent.append(dataset)
+    return absent
+
+
+def _benchmark_data_skip_reason(datasets: tuple[str, ...]) -> str | None:
+    absent = _missing_benchmark_data(datasets)
+    if not absent:
+        return None
+    return f"benchmark data missing: {', '.join(absent)}. {_BENCHMARK_DATA_HINT}"
+
+
+def require_benchmark_data(*datasets: str) -> None:
+    """Skip from inside a fixture when shipped benchmark data is absent.
+
+    Use this where the data is reached through a fixture: the skip lands on
+    exactly the tests that requested the fixture and leaves the rest of the
+    module running. Use the ``requires_benchmark_data`` marker instead when
+    the data is reached from the test body.
+    """
+    reason = _benchmark_data_skip_reason(datasets)
+    if reason is not None:
+        pytest.skip(reason)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "requires_benchmark_data(*datasets): skip unless every "
+        "'<env_type>/<benchmark>' listed resolves to a directory that "
+        "declares its splits in data_info.json.",
+    )
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        for mark in item.iter_markers(name="requires_benchmark_data"):
+            reason = _benchmark_data_skip_reason(mark.args)
+            if reason is not None:
+                item.add_marker(pytest.mark.skip(reason=reason))
+                break

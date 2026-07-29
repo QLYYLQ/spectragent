@@ -67,18 +67,36 @@ dev = [
 [project.scripts]
 spectragent-gen = "spectragent.scripts.generate_all:main"
 spectragent-bench = "spectragent.core.benchmark_runner:main"
+# Always build through this, never bare `uv build`: setuptools reuses
+# `build/lib` without pruning, so two builds of one commit can differ.
+spectragent-build = "spectragent.scripts.build_wheel:main"
 
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["spectragent*"]
 
+# The wheel's data content is exactly the globs below and nothing else.
+# Left at its pyproject-era default of `true`, setuptools also pulls in
+# whatever a previously generated `spectragent.egg-info/SOURCES.txt` lists,
+# which resurrects files that have since been dropped from `package-data`.
+[tool.setuptools]
+include-package-data = false
+
 # Runtime data files. `spectragent/prompts/**` is read at runtime by every agent's
-# `_build_system_prompt` (`prompt_file.read_text()`), and `spectragent/benchmark_data/**`
-# is read by the task/eval loaders. Without this the wheel ships zero non-.py files
-# and an installed (non-editable) spectragent raises FileNotFoundError on first prepare().
+# `_build_system_prompt` and by every evaluator (`path.read_text()` against
+# `PROMPT_PATH`, a directory inside the installed package). The leaf prompt
+# directories hold no `__init__.py`, so `packages.find` does not see them and this
+# glob is the only reason they reach the wheel — without it an installed
+# (non-editable) spectragent raises FileNotFoundError on first prepare().
+#
+# `benchmark_data/**` is deliberately NOT here. Globbing it made the wheel a
+# function of the build machine's disk: a checkout without the data emits a
+# smaller wheel under the same version, and a licensed 5 MB dataset is not
+# something to ship by accident. Loaders find it via `data_dir:` or
+# `$SPECTRAGENT_BENCHMARK_DATA` instead — see configs/README.md.
 [tool.setuptools.package-data]
-"spectragent" = ["prompts/**/*", "benchmark_data/**/*"]
+"spectragent" = ["prompts/**/*"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["**/__pycache__/*", "**/*.pyc"]

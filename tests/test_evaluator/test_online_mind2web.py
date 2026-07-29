@@ -24,6 +24,7 @@ from spectragent.evaluator.online_mind2web import (
     extract_predication,
     extract_reasoning,
 )
+from tests.conftest import require_benchmark_data
 from tests.test_evaluator.conftest import FakeJudge, png_bytes, write_trace
 
 _KEY_POINTS = "**Key Points**:\n1. Open the store locator\n2. Set a home store"
@@ -35,6 +36,7 @@ _FAILURE = "Thoughts: The filter was never applied.\nStatus: failure"
 
 @pytest.fixture(scope="module")
 def loader() -> OnlineMind2WebEvalLoader:
+    require_benchmark_data("browser/online_mind2web")
     return OnlineMind2WebEvalLoader()
 
 

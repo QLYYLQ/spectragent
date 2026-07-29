@@ -102,6 +102,36 @@ backend:
 
 Every other section stays identical. Trace output (`./traces/<run_id>/config.yaml`) records which `provider_id` was used so cross-backend runs are easy to diff.
 
+## Benchmark data
+
+Benchmark data is **not** part of the distribution and is not guaranteed to be
+in a checkout — `pip install spectragent` gives you the framework and the
+prompt tree, not the datasets. A loader that cannot find its data says so at
+construction (`BenchmarkDataError: No data_info.json at ...`) rather than
+loading zero tasks, because a run that scores nothing and a run that had
+nothing to score are otherwise indistinguishable.
+
+Point the loaders at your own copy in one of two ways:
+
+```bash
+# Whole-root relocation: every task_loader and eval_loader in the run.
+# Expects <root>/<env_type>/<benchmark>/data_info.json, e.g.
+#   ~/agent-data/browser/browsecomp/data_info.json
+export SPECTRAGENT_BENCHMARK_DATA=~/agent-data
+```
+
+```yaml
+# Per-loader override, for a benchmark that lives somewhere of its own.
+# Beats the environment variable; `~` is expanded.
+task_loader:
+  - benchmark_name: browsecomp
+    data_dir: ~/somewhere/else/browsecomp
+```
+
+Precedence is `data_dir:` > `$SPECTRAGENT_BENCHMARK_DATA` > the in-package
+`spectragent/benchmark_data/` directory. Tests that read shipped data skip
+themselves — naming the dataset — when none of the three resolves.
+
 ## Regenerating the schema
 
 After registering a new action / capability / provider:

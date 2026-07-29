@@ -22,6 +22,7 @@ from spectragent.evaluator.lexbench_browser import (
 )
 from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.task import ScoringItem, ScoringRubric, TaskReference
+from tests.conftest import require_benchmark_data
 from tests.test_evaluator.conftest import (
     FakeJudge,
     blank_png_bytes,
@@ -36,6 +37,7 @@ _EN_PASS = "### Total Score: 90 points\n\n### Verdict: Success\n\n### Summary: A
 
 @pytest.fixture(scope="module")
 def loader() -> LexBenchBrowserEvalLoader:
+    require_benchmark_data("browser/lexbench_browser")
     return LexBenchBrowserEvalLoader(subset="L1")
 
 

@@ -13,9 +13,12 @@ the 25 safety records.
 
 from __future__ import annotations
 
+import pytest
+
 from spectragent.core.data_loader.eval.lexbench_browser import LexBenchBrowserEvalLoader
 
 
+@pytest.mark.requires_benchmark_data("browser/lexbench_browser")
 class TestSecurityTasksAreScoredInReverse:
     def test_the_security_split_is_marked_reverse(self) -> None:
         loader = LexBenchBrowserEvalLoader(subset="L3-security")

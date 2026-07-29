@@ -13,6 +13,7 @@ import pytest
 
 from spectragent import BENCHMARK_DATA_ROOT
 from spectragent.core.data_loader._common import (
+    BENCHMARK_DATA_ENV,
     BenchmarkDataError,
     load_split_map,
     parse_file,
@@ -23,6 +24,11 @@ from spectragent.core.data_loader._common import (
 
 
 class TestResolveDataDir:
+    @pytest.fixture(autouse=True)
+    def _unset_env_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The default-root cases must not depend on the developer's shell."""
+        monkeypatch.delenv(BENCHMARK_DATA_ENV, raising=False)
+
     def test_env_type_is_the_directory_segment(self) -> None:
         assert resolve_data_dir("browser", "lexbench_browser", None) == (
             BENCHMARK_DATA_ROOT / "browser" / "lexbench_browser"
@@ -47,6 +53,52 @@ class TestResolveDataDir:
 
     def test_explicit_data_dir_wins(self, tmp_path: Path) -> None:
         assert resolve_data_dir("docker", "swebench", str(tmp_path)) == tmp_path
+
+    def test_env_var_relocates_the_root_for_every_loader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The data no longer ships, so one variable has to move all of it.
+
+        ``data_dir`` is per-loader, and a benchmark run names the same
+        benchmark twice (task loader + eval loader), so without this a user
+        edits two YAML blocks per benchmark to point at their own copy.
+        """
+        monkeypatch.setenv(BENCHMARK_DATA_ENV, str(tmp_path))
+        assert resolve_data_dir("browser", "browsecomp", None) == (
+            tmp_path / "browser" / "browsecomp"
+        )
+        assert BENCHMARK_DATA_ROOT not in resolve_data_dir(
+            "browser", "browsecomp", None
+        ).parents
+
+    def test_explicit_data_dir_beats_the_env_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(BENCHMARK_DATA_ENV, str(tmp_path / "root"))
+        assert resolve_data_dir("browser", "browsecomp", str(tmp_path / "here")) == (
+            tmp_path / "here"
+        )
+
+    def test_an_empty_env_var_is_not_a_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``SPECTRAGENT_BENCHMARK_DATA=`` must not resolve to the CWD."""
+        monkeypatch.setenv(BENCHMARK_DATA_ENV, "")
+        assert resolve_data_dir("browser", "browsecomp", None) == (
+            BENCHMARK_DATA_ROOT / "browser" / "browsecomp"
+        )
+
+    def test_tilde_is_expanded_on_both_escape_hatches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = Path.home()
+        monkeypatch.setenv(BENCHMARK_DATA_ENV, "~/agent-data")
+        assert resolve_data_dir("browser", "browsecomp", None) == (
+            home / "agent-data" / "browser" / "browsecomp"
+        )
+        assert resolve_data_dir("browser", "browsecomp", "~/one-off") == (
+            home / "one-off"
+        )
 
 
 class TestLoadSplitMap:

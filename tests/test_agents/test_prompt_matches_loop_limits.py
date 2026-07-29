@@ -6,12 +6,21 @@ model was told it could emit more actions than the loop would run,
 the loop dropped everything past the first with no log and no feedback
 message, and the model re-issued steps it believed had run.
 
-The fix has two halves and this file pins **both**: the agent renders the
-limit it is handed, and ``AgentRuntime`` is what hands it over. An
+The hand-off has two halves and this file pins **both**: the agent renders
+the limit it is handed, and ``AgentRuntime`` is what hands it over. An
 earlier version of this test called ``agent.prepare(...,
 max_actions_per_step=loop.max_actions_per_step)`` itself, so it stayed
 green with ``AgentRuntime._loop_policy_for`` disabled — it proved only
 that the agent can render a number someone else looked up.
+
+Scope, precisely: what is compared here is the *advertised* number against
+``ReactLoop.max_actions_per_step``, the attribute the loop enforces. The
+other half of the claim — that the loop really does stop at that number,
+truncate the rest and say so — is
+``test_core/test_loops/test_react_step_records.py::TestActionTruncation``,
+which builds its own loop so its numbers are derived, not pinned. And the
+hop before this one, YAML → loop, belongs to the shipped-config gate in
+``test_core/test_composer/test_shipped_config_integration.py``.
 """
 
 from __future__ import annotations
@@ -25,6 +34,11 @@ import yaml
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.runtime import AgentRuntime
 from spectragent.scripts.generate_all import _collect_registrars
+
+#: Resolved from this file, not from the CWD — ``pytest tests/test_agents``
+#: from anywhere but the repo root used to make these two tests vanish into
+#: a ``FileNotFoundError`` that looked like a missing config.
+SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
 
 
 class _RecordingMemory:
@@ -63,8 +77,7 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt() -> None:
     probe value, and this fails.
     """
     composer = ConfigComposer(registrars=_collect_registrars())
-    raw = Path("configs/browser_use_local.yaml").read_text()
-    run = composer.compose(yaml.safe_load(raw))
+    run = composer.compose(yaml.safe_load(SHIPPED_CONFIG.read_text()))
 
     agent_id = run.ids("agent")[0]
     agent = run.instance("agent", agent_id)
@@ -114,8 +127,7 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt() -> None:
 def test_agent_renders_whatever_limit_it_is_handed() -> None:
     """The agent half, in isolation: no hidden default of its own."""
     composer = ConfigComposer(registrars=_collect_registrars())
-    raw = Path("configs/browser_use_local.yaml").read_text()
-    run = composer.compose(yaml.safe_load(raw))
+    run = composer.compose(yaml.safe_load(SHIPPED_CONFIG.read_text()))
 
     agent = run.instance("agent", run.ids("agent")[0])
     seed = agent.prepare(task="t", action_descriptors=[], max_actions_per_step=7)
