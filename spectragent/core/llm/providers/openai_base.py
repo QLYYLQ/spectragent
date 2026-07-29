@@ -307,6 +307,27 @@ class OpenAICompatBase(ChatModelBase):
         if choice is None or choice.message.content is None:
             raise ModelProviderError(message="Failed to parse structured output", status_code=500, model=self.name)
 
+        # A completion stopped at the token ceiling is half-written JSON, so
+        # parsing it first reports a schema violation and points at the model's
+        # compliance instead of the budget that actually cut it off. Name the
+        # real cause, and carry the usage across — the parse path never reaches
+        # `_get_usage`, which is why a truncated call otherwise costs real
+        # tokens and still lands in the metrics as zero.
+        if choice.finish_reason == "length":
+            usage = self._get_usage(response)
+            spent = getattr(usage, "completion_tokens", None)
+            raise ModelProviderError(
+                message=(
+                    f"Response truncated at the completion-token ceiling: "
+                    f"finish_reason='length', max_completion_tokens="
+                    f"{self.max_completion_tokens}"
+                    + (f", completion_tokens={spent}" if spent is not None else "")
+                    + ". The structured output is incomplete — raise "
+                    "max_completion_tokens or reduce what the step asks for."
+                ),
+                model=self.name,
+            )
+
         # No `tool_calls=` here: `_standard_ainvoke` refuses tools on the
         # structured path, so a compliant provider cannot return any.
         return ChatInvokeCompletion(
