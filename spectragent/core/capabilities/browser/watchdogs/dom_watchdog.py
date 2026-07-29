@@ -23,6 +23,7 @@ from spectragent.core.capabilities.browser.dom.serializers import (
     DOMSerializerProtocol,
     DOMSerializerRegistrar,
 )
+from spectragent.core.capabilities.browser.observations import DOMObs
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
@@ -33,7 +34,6 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
 )
-from spectragent.schemas.observation.fragments import DOMObs
 
 logger = logging.getLogger(__name__)
 

@@ -5,8 +5,42 @@ Reference: browser-use EnhancedDOMTreeNode.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from collections.abc import Mapping
+from dataclasses import Field, dataclass, field, fields
+from types import MappingProxyType
+from typing import Any, Final
+
+# ── trace serialization policy ─────────────────────────────────────
+#
+# These models are a graph, not a tree: ``parent`` points back up. Any
+# JSON encoder therefore needs to be told where to stop, and *which*
+# link is the back-reference is knowledge only this module has —
+# ``parent`` and ``content_document`` are structurally identical
+# declarations (``DOMElementNode | None``), so nothing downstream can
+# infer it.
+#
+# Rather than let a consumer keep a list of our field names, a field
+# declares its own policy: ``metadata=TRACE_SKIP`` means "leave me out
+# of the run trace". The marker rides on the field, so renaming the
+# field carries the decision with it — a name list in another module
+# would silently start recording the full document instead.
+#
+# Two rules, in order:
+#   1. a field whose name starts with ``_`` is private and never traced;
+#   2. otherwise, ``metadata[TRACE_KEY] == "skip"`` excludes it.
+
+TRACE_KEY: Final = "trace"
+TRACE_SKIP: Final[Mapping[str, str]] = MappingProxyType({TRACE_KEY: "skip"})
+
+
+def is_traced(spec: Field[Any]) -> bool:
+    """Whether ``spec`` belongs in the JSON that lands in the run trace."""
+    return not spec.name.startswith("_") and spec.metadata.get(TRACE_KEY) != "skip"
+
+
+def traced_fields(obj: Any) -> tuple[Field[Any], ...]:
+    """Dataclass fields of ``obj`` that belong in the run trace."""
+    return tuple(spec for spec in fields(obj) if is_traced(spec))
 
 
 @dataclass(slots=True)
@@ -84,9 +118,20 @@ class DOMElementNode:
     should_display: bool = True  # False = skip tag in serialization but recurse children
 
     # Compound components (virtual sub-components for range, select, etc.)
+    #
+    # Private, so not traced by rule 1 — and nothing is lost: the text
+    # serializer renders these into ``DOMState.serialized_dom``, which is
+    # the form the agent actually read.
     _compound_children: list[dict[str, Any]] = field(default_factory=list)
 
-    # Iframe / Shadow DOM
+    # Iframe / Shadow DOM.
+    #
+    # Traced. These point *down* into content the agent genuinely saw —
+    # the text serializer walks both into ``serialized_dom`` — so leaving
+    # them out would mean a trace of an iframe-heavy page silently omits
+    # the elements the run acted on. They are not back-references and not
+    # a volume risk: node construction keeps shadow roots out of
+    # ``children``, so each subtree is reached exactly once.
     content_document: DOMElementNode | None = field(default=None, repr=False)
     shadow_root_type: str | None = None
     shadow_roots: list[DOMElementNode] | None = None
@@ -95,7 +140,16 @@ class DOMElementNode:
     paint_order: int | None = None
 
     # Tree nav
-    parent: DOMElementNode | None = field(default=None, repr=False)
+    #
+    # Not traced: this is the one link that points *up*. Following it is
+    # not a termination problem (the encoder's visited set handles that)
+    # but a volume one — an encoder entering the graph at a leaf, which
+    # is exactly how ``selector_map`` entries are encoded, walks straight
+    # back to the document root and re-emits the whole page under every
+    # entry (measured 17.7x on a 341-node page).
+    parent: DOMElementNode | None = field(
+        default=None, repr=False, metadata=TRACE_SKIP
+    )
 
     def descendants(self) -> list[DOMElementNode]:
         """Return all descendant nodes (depth-first)."""
@@ -143,7 +197,11 @@ class DOMState:
     """Complete DOM snapshot with selector map and scroll info."""
 
     dom_tree: DOMElementNode | None = None
-    selector_map: DOMSelectorMap = field(default_factory=dict)
+    # Not traced: ``DOMObs`` carries the selector map as a field of its
+    # own, and that copy is the trace contract. Encoding it here too
+    # produced nothing but ``{"__cycle__": N}`` stubs, because every node
+    # in it had already been reached through ``dom_tree``.
+    selector_map: DOMSelectorMap = field(default_factory=dict, metadata=TRACE_SKIP)
     scroll_info: ScrollInfo = field(default_factory=ScrollInfo)
     serialized_dom: str = ""
 

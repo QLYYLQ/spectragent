@@ -1,4 +1,24 @@
-"""First-batch observation fragments — 6 fragments covering major scenarios.
+"""Observation fragments that belong to no capability package.
+
+The rule this module holds to: **a fragment lives with the code that
+produces it.** A fragment owns its own JSON shape, so a fragment that
+carries a domain's internal types has to sit inside that domain's
+package — the browser ones are in
+``core/capabilities/browser/observations.py``, next to the
+``DOMElementNode`` that ``DOMObs`` has to encode. That is the same split
+as ``core/actions/`` (protocol + registrar) vs
+``core/capabilities/browser/actions/`` (the concrete units), and it is
+why nothing here names a field of any domain.
+
+What is left is what has no capability to live in:
+
+- the ``loop.*`` fragments, filled by the Loop rather than by an
+  Environment. "Loop" is a framework concept, not a domain, so this is
+  their home;
+- ``docker.terminal`` and ``tool_sandbox.tool_result``, placeholders for
+  capabilities that are not built yet. They carry plain scalars and name
+  no internal type; they move into their capability packages when those
+  packages land.
 
 See docs/architecture_design.md §4.4 for the Fragment registry design and
 docs/execution_dag.md M02 for the complete fragment list.
@@ -6,143 +26,12 @@ docs/execution_dag.md M02 for the complete fragment list.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
-from pydantic import Field, field_serializer
+from pydantic import Field
 
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.step_record import StepRecord
-
-if TYPE_CHECKING:
-    pass
-
-
-# ── DOM dataclass → JSON-safe dict ─────────────────────────────────
-# DOMElementNode has a parent ↔ children cycle (see core/capabilities/
-# browser/dom/models.py). Pydantic's default dataclass serializer trips
-# on that cycle, so DOMObs converts the tree top-down here, dropping
-# back-references and using a visited set to short-circuit any further
-# cycles introduced by iframe / shadow DOM links.
-
-_DOM_SKIP_FIELDS: frozenset[str] = frozenset(
-    {"parent", "content_document", "shadow_roots", "_compound_children"}
-)
-
-
-def _dom_node_to_dict(node: Any, visited: set[int]) -> Any:
-    if node is None:
-        return None
-    nid = id(node)
-    if nid in visited:
-        return {"__cycle__": getattr(node, "backend_node_id", None)}
-    visited.add(nid)
-    out: dict[str, Any] = {}
-    for fname in node.__dataclass_fields__:
-        if fname in _DOM_SKIP_FIELDS:
-            continue
-        out[fname] = _dom_value_to_dict(getattr(node, fname), visited)
-    return out
-
-
-def _dom_value_to_dict(value: Any, visited: set[int]) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if hasattr(value, "__dataclass_fields__"):
-        if "tag_name" in value.__dataclass_fields__:
-            return _dom_node_to_dict(value, visited)
-        return {
-            f: _dom_value_to_dict(getattr(value, f), visited)
-            for f in value.__dataclass_fields__
-        }
-    if isinstance(value, dict):
-        return {str(k): _dom_value_to_dict(v, visited) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_dom_value_to_dict(v, visited) for v in value]
-    return value
-
-
-# ── Browser fragments ──────────────────────────────────────────────
-
-
-class DOMObs(FragmentBase):
-    """DOM tree observation from browser capability."""
-
-    __registry_key__ = "browser.dom"
-    __source__: ClassVar[Literal["env", "loop"]] = "env"
-
-    element_tree: Any = None  # DOMState at type-check time
-    # Keys are ``backend_node_id`` (int) per upstream agent-cdp contract
-    # — see ``DOMSelectorMap = dict[int, DOMElementNode]`` in
-    # ``core/capabilities/browser/dom/models.py``. The serializer below
-    # stringifies keys for JSON output (where dict keys must be strings).
-    selector_map: dict[int, Any] = Field(default_factory=dict)
-
-    def summary(self) -> str:
-        return f"{len(self.selector_map)} interactive elements"
-
-    @field_serializer("element_tree")
-    def _serialize_element_tree(self, value: Any) -> Any:
-        return _dom_value_to_dict(value, set())
-
-    @field_serializer("selector_map")
-    def _serialize_selector_map(self, value: dict[int, Any]) -> dict[str, Any]:
-        visited: set[int] = set()
-        return {str(k): _dom_value_to_dict(v, visited) for k, v in value.items()}
-
-
-class ScreenshotObs(FragmentBase):
-    """Screenshot observation from browser or desktop capability.
-
-    Either ``image_path`` (on-disk PNG) or ``image_bytes`` (in-memory PNG)
-    must be set; consumers prefer ``image_path`` when both are present.
-    """
-
-    __registry_key__ = "browser.screenshot"
-    __source__: ClassVar[Literal["env", "loop"]] = "env"
-
-    image_path: str | None = None
-    image_bytes: bytes | None = None
-    viewport_width: int = 0
-    viewport_height: int = 0
-
-    @field_serializer("image_bytes")
-    def _serialize_image_bytes(self, value: bytes | None) -> str | None:
-        if value is None:
-            return None
-        import base64
-
-        return base64.b64encode(value).decode("ascii")
-
-    def trace_binary(self) -> tuple[str, bytes] | None:
-        """Persist the PNG as a real ``.png`` file, not base64 inside JSON."""
-        if self.image_bytes is None:
-            return None
-        return ".png", self.image_bytes
-
-    def trace_json_exclude(self) -> set[str]:
-        return {"image_bytes"}
-
-    def summary(self) -> str:
-        if not self.viewport_width and not self.viewport_height:
-            return ""
-        return f"{self.viewport_width}x{self.viewport_height}"
-
-
-class BrowserMetaObs(FragmentBase):
-    """Browser metadata: URL, title, tab info."""
-
-    __registry_key__ = "browser.browser_meta"
-    __source__: ClassVar[Literal["env", "loop"]] = "env"
-
-    url: str = ""
-    page_title: str = ""
-    tabs: list[dict[str, Any]] = Field(default_factory=list)
-
-    def summary(self) -> str:
-        if not self.url and not self.page_title:
-            return ""
-        return f"{self.page_title or '(untitled)'} <{self.url}>"
-
 
 # ── Loop-sourced fragments ─────────────────────────────────────────
 

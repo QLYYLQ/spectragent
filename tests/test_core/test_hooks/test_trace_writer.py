@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.hooks._registrar import HookRegistrar
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.trace.models import RunStatus, TraceManifest
@@ -19,7 +20,7 @@ from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.observation import build_observation_model
-from spectragent.schemas.observation.fragments import ScreenshotObs, TaskObs
+from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 
 _PNG = b"\x89PNG\r\n\x1a\n-fake-bytes"

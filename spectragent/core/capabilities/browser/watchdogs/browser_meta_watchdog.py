@@ -19,6 +19,7 @@ from typing import Any, ClassVar
 
 from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 
+from spectragent.core.capabilities.browser.observations import BrowserMetaObs
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
@@ -28,7 +29,6 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
 )
-from spectragent.schemas.observation.fragments import BrowserMetaObs
 
 logger = logging.getLogger(__name__)
 

@@ -20,15 +20,17 @@ from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.core.capabilities.browser.observations import (
+    BrowserMetaObs,
+    DOMObs,
+    ScreenshotObs,
+)
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.loops.validation import validate_compatibility
 from spectragent.core.negotiation import extract_wiring
 from spectragent.core.negotiation.observation import _observation_rules
 from spectragent.schemas.observation.fragments import (
-    BrowserMetaObs,
-    DOMObs,
     HistoryObs,
-    ScreenshotObs,
     StepInfoObs,
     TaskObs,
 )

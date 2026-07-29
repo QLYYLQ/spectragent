@@ -52,12 +52,21 @@ class FragmentBase(_BridgeBase):  # type: ignore[misc]
 
     # ── trace persistence contract ────────────────────────────
     #
-    # A fragment owns how it lands on disk. Binary payloads (screenshots,
-    # audio, video frames) must NOT be base64'd into the JSON record: it
-    # inflates the file ~33%, and every reader that globs for the real
-    # extension silently finds nothing. A fragment that carries bytes
-    # overrides ``trace_binary`` to hand them over verbatim and
-    # ``trace_json_exclude`` to keep them out of the JSON sidecar.
+    # A fragment owns how it lands on disk — its JSON shape as much as
+    # its file layout. **What shape that is, is the fragment's business.**
+    # This base class prescribes none and names no attribute of any
+    # particular domain; a fragment whose payload needs domain knowledge
+    # to encode (a cyclic DOM graph, a sparse framebuffer) carries a
+    # ``field_serializer`` of its own and lives in the package that owns
+    # the type it is encoding. Nothing here should ever grow a list of
+    # some other package's field names.
+    #
+    # Binary payloads (screenshots, audio, video frames) must NOT be
+    # base64'd into the JSON record: it inflates the file ~33%, and every
+    # reader that globs for the real extension silently finds nothing. A
+    # fragment that carries bytes overrides ``trace_binary`` to hand them
+    # over verbatim and ``trace_json_exclude`` to keep them out of the
+    # JSON sidecar.
 
     def trace_binary(self) -> tuple[str, bytes] | None:
         """Binary artifact as ``(file_suffix, payload)``, or ``None``.

@@ -15,6 +15,10 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities._registrar import CapabilityBase
+from spectragent.core.capabilities.browser.observations import (
+    BrowserMetaObs,
+    ScreenshotObs,
+)
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.metrics_collector import MetricsCollector
 from spectragent.core.hooks.trace_writer import TraceWriter
@@ -23,7 +27,6 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import RunStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
-from spectragent.schemas.observation.fragments import BrowserMetaObs, ScreenshotObs
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 _PNG = b"\x89PNG\r\n\x1a\n-pretend-this-is-a-screenshot"

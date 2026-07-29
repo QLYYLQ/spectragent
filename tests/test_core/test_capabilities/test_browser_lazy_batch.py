@@ -16,12 +16,12 @@ from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.capability import (
     _ObserveCycleCache,
 )
-from spectragent.schemas.action import Action, ActionResult
-from spectragent.schemas.observation.fragments import (
+from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.schemas.action import Action, ActionResult
 
 
 @pytest.fixture

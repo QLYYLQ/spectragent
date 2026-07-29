@@ -11,11 +11,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from spectragent.core.capabilities.browser.observations import BrowserMetaObs
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation import build_observation_model
-from spectragent.schemas.observation.fragments import BrowserMetaObs, TaskObs
+from spectragent.schemas.observation.fragments import TaskObs
 
 
 class _Usage:

@@ -1,12 +1,14 @@
 """Tests for ObservationFragment registration via conscribe bridge."""
 
 
-from spectragent.schemas.observation._registrar import ObservationRegistrar
-from spectragent.schemas.observation.fragments import (
-    ActionResultObs,
+from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
     DOMObs,
     ScreenshotObs,
+)
+from spectragent.schemas.observation._registrar import ObservationRegistrar
+from spectragent.schemas.observation.fragments import (
+    ActionResultObs,
     TerminalObs,
     ToolResultObs,
 )

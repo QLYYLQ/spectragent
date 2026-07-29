@@ -8,6 +8,7 @@ from typing import ClassVar
 
 from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 
+from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
@@ -18,7 +19,6 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateSummary,
     ScreenshotRequestEvent,
 )
-from spectragent.schemas.observation.fragments import ScreenshotObs
 
 logger = logging.getLogger(__name__)
 
