@@ -9,6 +9,7 @@ See docs/architecture_design.md §4.5 for the full design.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,6 +23,8 @@ from spectragent.core.negotiation._base import (
 )
 from spectragent.core.negotiation._registrar import NegotiationResultBase
 from spectragent.core.negotiation.engine import negotiate
+
+logger = logging.getLogger(__name__)
 
 
 class IncompatibleActionError(Exception):
@@ -106,11 +109,25 @@ def _action_rules(
             provided=env_provides,
         )
     active = demand.resolved
+    grouped = group_by_short_name(active, ACTION_KEY_SEPARATOR)
+    # Both providers stay active and both stay routable — only the bare
+    # form has no answer, so this is not an error. It is still worth
+    # saying out loud: an agent whose parser emits short names (UI-TARS)
+    # has no way to address either, and would be rejected once per step
+    # with nothing in the run explaining why.
+    for short, group in sorted(grouped.items()):
+        if len(group) > 1:
+            logger.warning(
+                "Action negotiation: %r is claimed by %s, so the bare name "
+                "binds to neither. Actions emitted as %r will be rejected; "
+                "an agent that needs one must emit a fully-qualified key.",
+                short,
+                list(group),
+                short,
+            )
     return ActionNegotiationResult(
         active_actions=active,
-        action_bindings=bind_short_names(
-            group_by_short_name(active, ACTION_KEY_SEPARATOR)
-        ),
+        action_bindings=bind_short_names(grouped),
     )
 
 

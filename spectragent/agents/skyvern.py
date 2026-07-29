@@ -347,6 +347,7 @@ class SkyvernAgent(AgentBase):
             {
                 "navigation_goal": task,
                 "action_space": self._render_action_list(action_space),
+                "done_action": self._done_action_name(action_space),
                 "max_actions_per_step": max_actions_per_step,
                 "navigation_payload": self.navigation_payload or "",
                 "complete_criterion": self.complete_criterion or "",
@@ -354,6 +355,22 @@ class SkyvernAgent(AgentBase):
                 "verification_code_check": self.verification_code_check,
             },
         )
+
+    @staticmethod
+    def _done_action_name(descriptors: list[ActionDescriptor]) -> str:
+        """The negotiated key of the terminal action, for the prompt's prose.
+
+        The template has to say which advertised action it is telling the
+        model *not* to write into ``actions``, and naming it must not mean
+        writing a provider into the template: the run's ``done`` is
+        whichever capability provided it. Falls back to the relative name
+        — the same one ``_done_action`` emits — when nothing named ``done``
+        is in the negotiated set, which only a degenerate fixture reaches.
+        """
+        for d in descriptors:
+            if d.name.rsplit(".", 1)[-1] == "done":
+                return d.name
+        return "done"
 
     @staticmethod
     def _render_action_list(descriptors: list[ActionDescriptor]) -> str:

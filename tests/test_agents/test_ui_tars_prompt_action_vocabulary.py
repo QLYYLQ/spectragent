@@ -138,8 +138,19 @@ def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) -> str:
 
 class TestPromptVocabulary:
     def test_every_variant_teaches_a_non_empty_vocabulary(self, harness) -> None:
-        """Guards the guard: an empty scrape makes everything below vacuous."""
+        """Guards the guard: an empty scrape makes everything below vacuous.
+
+        Both halves of empty count. ``_VARIANTS`` is globbed off disk, so
+        a prompt tree that moved (or a wheel that shipped without
+        ``prompts/**/*``) turns every ``for variant in _VARIANTS`` below
+        into a green no-op — including this one, when it only checked the
+        per-variant scrape.
+        """
         agent, _guard, extra = harness
+        assert _VARIANTS, (
+            "no ui_tars templates on disk — agent_prompt_variants('ui_tars') "
+            "is empty, so every loop in this file passes without running"
+        )
         for variant in _VARIANTS:
             calls = _TAUGHT_CALL.findall(_rendered(agent, extra["descriptors"], variant))
             assert len(calls) == len(extra["descriptors"]), variant
@@ -173,14 +184,16 @@ class TestPromptVocabulary:
         ``index`` / ``text``: it only ever saw name and description.
         """
         agent, _guard, extra = harness
-        prompt = _rendered(agent, extra["descriptors"], "computer_use")
-        for descriptor in extra["descriptors"]:
-            verb = _VERB_TABLE[_ACTION_TO_VERB[descriptor.name.rsplit(".", 1)[-1]]]
-            for param in verb.fills:
-                assert f"{param}: {descriptor.params[param]}" in prompt, (
-                    descriptor.name,
-                    param,
-                )
+        for variant in _VARIANTS:
+            prompt = _rendered(agent, extra["descriptors"], variant)
+            for descriptor in extra["descriptors"]:
+                verb = _VERB_TABLE[_ACTION_TO_VERB[descriptor.name.rsplit(".", 1)[-1]]]
+                for param in verb.fills:
+                    assert f"{param}: {descriptor.params[param]}" in prompt, (
+                        variant,
+                        descriptor.name,
+                        param,
+                    )
 
     def test_what_a_verb_produces_is_what_its_action_declares(
         self, harness

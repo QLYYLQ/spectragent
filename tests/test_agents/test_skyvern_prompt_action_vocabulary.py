@@ -170,6 +170,32 @@ class TestPromptVocabulary:
         assert result.success
         assert actions[0].params["extracted_content"] == "42"
 
+    def test_the_terminal_action_is_named_from_the_negotiated_set(self) -> None:
+        """The template names ``done``'s provider by rendering it, not by prose.
+
+        The rewritten template still spelled ``browser.done`` into its
+        prose and told the model that ``action_type`` carries a
+        ``browser.`` prefix — while ``{{ action_space }}`` right above it
+        renders whatever was negotiated. Two vocabularies in one prompt,
+        one of them hardcoded, is the defect this file was created for;
+        it survived the rewrite in the paragraphs around the list.
+        """
+        agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=100))
+        elsewhere = [
+            ActionDescriptor(
+                name="desktop.click",
+                description="Click.",
+                params={"index": "int"},
+            ),
+            ActionDescriptor(name="desktop.done", description="Finish."),
+        ]
+        prompt = agent.prepare(task="t", action_descriptors=elsewhere)[0].content
+        assert isinstance(prompt, str)
+
+        assert "`desktop.done`" in prompt
+        assert "browser.done" not in prompt
+        assert "`browser.` prefix" not in prompt
+
     def test_no_param_key_is_advertised_that_the_output_model_cannot_carry(
         self, prepared: tuple[SkyvernAgent, str, list[ActionDescriptor], Any]
     ) -> None:

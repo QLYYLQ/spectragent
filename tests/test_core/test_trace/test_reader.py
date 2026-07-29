@@ -259,6 +259,43 @@ class TestTheReaderGivesBackWhatTheWriterWasHanded:
             _ = record.step_index  # type: ignore[attr-defined]
 
 
+class TestTheManifestIsTheCommitPoint:
+    """A step file the manifest never claimed did not happen.
+
+    ``write_step_record`` writes ``steps/NNN.json`` atomically and
+    ``commit_step`` renames the manifest afterwards — that gap is the
+    whole reason the WAL is a WAL. A crash inside it leaves a complete,
+    parseable step file for a step that never committed, so an accessor
+    that probes the filename hands back a record the run does not have.
+    """
+
+    def _half_committed(self, tmp_path):
+        wal = WALWriter(tmp_path, "run-crash")
+        wal.init_run(TraceConfig(agent_id="a", loop_id="react"))
+        wal.commit_step(
+            step=0, step_file=wal.write_step_record(0, _step(0, "click(btn)"))
+        )
+        # Step 1: written, never committed — the crash window.
+        wal.write_step_record(1, _step(1, "done()"))
+        return RunTrace(wal.run_dir)
+
+    def test_an_uncommitted_step_is_not_a_step(self, tmp_path):
+        trace = self._half_committed(tmp_path)
+        assert (trace.trace_dir / "steps/001.json").is_file()
+        assert trace.step(1) is None
+
+    def test_the_three_step_accessors_agree(self, tmp_path):
+        trace = self._half_committed(tmp_path)
+        assert trace.step_count == 1
+        assert [rec.step for rec in trace.step_records] == [0]
+        assert trace.step(0) is not None
+
+    def test_a_committed_step_whose_file_vanished_is_none(self, tmp_path):
+        trace = self._half_committed(tmp_path)
+        (trace.trace_dir / "steps/000.json").unlink()
+        assert trace.step(0) is None
+
+
 class TestUnreadableTracesSayWhy:
     def _trace_with_result(self, tmp_path, payload: dict) -> RunTrace:
         wal = WALWriter(tmp_path, "run-legacy")

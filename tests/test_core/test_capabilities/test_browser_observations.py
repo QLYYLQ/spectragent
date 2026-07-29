@@ -167,6 +167,74 @@ class TestRealDOMSurvivesTheWAL:
         assert iframe_link["bounds"] == rect
 
 
+def _chain(depth: int, first_id: int) -> tuple[DOMElementNode, DOMElementNode]:
+    """A single-child chain ``depth`` elements long; returns (root, leaf)."""
+    root = DOMElementNode(tag_name="div", backend_node_id=first_id)
+    leaf = root
+    for offset in range(1, depth):
+        leaf = _link(
+            leaf, DOMElementNode(tag_name="div", backend_node_id=first_id + offset)
+        )
+    return root, leaf
+
+
+class TestDepthCannotKillTheRun:
+    """A page too deep must cost a subtree, never the run.
+
+    ``model_dump_json`` is a pydantic-core call and pydantic-core gives up
+    past ~256 levels of output nesting, reporting it as "Circular
+    reference detected". Since ``TraceWriter`` is a blocking hook on
+    ``record_step``, that exception propagates into the loop and ends the
+    run at step 0 with an empty trace. The encoder emits ~2 levels per DOM
+    level and an iframe's nesting adds to its host's, so two 70-deep trees
+    — one inside the other — used to be enough.
+    """
+
+    def test_an_iframe_deeper_than_the_serializer_still_reaches_disk(self) -> None:
+        root, leaf = _chain(70, first_id=1)
+        doc, _ = _chain(70, first_id=10_000)
+        doc.parent = leaf
+        leaf.content_document = doc
+        state = DOMState(dom_tree=root, selector_map={}, serialized_dom="[1]<div />")
+
+        raw = DOMObs(element_tree=state).model_dump_json()
+
+        assert '"__truncated__"' in raw, "nothing was cut, so nothing was budgeted"
+        assert json.loads(raw)["element_tree"]["dom_tree"]["tag_name"] == "div"
+
+    def test_a_shadow_root_deeper_than_the_serializer_does_the_same(self) -> None:
+        root, leaf = _chain(70, first_id=1)
+        shadow, _ = _chain(70, first_id=20_000)
+        shadow.parent = leaf
+        leaf.shadow_roots = [shadow]
+        state = DOMState(dom_tree=root, selector_map={}, serialized_dom="[1]<div />")
+
+        assert '"__truncated__"' in DOMObs(element_tree=state).model_dump_json()
+
+    def test_a_page_deeper_than_any_real_one_is_untouched(self) -> None:
+        """40 combined levels is the deepest measured on a live page."""
+        root, leaf = _chain(40, first_id=1)
+        doc, _ = _chain(40, first_id=10_000)
+        doc.parent = leaf
+        leaf.content_document = doc
+        state = DOMState(dom_tree=root, selector_map={}, serialized_dom="[1]<div />")
+
+        raw = DOMObs(element_tree=state).model_dump_json()
+        assert "__truncated__" not in raw
+
+    def test_the_marker_says_where_the_trace_stopped(self) -> None:
+        root, _leaf = _chain(300, first_id=1)
+        state = DOMState(dom_tree=root, selector_map={}, serialized_dom="[1]<div />")
+
+        payload = json.loads(DOMObs(element_tree=state).model_dump_json())
+        node = payload["element_tree"]["dom_tree"]
+        while "__truncated__" not in node:
+            node = node["children"][0]
+        # A backend_node_id, not a bare null: the reader can look the cut
+        # point up in the page the same way a ``__cycle__`` pointer works.
+        assert isinstance(node["__truncated__"], int)
+
+
 class TestWhatTheTraceContains:
     """The recorded page is the page the agent read."""
 

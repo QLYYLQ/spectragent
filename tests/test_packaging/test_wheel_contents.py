@@ -11,9 +11,11 @@ editable install reads the repository directly:
    in the wheel. Drop that glob and every agent and evaluator raises
    ``FileNotFoundError`` on its first ``prepare()`` after ``pip install``.
 
-2. **The benchmark data must not ship.** It is a licensed dataset that no
-   longer lives in git, and globbing it made the wheel a function of the
-   build machine's disk rather than of the commit.
+2. **The benchmark data must not ship.** It is a licensed dataset on its
+   way out of git (``.gitignore`` already lists it; the 17 files are still
+   tracked, so the rule is inert until they are removed), and globbing it
+   made the wheel a function of the build machine's disk rather than of
+   the commit.
 
 Nothing here hardcodes a file count: the expected set is read off the
 source tree, so adding a prompt cannot silently fail to be packaged.
@@ -22,12 +24,13 @@ source tree, so adding a prompt cannot silently fail to be packaged.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from spectragent import PACKAGE_ROOT
+from spectragent import PACKAGE_ROOT, REPO_ROOT
 from spectragent.prompts import PROMPT_PATH
 from spectragent.scripts.build_wheel import BUILD_CACHE, build_wheel
 
@@ -121,3 +124,63 @@ class TestBenchmarkDataDoesNotShip:
         finally:
             shutil.rmtree(BUILD_CACHE, ignore_errors=True)
         assert not [n for n in names if "benchmark_data" in n]
+
+
+class TestTheDeclarationHoldsTheOtherHalf:
+    """``include-package-data = false``, the half no build path can clean.
+
+    ``build_wheel`` deletes ``*.egg-info`` before every build, so the gate
+    above can never see the manifest cache: by the time setuptools runs,
+    the stale ``SOURCES.txt`` is gone. That makes the declaration the only
+    thing standing between a bare ``uv build`` and a wheel whose data
+    content is whatever a previous build happened to record — and until
+    this test, flipping it back to ``true`` (which is also what deleting
+    the line gives you) kept the whole suite green.
+
+    So this one builds *without* cleaning, on purpose. It plants its own
+    file rather than a ``benchmark_data`` path: the dataset is on its way
+    out of the tree, and a planted path that does not exist on disk would
+    make the assertion pass for the wrong reason.
+    """
+
+    def test_a_stale_manifest_cannot_resurrect_unglobbed_data(
+        self, tmp_path: Path
+    ) -> None:
+        if shutil.which("uv") is None:
+            pytest.skip("uv is not on PATH; cannot build a wheel to inspect")
+
+        probe_dir = PACKAGE_ROOT / "_stale_manifest_probe"
+        egg_info = REPO_ROOT / f"{_PACKAGE}.egg-info"
+        relative = f"{_PACKAGE}/_stale_manifest_probe/ghost.json"
+        try:
+            probe_dir.mkdir(parents=True, exist_ok=True)
+            (probe_dir / "ghost.json").write_text('{"split": {"All": "ghost"}}')
+            egg_info.mkdir(parents=True, exist_ok=True)
+            (egg_info / "SOURCES.txt").write_text(f"{relative}\n")
+
+            out_dir = tmp_path / "out"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(  # noqa: S603
+                ["uv", "build", "--wheel", "--out-dir", str(out_dir)],  # noqa: S607
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == 0, result.stderr
+            wheels = sorted(out_dir.glob("*.whl"))
+            assert len(wheels) == 1, [w.name for w in wheels]
+            with zipfile.ZipFile(wheels[0]) as archive:
+                names = archive.namelist()
+        finally:
+            shutil.rmtree(probe_dir, ignore_errors=True)
+            shutil.rmtree(egg_info, ignore_errors=True)
+            shutil.rmtree(BUILD_CACHE, ignore_errors=True)
+
+        assert relative not in names, (
+            "a hand-written SOURCES.txt put a file in the wheel that no "
+            "package-data glob names — include-package-data is not false"
+        )
+        # The globs themselves still work, i.e. this is not a wheel that
+        # shipped nothing at all.
+        assert any(n.startswith(f"{_PACKAGE}/prompts/") for n in names)

@@ -70,8 +70,16 @@ class _Env(EnvironmentBase):
 
 
 class _Agent:
+    """Declares and emits capability-relative names, like every shipped agent.
+
+    ``done``/``click``, not ``trace_e2e_cap.done`` — so the path this
+    file reads back off disk is the one ``build_guarded_act`` resolves.
+    A fixture that hands the guard an already-qualified name never
+    exercises the binding, and cannot see it drop the prefix.
+    """
+
     __wiring__ = {
-        "action": ("action", ["trace_e2e_cap.done", "trace_e2e_cap.click"]),
+        "action": ("action", ["done", "click"]),
         "observation": (
             "observation",
             ["browser.screenshot", "browser.browser_meta", "loop.task"],
@@ -88,7 +96,7 @@ class _Agent:
     def parse_react_output(self, out):
         name = self._plan[min(self._i, len(self._plan) - 1)]
         self._i += 1
-        return [Action(name=f"trace_e2e_cap.{name}", params={"index": 1})]
+        return [Action(name=name, params={"index": 1})]
 
     def get_react_output_model(self):
         return None
@@ -280,6 +288,24 @@ class TestCompletedRunTrace:
         assert payload["fragment_id"] == "loop.task"
         # And the junk 0.0 timestamp file is gone.
         assert "timestamp" not in written
+
+    async def test_recorded_actions_carry_their_producer(self, trace):
+        """The action axis keeps provenance too — same rule, same trace.
+
+        The agent declares and emits ``click``; ``build_guarded_act`` is
+        the one place that becomes ``trace_e2e_cap.click``, and it has to
+        resolve the object the loop records, not a copy of it. Otherwise
+        a reader holding only the trace sees a provider-less verb for an
+        action some specific capability executed, while the observation
+        files right next to it name theirs.
+        """
+        t, _ = trace
+        recorded = [a.name for rec in t.step_records for a in rec.actions]
+        assert recorded == ["trace_e2e_cap.click", "trace_e2e_cap.done"]
+        assert all("." in name for name in recorded), recorded
+
+        assert t.result is not None
+        assert [entry.split("(")[0] for entry in t.result.action_history] == recorded
 
     async def test_tokens_recorded_despite_hook_order(self, trace):
         t, _ = trace

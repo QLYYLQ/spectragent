@@ -84,7 +84,13 @@ def build_guarded_act(
             full = resolvable.get(name)
             if full is None:
                 return await _reject_action(action, active_names)
-            action = action.model_copy(update={"name": full})
+            # Resolve in place, not onto a copy: the caller keeps this
+            # object and is the one that writes it into ``StepRecord``
+            # and ``AgentResult.action_history``. A copy would leave the
+            # trace naming a provider-less verb for an action some
+            # specific capability executed — the provenance loss the
+            # observation axis already refuses.
+            action.name = full
         return await act_fn(action, **kwargs)
 
     return filtered, guarded_act

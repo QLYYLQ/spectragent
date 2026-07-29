@@ -2,6 +2,10 @@
 
 import pytest
 
+# Register the fragments these tests negotiate over. Two imports, because
+# a fragment lives with the code that produces it: the shared module below
+# holds the ``loop.*`` ones, this package holds ``browser.dom`` & co.
+import spectragent.core.capabilities.browser.observations  # noqa: F401
 from spectragent.core.negotiation import (
     IncompatibleFragmentError,
     ObservationNegotiationResult,
@@ -11,8 +15,6 @@ from spectragent.core.negotiation.observation import (
     DuplicateFragmentNameError,
     _observation_rules,
 )
-
-# Ensure fragments are registered before negotiation tests
 from spectragent.schemas.observation import fragments as _  # noqa: F401
 from spectragent.schemas.observation._registrar import ObservationRegistrar
 

@@ -57,7 +57,9 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
                 "coordinate_x": "int",
                 "coordinate_y": "int",
                 "text": "str",
-                "clear": "bool (optional, default true)",
+                # Interpolated, not literal: ``clear_by_default`` is a
+                # YAML knob, and this string is what the prompt teaches.
+                "clear": f"bool (optional, default={str(self.clear_by_default).lower()})",
             },
         )
 

@@ -32,7 +32,7 @@ rejected before it reaches the page.
 
 {{ action_space }}
 
-`browser.done` is the exception: you never write it into `actions`. You
+`{{ done_action }}` is the exception: you never write it into `actions`. You
 invoke it through the top-level `is_done` / `success` / `extracted_content`
 fields described under Finishing.
 
@@ -65,9 +65,9 @@ markdown fence, no comments, no trailing commas.
 	  "extracted_content": null
 	}
 
-- `action_type` — one of the action names listed above, copied verbatim:
-  lower-case, `browser.` prefix included. An action name you invent is
-  rejected and the step is wasted.
+- `action_type` — one of the action names listed above, copied verbatim,
+  character for character. An action name you invent is rejected and the
+  step is wasted.
 - `index` — the element index this action targets, or null for an action that
   takes no element.
 - `text` — the text to type, or the visible label of the option to select.

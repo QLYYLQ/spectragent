@@ -101,11 +101,22 @@ class RunTrace:
         return records
 
     def step(self, idx: int) -> StepRecord | None:
-        """One step record by index, or ``None`` if it was never written."""
-        step_path = self._trace_dir / f"steps/{idx:03d}.json"
-        if not step_path.exists():
-            return None
-        return _load_step(step_path)
+        """One committed step record by index, or ``None``.
+
+        Resolved through the manifest, like :attr:`step_records` and
+        :attr:`step_count`, because the manifest is the commit point. The
+        WAL writes ``steps/NNN.json`` atomically and *then* renames the
+        manifest, so a crash in between leaves a complete, parseable step
+        file for a step that never committed — and probing the filename
+        would hand it back as a valid record while the two accessors next
+        to it correctly refuse to. One reader, one answer to "did this
+        step happen".
+        """
+        for entry in self._manifest.steps:
+            if entry.step == idx:
+                step_path = self._trace_dir / entry.step_file
+                return _load_step(step_path) if step_path.exists() else None
+        return None
 
     def get_observation(self, step: int, fragment_key: str) -> Any | None:
         """Load a single observation fragment for a given step.

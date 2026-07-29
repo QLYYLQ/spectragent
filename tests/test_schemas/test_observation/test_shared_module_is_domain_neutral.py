@@ -71,6 +71,11 @@ def test_nothing_imports_a_capability(module: Path) -> None:
 
 
 def test_browser_fragments_are_registered_from_the_browser_package() -> None:
+    # Imported here, not at module scope, and this is the whole point of
+    # the test: the browser package is what registers these keys, so
+    # leaning on some *other* test module to have imported it first would
+    # make the assertion prove nothing (and this file fails on its own).
+    import spectragent.core.capabilities.browser.observations  # noqa: F401
     from spectragent.schemas.observation._registrar import ObservationRegistrar
 
     for key in ("browser.dom", "browser.screenshot", "browser.browser_meta"):

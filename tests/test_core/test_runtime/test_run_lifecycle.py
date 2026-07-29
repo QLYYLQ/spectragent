@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from spectragent.core.aop import Intercept
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks._registrar import HookBase
@@ -482,6 +483,40 @@ class TestNonBlockingHooksAreDrained:
         # Drained before teardown — the env-alive contract on_run_end has.
         assert fired == ["end(env_alive=True)"]
         assert env.events == ["setup", "teardown"]
+
+    async def test_a_nonblocking_method_intercept_handler_completes(self):
+        """The other half, and the one nothing was watching.
+
+        A lifecycle callback is spawned by ``AgentRuntime`` itself, so it
+        lands on the run's own ``BackgroundTasks`` no matter what. A
+        ``__intercepts__`` handler is spawned by the ``Weaver``, which
+        only shares that owner because the runtime passes it in — delete
+        that one argument and the handler goes back to being an
+        abandoned ``create_task``, with every test still green.
+        """
+        fired: list[str] = []
+
+        class _Watcher(HookBase):
+            __registry_key__ = "lifecycle_nonblocking_intercept"
+            __intercepts__ = [Intercept("ainvoke", role="llm", advice="after")]
+
+            @property
+            def blocking(self) -> bool:
+                return False
+
+            async def after_ainvoke(self, result: Any, **kw):
+                await asyncio.sleep(0.01)
+                fired.append("ainvoke")
+
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), ReactLoop(), _make_env(), hooks=[_Watcher()]), AGENT_ID
+        )
+        await runtime.execute("t", task_id="t-1")
+
+        assert fired == ["ainvoke"], (
+            "the run ended with a spawned intercept handler that never ran — "
+            "the Weaver is not sharing the run's BackgroundTasks"
+        )
 
     async def test_a_failing_nonblocking_callback_does_not_fail_the_run(self):
         class _Broken(HookBase):

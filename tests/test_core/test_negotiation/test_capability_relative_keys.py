@@ -369,6 +369,46 @@ class TestAmbiguityIsRefused:
             )
         assert exc.value.declared == "done"
 
+    def test_pinning_both_providers_says_the_short_name_is_gone(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The one shape that is allowed to collapse a short name, said aloud.
+
+        Pinning both providers is legal — both keys stay active and both
+        stay routable — so this is not the ambiguity error above. But the
+        bare verb then binds to neither, and an agent whose parser only
+        emits short names would have every emission rejected once per
+        step. Dropping the binding without a word is how that becomes a
+        silent per-step failure instead of a line in the log.
+        """
+        with caplog.at_level("WARNING"):
+            result = _action_rules(
+                agent=(
+                    {"browser.click_coordinate", "desktop.click_coordinate"},
+                    set(),
+                ),
+                env_provides={"browser.click_coordinate", "desktop.click_coordinate"},
+            )
+
+        assert result.active_actions == frozenset(
+            {"browser.click_coordinate", "desktop.click_coordinate"}
+        )
+        assert "click_coordinate" not in result.action_bindings
+        assert "click_coordinate" in caplog.text
+        assert "browser.click_coordinate" in caplog.text
+        assert "desktop.click_coordinate" in caplog.text
+
+    def test_an_unambiguous_set_stays_quiet(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No warning on the configuration every shipped run has."""
+        with caplog.at_level("WARNING"):
+            _action_rules(
+                agent=({"click_coordinate", "done"}, set()),
+                env_provides={"browser.click_coordinate", "browser.done"},
+            )
+        assert caplog.text == ""
+
     def test_observation_refuses_the_same_way(self) -> None:
         with pytest.raises(AmbiguousFragmentError) as exc:
             _observation_rules(
@@ -434,18 +474,21 @@ class TestRoutingStillSpeaksFullyQualifiedNames:
             env.act, descriptors, bindings=negotiated.action_bindings
         )
 
-        result = await guard(
-            Action(
-                name="click_coordinate",
-                params={"coordinate_x": 3, "coordinate_y": 4},
-            )
+        emitted = Action(
+            name="click_coordinate",
+            params={"coordinate_x": 3, "coordinate_y": 4},
         )
+        result = await guard(emitted)
 
         assert result.success
         assert result.extracted_content == "desktop click"
         cap = env.capabilities["desktop#0"]
         assert isinstance(cap, MockDesktopCapability)
         assert cap.click.executed == [{"coordinate_x": 3, "coordinate_y": 4}]
+        # The caller keeps this object and writes it into ``StepRecord``
+        # and ``AgentResult.action_history``, so resolving onto a copy
+        # would leave the trace naming a provider the run never used.
+        assert emitted.name == "desktop.click_coordinate"
 
     async def test_the_environment_itself_still_rejects_a_relative_name(
         self,

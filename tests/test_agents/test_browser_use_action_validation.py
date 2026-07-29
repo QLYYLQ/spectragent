@@ -54,8 +54,9 @@ class TestPerRunOutputValidation:
         assert out.action[0] == {"browser.click": {"index": 1}}
 
     def test_accepts_short_alias(self) -> None:
-        # ``"click"`` short alias is allowed when ``browser.click`` is in the
-        # negotiated set — _SHORT_TO_CANONICAL bridges them.
+        # ``"click"`` short alias is allowed when ``browser.click`` is in
+        # the negotiated set — the run's ``action_bindings`` bridge them,
+        # and ``build_guarded_act`` is the one place that resolution happens.
         Model = self._model_with("browser.click", "browser.navigate")
         Model.model_validate(
             {"memory": "", "action": [{"click": {"index": 1}}]}

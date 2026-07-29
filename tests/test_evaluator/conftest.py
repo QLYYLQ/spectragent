@@ -109,7 +109,11 @@ def write_trace(
             sidecar = ScreenshotObs(
                 viewport_width=1280, viewport_height=720
             ).model_dump(mode="json", exclude={"image_bytes"})
-            sidecar["artifact_file"] = f"{step:03d}_screenshot.png"
+            # Derived from the same rule ``TraceWriter`` writes it by
+            # (``NNN_<fragment_id><suffix>``), not spelled out: a
+            # hand-written name is how this pointer came to name a file
+            # the fixture never wrote.
+            sidecar["artifact_file"] = f"{step:03d}_{ScreenshotObs.__registry_key__}.png"
             obs_files.append(
                 wal.write_observation(step, "browser.screenshot", sidecar)
             )

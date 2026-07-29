@@ -76,11 +76,6 @@ class Weaver:
         self._background = background if background is not None else BackgroundTasks()
         self._build_index()
 
-    @property
-    def background(self) -> BackgroundTasks:
-        """In-flight non-blocking handler tasks spawned through this Weaver."""
-        return self._background
-
     def _build_index(self) -> None:
         """Build {(role, method): [(hook, advice, handler)]} from active hooks."""
         for hook in self._hooks:
