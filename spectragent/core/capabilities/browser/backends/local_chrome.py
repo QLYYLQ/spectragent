@@ -18,6 +18,7 @@ import os
 import shutil
 import signal
 import socket
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -120,22 +121,62 @@ _LINUX_PATHS: tuple[str, ...] = (
     "/snap/bin/chromium",
 )
 
+# macOS ships Chrome inside an .app bundle, so nothing on PATH matches the
+# Linux names — without these entries every macOS run needs the env override.
+_MACOS_PATHS: tuple[str, ...] = (
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+)
+
+_WINDOWS_PATHS: tuple[str, ...] = (
+    "chrome",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+)
+
+_PLATFORM_PATHS: dict[str, tuple[str, ...]] = {
+    "darwin": _MACOS_PATHS,
+    "win32": _WINDOWS_PATHS,
+}
+
+_INSTALL_HINT: dict[str, str] = {
+    "darwin": "  brew install --cask google-chrome",
+    "win32": "  winget install Google.Chrome",
+}
+
+
+def _search_paths() -> tuple[str, ...]:
+    """Executable candidates for the running platform."""
+    return _PLATFORM_PATHS.get(sys.platform, _LINUX_PATHS)
+
 
 def _find_chrome() -> str:
     """Find a Chrome / Chromium executable on the system."""
-    # Env override.
+    # Env override. An override that does not resolve is a configuration
+    # mistake worth naming — falling through to the search would report the
+    # generic "cannot find Chrome" and hide the bad path the user set.
     env_path = os.environ.get("CHROME_EXECUTABLE_PATH")
-    if env_path and shutil.which(env_path):
-        return env_path
+    if env_path:
+        resolved = shutil.which(os.path.expanduser(env_path))
+        if resolved:
+            return resolved
+        raise FileNotFoundError(
+            f"CHROME_EXECUTABLE_PATH is set to {env_path!r}, which is not an "
+            "executable file. Fix the path or unset it to search the default "
+            "install locations."
+        )
 
-    for candidate in _LINUX_PATHS:
-        found = shutil.which(candidate)
+    for candidate in _search_paths():
+        found = shutil.which(os.path.expanduser(candidate))
         if found:
             return found
 
+    hint = _INSTALL_HINT.get(sys.platform, "  apt install google-chrome-stable")
     raise FileNotFoundError(
-        "Cannot find Chrome / Chromium. Install with:\n"
-        "  apt install google-chrome-stable\n"
+        f"Cannot find Chrome / Chromium on {sys.platform}. Install with:\n"
+        f"{hint}\n"
         "Or set CHROME_EXECUTABLE_PATH."
     )
 
@@ -512,7 +553,15 @@ class LocalChromeProvider(BrowserProviderBase):
         url = f"http://127.0.0.1:{port}/json/version"
         deadline = asyncio.get_event_loop().time() + self.cdp_wait_timeout
 
-        async with httpx.AsyncClient() as client:
+        # ``trust_env=False`` keeps this poll off any ambient ``http_proxy``.
+        # Routing loopback through a proxy does not merely add a hop: while the
+        # port is still closed the proxy accepts the connection and then stalls,
+        # so the poll raises ReadTimeout instead of ConnectError. Every failure
+        # mode here is "not ready yet", so the retry catches TransportError as a
+        # whole rather than enumerating classes — an unlisted one used to abort
+        # startup on the first iteration instead of retrying to the deadline.
+        # ValueError covers a torn /json/version body during Chrome's boot.
+        async with httpx.AsyncClient(trust_env=False) as client:
             while asyncio.get_event_loop().time() < deadline:
                 try:
                     resp = await client.get(url, timeout=2.0)
@@ -522,7 +571,7 @@ class LocalChromeProvider(BrowserProviderBase):
                         if ws_url:
                             logger.info("Chrome CDP ready: %s", ws_url)
                             return ws_url
-                except (httpx.ConnectError, httpx.ReadError, httpx.ConnectTimeout):
+                except (httpx.TransportError, ValueError):
                     pass
                 await asyncio.sleep(0.2)
 

@@ -302,3 +302,114 @@ class TestChatBrowserUse:
         monkeypatch.setattr(chat, "_make_request", _fake)
         result = await chat.ainvoke([UserMessage(content="hi")], output_format=_NoAction)
         assert result.completion.steps[0].index == 1
+
+
+# ── Truncation at the completion-token ceiling ─────────────────────
+
+
+class _TruncatingOpenAIClient:
+    """Replays one OpenAI-shaped chat completion with a chosen finish_reason."""
+
+    def __init__(self, content: str, finish_reason: str, usage: Any = None) -> None:
+        self._content = content
+        self._finish_reason = finish_reason
+        self._usage = usage
+        self.chat = SimpleNamespace(
+            completions=SimpleNamespace(create=self._create)
+        )
+
+    async def _create(self, **_kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=self._content, tool_calls=None),
+                    finish_reason=self._finish_reason,
+                )
+            ],
+            usage=self._usage,
+        )
+
+
+def _usage(prompt: int, completion: int):
+    return SimpleNamespace(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=prompt + completion,
+        prompt_tokens_details=None,
+    )
+
+
+class TestStructuredOutputTruncation:
+    """A step cut off at the token ceiling must say so.
+
+    ``BrowserUseAgent``'s open ``action`` map downgrades the request to
+    ``strict: false`` (see ``TestOpenAIStrictModeDowngrade``), so nothing
+    constrains a chatty model from spending the whole completion budget on
+    one step. What came back then was half-written JSON, and parsing it
+    first blamed the *schema*::
+
+        1 validation error for BrowserUseOutputForRun
+          Invalid JSON: EOF while parsing an object at line 988 column 649
+
+    — which sends the reader after the model's schema compliance instead of
+    the ceiling that actually truncated it.
+    """
+
+    def _chat(self, **kw):
+        from spectragent.core.llm.providers.openai import ChatOpenAI
+
+        return ChatOpenAI(model="gpt-4o", api_key="test", **kw)
+
+    async def test_length_stop_names_the_ceiling_not_the_schema(
+        self, monkeypatch
+    ) -> None:
+        from spectragent.core.llm.exceptions import ModelProviderError
+
+        chat = self._chat(max_completion_tokens=16384)
+        client = _TruncatingOpenAIClient(
+            '{"memory": "m", "action": [{"browser.cli',  # cut mid-token
+            finish_reason="length",
+            usage=_usage(2000, 16370),
+        )
+        monkeypatch.setattr(chat, "get_client", lambda: client)
+
+        with pytest.raises(ModelProviderError) as excinfo:
+            await chat.ainvoke([UserMessage(content="hi")], output_format=_Out)
+
+        message = str(excinfo.value)
+        assert "truncated" in message
+        assert "16384" in message  # the ceiling that cut it off
+        assert "16370" in message  # what the call actually cost
+        assert "validation error" not in message
+
+    async def test_a_healthy_stop_still_parses(self, monkeypatch) -> None:
+        chat = self._chat()
+        client = _TruncatingOpenAIClient(
+            json.dumps({"memory": "m"}),
+            finish_reason="stop",
+            usage=_usage(10, 5),
+        )
+        monkeypatch.setattr(chat, "get_client", lambda: client)
+
+        result = await chat.ainvoke([UserMessage(content="hi")], output_format=_Out)
+
+        assert result.completion.memory == "m"
+        assert result.usage is not None
+        assert result.usage.completion_tokens == 5
+
+    async def test_genuine_schema_violations_are_still_reported_as_such(
+        self, monkeypatch
+    ) -> None:
+        """The ceiling check must not swallow real non-compliance."""
+        from spectragent.core.llm.exceptions import ModelProviderError
+
+        chat = self._chat()
+        client = _TruncatingOpenAIClient(
+            json.dumps({"wrong_field": 1}), finish_reason="stop"
+        )
+        monkeypatch.setattr(chat, "get_client", lambda: client)
+
+        with pytest.raises(ModelProviderError) as excinfo:
+            await chat.ainvoke([UserMessage(content="hi")], output_format=_Out)
+
+        assert "truncated" not in str(excinfo.value)
