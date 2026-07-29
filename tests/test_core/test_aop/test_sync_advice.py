@@ -1,4 +1,10 @@
-"""Tests for synchronous method advice support in ``AOPProxy``."""
+"""Synchronous method advice in ``AOPProxy`` — before, after *and* around.
+
+``around`` on a sync method is not an edge case: it is the framework's
+only documented around use case (``agent.build_react_prompt``, a plain
+``def`` on every shipped agent — docs/architecture_design.md §4.1).
+Refusing it made the documented plug point structurally impossible.
+"""
 
 from __future__ import annotations
 
@@ -85,20 +91,127 @@ class TestSyncAdvice:
         with pytest.raises(RuntimeError, match="nope"):
             wrapped(1)
 
-    def test_sync_handler_exception_nonblocking_logged(self, caplog) -> None:
-        def boom(*, args, kwargs, **ctx):
-            raise RuntimeError("silent")
+
+class TestSyncAround:
+    """``around`` on a sync target: ``proceed()`` returns a value."""
+
+    def test_single_around_wraps_the_call(self) -> None:
+        calls: list[str] = []
+
+        def around(*, proceed, args, kwargs, **ctx):
+            calls.append(f"enter:{args}:{ctx['method']}")
+            result = proceed()
+            calls.append(f"exit:{result}")
+            return result * 10
 
         wrapped = _build_wrapped_method(
             _sync_target,
-            interceptors=[(_NonBlocking(), AdviceType.BEFORE, boom)],
+            interceptors=[(_Blocking(), AdviceType.AROUND, around)],
             method_name="_sync_target",
         )
 
-        with caplog.at_level("ERROR"):
-            # Should not raise — non-blocking swallows and logs.
-            assert wrapped(1, y=2) == 3
-        assert any("nonblocking_sync" in rec.message for rec in caplog.records)
+        assert wrapped(3, y=4) == 70
+        assert calls == ["enter:(3,):_sync_target", "exit:7"]
+
+    def test_two_arounds_nest_outermost_first(self) -> None:
+        calls: list[str] = []
+
+        def outer(*, proceed, args, kwargs, **ctx):
+            calls.append("outer:enter")
+            result = proceed()
+            calls.append("outer:exit")
+            return result
+
+        def inner(*, proceed, args, kwargs, **ctx):
+            calls.append("inner:enter")
+            result = proceed()
+            calls.append("inner:exit")
+            return result
+
+        wrapped = _build_wrapped_method(
+            _sync_target,
+            interceptors=[
+                (_Blocking(), AdviceType.AROUND, outer),
+                (_Blocking(), AdviceType.AROUND, inner),
+            ],
+            method_name="_sync_target",
+        )
+
+        assert wrapped(1, y=1) == 2
+        assert calls == ["outer:enter", "inner:enter", "inner:exit", "outer:exit"]
+
+    def test_before_and_after_nest_inside_the_innermost_around(self) -> None:
+        calls: list[str] = []
+
+        def around(*, proceed, args, kwargs, **ctx):
+            calls.append("around:enter")
+            result = proceed()
+            calls.append("around:exit")
+            return result
+
+        def before(*, args, kwargs, **ctx):
+            calls.append("before")
+
+        def after(result, *, args, kwargs, **ctx):
+            calls.append("after")
+
+        wrapped = _build_wrapped_method(
+            _sync_target,
+            interceptors=[
+                (_Blocking(), AdviceType.AROUND, around),
+                (_Blocking(), AdviceType.BEFORE, before),
+                (_Blocking(), AdviceType.AFTER, after),
+            ],
+            method_name="_sync_target",
+        )
+
+        assert wrapped(2, y=3) == 5
+        assert calls == ["around:enter", "before", "after", "around:exit"]
+
+    def test_not_calling_proceed_short_circuits_the_target(self) -> None:
+        ran: list[str] = []
+
+        def target(x: int) -> int:
+            ran.append("target")
+            return x
+
+        def cache_hit(*, proceed, args, kwargs, **ctx):
+            return 999
+
+        wrapped = _build_wrapped_method(
+            target,
+            interceptors=[(_Blocking(), AdviceType.AROUND, cache_hit)],
+            method_name="target",
+        )
+
+        assert wrapped(1) == 999
+        assert ran == []
+
+    def test_documented_use_case_prompt_audit(self) -> None:
+        """docs/architecture_design.md §4.1: around on ``build_react_prompt``."""
+
+        class _Agent:
+            def build_react_prompt(self, obs):
+                return [{"role": "user", "content": obs}]
+
+        audited: list[list] = []
+
+        def around_build_react_prompt(*, proceed, args, kwargs, **ctx):
+            messages = proceed()
+            audited.append(messages)
+            return messages
+
+        agent = _Agent()
+        wrapped = _build_wrapped_method(
+            agent.build_react_prompt,
+            interceptors=[(_Blocking(), AdviceType.AROUND, around_build_react_prompt)],
+            method_name="build_react_prompt",
+            target=agent,
+            role="agent",
+        )
+
+        assert wrapped("dom") == [{"role": "user", "content": "dom"}]
+        assert audited == [[{"role": "user", "content": "dom"}]]
 
 
 class TestSyncContractViolations:
@@ -112,15 +225,55 @@ class TestSyncContractViolations:
                 method_name="_sync_target",
             )
 
-    def test_around_on_sync_target_raises(self) -> None:
-        def around_sync(*, proceed, args, kwargs, **ctx):
-            return proceed()
+    def test_nonblocking_hook_on_sync_target_raises(self) -> None:
+        """``blocking`` means concurrency, and a sync call has none to offer.
+
+        Running the handler inline anyway — the old behaviour — made
+        ``blocking`` mean "error isolation" here and "concurrency" on the
+        async path, so a hook author could not know what they had asked
+        for.
+        """
+
+        def before(*, args, kwargs, **ctx):
+            pass
+
+        with pytest.raises(UnsupportedAdviceError, match="non-blocking"):
+            _build_wrapped_method(
+                _sync_target,
+                interceptors=[(_NonBlocking(), AdviceType.BEFORE, before)],
+                method_name="_sync_target",
+            )
+
+    def test_nonblocking_around_raises_on_async_target_too(self) -> None:
+        """An around handler *is* the call; nothing can proceed without it."""
+
+        async def target():  # pragma: no cover - never called
+            return 1
+
+        async def around(*, proceed, args, kwargs, **ctx):  # pragma: no cover
+            return await proceed()
 
         with pytest.raises(UnsupportedAdviceError, match="around advice"):
             _build_wrapped_method(
-                _sync_target,
-                interceptors=[(_Blocking(), AdviceType.AROUND, around_sync)],
-                method_name="_sync_target",
+                target,
+                interceptors=[(_NonBlocking(), AdviceType.AROUND, around)],
+                method_name="target",
+            )
+
+    def test_sync_handler_on_async_target_raises(self) -> None:
+        """The async branch had no shape guard at all — it died at call time."""
+
+        async def target():  # pragma: no cover - never called
+            return 1
+
+        def handler(result, *, args, kwargs, **ctx):  # pragma: no cover
+            return result
+
+        with pytest.raises(UnsupportedAdviceError, match="plain ``def``"):
+            _build_wrapped_method(
+                target,
+                interceptors=[(_Blocking(), AdviceType.AFTER, handler)],
+                method_name="target",
             )
 
 

@@ -5,25 +5,43 @@ of (role, method) → interceptors, and wraps target objects' methods.
 
 Usage in AgentRuntime (M08)::
 
-    weaver = Weaver(active_hooks)
+    weaver = Weaver(active_hooks, background=run_tasks)
     wrapped_env = weaver.wrap(env, role="env")
     wrapped_agent = weaver.wrap(agent, role="agent")
     wrapped_llm = weaver.wrap(llm, role="llm")
+    weaver.raise_for_unclaimed_roles()
+
+    loop.weave(wrapped_agent, env=wrapped_env, llm=wrapped_llm, ...)
+    weaver.audit_intercepts()   # after weave: ``agent.run`` exists now
 
     # Loop uses wrapped objects — hooks fire automatically
-    await loop.run(wrapped_agent, wrapped_env, task, llm=wrapped_llm)
+    await wrapped_agent.run(task)
+    await run_tasks.drain()     # non-blocking handlers finish here
 
 See docs/architecture_design.md §4.6 and docs/execution_dag.md M04.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any
 
 from spectragent.core.aop.advice import AdviceType, Intercept
-from spectragent.core.aop.errors import UnclaimedRoleError
-from spectragent.core.aop.proxy import AOPProxy, InterceptorEntry
+from spectragent.core.aop.errors import (
+    DeadInterceptError,
+    UnclaimedRoleError,
+    UnsupportedAdviceError,
+)
+from spectragent.core.aop.proxy import (
+    MISSING,
+    AOPProxy,
+    InterceptorEntry,
+    hook_id_of,
+    static_target_method,
+    validate_advice_shape,
+)
+from spectragent.core.aop.tasks import BackgroundTasks
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +52,34 @@ class Weaver:
     Builds an interception index from active hooks and wraps target objects.
     Only methods with registered interceptors are wrapped; all other
     attribute access is delegated transparently to the original object.
+
+    Args:
+        active_hooks: Hook instances whose ``__intercepts__`` to weave.
+        background: Owner of ``blocking=False`` handler tasks. Pass the
+            run's own so it can be drained at run end; a Weaver that
+            makes its own keeps the tasks alive but nobody can wait for
+            them.
     """
 
-    def __init__(self, active_hooks: list[Any]) -> None:
+    def __init__(
+        self,
+        active_hooks: list[Any],
+        *,
+        background: BackgroundTasks | None = None,
+    ) -> None:
         self._hooks = active_hooks
         self._index: dict[tuple[str, str], list[InterceptorEntry]] = {}
         self._claimed_roles: set[str] = set()
+        # {role: raw target} — the *unwrapped* object, so the audit can
+        # inspect it without going through the proxy it just built.
+        self._wrapped_targets: dict[str, Any] = {}
+        self._background = background if background is not None else BackgroundTasks()
         self._build_index()
+
+    @property
+    def background(self) -> BackgroundTasks:
+        """In-flight non-blocking handler tasks spawned through this Weaver."""
+        return self._background
 
     def _build_index(self) -> None:
         """Build {(role, method): [(hook, advice, handler)]} from active hooks."""
@@ -52,7 +91,7 @@ class Weaver:
                 if handler is None:
                     logger.warning(
                         "Hook '%s' declares intercept %s.%s(%s) but has no method '%s'",
-                        getattr(hook, "hook_id", type(hook).__name__),
+                        hook_id_of(hook),
                         intercept.role,
                         intercept.method,
                         intercept.advice,
@@ -89,6 +128,7 @@ class Weaver:
             no interceptors apply.
         """
         self._claimed_roles.add(role)
+        self._wrapped_targets[role] = target
 
         method_interceptors: dict[str, list[InterceptorEntry]] = {}
         for (r, method), interceptors in self._index.items():
@@ -100,9 +140,9 @@ class Weaver:
 
         # Whether the target can serve a declared method is *not* decided
         # here: the proxy resolves lazily, and ``Loop.weave()`` installs
-        # ``agent.run`` after wrapping. The proxy warns at resolution
-        # time, when the answer is actually known.
-        return AOPProxy(target, method_interceptors, role=role)
+        # ``agent.run`` after wrapping. :meth:`audit_intercepts` asks once
+        # weaving is done, when the answer is actually known.
+        return AOPProxy(target, method_interceptors, role=role, background=self._background)
 
     def raise_for_unclaimed_roles(self) -> None:
         """Fail if any declared role was never handed to :meth:`wrap`.
@@ -116,14 +156,79 @@ class Weaver:
         for (role, _method), interceptors in self._index.items():
             if role in self._claimed_roles:
                 continue
-            hook_ids = [getattr(h, "hook_id", type(h).__name__) for h, _, _ in interceptors]
-            unclaimed.setdefault(role, []).extend(hook_ids)
+            unclaimed.setdefault(role, []).extend(hook_id_of(h) for h, _, _ in interceptors)
 
         if unclaimed:
             raise UnclaimedRoleError(
                 unclaimed=unclaimed,
                 claimed=sorted(self._claimed_roles),
             )
+
+    def audit_intercepts(self) -> None:
+        """Fail if a declared intercept can never fire on its target.
+
+        The complement of :meth:`raise_for_unclaimed_roles`, which only
+        catches a role nothing wraps. This catches the three ways an
+        intercept on a *wrapped* role still dies quietly:
+
+        * the run has no object for that role (an ``env``-role intercept
+          in an env-less run — ``wrap(None, role="env")`` claims the role,
+          so the unclaimed check passes);
+        * the target has no such attribute (``env.obsserve``);
+        * the advice does not fit the method's shape (an ``async def``
+          handler on a plain ``def`` method).
+
+        **Call this after ``Loop.weave()``.** No agent has ``run`` until
+        weaving installs it, so the same audit run before weaving reports
+        the framework's flagship intercept dead on every single run —
+        which is precisely why the old wrap-time check was deleted.
+
+        It raises rather than warns, deliberately. This is the same class
+        of mistake as ``UnclaimedRoleError`` and a hook wired to nothing
+        is worth exactly as much as a hook not wired at all; the house
+        rule is that config errors surface during assembly, not at the
+        first LLM call. A hook that wants to observe whichever objects a
+        run happens to have should be split into per-role hooks and
+        selected in YAML, not left to guess.
+
+        Raises:
+            DeadInterceptError: listing every dead intercept at once, so
+                one prepare() reports all of them instead of one per fix.
+        """
+        dead: list[tuple[str, list[str], str]] = []
+
+        for (role, method), interceptors in sorted(self._index.items()):
+            if role not in self._claimed_roles:
+                continue  # raise_for_unclaimed_roles owns this case
+            point = f"{role}.{method}"
+            hook_ids = sorted({hook_id_of(h) for h, _, _ in interceptors})
+
+            target = self._wrapped_targets.get(role)
+            if target is None:
+                dead.append(
+                    (point, hook_ids, f"this run has no {role!r} object to intercept")
+                )
+                continue
+
+            original = static_target_method(target, method)
+            if original is MISSING:
+                dead.append(
+                    (point, hook_ids, f"{type(target).__name__} has no attribute {method!r}")
+                )
+                continue
+
+            # Shape is only checkable on a real function. Anything else —
+            # a property, a Mock, a callable instance — exists, and
+            # guessing its await-ability would reject working setups.
+            if not (inspect.isfunction(original) or inspect.ismethod(original)):
+                continue
+            try:
+                validate_advice_shape(original, interceptors, method)
+            except UnsupportedAdviceError as exc:
+                dead.append((point, hook_ids, str(exc)))
+
+        if dead:
+            raise DeadInterceptError(dead=dead)
 
     @property
     def claimed_roles(self) -> frozenset[str]:

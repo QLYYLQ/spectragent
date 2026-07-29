@@ -13,17 +13,23 @@ See docs/architecture_design.md §4.6 and docs/execution_dag.md M04.
 
 from spectragent.core.aop.advice import AdviceType, Intercept
 from spectragent.core.aop.errors import (
+    DeadInterceptError,
     MissingHandlerError,
     UnclaimedRoleError,
     UnsupportedAdviceError,
+    UnsupportedProxyProtocolError,
 )
+from spectragent.core.aop.tasks import BackgroundTasks
 from spectragent.core.aop.weaver import Weaver
 
 __all__ = [
     "AdviceType",
+    "BackgroundTasks",
+    "DeadInterceptError",
     "Intercept",
     "MissingHandlerError",
     "UnclaimedRoleError",
     "UnsupportedAdviceError",
+    "UnsupportedProxyProtocolError",
     "Weaver",
 ]

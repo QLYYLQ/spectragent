@@ -447,6 +447,60 @@ class TestMemoryReset:
         ) == 1
 
 
+class TestNonBlockingHooksAreDrained:
+    """``blocking=False`` must mean "not waited for", never "never run".
+
+    A lifecycle callback spawned with a discarded ``create_task`` handle
+    is abandoned when the run's loop moves on: the handler never
+    executes, and CPython may collect the task mid-flight. The run owns
+    those tasks now and drains them before teardown, so the env a
+    handler was handed is still alive when it looks at it.
+    """
+
+    async def test_a_nonblocking_lifecycle_callback_completes(self):
+        fired: list[str] = []
+
+        class _Monitor(HookBase):
+            __registry_key__ = "lifecycle_nonblocking_monitor"
+
+            @property
+            def blocking(self) -> bool:
+                return False
+
+            async def on_run_end(self, **kw):
+                # Yields control, so nothing but a drain can get it back.
+                await asyncio.sleep(0.01)
+                env = kw.get("env")
+                fired.append(f"end(env_alive={getattr(env, 'alive', None)})")
+
+        env = _make_env()
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), ReactLoop(), env, hooks=[_Monitor()]), AGENT_ID
+        )
+        await runtime.execute("t", task_id="t-1")
+
+        # Drained before teardown — the env-alive contract on_run_end has.
+        assert fired == ["end(env_alive=True)"]
+        assert env.events == ["setup", "teardown"]
+
+    async def test_a_failing_nonblocking_callback_does_not_fail_the_run(self):
+        class _Broken(HookBase):
+            __registry_key__ = "lifecycle_nonblocking_broken"
+
+            @property
+            def blocking(self) -> bool:
+                return False
+
+            async def on_run_end(self, **kw):
+                raise RuntimeError("websocket died")
+
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), ReactLoop(), _make_env(), hooks=[_Broken()]), AGENT_ID
+        )
+        result = await runtime.execute("t", task_id="t-1")
+        assert result.agent_done is not None
+
+
 class TestHookPriority:
     async def test_enrichers_run_before_persisters(self):
         order: list[str] = []

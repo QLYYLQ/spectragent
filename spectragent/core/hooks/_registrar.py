@@ -124,6 +124,14 @@ class HookBase(metaclass=HookRegistrar.Meta):
 
     @property
     def blocking(self) -> bool:
+        """Wait for this hook's handlers — see :class:`RuntimeHook`.
+
+        True by default because a hook that produces run output must
+        finish before the output is read, and a ``blocking=False``
+        handler runs after the WAL commit point and therefore reaches no
+        artifact. Override to False only for a side channel nothing
+        downstream reads.
+        """
         return True
 
     # Default no-op lifecycle callbacks

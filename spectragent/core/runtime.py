@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from spectragent.core.action_guard import build_guarded_act
+from spectragent.core.aop.tasks import BackgroundTasks
 from spectragent.core.aop.weaver import Weaver
 from spectragent.core.composer import ComposedRun, ComposeError
 from spectragent.core.hooks.base import RuntimeHook
@@ -94,6 +95,11 @@ class AgentRuntime:
         self._memory: Any = None
         self._recorder = StepRecorder()
         self._env_needs_teardown = False
+        # Owns every ``blocking=False`` handler task this run spawns —
+        # method interceptions via the Weaver, lifecycle callbacks
+        # directly. Per-runtime, so two runs in one process drain
+        # independently.
+        self._background = BackgroundTasks()
 
     # -- Factory ----------------------------------------------
 
@@ -272,7 +278,7 @@ class AgentRuntime:
 
         # Step 3: AOP weaving (must happen before guarded_act so
         #          act_fn captures wrapped_env.act, enabling AOP intercepts)
-        weaver = Weaver(self._hooks)
+        weaver = Weaver(self._hooks, background=self._background)
         wrapped_agent = weaver.wrap(agent, role="agent")
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
@@ -306,6 +312,13 @@ class AgentRuntime:
             task_id=task_id,
             **kwargs,
         )
+
+        # Only now is every intercept's fate decided: ``agent.run`` did
+        # not exist until the line above installed it. An intercept that
+        # can still never fire — a typo'd method, an ``env`` role in an
+        # env-less run — is a config bug, and used to be a silent no-op
+        # or a warning in a log nobody reads.
+        weaver.audit_intercepts()
 
         # Negotiation outputs stay on the runtime — see
         # :attr:`active_descriptors`.
@@ -466,17 +479,23 @@ class AgentRuntime:
                     raise
                 return result
         finally:
-            # Teardown always runs, and always after on_run_end — env-state
-            # scoring needs the environment alive.
+            # Backstop drain, for the paths that never reach ``_finish``
+            # (cancellation). Normally a no-op — and it must not be able
+            # to skip teardown, hence the bare ``finally``.
             try:
-                await self.teardown_environment()
-            except Exception:
-                logger.exception("AgentRuntime: environment teardown failed")
+                await self._drain_background()
+            finally:
+                # Teardown always runs, and always after on_run_end — env-state
+                # scoring needs the environment alive.
+                try:
+                    await self.teardown_environment()
+                except Exception:
+                    logger.exception("AgentRuntime: environment teardown failed")
 
     # -- Private helpers ---------------------------------------
 
     async def _finish(self, result: Any, error: BaseException | None = None) -> None:
-        """Close a run out: ``on_run_end`` first, then error detail."""
+        """Close a run out: ``on_run_end`` first, then error detail, then drain."""
         await self._dispatch_lifecycle("on_run_end", result=result, env=self._env)
         if error is not None:
             await self._dispatch_lifecycle(
@@ -485,6 +504,20 @@ class AgentRuntime:
                 partial_steps=self._recorder.records,
                 env=self._env,
             )
+        # The run's non-blocking handlers end with the run. Drained here
+        # rather than after teardown so a handler still holding the env
+        # sees it alive — the same contract ``on_run_end`` gets — and
+        # because ``asyncio.run()`` returning is not a drain: it abandons
+        # every pending task, which is how a ``blocking=False`` handler
+        # could be spawned and simply never execute.
+        await self._drain_background()
+
+    async def _drain_background(self) -> None:
+        """Wait out this run's non-blocking handler tasks, then move on."""
+        try:
+            await self._background.drain()
+        except Exception:
+            logger.exception("AgentRuntime: draining background hook handlers failed")
 
     def _terminal_result(
         self,
@@ -556,7 +589,11 @@ class AgentRuntime:
             if hook.blocking:
                 await handler(**kwargs)
             else:
-                asyncio.create_task(self._safe_lifecycle_call(hook, handler, method_name, kwargs))
+                hook_id = getattr(hook, "hook_id", type(hook).__name__)
+                self._background.spawn(
+                    self._safe_lifecycle_call(hook, handler, method_name, kwargs),
+                    label=f"lifecycle:{method_name}:{hook_id}",
+                )
 
     @staticmethod
     async def _safe_lifecycle_call(

@@ -1,6 +1,6 @@
-"""AOPProxy must be transparent, and the Weaver must not fail silently.
+"""AOPProxy transparency — where it holds, and where it must say so.
 
-Four bugs are pinned here:
+Six bugs are pinned here:
 
 * ``proxy.attr = x`` landing in the proxy's own ``__dict__``, permanently
   shadowing the wrapped method — which is how ``Loop.weave()``'s
@@ -12,6 +12,11 @@ Four bugs are pinned here:
 * The inverse: a wrap-time "no such attribute" warning declaring a
   working ``agent.run`` hook dead, because it judged a lazily resolved
   method before ``Loop.weave()`` had installed it.
+* ``bool(proxy)`` / ``proxy == target`` answering for the *proxy*, which
+  is a wrong answer given silently.
+* ``async with proxy`` dying on a bare "'AOPProxy' object does not
+  support the asynchronous context manager protocol", which names
+  neither the target nor the way out.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ from __future__ import annotations
 import pytest
 
 from spectragent.core.aop.advice import Intercept
-from spectragent.core.aop.errors import UnclaimedRoleError
+from spectragent.core.aop.errors import UnclaimedRoleError, UnsupportedProxyProtocolError
 from spectragent.core.aop.proxy import AOPProxy
 from spectragent.core.aop.weaver import Weaver
 
@@ -111,6 +116,114 @@ class TestProxyWritesPassThrough:
         proxy.run = second
         await proxy.run("t")
         assert seen == ["first", "second"]
+
+
+class _Opinionated:
+    """A target with opinions about truthiness and equality."""
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, _Opinionated | AOPProxy)
+
+    def __hash__(self) -> int:
+        return 42
+
+
+class _CtxTarget:
+    """The ``CDPClient`` shape: a resource held through a ``with`` block."""
+
+    def __init__(self):
+        self.exited = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        self.exited = True
+        return False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.exited = True
+        return False
+
+    def __iter__(self):
+        return iter([1, 2])
+
+    async def observe(self, *a, **kw):
+        return "observed"
+
+
+class TestForwardedProtocols:
+    """The dunders that used to answer wrongly, and say nothing about it."""
+
+    def test_bool_asks_the_target(self):
+        proxy = AOPProxy(_Opinionated(), {}, role="env")
+        assert bool(proxy) is False
+
+    def test_equality_asks_the_target(self):
+        target = _Opinionated()
+        proxy = AOPProxy(target, {}, role="env")
+        assert proxy == target
+        assert target == proxy
+
+    def test_two_proxies_of_one_target_compare_and_hash_alike(self):
+        target = _Target()
+        a = AOPProxy(target, {}, role="env")
+        b = AOPProxy(target, {}, role="env")
+        assert a == b
+        assert hash(a) == hash(b) == hash(target)
+        assert len({a, b, target}) == 1
+
+
+class TestCuratedProtocols:
+    """Declared on the class, because an implicit lookup never sees ``__getattr__``."""
+
+    async def test_async_context_manager_reaches_the_target(self):
+        target = _CtxTarget()
+        proxy = AOPProxy(target, {}, role="env")
+        async with proxy as entered:
+            # ``as x`` stays woven: the target returned *itself*, so
+            # handing back the raw object would silently unweave it.
+            assert entered is proxy
+        assert target.exited is True
+
+    def test_context_manager_reaches_the_target(self):
+        target = _CtxTarget()
+        proxy = AOPProxy(target, {}, role="env")
+        with proxy as entered:
+            assert entered is proxy
+        assert target.exited is True
+
+    def test_iteration_reaches_the_target(self):
+        proxy = AOPProxy(_CtxTarget(), {}, role="env")
+        assert list(proxy) == [1, 2]
+
+    async def test_an_intercepted_method_still_fires_inside_the_block(self):
+        seen: list = []
+        proxy = Weaver([_Hook(seen)]).wrap(_CtxTarget(), role="env")
+        async with proxy as entered:
+            await entered.observe()
+        assert seen == [("observed", "env", "observe")]
+
+    def test_a_target_without_the_protocol_names_itself(self):
+        proxy = AOPProxy(_Target(), {}, role="env")
+        with pytest.raises(UnsupportedProxyProtocolError) as exc, proxy:
+            pass
+        message = str(exc.value)
+        assert "_Target" in message
+        assert "__enter__" in message
+        assert "role='env'" in message
+
+    def test_the_error_is_still_a_typeerror(self):
+        """Duck-typed ``try: iter(x) except TypeError`` must keep working."""
+        proxy = AOPProxy(_Target(), {}, role="env")
+        with pytest.raises(TypeError):
+            iter(proxy)
 
 
 class TestAdviceContext:

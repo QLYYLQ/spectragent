@@ -20,9 +20,9 @@ class RuntimeHook(Protocol):
 
     Attributes:
         hook_id: Registry discriminator — matches ``__registry_key__``.
-        blocking: If True, the hook must complete before execution continues.
-            Blocking hook failures propagate (re-raise). Non-blocking hook
-            failures are logged but do not interrupt execution.
+        blocking: Whether the call the hook fired on **waits** for the
+            handler. See :meth:`blocking` for the full contract; it means
+            concurrency, and error isolation follows from it.
         priority: Lifecycle dispatch order, ascending — lower runs first.
             Load-bearing whenever one hook *enriches* the result and
             another *serializes* it: with ``hook: [trace_writer, metrics]``
@@ -35,7 +35,40 @@ class RuntimeHook(Protocol):
 
     @property
     def blocking(self) -> bool:
-        """Whether this hook must complete before agent continues."""
+        """Whether the intercepted call waits for this hook's handler.
+
+        **The one definition: concurrency.** ``blocking=True`` awaits the
+        handler inline, so the intercepted method does not return until
+        the handler is done. ``blocking=False`` hands the handler to a
+        background task and lets the call continue immediately.
+
+        Error isolation is a *consequence*, not a second meaning. A
+        blocking handler's exception propagates into the call it fired on
+        — the call is still on the stack, and a ``TraceWriter`` that
+        cannot write is a run that must stop. A non-blocking handler's
+        cannot: by the time it raises, the call it decorated has already
+        returned, so there is nothing to propagate to and the exception
+        is logged.
+
+        Three shapes are impossible and are rejected during assembly with
+        ``UnsupportedAdviceError`` rather than degrading into "blocking
+        means something else here": ``blocking=False`` on a synchronous
+        target (no running call to defer to), ``blocking=False`` on
+        ``around`` advice (the handler *is* the call — the return value
+        comes back through its ``proceed()``), and any handler whose
+        sync/async shape does not match its target's.
+
+        **``blocking=False`` cannot contribute to the trace.** A
+        background handler finishes after the WAL commit point — after
+        the step record, possibly after ``on_run_end`` — so anything it
+        computes reaches no artifact. That is why both shipped hooks are
+        blocking: ``trace_writer`` and ``metrics`` produce the run's
+        output. ``blocking=False`` is for genuine side channels that
+        nothing downstream reads, of which the designed one is
+        ``live_monitor`` pushing state over a WebSocket. Its handlers are
+        still owned and drained at run end (``BackgroundTasks``), so
+        "fire and forget" does not mean "fire and never run".
+        """
         ...
 
     # ── Lifecycle callbacks (AgentRuntime calls directly) ──
