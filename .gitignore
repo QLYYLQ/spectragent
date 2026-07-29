@@ -47,3 +47,5 @@ CLAUDE.md
 
 # Vendored upstream sources kept locally for inspection only
 /ref/
+/test_reality
+
