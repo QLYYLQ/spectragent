@@ -10,6 +10,11 @@ from typing import Any
 
 from spectragent.core.capabilities.base import BaseCapability
 from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.actions import (
+    ClickAction,
+    NavigateAction,
+    ScrollAction,
+)
 from spectragent.schemas.action import ActionDescriptor
 
 
@@ -137,7 +142,7 @@ class TestInitialization:
 
 
 class TestActionWiringAndProvidedActions:
-    """``__wiring__["action"]`` feeds the symmetric ``provided_actions``."""
+    """``__wiring__["actions"]`` feeds the symmetric ``provided_actions``."""
 
     def test_provided_actions_covers_full_default_set(self) -> None:
         cap = BrowserCapability()
@@ -162,46 +167,59 @@ class TestActionWiringAndProvidedActions:
 
     def test_wiring_action_tuple_matches_provided(self) -> None:
         wiring = BrowserCapability.__wiring__
-        registry, provides = wiring["action"]
+        registry, provides = wiring["actions"]
         assert registry == "action"
         assert set(provides) == BrowserCapability().provided_actions
 
 
 class TestDefaultActionInstantiation:
-    """``__post_init__`` materialises actions from wiring + overrides."""
+    """``actions`` is the per-action config list; omitting it = full set."""
 
-    def test_default_actions_instantiated_when_no_overrides(self) -> None:
+    def test_default_actions_instantiated_when_list_omitted(self) -> None:
         cap = BrowserCapability()
         assert len(cap._actions_by_name) == 14
         assert set(cap._actions_by_name) == cap.provided_actions
 
-    def test_action_overrides_apply_kwargs(self) -> None:
+    def test_per_action_config_lands_on_the_instance(self) -> None:
         cap = BrowserCapability(
-            action_overrides={
-                "browser.scroll": {"default_amount": 777, "max_amount": 9999}
-            }
+            actions=[ScrollAction(default_amount=777, max_amount=9999)]
         )
         scroll = cap._actions_by_name["browser.scroll"]
         assert scroll.default_amount == 777  # type: ignore[attr-defined]
         assert scroll.max_amount == 9999  # type: ignore[attr-defined]
-        # All 14 actions still materialised — overrides are additive.
+
+    def test_listing_a_subset_is_an_ablation(self) -> None:
+        """Actions the config does not name are not instantiated."""
+        cap = BrowserCapability(actions=[ScrollAction(), ClickAction()])
+        assert set(cap._actions_by_name) == {"browser.scroll", "browser.click"}
+        assert cap.provided_actions == frozenset(
+            {"browser.scroll", "browser.click"}
+        )
+
+    def test_empty_list_falls_back_to_the_full_wired_set(self) -> None:
+        """The Composer setattrs ``[]`` when no top-level pool exists."""
+        cap = BrowserCapability()
+        # ``actions`` has a property setter; conscribe's stub writer only
+        # emits the getter, so pyright sees it as read-only.
+        cap.actions = []  # type: ignore[misc]
         assert len(cap._actions_by_name) == 14
 
-    def test_unknown_override_raises(self) -> None:
+    def test_action_the_capability_does_not_provide_raises(self) -> None:
         import pytest
 
-        with pytest.raises(ValueError, match="not in __wiring__"):
-            BrowserCapability(action_overrides={"rogue_action": {"x": 1}})
+        class _Rogue(ScrollAction):
+            __registry_key__ = "rogue.action"
+
+        with pytest.raises(ValueError, match="does not provide"):
+            BrowserCapability(actions=[_Rogue()])
 
     def test_provided_actions_matches_dispatch_map(self) -> None:
         """Core invariant: provided_actions == _actions_by_name.keys()."""
         cap = BrowserCapability()
         assert cap.provided_actions == frozenset(cap._actions_by_name)
 
-    def test_provided_actions_matches_with_overrides(self) -> None:
-        cap = BrowserCapability(
-            action_overrides={"browser.navigate": {"timeout_ms": 5000}}
-        )
+    def test_provided_actions_matches_after_ablation(self) -> None:
+        cap = BrowserCapability(actions=[NavigateAction(timeout_ms=5000)])
         assert cap.provided_actions == frozenset(cap._actions_by_name)
 
     def test_get_action_descriptors_derives_from_dispatch_map(self) -> None:

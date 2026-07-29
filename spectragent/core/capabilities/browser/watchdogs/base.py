@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from agent_cdp import CDPCommandProtocol
 
     from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
+    from spectragent.core.capabilities.browser.input import MouseTrajectoryProtocol
     from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
 
 #: Which EventScope a watchdog binds to. ``"tab"`` watchdogs are built
@@ -85,8 +86,11 @@ class WatchdogContext:
 
     debug_highlight: bool = False
     humanize_mouse: bool = False
-    mouse_trajectory: str = "windmouse"
-    mouse_trajectory_overrides: dict[str, Any] | None = None
+    #: The configured trajectory *instance* — already carrying its own
+    #: knobs, because the Composer built it from the capability's
+    #: ``mouse_trajectory`` config block. ``None`` means "nothing was
+    #: configured", which collapses to the instant jump.
+    mouse_trajectory: MouseTrajectoryProtocol | None = None
 
     selector_map_getter: Callable[[], DOMSelectorMap] = field(
         default=_no_selector_map

@@ -68,8 +68,7 @@ class TestTraceWriterRegistration:
 class TestTraceWriterLifecycle:
     @pytest.fixture()
     def writer(self, tmp_path) -> TraceWriter:
-        tw = TraceWriter()
-        tw.trace_dir = str(tmp_path / "traces")
+        tw = TraceWriter(trace_dir=str(tmp_path / "traces"))
         return tw
 
     @pytest.fixture()
@@ -313,8 +312,7 @@ class TestUnfinishedMessagesSurviveRunEnd:
 
     @pytest.fixture()
     def writer(self, tmp_path) -> TraceWriter:
-        tw = TraceWriter()
-        tw.trace_dir = str(tmp_path / "traces")
+        tw = TraceWriter(trace_dir=str(tmp_path / "traces"))
         return tw
 
     async def _start(self, writer) -> Path:

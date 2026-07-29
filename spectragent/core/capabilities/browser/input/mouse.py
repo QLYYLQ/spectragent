@@ -16,6 +16,13 @@ When ``humanize`` is off the strategy is forced to ``instant`` (one waypoint at
 the destination), so ``click`` emits exactly ``mouseMoved → mousePressed →
 mouseReleased`` at the target and ``wheel`` emits a single ``mouseWheel`` —
 byte-for-byte the pre-humanization behavior.
+
+The strategy arrives here as a ready-made instance, chosen and constructed by
+``ConfigComposer`` from the capability's ``mouse_trajectory`` config block. It
+used to arrive as a registry key plus an untyped kwargs dict, so a typo or an
+unsupported knob only surfaced as a ``ValueError`` here, at first tab setup,
+minutes into a run — and the kwargs dict was not reachable from YAML at all.
+Both failure modes are now Pydantic validation errors before anything launches.
 """
 
 from __future__ import annotations
@@ -28,9 +35,9 @@ from typing import Any
 
 from agent_cdp import CDPCommandProtocol
 
+from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
 from spectragent.core.capabilities.browser.input.trajectory import (
     MouseTrajectoryProtocol,
-    MouseTrajectoryRegistrar,
     TrajectoryPoint,
 )
 
@@ -41,18 +48,6 @@ async def _maybe_await(value: Any) -> None:
     """Await ``value`` if it is awaitable, else ignore (sync callback)."""
     if inspect.isawaitable(value):
         await value
-
-
-def _require_registered(key: str) -> type[MouseTrajectoryProtocol]:
-    """Return the strategy class for ``key`` or raise a listing ValueError."""
-    cls = MouseTrajectoryRegistrar.get_or_none(key)
-    if cls is None:
-        available = ", ".join(sorted(MouseTrajectoryRegistrar.keys()))
-        raise ValueError(
-            f"Unknown mouse_trajectory {key!r}. Registered strategies: "
-            f"{available}."
-        )
-    return cls
 
 
 class HumanMouse:
@@ -67,11 +62,10 @@ class HumanMouse:
         cdp: CDPCommandProtocol,
         *,
         session_id_getter: Callable[[], str | None],
-        trajectory_type: str = "instant",
+        trajectory: MouseTrajectoryProtocol | None = None,
         humanize: bool = False,
         viewport: tuple[int, int] = (1280, 720),
         move_callback: Callable[[int, int], Any] | None = None,
-        trajectory_kwargs: dict[str, Any] | None = None,
         dwell_ms: float = 0.0,
         cold_start: str = "center",
         wheel_steps: int = 8,
@@ -86,18 +80,12 @@ class HumanMouse:
         self._wheel_steps = max(1, wheel_steps)
         self._wheel_step_delay_ms = wheel_step_delay_ms
 
-        # The configured name is validated even when humanize is off — a typo
-        # is a config error, never a silent downgrade to instant.
-        _require_registered(trajectory_type)
-        if self._humanized:
-            self._traj: MouseTrajectoryProtocol = self._resolve_strategy(
-                trajectory_type, trajectory_kwargs or {}
-            )
+        # Humanize off → the no-op strategy regardless of what was
+        # configured, so behavior is exactly the legacy instant jump.
+        if self._humanized and trajectory is not None:
+            self._traj: MouseTrajectoryProtocol = trajectory
         else:
-            # Humanize off → the no-op strategy regardless of the configured
-            # type, so behavior is exactly the legacy instant jump. Overrides
-            # belong to the configured strategy, which is not in use here.
-            self._traj = self._resolve_strategy("instant", {})
+            self._traj = InstantTrajectory()
 
         # Cursor origin. Humanized runs start from viewport centre (matching the
         # debug overlay's initial 50vw/50vh) so the first action isn't a long
@@ -106,24 +94,6 @@ class HumanMouse:
             self._x, self._y = self._vw // 2, self._vh // 2
         else:
             self._x, self._y = 0, 0
-
-    @staticmethod
-    def _resolve_strategy(key: str, kwargs: dict[str, Any]) -> MouseTrajectoryProtocol:
-        """Construct the registered strategy ``key``.
-
-        Both failure modes are config errors and are raised, never swallowed:
-        an unrecognised key (typo) and constructor kwargs the strategy does
-        not accept. Degrading to ``instant`` here would silently turn off the
-        very behavior the user asked for.
-        """
-        cls = _require_registered(key)
-        try:
-            return cls(**kwargs)
-        except TypeError as exc:
-            raise ValueError(
-                f"mouse_trajectory {key!r} rejected "
-                f"mouse_trajectory_overrides {kwargs!r}: {exc}"
-            ) from exc
 
     # ── introspection ────────────────────────────────────────────────────
     @property

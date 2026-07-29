@@ -37,6 +37,10 @@ environment:
         viewport_width: 1280
         viewport_height: 720
 
+        # See browser_use_local.yaml for what these two blocks buy you.
+        mouse_trajectory:
+          trajectory_type: instant
+
         # Switch backend = edit only this block.
         backend:
           provider_id: skyvern
@@ -48,7 +52,8 @@ environment:
 
 # Cross-cutting hooks — see configs/browser_use_local.yaml for why
 # ``trace_writer`` has to be declared here for a direct run to leave a
-# trace on disk, and why ``trace_dir`` cannot be set from YAML yet.
+# trace on disk.
 hook:
   - hook_id: trace_writer
+    trace_dir: traces
   - hook_id: metrics

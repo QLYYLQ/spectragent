@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from spectragent.core.capabilities.browser.dom.models import DOMRect
+from spectragent.core.capabilities.browser.input import WindMouseTrajectory
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
     ActionWatchdog,
 )
@@ -38,9 +39,8 @@ async def test_humanized_click_emits_curved_path(no_sleep: None) -> None:
         cdp=cdp,  # type: ignore[arg-type]
         selector_map_getter=lambda: {42: node},
         humanize_mouse=True,
-        mouse_trajectory="windmouse",
+        mouse_trajectory=WindMouseTrajectory(seed=1),
         viewport=(1280, 720),
-        mouse_trajectory_kwargs={"seed": 1},
     )
 
     result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))

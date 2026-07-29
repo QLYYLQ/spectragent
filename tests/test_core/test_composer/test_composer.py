@@ -22,6 +22,7 @@ from spectragent.core.composer import (
     ConfigComposer,
     DuplicateInstanceIdError,
     UnresolvedWiringError,
+    _init_param_names,
 )
 
 # ── Shared fixture: fresh protocol/registrar per test module ───────
@@ -474,3 +475,25 @@ def _compose_minimal(
             ],
         },
     )
+
+
+class TestInitParamNames:
+    """``**kwargs`` names no option, so it claims none."""
+
+    def test_var_keyword_is_not_a_named_parameter(self) -> None:
+        class _Sink:
+            def __init__(self, real: int = 1, **kwargs: Any) -> None:
+                self.real = real
+
+        # Counting ``**kwargs`` used to advertise a parameter literally
+        # called ``kwargs`` — never a config field name — while the field
+        # the config *did* carry fell through to "no matching __init__
+        # parameter" and aborted the compose.
+        assert _init_param_names(_Sink) == {"real"}
+
+    def test_var_positional_is_not_a_named_parameter(self) -> None:
+        class _Splat:
+            def __init__(self, *args: Any, real: int = 1) -> None:
+                self.real = real
+
+        assert _init_param_names(_Splat) == {"real"}

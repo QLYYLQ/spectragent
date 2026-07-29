@@ -17,7 +17,10 @@ from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 from agent_cdp.events.base import BaseEvent
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMSelectorMap
-from spectragent.core.capabilities.browser.input import HumanMouse
+from spectragent.core.capabilities.browser.input import (
+    HumanMouse,
+    MouseTrajectoryProtocol,
+)
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
@@ -266,7 +269,6 @@ class ActionWatchdog(BrowserWatchdog):
             humanize_mouse=ctx.humanize_mouse,
             mouse_trajectory=ctx.mouse_trajectory,
             viewport=ctx.viewport,
-            mouse_trajectory_kwargs=ctx.mouse_trajectory_overrides or None,
         )
 
     def __init__(
@@ -278,9 +280,8 @@ class ActionWatchdog(BrowserWatchdog):
         debug_highlight: bool = False,
         debug_highlight_ms: int = 350,
         humanize_mouse: bool = False,
-        mouse_trajectory: str = "instant",
+        mouse_trajectory: MouseTrajectoryProtocol | None = None,
         viewport: tuple[int, int] = (1280, 720),
-        mouse_trajectory_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self._cdp = cdp
         self._selector_map_getter = selector_map_getter
@@ -296,11 +297,10 @@ class ActionWatchdog(BrowserWatchdog):
         self._mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: self._session_id,
-            trajectory_type=mouse_trajectory,
+            trajectory=mouse_trajectory,
             humanize=humanize_mouse,
             viewport=viewport,
             move_callback=self._overlay_move_cursor if debug_highlight else None,
-            trajectory_kwargs=mouse_trajectory_kwargs,
         )
 
         # Debug highlight state — Overlay.enable is sent lazily on first use.

@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar
 
 from agent_cdp import CDPEventBridge, EventScope, ScopeGroup
 from pydantic import Field as PydanticField
@@ -64,6 +64,10 @@ from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — re
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
+from spectragent.core.capabilities.browser.input import (
+    InstantTrajectory,
+    MouseTrajectoryProtocol,
+)
 from spectragent.core.capabilities.browser.profiles import (
     BrowserProfileConfig,
     resolve_profile,
@@ -129,6 +133,18 @@ class _ObserveCycleCache:
     fired: bool = False  # whether the batched event has run for this cycle
 
 
+def _build_wired_action(name: str) -> ActionBase:
+    """Default-construct the action registered under ``name``."""
+    action_cls = ActionRegistrar.get(name)
+    if action_cls is None:
+        raise ValueError(
+            f"Wiring declares action '{name}' but no class is registered "
+            f"under ActionRegistrar. Did you forget to import the action "
+            f"module?"
+        )
+    return action_cls()
+
+
 @dataclass
 class _StateEventOutcome:
     """Aggregated replies to one ``BrowserStateRequestEvent`` emission.
@@ -149,9 +165,37 @@ class _StateEventOutcome:
 # ══════════════════════════════════════════════════════════════════════
 
 
-@dataclass
-class BrowserCapability(CapabilityBase):
-    """Browser automation capability — CDP + multi-tab + watchdog system."""
+class _BrowserReceptors:
+    """Annotation-only declaration of the ``actions`` receptor slot.
+
+    ``ConfigComposer`` reads the *class* annotation to decide whether a
+    wired slot is single-instance or list-shaped
+    (:func:`~spectragent.core.composer._slot_annotation`), so the
+    annotation has to exist somewhere in the MRO. It lives on this mixin
+    rather than in the class body because ``BrowserCapability`` exposes
+    ``actions`` as a property — the same split
+    :class:`~spectragent.agents._registrar.AgentReceptors` uses.
+    """
+
+    actions: list[ActionBase]
+
+
+class BrowserCapability(_BrowserReceptors, CapabilityBase):
+    """Browser automation capability — CDP + multi-tab + watchdog system.
+
+    Deliberately **not** a ``@dataclass``, unlike :class:`CapabilityBase`
+    itself. conscribe's metaclass decides whether a ``__wiring__`` entry
+    is already a constructor parameter by reading
+    ``inspect.signature(cls.__init__)`` at *class creation* time — before
+    ``@dataclass`` has synthesised anything. On a dataclass capability
+    every wiring key therefore looks unreceived and conscribe installs a
+    ``WiredField`` descriptor over whatever the class body bound, which
+    both destroys the field default and makes the generated config field
+    required. Hand-writing ``__init__`` in the class body is what lets
+    ``actions`` be an *optional* receptor carrying a discriminated union
+    of per-action configs — the same trick :class:`EnvironmentBase` uses
+    for ``capabilities``.
+    """
 
     __registry_key__: ClassVar[str] = "browser"
     __wiring__: ClassVar[dict[str, Any]] = {
@@ -167,7 +211,13 @@ class BrowserCapability(CapabilityBase):
         # Action provides — symmetric to observation. Keep in sync with
         # the concrete classes registered under
         # ``spectragent.core.capabilities.browser.actions``.
-        "action": (
+        #
+        # The wiring key is the *attribute* the Composer fills
+        # (``self.actions``); the registry it draws from is ``"action"``.
+        # The listed keys are the full set this capability can offer; a
+        # YAML ``actions:`` block narrows it (ablation), it never widens
+        # it.
+        "actions": (
             "action",
             [
                 "browser.click",
@@ -186,6 +236,17 @@ class BrowserCapability(CapabilityBase):
                 "browser.done",
             ],
         ),
+        # ``mouse_trajectory`` is a receptor, not a scalar: the chosen
+        # strategy arrives as a *constructed instance* carrying its own
+        # knobs (windmouse gravity/wind, bezier control points, ...), so
+        # every one of them is reachable and validated from YAML. It used
+        # to be a ``Literal`` plus an untyped ``mouse_trajectory_overrides``
+        # dict, which conscribe dropped from the schema entirely — the
+        # knobs existed and nothing could set them.
+        "mouse_trajectory": (
+            "mouse_trajectory",
+            ["bezier", "instant", "windmouse"],
+        ),
         # ``browser_provider`` is the existing conscribe registrar for
         # the underlying browser backend (local_chrome, lexmount,
         # browseruse_lite, ...). Mode 1 (auto-discovery) allows any
@@ -193,181 +254,193 @@ class BrowserCapability(CapabilityBase):
         "backend": "browser_provider",
     }
 
-    # ── conscribe-visible config ──────────────────────────────────────
-    cdp_url: Annotated[
-        str | None,
-        PydanticField(
-            description="CDP WebSocket URL. If None, the configured backend will provide one at setup time.",
-        ),
-    ] = None
-
-    profile: Annotated[
-        str,
-        PydanticField(description="Browser profile name (resolved via resolve_profile)"),
-    ] = "standard"
-
-    viewport_width: Annotated[
-        int, PydanticField(description="Viewport width in pixels")
-    ] = 1280
-
-    viewport_height: Annotated[
-        int, PydanticField(description="Viewport height in pixels")
-    ] = 720
-
-    debug_highlight: Annotated[
-        bool,
-        PydanticField(
-            description=(
-                "If True, ActionWatchdog calls CDP Overlay.highlightNode + "
-                "short sleep before each click/type/select so a human watching "
-                "the headed Chrome can see which element the agent targeted. "
-                "Off by default — adds ~300ms per interactive action."
-            ),
-        ),
-    ] = False
-
-    humanize_mouse: Annotated[
-        bool,
-        PydanticField(
-            description=(
-                "If True, route clicks/scrolls (and the cursor approach before "
-                "type/select) through a human-like trajectory — curved path, "
-                "acceleration/deceleration, per-point timing — instead of an "
-                "instant jump. Off by default: adds ~200-1500ms per mouse "
-                "action; intended for anti-bot-sensitive evals, not throughput "
-                "benchmarks."
-            ),
-        ),
-    ] = False
-
-    # Keys of ``MouseTrajectoryRegistrar``. Spelled out because a
-    # ``Literal`` must be static to be a type at all — and because a bare
-    # ``str`` here let a typo fall through ``input/mouse.py``'s fallback
-    # and silently disable humanized movement. Drift is impossible:
-    # ``test_mouse_trajectory_literal_matches_registry`` fails the moment
-    # a strategy is added or renamed.
-    #
-    # NOTE: this is *not* expressible as ``__wiring__``. On a dataclass
-    # capability, conscribe's metaclass runs before ``@dataclass``, so a
-    # wiring entry replaces the field's default with a ``WiredField``
-    # descriptor — it turns the field into an injected receptor rather
-    # than constraining the existing scalar.
-    mouse_trajectory: Annotated[
-        Literal["bezier", "instant", "windmouse"],
-        PydanticField(
-            description=(
-                "Trajectory strategy when humanize_mouse is on: 'windmouse' | "
-                "'bezier' | 'instant'. Ignored when humanize_mouse is False."
-            ),
-        ),
-    ] = "windmouse"
-
-    # Per-strategy constructor overrides (e.g. ``{"gravity": 12, "seed": 7}``),
-    # forwarded to the resolved MouseTrajectory class. Omitted → strategy
-    # defaults.
-    mouse_trajectory_overrides: dict[str, Any] = field(default_factory=dict)
-
-    # ── per-action capability-side config ────────────────────────────
-    # Wiring (``__wiring__["action"]``) is the sole source of truth for
-    # *which* actions exist. ``action_overrides`` controls *how* each
-    # action is instantiated — keyed by canonical action name, values are
-    # dicts of constructor kwargs (e.g. ``{"scroll": {"max_amount": 5000}}``).
-    # Omitted actions get default-constructed from the registry.
-    action_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
-
-    # ── wired backend (IoC injection by ConfigComposer) ──────────────
-    # ``backend`` is a wired receptor managed by conscribe's metaclass.
-    # Conscribe replaces this annotation with a ``WiredField`` descriptor
-    # at class creation; ``ConfigComposer`` then calls
-    # ``setattr(cap, "backend", provider)`` to inject the chosen provider.
-    # Same pattern as ``agent.llm`` / ``agent.memory`` and
-    # ``env.capabilities``. Kept as a class-level annotation only (not a
-    # dataclass ``field()``) so dataclass leaves it alone — runtime is
-    # unaffected by the apparent "field after default" ordering.
+    # ── wired receptors ───────────────────────────────────────────────
+    # ``actions`` is declared on :class:`_BrowserReceptors`; the other two
+    # are annotation-only here, so conscribe installs a ``WiredField``
+    # descriptor and the Composer setattr-injects them after construction.
+    mouse_trajectory: MouseTrajectoryProtocol  # type: ignore[misc]
     backend: BaseBrowserProvider  # type: ignore[misc]
 
-    # ── internal state (excluded from config) ─────────────────────────
-    _actions_by_name: dict[str, ActionBase] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _cdp: CDPClient | None = field(default=None, init=False, repr=False)
-    _session: ProviderSession | None = field(
-        default=None, init=False, repr=False
-    )
-    _scope_group: ScopeGroup | None = field(default=None, init=False, repr=False)
-    _scopes: dict[str, EventScope] = field(default_factory=dict, init=False, repr=False)
-    _bridges: dict[str, CDPEventBridge] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _main_frame_ids: dict[str, str] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _selector_maps: dict[str, DOMSelectorMap] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _target_to_session: dict[str, str] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _session_to_target: dict[str, str] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _watchdogs: dict[str, list[BrowserWatchdog]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _global_scope: EventScope | None = field(default=None, init=False, repr=False)
-    _default_session_id: str | None = field(default=None, init=False, repr=False)
-    _alive: bool = field(default=False, init=False, repr=False)
-    _resolved_profile: BrowserProfileConfig | None = field(
-        default=None, init=False, repr=False
-    )
+    # ── conscribe-visible config (assigned in __init__) ──────────────
+    cdp_url: str | None
+    profile: str
+    viewport_width: int
+    viewport_height: int
+    debug_highlight: bool
+    humanize_mouse: bool
 
-    # Per-tab observe-cycle cache. Keyed by session_id.
-    _cycle_cache: dict[str, _ObserveCycleCache] = field(
-        default_factory=dict, init=False, repr=False
-    )
-
-    # Optional injected client for tests.
-    _injected_client: CDPClient | None = field(
-        default=None, init=False, repr=False
-    )
+    # ── internal state, never config (assigned in __init__) ──────────
+    # Declared here as type-only annotations so both pyright and the
+    # conscribe stub writer see them; the values are set in ``__init__``.
+    _actions_by_name: dict[str, ActionBase]
+    _cdp: CDPClient | None
+    _session: ProviderSession | None
+    _scope_group: ScopeGroup | None
+    _scopes: dict[str, EventScope]
+    _bridges: dict[str, CDPEventBridge]
+    _main_frame_ids: dict[str, str]
+    _selector_maps: dict[str, DOMSelectorMap]
+    _target_to_session: dict[str, str]
+    _session_to_target: dict[str, str]
+    _watchdogs: dict[str, list[BrowserWatchdog]]
+    _global_scope: EventScope | None
+    _default_session_id: str | None
+    _alive: bool
+    _resolved_profile: BrowserProfileConfig | None
+    #: Per-tab observe-cycle cache. Keyed by session_id.
+    _cycle_cache: dict[str, _ObserveCycleCache]
+    #: Optional injected client for tests.
+    _injected_client: CDPClient | None
 
     # ── Init machinery ────────────────────────────────────────────────
 
-    def __post_init__(self) -> None:
-        """Materialise actions from wiring + optional overrides.
+    def __init__(
+        self,
+        id: Annotated[
+            str | None,
+            PydanticField(
+                description=(
+                    "Instance identity. Unique across the whole config; "
+                    "defaults to '<capability_id>#<ordinal>' when omitted."
+                ),
+            ),
+        ] = None,
+        cdp_url: Annotated[
+            str | None,
+            PydanticField(
+                description=(
+                    "CDP WebSocket URL. If None, the configured backend will "
+                    "provide one at setup time."
+                ),
+            ),
+        ] = None,
+        profile: Annotated[
+            str,
+            PydanticField(description="Browser profile name (resolved via resolve_profile)"),
+        ] = "standard",
+        viewport_width: Annotated[
+            int, PydanticField(description="Viewport width in pixels")
+        ] = 1280,
+        viewport_height: Annotated[
+            int, PydanticField(description="Viewport height in pixels")
+        ] = 720,
+        debug_highlight: Annotated[
+            bool,
+            PydanticField(
+                description=(
+                    "If True, ActionWatchdog calls CDP Overlay.highlightNode + "
+                    "short sleep before each click/type/select so a human watching "
+                    "the headed Chrome can see which element the agent targeted. "
+                    "Off by default — adds ~300ms per interactive action."
+                ),
+            ),
+        ] = False,
+        humanize_mouse: Annotated[
+            bool,
+            PydanticField(
+                description=(
+                    "If True, route clicks/scrolls (and the cursor approach before "
+                    "type/select) through the configured ``mouse_trajectory`` — "
+                    "curved path, acceleration/deceleration, per-point timing — "
+                    "instead of an instant jump. Off by default: adds "
+                    "~200-1500ms per mouse action; intended for anti-bot-sensitive "
+                    "evals, not throughput benchmarks."
+                ),
+            ),
+        ] = False,
+        actions: Annotated[
+            list[ActionBase] | None,
+            PydanticField(
+                description=(
+                    "Actions this capability instantiates, each with its own "
+                    "side-effect configuration (scroll distance, navigation "
+                    "wait mode, post-action settle delay, ...). Omit to get "
+                    "every action the wiring declares. Listing a subset is an "
+                    "ablation: the actions you leave out are not built, are "
+                    "not advertised to the model, and will fail action "
+                    "negotiation if an agent requires one of them."
+                ),
+            ),
+        ] = None,
+    ) -> None:
+        super().__init__(id=id)
 
-        Wiring is the sole source of truth for *which* actions exist.
-        ``action_overrides`` controls *how* individual actions are
-        instantiated — unknown keys (not in wiring) raise immediately.
-        """
-        wiring_names: tuple[str, ...] = self.__wiring__["action"][1]
+        self.cdp_url = cdp_url
+        self.profile = profile
+        self.viewport_width = viewport_width
+        self.viewport_height = viewport_height
+        self.debug_highlight = debug_highlight
+        self.humanize_mouse = humanize_mouse
 
-        # Reject overrides for actions not declared in the wiring.
-        extras = set(self.action_overrides) - set(wiring_names)
-        if extras:
-            raise ValueError(
-                f"{type(self).__name__} received action_overrides for actions "
-                f"not in __wiring__: {sorted(extras)}. "
-                f"Wiring declares: {sorted(wiring_names)}."
-            )
+        # In-Python default for the wired trajectory receptor. YAML must
+        # name one (a single-instance receptor is required in the
+        # generated schema, exactly like ``backend``); constructing the
+        # capability directly gets the no-op strategy, which is the
+        # legacy instant-jump behaviour. ``ConfigComposer`` setattrs the
+        # configured instance over this, shadowing the descriptor.
+        self.mouse_trajectory = InstantTrajectory()
 
-        # Materialise every wiring-declared action, applying overrides.
+        # ── internal state (never config) ─────────────────────────
         self._actions_by_name = {}
-        for name in wiring_names:
-            action_cls = ActionRegistrar.get(name)
-            if action_cls is None:
-                raise ValueError(
-                    f"Wiring declares action '{name}' but no class is "
-                    f"registered under ActionRegistrar. Did you forget to "
-                    f"import the action module?"
-                )
-            kwargs = self.action_overrides.get(name, {})
-            self._actions_by_name[name] = action_cls(**kwargs)
+        self._cdp = None
+        self._session = None
+        self._scope_group = None
+        self._scopes = {}
+        self._bridges = {}
+        self._main_frame_ids = {}
+        self._selector_maps = {}
+        self._target_to_session = {}
+        self._session_to_target = {}
+        self._watchdogs = {}
+        self._global_scope = None
+        self._default_session_id = None
+        self._alive = False
+        self._cycle_cache = {}
+        self._injected_client = None
+
+        self.actions = actions
 
         # Resolve the profile eagerly: which watchdogs are installed
         # decides which fragments this capability can resolve, and
         # negotiation asks that question *before* setup() runs.
-        self._resolved_profile = resolve_profile(self.profile)
+        self._resolved_profile = resolve_profile(profile)
+
+    # ── Action set ────────────────────────────────────────────────────
+
+    @classmethod
+    def _wired_action_names(cls) -> tuple[str, ...]:
+        """Fully-qualified action keys ``__wiring__`` offers."""
+        return tuple(cls.__wiring__["actions"][1])
+
+    @property
+    def actions(self) -> list[ActionBase]:
+        """The action instances this capability will actually execute."""
+        return list(self._actions_by_name.values())
+
+    @actions.setter
+    def actions(self, value: list[ActionBase] | None) -> None:
+        """Adopt an explicit action list, or derive the full wired set.
+
+        ``None`` / ``[]`` means "everything the wiring offers" — that is
+        both the no-``actions:``-block YAML case and the Composer's
+        deferred-receptor pass, which setattrs an empty list when no
+        top-level ``action:`` section exists. A non-empty list is taken
+        literally: actions the config did not name are not instantiated,
+        which is the design doc's ablation narrowing.
+        """
+        offered = self._wired_action_names()
+        if not value:
+            resolved = [_build_wired_action(name) for name in offered]
+        else:
+            unknown = sorted({a.action_id for a in value} - set(offered))
+            if unknown:
+                raise ValueError(
+                    f"{type(self).__name__} was configured with actions it does "
+                    f"not provide: {unknown}. __wiring__ offers: "
+                    f"{sorted(offered)}."
+                )
+            resolved = list(value)
+        self._actions_by_name = {a.action_id: a for a in resolved}
 
     # ── Properties ────────────────────────────────────────────────────
 
@@ -1256,7 +1329,6 @@ class BrowserCapability(CapabilityBase):
             debug_highlight=self.debug_highlight,
             humanize_mouse=self.humanize_mouse,
             mouse_trajectory=self.mouse_trajectory,
-            mouse_trajectory_overrides=self.mouse_trajectory_overrides or None,
             selector_map_getter=_selector_map_getter,
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,

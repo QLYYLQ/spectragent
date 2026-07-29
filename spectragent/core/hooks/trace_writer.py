@@ -13,12 +13,17 @@ call rather than once per step.
 Registered via conscribe as hook_id="trace_writer".
 
 See docs/execution_dag.md M11 for design details.
-"""
 
-from __future__ import annotations
+.. note::
+   No ``from __future__ import annotations`` here — ``trace_dir`` must
+   stay a real ``Annotated[...]`` object so any future ``TraceWriter``
+   subclass living in another module still resolves it (see the same
+   note on ``hooks/_registrar.py``).
+"""
 
 import logging
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -41,6 +46,7 @@ logger = logging.getLogger(__name__)
 _ERROR_DONE_STATES = frozenset({AgentDoneStatus.TIMEOUT, AgentDoneStatus.ERROR})
 
 
+@dataclass
 class TraceWriter(HookBase):
     """Full-trace WAL persistence hook.
 
@@ -65,18 +71,24 @@ class TraceWriter(HookBase):
 
     # ── conscribe config-annotated fields ─────────────────────
     trace_dir: Annotated[
-        str, Field(default="traces", description="Base directory for trace output.")
+        str,
+        Field(
+            default="traces",
+            description=(
+                "Base directory for trace output. Each run lands in "
+                "``<trace_dir>/<run_id>``. Relative paths resolve against "
+                "the process working directory."
+            ),
+        ),
     ] = "traces"
 
     # ── internal state (not config) ───────────────────────────
-    _wal: WALWriter | None = None
-    _steps_written: int = 0
+    _wal: WALWriter | None = field(default=None, init=False, repr=False)
+    _steps_written: int = field(default=0, init=False, repr=False)
     # [(input_msgs, output)] for the LLM calls made since the last commit
-    _pending_messages: list[tuple[Any, Any]]
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._pending_messages = []
+    _pending_messages: list[tuple[Any, Any]] = field(
+        default_factory=list, init=False, repr=False
+    )
 
     @property
     def blocking(self) -> bool:

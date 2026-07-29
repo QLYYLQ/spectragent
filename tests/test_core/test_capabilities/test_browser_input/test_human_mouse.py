@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities.browser.input.mouse import HumanMouse
+from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 
 
 class RecordCDP:
@@ -100,10 +101,9 @@ class TestHumanizedMode:
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: "sid",
-            trajectory_type="windmouse",
+            trajectory=WindMouseTrajectory(seed=1, max_points=80),
             humanize=True,
             viewport=(1280, 720),
-            trajectory_kwargs={"seed": 1, "max_points": 80},
         )
         await mouse.click(600, 400, "left", 1, target_w=40, target_h=20)
 
@@ -126,9 +126,8 @@ class TestHumanizedMode:
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: "sid",
-            trajectory_type="windmouse",
+            trajectory=WindMouseTrajectory(seed=1),
             humanize=True,
-            trajectory_kwargs={"seed": 1},
         )
         await mouse.click(600, 400, "left", 1, target_w=40)
         # Humanized motion sleeps before most intermediate moves.
@@ -140,9 +139,8 @@ class TestHumanizedMode:
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: "sid",
-            trajectory_type="windmouse",
+            trajectory=WindMouseTrajectory(seed=1),
             humanize=True,
-            trajectory_kwargs={"seed": 1},
             wheel_steps=6,
         )
         await mouse.wheel(300, 300, 0, 480)
@@ -157,7 +155,7 @@ class TestHumanizedMode:
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: "sid",
-            trajectory_type="windmouse",
+            trajectory=WindMouseTrajectory(),
             humanize=True,
             viewport=(1280, 720),
         )
@@ -168,9 +166,8 @@ class TestHumanizedMode:
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: "sid",
-            trajectory_type="windmouse",
+            trajectory=WindMouseTrajectory(seed=2),
             humanize=True,
-            trajectory_kwargs={"seed": 2},
         )
         await mouse.drag(100, 100, 500, 400)
         types = cdp.types()
@@ -183,57 +180,50 @@ class TestHumanizedMode:
         assert (last["x"], last["y"]) == (500, 400)
 
 
-class TestUnknownStrategyIsHardError:
-    """A misspelled strategy must fail loudly, never degrade to instant.
+class TestStrategyIsInjectedNotResolved:
+    """The strategy arrives constructed; nothing is looked up by name here.
 
-    Silent fallback (the pre-fix behavior) meant a typo in
-    ``mouse_trajectory`` turned humanized movement off while the run
-    reported success — the config error was invisible.
+    A misspelled key and an unsupported knob used to be ``ValueError``s
+    raised here, at first tab setup — minutes into a run. Both are now
+    Pydantic validation errors against the generated
+    ``mouse_trajectory`` union, before anything launches; see
+    ``TestMouseTrajectoryIsAWiredReceptor``.
     """
 
-    def test_unknown_trajectory_raises_and_lists_options(self) -> None:
-        with pytest.raises(ValueError, match="Unknown mouse_trajectory") as exc:
-            HumanMouse(
-                RecordCDP(),
-                session_id_getter=lambda: None,
-                trajectory_type="does_not_exist",
-                humanize=True,
-            )
-        # The message must name the real options so the fix is one edit away.
-        for key in ("instant", "windmouse", "bezier"):
-            assert key in str(exc.value)
-
-    def test_unknown_trajectory_raises_even_when_humanize_off(self) -> None:
-        # ``mouse_trajectory`` is ignored when humanize is off, but an
-        # unregistered name is still a config error worth surfacing.
-        with pytest.raises(ValueError, match="Unknown mouse_trajectory"):
-            HumanMouse(
-                RecordCDP(),
-                session_id_getter=lambda: None,
-                trajectory_type="does_not_exist",
-                humanize=False,
-            )
-
-    def test_bad_overrides_raise(self) -> None:
-        with pytest.raises(ValueError, match="rejected"):
-            HumanMouse(
-                RecordCDP(),
-                session_id_getter=lambda: None,
-                trajectory_type="windmouse",
-                humanize=True,
-                trajectory_kwargs={"not_a_real_kwarg": 1},
-            )
-
-    async def test_overrides_ignored_when_humanize_off(self, no_sleep: list[float]) -> None:
-        # Overrides target the configured strategy; with humanize off the
-        # forced ``instant`` strategy must not be handed kwargs it cannot take.
+    async def test_injected_strategy_is_used_when_humanized(
+        self, no_sleep: list[float]
+    ) -> None:
         cdp = RecordCDP()
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: None,
-            trajectory_type="windmouse",
+            trajectory=WindMouseTrajectory(seed=3),
+            humanize=True,
+        )
+        await mouse.click(400, 300, "left", 1)
+        assert cdp.types().count("mouseMoved") > 1
+
+    async def test_strategy_ignored_when_humanize_off(
+        self, no_sleep: list[float]
+    ) -> None:
+        # With humanize off the forced ``instant`` strategy wins, so the
+        # configured one never runs — byte-for-byte the legacy jump.
+        cdp = RecordCDP()
+        mouse = HumanMouse(
+            cdp,
+            session_id_getter=lambda: None,
+            trajectory=WindMouseTrajectory(seed=7),
             humanize=False,
-            trajectory_kwargs={"seed": 7},
+        )
+        await mouse.click(40, 50, "left", 1)
+        assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]
+
+    async def test_no_strategy_configured_falls_back_to_instant(
+        self, no_sleep: list[float]
+    ) -> None:
+        cdp = RecordCDP()
+        mouse = HumanMouse(
+            cdp, session_id_getter=lambda: None, trajectory=None, humanize=True
         )
         await mouse.click(40, 50, "left", 1)
         assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]

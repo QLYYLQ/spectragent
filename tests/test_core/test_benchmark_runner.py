@@ -139,8 +139,7 @@ def _make_factory(tmp_path, envs: list[_Env], writers: list[TraceWriter]):
 
     def compose():
         env = make_env(_Env, {"bench_runner_cap": _Cap()})
-        writer = TraceWriter()
-        writer.trace_dir = str(tmp_path / "traces")
+        writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
         envs.append(env)
         writers.append(writer)
         return make_run(
@@ -264,8 +263,7 @@ class TestBenchmarkRunner:
 
         def compose():
             env = make_env(_DeadEnv, {"bench_runner_cap": _Cap()})
-            writer = TraceWriter()
-            writer.trace_dir = str(tmp_path / "traces")
+            writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
             envs.append(env)
             writers.append(writer)
             return make_run(
@@ -312,8 +310,7 @@ class TestBenchmarkRunner:
 
         def compose():
             env = make_env(_Env, {"bench_runner_cap": _Cap()})
-            writer = TraceWriter()
-            writer.trace_dir = str(tmp_path / "traces")
+            writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
             envs.append(env)
             writers.append(writer)
             return make_run(

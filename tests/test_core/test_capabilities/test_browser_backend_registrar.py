@@ -93,6 +93,9 @@ class TestComposerInjectsBackend:
         from spectragent.core.capabilities.browser.backends.local_chrome import (
             LocalChromeProvider,
         )
+        from spectragent.core.capabilities.browser.input import (
+            MouseTrajectoryRegistrar,
+        )
         from spectragent.core.composer import ConfigComposer
         from spectragent.core.environments._registrar import EnvironmentRegistrar
         from spectragent.core.hooks._registrar import HookRegistrar
@@ -102,6 +105,7 @@ class TestComposerInjectsBackend:
         composer = ConfigComposer(
             registrars={
                 "browser_provider": BrowserProviderRegistrar,
+                "mouse_trajectory": MouseTrajectoryRegistrar,
                 "action": ActionRegistrar,
                 "capability": CapabilityRegistrar,
                 "agent_loop": AgentLoopRegistrar,
@@ -124,6 +128,7 @@ class TestComposerInjectsBackend:
             "capability": [
                 {
                     "capability_id": "browser",
+                    "mouse_trajectory": {"trajectory_type": "instant"},
                     "backend": {"provider_id": "local_chrome"},
                 }
             ],
@@ -157,6 +162,9 @@ class TestComposerInjectsBackend:
         from spectragent.agents.memory._registrar import MemoryRegistrar
         from spectragent.core.actions._registrar import ActionRegistrar
         from spectragent.core.capabilities._registrar import CapabilityRegistrar
+        from spectragent.core.capabilities.browser.input import (
+            MouseTrajectoryRegistrar,
+        )
         from spectragent.core.composer import ConfigComposer
         from spectragent.core.environments._registrar import EnvironmentRegistrar
         from spectragent.core.hooks._registrar import HookRegistrar
@@ -166,6 +174,7 @@ class TestComposerInjectsBackend:
         composer = ConfigComposer(
             registrars={
                 "browser_provider": BrowserProviderRegistrar,
+                "mouse_trajectory": MouseTrajectoryRegistrar,
                 "action": ActionRegistrar,
                 "capability": CapabilityRegistrar,
                 "agent_loop": AgentLoopRegistrar,
@@ -225,8 +234,9 @@ class TestComposerInjectsBackend:
             "capability": [
                 {
                     "capability_id": "browser",
+                    "mouse_trajectory": {"trajectory_type": "instant"},
                     "backend": {"provider_id": "local_chrome"},
-                    "action": {"action_id": "browser.scroll", "default_amount": 999},
+                    "observation": "browser.dom",
                 }
             ],
         }
@@ -235,5 +245,5 @@ class TestComposerInjectsBackend:
             composer.compose(raw)
 
         message = str(exc_info.value)
-        assert "capability[0].action" in message
+        assert "capability[0].observation" in message
         assert "silently dropped" in message

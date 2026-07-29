@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from spectragent.core.aop.advice import Intercept
@@ -20,6 +21,7 @@ from spectragent.core.hooks._registrar import HookBase
 logger = logging.getLogger(__name__)
 
 
+@dataclass
 class MetricsCollector(HookBase):
     """Token/cost metrics **enricher**.
 
@@ -44,12 +46,11 @@ class MetricsCollector(HookBase):
     priority = HookBase.PRIORITY_ENRICH
 
     # ── internal state ────────────────────────────────────────
-    _start_time: float = 0.0
-    _llm_calls: int = 0
-    _usage: Any = None
+    _start_time: float = field(default=0.0, init=False, repr=False)
+    _llm_calls: int = field(default=0, init=False, repr=False)
+    _usage: Any = field(default=None, init=False, repr=False)
 
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
+    def __post_init__(self) -> None:
         from spectragent.schemas.agent_result import AgentUsage
 
         self._usage = AgentUsage()

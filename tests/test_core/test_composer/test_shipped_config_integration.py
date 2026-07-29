@@ -15,17 +15,21 @@ launches a browser: instantiation and negotiation are pure, only
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
+from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.input import WindMouseTrajectory
 from spectragent.core.composer import (
     ComposeError,
     ConfigComposer,
     DuplicateInstanceIdError,
 )
+from spectragent.core.negotiation import IncompatibleActionError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.scripts.generate_all import _collect_registrars
 
@@ -40,6 +44,7 @@ SHIPPED_CONFIGS = sorted(CONFIG_DIR.glob("*.yaml"))
 # negotiation engine reads them off ``__wiring__``, not off config.
 _CAPABILITY: dict[str, Any] = {
     "capability_id": "browser",
+    "mouse_trajectory": {"trajectory_type": "instant"},
     "backend": {"provider_id": "local_chrome"},
 }
 
@@ -404,3 +409,294 @@ def _closure_ctx(run_fn: Any) -> dict[str, Any]:
     names = run_fn.__code__.co_freevars
     cells = run_fn.__closure__ or ()
     return dict(zip(names, cells, strict=True))["ctx"].cell_contents
+
+
+# ── The declared config surface must actually be reachable ───────────
+#
+# Every bug this class covers was invisible to a test that only asserts
+# on the generated config *model*: the value validated fine and then went
+# nowhere. So each test follows one YAML key all the way onto the live
+# object that consumes it.
+
+
+def _capability(**overrides: Any) -> dict[str, Any]:
+    return {**_CAPABILITY, **overrides}
+
+
+class TestDeclaredConfigSurfaceIsReachable:
+    def test_trace_dir_from_yaml_reaches_the_writer(
+        self,
+        composer: ConfigComposer,
+        tmp_path: Path,
+    ) -> None:
+        """``trace_dir`` used to be a hard ``extra_forbidden`` error.
+
+        ``TraceWriter`` declared it as a class-level ``Annotated`` field on
+        a ``**kwargs``-only ``__init__``; conscribe reads the ``__init__``
+        signature, found no named parameter and emitted a
+        discriminator-only model with ``extra="forbid"``.
+        """
+        target = tmp_path / "my_traces"
+        run = composer.compose(
+            {
+                "agent": [
+                    _agent_entry(
+                        instance_id="main",
+                        max_steps=3,
+                        max_messages=10,
+                        llm=_DIRECT_LLM,
+                    )
+                ],
+                "environment": [_env_entry()],
+                "hook": [{"hook_id": "trace_writer", "trace_dir": str(target)}],
+            }
+        )
+        writer = run.single("hook")
+        assert writer.trace_dir == str(target)
+
+    async def test_trace_dir_decides_where_the_wal_lands(
+        self,
+        composer: ConfigComposer,
+        tmp_path: Path,
+    ) -> None:
+        """Not just the attribute — the directory the run actually writes."""
+        target = tmp_path / "wal_root"
+        run = composer.compose(
+            {
+                "agent": [
+                    _agent_entry(
+                        instance_id="main",
+                        max_steps=3,
+                        max_messages=10,
+                        llm=_DIRECT_LLM,
+                    )
+                ],
+                "environment": [_env_entry()],
+                "hook": [{"hook_id": "trace_writer", "trace_dir": str(target)}],
+            }
+        )
+        writer = run.single("hook")
+        await writer.on_run_start(run_id="abc123", task="t", task_id="t-1")
+        assert writer.run_dir == target / "abc123"
+        assert writer.run_dir.is_dir()
+
+    def test_per_action_knob_from_yaml_reaches_the_action_instance(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        """The design doc's ``actions:`` list, end to end."""
+        run = composer.compose(
+            {
+                "environment": [
+                    {
+                        "env_type": "browser",
+                        "capabilities": [
+                            _capability(
+                                actions=[
+                                    {
+                                        "action_id": "browser.scroll",
+                                        "default_amount": 600,
+                                        "max_amount": 5000,
+                                    },
+                                    {
+                                        "action_id": "browser.navigate",
+                                        "wait_until": "networkidle",
+                                        "post_delay_ms": 1500,
+                                    },
+                                ]
+                            )
+                        ],
+                    }
+                ],
+            }
+        )
+        cap = run.single("capability")
+        scroll = cap._actions_by_name["browser.scroll"]
+        navigate = cap._actions_by_name["browser.navigate"]
+        assert (scroll.default_amount, scroll.max_amount) == (600, 5000)
+        assert navigate.wait_until == "networkidle"
+        assert navigate.post_delay_ms == 1500
+
+    def test_post_delay_ms_reaches_every_settleable_action(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        """Six actions silently lost this knob to a PEP 563 trap.
+
+        ``SettleableAction`` lived in a module with ``from __future__
+        import annotations``, so the subclass's dataclass-synthesised
+        ``__init__`` carried the annotation as a *string* that its own
+        module's globals could not resolve (no ``PydanticField`` bound
+        there). Type-hint resolution failed, ``field_info`` came back
+        ``None`` and ``__config_annotated_only__`` dropped the field.
+        ``browser.navigate`` was unaffected only because its module
+        happens to import ``PydanticField``.
+        """
+        settleable = [
+            "browser.click",
+            "browser.click_coordinate",
+            "browser.go_back",
+            "browser.go_forward",
+            "browser.select_dropdown",
+            "browser.send_keys",
+        ]
+        run = composer.compose(
+            {
+                "environment": [
+                    {
+                        "env_type": "browser",
+                        "capabilities": [
+                            _capability(
+                                actions=[
+                                    {"action_id": name, "post_delay_ms": 250}
+                                    for name in settleable
+                                ]
+                            )
+                        ],
+                    }
+                ],
+            }
+        )
+        cap = run.single("capability")
+        assert sorted(cap._actions_by_name) == sorted(settleable)
+        for name in settleable:
+            assert cap._actions_by_name[name].post_delay_ms == 250, name
+
+    def test_omitting_the_list_yields_every_wired_action(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        run = composer.compose(
+            {"environment": [{"env_type": "browser", "capabilities": [_CAPABILITY]}]}
+        )
+        cap = run.single("capability")
+        assert cap.provided_actions == frozenset(
+            BrowserCapability.__wiring__["actions"][1]
+        )
+
+    def test_listing_a_subset_ablates_the_rest(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        run = composer.compose(
+            {
+                "environment": [
+                    {
+                        "env_type": "browser",
+                        "capabilities": [
+                            _capability(
+                                actions=[
+                                    {"action_id": "browser.click"},
+                                    {"action_id": "browser.done"},
+                                ]
+                            )
+                        ],
+                    }
+                ],
+            }
+        )
+        env = run.instances("environment")[0]
+        assert env.provided_actions == frozenset(
+            {"browser.click", "browser.done"}
+        )
+
+    def test_ablating_a_required_action_fails_negotiation_by_name(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        """The intended consequence of ablation, with a message that says so."""
+        run = composer.compose(
+            {
+                "agent": [
+                    _agent_entry(
+                        instance_id="main",
+                        max_steps=3,
+                        max_messages=10,
+                        llm=_DIRECT_LLM,
+                    )
+                ],
+                "environment": [
+                    {
+                        "env_type": "browser",
+                        "capabilities": [
+                            _capability(
+                                actions=[
+                                    {"action_id": "browser.click"},
+                                    {"action_id": "browser.type"},
+                                    {"action_id": "browser.navigate"},
+                                ]
+                            )
+                        ],
+                    }
+                ],
+            }
+        )
+        runtime = AgentRuntime.for_agent(run, "main")
+        with pytest.raises(IncompatibleActionError) as exc_info:
+            runtime.prepare()
+        message = str(exc_info.value)
+        assert "browser.done" in message
+        assert "ablation" in message
+
+    def test_mouse_trajectory_knobs_reach_the_strategy_instance(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        """Per-strategy knobs lived behind an untyped, unreachable dict."""
+        run = composer.compose(
+            {
+                "environment": [
+                    {
+                        "env_type": "browser",
+                        "capabilities": [
+                            _capability(
+                                humanize_mouse=True,
+                                mouse_trajectory={
+                                    "trajectory_type": "windmouse",
+                                    "gravity": 12.5,
+                                    "seed": 7,
+                                },
+                            )
+                        ],
+                    }
+                ],
+            }
+        )
+        cap = run.single("capability")
+        assert isinstance(cap.mouse_trajectory, WindMouseTrajectory)
+        # Private storage names — the point is that the YAML numbers
+        # travelled into the constructed strategy, not just the model.
+        assert cap.mouse_trajectory._g == 12.5
+        assert cap.mouse_trajectory._rng.random() == random.Random(7).random()
+        # ...and the watchdog context hands the watchdogs that same
+        # instance, not a registry key plus an untyped kwargs dict.
+        cap._cdp = object()  # type: ignore[assignment] — only stored, never called
+        ctx = cap._watchdog_context("sid-1")
+        assert ctx.mouse_trajectory is cap.mouse_trajectory
+        assert ctx.humanize_mouse is True
+
+    def test_top_level_action_section_is_no_longer_a_silent_no_op(
+        self,
+        composer: ConfigComposer,
+    ) -> None:
+        """The escape hatch the Composer's own error message recommends.
+
+        It used to compose successfully, build the configured actions into
+        ``run.instances("action")`` — and leave the capability holding a
+        completely separate set of default-constructed ones.
+        """
+        run = composer.compose(
+            {
+                "action": [
+                    {"action_id": "browser.scroll", "default_amount": 900},
+                    {"action_id": "browser.done"},
+                ],
+                "environment": [
+                    {"env_type": "browser", "capabilities": [_CAPABILITY]}
+                ],
+            }
+        )
+        cap = run.single("capability")
+        assert set(cap._actions_by_name) == {"browser.scroll", "browser.done"}
+        assert cap._actions_by_name["browser.scroll"] is run.instances("action")[0]
+        assert cap._actions_by_name["browser.scroll"].default_amount == 900

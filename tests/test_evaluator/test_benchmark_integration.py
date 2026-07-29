@@ -174,8 +174,7 @@ class _EvalLoader:
 def runner_factory(tmp_path):
     def build(**kwargs):
         def compose():
-            writer = TraceWriter()
-            writer.trace_dir = str(tmp_path / "traces")
+            writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
             return make_run(
                 agent=_Agent(),
                 loop=ReactLoop(max_steps=2),

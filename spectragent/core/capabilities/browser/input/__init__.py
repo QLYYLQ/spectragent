@@ -12,6 +12,8 @@ from __future__ import annotations
 from spectragent.core.capabilities.browser.input import bezier as _bezier  # noqa: F401, E402
 from spectragent.core.capabilities.browser.input import instant as _instant  # noqa: F401, E402
 from spectragent.core.capabilities.browser.input import windmouse as _windmouse  # noqa: F401, E402
+from spectragent.core.capabilities.browser.input.bezier import BezierTrajectory
+from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
 from spectragent.core.capabilities.browser.input.mouse import HumanMouse
 from spectragent.core.capabilities.browser.input.trajectory import (
     MouseTrajectoryBase,
@@ -19,11 +21,15 @@ from spectragent.core.capabilities.browser.input.trajectory import (
     MouseTrajectoryRegistrar,
     TrajectoryPoint,
 )
+from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 
 __all__ = [
+    "BezierTrajectory",
     "HumanMouse",
+    "InstantTrajectory",
     "MouseTrajectoryBase",
     "MouseTrajectoryProtocol",
     "MouseTrajectoryRegistrar",
     "TrajectoryPoint",
+    "WindMouseTrajectory",
 ]

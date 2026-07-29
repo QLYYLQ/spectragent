@@ -398,12 +398,22 @@ class TestWatchdogContract:
             seen |= cls.provides
 
 
-# ─── mouse_trajectory is a Literal, not a bare str ────────────────────
+# ─── mouse_trajectory is a wired receptor, not a bare str ────────────
 
 
-class TestMouseTrajectoryIsConstrained:
+class TestMouseTrajectoryIsAWiredReceptor:
+    """The strategy is chosen *and configured* from YAML.
+
+    It used to be a ``Literal`` naming the strategy plus an untyped
+    ``mouse_trajectory_overrides`` dict for its knobs. ``__config_annotated_only__``
+    dropped that dict from the generated model and ``extra="forbid"``
+    then rejected it, so every per-strategy knob (windmouse gravity /
+    wind / seed, bezier control-point spread) was declared in Python and
+    unreachable from a config file.
+    """
+
     @staticmethod
-    def _config_literal_keys() -> list[str]:
+    def _member_configs() -> list[type]:
         from typing import get_args
 
         from spectragent.generated._composed import BrowserCapabilityConfig
@@ -411,43 +421,56 @@ class TestMouseTrajectoryIsConstrained:
         annotation = BrowserCapabilityConfig.model_fields[
             "mouse_trajectory"
         ].annotation
-        return sorted(get_args(annotation))
+        return list(get_args(annotation))
 
-    def test_generated_config_field_is_a_literal(self) -> None:
-        # §5.1.7: it was emitted as a bare ``str``, so a typo passed
-        # validation and was then swallowed by ``input/mouse.py``'s bare
-        # ``except Exception``, silently downgrading to ``instant``.
-        assert self._config_literal_keys(), (
-            "mouse_trajectory must be a Literal in the generated config"
-        )
+    def test_generated_config_is_a_union_of_strategy_configs(self) -> None:
+        names = sorted(c.__name__ for c in self._member_configs())
+        assert names == [
+            "BezierMouse_TrajectoryConfig",
+            "InstantMouse_TrajectoryConfig",
+            "WindmouseMouse_TrajectoryConfig",
+        ]
 
-    def test_literal_matches_the_registry(self) -> None:
-        """Guards the one hand-written key list against drift.
-
-        A ``Literal`` has to be static to be a type, so the keys are
-        spelled out on the field. This test is what keeps them honest.
-        """
+    def test_union_matches_the_registry(self) -> None:
+        """Guards the union against registry drift."""
         from spectragent.core.capabilities.browser.input import (
             MouseTrajectoryRegistrar,
         )
 
-        assert self._config_literal_keys() == sorted(MouseTrajectoryRegistrar.keys())
+        keys = sorted(
+            c.model_fields["trajectory_type"].default for c in self._member_configs()
+        )
+        assert keys == sorted(MouseTrajectoryRegistrar.keys())
+
+    def test_per_strategy_knobs_are_in_the_generated_config(self) -> None:
+        """The whole point: the knobs are reachable and typed."""
+        from spectragent.generated._composed import WindmouseMouse_TrajectoryConfig
+
+        fields = WindmouseMouse_TrajectoryConfig.model_fields
+        assert {"gravity", "wind", "seed"} <= set(fields)
 
     def test_generated_config_rejects_a_typo(self) -> None:
-        from pydantic import TypeAdapter, ValidationError
+        from pydantic import ValidationError
 
         from spectragent.generated._composed import BrowserCapabilityConfig
 
-        adapter = TypeAdapter(
-            BrowserCapabilityConfig.model_fields["mouse_trajectory"].annotation
+        ok = BrowserCapabilityConfig.model_validate(
+            {
+                "mouse_trajectory": {"trajectory_type": "windmouse", "gravity": 12.0},
+                "backend": {"provider_id": "local_chrome"},
+            }
         )
-        assert adapter.validate_python("windmouse") == "windmouse"
+        assert ok.mouse_trajectory.gravity == 12.0  # type: ignore[union-attr]
         with pytest.raises(ValidationError):
-            adapter.validate_python("windmoose")
+            BrowserCapabilityConfig.model_validate(
+                {
+                    "mouse_trajectory": {"trajectory_type": "windmoose"},
+                    "backend": {"provider_id": "local_chrome"},
+                }
+            )
 
-    def test_default_is_a_plain_string_at_runtime(self) -> None:
-        # Regression: declaring this through ``__wiring__`` instead makes
-        # conscribe install a WiredField descriptor as the dataclass
-        # default, so the attribute reads back as WiredField(...) rather
-        # than the strategy name.
-        assert BrowserCapability().mouse_trajectory == "windmouse"
+    def test_unset_receptor_defaults_to_instant_in_python(self) -> None:
+        """Direct construction (no Composer) still has a working cursor."""
+        from spectragent.core.capabilities.browser.input import InstantTrajectory
+
+        assert isinstance(BrowserCapability().mouse_trajectory, InstantTrajectory)

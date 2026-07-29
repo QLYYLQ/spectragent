@@ -5,10 +5,17 @@ Hooks declare their method interceptions via ``__intercepts__`` (a list of
 declarations at runtime to wrap target object methods.
 
 See docs/execution_dag.md M04 for the registrar design.
+
+.. note::
+   This module deliberately does **not** use ``from __future__ import
+   annotations``, for the same reason ``capabilities/_registrar.py``
+   doesn't: every ``Annotated[...]`` a hook declares must stay a real
+   object so the dataclass-generated ``__init__`` of a subclass (whose
+   ``__globals__`` belong to *its* module) carries a resolvable
+   annotation for conscribe's config extractor.
 """
 
-from __future__ import annotations
-
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from conscribe import create_registrar
@@ -24,8 +31,20 @@ HookRegistrar = create_registrar(
 )
 
 
+@dataclass
 class HookBase(metaclass=HookRegistrar.Meta):
     """Concrete base for all hook implementations.
+
+    A ``@dataclass``, like every other registrar base in this package
+    (actions, capabilities, agents, loaders, evaluators). That is what
+    makes a class-level ``Annotated[...]`` declaration on a hook a real
+    ``__init__`` parameter, and therefore a field conscribe emits into
+    the generated per-key config model. Before this, hooks were the one
+    layer that hand-rolled ``__init__(self, **kwargs)``: conscribe reads
+    ``inspect.signature(cls.__init__)``, found no named parameter, and
+    emitted a discriminator-only model with ``extra="forbid"`` — so
+    ``TraceWriter.trace_dir`` was not merely ignored from YAML, it was a
+    hard validation error.
 
     Subclasses must set:
     - ``__registry_key__``: conscribe key (e.g. ``"trace_writer"``)
@@ -36,13 +55,20 @@ class HookBase(metaclass=HookRegistrar.Meta):
     - ``on_run_start/end/error`` lifecycle callbacks
     - Handler methods named ``{advice}_{method}`` matching ``__intercepts__``
 
+    A subclass that carries config or mutable state must decorate itself
+    with ``@dataclass`` too, declare its knobs as ``Annotated`` fields
+    and its internals as ``field(init=False, repr=False)``.
+
     Example::
 
+        @dataclass
         class MetricsHook(HookBase):
             __registry_key__ = "metrics"
             __intercepts__ = [
                 Intercept("ainvoke", role="llm", advice="after"),
             ]
+
+            window: Annotated[int, Field(description="Rolling window")] = 10
 
             @property
             def blocking(self) -> bool:

@@ -9,9 +9,19 @@ Mixin must come **before** ``ActionBase`` in the subclass MRO so the
 dataclass decorator merges fields with mixin fields appearing first;
 since ``post_delay_ms`` has a default, this also keeps any required
 fields the action itself declares from being shadowed.
-"""
 
-from __future__ import annotations
+.. note::
+   This module deliberately does **not** use ``from __future__ import
+   annotations``. ``post_delay_ms`` must stay a real ``Annotated[...]``
+   object: the subclass's dataclass-generated ``__init__`` carries the
+   *subclass module's* ``__globals__``, and most action modules do not
+   import ``PydanticField``. Under PEP 563 the annotation survives as the
+   string ``"Annotated[int, PydanticField(...)]"``, type-hint resolution
+   fails there, and ``__config_annotated_only__`` silently drops the knob
+   from the generated config — which is exactly how six actions lost
+   ``post_delay_ms`` from YAML while ``navigate`` (whose own module
+   happens to import ``PydanticField``) kept it.
+"""
 
 import asyncio
 from dataclasses import dataclass
@@ -26,9 +36,14 @@ class SettleableAction:
 
     After the action's primary side-effect resolves (i.e. after
     ``await event``), the action awaits ``post_delay_ms`` extra
-    milliseconds before returning success. Configured via
-    :attr:`BrowserCapability.action_overrides`, e.g.
-    ``{"browser.navigate": {"post_delay_ms": 6000}}``.
+    milliseconds before returning success. Configured per action in the
+    capability's ``actions:`` list::
+
+        capabilities:
+          - capability_id: browser
+            actions:
+              - action_id: browser.navigate
+                post_delay_ms: 6000
 
     Use cases:
       - Sites that fire login modals via ``setTimeout`` after ``load``.

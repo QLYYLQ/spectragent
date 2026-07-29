@@ -190,8 +190,7 @@ class _CrashAfterLLMLoop(_StallAfterLLMLoop):
 
 
 def _run_with_hooks(tmp_path, *, plan, loop=None, hooks=None):
-    writer = TraceWriter()
-    writer.trace_dir = str(tmp_path / "traces")
+    writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
     # Declared in the order that used to zero out every result.json.
     hook_list = hooks if hooks is not None else [writer, MetricsCollector()]
     run = make_run(

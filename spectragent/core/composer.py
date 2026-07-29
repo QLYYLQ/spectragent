@@ -549,11 +549,24 @@ def _is_populated(value: Any) -> bool:
 
 
 def _init_param_names(cls: type) -> set[str]:
+    """Names ``cls.__init__`` accepts *by name*.
+
+    ``*args`` / ``**kwargs`` are excluded. They name no option, so they
+    claim none — the same rule ``_setup_keys`` applies to ``setup()``.
+    Counting them let a ``def __init__(self, **kwargs)`` class advertise
+    a parameter literally called ``kwargs``, which is never what a config
+    field is called, while the field the config *did* carry fell through
+    to the "no matching __init__ parameter" error.
+    """
     try:
         sig = inspect.signature(cls.__init__)
     except (ValueError, TypeError):
         return set()
-    return {p.name for p in sig.parameters.values() if p.name != "self"}
+    return {
+        p.name
+        for p in sig.parameters.values()
+        if p.name != "self" and p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)
+    }
 
 
 def _safe_type_hints(cls: type) -> dict[str, Any]:

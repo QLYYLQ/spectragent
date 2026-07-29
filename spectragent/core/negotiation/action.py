@@ -17,7 +17,15 @@ from spectragent.core.negotiation.engine import negotiate
 
 
 class IncompatibleActionError(Exception):
-    """Raised when required actions cannot be satisfied by the environment."""
+    """Raised when required actions cannot be satisfied by the environment.
+
+    The most common cause is an *ablated* capability: a YAML ``actions:``
+    list narrows which actions the capability instantiates, and the agent
+    requires one that was left out. That is the intended behaviour — an
+    ablation that removes a required action must fail at negotiation, not
+    silently advertise a smaller toolset to the model — so the message
+    names the narrowing explicitly.
+    """
 
     def __init__(self, required: set[str], provided: set[str]) -> None:
         missing = required - provided
@@ -25,7 +33,12 @@ class IncompatibleActionError(Exception):
             f"Required actions not provided by environment. "
             f"Missing: {sorted(missing)}. "
             f"Environment provides: {sorted(provided)}. "
-            f"Required: {sorted(required)}."
+            f"Required: {sorted(required)}. "
+            f"If a capability declares an ``actions:`` list in YAML, that "
+            f"list is an ablation — only the actions it names are "
+            f"instantiated. Add the missing action(s) to that list, or "
+            f"drop the list entirely to provide everything the "
+            f"capability's __wiring__ offers."
         )
         self.missing = missing
         self.provided = provided

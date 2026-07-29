@@ -61,6 +61,36 @@ environment:
         viewport_width: 1280
         viewport_height: 720
 
+        # How the cursor moves. A wired receptor, so the chosen strategy
+        # arrives as a constructed instance carrying its own knobs —
+        # ``windmouse`` takes ``gravity`` / ``wind`` / ``seed``,
+        # ``bezier`` its control-point spread. ``instant`` is the no-op
+        # single-jump strategy and is what runs whenever
+        # ``humanize_mouse`` is false, which is the default.
+        mouse_trajectory:
+          trajectory_type: instant
+
+        # Per-action behaviour lives on the action instance, so this list
+        # is where you tune it. Every entry is validated against that
+        # action's own config model, so a typo'd knob fails here rather
+        # than at the first LLM call.
+        #
+        # It is also an *ablation* switch: only the actions named here are
+        # instantiated, advertised to the model and executable. Omit the
+        # block entirely — as this file does — to get all fourteen actions
+        # the capability's __wiring__ offers. Narrow it and any agent that
+        # requires a dropped action fails action negotiation, by design.
+        #
+        # actions:
+        #   - action_id: browser.navigate
+        #     wait_until: networkidle
+        #     post_delay_ms: 1500
+        #   - action_id: browser.scroll
+        #     default_amount: 600
+        #   - action_id: browser.click
+        #   - action_id: browser.type
+        #   - action_id: browser.done
+
         # Execution-layer backend (IoC injection). Switch backend by
         # editing this block only — every other section stays identical.
         backend:
@@ -80,11 +110,10 @@ environment:
 # them here is what makes a *direct* run (demo_yaml_compose.py, or any
 # AgentRuntime.execute caller) recordable too.
 #
-# ``trace_dir`` is deliberately absent: TraceWriter declares it as an
-# Annotated field, but conscribe drops receptors inherited by a class whose
-# __init__ takes no named parameters, so the generated TraceWriterHookConfig
-# carries only ``hook_id``. Traces land in ./traces/<run_id> relative to the
-# working directory until that is fixed upstream.
+# ``trace_dir`` is the root every run's WAL directory is created under:
+# traces land in ``<trace_dir>/<run_id>``. Relative paths resolve against
+# the process working directory.
 hook:
   - hook_id: trace_writer
+    trace_dir: traces
   - hook_id: metrics

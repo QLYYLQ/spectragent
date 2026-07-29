@@ -77,3 +77,48 @@ class TestHookRegistration:
 
         assert len(IntHook.__intercepts__) == 2
         HookRegistrar.unregister("test_int_hook")
+
+
+class TestHookConfigIsExtractable:
+    """A hook's ``Annotated`` knobs must survive into the generated config.
+
+    ``HookBase`` was the framework's one non-dataclass registrar base, so
+    hooks hand-rolled ``__init__(self, **kwargs)``. conscribe reads
+    ``inspect.signature(cls.__init__)``, found no named parameter and
+    emitted a discriminator-only model with ``extra="forbid"`` — putting
+    the knob in YAML was a hard ``extra_forbidden`` validation error, and
+    passing it to the constructor was a ``TypeError`` from
+    ``object.__init__``.
+    """
+
+    def test_annotated_field_becomes_a_config_field(self) -> None:
+        from dataclasses import dataclass, field
+        from typing import Annotated
+
+        from conscribe.config.extractor import extract_config_schema
+        from pydantic import Field
+
+        @dataclass
+        class KnobHook(HookBase):
+            __registry_key__ = "test_knob_hook"
+
+            where: Annotated[str, Field(description="Where to write")] = "here"
+            _state: list = field(default_factory=list, init=False, repr=False)
+
+        try:
+            schema = extract_config_schema(KnobHook)
+            assert schema is not None
+            assert "where" in schema.model_fields
+            # ...and the constructor actually accepts it.
+            assert KnobHook(where="/tmp/x").where == "/tmp/x"
+            assert KnobHook()._state == []
+        finally:
+            HookRegistrar.unregister("test_knob_hook")
+
+    def test_trace_writer_exposes_trace_dir(self) -> None:
+        from spectragent.generated._composed import TraceWriterHookConfig
+
+        assert "trace_dir" in TraceWriterHookConfig.model_fields
+        assert (
+            TraceWriterHookConfig(trace_dir="/tmp/t").trace_dir == "/tmp/t"
+        )
