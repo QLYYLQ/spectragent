@@ -32,7 +32,7 @@ agent:
     agent_loop:
       loop_id: react
       max_steps: 30
-      max_actions_per_step: 1
+      max_actions_per_step: 3
 
     llm:
       model_type: openai
@@ -71,3 +71,20 @@ environment:
           no_sandbox: false
           mute_audio: true
           startup_url: about:blank
+
+# Cross-cutting hooks, woven onto agent/env/llm by core/aop. Without a
+# ``trace_writer`` entry a run leaves nothing on disk, which makes "Record
+# Once, Evaluate Many" unreachable from this file — evaluators read a
+# RunTrace, not in-memory state. ``spectragent-bench`` installs its own
+# hooks and discovers the trace by duck-typing ``run_dir``, so declaring
+# them here is what makes a *direct* run (demo_yaml_compose.py, or any
+# AgentRuntime.execute caller) recordable too.
+#
+# ``trace_dir`` is deliberately absent: TraceWriter declares it as an
+# Annotated field, but conscribe drops receptors inherited by a class whose
+# __init__ takes no named parameters, so the generated TraceWriterHookConfig
+# carries only ``hook_id``. Traces land in ./traces/<run_id> relative to the
+# working directory until that is fixed upstream.
+hook:
+  - hook_id: trace_writer
+  - hook_id: metrics

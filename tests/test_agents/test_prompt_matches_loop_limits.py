@@ -1,8 +1,8 @@
 """The prompt must advertise exactly what the loop executes — §6.1.5.
 
-The shipped config sets ``max_actions_per_step: 1`` on the loop while
-``BrowserUseAgent`` used to carry its own default of 3 and render *that*
-into the system prompt. The model was told it could emit three actions,
+The loop owns ``max_actions_per_step`` while ``BrowserUseAgent`` used to
+carry its own default and render *that* into the system prompt. The
+model was told it could emit more actions than the loop would run,
 the loop dropped everything past the first with no log and no feedback
 message, and the model re-issued steps it believed had run.
 
@@ -57,9 +57,10 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt() -> None:
     """End-to-end through ``execute()``: real agent, real loop, real runtime.
 
     The loop's limit is set to a value the agent would never pick on its
-    own (its own default is 1), so deleting ``_loop_policy_for`` — or its
-    call site in ``execute()`` — makes the prompt advertise 1 while the
-    loop permits 3, and this fails.
+    own (its own default is 1) and that the shipped config does not already
+    name, so deleting ``_loop_policy_for`` — or its call site in
+    ``execute()`` — makes the prompt advertise 1 while the loop permits the
+    probe value, and this fails.
     """
     composer = ConfigComposer(registrars=_collect_registrars())
     raw = Path("configs/browser_use_local.yaml").read_text()
@@ -68,15 +69,21 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt() -> None:
     agent_id = run.ids("agent")[0]
     agent = run.instance("agent", agent_id)
     loop = agent.agent_loop
-    assert loop.max_actions_per_step == 1  # what the shipped config asks for
+    shipped = loop.max_actions_per_step  # whatever the shipped config asks for
 
     # The agent must not own a second copy of the limit.
     assert not hasattr(agent, "max_actions_per_step")
     assert not hasattr(agent, "max_steps")
 
     # Diverge from every default in play so only the runtime hand-off can
-    # produce the expected number.
-    loop.max_actions_per_step = 3
+    # produce the expected number: the probe must differ from the agent's own
+    # fallback of 1 *and* from the shipped value, or the override below is a
+    # no-op and a broken hand-off would still read as correct. Deriving it
+    # keeps the gate honest when the shipped config is retuned — pinning the
+    # shipped value to a literal made an ordinary config edit look like a
+    # test failure.
+    probe = max(shipped, 1) + 2
+    loop.max_actions_per_step = probe
 
     memory = _RecordingMemory()
     agent.memory = memory
@@ -98,7 +105,7 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt() -> None:
 
     system_prompt = _message_text(memory.messages[0])
     advertised = {int(n) for n in re.findall(r"maximum of (\d+) actions", system_prompt)}
-    assert advertised == {3}, (
+    assert advertised == {probe}, (
         f"prompt advertises {advertised}, loop enforces {loop.max_actions_per_step} "
         f"— AgentRuntime is not carrying the loop's limit to the agent"
     )
