@@ -2,18 +2,37 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from spectragent.agents._output_models import SkyvernActionItem, SkyvernOutput
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.skyvern import SkyvernAgent
+from spectragent.core.capabilities.browser.dom.models import DOMState
 from spectragent.core.llm.messages import (
     BaseMessage,
     SystemMessage,
     UserMessage,
 )
 from spectragent.core.loops import ReactLoop
+from spectragent.schemas.action import ActionDescriptor
+
+#: Stand-in for a negotiated action set. Deliberately *not* empty: the
+#: old suite passed ``action_descriptors=[]`` everywhere, which is why a
+#: prompt that dropped the action space on the floor stayed green.
+_DESCRIPTORS = [
+    ActionDescriptor(
+        name="browser.click",
+        description="Click a DOM element by its index in the selector map.",
+        params={"index": "int -- element index from selector_map"},
+    ),
+    ActionDescriptor(
+        name="browser.type",
+        description="Type text into a DOM element.",
+        params={"index": "int -- element index", "text": "str"},
+    ),
+]
 
 
 @dataclass
@@ -118,7 +137,7 @@ class TestPrepare:
     def test_returns_jinja_rendered_system_prompt_seed(self) -> None:
         agent = _make_agent()
         seed = agent.prepare(
-            task="Find the cheapest flight", action_descriptors=[]
+            task="Find the cheapest flight", action_descriptors=_DESCRIPTORS
         )
         assert isinstance(seed, list)
         assert len(seed) == 1
@@ -127,6 +146,55 @@ class TestPrepare:
         assert "Find the cheapest flight" in seed[0].content
         # Pure builder — agent memory remains untouched.
         assert agent.memory.get_messages() == []
+
+    def test_renders_the_negotiated_action_set(self) -> None:
+        """The whole point of the action-space slot.
+
+        The old template referenced eight variables the agent never
+        supplied and ignored ``action_space`` entirely, so the negotiated
+        action set never reached the model. Passing descriptors and
+        finding nothing is the regression.
+        """
+        agent = _make_agent()
+        seed = agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        text = seed[0].content
+        assert isinstance(text, str)
+        for descriptor in _DESCRIPTORS:
+            assert descriptor.name in text
+            assert descriptor.description in text
+
+    def test_renders_the_loops_action_budget(self) -> None:
+        agent = _make_agent()
+        seed = agent.prepare(
+            task="t", action_descriptors=_DESCRIPTORS, max_actions_per_step=4
+        )
+        text = seed[0].content
+        assert isinstance(text, str)
+        assert {int(n) for n in re.findall(r"maximum of (\d+) actions", text)} == {4}
+
+    def test_optional_config_blocks_render_only_when_set(self) -> None:
+        """Every remaining knob is consumed by the template."""
+        off = _make_agent().prepare(task="t", action_descriptors=[])[0].content
+        assert isinstance(off, str)
+        assert "PAY ONLY WITH THE SAVED CARD" not in off
+        assert "GIVE UP AFTER A PAYWALL" not in off
+        assert "verification code" not in off
+
+        on = (
+            _make_agent(
+                complete_criterion="PAY ONLY WITH THE SAVED CARD",
+                terminate_criterion="GIVE UP AFTER A PAYWALL",
+                verification_code_check=True,
+                navigation_payload="username=bob",
+            )
+            .prepare(task="t", action_descriptors=[])[0]
+            .content
+        )
+        assert isinstance(on, str)
+        assert "PAY ONLY WITH THE SAVED CARD" in on
+        assert "GIVE UP AFTER A PAYWALL" in on
+        assert "verification code" in on
+        assert "username=bob" in on
 
     def test_resets_action_history(self) -> None:
         agent = _make_agent()
@@ -137,10 +205,22 @@ class TestPrepare:
 
 class TestBuildReactPrompt:
     def test_includes_dom_text(self) -> None:
+        """A real ``DOMState``, not a string.
+
+        ``DOMObs.element_tree`` carries a ``DOMState``; the form the model
+        is meant to read is its ``serialized_dom``. The old fixture passed
+        a plain ``str``, which made ``str(element_tree)`` a no-op and hid
+        the fact that a real run got a dataclass repr — dozens of
+        ``DOMElementNode(tag_name=...)`` fields that the 10k truncation
+        ate long before the first ``[index]``.
+        """
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        state = DOMState(
+            serialized_dom="[1]<button>Submit</button>\n[2]<input placeholder='q'/>",
+        )
         obs = _FakeObservation(
-            dom=_FakeDOM(element_tree="<element>x</element>"),
+            dom=_FakeDOM(element_tree=state),
             browser_meta=_FakeBrowserMeta(
                 url="https://www.example.com", page_title="Ex"
             ),
@@ -152,7 +232,74 @@ class TestBuildReactPrompt:
         content = messages[0].content
         assert isinstance(content, str)
         assert "https://www.example.com" in content
-        assert "<element>x</element>" in content
+        assert "[1]<button>Submit</button>" in content
+        assert "[2]<input placeholder='q'/>" in content
+        # The dataclass repr must not be what the model reads.
+        assert "DOMElementNode(" not in content
+        assert "serialized_dom=" not in content
+
+    def test_action_history_is_rendered_per_step_not_in_the_system_prompt(
+        self,
+    ) -> None:
+        """The window follows the step, because it changes every step.
+
+        ``prepare()`` is a pure builder called once per run, so a history
+        window rendered into the system prompt is frozen at "empty"
+        forever. It belongs next to ``<user_request>`` / ``<step_info>``.
+        """
+        agent = _make_agent(action_history_window=2)
+        seed = agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        assert isinstance(seed[0].content, str)
+        assert "<action_history>" not in seed[0].content
+
+        obs = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
+        first = agent.build_react_prompt(obs)[0].content
+        assert isinstance(first, str)
+        assert "<action_history>\n(no actions yet)\n</action_history>" in first
+
+        for i in range(3):
+            agent.parse_react_output(
+                SkyvernOutput(
+                    actions=[
+                        SkyvernActionItem(
+                            action_type="browser.click", index=i, reasoning="r"
+                        )
+                    ]
+                )
+            )
+        later = agent.build_react_prompt(obs)[0].content
+        assert isinstance(later, str)
+        history = later.split("<action_history>\n")[1].split("\n</action_history>")[0]
+        # window=2 → the two most recent actions, oldest dropped.
+        assert history.count("browser.click(") == 2
+        assert "'index': 0" not in history
+        assert "'index': 1" in history
+        assert "'index': 2" in history
+
+    def test_a_zero_window_renders_nothing_not_everything(self) -> None:
+        """``lst[-0:]`` is ``lst[0:]``.
+
+        Zero is the obvious YAML spelling of "no history", and the naive
+        slice turns it into "the whole run" — the opposite of what was
+        asked for, and unbounded prompt growth.
+        """
+        agent = _make_agent(action_history_window=0)
+        agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        for i in range(3):
+            agent.parse_react_output(
+                SkyvernOutput(
+                    actions=[
+                        SkyvernActionItem(
+                            action_type="browser.click", index=i, reasoning="r"
+                        )
+                    ]
+                )
+            )
+        content = agent.build_react_prompt(
+            _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
+        )[0].content
+        assert isinstance(content, str)
+        assert "browser.click(" not in content
 
     def test_user_request_prefix(self) -> None:
         agent = _make_agent()
@@ -197,8 +344,8 @@ class TestParseReactOutput:
         out = SkyvernOutput(
             actions=[
                 SkyvernActionItem(
-                    action_type="click",
-                    element_id="btn-submit",
+                    action_type="browser.click",
+                    index=7,
                     reasoning="submit form",
                 ),
             ]
@@ -206,8 +353,81 @@ class TestParseReactOutput:
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
         assert actions[0].name == "browser.click"
-        assert actions[0].params["element_id"] == "btn-submit"
+        # ``index``, not ``element_id``: BrowserCapability's selector_map
+        # is index-keyed and ``ClickAction.execute`` reads params["index"].
+        assert actions[0].params["index"] == 7
+        assert "element_id" not in actions[0].params
         assert actions[0].params["reasoning"] == "submit form"
+
+    def test_carries_every_param_the_advertised_actions_need(self) -> None:
+        """scroll needs ``direction``, send_keys needs ``keys``.
+
+        Both are in ``__wiring__``'s optional set, so the prompt
+        advertises them; an output model that cannot express their
+        required params turns an advertised action into a guaranteed
+        ``Missing param`` at execute time.
+        """
+        agent = _make_agent()
+        actions = agent.parse_react_output(
+            SkyvernOutput(
+                actions=[
+                    SkyvernActionItem(
+                        action_type="browser.scroll", direction="up", reasoning="r"
+                    ),
+                    SkyvernActionItem(
+                        action_type="browser.send_keys", keys="Enter", reasoning="r"
+                    ),
+                    SkyvernActionItem(
+                        action_type="browser.type",
+                        index=3,
+                        text="hello",
+                        reasoning="r",
+                    ),
+                ]
+            )
+        )
+        assert actions[0].params["direction"] == "up"
+        assert actions[1].params["keys"] == "Enter"
+        assert actions[2].params == {"reasoning": "r", "index": 3, "text": "hello"}
+
+    def test_done_inside_actions_keeps_the_answer(self) -> None:
+        """The template says done is a top-level flag; models improvise.
+
+        ``browser.done`` is in the negotiated set, so ``guarded_act``
+        accepts it and the run ends either way — the risk is ending with
+        an empty answer.
+        """
+        agent = _make_agent()
+        actions = agent.parse_react_output(
+            SkyvernOutput(
+                actions=[
+                    SkyvernActionItem(
+                        action_type="browser.done",
+                        text="42 dollars",
+                        reasoning="found it",
+                    )
+                ],
+                success=False,
+            )
+        )
+        assert len(actions) == 1
+        assert actions[0].name == "browser.done"
+        assert actions[0].params["extracted_content"] == "42 dollars"
+        assert actions[0].params["success"] is False
+
+    def test_is_done_with_success_false_reports_failure(self) -> None:
+        agent = _make_agent()
+        actions = agent.parse_react_output(
+            SkyvernOutput(
+                actions=[],
+                is_done=True,
+                success=False,
+                extracted_content="hit a paywall",
+            )
+        )
+        assert actions[0].name == "browser.done"
+        assert actions[0].params["success"] is False
+        assert actions[0].params["extracted_content"] == "hit a paywall"
 
     def test_is_done_emits_only_done_action_not_mixed(self) -> None:
         # H2 regression: when ``is_done`` is set, Skyvern previously
@@ -219,8 +439,8 @@ class TestParseReactOutput:
         out = SkyvernOutput(
             actions=[
                 SkyvernActionItem(
-                    action_type="click",
-                    element_id="btn",
+                    action_type="browser.click",
+                    index=1,
                     reasoning="x",
                 )
             ],
@@ -236,14 +456,12 @@ class TestParseReactOutput:
         assert "text" not in actions[0].params
 
     def test_action_history_populated_for_prompt_window(self) -> None:
-        # M13-Rev: Skyvern's ``input_text`` is translated to the canonical
-        # ``type`` action name before it lands in the history window.
         agent = _make_agent()
         out = SkyvernOutput(
             actions=[
                 SkyvernActionItem(
-                    action_type="input_text",
-                    element_id="search",
+                    action_type="browser.type",
+                    index=4,
                     text="hello",
                     reasoning="search",
                 )
@@ -252,8 +470,41 @@ class TestParseReactOutput:
         agent.parse_react_output(out)
         assert any(entry.startswith("browser.type(") for entry in agent._action_history)
 
+    def test_bare_name_gets_the_capability_prefix(self) -> None:
+        """The template teaches ``browser.click``; a bare ``click`` still
+        resolves, because the un-prefixed spelling is the same vocabulary
+        in a single-capability environment."""
+        agent = _make_agent()
+        actions = agent.parse_react_output(
+            SkyvernOutput(
+                actions=[
+                    SkyvernActionItem(action_type="click", index=1, reasoning="r")
+                ]
+            )
+        )
+        assert actions[0].name == "browser.click"
+
 
 class TestOutputModel:
     def test_returns_skyvern_output(self) -> None:
         agent = _make_agent()
         assert agent.get_react_output_model() is SkyvernOutput
+
+    def test_the_shape_survives_a_strict_provider_schema(self) -> None:
+        """Skyvern's whole advantage is a closed, provider-enforceable shape.
+
+        ``SkyvernOutput`` is flat scalars all the way down, so the
+        OpenAI-style ``strict: true`` path can constrain it for real —
+        unlike an open ``{"<verb>": {...}}`` map, which JSON Schema cannot
+        narrow. Widening the model with a free-form object would silently
+        drop it back to "the provider validates nothing".
+        """
+        from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+
+        schema = SchemaOptimizer.create_optimized_json_schema(
+            SkyvernOutput, strict=True
+        )
+        assert SchemaOptimizer.is_strict_compatible(schema)
+        item = schema["properties"]["actions"]["items"]
+        assert item["additionalProperties"] is False
+        assert set(item["required"]) == set(SkyvernActionItem.model_fields)

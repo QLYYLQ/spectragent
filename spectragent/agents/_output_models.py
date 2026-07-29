@@ -81,14 +81,41 @@ class UITarsOutput(BaseModel):
 
 
 # ── Skyvern ────────────────────────────────────────────────────
+#
+# Shape mirrors spectragent/prompts/browser/agents/skyvern/system_prompt.md,
+# which is the only template SkyvernAgent loads. The two are pinned together
+# by tests/test_agents/test_skyvern_prompt_action_vocabulary.py: every verb
+# the template teaches has to survive ``parse_react_output`` and be accepted
+# by ``guarded_act``.
+#
+# The per-item fields are exactly the union of the params the negotiated
+# browser actions need and cannot default: ``index`` addresses the element
+# (BrowserCapability's selector_map is index-keyed — see
+# ``actions/_common.resolve_index_to_backend_node_id``), ``text`` types or
+# selects, ``direction`` steers a scroll, ``keys`` drives send_keys. Anything
+# else the capability exposes has a usable default, so widening this model is
+# a decision to make deliberately, not a reflex.
 
 
 class SkyvernActionItem(BaseModel):
     """A single action within a Skyvern step."""
 
-    action_type: str = Field(description="Action type")
-    element_id: str | None = Field(default=None, description="Target element ID from element tree")
-    text: str | None = Field(default=None, description="Text to type (if applicable)")
+    action_type: str = Field(
+        description="Canonical action name, e.g. 'browser.click'"
+    )
+    index: int | None = Field(
+        default=None,
+        description="Target element index from the element tree; null if the action takes no element",
+    )
+    text: str | None = Field(
+        default=None, description="Text to type, or visible option label to select"
+    )
+    direction: str | None = Field(
+        default=None, description="Scroll direction: up | down | left | right"
+    )
+    keys: str | None = Field(
+        default=None, description="Keyboard keys to send, e.g. 'Enter'"
+    )
     reasoning: str = Field(default="", description="Why this action was chosen")
 
 
@@ -96,7 +123,17 @@ class SkyvernOutput(BaseModel):
     """Structured output for SkyvernAgent."""
 
     actions: list[SkyvernActionItem] = Field(
-        description="One or more actions to execute"
+        description="Actions to execute this step; empty when is_done is true"
     )
-    is_done: bool = Field(default=False, description="Whether the task is complete")
-    extracted_content: str | None = Field(default=None, description="Extracted answer if done")
+    is_done: bool = Field(
+        default=False,
+        description="True to end the run — this is how browser.done is invoked",
+    )
+    success: bool = Field(
+        default=True,
+        description="Whether the goal was reached; only meaningful when is_done is true",
+    )
+    extracted_content: str | None = Field(
+        default=None,
+        description="Final answer / extracted data when is_done is true, or the reason for giving up",
+    )

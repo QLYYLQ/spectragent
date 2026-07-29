@@ -1,8 +1,16 @@
 """SkyvernAgent — element-tree based agent with action history window.
 
 M14 refactor: Skyvern is now a passive domain-knowledge provider.
-Jinja2 prompt templating, action_history_window, and TOTP/2FA support
-remain as agent config; the runtime/loop drive execution.
+Jinja2 prompt templating and the action-history window remain as agent
+config; the runtime/loop drive execution.
+
+The agent owns exactly one template,
+``prompts/browser/agents/skyvern/system_prompt.md``. It is not upstream
+Skyvern's: it teaches the JSON shape :class:`SkyvernOutput` declares and
+the action names this framework's ``guarded_act`` will accept, and it
+renders the *negotiated* action set rather than a hard-coded verb list.
+``tests/test_agents/test_skyvern_prompt_action_vocabulary.py`` pins the
+two together.
 """
 
 from __future__ import annotations
@@ -48,9 +56,10 @@ class SkyvernAgent(AgentBase):
                 "loop.history",
             ],
         ),
-        # Skyvern's element-tree driven vocabulary maps to the canonical
-        # BrowserCapability action names (``input_text`` is translated to
-        # ``type`` inside ``parse_react_output``).
+        # The canonical BrowserCapability action names *are* Skyvern's
+        # vocabulary: ``prepare()`` renders these descriptors into the
+        # system prompt verbatim, so there is no second verb list to keep
+        # in sync and no translation table to drift.
         "action": (
             "action",
             ["browser.click", "browser.type", "browser.done"],
@@ -67,32 +76,65 @@ class SkyvernAgent(AgentBase):
     }
 
     # ── config (conscribe visible) ─────────────────────────────
+    # ``action_history_window`` counts *actions*, not steps, and it is
+    # spent in the per-step user message — not the system prompt. The
+    # system prompt is built once, inside ``prepare()``; rendering a
+    # window that grows each step into it would mean re-rendering it
+    # every step, which the pure-builder ``prepare()`` contract in
+    # ``core/runtime.py`` does not allow.
     action_history_window: Annotated[
-        int, PydanticField(description="Number of recent actions to include in prompt")
+        int,
+        PydanticField(
+            description=(
+                "Number of most recent actions replayed in each step's "
+                "user message"
+            )
+        ),
     ] = 5
-    enable_totp: Annotated[bool, PydanticField(description="Enable TOTP 2FA support")] = False
     prompt_template: Annotated[
         str, PydanticField(description="Skyvern template name (without extension)")
-    ] = "extract-action"
+    ] = "system_prompt"
     navigation_payload: Annotated[
-        str | None, PydanticField(description="Navigation payload for task")
+        str | None,
+        PydanticField(
+            description=(
+                "User details the task needs (form values, credentials, "
+                "preferences); rendered as <user_details> in the system prompt"
+            )
+        ),
     ] = None
     complete_criterion: Annotated[
-        str | None, PydanticField(description="Criterion for task completion")
+        str | None,
+        PydanticField(
+            description=(
+                "Condition that must hold before the agent may finish with "
+                "success=true"
+            )
+        ),
     ] = None
     terminate_criterion: Annotated[
-        str | None, PydanticField(description="Criterion for task termination")
+        str | None,
+        PydanticField(
+            description="Condition on which the agent must give up (success=false)"
+        ),
     ] = None
     verification_code_check: Annotated[
-        bool, PydanticField(description="Enable verification code checking")
+        bool,
+        PydanticField(
+            description=(
+                "Tell the agent to give up when a page demands a verification "
+                "code it cannot obtain, instead of stalling"
+            )
+        ),
     ] = False
 
     # ── internal state ─────────────────────────────────────────
     # ``task`` reaches every step via ``obs.task.user_request`` (loop
     # fragment); the agent does not hold its own copy. ``_action_history``
-    # is kept agent-owned because Skyvern's system prompt template renders
-    # it via Jinja at prepare()-time, which is a different code path from
-    # the per-step user message.
+    # is agent-owned and per-run: ``prepare()`` clears it, every parsed
+    # step appends to it, and ``build_react_prompt`` renders the tail of
+    # it. It is what makes Skyvern's recency window a narrow list of the
+    # last N *actions* rather than the loop's full per-step transcript.
     _action_history: list[str] = field(default_factory=list, init=False, repr=False)
     _action_descriptors: list[ActionDescriptor] = field(
         default_factory=list, init=False, repr=False
@@ -131,17 +173,25 @@ class SkyvernAgent(AgentBase):
         self,
         task: str,
         action_descriptors: list[ActionDescriptor],
+        max_actions_per_step: int = 1,
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
 
-        Action history is non-memory state owned by the agent (rendered
-        into the Jinja system prompt via ``action_history_window``), so
-        the per-run reset still happens here. The per-step user message
-        gets task/step_info from observation fragments, not ``self``.
+        Action history is non-memory state owned by the agent, so the
+        per-run reset happens here; it is *rendered* per step, in
+        ``build_react_prompt``. The per-step user message gets
+        task/step_info from observation fragments, not ``self``.
+
+        ``max_actions_per_step`` comes from the Loop, which is what
+        actually truncates. ``SkyvernOutput.actions`` is a list, so
+        without it the prompt would invite a plan the loop silently cuts
+        short.
         """
         self._action_descriptors = list(action_descriptors)
         self._action_history.clear()
-        self._system_prompt_text = self._build_system_prompt(task, self._action_descriptors)
+        self._system_prompt_text = self._build_system_prompt(
+            task, self._action_descriptors, max_actions_per_step
+        )
         from spectragent.schemas.prompt import PromptRef, TextPrompt
 
         self._prompt_snapshot = TextPrompt(
@@ -159,6 +209,12 @@ class SkyvernAgent(AgentBase):
         when the loop provides it) so the LLM sees the task on every
         turn — the system prompt's task injection happens once at
         ``prepare()`` time and would otherwise drift out of context.
+
+        ``<action_history>`` lives here rather than in the system prompt
+        because it changes every step: the system prompt is built once,
+        by ``prepare()``, and re-rendering it per step would break that
+        contract. The template's "if the last step's actions did not move
+        the page, try something else" rule reads this block.
         """
         task = observation.task.user_request
         prefix_parts = [f"<user_request>\n{task}\n</user_request>"]
@@ -168,6 +224,9 @@ class SkyvernAgent(AgentBase):
                 f"<step_info>step {step_info.step}/{step_info.max_steps} "
                 f"(today={step_info.today})</step_info>"
             )
+        prefix_parts.append(
+            f"<action_history>\n{self._render_action_history()}\n</action_history>"
+        )
         body = "\n".join(prefix_parts) + "\n\n" + self._render_browser_state(observation)
         return [UserMessage(content=body, cache=True)]
 
@@ -180,33 +239,54 @@ class SkyvernAgent(AgentBase):
             # (the default). ``extracted_content`` flows straight into
             # ``DoneAction.execute`` — no renaming hack needed.
             if llm_output.is_done:
-                self._action_history.append("done")
-                return [
-                    Action(
-                        name="browser.done",
-                        params={
-                            "extracted_content": llm_output.extracted_content or "",
-                            "success": True,
-                        },
-                    )
-                ]
+                done = self._done_action(
+                    llm_output.extracted_content, llm_output.success
+                )
+                self._action_history.append(f"{done.name}({done.params})")
+                return [done]
 
             actions: list[Action] = []
             for item in llm_output.actions:
-                # Translate Skyvern's training vocabulary to the canonical
-                # fully-qualified BrowserCapability action names.
-                local = "type" if item.action_type == "input_text" else item.action_type
-                canonical_name = (
-                    local if "." in local else f"browser.{local}"
-                )
+                # The template teaches the negotiated action names
+                # verbatim, so this is an identity for well-formed
+                # output. The bare-name completion is kept for the
+                # single-capability spelling (``click`` →
+                # ``browser.click``); a name that is neither is left
+                # alone so ``guarded_act`` rejects it by name and the
+                # model gets the active set back as a correction signal.
+                local = item.action_type
+                canonical_name = local if "." in local else f"browser.{local}"
+
+                # ``browser.done`` is advertised like every other
+                # negotiated action but is invoked through the top-level
+                # fields. A model that writes it into ``actions`` anyway
+                # must not silently lose the answer.
+                if canonical_name == "browser.done":
+                    actions.append(
+                        self._done_action(
+                            item.text or llm_output.extracted_content,
+                            llm_output.success,
+                        )
+                    )
+                    continue
+
                 params: dict[str, Any] = {"reasoning": item.reasoning}
-                if item.element_id is not None:
-                    params["element_id"] = item.element_id
+                # ``index``, not ``element_id``: BrowserCapability's
+                # selector_map is index-keyed and every element-targeting
+                # action reads ``params["index"]``
+                # (``actions/_common.resolve_index_to_backend_node_id``).
+                if item.index is not None:
+                    params["index"] = item.index
                 if item.text is not None:
                     params["text"] = item.text
+                if item.direction is not None:
+                    params["direction"] = item.direction
+                if item.keys is not None:
+                    params["keys"] = item.keys
                 actions.append(Action(name=canonical_name, params=params))
 
-            # Track actions in the history window for the next prepare()
+            # Track actions in the window rendered by the next
+            # ``build_react_prompt``.
             for a in actions:
                 self._action_history.append(f"{a.name}({a.params})")
 
@@ -234,26 +314,72 @@ class SkyvernAgent(AgentBase):
 
     # ── private helpers ────────────────────────────────────────
 
-    def _build_system_prompt(self, task: str, action_space: list[ActionDescriptor]) -> str:
-        actions_text = "\n".join(
-            f"- {a.name}: {a.description} (params: {a.params})" for a in action_space
+    @staticmethod
+    def _done_action(extracted_content: str | None, success: bool) -> Action:
+        """The one place a terminal ``browser.done`` Action is built."""
+        return Action(
+            name="browser.done",
+            params={
+                "extracted_content": extracted_content or "",
+                "success": success,
+            },
         )
-        history_text = "\n".join(self._action_history[-self.action_history_window :]) or "(none)"
 
+    def _build_system_prompt(
+        self,
+        task: str,
+        action_space: list[ActionDescriptor],
+        max_actions_per_step: int = 1,
+    ) -> str:
         prompt_file = _PROMPT_DIR / f"{self.prompt_template}.md"
         self._prompt_path = str(prompt_file.relative_to(PROMPT_PATH))
         raw_template = prompt_file.read_text()
         template = jinja2.Template(raw_template)
         return template.render(
             navigation_goal=task,
-            action_space=actions_text,
-            action_history=history_text,
-            history_window=self.action_history_window,
+            action_space=self._render_action_list(action_space),
+            max_actions_per_step=max_actions_per_step,
             navigation_payload=self.navigation_payload or "",
             complete_criterion=self.complete_criterion or "",
             terminate_criterion=self.terminate_criterion or "",
             verification_code_check=self.verification_code_check,
         )
+
+    @staticmethod
+    def _render_action_list(descriptors: list[ActionDescriptor]) -> str:
+        """Render the *negotiated* action set as the prompt's vocabulary.
+
+        One line per descriptor::
+
+            - `browser.click(index: int -- element index)` — Click a DOM element.
+
+        The names are the canonical registry keys, which is exactly what
+        ``parse_react_output`` emits and ``guarded_act`` accepts, so the
+        prompt cannot advertise a verb the run would reject. Empty list
+        yields an empty string — only reachable before ``prepare()`` runs
+        or in a degenerate fixture.
+        """
+        lines: list[str] = []
+        for d in descriptors:
+            params_part = (
+                ", ".join(f"{k}: {v}" for k, v in d.params.items())
+                if d.params
+                else "no params"
+            )
+            lines.append(f"- `{d.name}({params_part})` — {d.description}")
+        return "\n".join(lines)
+
+    def _render_action_history(self) -> str:
+        """The last ``action_history_window`` actions, most recent last.
+
+        The ``<= 0`` branch is not defensive padding: ``lst[-0:]`` is
+        ``lst[0:]``, so a window of 0 — the obvious way to say "no
+        history" in YAML — would otherwise render the *entire* run.
+        """
+        if self.action_history_window <= 0:
+            return "(disabled)"
+        window = self._action_history[-self.action_history_window :]
+        return "\n".join(window) if window else "(no actions yet)"
 
     @staticmethod
     def _render_browser_state(observation: Any) -> str:
@@ -273,7 +399,11 @@ class SkyvernAgent(AgentBase):
         if dom is not None:
             element_tree = getattr(dom, "element_tree", None)
             if element_tree is not None:
-                dom_str = str(element_tree)
+                # ``element_tree`` is a ``DOMState``; the form the agent
+                # is meant to read is its ``serialized_dom`` field. Its
+                # bare repr is dataclass noise that the truncation below
+                # would eat long before any ``[index]`` appeared.
+                dom_str = getattr(element_tree, "serialized_dom", "") or str(element_tree)
                 if len(dom_str) > 10000:
                     dom_str = dom_str[:10000] + "\n... (truncated)"
                 parts.append(f"Element Tree:\n{dom_str}")
