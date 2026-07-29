@@ -618,7 +618,11 @@ class TestDeclaredConfigSurfaceIsReachable:
         with pytest.raises(IncompatibleActionError) as exc_info:
             runtime.prepare()
         message = str(exc_info.value)
-        assert "browser.done" in message
+        # Named the way the *agent* wrote it, which is the line the user
+        # has to edit; the ablation list it is missing from is quoted
+        # alongside, fully qualified.
+        assert "'done'" in message
+        assert "browser.click" in message
         assert "ablation" in message
 
     def test_mouse_trajectory_knobs_reach_the_strategy_instance(

@@ -32,6 +32,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     ClickElementEvent,
     DOMContentLoadedEvent,
     DoneEvent,
+    DragEvent,
     ExtractContentEvent,
     GoBackEvent,
     GoForwardEvent,
@@ -44,6 +45,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     ScrollEvent,
     SelectDropdownEvent,
     SendKeysEvent,
+    TypeAtCoordinateEvent,
     TypeTextEvent,
 )
 
@@ -320,6 +322,8 @@ class ActionWatchdog(BrowserWatchdog):
             (ClickElementEvent, self._on_click_element),
             (ClickCoordinateEvent, self._on_click_coordinate),
             (TypeTextEvent, self._on_type_text),
+            (TypeAtCoordinateEvent, self._on_type_at_coordinate),
+            (DragEvent, self._on_drag),
             (ScrollEvent, self._on_scroll),
             (NavigateToUrlEvent, self._on_navigate),
             (SendKeysEvent, self._on_send_keys),
@@ -421,32 +425,96 @@ class ActionWatchdog(BrowserWatchdog):
 
         await self._highlight_node(event.backend_node_id)
         await self._approach_node(event.backend_node_id)
-        sid = self._session_id
         try:
             # Focus the element.
-            await self._cdp.send("DOM.focus", {"backendNodeId": event.backend_node_id}, session_id=sid)
-
-            # Clear existing content if requested.
-            if event.clear:
-                await self._cdp.send("Input.dispatchKeyEvent", {
-                    "type": "keyDown", "key": "a", "commands": ["selectAll"],
-                }, session_id=sid)
-                await self._cdp.send("Input.dispatchKeyEvent", {
-                    "type": "keyUp", "key": "a",
-                }, session_id=sid)
-                await self._cdp.send("Input.dispatchKeyEvent", {
-                    "type": "keyDown", "key": "Backspace",
-                }, session_id=sid)
-                await self._cdp.send("Input.dispatchKeyEvent", {
-                    "type": "keyUp", "key": "Backspace",
-                }, session_id=sid)
-
-            # Bulk insert text (single CDP call, not per-character).
-            await self._cdp.send("Input.insertText", {"text": event.text}, session_id=sid)
-
-            return {"typed": True, "length": len(event.text)}
+            await self._cdp.send(
+                "DOM.focus",
+                {"backendNodeId": event.backend_node_id},
+                session_id=self._session_id,
+            )
+            return await self._insert_text_at_focus(event.text, event.clear)
         except Exception as e:
             logger.error("Type failed: %s", e)
+            return {"error": str(e)}
+
+    async def _on_type_at_coordinate(
+        self, event: TypeAtCoordinateEvent
+    ) -> dict[str, Any] | None:
+        """Type into whatever is at (x, y) — the vision-only path.
+
+        A vision-only agent negotiates no DOM fragment, so the
+        selector_map is empty and ``DOM.focus`` has nothing to aim at.
+        Clicking the coordinate is what moves focus; everything after it
+        (select-all + Backspace, ``Input.insertText``) is focus-relative
+        already and is shared verbatim with :meth:`_on_type_text`.
+        """
+        clicked = await self._click_at(
+            event.coordinate_x,
+            event.coordinate_y,
+            "left",
+            1,
+            label=f"({event.coordinate_x}, {event.coordinate_y})",
+        )
+        if "error" in clicked:
+            return clicked
+        try:
+            return await self._insert_text_at_focus(event.text, event.clear)
+        except Exception as e:
+            logger.error("Type at coordinate failed: %s", e)
+            return {"error": str(e)}
+
+    async def _insert_text_at_focus(
+        self, text: str, clear: bool
+    ) -> dict[str, Any]:
+        """Clear (optionally) and bulk-insert *text* into the focused node.
+
+        Every CDP call here targets the *current focus*, never a node id —
+        which is why the coordinate path can reuse it after a click.
+        """
+        sid = self._session_id
+        if clear:
+            await self._cdp.send("Input.dispatchKeyEvent", {
+                "type": "keyDown", "key": "a", "commands": ["selectAll"],
+            }, session_id=sid)
+            await self._cdp.send("Input.dispatchKeyEvent", {
+                "type": "keyUp", "key": "a",
+            }, session_id=sid)
+            await self._cdp.send("Input.dispatchKeyEvent", {
+                "type": "keyDown", "key": "Backspace",
+            }, session_id=sid)
+            await self._cdp.send("Input.dispatchKeyEvent", {
+                "type": "keyUp", "key": "Backspace",
+            }, session_id=sid)
+
+        # Bulk insert text (single CDP call, not per-character).
+        await self._cdp.send("Input.insertText", {"text": text}, session_id=sid)
+        return {"typed": True, "length": len(text)}
+
+    # -----------------------------------------------------------------------
+    # Drag
+    # -----------------------------------------------------------------------
+
+    async def _on_drag(self, event: DragEvent) -> dict[str, Any] | None:
+        """Press at the start coordinate, travel, release at the end.
+
+        The whole gesture belongs to :class:`HumanMouse` — press/move/
+        release with the run's trajectory strategy in between, so a
+        humanised run drags along a human path rather than teleporting.
+        """
+        try:
+            await self._mouse.drag(
+                event.start_x, event.start_y, event.end_x, event.end_y, event.button
+            )
+            return {
+                "dragged": True,
+                "from": [event.start_x, event.start_y],
+                "to": [event.end_x, event.end_y],
+            }
+        except Exception as e:
+            logger.error(
+                "Drag failed (%d, %d) -> (%d, %d): %s",
+                event.start_x, event.start_y, event.end_x, event.end_y, e,
+            )
             return {"error": str(e)}
 
     # -----------------------------------------------------------------------

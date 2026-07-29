@@ -58,33 +58,39 @@ class BrowserUseAgent(AgentBase):
 
     __registry_key__ = "browser_use"
 
-    # ── Cross-registry wiring (M14 + M13-Rev) ────────────────────
-    # Restricts compatible loops/capabilities/observations, and declares
-    # the canonical action names the agent can issue. Required actions
-    # are the ones every run needs (click/type/navigate/done); optional
-    # actions are the enhancement set — if a capability's ablation YAML
-    # drops them, the run still starts.
+    # ── Cross-registry wiring ────────────────────────────────────
+    # Restricts compatible loops and declares the domain verbs the agent
+    # can issue. Required actions are the ones every run needs
+    # (click/type/navigate/done); optional actions are the enhancement
+    # set — if a capability's ablation YAML drops them, the run still
+    # starts.
+    #
+    # Keys are capability-relative on purpose: ``click`` is what this
+    # agent knows how to do, ``browser.click`` is who executes it, and
+    # negotiation is the only place that can answer the second question.
+    # There is no ``capability`` entry for the same reason — naming one
+    # constrained the generated config to a provider without any runtime
+    # effect.
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react"]),
-        "capability": ("capability", ["browser"]),
         # DOM + screenshot are required, browser_meta is optional
         # (we use it for url/title context but can run without it).
         "observation": (
             "observation",
-            ["browser.dom", "browser.screenshot", "loop.task"],
-            ["browser.browser_meta", "loop.step_info", "loop.history"],
+            ["dom", "screenshot", "task"],
+            ["browser_meta", "step_info", "history"],
         ),
         "action": (
             "action",
-            ["browser.click", "browser.type", "browser.navigate", "browser.done"],
+            ["click", "type", "navigate", "done"],
             [
-                "browser.scroll",
-                "browser.send_keys",
-                "browser.extract_content",
-                "browser.go_back",
-                "browser.go_forward",
-                "browser.switch_tab",
-                "browser.wait",
+                "scroll",
+                "send_keys",
+                "extract_content",
+                "go_back",
+                "go_forward",
+                "switch_tab",
+                "wait",
             ],
         ),
         "llm": "llm",  # auto-discovery — any registered LLM

@@ -172,7 +172,11 @@ class WALWriter:
 
         Args:
             step: Step index.
-            fragment_key: Fragment field name (e.g. ``"screenshot"``).
+            fragment_key: Fully-qualified fragment key
+                (e.g. ``"browser.screenshot"``) — it is what carries the
+                producing capability into the filename, so an evaluator
+                can tell ``browser.screenshot`` from ``desktop.screenshot``
+                without opening the file.
             data: Payload. ``bytes`` is written verbatim.
             suffix: File extension including the dot. Defaults to
                 ``".png"`` for bytes (back-compatible) and ``".json"``

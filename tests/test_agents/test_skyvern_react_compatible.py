@@ -113,24 +113,31 @@ class TestWiring:
         wiring = SkyvernAgent.__wiring__
         assert wiring["agent_loop"] == ("agent_loop", ["react"])
 
-    def test_capability_wiring(self) -> None:
-        wiring = SkyvernAgent.__wiring__
-        assert wiring["capability"] == ("capability", ["browser"])
+    def test_no_capability_entry(self) -> None:
+        """Naming a capability constrained codegen and nothing else."""
+        assert "capability" not in SkyvernAgent.__wiring__
 
     def test_observation_wiring_dom_required_screenshot_optional(self) -> None:
-        # Skyvern is element-tree based: DOM is required + loop.task.
-        # Screenshot, browser_meta, loop.step_info, loop.history are optional.
+        # Skyvern is element-tree based: DOM is required + the task.
+        # Screenshot, browser_meta, step_info, history are optional.
         wiring = SkyvernAgent.__wiring__
         assert wiring["observation"] == (
             "observation",
-            ["browser.dom", "loop.task"],
+            ["dom", "task"],
             [
-                "browser.screenshot",
-                "browser.browser_meta",
-                "loop.step_info",
-                "loop.history",
+                "screenshot",
+                "browser_meta",
+                "step_info",
+                "history",
             ],
         )
+
+    def test_no_wiring_key_names_a_capability(self) -> None:
+        for entry in SkyvernAgent.__wiring__.values():
+            if isinstance(entry, str):
+                continue
+            for key_list in entry[1:]:
+                assert all("." not in k for k in key_list), key_list
 
 
 class TestPrepare:
@@ -411,7 +418,7 @@ class TestParseReactOutput:
             )
         )
         assert len(actions) == 1
-        assert actions[0].name == "browser.done"
+        assert actions[0].name == "done"
         assert actions[0].params["extracted_content"] == "42 dollars"
         assert actions[0].params["success"] is False
 
@@ -425,7 +432,7 @@ class TestParseReactOutput:
                 extracted_content="hit a paywall",
             )
         )
-        assert actions[0].name == "browser.done"
+        assert actions[0].name == "done"
         assert actions[0].params["success"] is False
         assert actions[0].params["extracted_content"] == "hit a paywall"
 
@@ -449,7 +456,7 @@ class TestParseReactOutput:
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
-        assert actions[0].name == "browser.done"
+        assert actions[0].name == "done"
         # C2 regression: ``extracted_content`` is the canonical key
         # (not ``text``).
         assert actions[0].params["extracted_content"] == "answer text"
@@ -470,10 +477,15 @@ class TestParseReactOutput:
         agent.parse_react_output(out)
         assert any(entry.startswith("browser.type(") for entry in agent._action_history)
 
-    def test_bare_name_gets_the_capability_prefix(self) -> None:
-        """The template teaches ``browser.click``; a bare ``click`` still
-        resolves, because the un-prefixed spelling is the same vocabulary
-        in a single-capability environment."""
+    def test_a_bare_name_is_left_for_the_guard_to_bind(self) -> None:
+        """The agent must not invent a provider for a bare verb.
+
+        The template teaches the negotiated (fully-qualified) names, but a
+        model that answers ``click`` gets that string forwarded verbatim:
+        ``build_guarded_act`` holds this run's short → fully-qualified
+        map, and it is the only component that can know whether ``click``
+        means ``browser.click`` or ``desktop.click``.
+        """
         agent = _make_agent()
         actions = agent.parse_react_output(
             SkyvernOutput(
@@ -482,7 +494,7 @@ class TestParseReactOutput:
                 ]
             )
         )
-        assert actions[0].name == "browser.click"
+        assert actions[0].name == "click"
 
 
 class TestOutputModel:

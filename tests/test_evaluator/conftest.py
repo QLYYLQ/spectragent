@@ -80,8 +80,9 @@ def write_trace(
     """Write one complete trace and return its directory.
 
     ``screenshots`` are persisted the way ``ScreenshotObs`` does it — a
-    real ``NNN_screenshot.png`` plus a JSON sidecar — so
-    ``RunTrace.screenshots`` finds them exactly as it would in production.
+    real ``NNN_browser.screenshot.png`` plus a JSON sidecar, named by the
+    fully-qualified fragment key — so ``RunTrace.screenshots`` finds them
+    exactly as it would in production.
     """
     wal = WALWriter(base_dir, run_id)
     wal.init_run(
@@ -103,13 +104,15 @@ def write_trace(
         if step < len(frames):
             data = frames[step]
             obs_files.append(
-                wal.write_observation(step, "screenshot", data, suffix=".png")
+                wal.write_observation(step, "browser.screenshot", data, suffix=".png")
             )
             sidecar = ScreenshotObs(
                 viewport_width=1280, viewport_height=720
             ).model_dump(mode="json", exclude={"image_bytes"})
             sidecar["artifact_file"] = f"{step:03d}_screenshot.png"
-            obs_files.append(wal.write_observation(step, "screenshot", sidecar))
+            obs_files.append(
+                wal.write_observation(step, "browser.screenshot", sidecar)
+            )
 
         record = StepRecord(
             step=step,

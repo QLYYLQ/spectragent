@@ -269,7 +269,15 @@ class TraceWriter(HookBase):
         )
 
     def _write_observation(self, step: int, observation: Any) -> list[str]:
-        """Write every populated fragment; binaries land as real files."""
+        """Write every populated fragment; binaries land as real files.
+
+        Files are named after the fragment's **fully-qualified** key
+        (``000_browser.dom.json``), not the negotiated local name. The
+        local name is a per-run artefact of which capability won
+        negotiation, so a trace keyed by it cannot tell an evaluator
+        which capability produced the data — and an evaluator reading a
+        ``RunTrace`` is the only consumer this file has.
+        """
         if self._wal is None or observation is None:
             return []
 
@@ -280,21 +288,22 @@ class TraceWriter(HookBase):
             return [self._wal.write_observation(step, "observation", observation)]
 
         for field_name, fragment in fragments:
+            key = getattr(fragment, "fragment_id", "") or field_name
             payload: Any = fragment
             binary = fragment.trace_binary() if isinstance(fragment, FragmentBase) else None
 
             if binary is not None:
                 suffix, data = binary
                 obs_files.append(
-                    self._wal.write_observation(step, field_name, data, suffix=suffix)
+                    self._wal.write_observation(step, key, data, suffix=suffix)
                 )
                 # JSON sidecar without the bytes, plus a pointer to them.
                 payload = fragment.model_dump(
                     mode="json", exclude=fragment.trace_json_exclude()
                 )
-                payload["artifact_file"] = f"{step:03d}_{field_name}{suffix}"
+                payload["artifact_file"] = f"{step:03d}_{key}{suffix}"
 
-            obs_files.append(self._wal.write_observation(step, field_name, payload))
+            obs_files.append(self._wal.write_observation(step, key, payload))
         return obs_files
 
 

@@ -254,16 +254,30 @@ class TestCompletedRunTrace:
         t, _ = trace
         assert t.screenshots, "RunTrace.screenshots must not be empty"
         assert t.screenshots[0].read_bytes() == _PNG
-        sidecar = t.get_observation(0, "screenshot")
+        sidecar = t.get_observation(0, "browser.screenshot")
         assert sidecar["viewport_width"] == 1280
         assert "image_bytes" not in sidecar
 
-    async def test_loop_fragments_land_on_disk(self, trace):
+    async def test_fragment_files_carry_their_producer(self, trace):
+        """Provenance survives the round trip to disk, twice over.
+
+        The file name is the fully-qualified key and the JSON repeats it
+        in ``fragment_id``. Before this, ``fragment_id`` was a
+        ``@property`` (so ``model_dump`` dropped it) and the file was
+        named after the negotiated local name, so a trace could not say
+        which capability produced a fragment — and an evaluator reading a
+        ``RunTrace`` is the only reader these files have.
+        """
         t, _ = trace
         obs_files = list((t.trace_dir / "observations").iterdir())
         written = {p.name.split("_", 1)[1].rsplit(".", 1)[0] for p in obs_files}
-        assert "task" in written
-        assert t.get_observation(0, "task")["user_request"] == "find the price"
+        assert "loop.task" in written
+        assert "browser.screenshot" in written
+        assert all("." in key for key in written), written
+
+        payload = t.get_observation(0, "loop.task")
+        assert payload["user_request"] == "find the price"
+        assert payload["fragment_id"] == "loop.task"
         # And the junk 0.0 timestamp file is gone.
         assert "timestamp" not in written
 

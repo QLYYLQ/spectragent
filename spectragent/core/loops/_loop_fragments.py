@@ -16,7 +16,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.observation._registrar import (
+    FragmentBase,
+    fragment_field_name,
+)
 from spectragent.schemas.observation.fragments import ActionResultObs
 from spectragent.schemas.step_record import StepRecord
 
@@ -46,7 +49,7 @@ def populate_loop_fragments(
                 f"No builder registered for loop-source fragment {key!r}; "
                 f"available builders: {sorted(builders)!r}"
             )
-        local_name = key.rsplit(".", 1)[-1]
+        local_name = fragment_field_name(key)
         update[local_name] = builders[key]()
     return obs.model_copy(update=update)
 

@@ -23,6 +23,7 @@ from pydantic import Field
 from spectragent.core.capabilities.base import BaseCapability
 from spectragent.core.environments.base import Environment
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.observation.dynamic_model import build_observation_model
 
 logger = logging.getLogger(__name__)
@@ -301,7 +302,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                 # Dynamic-model attribute names use the local segment of
                 # the fully-qualified key (``browser.dom`` → ``dom``), so
                 # agents keep their ``obs.dom`` access pattern.
-                field_values[frag_key.rsplit(".", 1)[-1]] = fragment
+                field_values[fragment_field_name(frag_key)] = fragment
 
         return obs_model(**field_values)
 

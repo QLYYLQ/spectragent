@@ -13,9 +13,11 @@
 # 2. ConfigComposer injects a wired child only when the owning class
 #    declares a slot for it (an ``__init__`` parameter or a class-level
 #    annotation). Wiring entries with no slot — the agent's
-#    ``capability`` / ``observation`` / ``action`` — are pure negotiation
-#    declarations read straight off ``__wiring__``; they are optional in
-#    the schema and omitted here.
+#    ``observation`` / ``action`` — are pure negotiation declarations read
+#    straight off ``__wiring__``; they are optional in the schema and
+#    omitted here. The agent declares them capability-relative
+#    (``click``, not ``browser.click``), and negotiation binds each to the
+#    capability the environment below actually holds.
 
 agent:
   - agent_id: browser_use
@@ -77,7 +79,7 @@ environment:
         #
         # It is also an *ablation* switch: only the actions named here are
         # instantiated, advertised to the model and executable. Omit the
-        # block entirely — as this file does — to get all fourteen actions
+        # block entirely — as this file does — to get all sixteen actions
         # the capability's __wiring__ offers. Narrow it and any agent that
         # requires a dropped action fails action negotiation, by design.
         #

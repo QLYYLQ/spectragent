@@ -12,6 +12,7 @@ from spectragent.core.capabilities.browser.actions.click_coordinate import (
     ClickCoordinateAction,
 )
 from spectragent.core.capabilities.browser.actions.done import DoneAction
+from spectragent.core.capabilities.browser.actions.drag import DragAction
 from spectragent.core.capabilities.browser.actions.extract_content import (
     ExtractContentAction,
 )
@@ -26,12 +27,16 @@ from spectragent.core.capabilities.browser.actions.select_dropdown import (
 from spectragent.core.capabilities.browser.actions.send_keys import SendKeysAction
 from spectragent.core.capabilities.browser.actions.switch_tab import SwitchTabAction
 from spectragent.core.capabilities.browser.actions.type_action import TypeAction
+from spectragent.core.capabilities.browser.actions.type_coordinate import (
+    TypeCoordinateAction,
+)
 from spectragent.core.capabilities.browser.actions.wait import WaitAction
 
 __all__ = [
     "ClickAction",
     "ClickCoordinateAction",
     "DoneAction",
+    "DragAction",
     "ExtractContentAction",
     "GoBackAction",
     "GoForwardAction",
@@ -42,5 +47,6 @@ __all__ = [
     "SendKeysAction",
     "SwitchTabAction",
     "TypeAction",
+    "TypeCoordinateAction",
     "WaitAction",
 ]

@@ -240,10 +240,12 @@ class HumanMouse:
         target_w: float = 0.0,
         target_h: float = 0.0,
     ) -> None:
-        """Reserved: press at start, move along the trajectory, release at end.
+        """Press at start, move along the trajectory, release at end.
 
-        No browser action currently emits a drag; this is wired for future
-        ``browser.drag`` support so the trajectory layer already covers it.
+        Driven by ``browser.drag`` via ``ActionWatchdog._on_drag``. The
+        travel between press and release goes through :meth:`move_to`, so
+        a humanised run drags along the same path it would have moved
+        along.
         """
         sid = self._sid()
         await self.move_to(start_x, start_y)

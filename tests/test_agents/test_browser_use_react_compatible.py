@@ -148,19 +148,28 @@ class TestWiring:
         wiring = BrowserUseAgent.__wiring__
         assert wiring["agent_loop"] == ("agent_loop", ["react"])
 
-    def test_capability_wiring(self) -> None:
-        wiring = BrowserUseAgent.__wiring__
-        assert wiring["capability"] == ("capability", ["browser"])
+    def test_no_capability_entry(self) -> None:
+        """Naming a capability constrained codegen and nothing else."""
+        assert "capability" not in BrowserUseAgent.__wiring__
 
     def test_observation_wiring(self) -> None:
         wiring = BrowserUseAgent.__wiring__
-        # Required: env-source DOM/screenshot + loop-source task.
+        # Required: DOM/screenshot + the loop-source task.
         # Optional: browser_meta + loop-source step_info/history.
+        # All capability-relative — which capability's ``dom`` this is
+        # gets decided at negotiation.
         assert wiring["observation"] == (
             "observation",
-            ["browser.dom", "browser.screenshot", "loop.task"],
-            ["browser.browser_meta", "loop.step_info", "loop.history"],
+            ["dom", "screenshot", "task"],
+            ["browser_meta", "step_info", "history"],
         )
+
+    def test_no_wiring_key_names_a_capability(self) -> None:
+        for entry in BrowserUseAgent.__wiring__.values():
+            if isinstance(entry, str):
+                continue
+            for key_list in entry[1:]:
+                assert all("." not in k for k in key_list), key_list
 
 
 # ── prepare() ─────────────────────────────────────────────────────────

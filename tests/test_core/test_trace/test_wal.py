@@ -157,8 +157,8 @@ class TestWALWriter:
 
     def test_write_observation_json(self, wal, config):
         wal.init_run(config)
-        rel = wal.write_observation(0, "dom", {"element_tree": "<div/>"})
-        assert rel == "observations/000_dom.json"
+        rel = wal.write_observation(0, "browser.dom", {"element_tree": "<div/>"})
+        assert rel == "observations/000_browser.dom.json"
         abs_path = wal.run_dir / rel
         assert abs_path.exists()
         assert json.loads(abs_path.read_text())["element_tree"] == "<div/>"
@@ -166,8 +166,8 @@ class TestWALWriter:
     def test_write_observation_binary(self, wal, config):
         wal.init_run(config)
         png_data = b"\x89PNG\r\nfake"
-        rel = wal.write_observation(0, "screenshot", png_data)
-        assert rel == "observations/000_screenshot.png"
+        rel = wal.write_observation(0, "browser.screenshot", png_data)
+        assert rel == "observations/000_browser.screenshot.png"
         assert (wal.run_dir / rel).read_bytes() == png_data
 
     def test_write_messages(self, wal, config):

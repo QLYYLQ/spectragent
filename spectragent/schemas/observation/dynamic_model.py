@@ -14,7 +14,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, create_model
 
-from spectragent.schemas.observation._registrar import ObservationRegistrar
+from spectragent.schemas.observation._registrar import (
+    ObservationRegistrar,
+    fragment_field_name,
+)
 
 if TYPE_CHECKING:
     from spectragent.core.negotiation import ObservationNegotiationResult
@@ -73,16 +76,13 @@ def _build_observation_model(
     # Fragment keys are fully qualified (``source.local_id``). The
     # pydantic attribute name is the local segment so agents keep
     # reading ``obs.dom`` / ``obs.terminal``. Cross-source collisions on
-    # the same local name (e.g. ``browser.screenshot`` AND
-    # ``desktop.screenshot`` both active) are rejected here.
+    # that local name are rejected by ``negotiate_observation``
+    # (``DuplicateFragmentNameError``) before a run starts — this
+    # function is reached only with a set that already survived it, and a
+    # second copy of the rule here could only ever disagree with the
+    # first.
     for key, frag_cls in resolved:
-        field_name = key.rsplit(".", 1)[-1]
-        if field_name in fields:
-            raise ValueError(
-                f"Duplicate observation field name '{field_name}' from "
-                f"active fragments {[k for k, _ in resolved]!r}. "
-                f"Cross-source local-id collisions are not supported."
-            )
+        field_name = fragment_field_name(key)
         # Loop-source fragments are filled by the Loop *after* env.observe()
         # via populate_loop_fragments. Make them Optional with default=None
         # so env.observe() can construct the model without these values;

@@ -151,6 +151,8 @@ class TestActionWiringAndProvidedActions:
                 "browser.click",
                 "browser.click_coordinate",
                 "browser.type",
+                "browser.type_coordinate",
+                "browser.drag",
                 "browser.navigate",
                 "browser.screenshot",
                 "browser.scroll",
@@ -177,7 +179,7 @@ class TestDefaultActionInstantiation:
 
     def test_default_actions_instantiated_when_list_omitted(self) -> None:
         cap = BrowserCapability()
-        assert len(cap._actions_by_name) == 14
+        assert len(cap._actions_by_name) == 16
         assert set(cap._actions_by_name) == cap.provided_actions
 
     def test_per_action_config_lands_on_the_instance(self) -> None:
@@ -202,7 +204,7 @@ class TestDefaultActionInstantiation:
         # ``actions`` has a property setter; conscribe's stub writer only
         # emits the getter, so pyright sees it as read-only.
         cap.actions = []  # type: ignore[misc]
-        assert len(cap._actions_by_name) == 14
+        assert len(cap._actions_by_name) == 16
 
     def test_action_the_capability_does_not_provide_raises(self) -> None:
         import pytest

@@ -49,6 +49,7 @@ from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — re
     ClickAction,
     ClickCoordinateAction,
     DoneAction,
+    DragAction,
     ExtractContentAction,
     GoBackAction,
     GoForwardAction,
@@ -59,6 +60,7 @@ from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — re
     SendKeysAction,
     SwitchTabAction,
     TypeAction,
+    TypeCoordinateAction,
     WaitAction,
 )
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
@@ -223,6 +225,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 "browser.click",
                 "browser.click_coordinate",
                 "browser.type",
+                "browser.type_coordinate",
+                "browser.drag",
                 "browser.navigate",
                 "browser.screenshot",
                 "browser.scroll",

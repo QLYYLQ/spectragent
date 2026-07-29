@@ -107,8 +107,25 @@ class TestFragmentIsPydanticModel:
         assert obs.image_bytes.startswith(b"\x89PNG")
         assert obs.image_path is None
 
-    def test_fragment_id_property(self) -> None:
+    def test_fragment_id_defaults_from_the_registry_key(self) -> None:
         obs = TerminalObs(stdout="x", cwd="/")
+        assert obs.fragment_id == "docker.terminal"
+
+    def test_fragment_id_survives_model_dump(self) -> None:
+        """It used to be a ``@property``, so it was not in the data.
+
+        Every fragment therefore reached the trace anonymous, and an
+        evaluator reading a ``RunTrace`` could not tell which capability
+        produced one — which "Record Once, Evaluate Many" does not
+        survive.
+        """
+        dumped = TerminalObs(stdout="x", cwd="/").model_dump()
+        assert dumped["fragment_id"] == "docker.terminal"
+        assert TerminalObs.model_validate(dumped).fragment_id == "docker.terminal"
+
+    def test_an_explicit_fragment_id_is_not_overwritten(self) -> None:
+        """Reading a trace back must return what was written, not a re-derivation."""
+        obs = TerminalObs(fragment_id="docker.terminal", stdout="x", cwd="/")
         assert obs.fragment_id == "docker.terminal"
 
 

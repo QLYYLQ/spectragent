@@ -32,6 +32,7 @@ file exists to close.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -58,15 +59,24 @@ _BACKTICKED = re.compile(r"`([A-Za-z_]+\.[A-Za-z_]+)[(`]")
 _ACTION_TYPE_LITERAL = re.compile(r'"action_type"\s*:\s*"([^"]+)"')
 
 
-def _negotiated_descriptors() -> list[ActionDescriptor]:
-    """The descriptors ``AgentRuntime.prepare`` would hand ``prepare()``."""
+def _negotiated() -> tuple[list[ActionDescriptor], Mapping[str, str]]:
+    """What ``AgentRuntime.prepare`` would hand ``prepare()`` and the guard.
+
+    Both halves, because both are negotiation output: the descriptors the
+    prompt advertises *and* the short → fully-qualified bindings the guard
+    resolves against. Building the guard without the bindings would test a
+    configuration the runtime never assembles.
+    """
     capability = BrowserCapability()
     env = make_env(BrowserEnvironment, {"browser": capability})
     result = _action_rules(
         agent=extract_wiring(SkyvernAgent, "action"),
         env_provides=set(capability.provided_actions),
     )
-    return env.get_action_space(active_actions=result.active_actions)
+    return (
+        env.get_action_space(active_actions=result.active_actions),
+        result.action_bindings,
+    )
 
 
 def _taught_verbs(prompt: str) -> set[str]:
@@ -78,7 +88,7 @@ def _taught_verbs(prompt: str) -> set[str]:
 @pytest.fixture
 def prepared() -> tuple[SkyvernAgent, str, list[ActionDescriptor], Any]:
     """A prepared agent plus the real guarded_act built over its action set."""
-    descriptors = _negotiated_descriptors()
+    descriptors, bindings = _negotiated()
     agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=100))
     prompt = agent.prepare(task="t", action_descriptors=descriptors)[0].content
     assert isinstance(prompt, str)
@@ -86,7 +96,7 @@ def prepared() -> tuple[SkyvernAgent, str, list[ActionDescriptor], Any]:
     async def _accept(action: Action, **_kw: Any) -> ActionResult:
         return ActionResult(success=True, extracted_content=action.name)
 
-    _active, guarded_act = build_guarded_act(_accept, descriptors)
+    _active, guarded_act = build_guarded_act(_accept, descriptors, bindings=bindings)
     return agent, prompt, descriptors, guarded_act
 
 

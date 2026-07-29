@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.ui_tars import UITarsAgent
+from spectragent.agents.ui_tars import _VERB_TABLE, UITarsAgent
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartTextParam,
@@ -81,23 +81,54 @@ class TestSlotConformance:
 
 class TestWiring:
     def test_pure_vision_observation_wiring(self) -> None:
-        # UI-TARS requires screenshot + loop.task; loop.step_info optional.
+        # Capability-relative: a screenshot is a screenshot whether a
+        # browser, a desktop VM or a phone produced it.
         wiring = UITarsAgent.__wiring__
         assert wiring["observation"] == (
             "observation",
-            ["browser.screenshot", "loop.task"],
-            ["loop.step_info"],
+            ["screenshot", "task"],
+            ["step_info"],
         )
 
     def test_does_not_require_dom(self) -> None:
         wiring = UITarsAgent.__wiring__
         registry, required, optional = wiring["observation"]
-        assert "browser.dom" not in required
-        assert "browser.dom" not in optional
+        assert "dom" not in required
+        assert "dom" not in optional
 
     def test_agent_loop_wiring(self) -> None:
         wiring = UITarsAgent.__wiring__
         assert wiring["agent_loop"] == ("agent_loop", ["react"])
+
+    def test_no_key_names_a_capability(self) -> None:
+        """The whole point: nothing in the wiring says ``browser``."""
+        for entry in UITarsAgent.__wiring__.values():
+            if isinstance(entry, str):
+                continue
+            for key_list in entry[1:]:
+                assert all("." not in k for k in key_list), key_list
+
+    def test_no_capability_entry(self) -> None:
+        assert "capability" not in UITarsAgent.__wiring__
+
+
+class TestVerbTableAndWiringAgree:
+    """The structural guard whose absence let ``type`` ship unexecutable.
+
+    The prompt is generated from the verb table intersected with the
+    negotiated descriptors, and the parser emits from the same table. So
+    a verb whose action is not wired can never run, and a wired action
+    with no verb can never be advertised — both are drift, and both are
+    invisible until a live run.
+    """
+
+    def test_every_verb_maps_to_a_wired_action(self) -> None:
+        _registry, required, optional = UITarsAgent.__wiring__["action"]
+        wired = set(required) | set(optional)
+        assert {v.action for v in _VERB_TABLE.values()} == wired
+
+    def test_every_verb_names_no_capability(self) -> None:
+        assert all("." not in v.action for v in _VERB_TABLE.values())
 
 
 class TestPrepare:
@@ -193,13 +224,82 @@ class TestParseReactOutput:
         assert actions[0].params["extracted_content"] == "task complete"
         assert actions[0].params["success"] is True
 
-    def test_parses_type_action(self) -> None:
+    def test_parses_type_to_the_executable_shape(self) -> None:
+        """R2: ``type`` used to emit ``{content, point}`` and be 100% dead.
+
+        ``TypeAction`` reads ``index`` (which a vision-only run has no
+        selector map for) and ``text`` (which the agent spelled
+        ``content``), so every typed step returned ``Missing param:
+        'index'`` — and had an index been supplied it would have typed
+        the empty string.
+        """
         agent = _make_agent()
         text = "Action: type(content='hello world', point='(100, 100)')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
-        assert actions[0].name == "type"
-        assert actions[0].params.get("content") == "hello world"
+        assert actions[0].name == "type_coordinate"
+        assert actions[0].params == {
+            "coordinate_x": 100,
+            "coordinate_y": 100,
+            "text": "hello world",
+        }
+
+    def test_type_without_a_point_is_a_loud_parse_error(self) -> None:
+        from spectragent.core.loops.errors import ParseError
+
+        agent = _make_agent()
+        with pytest.raises(ParseError, match="not a coordinate"):
+            agent.parse_react_output("Action: type(content='hello')")
+
+    def test_hotkey_is_renamed_onto_send_keys(self) -> None:
+        agent = _make_agent()
+        actions = agent.parse_react_output("Action: hotkey(key='ctrl+a')")
+        assert actions[0].name == "send_keys"
+        assert actions[0].params == {"keys": "ctrl+a"}
+
+    def test_drag_carries_both_endpoints(self) -> None:
+        agent = _make_agent()
+        actions = agent.parse_react_output(
+            "Action: drag(start_point='(1, 2)', end_point='(3, 4)')"
+        )
+        assert actions[0].name == "drag"
+        assert actions[0].params == {
+            "start_x": 1, "start_y": 2, "end_x": 3, "end_y": 4,
+        }
+
+    def test_wait_takes_no_arguments(self) -> None:
+        agent = _make_agent()
+        actions = agent.parse_react_output("Action: wait()")
+        assert actions[0].name == "wait"
+        assert actions[0].params == {}
+
+    def test_scroll_needs_a_direction(self) -> None:
+        from spectragent.core.loops.errors import ParseError
+
+        agent = _make_agent()
+        actions = agent.parse_react_output(
+            "Action: scroll(point='(5, 5)', direction='down')"
+        )
+        assert actions[0].name == "scroll"
+        # ``point`` is dropped: ScrollAction has nowhere to put it, and
+        # forwarding it would advertise a parameter nothing reads.
+        assert actions[0].params == {"direction": "down"}
+        with pytest.raises(ParseError, match="needs direction"):
+            agent.parse_react_output("Action: scroll(point='(5, 5)')")
+
+    def test_an_unknown_verb_fails_loudly_once(self) -> None:
+        """Was six silent per-step guard rejections; now one parse error.
+
+        ``long_press`` / ``open_app`` / ``press_home`` / ``press_back``
+        are mobile-only and have no browser action, so they are gone from
+        the prompt too — nothing advertises them any more.
+        """
+        from spectragent.core.loops.errors import ParseError
+
+        agent = _make_agent()
+        for verb in ("long_press", "open_app", "press_home", "press_back"):
+            with pytest.raises(ParseError, match="Unknown UI-TARS verb"):
+                agent.parse_react_output(f"Action: {verb}(point='(1, 2)')")
 
     def test_no_action_pattern_raises_parse_error(self) -> None:
         from spectragent.core.loops.errors import ParseError
@@ -210,13 +310,14 @@ class TestParseReactOutput:
             agent.parse_react_output(text)
 
     def test_invalid_click_coordinate_raises_parse_error(self) -> None:
-        # If the coordinate parser cannot extract x/y, the click is dropped
-        # and no valid actions remain → ParseError.
+        # A click whose point does not parse is unexecutable, so it fails
+        # at parse time naming the argument rather than reaching the
+        # action and coming back as ``Missing param``.
         from spectragent.core.loops.errors import ParseError
 
         agent = _make_agent()
         text = "Action: click(point='invalid')"
-        with pytest.raises(ParseError, match="none were parseable"):
+        with pytest.raises(ParseError, match="not a coordinate"):
             agent.parse_react_output(text)
 
 

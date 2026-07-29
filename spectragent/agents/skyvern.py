@@ -40,36 +40,39 @@ class SkyvernAgent(AgentBase):
 
     __registry_key__ = "skyvern"
 
-    # ── Cross-registry wiring (M14 + M13-Rev) ────────────────────
+    # ── Cross-registry wiring ────────────────────────────────────
+    # Capability-relative keys: the agent declares domain verbs, and
+    # which capability's ``click`` they mean is decided at negotiation.
+    # No ``capability`` entry — it was read by nothing at runtime and
+    # only pinned the generated config to one provider.
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react"]),
-        "capability": ("capability", ["browser"]),
         # DOM is required, screenshot is optional (Skyvern is mostly
         # element-tree based but can use vision when available).
         "observation": (
             "observation",
-            ["browser.dom", "loop.task"],
+            ["dom", "task"],
             [
-                "browser.screenshot",
-                "browser.browser_meta",
-                "loop.step_info",
-                "loop.history",
+                "screenshot",
+                "browser_meta",
+                "step_info",
+                "history",
             ],
         ),
-        # The canonical BrowserCapability action names *are* Skyvern's
-        # vocabulary: ``prepare()`` renders these descriptors into the
-        # system prompt verbatim, so there is no second verb list to keep
-        # in sync and no translation table to drift.
+        # The *negotiated* action names are Skyvern's vocabulary:
+        # ``prepare()`` renders those descriptors into the system prompt
+        # verbatim, so there is no second verb list to keep in sync and
+        # no translation table to drift.
         "action": (
             "action",
-            ["browser.click", "browser.type", "browser.done"],
+            ["click", "type", "done"],
             [
-                "browser.scroll",
-                "browser.send_keys",
-                "browser.go_back",
-                "browser.go_forward",
-                "browser.select_dropdown",
-                "browser.extract_content",
+                "scroll",
+                "send_keys",
+                "go_back",
+                "go_forward",
+                "select_dropdown",
+                "extract_content",
             ],
         ),
         "llm": "llm",
@@ -248,20 +251,19 @@ class SkyvernAgent(AgentBase):
             actions: list[Action] = []
             for item in llm_output.actions:
                 # The template teaches the negotiated action names
-                # verbatim, so this is an identity for well-formed
-                # output. The bare-name completion is kept for the
-                # single-capability spelling (``click`` →
-                # ``browser.click``); a name that is neither is left
-                # alone so ``guarded_act`` rejects it by name and the
-                # model gets the active set back as a correction signal.
-                local = item.action_type
-                canonical_name = local if "." in local else f"browser.{local}"
+                # verbatim, so this is normally already a fully-qualified
+                # key. A model that answers with the bare verb is left
+                # bare: ``build_guarded_act`` holds this run's short →
+                # fully-qualified map and is the one component allowed to
+                # apply it. Completing it to ``browser.<verb>`` here
+                # would name a provider the agent cannot see.
+                name = item.action_type
 
-                # ``browser.done`` is advertised like every other
-                # negotiated action but is invoked through the top-level
-                # fields. A model that writes it into ``actions`` anyway
-                # must not silently lose the answer.
-                if canonical_name == "browser.done":
+                # ``done`` is advertised like every other negotiated
+                # action but is invoked through the top-level fields. A
+                # model that writes it into ``actions`` anyway must not
+                # silently lose the answer.
+                if name.rsplit(".", 1)[-1] == "done":
                     actions.append(
                         self._done_action(
                             item.text or llm_output.extracted_content,
@@ -283,7 +285,7 @@ class SkyvernAgent(AgentBase):
                     params["direction"] = item.direction
                 if item.keys is not None:
                     params["keys"] = item.keys
-                actions.append(Action(name=canonical_name, params=params))
+                actions.append(Action(name=name, params=params))
 
             # Track actions in the window rendered by the next
             # ``build_react_prompt``.
@@ -316,9 +318,13 @@ class SkyvernAgent(AgentBase):
 
     @staticmethod
     def _done_action(extracted_content: str | None, success: bool) -> Action:
-        """The one place a terminal ``browser.done`` Action is built."""
+        """The one place a terminal ``done`` Action is built.
+
+        Capability-relative, like everything else this agent emits: the
+        guard binds it to whichever capability provides ``done``.
+        """
         return Action(
-            name="browser.done",
+            name="done",
             params={
                 "extracted_content": extracted_content or "",
                 "success": success,

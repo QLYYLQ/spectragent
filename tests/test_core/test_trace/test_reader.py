@@ -67,7 +67,9 @@ def populated_trace(tmp_path):
     wal.init_run(config)
 
     # Step 0
-    obs_rel = wal.write_observation(0, "dom", {"element_tree": "<div>step0</div>"})
+    obs_rel = wal.write_observation(
+        0, "browser.dom", {"element_tree": "<div>step0</div>"}
+    )
     in_rel, out_rel = wal.write_messages(
         0,
         [{"role": "user", "content": "observe"}],
@@ -83,8 +85,8 @@ def populated_trace(tmp_path):
     )
 
     # Step 1 with screenshot
-    wal.write_observation(1, "dom", {"element_tree": "<div>step1</div>"})
-    wal.write_observation(1, "screenshot", b"\x89PNGfakedata")
+    wal.write_observation(1, "browser.dom", {"element_tree": "<div>step1</div>"})
+    wal.write_observation(1, "browser.screenshot", b"\x89PNGfakedata")
     in_rel, out_rel = wal.write_messages(
         1,
         [{"role": "user", "content": "observe again"}],
@@ -156,13 +158,13 @@ class TestRunTrace:
 
     def test_get_observation_json(self, populated_trace):
         trace = RunTrace(populated_trace)
-        obs = trace.get_observation(0, "dom")
+        obs = trace.get_observation(0, "browser.dom")
         assert obs is not None
         assert obs["element_tree"] == "<div>step0</div>"
 
     def test_get_observation_binary(self, populated_trace):
         trace = RunTrace(populated_trace)
-        data = trace.get_observation(1, "screenshot")
+        data = trace.get_observation(1, "browser.screenshot")
         assert isinstance(data, bytes)
         assert data.startswith(b"\x89PNG")
 
@@ -182,7 +184,7 @@ class TestRunTrace:
         trace = RunTrace(populated_trace)
         shots = trace.screenshots
         assert len(shots) == 1
-        assert shots[0].name == "001_screenshot.png"
+        assert shots[0].name == "001_browser.screenshot.png"
 
     def test_lazy_loading_does_not_read_steps_eagerly(self, populated_trace):
         """Accessing only result should NOT trigger step file reads."""

@@ -235,16 +235,16 @@ class TestTraceWriterLifecycle:
         await writer.after_record_step(None, args=(_step(0),), kwargs={"observation": obs})
 
         run_dir = writer._wal.run_dir
-        png = run_dir / "observations" / "000_screenshot.png"
+        png = run_dir / "observations" / "000_browser.screenshot.png"
         assert png.exists()
         assert png.read_bytes() == _PNG
 
         sidecar = json.loads(
-            (run_dir / "observations" / "000_screenshot.json").read_text()
+            (run_dir / "observations" / "000_browser.screenshot.json").read_text()
         )
         assert sidecar["viewport_width"] == 1280
         assert "image_bytes" not in sidecar
-        assert sidecar["artifact_file"] == "000_screenshot.png"
+        assert sidecar["artifact_file"] == "000_browser.screenshot.png"
 
         trace = RunTrace(run_dir)
         assert trace.screenshots == [png]
@@ -263,11 +263,13 @@ class TestTraceWriterLifecycle:
             p.name.split("_", 1)[1].rsplit(".", 1)[0]
             for p in (writer._wal.run_dir / "observations").iterdir()
         }
-        assert "task" in written
+        # The fully-qualified key, so the file says who produced it.
+        assert "loop.task" in written
         assert writer.run_dir is not None
-        task_obs = RunTrace(writer.run_dir).get_observation(0, "task")
+        task_obs = RunTrace(writer.run_dir).get_observation(0, "loop.task")
         assert task_obs is not None
         assert task_obs["user_request"] == "find the price"
+        assert task_obs["fragment_id"] == "loop.task"
 
     async def test_on_run_end_writes_result(self, writer, fake_agent, fake_env):
         await writer.on_run_start(

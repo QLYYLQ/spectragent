@@ -110,13 +110,18 @@ class RunTrace:
     def get_observation(self, step: int, fragment_key: str) -> Any | None:
         """Load a single observation fragment for a given step.
 
-        Tries .json first, then .png (binary).
+        *fragment_key* is the fully-qualified registry key
+        (``browser.dom``), which is what the filename carries. It used to
+        be the negotiated local name (``dom``) — a per-run artefact of
+        which capability won negotiation, so the same file name meant a
+        different thing in a browser run and a desktop run and no reader
+        could tell.
 
-        Untyped, unlike its neighbours: fragment files are named by the
-        *negotiated field name* (``000_dom.json``), and the map back to
-        the registry key (``browser.dom``) that would identify the class
-        is not persisted anywhere. Typing this needs that map written
-        into the manifest first.
+        Tries .json first, then .png (binary). Still untyped: the key now
+        identifies the fragment class, and the payload repeats it in
+        ``fragment_id``, so returning a real ``FragmentBase`` is a
+        lookup away — it waits for an evaluator that needs one, since
+        that also fixes the return type of a public accessor.
         """
         json_path = self._trace_dir / f"observations/{step:03d}_{fragment_key}.json"
         if json_path.exists():
@@ -160,11 +165,17 @@ class RunTrace:
 
     @cached_property
     def screenshots(self) -> list[Path]:
-        """All screenshot file paths — globbed on first access."""
+        """All screenshot file paths — globbed on first access.
+
+        Matches any capability's ``screenshot`` fragment
+        (``000_browser.screenshot.png``, ``000_desktop.screenshot.png``),
+        because a vision judge wants the frames whatever produced them.
+        Which one it was stays readable off the path.
+        """
         obs_dir = self._trace_dir / "observations"
         if not obs_dir.exists():
             return []
-        return sorted(obs_dir.glob("*_screenshot.png"))
+        return sorted(obs_dir.glob("*.screenshot.png"))
 
 
 def _load_step(path: Path) -> StepRecord:
