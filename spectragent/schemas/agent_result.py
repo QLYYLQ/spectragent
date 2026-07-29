@@ -123,7 +123,15 @@ class AgentResult(BaseModel):
     # Version
     # 2.1 renamed ``agent_success`` -> ``agent_reported_success``. Traces
     # written before that carry 2.0 and the old key; they are legacy.
-    schema_version: Literal["1.0", "1.1", "2.0", "2.1"] = "2.1"
+    #
+    # Only the current version is accepted. The wider Literal this used
+    # to carry ("1.0", "1.1", "2.0") advertised a compatibility that does
+    # not exist: with ``extra="forbid"`` and the field renamed, a 2.0
+    # payload cannot validate under any circumstances, so accepting the
+    # version string only bought a confusing error about ``agent_success``
+    # instead of an honest one about the version. ``RunTrace`` turns the
+    # rejection into a ``TraceSchemaError`` that names the mismatch.
+    schema_version: Literal["2.1"] = "2.1"
 
     # Identity
     task_id: str

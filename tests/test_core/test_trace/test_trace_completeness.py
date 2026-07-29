@@ -232,25 +232,19 @@ class TestCompletedRunTrace:
         t, _ = trace
         assert t.manifest.status == RunStatus.COMPLETED
         assert t.result is not None
-        assert t.result["answer"] == "42 dollars"
-        assert t.result["agent_reported_success"] is True
+        assert t.result.answer == "42 dollars"
+        assert t.result.agent_reported_success is True
 
     async def test_step_records_are_complete(self, trace):
         t, _ = trace
-        rec = t.get_step_record(0)
+        rec = t.step(0)
         assert rec is not None
-        assert set(rec) >= {
-            "step",
-            "llm_output",
-            "actions",
-            "action_results",
-            "timestamp",
-            "token_usage",
-        }
-        assert rec["actions"][0]["name"] == "trace_e2e_cap.click"
-        assert rec["action_results"][0]["extracted_content"] == "clicked"
-        assert rec["token_usage"]["total_tokens"] == 150
-        assert rec["observation_summary"]
+        assert rec.step == 0
+        assert rec.actions[0].name == "trace_e2e_cap.click"
+        assert rec.action_results[0].extracted_content == "clicked"
+        assert rec.token_usage is not None
+        assert rec.token_usage.total_tokens == 150
+        assert rec.observation_summary
         assert t.step_count == 2
 
     async def test_screenshots_are_real_png_files(self, trace):
@@ -273,13 +267,14 @@ class TestCompletedRunTrace:
     async def test_tokens_recorded_despite_hook_order(self, trace):
         t, _ = trace
         assert t.result is not None
-        usage = t.result["metrics"]["usage"]
+        usage = t.result.metrics.usage
         assert usage is not None
-        assert usage["total_tokens"] == 300  # 2 steps x 150
-        assert usage["by_model"]["gpt-4o-mini"]["calls"] == 2
-        assert t.result["metrics"]["steps"] == 2
-        assert t.result["metrics"]["llm_calls"] == 2
-        assert t.result["model_id"] == "gpt-4o-mini"
+        assert usage.total_tokens == 300  # 2 steps x 150
+        assert usage.by_model is not None
+        assert usage.by_model["gpt-4o-mini"]["calls"] == 2
+        assert t.result.metrics.steps == 2
+        assert t.result.metrics.llm_calls == 2
+        assert t.result.model_id == "gpt-4o-mini"
 
 
 class TestTimedOutRunTrace:

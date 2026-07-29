@@ -31,6 +31,8 @@ from spectragent.core.trace.models import (
     TraceConfig,
     TraceManifest,
 )
+from spectragent.schemas.agent_result import AgentResult
+from spectragent.schemas.step_record import StepRecord
 
 
 def _fsync_dir(path: Path) -> None:
@@ -212,13 +214,17 @@ class WALWriter:
         _atomic_write(self._run_dir / output_rel, output_bytes)
         return input_rel, output_rel
 
-    def write_step_record(self, step: int, record: Any) -> str:
+    def write_step_record(self, step: int, record: StepRecord) -> str:
         """Write a step record JSON file.
+
+        Typed rather than ``Any``: this file is read back as a
+        ``StepRecord`` by :class:`RunTrace`, so writing anything else
+        here produces a trace nobody can read.
 
         Returns the relative path within the trace directory.
         """
         rel_path = f"steps/{step:03d}.json"
-        data = _serialize_fragment(record)
+        data = record.model_dump_json(indent=2).encode("utf-8")
         _atomic_write(self._run_dir / rel_path, data)
         return rel_path
 
@@ -274,10 +280,14 @@ class WALWriter:
         self._manifest.updated_at = datetime.now(UTC)
         self._write_manifest()
 
-    def write_result(self, result: Any) -> str:
-        """Write the final result.json at run end."""
+    def write_result(self, result: AgentResult) -> str:
+        """Write the final result.json at run end.
+
+        Same contract as :meth:`write_step_record`: ``RunTrace.result``
+        re-hydrates this file as an :class:`AgentResult`.
+        """
         rel_path = "result.json"
-        data = _serialize_fragment(result)
+        data = result.model_dump_json(indent=2).encode("utf-8")
         _atomic_write(self._run_dir / rel_path, data)
         return rel_path
 

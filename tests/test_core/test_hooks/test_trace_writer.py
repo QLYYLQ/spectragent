@@ -6,6 +6,7 @@ the way the runtime does: buffer an LLM call, then surrender a real
 """
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,24 @@ def _step(idx: int = 0, **kw) -> StepRecord:
     }
     defaults.update(kw)
     return StepRecord(**defaults)
+
+
+def _result(
+    agent_done: AgentDoneStatus = AgentDoneStatus.DONE, **kw
+) -> AgentResult:
+    """A terminal result of the shape ``AgentRuntime`` actually dispatches."""
+    defaults = {
+        "task_id": "t1",
+        "task": "test",
+        "timestamp": datetime.now(UTC),
+        "env_status": EnvironmentStatus.SUCCESS,
+        "agent_done": agent_done,
+        "agent_reported_success": agent_done is AgentDoneStatus.DONE or None,
+        "answer": "42",
+        "metrics": AgentMetrics(end_to_end_ms=1000, steps=0),
+    }
+    defaults.update(kw)
+    return AgentResult(**defaults)
 
 
 class TestTraceWriterRegistration:
@@ -254,8 +273,7 @@ class TestTraceWriterLifecycle:
             agent=fake_agent, env=fake_env, task="test", config={}
         )
 
-        result = {"task_id": "t1", "answer": "42"}
-        await writer.on_run_end(result=result, env=fake_env)
+        await writer.on_run_end(result=_result(), env=fake_env)
 
         run_dir = writer._wal.run_dir
         assert (run_dir / "result.json").exists()
@@ -269,8 +287,6 @@ class TestTraceWriterLifecycle:
 
     async def test_timeout_result_finalizes_as_error(self, writer, fake_agent, fake_env):
         """status must not stay 'running' just because the agent timed out."""
-        from datetime import UTC, datetime
-
         await writer.on_run_start(
             agent=fake_agent, env=fake_env, task="test", config={}
         )
@@ -288,6 +304,53 @@ class TestTraceWriterLifecycle:
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.status == RunStatus.ERROR
         assert trace.result is not None
+
+    async def test_the_hook_writes_what_the_reader_reads_back(
+        self, writer, fake_agent, fake_env
+    ):
+        """Round-trip through the production writer, not a hand-built file.
+
+        ``RunTrace`` promises typed models. That promise is only worth
+        anything if the hook that produces the files on a real run is
+        what these assertions read.
+        """
+        await writer.on_run_start(
+            agent=fake_agent, env=fake_env, task="test", config={}
+        )
+        await writer.after_ainvoke(_Completion(), args=([{"m": 0}],), kwargs={})
+        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await writer.on_run_end(result=_result(), env=fake_env)
+
+        trace = RunTrace(writer.run_dir)
+
+        record = trace.step(0)
+        assert isinstance(record, StepRecord)
+        assert record.step == 0
+        assert record.actions[0].name == "browser.click"
+        assert record.token_usage is not None
+        assert record.token_usage.total_tokens == 15
+
+        result = trace.result
+        assert isinstance(result, AgentResult)
+        assert result.answer == "42"
+        assert result.agent_done is AgentDoneStatus.DONE
+        assert result.metrics.end_to_end_ms == 1000
+
+    async def test_a_run_with_no_result_writes_no_result_file(
+        self, writer, fake_agent, fake_env
+    ):
+        """``result is None`` must mean "absent", never "unparseable".
+
+        A ``null`` result.json would read back as a schema failure and
+        make a run that simply never finished look like a corrupt trace.
+        """
+        await writer.on_run_start(
+            agent=fake_agent, env=fake_env, task="test", config={}
+        )
+        await writer.on_run_end(result=None, env=fake_env)
+
+        assert not (writer.run_dir / "result.json").exists()
+        assert RunTrace(writer.run_dir).result is None
 
     async def test_on_run_error_finalizes(self, writer, fake_agent, fake_env):
         await writer.on_run_start(
@@ -325,7 +388,7 @@ class TestUnfinishedMessagesSurviveRunEnd:
         await writer.after_ainvoke(
             _Completion(), args=([{"role": "user", "content": "step 0 prompt"}],), kwargs={}
         )
-        await writer.on_run_end(result={"agent_done": "timeout"})
+        await writer.on_run_end(result=_result(AgentDoneStatus.TIMEOUT))
 
         trace = RunTrace(run_dir)
         prompt, completion = trace.get_messages(0)
@@ -339,7 +402,7 @@ class TestUnfinishedMessagesSurviveRunEnd:
     async def test_flush_does_not_fabricate_a_completed_step(self, writer):
         run_dir = await self._start(writer)
         await writer.after_ainvoke(_Completion(), args=([{"m": 1}],), kwargs={})
-        await writer.on_run_end(result={"agent_done": "timeout"})
+        await writer.on_run_end(result=_result(AgentDoneStatus.TIMEOUT))
 
         trace = RunTrace(run_dir)
         assert trace.step_count == 0
@@ -352,7 +415,7 @@ class TestUnfinishedMessagesSurviveRunEnd:
         await writer.after_record_step(None, args=(_step(0),), kwargs={})
         # Step 1's LLM call comes back; the run dies before record_step.
         await writer.after_ainvoke(_Completion(), args=([{"m": 1}],), kwargs={})
-        await writer.on_run_end(result={"agent_done": "timeout"})
+        await writer.on_run_end(result=_result(AgentDoneStatus.TIMEOUT))
 
         trace = RunTrace(run_dir)
         assert trace.step_count == 1
@@ -368,7 +431,7 @@ class TestUnfinishedMessagesSurviveRunEnd:
         run_dir = await self._start(writer)
         await writer.after_ainvoke(_Completion(), args=([{"m": 1}],), kwargs={})
         await writer.after_ainvoke(_Completion(), args=([{"m": 2}],), kwargs={})
-        await writer.on_run_end(result={"agent_done": "error"})
+        await writer.on_run_end(result=_result(AgentDoneStatus.ERROR))
 
         assert (run_dir / "messages" / "000_input.json").exists()
         assert (run_dir / "messages" / "000_input__1.json").exists()
@@ -386,7 +449,7 @@ class TestUnfinishedMessagesSurviveRunEnd:
         run_dir = await self._start(writer)
         await writer.after_ainvoke(_Completion(), args=([{"m": 0}],), kwargs={})
         await writer.after_record_step(None, args=(_step(0),), kwargs={})
-        await writer.on_run_end(result={"answer": "42"})
+        await writer.on_run_end(result=_result())
 
         trace = RunTrace(run_dir)
         assert trace.unfinished_message_files == []

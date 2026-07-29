@@ -1,11 +1,13 @@
 """TraceView — the read-side vocabulary every evaluator shares.
 
-``RunTrace`` is a faithful, low-level reader: manifests, step files,
-observation blobs. Evaluators do not want that. They want four things —
-what was asked, what the agent answered, what it did, and what it saw —
-and every grader that was ported into this package reimplemented those
-four with slightly different fallbacks. Centralising them here means a
-change to the on-disk step format updates one file, not four graders.
+``RunTrace`` is a faithful, low-level reader: a manifest, a config
+snapshot, an ``AgentResult``, a list of ``StepRecord``. Evaluators do not
+want that shape. They want four things — what was asked, what the agent
+answered, what it did, and what it saw — each of which is spread across
+two or three of those files, and every grader that was ported into this
+package reimplemented the joins with slightly different fallbacks.
+Centralising them here means a change to the on-disk step format updates
+one file, not four graders.
 
 Everything is derived from files on disk. Nothing here touches a live
 environment, an agent instance, or a network.
@@ -15,12 +17,11 @@ from __future__ import annotations
 
 from functools import cached_property
 from pathlib import Path
-from typing import Any
 
 from spectragent.core.trace.reader import RunTrace
 from spectragent.evaluator.errors import TraceIncompleteError
 from spectragent.schemas._types import UTCDatetime
-from spectragent.schemas.agent_result import AgentMetrics, AgentUsage
+from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.eval_result import AgentResultRef
 
 
@@ -45,7 +46,7 @@ class TraceView:
     # ── Identity ────────────────────────────────────────────────────
 
     @cached_property
-    def _result(self) -> dict[str, Any]:
+    def _result(self) -> AgentResult:
         result = self._trace.result
         if result is None:
             raise TraceIncompleteError(
@@ -70,9 +71,8 @@ class TraceView:
         config_id = self._trace.config.task_id
         if config_id:
             return config_id
-        result_id = str(self._result.get("task_id") or "")
-        if result_id:
-            return result_id
+        if self._result.task_id:
+            return self._result.task_id
         raise TraceIncompleteError(
             f"{self._trace.trace_dir} records no task_id in config.json or "
             f"result.json. It cannot be matched to any benchmark reference."
@@ -89,7 +89,7 @@ class TraceView:
     @cached_property
     def task_text(self) -> str:
         """The instruction the agent was given."""
-        return self._trace.config.task or str(self._result.get("task") or "")
+        return self._trace.config.task or self._result.task
 
     # ── Outcome ─────────────────────────────────────────────────────
 
@@ -100,31 +100,28 @@ class TraceView:
         Valid on every termination path — a run that produced an answer
         and then hit ``max_steps`` must not lose it.
         """
-        return str(self._result.get("answer") or "")
+        return self._result.answer
 
     @cached_property
     def agent_done(self) -> str:
-        return str(self._result.get("agent_done") or "")
+        return self._result.agent_done.value
 
     @cached_property
     def error(self) -> str | None:
-        error = self._result.get("error")
-        return str(error) if error else None
+        return self._result.error or None
 
     @cached_property
     def model_id(self) -> str:
-        return str(self._result.get("model_id") or self._trace.config.llm_model or "")
+        return self._result.model_id or self._trace.config.llm_model
 
     @cached_property
     def browser_id(self) -> str:
-        return str(self._result.get("browser_id") or "")
+        return self._result.browser_id
 
     @cached_property
-    def timestamp(self) -> UTCDatetime | None:
-        raw = self._result.get("timestamp")
-        if not raw:
-            return None
-        return _coerce_datetime(raw)
+    def timestamp(self) -> UTCDatetime:
+        """When the run ended. Required on ``AgentResult``, so never absent."""
+        return self._result.timestamp
 
     # ── Trajectory ──────────────────────────────────────────────────
 
@@ -139,16 +136,10 @@ class TraceView:
         """
         history: list[str] = []
         for record in self._trace.step_records:
-            for action in record.get("actions") or []:
-                if isinstance(action, dict):
-                    name = action.get("name", "")
-                    params = action.get("params", {})
-                    history.append(f"{name}({params})")
-                else:
-                    history.append(str(action))
+            history.extend(f"{a.name}({a.params})" for a in record.actions)
         if history:
             return history
-        return [str(item) for item in (self._result.get("action_history") or [])]
+        return list(self._result.action_history)
 
     @cached_property
     def screenshots(self) -> list[Path]:
@@ -163,66 +154,35 @@ class TraceView:
 
     @cached_property
     def step_count(self) -> int:
-        metrics = self._result.get("metrics")
-        if isinstance(metrics, dict) and metrics.get("steps") is not None:
-            return int(metrics["steps"])
-        return self._trace.step_count
+        return self._result.metrics.steps
 
     # ── Metrics ─────────────────────────────────────────────────────
 
     @cached_property
-    def metrics(self) -> AgentMetrics | None:
+    def metrics(self) -> AgentMetrics:
         """Agent-side metrics, nested rather than flat-merged.
 
         Flat-merging these into the eval details is what used to let the
         agent's ``usage`` silently overwrite the evaluator's.
+
+        A deep copy, because ``EvaluatorBase.build_result`` hands this
+        straight to a mutable ``EvalDetails``: an evaluator that adds to
+        ``metrics.usage`` would otherwise be editing the trace's own
+        cached result, and every later reader of the same ``RunTrace``
+        would see the doctored numbers.
         """
-        raw = self._result.get("metrics")
-        if not isinstance(raw, dict):
-            return None
-        usage_raw = raw.get("usage")
-        usage = (
-            AgentUsage(**usage_raw)
-            if isinstance(usage_raw, dict) and usage_raw
-            else None
-        )
-        return AgentMetrics(
-            ttft_ms=raw.get("ttft_ms"),
-            end_to_end_ms=int(raw.get("end_to_end_ms") or 0),
-            steps=int(raw.get("steps") or 0),
-            llm_calls=raw.get("llm_calls"),
-            usage=usage,
-        )
+        return self._result.metrics.model_copy(deep=True)
 
     @cached_property
     def end_to_end_ms(self) -> int:
-        metrics = self.metrics
-        return metrics.end_to_end_ms if metrics else 0
+        return self.metrics.end_to_end_ms
 
     def result_ref(self) -> AgentResultRef:
         """Back-pointer from a verdict to the run that produced it."""
         return AgentResultRef(
             task_id=self.task_id,
-            timestamp=self.timestamp or _utc_now(),
+            timestamp=self.timestamp,
             result_dir=str(self.trace_dir),
             model_id=self.model_id,
             browser_id=self.browser_id,
         )
-
-
-def _utc_now() -> UTCDatetime:
-    from datetime import UTC, datetime
-
-    return datetime.now(UTC)
-
-
-def _coerce_datetime(raw: Any) -> UTCDatetime | None:
-    from datetime import UTC, datetime
-
-    if isinstance(raw, datetime):
-        return raw if raw.tzinfo else raw.replace(tzinfo=UTC)
-    try:
-        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)

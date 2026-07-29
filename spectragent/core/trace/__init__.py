@@ -6,6 +6,7 @@ WALWriter is the pure I/O engine; RunTrace is the lazy-loading reader.
 See docs/architecture_design.md §4.6 and docs/execution_dag.md M10.
 """
 
+from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import (
     RunStatus,
     StepManifestEntry,
@@ -21,5 +22,6 @@ __all__ = [
     "TraceConfig",
     "TraceManifest",
     "RunTrace",
+    "TraceSchemaError",
     "WALWriter",
 ]

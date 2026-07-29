@@ -144,7 +144,11 @@ class TraceWriter(HookBase):
         if self._wal is None:
             return
         self._flush_pending_messages()
-        self._wal.write_result(result)
+        # No result means no result.json. ``RunTrace.result`` returns
+        # ``None`` for exactly that state; a file containing ``null``
+        # would instead read as a result that fails to parse.
+        if result is not None:
+            self._wal.write_result(result)
         self._wal.finalize(_status_for(result))
         logger.info(
             "TraceWriter: finalized run at %s (%d steps)",

@@ -1,12 +1,35 @@
 """Tests for WALWriter — M10 WAL persistence engine."""
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import BaseModel
 
 from spectragent.core.trace.models import RunStatus, TraceConfig, TraceManifest
 from spectragent.core.trace.wal import WALWriter, _atomic_write, _serialize_fragment
+from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
+from spectragent.schemas.action import Action
+from spectragent.schemas.agent_result import AgentMetrics, AgentResult
+from spectragent.schemas.step_record import StepRecord
+
+
+def _step(idx: int = 0, **kw) -> StepRecord:
+    return StepRecord(step=idx, **kw)
+
+
+def _result(**kw) -> AgentResult:
+    defaults = {
+        "task_id": "task-001",
+        "timestamp": datetime.now(UTC),
+        "env_status": EnvironmentStatus.SUCCESS,
+        "agent_done": AgentDoneStatus.DONE,
+        "agent_reported_success": True,
+        "answer": "42",
+        "metrics": AgentMetrics(end_to_end_ms=10, steps=1),
+    }
+    defaults.update(kw)
+    return AgentResult(**defaults)
 
 
 # ── _atomic_write ────────────────────────────────────────────
@@ -159,14 +182,28 @@ class TestWALWriter:
 
     def test_write_step_record(self, wal, config):
         wal.init_run(config)
-        record = {"step": 0, "llm_output": "click(button)", "actions": []}
+        record = _step(0, llm_output="click(button)", actions=[])
         rel = wal.write_step_record(0, record)
         assert rel == "steps/000.json"
         assert json.loads((wal.run_dir / rel).read_text())["step"] == 0
 
+    def test_write_step_record_persists_the_whole_model(self, wal, config):
+        """Every field, not just the ones a hand-built dict remembered.
+
+        The reader re-hydrates this file as a ``StepRecord``, so a
+        writer that dropped defaults would make the two disagree.
+        """
+        wal.init_run(config)
+        rel = wal.write_step_record(
+            0, _step(0, actions=[Action(name="browser.click", params={"index": 3})])
+        )
+        on_disk = json.loads((wal.run_dir / rel).read_text())
+        assert set(on_disk) == set(StepRecord.model_fields)
+        assert on_disk["actions"][0]["params"] == {"index": 3}
+
     def test_commit_step_updates_manifest(self, wal, config):
         wal.init_run(config)
-        wal.write_step_record(0, {"step": 0})
+        wal.write_step_record(0, _step(0))
         wal.commit_step(
             step=0,
             step_file="steps/000.json",
@@ -187,7 +224,7 @@ class TestWALWriter:
     def test_multi_step_commit(self, wal, config):
         wal.init_run(config)
         for i in range(3):
-            wal.write_step_record(i, {"step": i})
+            wal.write_step_record(i, _step(i))
             wal.commit_step(step=i, step_file=f"steps/{i:03d}.json")
 
         manifest = TraceManifest.model_validate_json(
@@ -198,10 +235,11 @@ class TestWALWriter:
 
     def test_write_result(self, wal, config):
         wal.init_run(config)
-        result = {"task_id": "task-001", "answer": "42"}
-        rel = wal.write_result(result)
+        rel = wal.write_result(_result())
         assert rel == "result.json"
-        assert json.loads((wal.run_dir / rel).read_text())["answer"] == "42"
+        on_disk = json.loads((wal.run_dir / rel).read_text())
+        assert on_disk["answer"] == "42"
+        assert on_disk["schema_version"] == "2.1"
 
     def test_finalize_completed(self, wal, config):
         wal.init_run(config)
