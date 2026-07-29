@@ -502,10 +502,22 @@ class LocalChromeProvider(BrowserProviderBase):
         logger.debug("Chrome args: %s", " ".join(cmd))
 
         # Launch subprocess.
+        #
+        # ``DEVNULL``, not ``PIPE``: nothing in this package ever reads
+        # ``process.stdout`` / ``process.stderr``, and an undrained pipe is not
+        # merely wasteful. It has a fixed kernel buffer (64 KiB on macOS), and
+        # Chrome is chatty on stderr — GPU, font and DevTools notices — so a
+        # long enough session fills it and Chrome then blocks in ``write()``
+        # forever, with no log line to say so. The visible symptom was milder:
+        # the transport keeps a pipe protocol alive past the run, so its
+        # ``__del__`` fires after the loop is gone and ``proto.pipe.close()``
+        # calls ``call_soon`` on a closed loop — "RuntimeError: Event loop is
+        # closed", printed after an otherwise successful run. ``DEVNULL``
+        # leaves ``BaseSubprocessTransport._pipes`` empty, settling both.
         process = await asyncio.create_subprocess_exec(
             *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
         )
 
         # Wait for CDP to become ready.

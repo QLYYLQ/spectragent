@@ -12,11 +12,16 @@ blamed the wrong thing:
   ``ConnectError`` — and ``ReadTimeout`` was not in the retry's except
   tuple, so a Chrome slower than one 2s poll aborted startup outright with
   ~28s of its own budget unspent.
+* Chrome was launched with ``stdout``/``stderr`` on pipes that nothing ever
+  read. A finished run printed ``RuntimeError: Event loop is closed`` from
+  the transport's ``__del__``; the unreported half was that a long enough
+  session fills the pipe buffer and Chrome blocks in ``write()``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import httpx
 import pytest
@@ -188,3 +193,82 @@ class TestWaitForCdp:
 
         with pytest.raises(TimeoutError, match="did not become ready"):
             await provider._wait_for_cdp(9222)
+
+
+# ── Child stdio ───────────────────────────────────────────────────
+
+
+class _FakeProcess:
+    """Stands in for the Chrome the launch path never actually needs."""
+
+    pid = 4321
+    returncode = None
+
+
+class TestLaunchStdio:
+    async def test_chrome_stdio_is_discarded_rather_than_piped(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A pipe nobody reads is a stall waiting to happen — see the sibling
+        test below for the mechanism. Asserts on what ``open()`` passes, not on
+        anything the test itself wired up."""
+        record: dict = {}
+
+        async def _fake_exec(*cmd, **kwargs):
+            record["cmd"] = cmd
+            record["kwargs"] = kwargs
+            return _FakeProcess()
+
+        async def _fake_wait(_self, _port):
+            return "ws://127.0.0.1:9222/devtools/browser/x"
+
+        monkeypatch.setattr(
+            local_chrome.asyncio, "create_subprocess_exec", _fake_exec
+        )
+        monkeypatch.setattr(LocalChromeProvider, "_wait_for_cdp", _fake_wait)
+
+        provider = LocalChromeProvider()
+        provider.executable_path = "/fake/chrome"
+        provider.user_data_dir = str(tmp_path)
+
+        session = await provider.open()
+
+        assert session.cdp_url is not None
+        assert session.cdp_url.startswith("ws://")
+        assert record["kwargs"]["stdout"] is asyncio.subprocess.DEVNULL
+        assert record["kwargs"]["stderr"] is asyncio.subprocess.DEVNULL
+
+    async def test_an_undrained_pipe_stalls_a_chatty_child(self) -> None:
+        """The reason the assertion above is not cargo cult.
+
+        1 MiB is comfortably past the ~64 KiB kernel pipe buffer, so a child
+        writing that much to an unread pipe blocks partway through and never
+        exits. Chrome is exactly that chatty on stderr over a long session.
+        """
+        chatty = [
+            sys.executable,
+            "-c",
+            "import sys; sys.stderr.write('x' * (1 << 20)); sys.stderr.flush()",
+        ]
+
+        piped = await asyncio.create_subprocess_exec(
+            *chatty,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(piped.wait(), timeout=1.0)
+        # Drain so the child can finish and the transport closes on EOF —
+        # abandoning it here would reproduce the very teardown noise this
+        # module's fix removes.
+        assert piped.stderr is not None
+        await piped.stderr.read()
+        await piped.wait()
+
+        discarded = await asyncio.create_subprocess_exec(
+            *chatty,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(discarded.wait(), timeout=30.0)
+        assert discarded.returncode == 0
