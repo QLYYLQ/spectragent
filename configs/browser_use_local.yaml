@@ -97,7 +97,7 @@ environment:
         # editing this block only — every other section stays identical.
         backend:
           provider_id: local_chrome
-          headless: true
+          headless: false
           window_width: 1280
           window_height: 720
           no_sandbox: false
