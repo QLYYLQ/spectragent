@@ -1,15 +1,15 @@
-"""Numpy-only forward pass of an exported mouse-path GAN generator.
+"""Numpy forward pass of a ``mouse-gan-generator/1`` export (the faithful GAN port).
 
-Vendored from ``mouse-gan-torch`` (``mouse_gan/infer_numpy.py``), the PyTorch
-port of the conditional LSTM GAN in SaluRamos/mouse-ai ``train_gan.py``. The
-numpy-vs-torch parity test lives upstream and is not repeated here; this copy
-only tightens typing and validates the export before the first forward pass,
-so a truncated or foreign ``generator.npz`` fails with the missing array's
-name instead of a ``KeyError`` deep inside an LSTM step.
+Vendored from mouse-gan-torch ``mouse_gan/infer_numpy.py``, the PyTorch port of
+the conditional LSTM GAN in SaluRamos/mouse-ai ``train_gan.py``, with the op
+order unchanged; ``test_mouse_gan_v1`` checks it against that file whenever the
+trainer project is on the machine (numpy-vs-torch parity is proven upstream).
+This copy adds typing, the export checks of :func:`inspect` — so a truncated or
+foreign ``generator.npz`` fails at construction naming the missing arrays, not
+with a ``KeyError`` deep inside an LSTM step — and the ``draw`` entry point.
 
-Only :mod:`spectragent.core.capabilities.browser.input.gan` imports this
-module, and only lazily, so the package — and config generation — keeps
-working without numpy installed.
+Reached only through :mod:`._learned_export`, after ``LearnedTrajectory`` has
+checked that numpy is installed.
 
 Tensor contract (everything normalised by the 800x800 training window):
 
@@ -17,29 +17,29 @@ Tensor contract (everything normalised by the 800x800 training window):
 * ``cond``:  ``(B, 4)`` = ``(offset_x, offset_y, btn_w, btn_h)`` where
   ``offset = (button_centre - cursor) / 800`` and the button size is ``/ 800``.
 * output: ``(B, max_seq_len, 2)`` per-tick cursor deltas ``/ 800``.
+
+The model has no stop signal — trailing ticks after a path's effective end are
+small but never exactly zero, and the trained generator keeps moving for all
+``max_seq_len`` ticks — so :meth:`NumpyGenerator.draw` returns no lengths and
+the strategy decides where each path ends.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-MISSING_NUMPY_MESSAGE = (
-    "The 'gan' mouse trajectory needs numpy, which spectragent does not install "
-    "by default. Install the optional extra: `uv sync --extra mouse-gan` "
-    "(or `pip install 'spectragent[mouse-gan]'`)."
+import numpy as np
+
+from spectragent.core.capabilities.browser.input._learned_export import (
+    WEIGHTS_FILE,
+    Draw,
+    ExportInfo,
+    require_arrays,
 )
 
-try:
-    import numpy as np
-except ImportError as exc:  # the only place the missing extra is named
-    raise ImportError(MISSING_NUMPY_MESSAGE) from exc
-
-EXPORT_FORMAT = "mouse-gan-generator/1"
-WEIGHTS_FILE = "generator.npz"
-META_FILE = "meta.json"
+FORMAT: str = "mouse-gan-generator/1"
 
 _LSTM_PREFIXES: tuple[str, ...] = ("bilstm.fw", "bilstm.bw", "lstm1", "lstm2")
 
@@ -117,7 +117,7 @@ class NumpyGenerator:
     def __init__(self, weights: Mapping[str, np.ndarray], meta: Mapping[str, Any]) -> None:
         missing = [name for name in REQUIRED_ARRAYS if name not in weights]
         if missing:
-            raise ValueError(f"GAN generator weights are missing arrays: {missing}")
+            raise ValueError(f"{FORMAT} generator weights are missing arrays: {missing}")
         self._w = {k: np.asarray(v, dtype=np.float32) for k, v in weights.items()}
         self.latent_dim = int(meta.get("latent_dim", 100))
         self.cond_dim = int(meta.get("cond_dim", 4))
@@ -166,38 +166,26 @@ class NumpyGenerator:
         x = _leaky_relu(_dense(x, w["td_dense.weight"], w["td_dense.bias"]), s)
         return _dense(x, w["out.weight"], w["out.bias"])
 
-
-def new_rng(seed: int | None) -> np.random.Generator:
-    """A fresh, instance-owned random Generator (never the global numpy RNG)."""
-    return np.random.default_rng(seed)
-
-
-def read_meta(path: Path) -> dict[str, Any]:
-    """Parse ``meta.json``; an absent file is an empty mapping (upstream default dims)."""
-    if not path.is_file():
-        return {}
-    meta = json.loads(path.read_text())
-    if not isinstance(meta, dict):
-        raise ValueError(f"{path} is not a JSON object")
-    fmt = meta.get("format")
-    if fmt is not None and fmt != EXPORT_FORMAT:
-        raise ValueError(f"{path} declares format {fmt!r}; expected {EXPORT_FORMAT!r}")
-    return meta
+    def draw(self, cond: np.ndarray, rng: np.random.Generator) -> Draw:
+        """One standard-normal latent per row; no lengths (the model never stops)."""
+        noise = rng.standard_normal((cond.shape[0], self.latent_dim), dtype=np.float32)
+        return Draw(moves=self.forward(noise, cond), lengths=None)
 
 
-def load_generator(export_dir: Path, meta: Mapping[str, Any]) -> NumpyGenerator:
-    """Load ``<export_dir>/generator.npz``; ``meta`` is the already-parsed ``meta.json``."""
-    with np.load(export_dir / WEIGHTS_FILE) as npz:
+def inspect(directory: Path, meta: Mapping[str, Any]) -> ExportInfo:
+    """Construction-time checks: a 4-value condition and every array present."""
+    cond_dim = int(meta.get("cond_dim", 4))
+    if cond_dim != 4:
+        raise ValueError(
+            f"{directory} ({FORMAT}) conditions on {cond_dim} values; "
+            "the learned trajectory builds (offset_x, offset_y, btn_w, btn_h)"
+        )
+    require_arrays(directory, REQUIRED_ARRAYS, FORMAT)
+    return ExportInfo(kind=None, models_stop=False)
+
+
+def load(directory: Path, meta: Mapping[str, Any]) -> NumpyGenerator:
+    """Read ``<directory>/generator.npz``; ``meta`` is the parsed ``meta.json``."""
+    with np.load(directory / WEIGHTS_FILE) as npz:
         weights = {name: npz[name] for name in npz.files}
     return NumpyGenerator(weights, meta)
-
-
-def effective_ticks(moves_px: np.ndarray, stop_px: float) -> np.ndarray:
-    """Per path, the tick count up to the last tick moving ``>= stop_px`` pixels.
-
-    ``moves_px`` is ``(B, T, 2)`` in pixels; returns ``(B,)`` ints (0 = never moves).
-    """
-    moving = np.linalg.norm(moves_px, axis=-1) >= stop_px  # (B, T)
-    steps = moving.shape[1]
-    last = steps - np.argmax(moving[:, ::-1], axis=1)  # index of last True, +1
-    return np.where(moving.any(axis=1), last, 0)

@@ -427,8 +427,8 @@ class TestMouseTrajectoryIsAWiredReceptor:
         names = sorted(c.__name__ for c in self._member_configs())
         assert names == [
             "BezierMouse_TrajectoryConfig",
-            "GanMouse_TrajectoryConfig",
             "InstantMouse_TrajectoryConfig",
+            "LearnedMouse_TrajectoryConfig",
             "WindmouseMouse_TrajectoryConfig",
         ]
 

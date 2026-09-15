@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from spectragent.core.capabilities.browser.input.bezier import BezierTrajectory
-from spectragent.core.capabilities.browser.input.gan import GanTrajectory
 from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
+from spectragent.core.capabilities.browser.input.learned import LearnedTrajectory
 from spectragent.core.capabilities.browser.input.mouse import HumanMouse
 from spectragent.core.capabilities.browser.input.trajectory import TrajectoryPoint
 from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
@@ -231,51 +232,65 @@ class TestRepeatedWaypoints:
         assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]
 
 
-class TestGanStrategy:
-    """A ``gan`` click through the controller, on a tiny random generator."""
+@pytest.mark.parametrize("kind", ["v1", "mdn", "gan_ar"])
+class TestLearnedStrategy:
+    """A ``learned`` click through the controller, on each tiny export kind."""
 
-    async def test_click_dispatches_a_ticked_path_onto_the_target(
-        self, no_sleep: list[float], gan_export: Path
+    async def test_click_dispatches_the_sampled_path_onto_the_target(
+        self, no_sleep: list[float], make_export: Callable[..., Path], kind: str
     ) -> None:
+        export = make_export(kind)
         cdp = RecordCDP()
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: "sid",
-            trajectory=GanTrajectory(weights_dir=str(gan_export), seed=4),
+            trajectory=LearnedTrajectory(weights_dir=str(export), seed=4),
             viewport=(1280, 720),
         )
         await mouse.click(1000, 150, "left", 1, target_w=90, target_h=30)
 
+        # The same seed replays the path the controller was handed, from the
+        # humanized cold start at the viewport centre.
+        path = LearnedTrajectory(weights_dir=str(export), seed=4).generate(
+            640, 360, 1000, 150, target_w=90, target_h=30
+        )
+        assert 1 < len(path) <= TINY_SEQ_LEN + 1
+
         events = cdp.mouse_events()
-        types = cdp.types()
-        assert types[-2:] == ["mousePressed", "mouseReleased"]
-        moves = [e for e in events if e["type"] == "mouseMoved"]
-        assert 1 < len(moves) <= TINY_SEQ_LEN
-        assert (moves[-1]["x"], moves[-1]["y"]) == (1000, 150)
+        assert cdp.types()[-2:] == ["mousePressed", "mouseReleased"]
         assert all((e["x"], e["y"]) == (1000, 150) for e in events[-2:])
-        for a, b in zip(moves, moves[1:], strict=False):
-            assert (a["x"], a["y"]) != (b["x"], b["y"])
-        for ev in moves[:-1]:
-            assert 0 <= ev["x"] <= 1279 and 0 <= ev["y"] <= 719
-        # One 20 ms sleep per tick; still ticks sleep without dispatching, so
-        # there are at least as many sleeps as moves.
-        assert no_sleep and all(s == pytest.approx(0.02) for s in no_sleep)
-        assert len(moves) <= len(no_sleep) <= TINY_SEQ_LEN
+        # Every tick that moves the cursor is one mouseMoved — intermediate
+        # points clamped into the viewport, the endpoint raw — and a tick that
+        # holds still sends nothing.
+        expected: list[tuple[int, int]] = []
+        cursor = (640, 360)
+        for i, pt in enumerate(path):
+            is_last = i == len(path) - 1
+            xy = (pt.x, pt.y) if is_last else (min(max(pt.x, 0), 1279), min(max(pt.y, 0), 719))
+            if xy != cursor:
+                expected.append(xy)
+                cursor = xy
+        moves = [(e["x"], e["y"]) for e in events if e["type"] == "mouseMoved"]
+        assert moves == expected
+        assert moves[-1] == (1000, 150)
+        # Every tick's time is spent: one 20 ms sleep per tick, still or not.
+        assert no_sleep == pytest.approx([0.02] * (len(path) - 1))
 
     async def test_off_viewport_endpoint_stays_exact(
-        self, no_sleep: list[float], gan_export: Path
+        self, no_sleep: list[float], make_export: Callable[..., Path], kind: str
     ) -> None:
         cdp = RecordCDP()
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: "sid",
-            trajectory=GanTrajectory(weights_dir=str(gan_export), seed=9),
+            trajectory=LearnedTrajectory(weights_dir=str(make_export(kind)), seed=9),
             viewport=(1280, 720),
         )
         await mouse.click(450, 820, "left", 1)
         last_move = [e for e in cdp.mouse_events() if e["type"] == "mouseMoved"][-1]
         assert (last_move["x"], last_move["y"]) == (450, 820)
         assert mouse.position == (450, 820)
+        assert cdp.types()[-2:] == ["mousePressed", "mouseReleased"]
 
 
 class TestStrategyIsInjectedNotResolved:
@@ -315,11 +330,12 @@ class TestStrategyIsInjectedNotResolved:
         assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased", "mouseWheel"]
         assert no_sleep == []
 
-    def test_every_path_strategy_is_humanized(self, gan_export: Path) -> None:
+    def test_every_path_strategy_is_humanized(self, v1_export: Path, mdn_export: Path) -> None:
         for strategy in (
             WindMouseTrajectory(seed=1),
             BezierTrajectory(seed=1),
-            GanTrajectory(weights_dir=str(gan_export)),
+            LearnedTrajectory(weights_dir=str(v1_export)),
+            LearnedTrajectory(weights_dir=str(mdn_export)),
         ):
             mouse = HumanMouse(RecordCDP(), session_id_getter=lambda: None, trajectory=strategy)
             assert mouse.humanized is True, strategy.trajectory_type

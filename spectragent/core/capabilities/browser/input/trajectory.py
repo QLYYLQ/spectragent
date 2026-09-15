@@ -16,11 +16,14 @@ Registered strategies (conscribe, mirrors ``dom/cleaning``):
 - ``instant``   — single point == the legacy instant-jump behavior (default)
 - ``windmouse`` — gravity/wind physics model + Fitts's-law timing
 - ``bezier``    — cubic Bézier path + Fitts's-law timing
-- ``gan``       — path sampled from an exported GAN generator (numpy inference,
-  optional ``mouse-gan`` extra), replayed at the model's tick rate
+- ``learned``   — path sampled from a model trained on recorded human movements
+  (numpy inference, optional ``learned-mouse`` extra), replayed at the model's
+  tick rate; which model is read from the export's ``meta.json``
 
-A further learned strategy (e.g. ``diffusion``) needs zero changes to
-consumers — only a new class file, plus its key in the capability wiring.
+A new trained model (say a diffusion export) is not a new strategy: it is a
+backend of ``learned``, dispatched on its export format. A new strategy of a
+different kind needs zero changes to consumers — only a new class file, plus
+its key in the capability wiring.
 """
 
 from __future__ import annotations

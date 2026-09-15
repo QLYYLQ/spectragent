@@ -257,7 +257,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # to this receptor and silently overrode it when false.
         "mouse_trajectory": (
             "mouse_trajectory",
-            ["bezier", "gan", "instant", "windmouse"],
+            ["bezier", "instant", "learned", "windmouse"],
         ),
         # ``browser_provider`` is the existing conscribe registrar for
         # the underlying browser backend (local_chrome, lexmount,

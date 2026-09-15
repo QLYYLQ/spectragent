@@ -4,7 +4,7 @@
   viewport, so an agent can convert a point read off the image — the two
   differ by the device scale factor — without a second CDP call.
 * A humanized coordinate click hit-tests the point and hands the trajectory a
-  box centred on it (``gan`` is conditioned on the target size); the instant
+  box centred on it (``learned`` is conditioned on the target size); the instant
   jump stays the legacy three input events with no extra calls.
 """
 

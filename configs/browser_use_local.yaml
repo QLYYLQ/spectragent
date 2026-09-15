@@ -72,16 +72,18 @@ environment:
         # any other strategy humanizes every mouse action, adding roughly
         # 200-2000 ms each — for anti-bot-sensitive evals, not throughput.
         #
-        # ``gan`` replays paths sampled from a GAN trained on recorded human
-        # movements (mouse-gan-torch export dir: generator.npz + meta.json).
-        # Needs the optional numpy extra: ``uv sync --extra mouse-gan``.
-        # Every other knob has a default (seed, hz, num_candidates,
-        # truncate_at_arrival, max_offset, button_size, jitter, ...); see
-        # GanTrajectory.
+        # ``learned`` replays paths sampled from a model trained on recorded
+        # human movements. ``weights_dir`` is a mouse-gan-torch export dir
+        # (generator.npz + meta.json); which model it holds — the v1 GAN, the
+        # v2 ``mdn`` or ``gan_ar`` — is read from its meta.json, never set
+        # here. Needs the optional numpy extra: ``uv sync --extra
+        # learned-mouse``. Every other knob has a default (seed, hz,
+        # num_candidates, max_offset, button_size, jitter, ...); see
+        # LearnedTrajectory.
         #
         # mouse_trajectory:
-        #   trajectory_type: gan
-        #   weights_dir: ~/QLY/code/study/mouse-gan-torch/runs/full/export
+        #   trajectory_type: learned
+        #   weights_dir: ~/QLY/code/study/mouse-gan-torch/runs/v2_mdn_h128_d3/export
         #   seed: 0
         mouse_trajectory:
           trajectory_type: instant

@@ -24,9 +24,10 @@ be a separate ``humanize`` flag that forced ``instant`` when off, silently
 discarding a configured strategy; the two could disagree, so it is gone.
 
 No pre-click pause is added by default (``dwell_ms == 0``, and nothing in the
-package sets it): a strategy that models the hover before a click — ``gan``'s
-arrival dwell — expresses it as repeated waypoints, which ``move_to`` sleeps
-through without dispatching. Setting ``dwell_ms`` adds a fixed pause on top.
+package sets it): a strategy that models the hover before a click —
+``learned``, with the model's own pause or a sampled human dwell — expresses it
+as repeated waypoints, which ``move_to`` sleeps through without dispatching.
+Setting ``dwell_ms`` adds a fixed pause on top.
 
 The strategy arrives here as a ready-made instance, chosen and constructed by
 ``ConfigComposer`` from the capability's ``mouse_trajectory`` config block. It

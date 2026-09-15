@@ -397,7 +397,7 @@ class ActionWatchdog(BrowserWatchdog):
         """Size of the target region under a raw point, for the trajectory.
 
         An index click knows its element's box; a coordinate click does not,
-        and a strategy conditioned on the target size (``gan``, Fitts timing)
+        and a strategy conditioned on the target size (``learned``, Fitts timing)
         would otherwise see ``0 x 0``. Hit-test the point, take the element's
         border box, and return the largest box *centred on the point* that
         stays inside it — strategies treat the endpoint as the box centre, and

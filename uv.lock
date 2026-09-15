@@ -1635,7 +1635,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
-mouse-gan = [
+learned-mouse = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
@@ -1658,7 +1658,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
     { name = "lexmount", specifier = ">=0.4.2" },
     { name = "markdownify", marker = "extra == 'comparison'", specifier = ">=0.11" },
-    { name = "numpy", marker = "extra == 'mouse-gan'", specifier = ">=1.26" },
+    { name = "numpy", marker = "extra == 'learned-mouse'", specifier = ">=1.26" },
     { name = "oci", specifier = ">=2.100" },
     { name = "ollama", specifier = ">=0.4" },
     { name = "openai", specifier = ">=2.15" },
@@ -1671,11 +1671,11 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "skyvern-lite" },
-    { name = "spectragent", extras = ["mouse-gan"], marker = "extra == 'dev'" },
+    { name = "spectragent", extras = ["learned-mouse"], marker = "extra == 'dev'" },
     { name = "uuid7", marker = "extra == 'comparison'", specifier = "==0.1.0" },
     { name = "websockets", specifier = ">=13.0" },
 ]
-provides-extras = ["comparison", "mouse-gan", "dev"]
+provides-extras = ["comparison", "learned-mouse", "dev"]
 
 [[package]]
 name = "tenacity"
