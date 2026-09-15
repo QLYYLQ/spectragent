@@ -119,8 +119,10 @@ class ChatAzureOpenAI(OpenAICompatBase):
             model_params["top_p"] = self.top_p
         if self.service_tier is not None:
             model_params["service_tier"] = self.service_tier
-        if self.reasoning_models and any(str(m).lower() in str(self.model).lower() for m in self.reasoning_models):
-            model_params["reasoning"] = {"effort": self.reasoning_effort}
+        effort = self._effective_reasoning_effort()
+        if effort is not None:
+            model_params["reasoning"] = {"effort": effort}
+        if self._is_listed_reasoning_model():
             model_params.pop("temperature", None)
 
         try:

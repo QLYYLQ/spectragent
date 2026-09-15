@@ -60,10 +60,7 @@ class ChatVercel(OpenAICompatBase):
             # Gemini speaks a different JSON-Schema dialect.
             or family.schema_requires_gemini_fix
         )
-        is_reasoning = self.reasoning_models and any(
-            str(p).lower() in str(self.model).lower() for p in self.reasoning_models
-        )
-        return needs_family_workaround or bool(is_reasoning)
+        return needs_family_workaround or self._is_listed_reasoning_model()
 
     @overload
     async def ainvoke(

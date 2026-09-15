@@ -20,6 +20,7 @@ from openai.types.chat import ChatCompletionContentPartTextParam
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.responses import Response
 from openai.types.shared.chat_model import ChatModel
+from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.response_format_json_schema import (
     JSONSchema,
     ResponseFormatJSONSchema,
@@ -37,6 +38,10 @@ from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
+#: What a model on ``reasoning_models`` receives when ``reasoning_effort`` is
+#: left unset.
+_LISTED_MODEL_DEFAULT_EFFORT = "low"
+
 
 @dataclass
 class OpenAICompatBase(ChatModelBase):
@@ -51,7 +56,21 @@ class OpenAICompatBase(ChatModelBase):
     # --- Generation params ---
     temperature: Annotated[float | None, Field(description="Sampling temperature")] = 0.2
     frequency_penalty: Annotated[float | None, Field(description="Frequency penalty")] = 0.3
-    reasoning_effort: Annotated[str, Field(description="Reasoning effort level")] = "low"
+    reasoning_effort: Annotated[
+        ReasoningEffort,
+        Field(
+            description=(
+                "Sent as ``reasoning_effort`` whenever it is set, for any model. "
+                "Leave it unset to keep the provider's default policy: a model "
+                "on the provider's built-in reasoning-model list (o-series, "
+                "gpt-5*) gets 'low', every other model gets no parameter. Set "
+                "it to reach a reasoning model that list does not know, e.g. "
+                "gemini behind an OpenAI-compatible gateway. The value domain "
+                "is the OpenAI SDK's; a gateway may still refuse one of them "
+                "(a gemini proxy answers 'none' with HTTP 400)."
+            )
+        ),
+    ] = None
     seed: Annotated[int | None, Field(description="Random seed")] = None
     service_tier: Annotated[str | None, Field(description="Service tier")] = None
     top_p: Annotated[float | None, Field(description="Top-p sampling")] = None
@@ -180,15 +199,37 @@ class OpenAICompatBase(ChatModelBase):
         if self.service_tier is not None:
             params["service_tier"] = self.service_tier
 
-        # Handle reasoning models
-        if self.reasoning_models and any(
-            str(m).lower() in str(self.model).lower() for m in self.reasoning_models
-        ):
-            params["reasoning_effort"] = self.reasoning_effort
+        effort = self._effective_reasoning_effort()
+        if effort is not None:
+            params["reasoning_effort"] = effort
+        # OpenAI's own reasoning models reject sampling knobs. That is a fact
+        # about those models, not about the parameter: a gateway serving
+        # gemini takes ``temperature`` and ``reasoning_effort`` together.
+        if self._is_listed_reasoning_model():
             params.pop("temperature", None)
             params.pop("frequency_penalty", None)
 
         return params
+
+    def _is_listed_reasoning_model(self) -> bool:
+        """Whether ``model`` matches the provider's built-in reasoning list."""
+        return bool(self.reasoning_models) and any(
+            str(m).lower() in str(self.model).lower() for m in self.reasoning_models or ()
+        )
+
+    def _effective_reasoning_effort(self) -> str | None:
+        """The effort to put on the wire, or ``None`` to send nothing.
+
+        An explicit ``reasoning_effort`` always wins. Unset, a listed
+        reasoning model gets :data:`_LISTED_MODEL_DEFAULT_EFFORT` — the value
+        the field defaulted to before it became optional, so configs that
+        never named it send exactly what they sent before.
+        """
+        if self.reasoning_effort is not None:
+            return self.reasoning_effort
+        if self._is_listed_reasoning_model():
+            return _LISTED_MODEL_DEFAULT_EFFORT
+        return None
 
     # ------------------------------------------------------------------
     # Standard ainvoke — text + response_format structured output
