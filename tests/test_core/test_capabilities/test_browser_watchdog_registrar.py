@@ -427,6 +427,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
         names = sorted(c.__name__ for c in self._member_configs())
         assert names == [
             "BezierMouse_TrajectoryConfig",
+            "GanMouse_TrajectoryConfig",
             "InstantMouse_TrajectoryConfig",
             "WindmouseMouse_TrajectoryConfig",
         ]
@@ -465,6 +466,26 @@ class TestMouseTrajectoryIsAWiredReceptor:
             BrowserCapabilityConfig.model_validate(
                 {
                     "mouse_trajectory": {"trajectory_type": "windmoose"},
+                    "backend": {"provider_id": "local_chrome"},
+                }
+            )
+
+    def test_there_is_no_humanize_flag_to_override_the_strategy(self) -> None:
+        """``humanize_mouse: false`` used to silently discard a configured strategy.
+
+        The strategy is now the only switch (``instant`` == not humanized), so
+        the old key is an unknown field and fails validation loudly.
+        """
+        from pydantic import ValidationError
+
+        from spectragent.generated._composed import BrowserCapabilityConfig
+
+        assert "humanize_mouse" not in BrowserCapabilityConfig.model_fields
+        with pytest.raises(ValidationError, match="humanize_mouse"):
+            BrowserCapabilityConfig.model_validate(
+                {
+                    "humanize_mouse": False,
+                    "mouse_trajectory": {"trajectory_type": "windmouse"},
                     "backend": {"provider_id": "local_chrome"},
                 }
             )

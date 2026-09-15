@@ -637,7 +637,6 @@ class TestDeclaredConfigSurfaceIsReachable:
                         "env_type": "browser",
                         "capabilities": [
                             _capability(
-                                humanize_mouse=True,
                                 mouse_trajectory={
                                     "trajectory_type": "windmouse",
                                     "gravity": 12.5,
@@ -660,7 +659,6 @@ class TestDeclaredConfigSurfaceIsReachable:
         cap._cdp = object()  # type: ignore[assignment] — only stored, never called
         ctx = cap._watchdog_context("sid-1")
         assert ctx.mouse_trajectory is cap.mouse_trajectory
-        assert ctx.humanize_mouse is True
 
     def test_top_level_action_section_is_no_longer_a_silent_no_op(
         self,

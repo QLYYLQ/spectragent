@@ -85,11 +85,11 @@ class WatchdogContext:
     cdp_session_id: str | None = None
 
     debug_highlight: bool = False
-    humanize_mouse: bool = False
     #: The configured trajectory *instance* — already carrying its own
     #: knobs, because the Composer built it from the capability's
-    #: ``mouse_trajectory`` config block. ``None`` means "nothing was
-    #: configured", which collapses to the instant jump.
+    #: ``mouse_trajectory`` config block. It is the only humanization
+    #: switch: ``instant`` (or ``None``, nothing configured) is the legacy
+    #: instant jump, anything else humanizes.
     mouse_trajectory: MouseTrajectoryProtocol | None = None
 
     selector_map_getter: Callable[[], DOMSelectorMap] = field(

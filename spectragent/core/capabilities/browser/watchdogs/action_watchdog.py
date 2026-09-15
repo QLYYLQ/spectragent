@@ -268,7 +268,6 @@ class ActionWatchdog(BrowserWatchdog):
             selector_map_getter=ctx.selector_map_getter,
             main_frame_id_getter=ctx.main_frame_id_getter,
             debug_highlight=ctx.debug_highlight,
-            humanize_mouse=ctx.humanize_mouse,
             mouse_trajectory=ctx.mouse_trajectory,
             viewport=ctx.viewport,
         )
@@ -281,7 +280,6 @@ class ActionWatchdog(BrowserWatchdog):
         main_frame_id_getter: Callable[[], str | None] | None = None,
         debug_highlight: bool = False,
         debug_highlight_ms: int = 350,
-        humanize_mouse: bool = False,
         mouse_trajectory: MouseTrajectoryProtocol | None = None,
         viewport: tuple[int, int] = (1280, 720),
     ) -> None:
@@ -294,13 +292,12 @@ class ActionWatchdog(BrowserWatchdog):
         self._session_id: str | None = None
 
         # Mouse middle layer — owns cursor state + the trajectory strategy and
-        # performs every move/click/wheel. With humanize off it forces the
-        # ``instant`` strategy, collapsing to the legacy instant-jump behavior.
+        # performs every move/click/wheel. The ``instant`` strategy (also the
+        # fallback when none is configured) is the legacy instant jump.
         self._mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: self._session_id,
             trajectory=mouse_trajectory,
-            humanize=humanize_mouse,
             viewport=viewport,
             move_callback=self._overlay_move_cursor if debug_highlight else None,
         )
@@ -1069,9 +1066,9 @@ class ActionWatchdog(BrowserWatchdog):
     async def _approach_node(self, backend_node_id: int) -> None:
         """Move the humanized cursor onto an element before a keyboard/DOM action.
 
-        No-op unless ``humanize_mouse`` is on (type/select are keyboard/DOM
-        operations with no native cursor move, so we only add an approach when
-        humanizing). Best-effort: a failed coordinate resolution must not block
+        No-op unless the trajectory strategy is humanized, i.e. anything but
+        ``instant`` (type/select are keyboard/DOM operations with no native
+        cursor move, so we only add an approach when humanizing). Best-effort: a failed coordinate resolution must not block
         the underlying type/select.
         """
         if not self._mouse.humanized:

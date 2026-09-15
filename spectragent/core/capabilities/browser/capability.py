@@ -247,9 +247,17 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # to be a ``Literal`` plus an untyped ``mouse_trajectory_overrides``
         # dict, which conscribe dropped from the schema entirely — the
         # knobs existed and nothing could set them.
+        #
+        # It is also the only humanization switch. ``instant`` is the
+        # legacy instant jump; any other strategy humanizes every mouse
+        # action (curved path, per-point timing, eased wheel, cursor
+        # approach before type/select) at a cost of roughly 200-2000 ms
+        # per action — meant for anti-bot-sensitive evals, not throughput
+        # benchmarks. A separate ``humanize_mouse: bool`` used to sit next
+        # to this receptor and silently overrode it when false.
         "mouse_trajectory": (
             "mouse_trajectory",
-            ["bezier", "instant", "windmouse"],
+            ["bezier", "gan", "instant", "windmouse"],
         ),
         # ``browser_provider`` is the existing conscribe registrar for
         # the underlying browser backend (local_chrome, lexmount,
@@ -271,7 +279,6 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     viewport_width: int
     viewport_height: int
     debug_highlight: bool
-    humanize_mouse: bool
 
     # ── internal state, never config (assigned in __init__) ──────────
     # Declared here as type-only annotations so both pyright and the
@@ -339,19 +346,6 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = False,
-        humanize_mouse: Annotated[
-            bool,
-            PydanticField(
-                description=(
-                    "If True, route clicks/scrolls (and the cursor approach before "
-                    "type/select) through the configured ``mouse_trajectory`` — "
-                    "curved path, acceleration/deceleration, per-point timing — "
-                    "instead of an instant jump. Off by default: adds "
-                    "~200-1500ms per mouse action; intended for anti-bot-sensitive "
-                    "evals, not throughput benchmarks."
-                ),
-            ),
-        ] = False,
         actions: Annotated[
             list[ActionBase] | None,
             PydanticField(
@@ -374,7 +368,6 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
         self.debug_highlight = debug_highlight
-        self.humanize_mouse = humanize_mouse
 
         # In-Python default for the wired trajectory receptor. YAML must
         # name one (a single-instance receptor is required in the
@@ -1331,7 +1324,6 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             viewport=(self.viewport_width, self.viewport_height),
             cdp_session_id=cdp_session_id,
             debug_highlight=self.debug_highlight,
-            humanize_mouse=self.humanize_mouse,
             mouse_trajectory=self.mouse_trajectory,
             selector_map_getter=_selector_map_getter,
             selector_map_setter=_selector_map_setter,

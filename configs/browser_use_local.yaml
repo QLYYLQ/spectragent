@@ -66,9 +66,23 @@ environment:
         # How the cursor moves. A wired receptor, so the chosen strategy
         # arrives as a constructed instance carrying its own knobs —
         # ``windmouse`` takes ``gravity`` / ``wind`` / ``seed``,
-        # ``bezier`` its control-point spread. ``instant`` is the no-op
-        # single-jump strategy and is what runs whenever
-        # ``humanize_mouse`` is false, which is the default.
+        # ``bezier`` its control-point spread. The strategy is the only
+        # humanization switch: ``instant`` is the legacy single jump (no
+        # curved path, no eased wheel, no cursor approach before typing);
+        # any other strategy humanizes every mouse action, adding roughly
+        # 200-2000 ms each — for anti-bot-sensitive evals, not throughput.
+        #
+        # ``gan`` replays paths sampled from a GAN trained on recorded human
+        # movements (mouse-gan-torch export dir: generator.npz + meta.json).
+        # Needs the optional numpy extra: ``uv sync --extra mouse-gan``.
+        # Every other knob has a default (seed, hz, num_candidates,
+        # truncate_at_arrival, max_offset, button_size, jitter, ...); see
+        # GanTrajectory.
+        #
+        # mouse_trajectory:
+        #   trajectory_type: gan
+        #   weights_dir: ~/QLY/code/study/mouse-gan-torch/runs/full/export
+        #   seed: 0
         mouse_trajectory:
           trajectory_type: instant
 

@@ -1,13 +1,20 @@
-"""HumanMouse controller — off-mode equivalence + humanized behavior."""
+"""HumanMouse controller — instant-strategy equivalence + humanized behavior."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from spectragent.core.capabilities.browser.input.bezier import BezierTrajectory
+from spectragent.core.capabilities.browser.input.gan import GanTrajectory
+from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
 from spectragent.core.capabilities.browser.input.mouse import HumanMouse
+from spectragent.core.capabilities.browser.input.trajectory import TrajectoryPoint
 from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
+
+from .conftest import TINY_SEQ_LEN
 
 
 class RecordCDP:
@@ -61,11 +68,11 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 
 class TestOffModeEquivalence:
-    """humanize=False must reproduce the legacy instant-jump behavior."""
+    """The instant strategy (the default) must reproduce the legacy instant jump."""
 
     async def test_click_is_three_events_at_target_no_sleep(self, no_sleep: list[float]) -> None:
         cdp = RecordCDP()
-        mouse = HumanMouse(cdp, session_id_getter=lambda: None)  # humanize off
+        mouse = HumanMouse(cdp, session_id_getter=lambda: None)  # instant by default
         await mouse.click(55, 70, "left", 1)
 
         assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]
@@ -102,7 +109,6 @@ class TestHumanizedMode:
             cdp,
             session_id_getter=lambda: "sid",
             trajectory=WindMouseTrajectory(seed=1, max_points=80),
-            humanize=True,
             viewport=(1280, 720),
         )
         await mouse.click(600, 400, "left", 1, target_w=40, target_h=20)
@@ -127,7 +133,6 @@ class TestHumanizedMode:
             cdp,
             session_id_getter=lambda: "sid",
             trajectory=WindMouseTrajectory(seed=1),
-            humanize=True,
         )
         await mouse.click(600, 400, "left", 1, target_w=40)
         # Humanized motion sleeps before most intermediate moves.
@@ -140,7 +145,6 @@ class TestHumanizedMode:
             cdp,
             session_id_getter=lambda: "sid",
             trajectory=WindMouseTrajectory(seed=1),
-            humanize=True,
             wheel_steps=6,
         )
         await mouse.wheel(300, 300, 0, 480)
@@ -156,7 +160,6 @@ class TestHumanizedMode:
             cdp,
             session_id_getter=lambda: "sid",
             trajectory=WindMouseTrajectory(),
-            humanize=True,
             viewport=(1280, 720),
         )
         assert mouse.position == (640, 360)
@@ -167,7 +170,6 @@ class TestHumanizedMode:
             cdp,
             session_id_getter=lambda: "sid",
             trajectory=WindMouseTrajectory(seed=2),
-            humanize=True,
         )
         await mouse.drag(100, 100, 500, 400)
         types = cdp.types()
@@ -180,6 +182,102 @@ class TestHumanizedMode:
         assert (last["x"], last["y"]) == (500, 400)
 
 
+class _ScriptedPath:
+    """A strategy that returns a fixed waypoint list (humanized)."""
+
+    def __init__(self, points: list[TrajectoryPoint]) -> None:
+        self.points = points
+
+    @property
+    def humanized(self) -> bool:
+        return True
+
+    def generate(
+        self,
+        start_x: float,
+        start_y: float,
+        end_x: float,
+        end_y: float,
+        *,
+        target_w: float = 0.0,
+        target_h: float = 0.0,
+    ) -> list[TrajectoryPoint]:
+        return list(self.points)
+
+
+class TestRepeatedWaypoints:
+    """A repeated waypoint is stillness: its time is spent, no event is sent."""
+
+    async def test_repeats_sleep_without_dispatching(self, no_sleep: list[float]) -> None:
+        cdp = RecordCDP()
+        path = [
+            TrajectoryPoint(640, 360, 0.0),  # the cold-start position itself
+            TrajectoryPoint(700, 380, 20.0),
+            TrajectoryPoint(700, 380, 20.0),  # a still tick mid-path
+            TrajectoryPoint(760, 400, 20.0),
+            TrajectoryPoint(760, 400, 20.0),  # dwelling on the target
+            TrajectoryPoint(760, 400, 20.0),
+        ]
+        mouse = HumanMouse(cdp, session_id_getter=lambda: "sid", trajectory=_ScriptedPath(path))
+        await mouse.click(760, 400, "left", 1)
+        assert cdp.types() == ["mouseMoved", "mouseMoved", "mousePressed", "mouseReleased"]
+        assert no_sleep == pytest.approx([0.02] * 5)
+
+    async def test_single_point_path_always_dispatches(self, no_sleep: list[float]) -> None:
+        # The instant jump onto the current position still sends its event.
+        cdp = RecordCDP()
+        mouse = HumanMouse(cdp, session_id_getter=lambda: None)
+        await mouse.click(0, 0, "left", 1)
+        assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]
+
+
+class TestGanStrategy:
+    """A ``gan`` click through the controller, on a tiny random generator."""
+
+    async def test_click_dispatches_a_ticked_path_onto_the_target(
+        self, no_sleep: list[float], gan_export: Path
+    ) -> None:
+        cdp = RecordCDP()
+        mouse = HumanMouse(
+            cdp,
+            session_id_getter=lambda: "sid",
+            trajectory=GanTrajectory(weights_dir=str(gan_export), seed=4),
+            viewport=(1280, 720),
+        )
+        await mouse.click(1000, 150, "left", 1, target_w=90, target_h=30)
+
+        events = cdp.mouse_events()
+        types = cdp.types()
+        assert types[-2:] == ["mousePressed", "mouseReleased"]
+        moves = [e for e in events if e["type"] == "mouseMoved"]
+        assert 1 < len(moves) <= TINY_SEQ_LEN
+        assert (moves[-1]["x"], moves[-1]["y"]) == (1000, 150)
+        assert all((e["x"], e["y"]) == (1000, 150) for e in events[-2:])
+        for a, b in zip(moves, moves[1:], strict=False):
+            assert (a["x"], a["y"]) != (b["x"], b["y"])
+        for ev in moves[:-1]:
+            assert 0 <= ev["x"] <= 1279 and 0 <= ev["y"] <= 719
+        # One 20 ms sleep per tick; still ticks sleep without dispatching, so
+        # there are at least as many sleeps as moves.
+        assert no_sleep and all(s == pytest.approx(0.02) for s in no_sleep)
+        assert len(moves) <= len(no_sleep) <= TINY_SEQ_LEN
+
+    async def test_off_viewport_endpoint_stays_exact(
+        self, no_sleep: list[float], gan_export: Path
+    ) -> None:
+        cdp = RecordCDP()
+        mouse = HumanMouse(
+            cdp,
+            session_id_getter=lambda: "sid",
+            trajectory=GanTrajectory(weights_dir=str(gan_export), seed=9),
+            viewport=(1280, 720),
+        )
+        await mouse.click(450, 820, "left", 1)
+        last_move = [e for e in cdp.mouse_events() if e["type"] == "mouseMoved"][-1]
+        assert (last_move["x"], last_move["y"]) == (450, 820)
+        assert mouse.position == (450, 820)
+
+
 class TestStrategyIsInjectedNotResolved:
     """The strategy arrives constructed; nothing is looked up by name here.
 
@@ -190,40 +288,46 @@ class TestStrategyIsInjectedNotResolved:
     ``TestMouseTrajectoryIsAWiredReceptor``.
     """
 
-    async def test_injected_strategy_is_used_when_humanized(
-        self, no_sleep: list[float]
-    ) -> None:
+    async def test_injected_strategy_is_used_when_humanized(self, no_sleep: list[float]) -> None:
         cdp = RecordCDP()
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: None,
             trajectory=WindMouseTrajectory(seed=3),
-            humanize=True,
         )
         await mouse.click(400, 300, "left", 1)
         assert cdp.types().count("mouseMoved") > 1
 
-    async def test_strategy_ignored_when_humanize_off(
-        self, no_sleep: list[float]
-    ) -> None:
-        # With humanize off the forced ``instant`` strategy wins, so the
-        # configured one never runs — byte-for-byte the legacy jump.
+    async def test_instant_strategy_is_the_off_switch(self, no_sleep: list[float]) -> None:
+        # There is no separate humanize flag to disagree with the strategy:
+        # ``instant`` alone means "not humanized", with every legacy behaviour.
         cdp = RecordCDP()
         mouse = HumanMouse(
             cdp,
             session_id_getter=lambda: None,
-            trajectory=WindMouseTrajectory(seed=7),
-            humanize=False,
+            trajectory=InstantTrajectory(),
+            viewport=(1280, 720),
         )
+        assert mouse.humanized is False
+        assert mouse.position == (0, 0)  # legacy cold start, not the centre
         await mouse.click(40, 50, "left", 1)
-        assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]
+        await mouse.wheel(40, 50, 0, 300)
+        assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased", "mouseWheel"]
+        assert no_sleep == []
+
+    def test_every_path_strategy_is_humanized(self, gan_export: Path) -> None:
+        for strategy in (
+            WindMouseTrajectory(seed=1),
+            BezierTrajectory(seed=1),
+            GanTrajectory(weights_dir=str(gan_export)),
+        ):
+            mouse = HumanMouse(RecordCDP(), session_id_getter=lambda: None, trajectory=strategy)
+            assert mouse.humanized is True, strategy.trajectory_type
 
     async def test_no_strategy_configured_falls_back_to_instant(
         self, no_sleep: list[float]
     ) -> None:
         cdp = RecordCDP()
-        mouse = HumanMouse(
-            cdp, session_id_getter=lambda: None, trajectory=None, humanize=True
-        )
+        mouse = HumanMouse(cdp, session_id_getter=lambda: None, trajectory=None)
         await mouse.click(40, 50, "left", 1)
         assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]

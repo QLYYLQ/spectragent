@@ -56,11 +56,19 @@ comparison = [
     "uuid7==0.1.0",
     "markdownify>=0.11",
 ]
+# The ``gan`` mouse-trajectory strategy runs an exported GAN generator with a
+# numpy-only forward pass (``core/capabilities/browser/input/_gan_numpy.py``).
+# Nothing else in the package needs numpy, so it is not a core dependency.
+mouse-gan = [
+    "numpy>=1.26",
+]
 dev = [
     "ruff",
     "pyright",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    # The gan strategy's tests exercise the numpy forward pass.
+    "spectragent[mouse-gan]",
 ]
 
 

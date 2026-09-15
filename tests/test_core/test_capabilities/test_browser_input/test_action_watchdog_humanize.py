@@ -1,7 +1,8 @@
-"""Locks the ActionWatchdog → HumanMouse wiring (humanize on/off end-to-end).
+"""Locks the ActionWatchdog → HumanMouse wiring (humanized vs instant end-to-end).
 
 Reuses the canary's FakeCDP recorder so a regression that forgets to thread
-``humanize_mouse`` from the capability factory into the watchdog is caught.
+the ``mouse_trajectory`` strategy from the capability into the watchdog — the
+one thing that decides whether the cursor is humanized — is caught.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from spectragent.core.capabilities.browser.dom.models import DOMRect
-from spectragent.core.capabilities.browser.input import WindMouseTrajectory
+from spectragent.core.capabilities.browser.input import InstantTrajectory, WindMouseTrajectory
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
     ActionWatchdog,
 )
@@ -38,7 +39,6 @@ async def test_humanized_click_emits_curved_path(no_sleep: None) -> None:
     wd = ActionWatchdog(
         cdp=cdp,  # type: ignore[arg-type]
         selector_map_getter=lambda: {42: node},
-        humanize_mouse=True,
         mouse_trajectory=WindMouseTrajectory(seed=1),
         viewport=(1280, 720),
     )
@@ -58,7 +58,7 @@ async def test_humanized_click_emits_curved_path(no_sleep: None) -> None:
 
 
 async def test_default_watchdog_click_is_single_jump() -> None:
-    """Default (humanize off) watchdog == legacy single mouseMoved."""
+    """Default (no strategy → instant) watchdog == legacy single mouseMoved."""
     node = _make_node(42, DOMRect(x=400.0, y=300.0, width=100.0, height=40.0))
     cdp = FakeCDP(rect={"x": 600.0, "y": 400.0, "w": 40.0, "h": 20.0})
     wd = ActionWatchdog(
@@ -76,9 +76,33 @@ async def test_default_watchdog_click_is_single_jump() -> None:
     assert len(moves) == 1  # one jump, no trajectory
 
 
-async def test_humanize_flag_exposed_on_mouse() -> None:
+async def test_humanized_follows_the_strategy() -> None:
     cdp = FakeCDP()
-    on = ActionWatchdog(cdp=cdp, humanize_mouse=True)  # type: ignore[arg-type]
-    off = ActionWatchdog(cdp=cdp)  # type: ignore[arg-type]
-    assert on._mouse.humanized is True
-    assert off._mouse.humanized is False
+    windmouse = ActionWatchdog(cdp=cdp, mouse_trajectory=WindMouseTrajectory())  # type: ignore[arg-type]
+    instant = ActionWatchdog(cdp=cdp, mouse_trajectory=InstantTrajectory())  # type: ignore[arg-type]
+    unset = ActionWatchdog(cdp=cdp)  # type: ignore[arg-type]
+    assert windmouse._mouse.humanized is True
+    assert instant._mouse.humanized is False
+    assert unset._mouse.humanized is False
+
+
+@pytest.mark.parametrize(
+    ("strategy", "approaches"),
+    [(InstantTrajectory(), False), (WindMouseTrajectory(seed=1), True)],
+    ids=["instant", "windmouse"],
+)
+async def test_cursor_approach_before_type_follows_the_strategy(
+    no_sleep: None, strategy: object, approaches: bool
+) -> None:
+    """type/select only move the cursor first when the strategy is humanized."""
+    cdp = FakeCDP(rect={"x": 600.0, "y": 400.0, "w": 40.0, "h": 20.0})
+    wd = ActionWatchdog(cdp=cdp, mouse_trajectory=strategy)  # type: ignore[arg-type]
+    await wd._approach_node(42)
+    moves = [
+        c
+        for c in cdp.calls
+        if c.method == "Input.dispatchMouseEvent" and c.params.get("type") == "mouseMoved"
+    ]
+    assert bool(moves) is approaches
+    if approaches:
+        assert (moves[-1].params["x"], moves[-1].params["y"]) == (620, 410)

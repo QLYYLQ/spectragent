@@ -2,18 +2,25 @@
 
 A trajectory strategy turns a straight ``start → end`` cursor jump into a
 sequence of :class:`TrajectoryPoint` waypoints carrying per-point timing.
-``HumanMouse`` (``input/mouse.py``) dispatches one CDP ``mouseMoved`` per
-waypoint, sleeping ``dt_ms`` before each, which is what produces a curved
-path with realistic acceleration / deceleration.
+``HumanMouse`` (``input/mouse.py``) sleeps ``dt_ms`` before each waypoint and
+dispatches a CDP ``mouseMoved`` for every waypoint that moves the cursor, which
+is what produces a curved path with realistic acceleration / deceleration.
+
+The strategy is also the one humanization switch: ``instant`` reports
+``humanized == False`` and the controller then keeps every legacy behaviour
+(instant jump, ``(0, 0)`` cold start, single-event wheel, no cursor approach
+before type/select); every other strategy reports ``True``.
 
 Registered strategies (conscribe, mirrors ``dom/cleaning``):
 
-- ``instant``   — single point == the current instant-jump behavior (default)
+- ``instant``   — single point == the legacy instant-jump behavior (default)
 - ``windmouse`` — gravity/wind physics model + Fitts's-law timing
 - ``bezier``    — cubic Bézier path + Fitts's-law timing
+- ``gan``       — path sampled from an exported GAN generator (numpy inference,
+  optional ``mouse-gan`` extra), replayed at the model's tick rate
 
-The registry leaves room for a future ``gan`` / ``diffusion`` strategy with
-zero changes to consumers — only a new class file is needed.
+A further learned strategy (e.g. ``diffusion``) needs zero changes to
+consumers — only a new class file, plus its key in the capability wiring.
 """
 
 from __future__ import annotations
@@ -30,9 +37,15 @@ class TrajectoryPoint:
 
     ``x`` / ``y`` are integer viewport-CSS pixels — exactly what
     ``Input.dispatchMouseEvent`` expects. ``dt_ms`` is the delay to sleep
-    **before** dispatching this point's ``mouseMoved`` (the inter-sample
-    interval that encodes velocity / acceleration). The first point of a
-    path carries ``dt_ms == 0.0`` (no pre-move sleep).
+    **before** this waypoint (the inter-sample interval that encodes
+    velocity / acceleration). The first point of a path carries
+    ``dt_ms == 0.0`` (no pre-move sleep).
+
+    A waypoint that repeats the cursor position still takes its time but
+    dispatches no event, so a strategy can express stillness — a pause
+    mid-path, or dwelling on the target before the click — by repeating a
+    point. The one exception is a single-point path (the instant jump),
+    which always dispatches.
     """
 
     x: int
@@ -64,6 +77,16 @@ class MouseTrajectoryProtocol(Protocol):
         """
         ...
 
+    @property
+    def humanized(self) -> bool:
+        """Whether this strategy models human motion (``False`` only for ``instant``).
+
+        ``HumanMouse`` keys the behaviour *around* the path off it: cold
+        start at the viewport centre, wheel deltas split into eased
+        increments, and a cursor approach before keyboard/DOM actions.
+        """
+        ...
+
 
 MouseTrajectoryRegistrar = create_registrar(
     "mouse_trajectory",
@@ -86,3 +109,8 @@ class MouseTrajectoryBase(metaclass=MouseTrajectoryRegistrar.Meta):
     @property
     def trajectory_type(self) -> str:
         return self.__registry_key__
+
+    @property
+    def humanized(self) -> bool:
+        """Every strategy that emits a path is humanized; ``instant`` overrides."""
+        return True

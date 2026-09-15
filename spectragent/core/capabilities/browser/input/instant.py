@@ -4,7 +4,12 @@ A single waypoint at the destination, dt=0. With this strategy
 ``HumanMouse.move_to`` dispatches exactly one ``mouseMoved`` (at the target,
 no sleep), so ``click`` collapses to the legacy three-event sequence and
 ``wheel`` stays a single ``mouseWheel`` — byte-for-byte the pre-humanization
-behavior. This is what runs whenever ``humanize_mouse`` is off.
+behavior.
+
+It is the only way to switch humanization off: ``humanized`` is ``False``, so
+``HumanMouse`` also keeps the legacy ``(0, 0)`` cold start, the single-event
+wheel and no cursor approach before type/select. It is also what runs when no
+strategy is configured at all (direct construction, no Composer).
 """
 
 from __future__ import annotations
@@ -31,3 +36,7 @@ class InstantTrajectory(MouseTrajectoryBase):
         target_h: float = 0.0,
     ) -> list[TrajectoryPoint]:
         return [TrajectoryPoint(x=round(end_x), y=round(end_y), dt_ms=0.0)]
+
+    @property
+    def humanized(self) -> bool:
+        return False

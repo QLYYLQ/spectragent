@@ -12,10 +12,21 @@ sub-event would deadlock until ``event_timeout``. A controller invoked by direct
 ``await`` sidesteps the event loop entirely while still being the single
 chokepoint for all cursor movement.
 
-When ``humanize`` is off the strategy is forced to ``instant`` (one waypoint at
-the destination), so ``click`` emits exactly ``mouseMoved → mousePressed →
-mouseReleased`` at the target and ``wheel`` emits a single ``mouseWheel`` —
-byte-for-byte the pre-humanization behavior.
+The strategy is the only humanization switch. ``instant`` (also the fallback
+when no strategy is given) is one waypoint at the destination and reports
+``humanized == False``, so ``click`` emits exactly ``mouseMoved → mousePressed
+→ mouseReleased`` at the target, ``wheel`` emits a single ``mouseWheel`` and the
+cursor cold-starts at ``(0, 0)`` — byte-for-byte the pre-humanization behavior.
+Any other strategy reports ``humanized == True``, which also switches on the
+behaviour around the path: centre cold start and eased, segmented wheel (here)
+and the cursor approach before type/select (``ActionWatchdog``). There used to
+be a separate ``humanize`` flag that forced ``instant`` when off, silently
+discarding a configured strategy; the two could disagree, so it is gone.
+
+No pre-click pause is added by default (``dwell_ms == 0``, and nothing in the
+package sets it): a strategy that models the hover before a click — ``gan``'s
+arrival dwell — expresses it as repeated waypoints, which ``move_to`` sleeps
+through without dispatching. Setting ``dwell_ms`` adds a fixed pause on top.
 
 The strategy arrives here as a ready-made instance, chosen and constructed by
 ``ConfigComposer`` from the capability's ``mouse_trajectory`` config block. It
@@ -63,7 +74,6 @@ class HumanMouse:
         *,
         session_id_getter: Callable[[], str | None],
         trajectory: MouseTrajectoryProtocol | None = None,
-        humanize: bool = False,
         viewport: tuple[int, int] = (1280, 720),
         move_callback: Callable[[int, int], Any] | None = None,
         dwell_ms: float = 0.0,
@@ -74,18 +84,17 @@ class HumanMouse:
         self._cdp = cdp
         self._sid = session_id_getter
         self._vw, self._vh = viewport
-        self._humanized = bool(humanize)
         self._move_cb = move_callback
         self._dwell_ms = dwell_ms
         self._wheel_steps = max(1, wheel_steps)
         self._wheel_step_delay_ms = wheel_step_delay_ms
 
-        # Humanize off → the no-op strategy regardless of what was
-        # configured, so behavior is exactly the legacy instant jump.
-        if self._humanized and trajectory is not None:
-            self._traj: MouseTrajectoryProtocol = trajectory
-        else:
-            self._traj = InstantTrajectory()
+        # Nothing configured → the no-op strategy, exactly the legacy
+        # instant jump. The strategy alone decides whether we humanize.
+        self._traj: MouseTrajectoryProtocol = (
+            trajectory if trajectory is not None else InstantTrajectory()
+        )
+        self._humanized = self._traj.humanized
 
         # Cursor origin. Humanized runs start from viewport centre (matching the
         # debug overlay's initial 50vw/50vh) so the first action isn't a long
@@ -131,6 +140,9 @@ class HumanMouse:
         if not path:
             path = [TrajectoryPoint(ex, ey, 0.0)]
 
+        # A single-point path is the instant jump: always dispatched, even
+        # onto the current position (legacy behaviour).
+        jump = len(path) == 1
         last = len(path) - 1
         for i, pt in enumerate(path):
             is_last = i == last
@@ -138,10 +150,13 @@ class HumanMouse:
             # target (and off-viewport targets stay exact); only intermediate
             # overshoot points are clamped into the viewport.
             px, py = (pt.x, pt.y) if is_last else self._clamp(pt.x, pt.y)
-            if not is_last and (px, py) == (self._x, self._y):
-                continue  # dedup consecutive identical waypoints
+            # Every waypoint's time is spent — a repeated point is how a
+            # strategy says "hold still" — but a point that does not move the
+            # cursor dispatches nothing.
             if pt.dt_ms > 0:
                 await asyncio.sleep(pt.dt_ms / 1000.0)
+            if not jump and (px, py) == (self._x, self._y):
+                continue
             await self._dispatch_move(px, py)
 
     async def click(
