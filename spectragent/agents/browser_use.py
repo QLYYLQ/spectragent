@@ -44,6 +44,49 @@ _LLM_VOCABULARY_TO_LOCAL: dict[str, str] = {
     "go_to_url": "navigate",
 }
 
+#: Actions whose point the model reads off the *screenshot* while the
+#: capability executes it in *CSS viewport pixels*. Local id → the
+#: ``(x_param, y_param)`` pairs carrying a point, and the model-facing
+#: description of each param. The param *names* are the descriptor's own —
+#: only their unit differs between what the model is taught and what the
+#: executor declares, and ``_screenshot_points_to_viewport`` is the one
+#: place that converts.
+#:
+#: The two spaces coincide only at device scale factor 1. The image the
+#: model sees is ``ScreenshotObs.image_width x image_height`` pixels; the
+#: executor's space is ``viewport_width x viewport_height`` CSS pixels.
+_SCREENSHOT_POINT_PARAMS: dict[str, dict[tuple[str, str], tuple[str, str]]] = {
+    "click_coordinate": {
+        ("coordinate_x", "coordinate_y"): (
+            "int -- x in screenshot pixels, from the screenshot's left edge",
+            "int -- y in screenshot pixels, from the screenshot's top edge",
+        ),
+    },
+}
+
+
+def _local_id(name: str) -> str:
+    return name.rsplit(".", 1)[-1]
+
+
+@dataclass(frozen=True)
+class _ScreenshotGeometry:
+    """The image the model saw this step, and the viewport it depicts."""
+
+    image_width: int
+    image_height: int
+    viewport_width: int
+    viewport_height: int
+
+    def to_viewport(self, x: float, y: float) -> tuple[int, int]:
+        """Screenshot pixel → CSS viewport pixel, clamped into the viewport."""
+        vx = round(x * self.viewport_width / self.image_width)
+        vy = round(y * self.viewport_height / self.image_height)
+        return (
+            max(0, min(vx, self.viewport_width - 1)),
+            max(0, min(vy, self.viewport_height - 1)),
+        )
+
 
 def _is_anthropic_4_5_model(model_name: str | None) -> bool:
     """Check if the model is Claude Opus 4.5 or Haiku 4.5."""
@@ -87,6 +130,14 @@ class BrowserUseAgent(AgentBase):
             "action",
             ["click", "type", "navigate", "done"],
             [
+                # A second, distinct click verb — never merged into
+                # ``click``: ``click`` addresses a selector-map index,
+                # ``click_coordinate`` a point on the screenshot (for what
+                # the index cannot reach, e.g. a cross-origin iframe
+                # widget). Advertised only with ``use_vision``, since the
+                # point is read off the image; see
+                # ``_SCREENSHOT_POINT_PARAMS`` for the coordinate space.
+                "click_coordinate",
                 "scroll",
                 "send_keys",
                 "extract_content",
@@ -138,6 +189,14 @@ class BrowserUseAgent(AgentBase):
         default=None, init=False, repr=False
     )
     _max_history_steps: int = field(default=10, init=False, repr=False)
+    #: Geometry of the screenshot attached to the *current* step's prompt,
+    #: set by ``build_react_prompt`` and read by ``parse_react_output`` —
+    #: the loop calls the two in that order within one step, so a point in
+    #: the reply is always converted with the image that reply looked at.
+    #: ``None`` when this step showed the model no measurable screenshot.
+    _screenshot_geometry: _ScreenshotGeometry | None = field(
+        default=None, init=False, repr=False
+    )
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``). conscribe's metaclass attaches ``WiredField``
@@ -190,8 +249,19 @@ class BrowserUseAgent(AgentBase):
         ``max_actions_per_step`` comes from the Loop, which is what
         actually truncates. The agent must not carry its own copy: the
         prompt has to promise exactly what the loop will run.
+
+        Screenshot-point actions (``click_coordinate``) are dropped from what
+        the agent advertises and accepts when ``use_vision`` is off: the
+        model would be taught a verb whose only argument is a point on an
+        image it is never shown. The guard would still execute one; the
+        agent simply never teaches or parses it.
         """
-        self._action_descriptors = list(action_descriptors)
+        self._action_descriptors = [
+            d
+            for d in action_descriptors
+            if self.use_vision or _local_id(d.name) not in _SCREENSHOT_POINT_PARAMS
+        ]
+        self._screenshot_geometry = None
         self._per_run_output_model = _build_per_run_output_model(
             self._action_descriptors,
         )
@@ -211,9 +281,19 @@ class BrowserUseAgent(AgentBase):
         ``<agent_history>...</agent_history><agent_state>...</agent_state>
         <browser_state>...</browser_state>``. ``cache=True`` lets
         Anthropic prefix-cache the (mostly stable) task/state header.
+
+        The one piece of state it records is the geometry of the screenshot
+        it attaches, because ``parse_react_output`` has to convert a point
+        in the reply with the image that reply was looking at.
         """
+        shows_screenshot = self.use_vision and self._observation_has_screenshot(
+            observation
+        )
+        self._screenshot_geometry = (
+            _screenshot_geometry(observation.screenshot) if shows_screenshot else None
+        )
         body = self._build_step_text(observation)
-        if self.use_vision and self._observation_has_screenshot(observation):
+        if shows_screenshot:
             return [self._build_vision_message(observation, body)]
         return [UserMessage(content=body, cache=True)]
 
@@ -228,7 +308,10 @@ class BrowserUseAgent(AgentBase):
         and ``guarded_act`` all speak the same vocabulary.
         """
         if isinstance(llm_output, BrowserUseOutput):
-            return _items_to_actions(llm_output.action)
+            return [
+                self._screenshot_points_to_viewport(action)
+                for action in _items_to_actions(llm_output.action)
+            ]
 
         # Fallback: parse plain-text JSON.
         import json
@@ -266,6 +349,50 @@ class BrowserUseAgent(AgentBase):
         return self._per_run_output_model or BrowserUseOutput
 
     # ── private helpers ────────────────────────────────────────
+
+    def _screenshot_points_to_viewport(self, action: Action) -> Action:
+        """Convert a screenshot-pixel point into the executor's CSS pixels.
+
+        The model is taught ``click_coordinate`` in the pixels of the image
+        it was shown; ``browser.click_coordinate`` executes CSS viewport
+        pixels. Everything else passes through untouched.
+
+        Raises:
+            ParseError: the reply names a point but this step showed no
+                measurable screenshot, or a coordinate is not a number. Both
+                go back to the model as feedback rather than clicking a
+                guessed location.
+        """
+        point_params = _SCREENSHOT_POINT_PARAMS.get(_local_id(action.name))
+        if point_params is None:
+            return action
+        geometry = self._screenshot_geometry
+        if geometry is None:
+            raise ParseError(
+                f"{action.name} takes a point on the screenshot, but no "
+                f"screenshot with a known size was shown this step. Use an "
+                f"index-based action instead.",
+                raw_output=str(action.params)[:500],
+            )
+        params = dict(action.params)
+        for x_key, y_key in point_params:
+            try:
+                x = float(params[x_key])
+                y = float(params[y_key])
+            except KeyError as exc:
+                raise ParseError(
+                    f"{action.name} is missing {exc.args[0]!r}; it needs both "
+                    f"{x_key!r} and {y_key!r} in screenshot pixels.",
+                    raw_output=str(action.params)[:500],
+                ) from exc
+            except (TypeError, ValueError) as exc:
+                raise ParseError(
+                    f"{action.name}: {x_key!r}/{y_key!r} must be numbers, got "
+                    f"{params.get(x_key)!r}, {params.get(y_key)!r}.",
+                    raw_output=str(action.params)[:500],
+                ) from exc
+            params[x_key], params[y_key] = geometry.to_viewport(x, y)
+        return Action(name=action.name, params=params)
 
     def select_prompt_variant(self) -> str:
         """Which template on disk this configuration reads.
@@ -344,6 +471,11 @@ class BrowserUseAgent(AgentBase):
         legacy upstream verbs; a local id is resolved to a provider by
         ``build_guarded_act``, never here.
 
+        Param descriptions are verbatim too, with one exception: a
+        screenshot-point param (``_SCREENSHOT_POINT_PARAMS``) is described in
+        the unit the model writes it in — screenshot pixels — not the CSS
+        pixels the executor declares. The *names* never change.
+
         Empty list yields an empty string — only happens before
         ``prepare()`` runs or in degenerate test fixtures.
         """
@@ -352,8 +484,11 @@ class BrowserUseAgent(AgentBase):
         lines: list[str] = []
         for d in descriptors:
             if d.params:
+                model_facing: dict[str, str] = {}
+                for pair, docs in _SCREENSHOT_POINT_PARAMS.get(_local_id(d.name), {}).items():
+                    model_facing.update(zip(pair, docs, strict=True))
                 params_part = ", ".join(
-                    f"{k}: {v}" for k, v in d.params.items()
+                    f"{k}: {model_facing.get(k, v)}" for k, v in d.params.items()
                 )
             else:
                 params_part = "no params"
@@ -422,6 +557,16 @@ class BrowserUseAgent(AgentBase):
         history_xml = self._render_history(getattr(observation, "history", None))
         state_xml = self._render_agent_state(observation)
         browser_xml = self._render_browser_state(observation)
+        geometry = self._screenshot_geometry
+        if geometry is not None and any(
+            _local_id(d.name) in _SCREENSHOT_POINT_PARAMS for d in self._action_descriptors
+        ):
+            browser_xml += (
+                f"\n\nScreenshot: {geometry.image_width}x{geometry.image_height} "
+                f"pixels, showing the whole visible viewport. Coordinates for "
+                f"click_coordinate are pixels of this screenshot, origin (0, 0) "
+                f"at its top-left corner."
+            )
         return (
             f"<agent_history>\n{history_xml}\n</agent_history>\n"
             f"{state_xml}\n"
@@ -502,6 +647,23 @@ class BrowserUseAgent(AgentBase):
                 parts.append(f"DOM:\n{dom_str}")
 
         return "\n\n".join(parts) if parts else "(empty browser state)"
+
+
+def _screenshot_geometry(screenshot: Any) -> _ScreenshotGeometry | None:
+    """Geometry of a ``ScreenshotObs``, or ``None`` if any size is unknown.
+
+    Both sizes are the capability's to report (``image_*`` is read from the
+    captured PNG, ``viewport_*`` is the CSS viewport). A fragment missing
+    either has no defined conversion, so the agent refuses to convert rather
+    than assume device scale factor 1.
+    """
+    image_w = int(getattr(screenshot, "image_width", 0) or 0)
+    image_h = int(getattr(screenshot, "image_height", 0) or 0)
+    viewport_w = int(getattr(screenshot, "viewport_width", 0) or 0)
+    viewport_h = int(getattr(screenshot, "viewport_height", 0) or 0)
+    if not (image_w and image_h and viewport_w and viewport_h):
+        return None
+    return _ScreenshotGeometry(image_w, image_h, viewport_w, viewport_h)
 
 
 def _build_per_run_output_model(

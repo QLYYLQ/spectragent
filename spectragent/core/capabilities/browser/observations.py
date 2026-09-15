@@ -162,6 +162,15 @@ class ScreenshotObs(FragmentBase):
     active fragments whose local name collides are rejected at
     negotiation, so ``browser.screenshot`` and ``desktop.screenshot``
     could never both be live in one run anyway.
+
+    Two sizes, because they are two different grids. ``viewport_*`` is the
+    CSS-pixel viewport — the space every ``browser.*`` coordinate action
+    executes in (``Input.dispatchMouseEvent`` takes CSS pixels).
+    ``image_*`` is the pixel size of the image itself: ``Page.captureScreenshot``
+    renders the viewport at the device scale factor, so on a DPR-2 display
+    the image is twice the viewport in each direction. A consumer that shows
+    the image to a model and takes a point back converts with
+    ``viewport_width / image_width``; ``0`` means the size is unknown.
     """
 
     __registry_key__ = "browser.screenshot"
@@ -171,6 +180,8 @@ class ScreenshotObs(FragmentBase):
     image_bytes: bytes | None = None
     viewport_width: int = 0
     viewport_height: int = 0
+    image_width: int = 0
+    image_height: int = 0
 
     @field_serializer("image_bytes")
     def _serialize_image_bytes(self, value: bytes | None) -> str | None:

@@ -382,12 +382,61 @@ class ActionWatchdog(BrowserWatchdog):
         )
 
     async def _on_click_coordinate(self, event: ClickCoordinateEvent) -> dict[str, Any] | None:
-        """Click at absolute coordinates."""
+        """Click at a viewport point given in CSS pixels."""
+        target_w, target_h = await self._target_box_at(
+            event.coordinate_x, event.coordinate_y
+        )
         return await self._click_at(
             event.coordinate_x, event.coordinate_y,
             event.button, event.click_count,
             label=f"({event.coordinate_x}, {event.coordinate_y})",
+            target_w=target_w, target_h=target_h,
         )
+
+    async def _target_box_at(self, x: int, y: int) -> tuple[float, float]:
+        """Size of the target region under a raw point, for the trajectory.
+
+        An index click knows its element's box; a coordinate click does not,
+        and a strategy conditioned on the target size (``gan``, Fitts timing)
+        would otherwise see ``0 x 0``. Hit-test the point, take the element's
+        border box, and return the largest box *centred on the point* that
+        stays inside it — strategies treat the endpoint as the box centre, and
+        a click near an element's edge is aiming at a narrower target than the
+        element.
+
+        Only when humanized: the instant jump ignores the box, and the legacy
+        coordinate click stays exactly three input events. Best-effort — any
+        failure means "size unknown", never a failed click. The hit-test runs
+        in this tab's session, so a point over a cross-origin iframe resolves
+        to the iframe element itself.
+        """
+        if not self._mouse.humanized:
+            return 0.0, 0.0
+        sid = self._session_id
+        try:
+            hit = await self._cdp.send(
+                "DOM.getNodeForLocation",
+                {"x": x, "y": y, "ignorePointerEventsNone": True},
+                session_id=sid,
+            )
+            backend_node_id = (hit or {}).get("backendNodeId")
+            if not backend_node_id:
+                return 0.0, 0.0
+            box = await self._cdp.send(
+                "DOM.getBoxModel", {"backendNodeId": backend_node_id}, session_id=sid,
+            )
+            quad = ((box or {}).get("model") or {}).get("border") or []
+            if len(quad) < 8:
+                return 0.0, 0.0
+            xs, ys = quad[0::2], quad[1::2]
+            half_w = min(x - min(xs), max(xs) - x)
+            half_h = min(y - min(ys), max(ys) - y)
+            if half_w <= 0 or half_h <= 0:
+                return 0.0, 0.0
+            return float(2 * half_w), float(2 * half_h)
+        except Exception as exc:
+            logger.debug("hit-test at (%d, %d) failed: %s", x, y, exc)
+            return 0.0, 0.0
 
     async def _click_at(
         self, x: int, y: int, button: str, click_count: int,
@@ -395,8 +444,9 @@ class ActionWatchdog(BrowserWatchdog):
     ) -> dict[str, Any]:
         """Execute click at (x, y) via the HumanMouse middle layer.
 
-        Cursor movement (a single jump when humanize is off, a full human
-        trajectory when on) plus press/release are owned by ``self._mouse``.
+        Cursor movement (a single jump with the ``instant`` strategy, a full
+        human trajectory otherwise) plus press/release are owned by
+        ``self._mouse``.
         The returned coords are the *requested* target, unchanged.
         """
         try:

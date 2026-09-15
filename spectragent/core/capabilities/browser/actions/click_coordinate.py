@@ -21,15 +21,28 @@ if TYPE_CHECKING:
 
 @dataclass
 class ClickCoordinateAction(SettleableAction, ActionBase):
-    """Click at absolute viewport coordinates (used by vision-only agents)."""
+    """Click at a point in the viewport, no element index involved.
+
+    The coordinate space is **CSS pixels of the page viewport**, origin at
+    its top-left corner — what ``Input.dispatchMouseEvent`` takes. That is
+    *not* necessarily the pixel grid of the screenshot a model looked at:
+    the capture is rendered at the device scale factor (see
+    :class:`~spectragent.core.capabilities.browser.observations.ScreenshotObs`),
+    so an agent that takes a point off the image converts before emitting
+    this action. The descriptor says so, because the params it declares are
+    the contract every agent has to meet.
+    """
 
     __registry_key__ = "browser.click_coordinate"
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return ActionDescriptor(
             name=self.action_id,
-            description="Click at absolute screen coordinates.",
-            params={"coordinate_x": "int", "coordinate_y": "int"},
+            description="Click at a point in the page viewport.",
+            params={
+                "coordinate_x": "int -- CSS px from the viewport's left edge",
+                "coordinate_y": "int -- CSS px from the viewport's top edge",
+            },
         )
 
     async def execute(

@@ -22,6 +22,21 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 
 logger = logging.getLogger(__name__)
 
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def png_size(data: bytes) -> tuple[int, int]:
+    """``(width, height)`` of a PNG, read from its IHDR chunk; ``(0, 0)`` if not a PNG.
+
+    The image size is not the viewport size — the capture is rendered at the
+    device scale factor — and it is already in the bytes we hold, so reading
+    the 24-byte header costs nothing and keeps the observe cycle at one CDP
+    call.
+    """
+    if len(data) < 24 or not data.startswith(_PNG_SIGNATURE) or data[12:16] != b"IHDR":
+        return 0, 0
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
 
 class ScreenshotWatchdog(BrowserWatchdog):
     """Captures screenshots via CDP."""
@@ -74,12 +89,15 @@ class ScreenshotWatchdog(BrowserWatchdog):
         try:
             screenshot = await self._capture()
             width, height = self._viewport
+            image_width, image_height = png_size(screenshot)
             return BrowserStateSummary(
                 fragments={
                     "browser.screenshot": ScreenshotObs(
                         image_bytes=screenshot,
                         viewport_width=width,
                         viewport_height=height,
+                        image_width=image_width,
+                        image_height=image_height,
                     ),
                 }
             )
