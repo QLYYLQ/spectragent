@@ -3,7 +3,7 @@
 Both areas were only ever exercised by hand, and both failed in ways that
 blamed the wrong thing:
 
-* ``_find_chrome`` searched Linux names only, so every macOS run died with
+* ``find_chrome`` searched Linux names only, so every macOS run died with
   "Cannot find Chrome / Chromium. Install with: apt install ..." even though
   Chrome was installed — just inside an ``.app`` bundle.
 * ``_wait_for_cdp`` polled through whatever ``http_proxy`` happened to be
@@ -29,8 +29,8 @@ import pytest
 from spectragent.core.capabilities.browser.backends import local_chrome
 from spectragent.core.capabilities.browser.backends.local_chrome import (
     LocalChromeProvider,
-    _find_chrome,
     _search_paths,
+    find_chrome,
 )
 
 # ── Executable discovery ──────────────────────────────────────────
@@ -58,7 +58,7 @@ class TestFindChrome:
             local_chrome.shutil, "which", lambda p: p if p == bundle else None
         )
 
-        assert _find_chrome() == bundle
+        assert find_chrome() == bundle
 
     def test_a_broken_env_override_names_itself(self, monkeypatch) -> None:
         """Falling through to the search would report the generic message and
@@ -67,7 +67,7 @@ class TestFindChrome:
         monkeypatch.setattr(local_chrome.shutil, "which", lambda _p: None)
 
         with pytest.raises(FileNotFoundError, match=r"/nope/chrome"):
-            _find_chrome()
+            find_chrome()
 
     def test_install_hint_matches_the_running_platform(self, monkeypatch) -> None:
         monkeypatch.delenv("CHROME_EXECUTABLE_PATH", raising=False)
@@ -75,7 +75,7 @@ class TestFindChrome:
         monkeypatch.setattr(local_chrome.shutil, "which", lambda _p: None)
 
         with pytest.raises(FileNotFoundError, match=r"brew install --cask"):
-            _find_chrome()
+            find_chrome()
 
 
 # ── CDP readiness poll ────────────────────────────────────────────

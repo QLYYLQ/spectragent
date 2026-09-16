@@ -1,4 +1,4 @@
-"""Browser profile presets — named combinations of cleaner + serializer + watchdogs.
+"""Browser profile presets — what a run captures, and at what cost.
 
 A profile says which watchdogs to **leave out**, not which to install.
 Enumerating them was one of the nine places a new observation fragment
@@ -9,10 +9,18 @@ costs nothing unless its fragment is negotiated active — cost control
 belongs to negotiation (``BrowserStateRequestEvent.fragments``), not to
 a hand-maintained name list.
 
+The DOM *cleaner* is deliberately not here. It used to be a strategy key
+on this model, which meant the cleaner arrived default-constructed and
+every knob its config declared (``descendants_occlude``,
+``max_occlusion_nodes``, ...) was unreachable from YAML — the same shape
+``mouse_trajectory`` was fixed out of. It is a wired receptor on
+:class:`~spectragent.core.capabilities.browser.capability.BrowserCapability`
+now, so the configured *instance* is what reaches ``DOMWatchdog``.
+
 Usage::
 
     profile = resolve_profile("standard")
-    profile = resolve_profile("standard", override={"cleaner": "skyvern"})
+    profile = resolve_profile("standard", override={"serializer": "html"})
     profile = resolve_profile("standard", watchdogs_remove=["popups"])
 """
 
@@ -24,7 +32,6 @@ from pydantic import BaseModel, Field
 class BrowserProfileConfig(BaseModel):
     """Configuration for a browser session's component stack."""
 
-    cleaner: str | None = "browser_use"
     serializer: str | None = "text"
 
     #: Registry keys of watchdogs this profile deliberately does not
@@ -42,6 +49,18 @@ class BrowserProfileConfig(BaseModel):
     # per observe, which is why the cheap profiles leave it off.
     js_click_listener_detection: bool = False
 
+    # Capture the documents of cross-site iframes — the ones Chrome runs in
+    # another renderer process (captcha widgets, payment fields, embeds,
+    # ads), whose content is not in the tab's own ``DOM.getDocument``. Each
+    # such frame is reached through a CDP session of its own and costs its
+    # own DOM + DOMSnapshot + Accessibility round trips per observe (plus
+    # one ``Target.setAutoAttach`` when first seen), all frames together
+    # bounded by ``dom.capture.FRAME_CAPTURE_TIMEOUT_S``. Off, such an iframe
+    # stays opaque: the ``<iframe>`` element is its only target. Same-site
+    # iframes and shadow roots are captured either way — they arrive with
+    # the tab's own ``DOM.getDocument(pierce=True)`` at no extra cost.
+    cross_site_iframe_capture: bool = False
+
     # SecurityWatchdog configuration.
     security_allowed_domains: list[str] | None = None
     security_blocked_domains: list[str] | None = None
@@ -49,22 +68,23 @@ class BrowserProfileConfig(BaseModel):
 
 BUILTIN_PROFILES: dict[str, BrowserProfileConfig] = {
     "standard": BrowserProfileConfig(
-        cleaner="browser_use",
         serializer="text",
         watchdogs_exclude=[],
         # Accuracy-first profile: pay the extra round trip.
         js_click_listener_detection=True,
+        cross_site_iframe_capture=True,
     ),
+    # Pair with ``dom_cleaner: {cleaner_type: skyvern}``: the html
+    # serializer prints what that cleaner produces, and the two capture
+    # switches are off because that cleaner reads neither
+    # ``js_click_listener_ids`` nor frame captures.
     "skyvern": BrowserProfileConfig(
-        cleaner="skyvern",
         serializer="html",
         watchdogs_exclude=["security"],
-        # SkyvernCleaner does not read js_click_listener_ids — detecting
-        # them would be pure cost.
         js_click_listener_detection=False,
+        cross_site_iframe_capture=False,
     ),
     "vision_only": BrowserProfileConfig(
-        cleaner=None,
         serializer=None,
         # Hard opt-out: this profile cannot serve ``browser.dom`` at all,
         # so an agent that *requires* that fragment fails negotiation
@@ -72,9 +92,10 @@ BUILTIN_PROFILES: dict[str, BrowserProfileConfig] = {
         watchdogs_exclude=["dom", "security"],
     ),
     "lightweight": BrowserProfileConfig(
-        cleaner="browser_use",
         serializer="text",
         watchdogs_exclude=["crash", "popups", "security"],
+        # Cuts CDP work: cross-site frames stay opaque.
+        cross_site_iframe_capture=False,
     ),
 }
 
@@ -93,7 +114,7 @@ def resolve_profile(
     name:
         Built-in profile name (standard, skyvern, vision_only, lightweight).
     override:
-        Override individual fields (cleaner, serializer).
+        Override individual fields (``serializer``).
     watchdogs_add:
         Watchdog types to re-enable (drop them from ``watchdogs_exclude``).
     watchdogs_remove:
@@ -107,7 +128,7 @@ def resolve_profile(
 
     if override:
         for key, value in override.items():
-            if key in ("cleaner", "serializer"):
+            if key == "serializer":
                 setattr(profile, key, value)
 
     if watchdogs_add:

@@ -1,6 +1,29 @@
 """DOM internal models — dataclass-based for performance.
 
 Reference: browser-use EnhancedDOMTreeNode.
+
+One page, several CDP targets
+-----------------------------
+
+A tab is not one DOM. Its main document, every same-process iframe and
+every shadow root live in the tab's own renderer target and come back from
+one ``DOM.getDocument(pierce=True)``. A cross-origin iframe that Chrome runs
+out of process (an OOPIF) is a *different target*, reachable only through
+its own CDP session, and its ``backendNodeId`` values are counted in a
+different process. Two targets routinely hand out the same small ids, so a
+``backend_node_id`` means nothing without the target it came from.
+
+The tree built here is the composed page: a frame owner's
+``content_document`` holds that frame's document whichever target it came
+from, and every node records the session that owns it (``session_id``) —
+the pair ``(session_id, backend_node_id)`` is what CDP understands.
+
+The selector map needs a single ``int`` per element, because that integer
+is the ``[index]`` the model reads and writes back. :func:`element_handle`
+defines it: the tab's own target keeps ``backend_node_id`` as the key (so
+a page without out-of-process frames is keyed exactly as before), and each
+out-of-process frame target gets a namespace of its own above
+:data:`FRAME_HANDLE_BASE`.
 """
 
 from __future__ import annotations
@@ -41,6 +64,38 @@ def is_traced(spec: Field[Any]) -> bool:
 def traced_fields(obj: Any) -> tuple[Field[Any], ...]:
     """Dataclass fields of ``obj`` that belong in the run trace."""
     return tuple(spec for spec in fields(obj) if is_traced(spec))
+
+
+# ── selector-map keys ──────────────────────────────────────────────
+
+FRAME_HANDLE_BASE: Final = 2**31
+"""Width of one handle namespace.
+
+Namespace ``n`` owns ``[n * 2**31, (n + 1) * 2**31)``, so no two namespaces
+can produce the same key. Backend node ids are a per-renderer counter that
+starts at 1 — reaching ``2**31`` would take two billion DevTools-tracked
+nodes in one process — and :func:`element_handle` refuses an id that does
+reach it instead of letting it spill into the next namespace. Namespace 0 is
+the tab's own target, which is why its keys are its backend node ids
+unchanged.
+"""
+
+
+def element_handle(namespace: int, backend_node_id: int) -> int | None:
+    """The selector-map key of ``backend_node_id`` in handle namespace ``namespace``.
+
+    ``namespace`` is 0 for the tab's own target (main document, same-process
+    iframes, shadow roots) and the frame target's ordinal (1, 2, ...) for an
+    out-of-process iframe. The ordinal is assigned once per frame for the
+    life of the tab, so an element keeps its key across observations.
+
+    Returns ``None`` for an id outside the namespace width: such a node
+    cannot be given a key that is guaranteed not to collide, so it is not
+    indexed rather than risking an index that clicks a different element.
+    """
+    if backend_node_id < 0 or backend_node_id >= FRAME_HANDLE_BASE:
+        return None
+    return namespace * FRAME_HANDLE_BASE + backend_node_id
 
 
 @dataclass(slots=True)
@@ -86,16 +141,32 @@ class DOMElementNode:
     children: list[DOMElementNode] = field(default_factory=list)
 
     # Super-selector
+    #
+    # ``backend_node_id`` is unique only within the target that owns the
+    # node; ``session_id`` names that target's CDP session and is what
+    # every command about this node must be sent on. ``target_id`` is the
+    # out-of-process frame target the node came from, ``None`` for the
+    # tab's own target. ``frame_id`` is the frame whose document holds the
+    # node (shadow-root content belongs to its host's document).
     node_id: int | None = None
-    backend_node_id: int | None = None  # selector_map KEY (keyed by backend_node_id)
+    backend_node_id: int | None = None
     frame_id: str | None = None
     target_id: str | None = None
     session_id: str | None = None
 
     # Layout
-    bounds: DOMRect | None = None  # Document coords
-    client_rect: DOMRect | None = None  # Viewport coords
-    scroll_rects: DOMRect | None = None  # Scroll area (content size)
+    #
+    # ``bounds`` is the border box in *page* coordinates: CSS pixels of the
+    # top-level document, whichever frame the node lives in — a frame's
+    # content is offset by its owner's content box and its own scroll. So
+    # boxes from different frames are directly comparable, and for the
+    # main document they are the usual document coordinates.
+    # ``client_rect`` / ``scroll_rects`` are element-local metrics, not
+    # positions: (clientLeft, clientTop, clientWidth, clientHeight) and
+    # (scrollLeft, scrollTop, scrollWidth, scrollHeight).
+    bounds: DOMRect | None = None
+    client_rect: DOMRect | None = None
+    scroll_rects: DOMRect | None = None
     is_visible: bool = True
     is_scrollable: bool = False
 
@@ -109,7 +180,11 @@ class DOMElementNode:
     ax_properties: list[EnhancedAXProperty] | None = None
 
     # Interactivity
-    element_index: int | None = None  # Sequential index (for debugging / backward compat)
+    #
+    # ``element_index`` is the node's selector-map key — the ``[index]`` the
+    # serializers print and actions resolve — or ``None`` when the node is
+    # not indexed. See :func:`element_handle`.
+    element_index: int | None = None
     is_interactive: bool = False
     has_js_click_listener: bool = False
     is_new: bool = False  # True if element was not in previous snapshot
@@ -124,6 +199,11 @@ class DOMElementNode:
     # the form the agent actually read.
     _compound_children: list[dict[str, Any]] = field(default_factory=list)
 
+    # Handle namespace of the target this node came from — 0 for the tab's
+    # own target. Private: it is an input to ``element_index``, which is
+    # the traced form, and it means nothing without the tab's frame table.
+    _handle_namespace: int = 0
+
     # Iframe / Shadow DOM.
     #
     # Traced. These point *down* into content the agent genuinely saw —
@@ -132,6 +212,10 @@ class DOMElementNode:
     # the elements the run acted on. They are not back-references and not
     # a volume risk: node construction keeps shadow roots out of
     # ``children``, so each subtree is reached exactly once.
+    #
+    # ``content_document`` is the root of the frame's document whether the
+    # frame runs in this target or out of process; its nodes carry the
+    # session that owns them.
     content_document: DOMElementNode | None = field(default=None, repr=False)
     shadow_root_type: str | None = None
     shadow_roots: list[DOMElementNode] | None = None
@@ -151,22 +235,82 @@ class DOMElementNode:
         default=None, repr=False, metadata=TRACE_SKIP
     )
 
+    def composed_children(self) -> list[DOMElementNode]:
+        """Every subtree root below this node, in the order it is rendered.
+
+        Light-DOM children, then shadow roots, then the frame's document —
+        the order ``TextSerializer`` prints them in. A pass that walks only
+        ``children`` sees neither shadow DOM nor frame content, which is how
+        both used to reach the prompt without ever being indexed.
+        """
+        composed = list(self.children)
+        if self.shadow_roots:
+            composed.extend(self.shadow_roots)
+        if self.content_document is not None:
+            composed.append(self.content_document)
+        return composed
+
     def descendants(self) -> list[DOMElementNode]:
-        """Return all descendant nodes (depth-first)."""
+        """All nodes below this one — shadow roots and frame documents included."""
         result: list[DOMElementNode] = []
-        stack = list(self.children)
+        stack = self.composed_children()
         while stack:
             node = stack.pop()
             result.append(node)
-            stack.extend(node.children)
+            stack.extend(node.composed_children())
         return result
 
     def interactive_elements(self) -> list[DOMElementNode]:
         """Return all interactive descendant elements."""
         return [n for n in self.descendants() if n.is_interactive]
 
+    def frame_owners(self) -> list[DOMElementNode]:
+        """The ``<iframe>`` / ``<frame>`` elements this node sits inside, innermost first.
+
+        Empty for a node of the top-level document. An action needs the
+        chain because live geometry is relative to the node's own renderer:
+        at each out-of-process boundary, the owner's content box — measured
+        in the owner's renderer — lifts the point towards the page.
+        """
+        owners: list[DOMElementNode] = []
+        node = self
+        while node.parent is not None:
+            if node.parent.content_document is node:
+                owners.append(node.parent)
+            node = node.parent
+        return owners
+
 
 DOMSelectorMap = dict[int, DOMElementNode]
+"""``element_handle`` → node, for every indexed element of the page.
+
+Keys are :func:`element_handle` values, which are the ``backend_node_id``
+itself for the tab's own target. ``node.element_index`` repeats the key.
+"""
+
+
+@dataclass(slots=True)
+class TargetCapture:
+    """Raw CDP data for the documents of one renderer target.
+
+    Everything here came over one CDP session, so its backend node ids form
+    one namespace. ``frames`` holds the captures of this target's
+    out-of-process child frames keyed by frame id — the ``frameId`` of the
+    ``<iframe>`` node in ``raw_dom`` that hosts each one (for an out-of-process
+    frame Chrome uses the frame id as the target id too).
+    """
+
+    raw_dom: dict[str, Any]
+    snapshot: dict[str, Any]
+    ax_tree: dict[str, Any]
+    session_id: str | None = None
+    #: The frame target's id; ``None`` for the tab's own target.
+    target_id: str | None = None
+    #: :func:`element_handle` namespace; 0 for the tab's own target.
+    namespace: int = 0
+    #: Backend ids with JS click listeners; ``None`` = detection skipped.
+    js_click_listener_ids: set[int] | None = None
+    frames: dict[str, TargetCapture] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -205,6 +349,6 @@ class DOMState:
     scroll_info: ScrollInfo = field(default_factory=ScrollInfo)
     serialized_dom: str = ""
 
-    def get_element(self, backend_node_id: int) -> DOMElementNode | None:
-        """Look up an element by its backend_node_id in the selector map."""
-        return self.selector_map.get(backend_node_id)
+    def get_element(self, index: int) -> DOMElementNode | None:
+        """Look up an element by its selector-map key (its ``element_index``)."""
+        return self.selector_map.get(index)

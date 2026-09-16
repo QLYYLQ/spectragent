@@ -37,9 +37,12 @@ environment:
         viewport_width: 1280
         viewport_height: 720
 
-        # See browser_use_local.yaml for what these two blocks buy you.
+        # See browser_use_local.yaml for what these three blocks buy you.
         mouse_trajectory:
           trajectory_type: instant
+
+        dom_cleaner:
+          cleaner_type: browser_use
 
         # Switch backend = edit only this block.
         backend:

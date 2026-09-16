@@ -281,7 +281,7 @@ class SkyvernAgent(AgentBase):
                 # ``index``, not ``element_id``: BrowserCapability's
                 # selector_map is index-keyed and every element-targeting
                 # action reads ``params["index"]``
-                # (``actions/_common.resolve_index_to_backend_node_id``).
+                # (``actions/_common.resolve_index``).
                 if item.index is not None:
                     params["index"] = item.index
                 if item.text is not None:

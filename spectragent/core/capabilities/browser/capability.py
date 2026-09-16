@@ -67,6 +67,11 @@ from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — re
 )
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
+from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerProtocol
+from spectragent.core.capabilities.browser.dom.cleaning.browser_use import BrowserUseCleaner
+from spectragent.core.capabilities.browser.dom.cleaning.skyvern import (  # noqa: F401 — registration
+    SkyvernCleaner,
+)
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
 from spectragent.core.capabilities.browser.input import (
     InstantTrajectory,
@@ -271,6 +276,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             "mouse_trajectory",
             ["bezier", "instant", "learned", "windmouse"],
         ),
+        # ``dom_cleaner`` is a receptor for the same reason: the strategy
+        # arrives constructed, carrying the knobs that decide what the
+        # agent gets to see (``descendants_occlude``,
+        # ``max_occlusion_nodes``, ``include_shadow_dom``, ...). It used to
+        # be a name on ``BrowserProfileConfig``, which meant ``DOMWatchdog``
+        # looked the class up and default-constructed it — the generated
+        # ``BrowserUseDom_CleanerConfig`` existed and nothing could reach it.
+        "dom_cleaner": ("dom_cleaner", ["browser_use", "skyvern"]),
         # ``browser_provider`` is the existing conscribe registrar for
         # the underlying browser backend (local_chrome, lexmount,
         # browseruse_lite, ...). Mode 1 (auto-discovery) allows any
@@ -283,6 +296,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     # are annotation-only here, so conscribe installs a ``WiredField``
     # descriptor and the Composer setattr-injects them after construction.
     mouse_trajectory: MouseTrajectoryProtocol  # type: ignore[misc]
+    dom_cleaner: DOMCleanerProtocol  # type: ignore[misc]
     backend: BaseBrowserProvider  # type: ignore[misc]
 
     # ── conscribe-visible config (assigned in __init__) ──────────────
@@ -388,6 +402,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # legacy instant-jump behaviour. ``ConfigComposer`` setattrs the
         # configured instance over this, shadowing the descriptor.
         self.mouse_trajectory = InstantTrajectory()
+        # Same contract for the DOM cleaning strategy: YAML names one, a
+        # hand-built capability gets the default strategy with its defaults.
+        self.dom_cleaner = BrowserUseCleaner()
 
         # ── internal state (never config) ─────────────────────────
         self._actions_by_name = {}
@@ -1347,6 +1364,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             cdp_session_id=cdp_session_id,
             debug_highlight=self.debug_highlight,
             mouse_trajectory=self.mouse_trajectory,
+            dom_cleaner=self.dom_cleaner,
             selector_map_getter=_selector_map_getter,
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,

@@ -40,12 +40,17 @@ EXEMPT_CHILD_TAGS: frozenset[str] = frozenset({
 _CONTAINMENT_THRESHOLD = 0.99
 
 
-def propagate_parent_bounds(root: DOMElementNode) -> set[int]:
-    """Walk the tree, return set of backend_node_ids excluded by parent bounds.
+def propagate_parent_bounds(root: DOMElementNode) -> list[DOMElementNode]:
+    """Walk the composed tree, return the nodes excluded by parent bounds.
 
-    Does *not* mutate ``root``; returns the set of IDs that should be hidden.
+    Does *not* mutate ``root``; returns the nodes that should be hidden.
+    Nodes, not backend node ids: those repeat across the page's targets.
+
+    Shadow-root content propagates like light DOM — it renders inside its
+    host. A frame's document starts afresh: an ``<iframe>`` inside a link is
+    not the link's label, and its content is a page of its own.
     """
-    excluded: set[int] = set()
+    excluded: list[DOMElementNode] = []
     _walk(root, None, excluded)
     return excluded
 
@@ -53,7 +58,7 @@ def propagate_parent_bounds(root: DOMElementNode) -> set[int]:
 def _walk(
     node: DOMElementNode,
     active_parent_bounds: DOMRect | None,
-    excluded: set[int],
+    excluded: list[DOMElementNode],
 ) -> None:
     """Recurse depth-first, propagating bounds from propagating parents."""
     bounds = active_parent_bounds
@@ -66,10 +71,14 @@ def _walk(
     if bounds is not None and node.bounds is not None and bounds is not node.bounds:
         if _is_contained(node.bounds, bounds) and not _is_exempt(node):
             if node.backend_node_id is not None:
-                excluded.add(node.backend_node_id)
+                excluded.append(node)
 
     for child in node.children:
         _walk(child, bounds, excluded)
+    for shadow_root in node.shadow_roots or ():
+        _walk(shadow_root, bounds, excluded)
+    if node.content_document is not None:
+        _walk(node.content_document, None, excluded)
 
 
 def _is_propagating(node: DOMElementNode) -> bool:

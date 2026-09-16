@@ -52,12 +52,12 @@ class HTMLSerializer(DOMSerializerBase):
     def _render(self, node: DOMElementNode, depth: int) -> str:
         tag = node.tag_name.lower()
 
-        # Skip non-content wrapper.
-        if tag in ("html", "body"):
+        # Skip non-content wrappers (a shadow root included).
+        if tag in ("html", "body", "#document-fragment"):
             return self._render_children(node, depth)
 
         attrs = self._filter_attrs(node)
-        # Add element_index as data attribute for interactive elements.
+        # The selector-map key of an indexed element, as a data attribute.
         if node.element_index is not None:
             attrs = f' data-idx="{node.element_index}"' + attrs
 
@@ -81,8 +81,10 @@ class HTMLSerializer(DOMSerializerBase):
         return result
 
     def _render_children(self, node: DOMElementNode, depth: int) -> str:
+        # Shadow-root and frame content too: an element that is indexed but
+        # never rendered is a target the model cannot see.
         parts: list[str] = []
-        for child in node.children:
+        for child in node.composed_children():
             rendered = self._render(child, depth)
             if rendered:
                 parts.append(rendered)

@@ -25,7 +25,7 @@ from spectragent.core.capabilities.browser.dom.models import (
     DOMState,
     ScrollInfo,
 )
-from spectragent.core.capabilities.browser.observations import DOMObs
+from spectragent.core.capabilities.browser.observations import _MAX_ELEMENT_DEPTH, DOMObs
 
 
 def _link(parent: DOMElementNode, child: DOMElementNode) -> DOMElementNode:
@@ -89,9 +89,10 @@ def build_page() -> DOMState:
         ),
     )
 
-    # Index assignment walks ``children`` only, so iframe and shadow
-    # nodes never reach the selector map — the tree is their only route
-    # into the trace.
+    # The selector map below deliberately lists only the button, so the
+    # iframe and shadow nodes' only route into the trace is the tree —
+    # which is what these tests pin. (Real index assignment indexes them
+    # too; see ``test_browser_dom_cleaning_frames.py``.)
     assert iframe_link is not None and shadow_span is not None
     return DOMState(
         dom_tree=root,
@@ -230,9 +231,13 @@ class TestDepthCannotKillTheRun:
         node = payload["element_tree"]["dom_tree"]
         while "__truncated__" not in node:
             node = node["children"][0]
-        # A backend_node_id, not a bare null: the reader can look the cut
+        # The node's identity, not a bare null: the reader can look the cut
         # point up in the page the same way a ``__cycle__`` pointer works.
-        assert isinstance(node["__truncated__"], int)
+        assert node["__truncated__"] == {
+            "element_index": None,
+            "backend_node_id": 1 + _MAX_ELEMENT_DEPTH // 2,
+            "target_id": None,
+        }
 
 
 class TestWhatTheTraceContains:
@@ -266,13 +271,17 @@ class TestWhatTheTraceContains:
         state = build_page()
         button = state.selector_map[4]
         # Same node under two keys: the second is a pointer, and the
-        # pointer carries the backend_node_id a reader can look up.
+        # pointer carries the identity a reader can look up.
         state.selector_map[99] = button
         payload = fragment_json(state)
         emitted = [payload["selector_map"]["4"], payload["selector_map"]["99"]]
         stubs = [e for e in emitted if set(e) == {"__cycle__"}]
         assert len(stubs) == 1
-        assert stubs[0]["__cycle__"] == 4
+        assert stubs[0]["__cycle__"] == {
+            "element_index": button.element_index,
+            "backend_node_id": 4,
+            "target_id": None,
+        }
 
     def test_summary_counts_interactive_elements(self) -> None:
         state = build_page()

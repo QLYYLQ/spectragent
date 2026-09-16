@@ -43,7 +43,10 @@ class AwaitableEvent:
 
 @dataclass
 class FakeElementNode:
+    """The two fields an action reads off a selector-map node to address it."""
+
     backend_node_id: int | None = None
+    session_id: str | None = None
 
 
 @dataclass

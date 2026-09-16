@@ -12,11 +12,13 @@ Output example::
         Shadow End
 
 Markers:
-- ``[backend_node_id]`` prefix: interactive element keyed in selector_map
+- ``[index]`` prefix: interactive element; the number is its selector_map key
+  (``element_index`` — the backend node id, namespaced for an element inside
+  an out-of-process frame)
 - ``*`` prefix: newly appeared element (not in previous snapshot)
 - ``|scroll element|`` prefix: scrollable container
 - ``|SHADOW(open/closed)|`` prefix: shadow host
-- ``|IFRAME|`` / ``|FRAME|`` prefix: non-interactive frame
+- ``|IFRAME|`` / ``|FRAME|`` prefix: frame owner; its document is indented below
 - ``<!-- SVG content collapsed -->`` suffix: SVG children skipped
 - ``(scroll info)`` suffix: scroll progress hint
 - ``compound_components=(...)`` in attributes: virtual sub-components
@@ -133,8 +135,8 @@ class TextSerializer(DOMSerializerBase):
         if tag == "svg":
             attrs_str = self._build_attributes_string(node, "")
             prefix = ""
-            if node.is_interactive and node.backend_node_id is not None:
-                prefix = f"[{node.backend_node_id}]"
+            if node.is_interactive and node.element_index is not None:
+                prefix = f"[{node.element_index}]"
             lines.append(f"{pad}{prefix}<svg{' ' + attrs_str if attrs_str else ''} /> <!-- SVG content collapsed -->")
             return
 
@@ -190,12 +192,12 @@ class TextSerializer(DOMSerializerBase):
         # --- Scrollable / Interactive / Frame prefix ---
         is_scrollable = node.is_scrollable
         should_show_scroll = is_scrollable
+        is_indexed = node.is_interactive and node.element_index is not None
 
-        if node.is_interactive:
+        if is_indexed:
             scroll_prefix = "|scroll element[" if should_show_scroll else "["
-            bid = node.backend_node_id if node.backend_node_id is not None else 0
-            element_prefix = f"{new_prefix}{scroll_prefix}{bid}]"
-        elif should_show_scroll and not node.is_interactive:
+            element_prefix = f"{new_prefix}{scroll_prefix}{node.element_index}]"
+        elif should_show_scroll:
             element_prefix = "|scroll element|"
         elif tag == "iframe":
             element_prefix = "|IFRAME|"
