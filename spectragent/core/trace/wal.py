@@ -179,9 +179,11 @@ class WALWriter:
                 without opening the file.
             data: Payload. ``bytes`` is written verbatim.
             suffix: File extension including the dot. Defaults to
-                ``".png"`` for bytes (back-compatible) and ``".json"``
-                otherwise. Fragments carrying non-PNG binaries pass their
-                own via :meth:`FragmentBase.trace_binary`.
+                ``".png"`` for bytes and ``".json"`` otherwise.
+                Fragments carrying a binary pass their own via
+                :meth:`FragmentBase.trace_binary` — ``ScreenshotObs``
+                reads it off the capture's header, so a run configured
+                for JPEG observations writes ``NNN_browser.screenshot.jpg``.
 
         Returns the relative path within the trace directory.
         """

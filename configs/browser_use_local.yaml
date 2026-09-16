@@ -63,6 +63,17 @@ environment:
         viewport_width: 1280
         viewport_height: 720
 
+        # How the browser.screenshot *observation* is encoded. 'png' is
+        # lossless and the default. 'jpeg' is the single biggest lever on a
+        # vision run's step time — measured headless at 1280x720, a
+        # Wikipedia article is 240KB of PNG against 107KB of JPEG q70 and
+        # Chrome encodes it in half the time (68ms → 42ms), before the
+        # upload the model waits on. A heavier page (zhihu.com) goes
+        # 444KB → 116KB. The browser.screenshot *action* has its own
+        # per-call format; this decides only what every observe ships.
+        screenshot_format: png
+        screenshot_quality: 80
+
         # How the cursor moves. A wired receptor, so the chosen strategy
         # arrives as a constructed instance carrying its own knobs —
         # ``windmouse`` takes ``gravity`` / ``wind`` / ``seed``,

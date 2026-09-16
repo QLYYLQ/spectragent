@@ -31,6 +31,13 @@ from spectragent.core.trace.models import TraceConfig, TraceManifest
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.step_record import StepRecord
 
+#: Extensions an observation fragment's binary payload is written under,
+#: most-likely first. A fragment names its own via ``trace_binary()``
+#: (``ScreenshotObs`` takes it from the capture's header, so a JPEG
+#: observation lands as ``.jpg``), which leaves the reader needing to
+#: recognise the whole set rather than assume PNG.
+_BINARY_SUFFIXES: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
 
 class RunTrace:
     """Lazy-loading reader for a single trace directory.
@@ -128,8 +135,10 @@ class RunTrace:
         different thing in a browser run and a desktop run and no reader
         could tell.
 
-        Tries .json first, then .png (binary). Still untyped: the key now
-        identifies the fragment class, and the payload repeats it in
+        Tries .json first, then each binary extension a fragment can be
+        written under (:data:`_BINARY_SUFFIXES`) — a screenshot captured
+        as JPEG lands as ``.jpg``. Still untyped: the key now identifies
+        the fragment class, and the payload repeats it in
         ``fragment_id``, so returning a real ``FragmentBase`` is a
         lookup away — it waits for an evaluator that needs one, since
         that also fixes the return type of a public accessor.
@@ -138,9 +147,10 @@ class RunTrace:
         if json_path.exists():
             return json.loads(json_path.read_text("utf-8"))
 
-        png_path = self._trace_dir / f"observations/{step:03d}_{fragment_key}.png"
-        if png_path.exists():
-            return png_path.read_bytes()
+        for suffix in _BINARY_SUFFIXES:
+            path = self._trace_dir / f"observations/{step:03d}_{fragment_key}{suffix}"
+            if path.exists():
+                return path.read_bytes()
 
         return None
 
@@ -182,11 +192,22 @@ class RunTrace:
         (``000_browser.screenshot.png``, ``000_desktop.screenshot.png``),
         because a vision judge wants the frames whatever produced them.
         Which one it was stays readable off the path.
+
+        Every image extension, not only ``.png``: a run configured for
+        JPEG observations (``screenshot_format``) writes ``.jpg``, and a
+        judge that silently found no frames would score the run text-only.
+        Sorted by name within one extension *and across* them, so the
+        list stays in step order for a run whose encoding changed
+        mid-flight (a resumed trace, a re-run into the same directory).
         """
         obs_dir = self._trace_dir / "observations"
         if not obs_dir.exists():
             return []
-        return sorted(obs_dir.glob("*.screenshot.png"))
+        return sorted(
+            path
+            for suffix in _BINARY_SUFFIXES
+            for path in obs_dir.glob(f"*.screenshot{suffix}")
+        )
 
 
 def _load_step(path: Path) -> StepRecord:

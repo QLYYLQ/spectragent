@@ -64,6 +64,7 @@ from spectragent.schemas.observation.geometry import (
     ScreenshotGeometry,
     point_grid,
 )
+from spectragent.schemas.observation.image import image_media_type
 from spectragent.schemas.prompt import PromptRef, PromptSnapshot
 
 #: ``PromptRef.path`` for a prompt that came from YAML rather than the
@@ -846,13 +847,15 @@ class BrowserUseAgent(AgentBase):
 
         image_bytes = _image_bytes(observation.screenshot)
         assert image_bytes is not None  # noqa: S101 — caller's precondition
+        media_type = image_media_type(image_bytes) or "image/png"
         b64 = base64.b64encode(image_bytes).decode()
         content: list[Any] = [
             ContentPartTextParam(text=body),
             ContentPartImageParam(
                 image_url=ImageURL(
-                    url=f"data:image/png;base64,{b64}",
+                    url=f"data:{media_type};base64,{b64}",
                     detail=self.vision_detail,
+                    media_type=media_type,
                 ),
             ),
         ]
@@ -988,7 +991,14 @@ class BrowserUseAgent(AgentBase):
 
 
 def _image_bytes(screenshot: Any) -> bytes | None:
-    """The PNG bytes of a screenshot fragment, reading a path if needed."""
+    """The encoded bytes of a screenshot fragment, reading a path if needed.
+
+    The encoding is whatever the capability captured — PNG by default,
+    JPEG when it was configured for one. The caller labels the data URL
+    from the bytes (:func:`image_media_type`) rather than assuming: a
+    JPEG under a ``data:image/png`` prefix is sniffed past by OpenAI and
+    rejected outright by Anthropic.
+    """
     if screenshot is None:
         return None
     image_bytes = getattr(screenshot, "image_bytes", None)

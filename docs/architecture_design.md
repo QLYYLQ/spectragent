@@ -1679,7 +1679,7 @@ traces/
       │
       ├── observations/            # Observation fragments（每步追加）
       │   ├── 000_browser.dom.json         # 文件名 = 全限定 fragment key
-      │   ├── 000_browser.screenshot.png
+      │   ├── 000_browser.screenshot.png   # 后缀取自图像字节头（jpeg 则是 .jpg）
       │   ├── 001_browser.dom.json
       │   ├── 001_docker.terminal.json     # SWE 场景
       │   └── ...
@@ -1779,6 +1779,8 @@ class RunTrace:
 **落盘文件名带 provenance。** Observation 文件名用的是**全限定 fragment key**（`000_browser.dom.json`），不是协商后的 field name（`000_dom.json`）。后者是"本次装配里哪个 capability 赢了协商"的产物：同一个 `000_screenshot.png` 在 browser run 和 desktop run 里含义不同，而读 trace 的人无从分辨——"Record Once, Evaluate Many" 的前提是 trace 自带足够信息，evaluator 不需要回头猜配置。
 
 同一份 provenance 在数据里再写一遍：`fragment_id` 是 `FragmentBase` 上的**真实字段**（默认值来自 `__registry_key__`），不是 `@property`——property 不进 `model_dump()`，于是每个 fragment 落盘时都是匿名的。
+
+**二进制 fragment 的后缀来自字节本身，不来自配置。** 截图的编码是 capability 配置（`screenshot_format: png | jpeg`，默认 png 与旧行为逐字节相同），但 `ScreenshotObs.trace_binary()` 是从图像头读出后缀的——一个"声明的格式"字段能和字节不一致（provider 没听配置、fragment 从磁盘文件重建），而不一致会在几层之外变成 vision provider 的 400。同理，agent 拼 `data:` URL 的 media type、`RunTrace.screenshots` 的 glob、evaluator 按后缀判类型，读的都是同一个来源（`spectragent/schemas/observation/image.py`）。
 
 因此 `observation_fragment` 加具体类型的前置条件已经满足（key 就是 registry key，`ObservationRegistrar.get(key)` 直接给出类）；只等一个真正要读它的 evaluator，因为那同时会改掉一个公开访问器的返回类型。
 

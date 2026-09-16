@@ -199,6 +199,33 @@ class TestBuildReactPrompt:
         assert isinstance(content, list)
         assert len(content) == 2
 
+    def test_the_image_is_labelled_from_its_own_bytes(self) -> None:
+        """A JPEG capture must not be shipped under a ``data:image/png`` prefix.
+
+        ``screenshot_format: jpeg`` on the capability hands this agent JPEG
+        bytes; the prefix is what Anthropic validates the payload against.
+        """
+        import io
+
+        from PIL import Image
+
+        from spectragent.core.llm.messages import ContentPartImageParam
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (1280, 720)).save(buffer, format="JPEG", quality=70)
+
+        agent = _make_agent()
+        agent.prepare(task="t", action_descriptors=[])
+        obs = _FakeObservation(
+            screenshot=_FakeScreenshot(image_bytes=buffer.getvalue()),
+            task=_FakeTask(user_request="t"),
+        )
+        content = agent.build_react_prompt(obs)[0].content
+        assert isinstance(content, list)
+        image = next(p for p in content if isinstance(p, ContentPartImageParam))
+        assert image.image_url.url.startswith("data:image/jpeg;base64,")
+        assert image.image_url.media_type == "image/jpeg"
+
     def test_task_text_pulled_from_observation(self) -> None:
         agent = _make_agent()
         agent.prepare(task="ignored-old-value", action_descriptors=[])

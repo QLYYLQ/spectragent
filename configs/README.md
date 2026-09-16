@@ -50,6 +50,9 @@ environment:
       - capability_id: browser
         profile: standard
         mouse_trajectory: { trajectory_type: instant }
+        typing_rhythm: { rhythm_type: instant }
+        screenshot_format: png      # jpeg + screenshot_quality shrinks a
+                                    # vision step's image ~2-4x
         backend:                    # ← execution-layer config (IoC)
           provider_id: local_chrome
           headless: true

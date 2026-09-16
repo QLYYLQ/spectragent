@@ -186,6 +186,23 @@ class TestRunTrace:
         assert len(shots) == 1
         assert shots[0].name == "001_browser.screenshot.png"
 
+    def test_screenshots_finds_jpeg_frames_too(self, populated_trace):
+        """A run configured for JPEG observations writes ``.jpg``.
+
+        Globbing only ``.png`` would hand a vision judge an empty list and
+        silently drop it to its text-only branch — the exact failure
+        ``online_mind2web`` already carries a regression note about.
+        """
+        wal = WALWriter(populated_trace.parent, "run-test")
+        wal.write_observation(2, "browser.screenshot", b"\xff\xd8\xffjpegdata", suffix=".jpg")
+
+        trace = RunTrace(populated_trace)
+        assert [p.name for p in trace.screenshots] == [
+            "001_browser.screenshot.png",
+            "002_browser.screenshot.jpg",
+        ]
+        assert trace.get_observation(2, "browser.screenshot") == b"\xff\xd8\xffjpegdata"
+
     def test_lazy_loading_does_not_read_steps_eagerly(self, populated_trace):
         """Accessing only result should NOT trigger step file reads."""
         trace = RunTrace(populated_trace)

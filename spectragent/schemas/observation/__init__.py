@@ -24,15 +24,25 @@ from spectragent.schemas.observation.geometry import (
     ScreenshotGeometry,
     point_grid,
 )
+from spectragent.schemas.observation.image import (
+    ImageMediaType,
+    image_media_type,
+    image_size,
+    image_suffix,
+)
 
 __all__ = [
     "CoordinateSpace",
     "FragmentBase",
+    "ImageMediaType",
     "ObservationFragment",
     "ObservationRegistrar",
     "PointGrid",
     "ScreenshotGeometry",
     "build_observation_model",
+    "image_media_type",
+    "image_size",
+    "image_suffix",
     "iter_fragments",
     "point_grid",
     "summarize_observation",

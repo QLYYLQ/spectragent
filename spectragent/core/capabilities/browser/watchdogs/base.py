@@ -101,6 +101,16 @@ class WatchdogContext:
     #: hand; ``DOMWatchdog`` then default-constructs the default strategy.
     dom_cleaner: DOMCleanerProtocol | None = None
 
+    #: Encoding of the ``browser.screenshot`` *observation* — a scalar, not
+    #: a strategy, because there is nothing to swap: it is one CDP
+    #: parameter. ``png`` is the default and byte-identical to the
+    #: pre-config behaviour. The ``browser.screenshot`` action keeps its
+    #: own per-call format/quality; these decide only what every observe
+    #: ships to the model.
+    screenshot_format: Literal["png", "jpeg"] = "png"
+    #: Lossy-encoder quality 1-100. Ignored for ``png``.
+    screenshot_quality: int = 80
+
     selector_map_getter: Callable[[], DOMSelectorMap] = field(
         default=_no_selector_map
     )

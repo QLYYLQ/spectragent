@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 
 from agent_cdp import CDPEventBridge, EventScope, ScopeGroup
 from pydantic import Field as PydanticField
@@ -305,6 +305,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     viewport_width: int
     viewport_height: int
     debug_highlight: bool
+    screenshot_format: Literal["png", "jpeg"]
+    screenshot_quality: int
 
     # ── internal state, never config (assigned in __init__) ──────────
     # Declared here as type-only annotations so both pyright and the
@@ -372,6 +374,33 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = False,
+        screenshot_format: Annotated[
+            Literal["png", "jpeg"],
+            PydanticField(
+                description=(
+                    "Encoding of the browser.screenshot observation fragment. "
+                    "'png' (default) is lossless and unchanged. 'jpeg' is the "
+                    "lever on a vision run's step time: a 1280x720 article is "
+                    "240KB of PNG and 107KB of JPEG q70, and Chrome encodes it "
+                    "in half the time, before the upload the model waits on. "
+                    "The browser.screenshot *action* has its own format — this "
+                    "decides only what every observation ships."
+                ),
+            ),
+        ] = "png",
+        screenshot_quality: Annotated[
+            int,
+            PydanticField(
+                ge=1,
+                le=100,
+                description=(
+                    "JPEG quality for the browser.screenshot observation "
+                    "fragment; ignored when screenshot_format is 'png'. 70-80 "
+                    "is where a page screenshot stops shrinking much and text "
+                    "is still crisp."
+                ),
+            ),
+        ] = 80,
         actions: Annotated[
             list[ActionBase] | None,
             PydanticField(
@@ -394,6 +423,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
         self.debug_highlight = debug_highlight
+        self.screenshot_format = screenshot_format
+        self.screenshot_quality = screenshot_quality
 
         # In-Python default for the wired trajectory receptor. YAML must
         # name one (a single-instance receptor is required in the
@@ -1369,7 +1400,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             cdp_session_id=cdp_session_id,
             debug_highlight=self.debug_highlight,
             mouse_trajectory=self.mouse_trajectory,
+            typing_rhythm=self.typing_rhythm,
             dom_cleaner=self.dom_cleaner,
+            screenshot_format=self.screenshot_format,
+            screenshot_quality=self.screenshot_quality,
             selector_map_getter=_selector_map_getter,
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,

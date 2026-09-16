@@ -74,6 +74,7 @@ from spectragent.schemas.observation.geometry import (
     ScreenshotGeometry,
     point_grid,
 )
+from spectragent.schemas.observation.image import image_media_type
 from spectragent.schemas.prompt import PromptSnapshot
 
 # ── The verb vocabulary ──────────────────────────────────────
@@ -672,11 +673,19 @@ class UITarsAgent(AgentBase):
         text = f"Task: {task_text}"
         if self._grid is not None and self._grid.space == "screenshot_pixels":
             text += f"\nScreenshot: {self._grid.width}x{self._grid.height} pixels."
+        # Labelled from the bytes, not assumed: the capability can be
+        # configured to capture JPEG, and a JPEG behind a
+        # ``data:image/png`` prefix is rejected outright by Anthropic.
+        media_type = image_media_type(image_bytes) or "image/png"
         b64 = base64.b64encode(image_bytes).decode()
         content: list[Any] = [
             ContentPartTextParam(text=text),
             ContentPartImageParam(
-                image_url=ImageURL(url=f"data:image/png;base64,{b64}", detail="high"),
+                image_url=ImageURL(
+                    url=f"data:{media_type};base64,{b64}",
+                    detail="high",
+                    media_type=media_type,
+                ),
             ),
         ]
         return [UserMessage(content=content)]

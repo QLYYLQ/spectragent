@@ -23,6 +23,7 @@ no network. What is pinned:
 
 from __future__ import annotations
 
+import io
 import json
 import re
 from types import SimpleNamespace
@@ -264,6 +265,45 @@ def test_dom_vision_renders_the_tree_and_shows_the_image() -> None:
     assert isinstance(content, list)
     body = getattr(content[0], "text", "")
     assert "[3]<button>Submit</button>" in body
+
+
+def test_the_image_is_labelled_from_its_own_bytes() -> None:
+    """A JPEG observation must not be shipped as ``data:image/png``.
+
+    The capability can be configured to capture JPEG
+    (``screenshot_format``), and the agent is handed bytes, not a format.
+    OpenAI sniffs past a wrong prefix; Anthropic rejects the request.
+    """
+    from PIL import Image
+
+    from spectragent.core.llm.messages import ContentPartImageParam
+
+    def image_of(observation: Any) -> ContentPartImageParam:
+        (message,) = run.agent.build_react_prompt(observation)
+        content = message.content
+        assert isinstance(content, list)
+        return next(p for p in content if isinstance(p, ContentPartImageParam))
+
+    run = _Run("dom_vision")
+    buffer = io.BytesIO()
+    Image.new("RGB", (1280, 720)).save(buffer, format="JPEG", quality=70)
+    obs = _observation()
+    obs.screenshot = ScreenshotObs(
+        image_bytes=buffer.getvalue(),
+        image_width=1280,
+        image_height=720,
+        viewport_width=1280,
+        viewport_height=720,
+    )
+
+    jpeg = image_of(obs)
+    assert jpeg.image_url.url.startswith("data:image/jpeg;base64,")
+    assert jpeg.image_url.media_type == "image/jpeg"
+
+    # ...and the PNG default is still labelled PNG.
+    png = image_of(_observation())
+    assert png.image_url.url.startswith("data:image/png;base64,")
+    assert png.image_url.media_type == "image/png"
 
 
 def test_vision_never_renders_the_dom_fragment_even_when_handed_one() -> None:

@@ -25,11 +25,11 @@ from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.events import ClickCoordinateEvent
-from spectragent.core.capabilities.browser.watchdogs.screenshot_watchdog import png_size
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.observation.image import image_size
 from tests._helpers.assembly import make_agent, make_env
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -253,9 +253,9 @@ class TestRefusals:
 
 
 class TestScreenshotGeometry:
-    def test_png_size_reads_the_header(self) -> None:
-        assert png_size(_png(2560, 1440)) == (2560, 1440)
-        assert png_size(b"not a png") == (0, 0)
+    def test_image_size_reads_the_header(self) -> None:
+        assert image_size(_png(2560, 1440)) == (2560, 1440)
+        assert image_size(b"not an image") == (0, 0)
 
     def test_fragment_without_image_size_refuses_to_guess(self, harness) -> None:
         agent = harness["agent"]

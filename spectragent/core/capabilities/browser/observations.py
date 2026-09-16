@@ -28,6 +28,7 @@ from spectragent.core.capabilities.browser.dom.models import (
     traced_fields,
 )
 from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.observation.image import image_suffix
 
 # ── DOM graph → JSON-safe dict ─────────────────────────────────────
 #
@@ -173,8 +174,12 @@ class DOMObs(FragmentBase):
 class ScreenshotObs(FragmentBase):
     """Screenshot of the browser viewport.
 
-    Either ``image_path`` (on-disk PNG) or ``image_bytes`` (in-memory PNG)
-    must be set; consumers prefer ``image_path`` when both are present.
+    Either ``image_path`` (on disk) or ``image_bytes`` (in memory) must be
+    set; consumers prefer ``image_path`` when both are present. The
+    encoding is PNG unless the capability was configured for JPEG
+    (``screenshot_format``), and is not carried as a field: the bytes
+    already say, and a second source of truth can disagree with them —
+    see :mod:`spectragent.schemas.observation.image`.
 
     A desktop or mobile capability that wants a screenshot registers its
     own fragment under its own key rather than reusing this one — two
@@ -211,10 +216,19 @@ class ScreenshotObs(FragmentBase):
         return base64.b64encode(value).decode("ascii")
 
     def trace_binary(self) -> tuple[str, bytes] | None:
-        """Persist the PNG as a real ``.png`` file, not base64 inside JSON."""
+        """Persist the image as a real file, not base64 inside JSON.
+
+        The extension comes from the bytes' own header, so a run
+        configured for JPEG writes ``NNN_browser.screenshot.jpg`` and an
+        evaluator that opens it by suffix gets the media type right.
+        Bytes of no recognised encoding fall back to ``.png``: the
+        capability can only ask CDP for png or jpeg, so this is a
+        truncated or empty capture, and the trace is more useful naming
+        it like its neighbours than hiding it from the screenshot glob.
+        """
         if self.image_bytes is None:
             return None
-        return ".png", self.image_bytes
+        return image_suffix(self.image_bytes) or ".png", self.image_bytes
 
     def trace_json_exclude(self) -> set[str]:
         return {"image_bytes"}

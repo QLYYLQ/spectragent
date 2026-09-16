@@ -1,9 +1,9 @@
 """Screenshot → LLM content part.
 
-Screenshots reach an evaluator as real ``.png`` files under the trace's
-``observations/`` directory, so the default path is "read the bytes,
-base64 them, label them ``image/png``" — no re-encode, no quality loss,
-no PIL round-trip.
+Screenshots reach an evaluator as real image files under the trace's
+``observations/`` directory — ``.png``, or ``.jpg`` when the run captured
+JPEG observations — so the default path is "read the bytes, base64 them,
+label them by extension" — no re-encode, no quality loss, no PIL round-trip.
 
 Downscaling is opt-in and exists for one reason: a stepwise judge that
 feeds forty full-resolution screenshots into one request is expensive
