@@ -36,6 +36,7 @@ from agent_cdp import WatchdogBase, WatchdogRegistrar
 if TYPE_CHECKING:
     from agent_cdp import CDPCommandProtocol
 
+    from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerProtocol
     from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
     from spectragent.core.capabilities.browser.input import MouseTrajectoryProtocol
     from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
@@ -72,8 +73,9 @@ class WatchdogContext:
 
     The ``*_getter`` / ``*_setter`` callables exist because two watchdogs
     share state the capability owns: ``DOMWatchdog`` produces the
-    per-tab selector map and ``ActionWatchdog`` consumes it to translate
-    an LLM-facing element index into a CDP ``backend_node_id``.
+    per-tab selector map and ``ActionWatchdog`` consumes it to find the
+    element an event names — its ``backend_node_id``, the session that owns
+    it and the frames around it.
     """
 
     cdp: CDPCommandProtocol
@@ -91,6 +93,13 @@ class WatchdogContext:
     #: switch: ``instant`` (or ``None``, nothing configured) is the legacy
     #: instant jump, anything else humanizes.
     mouse_trajectory: MouseTrajectoryProtocol | None = None
+
+    #: The configured DOM cleaning strategy *instance*, for the same reason
+    #: and by the same route as ``mouse_trajectory``: the Composer built it
+    #: from the capability's ``dom_cleaner`` config block, so its knobs are
+    #: already on it. ``None`` only when the capability was constructed by
+    #: hand; ``DOMWatchdog`` then default-constructs the default strategy.
+    dom_cleaner: DOMCleanerProtocol | None = None
 
     selector_map_getter: Callable[[], DOMSelectorMap] = field(
         default=_no_selector_map

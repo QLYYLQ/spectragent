@@ -18,6 +18,7 @@ from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (
     _build_snapshot_lookup,
     _extract_scroll_info,
 )
+from spectragent.core.capabilities.browser.dom.models import TargetCapture
 
 
 def _make_snapshot(
@@ -162,10 +163,8 @@ class TestBrowserUseCleanerEndToEnd:
         )
         cleaner = BrowserUseCleaner()
         state = await cleaner.clean(
-            raw_dom={"root": None},
-            snapshot=snap,
-            ax_tree={"nodes": []},
-            viewport=(1280, 720),
+            TargetCapture(raw_dom={"root": None}, snapshot=snap, ax_tree={"nodes": []}),
+            (1280, 720),
         )
         # raw_dom has no root → empty state.
         assert state.dom_tree is None
@@ -198,10 +197,8 @@ class TestBrowserUseCleanerEndToEnd:
         )
         cleaner = BrowserUseCleaner()
         state = await cleaner.clean(
-            raw_dom=raw_dom,
-            snapshot=snap,
-            ax_tree={"nodes": []},
-            viewport=(1280, 720),
+            TargetCapture(raw_dom=raw_dom, snapshot=snap, ax_tree={"nodes": []}),
+            (1280, 720),
             device_pixel_ratio=2.0,
         )
         assert state.scroll_info.scroll_y == 300.0

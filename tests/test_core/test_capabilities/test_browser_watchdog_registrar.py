@@ -458,6 +458,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
         ok = BrowserCapabilityConfig.model_validate(
             {
                 "mouse_trajectory": {"trajectory_type": "windmouse", "gravity": 12.0},
+                "dom_cleaner": {"cleaner_type": "browser_use"},
                 "backend": {"provider_id": "local_chrome"},
             }
         )
@@ -466,6 +467,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
             BrowserCapabilityConfig.model_validate(
                 {
                     "mouse_trajectory": {"trajectory_type": "windmoose"},
+                    "dom_cleaner": {"cleaner_type": "browser_use"},
                     "backend": {"provider_id": "local_chrome"},
                 }
             )
@@ -486,6 +488,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
                 {
                     "humanize_mouse": False,
                     "mouse_trajectory": {"trajectory_type": "windmouse"},
+                    "dom_cleaner": {"cleaner_type": "browser_use"},
                     "backend": {"provider_id": "local_chrome"},
                 }
             )
@@ -495,3 +498,173 @@ class TestMouseTrajectoryIsAWiredReceptor:
         from spectragent.core.capabilities.browser.input import InstantTrajectory
 
         assert isinstance(BrowserCapability().mouse_trajectory, InstantTrajectory)
+
+
+# ─── dom_cleaner is a wired receptor, not a name on the profile ──────
+
+
+#: A control that paints its own face: an opaque child exactly covering an
+#: interactive parent, which is the shape ``descendants_occlude`` decides on
+#: (reCAPTCHA's ``#recaptcha-anchor`` under its checkbox border).
+def _self_painting_control() -> Any:
+    from tests._helpers.dom_payloads import Doc, El, compile_target
+
+    return compile_target(
+        Doc(
+            "MAIN",
+            html_id=1,
+            body=[
+                El(
+                    "div",
+                    20,
+                    bounds=(490, 265, 50, 50),
+                    attrs={"id": "holder"},
+                    children=[
+                        El(
+                            "div",
+                            21,
+                            bounds=(501, 275, 28, 28),
+                            attrs={"id": "anchor", "role": "checkbox", "tabindex": "0"},
+                            paint_order=4,
+                            children=[
+                                El(
+                                    "div",
+                                    22,
+                                    bounds=(501, 275, 28, 28),
+                                    attrs={"id": "face"},
+                                    paint_order=10,
+                                    styles={"background-color": "rgb(255, 255, 255)"},
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ],
+        ),
+        session_id="sid1",
+    )
+
+
+class _PageCDP(_RecordingCDP):
+    """``_RecordingCDP`` that also answers the three DOM captures."""
+
+    def __init__(self, capture: Any) -> None:
+        super().__init__()
+        self._capture = capture
+
+    async def send(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> Any:
+        answer = await super().send(method, params, session_id)
+        if method == "DOM.getDocument":
+            return self._capture.raw_dom
+        if method == "DOMSnapshot.captureSnapshot":
+            return self._capture.snapshot
+        if method == "Accessibility.getFullAXTree":
+            return self._capture.ax_tree
+        return answer
+
+
+class TestDomCleanerIsAWiredReceptor:
+    """The cleaning strategy is chosen *and configured* from YAML.
+
+    It used to be a name on ``BrowserProfileConfig``: ``DOMWatchdog`` looked
+    the class up and default-constructed it, so every knob the generated
+    ``BrowserUseDom_CleanerConfig`` declared — ``descendants_occlude``,
+    ``max_occlusion_nodes``, ``include_shadow_dom`` — validated and then
+    went nowhere. Same fault, same fix, same shape as ``mouse_trajectory``.
+    """
+
+    @staticmethod
+    def _compose(cleaner_block: dict[str, Any]) -> BrowserCapability:
+        from spectragent.core.composer import ConfigComposer
+        from spectragent.scripts.generate_all import _collect_registrars
+
+        run = ConfigComposer(registrars=_collect_registrars()).compose(
+            {
+                "capability": [
+                    {
+                        "capability_id": "browser",
+                        "mouse_trajectory": {"trajectory_type": "instant"},
+                        "dom_cleaner": cleaner_block,
+                        "backend": {"provider_id": "local_chrome"},
+                    }
+                ]
+            }
+        )
+        return run.single("capability")
+
+    @staticmethod
+    async def _indexed_ids(cap: BrowserCapability) -> set[str | None]:
+        fragment, group = await _observe_once(cap, _PageCDP(_self_painting_control()), "browser.dom")
+        try:
+            return {
+                node.attributes.get("id") for node in fragment.element_tree.selector_map.values()
+            }
+        finally:
+            await group.close_all()
+
+    def test_the_knob_reaches_the_instance(self) -> None:
+        from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (
+            BrowserUseCleaner,
+        )
+
+        cap = self._compose({"cleaner_type": "browser_use", "descendants_occlude": True})
+        assert isinstance(cap.dom_cleaner, BrowserUseCleaner)
+        assert cap.dom_cleaner.descendants_occlude is True
+        assert cap.dom_cleaner.cleaner_type == "browser_use"
+
+    def test_the_strategy_itself_is_chosen_there(self) -> None:
+        from spectragent.core.capabilities.browser.dom.cleaning.skyvern import SkyvernCleaner
+
+        cap = self._compose({"cleaner_type": "skyvern", "max_text_length": 42})
+        assert isinstance(cap.dom_cleaner, SkyvernCleaner)
+        assert cap.dom_cleaner.max_text_length == 42
+
+    def test_the_configured_instance_is_the_one_that_cleans(self) -> None:
+        cap = self._compose({"cleaner_type": "browser_use", "descendants_occlude": True})
+        cap._cdp = _RecordingCDP()  # type: ignore[assignment]
+        watchdog = next(
+            wd
+            for wd in cap._create_watchdogs_for_scope(level="tab", cdp_session_id="sid1")
+            if isinstance(wd, DOMWatchdog)
+        )
+        assert watchdog._cleaner is cap.dom_cleaner
+
+    @pytest.mark.parametrize(
+        ("descendants_occlude", "indexed"),
+        [(False, True), (True, False)],
+        ids=["default", "upstream-parity"],
+    )
+    async def test_the_yaml_value_changes_what_is_observed(
+        self, descendants_occlude: bool, indexed: bool
+    ) -> None:
+        """End to end: one boolean in the config decides what the agent can click.
+
+        Everything between is real — the Composer builds the cleaner, the
+        capability carries it, the watchdog cleans with it, and the answer
+        comes back on the negotiated ``browser.dom`` fragment.
+        """
+        cap = self._compose(
+            {"cleaner_type": "browser_use", "descendants_occlude": descendants_occlude}
+        )
+        assert ("anchor" in await self._indexed_ids(cap)) is indexed
+
+    async def test_a_hand_built_capability_still_cleans(self) -> None:
+        """No Composer: the default strategy with its defaults, as before."""
+        from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (
+            BrowserUseCleaner,
+        )
+
+        cap = BrowserCapability()
+        assert isinstance(cap.dom_cleaner, BrowserUseCleaner)
+        assert "anchor" in await self._indexed_ids(cap)
+
+    def test_the_profile_no_longer_names_a_cleaner(self) -> None:
+        """Two places to pick one is what made the config field inert."""
+        from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
+
+        assert "cleaner" not in BrowserProfileConfig.model_fields

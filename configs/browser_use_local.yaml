@@ -86,6 +86,21 @@ environment:
         mouse_trajectory:
           trajectory_type: instant
 
+        # How the raw CDP capture becomes the tree the agent reads. Also a
+        # wired receptor, so the strategy's knobs are reachable: this is
+        # where you widen or narrow what gets an index.
+        #
+        # ``descendants_occlude`` is the one that diverges from upstream
+        # browser-use, which counts a node's own descendants among the
+        # boxes that can hide it (``true``). Here it defaults to ``false``,
+        # because a click on a descendant *is* a click on the node, and
+        # counting them drops exactly the controls that paint their face
+        # with an inner element — reCAPTCHA's ``#recaptcha-anchor`` among
+        # them. Set it ``true`` for upstream parity.
+        dom_cleaner:
+          cleaner_type: browser_use
+          descendants_occlude: false
+
         # Per-action behaviour lives on the action instance, so this list
         # is where you tune it. Every entry is validated against that
         # action's own config model, so a typo'd knob fails here rather

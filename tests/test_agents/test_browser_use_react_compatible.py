@@ -454,3 +454,57 @@ class TestOutputModel:
     def test_returns_browser_use_output(self) -> None:
         agent = _make_agent()
         assert agent.get_react_output_model() is BrowserUseOutput
+
+
+class TestFrameElementIndices:
+    """An element inside an out-of-process frame has a ten-digit index.
+
+    ``dom.models.element_handle`` namespaces each frame target above
+    ``2**31``, and that key is the ``[index]`` the model copies back. The
+    agent must hand ClickAction the same integer, unchanged, whichever path
+    the reply takes.
+    """
+
+    KEY = 2 * 2**31 + 58
+
+    async def _click(self, action: Action) -> tuple[Any, Any]:
+        from spectragent.core.capabilities.browser.actions.click import ClickAction
+        from tests.test_core.test_capabilities.test_browser_actions.conftest import (
+            FakeCapability,
+            FakeElementNode,
+            FakeScope,
+        )
+
+        capability = FakeCapability()
+        capability._scopes["tab"] = FakeScope()
+        capability._selector_maps["tab"] = {
+            self.KEY: FakeElementNode(backend_node_id=58, session_id="frame")
+        }
+        capability._default_session_id = "tab"
+        result = await ClickAction(post_delay_ms=0).execute(action.params, capability=capability)  # type: ignore[arg-type]
+        (event,) = capability._scopes["tab"].emitted
+        return result, event
+
+    async def test_through_the_text_path(self) -> None:
+        import json
+
+        agent = _make_agent()
+        (action,) = agent.parse_react_output(
+            json.dumps({"action": [{"click_element": {"index": self.KEY}}]})
+        )
+        assert action.params == {"index": self.KEY}
+        assert type(action.params["index"]) is int
+
+        result, event = await self._click(action)
+        assert result.success, result.error
+        assert (event.backend_node_id, event.session_id) == (58, "frame")
+
+    async def test_through_the_structured_path(self) -> None:
+        agent = _make_agent()
+        out = BrowserUseOutput.model_validate_json(
+            f'{{"action": [{{"click_element": {{"index": {self.KEY}}}}}]}}'
+        )
+        (action,) = agent.parse_react_output(out)
+        result, event = await self._click(action)
+        assert result.success, result.error
+        assert event.backend_node_id == 58

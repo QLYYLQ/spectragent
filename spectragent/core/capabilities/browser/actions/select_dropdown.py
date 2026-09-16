@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
-    resolve_index_to_backend_node_id,
+    resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import (
@@ -45,12 +45,11 @@ class SelectDropdownAction(SettleableAction, ActionBase):
         capability: BrowserCapability,
     ) -> ActionResult:
         try:
-            backend_node_id = resolve_index_to_backend_node_id(
-                capability, params["index"],
-            )
+            element = resolve_index(capability, params["index"])
             scope = focused_scope(capability)
             event = SelectDropdownEvent(
-                backend_node_id=backend_node_id,
+                backend_node_id=element.backend_node_id,
+                session_id=element.session_id,
                 value=params.get("value"),
                 text=params.get("text"),
                 index=params.get("option_index"),

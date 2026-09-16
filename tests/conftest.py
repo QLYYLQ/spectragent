@@ -132,6 +132,21 @@ def require_benchmark_data(*datasets: str) -> None:
         pytest.skip(reason)
 
 
+def _chrome_skip_reason() -> str | None:
+    """Why a real-browser test cannot run here, or ``None`` if it can.
+
+    Resolved the way ``LocalChromeProvider`` resolves it, so a test skips
+    exactly when a run would fail to launch the browser.
+    """
+    from spectragent.core.capabilities.browser.backends.local_chrome import find_chrome
+
+    try:
+        find_chrome()
+    except FileNotFoundError as exc:
+        return f"no Chrome / Chromium to launch: {exc}"
+    return None
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
@@ -139,12 +154,25 @@ def pytest_configure(config: pytest.Config) -> None:
         "'<env_type>/<benchmark>' listed resolves to a directory that "
         "declares its splits in data_info.json.",
     )
+    config.addinivalue_line(
+        "markers",
+        "requires_chrome: launches a real headless Chrome; skipped when no "
+        "executable is found (CHROME_EXECUTABLE_PATH or the platform's "
+        "install locations). Deselect with -m 'not requires_chrome'.",
+    )
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    chrome_reason: str | None = None
+    chrome_checked = False
     for item in items:
         for mark in item.iter_markers(name="requires_benchmark_data"):
             reason = _benchmark_data_skip_reason(mark.args)
             if reason is not None:
                 item.add_marker(pytest.mark.skip(reason=reason))
                 break
+        if item.get_closest_marker("requires_chrome") is not None:
+            if not chrome_checked:
+                chrome_reason, chrome_checked = _chrome_skip_reason(), True
+            if chrome_reason is not None:
+                item.add_marker(pytest.mark.skip(reason=chrome_reason))

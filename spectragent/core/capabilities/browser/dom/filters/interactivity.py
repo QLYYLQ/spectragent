@@ -32,6 +32,19 @@ _INTERACTIVE_ATTRS: frozenset[str] = frozenset({
     "tabindex", "contenteditable",
 })
 
+# A frame at least this large (CSS px, each side) is a target of its own,
+# whatever is inside it — browser-use's rule. It is how an agent reaches what
+# a frame's elements cannot give it: typing into a rich-text editor whose
+# document *is* the editable surface (``<body contenteditable>``, designMode),
+# or scrolling the frame.
+_FRAME_MIN_PX = 100
+
+# Smallest box a frame whose document was not captured needs to be offered
+# as a target: the frame is then its only handle, and its size is no reason
+# to hide it — a 304x78 captcha widget is as real as a 600x400 embed. Same
+# floor as the icon heuristic below; it keeps out tracking pixels.
+_OPAQUE_FRAME_MIN_PX = 10
+
 # Class/ID substrings that suggest a search widget.
 _SEARCH_HINTS: frozenset[str] = frozenset({
     "search", "magnify", "glass", "lookup", "find", "query",
@@ -57,7 +70,7 @@ def is_interactive(node: DOMElementNode) -> bool:
     Checks (roughly ordered from cheapest to most expensive):
     1. Skip html/body.
     2. JS click listener flag.
-    3. Large iframe/frame.
+    3. Frame owners: large ones, and small ones whose document is not in the tree.
     4. Label/span wrapper detection.
     5. Search widget heuristic.
     6. AX property-based detection (disabled, hidden, focusable, editable, etc.).
@@ -93,9 +106,21 @@ def is_interactive(node: DOMElementNode) -> bool:
     if node.has_js_click_listener:
         return True
 
-    # 2. Large iframe / frame (likely embedded interactive content).
-    if tag in ("iframe", "frame") and _has_min_size(node, 100, 100):
-        return True
+    # 2. Frame owner. Its document's elements are indexed where they are
+    #    drawn (the cleaner walks frame documents), and they are what a
+    #    click on a widget should aim at — a frame's centre is not the
+    #    checkbox at its left edge. The frame itself is a target too when it
+    #    is large (browser-use's rule, and the only handle on an editor whose
+    #    body is the editable surface), or when its document is not in the
+    #    tree at all — not captured, timed out — and it is the only handle.
+    #    Any other frame falls through to the generic checks below.
+    if tag in ("iframe", "frame"):
+        if _has_min_size(node, _FRAME_MIN_PX, _FRAME_MIN_PX):
+            return True
+        if node.content_document is None and _has_min_size(
+            node, _OPAQUE_FRAME_MIN_PX, _OPAQUE_FRAME_MIN_PX
+        ):
+            return True
 
     # 3. Label wrapper detection — skip labels that proxy via "for".
     if tag == "label":

@@ -93,6 +93,9 @@ class TestComposerInjectsBackend:
         from spectragent.core.capabilities.browser.backends.local_chrome import (
             LocalChromeProvider,
         )
+        from spectragent.core.capabilities.browser.dom.cleaning import (
+            DOMCleanerRegistrar,
+        )
         from spectragent.core.capabilities.browser.input import (
             MouseTrajectoryRegistrar,
         )
@@ -106,6 +109,7 @@ class TestComposerInjectsBackend:
             registrars={
                 "browser_provider": BrowserProviderRegistrar,
                 "mouse_trajectory": MouseTrajectoryRegistrar,
+                "dom_cleaner": DOMCleanerRegistrar,
                 "action": ActionRegistrar,
                 "capability": CapabilityRegistrar,
                 "agent_loop": AgentLoopRegistrar,
@@ -129,6 +133,7 @@ class TestComposerInjectsBackend:
                 {
                     "capability_id": "browser",
                     "mouse_trajectory": {"trajectory_type": "instant"},
+                    "dom_cleaner": {"cleaner_type": "browser_use"},
                     "backend": {"provider_id": "local_chrome"},
                 }
             ],
@@ -162,6 +167,9 @@ class TestComposerInjectsBackend:
         from spectragent.agents.memory._registrar import MemoryRegistrar
         from spectragent.core.actions._registrar import ActionRegistrar
         from spectragent.core.capabilities._registrar import CapabilityRegistrar
+        from spectragent.core.capabilities.browser.dom.cleaning import (
+            DOMCleanerRegistrar,
+        )
         from spectragent.core.capabilities.browser.input import (
             MouseTrajectoryRegistrar,
         )
@@ -175,6 +183,7 @@ class TestComposerInjectsBackend:
             registrars={
                 "browser_provider": BrowserProviderRegistrar,
                 "mouse_trajectory": MouseTrajectoryRegistrar,
+                "dom_cleaner": DOMCleanerRegistrar,
                 "action": ActionRegistrar,
                 "capability": CapabilityRegistrar,
                 "agent_loop": AgentLoopRegistrar,
@@ -235,6 +244,7 @@ class TestComposerInjectsBackend:
                 {
                     "capability_id": "browser",
                     "mouse_trajectory": {"trajectory_type": "instant"},
+                    "dom_cleaner": {"cleaner_type": "browser_use"},
                     "backend": {"provider_id": "local_chrome"},
                     "observation": "browser.dom",
                 }

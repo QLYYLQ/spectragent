@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Any
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
+    ElementRef,
     focused_scope,
-    resolve_index_to_backend_node_id,
+    resolve_index,
 )
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ExtractContentEvent,
@@ -42,14 +43,13 @@ class ExtractContentAction(ActionBase):
         capability: BrowserCapability,
     ) -> ActionResult:
         try:
-            backend_node_id: int | None = None
+            element: ElementRef | None = None
             if "index" in params and params["index"] is not None:
-                backend_node_id = resolve_index_to_backend_node_id(
-                    capability, params["index"],
-                )
+                element = resolve_index(capability, params["index"])
             scope = focused_scope(capability)
             event = ExtractContentEvent(
-                backend_node_id=backend_node_id,
+                backend_node_id=element.backend_node_id if element else None,
+                session_id=element.session_id if element else None,
                 goal=params.get("goal"),
             )
             scope.emit(event)

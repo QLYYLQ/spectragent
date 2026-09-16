@@ -26,6 +26,8 @@ from spectragent.core.capabilities.browser.dom.models import (
     DOMSelectorMap,
     DOMState,
     ScrollInfo,
+    TargetCapture,
+    element_handle,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,13 +71,9 @@ class SkyvernCleaner(DOMCleanerBase):
 
     async def clean(
         self,
-        raw_dom: dict[str, Any],
-        snapshot: dict[str, Any],
-        ax_tree: dict[str, Any],
+        capture: TargetCapture,
         viewport: tuple[int, int],
         *,
-        session_id: str | None = None,
-        js_click_listener_ids: set[int] | None = None,
         previous_selector_map: DOMSelectorMap | None = None,
         device_pixel_ratio: float = 1.0,
     ) -> DOMState:
@@ -85,20 +83,22 @@ class SkyvernCleaner(DOMCleanerBase):
         Runtime.evaluate *before* this method is called.  The result is
         passed in ``raw_dom["js_elements"]`` or ``raw_dom["elements"]``.
         If not present, falls back to building from snapshot (like browser-use).
+
+        The JS extraction runs in the tab's own document, so every element it
+        reports belongs to the tab's target and is keyed by its backend node
+        id; out-of-process frames in ``capture.frames`` are not read.
         """
         # Check for JS-extracted elements.
-        js_elements = raw_dom.get("js_elements") or raw_dom.get("elements")
+        js_elements = capture.raw_dom.get("js_elements") or capture.raw_dom.get("elements")
         if js_elements:
             # JS path: getBoundingClientRect on the page side already returns
             # CSS pixels, so DPR conversion is not needed here. The kwarg is
             # accepted for protocol parity and future-proofing only.
-            return self._from_js_elements(js_elements, viewport, session_id)
+            return self._from_js_elements(js_elements, viewport, capture.session_id)
 
         # Fallback: build from DOMSnapshot (less accurate for skyvern).
         logger.warning("SkyvernCleaner: No JS elements found, falling back to snapshot")
-        return await self._from_snapshot(
-            snapshot, ax_tree, viewport, session_id, dpr=device_pixel_ratio,
-        )
+        return await self._from_snapshot(capture, viewport, dpr=device_pixel_ratio)
 
     def _from_js_elements(
         self,
@@ -109,10 +109,9 @@ class SkyvernCleaner(DOMCleanerBase):
         """Convert JS-extracted element tree to DOMState."""
         root = DOMElementNode(tag_name="body", is_visible=True)
         selector_map: DOMSelectorMap = {}
-        index_counter = [0]
 
         for elem_data in elements:
-            node = self._convert_element(elem_data, session_id, selector_map, index_counter)
+            node = self._convert_element(elem_data, session_id, selector_map)
             if node is not None:
                 root.children.append(node)
                 node.parent = root
@@ -128,7 +127,6 @@ class SkyvernCleaner(DOMCleanerBase):
         data: dict[str, Any],
         session_id: str | None,
         selector_map: DOMSelectorMap,
-        index_counter: list[int],
     ) -> DOMElementNode | None:
         """Recursively convert a JS element dict to DOMElementNode."""
         tag = data.get("tagName", "div")
@@ -179,13 +177,17 @@ class SkyvernCleaner(DOMCleanerBase):
             ax_name=data.get("name"),
         )
 
-        # Assign interactive index.
-        if is_interactable:
-            node.element_index = index_counter[0]
-            if node.backend_node_id is not None:
-                # Key by backend_node_id (consistent with BrowserUseCleaner).
-                selector_map[node.backend_node_id] = node
-            index_counter[0] += 1
+        # Index by the tab target's key — the backend node id itself (see
+        # ``element_handle``) — so the index a serializer prints is the one
+        # the selector map answers to.
+        handle = (
+            element_handle(0, node.backend_node_id)
+            if is_interactable and node.backend_node_id is not None
+            else None
+        )
+        if handle is not None:
+            node.element_index = handle
+            selector_map[handle] = node
 
         # XPath for re-location.
         xpath = data.get("xpath")
@@ -194,7 +196,7 @@ class SkyvernCleaner(DOMCleanerBase):
 
         # Recurse children.
         for child_data in data.get("children", []):
-            child = self._convert_element(child_data, session_id, selector_map, index_counter)
+            child = self._convert_element(child_data, session_id, selector_map)
             if child is not None:
                 node.children.append(child)
                 child.parent = node
@@ -203,10 +205,8 @@ class SkyvernCleaner(DOMCleanerBase):
 
     async def _from_snapshot(
         self,
-        snapshot: dict[str, Any],
-        ax_tree: dict[str, Any],
+        capture: TargetCapture,
         viewport: tuple[int, int],
-        session_id: str | None,
         *,
         dpr: float = 1.0,
     ) -> DOMState:
@@ -215,8 +215,14 @@ class SkyvernCleaner(DOMCleanerBase):
 
         fallback = BrowserUseCleaner()
         return await fallback.clean(
-            {}, snapshot, ax_tree, viewport,
-            session_id=session_id, device_pixel_ratio=dpr,
+            TargetCapture(
+                raw_dom={},
+                snapshot=capture.snapshot,
+                ax_tree=capture.ax_tree,
+                session_id=capture.session_id,
+            ),
+            viewport,
+            device_pixel_ratio=dpr,
         )
 
 

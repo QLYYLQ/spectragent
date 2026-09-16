@@ -7,11 +7,15 @@ Two strategies registered via conscribe:
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from conscribe import create_registrar
 
-from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, DOMState
+from spectragent.core.capabilities.browser.dom.models import (
+    DOMSelectorMap,
+    DOMState,
+    TargetCapture,
+)
 
 
 @runtime_checkable
@@ -20,13 +24,9 @@ class DOMCleanerProtocol(Protocol):
 
     async def clean(
         self,
-        raw_dom: dict[str, Any],
-        snapshot: dict[str, Any],
-        ax_tree: dict[str, Any],
+        capture: TargetCapture,
         viewport: tuple[int, int],
         *,
-        session_id: str | None = None,
-        js_click_listener_ids: set[int] | None = None,
         previous_selector_map: DOMSelectorMap | None = None,
         device_pixel_ratio: float = 1.0,
     ) -> DOMState:
@@ -34,19 +34,16 @@ class DOMCleanerProtocol(Protocol):
 
         Parameters
         ----------
-        raw_dom:
-            Result of ``DOM.getDocument(depth=-1, pierce=True)``.
-        snapshot:
-            Result of ``DOMSnapshot.captureSnapshot(...)``.
-        ax_tree:
-            Result of ``Accessibility.getFullAXTree()``.
+        capture:
+            The tab's own target — ``DOM.getDocument(depth=-1, pierce=True)``,
+            ``DOMSnapshot.captureSnapshot(...)``, the accessibility nodes of
+            each of its frames, optional JS click-listener ids — with the
+            captures of its out-of-process frames nested in
+            ``capture.frames``. A cleaner that reads frame content must key
+            the selector map with ``dom.models.element_handle``: backend node
+            ids of different targets collide.
         viewport:
             ``(width, height)`` in CSS pixels.
-        session_id:
-            CDP session ID (for multi-target filtering).
-        js_click_listener_ids:
-            Backend node IDs of elements with JS click event listeners
-            (from optional 4th CDP call). ``None`` means detection was skipped.
         previous_selector_map:
             Previous selector_map for new-node tracking. ``None`` on first call.
         device_pixel_ratio:

@@ -40,8 +40,7 @@ from spectragent.schemas.observation._registrar import FragmentBase
 #   * which *nodes* have already been emitted is tracked here, because
 #     the same node is reachable from several roots (``selector_map``
 #     entries are also nodes of ``dom_tree``). A repeat becomes a
-#     ``{"__cycle__": <backend_node_id>}`` pointer, which a reader can
-#     resolve against the selector map.
+#     ``{"__cycle__": <ref>}`` pointer naming the node — see ``_node_ref``.
 #
 # Depth is the third, and it is not a style choice. ``model_dump_json``
 # is a pydantic-core call, and pydantic-core's serializer gives up past
@@ -66,10 +65,27 @@ _MAX_ENCODE_DEPTH = _MAX_ELEMENT_DEPTH + 8
 """Backstop for nesting that is not elements — dicts, lists, value objects.
 
 Above the element budget on purpose, so on a deep page the element cut
-always lands first: the marker then carries a ``backend_node_id``, and a
-list-valued field is still a list of markers rather than turning into a
-dict and changing shape under its reader.
+always lands first: the marker then names the node, and a list-valued
+field is still a list of markers rather than turning into a dict and
+changing shape under its reader.
 """
+
+
+def _node_ref(node: DOMElementNode) -> dict[str, Any]:
+    """How a pointer names ``node``: always the same three fields.
+
+    ``backend_node_id`` means something only within one CDP target — an
+    out-of-process frame hands out the same small ids as the page — so it
+    travels with ``target_id`` (``None`` for the tab's own target), the pair
+    every recorded node carries. ``element_index`` is the node's
+    selector-map key when it is indexed, ``None`` when it is not; a reader
+    never has to guess which kind of number it is holding.
+    """
+    return {
+        "element_index": node.element_index,
+        "backend_node_id": node.backend_node_id,
+        "target_id": node.target_id,
+    }
 
 
 def _node_to_json(
@@ -77,12 +93,12 @@ def _node_to_json(
 ) -> dict[str, Any]:
     nid = id(node)
     if nid in visited:
-        return {"__cycle__": node.backend_node_id}
+        return {"__cycle__": _node_ref(node)}
     if depth >= _MAX_ELEMENT_DEPTH:
         # Same shape as the cycle pointer, different reason: the subtree
-        # exists and was not emitted. The id is what lets a reader say
-        # where the trace stopped.
-        return {"__truncated__": node.backend_node_id}
+        # exists and was not emitted. The reference is what lets a reader
+        # say where the trace stopped.
+        return {"__truncated__": _node_ref(node)}
     visited.add(nid)
     return {
         spec.name: _to_json(getattr(node, spec.name), visited, depth + 1)
@@ -130,10 +146,13 @@ class DOMObs(FragmentBase):
     __source__: ClassVar[Literal["env", "loop"]] = "env"
 
     element_tree: Any = None  # DOMState at type-check time
-    # Keys are ``backend_node_id`` (int) — see ``DOMSelectorMap`` in
-    # ``dom/models.py``. This is the trace contract for "what was
-    # actionable at this step"; the copy nested in ``DOMState`` is not
-    # traced. The serializer stringifies keys for JSON output.
+    # Keys are element handles (int) — the ``backend_node_id`` for the
+    # tab's own target, namespaced for an out-of-process frame; see
+    # ``DOMSelectorMap`` / ``element_handle`` in ``dom/models.py``. Each
+    # entry repeats its key as ``element_index`` and names the CDP session
+    # that owns it. This is the trace contract for "what was actionable at
+    # this step"; the copy nested in ``DOMState`` is not traced. The
+    # serializer stringifies keys for JSON output.
     selector_map: dict[int, Any] = Field(default_factory=dict)
 
     def summary(self) -> str:

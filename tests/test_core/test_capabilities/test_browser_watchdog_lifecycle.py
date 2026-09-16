@@ -158,10 +158,21 @@ class TestJsListenerDetectionIsReachable:
         )
 
         wd = DOMWatchdog(_CDP(), enable_js_listener_detection=True)  # type: ignore[arg-type]
-        *_, js_ids, _dpr = await wd._capture_cdp_data()
+        capture, _dpr = await wd._capture_cdp_data()
 
         assert called == [True]
-        assert js_ids == {42}
+        assert capture.js_click_listener_ids == {42}
+
+    def test_cross_site_iframe_capture_follows_the_profile(self) -> None:
+        """Accuracy-first ``standard`` captures cross-site frames; the cheap
+        profiles, and skyvern whose cleaner never reads them, do not."""
+        expected = {"standard": True, "skyvern": False, "lightweight": False}
+        for name, enabled in expected.items():
+            assert resolve_profile(name).cross_site_iframe_capture is enabled
+            cap, _ = _make_cap(name)
+            watchdogs = cap._create_watchdogs_for_scope(level="tab", cdp_session_id="sid-1")
+            (dom,) = [wd for wd in watchdogs if type(wd).__name__ == "DOMWatchdog"]
+            assert (dom._frames is not None) is enabled, name
 
     async def test_detection_off_skips_the_extra_round_trip(self) -> None:
         from spectragent.core.capabilities.browser.watchdogs.dom_watchdog import (
@@ -169,8 +180,8 @@ class TestJsListenerDetectionIsReachable:
         )
 
         wd = DOMWatchdog(_CDP(), enable_js_listener_detection=False)  # type: ignore[arg-type]
-        *_, js_ids, _dpr = await wd._capture_cdp_data()
-        assert js_ids is None
+        capture, _dpr = await wd._capture_cdp_data()
+        assert capture.js_click_listener_ids is None
 
 
 class TestDownloadsWatchdogIsGone:

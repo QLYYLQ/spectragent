@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
-    resolve_index_to_backend_node_id,
+    handler_error,
+    resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import ClickElementEvent
@@ -38,13 +39,17 @@ class ClickAction(SettleableAction, ActionBase):
         capability: BrowserCapability,
     ) -> ActionResult:
         try:
-            backend_node_id = resolve_index_to_backend_node_id(
-                capability, params["index"],
-            )
+            element = resolve_index(capability, params["index"])
             scope = focused_scope(capability)
-            event = ClickElementEvent(backend_node_id=backend_node_id)
+            event = ClickElementEvent(
+                backend_node_id=element.backend_node_id,
+                session_id=element.session_id,
+            )
             scope.emit(event)
             await event
+            error = handler_error(event)
+            if error is not None:
+                return ActionResult(success=False, error=error)
             await self.settle()
             return ActionResult(success=True)
         except KeyError as exc:

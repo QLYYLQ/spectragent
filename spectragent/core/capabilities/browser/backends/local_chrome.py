@@ -152,7 +152,7 @@ def _search_paths() -> tuple[str, ...]:
     return _PLATFORM_PATHS.get(sys.platform, _LINUX_PATHS)
 
 
-def _find_chrome() -> str:
+def find_chrome() -> str:
     """Find a Chrome / Chromium executable on the system."""
     # Env override. An override that does not resolve is a configuration
     # mistake worth naming — falling through to the search would report the
@@ -492,7 +492,7 @@ class LocalChromeProvider(BrowserProviderBase):
             udd = temp_dir
 
         # Resolve executable.
-        executable = kwargs.get("executable_path") or self.executable_path or _find_chrome()
+        executable = kwargs.get("executable_path") or self.executable_path or find_chrome()
 
         # Build args.
         chrome_args = self._build_args(port, udd)

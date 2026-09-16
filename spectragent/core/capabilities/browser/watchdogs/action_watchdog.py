@@ -1,8 +1,22 @@
 """ActionWatchdog — executes browser actions via CDP Input/Page/DOM domains.
 
 Listens to action events (Click, Type, Scroll, Navigate, ...) and translates
-them into CDP commands.  Uses ``DOMWatchdog.selector_map`` to resolve
-``backend_node_id`` → element coordinates.
+them into CDP commands.  Uses ``DOMWatchdog.selector_map`` to resolve an
+element ``(session_id, backend_node_id)`` → element coordinates.
+
+Elements in frames. DOM commands about an element (scroll into view, measure,
+focus, select, read) go to the session that owns it — the tab's own for the
+page and its same-process frames, the frame target's for an out-of-process
+iframe. Mouse input never does: it is dispatched on the tab's session at page
+CSS coordinates, where Chrome hit-tests it into whichever frame is under the
+point, exactly as a real pointer would be. The page point of a frame element
+is measured from layout (``DOM.getContentQuads``), not by script in its frame,
+lifted to the page at each out-of-process boundary by that frame's
+:class:`~spectragent.core.capabilities.browser.geometry.FrameProjection` — the
+affine map the owner's box model describes, so a frame under a CSS transform
+lands where it is drawn and not where an untransformed one would be. A frame
+element that can no longer be measured is not acted on at its snapshot
+position: its frame changed, and that point belongs to something else.
 """
 
 from __future__ import annotations
@@ -10,13 +24,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, ClassVar
 
 from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 from agent_cdp.events.base import BaseEvent
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMSelectorMap
+from spectragent.core.capabilities.browser.geometry import (
+    FrameGeometryError,
+    FrameProjection,
+    bounding_box,
+    corners,
+)
 from spectragent.core.capabilities.browser.input import (
     HumanMouse,
     MouseTrajectoryProtocol,
@@ -76,6 +96,22 @@ _KEY_INFO: dict[str, tuple[str, str, int, str | None]] = {
     "pagedown":   ("PageDown",   "PageDown",    34, None),
     "space":      (" ",          "Space",       32, " "),
 }
+
+
+#: What a click on a frame element that can no longer be located reports.
+_STALE_FRAME_ELEMENT = (
+    "The element is inside a frame that changed since the last observation "
+    "(navigated, reloaded or removed), so it cannot be located; observe the "
+    "page again before acting on it."
+)
+
+#: Live border-box rect of a top-level element, in the page viewport.
+_CLIENT_RECT_JS = (
+    "function() {"
+    "  const r = this.getBoundingClientRect();"
+    "  return {x: r.x, y: r.y, w: r.width, h: r.height};"
+    "}"
+)
 
 
 def _resolve_key_event(raw: str) -> tuple[dict[str, Any], str | None]:
@@ -302,10 +338,12 @@ class ActionWatchdog(BrowserWatchdog):
             move_callback=self._overlay_move_cursor if debug_highlight else None,
         )
 
-        # Debug highlight state — Overlay.enable is sent lazily on first use.
+        # Debug highlight state — Overlay.enable is sent lazily, once per
+        # session it is needed on (an element in an out-of-process iframe is
+        # highlighted through that frame's session).
         self._debug_highlight = debug_highlight
         self._debug_highlight_ms = debug_highlight_ms
-        self._overlay_enabled = False
+        self._overlay_sessions: set[str | None] = set()
         # Tracks whether the JS cursor/click overlay has been registered
         # via Page.addScriptToEvaluateOnNewDocument for this session, so
         # we register it at most once per tab.
@@ -340,28 +378,50 @@ class ActionWatchdog(BrowserWatchdog):
     async def _on_click_element(self, event: ClickElementEvent) -> dict[str, Any] | None:
         """Click element by backend_node_id → resolve to coordinates → click.
 
-        Click coordinates come from a live ``getBoundingClientRect`` (CSS
-        viewport pixels) rather than ``node.bounds`` to immunise against
-        three known sources of drift between observe and act:
+        Click coordinates come from a live measurement (CSS viewport pixels,
+        see ``_get_live_viewport_center``) rather than ``node.bounds`` to
+        immunise against three known sources of drift between observe and act:
 
         - DPR mismatch (DOMSnapshot bounds are device pixels)
         - document vs viewport coordinate space (snapshot bounds include
           scrollOffset; CDP Input.dispatchMouseEvent expects viewport)
         - layout shifts that happened after the snapshot was taken
+
+        For an element inside frames the live box is lifted to the page
+        through the frames around it (see the module docstring), and the
+        press lands on the tab at that page point. When that point cannot be
+        measured the click is refused, not guessed: a frame element's
+        position depends on every frame around it, so a failure there means
+        the frame navigated, reloaded or went away — and the snapshot's point
+        now belongs to whatever replaced it.
         """
-        node = self._resolve_node(event.backend_node_id)
+        node = self._resolve_node(event.backend_node_id, event.session_id)
         if node is None:
             return {"error": f"Element {event.backend_node_id} not in selector_map"}
 
         if node.bounds is None:
             return {"error": f"Element {event.backend_node_id} has no bounds"}
 
-        await self._highlight_node(event.backend_node_id)
+        await self._highlight_node(event.backend_node_id, event.session_id)
 
         target_w = target_h = 0.0
-        live = await self._get_live_viewport_center(event.backend_node_id)
+        owners = node.frame_owners()
+        try:
+            live = await self._get_live_viewport_center(
+                event.backend_node_id, event.session_id, owners
+            )
+        except FrameGeometryError as exc:
+            logger.warning("Not clicking %s: %s", self._describe_node(node), exc)
+            return {"error": str(exc)}
         if live is not None:
             cx, cy, target_w, target_h = live
+        elif owners:
+            logger.warning(
+                "Element %s inside a frame could not be located live; not clicking "
+                "its snapshot position",
+                self._describe_node(node),
+            )
+            return {"error": _STALE_FRAME_ELEMENT}
         else:
             # Fallback path: post Layer-1 bounds are CSS pixels, so this is
             # still correct for the static-page case but vulnerable to
@@ -465,21 +525,27 @@ class ActionWatchdog(BrowserWatchdog):
     # -----------------------------------------------------------------------
 
     async def _on_type_text(self, event: TypeTextEvent) -> dict[str, Any] | None:
-        """Type text into an element via CDP Input.insertText (bulk)."""
-        node = self._resolve_node(event.backend_node_id)
+        """Type text into an element via CDP Input.insertText (bulk).
+
+        Focus and keystrokes go to the session that owns the element: focusing
+        a node inside an out-of-process iframe through its own frame target
+        is what makes that frame the one the keystrokes reach.
+        """
+        node = self._resolve_node(event.backend_node_id, event.session_id)
         if node is None:
             return {"error": f"Element {event.backend_node_id} not in selector_map"}
 
-        await self._highlight_node(event.backend_node_id)
-        await self._approach_node(event.backend_node_id)
+        sid = self._element_session(event.session_id)
+        await self._highlight_node(event.backend_node_id, event.session_id)
+        await self._approach_node(event.backend_node_id, event.session_id)
         try:
             # Focus the element.
             await self._cdp.send(
                 "DOM.focus",
                 {"backendNodeId": event.backend_node_id},
-                session_id=self._session_id,
+                session_id=sid,
             )
-            return await self._insert_text_at_focus(event.text, event.clear)
+            return await self._insert_text_at_focus(event.text, event.clear, session_id=sid)
         except Exception as e:
             logger.error("Type failed: %s", e)
             return {"error": str(e)}
@@ -511,14 +577,16 @@ class ActionWatchdog(BrowserWatchdog):
             return {"error": str(e)}
 
     async def _insert_text_at_focus(
-        self, text: str, clear: bool
+        self, text: str, clear: bool, *, session_id: str | None = None
     ) -> dict[str, Any]:
         """Clear (optionally) and bulk-insert *text* into the focused node.
 
         Every CDP call here targets the *current focus*, never a node id —
         which is why the coordinate path can reuse it after a click.
+        ``session_id`` is the target the focus was put in; ``None`` is the
+        tab, whose input Chrome routes to its focused frame.
         """
-        sid = self._session_id
+        sid = self._element_session(session_id)
         if clear:
             await self._cdp.send("Input.dispatchKeyEvent", {
                 "type": "keyDown", "key": "a", "commands": ["selectAll"],
@@ -582,11 +650,28 @@ class ActionWatchdog(BrowserWatchdog):
                 dx = -event.amount
 
             if event.backend_node_id is not None:
-                node = self._resolve_node(event.backend_node_id)
+                node = self._resolve_node(event.backend_node_id, event.session_id)
                 if node is not None:
-                    live = await self._get_live_viewport_center(event.backend_node_id)
+                    owners = node.frame_owners()
+                    try:
+                        live = await self._get_live_viewport_center(
+                            event.backend_node_id, event.session_id, owners
+                        )
+                    except FrameGeometryError as exc:
+                        logger.warning(
+                            "Not scrolling %s: %s", self._describe_node(node), exc
+                        )
+                        return
                     if live is not None:
                         cx, cy, _w, _h = live
+                    elif owners:
+                        # Same reason as a click: the frame changed.
+                        logger.warning(
+                            "Element %s inside a frame could not be located live; "
+                            "not scrolling at its snapshot position",
+                            self._describe_node(node),
+                        )
+                        return
                     elif node.bounds is not None:
                         cx_f, cy_f = node.bounds.center
                         cx, cy = int(cx_f), int(cy_f)
@@ -852,10 +937,10 @@ class ActionWatchdog(BrowserWatchdog):
 
         Uses proper CDP argument binding to avoid JavaScript injection.
         """
-        await self._highlight_node(event.backend_node_id)
-        await self._approach_node(event.backend_node_id)
+        await self._highlight_node(event.backend_node_id, event.session_id)
+        await self._approach_node(event.backend_node_id, event.session_id)
         try:
-            sid = self._session_id
+            sid = self._element_session(event.session_id)
             # Resolve the backend node to a remote object.
             resolve_result = await self._cdp.send("DOM.resolveNode", {
                 "backendNodeId": event.backend_node_id,
@@ -915,17 +1000,16 @@ class ActionWatchdog(BrowserWatchdog):
 
     async def _on_extract_content(self, event: ExtractContentEvent) -> str | None:
         """Extract text content from page or element."""
-        sid = self._session_id
         try:
             if event.backend_node_id is not None:
                 result = await self._cdp.send("DOM.getOuterHTML", {
                     "backendNodeId": event.backend_node_id,
-                }, session_id=sid)
+                }, session_id=self._element_session(event.session_id))
                 return result.get("outerHTML", "") if result else ""
             else:
                 result = await self._cdp.send("Runtime.evaluate", {
                     "expression": "document.body.innerText",
-                }, session_id=sid)
+                }, session_id=self._session_id)
                 return result.get("result", {}).get("value", "") if result else ""
         except Exception as e:
             logger.error("Extract content failed: %s", e)
@@ -1059,21 +1143,24 @@ class ActionWatchdog(BrowserWatchdog):
         except Exception as exc:
             logger.debug("debug overlay set_visible(%s) failed: %s", flag, exc)
 
-    async def _highlight_node(self, backend_node_id: int) -> None:
+    async def _highlight_node(
+        self, backend_node_id: int, session_id: str | None = None
+    ) -> None:
         """DevTools-style highlight on the target node, then sleep briefly.
 
         No-op when ``debug_highlight`` is off. Lazy-enables the Overlay
-        domain on first use (Overlay.enable is per-target/session).
+        domain on first use per session (Overlay.enable is per-target/session;
+        a node is highlighted through the session that owns it).
         Failures are logged at debug level — highlighting is best-effort
         and must never block the underlying action.
         """
         if not self._debug_highlight:
             return
-        sid = self._session_id
+        sid = self._element_session(session_id)
         try:
-            if not self._overlay_enabled:
+            if sid not in self._overlay_sessions:
                 await self._cdp.send("Overlay.enable", {}, session_id=sid)
-                self._overlay_enabled = True
+                self._overlay_sessions.add(sid)
             await self._cdp.send(
                 "Overlay.highlightNode",
                 {
@@ -1113,17 +1200,27 @@ class ActionWatchdog(BrowserWatchdog):
         except Exception as exc:
             logger.debug("overlay cursor move to (%d,%d) failed: %s", x, y, exc)
 
-    async def _approach_node(self, backend_node_id: int) -> None:
+    async def _approach_node(
+        self, backend_node_id: int, session_id: str | None = None
+    ) -> None:
         """Move the humanized cursor onto an element before a keyboard/DOM action.
 
         No-op unless the trajectory strategy is humanized, i.e. anything but
         ``instant`` (type/select are keyboard/DOM operations with no native
         cursor move, so we only add an approach when humanizing). Best-effort: a failed coordinate resolution must not block
-        the underlying type/select.
+        the underlying type/select — including a frame whose transform has no
+        affine inverse, where the keystrokes still reach the element through
+        its own session and only the cursor cannot be aimed.
         """
         if not self._mouse.humanized:
             return
-        live = await self._get_live_viewport_center(backend_node_id)
+        node = self._resolve_node(backend_node_id, session_id)
+        owners = node.frame_owners() if node is not None else []
+        try:
+            live = await self._get_live_viewport_center(backend_node_id, session_id, owners)
+        except FrameGeometryError as exc:
+            logger.debug("cursor approach to node %d skipped: %s", backend_node_id, exc)
+            return
         if live is None:
             return
         cx, cy, w, h = live
@@ -1133,20 +1230,41 @@ class ActionWatchdog(BrowserWatchdog):
             logger.debug("cursor approach to node %d failed: %s", backend_node_id, exc)
 
     async def _get_live_viewport_center(
-        self, backend_node_id: int,
+        self,
+        backend_node_id: int,
+        session_id: str | None = None,
+        frame_owners: Sequence[DOMElementNode] = (),
     ) -> tuple[int, int, int, int] | None:
-        """Return ``(center_x, center_y, width, height)`` in viewport px, or None.
+        """Return ``(center_x, center_y, width, height)`` in page viewport px, or None.
 
-        Pipeline: scroll the element into view, resolve it to a JS object,
-        then read ``getBoundingClientRect()`` — those numbers are in CSS
-        viewport pixels and are exactly what ``Input.dispatchMouseEvent``
-        wants. Width/height feed the trajectory layer's Fitts's-law timing.
-        Any failure → ``None`` so the caller can fall back to the snapshot
-        bounds path.
+        Pipeline: scroll the element into view, then measure its border box
+        where it is drawn now.
+
+        - An element of the top-level document is resolved to a JS object and
+          reads ``getBoundingClientRect()`` — CSS pixels of the page viewport,
+          exactly what ``Input.dispatchMouseEvent`` wants.
+        - An element inside frames (``frame_owners``, innermost first) is
+          measured from layout alone, with no script in its frame: frames are
+          where third-party code runs (captchas, anti-bot vendors, payment
+          fields), and a measuring call through a page's own prototypes is
+          something that code can watch. ``DOM.getContentQuads`` answers in
+          the coordinates of the element's local root — the page viewport for
+          a same-process frame, the frame's own viewport for an out-of-process
+          one — so each process boundary on the way up applies its owner's
+          frame projection (``DOM.getBoxModel``, measured in the owner's own
+          local root).
+
+        Width/height feed the trajectory layer's Fitts's-law timing and the
+        ``gan`` strategy's target box. Any failure → ``None``; the caller
+        decides whether a snapshot position is still worth anything.
+        :class:`FrameGeometryError` propagates instead, because "this frame's
+        transform cannot be inverted" is not something a later observation
+        fixes and the agent is told so by name.
         """
-        sid = self._session_id
+        sid = self._element_session(session_id)
         try:
             try:
+                # Scrolls every enclosing frame too, across processes.
                 await self._cdp.send(
                     "DOM.scrollIntoViewIfNeeded",
                     {"backendNodeId": backend_node_id},
@@ -1160,42 +1278,16 @@ class ActionWatchdog(BrowserWatchdog):
                     backend_node_id, exc,
                 )
 
-            resolved = await self._cdp.send(
-                "DOM.resolveNode",
-                {"backendNodeId": backend_node_id},
-                session_id=sid,
-            )
-            if not resolved or "object" not in resolved:
+            if frame_owners:
+                box = await self._frame_element_box(backend_node_id, sid, frame_owners)
+            else:
+                box = await self._page_element_box(backend_node_id, sid)
+            if box is None:
                 return None
-            object_id = resolved["object"].get("objectId")
-            if not object_id:
-                return None
-
-            rect_result = await self._cdp.send(
-                "Runtime.callFunctionOn",
-                {
-                    "functionDeclaration": (
-                        "function() {"
-                        "  const r = this.getBoundingClientRect();"
-                        "  return {x: r.x, y: r.y, w: r.width, h: r.height};"
-                        "}"
-                    ),
-                    "objectId": object_id,
-                    "returnByValue": True,
-                },
-                session_id=sid,
-            )
-            value = (rect_result or {}).get("result", {}).get("value")
-            if not isinstance(value, dict):
-                return None
-            try:
-                x = float(value["x"])
-                y = float(value["y"])
-                w = float(value["w"])
-                h = float(value["h"])
-            except (KeyError, TypeError, ValueError):
-                return None
+            x, y, w, h = box
             return int(x + w / 2), int(y + h / 2), int(w), int(h)
+        except FrameGeometryError:
+            raise
         except Exception as exc:
             logger.warning(
                 "Live viewport center query failed for node %d: %s",
@@ -1203,13 +1295,135 @@ class ActionWatchdog(BrowserWatchdog):
             )
             return None
 
-    def _resolve_node(self, backend_node_id: int) -> DOMElementNode | None:
-        """Look up a node from DOMWatchdog's selector_map by backend_node_id."""
+    async def _page_element_box(
+        self, backend_node_id: int, session_id: str | None
+    ) -> tuple[float, float, float, float] | None:
+        """A top-level element's live ``getBoundingClientRect()``: ``(x, y, w, h)``."""
+        rect = await self._call_on_node(backend_node_id, session_id, _CLIENT_RECT_JS)
+        if rect is None:
+            return None
+        try:
+            return float(rect["x"]), float(rect["y"]), float(rect["w"]), float(rect["h"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    async def _frame_element_box(
+        self,
+        backend_node_id: int,
+        session_id: str | None,
+        frame_owners: Sequence[DOMElementNode],
+    ) -> tuple[float, float, float, float] | None:
+        """A frame element's live border box in the page viewport, from layout only.
+
+        The box starts in the coordinates of the element's own local root
+        and is mapped through one :class:`FrameProjection` per process
+        boundary, each built from that frame's owner's box model. The
+        corners travel, not the box: a rotated frame turns the box into a
+        parallelogram, and re-squaring it at every hop would inflate it
+        each time. Same-renderer owners are skipped — Blink already
+        composed their transforms into the quads it answered with.
+
+        Raises on a CDP error (a detached node, a session that is gone)
+        and :class:`FrameGeometryError` when a frame's own transform has
+        no affine inverse.
+        """
+        box = await self._layout_box(backend_node_id, session_id)
+        if box is None:
+            return None
+        points = corners(box)
+        local_root = session_id
+        for owner in frame_owners:
+            owner_session = self._element_session(owner.session_id)
+            if owner_session == local_root:
+                continue  # same renderer: already in this local root's coordinates
+            if owner.backend_node_id is None:
+                return None
+            model = await self._cdp.send(
+                "DOM.getBoxModel", {"backendNodeId": owner.backend_node_id}, session_id=owner_session
+            )
+            points = FrameProjection.of_box_model(model).quad(points)
+            local_root = owner_session
+        return bounding_box(points)
+
+    async def _layout_box(
+        self, backend_node_id: int, session_id: str | None
+    ) -> tuple[float, float, float, float] | None:
+        """``(x, y, w, h)`` around a node's content quads, in its local root's viewport.
+
+        The bounding box of every quad, as ``getBoundingClientRect`` is of
+        every client rect; a node Chrome computes no content quads for falls
+        back to its border box.
+        """
+        try:
+            result = await self._cdp.send(
+                "DOM.getContentQuads", {"backendNodeId": backend_node_id}, session_id=session_id
+            )
+            quads = [q for q in (result or {}).get("quads") or [] if len(q) >= 8]
+        except Exception as exc:
+            logger.debug("getContentQuads failed for node %d: %s", backend_node_id, exc)
+            quads = []
+        if not quads:
+            model = await self._cdp.send(
+                "DOM.getBoxModel", {"backendNodeId": backend_node_id}, session_id=session_id
+            )
+            border = ((model or {}).get("model") or {}).get("border") or []
+            if len(border) < 8:
+                return None
+            quads = [border]
+        xs = [value for quad in quads for value in quad[0::2]]
+        ys = [value for quad in quads for value in quad[1::2]]
+        return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+
+    async def _call_on_node(
+        self, backend_node_id: int, session_id: str | None, function_declaration: str
+    ) -> dict[str, Any] | None:
+        """Run ``function_declaration`` with ``this`` = the node; its dict result, or None."""
+        resolved = await self._cdp.send(
+            "DOM.resolveNode",
+            {"backendNodeId": backend_node_id},
+            session_id=session_id,
+        )
+        if not resolved or "object" not in resolved:
+            return None
+        object_id = resolved["object"].get("objectId")
+        if not object_id:
+            return None
+        result = await self._cdp.send(
+            "Runtime.callFunctionOn",
+            {
+                "functionDeclaration": function_declaration,
+                "objectId": object_id,
+                "returnByValue": True,
+            },
+            session_id=session_id,
+        )
+        value = (result or {}).get("result", {}).get("value")
+        return value if isinstance(value, dict) else None
+
+    def _element_session(self, session_id: str | None) -> str | None:
+        """The CDP session to address an element's node through; ``None`` = this tab."""
+        return session_id if session_id is not None else self._session_id
+
+    def _resolve_node(
+        self, backend_node_id: int, session_id: str | None = None
+    ) -> DOMElementNode | None:
+        """Find the selector_map node that is ``backend_node_id`` in ``session_id``.
+
+        Matched by identity, not by key: the map is keyed by element handle,
+        which is the backend node id only for the tab's own target — an
+        out-of-process frame's element has a namespaced key and a backend
+        node id that may belong to a page element too.
+        """
         if self._selector_map_getter is None:
             return None
         selector_map = self._selector_map_getter()
-        if selector_map is None:
+        if not selector_map:
             return None
-        # selector_map is keyed by backend_node_id (since both BrowserUseCleaner
-        # and SkyvernCleaner now use this key).
-        return selector_map.get(backend_node_id)
+        wanted = self._element_session(session_id)
+        for node in selector_map.values():
+            if (
+                node.backend_node_id == backend_node_id
+                and self._element_session(node.session_id) == wanted
+            ):
+                return node
+        return None

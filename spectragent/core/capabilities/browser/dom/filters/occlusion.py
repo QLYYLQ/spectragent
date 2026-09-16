@@ -7,7 +7,9 @@ Algorithm:
 2. Group by paint_order (descending — topmost first).
 3. For each group: check ALL nodes first, then add opaque rects to union.
    (Elements in the same paint-order group never occlude each other.)
-4. For each element: if fully contained by the union, mark as occluded.
+4. For each element: if fully contained by the union, mark as occluded —
+   unless what covers it is its own subtree, when ``descendants_occlude`` is
+   off (see ``filter_by_paint_order``).
 5. Transparent / semi-transparent elements are excluded from the union.
 
 Uses a proper disjoint rect-union with splitting (matching original
@@ -16,6 +18,7 @@ Uses a proper disjoint rect-union with splitting (matching original
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -130,10 +133,20 @@ _TRANSPARENT_BG = "rgba(0, 0, 0, 0)"
 _MIN_OPAQUE_OPACITY = 0.8
 
 
+def has_paint_geometry(node: DOMElementNode) -> bool:
+    """Whether ``node`` takes part in paint-order occlusion at all."""
+    return (
+        node.paint_order is not None
+        and node.bounds is not None
+        and node.backend_node_id is not None
+    )
+
+
 def filter_by_paint_order(
     nodes: list[DOMElementNode],
     *,
     max_nodes: int = 5000,
+    descendants_occlude: bool = False,
 ) -> set[int]:
     """Return set of ``backend_node_id`` values that are occluded.
 
@@ -142,11 +155,24 @@ def filter_by_paint_order(
     - Within a group, ALL elements are checked BEFORE any are added to the
       union — so elements with the same paint_order never occlude each other.
     - Uses proper disjoint rect-union for multi-rect coverage detection.
+
+    ``descendants_occlude=True`` is exactly that algorithm. With the default
+    ``False`` a node is never occluded by its own subtree: a click on a
+    descendant is a click on the node — the event reaches it — so an opaque
+    child painted over its parent hides nothing. Counting it drops exactly
+    the controls that draw their face with an inner element: reCAPTCHA's
+    ``span#recaptcha-anchor`` (role=checkbox) sits under its own white
+    ``div.recaptcha-checkbox-border`` and was never indexed. The union sweep
+    finds the nodes covered by *anything*; each is then re-checked against
+    the painters outside its subtree.
+
+    ``nodes`` must share one paint-order space — one document of one target.
     """
     # Collect candidates: nodes with paint_order + bounds.
     candidates: list[tuple[int, DOMElementNode]] = []
     for n in nodes:
-        if n.paint_order is not None and n.bounds is not None and n.backend_node_id is not None:
+        if has_paint_geometry(n):
+            assert n.paint_order is not None
             candidates.append((n.paint_order, n))
 
     if len(candidates) > max_nodes:
@@ -158,7 +184,8 @@ def filter_by_paint_order(
         grouped[paint_order].append(node)
 
     covered = _RectUnion()
-    occluded: set[int] = set()
+    suspects: list[tuple[int, _Rect, DOMElementNode]] = []
+    painters: list[tuple[int, _Rect, DOMElementNode]] = []
 
     for paint_order in sorted(grouped.keys(), reverse=True):
         group_nodes = grouped[paint_order]
@@ -173,19 +200,81 @@ def filter_by_paint_order(
             # Note: zero-area elements (e.g. <source>) can still be covered
             # by the union — matching original browser-use behavior.
             if covered.contains(r):
-                assert node.backend_node_id is not None
-                occluded.add(node.backend_node_id)
+                suspects.append((paint_order, r, node))
 
             # Only opaque elements with non-zero area contribute to the
             # covered region.
             if r.area() > 0 and _is_opaque(node):
                 rects_to_add.append(r)
+                painters.append((paint_order, r, node))
 
         # Add all opaque rects from this group to the union.
         for r in rects_to_add:
             covered.add(r)
 
+    if not suspects:
+        return set()
+    if descendants_occlude:
+        return {node.backend_node_id for _, _, node in suspects if node.backend_node_id is not None}
+
+    nearby = _Grid(painters)
+    occluded: set[int] = set()
+    for paint_order, r, node in suspects:
+        outside = _RectUnion()
+        for other_order, other_r, other in nearby.around(r):
+            if other_order <= paint_order or not (other_r.intersects(r) or other_r.contains(r)):
+                continue
+            if _is_within(other, node):
+                continue
+            outside.add(other_r)
+        if outside.contains(r):
+            assert node.backend_node_id is not None
+            occluded.add(node.backend_node_id)
     return occluded
+
+
+def _is_within(node: DOMElementNode, ancestor: DOMElementNode) -> bool:
+    """Whether ``node`` is in ``ancestor``'s subtree (shadow content included)."""
+    current = node.parent
+    while current is not None:
+        if current is ancestor:
+            return True
+        current = current.parent
+    return False
+
+
+class _Grid:
+    """Painters bucketed by 256 px cell, so re-checking a node looks nearby only.
+
+    Without it the re-check is suspects x painters; under a full-page modal
+    that is most of the page against everything painted above it.
+    """
+
+    _CELL = 256.0
+
+    def __init__(self, painters: list[tuple[int, _Rect, DOMElementNode]]) -> None:
+        self._cells: defaultdict[tuple[int, int], list[tuple[int, _Rect, DOMElementNode]]] = (
+            defaultdict(list)
+        )
+        for entry in painters:
+            for key in self._keys(entry[1]):
+                self._cells[key].append(entry)
+
+    @classmethod
+    def _keys(cls, r: _Rect) -> list[tuple[int, int]]:
+        x0, x1 = math.floor(r.x1 / cls._CELL), math.floor(r.x2 / cls._CELL)
+        y0, y1 = math.floor(r.y1 / cls._CELL), math.floor(r.y2 / cls._CELL)
+        return [(cx, cy) for cx in range(x0, x1 + 1) for cy in range(y0, y1 + 1)]
+
+    def around(self, r: _Rect) -> list[tuple[int, _Rect, DOMElementNode]]:
+        seen: set[int] = set()
+        found: list[tuple[int, _Rect, DOMElementNode]] = []
+        for key in self._keys(r):
+            for entry in self._cells.get(key, ()):
+                if id(entry) not in seen:
+                    seen.add(id(entry))
+                    found.append(entry)
+        return found
 
 
 def _is_opaque(node: DOMElementNode) -> bool:

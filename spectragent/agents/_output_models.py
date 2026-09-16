@@ -91,7 +91,7 @@ class UITarsOutput(BaseModel):
 # The per-item fields are exactly the union of the params the negotiated
 # browser actions need and cannot default: ``index`` addresses the element
 # (BrowserCapability's selector_map is index-keyed — see
-# ``actions/_common.resolve_index_to_backend_node_id``), ``text`` types or
+# ``actions/_common.resolve_index``), ``text`` types or
 # selects, ``direction`` steers a scroll, ``keys`` drives send_keys. Anything
 # else the capability exposes has a usable default, so widening this model is
 # a decision to make deliberately, not a reflex.

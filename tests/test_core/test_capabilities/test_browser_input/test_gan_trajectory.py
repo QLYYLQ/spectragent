@@ -83,7 +83,11 @@ def _capability_config(mouse_trajectory: dict[str, Any]) -> Any:
     from spectragent.generated._composed import BrowserCapabilityConfig
 
     return BrowserCapabilityConfig.model_validate(
-        {"mouse_trajectory": mouse_trajectory, "backend": {"provider_id": "local_chrome"}}
+        {
+            "mouse_trajectory": mouse_trajectory,
+            "dom_cleaner": {"cleaner_type": "browser_use"},
+            "backend": {"provider_id": "local_chrome"},
+        }
     )
 
 

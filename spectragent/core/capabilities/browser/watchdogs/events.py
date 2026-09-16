@@ -1,7 +1,11 @@
 """Browser event definitions — BaseEvent subclasses for watchdog communication.
 
-Events use lightweight references (backend_node_id: int) instead of full DOM node
-objects. The selector_map lookup happens at handler time in each watchdog.
+Events use lightweight references instead of full DOM node objects: an
+element is ``(session_id, backend_node_id)``, the pair CDP itself addresses
+nodes by. A backend node id is unique only within one target, and an element
+inside an out-of-process iframe lives in a target of its own, so the id alone
+does not say which element is meant. ``session_id`` is ``None`` for the tab's
+own session. The selector_map lookup happens at handler time in each watchdog.
 """
 
 from __future__ import annotations
@@ -51,6 +55,8 @@ class ClickElementEvent(BaseEvent[dict[str, Any] | None]):
     """Click a DOM element by backend_node_id (resolved via selector_map)."""
 
     backend_node_id: int
+    #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
+    session_id: str | None = None
     button: str = "left"
     click_count: int = 1
     event_timeout: float = 15.0
@@ -70,6 +76,8 @@ class TypeTextEvent(BaseEvent[dict[str, Any] | None]):
     """Type text into a DOM element."""
 
     backend_node_id: int
+    #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
+    session_id: str | None = None
     text: str
     clear: bool = True
     event_timeout: float = 60.0
@@ -110,6 +118,8 @@ class ScrollEvent(BaseEvent[None]):
     direction: str  # "up" | "down" | "left" | "right"
     amount: int = 300  # pixels
     backend_node_id: int | None = None  # None = scroll viewport
+    #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
+    session_id: str | None = None
     event_timeout: float = 8.0
 
 
@@ -142,6 +152,8 @@ class SelectDropdownEvent(BaseEvent[None]):
     """Select an option from a dropdown element."""
 
     backend_node_id: int
+    #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
+    session_id: str | None = None
     value: str | None = None
     text: str | None = None
     index: int | None = None
@@ -152,6 +164,8 @@ class ExtractContentEvent(BaseEvent[str | None]):
     """Extract text content from the page or a specific element."""
 
     backend_node_id: int | None = None
+    #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
+    session_id: str | None = None
     goal: str | None = None
     event_timeout: float = 30.0
 

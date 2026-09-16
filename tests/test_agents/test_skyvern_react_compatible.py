@@ -520,3 +520,33 @@ class TestOutputModel:
         item = schema["properties"]["actions"]["items"]
         assert item["additionalProperties"] is False
         assert set(item["required"]) == set(SkyvernActionItem.model_fields)
+
+
+class TestFrameElementIndices:
+    """A ten-digit frame-element index survives the closed Skyvern shape."""
+
+    async def test_the_index_reaches_the_element_unchanged(self) -> None:
+        from spectragent.core.capabilities.browser.actions.click import ClickAction
+        from tests.test_core.test_capabilities.test_browser_actions.conftest import (
+            FakeCapability,
+            FakeElementNode,
+            FakeScope,
+        )
+
+        key = 3 * 2**31 + 7
+        out = SkyvernOutput.model_validate_json(
+            f'{{"actions": [{{"action_type": "browser.click", "index": {key}, "reasoning": "r"}}]}}'
+        )
+        (action,) = _make_agent().parse_react_output(out)
+        assert action.params["index"] == key
+
+        capability = FakeCapability()
+        capability._scopes["tab"] = FakeScope()
+        capability._selector_maps["tab"] = {
+            key: FakeElementNode(backend_node_id=7, session_id="frame")
+        }
+        capability._default_session_id = "tab"
+        result = await ClickAction(post_delay_ms=0).execute(action.params, capability=capability)  # type: ignore[arg-type]
+        assert result.success, result.error
+        (event,) = capability._scopes["tab"].emitted
+        assert (event.backend_node_id, event.session_id) == (7, "frame")
