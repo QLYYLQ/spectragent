@@ -116,9 +116,10 @@ class ChatCerebras(OpenAICompatBase):
 
             json_match = re.search(r"\{.*\}", content, re.DOTALL)
             json_str = json_match.group(0) if json_match else content
+            usage = self._get_usage(resp)
             return ChatInvokeCompletion(
-                completion=output_format.model_validate_json(json_str),
-                usage=self._get_usage(resp),
+                completion=self._validate_structured(output_format, json_str, usage=usage),
+                usage=usage,
             )
 
         except ModelProviderError:

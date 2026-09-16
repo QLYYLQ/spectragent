@@ -614,9 +614,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     def get_action_descriptors(self, **context: Any) -> list[ActionDescriptor]:
         """Derive descriptors from each registered action instance.
 
-        Kept context-free for browser — no per-task action shape. Other
-        capabilities (e.g. ``ToolSandboxCapability``) pass per-task tool
-        schemas through ``**context`` to each action's ``descriptor``.
+        ``**context`` is forwarded verbatim. For browser it carries this
+        run's active observation fragments (``AgentRuntime.prepare`` passes
+        ``fragments=``), which is what lets ``browser.scroll`` advertise its
+        ``index`` param in a DOM run and not in a vision one — the param
+        addresses the selector map, so a run without ``browser.dom`` must
+        not be told it exists. Other capabilities use the same channel for
+        their own per-task shapes (``ToolSandboxCapability`` passes tool
+        schemas).
         """
         return [a.descriptor(**context) for a in self._actions_by_name.values()]
 

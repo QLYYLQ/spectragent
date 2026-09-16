@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
     resolve_index,
@@ -26,17 +30,24 @@ class SelectDropdownAction(SettleableAction, ActionBase):
 
     __registry_key__ = "browser.select_dropdown"
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        index: Annotated[
+            int,
+            RequiresFragment("browser.dom"),
+            PydanticField(description="element index of the <select>"),
+        ]
+        value: str | None = None
+        text: Annotated[
+            str | None, PydanticField(description="visible option text")
+        ] = None
+        option_index: Annotated[
+            int | None, PydanticField(description="0-based option index")
+        ] = None
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description="Select an option from a dropdown element.",
-            params={
-                "index": "int -- element index of the <select>",
-                "value": "str (optional)",
-                "text": "str (optional) -- visible option text",
-                "option_index": "int (optional) -- 0-based option index",
-            },
-        )
+        return self.describe("Select an option from a dropdown element.", **context)
 
     async def execute(
         self,

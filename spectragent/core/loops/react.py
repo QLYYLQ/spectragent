@@ -22,7 +22,9 @@ from typing import Annotated, Any, ClassVar
 from pydantic import Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
+from spectragent.core.llm.exceptions import StructuredOutputValidationError
 from spectragent.core.llm.messages import AssistantMessage
+from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops._loop_fragments import (
     last_action_result_obs,
     populate_loop_fragments,
@@ -223,6 +225,26 @@ class ReactLoop(AgentLoopBase):
             )
             try:
                 completion = await llm.ainvoke(context, output_format=output_model)
+            except StructuredOutputValidationError as exc:
+                # The call succeeded; the *reply* did not fit the schema.
+                # That is the one provider error the model can fix, so it
+                # rejoins the ordinary path with the text the model wrote
+                # and is refused a second time by the agent's own parser —
+                # which knows this run's verbs and answers with one located
+                # line, where the provider can only report a schema
+                # mismatch. Aborting here instead ended an episode over a
+                # single mistyped parameter.
+                #
+                # The call stays visible to the hooks even though it
+                # raised: ``around_ainvoke`` on TraceWriter and
+                # MetricsCollector sees what ``after`` cannot, so the
+                # exchange reaches the WAL and the tokens below are counted
+                # once on both sides rather than only here.
+                completion = ChatInvokeCompletion(
+                    completion=exc.raw_output,
+                    usage=exc.usage,
+                    stop_reason="structured_output_validation_error",
+                )
             except Exception as exc:
                 # The environment is fine; the model call is not. A 429
                 # should not be indistinguishable from a dead browser.

@@ -75,7 +75,7 @@ def agent_prompt_variants(agent_id: str) -> tuple[str, ...]:
     return tuple(sorted(p.stem for p in directory.glob(f"*{PROMPT_SUFFIX}")))
 
 
-def load_prompt(agent_id: str, name: str) -> tuple[str, PromptRef]:
+def _read_prompt(path: Path, missing: str) -> tuple[str, PromptRef]:
     """Read one prompt file and pin its content hash.
 
     Returns ``(text, ref)``. The ref's ``path`` is relative to the
@@ -84,17 +84,50 @@ def load_prompt(agent_id: str, name: str) -> tuple[str, PromptRef]:
     the prompt I am reading now?" answerable — agents used to record the
     empty string there.
     """
-    path = agent_prompt_dir(agent_id) / f"{name}{PROMPT_SUFFIX}"
     if not path.is_file():
-        available = agent_prompt_variants(agent_id)
-        raise PromptNotFoundError(
-            f"Agent {agent_id!r} requested prompt {name!r} but {path} does "
-            f"not exist. Available in that directory: "
-            f"{list(available) or '(directory missing)'}."
-        )
+        raise PromptNotFoundError(missing)
     text = path.read_text("utf-8")
     ref = PromptRef(path=str(path.relative_to(PROMPT_PATH)), content_hash=hash_text(text))
     return text, ref
+
+
+def load_prompt(agent_id: str, name: str) -> tuple[str, PromptRef]:
+    """Read one of an agent's top-level templates."""
+    path = agent_prompt_dir(agent_id) / f"{name}{PROMPT_SUFFIX}"
+    available = agent_prompt_variants(agent_id)
+    return _read_prompt(
+        path,
+        f"Agent {agent_id!r} requested prompt {name!r} but {path} does "
+        f"not exist. Available in that directory: "
+        f"{list(available) or '(directory missing)'}.",
+    )
+
+
+def load_prompt_fragment(
+    agent_id: str, directory: str, name: str
+) -> tuple[str, PromptRef]:
+    """Read a prompt *fragment* from a subdirectory of an agent's tree.
+
+    A fragment is a piece spliced into a template as a render param —
+    ``browser_use``'s surface descriptions, one per observation mode. It
+    lives one level down (``browser_use/_surface/vision.md``) precisely so
+    :func:`agent_prompt_variants`, which globs the top level, cannot
+    mistake it for a template the agent can select: a fragment is not a
+    prompt on its own, and "every file on disk is reachable as a variant"
+    must stay true of the directory that answers that question.
+
+    The fragment is hashed like any other prompt, and the agent records it
+    among the render params, so a trace says which surface a run used
+    without anyone grepping the rendered prose.
+    """
+    path = agent_prompt_dir(agent_id) / directory / f"{name}{PROMPT_SUFFIX}"
+    available = sorted(p.stem for p in path.parent.glob(f"*{PROMPT_SUFFIX}"))
+    return _read_prompt(
+        path,
+        f"Agent {agent_id!r} requested fragment {directory}/{name!r} but "
+        f"{path} does not exist. Available there: "
+        f"{available or '(directory missing)'}.",
+    )
 
 
 def template_variables(engine: PromptEngine, template: str) -> set[str]:

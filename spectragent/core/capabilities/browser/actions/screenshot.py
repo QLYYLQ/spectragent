@@ -7,8 +7,9 @@ action returns is rendered as plain text inside the next step's
 ``<results>`` block (see ``BrowserUseAgent._render_history``). That means
 neither a file path nor an inline base64 data URL placed here is shown to
 the model as a real image. To have the LLM actually *see* a screenshot,
-use the existing ``browser.screenshot`` observation fragment with
-``use_vision=True`` — that is the multimodal channel
+use the existing ``browser.screenshot`` observation fragment with an
+agent configured to show it — ``browser_use``'s ``observation_mode`` of
+``dom_vision`` or ``vision``, which is the multimodal channel
 (``BrowserUseAgent._build_vision_message`` → ``ContentPartImageParam``).
 
 This action's job is therefore to **capture and persist on demand**: write
@@ -26,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
@@ -89,21 +91,27 @@ class ScreenshotAction(ActionBase):
         PydanticField(description="Default quality (jpeg/webp 0-100); ignored for png"),
     ] = None
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        full_page: Annotated[
+            bool | None, PydanticField(description="capture beyond viewport")
+        ] = None
+        format: Literal["png", "jpeg", "webp"] | None = None
+        quality: Annotated[
+            int | None, PydanticField(description="jpeg/webp quality 0-100")
+        ] = None
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description=(
+        return self.describe(
+            (
                 "Capture a screenshot of the current page. The PNG is "
                 "saved to disk as a run artifact and the file path is "
                 "returned. This action does not display the image to "
                 "the model — vision-capable agents read screenshots "
                 "from the browser.screenshot observation fragment."
             ),
-            params={
-                "full_page": "bool (optional) -- capture beyond viewport",
-                "format": "png|jpeg|webp (optional)",
-                "quality": "int (optional) -- jpeg/webp quality 0-100",
-            },
+            **context,
         )
 
     async def execute(
@@ -114,7 +122,12 @@ class ScreenshotAction(ActionBase):
     ) -> ActionResult:
         try:
             scope = focused_scope(capability)
-            full_page = bool(params.get("full_page", self.default_full_page))
+            requested_full_page = params.get("full_page")
+            full_page = (
+                self.default_full_page
+                if requested_full_page is None
+                else bool(requested_full_page)
+            )
             fmt = params.get("format") or self.default_format
             quality = params.get("quality", self.default_quality)
             quality_int = int(quality) if isinstance(quality, (int, float)) else None

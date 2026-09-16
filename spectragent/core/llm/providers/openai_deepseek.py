@@ -3,7 +3,6 @@
 # NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
 # 的 nested config 类型提取机制（详见 openai_base.py 注释）。
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
@@ -139,12 +138,12 @@ class ChatDeepSeek(OpenAICompatBase):
                 if not msg.tool_calls:
                     raise ValueError("Expected tool_calls in response but got none")
                 raw_args = msg.tool_calls[0].function.arguments
-                parsed = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                # DeepSeek returns the same `usage` block as OpenAI on the
+                # tool-call path; reporting None discarded it.
+                usage = self._get_usage(resp)
                 return ChatInvokeCompletion(
-                    completion=output_format.model_validate(parsed),
-                    # DeepSeek returns the same `usage` block as OpenAI on the
-                    # tool-call path; reporting None discarded it.
-                    usage=self._get_usage(resp),
+                    completion=self._validate_structured(output_format, raw_args, usage=usage),
+                    usage=usage,
                     stop_reason=resp.choices[0].finish_reason,
                 )
 

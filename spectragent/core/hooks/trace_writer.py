@@ -50,9 +50,10 @@ _ERROR_DONE_STATES = frozenset({AgentDoneStatus.TIMEOUT, AgentDoneStatus.ERROR})
 class TraceWriter(HookBase):
     """Full-trace WAL persistence hook.
 
-    Buffers LLM messages (``after_ainvoke``) and commits a complete step —
-    observation fragments, messages, step record, manifest — when the Loop
-    hands over its ``StepRecord`` (``after_record_step``).
+    Buffers LLM messages (``after_ainvoke``, and ``around_ainvoke`` for a
+    call that raised) and commits a complete step — observation fragments,
+    messages, step record, manifest — when the Loop hands over its
+    ``StepRecord`` (``after_record_step``).
 
     A run that dies between the completion and the step (timeout, crash)
     never reaches that commit point, so run end drains whatever is still
@@ -62,6 +63,10 @@ class TraceWriter(HookBase):
     __registry_key__ = "trace_writer"
     __intercepts__ = [
         Intercept("ainvoke", role="llm", advice="after"),
+        # ``after`` does not fire when the target raises, and one LLM error
+        # is recoverable — the run continues past it. See
+        # :meth:`around_ainvoke`.
+        Intercept("ainvoke", role="llm", advice="around"),
         Intercept("record_step", role="loop", advice="after"),
     ]
 
@@ -184,6 +189,35 @@ class TraceWriter(HookBase):
         input_msgs = args[0] if args else kwargs.get("messages")
         self._pending_messages.append((input_msgs, result))
 
+    async def around_ainvoke(
+        self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any
+    ) -> Any:
+        """Buffer a call whose *reply* was refused, which ``after`` misses.
+
+        A structured reply that does not match the schema comes back as an
+        exception, so no ``after`` advice fires — and yet the run does not
+        end there: the Loop hands the model its own text back and takes
+        another step. Without this the trace would carry a step whose
+        messages file is simply absent, and "Record Once, Evaluate Many"
+        would be false for exactly the steps a researcher most wants to
+        read: the ones where the model got it wrong.
+
+        The exception is buffered in place of the completion, serialized as
+        what it is — the error, the model's raw text — rather than shaped
+        into a completion it never was.
+
+        Deliberately every exception, not only the recoverable one. The
+        messages that *caused* a 429 or a timeout are the same messages,
+        and ``on_run_end`` already drains the buffer as unfinished; a
+        prompt that kills the endpoint is worth having in the trace.
+        """
+        input_msgs = args[0] if args else kwargs.get("messages")
+        try:
+            return await proceed()
+        except Exception as exc:
+            self._pending_messages.append((input_msgs, _failed_call(exc)))
+            raise
+
     async def after_record_step(
         self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
     ) -> None:
@@ -305,6 +339,22 @@ class TraceWriter(HookBase):
 
             obs_files.append(self._wal.write_observation(step, key, payload))
         return obs_files
+
+
+def _failed_call(exc: BaseException) -> dict[str, Any]:
+    """What goes in the output file when the call raised instead of returning.
+
+    A plain dict, not a stand-in ``ChatInvokeCompletion``: whoever reads
+    the trace has to be able to tell a reply the model wrote from one the
+    framework invented, and a completion-shaped object with an error in it
+    reads as the former. ``raw_output`` appears only when the provider had
+    text to hand over — a schema mismatch does, a dead socket does not.
+    """
+    record: dict[str, Any] = {"error": type(exc).__name__, "detail": str(exc)}
+    raw = getattr(exc, "raw_output", None)
+    if raw is not None:
+        record["raw_output"] = raw
+    return record
 
 
 def _status_for(result: Any) -> RunStatus:

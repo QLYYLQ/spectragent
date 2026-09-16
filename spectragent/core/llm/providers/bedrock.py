@@ -1,4 +1,3 @@
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from os import getenv
@@ -240,20 +239,17 @@ class ChatBedrock(ChatModelBase):
                 else:
                     for item in content:
                         if "toolUse" in item:
+                            # ``input`` is a dict on the normal path and a JSON
+                            # string when the model stuffed everything into one
+                            # argument; ``_validate_structured`` takes either,
+                            # and raises the recoverable error for both.
                             tool_input = item["toolUse"].get("input", {})
-                            try:
-                                return ChatInvokeCompletion(
-                                    completion=output_format.model_validate(tool_input), usage=usage,
-                                )
-                            except Exception as e:
-                                if isinstance(tool_input, str):
-                                    data = json.loads(tool_input)
-                                    return ChatInvokeCompletion(
-                                        completion=output_format.model_validate(data), usage=usage,
-                                    )
-                                raise ModelProviderError(
-                                    message=f"Failed to validate structured output: {e}", model=self.name,
-                                ) from e
+                            return ChatInvokeCompletion(
+                                completion=self._validate_structured(
+                                    output_format, tool_input, usage=usage
+                                ),
+                                usage=usage,
+                            )
                     raise ModelProviderError(
                         message="Expected structured output but no tool use found", model=self.name,
                     )
@@ -262,6 +258,11 @@ class ChatBedrock(ChatModelBase):
                 return ChatInvokeCompletion(completion="", usage=usage)
             raise ModelProviderError(message="No valid content found in response", model=self.name)
 
+        except ModelProviderError:
+            # StructuredOutputValidationError included: the Loop distinguishes
+            # "the model wrote something wrong" from "the provider failed", and
+            # flattening it here would take that choice away.
+            raise
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
             error_message = e.response.get("Error", {}).get("Message", str(e))

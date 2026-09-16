@@ -461,3 +461,52 @@ class TestActionFilter:
             )
         )
         assert set(seen) == {"rt_multi_cap.click", "rt_multi_cap.done"}
+
+
+class TestDescriptorContext:
+    """Step 4 hands the capability the run's observation context.
+
+    A parameter can depend on a fragment — ``browser.scroll``'s ``index``
+    addresses the selector map ``browser.dom`` builds — and only the
+    providing capability knows which. Without the active fragment set it
+    cannot drop such a param, so a vision-only run's prompt would teach an
+    index it has no way to resolve. The negotiation *rules* are untouched;
+    this is the ``**context`` channel a per-task tool schema already rides.
+    """
+
+    def test_get_action_space_receives_the_active_fragments(self) -> None:
+        seen: dict[str, object] = {}
+
+        class _SpyCap(SimpleCap):
+            __registry_key__ = "rt_spy_cap"
+            __wiring__ = {"action": ("action", ["rt_spy_cap.done"])}
+
+            def get_action_descriptors(self, **ctx):
+                seen.update(ctx)
+                return [
+                    ActionDescriptor(name="rt_spy_cap.done", description="Done")
+                ]
+
+        class _SpyAgent(SimpleAgent):
+            __wiring__ = {
+                "action": ("action", ["rt_spy_cap.done"]),
+                "observation": ("observation", ["task"], []),
+            }
+
+            def parse_react_output(self, llm_output):
+                return [Action(name="rt_spy_cap.done")]
+
+        env = make_env(SimpleEnv, {"rt_spy_cap": _SpyCap()})
+        runtime = AgentRuntime.for_agent(_mk(_SpyAgent(), ReactLoop(), env), AGENT_ID)
+        runtime.prepare()
+
+        assert "fragments" in seen, (
+            "the capability was not told which fragments this run activated, "
+            "so it cannot drop a param that depends on one"
+        )
+        negotiated = runtime.negotiated_observation
+        assert negotiated is not None
+        fragments = seen["fragments"]
+        assert fragments == negotiated.active_fragments
+        assert "loop.task" in negotiated.active_fragments
+

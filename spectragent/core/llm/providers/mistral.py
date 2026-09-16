@@ -244,7 +244,7 @@ class ChatMistral(ChatModelBase):
                     usage=usage,
                     tool_calls=_parse_raw_tool_calls(choices[0]),
                 )
-            parsed = output_format.model_validate_json(content_text)
+            parsed = self._validate_structured(output_format, content_text, usage=usage)
             return ChatInvokeCompletion(completion=parsed, usage=usage)
 
         except (ModelRateLimitError, ModelProviderError):

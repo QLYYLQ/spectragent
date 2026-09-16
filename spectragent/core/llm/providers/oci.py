@@ -235,8 +235,11 @@ class ChatOCI(ChatModelBase):
                     if start != -1 and end > start:
                         text = text[start : end + 1]
 
-                parsed = output_format.model_validate(json.loads(text))
-                return ChatInvokeCompletion(completion=parsed, usage=self._extract_usage(response))
+                usage = self._extract_usage(response)
+                return ChatInvokeCompletion(
+                    completion=self._validate_structured(output_format, text, usage=usage),
+                    usage=usage,
+                )
 
         except (ModelRateLimitError, ModelProviderError):
             raise

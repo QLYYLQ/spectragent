@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
     ElementRef,
     focused_scope,
@@ -26,14 +30,21 @@ class ExtractContentAction(ActionBase):
 
     __registry_key__ = "browser.extract_content"
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        index: Annotated[
+            int | None,
+            RequiresFragment("browser.dom"),
+            PydanticField(description="element index; omit to extract page text"),
+        ] = None
+        goal: Annotated[
+            str | None, PydanticField(description="free-form extraction goal")
+        ] = None
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description="Extract text content from the page or an element.",
-            params={
-                "index": "int (optional) -- element index; omit to extract page text",
-                "goal": "str (optional) -- free-form extraction goal",
-            },
+        return self.describe(
+            "Extract text content from the page or an element.", **context
         )
 
     async def execute(

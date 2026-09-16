@@ -9,9 +9,11 @@ See docs/architecture_design.md §4.5 "Action 体系 + 对称协商 + 前缀路�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from pydantic import BaseModel
+
     from spectragent.schemas.action import ActionDescriptor, ActionResult
 
 
@@ -21,16 +23,36 @@ class BaseAction(Protocol):
 
     Attributes:
         action_id: Registry discriminator — matches ``__registry_key__``.
+        Params: The action's parameter contract as a flat Pydantic model.
+            It is what the descriptor's ``params_schema`` and ``params``
+            prose are both rendered from, and where a parameter's
+            observation-fragment dependency is declared
+            (:class:`~spectragent.core.actions.params.RequiresFragment`).
+            An action that wrote its prose by hand and read its params out
+            of a bare dict had no contract at all — only two descriptions
+            of one, free to disagree.
     """
 
     action_id: str
+    Params: ClassVar[type[BaseModel]]
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         """Produce an ActionDescriptor for prompt construction.
 
         ``**context`` lets dynamic actions (e.g. tool_sandbox's
-        ``CallToolAction``) vary their descriptor per-task. Static
-        actions simply ignore the kwargs.
+        ``CallToolAction``) vary their descriptor per-task, and carries
+        the run's active observation ``fragments`` so a param that needs
+        one that is not live can be dropped. Static actions simply ignore
+        the kwargs.
+        """
+        ...
+
+    def requires_fragments(self) -> frozenset[str]:
+        """Observation fragments this action cannot run without.
+
+        Fully-qualified keys, because the providing capability is the one
+        that knows: ``browser.click``'s index addresses ``browser.dom``'s
+        selector map.
         """
         ...
 

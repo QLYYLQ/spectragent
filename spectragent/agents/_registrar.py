@@ -21,6 +21,7 @@ from spectragent.agents.prompts import (
     load_prompt,
     render_template,
 )
+from spectragent.core.negotiation._base import extract_wiring
 from spectragent.prompts import template_snapshot
 from spectragent.schemas.prompt import PromptRef, TemplatePrompt
 
@@ -115,6 +116,25 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
     def domain(self) -> str:
         """Domain identifier. Override in subclasses for specific domains."""
         return "general"
+
+    # ── Negotiation ─────────────────────────────────────────────────
+
+    def negotiation_demand(self, registry: str) -> tuple[set[str], set[str]]:
+        """``(required, optional)`` this *instance* takes into negotiation.
+
+        The class ``__wiring__`` is the declared space; a configured
+        instance may narrow inside it — promote an optional key to
+        required, or exclude one it will not use — which is how one agent
+        class covers several modes without a second registry key or a
+        second prompt tree (``docs/design_discussion.md`` §2.5 Q3).
+
+        The default narrows nothing. An override must route through
+        :func:`~spectragent.core.negotiation._base.bounded_demand`, which
+        is what refuses a demand that leaves the declared space: conscribe
+        compiled that space into the generated config's ``Literal``, so a
+        key outside it names something no YAML could have configured.
+        """
+        return extract_wiring(type(self), registry)
 
     # ── Prompt access ───────────────────────────────────────────────
     # Keyed off ``__registry_key__``, exactly as ``EvaluatorBase`` does.

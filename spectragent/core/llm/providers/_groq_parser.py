@@ -19,7 +19,17 @@ def try_parse_groq_failed_generation(
     error: APIStatusError,
     output_format: type[T],
 ) -> T:
-    """Extract JSON from model output, handling both plain JSON and code-block-wrapped JSON."""
+    """Extract JSON from model output, handling both plain JSON and code-block-wrapped JSON.
+
+    The one structured path in ``providers/`` that deliberately does **not**
+    go through ``ChatModelBase._validate_structured``: it is a salvage
+    attempt inside ``except GroqStatusError``, where the request has
+    already failed. Its caller discards any exception it raises and lets
+    the original status error stand, so a recoverable-error type raised
+    here could never reach the Loop — the failure is the provider's, not
+    the model's. ``tests/test_core/test_llm/test_provider_validation.py``
+    names this exemption so the scan does not have to guess at it.
+    """
     try:
         content = error.body["error"]["failed_generation"]  # type: ignore
 

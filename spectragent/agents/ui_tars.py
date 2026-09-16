@@ -591,10 +591,6 @@ class UITarsAgent(AgentBase):
         return "web_navigation_vision"
 
     @property
-    def observation_types(self) -> set[str]:
-        return {"screenshot"}
-
-    @property
     def system_prompt(self) -> PromptSnapshot | None:
         return self._prompt_snapshot
 

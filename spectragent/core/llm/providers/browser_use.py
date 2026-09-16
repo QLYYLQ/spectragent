@@ -135,20 +135,22 @@ class ChatBrowserUse(ChatModelBase):
                 raise ValueError(f"Request failed after {self.max_retries} attempts: {last_error}")
             raise RuntimeError("Retry loop completed without return or exception")
 
+        usage = None
+        if "usage" in result and result["usage"] is not None:
+            from spectragent.core.llm.views import ChatInvokeUsage
+            usage = ChatInvokeUsage(**result["usage"])
+
         if output_format is not None:
             # Pydantic already coerces nested models, including discriminated
             # unions inside list fields. The old pre-pass hardcoded the field name
             # "action" and validated *every* element against `get_args(...)[0]` —
             # i.e. an arbitrary member of the union — so heterogeneous action lists
             # were coerced to the wrong type.
-            completion = output_format.model_validate(result["completion"])
+            completion = self._validate_structured(
+                output_format, result["completion"], usage=usage
+            )
         else:
             completion = result["completion"]
-
-        usage = None
-        if "usage" in result and result["usage"] is not None:
-            from spectragent.core.llm.views import ChatInvokeUsage
-            usage = ChatInvokeUsage(**result["usage"])
 
         return ChatInvokeCompletion(completion=completion, usage=usage)
 

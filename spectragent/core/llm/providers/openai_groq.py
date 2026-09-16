@@ -128,11 +128,18 @@ class ChatGroq(OpenAICompatBase):
                 )
                 if not resp.choices[0].message.content:
                     raise ModelProviderError(message="No content in response", status_code=500, model=self.name)
-                parsed = output_format.model_validate_json(resp.choices[0].message.content)
                 usage = self._get_usage(resp) if hasattr(resp, 'usage') else None
+                parsed = self._validate_structured(
+                    output_format, resp.choices[0].message.content, usage=usage
+                )
                 # No `tool_calls=`: tools are refused on this path above.
                 return ChatInvokeCompletion(completion=parsed, usage=usage)
 
+        except ModelProviderError:
+            # Includes StructuredOutputValidationError — the one provider
+            # error the *model* can fix. Re-wrapping it below would hand the
+            # Loop a generic failure and end the run.
+            raise
         except GroqRateLimitError as e:
             raise ModelRateLimitError(message=e.response.text, model=self.name) from e
         except GroqStatusError as e:

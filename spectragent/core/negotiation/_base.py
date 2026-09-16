@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 
 from conscribe.wiring import expand_relative_keys, parse_wiring
 
@@ -45,6 +45,169 @@ def extract_wiring(cls: type, registry_name: str) -> tuple[set[str], set[str]]:
             optional = set(spec.optional_keys) if spec.optional_keys else set()
             return required, optional
     return set(), set()
+
+
+class DemandOutsideWiringError(Exception):
+    """An instance asked for something its class never declared.
+
+    A configured instance may **narrow** what it takes into negotiation —
+    promote one of its class's optional keys to required, or drop one it
+    will not use this time — but only inside the space the class declared
+    (``docs/design_discussion.md`` §2.5 Q3). Two things make that boundary
+    load-bearing rather than decorative:
+
+    - conscribe turns the class ``__wiring__`` into the ``Literal`` the
+      generated config validates against. A key outside it is a key no
+      YAML could ever have named, so a run built on one would be
+      unreproducible from its own config.
+    - A class-level *required* key is the agent's statement that it cannot
+      work without it. An instance that dropped one would turn a loud
+      negotiation failure into a silent degradation — exactly the
+      auto-downgrade this design refuses.
+
+    This is a programming error in the agent class, not a user's config
+    mistake: it surfaces at ``prepare()``, before the environment is set
+    up and long before the first LLM call.
+    """
+
+    def __init__(self, owner: str, registry: str, problems: Sequence[str]) -> None:
+        detail = "; ".join(problems)
+        super().__init__(
+            f"{owner} asked for {registry} keys outside what its class "
+            f"__wiring__ declares: {detail}. An instance may promote a "
+            f"declared optional key to required, or exclude one, and nothing "
+            f"else — the class declaration is what the generated config's "
+            f"Literal allows."
+        )
+        self.owner = owner
+        self.registry = registry
+        self.problems = tuple(problems)
+
+
+def demand_label(owner: Any) -> str:
+    """How *owner* names itself in a negotiation diagnosis.
+
+    A missing fragment is a puzzle until the message says who asked for
+    it, and "the agent" is not enough when one agent class has three
+    configurations that ask for different things. So an instance may
+    describe itself: a ``__repr__`` that *starts with the registry key* is
+    taken as a deliberate, compact self-description and used whole —
+    ``browser_use(observation_mode='dom')``.
+
+    Anything else falls back to the registry key, which is the string the
+    YAML named it by. That rule is what keeps a dataclass's generated
+    ``__repr__`` (``BrowserUseAgent(llm=ChatOpenAI(...), memory=...)``) and
+    ``object``'s ``<... at 0x7f…>`` out of the error: neither tells the
+    reader which knob to change, and the second is not even stable
+    between processes.
+
+    A class passed where an instance belongs answers with its key — the
+    only thing it can honestly say.
+    """
+    cls = owner if isinstance(owner, type) else type(owner)
+    key = str(getattr(cls, "__registry_key__", cls.__name__))
+    if isinstance(owner, type):
+        return key
+    text = repr(owner)
+    return text if text.startswith(f"{key}(") else key
+
+
+def bounded_demand(
+    owner: Any,
+    registry: str,
+    required: Iterable[str],
+    optional: Iterable[str],
+) -> tuple[set[str], set[str]]:
+    """Check an instance's narrowed demand against its class declaration.
+
+    Args:
+        owner: The instance doing the narrowing. Its class carries the
+            ``__wiring__`` that bounds it, and :func:`demand_label` names
+            it in the error — ``browser_use(observation_mode='vision')``
+            says far more than ``BrowserUseAgent``.
+        registry: Which wiring entry is being narrowed (``"observation"``).
+        required: The keys this instance must have.
+        optional: The keys it can use if present.
+
+    Returns:
+        ``(required, optional)`` as sets, ready to hand to the negotiation
+        engine in place of the class's own wiring.
+
+    Raises:
+        DemandOutsideWiringError: The narrowing left the declared space.
+    """
+    required, optional = set(required), set(optional)
+    class_required, class_optional = extract_wiring(type(owner), registry)
+    declared = class_required | class_optional
+    name = demand_label(owner)
+
+    problems: list[str] = []
+    dropped = sorted(class_required - required)
+    if dropped:
+        problems.append(f"class-required key(s) {dropped} are no longer required")
+    outside = sorted((required | optional) - declared)
+    if outside:
+        problems.append(f"{outside} appear in no class __wiring__ entry")
+    both = sorted(required & optional)
+    if both:
+        problems.append(f"{both} are both required and optional")
+    if problems:
+        raise DemandOutsideWiringError(name, registry, problems)
+    return required, optional
+
+
+def demand_of(owner: Any, registry: str) -> tuple[set[str], set[str]]:
+    """What *owner* takes into negotiation for *registry*.
+
+    An instance that answers ``negotiation_demand`` gets to narrow; every
+    other object — including a test double with nothing but ``__wiring__``
+    — falls back to its class declaration, which is what negotiation read
+    before instance narrowing existed.
+
+    The narrowed answer goes back through :func:`bounded_demand` here,
+    where the framework can enforce the boundary rather than trust every
+    override to enforce it on itself. An implementation that already calls
+    ``bounded_demand`` (``BrowserUseAgent`` does, so that a typo in its
+    mode table is attributed to the mode table) gets the same sets back:
+    the check is idempotent. One that forgot to is caught anyway, which is
+    the point — this is the single new degree of freedom in the
+    negotiation path, and it is not the one to leave on trust.
+
+    A class is never asked to narrow. ``getattr`` on a class would find
+    ``negotiation_demand`` as a plain function and call it with the
+    registry name bound to ``self``.
+    """
+    if isinstance(owner, type):
+        return extract_wiring(owner, registry)
+    narrow = getattr(owner, "negotiation_demand", None)
+    if callable(narrow):
+        narrowed = cast("tuple[Iterable[str], Iterable[str]]", narrow(registry))
+        return bounded_demand(owner, registry, narrowed[0], narrowed[1])
+    return extract_wiring(type(owner), registry)
+
+
+def requested_by(
+    missing: Collection[str],
+    parties: Sequence[tuple[str, Collection[str]]],
+) -> dict[str, list[str]]:
+    """Missing key → the labels of the parties that required it.
+
+    Negotiation unions the parties' required sets before resolving them,
+    which is what makes the *rules* indifferent to who asked. That union
+    is also why the diagnosis has to be computed from the inputs rather
+    than recovered from the result: by the time a key is missing, nothing
+    downstream remembers whether the agent or the Loop wanted it.
+
+    A party with no label (a caller that did not supply one) contributes
+    nothing rather than an anonymous entry — half an attribution reads as
+    a complete one.
+    """
+    found: dict[str, list[str]] = {}
+    for key in sorted(missing):
+        who = [label for label, required in parties if label and key in required]
+        if who:
+            found[key] = who
+    return found
 
 
 class AmbiguousKeyError(Exception):

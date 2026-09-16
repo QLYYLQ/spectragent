@@ -21,7 +21,7 @@ import random
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal, get_args, get_origin, get_type_hints
 
 import pytest
 import yaml
@@ -880,13 +880,34 @@ def _class_default(obj: Any, key: str) -> Any:
     return attr
 
 
-def _perturb(value: Any) -> Any:
+def _literal_alternative(obj: Any, key: str, value: Any) -> Any:
+    """Another member of *key*'s ``Literal``, or ``None`` if it has none.
+
+    A synthetic string is useless here — it would fail validation, and a
+    rejected config proves nothing about injection. A *declared* member is
+    the opposite: it is guaranteed to validate and guaranteed to differ, so
+    an enum knob restating its class default becomes falsifiable instead of
+    joining the ledger of blind spots.
+    """
+    try:
+        annotation = get_type_hints(type(obj), include_extras=True).get(key)
+    except Exception:
+        return None
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    if get_origin(annotation) is not Literal:
+        return None
+    return next((member for member in get_args(annotation) if member != value), None)
+
+
+def _perturb(value: Any, obj: Any = None, key: str = "") -> Any:
     """A different but still valid value for a knob, or ``None`` if unsafe.
 
-    Booleans and numbers only. Every string in this schema either selects a
-    class (``provider_id``), names something that has to exist (``profile``)
-    or is an identity, so a synthetic string would be rejected by validation
-    and a rejected config proves nothing about injection.
+    Booleans, numbers, and any field whose annotation is a ``Literal``.
+    Every *other* string in this schema either selects a class
+    (``provider_id``), names something that has to exist (``profile``) or is
+    an identity, so a synthetic string would be rejected by validation and a
+    rejected config proves nothing about injection.
     """
     if isinstance(value, bool):
         return not value
@@ -894,6 +915,8 @@ def _perturb(value: Any) -> Any:
         return value + 7
     if isinstance(value, float):
         return value + 7.0
+    if isinstance(value, str) and obj is not None:
+        return _literal_alternative(obj, key, value)
     return None
 
 
@@ -948,6 +971,11 @@ class TestShippedValuesReachTheObjectsThatReadThem:
         old ``headless is True`` assertion had already collapsed into.
         """
         root = yaml.safe_load(config_path.read_text())
+        # Composed once unperturbed, only so ``_perturb`` can read a field's
+        # annotation off the live object and pick another member of its
+        # ``Literal`` — an enum knob is otherwise unfalsifiable whenever the
+        # shipped value happens to be the class default.
+        run = composer.compose(copy.deepcopy(root))
         probe_root = copy.deepcopy(root)
         blocks = _tracked_blocks(root)
         probe_blocks = {block.path: block for block in _tracked_blocks(probe_root)}
@@ -956,7 +984,7 @@ class TestShippedValuesReachTheObjectsThatReadThem:
         for block in blocks:
             probe_raw = probe_blocks[block.path].raw(probe_root)
             for key, value in _scalar_items(block.raw(root)).items():
-                probe = _perturb(value)
+                probe = _perturb(value, block.live(run), key)
                 if probe is None:
                     continue
                 probe_raw[key] = probe
@@ -1000,7 +1028,7 @@ class TestShippedValuesReachTheObjectsThatReadThem:
             f"{block.path}.{key}"
             for block in _tracked_blocks(root)
             for key, value in _scalar_items(block.raw(root)).items()
-            if _perturb(value) is None
+            if _perturb(value, block.live(run), key) is None
             and _class_default(block.live(run), key) == value
         }
         assert unprovable == declared

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -25,19 +28,29 @@ class SwitchTabAction(ActionBase):
 
     __registry_key__ = "browser.switch_tab"
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        #: Required *and* nullable, so a model always answers the question
+        #: and ``null`` is how it says "the most recent one". An optional
+        #: param would have let a strict-mode provider decide.
+        target_id: Annotated[
+            str | None,
+            PydanticField(
+                description=(
+                    "the tab_id shown in the observation's tab list; omit or "
+                    "null for the most recently opened tab"
+                ),
+            ),
+        ]
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description=(
+        return self.describe(
+            (
                 "Switch to a different browser tab. Subsequent actions and "
                 "observations apply to the newly focused tab."
             ),
-            params={
-                "target_id": (
-                    "str | None -- the tab_id shown in the observation's tab "
-                    "list; omit or null for the most recently opened tab"
-                ),
-            },
+            **context,
         )
 
     async def execute(

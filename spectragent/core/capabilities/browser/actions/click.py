@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
     handler_error,
@@ -25,11 +29,25 @@ class ClickAction(SettleableAction, ActionBase):
 
     __registry_key__ = "browser.click"
 
+    class Params(BaseModel):
+        """An element of the selector map, which only ``browser.dom`` builds.
+
+        The dependency is on the param, and the param is required, so the
+        whole action inherits it: a run that did not negotiate
+        ``browser.dom`` has no index to click and must not be told it can.
+        """
+
+        model_config = ConfigDict(extra="forbid")
+
+        index: Annotated[
+            int,
+            RequiresFragment("browser.dom"),
+            PydanticField(description="element index from selector_map"),
+        ]
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description="Click a DOM element by its index in the selector map.",
-            params={"index": "int -- element index from selector_map"},
+        return self.describe(
+            "Click a DOM element by its index in the selector map.", **context
         )
 
     async def execute(

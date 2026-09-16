@@ -19,9 +19,10 @@ from typing import Any
 
 import pytest
 
-from spectragent.agents._output_models import BrowserUseOutput
+import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.memory.simple import SimpleMemory
+from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.llm.messages import (
     BaseMessage,
     SystemMessage,
@@ -110,11 +111,40 @@ class _FakeObservation:
         self.history = history
 
 
+#: The verbs most of this file needs. Real descriptors, because
+#: ``prepare()`` compiles them into the run's closed output schema — a
+#: fixture of empty ones would describe a run that can emit nothing.
+_DEFAULT_ACTIONS = (
+    "browser.click",
+    "browser.type",
+    "browser.navigate",
+    "browser.scroll",
+    "browser.done",
+)
+
+
+def _descriptors(*keys: str) -> list[ActionDescriptor]:
+    return [ActionRegistrar.get(key)().descriptor() for key in (keys or _DEFAULT_ACTIONS)]
+
+
 def _make_agent(**overrides: Any) -> BrowserUseAgent:
     from tests._helpers.assembly import make_agent
     return make_agent(
         BrowserUseAgent, memory=SimpleMemory(max_messages=100), **overrides,
     )
+
+
+def _prepared(**overrides: Any) -> BrowserUseAgent:
+    """An agent that has been through ``prepare()`` with a real action set."""
+    agent = _make_agent(**overrides)
+    agent.prepare(task="t", action_descriptors=_descriptors())
+    return agent
+
+
+def _reply(*items: dict[str, Any]) -> str:
+    import json as _json
+
+    return _json.dumps({"memory": "m", "action": list(items)})
 
 
 # ── Protocol conformance ──────────────────────────────────────────────
@@ -158,10 +188,14 @@ class TestWiring:
         # Optional: browser_meta + loop-source step_info/history.
         # All capability-relative — which capability's ``dom`` this is
         # gets decided at negotiation.
+        # The class declaration is the *superset across modes*: what every
+        # mode needs is required, what a mode promotes or excludes is
+        # optional. ``dom`` is optional here and promoted to required by
+        # both DOM modes — see ``_MODE_DEMAND``.
         assert wiring["observation"] == (
             "observation",
-            ["dom", "screenshot", "task"],
-            ["browser_meta", "step_info", "history"],
+            ["screenshot", "task"],
+            ["dom", "browser_meta", "step_info", "history"],
         )
 
     def test_no_wiring_key_names_a_capability(self) -> None:
@@ -178,7 +212,7 @@ class TestWiring:
 class TestPrepare:
     def test_prepare_returns_system_prompt_seed(self) -> None:
         agent = _make_agent()
-        descriptors = [ActionDescriptor(name="click", description="click", params={})]
+        descriptors = _descriptors("browser.click")
         seed = agent.prepare(
             task="navigate to example.com", action_descriptors=descriptors
         )
@@ -194,7 +228,7 @@ class TestPrepare:
 
     def test_prepare_builds_prompt_snapshot(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(task="t", action_descriptors=_descriptors())
         snapshot = agent.system_prompt
         assert snapshot is not None
 
@@ -205,7 +239,7 @@ class TestPrepare:
 class TestBuildReactPrompt:
     def test_returns_only_new_step_messages(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(task="t", action_descriptors=_descriptors())
 
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<html><body>hi</body></html>"),
@@ -223,7 +257,7 @@ class TestBuildReactPrompt:
 
     def test_observation_contains_url_and_dom(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(task="t", action_descriptors=_descriptors())
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<DOM>tree</DOM>"),
             browser_meta=_FakeBrowserMeta(
@@ -241,7 +275,7 @@ class TestBuildReactPrompt:
 
     def test_user_request_present_in_user_message(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(task="t", action_descriptors=_descriptors())
         obs = _FakeObservation(
             task=_FakeTask(user_request="book a flight to Tokyo"),
             browser_meta=_FakeBrowserMeta(url="https://airline.example"),
@@ -255,7 +289,7 @@ class TestBuildReactPrompt:
 
     def test_step_info_block_when_present(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(task="t", action_descriptors=_descriptors())
         obs = _FakeObservation(
             task=_FakeTask(user_request="x"),
             step_info=_FakeStepInfo(step=4, max_steps=20, today="2026-05-01"),
@@ -276,7 +310,7 @@ class TestBuildReactPrompt:
             action_results=[ActionResult(success=True)],
         )
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(task="t", action_descriptors=_descriptors())
         obs = _FakeObservation(
             task=_FakeTask(user_request="x"),
             history=_FakeHistory(items=[rec]),
@@ -288,7 +322,7 @@ class TestBuildReactPrompt:
 
     def test_handles_minimal_observation(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(task="t", action_descriptors=_descriptors())
         # Only the required task fragment; no DOM / browser_meta / etc.
         obs = _FakeObservation(task=_FakeTask(user_request="hello"))
         messages = agent.build_react_prompt(obs)
@@ -299,9 +333,9 @@ class TestBuildReactPrompt:
         assert "hello" in content
         assert "(empty browser state)" in content
 
-    def test_use_vision_attaches_screenshot_when_present(self) -> None:
-        agent = _make_agent(use_vision=True)
-        agent.prepare(task="t", action_descriptors=[])
+    def test_a_vision_mode_attaches_the_screenshot_when_present(self) -> None:
+        agent = _make_agent(observation_mode="dom_vision")
+        agent.prepare(task="t", action_descriptors=_descriptors())
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=b"\x89PNG\r\n\x1a\nfake"),
             task=_FakeTask(user_request="vision task"),
@@ -313,9 +347,9 @@ class TestBuildReactPrompt:
         assert isinstance(content, list)
         assert len(content) == 2
 
-    def test_use_vision_no_screenshot_falls_back_to_text(self) -> None:
-        agent = _make_agent(use_vision=True)
-        agent.prepare(task="t", action_descriptors=[])
+    def test_a_vision_mode_with_no_screenshot_falls_back_to_text(self) -> None:
+        agent = _make_agent(observation_mode="dom_vision")
+        agent.prepare(task="t", action_descriptors=_descriptors())
         obs = _FakeObservation(task=_FakeTask(user_request="x"))  # no screenshot
         messages = agent.build_react_prompt(obs)
         assert len(messages) == 1
@@ -327,103 +361,82 @@ class TestBuildReactPrompt:
 
 
 class TestParseReactOutput:
-    def test_translates_click_element_to_canonical_click(self) -> None:
-        # C1 regression: browser-use LLM vocabulary uses verbose names
-        # (click_element, input_text, go_to_url) that must be aliased
-        # to the BrowserCapability's canonical names (click, type,
-        # navigate) before reaching execute_action.
-        agent = _make_agent()
-        out = BrowserUseOutput(
-            evaluation_previous_goal="success",
-            memory="mem",
-            next_goal="click button",
-            action=[{"click_element": {"index": 42}}],
+    """One spelling per verb: the fully-qualified key, and nothing else.
+
+    The three upstream aliases (``click_element`` / ``input_text`` /
+    ``go_to_url``) and the bare local ids are gone. No template ever taught
+    an alias, and the local id made the run carry two names for one action
+    — one advertised, one routable — with ``build_guarded_act`` silently
+    reconciling them after the fact.
+    """
+
+    def test_reads_a_validated_instance(self) -> None:
+        agent = _prepared()
+        out = agent.get_react_output_model().model_validate(
+            {
+                "memory": "mem",
+                "action": [{"browser.click": {"index": 42}}],
+            }
         )
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
         assert isinstance(actions[0], Action)
-        assert actions[0].name == "click"
+        assert actions[0].name == "browser.click"
         assert actions[0].params == {"index": 42}
 
-    def test_translates_input_text_and_go_to_url(self) -> None:
-        agent = _make_agent()
-        out = BrowserUseOutput(
-            action=[
-                {"input_text": {"index": 2, "text": "hello"}},
-                {"go_to_url": {"url": "https://x.example"}},
-            ],
-        )
-        actions = agent.parse_react_output(out)
-        assert len(actions) == 2
-        assert actions[0].name == "type"
-        assert actions[0].params == {"index": 2, "text": "hello"}
-        assert actions[1].name == "navigate"
-        assert actions[1].params == {"url": "https://x.example"}
-
     def test_multi_action_output(self) -> None:
-        agent = _make_agent()
-        out = BrowserUseOutput(
-            action=[
-                {"click_element": {"index": 1}},
-                {"input_text": {"index": 2, "text": "hello"}},
-                {"go_to_url": {"url": "https://x.example"}},
-            ],
+        agent = _prepared()
+        actions = agent.parse_react_output(
+            _reply(
+                {"browser.click": {"index": 1}},
+                {"browser.type": {"index": 2, "text": "hello"}},
+                {"browser.navigate": {"url": "https://x.example"}},
+            )
         )
-        actions = agent.parse_react_output(out)
-        assert len(actions) == 3
-        assert actions[0].name == "click"
-        assert actions[1].name == "type"
-        assert actions[2].name == "navigate"
+        assert [a.name for a in actions] == [
+            "browser.click",
+            "browser.type",
+            "browser.navigate",
+        ]
+        assert actions[1].params == {"index": 2, "text": "hello"}
 
-    def test_short_verbs_pass_through_unqualified(self) -> None:
-        # Upstream prompt sometimes emits the action id directly
-        # ("navigate" instead of "go_to_url"). It reaches the guard as
-        # written — the parser names no capability, because it has no way
-        # to know which one this run holds.
-        agent = _make_agent()
-        out = BrowserUseOutput(
-            action=[
-                {"navigate": {"url": "https://example.com"}},
-                {"scroll": {"direction": "down"}},
-            ],
+    def test_omitted_optional_params_are_not_manufactured(self) -> None:
+        """``clear: null`` used to arrive as ``False`` and override the knob.
+
+        ``TypeAction.clear_by_default`` is capability-side config; a model
+        that says nothing about ``clear`` must leave it alone, and a model
+        that writes ``null`` is saying exactly that.
+        """
+        agent = _prepared()
+        (action,) = agent.parse_react_output(
+            _reply({"browser.type": {"index": 2, "text": "x", "clear": None}})
         )
-        actions = agent.parse_react_output(out)
-        assert actions[0].name == "navigate"
-        assert actions[0].params == {"url": "https://example.com"}
-        assert actions[1].name == "scroll"
+        assert "clear" not in action.params
 
     def test_parses_raw_json_string_matching_prompt_template(self) -> None:
-        # End-to-end regression: when the LLM returns a JSON string
-        # exactly matching the prompt template (the upstream
-        # browser-use shape), parse_react_output must fall through to
-        # JSON load → model_validate → action translation without
-        # requiring a pre-built BrowserUseOutput instance.
         import json as _json
 
-        agent = _make_agent()
+        agent = _prepared(flash_mode=False, use_thinking=True)
         payload = _json.dumps(
             {
                 "thinking": "I need to navigate first.",
                 "evaluation_previous_goal": "n/a",
                 "memory": "starting on about:blank",
                 "next_goal": "navigate to example.com",
-                "action": [
-                    {"navigate": {"url": "https://www.example.com"}}
-                ],
+                "action": [{"browser.navigate": {"url": "https://www.example.com"}}],
             }
         )
         actions = agent.parse_react_output(payload)
         assert len(actions) == 1
-        assert actions[0].name == "navigate"
+        assert actions[0].name == "browser.navigate"
         assert actions[0].params == {"url": "https://www.example.com"}
 
     def test_empty_action_list_raises_parse_error(self) -> None:
         from spectragent.core.loops.errors import ParseError
 
-        agent = _make_agent()
-        out = BrowserUseOutput(action=[])
-        with pytest.raises(ParseError, match="empty 'action' list"):
-            agent.parse_react_output(out)
+        agent = _prepared()
+        with pytest.raises(ParseError):
+            agent.parse_react_output(_reply())
 
     def test_unparseable_text_raises_parse_error(self) -> None:
         # H1 regression: parse failures used to return a "done" action
@@ -431,29 +444,45 @@ class TestParseReactOutput:
         # raise ParseError so ReactLoop handles retry/termination.
         from spectragent.core.loops.errors import ParseError
 
-        agent = _make_agent()
+        agent = _prepared()
         with pytest.raises(ParseError, match="not valid JSON"):
             agent.parse_react_output("not valid json at all")
 
     def test_done_uses_extracted_content_key(self) -> None:
-        # C2 regression: the ``done`` action's answer text must be
-        # passed under ``extracted_content`` (the key BrowserCapability
-        # and DoneEvent read), not ``text``.
-        agent = _make_agent()
-        out = BrowserUseOutput(
-            action=[{"done": {"text": "the final answer", "success": True}}],
+        """No rename on the way through: the action names its own field.
+
+        ``done.text`` → ``extracted_content`` used to happen in the parser,
+        so the prompt taught one name, the schema permitted it, and the
+        executor read another.
+        """
+        agent = _prepared()
+        (action,) = agent.parse_react_output(
+            _reply(
+                {"browser.done": {"extracted_content": "the final answer", "success": True}}
+            )
         )
-        actions = agent.parse_react_output(out)
-        assert len(actions) == 1
-        assert actions[0].name == "done"
-        assert actions[0].params.get("extracted_content") == "the final answer"
-        assert "text" not in actions[0].params
+        assert action.name == "browser.done"
+        assert action.params.get("extracted_content") == "the final answer"
+        assert "text" not in action.params
+
+    def test_the_old_done_text_spelling_is_refused(self) -> None:
+        from spectragent.core.loops.errors import ParseError
+
+        agent = _prepared()
+        with pytest.raises(ParseError):
+            agent.parse_react_output(_reply({"browser.done": {"text": "answer"}}))
 
 
 class TestOutputModel:
-    def test_returns_browser_use_output(self) -> None:
-        agent = _make_agent()
-        assert agent.get_react_output_model() is BrowserUseOutput
+    def test_returns_this_run_s_closed_model(self) -> None:
+        agent = _prepared()
+        model = agent.get_react_output_model()
+        assert model.__name__ == "BrowserUseOutputForRun"
+        # Built per run: a second prepare with a different verb set gives a
+        # different model, which is the point of building it from the
+        # negotiated descriptors rather than from the class.
+        agent.prepare(task="t", action_descriptors=_descriptors("browser.done"))
+        assert agent.get_react_output_model() is not model
 
 
 class TestFrameElementIndices:
@@ -486,11 +515,9 @@ class TestFrameElementIndices:
         return result, event
 
     async def test_through_the_text_path(self) -> None:
-        import json
-
-        agent = _make_agent()
+        agent = _prepared()
         (action,) = agent.parse_react_output(
-            json.dumps({"action": [{"click_element": {"index": self.KEY}}]})
+            _reply({"browser.click": {"index": self.KEY}})
         )
         assert action.params == {"index": self.KEY}
         assert type(action.params["index"]) is int
@@ -500,9 +527,9 @@ class TestFrameElementIndices:
         assert (event.backend_node_id, event.session_id) == (58, "frame")
 
     async def test_through_the_structured_path(self) -> None:
-        agent = _make_agent()
-        out = BrowserUseOutput.model_validate_json(
-            f'{{"action": [{{"click_element": {{"index": {self.KEY}}}}}]}}'
+        agent = _prepared()
+        out = agent.get_react_output_model().model_validate_json(
+            f'{{"memory": "", "action": [{{"browser.click": {{"index": {self.KEY}}}}}]}}'
         )
         (action,) = agent.parse_react_output(out)
         result, event = await self._click(action)

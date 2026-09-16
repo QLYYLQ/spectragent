@@ -9,14 +9,17 @@ See docs/architecture_design.md §4.4 for the full specification.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from spectragent.core.negotiation._base import (
     AmbiguousKeyError,
     bind_short_names,
+    demand_label,
+    demand_of,
     group_by_short_name,
+    requested_by,
     resolve_demand,
 )
 from spectragent.core.negotiation._registrar import NegotiationResultBase
@@ -39,16 +42,38 @@ class IncompatibleFragmentError(Exception):
     Fragments are named as they were declared, so a capability-relative
     declaration is reported by its short name — the string in the wiring
     line the user has to edit.
+
+    Each missing fragment is also attributed to the party that required
+    it. Since an instance may narrow what it demands, "``dom`` is
+    required" is no longer a property of the agent *class*: the same
+    ``browser_use`` requires it in two modes and excludes it in the third,
+    so the message names the configuration —
+    ``dom ← browser_use(observation_mode='dom')`` — and a mistyped
+    capability profile reads as the mistake it is instead of as a puzzle
+    about who wanted a DOM.
     """
 
-    def __init__(self, missing: set[str], provided: set[str]) -> None:
+    def __init__(
+        self,
+        missing: set[str],
+        provided: set[str],
+        requested_by: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
+        requested_by = {
+            key: tuple(sources) for key, sources in sorted((requested_by or {}).items())
+        }
+        attribution = "; ".join(
+            f"{key} ← {' and '.join(sources)}" for key, sources in requested_by.items()
+        )
         super().__init__(
             f"Required observation fragments not provided by environment. "
             f"Missing: {sorted(missing)}. "
-            f"Environment provides: {sorted(provided)}."
+            + (f"Requested by: {attribution}. " if attribution else "")
+            + f"Environment provides: {sorted(provided)}."
         )
         self.missing = missing
         self.provided = provided
+        self.requested_by = requested_by
 
 
 class AmbiguousFragmentError(AmbiguousKeyError):
@@ -122,6 +147,8 @@ def _observation_rules(
     agent: tuple[set[str], set[str]],
     loop: tuple[set[str], set[str]],
     env_provides: set[str],
+    agent_source: str = "",
+    loop_source: str = "",
 ) -> ObservationNegotiationResult:
     """Avro-style three-party negotiation semantics.
 
@@ -129,6 +156,12 @@ def _observation_rules(
     provider; resolution against this run's fragment universe turns those
     declarations into fully-qualified keys, and everything the result
     hands downstream is fully qualified.
+
+    ``agent_source`` / ``loop_source`` are labels, not inputs: they never
+    reach :func:`resolve_demand` and cannot change what is negotiated.
+    They exist so a failure can say *who* asked — which stopped being
+    derivable from the class once an instance could narrow its own demand.
+    Omitted, the diagnosis simply carries no attribution.
     """
     agent_required, agent_optional = agent
     loop_required, loop_optional = loop
@@ -146,6 +179,10 @@ def _observation_rules(
         raise IncompatibleFragmentError(
             missing=set(demand.missing),
             provided=env_provides,
+            requested_by=requested_by(
+                demand.missing,
+                [(agent_source, agent_required), (loop_source, loop_required)],
+            ),
         )
 
     active = demand.resolved
@@ -176,12 +213,27 @@ def negotiate_observation(
     loop: Any,
     env: Any,
 ) -> ObservationNegotiationResult:
-    """Run observation negotiation for an (agent, loop, env) triple."""
+    """Run observation negotiation for an (agent, loop, env) triple.
+
+    The agent's half comes from :func:`~spectragent.core.negotiation._base.
+    demand_of`, so a configured instance may narrow inside its class's
+    declared space (an agent in vision mode excludes ``dom`` and promotes
+    the coordinate verbs). The *rules* still see one ``(required,
+    optional)`` pair either way, which is what keeps instance narrowing
+    from becoming a second negotiation semantics — the labels that ride
+    alongside are used for one thing, naming the requester in a failure.
+
+    Only the agent's half is narrowed. The Loop's declaration goes in as
+    its class wrote it: an agent cannot excuse itself from a fragment the
+    Loop needs to do its job.
+    """
     return negotiate(
         ObservationNegotiationResult,
         "observation",
         _observation_rules,
-        agent=type(agent),
+        agent=demand_of(agent, "observation"),
         loop=type(loop),
         env_provides=set(env.provided_fragments),
+        agent_source=demand_label(agent),
+        loop_source=demand_label(loop),
     )

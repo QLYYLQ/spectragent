@@ -171,10 +171,6 @@ class SkyvernAgent(AgentBase):
         return "web_navigation"
 
     @property
-    def observation_types(self) -> set[str]:
-        return {"dom", "browser_meta"}
-
-    @property
     def system_prompt(self) -> PromptSnapshot | None:
         return self._prompt_snapshot
 

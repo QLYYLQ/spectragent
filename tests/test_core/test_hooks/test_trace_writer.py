@@ -458,3 +458,96 @@ class TestUnfinishedMessagesSurviveRunEnd:
         assert trace.unfinished_message_files == []
         assert trace.manifest.status == RunStatus.COMPLETED
         assert trace.step_count == 1
+
+
+class TestACallThatRaisedIsStillRecorded:
+    """``after`` advice does not fire when the target raises.
+
+    That is usually the right answer: a call that never came back has
+    nothing to record. But one LLM error is *recoverable* — a structured
+    reply that does not fit the schema — and the Loop continues past it,
+    feeding the model its own text back. Recorded nowhere, the trace would
+    carry a step whose messages file is simply absent, and it would be
+    absent for exactly the steps a researcher most wants to read.
+
+    ``around_ainvoke`` sees what ``after`` cannot.
+    """
+
+    @pytest.fixture()
+    def writer(self, tmp_path) -> TraceWriter:
+        return TraceWriter(trace_dir=str(tmp_path / "traces"))
+
+    async def _start(self, writer) -> Path:
+        await writer.on_run_start(agent=None, env=None, task="test", config={})
+        assert writer.run_dir is not None
+        return writer.run_dir
+
+    @staticmethod
+    def _raiser(exc: Exception):
+        async def proceed():
+            raise exc
+
+        return proceed
+
+    async def test_the_exchange_reaches_the_step_it_belongs_to(self, writer):
+        from spectragent.core.llm.exceptions import StructuredOutputValidationError
+
+        run_dir = await self._start(writer)
+        messages = [{"role": "user", "content": "what do you see?"}]
+        exc = StructuredOutputValidationError(
+            "schema mismatch",
+            raw_output='{"action": [{}]}',
+            model="gpt-4o",
+        )
+        with pytest.raises(StructuredOutputValidationError):
+            await writer.around_ainvoke(
+                proceed=self._raiser(exc), args=(messages,), kwargs={}
+            )
+        # The Loop turns this into a parse error and surrenders a step.
+        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+
+        sent, got = RunTrace(run_dir).get_messages(0)
+        assert sent == messages
+        assert got is not None
+        assert got["error"] == "StructuredOutputValidationError"
+        assert got["raw_output"] == '{"action": [{}]}'
+
+    async def test_a_transport_failure_is_recorded_without_inventing_a_reply(
+        self, writer
+    ):
+        """No ``raw_output``: the provider had no text to give."""
+        run_dir = await self._start(writer)
+        with pytest.raises(TimeoutError):
+            await writer.around_ainvoke(
+                proceed=self._raiser(TimeoutError("gateway gone")),
+                args=([{"m": 1}],),
+                kwargs={},
+            )
+        await writer.on_run_end(result=_result(AgentDoneStatus.ERROR))
+
+        got = RunTrace(run_dir).get_messages(0)[1]
+        assert got is not None
+        assert got["error"] == "TimeoutError"
+        assert "raw_output" not in got
+
+    async def test_a_successful_call_is_buffered_once_not_twice(self, writer):
+        """``around`` wraps the ``after`` advice; only one of them records."""
+        run_dir = await self._start(writer)
+
+        async def proceed():
+            await writer.after_ainvoke(_Completion(), args=([{"m": 1}],), kwargs={})
+            return _Completion()
+
+        await writer.around_ainvoke(proceed=proceed, args=([{"m": 1}],), kwargs={})
+        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+
+        assert (run_dir / "messages" / "000_input.json").exists()
+        assert not (run_dir / "messages" / "000_input__1.json").exists()
+
+    async def test_the_exception_still_reaches_the_caller(self, writer):
+        """The hook observes; it does not swallow."""
+        await self._start(writer)
+        with pytest.raises(RuntimeError, match="boom"):
+            await writer.around_ainvoke(
+                proceed=self._raiser(RuntimeError("boom")), args=([],), kwargs={}
+            )

@@ -37,6 +37,7 @@ from spectragent.schemas.observation.fragments import (
     StepInfoObs,
     TaskObs,
 )
+from tests._helpers.action_params import minimal_params
 from tests._helpers.assembly import make_agent
 
 # ── Validate compatibility ────────────────────────────────────────────
@@ -253,7 +254,13 @@ class TestAgentToCapabilityActionVocabulary:
     """
 
     def test_browser_use_verbs_resolve_to_capability_actions(self) -> None:
-        from spectragent.agents._output_models import BrowserUseOutput
+        """Now a tautology by construction, and worth pinning as one.
+
+        browser_use compiles its output schema *from the negotiated
+        descriptors*, so the verbs it can emit are the keys the capability
+        provides — there is no vocabulary map left to drift. The test walks
+        the whole negotiated set and puts each one through the guard.
+        """
         from spectragent.core.capabilities.browser.capability import (
             BrowserCapability,
         )
@@ -262,19 +269,20 @@ class TestAgentToCapabilityActionVocabulary:
         capability = BrowserCapability()
         provided = capability.provided_actions
 
-        # Every LLM action verb the agent is expected to emit.
-        llm_action_names = [
-            "click_element",
-            "input_text",
-            "scroll",
-            "go_to_url",
-            "go_back",
-            "send_keys",
-            "extract_content",
-            "done",
+        negotiated = negotiate_action(agent, _ActionsOnlyEnv(capability))
+        descriptors = [
+            a.descriptor()
+            for a in capability.actions
+            if a.action_id in negotiated.active_actions
         ]
-        for name in llm_action_names:
-            out = BrowserUseOutput(action=[{name: {"index": 1}}])
+        agent.prepare(task="t", action_descriptors=descriptors)
+        model = agent.get_react_output_model()
+
+        for descriptor in descriptors:
+            params = minimal_params(descriptor)
+            out = model.model_validate(
+                {"memory": "", "action": [{descriptor.name: params}]}
+            )
             for action in agent.parse_react_output(out):
                 routed = _resolve(agent, action, capability)
                 assert routed in provided, (
@@ -318,20 +326,31 @@ class TestAgentToCapabilityActionVocabulary:
         # C2 regression: every adapted agent must emit its done action
         # with the ``extracted_content`` key so the answer survives the
         # capability's DoneEvent translation.
-        from spectragent.agents._output_models import (
-            BrowserUseOutput,
-            SkyvernOutput,
-        )
+        from spectragent.agents._output_models import SkyvernOutput
         from spectragent.core.capabilities.browser.capability import (
             BrowserCapability,
         )
 
         capability = BrowserCapability()
 
-        # BrowserUseAgent
+        # BrowserUseAgent — ``done``'s answer field is named once, by the
+        # action (``extracted_content``). The agent used to rename ``text``
+        # onto it, which meant the prompt, the schema and the executor each
+        # had their own name for the same value.
         bu = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
-        bu_out = BrowserUseOutput(
-            action=[{"done": {"text": "answer bu", "success": True}}],
+        bu.prepare(
+            task="t",
+            action_descriptors=[
+                a.descriptor() for a in capability.actions if a.action_id == "browser.done"
+            ],
+        )
+        bu_out = bu.get_react_output_model().model_validate(
+            {
+                "memory": "",
+                "action": [
+                    {"browser.done": {"extracted_content": "answer bu", "success": True}}
+                ],
+            }
         )
         bu_actions = bu.parse_react_output(bu_out)
         assert _resolve(bu, bu_actions[0], capability) == "browser.done"
@@ -360,8 +379,6 @@ class TestAgentToCapabilityActionVocabulary:
 class TestReactLoopDriveBrowserUse:
     @pytest.mark.asyncio
     async def test_browser_use_one_step_done(self) -> None:
-        from spectragent.agents._output_models import BrowserUseOutput
-
         # Build a fake observation matching the fragment-based shape.
         # ``task`` mirrors what populate_loop_fragments would inject —
         # this driver test bypasses ReactLoop's loop-fragment path because
@@ -389,10 +406,6 @@ class TestReactLoopDriveBrowserUse:
             memory=SimpleMemory(max_messages=100),
         )
 
-        out = BrowserUseOutput(
-            action=[{"done": {"text": "finished"}}],
-        )
-        llm = _MockLLM(out)
         env = _MockEnv(obs)
         loop = ReactLoop()
         loop.max_steps = 2
@@ -421,9 +434,24 @@ class TestReactLoopDriveBrowserUse:
 
         # Post-M17: AgentRuntime owns the prepare → memory.add_messages
         # handoff. Driving the loop without AgentRuntime requires the
-        # caller to replicate that step.
-        seed = agent.prepare(task="Find the answer", action_descriptors=[])
+        # caller to replicate that step. The descriptors are the negotiated
+        # ones, because ``prepare`` compiles them into the output schema
+        # the stub LLM below has to satisfy.
+        descriptors = [
+            a.descriptor()
+            for a in BrowserCapability().actions
+            if a.action_id in negotiated_actions.active_actions
+        ]
+        seed = agent.prepare(task="Find the answer", action_descriptors=descriptors)
         agent.memory.add_messages(seed)
+        llm = _MockLLM(
+            agent.get_react_output_model().model_validate(
+                {
+                    "memory": "",
+                    "action": [{"browser.done": {"extracted_content": "finished"}}],
+                }
+            )
+        )
 
         ctx = dict(
             env=env, llm=llm, memory=agent.memory,

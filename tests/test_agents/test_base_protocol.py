@@ -14,8 +14,17 @@ class TestBaseAgentProtocol:
     def test_has_domain(self):
         assert hasattr(BaseAgent, "domain")
 
-    def test_has_observation_types(self):
-        assert hasattr(BaseAgent, "observation_types")
+    def test_has_no_observation_types(self):
+        """Deleted: it contradicted ``__wiring__`` and nothing read it.
+
+        ``BrowserUseAgent.observation_types`` answered
+        ``{"dom", "browser_meta"}`` while its wiring required
+        ``["dom", "screenshot", "task"]``, and the two disagreed for months
+        because negotiation reads the wiring and never this. What an agent
+        observes is now said once, in ``__wiring__``, narrowed per instance
+        by ``negotiation_demand``.
+        """
+        assert not hasattr(BaseAgent, "observation_types")
 
     def test_has_system_prompt(self):
         assert hasattr(BaseAgent, "system_prompt")
@@ -50,10 +59,6 @@ class TestBaseAgentProtocol:
             @property
             def domain(self) -> str:
                 return "test"
-
-            @property
-            def observation_types(self) -> set[str]:
-                return set()
 
             @property
             def system_prompt(self):

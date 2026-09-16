@@ -32,16 +32,32 @@ class SchemaOptimizer:
 
         Args:
                 model: The Pydantic model to optimize
-                strict: If True, rewrite every object's ``required`` to list all of its
-                        properties, as OpenAI's ``"strict": true`` structured outputs
-                        demand. Leave False for tool-use / prompt-JSON / Gemini paths,
-                        which honour the model's own optionality.
-                remove_min_items: If True, remove minItems from the schema
-                remove_defaults: If True, remove default values from the schema
+                strict: If True, emit OpenAI's ``"strict": true`` dialect: every
+                        object's ``required`` lists all of its properties, and the
+                        array keywords that dialect refuses are dropped (see below).
+                        Leave False for tool-use / prompt-JSON / Gemini paths, which
+                        honour the model's own optionality.
+                remove_min_items: If True, remove minItems from the schema. Implied by
+                        ``strict``; set it for a *non-strict* endpoint that also chokes
+                        on it.
+                remove_defaults: If True, remove default values from the schema.
+
+        ``minItems`` is not a preference under strict, it is a rejection: the
+        strict dialect lists ``minItems``/``maxItems``/``uniqueItems`` among the
+        array keywords it does not accept, and a request carrying one comes back
+        400 on the schema — before the model has read a word of the prompt. A
+        Pydantic ``Field(min_length=1)`` on a list is an ordinary thing to write
+        (``action`` carries one, so an empty action list is caught locally), so
+        the removal belongs here, once, rather than in each caller's knob.
+        ``default`` is left alone deliberately: it is not on that list, and under
+        strict every property is required, so a default can never be applied.
 
         Returns:
                 Optimized schema with all $refs resolved
         """
+        # Strict is a dialect, not a flag the caller can half-apply.
+        remove_min_items = remove_min_items or strict
+
         # Generate original schema
         original_schema = model.model_json_schema()
 
@@ -243,7 +259,9 @@ class SchemaOptimizer:
         cannot comply, and both are produced by ordinary Pydantic models:
 
         * **open maps** — ``dict[str, Any]`` compiles to an object node with no
-          ``properties`` at all (``BrowserUseOutput.action`` is one).
+          ``properties`` at all. An agent that accepted ``list[dict[str, Any]]``
+          actions produced exactly that, which is why a constrained decoder
+          could answer ``{}`` and nothing rejected it.
         * **typed maps** — ``dict[str, int]`` compiles to
           ``additionalProperties: {...}``, which strict forbids outright.
 
@@ -252,8 +270,17 @@ class SchemaOptimizer:
         gives up ``strict`` instead. Callers pair this with the model-family
         capability: strict is emitted only when the model supports it **and**
         the compiled schema can express it.
+
+        A third shape is refused wherever it appears: ``oneOf``, and the
+        ``discriminator`` that produces it. None of the structured-output
+        dialects accepts ``oneOf`` — a closed union has to compile to
+        ``anyOf`` — and this function used to answer ``True`` for a schema
+        full of it, so the request went out strict and was rejected by the
+        API with nothing in the codebase pointing at why.
         """
         if isinstance(schema, dict):
+            if "oneOf" in schema or "discriminator" in schema:
+                return False
             if schema.get("type") == "object":
                 if "properties" not in schema:
                     return False

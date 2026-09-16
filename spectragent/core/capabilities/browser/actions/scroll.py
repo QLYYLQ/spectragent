@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
     ElementRef,
     focused_scope,
@@ -41,18 +43,33 @@ class ScrollAction(SettleableAction, ActionBase):
         PydanticField(description="Fallback direction when agent omits one"),
     ] = "down"
 
+    class Params(BaseModel):
+        """Scrolling needs no DOM — except to scroll *inside* one element.
+
+        ``index`` is the only param that reads the selector map, and it is
+        optional, so a run without ``browser.dom`` keeps the action and
+        loses the param: ``describe(fragments=...)`` drops it from both
+        the prompt and the schema rather than advertising an index the run
+        cannot resolve.
+        """
+
+        model_config = ConfigDict(extra="forbid")
+
+        direction: Literal["up", "down", "left", "right"]
+        amount: int | None = None
+        index: Annotated[
+            int | None,
+            RequiresFragment("browser.dom"),
+            PydanticField(description="scroll inside specific element"),
+        ] = None
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description=(
+        return self.describe(
+            (
                 f"Scroll the page or an element "
                 f"(default {self.default_amount}px {self.default_direction})."
             ),
-            params={
-                "direction": "up|down|left|right",
-                "amount": "int (optional)",
-                "index": "int (optional) -- scroll inside specific element",
-            },
+            **context,
         )
 
     async def execute(

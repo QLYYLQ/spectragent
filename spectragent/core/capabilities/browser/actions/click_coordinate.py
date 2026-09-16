@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
@@ -35,15 +38,18 @@ class ClickCoordinateAction(SettleableAction, ActionBase):
 
     __registry_key__ = "browser.click_coordinate"
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        coordinate_x: Annotated[
+            int, PydanticField(description="CSS px from the viewport's left edge")
+        ]
+        coordinate_y: Annotated[
+            int, PydanticField(description="CSS px from the viewport's top edge")
+        ]
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description="Click at a point in the page viewport.",
-            params={
-                "coordinate_x": "int -- CSS px from the viewport's left edge",
-                "coordinate_y": "int -- CSS px from the viewport's top edge",
-            },
-        )
+        return self.describe("Click at a point in the page viewport.", **context)
 
     async def execute(
         self,
