@@ -357,6 +357,108 @@ class TestDeadlineSchedule:
         assert clock.now - start == pytest.approx(0.120)
 
 
+class TestWheelDeadlineSchedule:
+    """An eased scroll keeps its own rhythm, not the transport's.
+
+    ``wheel`` used to sleep ``wheel_step_delay_ms`` and *then* await the
+    dispatch, so every step was stretched by the CDP round trip — measured
+    against headless Chrome, a 12 ms step took ~28 ms and a 20-step scroll
+    2.5x the duration it asked for. The step rhythm is exactly the behavioural
+    signal the segmented scroll exists to produce, so it runs on the same
+    absolute-deadline schedule as ``move_to``.
+    """
+
+    #: The ease-out split of 600 into 6 steps, which the tests below regroup.
+    INCREMENTS = [183, 150, 117, 83, 50, 17]
+
+    def _mouse(self, cdp: RecordCDP, *, steps: int = 6, delay: float = 12.0) -> HumanMouse:
+        # A one-waypoint humanized path: the approach move costs one round
+        # trip and no time of its own, so what follows is the scroll alone.
+        return HumanMouse(
+            cdp,
+            session_id_getter=lambda: "sid",
+            trajectory=_ScriptedPath([TrajectoryPoint(300, 300, 0.0)]),
+            viewport=(1280, 720),
+            wheel_steps=steps,
+            wheel_step_delay_ms=delay,
+        )
+
+    @staticmethod
+    def _wheels(cdp: RecordCDP) -> list[int]:
+        return [e["deltaY"] for e in cdp.mouse_events() if e["type"] == "mouseWheel"]
+
+    async def test_the_split_is_an_ease_out_summing_to_the_delta(self, clock: VirtualClock) -> None:
+        cdp = RecordCDP(clock)
+        await self._mouse(cdp).wheel(300, 300, 0, 600)
+        assert self._wheels(cdp) == self.INCREMENTS
+        assert sum(self.INCREMENTS) == 600
+        # Decelerating into the stop — that is what "eased" means here.
+        assert all(a > b for a, b in zip(self.INCREMENTS, self.INCREMENTS[1:], strict=False))
+
+    async def test_dispatch_latency_is_absorbed_into_the_step(self, clock: VirtualClock) -> None:
+        cdp = RecordCDP(clock, cost_ms=8.0)
+        start = clock.now
+        await self._mouse(cdp).wheel(300, 300, 0, 600)
+
+        assert self._wheels(cdp) == self.INCREMENTS
+        # Five 12 ms gaps is what a six-step scroll asks for; each pays for its
+        # own round trip out of its own slot, so only the last one is added.
+        # Sleeping the delay and then dispatching took 5 x 12 + 6 x 8 = 108 ms.
+        assert clock.sleeps == pytest.approx([0.004] * 5)
+        assert clock.now - start == pytest.approx(0.008 + 0.060 + 0.008)
+
+    async def test_the_first_step_is_due_immediately(self, clock: VirtualClock) -> None:
+        # The requested duration is (steps - 1) delays: no leading pause, so a
+        # scroll starts the moment the cursor arrives.
+        cdp = RecordCDP(clock)
+        await self._mouse(cdp, steps=4).wheel(300, 300, 0, 600)
+        assert clock.sleeps == pytest.approx([0.012] * 3)
+
+    async def test_a_slow_dispatch_merges_steps_rather_than_stretching_them(
+        self, clock: VirtualClock
+    ) -> None:
+        cdp = RecordCDP(clock, cost_ms=40.0)
+        start = clock.now
+        await self._mouse(cdp).wheel(300, 300, 0, 600)
+
+        # Steps 2-4 and 6 never got a slot of their own; their deltas ride
+        # along with the next step that is sent, so nothing is lost and the
+        # scroll coarsens instead of running 5 x 12 + 6 x 40 = 300 ms long.
+        assert self._wheels(cdp) == [183, 150 + 117 + 83, 50 + 17]
+        assert sum(self._wheels(cdp)) == 600
+        assert clock.sleeps == []  # never ahead of schedule, never waiting
+        assert clock.now - start == pytest.approx(0.040 + 0.120)
+
+    async def test_the_last_step_is_never_dropped(self, clock: VirtualClock) -> None:
+        # A round trip an order of magnitude past the step. Nothing is late
+        # before the first dispatch, so step 1 goes out; everything after it
+        # merges into the last step, which is never dropped and therefore
+        # still carries the exact remaining delta, on both axes.
+        cdp = RecordCDP(clock, cost_ms=400.0)
+        await self._mouse(cdp).wheel(300, 300, -25, 600)
+        wheels = [e for e in cdp.mouse_events() if e["type"] == "mouseWheel"]
+        assert len(wheels) == 2
+        assert sum(w["deltaY"] for w in wheels) == 600
+        assert sum(w["deltaX"] for w in wheels) == -25
+        assert (wheels[0]["deltaX"], wheels[0]["deltaY"]) == (-8, 183)
+
+    async def test_zero_delay_still_sends_every_step(self, clock: VirtualClock) -> None:
+        # A schedule of zero-length slots asks for no time, so no slot can be
+        # late: "as fast as the transport goes", not "collapse into one event".
+        cdp = RecordCDP(clock, cost_ms=8.0)
+        await self._mouse(cdp, delay=0.0).wheel(300, 300, 0, 600)
+        assert self._wheels(cdp) == self.INCREMENTS
+        assert clock.sleeps == []
+
+    async def test_a_single_step_scroll_is_one_event_with_the_whole_delta(
+        self, clock: VirtualClock
+    ) -> None:
+        cdp = RecordCDP(clock, cost_ms=8.0)
+        await self._mouse(cdp, steps=1).wheel(300, 300, 0, 600)
+        assert self._wheels(cdp) == [600]
+        assert clock.sleeps == []
+
+
 @pytest.mark.parametrize("kind", ["v1", "mdn", "gan_ar"])
 class TestLearnedStrategy:
     """A ``learned`` click through the controller, on each tiny export kind."""
