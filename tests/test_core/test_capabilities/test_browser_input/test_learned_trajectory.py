@@ -1024,19 +1024,15 @@ def test_non_finite_output_is_an_error(
 
 
 @pytest.mark.parametrize(
-    "export,hz",
-    [
-        # The smoke export's meta declares 60 Hz although the released data was
-        # recorded at 50; the current exporter writes 50. Its meta is the only
-        # thing that can say so — a config that named 50 here would be a config
-        # disagreeing with the weights it loads.
-        (V1_SMOKE_EXPORT, 60.0),
-        (V2_MDN_EXPORT, 50.0),
-        (V2_GAN_AR_EXPORT, 50.0),
-    ],
+    "export",
+    [V1_SMOKE_EXPORT, V2_MDN_EXPORT, V2_GAN_AR_EXPORT],
     ids=["v1-smoke", "v2-mdn", "v2-gan_ar"],
 )
-def test_real_exports_generate_exact_viewport_paths(export: Path, hz: float) -> None:
+def test_real_exports_generate_exact_viewport_paths(export: Path) -> None:
+    # The tick rate is the export's to declare — a number written here would be
+    # a test disagreeing with the weights it loads, which is exactly what the
+    # strategy refuses from a config.
+    hz = json.loads((export / "meta.json").read_text())["hz"]
     if not (export / "generator.npz").is_file():
         pytest.skip(f"trainer export absent: {export}")
     traj = LearnedTrajectory(weights_dir=str(export), seed=0)
