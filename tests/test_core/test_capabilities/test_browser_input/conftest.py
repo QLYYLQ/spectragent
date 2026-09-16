@@ -1,5 +1,10 @@
 """Shared fixtures for the browser input layer.
 
+The virtual-clock harness is here rather than in one test module because the
+mouse and the keyboard play against the *same* scheduler
+(``input/_schedule.py``): giving each a clock of its own is how the two would
+drift apart.
+
 Tiny, randomly initialised exports in each format the ``learned`` strategy
 reads, with the exact array names, layer wiring and meta keys of the
 trainer's exporters (``mouse_gan.export`` for ``mouse-gan-generator/1``,
@@ -276,3 +281,107 @@ def make_export(tmp_path: Path) -> Callable[..., Path]:
         return WRITERS[kind](tmp_path / f"{kind}_export_{next(counter)}", **kwargs)
 
     return make
+
+
+class VirtualClock:
+    """The clock and the sleeps the input layer schedules against, under control.
+
+    Real time never passes in these tests: only a sleep, or a CDP round trip
+    that was given a cost, advances ``now``. That makes the deadline schedule
+    exactly reproducible — and lets a test say "this dispatch takes 50 ms"
+    without a browser.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class RecordCDP:
+    """Records every ``send`` call; returns empty results.
+
+    Structurally satisfies ``agent_cdp.CDPCommandProtocol`` — including
+    the positional ``session_id`` and the event-subscription half — so
+    ``HumanMouse`` / ``HumanKeyboard`` can be constructed with it without a
+    type error.
+
+    ``cost_ms`` is how long a round trip takes on the virtual clock, the
+    latency the deadline schedule has to absorb.
+    """
+
+    is_connected = True
+
+    def __init__(self, clock: VirtualClock | None = None, cost_ms: float = 0.0) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._clock = clock
+        self._cost_ms = cost_ms
+
+    async def send(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append((method, params or {}))
+        if self._clock is not None and self._cost_ms:
+            self._clock.advance(self._cost_ms / 1000.0)
+        return {}
+
+    def on_event(self, method: str, callback: Any) -> None:
+        return None
+
+    def off_event(self, method: str, callback: Any) -> None:
+        return None
+
+    def mouse_events(self) -> list[dict[str, Any]]:
+        return [p for m, p in self.calls if m == "Input.dispatchMouseEvent"]
+
+    def types(self) -> list[str]:
+        return [p["type"] for p in self.mouse_events()]
+
+    def key_events(self) -> list[dict[str, Any]]:
+        return [p for m, p in self.calls if m == "Input.dispatchKeyEvent"]
+
+    def inserts(self) -> list[str]:
+        return [p["text"] for m, p in self.calls if m == "Input.insertText"]
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> VirtualClock:
+    """Give the input layer's one scheduler a virtual clock and virtual sleeps.
+
+    Patched on ``input/_schedule.py``, which is where the deadline loop
+    lives: the mouse and the keyboard share it, so they share this harness
+    too rather than growing a second clock each.
+    """
+    virtual = VirtualClock()
+    monkeypatch.setattr(
+        "spectragent.core.capabilities.browser.input._schedule.asyncio.sleep",
+        virtual.sleep,
+    )
+    monkeypatch.setattr(
+        "spectragent.core.capabilities.browser.input._schedule.monotonic",
+        virtual.monotonic,
+    )
+    # ``HumanMouse.click`` sleeps its own ``dwell_ms`` outside the schedule.
+    monkeypatch.setattr(
+        "spectragent.core.capabilities.browser.input.mouse.asyncio.sleep",
+        virtual.sleep,
+    )
+    return virtual
+
+
+@pytest.fixture
+def no_sleep(clock: VirtualClock) -> list[float]:
+    """The durations slept, which on the virtual clock cost no real time."""
+    return clock.sleeps

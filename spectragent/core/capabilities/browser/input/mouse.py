@@ -30,7 +30,7 @@ as repeated waypoints, which ``move_to`` sleeps through without dispatching.
 Setting ``dwell_ms`` adds a fixed pause on top.
 
 Everything paced here — a trajectory's waypoints, an eased scroll's steps — is
-played against **absolute deadlines** by :func:`_play_on_deadline`, not by
+played against **absolute deadlines** by :func:`play_on_deadline`, not by
 sleeping each interval in turn. Sleeping the interval and *then* awaiting the
 CDP dispatch adds the round trip to every tick; measured against headless
 Chrome that is ~17 ms per ``mouseMoved``, which replayed a 50 Hz learned path
@@ -53,14 +53,16 @@ Both failure modes are now Pydantic validation errors before anything launches.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
-from collections.abc import AsyncIterator, Callable, Sequence
-from time import monotonic
+from collections.abc import Callable
 from typing import Any
 
 from agent_cdp import CDPCommandProtocol
 
+from spectragent.core.capabilities.browser.input._schedule import (
+    maybe_await,
+    play_on_deadline,
+)
 from spectragent.core.capabilities.browser.input.instant import InstantTrajectory
 from spectragent.core.capabilities.browser.input.trajectory import (
     MouseTrajectoryProtocol,
@@ -68,52 +70,6 @@ from spectragent.core.capabilities.browser.input.trajectory import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-async def _maybe_await(value: Any) -> None:
-    """Await ``value`` if it is awaitable, else ignore (sync callback)."""
-    if inspect.isawaitable(value):
-        await value
-
-
-async def _play_on_deadline(dt_ms: Sequence[float]) -> AsyncIterator[int]:
-    """Yield the slots of a schedule, each at its own absolute due time.
-
-    ``dt_ms[i]`` is how long slot *i* waits after slot ``i - 1`` came due, so
-    slot *i* is due at ``start + sum(dt_ms[: i + 1])`` — an instant, fixed
-    before anything is sent. Each iteration sleeps until *that* instant, so
-    whatever the caller awaits between yields is spent inside the slot it
-    belongs to instead of being added to it. Sleeping the interval and then
-    awaiting the work adds the work's own cost to every slot, which is how a
-    CDP round trip (~17 ms per ``mouseMoved``, ~12 ms per ``mouseWheel``
-    against headless Chrome) came to dominate both a trajectory's tick rate
-    and a scroll's step rhythm.
-
-    When the work is slower than its slot, a slot whose successor is *also*
-    already due is **skipped** rather than chased — a dropped frame, not a
-    stretched one, so the schedule's total duration and its shape stay honest
-    and only the sampling coarsens. What a skipped slot means belongs to the
-    caller: :meth:`HumanMouse.move_to` simply never sends that position, and
-    :meth:`HumanMouse.wheel` folds its delta into the next step it does send.
-    A slot with no time of its own can never make its predecessor late, so a
-    schedule of zero-length slots (``wheel_step_delay_ms == 0``) plays in full,
-    and the last slot — which has no successor — is never skipped.
-
-    A yielded slot the caller decides not to act on has still spent its time:
-    that is how a repeated waypoint holds the cursor still.
-    """
-    last = len(dt_ms) - 1
-    # ``monotonic`` is the clock ``asyncio.sleep`` itself schedules against.
-    deadline = monotonic()
-    for i, dt in enumerate(dt_ms):
-        deadline += dt / 1000.0
-        successor = dt_ms[i + 1] / 1000.0 if i != last else 0.0
-        now = monotonic()
-        if now < deadline:
-            await asyncio.sleep(deadline - now)
-        elif successor > 0 and now >= deadline + successor:
-            continue  # behind schedule, this slot's whole span is gone: drop it
-        yield i
 
 
 class HumanMouse:
@@ -181,7 +137,7 @@ class HumanMouse:
         self._x, self._y = x, y
         if self._move_cb is not None:
             try:
-                await _maybe_await(self._move_cb(x, y))
+                await maybe_await(self._move_cb(x, y))
             except Exception as exc:  # overlay is best-effort, never blocks
                 logger.debug("mouse move_callback failed at (%d,%d): %s", x, y, exc)
 
@@ -191,7 +147,7 @@ class HumanMouse:
     ) -> None:
         """Move the cursor to (x, y) along the active trajectory strategy.
 
-        The path is the schedule handed to :func:`_play_on_deadline`: waypoint
+        The path is the schedule handed to :func:`play_on_deadline`: waypoint
         ``i`` is due at ``start + sum(dt_ms[:i + 1])``, so the CDP round trip
         is spent inside the tick it belongs to instead of being added to it.
         Sleeping ``dt_ms`` and then awaiting the dispatch stretched every path
@@ -218,7 +174,7 @@ class HumanMouse:
         # onto the current position (legacy behaviour).
         jump = len(path) == 1
         last = len(path) - 1
-        async for i in _play_on_deadline([pt.dt_ms for pt in path]):
+        async for i in play_on_deadline([pt.dt_ms for pt in path]):
             pt = path[i]
             # The endpoint is dispatched raw so the click lands exactly on
             # target (and off-viewport targets stay exact); only intermediate
@@ -322,7 +278,7 @@ class HumanMouse:
 
         schedule = [0.0] + [self._wheel_step_delay_ms] * (steps - 1)
         unsent = 0
-        async for i in _play_on_deadline(schedule):
+        async for i in play_on_deadline(schedule):
             merged = increments[unsent : i + 1]
             unsent = i + 1
             await self._cdp.send(

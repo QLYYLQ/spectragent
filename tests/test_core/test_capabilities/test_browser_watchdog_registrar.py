@@ -458,6 +458,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
         ok = BrowserCapabilityConfig.model_validate(
             {
                 "mouse_trajectory": {"trajectory_type": "windmouse", "gravity": 12.0},
+                "typing_rhythm": {"rhythm_type": "instant"},
                 "dom_cleaner": {"cleaner_type": "browser_use"},
                 "backend": {"provider_id": "local_chrome"},
             }
@@ -589,6 +590,7 @@ class TestDomCleanerIsAWiredReceptor:
                     {
                         "capability_id": "browser",
                         "mouse_trajectory": {"trajectory_type": "instant"},
+                    "typing_rhythm": {"rhythm_type": "instant"},
                         "dom_cleaner": cleaner_block,
                         "backend": {"provider_id": "local_chrome"},
                     }

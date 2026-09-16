@@ -100,6 +100,26 @@ environment:
         mouse_trajectory:
           trajectory_type: instant
 
+        # How text is typed. The keyboard's half of the same idea, on its
+        # own axis, with the same rule: the strategy is the switch.
+        # ``instant`` sends the whole string in one ``Input.insertText`` —
+        # one CDP call, and (measured) *no* keydown/keypress/keyup at all,
+        # so a page's keystroke listeners see a field fill in an instant.
+        # ``human`` dispatches a real keydown/keyup per character on
+        # lognormal flight times with word/punctuation structure and a
+        # modelled key hold, at roughly 250 ms per character — for
+        # anti-bot-sensitive evals, not throughput. Non-ASCII (all CJK) is
+        # delivered per character by ``insertText`` on the same rhythm, so
+        # a page gating on keydown sees nothing for it; see
+        # ``input/keyboard.py``.
+        #
+        # typing_rhythm:
+        #   rhythm_type: human
+        #   median_iki_ms: 170
+        #   seed: 0
+        typing_rhythm:
+          rhythm_type: instant
+
         # How the raw CDP capture becomes the tree the agent reads. Also a
         # wired receptor, so the strategy's knobs are reachable: this is
         # where you widen or narrow what gets an index.

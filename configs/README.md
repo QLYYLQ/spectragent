@@ -66,7 +66,8 @@ Notes:
 
 - A wiring entry becomes a runtime receptor **only** when the owning class declares a slot for it. `observation` / `action` on the agent and `observation` on the capability have no slot: they are declaration-only constraints the negotiation engine reads off `__wiring__`. They are optional in the schema, and *populating* one is a hard `UnresolvedWiringError` — the value would otherwise be silently dropped.
 - Mode 1 wirings (`agent_loop`, `llm`, `memory`) become full discriminated unions of every registered config — you write the **complete child config** inline, no top-level reference list needed.
-- Single-instance receptors (`llm`, `agent_loop`, `capability.backend`, `capability.mouse_trajectory`) are **required**; list-shaped ones (`environment.capabilities`, `capability.actions`) are optional and fall back to a sensible default when omitted.
+- Single-instance receptors (`llm`, `agent_loop`, `capability.backend`, `capability.mouse_trajectory`, `capability.typing_rhythm`, `capability.dom_cleaner`) are **required**; list-shaped ones (`environment.capabilities`, `capability.actions`) are optional and fall back to a sensible default when omitted.
+- The two input-humanization receptors are independent axes and each is its own off-switch: `mouse_trajectory: { trajectory_type: instant }` and `typing_rhythm: { rhythm_type: instant }` are the legacy instant jump and the legacy single bulk `Input.insertText`. There is no boolean beside either — the strategy *is* the switch.
 
 ## Per-action configuration
 

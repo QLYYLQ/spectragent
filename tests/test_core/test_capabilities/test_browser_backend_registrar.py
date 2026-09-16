@@ -98,6 +98,7 @@ class TestComposerInjectsBackend:
         )
         from spectragent.core.capabilities.browser.input import (
             MouseTrajectoryRegistrar,
+            TypingRhythmRegistrar,
         )
         from spectragent.core.composer import ConfigComposer
         from spectragent.core.environments._registrar import EnvironmentRegistrar
@@ -109,6 +110,7 @@ class TestComposerInjectsBackend:
             registrars={
                 "browser_provider": BrowserProviderRegistrar,
                 "mouse_trajectory": MouseTrajectoryRegistrar,
+                "typing_rhythm": TypingRhythmRegistrar,
                 "dom_cleaner": DOMCleanerRegistrar,
                 "action": ActionRegistrar,
                 "capability": CapabilityRegistrar,
@@ -133,6 +135,7 @@ class TestComposerInjectsBackend:
                 {
                     "capability_id": "browser",
                     "mouse_trajectory": {"trajectory_type": "instant"},
+                    "typing_rhythm": {"rhythm_type": "instant"},
                     "dom_cleaner": {"cleaner_type": "browser_use"},
                     "backend": {"provider_id": "local_chrome"},
                 }
@@ -172,6 +175,7 @@ class TestComposerInjectsBackend:
         )
         from spectragent.core.capabilities.browser.input import (
             MouseTrajectoryRegistrar,
+            TypingRhythmRegistrar,
         )
         from spectragent.core.composer import ConfigComposer
         from spectragent.core.environments._registrar import EnvironmentRegistrar
@@ -183,6 +187,7 @@ class TestComposerInjectsBackend:
             registrars={
                 "browser_provider": BrowserProviderRegistrar,
                 "mouse_trajectory": MouseTrajectoryRegistrar,
+                "typing_rhythm": TypingRhythmRegistrar,
                 "dom_cleaner": DOMCleanerRegistrar,
                 "action": ActionRegistrar,
                 "capability": CapabilityRegistrar,
@@ -244,6 +249,7 @@ class TestComposerInjectsBackend:
                 {
                     "capability_id": "browser",
                     "mouse_trajectory": {"trajectory_type": "instant"},
+                    "typing_rhythm": {"rhythm_type": "instant"},
                     "dom_cleaner": {"cleaner_type": "browser_use"},
                     "backend": {"provider_id": "local_chrome"},
                     "observation": "browser.dom",

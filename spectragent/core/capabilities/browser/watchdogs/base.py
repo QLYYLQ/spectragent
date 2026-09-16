@@ -38,7 +38,10 @@ if TYPE_CHECKING:
 
     from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerProtocol
     from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
-    from spectragent.core.capabilities.browser.input import MouseTrajectoryProtocol
+    from spectragent.core.capabilities.browser.input import (
+        MouseTrajectoryProtocol,
+        TypingRhythmProtocol,
+    )
     from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
 
 #: Which EventScope a watchdog binds to. ``"tab"`` watchdogs are built
@@ -93,6 +96,12 @@ class WatchdogContext:
     #: switch: ``instant`` (or ``None``, nothing configured) is the legacy
     #: instant jump, anything else humanizes.
     mouse_trajectory: MouseTrajectoryProtocol | None = None
+
+    #: The configured typing rhythm *instance*, same route and same rule as
+    #: ``mouse_trajectory`` and on its own axis: ``instant`` (or ``None``,
+    #: nothing configured) is the legacy bulk ``Input.insertText``, anything
+    #: else dispatches real per-character key events on modelled timings.
+    typing_rhythm: TypingRhythmProtocol | None = None
 
     #: The configured DOM cleaning strategy *instance*, for the same reason
     #: and by the same route as ``mouse_trajectory``: the Composer built it

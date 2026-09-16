@@ -74,8 +74,10 @@ from spectragent.core.capabilities.browser.dom.cleaning.skyvern import (  # noqa
 )
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
 from spectragent.core.capabilities.browser.input import (
+    InstantRhythm,
     InstantTrajectory,
     MouseTrajectoryProtocol,
+    TypingRhythmProtocol,
 )
 from spectragent.core.capabilities.browser.profiles import (
     BrowserProfileConfig,
@@ -276,6 +278,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             "mouse_trajectory",
             ["bezier", "instant", "learned", "windmouse"],
         ),
+        # ``typing_rhythm`` is the keyboard's half of the same idea, on its
+        # own axis — a run may want a curved cursor and a bulk insert, or the
+        # reverse — and with the same rule: the strategy *is* the switch,
+        # there is no boolean beside it to disagree with it. ``instant`` is
+        # the legacy single ``Input.insertText``, which fires no key events
+        # at all; ``human`` dispatches a real keydown/keyup per character on
+        # modelled flight and hold times, at a cost of roughly 250 ms per
+        # character — meant for anti-bot-sensitive evals, not throughput.
+        "typing_rhythm": ("typing_rhythm", ["human", "instant"]),
         # ``dom_cleaner`` is a receptor for the same reason: the strategy
         # arrives constructed, carrying the knobs that decide what the
         # agent gets to see (``descendants_occlude``,
@@ -296,6 +307,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     # are annotation-only here, so conscribe installs a ``WiredField``
     # descriptor and the Composer setattr-injects them after construction.
     mouse_trajectory: MouseTrajectoryProtocol  # type: ignore[misc]
+    typing_rhythm: TypingRhythmProtocol  # type: ignore[misc]
     dom_cleaner: DOMCleanerProtocol  # type: ignore[misc]
     backend: BaseBrowserProvider  # type: ignore[misc]
 
@@ -433,8 +445,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # legacy instant-jump behaviour. ``ConfigComposer`` setattrs the
         # configured instance over this, shadowing the descriptor.
         self.mouse_trajectory = InstantTrajectory()
-        # Same contract for the DOM cleaning strategy: YAML names one, a
-        # hand-built capability gets the default strategy with its defaults.
+        # Same contract for the keyboard's rhythm and for the DOM cleaning
+        # strategy: YAML names one, a hand-built capability gets the default
+        # strategy with its defaults.
+        self.typing_rhythm = InstantRhythm()
         self.dom_cleaner = BrowserUseCleaner()
 
         # ── internal state (never config) ─────────────────────────

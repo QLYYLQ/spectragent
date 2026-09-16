@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -15,94 +14,7 @@ from spectragent.core.capabilities.browser.input.mouse import HumanMouse
 from spectragent.core.capabilities.browser.input.trajectory import TrajectoryPoint
 from spectragent.core.capabilities.browser.input.windmouse import WindMouseTrajectory
 
-from .conftest import TINY_SEQ_LEN
-
-
-class VirtualClock:
-    """The clock and the sleeps ``HumanMouse`` schedules against, under control.
-
-    Real time never passes in these tests: only a sleep, or a CDP round trip
-    that was given a cost, advances ``now``. That makes the deadline schedule
-    exactly reproducible — and lets a test say "this dispatch takes 50 ms"
-    without a browser.
-    """
-
-    def __init__(self) -> None:
-        self.now = 1_000.0
-        self.sleeps: list[float] = []
-
-    def monotonic(self) -> float:
-        return self.now
-
-    async def sleep(self, seconds: float) -> None:
-        self.sleeps.append(seconds)
-        self.now += seconds
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-class RecordCDP:
-    """Records every ``send`` call; returns empty results.
-
-    Structurally satisfies ``agent_cdp.CDPCommandProtocol`` — including
-    the positional ``session_id`` and the event-subscription half — so
-    HumanMouse can be constructed with it without a type error.
-
-    ``cost_ms`` is how long a round trip takes on the virtual clock, the
-    latency the deadline schedule has to absorb.
-    """
-
-    is_connected = True
-
-    def __init__(self, clock: VirtualClock | None = None, cost_ms: float = 0.0) -> None:
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-        self._clock = clock
-        self._cost_ms = cost_ms
-
-    async def send(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-        session_id: str | None = None,
-    ) -> dict[str, Any]:
-        self.calls.append((method, params or {}))
-        if self._clock is not None and self._cost_ms:
-            self._clock.advance(self._cost_ms / 1000.0)
-        return {}
-
-    def on_event(self, method: str, callback: Any) -> None:
-        return None
-
-    def off_event(self, method: str, callback: Any) -> None:
-        return None
-
-    def mouse_events(self) -> list[dict[str, Any]]:
-        return [p for m, p in self.calls if m == "Input.dispatchMouseEvent"]
-
-    def types(self) -> list[str]:
-        return [p["type"] for p in self.mouse_events()]
-
-
-@pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> VirtualClock:
-    """Give the mouse module a virtual clock and virtual sleeps."""
-    virtual = VirtualClock()
-    monkeypatch.setattr(
-        "spectragent.core.capabilities.browser.input.mouse.asyncio.sleep",
-        virtual.sleep,
-    )
-    monkeypatch.setattr(
-        "spectragent.core.capabilities.browser.input.mouse.monotonic",
-        virtual.monotonic,
-    )
-    return virtual
-
-
-@pytest.fixture
-def no_sleep(clock: VirtualClock) -> list[float]:
-    """The durations slept, which on the virtual clock cost no real time."""
-    return clock.sleeps
+from .conftest import TINY_SEQ_LEN, RecordCDP, VirtualClock
 
 
 class TestOffModeEquivalence:

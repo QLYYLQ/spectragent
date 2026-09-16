@@ -55,7 +55,10 @@ def _collect_registrars() -> dict[str, type]:
     from spectragent.core.capabilities.browser.dom.serializers import (
         DOMSerializerRegistrar,
     )
-    from spectragent.core.capabilities.browser.input import MouseTrajectoryRegistrar
+    from spectragent.core.capabilities.browser.input import (
+        MouseTrajectoryRegistrar,
+        TypingRhythmRegistrar,
+    )
     from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
     from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
     from spectragent.core.environments._registrar import EnvironmentRegistrar
@@ -73,6 +76,7 @@ def _collect_registrars() -> dict[str, type]:
         # which was emitted as a bare ``str`` so a typo was silently
         # downgraded to the instant (non-humanized) strategy.
         "mouse_trajectory": MouseTrajectoryRegistrar,
+        "typing_rhythm": TypingRhythmRegistrar,
         "dom_cleaner": DOMCleanerRegistrar,
         "dom_serializer": DOMSerializerRegistrar,
         "action": ActionRegistrar,

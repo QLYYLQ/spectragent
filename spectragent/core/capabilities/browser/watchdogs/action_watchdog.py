@@ -38,8 +38,10 @@ from spectragent.core.capabilities.browser.geometry import (
     corners,
 )
 from spectragent.core.capabilities.browser.input import (
+    HumanKeyboard,
     HumanMouse,
     MouseTrajectoryProtocol,
+    TypingRhythmProtocol,
 )
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
@@ -305,6 +307,7 @@ class ActionWatchdog(BrowserWatchdog):
             main_frame_id_getter=ctx.main_frame_id_getter,
             debug_highlight=ctx.debug_highlight,
             mouse_trajectory=ctx.mouse_trajectory,
+            typing_rhythm=ctx.typing_rhythm,
             viewport=ctx.viewport,
         )
 
@@ -317,6 +320,7 @@ class ActionWatchdog(BrowserWatchdog):
         debug_highlight: bool = False,
         debug_highlight_ms: int = 350,
         mouse_trajectory: MouseTrajectoryProtocol | None = None,
+        typing_rhythm: TypingRhythmProtocol | None = None,
         viewport: tuple[int, int] = (1280, 720),
     ) -> None:
         self._cdp = cdp
@@ -337,6 +341,12 @@ class ActionWatchdog(BrowserWatchdog):
             viewport=viewport,
             move_callback=self._overlay_move_cursor if debug_highlight else None,
         )
+
+        # Keystroke middle layer — owns the typing rhythm and performs every
+        # text entry. Same shape and same reason as the mouse: the ``instant``
+        # rhythm (also the fallback when none is configured) is the legacy
+        # single bulk ``Input.insertText``.
+        self._keyboard = HumanKeyboard(cdp, rhythm=typing_rhythm)
 
         # Debug highlight state — Overlay.enable is sent lazily, once per
         # session it is needed on (an element in an out-of-process iframe is
@@ -579,12 +589,18 @@ class ActionWatchdog(BrowserWatchdog):
     async def _insert_text_at_focus(
         self, text: str, clear: bool, *, session_id: str | None = None
     ) -> dict[str, Any]:
-        """Clear (optionally) and bulk-insert *text* into the focused node.
+        """Clear (optionally) and enter *text* into the focused node.
 
         Every CDP call here targets the *current focus*, never a node id —
         which is why the coordinate path can reuse it after a click.
         ``session_id`` is the target the focus was put in; ``None`` is the
         tab, whose input Chrome routes to its focused frame.
+
+        The text itself belongs to :class:`HumanKeyboard`: one bulk
+        ``Input.insertText`` under the ``instant`` rhythm (the default), a
+        real key event per character on modelled timings under any other.
+        The clear is deliberately left alone in both modes — it is not
+        typing, it is a shortcut a human would also perform at once.
         """
         sid = self._element_session(session_id)
         if clear:
@@ -601,8 +617,7 @@ class ActionWatchdog(BrowserWatchdog):
                 "type": "keyUp", "key": "Backspace",
             }, session_id=sid)
 
-        # Bulk insert text (single CDP call, not per-character).
-        await self._cdp.send("Input.insertText", {"text": text}, session_id=sid)
+        await self._keyboard.type_text(text, session_id=sid)
         return {"typed": True, "length": len(text)}
 
     # -----------------------------------------------------------------------
