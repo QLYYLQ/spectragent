@@ -18,18 +18,47 @@ from spectragent.core.capabilities.browser.input.windmouse import WindMouseTraje
 from .conftest import TINY_SEQ_LEN
 
 
+class VirtualClock:
+    """The clock and the sleeps ``HumanMouse`` schedules against, under control.
+
+    Real time never passes in these tests: only a sleep, or a CDP round trip
+    that was given a cost, advances ``now``. That makes the deadline schedule
+    exactly reproducible — and lets a test say "this dispatch takes 50 ms"
+    without a browser.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class RecordCDP:
     """Records every ``send`` call; returns empty results.
 
     Structurally satisfies ``agent_cdp.CDPCommandProtocol`` — including
     the positional ``session_id`` and the event-subscription half — so
     HumanMouse can be constructed with it without a type error.
+
+    ``cost_ms`` is how long a round trip takes on the virtual clock, the
+    latency the deadline schedule has to absorb.
     """
 
     is_connected = True
 
-    def __init__(self) -> None:
+    def __init__(self, clock: VirtualClock | None = None, cost_ms: float = 0.0) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._clock = clock
+        self._cost_ms = cost_ms
 
     async def send(
         self,
@@ -38,6 +67,8 @@ class RecordCDP:
         session_id: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append((method, params or {}))
+        if self._clock is not None and self._cost_ms:
+            self._clock.advance(self._cost_ms / 1000.0)
         return {}
 
     def on_event(self, method: str, callback: Any) -> None:
@@ -54,18 +85,24 @@ class RecordCDP:
 
 
 @pytest.fixture
-def no_sleep(monkeypatch: pytest.MonkeyPatch) -> list[float]:
-    """Patch asyncio.sleep in the mouse module to a recording no-op."""
-    slept: list[float] = []
-
-    async def fake_sleep(seconds: float) -> None:
-        slept.append(seconds)
-
+def clock(monkeypatch: pytest.MonkeyPatch) -> VirtualClock:
+    """Give the mouse module a virtual clock and virtual sleeps."""
+    virtual = VirtualClock()
     monkeypatch.setattr(
         "spectragent.core.capabilities.browser.input.mouse.asyncio.sleep",
-        fake_sleep,
+        virtual.sleep,
     )
-    return slept
+    monkeypatch.setattr(
+        "spectragent.core.capabilities.browser.input.mouse.monotonic",
+        virtual.monotonic,
+    )
+    return virtual
+
+
+@pytest.fixture
+def no_sleep(clock: VirtualClock) -> list[float]:
+    """The durations slept, which on the virtual clock cost no real time."""
+    return clock.sleeps
 
 
 class TestOffModeEquivalence:
@@ -230,6 +267,94 @@ class TestRepeatedWaypoints:
         mouse = HumanMouse(cdp, session_id_getter=lambda: None)
         await mouse.click(0, 0, "left", 1)
         assert cdp.types() == ["mouseMoved", "mousePressed", "mouseReleased"]
+
+
+class TestDeadlineSchedule:
+    """Waypoints are due at absolute times, so latency comes out of the tick.
+
+    Sleeping ``dt_ms`` and then awaiting the dispatch added the CDP round trip
+    to every tick — ~17 ms against headless Chrome, which replayed a 50 Hz
+    learned path at 33 Hz and a windmouse path at 5x its own duration. The
+    timing is the whole point of a trajectory: the learned models match human
+    speed only at the rate they were recorded at.
+    """
+
+    @staticmethod
+    def _path(ticks: int, dt_ms: float = 20.0) -> list[TrajectoryPoint]:
+        """Starts on the humanized cold start, then one 10 px step per tick."""
+        return [TrajectoryPoint(640, 360, 0.0)] + [
+            TrajectoryPoint(640 + 10 * i, 360, dt_ms) for i in range(1, ticks + 1)
+        ]
+
+    def _mouse(self, cdp: RecordCDP, path: list[TrajectoryPoint]) -> HumanMouse:
+        return HumanMouse(
+            cdp,
+            session_id_getter=lambda: "sid",
+            trajectory=_ScriptedPath(path),
+            viewport=(1280, 720),
+        )
+
+    async def test_dispatch_latency_is_absorbed_into_the_tick(self, clock: VirtualClock) -> None:
+        cdp = RecordCDP(clock, cost_ms=8.0)
+        mouse = self._mouse(cdp, self._path(10))
+        start = clock.now
+        await mouse.move_to(740, 360)
+
+        # 10 ticks of 20 ms take the path's own 200 ms plus the last round trip
+        # (nothing follows it to absorb it), not 200 + 10 x 8.
+        assert clock.now - start == pytest.approx(0.208)
+        # Every tick but the first pays for the round trip out of its own slot.
+        assert clock.sleeps == pytest.approx([0.020] + [0.012] * 9)
+        moves = [(e["x"], e["y"]) for e in cdp.mouse_events()]
+        assert len(moves) == 10  # nothing dropped while the transport keeps up
+        assert moves[-1] == (740, 360)
+
+    async def test_a_dispatch_slower_than_the_tick_drops_waypoints_not_time(
+        self, clock: VirtualClock
+    ) -> None:
+        cdp = RecordCDP(clock, cost_ms=47.0)
+        mouse = self._mouse(cdp, self._path(10))
+        start = clock.now
+        await mouse.move_to(740, 360)
+
+        # Each waypoint whose whole 20 ms slot had already passed is dropped,
+        # so the ones that are sent are sent at their own time. Playing every
+        # waypoint would have taken 10 x (20 + 47) = 670 ms for a 200 ms path.
+        assert [e["x"] for e in cdp.mouse_events()] == [650, 670, 690, 720, 740]
+        assert clock.now - start == pytest.approx(0.255)
+        assert clock.sleeps == pytest.approx([0.020])  # only the first tick had slack
+
+    async def test_the_endpoint_survives_a_transport_that_cannot_keep_up(
+        self, clock: VirtualClock
+    ) -> None:
+        # 1 ms waypoints against a 40 ms round trip — the shape of a Fitts
+        # ease-out tail. Everything intermediate goes; the endpoint never does.
+        cdp = RecordCDP(clock, cost_ms=40.0)
+        mouse = self._mouse(cdp, self._path(10, dt_ms=1.0))
+        start = clock.now
+        await mouse.move_to(740, 360)
+
+        assert [(e["x"], e["y"]) for e in cdp.mouse_events()] == [(650, 360), (740, 360)]
+        assert mouse.position == (740, 360)
+        # The overshoot is the one dispatch that could not be skipped, not ten.
+        assert clock.now - start == pytest.approx(0.081)
+
+    async def test_a_still_waypoint_waits_out_its_slot_under_latency(
+        self, clock: VirtualClock
+    ) -> None:
+        # The model's pre-click dwell: three repeats of the target. They send
+        # nothing, so they cost no latency and keep their time exactly.
+        path = [*self._path(3), *([TrajectoryPoint(670, 360, 20.0)] * 3)]
+        cdp = RecordCDP(clock, cost_ms=8.0)
+        mouse = self._mouse(cdp, path)
+        start = clock.now
+        await mouse.move_to(670, 360)
+
+        assert len(cdp.mouse_events()) == 3
+        assert clock.sleeps == pytest.approx([0.020] + [0.012] * 3 + [0.020] * 2)
+        # The dwell absorbs the last move's round trip, so the click that
+        # follows lands exactly at the path's own duration.
+        assert clock.now - start == pytest.approx(0.120)
 
 
 @pytest.mark.parametrize("kind", ["v1", "mdn", "gan_ar"])

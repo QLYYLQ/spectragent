@@ -144,12 +144,17 @@ def test_tiny_fixtures_mirror_the_real_export_layout(
 # ── contract ────────────────────────────────────────────────────────────
 
 
-def test_inspect_reports_the_kind_and_that_the_model_stops(
+def test_inspect_reports_the_kind_and_how_the_model_stops(
     mdn_export: Path, gan_ar_export: Path
 ) -> None:
-    assert v2.inspect(mdn_export, _meta(mdn_export)) == ExportInfo(kind="mdn", models_stop=True)
+    # Both kinds decide where a path ends, but only ``mdn`` decides it tick by
+    # tick (a Bernoulli stop head); ``gan_ar`` draws the whole length up front,
+    # so a length at the horizon is a capped draw rather than a runaway.
+    assert v2.inspect(mdn_export, _meta(mdn_export)) == ExportInfo(
+        kind="mdn", models_stop=True, stop_is_per_tick=True
+    )
     assert v2.inspect(gan_ar_export, _meta(gan_ar_export)) == ExportInfo(
-        kind="gan_ar", models_stop=True
+        kind="gan_ar", models_stop=True, stop_is_per_tick=False
     )
 
 

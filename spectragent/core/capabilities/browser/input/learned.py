@@ -31,11 +31,13 @@ Turning that into waypoints:
    length already holds the approach, any corrective submovement and the pause
    inside the target before the click; nothing is added or trimmed. The first
    candidate in batch order whose end lands inside the target wins, else the
-   one ending closest. A candidate that used all ``max_seq_len`` ticks never
-   stopped — for ``mdn`` the stop head never fired, about 0.2 % of the exported
-   model's samples, and those paths wander (around 50 idle ticks, reaching the
-   target at tick 86-99 if at all) — so it is considered only when no
-   candidate stopped.
+   one ending closest. Where the end comes from a per-tick stop head (``mdn``),
+   a candidate that used all ``max_seq_len`` ticks is one whose stop head never
+   fired — about 0.2 % of the exported model's samples, and those paths wander
+   (around 50 idle ticks, reaching the target at tick 86-99 if at all) — so it
+   is considered only when no candidate stopped. ``gan_ar`` draws its length up
+   front from a head capped at the horizon, so there a full-length path is an
+   ordinary draw and competes with the rest.
 
    Arrival truncation is not applied to these exports, not even as a fallback.
    Its sampled dwell would count the pre-click pause twice and replace the
@@ -70,17 +72,27 @@ Turning that into waypoints:
    dead-centre path. Without an element box, "inside the target" for choosing
    between ends means inside the button the model was conditioned on.
 2. **Exact endpoint.** The residual ``target - end`` is added along the path
-   with weight ``w(u) = smoothstep(u ** correction_power)``, ``u = k / n``.
+   with weight ``w(u) = smoothstep(u ** correction_power)``, where ``u`` is
+   progress through the ticks **that move** (``k / n`` when they all do).
    ``w(1) == 1`` makes the last point the target exactly; ``w'(0) == w'(1) == 0``
    leaves the model's launch and final deceleration untouched, and
    ``correction_power > 1`` pushes the correction into the late, corrective
-   part of the movement. The endpoint is never clamped (``HumanMouse`` clamps
-   only intermediate points), so off-viewport targets stay exact.
+   part of the movement. ``u`` holding still while the model does is what keeps
+   a still tick still: it takes the same shift as the tick before it, so the
+   settle inside the target before the click — and any mid-path pause — stays
+   exactly as sampled instead of being smeared into 1 px micro-moves. The
+   endpoint is never clamped (``HumanMouse`` clamps only intermediate points),
+   so off-viewport targets stay exact.
 3. **Timing.** One waypoint per tick, ``dt_ms = 1000 / hz`` (optionally
-   jittered). A tick that rounds to the previous pixel stays in the list as a
-   repeated waypoint: ``HumanMouse`` sleeps through it without dispatching an
+   jittered), replayed against absolute deadlines so the path takes the time
+   the model asked for. A tick that holds the previous pixel stays in the list
+   as a repeated waypoint: ``HumanMouse`` waits it out without dispatching an
    event, so still ticks — including the pause resting on the target — keep
-   their time.
+   their time. ``hz`` and the training window are the export's, not the
+   config's: both come from ``meta.json`` when it declares them, and a
+   ``mouse_trajectory`` block that names a different value is rejected at
+   construction rather than silently replaying the model at the wrong rate or
+   scale.
 
 **Dwell vs. HumanMouse.** ``HumanMouse`` has a ``dwell_ms`` pre-click pause,
 but it defaults to 0 and nothing in the package sets it, so the pause inside
@@ -139,7 +151,7 @@ from spectragent.core.capabilities.browser.input.trajectory import (
 if TYPE_CHECKING:
     import numpy as np
 
-    from spectragent.core.capabilities.browser.input._learned_export import Sampler
+    from spectragent.core.capabilities.browser.input._learned_export import Export, Sampler
 
 MISSING_NUMPY_MESSAGE = (
     "The 'learned' mouse trajectory needs numpy, which spectragent does not install "
@@ -151,6 +163,8 @@ MISSING_NUMPY_MESSAGE = (
 TRAINING_BUTTON_PX: tuple[float, float] = (109.0, 34.0)
 #: Tick rate of the recorder that produced the training data.
 DEFAULT_HZ = 50.0
+#: Training window the released data was normalised by (px).
+DEFAULT_PX_PER_UNIT = 800.0
 #: Defaults of the knobs that only apply to exports without a stop signal.
 DEFAULT_TRUNCATE_AT_ARRIVAL = True
 DEFAULT_ARRIVAL_RADIUS_PX = 12.0
@@ -162,6 +176,57 @@ DEFAULT_STOP_PX = 0.5
 DWELL_GAMMA_SHAPE = 10.53369
 DWELL_GAMMA_SCALE = 0.80039
 DWELL_GAMMA_LOC = -0.93502
+
+
+def _declared_px_per_unit(export: Export) -> float | None:
+    """The training window ``meta.json`` records, or None if it records none."""
+    window = export.meta.get("norm_reference_window")
+    if window is None:
+        return None
+    try:
+        width, height = (float(side) for side in window)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{export.meta_path} declares norm_reference_window {window!r}; the learned "
+            "trajectory reads a [width, height] pair of pixel sizes"
+        ) from exc
+    if width != height:
+        raise ValueError(
+            f"{export.meta_path} declares a {width}x{height} training window; the learned "
+            "trajectory scales both axes by one px_per_unit and cannot replay a model "
+            "normalised per axis"
+        )
+    return width
+
+
+def _from_meta(
+    export: Export,
+    name: str,
+    configured: float | None,
+    declared: float | None,
+    default: float,
+    *,
+    meta_key: str | None = None,
+) -> float:
+    """The export's value for ``name``, with a config that names another rejected.
+
+    ``meta.json`` records what the weights were made with, so it decides: a
+    configured value that agrees is redundant, and one that disagrees is the
+    error it looks like rather than a silent reinterpretation of the model —
+    replaying a 50 Hz model at 60 Hz, or unnormalising it by the wrong window,
+    changes exactly the speed the model was chosen for. Config only decides
+    when the meta is silent.
+    """
+    if declared is None:
+        return default if configured is None else configured
+    if configured is not None and configured != declared:
+        raise ValueError(
+            f"{name}={configured} contradicts {export.meta_path}, which records "
+            f"{meta_key or name} {declared} for {export.label}; remove it from the "
+            "mouse_trajectory block, or correct the export's meta if the value it "
+            "declares is wrong"
+        )
+    return declared
 
 
 def _require_numpy() -> None:
@@ -238,24 +303,30 @@ class LearnedTrajectory(MouseTrajectoryBase):
         hz: Annotated[
             float | None,
             PydanticField(
+                gt=0,
                 description=(
                     "Tick rate the model's per-tick deltas are replayed at. "
-                    "None takes `hz` from meta.json, else 50 (the rate the "
-                    "released training data was recorded at)."
+                    "The export fixes it: None takes `hz` from meta.json, and a "
+                    "value that contradicts the meta is rejected (only an "
+                    "export whose meta declares no rate takes this one, else "
+                    "50 — the rate the released training data was recorded at)."
                 ),
             ),
         ] = None,
         px_per_unit: Annotated[
-            float,
+            float | None,
             PydanticField(
                 gt=0,
                 description=(
-                    "Pixels per model unit — the training window size. Kept in "
-                    "CSS pixels, never normalised by the viewport, so speeds "
-                    "stay human."
+                    "Pixels per model unit — the training window size, kept in "
+                    "CSS pixels and never normalised by the viewport so speeds "
+                    "stay human. The export fixes it too: None takes "
+                    "`norm_reference_window` from meta.json, a contradicting "
+                    "value is rejected, and an export that declares no window "
+                    "takes this one, else 800."
                 ),
             ),
-        ] = 800.0,
+        ] = None,
         button_size: Annotated[
             Literal["training", "target"],
             PydanticField(
@@ -392,14 +463,28 @@ class LearnedTrajectory(MouseTrajectoryBase):
                     f"remove {'it' if one else 'them'} from the mouse_trajectory block"
                 )
 
-        resolved_hz = hz if hz is not None else float(self._export.meta.get("hz", DEFAULT_HZ))
+        declared_hz = self._export.meta.get("hz")
+        resolved_hz = _from_meta(
+            self._export,
+            "hz",
+            hz,
+            None if declared_hz is None else float(declared_hz),
+            DEFAULT_HZ,
+        )
         if resolved_hz <= 0:
             raise ValueError(f"hz must be > 0, got {resolved_hz}")
         if num_candidates < 1:
             raise ValueError(f"num_candidates must be >= 1, got {num_candidates}")
 
         self._hz = resolved_hz
-        self._px_per_unit = px_per_unit
+        self._px_per_unit = _from_meta(
+            self._export,
+            "px_per_unit",
+            px_per_unit,
+            _declared_px_per_unit(self._export),
+            DEFAULT_PX_PER_UNIT,
+            meta_key="norm_reference_window",
+        )
         self._button_size = button_size
         self._num_candidates = num_candidates
         self._max_offset = max_offset
@@ -507,9 +592,36 @@ class LearnedTrajectory(MouseTrajectoryBase):
                 chosen = self._trimmed_cut(moves, cumulative, target, end_half, finite)
             best, n = chosen
 
-        path = cumulative[best, :n]
-        u = np.arange(1, n + 1, dtype=np.float64) / n
-        weight = _smoothstep(u**self._correction_power)
+        return self._corrected(cumulative[best, :n], moves[best, :n], target)
+
+    def _corrected(self, path: np.ndarray, moves: np.ndarray, target: np.ndarray) -> np.ndarray:
+        """``path`` shifted onto the target along its moving ticks.
+
+        The residual ``target - end`` is spread with
+        ``w(u) = smoothstep(u ** correction_power)``, where ``u`` is progress
+        through the ticks **that move**: it stands still while the model does,
+        so a still tick takes exactly the same shift as the tick before it and
+        therefore stays exactly as still. Spreading over every sampled tick
+        instead (``u = k / n``) gave consecutive still ticks different weights
+        and smeared 1 px of correction onto each — turning the model's settle
+        inside the target, which the /2 training paths record right up to the
+        click, into micro-moves, and a mid-path pause into a drift.
+
+        Over a path whose every tick moves — every format /1 path, and any /2
+        path without a pause — ``u`` is ``k / n`` again, so this is the same
+        correction that was tuned there: ``w(1) == 1`` puts the end exactly on
+        the target, ``w'(0) == w'(1) == 0`` leaves launch and final
+        deceleration alone. A path that never moves at all has no stillness to
+        protect and falls back to ``k / n``.
+        """
+        import numpy as np
+
+        n = len(path)
+        moved = np.cumsum(np.any(moves != 0.0, axis=1))  # moving ticks so far
+        total = int(moved[-1])
+        # No moving tick at all: nothing to protect, progress is k / n.
+        progress = moved.astype(np.float64) if total else np.arange(1, n + 1, dtype=np.float64)
+        weight = _smoothstep((progress / (total or n)) ** self._correction_power)
         path = path + weight[:, None] * (target - path[-1])
         path[-1] = target
         return path
@@ -528,11 +640,16 @@ class LearnedTrajectory(MouseTrajectoryBase):
         k, steps = cumulative.shape[0], cumulative.shape[1]
         lengths = np.clip(np.asarray(lengths, dtype=np.int64), 1, steps)
         ends = cumulative[np.arange(k), lengths - 1]  # (k, 2)
-        # A path that used the whole horizon never stopped; only fall back to
-        # those when no candidate did.
-        eligible = finite & (lengths < steps)
-        if not eligible.any():
-            eligible = finite
+        eligible = finite
+        if self._export.stop_is_per_tick:
+            # This model ends a path by firing a stop head at some tick, so one
+            # that used the whole horizon never stopped (and those wander);
+            # only fall back to them when no candidate stopped. A model that
+            # draws its length up front has no such failure — a draw equal to
+            # the horizon is the length head's capped draw, not a runaway.
+            stopped = finite & (lengths < steps)
+            if stopped.any():
+                eligible = stopped
         inside = eligible & np.all(np.abs(ends - target) <= end_half, axis=1)
         if inside.any():
             best = int(np.argmax(inside))

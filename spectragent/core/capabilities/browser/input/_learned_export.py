@@ -69,6 +69,11 @@ class ExportInfo:
     kind: str | None
     #: Whether the model decides where each path ends (``Draw.lengths`` set).
     models_stop: bool
+    #: Whether that decision is taken tick by tick, so a path that used the
+    #: whole horizon is one that never ended — ``mdn``'s Bernoulli stop head.
+    #: ``gan_ar`` instead draws the length up front from a head capped at
+    #: ``max_seq_len``, where the full horizon is an ordinary draw.
+    stop_is_per_tick: bool = False
 
 
 class _Backend(Protocol):
@@ -97,11 +102,17 @@ class Export:
     format: str
     kind: str | None
     models_stop: bool
+    stop_is_per_tick: bool
 
     @property
     def label(self) -> str:
         """How messages name the model: ``mouse-gan-generator/2 kind 'mdn'``."""
         return self.format if self.kind is None else f"{self.format} kind {self.kind!r}"
+
+    @property
+    def meta_path(self) -> Path:
+        """The ``meta.json`` :attr:`meta` was read from (messages point at it)."""
+        return self.directory / META_FILE
 
     def load(self) -> Sampler:
         return _backends()[self.format].load(self.directory, self.meta)
@@ -140,7 +151,7 @@ def open_export(weights_dir: str) -> Export:
             f"{meta_path} {declared}; the learned trajectory reads {', '.join(sorted(backends))}"
         )
     info = backends[fmt].inspect(directory, meta)
-    return Export(directory, meta, fmt, info.kind, info.models_stop)
+    return Export(directory, meta, fmt, info.kind, info.models_stop, info.stop_is_per_tick)
 
 
 def require_arrays(directory: Path, required: Iterable[str], label: str) -> None:

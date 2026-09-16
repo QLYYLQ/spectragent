@@ -29,6 +29,16 @@ package sets it): a strategy that models the hover before a click —
 as repeated waypoints, which ``move_to`` sleeps through without dispatching.
 Setting ``dwell_ms`` adds a fixed pause on top.
 
+Playback is scheduled against **absolute deadlines**, not by sleeping each
+waypoint's ``dt_ms`` in turn — see :meth:`HumanMouse.move_to`. Sleeping the
+interval and *then* awaiting the CDP dispatch adds the round trip to every
+tick; measured against headless Chrome that is ~17 ms per ``mouseMoved``,
+which replayed a 50 Hz learned path at 33 Hz (1.53x its own duration) and a
+windmouse path, whose ease-out tail asks for a waypoint every few ms, at 5.06x.
+A trajectory's timing is the whole point of the layer — the learned models were
+selected for matching human speed at the rate they were recorded — so wall time
+has to follow the path, not the transport.
+
 The strategy arrives here as a ready-made instance, chosen and constructed by
 ``ConfigComposer`` from the capability's ``mouse_trajectory`` config block. It
 used to arrive as a registry key plus an untyped kwargs dict, so a typo or an
@@ -43,6 +53,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Callable
+from time import monotonic
 from typing import Any
 
 from agent_cdp import CDPCommandProtocol
@@ -135,7 +146,27 @@ class HumanMouse:
     async def move_to(
         self, x: float, y: float, *, target_w: float = 0.0, target_h: float = 0.0
     ) -> None:
-        """Move the cursor to (x, y) along the active trajectory strategy."""
+        """Move the cursor to (x, y) along the active trajectory strategy.
+
+        The path is played on a deadline: waypoint ``i`` is due at
+        ``start + sum(dt_ms[:i + 1])`` and each step sleeps until *that*
+        instant, so the CDP round trip is spent inside the tick it belongs to
+        instead of being added to it. Sleeping ``dt_ms`` and then awaiting the
+        dispatch stretched every path by the transport's latency (~17 ms per
+        event against headless Chrome), which is what made a 50 Hz learned
+        model play back at 33 Hz.
+
+        When the transport cannot keep up — a dispatch slower than the tick,
+        which is the normal case for the sub-millisecond waypoints at the end
+        of a Fitts ease-out — an intermediate waypoint whose whole slot has
+        already elapsed is **dropped**: it merges into the next waypoint
+        dispatched, exactly as a display drops a frame. Positions then stay on
+        their own timeline (the total duration and the speed profile stay
+        honest, the path is just sampled more coarsely) rather than the path
+        being replayed in slow motion. The final waypoint is never dropped, so
+        the endpoint stays exact, and a repeated waypoint still waits out its
+        time without dispatching — a strategy's pre-click dwell survives.
+        """
         ex, ey = round(x), round(y)
         path = self._traj.generate(self._x, self._y, ex, ey, target_w=target_w, target_h=target_h)
         if not path:
@@ -145,17 +176,22 @@ class HumanMouse:
         # onto the current position (legacy behaviour).
         jump = len(path) == 1
         last = len(path) - 1
+        # ``monotonic`` is the clock ``asyncio.sleep`` itself schedules against.
+        deadline = monotonic()
         for i, pt in enumerate(path):
+            deadline += pt.dt_ms / 1000.0
             is_last = i == last
             # The endpoint is dispatched raw so the click lands exactly on
             # target (and off-viewport targets stay exact); only intermediate
             # overshoot points are clamped into the viewport.
             px, py = (pt.x, pt.y) if is_last else self._clamp(pt.x, pt.y)
-            # Every waypoint's time is spent — a repeated point is how a
-            # strategy says "hold still" — but a point that does not move the
-            # cursor dispatches nothing.
-            if pt.dt_ms > 0:
-                await asyncio.sleep(pt.dt_ms / 1000.0)
+            now = monotonic()
+            if now < deadline:
+                await asyncio.sleep(deadline - now)
+            elif not is_last and now >= deadline + path[i + 1].dt_ms / 1000.0:
+                continue  # behind schedule, this waypoint's slot is gone: drop it
+            # A repeated point is how a strategy says "hold still": its time is
+            # spent above, but it dispatches nothing.
             if not jump and (px, py) == (self._x, self._y):
                 continue
             await self._dispatch_move(px, py)

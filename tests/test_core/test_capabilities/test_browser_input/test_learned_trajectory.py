@@ -2,11 +2,13 @@
 
 Sampler parity with the trainer's reference code lives in ``test_mouse_gan_v1``
 and ``test_mouse_gan_v2``; these tests pin what the strategy adds: registration
-and config surface, reading the model from ``meta.json`` (and rejecting what it
-cannot sample), the knobs that only fit exports without a stop signal, exact
-endpoints, tick timing, seeding, the long-move, button-size and
-candidate-selection policies, where a path ends — the model's own stop, or
-arrival truncation for a model that never stops — and degenerate input.
+and config surface, reading the model from ``meta.json`` (its tick rate and
+training window included, and rejecting what it cannot sample), the knobs that
+only fit exports without a stop signal, exact endpoints, an endpoint correction
+that leaves the model's still ticks still, tick timing, seeding, the long-move,
+button-size and candidate-selection policies, where a path ends — the model's
+own stop, or arrival truncation for a model that never stops — and degenerate
+input.
 """
 
 from __future__ import annotations
@@ -139,7 +141,8 @@ def test_generated_config_accepts_a_learned_block() -> None:
     assert mt.trajectory_type == "learned"
     assert (mt.weights_dir, mt.seed, mt.num_candidates) == ("/w", 3, 4)
     assert mt.button_size == "training"
-    assert mt.px_per_unit == 800.0
+    # hz and the training window are the export's; unset unless written.
+    assert (mt.hz, mt.px_per_unit) == (None, None)
     # The knobs of exports without a stop signal are unset unless written.
     assert (mt.truncate_at_arrival, mt.arrival_radius_px, mt.stop_px) == (None, None, None)
 
@@ -422,18 +425,89 @@ def test_timestamps_are_ticks(export_of: Callable[[str], Path], kind: str) -> No
         assert 1 <= len(pts) - 1 <= TINY_SEQ_LEN
 
 
-def test_hz_resolution(make_export: Callable[..., Path]) -> None:
-    for kind in ("v1", "mdn"):
-        assert LearnedTrajectory(weights_dir=str(make_export(kind, meta={"hz": 60}))).hz == 60.0
-        tuned = LearnedTrajectory(weights_dir=str(make_export(kind, meta={"hz": 60})), hz=40)
-        assert (tuned.hz, tuned.tick_ms) == (40.0, 25.0)
-        meta_without_hz = make_export(kind)
-        meta = json.loads((meta_without_hz / "meta.json").read_text())
-        del meta["hz"]
-        (meta_without_hz / "meta.json").write_text(json.dumps(meta))
-        assert LearnedTrajectory(weights_dir=str(meta_without_hz)).hz == 50.0
+def _without(export: Path, key: str) -> Path:
+    meta = json.loads((export / "meta.json").read_text())
+    del meta[key]
+    (export / "meta.json").write_text(json.dumps(meta))
+    return export
+
+
+@pytest.mark.parametrize("kind", ["v1", "mdn"])
+def test_the_export_fixes_hz_and_the_training_window(
+    make_export: Callable[..., Path], kind: str
+) -> None:
+    # meta.json records what the weights were made with, so it decides: a
+    # config cannot replay a 60 Hz model at 40 Hz, or unnormalise a model
+    # trained on an 800 px window by 1000 px — both change exactly the speed
+    # the model was selected for, silently.
+    declared = LearnedTrajectory(weights_dir=str(make_export(kind, meta={"hz": 60})))
+    assert (declared.hz, declared.tick_ms) == (60.0, pytest.approx(1000 / 60))
+    assert declared._px_per_unit == 800.0
+
+    agreeing = LearnedTrajectory(
+        weights_dir=str(make_export(kind, meta={"hz": 60})), hz=60, px_per_unit=800
+    )
+    assert (agreeing.hz, agreeing._px_per_unit) == (60.0, 800.0)
+
+
+@pytest.mark.parametrize("kind", ["v1", "mdn"])
+@pytest.mark.parametrize(
+    "knobs,match",
+    [
+        ({"hz": 40}, r"^hz=40 contradicts .*meta\.json, which records hz 60\.0 for "),
+        (
+            {"px_per_unit": 1000},
+            r"^px_per_unit=1000 contradicts .*records norm_reference_window 800\.0 for ",
+        ),
+    ],
+    ids=["hz", "px_per_unit"],
+)
+def test_a_knob_contradicting_the_export_is_rejected_naming_both(
+    make_export: Callable[..., Path], kind: str, knobs: dict[str, Any], match: str
+) -> None:
+    export = make_export(kind, meta={"hz": 60})
+    with pytest.raises(ValueError, match=match):
+        LearnedTrajectory(weights_dir=str(export), **knobs)
+
+
+@pytest.mark.parametrize("kind", ["v1", "mdn"])
+def test_a_silent_meta_falls_back_to_the_released_recorder(
+    make_export: Callable[..., Path], kind: str
+) -> None:
+    # No claim to contradict: the config decides, else the released data's
+    # 50 Hz recorder and 800 px window.
+    bare = _without(_without(make_export(kind), "hz"), "norm_reference_window")
+    assert LearnedTrajectory(weights_dir=str(bare)).hz == 50.0
+    assert LearnedTrajectory(weights_dir=str(bare))._px_per_unit == 800.0
+    tuned = LearnedTrajectory(weights_dir=str(bare), hz=40, px_per_unit=1000)
+    assert (tuned.hz, tuned.tick_ms, tuned._px_per_unit) == (40.0, 25.0, 1000.0)
     with pytest.raises(ValueError, match="hz must be > 0"):
-        LearnedTrajectory(weights_dir=str(make_export("v1", meta={"hz": 0})))
+        LearnedTrajectory(weights_dir=str(_without(make_export("v1"), "hz")), hz=0)
+
+
+def test_a_meta_window_that_is_not_one_square_size_is_rejected(
+    make_export: Callable[..., Path],
+) -> None:
+    with pytest.raises(ValueError, match="800.0x600.0 training window"):
+        LearnedTrajectory(
+            weights_dir=str(make_export("mdn", meta={"norm_reference_window": [800, 600]}))
+        )
+    with pytest.raises(ValueError, match=r"norm_reference_window 800"):
+        LearnedTrajectory(weights_dir=str(make_export("mdn", meta={"norm_reference_window": 800})))
+
+
+def test_the_declared_window_is_what_the_path_is_scaled_by(
+    make_export: Callable[..., Path],
+) -> None:
+    # A model normalised by a 400 px window covers half the pixels per unit.
+    # Taking the default 800 instead would have doubled every step, silently.
+    export = make_export("v1", meta={"norm_reference_window": [400, 400]})
+    sampler = ScriptedSampler([_straight(300, 0, 10)], unit=400.0)
+    traj = _scripted(_no_truncation(export), sampler)
+    assert traj._px_per_unit == 400.0
+    pts = traj.generate(0, 0, 300, 0)
+    assert sampler.conds[-1][0, 0] == pytest.approx(0.75)  # 300 px of a 400 px window
+    assert (pts[1].x, pts[-1].x) == (30, 300)
 
 
 def test_jitter_perturbs_ticks_within_bounds(v1_export: Path) -> None:
@@ -739,6 +813,54 @@ def test_the_model_length_is_the_path_including_its_pause(
     assert [p.dt_ms for p in pts] == [0.0] + [20.0] * 15
 
 
+def test_trailing_still_ticks_survive_the_correction(mdn_export: Path, no_dwell: None) -> None:
+    # The model walks to 40 px short of the target and then holds still for 5
+    # ticks — its settle before the click, which the /2 training paths run up
+    # to and including. Correcting over the whole sampled length turned that
+    # settle into 1 px micro-moves; it must stay exactly still, on the target.
+    path = _straight(360, 30, 10) + [(0.0, 0.0)] * 5
+    traj = _stopping(mdn_export, ScriptedSampler([path], lengths=[15]))
+    pts = traj.generate(100, 100, 500, 100)
+
+    assert len(pts) == 1 + 15
+    assert [(p.x, p.y) for p in pts[-6:]] == [(500, 100)] * 6  # last moving tick + the settle
+    assert all(p.dt_ms == 20.0 for p in pts[1:])  # every still tick keeps its time
+    # The moving part still eases onto the target rather than jumping.
+    steps = [math.hypot(b.x - a.x, b.y - a.y) for a, b in zip(pts[:10], pts[1:11], strict=True)]
+    assert max(steps) <= 50
+
+
+def test_leading_still_ticks_stay_at_the_start(mdn_export: Path, no_dwell: None) -> None:
+    path = [(0.0, 0.0)] * 4 + _straight(360, 0, 8)
+    traj = _stopping(mdn_export, ScriptedSampler([path], lengths=[12]))
+    pts = traj.generate(100, 100, 500, 100)
+    assert [(p.x, p.y) for p in pts[:5]] == [(100, 100)] * 5  # the path's own start, untouched
+    assert (pts[-1].x, pts[-1].y) == (500, 100)
+
+
+def test_a_mid_path_pause_stays_a_pause(mdn_export: Path, no_dwell: None) -> None:
+    # The correction's progress stands still while the model does, so a pause
+    # in the middle of a move does not drift either.
+    path = _straight(180, 0, 6) + [(0.0, 0.0)] * 4 + _straight(180, 0, 6)
+    traj = _stopping(mdn_export, ScriptedSampler([path], lengths=[16]))
+    pts = traj.generate(100, 100, 500, 100)
+    assert len({(p.x, p.y) for p in pts[7:11]}) == 1  # the four paused ticks, one position
+    assert (pts[-1].x, pts[-1].y) == (500, 100)
+
+
+def test_a_still_path_is_corrected_across_its_whole_length(
+    mdn_export: Path, no_dwell: None
+) -> None:
+    # Nothing to protect: a model that never moves has no moving span, so the
+    # correction keeps its smooth ease onto the target.
+    traj = _stopping(mdn_export, ScriptedSampler([[]], lengths=[6]))
+    pts = traj.generate(100, 100, 400, 100)
+    xs = [p.x for p in pts]
+    assert xs == sorted(xs)
+    assert len(set(xs)) > 2
+    assert (pts[-1].x, pts[-1].y) == (400, 100)
+
+
 def test_a_path_through_the_target_is_not_cut_at_arrival(mdn_export: Path, no_dwell: None) -> None:
     # Overshoots by 80 px (tick index 11) and comes back: the whole correction
     # is the model's, so nothing is truncated where it first crossed the target.
@@ -780,19 +902,39 @@ def test_a_candidate_that_never_stopped_is_passed_over(mdn_export: Path) -> None
     assert (pts[1].x, pts[1].y) == (40, 0)
 
 
-def test_without_a_stopped_candidate_inside_the_closest_stopped_end_wins(
-    gan_ar_export: Path,
-) -> None:
+def test_without_a_candidate_inside_the_closest_end_wins(gan_ar_export: Path) -> None:
     far = _straight(100, 200, 10)
     near_miss = _straight(380, 40, 10)
-    never_stopped_inside = _straight(400, 0, 10)
-    sampler = ScriptedSampler(
-        [far, near_miss, never_stopped_inside], lengths=[10, 10, TINY_SEQ_LEN]
-    )
-    traj = _stopping(gan_ar_export, sampler, num_candidates=3)
+    sampler = ScriptedSampler([far, near_miss], lengths=[10, 10])
+    traj = _stopping(gan_ar_export, sampler, num_candidates=2)
     pts = traj.generate(0, 0, 400, 0, target_w=60, target_h=24)
     assert len(pts) == 11
     assert pts[1].y == pytest.approx(4, abs=1)
+
+
+def test_a_gan_ar_length_at_the_horizon_is_an_ordinary_draw(
+    gan_ar_export: Path, mdn_export: Path
+) -> None:
+    # ``gan_ar`` draws L up front from a length head capped at max_seq_len, so
+    # L == max_seq_len is a legitimate long path, not a model that never
+    # stopped: it competes with the rest instead of being passed over. Only a
+    # per-tick stop head (``mdn``) can fail to fire — see
+    # ``test_a_candidate_that_never_stopped_is_passed_over``.
+    stopped_near_miss = _straight(380, 40, 10)
+    full_horizon_inside = _straight(400, 0, TINY_SEQ_LEN)
+    sampler = ScriptedSampler([stopped_near_miss, full_horizon_inside], lengths=[10, TINY_SEQ_LEN])
+    pts = _stopping(gan_ar_export, sampler, num_candidates=2).generate(
+        0, 0, 400, 0, target_w=60, target_h=24
+    )
+    assert len(pts) == 1 + TINY_SEQ_LEN
+    assert (pts[1].x, pts[1].y) == (13, 0)  # the full-horizon candidate, 400/30 px a tick
+
+    # An mdn export sampling exactly the same batch passes it over.
+    sampler = ScriptedSampler([stopped_near_miss, full_horizon_inside], lengths=[10, TINY_SEQ_LEN])
+    pts = _stopping(mdn_export, sampler, num_candidates=2).generate(
+        0, 0, 400, 0, target_w=60, target_h=24
+    )
+    assert len(pts) == 11
 
 
 def test_when_no_candidate_stopped_the_closest_full_horizon_path_is_used(
@@ -882,21 +1024,26 @@ def test_non_finite_output_is_an_error(
 
 
 @pytest.mark.parametrize(
-    "export,knobs",
+    "export,hz",
     [
-        (V1_SMOKE_EXPORT, {"hz": 50}),  # its meta says 60; the data was 50 Hz
-        (V2_MDN_EXPORT, {}),
-        (V2_GAN_AR_EXPORT, {}),
+        # The smoke export's meta declares 60 Hz although the released data was
+        # recorded at 50; the current exporter writes 50. Its meta is the only
+        # thing that can say so — a config that named 50 here would be a config
+        # disagreeing with the weights it loads.
+        (V1_SMOKE_EXPORT, 60.0),
+        (V2_MDN_EXPORT, 50.0),
+        (V2_GAN_AR_EXPORT, 50.0),
     ],
     ids=["v1-smoke", "v2-mdn", "v2-gan_ar"],
 )
-def test_real_exports_generate_exact_viewport_paths(export: Path, knobs: dict[str, Any]) -> None:
+def test_real_exports_generate_exact_viewport_paths(export: Path, hz: float) -> None:
     if not (export / "generator.npz").is_file():
         pytest.skip(f"trainer export absent: {export}")
-    traj = LearnedTrajectory(weights_dir=str(export), seed=0, **knobs)
+    traj = LearnedTrajectory(weights_dir=str(export), seed=0)
+    assert (traj.hz, traj._px_per_unit) == (hz, 800.0)
     for (sx, sy), (ex, ey) in (((640, 360), (1200, 90)), ((20, 20), (1260, 700))):
         for box in ((80, 30), (0, 0)):
             pts = traj.generate(sx, sy, ex, ey, target_w=box[0], target_h=box[1])
             assert (pts[-1].x, pts[-1].y) == (ex, ey)
             assert 1 < len(pts) <= 101
-            assert all(p.dt_ms == 20.0 for p in pts[1:])
+            assert all(p.dt_ms == traj.tick_ms for p in pts[1:])

@@ -2,9 +2,10 @@
 
 A trajectory strategy turns a straight ``start → end`` cursor jump into a
 sequence of :class:`TrajectoryPoint` waypoints carrying per-point timing.
-``HumanMouse`` (``input/mouse.py``) sleeps ``dt_ms`` before each waypoint and
-dispatches a CDP ``mouseMoved`` for every waypoint that moves the cursor, which
-is what produces a curved path with realistic acceleration / deceleration.
+``HumanMouse`` (``input/mouse.py``) plays them on an absolute schedule, waiting
+until each waypoint's deadline and dispatching a CDP ``mouseMoved`` for every
+waypoint that moves the cursor, which is what produces a curved path with
+realistic acceleration / deceleration.
 
 The strategy is also the one humanization switch: ``instant`` reports
 ``humanized == False`` and the controller then keeps every legacy behaviour
@@ -39,10 +40,17 @@ class TrajectoryPoint:
     """One waypoint along a mouse path.
 
     ``x`` / ``y`` are integer viewport-CSS pixels — exactly what
-    ``Input.dispatchMouseEvent`` expects. ``dt_ms`` is the delay to sleep
+    ``Input.dispatchMouseEvent`` expects. ``dt_ms`` is the interval
     **before** this waypoint (the inter-sample interval that encodes
     velocity / acceleration). The first point of a path carries
-    ``dt_ms == 0.0`` (no pre-move sleep).
+    ``dt_ms == 0.0`` (it is due immediately).
+
+    The intervals are a schedule, not a list of sleeps: ``HumanMouse`` gives
+    waypoint ``i`` the absolute deadline ``start + sum(dt_ms[:i + 1])`` and
+    waits until it, so the dispatch latency is spent inside the tick rather
+    than added to it, and ``sum(dt_ms)`` is the path's wall-clock duration.
+    A strategy that cannot be dispatched that fast is thinned, not slowed:
+    an intermediate waypoint whose slot has already passed is dropped.
 
     A waypoint that repeats the cursor position still takes its time but
     dispatches no event, so a strategy can express stillness — a pause

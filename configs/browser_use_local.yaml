@@ -76,10 +76,11 @@ environment:
         # human movements. ``weights_dir`` is a mouse-gan-torch export dir
         # (generator.npz + meta.json); which model it holds — the v1 GAN, the
         # v2 ``mdn`` or ``gan_ar`` — is read from its meta.json, never set
-        # here. Needs the optional numpy extra: ``uv sync --extra
-        # learned-mouse``. Every other knob has a default (seed, hz,
-        # num_candidates, max_offset, button_size, jitter, ...); see
-        # LearnedTrajectory.
+        # here, and so are its tick rate and training window (writing an ``hz``
+        # or ``px_per_unit`` that disagrees is an error, not an override).
+        # Needs the optional numpy extra: ``uv sync --extra learned-mouse``.
+        # Every other knob has a default (seed, num_candidates, max_offset,
+        # button_size, jitter, ...); see LearnedTrajectory.
         #
         # mouse_trajectory:
         #   trajectory_type: learned

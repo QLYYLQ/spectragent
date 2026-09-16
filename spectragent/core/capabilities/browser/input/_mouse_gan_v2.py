@@ -25,8 +25,9 @@ Contract of both kinds (the same condition as format /1):
 * output: ``moves`` ``(B, max_seq_len, 2)`` float32 deltas ``/ 800``, exactly 0
   from tick ``lengths[i]`` on, and ``lengths`` ``(B,)`` int64 in
   ``1..max_seq_len``; the click follows tick ``lengths[i] - 1``. A length of
-  ``max_seq_len`` means the path used the whole horizon — for ``mdn``, that the
-  stop head never fired.
+  ``max_seq_len`` means the path used the whole horizon — for ``mdn`` that the
+  stop head never fired, which is a failure; for ``gan_ar`` only that the
+  length head's draw hit its cap, which is an ordinary path (``PER_TICK_STOP``).
 * noise is drawn from the caller's Generator in the trainer's order and way
   (``noise``), so a seed reproduces the trainer's ``GeneratorV2.sample``.
 """
@@ -51,6 +52,10 @@ from spectragent.core.capabilities.browser.input._learned_export import (
 FORMAT: str = "mouse-gan-generator/2"
 #: Kinds this module samples.
 KINDS: tuple[str, ...] = ("gan_ar", "mdn")
+#: Kinds whose path ends at a per-tick stop decision, so a path that used the
+#: whole horizon is one that never stopped. ``gan_ar``'s length is drawn up
+#: front from a head capped at ``max_seq_len``: there the horizon is a draw.
+PER_TICK_STOP: tuple[str, ...] = ("mdn",)
 #: Kinds the trainer's sampler knows and this copy deliberately leaves out.
 NOT_VENDORED: tuple[str, ...] = ("gan_conv", "gan_nar")
 
@@ -144,7 +149,7 @@ def inspect(directory: Path, meta: Mapping[str, Any]) -> ExportInfo:
     if missing:
         raise ValueError(f"{where} model_args lacks {missing}, which kind {kind!r} needs")
     require_arrays(directory, required_arrays(kind, model_args), f"{FORMAT} kind {kind!r}")
-    return ExportInfo(kind=kind, models_stop=True)
+    return ExportInfo(kind=kind, models_stop=True, stop_is_per_tick=kind in PER_TICK_STOP)
 
 
 def load(directory: Path, meta: Mapping[str, Any]) -> MdnSampler | GanArSampler:
