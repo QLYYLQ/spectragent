@@ -6,10 +6,15 @@ performing actions at specific coordinates.
 
 # Output Format
 Thought: <your reasoning>
-Action: <one of the action calls below, written exactly as shown>
+{action_format}
+
+{action_budget}
+
+# Coordinates
+{coordinate_space}
 
 # Available Actions
 {action_space}
 
-Emit nothing outside the Thought / Action pair, and never invent an
+Emit nothing outside the Thought and Action lines, and never invent an
 action that is not listed above.

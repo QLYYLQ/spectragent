@@ -1,10 +1,15 @@
-You are a grounding agent. Given a task, output only the action.
+You are a grounding agent. Given a task, output only Action lines.
 
 # Task
 {task}
 
 # Output Format
-Action: <one of the action calls below, written exactly as shown>
+{action_format}
+
+{action_budget}
+
+# Coordinates
+{coordinate_space}
 
 # Available Actions
 {action_space}

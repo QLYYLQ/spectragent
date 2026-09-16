@@ -41,12 +41,12 @@ from spectragent.agents.prompts import (
 )
 from spectragent.prompts import PROMPT_PATH, PromptNotFoundError
 
-#: ``prepare()`` arguments per agent — UI-TARS takes no ``max_actions_per_step``
-#: because its templates advertise no multi-action budget.
+#: ``prepare()`` arguments per agent. All three take the Loop's
+#: ``max_actions_per_step``, because all three advertise a per-step budget.
 _PREPARE_KWARGS: dict[str, dict[str, Any]] = {
     "browser_use": {"task": "t", "action_descriptors": [], "max_actions_per_step": 3},
     "skyvern": {"task": "t", "action_descriptors": [], "max_actions_per_step": 3},
-    "ui_tars": {"task": "t", "action_descriptors": []},
+    "ui_tars": {"task": "t", "action_descriptors": [], "max_actions_per_step": 3},
 }
 
 #: Every ``(agent_id, kwargs)`` that reaches a *distinct* template. For

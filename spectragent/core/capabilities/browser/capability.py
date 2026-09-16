@@ -20,8 +20,10 @@ Key design points:
 - **Lazy-batch resolution**: ``resolve_fragment()`` consults a per-tab
   per-cycle cache. The first call within a cycle fires *one*
   ``BrowserStateRequestEvent``; later calls in the same cycle hit the
-  cache. The cache is invalidated by ``execute_action()`` so action
-  effects are never observed via stale data.
+  cache. A cycle is one *observation*: a fragment asked for a second time
+  opens the next one, and ``execute_action()`` drops the cycle — so
+  neither an action's effects nor the page moving on by itself is ever
+  observed via stale data.
 - **Multi-tab focus is capability state**: the CDP session id of the
   focused tab lives in ``_default_session_id`` and is changed through
   :meth:`BrowserCapability.switch_tab`. It is *not* a parameter of
@@ -117,22 +119,32 @@ _OBSERVE_MAX_ATTEMPTS = 2
 
 @dataclass
 class _ObserveCycleCache:
-    """Per-tab cache of resolved fragments within a single observe cycle.
+    """Per-tab cache of the fragments one observation resolves.
 
     ``fragments`` is keyed by fully-qualified fragment key. It used to be
     one hard-coded attribute per fragment, which forced both a schema
     edit and an ``if/elif`` branch in ``resolve_fragment`` for every new
     fragment; a dict needs neither.
 
-    The cache is created on the first ``resolve_fragment`` call after an
-    ``execute_action`` and invalidated on the next ``execute_action``.
-    Multiple resolve calls within the same cycle reuse the same
-    ``BrowserStateRequestEvent`` results so the CDP cost stays constant
-    regardless of how many fragments the agent requests per step.
+    ``Environment.observe`` asks for every negotiated fragment exactly
+    once, so the fragments of one observation share one
+    ``BrowserStateRequestEvent`` and the CDP cost stays constant however
+    many the agent requests. A fragment asked for *again* is therefore
+    the next observation, and ``resolve_fragment`` opens a new cycle for
+    it; ``execute_action`` drops the cycle as well.
+
+    The cycle used to live until the next ``execute_action``. The page
+    does not wait for one — a spinner resolves into a challenge, a modal
+    fades in — so a Loop step that ran no action (a reply that failed to
+    parse) was handed the previous step's screenshot byte for byte, 5.5
+    seconds after the page had changed, and the agent clicked on what was
+    no longer there.
     """
 
     fragments: dict[str, Any] = field(default_factory=dict)
     fired: bool = False  # whether the batched event has run for this cycle
+    #: Fragment keys already handed out by this cycle.
+    served: set[str] = field(default_factory=set)
 
 
 def _build_wired_action(name: str) -> ActionBase:
@@ -869,9 +881,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     async def resolve_fragment(self, fragment_key: str) -> Any:
         """Resolve one observation fragment via the lazy-batch cache.
 
-        First call after an ``execute_action`` fires a single
-        ``BrowserStateRequestEvent`` carrying the negotiated fragment
-        set; subsequent calls within the same cycle hit the cache.
+        The first call of a cycle fires a single
+        ``BrowserStateRequestEvent`` carrying the negotiated fragment set;
+        the other fragments of the same observation hit the cache. Asking
+        for a fragment this cycle already handed out starts the next
+        observation with a fresh capture — see :class:`_ObserveCycleCache`.
 
         Which keys are supported is decided by the installed watchdogs'
         ``provides`` — there is no branch per fragment here. The tab
@@ -889,10 +903,18 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 f"{sorted(provided)}."
             )
 
+        cache = self._cycle_cache.get(sid)
+        if cache is not None and fragment_key in cache.served:
+            # Already handed out by this cycle: this read is the next
+            # observation, and must see the page as it is now.
+            del self._cycle_cache[sid]
+
         # Ensure cache is populated for this cycle.
         await self._populate_cycle(sid)
 
-        return self._cycle_cache[sid].fragments.get(fragment_key)
+        cache = self._cycle_cache[sid]
+        cache.served.add(fragment_key)
+        return cache.fragments.get(fragment_key)
 
     def _action_watchdog_for(self, sid: str) -> Any | None:
         """Return the ActionWatchdog instance attached to ``sid``, or ``None``.

@@ -7,13 +7,14 @@ that uses ``click_coordinate`` rather than DOM-index ``click``.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
 from spectragent.agents.memory.simple import SimpleMemory
-from spectragent.agents.ui_tars import _VERB_TABLE, UITarsAgent
+from spectragent.agents.ui_tars import _POINT_ARGUMENTS, _VERB_TABLE, UITarsAgent
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartTextParam,
@@ -30,6 +31,8 @@ class _FakeScreenshot:
     image_path: str | None = None
     viewport_width: int = 0
     viewport_height: int = 0
+    image_width: int = 0
+    image_height: int = 0
 
 
 @dataclass
@@ -60,6 +63,28 @@ def _make_agent(**overrides: Any) -> UITarsAgent:
     return make_agent(
         UITarsAgent, memory=SimpleMemory(max_messages=100), **overrides,
     )
+
+
+def _looking_at_screen(**overrides: Any) -> UITarsAgent:
+    """An agent that has been shown a 1280x720 screenshot of a 1280x720 viewport.
+
+    A point in a reply is placed with the screenshot the same step showed,
+    so every verb test that emits a point starts here. DPR 1, so the
+    numbers a test writes are the numbers the action receives.
+    """
+    agent = _make_agent(**overrides)
+    agent.build_react_prompt(
+        _FakeObservation(
+            screenshot=_FakeScreenshot(
+                image_bytes=b"\x89PNG",
+                viewport_width=1280,
+                viewport_height=720,
+                image_width=1280,
+                image_height=720,
+            )
+        )
+    )
+    return agent
 
 
 class TestSlotConformance:
@@ -130,6 +155,19 @@ class TestVerbTableAndWiringAgree:
     def test_every_verb_names_no_capability(self) -> None:
         assert all("." not in v.action for v in _VERB_TABLE.values())
 
+    def test_every_argument_a_signature_teaches_is_one_the_verb_accepts(self) -> None:
+        """A taught argument the verb refused would make its own prompt unparseable."""
+        for name, verb in _VERB_TABLE.items():
+            taught = set(re.findall(r"(\w+)=", verb.signature))
+            assert taught <= set(verb.accepts), (name, taught - set(verb.accepts))
+
+    def test_every_ui_tars_spelling_of_a_taught_point_is_accepted(self) -> None:
+        """``start_box`` / ``end_box`` are what fine-tuned UI-TARS weights write."""
+        for name, verb in _VERB_TABLE.items():
+            taught = set(re.findall(r"(\w+)=", verb.signature))
+            for point in taught & set(_POINT_ARGUMENTS):
+                assert set(_POINT_ARGUMENTS[point]) <= set(verb.accepts), (name, point)
+
 
 class TestPrepare:
     def test_prepare_returns_system_prompt_seed(self) -> None:
@@ -190,8 +228,10 @@ class TestBuildReactPrompt:
 
 
 class TestParseReactOutput:
+    """Verb → action translation. Reply grammar lives in ``test_ui_tars_parser``."""
+
     def test_parses_click_with_point_to_click_coordinate(self) -> None:
-        agent = _make_agent()
+        agent = _looking_at_screen()
         text = "Thought: I need to click the search box.\nAction: click(point='(640, 360)')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
@@ -205,7 +245,7 @@ class TestParseReactOutput:
         assert action.params["coordinate_y"] == 360
 
     def test_parses_click_with_alternative_coordinate_format(self) -> None:
-        agent = _make_agent()
+        agent = _looking_at_screen()
         text = "Action: click(point='100,200')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
@@ -233,7 +273,7 @@ class TestParseReactOutput:
         'index'`` — and had an index been supplied it would have typed
         the empty string.
         """
-        agent = _make_agent()
+        agent = _looking_at_screen()
         text = "Action: type(content='hello world', point='(100, 100)')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
@@ -247,9 +287,17 @@ class TestParseReactOutput:
     def test_type_without_a_point_is_a_loud_parse_error(self) -> None:
         from spectragent.core.loops.errors import ParseError
 
-        agent = _make_agent()
-        with pytest.raises(ParseError, match="not a coordinate"):
+        agent = _looking_at_screen()
+        with pytest.raises(ParseError, match=r"a point is missing; write point='\(x, y\)'"):
             agent.parse_react_output("Action: type(content='hello')")
+
+    def test_type_without_content_is_a_loud_parse_error(self) -> None:
+        """``clear_by_default`` would wipe the field and report success."""
+        from spectragent.core.loops.errors import ParseError
+
+        agent = _looking_at_screen()
+        with pytest.raises(ParseError, match="type needs content="):
+            agent.parse_react_output("Action: type(point='(1, 2)')")
 
     def test_hotkey_is_renamed_onto_send_keys(self) -> None:
         agent = _make_agent()
@@ -257,8 +305,29 @@ class TestParseReactOutput:
         assert actions[0].name == "send_keys"
         assert actions[0].params == {"keys": "ctrl+a"}
 
-    def test_drag_carries_both_endpoints(self) -> None:
+    def test_a_ui_tars_1_5_space_separated_chord_becomes_a_plus_chord(self) -> None:
+        """The executor splits a chord on ``+``; ``'ctrl c'`` would be one key."""
         agent = _make_agent()
+        actions = agent.parse_react_output("Action: hotkey(key='ctrl shift t')")
+        assert actions[0].params == {"keys": "ctrl+shift+t"}
+        single = agent.parse_react_output("Action: hotkey(key='enter')")
+        assert single[0].params == {"keys": "enter"}
+
+    def test_a_list_of_key_names_is_a_chord(self) -> None:
+        agent = _make_agent()
+        actions = agent.parse_react_output("Action: hotkey(key=['ctrl', 'shift t'])")
+        assert actions[0].params == {"keys": "ctrl+shift+t"}
+
+    def test_key_and_keys_together_are_refused(self) -> None:
+        """Both are accepted spellings; two of them in one call need not agree."""
+        from spectragent.core.loops.errors import ParseError
+
+        agent = _make_agent()
+        with pytest.raises(ParseError, match="key and keys say the same thing; write only key"):
+            agent.parse_react_output("Action: hotkey(key='ctrl+a', keys='ctrl+c')")
+
+    def test_drag_carries_both_endpoints(self) -> None:
+        agent = _looking_at_screen()
         actions = agent.parse_react_output(
             "Action: drag(start_point='(1, 2)', end_point='(3, 4)')"
         )
@@ -273,19 +342,35 @@ class TestParseReactOutput:
         assert actions[0].name == "wait"
         assert actions[0].params == {}
 
-    def test_scroll_needs_a_direction(self) -> None:
+    def test_scroll_takes_a_direction_and_nothing_else(self) -> None:
         from spectragent.core.loops.errors import ParseError
 
         agent = _make_agent()
-        actions = agent.parse_react_output(
-            "Action: scroll(point='(5, 5)', direction='down')"
-        )
+        actions = agent.parse_react_output("Action: scroll(direction='Down')")
         assert actions[0].name == "scroll"
-        # ``point`` is dropped: ScrollAction has nowhere to put it, and
-        # forwarding it would advertise a parameter nothing reads.
         assert actions[0].params == {"direction": "down"}
         with pytest.raises(ParseError, match="needs direction"):
-            agent.parse_react_output("Action: scroll(point='(5, 5)')")
+            agent.parse_react_output("Action: scroll()")
+        with pytest.raises(ParseError, match="needs direction"):
+            agent.parse_react_output("Action: scroll(direction='sideways')")
+
+    def test_scroll_refuses_the_point_ui_tars_weights_write(self) -> None:
+        """Was silently dropped, so the model believed it scrolled at its point.
+
+        ``ScrollAction`` has nowhere to put a point: it scrolls under the mouse
+        pointer or a selector-map element, and a vision-only run has no
+        selector map. The refusal names the argument and the taught form.
+        """
+        from spectragent.core.loops.errors import ParseError
+
+        agent = _make_agent()
+        with pytest.raises(ParseError) as excinfo:
+            agent.parse_react_output("Action: scroll(point='(5, 5)', direction='down')")
+        assert excinfo.value.detail.endswith(
+            "scroll() does not take point; write it as scroll(direction='up|down|left|right')"
+        )
+        with pytest.raises(ParseError, match="does not take amount"):
+            agent.parse_react_output("Action: scroll(direction='down', amount=600)")
 
     def test_an_unknown_verb_fails_loudly_once(self) -> None:
         """Was six silent per-step guard rejections; now one parse error.
@@ -298,7 +383,7 @@ class TestParseReactOutput:
 
         agent = _make_agent()
         for verb in ("long_press", "open_app", "press_home", "press_back"):
-            with pytest.raises(ParseError, match="Unknown UI-TARS verb"):
+            with pytest.raises(ParseError, match=f"unknown verb '{verb}'"):
                 agent.parse_react_output(f"Action: {verb}(point='(1, 2)')")
 
     def test_no_action_pattern_raises_parse_error(self) -> None:
@@ -306,7 +391,7 @@ class TestParseReactOutput:
 
         agent = _make_agent()
         text = "Thought: I should wait for the page to settle."
-        with pytest.raises(ParseError, match="No 'Action:"):
+        with pytest.raises(ParseError, match="No line starts with 'Action:'"):
             agent.parse_react_output(text)
 
     def test_invalid_click_coordinate_raises_parse_error(self) -> None:
@@ -315,7 +400,7 @@ class TestParseReactOutput:
         # action and coming back as ``Missing param``.
         from spectragent.core.loops.errors import ParseError
 
-        agent = _make_agent()
+        agent = _looking_at_screen()
         text = "Action: click(point='invalid')"
         with pytest.raises(ParseError, match="not a coordinate"):
             agent.parse_react_output(text)

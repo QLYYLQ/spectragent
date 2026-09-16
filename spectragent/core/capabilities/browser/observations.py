@@ -170,7 +170,9 @@ class ScreenshotObs(FragmentBase):
     renders the viewport at the device scale factor, so on a DPR-2 display
     the image is twice the viewport in each direction. A consumer that shows
     the image to a model and takes a point back converts with
-    ``viewport_width / image_width``; ``0`` means the size is unknown.
+    ``viewport_width / image_width``; ``0`` means the size is unknown. The
+    four fields are what make this fragment a
+    :class:`~spectragent.schemas.observation.geometry.ScreenshotGeometry`.
     """
 
     __registry_key__ = "browser.screenshot"

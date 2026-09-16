@@ -331,6 +331,104 @@ class TestCachePartialFailure:
         assert asyncio.run(_go()) == "raised"
 
 
+class TestEveryObservationSeesThePageAsItIsNow:
+    """A cycle is one observation, not "everything until the next action".
+
+    Recorded failure (UI-TARS on the real reCAPTCHA v2 key): the reply to
+    the step after the checkbox click was empty, so that step ran no
+    action, and the next step's screenshot was *byte-identical* to the
+    previous one — a spinner — although the page's own state log shows
+    the image challenge fully open 5.5 s before that capture. The agent
+    clicked the checkbox again, which dismissed the challenge. The cache
+    had been invalidated only by ``execute_action``; a ParseError step
+    never calls it.
+    """
+
+    @staticmethod
+    def _shot(tag: bytes) -> object:
+        from spectragent.core.capabilities.browser.watchdogs.events import (
+            BrowserStateSummary,
+        )
+
+        return BrowserStateSummary(
+            fragments={
+                "browser.screenshot": ScreenshotObs(image_bytes=tag),
+                "browser.dom": DOMObs(element_tree=tag.decode()),
+            }
+        )
+
+    def _cap(self, replies: list[object], fragments: set[str]) -> tuple[BrowserCapability, _ReplayScope]:
+        cap = BrowserCapability()
+        cap._default_session_id = "fake_sid"
+        scope = _ReplayScope(replies)
+        cap._scopes["fake_sid"] = scope  # type: ignore[assignment]
+        cap._selector_maps["fake_sid"] = {}
+        cap.apply_negotiation(fragments)
+        return cap, scope
+
+    def test_a_second_observation_without_an_action_captures_again(self) -> None:
+        import asyncio
+
+        cap, scope = self._cap(
+            [self._shot(b"spinner"), self._shot(b"challenge")], {"browser.screenshot"}
+        )
+
+        async def _two_observations() -> tuple[object, object]:
+            first = await cap.resolve_fragment("browser.screenshot")
+            # No execute_action in between: the reply failed to parse.
+            second = await cap.resolve_fragment("browser.screenshot")
+            return first, second
+
+        first, second = asyncio.run(_two_observations())
+        assert scope.emissions == 2
+        assert first.image_bytes == b"spinner"  # type: ignore[attr-defined]
+        assert second.image_bytes == b"challenge"  # type: ignore[attr-defined]
+
+    def test_one_observation_of_several_fragments_still_costs_one_event(self) -> None:
+        import asyncio
+
+        cap, scope = self._cap(
+            [self._shot(b"one"), self._shot(b"two")],
+            {"browser.screenshot", "browser.dom"},
+        )
+
+        async def _observations() -> list[object]:
+            got = []
+            for _ in range(2):  # what Environment.observe does, twice
+                got.append(await cap.resolve_fragment("browser.dom"))
+                got.append(await cap.resolve_fragment("browser.screenshot"))
+            return got
+
+        dom1, shot1, dom2, shot2 = asyncio.run(_observations())
+        assert scope.emissions == 2
+        assert (dom1.element_tree, shot1.image_bytes) == ("one", b"one")  # type: ignore[attr-defined]
+        assert (dom2.element_tree, shot2.image_bytes) == ("two", b"two")  # type: ignore[attr-defined]
+
+    def test_through_the_environment_two_observes_are_two_captures(self) -> None:
+        import asyncio
+
+        from spectragent.core.environments.browser import BrowserEnvironment
+        from spectragent.core.negotiation import ObservationNegotiationResult
+
+        cap, scope = self._cap(
+            [self._shot(b"spinner"), self._shot(b"challenge")], {"browser.screenshot"}
+        )
+        env = BrowserEnvironment(capabilities={"browser": cap})
+        negotiated = ObservationNegotiationResult(
+            active_fragments=frozenset({"browser.screenshot"}),
+            env_sourced=frozenset({"browser.screenshot"}),
+            loop_sourced=frozenset(),
+        )
+
+        async def _observe_twice() -> tuple[object, object]:
+            return await env.observe(negotiated), await env.observe(negotiated)
+
+        first, second = asyncio.run(_observe_twice())
+        assert scope.emissions == 2
+        assert first.screenshot.image_bytes == b"spinner"  # type: ignore[attr-defined]
+        assert second.screenshot.image_bytes == b"challenge"  # type: ignore[attr-defined]
+
+
 class TestMultiTabIsolation:
     """Per-tab caches must not bleed across tabs.
 
