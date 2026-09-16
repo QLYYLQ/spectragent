@@ -10,7 +10,7 @@ See docs/architecture_design.md §4.5 for the full design.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,7 +18,10 @@ from spectragent.core.actions._registrar import ACTION_KEY_SEPARATOR
 from spectragent.core.negotiation._base import (
     AmbiguousKeyError,
     bind_short_names,
+    demand_label,
+    demand_of,
     group_by_short_name,
+    requested_by,
     resolve_demand,
 )
 from spectragent.core.negotiation._registrar import NegotiationResultBase
@@ -41,13 +44,30 @@ class IncompatibleActionError(Exception):
     a capability-relative declaration is the short name. That is the
     string the user has to go and edit; reporting a fully-qualified key
     they never wrote would point at the wrong line.
+
+    The requester is named for the same reason as in
+    :class:`~spectragent.core.negotiation.observation.IncompatibleFragmentError`:
+    an instance may narrow its own demand, so which actions are required
+    is a property of the *configuration*, not of the agent class.
     """
 
-    def __init__(self, missing: set[str], provided: set[str]) -> None:
+    def __init__(
+        self,
+        missing: set[str],
+        provided: set[str],
+        requested_by: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
+        requested_by = {
+            key: tuple(sources) for key, sources in sorted((requested_by or {}).items())
+        }
+        attribution = "; ".join(
+            f"{key} ← {' and '.join(sources)}" for key, sources in requested_by.items()
+        )
         super().__init__(
             f"Required actions not provided by environment. "
             f"Missing: {sorted(missing)}. "
-            f"Environment provides: {sorted(provided)}. "
+            + (f"Requested by: {attribution}. " if attribution else "")
+            + f"Environment provides: {sorted(provided)}. "
             f"If a capability declares an ``actions:`` list in YAML, that "
             f"list is an ablation — only the actions it names are "
             f"instantiated. Add the missing action(s) to that list, or "
@@ -87,6 +107,7 @@ def _action_rules(
     *,
     agent: tuple[set[str], set[str]],
     env_provides: set[str],
+    agent_source: str = "",
 ) -> ActionNegotiationResult:
     """Two-party action negotiation semantics.
 
@@ -94,6 +115,9 @@ def _action_rules(
     unless the agent pinned a provider — and resolves it against the
     environment's fully-qualified action keys. Everything the result
     hands downstream is fully qualified.
+
+    ``agent_source`` is a label for the diagnosis and nothing else; it
+    never reaches :func:`resolve_demand`.
     """
     agent_required, agent_optional = agent
     demand = resolve_demand(
@@ -107,6 +131,7 @@ def _action_rules(
         raise IncompatibleActionError(
             missing=set(demand.missing),
             provided=env_provides,
+            requested_by=requested_by(demand.missing, [(agent_source, agent_required)]),
         )
     active = demand.resolved
     grouped = group_by_short_name(active, ACTION_KEY_SEPARATOR)
@@ -132,11 +157,18 @@ def _action_rules(
 
 
 def negotiate_action(agent: Any, env: Any) -> ActionNegotiationResult:
-    """Run action negotiation for an (agent, env) pair."""
+    """Run action negotiation for an (agent, env) pair.
+
+    Symmetric to observation: the agent's half comes from
+    :func:`~spectragent.core.negotiation._base.demand_of`, so an instance
+    narrowing inside its class's declared space is the same mechanism on
+    both axes rather than a special case on one.
+    """
     return negotiate(
         ActionNegotiationResult,
         "action",
         _action_rules,
-        agent=type(agent),
+        agent=demand_of(agent, "action"),
         env_provides=set(env.provided_actions),
+        agent_source=demand_label(agent),
     )

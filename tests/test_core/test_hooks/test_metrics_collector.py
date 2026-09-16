@@ -172,3 +172,80 @@ class TestMetricsCollectorAccumulation:
         await collector.on_run_start()
         assert collector.llm_calls == 0
         assert collector._usage.total_tokens == 0
+
+
+class TestACallWhoseReplyWasRefused:
+    """A schema-rejected reply costs tokens and the run continues.
+
+    ``ainvoke`` raises, so no ``after`` advice fires — but the Loop catches
+    ``StructuredOutputValidationError``, hands the model its own text back
+    and counts the call in the run's own total. Uncounted here, the
+    collector and the result would disagree by one call and its tokens,
+    and the gap would widen with every correction a run needed.
+    """
+
+    @pytest.fixture()
+    def collector(self) -> MetricsCollector:
+        return MetricsCollector()
+
+    @staticmethod
+    def _raiser(exc: Exception):
+        async def proceed():
+            raise exc
+
+        return proceed
+
+    def _rejected(self, usage=None):
+        from spectragent.core.llm.exceptions import StructuredOutputValidationError
+
+        return StructuredOutputValidationError(
+            "schema mismatch",
+            raw_output='{"action": [{}]}',
+            model="gpt-4o-mini",
+            usage=usage,
+        )
+
+    async def test_the_tokens_it_cost_are_counted(self, collector):
+        from spectragent.core.llm.exceptions import StructuredOutputValidationError
+
+        await collector.on_run_start()
+        exc = self._rejected(_FakeUsage(prompt=10, completion=5, cached=0, total=15))
+        with pytest.raises(StructuredOutputValidationError):
+            await collector.around_ainvoke(
+                proceed=self._raiser(exc), args=(), kwargs={}, target=_FakeLLM()
+            )
+        assert collector.llm_calls == 1
+        assert collector._usage.total_tokens == 15
+        assert collector._usage.by_model is not None
+
+    async def test_a_transport_failure_is_not_counted(self, collector):
+        """No reply, no tokens, no call — the honest answer for a 429."""
+        await collector.on_run_start()
+        with pytest.raises(TimeoutError):
+            await collector.around_ainvoke(
+                proceed=self._raiser(TimeoutError("gateway gone")), args=(), kwargs={}
+            )
+        assert collector.llm_calls == 0
+        assert collector._usage.total_tokens == 0
+
+    async def test_a_successful_call_is_counted_once(self, collector):
+        """``around`` wraps ``after``; the success path stays ``after``'s."""
+        await collector.on_run_start()
+
+        async def proceed():
+            completion = _FakeCompletion(usage=_FakeUsage(total=15))
+            await collector.after_ainvoke(completion, args=(), kwargs={})
+            return completion
+
+        await collector.around_ainvoke(proceed=proceed, args=(), kwargs={})
+        assert collector.llm_calls == 1
+        assert collector._usage.total_tokens == 15
+
+    async def test_the_exception_still_reaches_the_caller(self, collector):
+        from spectragent.core.llm.exceptions import StructuredOutputValidationError
+
+        await collector.on_run_start()
+        with pytest.raises(StructuredOutputValidationError):
+            await collector.around_ainvoke(
+                proceed=self._raiser(self._rejected()), args=(), kwargs={}
+            )

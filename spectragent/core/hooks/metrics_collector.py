@@ -40,6 +40,10 @@ class MetricsCollector(HookBase):
     __registry_key__ = "metrics"
     __intercepts__ = [
         Intercept("ainvoke", role="llm", advice="after"),
+        # ``after`` does not fire when the target raises, and one LLM error
+        # is recoverable: the Loop continues past it, so its tokens belong
+        # in the run's total. See :meth:`around_ainvoke`.
+        Intercept("ainvoke", role="llm", advice="around"),
     ]
 
     # Enrich before anything serializes the result.
@@ -122,6 +126,31 @@ class MetricsCollector(HookBase):
             getattr(result, "usage", None),
             model=_extract_model_name(kwargs, ctx),
         )
+
+    async def around_ainvoke(
+        self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any
+    ) -> Any:
+        """Count the call whose *reply* was refused; ``after`` cannot see it.
+
+        A structured reply that does not fit the schema leaves ``ainvoke``
+        as an exception, so no ``after`` advice fires — but the tokens were
+        spent, and the Loop goes on to feed the model its own text back and
+        counts the call in the run's total. Uncounted here, the metrics and
+        the result would disagree by one call and its tokens, and the
+        disagreement would grow with every correction a run needed.
+
+        Only this one error. A 429 or a dead socket carries no usage and no
+        reply; those stay invisible, which is the honest answer for a call
+        that never happened.
+        """
+        from spectragent.core.llm.exceptions import StructuredOutputValidationError
+
+        try:
+            return await proceed()
+        except StructuredOutputValidationError as exc:
+            self._llm_calls += 1
+            self._usage.add_llm_usage(exc.usage, model=_extract_model_name(kwargs, ctx))
+            raise
 
 
 def _merge_missing(target: Any, collected: Any) -> None:

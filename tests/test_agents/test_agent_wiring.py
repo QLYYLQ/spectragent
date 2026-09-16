@@ -25,10 +25,6 @@ class TestAgentBaseWiring:
                 return "test"
 
             @property
-            def observation_types(self):
-                return set()
-
-            @property
             def system_prompt(self):
                 return None
 
@@ -53,10 +49,6 @@ class TestAgentBaseWiring:
                 return "narrow"
 
             @property
-            def observation_types(self):
-                return set()
-
-            @property
             def system_prompt(self):
                 return None
 
@@ -78,10 +70,6 @@ class TestAgentBaseWiring:
             @property
             def agent_name(self):
                 return "obs"
-
-            @property
-            def observation_types(self):
-                return {"dom", "screenshot"}
 
             @property
             def system_prompt(self):
@@ -112,10 +100,6 @@ class TestAgentBaseWiring:
                 return "web"
 
             @property
-            def observation_types(self):
-                return set()
-
-            @property
             def system_prompt(self):
                 return None
 
@@ -133,10 +117,6 @@ class TestAgentBaseWiring:
             @property
             def agent_name(self):
                 return "reg"
-
-            @property
-            def observation_types(self):
-                return set()
 
             @property
             def system_prompt(self):

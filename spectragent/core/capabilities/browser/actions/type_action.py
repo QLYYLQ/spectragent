@@ -10,9 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
+from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
     handler_error,
@@ -38,17 +40,28 @@ class TypeAction(SettleableAction, ActionBase):
         PydanticField(description="Whether to clear the target element first"),
     ] = True
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        index: Annotated[
+            int,
+            RequiresFragment("browser.dom"),
+            PydanticField(description="element index"),
+        ]
+        text: str
+        #: Omitted means ``clear_by_default``. Optional rather than
+        #: defaulted here on purpose: the default is the capability's to
+        #: apply, and a model that writes nothing must not have a value
+        #: manufactured for it on the way in.
+        clear: bool | None = None
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description="Type text into a DOM element.",
-            params={
-                "index": "int -- element index",
-                "text": "str",
-                # Interpolated, not literal: ``clear_by_default`` is a
-                # YAML knob, and this string is what the prompt teaches.
-                "clear": f"bool (optional, default={str(self.clear_by_default).lower()})",
-            },
+        return self.describe(
+            "Type text into a DOM element.",
+            # Interpolated, not literal: ``clear_by_default`` is a YAML
+            # knob, and this string is what the prompt teaches.
+            hints={"clear": f"default={str(self.clear_by_default).lower()}"},
+            **context,
         )
 
     async def execute(
@@ -60,7 +73,11 @@ class TypeAction(SettleableAction, ActionBase):
         try:
             element = resolve_index(capability, params["index"])
             text = params.get("text", "")
-            clear = bool(params.get("clear", self.clear_by_default))
+            # ``params.get("clear", default)`` returned False for an
+            # explicit ``clear: null``, overriding the capability knob
+            # with a value the model never chose.
+            requested = params.get("clear")
+            clear = self.clear_by_default if requested is None else bool(requested)
             scope = focused_scope(capability)
             event = TypeTextEvent(
                 backend_node_id=element.backend_node_id,

@@ -1,16 +1,22 @@
 """LLM provider registry using conscribe."""
 
+import json
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from conscribe import create_registrar
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from spectragent.core.llm.base import BaseChatModel
-from spectragent.core.llm.exceptions import ToolsUnsupportedError
+from spectragent.core.llm.exceptions import (
+    StructuredOutputValidationError,
+    ToolsUnsupportedError,
+)
 from spectragent.core.llm.model_families import ModelFamily, detect_model_family
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.tools import ToolDefinition
+
+T = TypeVar("T", bound=BaseModel)
 
 LLMRegistrar = create_registrar(
     "llm",
@@ -99,8 +105,9 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
         1. *Does this model support the strict dialect?* — the declarative
            capability table, not a substring test on the model name.
         2. *Can this particular schema be expressed in it?* — the compiled
-           schema. Open maps (``dict[str, Any]``, e.g. ``BrowserUseOutput.action``)
-           produce an object node with no ``properties``, which strict rejects.
+           schema. An open map (``dict[str, Any]``, which is what an action
+           field typed ``list[dict[str, Any]]`` becomes) produces an object
+           node with no ``properties``, which strict rejects.
            :class:`SchemaOptimizer` deliberately leaves such nodes open, so
            asking for strict anyway ships a schema the API refuses.
 
@@ -114,3 +121,66 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
         return SchemaOptimizer.is_strict_compatible(
             SchemaOptimizer.create_optimized_json_schema(output_format, strict=True)
         )
+
+    def _validate_structured(
+        self,
+        output_format: type[T],
+        payload: str | dict[str, Any],
+        *,
+        usage: Any = None,
+    ) -> T:
+        """Validate a structured reply, or raise a *recoverable* error.
+
+        Every provider's structured path ends in the same two lines —
+        parse, then validate — and every one of them used to let the
+        resulting ``ValidationError`` escape as a generic
+        :class:`ModelProviderError`. The Loop cannot tell that apart from a
+        dead endpoint, so it aborted the run at the LLM phase: a model that
+        wrote one wrong parameter ended the episode, while the same mistake
+        made in free text came back as a ``ParseError`` and was fed back
+        for the model to fix.
+
+        Raising :class:`StructuredOutputValidationError` instead keeps the
+        model's own text, so the Loop can put it through the agent's parser
+        and hand the model a located, single-line correction.
+
+        **Every** registered provider routes its structured path through
+        here, and a test walks ``providers/`` to keep it that way. That is
+        not tidiness: whether a mistyped parameter costs a step or the
+        whole run would otherwise depend on which provider key the YAML
+        happens to name, which is the per-provider split the LLM layer
+        exists to remove. The single exemption, ``_groq_parser``, is a
+        salvage attempt inside an already-failed request and documents
+        itself.
+
+        Takes a ``str`` (validated as JSON, so malformed text is caught
+        here too) or an already-parsed mapping.
+        """
+        raw = payload if isinstance(payload, str) else json.dumps(payload)
+        # ``getattr`` rather than ``type(self).__name__``: conscribe's
+        # registrar metaclass leaves the attribute unresolvable to a static
+        # checker, and this is the same spelling ``reject_unsupported_tools``
+        # above already uses for the same reason.
+        who = str(getattr(self, "name", None) or getattr(type(self), "__name__", "provider"))
+        try:
+            if isinstance(payload, str):
+                return output_format.model_validate_json(payload)
+            return output_format.model_validate(payload)
+        except ValidationError as exc:
+            raise StructuredOutputValidationError(
+                f"{who} returned a reply that does not match "
+                f"{output_format.__name__}: {exc}",
+                raw_output=raw,
+                model=str(getattr(self, "model", "")),
+                usage=usage,
+            ) from exc
+        except ValueError as exc:
+            # Malformed JSON on the text-shaped paths — equally the
+            # model's to fix, and equally not a transport failure.
+            raise StructuredOutputValidationError(
+                f"{who} returned a reply that is not valid JSON for "
+                f"{output_format.__name__}: {exc}",
+                raw_output=raw,
+                model=str(getattr(self, "model", "")),
+                usage=usage,
+            ) from exc

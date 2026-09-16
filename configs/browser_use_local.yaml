@@ -23,7 +23,7 @@ agent:
   - agent_id: browser_use
     id: main
     flash_mode: false
-    use_vision: false
+    observation_mode: dom          # dom | dom_vision | vision
     use_thinking: true
     is_anthropic: false
 

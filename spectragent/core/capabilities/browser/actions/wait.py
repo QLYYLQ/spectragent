@@ -24,6 +24,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
@@ -60,22 +61,24 @@ class WaitAction(ActionBase):
         ),
     ] = 30.0
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        seconds: float | None = None
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description=(
+        return self.describe(
+            (
                 f"Pause for N seconds before the next observation. Use when "
                 f"the page is still loading, a popup/modal is expected to "
-                f"appear after a delay, or the previous screenshot looks "
+                f"appear after a delay, or what you were last shown looks "
                 f"clearly incomplete. Default={self.default_seconds}s, "
                 f"max={self.max_seconds}s."
             ),
-            params={
-                "seconds": (
-                    f"float (optional, default={self.default_seconds}, "
-                    f"max={self.max_seconds})"
-                ),
+            hints={
+                "seconds": f"default={self.default_seconds}, max={self.max_seconds}"
             },
+            **context,
         )
 
     async def execute(
@@ -85,7 +88,10 @@ class WaitAction(ActionBase):
         capability: BrowserCapability,
     ) -> ActionResult:
         try:
-            seconds = float(params.get("seconds", self.default_seconds))
+            requested = params.get("seconds")
+            seconds = float(
+                self.default_seconds if requested is None else requested
+            )
         except (TypeError, ValueError) as exc:
             return ActionResult(
                 success=False, error=f"Invalid seconds: {exc}",

@@ -173,9 +173,9 @@ class ChatVercel(OpenAICompatBase):
         elif text.startswith("```") and text.endswith("```"):
             text = text[3:-3].strip()
 
-        parsed = output_format.model_validate(json.loads(text))
+        usage = self._get_usage(response)
         return ChatInvokeCompletion(
-            completion=parsed,
-            usage=self._get_usage(response),
+            completion=self._validate_structured(output_format, text, usage=usage),
+            usage=usage,
             stop_reason=response.choices[0].finish_reason if response.choices else None,
         )

@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
@@ -52,21 +53,29 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
         PydanticField(description="Whether to clear the target field first"),
     ] = True
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        coordinate_x: Annotated[
+            int, PydanticField(description="CSS px from the viewport's left edge")
+        ]
+        coordinate_y: Annotated[
+            int, PydanticField(description="CSS px from the viewport's top edge")
+        ]
+        text: str
+        #: Omitted means ``clear_by_default`` — see ``TypeAction.Params``.
+        clear: bool | None = None
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description=(
+        return self.describe(
+            (
                 "Click a point in the page viewport to focus a text field, "
                 "then type into it."
             ),
-            params={
-                "coordinate_x": "int -- CSS px from the viewport's left edge",
-                "coordinate_y": "int -- CSS px from the viewport's top edge",
-                "text": "str",
-                # Interpolated, not literal: ``clear_by_default`` is a
-                # YAML knob, and this string is what the prompt teaches.
-                "clear": f"bool (optional, default={str(self.clear_by_default).lower()})",
-            },
+            # Interpolated, not literal: ``clear_by_default`` is a YAML
+            # knob, and this string is what the prompt teaches.
+            hints={"clear": f"default={str(self.clear_by_default).lower()}"},
+            **context,
         )
 
     async def execute(
@@ -81,7 +90,11 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
                 coordinate_x=int(params["coordinate_x"]),
                 coordinate_y=int(params["coordinate_y"]),
                 text=params["text"],
-                clear=bool(params.get("clear", self.clear_by_default)),
+                clear=(
+                    self.clear_by_default
+                    if params.get("clear") is None
+                    else bool(params["clear"])
+                ),
             )
             scope.emit(event)
             await event

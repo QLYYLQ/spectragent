@@ -25,6 +25,13 @@ class BaseAgent(Protocol):
 
     Loop-specific behaviour is declared via callable slots that each
     Loop checks at weave time — see core/loops/_registrar.py.
+
+    What an agent *observes* is not on this Protocol. It is declared in
+    ``__wiring__`` and answered by ``negotiation_demand``, which are what
+    the runtime actually reads; a second, hand-maintained
+    ``observation_types`` property said ``{"dom", "browser_meta"}`` while
+    the wiring said ``["dom", "screenshot", "task"]`` and nothing noticed,
+    because nothing read it.
     """
 
     @property
@@ -35,14 +42,6 @@ class BaseAgent(Protocol):
     @property
     def domain(self) -> str:
         """Domain identifier (e.g. 'web_navigation', 'software_engineering')."""
-        ...
-
-    @property
-    def observation_types(self) -> set[str]:
-        """Set of observation modalities this agent consumes.
-
-        Examples: ``{"dom", "screenshot", "accessibility_tree"}``.
-        """
         ...
 
     @property

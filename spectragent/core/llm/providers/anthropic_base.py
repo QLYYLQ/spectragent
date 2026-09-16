@@ -5,7 +5,6 @@
 # 类型对象来做 __config_annotated_only__ 过滤；future annotations 会导致
 # 跨模块类型解析失败，使 get_origin() 返回 None。
 
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, TypeVar, overload
@@ -282,7 +281,7 @@ class AnthropicCompatBase(ChatModelBase):
                 elif t.startswith("```") and t.endswith("```"):
                     t = t[3:-3].strip()
                 return ChatInvokeCompletion(
-                    completion=output_format.model_validate_json(t),
+                    completion=self._validate_structured(output_format, t, usage=usage),
                     usage=usage,
                     stop_reason=response.stop_reason,
                 )
@@ -323,21 +322,28 @@ class AnthropicCompatBase(ChatModelBase):
                 usage = self._get_usage(response)
                 for block in response.content:
                     if hasattr(block, "type") and block.type == "tool_use":
-                        try:
-                            return ChatInvokeCompletion(
-                                completion=output_format.model_validate(block.input),
-                                usage=usage, stop_reason=response.stop_reason,
-                            )
-                        except Exception as e:
-                            if isinstance(block.input, str):
-                                data = json.loads(block.input)
-                                return ChatInvokeCompletion(
-                                    completion=output_format.model_validate(data),
-                                    usage=usage, stop_reason=response.stop_reason,
-                                )
-                            raise e
+                        # ``input`` is a dict on the normal path and a JSON
+                        # string when the model stuffed everything into one
+                        # argument; ``_validate_structured`` takes either and
+                        # raises the recoverable error for both. The retry that
+                        # used to sit here caught its own typed error and
+                        # re-parsed with ``json.loads``, so malformed text came
+                        # back out as a bare ``JSONDecodeError`` — a reply the
+                        # model could have fixed, laundered into one it cannot.
+                        return ChatInvokeCompletion(
+                            completion=self._validate_structured(output_format, block.input, usage=usage),
+                            usage=usage, stop_reason=response.stop_reason,
+                        )
                 raise ValueError("Expected tool use in response but none found")
 
+        except ModelProviderError:
+            # Re-raised as-is, and first: ``StructuredOutputValidationError`` is
+            # a ``ModelProviderError``, and the catch-all below would flatten it
+            # into a generic one — dropping ``raw_output`` and ``usage`` with it.
+            # The Loop reads that type to tell "the model wrote something wrong"
+            # (feed it back, keep going) from "the provider failed" (abort), so
+            # flattening it here ends a run over one mistyped parameter.
+            raise
         except APIConnectionError as e:
             raise ModelProviderError(message=e.message, model=self.name) from e
         except RateLimitError as e:

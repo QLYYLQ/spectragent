@@ -1,28 +1,69 @@
-"""BrowserUseAgent — multi-action, flash-mode, vision-capable browser agent.
+"""BrowserUseAgent — one browser agent, three observation modes.
 
-M14 refactor: BrowserUseAgent is now a passive domain-knowledge provider.
-Execution is driven by ``ReactLoop`` (weaved via ``AgentRuntime``);
-this class only knows how to (1) build prompts and (2) parse LLM output.
+A passive domain-knowledge provider: it knows how to build a browser
+prompt and how to read a browser reply. ``ReactLoop`` drives it, woven in
+by ``AgentRuntime``.
 
-Memory access is intentionally localized to ``_format_observation`` and
-``build_react_prompt`` so the M17 migration (memory injected by
-AgentRuntime) is mechanical.
+**The mode is configured, never inferred.** ``observation_mode`` says
+whether this run reads the page as DOM text, as DOM text plus a
+screenshot, or as a screenshot alone. It picks the surface fragment the
+prompt is built from *and* narrows what the agent takes into negotiation,
+so the three follow from one enum value:
+
+============ ================= =============================== ===========
+mode         in model context  click verbs                     DOM reached
+============ ================= =============================== ===========
+dom          DOM text          ``click`` (index)               yes
+dom_vision   DOM text + image  ``click`` and ``click_coordinate``, yes
+                               independently
+vision       image             ``click_coordinate`` only       never
+============ ================= =============================== ===========
+
+Deriving the mode from the environment instead — "there is no ``dom``
+fragment, so this must be a vision run" — would make a mistyped capability
+profile silently downgrade a DOM experiment into a vision one. Here a DOM
+mode keeps ``dom`` *required*, so that mistake is an
+``IncompatibleFragmentError`` naming the mode that asked for it.
+
+The screenshot fragment is required in **every** mode. It is not only
+model input: ``online_mind2web`` and ``lexbench_browser`` score runs from
+the screenshots in the trace, so a DOM-mode run still captures them — the
+mode decides what the *model* sees, not what the run records.
+
+**What the model may emit is a closed schema.** ``prepare()`` compiles the
+negotiated descriptors into a per-run union (``agents/_action_union.py``)
+whose ``anyOf`` branches are the verbs this run can execute and nothing
+else. There is no vocabulary map and no local-id fallback: the prompt
+advertises the fully-qualified key, the schema permits it, ``env.act``
+routes on it and the trace records it — one string the whole way.
 """
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import AfterValidator, BaseModel
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
-from spectragent.agents._output_models import BrowserUseOutput
+from spectragent.agents._action_union import _create_model, action_union
+from spectragent.agents._output_models import reasoning_fields
 from spectragent.agents._registrar import AgentBase
+from spectragent.agents.prompts import load_prompt_fragment
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
+from spectragent.core.negotiation import bounded_demand
 from spectragent.prompts import hash_text, text_snapshot
 from spectragent.schemas.action import Action, ActionDescriptor
+from spectragent.schemas.observation.geometry import (
+    CoordinateSpace,
+    PointGrid,
+    ScreenshotGeometry,
+    point_grid,
+)
 from spectragent.schemas.prompt import PromptRef, PromptSnapshot
 
 #: ``PromptRef.path`` for a prompt that came from YAML rather than the
@@ -30,62 +71,181 @@ from spectragent.schemas.prompt import PromptRef, PromptSnapshot
 #: one — the hash still pins the exact text the model was given.
 _OVERRIDE_REF_PATH = "<override_system_message>"
 
-# Local vocabulary map: browser-use LLM prompts were originally written
-# for the upstream browser-use library (``click_element`` / ``input_text``
-# / ``go_to_url``) but the action ids are ``click`` / ``type`` /
-# ``navigate``. This dict renames those three verbs and nothing else — it
-# is a *vocabulary* map, not a provider map. Which capability's ``click``
-# a name resolves to is decided once, at negotiation, and applied once,
-# in ``build_guarded_act``; an agent that answered that question itself
-# would be answering it for a capability set it cannot see.
-_LLM_VOCABULARY_TO_LOCAL: dict[str, str] = {
-    "click_element": "click",
-    "input_text": "type",
-    "go_to_url": "navigate",
-}
+ObservationMode = Literal["dom", "dom_vision", "vision"]
 
-#: Actions whose point the model reads off the *screenshot* while the
-#: capability executes it in *CSS viewport pixels*. Local id → the
-#: ``(x_param, y_param)`` pairs carrying a point, and the model-facing
-#: description of each param. The param *names* are the descriptor's own —
-#: only their unit differs between what the model is taught and what the
-#: executor declares, and ``_screenshot_points_to_viewport`` is the one
-#: place that converts.
-#:
-#: The two spaces coincide only at device scale factor 1. The image the
-#: model sees is ``ScreenshotObs.image_width x image_height`` pixels; the
-#: executor's space is ``viewport_width x viewport_height`` CSS pixels.
-_SCREENSHOT_POINT_PARAMS: dict[str, dict[tuple[str, str], tuple[str, str]]] = {
-    "click_coordinate": {
-        ("coordinate_x", "coordinate_y"): (
-            "int -- x in screenshot pixels, from the screenshot's left edge",
-            "int -- y in screenshot pixels, from the screenshot's top edge",
+
+@dataclass(frozen=True)
+class _ModeDemand:
+    """How one mode narrows the class ``__wiring__``, per registry.
+
+    ``promote`` moves a declared optional key into required; ``exclude``
+    drops one. Both may name **only** the class's optional keys: the
+    optional set is precisely the space the modes disagree about, and a
+    required key is one no mode may touch.
+    """
+
+    promote: frozenset[str] = frozenset()
+    exclude: frozenset[str] = frozenset()
+
+    def apply(
+        self, required: set[str], optional: set[str], *, where: str
+    ) -> tuple[set[str], set[str]]:
+        """This mode's ``(required, optional)``, from the class's own.
+
+        The check is here rather than left to ``bounded_demand`` because
+        the two failures are not symmetrical. A stray ``promote`` grows
+        the required set and leaves the declared space, so it would be
+        caught downstream anyway; a stray ``exclude`` subtracts a key
+        nothing has — a misspelling, or a required key a mode may not drop
+        — and produces sets that are perfectly legal and quietly wrong.
+        The mode table is the single definition of the three surfaces, so
+        a typo in it has to be an error, not a shrug.
+        """
+        stray = sorted((self.promote | self.exclude) - optional)
+        if stray:
+            raise ValueError(
+                f"{where}: {stray} is not an optional key of "
+                f"BrowserUseAgent.__wiring__ (optional: {sorted(optional)}). A "
+                f"mode narrows only inside the optional set — it can neither "
+                f"invent a key nor release one the class declared required."
+            )
+        return required | self.promote, (optional - self.promote) - self.exclude
+
+
+#: Mode → registry → how it narrows. A module-level immutable table, not
+#: state: it is read, never written, and every run builds its own agent.
+_MODE_DEMAND: Mapping[str, Mapping[str, _ModeDemand]] = MappingProxyType(
+    {
+        "dom": MappingProxyType(
+            {
+                "observation": _ModeDemand(promote=frozenset({"dom"})),
+                "action": _ModeDemand(
+                    promote=frozenset({"click", "type"}),
+                    # The coordinate verbs read a point off an image this
+                    # mode never shows the model. Previously they were
+                    # negotiated, executable and simply never taught —
+                    # the guard would have run one the model could not
+                    # have known to ask for.
+                    exclude=frozenset({"click_coordinate", "type_coordinate", "drag"}),
+                ),
+            }
         ),
-    },
-}
+        "dom_vision": MappingProxyType(
+            {
+                "observation": _ModeDemand(promote=frozenset({"dom"})),
+                "action": _ModeDemand(
+                    promote=frozenset({"click", "type"}),
+                    # Two *click* verbs, kept distinct on purpose; typing
+                    # and dragging stay index-addressed here, where an
+                    # index exists.
+                    exclude=frozenset({"type_coordinate", "drag"}),
+                ),
+            }
+        ),
+        "vision": MappingProxyType(
+            {
+                "observation": _ModeDemand(exclude=frozenset({"dom"})),
+                "action": _ModeDemand(
+                    # ``send_keys`` presses keys; it cannot type text into
+                    # a field nobody focused, so ``type_coordinate`` is
+                    # required rather than optional.
+                    promote=frozenset({"click_coordinate", "type_coordinate"}),
+                    # ``extract_content`` returns innerText or outerHTML —
+                    # DOM-derived text under another name. Letting it in
+                    # would make "vision-only" mean "vision plus a text
+                    # channel", and every ablation drawn against it wrong.
+                    exclude=frozenset({"click", "type", "extract_content"}),
+                ),
+            }
+        ),
+    }
+)
+
+#: Which modes attach the screenshot to the model's message.
+_MODES_WITH_IMAGE: frozenset[str] = frozenset({"dom_vision", "vision"})
+
+#: Which modes put the DOM tree in the model's message.
+_MODES_WITH_DOM: frozenset[str] = frozenset({"dom", "dom_vision"})
+
+#: Local id → the ``(x_param, y_param)`` pairs carrying a point the model
+#: reads off the *screenshot* while the capability executes it in its own
+#: viewport units. The param names are the descriptor's own; only the unit
+#: differs between what the model is taught and what the executor
+#: declares, and :meth:`BrowserUseAgent._points_to_viewport` is the one
+#: place that converts.
+_POINT_PARAMS: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType(
+    {
+        "click_coordinate": (("coordinate_x", "coordinate_y"),),
+        "type_coordinate": (("coordinate_x", "coordinate_y"),),
+        "drag": (("start_x", "start_y"), ("end_x", "end_y")),
+    }
+)
+
+#: What a coordinate param means, per grid. ``{axis}`` is ``x`` or ``y``
+#: and ``{edge}`` the edge it is measured from, so one sentence covers
+#: ``coordinate_x``, ``start_y`` and the rest.
+_POINT_DESCRIPTIONS: Mapping[CoordinateSpace, str] = MappingProxyType(
+    {
+        "screenshot_pixels": (
+            "int -- {axis} in pixels of the screenshot you are shown, from its "
+            "{edge} edge"
+        ),
+        "normalized_1000": (
+            "int -- {axis} on a 0-1000 grid laid over the screenshot whatever its "
+            "pixel size, from its {edge} edge"
+        ),
+    }
+)
+
+#: The paragraph the prompt adds when this run has a coordinate action.
+#: Said in code rather than in the surface fragment because it depends on
+#: ``coordinate_space``, which is config — the same split UI-TARS makes.
+_COORDINATE_GUIDE: Mapping[CoordinateSpace, str] = MappingProxyType(
+    {
+        "screenshot_pixels": (
+            "<coordinates>\n"
+            "A point is (x, y) in pixels of the screenshot you are shown: (0, 0) "
+            "is its top-left corner, x grows to the right and y downwards. Every "
+            "step states the screenshot's size in pixels. Write the numbers only "
+            "— nothing there names an element, it only says where one is.\n"
+            "</coordinates>"
+        ),
+        "normalized_1000": (
+            "<coordinates>\n"
+            "A point is (x, y) on a 0-1000 grid laid over the screenshot, whatever "
+            "its size in pixels: (0, 0) is the top-left corner, (1000, 1000) the "
+            "bottom-right corner, x grows to the right and y downwards. Write the "
+            "numbers only — nothing there names an element, it only says where one "
+            "is.\n"
+            "</coordinates>"
+        ),
+    }
+)
+
+#: Template stems written for a fine-tuned browser-use checkpoint. They
+#: carry no surface description at all (the checkpoint learned the DOM
+#: format), so they take no surface fragment — and are refused outside a
+#: DOM mode, where that assumption no longer holds.
+_FINE_TUNED_VARIANTS: frozenset[str] = frozenset(
+    {
+        "system_prompt_browser_use",
+        "system_prompt_browser_use_flash",
+        "system_prompt_browser_use_no_thinking",
+    }
+)
+
+#: Variants whose surface fragment is the compact one.
+_TERSE_VARIANTS: frozenset[str] = frozenset(
+    {
+        "system_prompt_flash",
+        "system_prompt_flash_anthropic",
+        "system_prompt_anthropic_flash",
+    }
+)
 
 
 def _local_id(name: str) -> str:
     return name.rsplit(".", 1)[-1]
-
-
-@dataclass(frozen=True)
-class _ScreenshotGeometry:
-    """The image the model saw this step, and the viewport it depicts."""
-
-    image_width: int
-    image_height: int
-    viewport_width: int
-    viewport_height: int
-
-    def to_viewport(self, x: float, y: float) -> tuple[int, int]:
-        """Screenshot pixel → CSS viewport pixel, clamped into the viewport."""
-        vx = round(x * self.viewport_width / self.image_width)
-        vy = round(y * self.viewport_height / self.image_height)
-        return (
-            max(0, min(vx, self.viewport_width - 1)),
-            max(0, min(vy, self.viewport_height - 1)),
-        )
 
 
 def _is_anthropic_4_5_model(model_name: str | None) -> bool:
@@ -100,16 +260,16 @@ def _is_anthropic_4_5_model(model_name: str | None) -> bool:
 
 @dataclass
 class BrowserUseAgent(AgentBase):
-    """Browser-use style agent with multi-action and flash mode."""
+    """Browser-use style agent with multi-action, flash mode and three surfaces."""
 
     __registry_key__ = "browser_use"
 
     # ── Cross-registry wiring ────────────────────────────────────
-    # Restricts compatible loops and declares the domain verbs the agent
-    # can issue. Required actions are the ones every run needs
-    # (click/type/navigate/done); optional actions are the enhancement
-    # set — if a capability's ablation YAML drops them, the run still
-    # starts.
+    # The declared space, across *all* modes. Required here means "no
+    # mode can do without it"; optional means "some mode promotes it and
+    # some mode excludes it", and ``_MODE_DEMAND`` is where that is said.
+    # conscribe compiles this into the generated config's ``Literal``, so
+    # it is also the boundary ``negotiation_demand`` may not cross.
     #
     # Keys are capability-relative on purpose: ``click`` is what this
     # agent knows how to do, ``browser.click`` is who executes it, and
@@ -119,25 +279,29 @@ class BrowserUseAgent(AgentBase):
     # effect.
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react"]),
-        # DOM + screenshot are required, browser_meta is optional
-        # (we use it for url/title context but can run without it).
+        # ``screenshot`` is required in every mode because the evaluators
+        # read it out of the trace, not because the model always sees it.
         "observation": (
             "observation",
-            ["dom", "screenshot", "task"],
-            ["browser_meta", "step_info", "history"],
+            ["screenshot", "task"],
+            ["dom", "browser_meta", "step_info", "history"],
         ),
         "action": (
             "action",
-            ["click", "type", "navigate", "done"],
+            ["navigate", "done"],
             [
-                # A second, distinct click verb — never merged into
-                # ``click``: ``click`` addresses a selector-map index,
-                # ``click_coordinate`` a point on the screenshot (for what
-                # the index cannot reach, e.g. a cross-origin iframe
-                # widget). Advertised only with ``use_vision``, since the
-                # point is read off the image; see
-                # ``_SCREENSHOT_POINT_PARAMS`` for the coordinate space.
+                # Index-addressed and point-addressed verbs are never
+                # merged: ``click`` takes a selector-map index, which only
+                # exists when ``browser.dom`` was negotiated;
+                # ``click_coordinate`` takes a point on the screenshot,
+                # which reaches what an index cannot (a cross-origin iframe
+                # widget). One overloaded verb would have half-inapplicable
+                # params in either mode.
+                "click",
+                "type",
                 "click_coordinate",
+                "type_coordinate",
+                "drag",
                 "scroll",
                 "send_keys",
                 "extract_content",
@@ -155,8 +319,36 @@ class BrowserUseAgent(AgentBase):
     # deliberately absent: the Loop owns and enforces them. AgentRuntime
     # hands the loop's limits to ``prepare()`` so the prompt advertises
     # exactly what will be executed.
+    #
+    # Both Literals are written inline rather than through a module alias:
+    # conscribe renders an alias into the generated stub as ``Any``, which
+    # silently drops the narrowing this field exists for.
+    observation_mode: Annotated[
+        Literal["dom", "dom_vision", "vision"],
+        PydanticField(
+            description=(
+                "What reaches the model: 'dom' (the element tree as text), "
+                "'dom_vision' (that plus a screenshot), or 'vision' (a "
+                "screenshot alone — no DOM is extracted, and the only click "
+                "verb is a coordinate one). Screenshots are captured and "
+                "recorded in every mode."
+            ),
+        ),
+    ] = "dom"
+    coordinate_space: Annotated[
+        Literal["screenshot_pixels", "normalized_1000"],
+        PydanticField(
+            description=(
+                "The grid the model writes points on: 'screenshot_pixels' "
+                "(pixels of the screenshot it is shown) or 'normalized_1000' "
+                "(0-1000 over the screenshot on both axes, x first). The "
+                "prompt teaches it; the agent converts every point into the "
+                "units of the capability's point actions. Unused when this "
+                "run negotiated no coordinate action."
+            ),
+        ),
+    ] = "screenshot_pixels"
     flash_mode: Annotated[bool, PydanticField(description="Skip thinking for speed")] = True
-    use_vision: Annotated[bool, PydanticField(description="Include screenshots")] = False
     vision_detail: Annotated[
         Literal["auto", "low", "high"], PydanticField(description="Screenshot detail level")
     ] = "low"
@@ -189,20 +381,34 @@ class BrowserUseAgent(AgentBase):
         default=None, init=False, repr=False
     )
     _max_history_steps: int = field(default=10, init=False, repr=False)
-    #: Geometry of the screenshot attached to the *current* step's prompt,
-    #: set by ``build_react_prompt`` and read by ``parse_react_output`` —
-    #: the loop calls the two in that order within one step, so a point in
-    #: the reply is always converted with the image that reply looked at.
-    #: ``None`` when this step showed the model no measurable screenshot.
-    _screenshot_geometry: _ScreenshotGeometry | None = field(
-        default=None, init=False, repr=False
-    )
+    #: The grid over the screenshot attached to the *current* step's
+    #: prompt, set by ``build_react_prompt`` and read by
+    #: ``parse_react_output`` — the loop calls the two in that order within
+    #: one step, so a point in the reply is always converted with the image
+    #: that reply looked at. ``None`` when this step showed the model no
+    #: measurable screenshot.
+    _grid: PointGrid | None = field(default=None, init=False, repr=False)
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``). conscribe's metaclass attaches ``WiredField``
     # descriptors at class creation; the Composer populates them via
     # setattr at wire time. Reading them before injection raises
     # ``AttributeError`` with a clear message.
+
+    def __post_init__(self) -> None:
+        # A cross-field check, so it fails while the Composer is building
+        # the object graph — earlier than negotiation, and long before the
+        # first LLM call. The three fine-tuned templates describe no
+        # surface at all because the checkpoint learned the DOM format;
+        # pointing one at a vision run would ship a prompt that never
+        # mentions how this run sees the page.
+        if self.observation_mode == "vision" and self.is_browser_use_model:
+            raise ValueError(
+                "browser_use: is_browser_use_model=true selects a prompt written "
+                "for a checkpoint fine-tuned on the DOM element tree, which "
+                "observation_mode='vision' never produces. Use 'dom' or "
+                "'dom_vision', or turn is_browser_use_model off."
+            )
 
     # ── BaseAgent properties ───────────────────────────────────
 
@@ -215,13 +421,6 @@ class BrowserUseAgent(AgentBase):
         return "web_navigation"
 
     @property
-    def observation_types(self) -> set[str]:
-        types: set[str] = {"dom", "browser_meta"}
-        if self.use_vision:
-            types.add("screenshot")
-        return types
-
-    @property
     def system_prompt(self) -> PromptSnapshot | None:
         return self._prompt_snapshot
 
@@ -230,6 +429,41 @@ class BrowserUseAgent(AgentBase):
         executable action set; this method just exposes them for
         introspection."""
         return list(self._action_descriptors)
+
+    # ── Negotiation ────────────────────────────────────────────
+
+    def negotiation_demand(self, registry: str) -> tuple[set[str], set[str]]:
+        """This instance's demand, narrowed by ``observation_mode``.
+
+        The mode promotes some of the class's optional keys and excludes
+        others; ``bounded_demand`` then checks the result never left the
+        declared space. Negotiation itself is untouched — it receives one
+        ``(required, optional)`` pair and cannot tell that a mode chose it.
+
+        Both checks run even though ``demand_of`` would run the second
+        one anyway. They answer different questions: ``_ModeDemand.apply``
+        blames the mode table, ``bounded_demand`` blames the instance.
+        """
+        required, optional = super().negotiation_demand(registry)
+        demand = _MODE_DEMAND[self.observation_mode].get(registry)
+        if demand is None:
+            return required, optional
+        narrowed = demand.apply(
+            required,
+            optional,
+            where=f"_MODE_DEMAND[{self.observation_mode!r}][{registry!r}]",
+        )
+        return bounded_demand(self, registry, *narrowed)
+
+    def __repr__(self) -> str:
+        # This exact shape is what ``demand_label`` looks for: a repr that
+        # begins with the registry key is used whole in a negotiation
+        # diagnosis, so ``IncompatibleFragmentError`` says
+        # ``dom ← browser_use(observation_mode='dom')`` instead of leaving
+        # "required fragment 'dom' is missing" as a puzzle. A dataclass's
+        # generated repr would dump the LLM and the memory into the
+        # message; this says the one thing that chose the demand.
+        return f"browser_use(observation_mode={self.observation_mode!r})"
 
     # ── Lifecycle hook called by AgentRuntime ──────────────────
 
@@ -250,24 +484,25 @@ class BrowserUseAgent(AgentBase):
         actually truncates. The agent must not carry its own copy: the
         prompt has to promise exactly what the loop will run.
 
-        Screenshot-point actions (``click_coordinate``) are dropped from what
-        the agent advertises and accepts when ``use_vision`` is off: the
-        model would be taught a verb whose only argument is a point on an
-        image it is never shown. The guard would still execute one; the
-        agent simply never teaches or parses it.
+        The descriptors arrive already narrowed by negotiation, which the
+        mode steered — so there is nothing to filter here. What this does
+        build is the per-run output model: a closed union over exactly
+        these verbs, which is what makes "the prompt advertises what the
+        run can execute" true of the *schema* as well as the prose.
+
+        Raises:
+            UnsupportedParamsSchema: an action's params are outside the
+                closed-union subset — before the first LLM call, not at it.
         """
-        self._action_descriptors = [
-            d
-            for d in action_descriptors
-            if self.use_vision or _local_id(d.name) not in _SCREENSHOT_POINT_PARAMS
-        ]
-        self._screenshot_geometry = None
-        self._per_run_output_model = _build_per_run_output_model(
-            self._action_descriptors,
-        )
+        self._action_descriptors = list(action_descriptors)
+        self._grid = None
+        variant = self.select_prompt_variant()
+        relabel = self._coordinate_relabel()
+        self._per_run_output_model = self._build_per_run_output_model(variant, relabel)
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
             task,
-            self._action_descriptors,
+            variant,
+            relabel,
             max_actions_per_step,
         )
         return [SystemMessage(content=self._system_prompt_text)]
@@ -282,117 +517,224 @@ class BrowserUseAgent(AgentBase):
         <browser_state>...</browser_state>``. ``cache=True`` lets
         Anthropic prefix-cache the (mostly stable) task/state header.
 
-        The one piece of state it records is the geometry of the screenshot
+        The mode decides what goes in: a DOM mode renders the element
+        tree, a vision-capable mode attaches the image. ``vision`` renders
+        no ``dom`` fragment *even if the observation carries one* — a
+        fragment can reach the agent that negotiation did not activate (a
+        loop re-observing, a hand-built observation in a test), and
+        "vision only" has to mean it.
+
+        That gate is on the fragment, not on the whole message. What the
+        step's own history says about the actions it ran is rendered in
+        every mode (see :meth:`_render_history`); keeping DOM-derived text
+        out of *that* is negotiation's job, and in ``vision`` it does it by
+        never activating a verb that returns any.
+
+        The one piece of state it records is the grid over the screenshot
         it attaches, because ``parse_react_output`` has to convert a point
         in the reply with the image that reply was looking at.
+
+        Raises:
+            TypeError: the screenshot fragment reports no geometry while
+                this run has a coordinate action. That is an assembly
+                error — no point on it could ever be executed — so the run
+                stops here rather than feeding the model a parse error per
+                step that it cannot fix.
         """
-        shows_screenshot = self.use_vision and self._observation_has_screenshot(
-            observation
+        screenshot = getattr(observation, "screenshot", None)
+        shows_screenshot = (
+            self.observation_mode in _MODES_WITH_IMAGE
+            and _image_bytes(screenshot) is not None
         )
-        self._screenshot_geometry = (
-            _screenshot_geometry(observation.screenshot) if shows_screenshot else None
-        )
+        self._grid = None
+        if shows_screenshot and self._has_point_actions():
+            if not isinstance(screenshot, ScreenshotGeometry):
+                raise TypeError(
+                    f"{type(screenshot).__name__} reports no screenshot geometry, "
+                    f"so no point this run writes on it can be executed. A "
+                    f"screenshot fragment has to carry image_width, image_height, "
+                    f"viewport_width and viewport_height (ScreenshotGeometry, "
+                    f"spectragent.schemas.observation.geometry)."
+                )
+            self._grid = point_grid(self.coordinate_space, screenshot)
+
         body = self._build_step_text(observation)
         if shows_screenshot:
             return [self._build_vision_message(observation, body)]
         return [UserMessage(content=body, cache=True)]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
-        """Parse a ``BrowserUseOutput`` into canonical Action objects.
+        """Validate a reply against this run's closed schema, as Actions.
 
-        The LLM follows the upstream browser-use prompt template and
-        emits ``{"action": [{"<verb>": {<params>}}, ...]}``. We translate
-        the verb (browser-use vocabulary like ``navigate`` /
-        ``click_element`` / ``go_to_url``) to the canonical
-        ``browser.*`` action names so agent wiring, runtime negotiation
-        and ``guarded_act`` all speak the same vocabulary.
+        Both paths — a provider-validated instance and free-form JSON text
+        — go through the *same* per-run model, so a run that falls back to
+        text is held to the same verb set and the same parameter types as
+        one with constrained decoding.
+
+        Raises:
+            ParseError: anything the model can fix by writing a different
+                reply. The Loop feeds the detail back verbatim, so each
+                one names a single problem.
         """
-        if isinstance(llm_output, BrowserUseOutput):
-            return [
-                self._screenshot_points_to_viewport(action)
-                for action in _items_to_actions(llm_output.action)
-            ]
-
-        # Fallback: parse plain-text JSON.
-        import json
-
-        text = llm_output if isinstance(llm_output, str) else str(llm_output)
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as exc:
+        model = self._per_run_output_model
+        if model is None:
             raise ParseError(
-                f"LLM output is not valid JSON: {exc}",
-                raw_output=text[:500],
-            ) from exc
+                "browser_use.parse_react_output ran before prepare(), so there "
+                "is no negotiated action set to validate against.",
+                raw_output=str(llm_output)[:500],
+            )
 
-        # Validate against the per-run model so the negotiated verb set
-        # rejects hallucinations here, on the text path too — not one
-        # step later at ``guarded_act``. Falls back to the loose base
-        # model only when ``prepare()`` has not run.
-        model = self._per_run_output_model or BrowserUseOutput
-        try:
-            parsed = model.model_validate(data)
-        except Exception as exc:
-            raise ParseError(
-                f"LLM JSON does not match {model.__name__} schema: "
-                f"{type(exc).__name__}: {exc}",
-                raw_output=text[:500],
-            ) from exc
+        parsed: Any = llm_output
+        if not isinstance(llm_output, model):
+            text = llm_output if isinstance(llm_output, str) else str(llm_output)
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ParseError(
+                    f"LLM output is not valid JSON: {exc}",
+                    raw_output=text[:500],
+                ) from exc
+            try:
+                parsed = model.model_validate(data)
+            except Exception as exc:
+                raise ParseError(
+                    f"LLM JSON does not match this run's output schema: "
+                    f"{type(exc).__name__}: {exc}",
+                    raw_output=text[:500],
+                ) from exc
 
-        return self.parse_react_output(parsed)
+        return [self._action_for(item) for item in parsed.action]
 
-    def get_react_output_model(self) -> type[BaseModel] | None:
-        # ``prepare()`` builds a per-run subclass that narrows ``action``
-        # to the negotiated verb set. Falls back to the static loose
-        # model if ``prepare()`` hasn't run yet (defensive — every real
-        # call path goes through prepare first).
-        return self._per_run_output_model or BrowserUseOutput
+    def get_react_output_model(self) -> type[BaseModel]:
+        """The closed per-run model, once ``prepare()`` has built it.
+
+        Never ``None``: an agent that has been prepared always has a verb
+        set, and one that has not cannot answer. The Loop's slot accepts
+        ``type[BaseModel] | None`` for agents like UI-TARS that speak a
+        text protocol; narrowing it here is what lets every caller use the
+        result without a null check.
+
+        Raises:
+            RuntimeError: called before ``prepare()``. Returning a looser
+                fallback instead is how the open ``list[dict[str, Any]]``
+                schema kept reaching providers unnoticed.
+        """
+        if self._per_run_output_model is None:
+            raise RuntimeError(
+                "browser_use.get_react_output_model() was called before "
+                "prepare(); the output schema is built from the negotiated "
+                "action set, which does not exist yet."
+            )
+        return self._per_run_output_model
 
     # ── private helpers ────────────────────────────────────────
 
-    def _screenshot_points_to_viewport(self, action: Action) -> Action:
-        """Convert a screenshot-pixel point into the executor's CSS pixels.
+    def _has_point_actions(self) -> bool:
+        return any(_local_id(d.name) in _POINT_PARAMS for d in self._action_descriptors)
 
-        The model is taught ``click_coordinate`` in the pixels of the image
-        it was shown; ``browser.click_coordinate`` executes CSS viewport
-        pixels. Everything else passes through untouched.
+    def _coordinate_relabel(self) -> dict[str, dict[str, str]]:
+        """Descriptor name → param → the unit *the model* writes it in.
+
+        The capability declares its point params in the units it executes
+        (viewport pixels); the model answers on the grid this agent asked
+        for. Only the description differs — the names are the descriptor's
+        own, and :meth:`_points_to_viewport` is the single conversion.
+        """
+        template = _POINT_DESCRIPTIONS[self.coordinate_space]
+        relabel: dict[str, dict[str, str]] = {}
+        for descriptor in self._action_descriptors:
+            pairs = _POINT_PARAMS.get(_local_id(descriptor.name))
+            if not pairs:
+                continue
+            labels: dict[str, str] = {}
+            for x_key, y_key in pairs:
+                labels[x_key] = template.format(axis="x", edge="left")
+                labels[y_key] = template.format(axis="y", edge="top")
+            relabel[descriptor.name] = labels
+        return relabel
+
+    def _build_per_run_output_model(
+        self,
+        variant: str,
+        relabel: Mapping[str, Mapping[str, str]],
+    ) -> type[BaseModel]:
+        """Compose this run's output model: taught reasoning + closed action.
+
+        The reasoning fields are the ones *this variant's* ``<output>``
+        block teaches and no others. Under OpenAI's strict dialect every
+        property becomes required, so a flash run carrying the full field
+        set would be forced to emit a ``thinking`` block its prompt never
+        asked for.
+        """
+        item, _models = action_union(self._action_descriptors, relabel=relabel)
+        allowed = ", ".join(d.name for d in self._action_descriptors)
+        return _create_model(
+            "BrowserUseOutputForRun",
+            # Providers and gateways inject metadata of their own
+            # (anthropic's ``thought_signature``); refusing it here would
+            # fail a reply that is otherwise exactly right.
+            __config__=ConfigDict(extra="allow"),
+            **reasoning_fields(variant),
+            action=(
+                list[item],  # type: ignore[valid-type]
+                PydanticField(
+                    min_length=1,
+                    description=(
+                        f"Actions to run this step, in order. Each is an object "
+                        f"naming one verb and giving it an object of parameters, "
+                        f"e.g. {{'browser.navigate': {{'url': 'https://...'}}}}. "
+                        f"Allowed verbs: {allowed}."
+                    ),
+                ),
+            ),
+        )
+
+    def _action_for(self, item: BaseModel) -> Action:
+        """One validated union member as an Action, on the executor's grid.
+
+        ``exclude_none`` matters: a model that writes ``clear: null`` means
+        "I have no opinion", and forwarding the ``None`` would override the
+        capability's own ``clear_by_default`` with a value nobody chose.
+        """
+        dumped = item.model_dump(exclude_none=True)
+        name, params = next(iter(dumped.items()))
+        pairs = _POINT_PARAMS.get(_local_id(name))
+        if not pairs:
+            return Action(name=name, params=params)
+        return Action(name=name, params=self._points_to_viewport(name, params, pairs))
+
+    def _points_to_viewport(
+        self,
+        name: str,
+        params: dict[str, Any],
+        pairs: tuple[tuple[str, str], ...],
+    ) -> dict[str, Any]:
+        """Convert every point in *params* onto the executor's grid.
 
         Raises:
             ParseError: the reply names a point but this step showed no
-                measurable screenshot, or a coordinate is not a number. Both
-                go back to the model as feedback rather than clicking a
-                guessed location.
+                measurable screenshot. That goes back to the model rather
+                than clicking a guessed location.
         """
-        point_params = _SCREENSHOT_POINT_PARAMS.get(_local_id(action.name))
-        if point_params is None:
-            return action
-        geometry = self._screenshot_geometry
-        if geometry is None:
+        grid = self._grid
+        if grid is None:
             raise ParseError(
-                f"{action.name} takes a point on the screenshot, but no "
-                f"screenshot with a known size was shown this step. Use an "
-                f"index-based action instead.",
-                raw_output=str(action.params)[:500],
+                f"{name} takes a point on the screenshot, but this step showed "
+                f"no screenshot with a known size, so the point cannot be "
+                f"placed.",
+                raw_output=str(params)[:500],
             )
-        params = dict(action.params)
-        for x_key, y_key in point_params:
-            try:
-                x = float(params[x_key])
-                y = float(params[y_key])
-            except KeyError as exc:
+        converted = dict(params)
+        for x_key, y_key in pairs:
+            x, y = converted.get(x_key), converted.get(y_key)
+            if x is None or y is None:
                 raise ParseError(
-                    f"{action.name} is missing {exc.args[0]!r}; it needs both "
-                    f"{x_key!r} and {y_key!r} in screenshot pixels.",
-                    raw_output=str(action.params)[:500],
-                ) from exc
-            except (TypeError, ValueError) as exc:
-                raise ParseError(
-                    f"{action.name}: {x_key!r}/{y_key!r} must be numbers, got "
-                    f"{params.get(x_key)!r}, {params.get(y_key)!r}.",
-                    raw_output=str(action.params)[:500],
-                ) from exc
-            params[x_key], params[y_key] = geometry.to_viewport(x, y)
-        return Action(name=action.name, params=params)
+                    f"{name} needs both {x_key!r} and {y_key!r}; it was given "
+                    f"{x_key}={x!r}, {y_key}={y!r}.",
+                    raw_output=str(params)[:500],
+                )
+            converted[x_key], converted[y_key] = grid.to_viewport(float(x), float(y))
+        return converted
 
     def select_prompt_variant(self) -> str:
         """Which template on disk this configuration reads.
@@ -405,6 +747,11 @@ class BrowserUseAgent(AgentBase):
         truth that can disagree. ``tests/test_agents/test_prompt_tree.py``
         enumerates this over the whole config matrix to prove every file
         in the directory is reachable and none is orphaned.
+
+        ``observation_mode`` is deliberately *not* an axis here: the modes
+        share one prompt tree and differ only by the surface fragment
+        spliced into it, so a DOM/vision ablation cannot be confounded by
+        two separately worded templates.
         """
         is_anthropic_4_5 = _is_anthropic_4_5_model(self.model_name)
 
@@ -426,10 +773,30 @@ class BrowserUseAgent(AgentBase):
         else:
             return "system_prompt_no_thinking"
 
+    def _render_surface(self) -> str:
+        """The mode's description of how this run sees and reaches the page.
+
+        Loaded from ``prompts/agents/browser_use/_surface/`` — a
+        subdirectory, so ``agent_prompt_variants`` (which globs the top
+        level) cannot mistake a fragment for a template variant. The
+        coordinate paragraph is appended from code because it depends on
+        ``coordinate_space``, and only when this run actually negotiated
+        an action that takes a point.
+        """
+        stem = self.observation_mode
+        if self.select_prompt_variant() in _TERSE_VARIANTS:
+            stem = f"{stem}_terse"
+        text, _ref = load_prompt_fragment(self.__registry_key__, "_surface", stem)
+        text = text.strip()
+        if self._has_point_actions():
+            text = f"{text}\n{_COORDINATE_GUIDE[self.coordinate_space]}"
+        return text
+
     def _build_system_prompt(
         self,
         task: str,  # noqa: ARG002 — reserved; some prompt templates may consume it later
-        action_space: list[ActionDescriptor],
+        variant: str,
+        relabel: Mapping[str, Mapping[str, str]],
         max_actions_per_step: int = 1,
     ) -> tuple[str, PromptSnapshot]:
         """Return the system prompt and the snapshot that explains it."""
@@ -443,13 +810,17 @@ class BrowserUseAgent(AgentBase):
                 ),
             )
         else:
-            text, snapshot = self.render(
-                self.select_prompt_variant(),
-                {
-                    "max_actions": max_actions_per_step,
-                    "action_list": self._render_action_list(action_space),
-                },
-            )
+            params: dict[str, Any] = {
+                "max_actions": max_actions_per_step,
+                "action_list": _render_action_list(self._action_descriptors, relabel),
+            }
+            # The fine-tuned templates describe no surface, so handing
+            # them one would be a param nothing renders — which
+            # ``test_prompt_tree`` reads as "the agent computed something
+            # the model never sees", and rightly.
+            if variant not in _FINE_TUNED_VARIANTS:
+                params["surface"] = self._render_surface()
+            text, snapshot = self.render(variant, params)
 
         if self.extend_system_message:
             # The extension is appended *after* substitution, so the
@@ -459,58 +830,11 @@ class BrowserUseAgent(AgentBase):
             snapshot = text_snapshot(text, snapshot.ref)
         return text, snapshot
 
-    @staticmethod
-    def _render_action_list(descriptors: list[ActionDescriptor]) -> str:
-        """Render action descriptors as a markdown bullet list for the prompt.
-
-        Each line: ``- `<descriptor_name>(<params>)` — <description>``.
-
-        The descriptor's own name is used verbatim, so the prompt
-        advertises exactly the vocabulary ``env.act`` routes on. The
-        parser additionally accepts each action's local id and the three
-        legacy upstream verbs; a local id is resolved to a provider by
-        ``build_guarded_act``, never here.
-
-        Param descriptions are verbatim too, with one exception: a
-        screenshot-point param (``_SCREENSHOT_POINT_PARAMS``) is described in
-        the unit the model writes it in — screenshot pixels — not the CSS
-        pixels the executor declares. The *names* never change.
-
-        Empty list yields an empty string — only happens before
-        ``prepare()`` runs or in degenerate test fixtures.
-        """
-        if not descriptors:
-            return ""
-        lines: list[str] = []
-        for d in descriptors:
-            if d.params:
-                model_facing: dict[str, str] = {}
-                for pair, docs in _SCREENSHOT_POINT_PARAMS.get(_local_id(d.name), {}).items():
-                    model_facing.update(zip(pair, docs, strict=True))
-                params_part = ", ".join(
-                    f"{k}: {model_facing.get(k, v)}" for k, v in d.params.items()
-                )
-            else:
-                params_part = "no params"
-            lines.append(f"- `{d.name}({params_part})` — {d.description}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _observation_has_screenshot(observation: Any) -> bool:
-        """Check whether a NegotiatedObservation has screenshot data."""
-        screenshot = getattr(observation, "screenshot", None)
-        if screenshot is None:
-            return False
-        return getattr(screenshot, "image_bytes", None) is not None or (
-            getattr(screenshot, "image_path", None) is not None
-        )
-
     def _build_vision_message(self, observation: Any, body: str) -> UserMessage:
         """Build a multi-modal user message with body + screenshot.
 
-        Caller already checked ``_observation_has_screenshot`` so
-        ``image_bytes`` (or ``image_path``) is guaranteed present, and
-        already constructed the structured XML body.
+        Caller already checked that the screenshot has bytes, and already
+        constructed the structured XML body.
         """
         import base64
 
@@ -520,12 +844,8 @@ class BrowserUseAgent(AgentBase):
             ImageURL,
         )
 
-        screenshot = observation.screenshot
-        image_bytes = getattr(screenshot, "image_bytes", None)
-        if image_bytes is None:
-            with open(screenshot.image_path, "rb") as f:
-                image_bytes = f.read()
-
+        image_bytes = _image_bytes(observation.screenshot)
+        assert image_bytes is not None  # noqa: S101 — caller's precondition
         b64 = base64.b64encode(image_bytes).decode()
         content: list[Any] = [
             ContentPartTextParam(text=body),
@@ -541,7 +861,8 @@ class BrowserUseAgent(AgentBase):
     def _build_step_text(self, observation: Any) -> str:
         """Compose the per-step XML user-message body.
 
-        Layout (upstream browser-use prompts.py:400-416):
+        Layout (upstream browser-use prompts.py:400-416)::
+
             <agent_history>...</agent_history>
             <agent_state>
               <user_request>...</user_request>
@@ -557,15 +878,14 @@ class BrowserUseAgent(AgentBase):
         history_xml = self._render_history(getattr(observation, "history", None))
         state_xml = self._render_agent_state(observation)
         browser_xml = self._render_browser_state(observation)
-        geometry = self._screenshot_geometry
-        if geometry is not None and any(
-            _local_id(d.name) in _SCREENSHOT_POINT_PARAMS for d in self._action_descriptors
-        ):
+        grid = self._grid
+        # Only the pixel grid needs a size: a 0-1000 grid is defined over
+        # whatever size the image happens to have, so stating the pixels
+        # would invite the model to answer in them.
+        if grid is not None and grid.space == "screenshot_pixels":
             browser_xml += (
-                f"\n\nScreenshot: {geometry.image_width}x{geometry.image_height} "
-                f"pixels, showing the whole visible viewport. Coordinates for "
-                f"click_coordinate are pixels of this screenshot, origin (0, 0) "
-                f"at its top-left corner."
+                f"\n\nScreenshot: {grid.width}x{grid.height} pixels, showing the "
+                f"whole visible viewport."
             )
         return (
             f"<agent_history>\n{history_xml}\n</agent_history>\n"
@@ -589,6 +909,19 @@ class BrowserUseAgent(AgentBase):
         return f"<agent_state>\n{body}\n</agent_state>"
 
     def _render_history(self, history: Any) -> str:
+        """What this run already did, in every mode.
+
+        Deliberately not gated on the mode. These are the run's own past
+        actions and their results — the model needs them to avoid
+        repeating a step, and in ``vision`` they are the actions that mode
+        negotiated, whose results carry no element tree. The invariant
+        "``vision`` sees no DOM" is held where it is decidable: the ``dom``
+        fragment is never rendered (:meth:`_render_browser_state`), and
+        ``extract_content`` — DOM-derived text under another name — is
+        excluded from the mode's action demand, so no result can contain
+        any. Filtering the text here instead would be guessing at a
+        provenance the string does not carry.
+        """
         items = list(getattr(history, "items", []) or [])
         if not items:
             return "<step_1>\n(no prior steps)\n</step_1>"
@@ -616,10 +949,15 @@ class BrowserUseAgent(AgentBase):
             )
         return "\n".join(blocks)
 
-    @staticmethod
-    def _render_browser_state(observation: Any) -> str:
-        """URL / Title / Tabs / DOM block. Mirrors upstream's <browser_state>
-        but without page_stats / page_info / recent_events (ScratchpadCapability)."""
+    def _render_browser_state(self, observation: Any) -> str:
+        """URL / Title / Tabs / DOM block.
+
+        The DOM half is gated on the *mode*, not on whether the
+        observation happens to carry a ``dom`` fragment. In ``vision`` the
+        tree never reaches the model even if something put one on the
+        observation — which is what makes a vision ablation a vision
+        ablation.
+        """
         parts: list[str] = []
         meta = getattr(observation, "browser_meta", None)
         if meta is not None:
@@ -637,9 +975,9 @@ class BrowserUseAgent(AgentBase):
                 )
                 parts.append(f"Tabs: {tab_info}")
 
-        dom = getattr(observation, "dom", None)
-        if dom is not None:
-            element_tree = getattr(dom, "element_tree", None)
+        if self.observation_mode in _MODES_WITH_DOM:
+            dom = getattr(observation, "dom", None)
+            element_tree = getattr(dom, "element_tree", None) if dom is not None else None
             if element_tree is not None:
                 dom_str = getattr(element_tree, "serialized_dom", "") or str(element_tree)
                 if len(dom_str) > 10000:
@@ -649,169 +987,56 @@ class BrowserUseAgent(AgentBase):
         return "\n\n".join(parts) if parts else "(empty browser state)"
 
 
-def _screenshot_geometry(screenshot: Any) -> _ScreenshotGeometry | None:
-    """Geometry of a ``ScreenshotObs``, or ``None`` if any size is unknown.
-
-    Both sizes are the capability's to report (``image_*`` is read from the
-    captured PNG, ``viewport_*`` is the CSS viewport). A fragment missing
-    either has no defined conversion, so the agent refuses to convert rather
-    than assume device scale factor 1.
-    """
-    image_w = int(getattr(screenshot, "image_width", 0) or 0)
-    image_h = int(getattr(screenshot, "image_height", 0) or 0)
-    viewport_w = int(getattr(screenshot, "viewport_width", 0) or 0)
-    viewport_h = int(getattr(screenshot, "viewport_height", 0) or 0)
-    if not (image_w and image_h and viewport_w and viewport_h):
+def _image_bytes(screenshot: Any) -> bytes | None:
+    """The PNG bytes of a screenshot fragment, reading a path if needed."""
+    if screenshot is None:
         return None
-    return _ScreenshotGeometry(image_w, image_h, viewport_w, viewport_h)
+    image_bytes = getattr(screenshot, "image_bytes", None)
+    if image_bytes is not None:
+        return image_bytes
+    image_path = getattr(screenshot, "image_path", None)
+    if not image_path:
+        return None
+    with open(image_path, "rb") as f:
+        return f.read()
 
 
-def _build_per_run_output_model(
+def _render_action_list(
     descriptors: list[ActionDescriptor],
-) -> type[BrowserUseOutput]:
-    """Return a per-run :class:`BrowserUseOutput` subclass narrowing ``action``.
+    relabel: Mapping[str, Mapping[str, str]],
+) -> str:
+    """Render action descriptors as a markdown bullet list for the prompt.
 
-    The static ``BrowserUseOutput.action`` is ``list[dict[str, Any]]`` —
-    the LLM can write any verb and the schema accepts it, so hallucinated
-    actions only get caught downstream at ``guarded_act``, one step and a
-    whole prompt's tokens later. Attaching a per-item validator that
-    knows the negotiated allowed-verb set moves that rejection to
-    ``parse_react_output`` time, and the error message carries the
-    allowed set so the LLM gets a self-correction signal on its next
-    turn.
+    Each line: ``- `<descriptor_name>(<params>)` — <description>``.
 
-    **The narrowing is Python-side only.** The verb domain lives in an
-    ``AfterValidator``, which contributes nothing to
-    ``model_json_schema()`` — the field still compiles to
-    ``{"type": "array", "items": {"type": "object"}}``, byte-identical to
-    the base model. That is deliberate: the field is an open
-    ``{"<verb>": {<params>}}`` map, and JSON Schema cannot constrain a
-    map's key domain in a way the provider structured-output dialects
-    accept. Do not read this model as provider-enforced.
+    The descriptor's own name is used verbatim, so the prompt advertises
+    exactly the vocabulary the closed schema permits, ``env.act`` routes
+    on, and the trace records. There is no alias table and no local-id
+    fallback: a name the model writes is a name the run holds.
 
-    Keeping ``action`` typed ``list[dict[str, Any]]`` (rather than
-    wrapping items in a ``RootModel``) also keeps the two output models
-    wire-identical downstream: ``parse_react_output`` /
-    ``_items_to_actions`` see plain dicts either way, and
-    ``model_dump_json()`` round-trips without a Pydantic serializer
-    mismatch.
+    Param text is verbatim too, except where *relabel* names the grid the
+    model answers on rather than the units the executor declares. The
+    *names* never change.
 
-    The allowed set is the union of:
-
-    - the descriptor names this run negotiated (``browser.click`` etc.)
-    - their local ids (``click``), which the guard resolves back to a
-      provider
-    - legacy upstream browser-use verbs (``click_element``,
-      ``input_text``, ``go_to_url``) whose local id is in the run set
-
-    This is an *acceptance* surface, not a name-to-provider map: it says
-    which strings are worth forwarding, and never which capability one of
-    them means.
+    Empty list yields an empty string — only in degenerate fixtures;
+    ``prepare()`` refuses to build a schema with no verbs in it.
     """
-    advertised = {d.name for d in descriptors}
-    local_ids = {name.rsplit(".", 1)[-1] for name in advertised}
-    legacy_aliases = {
-        legacy
-        for legacy, local in _LLM_VOCABULARY_TO_LOCAL.items()
-        if local in local_ids
-    }
-    allowed: frozenset[str] = frozenset(advertised | local_ids | legacy_aliases)
-    allowed_sorted = sorted(allowed)
-
-    def _check_action_item(item: dict[str, Any]) -> dict[str, Any]:
-        if len(item) != 1:
-            raise ValueError(
-                f"action item must have exactly one key, got {sorted(item)}"
+    if not descriptors:
+        return ""
+    lines: list[str] = []
+    for d in descriptors:
+        if d.params:
+            labels = relabel.get(d.name, {})
+            params_part = ", ".join(
+                f"{k}: {labels.get(k, v)}" for k, v in d.params.items()
             )
-        verb, params = next(iter(item.items()))
-        if verb not in allowed:
-            raise ValueError(
-                f"unknown action {verb!r}; allowed: {allowed_sorted}"
-            )
-        if not isinstance(params, dict):
-            raise ValueError(
-                f"params for {verb!r} must be an object, got "
-                f"{type(params).__name__}"
-            )
-        return item
-
-    _action_description = (
-        "Action list. Each item is a single-key object where the key is the "
-        "action name and the value is its params object, e.g. "
-        "``{'browser.navigate': {'url': 'https://...'}}``. The key must be "
-        f"one of: {', '.join(allowed_sorted)}."
-    )
-
-    # Named at definition, not patched onto ``__name__`` afterwards:
-    # Pydantic freezes the class name into the core schema at creation, so
-    # a later rename left ``ValidationError`` saying ``_PerRunOutput``
-    # while every other surface said ``BrowserUseOutputForRun``. That
-    # error text is fed back to the LLM as a self-correction signal.
-    class BrowserUseOutputForRun(BrowserUseOutput):
-        # Two deliberate differences from the base field:
-        #
-        # 1. No default — ``action`` becomes ``required`` in the emitted
-        #    JSON schema, so constrained decoding forces the model to
-        #    produce one. (pyright wants an override to keep the base's
-        #    default; here losing it is the point.)
-        # 2. The description is restated. Redeclaring a field drops the
-        #    base's, and this schema is now shipped to providers, where
-        #    ``description`` is the one channel every structured-output
-        #    dialect passes to the model verbatim — so it carries the
-        #    negotiated verb set.
-        action: list[  # pyright: ignore[reportGeneralTypeIssues]
-            Annotated[dict[str, Any], AfterValidator(_check_action_item)]
-        ] = PydanticField(description=_action_description)
-
-    BrowserUseOutputForRun.__qualname__ = "BrowserUseOutputForRun"
-    return BrowserUseOutputForRun
+        else:
+            params_part = "no params"
+        lines.append(f"- `{d.name}({params_part})` — {d.description}")
+    return "\n".join(lines)
 
 
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "... (truncated)"
-
-
-def _items_to_actions(items: list[dict[str, Any]]) -> list[Action]:
-    """Translate ``[{"<verb>": {<params>}}, ...]`` into Actions.
-
-    Each item is a single-key dict (the upstream browser-use shape).
-    The key is the action verb in browser-use vocabulary; the value is
-    the params dict. Legacy upstream verbs are renamed to the matching
-    action's local id; everything else is passed through as written, and
-    a local id is bound to a capability by ``build_guarded_act``. Minimal
-    per-action param renames (``done.text`` → ``extracted_content``) are
-    applied here because they are domain knowledge about the action, not
-    about its provider.
-    """
-    if not items:
-        raise ParseError(
-            "LLM output had an empty 'action' list — at least one action is required.",
-            raw_output=str(items)[:500],
-        )
-
-    actions: list[Action] = []
-    for raw in items:
-        if not isinstance(raw, dict) or len(raw) != 1:
-            raise ParseError(
-                f"Each action must be a single-key dict like {{'navigate': {{...}}}}; "
-                f"got {raw!r}",
-                raw_output=str(items)[:500],
-            )
-        verb, params = next(iter(raw.items()))
-        if not isinstance(params, dict):
-            params = {}
-        name = _LLM_VOCABULARY_TO_LOCAL.get(verb, verb)
-        # Done's answer text comes in under 'text'; DoneAction reads
-        # 'extracted_content'. Rename onto a fresh dict so we don't
-        # mutate the caller's payload.
-        params = dict(params)
-        if (
-            name.rsplit(".", 1)[-1] == "done"
-            and "text" in params
-            and "extracted_content" not in params
-        ):
-            params["extracted_content"] = params.pop("text")
-        actions.append(Action(name=name, params=params))
-    return actions

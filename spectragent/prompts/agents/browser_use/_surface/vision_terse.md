@@ -1,0 +1,1 @@
+<browser_vision>A screenshot of the viewport is attached every step and is your only picture of the page. There is no element list and no index: read the image and say where to act. Only what is in the viewport is in the image — scroll to see the rest. Coordinates are read off this step's screenshot and go stale the moment the page changes.</browser_vision>

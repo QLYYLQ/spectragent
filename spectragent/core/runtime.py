@@ -290,8 +290,20 @@ class AgentRuntime:
         weaver.raise_for_unclaimed_roles()
 
         # Step 4: Narrow descriptors via the action negotiation result.
+        #
+        # The observation result travels with it. A parameter can depend on
+        # a fragment — ``browser.scroll``'s ``index`` addresses the
+        # selector map ``browser.dom`` builds — and only the capability
+        # knows which. Handing it the active fragment set lets it drop
+        # those params before they are advertised, so a vision-only run's
+        # prompt never teaches an index it could not resolve. This is the
+        # same ``**context`` channel a per-task tool schema rides
+        # (architecture_design.md §4.9); the negotiation rules are
+        # untouched, and a capability that ignores ``fragments`` behaves
+        # exactly as before.
         narrowed_descriptors = wrapped_env.get_action_space(
             active_actions=negotiated_actions.active_actions,
+            fragments=negotiated_obs.active_fragments,
         )
         active_descriptors, act_fn = build_guarded_act(
             wrapped_env.act,

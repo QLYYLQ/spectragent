@@ -26,9 +26,21 @@ class ActionDescriptor(BaseModel):
     ``ActionDescriptor(name=self.action_id, ...)``, so the advertised name
     and the routing key cannot drift.
 
-    Two parameter description modes coexist:
-    - ``params`` (simple): ``{"url": "string", "index": "integer"}``
-    - ``params_schema`` (rich): full JSON Schema for complex/dynamic tools
+    The two parameter fields are **one** contract seen twice, not a simple
+    mode and a rich one. Every action declares a typed ``Params`` model;
+    ``ActionBase.describe`` compiles it once
+    (``core/actions/params.py``) into:
+
+    - ``params_schema`` — the JSON Schema a provider constrains on, and
+      what an agent compiles into its closed per-run output model;
+    - ``params`` — the prose the prompt shows, *rendered from that same
+      schema* (``{"url": "str -- where to go"}``), never hand-written.
+
+    So they cannot describe different parameters, and a param-level
+    ``RequiresFragment`` that drops a param this run cannot honour drops
+    it from both at once. ``params_schema`` is populated on every
+    registered action; ``None`` means an action that has not been given a
+    ``Params`` model yet, not a simpler kind of action.
 
     There is deliberately no conversion to a provider function-calling
     schema here; see ``docs/action_descriptor_vs_tool_definition.md``.

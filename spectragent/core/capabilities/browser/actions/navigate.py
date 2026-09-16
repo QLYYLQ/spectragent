@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
+from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
@@ -53,12 +54,13 @@ class NavigateAction(SettleableAction, ActionBase):
         ),
     ] = None
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        url: str
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description="Navigate to a URL.",
-            params={"url": "str"},
-        )
+        return self.describe("Navigate to a URL.", **context)
 
     async def execute(
         self,

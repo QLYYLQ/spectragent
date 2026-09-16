@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict
+
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
@@ -23,11 +25,14 @@ class SendKeysAction(SettleableAction, ActionBase):
 
     __registry_key__ = "browser.send_keys"
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        keys: str
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description="Send keyboard keys (e.g. Enter, Escape, Ctrl+A).",
-            params={"keys": "str"},
+        return self.describe(
+            "Send keyboard keys (e.g. Enter, Escape, Ctrl+A).", **context
         )
 
     async def execute(

@@ -151,10 +151,18 @@ class ChatAzureOpenAI(OpenAICompatBase):
                     raise ModelProviderError(message="Failed to parse structured output", status_code=500, model=self.name)
                 usage = self._get_usage_from_responses(response)
                 return ChatInvokeCompletion(
-                    completion=output_format.model_validate_json(response.output_text),
+                    completion=self._validate_structured(
+                        output_format, response.output_text, usage=usage
+                    ),
                     usage=usage,
                     stop_reason=response.status if response.status else None,
                 )
+        except ModelProviderError:
+            # Already typed — a reply the model can fix
+            # (StructuredOutputValidationError) must not be flattened into a
+            # generic provider failure by the catch-all below, or the Loop
+            # ends the run over one mistyped parameter.
+            raise
         except RateLimitError as e:
             raise ModelRateLimitError(message=e.message, model=self.name) from e
         except APIConnectionError as e:

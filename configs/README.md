@@ -89,9 +89,47 @@ The list is also an **ablation switch**: only the actions it names are instantia
 
 `action_id` uses the fully-qualified registry key (`browser.scroll`, not `scroll`).
 
+## What browser_use sees: `observation_mode`
+
+`browser_use` has one knob for the whole surface, and it replaces `use_vision`:
+
+```yaml
+agent:
+  - agent_id: browser_use
+    observation_mode: dom          # dom | dom_vision | vision
+```
+
+| mode | in the model's context | click verbs | DOM extracted |
+|---|---|---|---|
+| `dom` (default) | the element tree as text | `browser.click` (index) | yes |
+| `dom_vision` | that plus a screenshot | `browser.click` **and** `browser.click_coordinate`, independently | yes |
+| `vision` | a screenshot, plus URL / title / tabs | `browser.click_coordinate` only | **no** |
+
+`use_vision: false` was `dom`; `use_vision: true` was `dom_vision`.
+
+Three things follow from the enum, so there is nothing else to keep in sync:
+
+- **what the prompt describes** — one prompt tree, one surface fragment spliced in, so a DOM/vision ablation differs by that fragment and nothing else;
+- **what the run negotiates** — `vision` never asks for `browser.dom`, so no DOM is extracted at all (not extracted and then hidden), and index-addressed actions are not activated;
+- **what the model may emit** — the output schema is compiled from the negotiated actions, so a verb this mode does not have cannot be written.
+
+The mode is never inferred from the environment. `observation_mode: dom` against `profile: vision_only` fails at negotiation, before the browser is launched:
+
+```
+IncompatibleFragmentError: Required observation fragments not provided by environment.
+Missing: ['dom']. Requested by: dom ← browser_use(observation_mode='dom').
+Environment provides: ['browser.browser_meta', 'browser.screenshot'].
+```
+
+The requester is named because the fix is not obvious without it: `observation_mode` and `profile` point at opposite edits, and a mistyped profile must not quietly turn a DOM experiment into a vision one.
+
+Screenshots are captured and recorded in **every** mode: `online_mind2web` and `lexbench_browser` score runs from the screenshots in the trace. The mode decides what the model sees, not what the run records.
+
+For a vision run, prefer `profile: standard` over `vision_only`: negotiation already skips DOM extraction, and `vision_only` additionally drops the SecurityWatchdog, so domain allow/deny lists silently stop applying.
+
 ## Vision agents
 
-A vision agent (`ui_tars`, or `browser_use` clicking with `click_coordinate`) aims at the screenshot the step showed. Two settings decide whether that is still the page it acts on.
+A vision agent (`ui_tars`, or `browser_use` in `dom_vision` / `vision`) aims at the screenshot the step showed. Two settings decide whether that is still the page it acts on.
 
 **When the screenshot is taken.** The next observation is captured as soon as the step's last action returns, and an action returns `post_delay_ms` after its effect was dispatched (default `0`). A widget that is still animating then — a reCAPTCHA spinner, an image challenge fading in — is captured mid-animation, and the next reply aims at what is no longer there. Give the coordinate actions a settle delay:
 
@@ -120,7 +158,9 @@ agent:
     coordinate_space: normalized_1000
 ```
 
-Which grid a given model uses is not something to guess from its name: check a few of its answers against known element positions before a run. A point off the grid is clamped onto the edge of the viewport, as it is for `browser_use`.
+`browser_use` takes the same field, with the same two values, and uses it the same way — it is a property of the model, not of the agent class.
+
+Which grid a given model uses is not something to guess from its name: check a few of its answers against known element positions before a run. A point off the grid is clamped onto the edge of the viewport.
 
 ## Switching backend
 

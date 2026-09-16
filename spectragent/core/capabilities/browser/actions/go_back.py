@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict
+
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
@@ -23,12 +25,15 @@ class GoBackAction(SettleableAction, ActionBase):
 
     __registry_key__ = "browser.go_back"
 
+    class Params(BaseModel):
+        """No parameters. Still a model: a provider dialect that cannot
+        express an empty object (Gemini's) is the provider's problem to
+        solve, not a reason for one action to have no contract."""
+
+        model_config = ConfigDict(extra="forbid")
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description="Navigate back in browser history.",
-            params={},
-        )
+        return self.describe("Navigate back in browser history.", **context)
 
     async def execute(
         self,

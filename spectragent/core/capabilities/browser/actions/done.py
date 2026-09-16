@@ -9,7 +9,10 @@ source of truth for the done-answer payload — no aliasing, no renames.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -24,15 +27,18 @@ class DoneAction(ActionBase):
 
     __registry_key__ = "browser.done"
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        #: Required *and* nullable: every run ends by stating its answer,
+        #: and ``null`` is the honest answer to a task that has none.
+        extracted_content: Annotated[
+            str | None, PydanticField(description="final answer / result text")
+        ]
+        success: bool | None = None
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description="Signal that the task is complete.",
-            params={
-                "extracted_content": "str | None -- final answer / result text",
-                "success": "bool (optional)",
-            },
-        )
+        return self.describe("Signal that the task is complete.", **context)
 
     async def execute(
         self,
@@ -40,8 +46,9 @@ class DoneAction(ActionBase):
         *,
         capability: BrowserCapability,
     ) -> ActionResult:
+        requested = params.get("success")
         return ActionResult(
-            success=bool(params.get("success", True)),
+            success=True if requested is None else bool(requested),
             is_done=True,
             extracted_content=params.get("extracted_content"),
         )

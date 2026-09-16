@@ -1,249 +1,246 @@
-"""BrowserUseAgent — per-run output validation + action_list rendering.
+"""BrowserUseAgent — the closed per-run action schema.
 
-Covers two pieces added in M14.5:
+What used to live here: an ``AfterValidator`` over ``list[dict[str, Any]]``
+that knew the negotiated verb *names* and accepted three spellings of each
+(canonical, local id, upstream alias). It contributed nothing to the JSON
+schema, so a provider saw an open map and Gemini answered ``{}``.
 
-1. ``_build_per_run_output_model`` builds a Pydantic subclass of
-   ``BrowserUseOutput`` whose ``action`` field rejects verbs outside
-   the negotiated set, including hallucinated names and multi-key
-   single-action items.
+What lives here now: the union built by ``agents/_action_union.py``. One
+single-key model per negotiated verb, dispatched by a ``BeforeValidator``,
+so the schema *is* the vocabulary — one spelling, the fully-qualified key,
+the same string the prompt advertises and ``env.act`` routes on.
 
-2. ``BrowserUseAgent._render_action_list`` formats the descriptors for
-   prompt injection — empty list yields empty string, populated list
-   yields stable canonical-name bullet output, params hint is preserved
-   verbatim from each ``ActionDescriptor``.
+The other half of the file is the error surface, because every message
+here is fed verbatim back to the model by ``ReactLoop``: one line, naming
+the verb, never one complaint per union branch.
 """
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
-from spectragent.agents._output_models import BrowserUseOutput
-from spectragent.agents.browser_use import (
-    BrowserUseAgent,
-    _build_per_run_output_model,
-)
+import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
+from spectragent.agents._action_union import UnsupportedParamsSchema, action_union
+from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.schemas.action import ActionDescriptor
 
 
-def _descriptors(*pairs: tuple[str, str, dict[str, str]]) -> list[ActionDescriptor]:
-    return [
-        ActionDescriptor(name=name, description=desc, params=params)
-        for name, desc, params in pairs
-    ]
+def _descriptors(*keys: str) -> list[ActionDescriptor]:
+    """Real descriptors, because the union is built from ``params_schema``."""
+    return [ActionRegistrar.get(key)().descriptor() for key in keys]
 
 
-# ── Per-run output model — verb validation ────────────────────────────
+def _errors(exc: ValidationError) -> list[str]:
+    return [f"{e['loc']}: {e['msg']}" for e in exc.errors()]
 
 
-class TestPerRunOutputValidation:
-    def _model_with(self, *names: str):
-        descs = _descriptors(*[(n, "x", {}) for n in names])
-        return _build_per_run_output_model(descs)
+# ── The union ─────────────────────────────────────────────────────────
 
-    def test_accepts_canonical_name(self) -> None:
-        Model = self._model_with("browser.click", "browser.navigate")
-        out = Model.model_validate(
-            {
-                "memory": "x",
-                "action": [{"browser.click": {"index": 1}}],
-            }
+
+class TestClosedUnion:
+    def _model(self, *keys: str) -> Any:
+        agent = BrowserUseAgent(flash_mode=True)
+        agent.prepare(task="t", action_descriptors=_descriptors(*keys))
+        return agent.get_react_output_model()
+
+    def test_accepts_the_fully_qualified_key(self) -> None:
+        model = self._model("browser.click", "browser.navigate")
+        out = model.model_validate(
+            {"memory": "x", "action": [{"browser.click": {"index": 1}}]}
         )
-        # ``action`` stays ``list[dict]`` — wire-identical to the base
-        # model, so ``_items_to_actions`` needs no unwrapping.
-        assert out.action[0] == {"browser.click": {"index": 1}}
+        assert out.action[0].model_dump() == {"browser.click": {"index": 1}}
 
-    def test_accepts_short_alias(self) -> None:
-        # ``"click"`` short alias is allowed when ``browser.click`` is in
-        # the negotiated set — the run's ``action_bindings`` bridge them,
-        # and ``build_guarded_act`` is the one place that resolution happens.
-        Model = self._model_with("browser.click", "browser.navigate")
-        Model.model_validate(
-            {"memory": "", "action": [{"click": {"index": 1}}]}
-        )
+    def test_refuses_the_local_id(self) -> None:
+        """No short form. ``build_guarded_act`` used to bind one late.
 
-    def test_accepts_legacy_alias(self) -> None:
-        # ``"click_element"`` is the upstream browser-use vocabulary; allowed
-        # when ``browser.click`` is in the negotiated set.
-        Model = self._model_with("browser.click")
-        Model.model_validate(
-            {"memory": "", "action": [{"click_element": {"index": 1}}]}
-        )
-
-    def test_rejects_unknown_verb(self) -> None:
-        Model = self._model_with("browser.click", "browser.navigate")
+        The prompt advertises ``browser.click`` and the schema permits
+        ``browser.click``; accepting ``click`` as well meant the run had
+        two names for one action and the trace could record either.
+        """
+        model = self._model("browser.click", "browser.navigate")
         with pytest.raises(ValidationError) as exc:
-            Model.model_validate(
-                {"memory": "", "action": [{"refresh_browser": {}}]}
-            )
-        msg = str(exc.value)
-        assert "unknown action 'refresh_browser'" in msg
-        # Error message lists the allowed set so the LLM can self-correct.
-        assert "browser.click" in msg
-
-    def test_rejects_short_alias_when_canonical_not_in_set(self) -> None:
-        # ``browser.click`` not negotiated → short alias ``click`` rejected.
-        Model = self._model_with("browser.navigate", "browser.done")
-        with pytest.raises(ValidationError) as exc:
-            Model.model_validate(
-                {"memory": "", "action": [{"click": {"index": 1}}]}
-            )
+            model.model_validate({"memory": "", "action": [{"click": {"index": 1}}]})
         assert "unknown action 'click'" in str(exc.value)
 
-    def test_rejects_multi_key_action_item(self) -> None:
-        Model = self._model_with("browser.click", "browser.navigate")
+    def test_refuses_the_upstream_alias(self) -> None:
+        """``click_element`` / ``input_text`` / ``go_to_url`` are gone.
+
+        No template ever taught them, so the table was pure accommodation.
+        """
+        model = self._model("browser.click")
         with pytest.raises(ValidationError) as exc:
-            Model.model_validate(
+            model.model_validate(
+                {"memory": "", "action": [{"click_element": {"index": 1}}]}
+            )
+        assert "unknown action 'click_element'" in str(exc.value)
+
+    def test_unknown_verb_is_one_error_that_lists_the_allowed_set(self) -> None:
+        model = self._model("browser.click", "browser.navigate")
+        with pytest.raises(ValidationError) as exc:
+            model.model_validate({"memory": "", "action": [{"refresh": {}}]})
+        assert len(exc.value.errors()) == 1, _errors(exc.value)
+        message = str(exc.value)
+        assert "unknown action 'refresh'" in message
+        assert "browser.click" in message and "browser.navigate" in message
+
+    def test_empty_action_item_is_one_error(self) -> None:
+        """The failure this whole design exists to make impossible.
+
+        A property-less ``{"type": "object"}`` schema let a constrained
+        decoder emit ``[{}]``; a plain union then reported it once per
+        branch, so eleven actions meant eleven lines of feedback.
+        """
+        model = self._model("browser.click", "browser.navigate", "browser.done")
+        with pytest.raises(ValidationError) as exc:
+            model.model_validate({"memory": "", "action": [{}]})
+        assert len(exc.value.errors()) == 1, _errors(exc.value)
+        assert "exactly one verb" in str(exc.value)
+
+    def test_multi_key_item_is_one_error(self) -> None:
+        model = self._model("browser.click", "browser.navigate")
+        with pytest.raises(ValidationError) as exc:
+            model.model_validate(
                 {
                     "memory": "",
-                    "action": [
-                        {"browser.click": {}, "browser.navigate": {}},
-                    ],
+                    "action": [{"browser.click": {"index": 1}, "browser.navigate": {}}],
                 }
             )
-        assert "exactly one key" in str(exc.value)
+        assert len(exc.value.errors()) == 1, _errors(exc.value)
+        assert "exactly one verb" in str(exc.value)
 
-    def test_rejects_empty_action_item(self) -> None:
-        Model = self._model_with("browser.click")
-        with pytest.raises(ValidationError):
-            Model.model_validate(
-                {"memory": "", "action": [{}]}
-            )
-
-    def test_empty_descriptors_rejects_everything(self) -> None:
-        # Defensive — if prepare() ever runs with no descriptors, NO verb
-        # is allowed. (Negotiation should have caught this earlier.)
-        Model = _build_per_run_output_model([])
+    def test_bad_param_type_is_one_error_located_on_the_verb(self) -> None:
+        model = self._model("browser.click", "browser.scroll", "browser.navigate")
         with pytest.raises(ValidationError) as exc:
-            Model.model_validate(
-                {"memory": "", "action": [{"click": {}}]}
+            model.model_validate(
+                {"memory": "", "action": [{"browser.scroll": {"direction": "sideways"}}]}
             )
-        assert "unknown action 'click'" in str(exc.value)
+        assert len(exc.value.errors()) == 1, _errors(exc.value)
+        message = str(exc.value)
+        assert "browser.scroll: direction" in message
 
-    def test_per_run_subclass_inherits_other_fields(self) -> None:
-        # ``thinking`` / ``memory`` / ``next_goal`` etc. still on the class.
-        Model = self._model_with("browser.done")
-        out = Model.model_validate(
-            {
-                "thinking": "deliberating",
-                "memory": "remembering",
-                "next_goal": "go forth",
-                "action": [{"browser.done": {"extracted_content": "ok"}}],
-            }
+    def test_unexpected_param_is_refused(self) -> None:
+        model = self._model("browser.click")
+        with pytest.raises(ValidationError) as exc:
+            model.model_validate(
+                {"memory": "", "action": [{"browser.click": {"index": 1, "x": 2}}]}
+            )
+        assert len(exc.value.errors()) == 1, _errors(exc.value)
+        assert "browser.click:" in str(exc.value)
+
+    def test_an_empty_action_list_is_refused(self) -> None:
+        model = self._model("browser.done")
+        with pytest.raises(ValidationError):
+            model.model_validate({"memory": "", "action": []})
+
+    def test_the_dotted_key_survives_a_json_round_trip(self) -> None:
+        """The replay contract: a recorded reply re-reads as itself.
+
+        Pydantic takes ``browser.click`` as a field name verbatim, so no
+        alias is involved — which is what would otherwise have put ``v0``
+        in the trace where the verb belongs.
+        """
+        model = self._model("browser.click", "browser.navigate")
+        out = model.model_validate(
+            {"memory": "m", "action": [{"browser.click": {"index": 3}}]}
         )
-        assert out.thinking == "deliberating"
-        assert out.memory == "remembering"
-        assert out.next_goal == "go forth"
+        text = out.model_dump_json()
+        assert json.loads(text)["action"] == [{"browser.click": {"index": 3}}]
+        assert model.model_validate_json(text).action[0].model_dump() == {
+            "browser.click": {"index": 3}
+        }
 
-    def test_class_name_set_for_debugging(self) -> None:
-        Model = self._model_with("browser.done")
-        assert Model.__name__ == "BrowserUseOutputForRun"
+    def test_a_run_with_no_actions_is_refused_at_prepare(self) -> None:
+        agent = BrowserUseAgent()
+        with pytest.raises(ValueError, match="at least one negotiated action"):
+            agent.prepare(task="t", action_descriptors=[])
 
-    def test_subclass_relationship_preserved(self) -> None:
-        Model = self._model_with("browser.done")
-        assert issubclass(Model, BrowserUseOutput)
+    def test_a_params_schema_outside_the_subset_fails_at_prepare(self) -> None:
+        """Loud at ``prepare()``, not at the first LLM call."""
+        nested = ActionDescriptor(
+            name="browser.weird",
+            description="x",
+            params={"payload": "object"},
+            params_schema={
+                "type": "object",
+                "properties": {"payload": {"type": "object"}},
+                "required": ["payload"],
+            },
+        )
+        with pytest.raises(UnsupportedParamsSchema, match="payload"):
+            action_union([nested])
 
 
-# ── _render_action_list ───────────────────────────────────────────────
+# ── Reasoning fields follow the template ──────────────────────────────
+
+
+class TestReasoningFieldsFollowTheVariant:
+    def test_flash_asks_only_for_memory_and_action(self) -> None:
+        agent = BrowserUseAgent(flash_mode=True)
+        agent.prepare(task="t", action_descriptors=_descriptors("browser.done"))
+        assert list(agent.get_react_output_model().model_fields) == ["memory", "action"]
+
+    def test_thinking_variant_asks_for_the_full_set(self) -> None:
+        agent = BrowserUseAgent(flash_mode=False, use_thinking=True)
+        agent.prepare(task="t", action_descriptors=_descriptors("browser.done"))
+        assert list(agent.get_react_output_model().model_fields) == [
+            "thinking",
+            "evaluation_previous_goal",
+            "memory",
+            "next_goal",
+            "current_plan_item",
+            "plan_update",
+            "action",
+        ]
+
+    def test_no_thinking_variant_drops_thinking(self) -> None:
+        agent = BrowserUseAgent(flash_mode=False, use_thinking=False)
+        agent.prepare(task="t", action_descriptors=_descriptors("browser.done"))
+        assert "thinking" not in agent.get_react_output_model().model_fields
+
+
+# ── The action list in the prompt ─────────────────────────────────────
 
 
 class TestRenderActionList:
-    def test_empty_descriptors_yields_empty_string(self) -> None:
-        assert BrowserUseAgent._render_action_list([]) == ""
+    def _render(self, agent: BrowserUseAgent, *keys: str) -> str:
+        seed = agent.prepare(task="t", action_descriptors=_descriptors(*keys))
+        return str(seed[0].content)
 
-    def test_single_descriptor_with_params(self) -> None:
-        descs = _descriptors(
-            ("browser.navigate", "Navigate to a URL.", {"url": "str"}),
-        )
-        rendered = BrowserUseAgent._render_action_list(descs)
-        assert rendered == "- `browser.navigate(url: str)` — Navigate to a URL."
+    def test_advertises_the_fully_qualified_name_and_the_descriptor_params(self) -> None:
+        text = self._render(BrowserUseAgent(flash_mode=True), "browser.navigate")
+        assert "- `browser.navigate(url: str)` — Navigate to a URL." in text
+        assert "`navigate(" not in text
 
-    def test_multiple_descriptors_one_per_line(self) -> None:
-        descs = _descriptors(
-            ("browser.click", "Click an element.", {"index": "int"}),
-            ("browser.wait", "Pause N seconds.", {"seconds": "float"}),
-        )
-        rendered = BrowserUseAgent._render_action_list(descs)
-        lines = rendered.split("\n")
-        assert len(lines) == 2
-        assert lines[0].startswith("- `browser.click(")
-        assert lines[1].startswith("- `browser.wait(")
+    def test_a_parameterless_action_says_so(self) -> None:
+        text = self._render(BrowserUseAgent(flash_mode=True), "browser.go_back")
+        assert "- `browser.go_back(no params)` — Navigate back in browser history." in text
 
-    def test_no_params_renders_placeholder(self) -> None:
-        descs = _descriptors(
-            ("browser.go_back", "Navigate back.", {}),
-        )
-        rendered = BrowserUseAgent._render_action_list(descs)
-        assert "no params" in rendered
-        assert rendered == "- `browser.go_back(no params)` — Navigate back."
+    def test_param_text_is_the_descriptor_s_own(self) -> None:
+        text = self._render(BrowserUseAgent(flash_mode=True), "browser.scroll")
+        assert "direction: up|down|left|right" in text
+        assert "amount: int (optional)" in text
 
-    def test_uses_canonical_names_not_short(self) -> None:
-        descs = _descriptors(("browser.click", "Click.", {"index": "int"}))
-        rendered = BrowserUseAgent._render_action_list(descs)
-        assert "browser.click" in rendered
-        assert "`click(" not in rendered  # short form should NOT appear
-
-    def test_preserves_param_descriptions_verbatim(self) -> None:
-        descs = _descriptors(
-            (
-                "browser.scroll",
-                "Scroll the page.",
-                {"direction": "up|down|left|right", "amount": "int (optional)"},
-            ),
-        )
-        rendered = BrowserUseAgent._render_action_list(descs)
-        assert "direction: up|down|left|right" in rendered
-        assert "amount: int (optional)" in rendered
-
-
-# ── prepare() integration ─────────────────────────────────────────────
-
-
-class TestPrepareWiresPerRunModel:
-    def test_get_react_output_model_uses_per_run_subclass(self) -> None:
-        agent = BrowserUseAgent()
-        descs = _descriptors(
-            ("browser.click", "Click.", {"index": "int"}),
-            ("browser.done", "Finish.", {"extracted_content": "str"}),
-        )
-        agent.prepare(task="t", action_descriptors=descs)
-        model = agent.get_react_output_model()
-        assert model is not None
-        assert model.__name__ == "BrowserUseOutputForRun"
-
-        # Negotiated verb passes; foreign verb fails.
-        model.model_validate(
-            {"memory": "", "action": [{"click": {"index": 1}}]}
-        )
-        with pytest.raises(ValidationError):
-            model.model_validate(
-                {"memory": "", "action": [{"refresh_browser": {}}]}
-            )
-
-    def test_prompt_includes_action_list(self) -> None:
+    def test_the_advertised_set_is_a_field_on_the_snapshot(self) -> None:
+        """Not something to regex out of 200 lines of prose."""
         agent = BrowserUseAgent(flash_mode=True)
-        descs = _descriptors(
-            ("browser.click", "Click an element.", {"index": "int"}),
-            ("browser.wait", "Pause.", {"seconds": "float"}),
-        )
-        seed = agent.prepare(task="t", action_descriptors=descs)
-        text = str(seed[0].content)
-        assert "<actions_available>" in text
-        assert "browser.click" in text
-        assert "browser.wait" in text
-        # Action list is the canonical, not short, names.
-        assert "- `browser.click(index: int)`" in text
-
-        # The snapshot is a TemplatePrompt, so the advertised action set
-        # is a field on the trace rather than something to regex out of
-        # 200 lines of prose.
+        self._render(agent, "browser.wait", "browser.done")
         snapshot = agent.system_prompt
         assert snapshot is not None
         assert snapshot.kind == "template"  # type: ignore[union-attr]
         assert "browser.wait" in snapshot.params["action_list"]  # type: ignore[union-attr]
+        assert snapshot.params["surface"]  # type: ignore[union-attr]
 
-    def test_get_react_output_model_falls_back_before_prepare(self) -> None:
-        # Defensive: if anyone calls before prepare(), they get the static
-        # loose model rather than crashing.
-        agent = BrowserUseAgent()
-        assert agent.get_react_output_model() is BrowserUseOutput
+
+# ── Before prepare() ──────────────────────────────────────────────────
+
+
+def test_get_react_output_model_refuses_to_answer_before_prepare() -> None:
+    """Louder than a loose fallback, which is how the open schema shipped."""
+    agent = BrowserUseAgent()
+    with pytest.raises(RuntimeError, match="before"):
+        agent.get_react_output_model()

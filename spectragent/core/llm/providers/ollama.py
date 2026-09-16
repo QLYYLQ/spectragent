@@ -158,10 +158,18 @@ class ChatOllama(ChatModelBase):
                     format=schema,
                     options=self.ollama_options,
                 )
+                usage = self._get_usage(response)
                 return ChatInvokeCompletion(
-                    completion=output_format.model_validate_json(response.message.content or ""),
-                    usage=self._get_usage(response),
+                    completion=self._validate_structured(
+                        output_format, response.message.content or "", usage=usage
+                    ),
+                    usage=usage,
                 )
 
+        except ModelProviderError:
+            # StructuredOutputValidationError is one of these, and it is the
+            # only provider error the model itself can fix; re-wrapping it
+            # below would cost the run.
+            raise
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e

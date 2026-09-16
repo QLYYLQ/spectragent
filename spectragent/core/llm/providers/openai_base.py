@@ -371,9 +371,12 @@ class OpenAICompatBase(ChatModelBase):
 
         # No `tool_calls=` here: `_standard_ainvoke` refuses tools on the
         # structured path, so a compliant provider cannot return any.
+        usage = self._get_usage(response)
         return ChatInvokeCompletion(
-            completion=output_format.model_validate_json(choice.message.content),
-            usage=self._get_usage(response),
+            completion=self._validate_structured(
+                output_format, choice.message.content, usage=usage
+            ),
+            usage=usage,
             stop_reason=choice.finish_reason,
         )
 

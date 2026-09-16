@@ -29,8 +29,9 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from spectragent.agents._output_models import BrowserUseOutput
+import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
 from spectragent.agents.browser_use import BrowserUseAgent
+from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop, _serialize_llm_output
@@ -39,12 +40,10 @@ from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 # ── Shared fixtures ───────────────────────────────────────────────
 
 
-def _descriptors() -> list[ActionDescriptor]:
-    return [
-        ActionDescriptor(name="browser.click", description="Click.", params={"index": "int"}),
-        ActionDescriptor(name="browser.navigate", description="Go.", params={"url": "str"}),
-        ActionDescriptor(name="browser.done", description="Finish.", params={"text": "str"}),
-    ]
+def _descriptors(*keys: str) -> list[ActionDescriptor]:
+    """Real descriptors — the closed union is compiled from ``params_schema``."""
+    keys = keys or ("browser.click", "browser.navigate", "browser.done")
+    return [ActionRegistrar.get(key)().descriptor() for key in keys]
 
 
 def _prepared_agent() -> BrowserUseAgent:
@@ -72,24 +71,21 @@ class TestPerRunModelRoundTrip:
             Action(name="browser.click", params={"index": 1})
         ]
 
-    def test_per_run_and_base_models_are_wire_identical(self) -> None:
-        """Both models must hand ``_items_to_actions`` the same thing.
+    def test_the_wire_shape_is_upstream_browser_use_s(self) -> None:
+        """A validated item is a model now, and dumps back to the same JSON.
 
-        This is the bug: ``_PerRunOutput`` subclasses ``BrowserUseOutput``
-        so the ``isinstance`` fast path fires, and anything but a plain
-        ``dict`` in ``action`` fails the duck-check one frame later.
+        The shape is not an implementation detail: the fine-tuned
+        browser-use checkpoints were trained on
+        ``{"action":[{"<verb>":{...}}]}``, and it is also the only shape
+        whose schema stays inside the intersection of the three provider
+        dialects — the verb is a property *name*, so nothing but
+        ``object``/``properties``/``required``/``anyOf`` is needed.
         """
         agent = _prepared_agent()
-        per_run = agent.get_react_output_model()
-        assert per_run is not None
+        model = agent.get_react_output_model()
 
-        narrow = per_run.model_validate(_PAYLOAD)
-        loose = BrowserUseOutput.model_validate(_PAYLOAD)
-
-        assert isinstance(narrow, BrowserUseOutput)
-        assert type(narrow.action[0]) is type(loose.action[0]) is dict
-        assert narrow.action == loose.action
-        assert agent.parse_react_output(narrow) == agent.parse_react_output(loose)
+        out = model.model_validate(_PAYLOAD)
+        assert json.loads(out.model_dump_json())["action"] == _PAYLOAD["action"]
 
     def test_model_dump_json_has_no_serializer_mismatch(self) -> None:
         """``react.py`` calls this every step — it must not warn.
@@ -109,32 +105,37 @@ class TestPerRunModelRoundTrip:
         assert [str(w.message) for w in caught] == []
         assert json.loads(dumped)["action"] == [{"browser.click": {"index": 1}}]
 
-    def test_aliases_still_translate_to_the_action_id(self) -> None:
+    def test_the_verb_the_schema_permits_is_the_verb_env_act_routes_on(self) -> None:
+        """One spelling, end to end — no alias table, no local-id fallback."""
         agent = _prepared_agent()
         model = agent.get_react_output_model()
-        assert model is not None
 
-        out = model.model_validate(
-            {"memory": "m", "action": [{"click_element": {"index": 4}}]}
-        )
-        # The legacy upstream verb is renamed to the action id and stops
-        # there: which capability's ``click`` this is, is not the
-        # parser's to decide.
-        assert agent.parse_react_output(out) == [
-            Action(name="click", params={"index": 4})
-        ]
+        for alias in ("click_element", "click"):
+            with pytest.raises(ValidationError):
+                model.model_validate(
+                    {"memory": "m", "action": [{alias: {"index": 4}}]}
+                )
 
-    def test_done_text_is_renamed_on_the_structured_path(self) -> None:
+    def test_done_names_its_answer_field_once(self) -> None:
+        """``done.text`` → ``extracted_content`` used to happen in the parser.
+
+        Three surfaces then had three names for one value: the template
+        said ``text``, the action read ``extracted_content``, and the
+        parser bridged them where nothing could see it.
+        """
         agent = _prepared_agent()
         model = agent.get_react_output_model()
-        assert model is not None
 
         out = model.model_validate(
-            {"memory": "m", "action": [{"browser.done": {"text": "the answer"}}]}
+            {"memory": "m", "action": [{"browser.done": {"extracted_content": "the answer"}}]}
         )
         assert agent.parse_react_output(out) == [
             Action(name="browser.done", params={"extracted_content": "the answer"})
         ]
+        with pytest.raises(ValidationError):
+            model.model_validate(
+                {"memory": "m", "action": [{"browser.done": {"text": "the answer"}}]}
+            )
 
 
 # ── 2. Hallucinated verbs die at parse time, not at guarded_act ───
@@ -170,22 +171,21 @@ class TestHallucinatedVerbRejection:
     def test_negotiated_out_verb_is_rejected(self) -> None:
         """A real action the capability did not offer this run."""
         agent = BrowserUseAgent()
-        agent.prepare(
-            task="t",
-            action_descriptors=[
-                ActionDescriptor(name="browser.click", description="c", params={}),
-            ],
-        )
+        agent.prepare(task="t", action_descriptors=_descriptors("browser.click"))
         with pytest.raises(ParseError):
             agent.parse_react_output(
                 json.dumps({"memory": "m", "action": [{"browser.navigate": {"url": "u"}}]})
             )
 
-    def test_before_prepare_the_loose_model_still_parses(self) -> None:
-        """No ``prepare()`` -> no negotiated set -> fall back, do not crash."""
+    def test_before_prepare_there_is_nothing_to_validate_against(self) -> None:
+        """No ``prepare()`` → no negotiated set → refuse, loudly.
+
+        The loose fallback that used to stand in here is how an open
+        ``list[dict[str, Any]]`` schema kept reaching providers unnoticed.
+        """
         agent = BrowserUseAgent()
-        actions = agent.parse_react_output(json.dumps(_PAYLOAD))
-        assert actions == [Action(name="browser.click", params={"index": 1})]
+        with pytest.raises(ParseError, match="before prepare"):
+            agent.parse_react_output(json.dumps(_PAYLOAD))
 
 
 # ── 3. ReactLoop actually routes output_format ────────────────────
@@ -279,7 +279,7 @@ class TestReactLoopRoutesOutputFormat:
         agent = _prepared_agent()
         model = agent.get_react_output_model()
         llm = _RecordingLLM(model.model_validate(  # type: ignore[union-attr]
-            {"memory": "m", "action": [{"browser.done": {"text": "ok"}}]}
+            {"memory": "m", "action": [{"browser.done": {"extracted_content": "ok"}}]}
         ))
 
         result = _run_loop(agent, llm)
@@ -450,7 +450,7 @@ class TestAnthropicRoundTrip:
         # Native constrained decoding, not the forced-tool fallback.
         assert "output_config" in client.calls[0]
         assert "tools" not in client.calls[0]
-        assert isinstance(result.completion, BrowserUseOutput)
+        assert isinstance(result.completion, model)
         assert agent.parse_react_output(result.completion) == [
             Action(name="browser.click", params={"index": 1})
         ]
@@ -573,8 +573,15 @@ class TestBedrockToolSchemaRoundTrip:
         schema = chat._format_tools_for_request(model)[0]["toolSpec"]["inputSchema"]["json"]
 
         # The array must keep its ``items`` — Bedrock used to strip them.
+        # ``items`` is now the closed union, so it is an ``anyOf`` of
+        # single-key objects rather than a bare ``{"type": "object"}``.
         assert schema["properties"]["action"]["type"] == "array"
-        assert schema["properties"]["action"]["items"]["type"] == "object"
+        branches = schema["properties"]["action"]["items"]["anyOf"]
+        assert {next(iter(b["properties"])) for b in branches} == {
+            "browser.click",
+            "browser.navigate",
+            "browser.done",
+        }
         assert "$defs" not in schema
 
     def test_tool_input_dict_round_trips(self) -> None:
@@ -588,29 +595,23 @@ class TestBedrockToolSchemaRoundTrip:
         ]
 
 
-# ── 6. Known gap surfaced by turning output_format on ─────────────
+# ── 6. The strict-mode gap, now closed ────────────────────────────
 
 
 class TestOpenAIStrictModeGap:
-    """The *ingredients* of the GPT-family + BrowserUseAgent strict-mode gap.
+    """The gap this file was written to document, and its repair.
 
-    ``action`` is an open ``{"<verb>": {<params>}}`` map, which compiles to
-    an object node with no ``properties``. ``SchemaOptimizer`` deliberately
+    ``action`` used to be an open ``{"<verb>": {<params>}}`` map, which
+    compiles to an object node with no ``properties``. ``SchemaOptimizer``
     leaves such nodes open (closing them was the tool-call-argument
-    data-loss bug), and the GPT family genuinely does support the strict
-    dialect — so, taken separately, ``"strict": true`` and the open node are
-    each correct. Shipping them *together* is what OpenAI rejects.
+    data-loss bug), so the GPT family — which genuinely supports strict —
+    had to ship ``strict: false``, and Gemini behind an OpenAI-compatible
+    gateway, which is *not* asked for strict at all, answered ``[{}]``.
 
-    These three tests pin the ingredients and are unchanged. What the fix
-    changed is the combination, which is pinned by
-    :class:`TestOpenAIStrictModeDowngrade` below: ``_use_strict_schema`` now
-    takes the output model and answers for that payload, so the request
-    downgrades to ``strict: false`` instead of shipping an invalid schema.
-    ``_use_strict_schema()`` with no argument still answers the
-    model-capability question alone, which is what these tests ask.
-
-    ``configs/browser_use_local.yaml`` pins ``gpt-4o``, so this is the
-    documented path.
+    Nothing about the optimizer changed. The *model* did: ``action`` is a
+    closed union of single-key objects, every one of which declares its
+    properties, so the compiled schema satisfies the strict dialect and
+    both problems disappear at once.
     """
 
     def _response_format(self, model: type[BaseModel]) -> dict[str, Any]:
@@ -618,7 +619,7 @@ class TestOpenAIStrictModeGap:
         from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 
         chat = ChatOpenAI(model="gpt-4o", api_key="test")
-        strict = chat._use_strict_schema()
+        strict = chat._use_strict_schema(model)
         return {
             "strict": strict,
             "schema": SchemaOptimizer.create_optimized_json_schema(model, strict=strict),
@@ -626,34 +627,35 @@ class TestOpenAIStrictModeGap:
 
     def test_strict_is_requested_for_gpt(self) -> None:
         agent = _prepared_agent()
-        model = agent.get_react_output_model()
-        assert model is not None
-        assert self._response_format(model)["strict"] is True
+        assert self._response_format(agent.get_react_output_model())["strict"] is True
 
-    def test_open_action_map_is_not_strict_compatible(self) -> None:
+    def test_every_action_branch_declares_its_properties(self) -> None:
         agent = _prepared_agent()
-        model = agent.get_react_output_model()
-        assert model is not None
+        node = self._response_format(agent.get_react_output_model())["schema"][
+            "properties"
+        ]["action"]["items"]
 
-        node = self._response_format(model)["schema"]["properties"]["action"]["items"]
-        assert node["type"] == "object"
-        # Both of these are what OpenAI strict requires and what an open map
-        # cannot supply. The fix downgrades the *request*, never the schema —
-        # re-closing this node is the tool-call-argument data-loss bug.
-        assert "properties" not in node
-        assert "additionalProperties" not in node
+        assert "oneOf" not in node
+        branches = node["anyOf"]
+        assert {next(iter(b["properties"])) for b in branches} == {
+            "browser.click",
+            "browser.navigate",
+            "browser.done",
+        }
+        # Exactly one required property per branch — that is what makes the
+        # verb the *key* rather than a value the model has to get right.
+        assert all(len(b["required"]) == 1 for b in branches)
 
-    def test_the_same_gap_predates_the_per_run_narrowing(self) -> None:
-        """Not caused by F4 — the loose base model has the identical shape."""
+    def test_the_whole_schema_is_strict_clean(self) -> None:
+        """No ``$ref``, no ``oneOf``, no object without ``properties``."""
         from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 
-        base = SchemaOptimizer.create_optimized_json_schema(BrowserUseOutput, strict=True)
         agent = _prepared_agent()
-        model = agent.get_react_output_model()
-        assert model is not None
-        narrow = SchemaOptimizer.create_optimized_json_schema(model, strict=True)
+        schema = self._response_format(agent.get_react_output_model())["schema"]
+        assert SchemaOptimizer.is_strict_compatible(schema)
 
-        assert base["properties"]["action"]["items"] == narrow["properties"]["action"]["items"]
+        text = json.dumps(schema)
+        assert "$ref" not in text and "$defs" not in text and "oneOf" not in text
 
 
 class TestOpenAIStrictModeDowngrade:
@@ -679,11 +681,12 @@ class TestOpenAIStrictModeDowngrade:
         assert self._chat()._use_strict_schema() is True
         assert self._chat("meta-llama/Llama-3.3-70B")._use_strict_schema() is False
 
-    def test_open_action_map_downgrades_strict(self) -> None:
+    def test_the_closed_action_union_keeps_strict(self) -> None:
+        """The regression guard: reopening ``action`` silently loses strict."""
         agent = _prepared_agent()
         model = agent.get_react_output_model()
         assert model is not None
-        assert self._chat()._use_strict_schema(model) is False
+        assert self._chat()._use_strict_schema(model) is True
 
     def test_closed_model_keeps_strict(self) -> None:
         """The downgrade is payload-specific, not a blanket disable."""
@@ -700,7 +703,7 @@ class TestOpenAIStrictModeDowngrade:
 
         assert self._chat("meta-llama/Llama-3.3-70B")._use_strict_schema(_Closed) is False
 
-    async def test_request_ships_strict_false_with_an_open_schema(self) -> None:
+    async def test_request_ships_strict_true_with_the_closed_schema(self) -> None:
         """End to end: the emitted response_format is internally consistent."""
         captured: dict[str, Any] = {}
 
@@ -730,13 +733,19 @@ class TestOpenAIStrictModeDowngrade:
         await chat.ainvoke([UserMessage(content="hi")], model)
 
         response_format = captured["response_format"]["json_schema"]
-        assert response_format["strict"] is False
+        assert response_format["strict"] is True
 
-        node = response_format["schema"]["properties"]["action"]["items"]
-        assert node["type"] == "object"
-        assert "properties" not in node
-        # The open map must stay open — closing it is the data-loss bug.
-        assert "additionalProperties" not in node
+        schema = response_format["schema"]
+        node = schema["properties"]["action"]
+        branches = node["items"]["anyOf"]
+        assert all(b["additionalProperties"] is False for b in branches)
+        assert all(b["properties"] for b in branches)
+        # The request is where a refused keyword would actually cost
+        # something: ``minItems`` is not in the strict dialect, and this is
+        # the first payload in the codebase that ships ``strict: true``
+        # with a list field that has a Pydantic length bound.
+        assert "minItems" not in json.dumps(schema)
+        assert "minItems" not in node
 
     async def test_closed_model_still_ships_strict_true(self) -> None:
         captured: dict[str, Any] = {}
@@ -812,3 +821,284 @@ class TestIsStrictCompatible:
                 "required": ["a"],
             }
         )
+
+    def test_one_of_is_not(self) -> None:
+        """No structured-output dialect accepts ``oneOf``.
+
+        A Pydantic ``Discriminator`` compiles a union to ``oneOf``, and this
+        predicate used to walk straight past it and answer ``True`` — so the
+        request went out ``strict: true`` and the API refused it, with
+        nothing in the codebase pointing at why. It is also why the closed
+        action union is a plain ``Union``.
+        """
+        from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+
+        assert not SchemaOptimizer.is_strict_compatible(
+            {"oneOf": [{"type": "object", "properties": {"a": {"type": "string"}}}]}
+        )
+
+    def test_a_discriminator_is_not_either(self) -> None:
+        from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+
+        assert not SchemaOptimizer.is_strict_compatible(
+            {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "discriminator": {"propertyName": "a"},
+            }
+        )
+
+    def test_a_nested_one_of_is_detected(self) -> None:
+        from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+
+        assert not SchemaOptimizer.is_strict_compatible(
+            {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "array",
+                        "items": {"oneOf": [{"type": "object", "properties": {}}]},
+                    }
+                },
+            }
+        )
+
+    def test_an_any_of_union_stays_compatible(self) -> None:
+        """The shape the closed action union actually compiles to."""
+        from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+
+        assert SchemaOptimizer.is_strict_compatible(
+            {
+                "anyOf": [
+                    {"type": "object", "properties": {"browser.click": {"type": "object", "properties": {}}}},
+                ]
+            }
+        )
+
+
+# ── 8. A reply that does not fit the schema is the model's to fix ──
+
+
+class TestStructuredValidationIsFedBack:
+    """``StructuredOutputValidationError`` rejoins the ordinary parse path.
+
+    Before: a provider that could not validate a reply raised a generic
+    ``ModelProviderError``, and ``ReactLoop`` cannot tell that apart from a
+    dead endpoint — so it aborted the run at the LLM phase. A model that
+    wrote one wrong parameter ended the episode, while the same mistake in
+    free text came back as a ``ParseError`` and was fed back for the model
+    to fix. Now both go to the model.
+    """
+
+    def _chat(self, **kwargs: Any):
+        from spectragent.core.llm.providers.openai import ChatOpenAI
+
+        return ChatOpenAI(model="gpt-4o", api_key="test", **kwargs)
+
+    def _client(self, content: str) -> Any:
+        class _Completions:
+            async def create(self, **_kw: Any) -> Any:
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(content=content, tool_calls=None),
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=None,
+                )
+
+        return SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+
+    async def test_the_provider_raises_the_recoverable_error(self) -> None:
+        from spectragent.core.llm.exceptions import StructuredOutputValidationError
+
+        agent = _prepared_agent()
+        model = agent.get_react_output_model()
+        bad = json.dumps({"memory": "m", "action": [{"nope": {}}]})
+
+        chat = self._chat()
+        chat.get_client = lambda: self._client(bad)  # type: ignore[method-assign]
+        with pytest.raises(StructuredOutputValidationError) as exc:
+            await chat.ainvoke([UserMessage(content="hi")], model)
+
+        # It carries the model's own text, so the caller can put it back
+        # through the agent's parser — which knows the verb set and answers
+        # with one located line.
+        assert exc.value.raw_output == bad
+        assert exc.value.status_code == 422
+
+    def test_the_loop_feeds_it_back_instead_of_aborting(self) -> None:
+        """One step, one correction message, run continues to max_steps."""
+        from spectragent.core.llm.exceptions import StructuredOutputValidationError
+
+        agent = _prepared_agent()
+        bad = json.dumps({"memory": "m", "action": [{"nope": {}}]})
+
+        class _RaisingLLM:
+            model = "gpt-4o"
+
+            async def ainvoke(self, _messages: Any, output_format: Any = None) -> Any:
+                raise StructuredOutputValidationError(
+                    "schema mismatch", raw_output=bad, model="gpt-4o"
+                )
+
+        memory = _FakeMemory()
+        loop = ReactLoop()
+        loop.max_steps = 1
+        env = _FakeEnv()
+        result = asyncio.run(
+            loop._execute(
+                agent,
+                "task",
+                ctx={
+                    "env": env,
+                    "llm": _RaisingLLM(),
+                    "memory": memory,
+                    "act_fn": env.act,
+                    "session_id": None,
+                    "task_id": "t",
+                },
+            )
+        )
+
+        # Not an abort at the LLM phase: the loop ran its step, recorded it,
+        # and told the model what was wrong.
+        assert result.agent_done.value == "max_steps"
+        feedback = [
+            m.content
+            for m in memory.messages
+            if getattr(m, "role", "") == "user" and "[SYSTEM]" in str(m.content)
+        ]
+        assert feedback, "the model was never told its reply did not parse"
+        assert "nope" in str(feedback[-1])
+        # The agent's parser produced the message, not the provider's.
+        assert "unknown action" in str(feedback[-1])
+
+    def test_a_generic_provider_error_still_ends_the_run(self) -> None:
+        """The other half of the pair — and the reason the type matters.
+
+        Feeding *every* provider error back would have the loop argue with
+        a dead endpoint for max_steps. A 429 is not the model's to fix, so
+        it still aborts at the llm phase with nothing said to the model.
+        """
+        from spectragent.core.llm.exceptions import ModelProviderError
+
+        agent = _prepared_agent()
+
+        class _DeadLLM:
+            model = "gpt-4o"
+
+            async def ainvoke(self, _messages: Any, output_format: Any = None) -> Any:
+                raise ModelProviderError(
+                    "rate limited upstream", status_code=429, model="gpt-4o"
+                )
+
+        memory = _FakeMemory()
+        loop = ReactLoop()
+        loop.max_steps = 3
+        env = _FakeEnv()
+        result = asyncio.run(
+            loop._execute(
+                agent,
+                "task",
+                ctx={
+                    "env": env,
+                    "llm": _DeadLLM(),
+                    "memory": memory,
+                    "act_fn": env.act,
+                    "session_id": None,
+                    "task_id": "t",
+                },
+            )
+        )
+
+        assert result.agent_done.value == "error"
+        assert "llm failed at step 0" in (result.error or "")
+        assert "ModelProviderError" in (result.error or "")
+        assert not [
+            m
+            for m in memory.messages
+            if getattr(m, "role", "") == "user" and "[SYSTEM]" in str(m.content)
+        ], "a transport failure was argued back to the model"
+
+    def test_the_failed_call_is_still_in_the_trace(self, tmp_path: Any) -> None:
+        """Recoverable does not mean invisible.
+
+        ``after`` advice does not fire when the target raises, so a call
+        the run *continues past* would leave a step whose messages file is
+        simply absent — and absent for exactly the steps a researcher
+        wants to read. ``around`` advice sees it; this walks the real
+        Weaver to prove the wiring, not just the handler.
+        """
+        from spectragent.core.aop.weaver import Weaver
+        from spectragent.core.hooks.metrics_collector import MetricsCollector
+        from spectragent.core.hooks.trace_writer import TraceWriter
+        from spectragent.core.llm.exceptions import StructuredOutputValidationError
+        from spectragent.core.llm.views import ChatInvokeUsage
+        from spectragent.core.trace.reader import RunTrace
+
+        agent = _prepared_agent()
+        bad = json.dumps({"memory": "m", "action": [{"nope": {}}]})
+
+        class _RaisingLLM:
+            model = "gpt-4o"
+
+            async def ainvoke(self, _messages: Any, output_format: Any = None) -> Any:
+                raise StructuredOutputValidationError(
+                    "schema mismatch",
+                    raw_output=bad,
+                    model="gpt-4o",
+                    usage=ChatInvokeUsage(
+                        prompt_tokens=10,
+                        prompt_cached_tokens=0,
+                        prompt_cache_creation_tokens=None,
+                        prompt_image_tokens=None,
+                        completion_tokens=5,
+                        total_tokens=15,
+                    ),
+                )
+
+        writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
+        metrics = MetricsCollector()
+        weaver = Weaver([writer, metrics])
+        llm = weaver.wrap(_RaisingLLM(), "llm")
+
+        memory = _FakeMemory()
+        loop = ReactLoop()
+        loop.max_steps = 1
+        env = _FakeEnv()
+
+        async def _run() -> Any:
+            await writer.on_run_start(agent=agent, env=env, task="task", config={})
+            await metrics.on_run_start()
+            recorder = weaver.wrap(loop, "loop")
+            result = await loop._execute(
+                agent,
+                "task",
+                ctx={
+                    "env": env,
+                    "llm": llm,
+                    "memory": memory,
+                    "act_fn": env.act,
+                    "session_id": None,
+                    "task_id": "t",
+                    "recorder": recorder,
+                },
+            )
+            await writer.on_run_end(result=result)
+            return result
+
+        result = asyncio.run(_run())
+
+        assert writer.run_dir is not None
+        sent, got = RunTrace(writer.run_dir).get_messages(0)
+        assert sent, "the prompt that produced the refused reply was not recorded"
+        assert got is not None
+        assert got["error"] == "StructuredOutputValidationError"
+        assert got["raw_output"] == bad
+        # And what it cost is counted once on both sides, rather than only
+        # by the loop that kept going.
+        assert metrics.llm_calls == 1
+        assert metrics._usage.total_tokens == 15
+        assert result.metrics.llm_calls == 1

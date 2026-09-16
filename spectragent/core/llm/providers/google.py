@@ -21,6 +21,37 @@ from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.google_format import GoogleMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 
+#: The property ``fix_gemini_schema`` invents for an object with no
+#: properties, because Gemini's ``responseSchema`` subset rejects an empty
+#: one. A zero-parameter action (``browser.go_back``) is exactly that, so
+#: the model dutifully answers ``{"browser.go_back": {"_placeholder": ""}}``
+#: — and a closed params model with ``extra="forbid"`` refuses it.
+#:
+#: The provider that added the key is the provider that takes it away.
+#: Doing it in the agent instead would put one provider's schema dialect
+#: inside domain knowledge, where every *other* provider would carry it too.
+_GEMINI_PLACEHOLDER = "_placeholder"
+
+
+def _strip_placeholders(value: Any) -> Any:
+    """Remove :data:`_GEMINI_PLACEHOLDER` from a decoded reply, recursively.
+
+    Only this key, and only because this module put it in the schema. Any
+    other unexpected property is the model's own invention and must still
+    fail validation. Non-mapping values pass through untouched.
+    """
+    if isinstance(value, dict):
+        cleaned = {
+            key: _strip_placeholders(item)
+            for key, item in value.items()
+            if key != _GEMINI_PLACEHOLDER
+        }
+        return cleaned
+    if isinstance(value, list):
+        return [_strip_placeholders(item) for item in value]
+    return value
+
+
 #: ``tool_choice`` spelled the Gemini way (``function_calling_config.mode``).
 _GEMINI_TOOL_MODE: dict[str, types.FunctionCallingConfigMode] = {
     "auto": types.FunctionCallingConfigMode.AUTO,
@@ -291,7 +322,7 @@ class ChatGoogle(ChatModelBase):
                                     text = text[3:-3].strip()
                                 parsed_data = json.loads(text)
                                 return ChatInvokeCompletion(
-                                    completion=output_format.model_validate(parsed_data),
+                                    completion=self._validate_structured(output_format, _strip_placeholders(parsed_data), usage=usage),
                                     usage=usage,
                                     stop_reason=self._get_stop_reason(response),
                                 )
@@ -304,7 +335,7 @@ class ChatGoogle(ChatModelBase):
                                 completion=response.parsed, usage=usage, stop_reason=self._get_stop_reason(response),
                             )
                         return ChatInvokeCompletion(
-                            completion=output_format.model_validate(response.parsed),
+                            completion=self._validate_structured(output_format, _strip_placeholders(response.parsed), usage=usage),
                             usage=usage,
                             stop_reason=self._get_stop_reason(response),
                         )
@@ -337,7 +368,7 @@ class ChatGoogle(ChatModelBase):
                                 text = text[3:-3].strip()
                             parsed_data = json.loads(text)
                             return ChatInvokeCompletion(
-                                completion=output_format.model_validate(parsed_data),
+                                completion=self._validate_structured(output_format, _strip_placeholders(parsed_data), usage=usage),
                                 usage=usage,
                                 stop_reason=self._get_stop_reason(response),
                             )

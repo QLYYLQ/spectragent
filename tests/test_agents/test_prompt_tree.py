@@ -41,10 +41,28 @@ from spectragent.agents.prompts import (
 )
 from spectragent.prompts import PROMPT_PATH, PromptNotFoundError
 
+
+def _descriptors(*keys: str) -> list[Any]:
+    """Real descriptors for a few registered actions.
+
+    Not hand-written stand-ins: ``browser_use`` compiles the descriptors
+    into a closed output schema, so a fixture of empty ones would exercise
+    a run that can emit nothing — and it refuses to build one, rightly.
+    """
+    import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers
+    from spectragent.core.actions._registrar import ActionRegistrar
+
+    return [ActionRegistrar.get(key)().descriptor() for key in keys]
+
+
 #: ``prepare()`` arguments per agent. All three take the Loop's
 #: ``max_actions_per_step``, because all three advertise a per-step budget.
 _PREPARE_KWARGS: dict[str, dict[str, Any]] = {
-    "browser_use": {"task": "t", "action_descriptors": [], "max_actions_per_step": 3},
+    "browser_use": {
+        "task": "t",
+        "action_descriptors": _descriptors("browser.navigate", "browser.done"),
+        "max_actions_per_step": 3,
+    },
     "skyvern": {"task": "t", "action_descriptors": [], "max_actions_per_step": 3},
     "ui_tars": {"task": "t", "action_descriptors": [], "max_actions_per_step": 3},
 }
@@ -69,6 +87,13 @@ _CONFIGURATIONS: list[tuple[str, dict[str, Any]]] = [
     ("browser_use", {"flash_mode": True}),
     ("browser_use", {"flash_mode": False, "use_thinking": True}),
     ("browser_use", {"flash_mode": False, "use_thinking": False}),
+    # ``observation_mode`` is orthogonal to the template selector: it picks
+    # the surface fragment spliced in, not the file. Both axes are walked
+    # so a mode that renders a fragment nothing supplies — or supplies one
+    # nothing renders — fails here rather than at a run's first step.
+    ("browser_use", {"flash_mode": False, "observation_mode": "dom_vision"}),
+    ("browser_use", {"flash_mode": False, "observation_mode": "vision"}),
+    ("browser_use", {"flash_mode": True, "observation_mode": "vision"}),
     ("skyvern", {"prompt_template": "system_prompt"}),
     ("ui_tars", {"prompt_template": "computer_use"}),
     ("ui_tars", {"prompt_template": "grounding"}),
@@ -314,3 +339,51 @@ def test_format_templates_hold_no_jinja_and_vice_versa(agent_id, name):
         assert "{{" in template, f"{name} declares jinja2 and substitutes nothing"
     else:
         assert "{%" not in template, f"{name} declares format but carries a jinja tag"
+
+
+# ── Surface fragments ─────────────────────────────────────────────────
+
+_SURFACE_DIR = AGENT_PROMPT_ROOT / "browser_use" / "_surface"
+
+
+def test_surface_fragments_are_not_mistaken_for_template_variants():
+    """They live one level down precisely so the glob cannot see them.
+
+    A fragment is a *value* spliced into a template, not a prompt an agent
+    can select; if ``agent_prompt_variants`` listed them,
+    ``test_every_file_on_disk_is_reachable_from_its_agent`` would demand a
+    config that renders each one on its own.
+    """
+    assert _SURFACE_DIR.is_dir()
+    assert not set(agent_prompt_variants("browser_use")) & {
+        p.stem for p in _SURFACE_DIR.glob(f"*{PROMPT_SUFFIX}")
+    }
+
+
+def test_every_surface_fragment_is_reachable_from_some_mode():
+    """The same rule as for templates: a file nothing loads still ships."""
+    reached: set[str] = set()
+    for mode in ("dom", "dom_vision", "vision"):
+        for flash in (True, False):
+            agent = BrowserUseAgent(observation_mode=mode, flash_mode=flash)
+            agent.prepare(**_PREPARE_KWARGS["browser_use"])
+            snapshot = agent.system_prompt
+            assert snapshot is not None
+            reached.add(snapshot.params["surface"])  # type: ignore[union-attr]
+    on_disk = {p.read_text("utf-8").strip() for p in _SURFACE_DIR.glob(f"*{PROMPT_SUFFIX}")}
+    # A rendered surface may carry an appended coordinate paragraph, so
+    # match on "the fragment is a prefix of something rendered".
+    unused = [text for text in on_disk if not any(r.startswith(text) for r in reached)]
+    assert not unused, f"{len(unused)} surface fragment(s) no mode renders"
+
+
+def test_surface_fragments_substitute_nothing():
+    """They are values, and ``str.format`` does not recurse into one.
+
+    A ``{placeholder}`` here would reach the model verbatim — so the one
+    part of the surface that *is* configuration (the coordinate grid) is
+    composed in Python, not left as a token in the file.
+    """
+    for path in _SURFACE_DIR.glob(f"*{PROMPT_SUFFIX}"):
+        assert not template_variables("format", path.read_text("utf-8")), path.name
+

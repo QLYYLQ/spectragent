@@ -8,7 +8,10 @@ see pixels, not a selector_map.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import focused_scope
@@ -26,20 +29,30 @@ class DragAction(SettleableAction, ActionBase):
 
     __registry_key__ = "browser.drag"
 
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        start_x: Annotated[
+            int, PydanticField(description="CSS px from the viewport's left edge")
+        ]
+        start_y: Annotated[
+            int, PydanticField(description="CSS px from the viewport's top edge")
+        ]
+        end_x: Annotated[
+            int, PydanticField(description="CSS px from the viewport's left edge")
+        ]
+        end_y: Annotated[
+            int, PydanticField(description="CSS px from the viewport's top edge")
+        ]
+
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return ActionDescriptor(
-            name=self.action_id,
-            description=(
+        return self.describe(
+            (
                 "Press the mouse at one point in the page viewport, move to "
                 "a second one and release — for sliders, canvas selection "
                 "and drag-and-drop."
             ),
-            params={
-                "start_x": "int -- CSS px from the viewport's left edge",
-                "start_y": "int -- CSS px from the viewport's top edge",
-                "end_x": "int -- CSS px from the viewport's left edge",
-                "end_y": "int -- CSS px from the viewport's top edge",
-            },
+            **context,
         )
 
     async def execute(
