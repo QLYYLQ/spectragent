@@ -36,7 +36,13 @@ if TYPE_CHECKING:
 
 @dataclass
 class TypeCoordinateAction(SettleableAction, ActionBase):
-    """Type text into whatever sits at absolute viewport coordinates."""
+    """Type text into whatever sits at a point of the viewport.
+
+    The point is in **CSS pixels of the page viewport**, the same space as
+    :class:`~spectragent.core.capabilities.browser.actions.click_coordinate.
+    ClickCoordinateAction` — an agent that reads the point off a screenshot
+    converts before emitting this action.
+    """
 
     __registry_key__ = "browser.type_coordinate"
 
@@ -50,12 +56,12 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
         return ActionDescriptor(
             name=self.action_id,
             description=(
-                "Click at absolute screen coordinates to focus a text "
-                "field, then type into it."
+                "Click a point in the page viewport to focus a text field, "
+                "then type into it."
             ),
             params={
-                "coordinate_x": "int",
-                "coordinate_y": "int",
+                "coordinate_x": "int -- CSS px from the viewport's left edge",
+                "coordinate_y": "int -- CSS px from the viewport's top edge",
                 "text": "str",
                 # Interpolated, not literal: ``clear_by_default`` is a
                 # YAML knob, and this string is what the prompt teaches.

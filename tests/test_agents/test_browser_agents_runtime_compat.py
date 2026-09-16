@@ -289,6 +289,23 @@ class TestAgentToCapabilityActionVocabulary:
         )
 
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
+        # A point is placed with the screenshot the step showed.
+        agent.build_react_prompt(
+            type(
+                "Obs",
+                (),
+                {
+                    "task": type("Task", (), {"user_request": "t"})(),
+                    "screenshot": ScreenshotObs(
+                        image_bytes=b"\x89PNG\r\n\x1a\n",
+                        viewport_width=1280,
+                        viewport_height=720,
+                        image_width=1280,
+                        image_height=720,
+                    ),
+                },
+            )()
+        )
         actions = agent.parse_react_output(
             "Thought: click it.\nAction: click(point='(100, 200)')"
         )

@@ -89,6 +89,39 @@ The list is also an **ablation switch**: only the actions it names are instantia
 
 `action_id` uses the fully-qualified registry key (`browser.scroll`, not `scroll`).
 
+## Vision agents
+
+A vision agent (`ui_tars`, or `browser_use` clicking with `click_coordinate`) aims at the screenshot the step showed. Two settings decide whether that is still the page it acts on.
+
+**When the screenshot is taken.** The next observation is captured as soon as the step's last action returns, and an action returns `post_delay_ms` after its effect was dispatched (default `0`). A widget that is still animating then — a reCAPTCHA spinner, an image challenge fading in — is captured mid-animation, and the next reply aims at what is no longer there. Give the coordinate actions a settle delay:
+
+```yaml
+capabilities:
+  - capability_id: browser
+    actions:
+      - action_id: browser.navigate          # setup() opens start_url with it
+      - action_id: browser.click_coordinate
+        post_delay_ms: 1500                  # reCAPTCHA spinner and fades settle
+      - action_id: browser.type_coordinate
+      - action_id: browser.scroll
+      - action_id: browser.send_keys
+      - action_id: browser.drag
+      - action_id: browser.wait
+      - action_id: browser.done
+```
+
+The list is the ablation switch described above, so it has to name every action the run needs: `ui_tars` requires `click_coordinate`, `type_coordinate` and `done`, and a task with a `start_url` needs `browser.navigate`, because the capability opens the landing page by executing it.
+
+**What a point is.** `ui_tars` tells the model which grid to write points on and converts each point into the capability's units (CSS pixels for the browser) using the size of the screenshot that step showed, so the device scale factor and viewport size need no setting of their own. Pick the grid the model really answers on — `screenshot_pixels` (the default) or `normalized_1000` (0-1000 on both axes, x first):
+
+```yaml
+agent:
+  - agent_id: ui_tars
+    coordinate_space: normalized_1000
+```
+
+Which grid a given model uses is not something to guess from its name: check a few of its answers against known element positions before a run. A point off the grid is clamped onto the edge of the viewport, as it is for `browser_use`.
+
 ## Switching backend
 
 Edit only `environment[0].capabilities[0].backend`:

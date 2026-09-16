@@ -22,11 +22,18 @@ with the fixtures derived at every stage. The sample call for each verb
 is built by substituting concrete values into the *signature the prompt
 shows the model* — so a signature that teaches an argument the action
 cannot use fails here rather than in production.
+
+Every parse happens after the agent was shown a screenshot, as in a real
+step: a point is placed with the screenshot's geometry, and a reply that
+names one with no measured screenshot behind it is refused. The shown
+screenshot is DPR 1, so the numbers substituted below are the numbers the
+action receives.
 """
 
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -41,6 +48,7 @@ from spectragent.agents.ui_tars import (
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.actions.wait import WaitAction
 from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.negotiation import extract_wiring
 from spectragent.core.negotiation.action import _action_rules
@@ -127,12 +135,27 @@ def harness() -> tuple[UITarsAgent, Any, dict[str, Any]]:
 
 
 def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) -> str:
-    # ``Any`` because ``_VARIANTS`` is read off the disk at import time,
-    # so a checker cannot see that its members are the field's Literal —
-    # that equality is what ``test_prompt_tree`` asserts.
+    """Prepare the agent with *variant* and show it one DPR-1 screenshot.
+
+    ``Any`` because ``_VARIANTS`` is read off the disk at import time, so a
+    checker cannot see that its members are the field's Literal — that
+    equality is what ``test_prompt_tree`` asserts.
+    """
     agent.prompt_template = variant
     prompt = agent.prepare(task="t", action_descriptors=descriptors)[0].content
     assert isinstance(prompt, str)
+    agent.build_react_prompt(
+        SimpleNamespace(
+            task=SimpleNamespace(user_request="t"),
+            screenshot=ScreenshotObs(
+                image_bytes=b"\x89PNG\r\n\x1a\n",
+                viewport_width=1280,
+                viewport_height=720,
+                image_width=1280,
+                image_height=720,
+            ),
+        )
+    )
     return prompt
 
 
@@ -182,18 +205,26 @@ class TestPromptVocabulary:
 
         That is why the model was never told ``browser.type`` wanted
         ``index`` / ``text``: it only ever saw name and description.
+
+        Point params are the one exception, in the other direction: the
+        agent converts them, so the executor's unit (CSS px) is exactly
+        what the model must *not* be taught. What a point is comes from
+        the Coordinates section instead.
         """
         agent, _guard, extra = harness
         for variant in _VARIANTS:
             prompt = _rendered(agent, extra["descriptors"], variant)
+            assert "# Coordinates" in prompt, variant
+            assert "CSS px" not in prompt, variant
             for descriptor in extra["descriptors"]:
                 verb = _VERB_TABLE[_ACTION_TO_VERB[descriptor.name.rsplit(".", 1)[-1]]]
+                converted = {key for pair in verb.points for key in pair}
                 for param in verb.fills:
-                    assert f"{param}: {descriptor.params[param]}" in prompt, (
-                        variant,
-                        descriptor.name,
-                        param,
-                    )
+                    rendered = f"{param}: {descriptor.params[param]}"
+                    if param in converted:
+                        assert rendered not in prompt, (variant, descriptor.name, param)
+                    else:
+                        assert rendered in prompt, (variant, descriptor.name, param)
 
     def test_what_a_verb_produces_is_what_its_action_declares(
         self, harness
@@ -243,6 +274,7 @@ class TestPromptVocabulary:
     ) -> None:
         """The second, independent breakage: ``content`` vs ``text``."""
         agent, guard, extra = harness
+        _rendered(agent, extra["descriptors"], _VARIANTS[0])
         actions = agent.parse_react_output(
             "Action: type(content='hello world', point='(10, 20)')"
         )

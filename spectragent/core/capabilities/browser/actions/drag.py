@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class DragAction(SettleableAction, ActionBase):
-    """Drag from one absolute viewport coordinate to another."""
+    """Drag from one point of the viewport to another, both in CSS pixels."""
 
     __registry_key__ = "browser.drag"
 
@@ -30,15 +30,15 @@ class DragAction(SettleableAction, ActionBase):
         return ActionDescriptor(
             name=self.action_id,
             description=(
-                "Press the mouse at one screen coordinate, move to a "
-                "second one and release — for sliders, canvas selection "
+                "Press the mouse at one point in the page viewport, move to "
+                "a second one and release — for sliders, canvas selection "
                 "and drag-and-drop."
             ),
             params={
-                "start_x": "int",
-                "start_y": "int",
-                "end_x": "int",
-                "end_y": "int",
+                "start_x": "int -- CSS px from the viewport's left edge",
+                "start_y": "int -- CSS px from the viewport's top edge",
+                "end_x": "int -- CSS px from the viewport's left edge",
+                "end_y": "int -- CSS px from the viewport's top edge",
             },
         )
 
