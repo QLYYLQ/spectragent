@@ -67,6 +67,9 @@ dev = [
     "pyright",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    # Drives .pre-commit-config.yaml, whose hooks shell out to the ruff above
+    # rather than pinning a second copy of it.
+    "pre-commit>=3.5",
     # The learned strategy's tests exercise the numpy samplers.
     "spectragent[learned-mouse]",
 ]

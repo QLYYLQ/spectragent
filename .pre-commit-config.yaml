@@ -1,0 +1,47 @@
+# Nothing enforced formatting before this, which is how 207 of 440 files drifted
+# out of `ruff format` at once.
+#
+# The hooks deliberately run the project's *own* ruff through `uv run` instead of
+# pinning astral-sh/ruff-pre-commit to a rev. A mirror rev is a second ruff
+# version to keep in step with the one in .venv, and the two disagreeing is the
+# same drift in a new place: the hook would pass on a tree that
+# `uv run ruff format --check .` rejects. One ruff, one answer.
+#
+# `--no-sync` because plain `uv run` re-resolves and reinstalls the project on
+# every invocation, and a hook that rebuilds the package twice per commit is a
+# hook people disable. It needs `uv sync --extra dev` to have been run once,
+# which CLAUDE.md §1 already asks for.
+#
+# Both hooks skip test_reality/. The directory is named on .gitignore:70 but its
+# ten files are tracked, and git ignores nothing already in the index — so
+# `ruff check .` honours the ignore and never walks it, while pre-commit
+# enumerates tracked files and does. Left alone, the hook would enforce a wider
+# surface than the command CLAUDE.md §1 documents and would fail a commit on
+# nine lint errors that were already there. It is format-clean either way.
+repos:
+  - repo: local
+    hooks:
+      # Formatting is layout-only and safe to apply unasked: the reformat this
+      # config landed with was verified AST-identical on 205 of 207 files, the
+      # two exceptions being a space ruff inserts after `"""` when a docstring's
+      # own text starts with a quote. So this hook rewrites and fails, leaving
+      # the files staged for re-add.
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --no-sync ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        exclude: '^test_reality/'
+        require_serial: true
+
+      # Lint only reports. `--fix` is withheld on purpose: the lint pass before
+      # this one turned on judgement calls a hook cannot make — six SIM103 hits
+      # of one shape, four collapsed and two kept under a noqa with the reason
+      # written out. An auto-fixer would have taken all six.
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --no-sync ruff check --force-exclude
+        language: system
+        types_or: [python, pyi]
+        exclude: '^test_reality/'
+        require_serial: true
