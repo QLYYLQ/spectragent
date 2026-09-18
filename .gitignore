@@ -39,7 +39,19 @@ CLAUDE.md
 
 # conscribe codegen output (regenerate via spectragent.scripts.generate_all)
 *.pyi
-/spectragent/generated/
+# Contents, not the directory: git does not descend into an excluded
+# directory, so a negation for a file inside one never fires.
+/spectragent/generated/*
+# ...except the fingerprint. The generated config is the surface users write
+# YAML against, so a `__wiring__` change is a user-visible API change — and by
+# the same argument that made ``docs/`` tracked below, it cannot be reviewed
+# alongside the change that causes it while it lives outside the repository.
+# Tracking ``_composed.py`` itself would put a 68k derived file in the path of
+# every parallel branch; the 575-byte fingerprint carries the same signal as a
+# one-line diff and merges by regenerating. ``test_generated_in_sync`` compares
+# it against the live registries, because a stale ``_composed.py`` is
+# internally consistent and passes the entire suite.
+!/spectragent/generated/.fingerprint.json
 
 # ``docs/`` is tracked. ``architecture_design.md`` is this repo's source of
 # truth (CLAUDE.md §0.1) — a source of truth that is not in the repository
