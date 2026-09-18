@@ -101,17 +101,22 @@ class _RecordingCap(CapabilityBase):
 
 
 class TestOneObserveResolvesEachFragmentOnce:
-    """The invariant ``BrowserCapability``'s observe cache is built on.
+    """One capability's slice is resolved once each, in sequence.
 
-    ``BrowserCapability`` captures every fragment of one observation in a
-    single CDP round trip, and reads a fragment asked for a *second* time
-    as the start of the next observation (``_ObserveCycleCache.served``) —
-    which is what stopped a step whose reply failed to parse from being
-    handed the previous step's screenshot. That reading is sound only while
-    ``observe`` resolves every env-sourced fragment exactly once per call,
-    one after another. Resolving one twice would split an observation in
-    two; resolving a subset, or several at once, would put fragments of two
-    captures into one observation.
+    Not a cache rule — the cycle boundary is announced by
+    ``begin_observation`` now, so a fragment read twice inside a cycle is
+    explicitly the *same* observation and costs nothing extra (see
+    ``test_browser_lazy_batch.py``). What this pins is the other half of
+    ``observe``'s concurrency plan: capabilities run in parallel, but a
+    single capability's own fragments run **one at a time**, because they
+    share one capture. Firing them at once would either duplicate the
+    capture or have several coroutines race for it, and the fragments of
+    one observation could then come from two different captures — the
+    agent shown two worlds in one step.
+
+    The "exactly once" half is about cost rather than correctness: each
+    fragment of a slice is asked for once per cycle, so the environment
+    never pays for a resolve the negotiation did not ask for.
     """
 
     def test_every_env_fragment_once_per_call_one_at_a_time(self) -> None:

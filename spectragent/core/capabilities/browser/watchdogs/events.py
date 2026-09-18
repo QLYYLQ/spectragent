@@ -161,12 +161,16 @@ class SelectDropdownEvent(BaseEvent[None]):
 
 
 class ExtractContentEvent(BaseEvent[str | None]):
-    """Extract text content from the page or a specific element."""
+    """Extract a scope wholesale: page ``innerText``, or element ``outerHTML``.
+
+    No ``goal`` field. One existed and no handler ever read it; see
+    ``docs/actions_that_call_an_llm.md`` for what it was meant to be and
+    what has to exist first.
+    """
 
     backend_node_id: int | None = None
     #: CDP session that owns ``backend_node_id``; ``None`` = the tab's own.
     session_id: str | None = None
-    goal: str | None = None
     event_timeout: float = 30.0
 
 

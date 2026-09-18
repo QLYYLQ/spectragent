@@ -12,6 +12,7 @@ See docs/execution_dag.md M07 for the registrar design.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from collections.abc import Mapping
@@ -22,9 +23,16 @@ from pydantic import Field
 
 from spectragent.core.capabilities.base import BaseCapability
 from spectragent.core.environments.base import Environment
+from spectragent.core.environments.errors import (
+    ObservationFailedError,
+    UnroutableFragmentError,
+)
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import fragment_field_name
-from spectragent.schemas.observation.dynamic_model import build_observation_model
+from spectragent.schemas.observation.dynamic_model import (
+    build_observation_model_from_result,
+)
+from spectragent.schemas.observation.failure import FragmentFailure
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +130,10 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         self.id = id
         self._fragment_router: dict[str, BaseCapability] | None = None
         self._capability_router: dict[str, BaseCapability] | None = None
+        #: Observation cycle counter — see :meth:`observe`. Per instance,
+        #: never module state: two environments in one run each count
+        #: their own observations, and a fresh run starts at zero.
+        self._observation_cycle: int = 0
         if capabilities is not None:
             self.capabilities = capabilities
             # Reject a colliding capability set at construction rather
@@ -272,16 +284,97 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                     f"Available: {sorted(self.capability_ids())}"
                 ),
             )
-        return await cap.execute_action(action)
+        result = await cap.execute_action(action)
+        await self._invalidate_foreign_captures(cap)
+        return result
+
+    async def _invalidate_foreign_captures(self, actor: BaseCapability) -> None:
+        """Open a fresh cycle on capabilities this action may have changed.
+
+        The policy is the capability's own, declared as
+        ``__invalidated_by_foreign_actions__`` and **False by default**:
+        capabilities are independent worlds, so a ``browser.click`` costs
+        an Android capability nothing. A capability that shares a surface
+        with its peers (a desktop VM whose screen also hosts the browser)
+        sets it to ``True`` and pays for a re-capture per foreign action.
+
+        The acting capability is not in scope: invalidating its own
+        capture after its own action is its business, and it is the one
+        that knows whether the action changed anything.
+
+        What this buys, precisely, so nobody mistakes it for more:
+        ``observe()`` opens a new cycle on every participating capability
+        anyway, so for a plain observe → act → observe loop this changes
+        nothing. It is the guarantee for everything that reads a fragment
+        *between* two observes — an action implementation resolving one,
+        a loop taking several actions per step — which is exactly where a
+        stale capture is invisible.
+
+        A failure to open the cycle here is logged, not raised: the action
+        already happened, its result is owed to the caller, and the next
+        ``observe()`` opens a strictly newer cycle on the same capability,
+        which invalidates it again.
+        """
+        affected = [
+            cap
+            for cap in self.capabilities.values()
+            if cap is not actor
+            and getattr(type(cap), "__invalidated_by_foreign_actions__", False)
+        ]
+        if not affected:
+            return
+        self._observation_cycle += 1
+        cycle = self._observation_cycle
+        errors = await asyncio.gather(
+            *(self._begin_cycle(cap, cycle) for cap in affected)
+        )
+        for cap, exc in zip(affected, errors, strict=True):
+            if exc is not None:
+                logger.warning(
+                    "Capability %r failed to open cycle %d after a foreign "
+                    "action (%s: %s) — its next observation opens a newer one",
+                    cap.capability_id,
+                    cycle,
+                    type(exc).__name__,
+                    exc,
+                )
 
     # ── Observation delegation ────────────────────────────────
 
     async def observe(self, negotiated: Any) -> Any:
-        """Resolve observation by delegating to Capability resolvers.
+        """Assemble one observation from the capabilities that own it.
 
-        For each env-sourced fragment in the negotiation result,
-        routes to the Capability that provides it. Loop-sourced
-        fragments are not filled here (the Loop handles them).
+        **The environment owns the observation cycle.** It holds a
+        monotonically increasing counter, increments it here — one
+        ``observe()`` is one cycle, whatever the loop did or did not do in
+        between — and tells every participating capability before anything
+        is resolved. That statement is what lets a capability batch: the
+        browser captures DOM + screenshot + tabs in one CDP round trip and
+        serves them all from it, knowing the next cycle will be announced
+        rather than guessed at. Before this existed, the rule lived only
+        inside ``BrowserCapability`` as "have I already served this key",
+        an inference standing in for information the caller had all along
+        — and one that read a fragment fetched twice as a new observation.
+
+        Capabilities run **concurrently**, each capability's own fragments
+        **sequentially**. Both halves are load-bearing:
+
+        - Concurrent across capabilities, because they are independent
+          worlds: a 0.5 s browser scrape and a 3 s Android capture cost
+          3 s, not 3.5 s, and the two samples are taken as close together
+          in time as the machine allows.
+        - Sequential within a capability, because its fragments share one
+          capture. Firing them at once would either duplicate the capture
+          or race for it.
+
+        Failures are isolated per fragment, and what a failure *means* is
+        what the agent and loop declared: a fragment in
+        ``required_fragments`` raises :class:`ObservationFailedError`
+        (after every capability has finished, so the message reports them
+        all); an optional one lands in the observation as a
+        :class:`FragmentFailure` and the rest of the observation survives.
+        Nothing is ever fabricated to fill a slot — that is the same
+        discipline the LLM layer applies to a failed completion.
 
         Args:
             negotiated: NegotiationResult from three-party negotiation.
@@ -292,19 +385,163 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         if self._fragment_router is None:
             self._build_fragment_router()
 
-        obs_model = build_observation_model(negotiated.active_fragments)
-        field_values: dict[str, Any] = {}
+        slices = self._observation_slices(frozenset(negotiated.env_sourced))
+        # Read directly, never through ``getattr(..., frozenset())``. A
+        # result without the field would silently mean "nothing is
+        # required", which turns a failed *required* DOM into a recorded
+        # FragmentFailure and lets the run continue on a slot the reader
+        # believes is real data. This invariant must fail closed and loud.
+        required = frozenset(negotiated.required_fragments)
 
-        for frag_key in negotiated.env_sourced:
-            cap = self._fragment_router.get(frag_key)
-            if cap is not None:
-                fragment = await cap.resolve_fragment(frag_key)
+        self._observation_cycle += 1
+        cycle = self._observation_cycle
+
+        # Phase 1 — every participating capability is told the cycle
+        # before any fragment of it is resolved, so a capability can rely
+        # on that ordering when it decides what to throw away.
+        begin_errors = await asyncio.gather(
+            *(self._begin_cycle(cap, cycle) for cap, _keys in slices)
+        )
+        # Phase 2 — one task per capability; within a task, one fragment
+        # at a time.
+        harvested = await asyncio.gather(
+            *(
+                self._resolve_slice(cap, keys, begin_error)
+                for (cap, keys), begin_error in zip(slices, begin_errors, strict=True)
+            )
+        )
+
+        field_values: dict[str, Any] = {}
+        failures: dict[str, BaseException] = {}
+        owners: dict[str, str] = {}
+        for (cap, _keys), (captured, failed) in zip(slices, harvested, strict=True):
+            for frag_key, fragment in captured.items():
                 # Dynamic-model attribute names use the local segment of
                 # the fully-qualified key (``browser.dom`` → ``dom``), so
                 # agents keep their ``obs.dom`` access pattern.
                 field_values[fragment_field_name(frag_key)] = fragment
+            for frag_key, exc in failed.items():
+                failures[frag_key] = exc
+                owners[frag_key] = cap.capability_id
 
+        if failures:
+            fatal = sorted(set(failures) & required)
+            if fatal:
+                raise ObservationFailedError(
+                    cycle, failures, owners, required
+                ) from failures[fatal[0]]
+            for frag_key, exc in failures.items():
+                logger.warning(
+                    "observe cycle %d: optional fragment %r from capability %r "
+                    "failed (%s: %s) — recorded as a failure, observation "
+                    "continues",
+                    cycle,
+                    frag_key,
+                    owners[frag_key],
+                    type(exc).__name__,
+                    exc,
+                )
+                field_values[fragment_field_name(frag_key)] = (
+                    FragmentFailure.from_exception(frag_key, owners[frag_key], exc)
+                )
+
+        # Which slots may carry a failure is derived by the model builder
+        # from the same single field this method read above
+        # (``required_fragments``): it widens exactly ``env_sourced -
+        # required``. The two are exact complements by construction rather
+        # than by agreement — there is one source, read twice, not two
+        # computations that have to be kept in step.
+        obs_model = build_observation_model_from_result(negotiated)
         return obs_model(**field_values)
+
+    def _observation_slices(
+        self, env_sourced: frozenset[str]
+    ) -> list[tuple[BaseCapability, list[str]]]:
+        """Group the cycle's fragments into one slice per capability.
+
+        Grouping *is* the concurrency plan: one slice is one task, and a
+        slice's keys share one capture. Sorted so a run resolves its
+        fragments in a stable order — a log of two runs of one config
+        should differ where the pages differ, not where a set iterated.
+
+        Raises:
+            UnroutableFragmentError: a negotiated fragment no capability
+                here owns.
+        """
+        router = self._fragment_router or {}
+        unroutable = env_sourced - router.keys()
+        if unroutable:
+            raise UnroutableFragmentError(
+                frozenset(unroutable), frozenset(router)
+            )
+        # Keyed by ``id()`` because a capability is genuinely unhashable:
+        # ``CapabilityBase`` is a ``@dataclass`` with the default
+        # ``eq=True``, which sets ``__hash__ = None``, so
+        # ``{cap: keys}`` raises ``TypeError``. Identity is the right key
+        # anyway — two entries of ``capabilities`` are two capabilities
+        # even if their fields happen to match.
+        by_instance: dict[int, tuple[BaseCapability, list[str]]] = {}
+        for frag_key in sorted(env_sourced):
+            cap = router[frag_key]
+            slice_ = by_instance.get(id(cap))
+            if slice_ is None:
+                slice_ = (cap, [])
+                by_instance[id(cap)] = slice_
+            slice_[1].append(frag_key)
+        return list(by_instance.values())
+
+    @staticmethod
+    async def _begin_cycle(cap: BaseCapability, cycle: int) -> Exception | None:
+        """Open *cycle* on one capability; return its failure, if any.
+
+        Returning rather than raising keeps ``gather`` free of
+        ``return_exceptions=True``, which would also swallow a
+        ``CancelledError`` — a cancelled run must stay cancelled.
+        """
+        try:
+            await cap.begin_observation(cycle)
+        except Exception as exc:  # per-capability isolation
+            return exc
+        return None
+
+    @staticmethod
+    async def _resolve_slice(
+        cap: BaseCapability,
+        keys: list[str],
+        begin_error: Exception | None,
+    ) -> tuple[dict[str, Any], dict[str, BaseException]]:
+        """Resolve one capability's fragments, in order, isolating failures.
+
+        A capability that could not open the cycle resolves nothing: its
+        fragments would come from the previous capture, which is the stale
+        data this whole contract exists to prevent. They are reported as
+        failed, carrying the reason the cycle could not be opened.
+
+        Isolation is per *fragment*, and stays that way on purpose: a
+        capability that genuinely captures one fragment at a time has
+        independent failures, and short-circuiting its slice would throw
+        away data it did capture. The cost of that choice falls on the
+        capability that **batches**, and the contract puts it there: a
+        shared capture that fails must be recorded for the cycle, so the
+        next key of the slice is refused with the same exception rather
+        than re-entering the capture. ``BrowserCapability`` does this with
+        ``_ObserveCycleCache.error``; before it did, one failed
+        three-fragment observation cost three full retry budgets. See
+        ``assert_a_failed_cycle_costs_one_capture`` in
+        ``tests/_helpers/capability_contract.py`` — every capability is
+        run through it.
+        """
+        captured: dict[str, Any] = {}
+        failed: dict[str, BaseException] = {}
+        for frag_key in keys:
+            if begin_error is not None:
+                failed[frag_key] = begin_error
+                continue
+            try:
+                captured[frag_key] = await cap.resolve_fragment(frag_key)
+            except Exception as exc:  # per-fragment isolation
+                failed[frag_key] = exc
+        return captured, failed
 
     def _build_fragment_router(self) -> None:
         """Build reverse index: fragment_key → Capability."""

@@ -17,6 +17,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -75,19 +76,15 @@ class CDPClient:
         """Cancel the receive loop, fail pending futures, and close the WebSocket."""
         if self._recv_task is not None:
             self._recv_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._recv_task
-            except asyncio.CancelledError:
-                pass
             self._recv_task = None
 
         self._fail_pending(ConnectionError("CDPClient stopped"))
 
         if self._ws is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._ws.close()
-            except Exception:
-                pass
             self._ws = None
 
         logger.debug("CDPClient stopped")
@@ -149,10 +146,8 @@ class CDPClient:
         cbs = self._callbacks.get(method)
         if cbs is None:
             return
-        try:
+        with contextlib.suppress(ValueError):
             cbs.remove(callback)
-        except ValueError:
-            pass
         if not cbs:
             del self._callbacks[method]
 

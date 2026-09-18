@@ -96,6 +96,9 @@ class TestComposerInjectsBackend:
         from spectragent.core.capabilities.browser.dom.cleaning import (
             DOMCleanerRegistrar,
         )
+        from spectragent.core.capabilities.browser.dom.serializers import (
+            DOMSerializerRegistrar,
+        )
         from spectragent.core.capabilities.browser.input import (
             MouseTrajectoryRegistrar,
             TypingRhythmRegistrar,
@@ -112,6 +115,7 @@ class TestComposerInjectsBackend:
                 "mouse_trajectory": MouseTrajectoryRegistrar,
                 "typing_rhythm": TypingRhythmRegistrar,
                 "dom_cleaner": DOMCleanerRegistrar,
+                "dom_serializer": DOMSerializerRegistrar,
                 "action": ActionRegistrar,
                 "capability": CapabilityRegistrar,
                 "agent_loop": AgentLoopRegistrar,
@@ -137,6 +141,7 @@ class TestComposerInjectsBackend:
                     "mouse_trajectory": {"trajectory_type": "instant"},
                     "typing_rhythm": {"rhythm_type": "instant"},
                     "dom_cleaner": {"cleaner_type": "browser_use"},
+                    "dom_serializer": {"serializer_type": "text"},
                     "backend": {"provider_id": "local_chrome"},
                 }
             ],
@@ -173,6 +178,9 @@ class TestComposerInjectsBackend:
         from spectragent.core.capabilities.browser.dom.cleaning import (
             DOMCleanerRegistrar,
         )
+        from spectragent.core.capabilities.browser.dom.serializers import (
+            DOMSerializerRegistrar,
+        )
         from spectragent.core.capabilities.browser.input import (
             MouseTrajectoryRegistrar,
             TypingRhythmRegistrar,
@@ -189,6 +197,7 @@ class TestComposerInjectsBackend:
                 "mouse_trajectory": MouseTrajectoryRegistrar,
                 "typing_rhythm": TypingRhythmRegistrar,
                 "dom_cleaner": DOMCleanerRegistrar,
+                "dom_serializer": DOMSerializerRegistrar,
                 "action": ActionRegistrar,
                 "capability": CapabilityRegistrar,
                 "agent_loop": AgentLoopRegistrar,
@@ -251,6 +260,7 @@ class TestComposerInjectsBackend:
                     "mouse_trajectory": {"trajectory_type": "instant"},
                     "typing_rhythm": {"rhythm_type": "instant"},
                     "dom_cleaner": {"cleaner_type": "browser_use"},
+                    "dom_serializer": {"serializer_type": "text"},
                     "backend": {"provider_id": "local_chrome"},
                     "observation": "browser.dom",
                 }

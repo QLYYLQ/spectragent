@@ -72,12 +72,40 @@ class Environment(Protocol):
     ) -> Any:
         """Return the current observation, delegating to Capability resolvers.
 
+        **One call is one observation cycle.** The environment owns a
+        monotonically increasing cycle counter, increments it here, and
+        announces it to every participating capability
+        (:meth:`BaseCapability.begin_observation`) before resolving
+        anything — which is what makes "a capability may capture once and
+        serve many fragments from it" a contract rather than a convention
+        one capability happens to follow. A caller that wants fresh data
+        calls ``observe()`` again; nothing else opens a cycle.
+
+        Capabilities are resolved concurrently and each capability's own
+        fragments in sequence, so the wall-clock cost of an observation is
+        its slowest capability rather than the sum, and each fragment
+        carries the time it was captured (``FragmentBase.captured_at``) so
+        the skew between capabilities is visible in the run and in the
+        trace.
+
+        A capability that raises while owing a **required** fragment fails
+        the observation; one that raises while owing only optional
+        fragments has those slots recorded as
+        :class:`~spectragent.schemas.observation.failure.FragmentFailure`
+        and everything its peers captured survives. Which is which comes
+        from ``negotiated.required_fragments`` — the environment decides
+        nothing here.
+
         Args:
             negotiated: NegotiationResult from the three-party negotiation.
                 Typed as Any to avoid circular imports.
 
         Returns:
             A dynamically-built NegotiatedObservation Pydantic model instance.
+
+        Raises:
+            ObservationFailedError: A required fragment could not be
+                captured.
         """
         ...
 

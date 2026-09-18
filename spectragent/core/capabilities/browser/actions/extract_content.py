@@ -1,4 +1,13 @@
-"""ExtractContentAction — extract text content from the page or an element."""
+"""ExtractContentAction — dump the page's text, or one element's HTML.
+
+It carries **no** extraction goal. It used to: a ``goal`` param rode the
+descriptor into the prompt and the event into the watchdog, where nothing
+read it — the handler returns the whole scope either way. The model was
+being asked to state what it wanted and handed the page regardless. The
+param is deleted rather than kept as a promise; the honest version of that
+feature needs an LLM inside the action, which the framework cannot yet
+wire or attribute. See ``docs/actions_that_call_an_llm.md``.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +35,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class ExtractContentAction(ActionBase):
-    """Extract text from the page or a specific element."""
+    """Return a scope wholesale: page ``innerText``, or element ``outerHTML``."""
 
     __registry_key__ = "browser.extract_content"
 
@@ -38,13 +47,12 @@ class ExtractContentAction(ActionBase):
             RequiresFragment("browser.dom"),
             PydanticField(description="element index; omit to extract page text"),
         ] = None
-        goal: Annotated[
-            str | None, PydanticField(description="free-form extraction goal")
-        ] = None
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return self.describe(
-            "Extract text content from the page or an element.", **context
+            "Extract the page's visible text, or one element's HTML. "
+            "Returns the whole scope — it does not search or summarise.",
+            **context,
         )
 
     async def execute(
@@ -61,7 +69,6 @@ class ExtractContentAction(ActionBase):
             event = ExtractContentEvent(
                 backend_node_id=element.backend_node_id if element else None,
                 session_id=element.session_id if element else None,
-                goal=params.get("goal"),
             )
             scope.emit(event)
             await event

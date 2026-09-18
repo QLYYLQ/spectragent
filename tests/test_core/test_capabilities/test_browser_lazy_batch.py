@@ -342,6 +342,12 @@ class TestEveryObservationSeesThePageAsItIsNow:
     clicked the checkbox again, which dismissed the challenge. The cache
     had been invalidated only by ``execute_action``; a ParseError step
     never calls it.
+
+    Where the boundary comes from has since changed, and that is the
+    point: ``Environment.observe`` announces each cycle through
+    ``begin_observation``. The capability used to infer it from "have I
+    served this key before", which was right for the loop's access pattern
+    and wrong for every other caller.
     """
 
     @staticmethod
@@ -374,8 +380,12 @@ class TestEveryObservationSeesThePageAsItIsNow:
         )
 
         async def _two_observations() -> tuple[object, object]:
+            await cap.begin_observation(1)
             first = await cap.resolve_fragment("browser.screenshot")
             # No execute_action in between: the reply failed to parse.
+            # The next observation still opens a cycle, so the page is
+            # read again.
+            await cap.begin_observation(2)
             second = await cap.resolve_fragment("browser.screenshot")
             return first, second
 
@@ -383,6 +393,32 @@ class TestEveryObservationSeesThePageAsItIsNow:
         assert scope.emissions == 2
         assert first.image_bytes == b"spinner"  # type: ignore[attr-defined]
         assert second.image_bytes == b"challenge"  # type: ignore[attr-defined]
+
+    def test_reading_one_fragment_twice_inside_a_cycle_is_one_capture(self) -> None:
+        """The deleted heuristic, pinned in its new shape.
+
+        Two reads of one key used to mean "this must be the next
+        observation" and cost a second scrape. Inside one announced cycle
+        they are two reads of one capture — which is what makes it safe
+        for a hook, an action or a prompt builder to read a fragment the
+        loop already read.
+        """
+        import asyncio
+
+        cap, scope = self._cap(
+            [self._shot(b"one"), self._shot(b"two")], {"browser.screenshot"}
+        )
+
+        async def _twice() -> tuple[object, object]:
+            await cap.begin_observation(1)
+            return (
+                await cap.resolve_fragment("browser.screenshot"),
+                await cap.resolve_fragment("browser.screenshot"),
+            )
+
+        first, second = asyncio.run(_twice())
+        assert scope.emissions == 1
+        assert first is second
 
     def test_one_observation_of_several_fragments_still_costs_one_event(self) -> None:
         import asyncio
@@ -394,7 +430,8 @@ class TestEveryObservationSeesThePageAsItIsNow:
 
         async def _observations() -> list[object]:
             got = []
-            for _ in range(2):  # what Environment.observe does, twice
+            for cycle in (1, 2):  # what Environment.observe does, twice
+                await cap.begin_observation(cycle)
                 got.append(await cap.resolve_fragment("browser.dom"))
                 got.append(await cap.resolve_fragment("browser.screenshot"))
             return got

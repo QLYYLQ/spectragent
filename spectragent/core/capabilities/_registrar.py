@@ -80,6 +80,15 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
     __registry_key__: ClassVar[str]
     __wiring__: ClassVar[dict[str, Any]] = {}
 
+    #: Whether an action run by *another* capability invalidates this
+    #: one's current capture. See
+    #: :attr:`BaseCapability.__invalidated_by_foreign_actions__` for the
+    #: policy; ``False`` says "we are independent worlds", which is what
+    #: keeps ``browser.click`` from costing an Android capability an ADB
+    #: round trip. Declaring it here — even as the default — is what turns
+    #: an assumption nobody wrote down into something a test can read.
+    __invalidated_by_foreign_actions__: ClassVar[bool] = False
+
     #: Instance identity — distinct from ``capability_id`` (class identity).
     #: A dataclass field on the base so every dataclass subclass inherits
     #: it as an ``__init__`` parameter and conscribe emits it into the
@@ -173,6 +182,31 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
 
     async def execute_action(self, action: Any) -> Any:
         raise NotImplementedError(f"{type(self).__name__} must implement execute_action()")
+
+    async def begin_observation(self, cycle: int) -> None:
+        """Open an observation cycle. No-op unless the capability caches.
+
+        The default is doing nothing, because a capability that resolves
+        every fragment with its own round trip holds no cycle state.
+        Override it to drop the previous capture — and key the new one on
+        ``cycle``, rather than inferring the boundary from which fragments
+        you have already served. See
+        :meth:`~spectragent.core.capabilities.base.BaseCapability.begin_observation`.
+
+        Overriding it means "my fragments share a capture", and that
+        carries a second obligation on the failure path: record that
+        **this cycle's capture failed** and refuse the rest of the cycle
+        with the same error. ``Environment.observe`` isolates failures per
+        *fragment*, so after your first fragment raises it will ask you
+        for the next one; a capability that re-enters its capture there
+        pays for the whole thing — retries included — once per negotiated
+        fragment, on exactly the step that was already going badly.
+        ``BrowserCapability`` keeps it on ``_ObserveCycleCache.error``;
+        ``assert_a_failed_cycle_costs_one_capture`` in
+        ``tests/_helpers/capability_contract.py`` is the clause that
+        checks it.
+        """
+        return None
 
     async def resolve_fragment(self, fragment_key: str) -> Any:
         raise NotImplementedError(f"{type(self).__name__} cannot resolve fragment '{fragment_key}'")

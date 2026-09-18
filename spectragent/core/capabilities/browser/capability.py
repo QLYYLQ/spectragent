@@ -20,10 +20,12 @@ Key design points:
 - **Lazy-batch resolution**: ``resolve_fragment()`` consults a per-tab
   per-cycle cache. The first call within a cycle fires *one*
   ``BrowserStateRequestEvent``; later calls in the same cycle hit the
-  cache. A cycle is one *observation*: a fragment asked for a second time
-  opens the next one, and ``execute_action()`` drops the cycle — so
-  neither an action's effects nor the page moving on by itself is ever
-  observed via stale data.
+  cache. **Which cycle it is, is told to us**: ``Environment.observe``
+  owns the counter and announces each observation through
+  :meth:`BrowserCapability.begin_observation`, so the cache is keyed on
+  that number and nothing here has to infer where one observation ends.
+  ``execute_action()`` drops the acted tab's cycle as well, so an action's
+  effects are never observed through the capture that preceded them.
 - **Multi-tab focus is capability state**: the CDP session id of the
   focused tab lives in ``_default_session_id`` and is changed through
   :meth:`BrowserCapability.switch_tab`. It is *not* a parameter of
@@ -67,12 +69,28 @@ from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — re
 )
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
-from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerProtocol
-from spectragent.core.capabilities.browser.dom.cleaning.browser_use import BrowserUseCleaner
+from spectragent.core.capabilities.browser.dom.budget import DOMBudget
+from spectragent.core.capabilities.browser.dom.cleaning import (
+    DOMCleanerProtocol,
+    default_cleaner,
+)
+from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (  # noqa: F401 — registration
+    BrowserUseCleaner,
+)
 from spectragent.core.capabilities.browser.dom.cleaning.skyvern import (  # noqa: F401 — registration
     SkyvernCleaner,
 )
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
+from spectragent.core.capabilities.browser.dom.serializers import (
+    DOMSerializerProtocol,
+    default_serializer,
+)
+from spectragent.core.capabilities.browser.dom.serializers.html_serializer import (  # noqa: F401 — registration
+    HTMLSerializer,
+)
+from spectragent.core.capabilities.browser.dom.serializers.text_serializer import (  # noqa: F401 — registration
+    TextSerializer,
+)
 from spectragent.core.capabilities.browser.input import (
     InstantRhythm,
     InstantTrajectory,
@@ -126,32 +144,64 @@ _OBSERVE_MAX_ATTEMPTS = 2
 
 @dataclass
 class _ObserveCycleCache:
-    """Per-tab cache of the fragments one observation resolves.
+    """One tab's capture for one observation cycle.
 
     ``fragments`` is keyed by fully-qualified fragment key. It used to be
     one hard-coded attribute per fragment, which forced both a schema
     edit and an ``if/elif`` branch in ``resolve_fragment`` for every new
     fragment; a dict needs neither.
 
-    ``Environment.observe`` asks for every negotiated fragment exactly
-    once, so the fragments of one observation share one
-    ``BrowserStateRequestEvent`` and the CDP cost stays constant however
-    many the agent requests. A fragment asked for *again* is therefore
-    the next observation, and ``resolve_fragment`` opens a new cycle for
-    it; ``execute_action`` drops the cycle as well.
+    ``cycle`` is the number :meth:`BrowserCapability.begin_observation`
+    was last told, stamped at capture. An entry from an older cycle is not
+    served — it is replaced by a fresh capture. It replaced an inference:
+    the cache used to track which keys it had already *served* and treat a
+    second read of one key as the start of the next observation. That
+    guess was right for the loop's access pattern and wrong for anything
+    else (a hook or an action reading a fragment twice silently paid for a
+    second scrape), and it existed only because nothing ever told this
+    capability where an observation began.
 
-    The cycle used to live until the next ``execute_action``. The page
-    does not wait for one — a spinner resolves into a challenge, a modal
-    fades in — so a Loop step that ran no action (a reply that failed to
-    parse) was handed the previous step's screenshot byte for byte, 5.5
-    seconds after the page had changed, and the agent clicked on what was
-    no longer there.
+    ``cycle`` is **not** the only invalidation path, and assuming it is
+    would lose the other one: :meth:`BrowserCapability.execute_action`
+    pops the acted tab's entry outright, without advancing the cycle,
+    because an action's effects must never be read through the capture
+    that preceded them and the loop does not open a new cycle between its
+    act and whatever reads next. Cycle number = "this observation is
+    over"; pop = "this tab changed under me".
+
+    ``error`` is the third piece, and it is what makes a *failed* cycle
+    cost the same as a successful one. This capability's capture is
+    all-or-nothing: if the batched event did not produce every negotiated
+    fragment, ``_populate_cycle`` raises and leaves ``fired`` False. Since
+    ``Environment.observe`` isolates failures per fragment, it goes on to
+    ask for the next key of the same slice — which would re-enter the
+    whole ``_OBSERVE_MAX_ATTEMPTS`` retry budget, once per fragment, so a
+    dom+screenshot+meta run burned six full DOM extractions to fail one
+    observation. Recording the failure on the cycle means the retry budget
+    is spent once and every other fragment of that cycle is refused with
+    the same exception, immediately.
+
+    Two failures the history is worth keeping:
+
+    - The cycle once lived until the next ``execute_action``. The page
+      does not wait for one — a spinner resolves into a challenge, a modal
+      fades in — so a Loop step that ran no action (a reply that failed to
+      parse) was handed the previous step's screenshot byte for byte, 5.5
+      seconds after the page had changed, and the agent clicked on what
+      was no longer there.
+    - ``Environment.observe`` asks for every negotiated fragment of one
+      cycle in sequence, so they share one ``BrowserStateRequestEvent``
+      and the CDP cost of a step stays constant however many fragments the
+      agent requested.
     """
 
+    #: Observation cycle this capture belongs to.
+    cycle: int = 0
     fragments: dict[str, Any] = field(default_factory=dict)
     fired: bool = False  # whether the batched event has run for this cycle
-    #: Fragment keys already handed out by this cycle.
-    served: set[str] = field(default_factory=set)
+    #: Why this cycle's capture failed, if it did. Re-raised for every
+    #: other fragment of the same cycle instead of re-attempting it.
+    error: BaseException | None = None
 
 
 def _build_wired_action(name: str) -> ActionBase:
@@ -295,6 +345,16 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # looked the class up and default-constructed it — the generated
         # ``BrowserUseDom_CleanerConfig`` existed and nothing could reach it.
         "dom_cleaner": ("dom_cleaner", ["browser_use", "skyvern"]),
+        # ``dom_serializer`` is the third instance of that identical
+        # defect and closes it: the serializer decides what the *prompt*
+        # says the page is, and ``TextSerializer.max_text_length`` /
+        # ``HTMLSerializer.max_href_length`` were declared, generated into
+        # ``TextDom_SerializerConfig`` / ``HtmlDom_SerializerConfig``, and
+        # unreachable, because ``profile.serializer`` was a name and
+        # ``DOMWatchdog`` did ``DOMSerializerRegistrar.get(name)()``.
+        # ``tests/.../test_receptor_hygiene.py`` is the structural guard
+        # against a fourth.
+        "dom_serializer": ("dom_serializer", ["text", "html"]),
         # ``browser_provider`` is the existing conscribe registrar for
         # the underlying browser backend (local_chrome, lexmount,
         # browseruse_lite, ...). Mode 1 (auto-discovery) allows any
@@ -309,6 +369,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     mouse_trajectory: MouseTrajectoryProtocol  # type: ignore[misc]
     typing_rhythm: TypingRhythmProtocol  # type: ignore[misc]
     dom_cleaner: DOMCleanerProtocol  # type: ignore[misc]
+    dom_serializer: DOMSerializerProtocol  # type: ignore[misc]
     backend: BaseBrowserProvider  # type: ignore[misc]
 
     # ── conscribe-visible config (assigned in __init__) ──────────────
@@ -319,6 +380,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     debug_highlight: bool
     screenshot_format: Literal["png", "jpeg"]
     screenshot_quality: int
+    dom_max_elements: int | None
+    dom_max_serialized_chars: int | None
+    dom_interactive_only: bool
+    dom_viewport_only: bool
 
     # ── internal state, never config (assigned in __init__) ──────────
     # Declared here as type-only annotations so both pyright and the
@@ -340,6 +405,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     _resolved_profile: BrowserProfileConfig | None
     #: Per-tab observe-cycle cache. Keyed by session_id.
     _cycle_cache: dict[str, _ObserveCycleCache]
+    #: The observation cycle this capability was last told about.
+    _observation_cycle: int
     #: Optional injected client for tests.
     _injected_client: CDPClient | None
 
@@ -413,6 +480,70 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = 80,
+        dom_max_elements: Annotated[
+            int | None,
+            PydanticField(
+                ge=1,
+                description=(
+                    "Cap on indexed elements in the browser.dom observation "
+                    "fragment, kept in document order. The DOM half of "
+                    "screenshot_quality: a listing page indexes 400+ elements "
+                    "and every one of them costs prompt tokens on every step. "
+                    "What a dropped element loses is its index: the selector "
+                    "map is capped with it, so no action can reach it. It may "
+                    "still appear in the serialization as unindexed structure "
+                    "— a scroll container or an iframe still prints its tag — "
+                    "which is why this caps cost rather than hiding a page. "
+                    "None (default) is unlimited. Whenever this cuts, the "
+                    "fragment says so in DOMObs.budget."
+                ),
+            ),
+        ] = None,
+        dom_max_serialized_chars: Annotated[
+            int | None,
+            PydanticField(
+                ge=1,
+                description=(
+                    "Budget for the serialized DOM string, cut at the last "
+                    "line boundary inside it. Applied after the element "
+                    "caps, so it is the last resort rather than the first. "
+                    "The kept text ends with a '[dom budget: N of M "
+                    "characters shown]' note, so the model is told it is "
+                    "reading a cut page, and the cut is recorded in "
+                    "DOMObs.budget for the trace. The note is metadata about "
+                    "the cut and is not charged against this budget, so the "
+                    "final string runs ~45 characters over it: this bounds "
+                    "page content, it is not a hard cap on the field. None "
+                    "(default) is unlimited."
+                ),
+            ),
+        ] = None,
+        dom_interactive_only: Annotated[
+            bool,
+            PydanticField(
+                description=(
+                    "Keep only what the agent can act on: drop indexed scroll "
+                    "containers that are not themselves interactive, and drop "
+                    "from the tree every node that is neither indexed nor an "
+                    "ancestor of an indexed one. That second half removes the "
+                    "page's prose, which is where the tokens are — and "
+                    "removes it for a reading agent too, so leave it off for "
+                    "tasks whose answer is in the text."
+                ),
+            ),
+        ] = False,
+        dom_viewport_only: Annotated[
+            bool,
+            PydanticField(
+                description=(
+                    "Drop indexed elements whose bounds do not intersect the "
+                    "scrolled viewport, so a long page costs what is on "
+                    "screen. The agent must scroll to reach the rest. An "
+                    "element with no measured bounds is kept: this never cuts "
+                    "what it cannot measure."
+                ),
+            ),
+        ] = False,
         actions: Annotated[
             list[ActionBase] | None,
             PydanticField(
@@ -437,6 +568,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.debug_highlight = debug_highlight
         self.screenshot_format = screenshot_format
         self.screenshot_quality = screenshot_quality
+        self.dom_max_elements = dom_max_elements
+        self.dom_max_serialized_chars = dom_max_serialized_chars
+        self.dom_interactive_only = dom_interactive_only
+        self.dom_viewport_only = dom_viewport_only
 
         # In-Python default for the wired trajectory receptor. YAML must
         # name one (a single-instance receptor is required in the
@@ -449,7 +584,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # strategy: YAML names one, a hand-built capability gets the default
         # strategy with its defaults.
         self.typing_rhythm = InstantRhythm()
-        self.dom_cleaner = BrowserUseCleaner()
+        # Via the strategy packages' own ``default_*`` factories, not by
+        # naming the class here: ``DOMWatchdog`` needs the same default for
+        # a hand-built watchdog, and one fact written in two files drifts.
+        self.dom_cleaner = default_cleaner()
+        self.dom_serializer = default_serializer()
 
         # ── internal state (never config) ─────────────────────────
         self._actions_by_name = {}
@@ -467,6 +606,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._default_session_id = None
         self._alive = False
         self._cycle_cache = {}
+        self._observation_cycle = 0
         self._injected_client = None
 
         self.actions = actions
@@ -514,6 +654,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._actions_by_name = {a.action_id: a for a in resolved}
 
     # ── Properties ────────────────────────────────────────────────────
+
+    @property
+    def dom_budget(self) -> DOMBudget:
+        """The four DOM cost knobs, as one value the resolver can hold.
+
+        Assembled here rather than stored, so the scalars stay the config
+        surface (four ``Annotated`` ``__init__`` params conscribe can see)
+        and the resolver still receives one object rather than four
+        arguments it has to keep in sync.
+        """
+        return DOMBudget(
+            max_elements=self.dom_max_elements,
+            max_serialized_chars=self.dom_max_serialized_chars,
+            interactive_only=self.dom_interactive_only,
+            viewport_only=self.dom_viewport_only,
+        )
 
     @property
     def profile_config(self) -> BrowserProfileConfig:
@@ -945,14 +1101,29 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             logger.error("Action %s failed: %s", action.name, exc, exc_info=True)
             return ActionResult(success=False, error=str(exc))
 
+    async def begin_observation(self, cycle: int) -> None:
+        """Open observation cycle *cycle* — the next read re-captures.
+
+        Recording the number is the whole implementation: a cache entry
+        stamped with an older cycle is not served (see
+        :meth:`_populate_cycle`), so this costs nothing until a fragment
+        is actually asked for, and a tab nobody observes this cycle is not
+        scraped at all.
+
+        No CDP call, so nothing here can fail; the environment still
+        treats a raise as this capability's whole slice failing, which is
+        what a capability that acquires something in here would want.
+        """
+        self._observation_cycle = cycle
+
     async def resolve_fragment(self, fragment_key: str) -> Any:
         """Resolve one observation fragment via the lazy-batch cache.
 
         The first call of a cycle fires a single
         ``BrowserStateRequestEvent`` carrying the negotiated fragment set;
-        the other fragments of the same observation hit the cache. Asking
-        for a fragment this cycle already handed out starts the next
-        observation with a fresh capture — see :class:`_ObserveCycleCache`.
+        every other fragment of the same cycle is served from that one
+        capture, however many times each is asked for. The next cycle is
+        announced by :meth:`begin_observation`, not guessed at.
 
         Which keys are supported is decided by the installed watchdogs'
         ``provides`` — there is no branch per fragment here. The tab
@@ -970,18 +1141,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 f"{sorted(provided)}."
             )
 
-        cache = self._cycle_cache.get(sid)
-        if cache is not None and fragment_key in cache.served:
-            # Already handed out by this cycle: this read is the next
-            # observation, and must see the page as it is now.
-            del self._cycle_cache[sid]
-
-        # Ensure cache is populated for this cycle.
+        # Ensure this tab holds a capture belonging to the current cycle.
         await self._populate_cycle(sid)
 
-        cache = self._cycle_cache[sid]
-        cache.served.add(fragment_key)
-        return cache.fragments.get(fragment_key)
+        return self._cycle_cache[sid].fragments.get(fragment_key)
 
     def _action_watchdog_for(self, sid: str) -> Any | None:
         """Return the ActionWatchdog instance attached to ``sid``, or ``None``.
@@ -1015,15 +1178,65 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         unset, and since env fragments are required fields on the
         negotiated observation model the caller got an opaque pydantic
         ``ValidationError`` about a missing field instead of the cause.
+
+        **A cycle's failure is recorded and re-raised, not re-attempted.**
+        ``Environment.observe`` isolates failures per *fragment*, which is
+        right for a capability that captures per fragment and wrong for
+        this one: the capture is shared, so after it fails the environment
+        asks for the next key of the same slice and — without
+        ``cache.error`` — that re-entered the whole retry budget again. A
+        three-fragment run paid six DOM extractions, six overlay toggles
+        and six warning lines to fail one observation. The budget is spent
+        once per cycle now; the rest of the slice gets the same exception
+        back, immediately.
+
+        The raise reaches ``Environment.observe``, which decides what it
+        costs: fatal if this run declared the fragment required, recorded
+        as a ``FragmentFailure`` if it was optional. This method does not
+        get to make that call, and must never soften it by serving a
+        fragment it could not capture.
         """
         cache = self._cycle_cache.get(sid)
-        if cache is None:
-            cache = _ObserveCycleCache()
+        if cache is None or cache.cycle != self._observation_cycle:
+            # No capture for this tab, or one belonging to an observation
+            # that is over. Either way the page must be read again.
+            cache = _ObserveCycleCache(cycle=self._observation_cycle)
             self._cycle_cache[sid] = cache
 
         if cache.fired:
-            return  # Cache already populated for this cycle.
+            return  # This cycle's capture is already in hand.
 
+        if cache.error is not None:
+            # This cycle's capture already failed, and it is one capture
+            # for every fragment: re-attempting it per fragment would
+            # multiply the cost of a bad step by the number of fragments
+            # the agent negotiated. Same exception object, so the
+            # environment reports one cause for the whole slice — which is
+            # the truth about what happened.
+            raise cache.error
+
+        try:
+            outcome = await self._capture_once(sid)
+        except Exception as exc:
+            # Remembered on the cycle, so the rest of this slice is
+            # refused rather than re-captured. Anything that reaches here
+            # — a lost race, a dead scope, a CDP transport error — costs
+            # the same once.
+            cache.error = exc
+            raise
+
+        cache.fragments.update(outcome.fragments)
+        cache.fired = True
+
+    async def _capture_once(self, sid: str) -> _StateEventOutcome:
+        """One tab's capture attempt-with-retries, or raise.
+
+        Split out of :meth:`_populate_cycle` so every way a capture can
+        fail passes through one ``except`` there and lands on
+        ``cache.error``. Inlining it would make the retry ``for/else`` and
+        the failure bookkeeping share a block, which is how the second
+        failure path gets forgotten.
+        """
         scope = self._scopes.get(sid)
         if scope is None:
             raise RuntimeError(f"Unknown session_id: {sid}")
@@ -1033,7 +1246,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         for attempt in range(1, _OBSERVE_MAX_ATTEMPTS + 1):
             outcome = await self._fire_state_event(sid, scope, wanted)
             if wanted <= outcome.fragments.keys():
-                break
+                return outcome
             logger.warning(
                 "observe cycle (sid=%s): BrowserStateRequestEvent attempt "
                 "%d/%d did not produce %s (handlers responded: %d%s)",
@@ -1044,22 +1257,19 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 outcome.handler_count,
                 f"; errors: {outcome.errors}" if outcome.errors else "",
             )
-        else:
-            assert outcome is not None  # loop body runs at least once
-            detail = (
-                "; ".join(outcome.errors)
-                if outcome.errors
-                else "none recorded — see the watchdog errors logged above"
-            )
-            raise RuntimeError(
-                f"observe cycle (sid={sid}): no watchdog produced "
-                f"{sorted(wanted - outcome.fragments.keys())} after "
-                f"{_OBSERVE_MAX_ATTEMPTS} attempts. Handlers responded: "
-                f"{outcome.handler_count}. Errors: {detail}."
-            )
 
-        cache.fragments.update(outcome.fragments)
-        cache.fired = True
+        assert outcome is not None  # loop body runs at least once
+        detail = (
+            "; ".join(outcome.errors)
+            if outcome.errors
+            else "none recorded — see the watchdog errors logged above"
+        )
+        raise RuntimeError(
+            f"observe cycle (sid={sid}): no watchdog produced "
+            f"{sorted(wanted - outcome.fragments.keys())} after "
+            f"{_OBSERVE_MAX_ATTEMPTS} attempts. Handlers responded: "
+            f"{outcome.handler_count}. Errors: {detail}."
+        )
 
     async def _fire_state_event(
         self, sid: str, scope: EventScope, wanted: frozenset[str]
@@ -1416,6 +1626,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             mouse_trajectory=self.mouse_trajectory,
             typing_rhythm=self.typing_rhythm,
             dom_cleaner=self.dom_cleaner,
+            dom_serializer=self.dom_serializer,
+            dom_budget=self.dom_budget,
             screenshot_format=self.screenshot_format,
             screenshot_quality=self.screenshot_quality,
             selector_map_getter=_selector_map_getter,

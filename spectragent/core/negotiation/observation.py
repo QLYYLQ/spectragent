@@ -118,6 +118,21 @@ class ObservationNegotiationResult(NegotiationResultBase):
             active set. Computed once here so nothing downstream has to
             rediscover which capability a locally-named fragment came
             from.
+        required_fragments: Subset of active_fragments the agent or loop
+            declared **required**, fully qualified. Negotiation has always
+            known this — it is the difference between "I cannot work
+            without a DOM" and "use a screenshot if there is one" — and it
+            used to end at the missing-key check and be thrown away. It is
+            kept because it is the only thing that can answer the question
+            a multi-capability observation asks at runtime: this
+            capability just raised, is the run over, or is this a slot
+            that records the failure and carries on
+            (:class:`~spectragent.schemas.observation.failure.FragmentFailure`)?
+            Without it every failure is fatal, which discards the
+            fragments its peers already captured.
+
+            Includes loop-sourced required keys. Consumers that care only
+            about capability failures intersect with ``env_sourced``.
     """
 
     __registry_key__ = "observation"
@@ -126,6 +141,12 @@ class ObservationNegotiationResult(NegotiationResultBase):
     env_sourced: frozenset[str]
     loop_sourced: frozenset[str]
     fragment_bindings: Mapping[str, str] = field(default_factory=dict)
+    #: Defaults to empty so a hand-built result (tests, fixtures) stays
+    #: constructible. Note what that default *means* downstream: nothing
+    #: is required, so every capability failure is recorded rather than
+    #: raised. Real runs always go through :func:`negotiate_observation`,
+    #: which fills it exactly.
+    required_fragments: frozenset[str] = frozenset()
 
 
 def _loop_sourced_keys() -> frozenset[str]:
@@ -200,11 +221,24 @@ def _observation_rules(
     if collisions:
         raise DuplicateFragmentNameError(collisions)
 
+    # Required keys, carried forward in the same fully-qualified space as
+    # everything else the result hands downstream. Every declared-required
+    # key has a binding: one without a provider is in ``demand.missing``,
+    # and that raised above — so this indexes rather than filtering. A
+    # ``if declared in demand.bindings`` guard here would fail open on the
+    # one invariant this set carries: a key that slipped through it would
+    # be silently reclassified as optional, and its capture failure would
+    # land in the observation as a FragmentFailure instead of stopping the
+    # run. KeyError is the right answer to an impossible state.
+    declared_required = agent_required | loop_required
+    required = frozenset(demand.bindings[declared] for declared in declared_required)
+
     return ObservationNegotiationResult(
         active_fragments=active,
         env_sourced=frozenset(env_sourced),
         loop_sourced=frozenset(loop_sourced),
         fragment_bindings=bind_short_names(by_local),
+        required_fragments=required,
     )
 
 

@@ -460,6 +460,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
                 "mouse_trajectory": {"trajectory_type": "windmouse", "gravity": 12.0},
                 "typing_rhythm": {"rhythm_type": "instant"},
                 "dom_cleaner": {"cleaner_type": "browser_use"},
+                "dom_serializer": {"serializer_type": "text"},
                 "backend": {"provider_id": "local_chrome"},
             }
         )
@@ -469,6 +470,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
                 {
                     "mouse_trajectory": {"trajectory_type": "windmoose"},
                     "dom_cleaner": {"cleaner_type": "browser_use"},
+                    "dom_serializer": {"serializer_type": "text"},
                     "backend": {"provider_id": "local_chrome"},
                 }
             )
@@ -490,6 +492,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
                     "humanize_mouse": False,
                     "mouse_trajectory": {"trajectory_type": "windmouse"},
                     "dom_cleaner": {"cleaner_type": "browser_use"},
+                    "dom_serializer": {"serializer_type": "text"},
                     "backend": {"provider_id": "local_chrome"},
                 }
             )
@@ -592,6 +595,7 @@ class TestDomCleanerIsAWiredReceptor:
                         "mouse_trajectory": {"trajectory_type": "instant"},
                     "typing_rhythm": {"rhythm_type": "instant"},
                         "dom_cleaner": cleaner_block,
+                        "dom_serializer": {"serializer_type": "text"},
                         "backend": {"provider_id": "local_chrome"},
                     }
                 ]

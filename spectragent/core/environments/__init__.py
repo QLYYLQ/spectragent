@@ -14,9 +14,15 @@ See docs/architecture_design.md §4.3 and docs/execution_dag.md M07.
 
 from spectragent.core.environments._registrar import EnvironmentBase, EnvironmentRegistrar
 from spectragent.core.environments.base import Environment
+from spectragent.core.environments.errors import (
+    ObservationFailedError,
+    UnroutableFragmentError,
+)
 
 __all__ = [
     "Environment",
     "EnvironmentRegistrar",
     "EnvironmentBase",
+    "ObservationFailedError",
+    "UnroutableFragmentError",
 ]

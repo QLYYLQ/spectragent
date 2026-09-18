@@ -33,11 +33,16 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from agent_cdp import WatchdogBase, WatchdogRegistrar
 
+from spectragent.core.capabilities.browser.dom.budget import DOMBudget
+
 if TYPE_CHECKING:
     from agent_cdp import CDPCommandProtocol
 
     from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerProtocol
     from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
+    from spectragent.core.capabilities.browser.dom.serializers import (
+        DOMSerializerProtocol,
+    )
     from spectragent.core.capabilities.browser.input import (
         MouseTrajectoryProtocol,
         TypingRhythmProtocol,
@@ -109,6 +114,20 @@ class WatchdogContext:
     #: already on it. ``None`` only when the capability was constructed by
     #: hand; ``DOMWatchdog`` then default-constructs the default strategy.
     dom_cleaner: DOMCleanerProtocol | None = None
+
+    #: The configured DOM serializer *instance* — third strategy on this
+    #: route and for the third time the same reason. It used to be
+    #: ``profile.serializer``, a registry key, which meant ``DOMWatchdog``
+    #: did ``DOMSerializerRegistrar.get(name)()`` and
+    #: ``TextSerializer.max_text_length`` / ``HTMLSerializer.max_href_length``
+    #: were configurable in name only. ``None`` only for a hand-built
+    #: capability.
+    dom_serializer: DOMSerializerProtocol | None = None
+
+    #: How much the ``browser.dom`` fragment is allowed to cost. Scalars,
+    #: not a strategy — the DOM half of ``screenshot_format`` /
+    #: ``screenshot_quality``. Default is unbudgeted.
+    dom_budget: DOMBudget = DOMBudget()
 
     #: Encoding of the ``browser.screenshot`` *observation* — a scalar, not
     #: a strategy, because there is nothing to swap: it is one CDP

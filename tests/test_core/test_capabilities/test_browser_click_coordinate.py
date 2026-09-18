@@ -77,7 +77,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
         return None
 
     monkeypatch.setattr(
-        "spectragent.core.capabilities.browser.input.mouse.asyncio.sleep", fake_sleep
+        "spectragent.core.capabilities.browser.input._schedule.asyncio.sleep", fake_sleep
     )
 
 

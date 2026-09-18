@@ -351,3 +351,63 @@ class TestObservationModelCaching:
             assert getattr(obs, "network").bytes_in == 9  # noqa: B009
         finally:
             ObservationRegistrar.unregister(key)
+
+
+class TestRequiredFragmentsReachTheResult:
+    """Negotiation already knows required from optional — it now says so.
+
+    Downstream (``EnvironmentBase.observe``) this is the difference
+    between a flaky capability killing the whole observation and it being
+    recorded while its peers' captures survive. The split was computed
+    here, used once for the missing-key check, and dropped.
+    """
+
+    def test_required_comes_back_fully_qualified(self) -> None:
+        """A relative declaration is bound before it is reported.
+
+        ``dom`` is what the agent wrote; ``browser.dom`` is what the
+        environment routes and what ``observe`` compares against. Reporting
+        the declared form would mean the comparison never matched and
+        every failure counted as optional.
+        """
+        result = _run(
+            env_provides={"browser.dom", "browser.screenshot"},
+            agent_required={"dom"},
+            agent_optional={"screenshot"},
+            loop_required=set(),
+            loop_optional=set(),
+        )
+        assert result.required_fragments == frozenset({"browser.dom"})
+        assert result.env_sourced == frozenset({"browser.dom", "browser.screenshot"})
+
+    def test_the_loops_requirements_count_as_required(self) -> None:
+        result = _run(
+            env_provides={"browser.dom", "browser.screenshot"},
+            agent_required=set(),
+            agent_optional={"browser.dom"},
+            loop_required={"browser.screenshot"},
+            loop_optional=set(),
+        )
+        assert result.required_fragments == frozenset({"browser.screenshot"})
+
+    def test_an_optional_fragment_the_env_lacks_is_not_required(self) -> None:
+        result = _run(
+            env_provides={"browser.screenshot"},
+            agent_required={"browser.screenshot"},
+            agent_optional={"browser.dom"},
+            loop_required=set(),
+            loop_optional=set(),
+        )
+        assert result.required_fragments == frozenset({"browser.screenshot"})
+        assert "browser.dom" not in result.active_fragments
+
+    def test_a_purely_optional_run_requires_nothing(self) -> None:
+        result = _run(
+            env_provides={"browser.screenshot"},
+            agent_required=set(),
+            agent_optional={"browser.screenshot"},
+            loop_required=set(),
+            loop_optional=set(),
+        )
+        assert result.required_fragments == frozenset()
+        assert result.active_fragments == frozenset({"browser.screenshot"})

@@ -75,3 +75,98 @@ class TestBuildFromResult:
         Model = build_observation_model_from_result(result)
         assert "terminal" in Model.model_fields
         assert "action_result" in Model.model_fields
+
+
+class TestFailableSlots:
+    """An optional fragment's slot may carry the reason it is absent.
+
+    Required slots may not, on purpose: the environment raises for those,
+    so a failure landing in one would mean a bug had quietly changed what
+    "required" means.
+    """
+
+    def test_an_optional_slot_accepts_a_failure(self) -> None:
+        from spectragent.schemas.observation.failure import FragmentFailure
+
+        Model = build_observation_model(
+            frozenset({"docker.terminal"}), failable=frozenset({"docker.terminal"})
+        )
+        obs = Model(
+            terminal=FragmentFailure(
+                fragment_id="docker.terminal",
+                capability="docker",
+                error="TimeoutError",
+                detail="exec timed out",
+            )
+        )
+        assert obs.terminal.error == "TimeoutError"  # type: ignore[attr-defined]
+        # And still accepts the real thing.
+        assert Model(terminal=TerminalObs(stdout="ok", cwd="/")).terminal.stdout == "ok"  # type: ignore[attr-defined]
+
+    def test_a_required_slot_refuses_a_failure(self) -> None:
+        import pytest
+        from pydantic import ValidationError
+
+        from spectragent.schemas.observation.failure import FragmentFailure
+
+        Model = build_observation_model(frozenset({"docker.terminal"}))
+        with pytest.raises(ValidationError):
+            Model(
+                terminal=FragmentFailure(
+                    fragment_id="docker.terminal", error="RuntimeError"
+                )
+            )
+
+    def test_failability_is_part_of_the_cache_key(self) -> None:
+        """Same fragments, different contract — not the same model.
+
+        The builder is ``lru_cache``d; if failability were applied outside
+        the cache, whichever run negotiated first would decide the shape
+        for every later one in the process.
+        """
+        keys = frozenset({"docker.terminal"})
+        strict = build_observation_model(keys)
+        lenient = build_observation_model(keys, failable=keys)
+        assert strict is not lenient
+        assert strict is build_observation_model(keys)
+
+    def test_from_result_derives_failability_from_the_negotiation(self) -> None:
+        from spectragent.schemas.observation.failure import FragmentFailure
+
+        result = ObservationNegotiationResult(
+            active_fragments=frozenset({"docker.terminal", "loop.action_result"}),
+            env_sourced=frozenset({"docker.terminal"}),
+            loop_sourced=frozenset({"loop.action_result"}),
+            required_fragments=frozenset(),
+        )
+        Model = build_observation_model_from_result(result)
+        obs = Model(
+            terminal=FragmentFailure(fragment_id="docker.terminal", error="OSError")
+        )
+        assert isinstance(obs.terminal, FragmentFailure)  # type: ignore[attr-defined]
+
+        required = ObservationNegotiationResult(
+            active_fragments=frozenset({"docker.terminal"}),
+            env_sourced=frozenset({"docker.terminal"}),
+            loop_sourced=frozenset(),
+            required_fragments=frozenset({"docker.terminal"}),
+        )
+        assert build_observation_model_from_result(required) is not Model
+
+
+class TestCaptureTime:
+    """Every fragment says when it was captured."""
+
+    def test_a_fragment_stamps_itself_on_construction(self) -> None:
+        import time
+
+        before = time.time()
+        obs = TerminalObs(stdout="x", cwd="/")
+        after = time.time()
+        assert before <= obs.captured_at <= after
+
+    def test_capture_time_survives_serialization(self) -> None:
+        """It has to reach the trace, which is the only reader that matters."""
+        obs = TerminalObs(stdout="x", cwd="/")
+        restored = TerminalObs.model_validate_json(obs.model_dump_json())
+        assert restored.captured_at == obs.captured_at

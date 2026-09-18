@@ -7,10 +7,11 @@ Validated by conscribe's own test suite (test_pydantic_generic.py:183-239).
 
 from __future__ import annotations
 
+import time
 from typing import ClassVar, Literal, Self
 
 from conscribe import create_registrar
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from spectragent.schemas.observation.base import ObservationFragment
 
@@ -90,6 +91,29 @@ class FragmentBase(_BridgeBase):  # type: ignore[misc]
     #: reaches a config file. This one is provenance anyway — it is
     #: written by the run, never by a user.
     fragment_id: str = ""
+
+    #: Unix time at which this fragment's data was captured.
+    #:
+    #: Stamped at construction, which for a capability that batches (the
+    #: browser builds every fragment of one ``BrowserStateRequestEvent``
+    #: inside one scrape) is the moment of the capture itself — not the
+    #: moment the observation was assembled. That distinction is the whole
+    #: point: capabilities are observed **concurrently**, so the browser
+    #: may be sampled 0.5 s before the Android emulator finishes, and the
+    #: agent is handed both as if they were one instant. Without a
+    #: per-fragment capture time the skew is invisible in the run and
+    #: unrecoverable from the trace; with it, an evaluator reading a
+    #: ``RunTrace`` can see exactly how far apart the halves of a step's
+    #: observation were taken.
+    #:
+    #: Wall clock rather than ``perf_counter``: the readers are the trace
+    #: and the humans reading it, and both need it comparable to
+    #: ``StepRecord.timestamp``. A fragment served twice inside one cycle
+    #: keeps the capture's stamp, because it *is* that capture.
+    #:
+    #: Not a YAML knob — same reason as ``fragment_id``: provenance is
+    #: written by the run, never by a user.
+    captured_at: float = Field(default_factory=time.time)
 
     @model_validator(mode="after")
     def _default_fragment_id(self) -> Self:

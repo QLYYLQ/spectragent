@@ -23,6 +23,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import Field, field_serializer
 
+from spectragent.core.capabilities.browser.dom.budget import DOMBudgetReport
 from spectragent.core.capabilities.browser.dom.models import (
     DOMElementNode,
     traced_fields,
@@ -155,9 +156,19 @@ class DOMObs(FragmentBase):
     # this step"; the copy nested in ``DOMState`` is not traced. The
     # serializer stringifies keys for JSON output.
     selector_map: dict[int, Any] = Field(default_factory=dict)
+    # What a DOM budget removed on the way here, or ``None`` when nothing
+    # was removed. Without it, ``42 interactive elements`` is ambiguous
+    # between "the page had 42" and "the page had 900 and the run paid for
+    # 42", and an evaluator reading the trace cannot tell them apart — the
+    # lying-trace defect. ``DOMWatchdog`` sets it; see
+    # ``dom/budget.py``.
+    budget: DOMBudgetReport | None = None
 
     def summary(self) -> str:
-        return f"{len(self.selector_map)} interactive elements"
+        base = f"{len(self.selector_map)} interactive elements"
+        if self.budget is None:
+            return base
+        return f"{base} ({self.budget.summary()})"
 
     @field_serializer("element_tree")
     def _serialize_element_tree(self, value: Any) -> Any:

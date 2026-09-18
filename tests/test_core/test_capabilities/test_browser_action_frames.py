@@ -182,6 +182,18 @@ class Straight:
     def __init__(self) -> None:
         self.seen: list[tuple[float, float, float, float]] = []
 
+    def click_hold_ms(self) -> float:
+        return 0.0
+
+    def aim_offset_px(self, width: float, height: float) -> tuple[float, float]:
+        """Dead centre: these tests are about where the *box* is.
+
+        The landing-point scatter is the strategy's own (see
+        ``test_click_landing.py``), so a strategy that declines it leaves the
+        composed point exact and these assertions at full resolution.
+        """
+        return (0.0, 0.0)
+
     def generate(
         self,
         sx: float,

@@ -18,6 +18,7 @@ from spectragent.schemas.observation._registrar import (
     ObservationRegistrar,
     fragment_field_name,
 )
+from spectragent.schemas.observation.failure import FragmentFailure
 
 if TYPE_CHECKING:
     from spectragent.core.negotiation import ObservationNegotiationResult
@@ -25,11 +26,21 @@ if TYPE_CHECKING:
 
 def build_observation_model(
     active_fragments: frozenset[str],
+    *,
+    failable: frozenset[str] = frozenset(),
 ) -> type[BaseModel]:
     """Build a nested Pydantic model from the set of active fragment keys.
 
     Each fragment becomes a required sub-model field. The resulting model
     supports nested access like ``obs.terminal.stdout``.
+
+    ``failable`` names the active fragments **nobody declared required** —
+    ``env_sourced - required_fragments`` from the negotiation result.
+    Those slots widen to ``Fragment | FragmentFailure``, which is what
+    lets one capability's flaky resolve be recorded instead of discarding
+    the fragments its peers already captured. Required slots stay narrow
+    on purpose: a required fragment that failed must not be representable
+    here, because the environment's answer to that is to raise.
 
     The result is cached: the sole production caller is
     ``EnvironmentBase.observe``, which runs **once per step**, and the set
@@ -59,15 +70,24 @@ def build_observation_model(
         assert obs.terminal.stdout == "hello"
     """
     return _build_observation_model(
-        tuple((key, ObservationRegistrar.get(key)) for key in sorted(active_fragments))
+        tuple(
+            (key, ObservationRegistrar.get(key), key in failable)
+            for key in sorted(active_fragments)
+        )
     )
 
 
 @lru_cache(maxsize=64)
 def _build_observation_model(
-    resolved: tuple[tuple[str, type], ...],
+    resolved: tuple[tuple[str, type, bool], ...],
 ) -> type[BaseModel]:
-    """Cached constructor keyed on ``(fragment_key, fragment_class)`` pairs."""
+    """Cached constructor keyed on ``(key, class, may_fail)`` triples.
+
+    ``may_fail`` is part of the cache key, not a detail applied after:
+    the same fragment set is a *different model* when one of its slots is
+    allowed to carry a :class:`FragmentFailure`, and two runs of one
+    process can legitimately negotiate both.
+    """
     # No synthetic ``timestamp`` field: nothing ever assigned it, so every
     # step wrote a junk ``NNN_timestamp.json`` containing ``0.0``. Step
     # timing lives on StepRecord, which is actually written by the loop.
@@ -81,7 +101,7 @@ def _build_observation_model(
     # function is reached only with a set that already survived it, and a
     # second copy of the rule here could only ever disagree with the
     # first.
-    for key, frag_cls in resolved:
+    for key, frag_cls, may_fail in resolved:
         field_name = fragment_field_name(key)
         # Loop-source fragments are filled by the Loop *after* env.observe()
         # via populate_loop_fragments. Make them Optional with default=None
@@ -91,6 +111,12 @@ def _build_observation_model(
         source = getattr(frag_cls, "__source__", "env")
         if source == "loop":
             fields[field_name] = (frag_cls | None, Field(default=None))
+        elif may_fail:
+            # Still required — the environment always fills the slot. What
+            # widens is *what may be in it*: the capture, or the record of
+            # why there is none. Never ``None``, which would read as "this
+            # run did not ask for it".
+            fields[field_name] = (frag_cls | FragmentFailure, ...)
         else:
             fields[field_name] = (frag_cls, ...)
 
@@ -100,8 +126,21 @@ def _build_observation_model(
 def build_observation_model_from_result(
     result: ObservationNegotiationResult,
 ) -> type[BaseModel]:
-    """Convenience wrapper: build model directly from an ObservationNegotiationResult."""
-    return build_observation_model(result.active_fragments)
+    """Build the model for one negotiation result.
+
+    The single place that turns "who required what" into "whose slot may
+    carry a failure": ``env_sourced - required_fragments``. Loop-sourced
+    fragments are excluded because the Loop fills them itself and a Loop
+    failure is a Loop-level error, not a missing capture.
+    """
+    # Read directly: a missing field must be an AttributeError here, not a
+    # silent "nothing was required" that widens every slot and invites a
+    # reader to treat a FragmentFailure as the fragment it asked for.
+    required = frozenset(result.required_fragments)
+    return build_observation_model(
+        result.active_fragments,
+        failable=frozenset(result.env_sourced) - required,
+    )
 
 
 def iter_fragments(obs: Any) -> Iterator[tuple[str, Any]]:
