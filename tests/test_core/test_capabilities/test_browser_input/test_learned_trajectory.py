@@ -129,6 +129,7 @@ def _capability_config(mouse_trajectory: dict[str, Any]) -> Any:
             "mouse_trajectory": mouse_trajectory,
             "typing_rhythm": {"rhythm_type": "instant"},
             "dom_cleaner": {"cleaner_type": "browser_use"},
+            "dom_serializer": {"serializer_type": "text"},
             "backend": {"provider_id": "local_chrome"},
         }
     )

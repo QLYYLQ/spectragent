@@ -11,9 +11,19 @@ from __future__ import annotations
 import math
 import random
 
+from spectragent.core.capabilities.browser.input._aim import (
+    DEFAULT_AIM_MARGIN_PX,
+    DEFAULT_AIM_SIGMA_RATIO,
+    sample_aim_offset_px,
+)
 from spectragent.core.capabilities.browser.input._timing import (
+    DEFAULT_CLICK_HOLD_MAX_MS,
+    DEFAULT_CLICK_HOLD_MEDIAN_MS,
+    DEFAULT_CLICK_HOLD_MIN_MS,
+    DEFAULT_CLICK_HOLD_SIGMA,
     assign_timing,
     fitts_duration_ms,
+    sample_click_hold_ms,
 )
 from spectragent.core.capabilities.browser.input.trajectory import (
     MouseTrajectoryBase,
@@ -39,6 +49,12 @@ class BezierTrajectory(MouseTrajectoryBase):
         curvature: float = 0.18,
         ease_out_power: float = 1.7,
         jitter: float = 0.18,
+        click_hold_median_ms: float = DEFAULT_CLICK_HOLD_MEDIAN_MS,
+        click_hold_sigma: float = DEFAULT_CLICK_HOLD_SIGMA,
+        click_hold_min_ms: float = DEFAULT_CLICK_HOLD_MIN_MS,
+        click_hold_max_ms: float = DEFAULT_CLICK_HOLD_MAX_MS,
+        aim_sigma_ratio: float = DEFAULT_AIM_SIGMA_RATIO,
+        aim_margin_px: float = DEFAULT_AIM_MARGIN_PX,
         seed: int | None = None,
     ) -> None:
         self._fitts_a = fitts_a
@@ -51,7 +67,33 @@ class BezierTrajectory(MouseTrajectoryBase):
         self._curvature = curvature
         self._ease = ease_out_power
         self._jitter = jitter
+        self._hold_median_ms = click_hold_median_ms
+        self._hold_sigma = click_hold_sigma
+        self._hold_min_ms = click_hold_min_ms
+        self._hold_max_ms = max(click_hold_min_ms, click_hold_max_ms)
+        self._aim_sigma_ratio = aim_sigma_ratio
+        self._aim_margin_px = aim_margin_px
         self._rng = random.Random(seed)
+
+    def click_hold_ms(self) -> float:
+        """A human hold, drawn from this instance's own stream (see ``_timing``)."""
+        return sample_click_hold_ms(
+            self._rng,
+            median_ms=self._hold_median_ms,
+            sigma=self._hold_sigma,
+            min_ms=self._hold_min_ms,
+            max_ms=self._hold_max_ms,
+        )
+
+    def aim_offset_px(self, width: float, height: float) -> tuple[float, float]:
+        """Where inside the box this click lands, from the same stream (see ``_aim``)."""
+        return sample_aim_offset_px(
+            self._rng,
+            width,
+            height,
+            sigma_ratio=self._aim_sigma_ratio,
+            margin_px=self._aim_margin_px,
+        )
 
     def generate(
         self,

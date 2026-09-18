@@ -27,7 +27,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
         return None
 
     monkeypatch.setattr(
-        "spectragent.core.capabilities.browser.input.mouse.asyncio.sleep",
+        "spectragent.core.capabilities.browser.input._schedule.asyncio.sleep",
         fake_sleep,
     )
 
@@ -44,17 +44,24 @@ async def test_humanized_click_emits_curved_path(no_sleep: None) -> None:
     )
 
     result = await wd._on_click_element(ClickElementEvent(backend_node_id=42))
-    assert result == {"clicked": True, "x": 620, "y": 410}
+    # The resolved centre is (620, 410); the click aims somewhere inside the
+    # 40x20 box around it, and the result reports where it actually went.
+    assert result is not None
+    assert result["clicked"] is True
+    assert 600 <= result["x"] <= 640 and 400 <= result["y"] <= 420
 
     mouse_events = [c for c in cdp.calls if c.method == "Input.dispatchMouseEvent"]
     moves = [c for c in mouse_events if c.params.get("type") == "mouseMoved"]
     # Humanized → many intermediate moves, not a single jump.
     assert len(moves) > 1
-    # Press + release still land exactly on the resolved center.
+    # Press + release land exactly on the aimed point — the path is never
+    # clamped and the button never drifts between down and up.
     press = next(c for c in mouse_events if c.params["type"] == "mousePressed")
     release = next(c for c in mouse_events if c.params["type"] == "mouseReleased")
-    assert (press.params["x"], press.params["y"]) == (620, 410)
-    assert (release.params["x"], release.params["y"]) == (620, 410)
+    aimed = (result["x"], result["y"])
+    assert (press.params["x"], press.params["y"]) == aimed
+    assert (release.params["x"], release.params["y"]) == aimed
+    assert (moves[-1].params["x"], moves[-1].params["y"]) == aimed
 
 
 async def test_default_watchdog_click_is_single_jump() -> None:
@@ -105,4 +112,8 @@ async def test_cursor_approach_before_type_follows_the_strategy(
     ]
     assert bool(moves) is approaches
     if approaches:
-        assert (moves[-1].params["x"], moves[-1].params["y"]) == (620, 410)
+        # The cursor rests inside the 40x20 box around (620, 410), not on its
+        # exact centre: a mousemove endpoint is as recordable as a press, so
+        # the approach goes through the same aiming seam as a click.
+        x, y = moves[-1].params["x"], moves[-1].params["y"]
+        assert 602 <= x <= 638 and 402 <= y <= 418

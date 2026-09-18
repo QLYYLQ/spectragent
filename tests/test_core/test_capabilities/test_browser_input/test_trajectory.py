@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from typing import Any
 
 import pytest
 
 from spectragent.core.capabilities.browser.input._timing import fitts_duration_ms
 from spectragent.core.capabilities.browser.input.bezier import BezierTrajectory
+from spectragent.core.capabilities.browser.input.learned import LearnedTrajectory
 from spectragent.core.capabilities.browser.input.trajectory import (
+    MouseTrajectoryProtocol,
     MouseTrajectoryRegistrar,
     TrajectoryPoint,
 )
@@ -25,10 +29,70 @@ _GRID = [
 ]
 
 
-def test_registry_resolves_all_strategies() -> None:
-    for key in ("instant", "windmouse", "bezier"):
-        strat = MouseTrajectoryRegistrar.get(key)()
+def _every_registered_strategy(mdn_export: Path) -> list[tuple[str, Any]]:
+    """One live instance of every key in the registry, ``learned`` included.
+
+    Built by iterating ``keys()`` rather than a literal list, so a strategy
+    added later is covered by the invariants below without anyone remembering
+    to add it here. ``learned`` is the only one that needs an argument (an
+    export directory); everything else constructs bare.
+    """
+    built: list[tuple[str, Any]] = []
+    for key in sorted(MouseTrajectoryRegistrar.keys()):
+        cls = MouseTrajectoryRegistrar.get(key)
+        built.append((key, cls(weights_dir=str(mdn_export)) if cls is LearnedTrajectory else cls()))
+    return built
+
+
+def test_registry_resolves_all_strategies(mdn_export: Path) -> None:
+    for key, strat in _every_registered_strategy(mdn_export):
         assert strat.trajectory_type == key
+
+
+def test_every_registered_strategy_satisfies_the_protocol(mdn_export: Path) -> None:
+    """The check conscribe does not do.
+
+    Registering a class does **not** verify it against the registry's
+    protocol — a strategy missing ``generate`` or ``aim_offset_px`` registers
+    happily and fails at the first click, minutes into a run. ``isinstance``
+    against the runtime-checkable protocol does see the gap, so growing
+    ``MouseTrajectoryProtocol`` is caught here for every strategy at once
+    rather than by whoever runs the new one first.
+    """
+    for key, strat in _every_registered_strategy(mdn_export):
+        assert isinstance(strat, MouseTrajectoryProtocol), key
+
+
+def test_a_strategy_that_is_not_humanized_opts_out_of_everything(mdn_export: Path) -> None:
+    """``humanized == False`` means the pre-humanization behaviour, exactly.
+
+    Stated in the protocol's docstrings as a MUST; pinned here across the
+    registry, because a per-strategy test named after ``instant`` only ever
+    pins ``instant``.
+    """
+    for key, strat in _every_registered_strategy(mdn_export):
+        if strat.humanized:
+            continue
+        assert strat.click_hold_ms() == 0.0, key
+        assert strat.aim_offset_px(100.0, 40.0) == (0.0, 0.0), key
+
+
+def test_no_strategy_aims_outside_an_unmeasured_box(mdn_export: Path) -> None:
+    """Humanized or not: no box, no offset — never guess outward."""
+    for key, strat in _every_registered_strategy(mdn_export):
+        assert strat.aim_offset_px(0.0, 0.0) == (0.0, 0.0), key
+        assert strat.aim_offset_px(0.0, 40.0) == (0.0, 0.0), key
+        assert strat.aim_offset_px(100.0, 0.0) == (0.0, 0.0), key
+
+
+def test_every_humanized_strategy_stays_inside_the_box_it_is_given(mdn_export: Path) -> None:
+    for key, strat in _every_registered_strategy(mdn_export):
+        if not strat.humanized:
+            continue
+        for _ in range(200):
+            dx, dy = strat.aim_offset_px(100.0, 40.0)
+            assert abs(dx) <= 48.0, key  # half of 100, less the 2 px margin
+            assert abs(dy) <= 18.0, key
 
 
 def test_instant_is_single_endpoint() -> None:

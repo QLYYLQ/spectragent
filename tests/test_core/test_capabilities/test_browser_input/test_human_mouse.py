@@ -135,12 +135,20 @@ class TestHumanizedMode:
 class _ScriptedPath:
     """A strategy that returns a fixed waypoint list (humanized)."""
 
-    def __init__(self, points: list[TrajectoryPoint]) -> None:
+    def __init__(self, points: list[TrajectoryPoint], hold_ms: float = 0.0) -> None:
         self.points = points
+        self.hold_ms = hold_ms
 
     @property
     def humanized(self) -> bool:
         return True
+
+    def click_hold_ms(self) -> float:
+        return self.hold_ms
+
+    def aim_offset_px(self, width: float, height: float) -> tuple[float, float]:
+        """The controller never applies this; it is here to satisfy the protocol."""
+        return (0.0, 0.0)
 
     def generate(
         self,
@@ -389,10 +397,11 @@ class TestLearnedStrategy:
         await mouse.click(1000, 150, "left", 1, target_w=90, target_h=30)
 
         # The same seed replays the path the controller was handed, from the
-        # humanized cold start at the viewport centre.
-        path = LearnedTrajectory(weights_dir=str(export), seed=4).generate(
-            640, 360, 1000, 150, target_w=90, target_h=30
-        )
+        # humanized cold start at the viewport centre. Drawn in the same order
+        # as the real click — path first, then the hold — so this replica's
+        # hold is the one the click spent.
+        replica = LearnedTrajectory(weights_dir=str(export), seed=4)
+        path = replica.generate(640, 360, 1000, 150, target_w=90, target_h=30)
         assert 1 < len(path) <= TINY_SEQ_LEN + 1
 
         events = cdp.mouse_events()
@@ -412,8 +421,11 @@ class TestLearnedStrategy:
         moves = [(e["x"], e["y"]) for e in events if e["type"] == "mouseMoved"]
         assert moves == expected
         assert moves[-1] == (1000, 150)
-        # Every tick's time is spent: one 20 ms sleep per tick, still or not.
-        assert no_sleep == pytest.approx([0.02] * (len(path) - 1))
+        # Every tick's time is spent: one 20 ms sleep per tick, still or not,
+        # and then the button's own hold between press and release.
+        hold_s = replica.click_hold_ms() / 1000.0
+        assert hold_s > 0.0
+        assert no_sleep == pytest.approx([0.02] * (len(path) - 1) + [hold_s])
 
     async def test_off_viewport_endpoint_stays_exact(
         self, no_sleep: list[float], make_export: Callable[..., Path], kind: str

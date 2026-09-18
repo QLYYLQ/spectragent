@@ -373,11 +373,6 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> VirtualClock:
         "spectragent.core.capabilities.browser.input._schedule.monotonic",
         virtual.monotonic,
     )
-    # ``HumanMouse.click`` sleeps its own ``dwell_ms`` outside the schedule.
-    monkeypatch.setattr(
-        "spectragent.core.capabilities.browser.input.mouse.asyncio.sleep",
-        virtual.sleep,
-    )
     return virtual
 
 

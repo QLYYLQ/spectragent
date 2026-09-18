@@ -37,6 +37,26 @@ class InstantTrajectory(MouseTrajectoryBase):
     ) -> list[TrajectoryPoint]:
         return [TrajectoryPoint(x=round(end_x), y=round(end_y), dt_ms=0.0)]
 
+    def click_hold_ms(self) -> float:
+        """Zero, and it must stay zero.
+
+        Press and release in the same instant is *the* legacy click — three
+        input events, no wall time between them, no sleep anywhere. Giving
+        this a human default would quietly humanize the one strategy whose
+        whole job is not to, so the value is pinned by a test.
+        """
+        return 0.0
+
+    def aim_offset_px(self, width: float, height: float) -> tuple[float, float]:
+        """Dead centre, every time — the legacy landing point.
+
+        Pinned by the same registry-wide test as the hold: whatever a box
+        measures, this strategy clicks the arithmetic centre of it, because
+        "not humanized" has to mean the pre-humanization behaviour down to
+        the pixel.
+        """
+        return (0.0, 0.0)
+
     @property
     def humanized(self) -> bool:
         return False

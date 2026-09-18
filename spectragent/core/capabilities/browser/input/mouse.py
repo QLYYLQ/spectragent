@@ -23,11 +23,28 @@ and the cursor approach before type/select (``ActionWatchdog``). There used to
 be a separate ``humanize`` flag that forced ``instant`` when off, silently
 discarding a configured strategy; the two could disagree, so it is gone.
 
-No pre-click pause is added by default (``dwell_ms == 0``, and nothing in the
-package sets it): a strategy that models the hover before a click —
-``learned``, with the model's own pause or a sampled human dwell — expresses it
-as repeated waypoints, which ``move_to`` sleeps through without dispatching.
-Setting ``dwell_ms`` adds a fixed pause on top.
+No pre-click pause is added here at all: a strategy that models the hover
+before a click — ``learned``, with the model's own pause or a sampled human
+dwell — expresses it as repeated waypoints, which ``move_to`` sleeps through
+without dispatching. (There was a ``dwell_ms`` constructor knob for a fixed
+extra pause. Nothing in the package ever set it, it was unreachable from YAML,
+and it would have double-counted the pause a strategy already models, so it is
+gone rather than kept for a caller that does not exist.)
+
+The *hold* is not optional and is not a knob here either: the button goes down
+and comes back up ``trajectory.click_hold_ms()`` later, which is ``0.0`` for
+``instant`` and a fresh human draw for every other strategy. It is the
+strategy's to decide because it is humanization, not transport — but it is not
+a waypoint (nothing moves while the button is down), so it cannot live on the
+path. Before this existed the press and the release were two back-to-back CDP
+sends, 1.4-3.4 ms apart measured against a real page, where a human holds for
+tens to hundreds of ms.
+
+The strategy also decides *where inside a target box* a click lands
+(``trajectory.aim_offset_px``), but this layer never applies that offset:
+``move_to`` is handed one exact point and its contract is to end exactly on
+it. ``ActionWatchdog`` — the one place a measured box becomes a point — asks
+for the offset and applies it before calling in here.
 
 Everything paced here — a trajectory's waypoints, an eased scroll's steps — is
 played against **absolute deadlines** by :func:`play_on_deadline`, not by
@@ -52,7 +69,6 @@ Both failure modes are now Pydantic validation errors before anything launches.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -87,7 +103,6 @@ class HumanMouse:
         trajectory: MouseTrajectoryProtocol | None = None,
         viewport: tuple[int, int] = (1280, 720),
         move_callback: Callable[[int, int], Any] | None = None,
-        dwell_ms: float = 0.0,
         cold_start: str = "center",
         wheel_steps: int = 8,
         wheel_step_delay_ms: float = 12.0,
@@ -96,7 +111,6 @@ class HumanMouse:
         self._sid = session_id_getter
         self._vw, self._vh = viewport
         self._move_cb = move_callback
-        self._dwell_ms = dwell_ms
         self._wheel_steps = max(1, wheel_steps)
         self._wheel_step_delay_ms = wheel_step_delay_ms
 
@@ -119,6 +133,17 @@ class HumanMouse:
     @property
     def humanized(self) -> bool:
         return self._humanized
+
+    @property
+    def trajectory(self) -> MouseTrajectoryProtocol:
+        """The active strategy, for the humanization decisions taken elsewhere.
+
+        ``ActionWatchdog`` needs one of them — ``aim_offset_px``, applied
+        where a measured box becomes a point, which is upstream of every
+        method here. Reading it through the controller keeps the strategy
+        single-instanced: there is one per tab and this is it.
+        """
+        return self._traj
 
     @property
     def position(self) -> tuple[int, int]:
@@ -196,33 +221,41 @@ class HumanMouse:
         target_w: float = 0.0,
         target_h: float = 0.0,
     ) -> tuple[int, int]:
-        """Move to (x, y) then press + release. Returns the final cursor pos."""
+        """Move to (x, y), press, hold, release. Returns the final cursor pos.
+
+        The button's two events are two slots of one schedule — the press due
+        immediately on arrival, the release ``trajectory.click_hold_ms()``
+        after it — played by :func:`play_on_deadline` like everything else in
+        this layer. Two reasons it is the schedule and not a sleep: the
+        press's own CDP round trip is then spent *inside* the hold instead of
+        being added to it (the same transport cost that made a 50 Hz path play
+        at 33 Hz), and a second timing path here would drift from the
+        scheduler the moment either was tuned.
+
+        With ``instant`` both slots are due immediately, so nothing sleeps and
+        the click is byte-for-byte the legacy three events. Slots are sent in
+        order and a slot's events ride along with the next one dispatched, so
+        a transport slower than the hold shortens the hold — it can never
+        release a button that was never pressed.
+        """
         await self.move_to(x, y, target_w=target_w, target_h=target_h)
-        if self._dwell_ms > 0:
-            await asyncio.sleep(self._dwell_ms / 1000.0)
         sid = self._sid()
-        await self._cdp.send(
-            "Input.dispatchMouseEvent",
-            {
-                "type": "mousePressed",
-                "x": self._x,
-                "y": self._y,
-                "button": button,
-                "clickCount": click_count,
-            },
-            session_id=sid,
-        )
-        await self._cdp.send(
-            "Input.dispatchMouseEvent",
-            {
-                "type": "mouseReleased",
-                "x": self._x,
-                "y": self._y,
-                "button": button,
-                "clickCount": click_count,
-            },
-            session_id=sid,
-        )
+        common = {
+            "x": self._x,
+            "y": self._y,
+            "button": button,
+            "clickCount": click_count,
+        }
+        events = [
+            {"type": "mousePressed", **common},
+            {"type": "mouseReleased", **common},
+        ]
+        schedule = [0.0, self._traj.click_hold_ms()]
+        unsent = 0
+        async for slot in play_on_deadline(schedule):
+            for params in events[unsent : slot + 1]:
+                await self._cdp.send("Input.dispatchMouseEvent", params, session_id=sid)
+            unsent = slot + 1
         return self._x, self._y
 
     async def wheel(self, x: int, y: int, dx: int, dy: int) -> None:

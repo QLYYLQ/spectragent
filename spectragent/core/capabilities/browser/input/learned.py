@@ -94,12 +94,14 @@ Turning that into waypoints:
    construction rather than silently replaying the model at the wrong rate or
    scale.
 
-**Dwell vs. HumanMouse.** ``HumanMouse`` has a ``dwell_ms`` pre-click pause,
-but it defaults to 0 and nothing in the package sets it, so the pause inside
-the path is the only one before the click and nothing is counted twice. It is
-part of the path, so it also precedes a drag release or a type/select after
-the cursor approach, where a short settle is just as human. Setting
-``dwell_ms`` on top would add a second, constant pause.
+**Dwell.** The pause before the click is part of the *path* — repeated
+waypoints the controller waits out without dispatching — so there is exactly
+one of it and ``HumanMouse`` adds nothing on top (it used to carry a dead
+``dwell_ms`` knob that would have double-counted; it is gone). Being part of
+the path, it also precedes a drag release or a type/select after the cursor
+approach, where a short settle is just as human. The press-to-release *hold*
+is separate and is not in the path at all: nothing moves while the button is
+down, so it is :meth:`click_hold_ms`.
 
 **Long moves.** The training offsets stay inside the 800 px window
 (``|offset|`` p99 = 0.95, max 1.09), while a 1280x720 viewport diagonal is
@@ -143,6 +145,18 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field as PydanticField
 
+from spectragent.core.capabilities.browser.input._aim import (
+    DEFAULT_AIM_MARGIN_PX,
+    DEFAULT_AIM_SIGMA_RATIO,
+    sample_aim_offset_px,
+)
+from spectragent.core.capabilities.browser.input._timing import (
+    DEFAULT_CLICK_HOLD_MAX_MS,
+    DEFAULT_CLICK_HOLD_MEDIAN_MS,
+    DEFAULT_CLICK_HOLD_MIN_MS,
+    DEFAULT_CLICK_HOLD_SIGMA,
+    sample_click_hold_ms,
+)
 from spectragent.core.capabilities.browser.input.trajectory import (
     MouseTrajectoryBase,
     TrajectoryPoint,
@@ -295,8 +309,12 @@ class LearnedTrajectory(MouseTrajectoryBase):
             int | None,
             PydanticField(
                 description=(
-                    "Seed for this instance's numpy Generator (model noise, "
-                    "arrival dwell and timing jitter). None draws fresh entropy."
+                    "Seed for this instance's numpy Generator. One stream "
+                    "drives everything this strategy draws: model noise, "
+                    "arrival dwell, timing jitter, the click hold and the "
+                    "landing point inside the target box — so one seed "
+                    "replays a run's cursor behaviour whole, and changing it "
+                    "perturbs all of it. None draws fresh entropy."
                 ),
             ),
         ] = None,
@@ -433,6 +451,64 @@ class LearnedTrajectory(MouseTrajectoryBase):
                 ),
             ),
         ] = None,
+        click_hold_median_ms: Annotated[
+            float,
+            PydanticField(
+                gt=0,
+                description=(
+                    "Median press-to-release hold, in ms. The models know "
+                    "nothing about buttons — every export is cursor positions "
+                    "— so the hold is sampled here, from a lognormal around "
+                    "this median."
+                ),
+            ),
+        ] = DEFAULT_CLICK_HOLD_MEDIAN_MS,
+        click_hold_sigma: Annotated[
+            float,
+            PydanticField(
+                ge=0,
+                description=(
+                    "Log-space spread of the click hold. 0 holds for exactly "
+                    "the median every time (a tell of its own)."
+                ),
+            ),
+        ] = DEFAULT_CLICK_HOLD_SIGMA,
+        click_hold_min_ms: Annotated[
+            float,
+            PydanticField(
+                ge=0,
+                description="Lower clamp on the sampled click hold, in ms.",
+            ),
+        ] = DEFAULT_CLICK_HOLD_MIN_MS,
+        click_hold_max_ms: Annotated[
+            float,
+            PydanticField(
+                gt=0,
+                description="Upper clamp on the sampled click hold, in ms.",
+            ),
+        ] = DEFAULT_CLICK_HOLD_MAX_MS,
+        aim_sigma_ratio: Annotated[
+            float,
+            PydanticField(
+                ge=0,
+                description=(
+                    "Spread of the landing point inside the target box, as a "
+                    "fraction of the box's short side (1/6 puts its half-extent "
+                    "at 3 sigma). 0 clicks the exact centre every time, which "
+                    "is the machine tell this exists to remove."
+                ),
+            ),
+        ] = DEFAULT_AIM_SIGMA_RATIO,
+        aim_margin_px: Annotated[
+            float,
+            PydanticField(
+                ge=0,
+                description=(
+                    "How far inside the border the landing point stays, in px. "
+                    "A box smaller than twice this keeps its exact centre."
+                ),
+            ),
+        ] = DEFAULT_AIM_MARGIN_PX,
     ) -> None:
         # Fail at construction — before a browser launches — rather than at
         # the first click: missing numpy (named once, here), a wrong
@@ -498,11 +574,48 @@ class LearnedTrajectory(MouseTrajectoryBase):
             DEFAULT_ARRIVAL_RADIUS_PX if arrival_radius_px is None else arrival_radius_px
         )
         self._stop_px = DEFAULT_STOP_PX if stop_px is None else stop_px
+        self._hold_median_ms = click_hold_median_ms
+        self._hold_sigma = click_hold_sigma
+        self._hold_min_ms = click_hold_min_ms
+        self._hold_max_ms = max(click_hold_min_ms, click_hold_max_ms)
+        self._aim_sigma_ratio = aim_sigma_ratio
+        self._aim_margin_px = aim_margin_px
         # Instance-owned, never the global numpy RNG.
         self._rng = np.random.default_rng(seed)
         self._sampler: Sampler | None = None
 
     # ── introspection ─────────────────────────────────────────────────────
+    def click_hold_ms(self) -> float:
+        """A human hold, drawn from this instance's numpy stream.
+
+        Not from the model: the recordings behind every export are cursor
+        positions, so no export has ever seen a button state. The path's own
+        pause inside the target is the approach settling; this is the press
+        that follows it, and the two are different events.
+        """
+        return sample_click_hold_ms(
+            self._rng,
+            median_ms=self._hold_median_ms,
+            sigma=self._hold_sigma,
+            min_ms=self._hold_min_ms,
+            max_ms=self._hold_max_ms,
+        )
+
+    def aim_offset_px(self, width: float, height: float) -> tuple[float, float]:
+        """Where inside the box this click lands — also not from the model.
+
+        The training paths all aimed at the centre of the same 109x34 button,
+        so the export has no opinion on where inside a target a human clicks;
+        it is sampled here, from the same numpy stream as everything else.
+        """
+        return sample_aim_offset_px(
+            self._rng,
+            width,
+            height,
+            sigma_ratio=self._aim_sigma_ratio,
+            margin_px=self._aim_margin_px,
+        )
+
     @property
     def hz(self) -> float:
         return self._hz

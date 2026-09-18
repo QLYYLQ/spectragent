@@ -17,6 +17,24 @@ affine map the owner's box model describes, so a frame under a CSS transform
 lands where it is drawn and not where an untransformed one would be. A frame
 element that can no longer be measured is not acted on at its snapshot
 position: its frame changed, and that point belongs to something else.
+
+Where a box becomes a point. Measuring gives a box; clicking needs a point,
+and this module is where that choice is made — :meth:`ActionWatchdog._aim_inside`
+is the one seam, used by every path that turns a measured element into a
+coordinate (click, the cursor approach before type/select, the wheel's aim
+point). The *policy* is the trajectory strategy's (``aim_offset_px``, so it
+swaps with ``trajectory_type`` and its knobs are config like every other
+humanization number); the seam is here because a trajectory's contract is that
+its path ends *exactly* on the point it was given and is never clamped. If a
+strategy moved the endpoint itself, nothing downstream — the trace, the
+overlay, the result — would agree on where the click went. So the requested
+point carries the offset and every layer below sees one exact point.
+
+The seam is also the only place that knows how big the window is, so it is
+where the offset is clipped: a measured box is the element's *whole* border
+box, which can be larger than the viewport or hang off it, and a point outside
+the viewport is not a click on the element — it is a click Chrome discards
+while the action reports success.
 """
 
 from __future__ import annotations
@@ -106,6 +124,27 @@ _STALE_FRAME_ELEMENT = (
     "(navigated, reloaded or removed), so it cannot be located; observe the "
     "page again before acting on it."
 )
+
+def _visible_span(centre: float, size: float, extent: int) -> float:
+    """The part of a box that is on screen, kept symmetric about its centre.
+
+    A measured border box is not clipped to the window: an element can be
+    taller than the viewport, or hang off it after ``scrollIntoViewIfNeeded``
+    put its *centre* in view. Aiming anywhere in such a box dispatches clicks
+    at negative or off-screen coordinates, which Chrome drops while the action
+    still reports success — so the box handed to the aiming policy is shrunk
+    to what is actually visible.
+
+    Symmetric (the smaller of the two reaches, doubled) rather than clipped on
+    each side independently, because the offset it feeds is a *centred*
+    distribution: an asymmetric window would bias the aim toward whichever
+    side happens to be on screen. Returns ``0.0`` when the centre itself is
+    off screen — nothing sensible to aim at, so the centre is kept exactly as
+    it was before any of this existed.
+    """
+    reach = min(size / 2.0, centre, float(extent - 1) - centre)
+    return 2.0 * reach if reach > 0.0 else 0.0
+
 
 #: Live border-box rect of a top-level element, in the page viewport.
 _CLIENT_RECT_JS = (
@@ -348,6 +387,10 @@ class ActionWatchdog(BrowserWatchdog):
         # single bulk ``Input.insertText``.
         self._keyboard = HumanKeyboard(cdp, rhythm=typing_rhythm)
 
+        # The window a dispatched point has to land in — the only thing
+        # ``_aim_inside`` knows that the strategy deciding the offset does not.
+        self._vw, self._vh = viewport
+
         # Debug highlight state — Overlay.enable is sent lazily, once per
         # session it is needed on (an element in an out-of-process iframe is
         # highlighted through that frame's session).
@@ -445,14 +488,57 @@ class ActionWatchdog(BrowserWatchdog):
             cx, cy = int(cx_f), int(cy_f)
             target_w, target_h = node.bounds.width, node.bounds.height
 
+        ax, ay = self._aim_inside(cx, cy, target_w, target_h)
         return await self._click_at(
-            cx, cy, event.button, event.click_count,
+            ax, ay, event.button, event.click_count,
             label=self._describe_node(node),
             target_w=target_w, target_h=target_h,
         )
 
+    def _aim_inside(
+        self, cx: float, cy: float, width: float, height: float
+    ) -> tuple[int, int]:
+        """Pick the point inside an element's box that this action aims at.
+
+        A box does not say where to click, it says where it is legal to.
+        Aiming at the arithmetic centre every single time is a tell no amount
+        of path realism covers: measured on real pages the error was 0.78 px,
+        where humans scatter 3-31 px. *Where* to aim is the trajectory
+        strategy's decision (``aim_offset_px``) — it is humanization, so it
+        swaps with the strategy and its knobs are that strategy's config;
+        ``instant`` returns no offset at all, which is how the legacy path
+        stays byte-for-byte legacy.
+
+        This method is the seam, and it owns two things the strategy cannot
+        know. First, the window: the offset is drawn inside the *visible*
+        part of the box (see :func:`_visible_span`), because a border box is
+        not clipped to the viewport and a point outside it is a click that
+        goes nowhere while the action reports success. Second, exactness —
+        the trajectory is handed the aimed point as its endpoint and still
+        ends exactly there, ``_click_at`` reports it, and the overlay paints
+        it: one point, agreed on by everything downstream.
+
+        Every measured-box action comes through here — the click, the cursor
+        approach before type/select, and the wheel's aim point — because they
+        all carry the same tell. A raw-coordinate click does not: that point
+        is the model's own aim, see :meth:`_on_click_coordinate`.
+        """
+        dx, dy = self._mouse.trajectory.aim_offset_px(
+            _visible_span(cx, width, self._vw),
+            _visible_span(cy, height, self._vh),
+        )
+        return round(cx + dx), round(cy + dy)
+
     async def _on_click_coordinate(self, event: ClickCoordinateEvent) -> dict[str, Any] | None:
-        """Click at a viewport point given in CSS pixels."""
+        """Click at a viewport point given in CSS pixels.
+
+        Not scattered, unlike an index click: this point is the *model's*
+        aim, usually read off a screenshot. Nudging it would be overruling
+        the agent's intent with our own idea of where the target is — and
+        where an index click has a measured box to stay inside, here there
+        is only a hit-test guess. The box we do find is for the trajectory's
+        timing (``_target_box_at``), never for moving the point.
+        """
         target_w, target_h = await self._target_box_at(
             event.coordinate_x, event.coordinate_y
         )
@@ -678,7 +764,10 @@ class ActionWatchdog(BrowserWatchdog):
                         )
                         return
                     if live is not None:
-                        cx, cy, _w, _h = live
+                        cx, cy, w, h = live
+                        # The wheel is aimed at a measured box too, so it goes
+                        # through the same seam as the click.
+                        cx, cy = self._aim_inside(cx, cy, w, h)
                     elif owners:
                         # Same reason as a click: the frame changed.
                         logger.warning(
@@ -689,7 +778,9 @@ class ActionWatchdog(BrowserWatchdog):
                         return
                     elif node.bounds is not None:
                         cx_f, cy_f = node.bounds.center
-                        cx, cy = int(cx_f), int(cy_f)
+                        cx, cy = self._aim_inside(
+                            cx_f, cy_f, node.bounds.width, node.bounds.height
+                        )
                     else:
                         return
                     await self._mouse.wheel(cx, cy, dx, dy)
@@ -1239,8 +1330,12 @@ class ActionWatchdog(BrowserWatchdog):
         if live is None:
             return
         cx, cy, w, h = live
+        # Same box-to-point seam as a click: a cursor that rests on the exact
+        # centre of every field it types into is the same tell, and a
+        # mousemove endpoint is exactly what a page records.
+        ax, ay = self._aim_inside(cx, cy, w, h)
         try:
-            await self._mouse.move_to(cx, cy, target_w=w, target_h=h)
+            await self._mouse.move_to(ax, ay, target_w=w, target_h=h)
         except Exception as exc:
             logger.debug("cursor approach to node %d failed: %s", backend_node_id, exc)
 
