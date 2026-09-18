@@ -9,6 +9,7 @@ from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops.errors import RunAbort
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from tests._helpers.assembly import make_env, make_run
@@ -347,3 +348,119 @@ class TestBenchmarkRunner:
         assert summary.outcomes[1].ok
         # 297 of 300 tasks must not be lost because task 3 was malformed.
         assert "t-1" in summary.format_table()
+
+
+class _VetoingAgent(_Agent):
+    """An agent whose guard inspects the model's reply and refuses to go on.
+
+    The veto lives in ``parse_react_output`` because that is where a real one
+    lives: the parser is an agent method, so it is woven, and it is the first
+    place the agent sees what the model actually wrote.
+    """
+
+    def __init__(self, *, vetoes: bool) -> None:
+        self._vetoes = vetoes
+
+    def build_react_prompt(self, obs):
+        return [{"role": "user", "content": "go"}]
+
+    def parse_react_output(self, out):
+        if self._vetoes:
+            raise RunAbort("risk-control page detected")
+        return [Action(name="bench_runner_cap.done")]
+
+
+def _vetoing_factory(tmp_path, envs, writers, *, veto_on_task: int):
+    """Like ``_make_factory``, but the agent for task *veto_on_task* vetoes.
+
+    Indexed by compose order rather than by task text: the runner composes a
+    fresh stack per task, in order, and the task itself reaches the loop as a
+    ``run()`` argument — it is never set on the agent, so an agent cannot
+    recognise which task it is on.
+    """
+    composed = 0
+
+    def compose():
+        nonlocal composed
+        env = make_env(_Env, {"bench_runner_cap": _Cap()})
+        writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
+        envs.append(env)
+        writers.append(writer)
+        agent = _VetoingAgent(vetoes=composed == veto_on_task)
+        composed += 1
+        return make_run(
+            agent=agent,
+            loop=ReactLoop(max_steps=2),
+            env=env,
+            llm=_LLM(),
+            memory=_Memory(),
+            hooks=[writer],
+        )
+
+    return compose
+
+
+class TestGuardVeto:
+    """A guard's veto stops the sweep; a plain failure does not.
+
+    ``raise_on_error=False`` exists so one bad task cannot end a 300-task
+    sweep. A veto is the opposite instruction — a guard looked at this run and
+    said *stop* — so it has to be able to travel past that flag, through
+    ``AgentRuntime.run`` and ``BenchmarkRunner.run_task``, both of which
+    otherwise collapse every exception into a recorded failure.
+    """
+
+    async def test_a_veto_stops_the_sweep_and_keeps_what_ran(self, tmp_path):
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_Loader(),
+            compose=_vetoing_factory(tmp_path, envs, writers, veto_on_task=1),
+            timeout=10,
+        )
+        summary = await runner.run()
+
+        assert summary.was_aborted
+        assert "t-2" in summary.aborted
+        assert "risk-control page detected" in summary.aborted
+        # The guard said stop, not destroy the evidence: t-1 finished before
+        # the veto and its outcome is still here to be scored.
+        assert summary.total == 1
+        assert summary.outcomes[0].task_id == "t-1"
+        assert summary.outcomes[0].ok
+
+    async def test_an_ordinary_failure_still_does_not_stop_the_sweep(self, tmp_path):
+        """The veto path must not have widened into "any exception stops"."""
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_Loader(broken={"t-1"}),
+            compose=_make_factory(tmp_path, envs, writers),
+            timeout=10,
+        )
+        summary = await runner.run()
+
+        assert not summary.was_aborted
+        assert summary.aborted is None
+        assert summary.total == 2
+
+    async def test_the_veto_is_in_the_trace_before_it_propagates(self, tmp_path):
+        """``_finish`` runs first, so the evidence outlives the exception."""
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_Loader(),
+            compose=_vetoing_factory(tmp_path, envs, writers, veto_on_task=0),
+            timeout=10,
+        )
+        summary = await runner.run()
+
+        assert summary.was_aborted
+        assert summary.total == 0  # vetoed on the very first task
+        # A trace was still opened and closed out for the vetoed run.
+        trace_dirs = sorted((tmp_path / "traces").iterdir())
+        assert trace_dirs, "the vetoed run left no trace at all"
+        trace = RunTrace(trace_dirs[0])
+        assert trace.result is not None
+        assert "RunAbort" in (getattr(trace.result, "error", "") or "")
+        assert "risk-control page detected" in (getattr(trace.result, "error", "") or "")

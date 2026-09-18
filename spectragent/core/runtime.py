@@ -31,6 +31,7 @@ from spectragent.core.aop.tasks import BackgroundTasks
 from spectragent.core.aop.weaver import Weaver
 from spectragent.core.composer import ComposedRun, ComposeError
 from spectragent.core.hooks.base import RuntimeHook
+from spectragent.core.loops.errors import RunAbort
 from spectragent.core.negotiation import (
     negotiate_action,
     negotiate_memory,
@@ -53,6 +54,24 @@ def _model_name(agent: Any) -> str:
         if isinstance(value, str) and value:
             return value
     return ""
+
+
+def _component_id(obj: Any, accessor: str) -> str:
+    """Registry key of one composed component (``agent_id``, ``loop_id``…).
+
+    Every registrar base exposes it as a property returning
+    ``__registry_key__`` (see ``agents/_registrar.py``,
+    ``core/loops/_registrar.py``, ``core/environments/_registrar.py``), so
+    this reads the declared accessor rather than reaching for the ClassVar
+    — a Loop assembled for a test, or any object satisfying the Protocol
+    without subclassing the base, answers the same question the same way.
+
+    Resolved **here**, once, because AgentRuntime is what knows the run.
+    It used to be redone inside every persistence hook, which made each
+    hook responsible for discovering facts it should have been handed.
+    """
+    value = getattr(obj, accessor, "") if obj is not None else ""
+    return value if isinstance(value, str) else ""
 
 
 class AgentRuntime:
@@ -91,6 +110,7 @@ class AgentRuntime:
         self._env = env
         self._hooks: list[RuntimeHook] = list(run.hooks)
         self._negotiated_obs: Any = None
+        self._negotiated_actions: Any = None
         self._active_descriptors: list[Any] = []
         self._memory: Any = None
         self._recorder = StepRecorder()
@@ -147,6 +167,18 @@ class AgentRuntime:
     def negotiated_observation(self) -> Any | None:
         """Observation negotiation result, available after :meth:`prepare`."""
         return self._negotiated_obs
+
+    @property
+    def negotiated_actions(self) -> Any | None:
+        """Action negotiation result, available after :meth:`prepare`.
+
+        Kept for the same reason its observation twin is: the result is
+        what says which fully-qualified action keys this run could
+        execute and what each relative declaration bound to. It used to
+        be a local in ``prepare()``, so nothing downstream — the trace
+        included — could say what the run had actually agreed on.
+        """
+        return self._negotiated_actions
 
     @property
     def active_descriptors(self) -> list[Any]:
@@ -272,6 +304,7 @@ class AgentRuntime:
 
         # Step 2.5: Action two-party negotiation
         negotiated_actions = negotiate_action(agent, env)
+        self._negotiated_actions = negotiated_actions
 
         # Step 2.75: Memory protocol negotiation (Loop ⊆ Memory)
         negotiate_memory(loop, memory)
@@ -420,6 +453,16 @@ class AgentRuntime:
         # Hook lifecycle — run_start. Deliberately *before* env setup: a
         # setup failure must still land in a trace, and that needs the
         # trace to already exist.
+        #
+        # Dispatched *after* ``prepare()`` so the negotiation results
+        # exist: a trace that cannot say which fragments and actions were
+        # live cannot explain a single step it recorded.
+        #
+        # The identity, the composed config and both negotiation results
+        # are resolved here and passed as values. A hook that had to
+        # rediscover them would be doing the runtime's job with less
+        # information — and did, by ``getattr``-ing ids off the agent and
+        # dropping the configuration entirely.
         await self._dispatch_lifecycle(
             "on_run_start",
             agent=self._agent,
@@ -432,6 +475,13 @@ class AgentRuntime:
             subset=subset,
             run_id=run_id,
             config=config or {},
+            agent_id=_component_id(self._agent, "agent_id"),
+            loop_id=_component_id(self._agent.agent_loop, "loop_id"),
+            env_type=_component_id(self._env, "env_type"),
+            llm_model=_model_name(self._agent),
+            resolved_config=self._run.top_level_cfg,
+            observation_negotiation=self._negotiated_obs,
+            action_negotiation=self._negotiated_actions,
         )
 
         started = time.monotonic()
@@ -488,7 +538,14 @@ class AgentRuntime:
                     elapsed_ms=int((time.monotonic() - started) * 1000),
                 )
                 await self._finish(result, error=exc)
-                if raise_on_error:
+                # ``raise_on_error=False`` means "a task that fails must not
+                # stop the sweep". A veto is the opposite instruction: a guard
+                # inspected this run and said *stop*, so collapsing it into a
+                # returned ``AgentResult`` would make the framework overrule
+                # the guard it just obeyed inside the loop. It propagates
+                # either way — but only after ``_finish``, so the veto and its
+                # evidence are already in the trace when it does.
+                if raise_on_error or isinstance(exc, RunAbort):
                     raise
                 return result
         finally:

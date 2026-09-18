@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from spectragent.core.composer import ComposedRun
+from spectragent.core.loops.errors import RunAbort
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas._types import EnvironmentStatus
 
@@ -142,6 +143,16 @@ class BenchmarkRunSummary:
     outcomes: list[TaskOutcome] = field(default_factory=list)
     eval_summary: Any = None
     eval_errors: list[str] = field(default_factory=list)
+
+    #: Set when a guard vetoed the sweep (``RunAbort``), naming the task that
+    #: did it. ``outcomes`` then holds only the tasks that ran before it, so
+    #: without this a short sweep is indistinguishable from a small one — and
+    #: a reader would compare a 3-task partial against a 30-task full one.
+    aborted: str | None = None
+
+    @property
+    def was_aborted(self) -> bool:
+        return self.aborted is not None
 
     @property
     def total(self) -> int:
@@ -285,14 +296,35 @@ class BenchmarkRunner:
             self._subset or "-",
             len(selected),
         )
-        outcomes = [await self.run_task(task_id) for task_id in selected]
-        eval_summary, eval_errors = await self._evaluate(outcomes, selected)
+        outcomes: list[TaskOutcome] = []
+        aborted: str | None = None
+        for task_id in selected:
+            try:
+                outcomes.append(await self.run_task(task_id))
+            except RunAbort as exc:
+                # Stop the sweep, but keep what it produced. The guard said
+                # "stop", not "destroy the evidence": the finished tasks have
+                # complete traces, and under Record Once, Evaluate Many those
+                # are still worth scoring. Losing them silently would make a
+                # veto more destructive than a crash.
+                aborted = f"{task_id}: {exc}"
+                logger.warning(
+                    "BenchmarkRunner: sweep vetoed at %s after %d/%d task(s)",
+                    task_id,
+                    len(outcomes),
+                    len(selected),
+                )
+                break
+        eval_summary, eval_errors = await self._evaluate(
+            outcomes, selected[: len(outcomes)] if aborted else selected
+        )
         return BenchmarkRunSummary(
             benchmark=self._benchmark,
             subset=self._subset,
             outcomes=outcomes,
             eval_summary=eval_summary,
             eval_errors=eval_errors,
+            aborted=aborted,
         )
 
     async def _evaluate(
@@ -378,6 +410,14 @@ class BenchmarkRunner:
                 config=_task_snapshot(task, self._benchmark, self._subset),
             )
             error = None
+        except RunAbort:
+            # First, and re-raised: this handler exists so one bad task does
+            # not stop the sweep, and a veto is precisely the case where it
+            # should. ``execute`` has already closed the trace out, so the
+            # veto and its evidence survive; ``run`` catches it above and
+            # summarises the tasks that did finish.
+            logger.warning("BenchmarkRunner: task %s vetoed the sweep", task_id)
+            raise
         except Exception as exc:  # execute already closed the trace out
             logger.exception("BenchmarkRunner: task %s failed", task_id)
             result = None
