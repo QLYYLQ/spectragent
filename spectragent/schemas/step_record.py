@@ -59,3 +59,23 @@ class StepRecord(BaseModel):
     # "llm", "act"). Empty on healthy steps.
     error_phase: str = ""
     error: str | None = None
+    # Wall clock, in milliseconds. ``None`` means *not measured*, the same
+    # honest sentinel ``token_usage`` uses — a zero here would claim a
+    # step that took no time.
+    #
+    # Filled by the persistence hook from AOP ``around`` advice, never by
+    # the Loop: a Loop that timed itself would be the one component the
+    # AOP layer exists to keep free of cross-cutting concerns, and the
+    # timing would then be missing from every Loop nobody remembered to
+    # instrument.
+    #
+    # ``duration_ms`` partitions the run's wall clock across its steps —
+    # it is measured from the previous step's commit, so step 0 spans
+    # from run start and therefore *includes environment setup* (browser
+    # launch, container pull). That is the honest reading: it is what
+    # producing step 0 actually cost.
+    duration_ms: int | None = None
+    # Of that, the part spent waiting on the model — summed across every
+    # LLM call the step made, including calls that raised (a refused
+    # structured reply costs real seconds and the loop retries past it).
+    llm_latency_ms: int | None = None

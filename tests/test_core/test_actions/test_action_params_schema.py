@@ -53,9 +53,12 @@ _GOLDEN_PROSE: dict[str, dict[str, str]] = {
         "end_x": "int -- CSS px from the viewport's left edge",
         "end_y": "int -- CSS px from the viewport's top edge",
     },
+    # ``goal`` was here, and is deliberately gone: the descriptor advertised
+    # it, the event carried it, and no handler read it. Deleting a param the
+    # prompt shipped is exactly the drift this golden table exists to catch,
+    # so the entry is removed on purpose, not adjusted to fit.
     "browser.extract_content": {
         "index": "int (optional) -- element index; omit to extract page text",
-        "goal": "str (optional) -- free-form extraction goal",
     },
     "browser.go_back": {},
     "browser.go_forward": {},
@@ -265,8 +268,16 @@ def test_an_optional_dependent_param_is_dropped_when_its_fragment_is_absent() ->
 
 
 def test_extract_content_loses_its_index_the_same_way() -> None:
-    without = _action("browser.extract_content").descriptor(fragments=frozenset())
-    assert set(without.params) == {"goal"}
+    """Same drop, down to an empty parameter list.
+
+    ``index`` is now this action's *only* param, so a run without
+    ``browser.dom`` advertises ``extract_content()`` with nothing at all —
+    which is correct, and is what the second assertion pins: the drop must
+    empty the list, not fall back to teaching a param the run cannot honour.
+    """
+    action = _action("browser.extract_content")
+    assert "index" in action.descriptor(fragments=frozenset({"browser.dom"})).params
+    assert action.descriptor(fragments=frozenset()).params == {}
 
 
 def test_no_context_means_no_filtering() -> None:

@@ -43,6 +43,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+
 __all__ = [
     "RequiresFragment",
     "action_fragments",
@@ -182,9 +184,37 @@ def params_view(
     The two halves are rendered together, once, so the text the prompt
     shows and the schema the provider constrains on cannot describe
     different parameters.
+
+    The compilation is :meth:`SchemaOptimizer.create_optimized_json_schema`
+    — the same compiler ``ToolDefinition.from_model`` wraps for the
+    provider wire format, so the prompt's schema and a native tool
+    declaration cannot drift into two different ideas of what a legal
+    schema is. This used to call ``params.model_json_schema()`` raw. For
+    every action in the tree today the two agree (the optimizer's only
+    effect on a flat scalar model is dropping ``title``), so this is not a
+    bug fix; it removes the *possibility* of a divergence, on one
+    reachable shape in particular:
+
+    a param typed as a Python enum class (``StrEnum``, or ``str, Enum``) —
+    which ``architecture_design.md`` §4.5 explicitly admits ("字符串枚举") —
+    compiles to ``{"$ref": "#/$defs/…"}`` plus a ``$defs`` block, and this
+    function reads ``properties`` and drops the rest. The descriptor would
+    then carry a ``$ref`` with nothing to resolve against, which surfaces
+    much later as ``UnsupportedParamsSchema: has unsupported type None``
+    when an agent compiles the closed union. The optimizer inlines it to
+    ``{"enum": [...], "type": "string"}``, which is inside the subset.
+    Every shipped action spells its enums ``Literal[...]`` — which Pydantic
+    inlines — so nothing in the tree hit this.
+
+    The provider-facing :class:`~spectragent.core.llm.tools.ToolDefinition`
+    is deliberately *not* imported here: merging it with
+    ``ActionDescriptor`` is deferred until the FuncCall loop gives it a
+    real consumer, and it has an open blocker
+    (``docs/action_descriptor_vs_tool_definition.md``). Sharing the
+    compiler is not that merge.
     """
     hints = hints or {}
-    compiled = params.model_json_schema()
+    compiled = SchemaOptimizer.create_optimized_json_schema(params)
     properties: dict[str, Any] = dict(compiled.get("properties") or {})
     required = set(compiled.get("required") or ())
     dependencies = param_fragments(params)
