@@ -585,7 +585,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                 descriptors.append(desc)
         return descriptors
 
-    async def act(self, action: Action, session_id=None) -> ActionResult:
+    async def act(self, action: Action) -> ActionResult:
         # 路由：按 action.name 的 leading segment 找 capability
         prefix, sep, _ = action.name.partition(".")
         if not sep:
@@ -594,20 +594,40 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         if cap is None:
             return ActionResult(success=False,
                                 error=f"No capability handles prefix '{prefix}'")
-        return await cap.execute_action(action, session_id=session_id)
+        return await cap.execute_action(action)
 
-    async def observe(self, negotiated, session_id=None):
+    async def observe(self, negotiated) -> Any:
+        # env 拥有 observation cycle：计数器在这里 +1，一次 observe = 一个 cycle。
         if self._fragment_router is None:
             self._build_fragment_router()
-        obs_model = build_observation_model(negotiated.active_fragments)
-        field_values: dict[str, Any] = {}
-        for frag_key in negotiated.env_sourced:
-            cap = self._fragment_router.get(frag_key)
-            if cap is not None:
-                fragment = await cap.resolve_fragment(frag_key, session_id=session_id)
-                field_values[frag_key.rsplit(".", 1)[-1]] = fragment
+        slices = self._observation_slices(frozenset(negotiated.env_sourced))
+        # 直接读，不用 getattr(..., frozenset()) 兜底——缺字段等于"没有必需
+        # fragment"，会把失败的 required DOM 降级成一条记录，必须 fail closed。
+        required = frozenset(negotiated.required_fragments)
+        self._observation_cycle += 1
+        cycle = self._observation_cycle
+
+        # Phase 1：先向每个参与的 capability 宣告 cycle，再解析任何 fragment。
+        begin_errors = await asyncio.gather(
+            *(self._begin_cycle(cap, cycle) for cap, _keys in slices)
+        )
+        # Phase 2：capability 之间并发（互相独立的世界），
+        # 单个 capability 内部串行（它的 fragment 共享同一次 capture）。
+        harvested = await asyncio.gather(
+            *(
+                self._resolve_slice(cap, keys, begin_error)
+                for (cap, keys), begin_error in zip(slices, begin_errors, strict=True)
+            )
+        )
+        # 失败按 fragment 隔离，语义由协商结果裁决：required 失败在所有
+        # capability 跑完后抛 ObservationFailedError（一次报全）；optional
+        # 失败落成 FragmentFailure，其余 observation 照常成立。绝不伪造填槽。
+        ...
+        obs_model = build_observation_model_from_result(negotiated)
         return obs_model(**field_values)
 ```
+
+**Observation cycle 由 env 宣告，不由 capability 推断**：`Environment.observe` 持有单调递增的 cycle 计数器，每次 observe 自增一次，并在任何 fragment 解析之前调用每个参与 capability 的 `begin_observation(cycle)`。这正是 capability 敢批量抓取的前提——browser 一次 `BrowserStateRequestEvent` 同时拿到 DOM + screenshot + tab list，然后在本 cycle 内把每个 key 服务任意多次，因为下一个 cycle 会被**告知**而不是被**猜到**。此前这条规则只以"我是否已经服务过这个 key"的形式活在 `BrowserCapability` 内部：那是用推断代替调用方本来就握有的信息，并且对任何读同一 fragment 两次的调用方都是错的。同一步内重复读同一个 fragment 是**同一次** observation，不是下一次。
 
 **全限定 dotted key**：每个 action 的 `__registry_key__` 是 `"<source>.<id>"`（如 `browser.click`），所以无论 single-cap 还是 composite env，`action.name` 都已经带前缀，`act()` 只做路由不做改写——单 cap 场景也透明工作。Composite 场景（如 GAIA）的 `browser.click` / `tool_sandbox.call_tool` 通过同一段路由分发到对应 capability。
 
@@ -1348,6 +1368,13 @@ class BaseCapability(Protocol):
     @property
     def capability_id(self) -> str: ...
 
+    # 别的 capability 执行的 action，是否让本 capability 当前的 capture 失效？
+    # 默认 False：capability 之间是互相独立的世界，一次 browser.click 不会改变
+    # Android 模拟器显示的内容，就不该为它付一次 ADB 往返。只有两个 capability
+    # 真的共享同一块表面时（desktop VM 的屏幕上正跑着那个 browser）才置 True，
+    # env 随后在每次外部 action 之后为它开一个新的 observation cycle。
+    __invalidated_by_foreign_actions__: ClassVar[bool]
+
     # === Action 接口 ===
     # provided_actions 从 __wiring__["action"] 派生（对称 provided_fragments）
     @property
@@ -1357,12 +1384,20 @@ class BaseCapability(Protocol):
     actions: list[ActionBase]
 
     def get_action_descriptors(self, **context) -> list[ActionDescriptor]: ...
-    async def execute_action(self, action: Action, **kwargs) -> ActionResult: ...
+    async def execute_action(self, action: Action) -> ActionResult: ...
 
     # === Observation 接口（原 Resolver） ===
     @property
     def provided_fragments(self) -> frozenset[str]: ...
-    async def resolve_fragment(self, fragment_key: str, **kwargs) -> ObservationFragment: ...
+
+    # 打开 observation cycle *cycle*，丢弃上一次 capture。由 Environment.observe
+    # 在解析本 cycle 任何 fragment **之前**对每个参与 capability 调用一次。
+    # 两次调用之间的所有 resolve_fragment 属于**同一次** observation。
+    # 默认 no-op：逐 fragment 抓取的 capability 不持有 cycle 状态。
+    # 在这里抛错等价于本 capability 整个切片解析失败。
+    async def begin_observation(self, cycle: int) -> None: ...
+
+    async def resolve_fragment(self, fragment_key: str) -> ObservationFragment: ...
 
     # === 执行层 backend（IoC 注入，见 §4.9.x）===
     # 每个 capability 子类通过 __wiring__["backend"] = "<provider_registry>"
@@ -1622,6 +1657,118 @@ Stage 3: Serialization (可插拔策略)
     └── html: HTML 格式
 ```
 
+### 4.13 Input 拟人化层（mouse_trajectory + typing_rhythm）
+
+Browser capability 内部除 DOM pipeline 之外，另有两个平级的 conscribe 注册表，管的是**输入侧**：光标怎么移动（`MouseTrajectoryRegistrar`，`core/capabilities/browser/input/trajectory.py`）、字怎么敲出来（`TypingRhythmRegistrar`，`core/capabilities/browser/input/rhythm.py`）。它们服务的是 anti-bot 敏感的评测场景——一次点击的曲线、停留、按键长短本身就是被检测系统读取的行为信号。
+
+```
+agent 的一次 click ─→ ActionWatchdog ─→ HumanMouse ─→ CDP Input.dispatchMouseEvent
+                       │ (框→点的唯一接缝)  │ (input/mouse.py)
+                       │                    └── MouseTrajectoryProtocol (Strategy)
+                       │                         ├── instant   单点直跳 == 旧行为（默认）
+                       │                         ├── windmouse 引力/风力物理模型 + Fitts 定时
+                       │                         ├── bezier    三次贝塞尔 + Fitts 定时
+                       │                         └── learned   人类录制数据训练的模型（numpy 推理）
+                       │
+agent 的一次 type  ─→ ActionWatchdog ─→ HumanKeyboard ─→ CDP Input.dispatchKeyEvent
+                                         │ (input/keyboard.py)
+                                         └── TypingRhythmProtocol (Strategy)
+                                              ├── instant 整串一次 Input.insertText == 旧行为（默认）
+                                              └── human   逐字符 keydown/keyup，flight / hold 建模
+
+             两条链共用一个时钟：play_on_deadline（input/_schedule.py）
+```
+
+**两个注册表而不是一个**，因为它们是互相独立的轴：一次 run 完全可能要曲线光标 + bulk insert，或者反过来；而且两者产出的东西不同（waypoints vs keystrokes）。合成一个「humanization level」枚举会让两根轴不可分离，也让第三根轴（滚轮节奏、触屏手势）加不进来。这就是 §1.1「每个变化轴一个注册表」在这一层的落地。
+
+#### 策略本身就是开关
+
+`humanized` 是**策略的属性**，不是配置项：`MouseTrajectoryBase` / `TypingRhythmBase` 默认返回 `True`（会生成路径 / 会建模时序的策略，按构造就是拟人的），只有 `instant` 覆盖成 `False`。消费者读这一个布尔来决定路径之外的行为——冷启动位置、滚轮是否分段缓动、键入 / 选择前是否先把光标移过去，以及 `instant` 下整串一次 `insertText`。
+
+**它旁边不允许再出现第二个开关**（defect F4）：`BrowserCapability` 上曾经有一个 `humanize_mouse: bool` 与 `mouse_trajectory` 受体并列。YAML 里同时写 `trajectory_type: windmouse` 和 `humanize_mouse: false`，配置校验全过，运行时静默走旧的直跳——用户配了一个策略，框架执行的是另一个。同一个语义有两个声明点，就必然存在互相矛盾的组合，而矛盾的那个组合没有任何地方会报错。所以规则是：**策略即开关**，`humanized` 只能从策略读，config 面上不得出现与之并列的布尔。`typing_rhythm` 从第一天起就是这个形状。
+
+同理，两者都是 `BrowserCapability.__wiring__` 上的**受体**（wired receptor），不是 `Literal` 字符串：策略以**构造好的实例**注入，它自己的 knobs（windmouse 的 gravity / wind、bezier 的控制点、`human` rhythm 的 median_iki / hold 分布、learned 的 weights_dir / num_candidates，以及下面两节的 click-hold 与 aim 分布参数）因此全部经 conscribe 进入生成的 config，YAML 可达且被校验。曾经的形状是 `Literal` 加一个未类型化的 overrides dict，conscribe 把后者整个从 schema 里丢掉——knobs 存在，没有任何东西能设置它们。这与 `dom_cleaner` / `dom_serializer` 是同一类 defect（见 §4.12），`tests/test_core/test_capabilities/test_receptor_hygiene.py` 是结构性守卫。
+
+但**受体身份是必要而非充分条件**：注册表还必须被 Composer 收集（`scripts/generate_all.py::_collect_registrars`），否则 conscribe 无从知道这个字段是一个判别联合，只能把它发成裸 `str`——knobs 依然不可达，而且更坏：一个拼错的 `trajectory_type` 不会被校验挡住，会静默退回 `instant`（非拟人）。`mouse_trajectory` 正是这样漏过一轮的，`_collect_registrars` 里现在留着记录此事的注释。新增任何一根策略轴都要同时做这两件事。
+
+#### 两个 Protocol
+
+```python
+@runtime_checkable
+class MouseTrajectoryProtocol(Protocol):
+    def generate(self, start_x, start_y, end_x, end_y, *,
+                 target_w: float = 0.0, target_h: float = 0.0) -> list[TrajectoryPoint]:
+        """返回路径 waypoints；**最后一点必须精确等于** (round(end_x), round(end_y))。"""
+
+    def click_hold_ms(self) -> float:
+        """按下到抬起的时长，每次点击抽一次。humanized == False 必须返回 0.0。"""
+
+    def aim_offset_px(self, width: float, height: float) -> tuple[float, float]:
+        """本次点击在 width x height 目标框内相对**框心**的落点偏移，每次点击抽一次。
+        humanized == False 必须返回 (0.0, 0.0)；任何策略对没有尺寸的框都必须返回 (0.0, 0.0)。"""
+
+    @property
+    def humanized(self) -> bool: ...
+
+
+@dataclass(slots=True, frozen=True)
+class TrajectoryPoint:
+    x: int
+    y: int
+    dt_ms: float = 0.0     # 本点**之前**的间隔；第一点为 0
+
+
+@runtime_checkable
+class TypingRhythmProtocol(Protocol):
+    def generate(self, text: str) -> list[Keystroke]:
+        """每字符一个 Keystroke，长度与字符不变——节奏只决定*何时*，绝不决定*什么*。"""
+
+    @property
+    def humanized(self) -> bool: ...
+
+
+@dataclass(slots=True, frozen=True)
+class Keystroke:
+    char: str
+    gap_ms: float = 0.0    # 上一键抬起到本键按下的 flight time
+    hold_ms: float = 0.0   # 本键 keydown → keyup 的 dwell
+```
+
+`click_hold_ms`（本轮新增）与 `aim_offset_px` 挂在 Protocol 上而不是 `TrajectoryPoint` 上，理由是同一条：它们**不是任何单个 waypoint 的属性**——按住的时候什么都不动，落点偏移是整次点击一个数——但它们确实是拟人化，而策略是这一层唯一的开关。把**行为**放在策略上还有一个副产品：**RNG 永远不必离开拥有它的对象**。曾经有一版把 `seed` 加进 Protocol，好让 watchdog 自己复刻一条同源的随机流；那是把实现管线塞进公共契约，下一个消费者就会来要 `derive_rng(label)`。正确的读法是：第二个消费者想要相关联的随机性时，说明那个**行为**应该搬到策略上，而不是把 RNG 句柄导出去。
+
+两个新成员都**没有 base 默认值**——`MouseTrajectoryBase` 直接 raise，并报出继承了这个拒绝的类名——因为看起来安全的默认值恰好就是 defect 本身：`0.0` 的 hold 是同一毫秒内按下并抬起，`(0.0, 0.0)` 的 aim 是每次都精确命中算术中心（实测落点误差 0.78 px，人类是 3-31 px）。`humanized` 可以有默认值，时长和偏移不能。分布的实现是共享的（`input/_timing.py::sample_click_hold_ms` 的 lognormal、`input/_aim.py::sample_aim_offset_px` 的截断正态），但**分布的参数是每个策略自己的 `__init__` 参数**，因此是 YAML 可达的 config 字段，而不是模块常量。
+
+> conscribe 在类注册时**不**做 Protocol 一致性检查——少一个成员照样注册成功，到第一次点击才炸。注册表全量的 `isinstance(strat, MouseTrajectoryProtocol)` 测试把它变成测试失败（`tests/test_core/test_capabilities/test_browser_input/test_trajectory.py`），给 Protocol 加成员时要同时扩那个循环。
+
+#### 端点不变量：轨迹的终点就是被请求的那个点
+
+`generate()` 契约里「最后一点必须精确等于 `(round(end_x), round(end_y))`」是硬约束；`HumanMouse.move_to` 对应地**只裁剪中间点**到 viewport，终点原样下发——所以 off-viewport 的目标依然精确，trace 里记的点、overlay 画的点、实际 press 的点是同一个。
+
+这条不变量决定了「点到框里哪儿」该放在哪：**不在策略里**。测量给出的是一个**框**，点击需要的是一个**点**；策略若自己挪动终点，trace / overlay / `ActionResult` 就会对这次点击到底落在哪产生分歧。所以策略返回一个**偏移**（`aim_offset_px`），由 `ActionWatchdog._aim_inside` —— 整个 capability 里唯一一处「测量框 → 点」的接缝 —— 施加，交给轨迹的已经是一个确定的精确点。
+
+这个接缝还拥有两件策略不可能知道的事：
+
+- **窗口**。border box 从不被裁到 viewport：`getBoundingClientRect` 对比窗口还高的 banner 返回它的整个高度，`DOM.scrollIntoViewIfNeeded` 也只保证元素可达。所以 `_visible_span` 先把框**关于框心对称地**缩到真正可见的部分，再交给策略——对称而非各边独立裁剪，因为喂进去的是一个**中心对称**的分布，非对称窗口会把落点偏向恰好可见的那一侧；框心本身已在屏幕外时返回 0，也就是退回精确框心（这一切存在之前的行为）。少了这一步，散布出去的点会落在负坐标或屏幕外，Chrome 把事件丢掉而 action 照样报 success。
+- **谁该被散布**。每一个来自**测量**的框都走这里（index click、type / select 前的光标趋近、滚轮的落点）——它们带着同一个 tell。而 `click_coordinate` / `drag` 的点来自**模型自己**，那是 agent 的意图，也没有测量框可言，不过这条接缝。
+
+#### 一个时钟：`play_on_deadline`
+
+`dt_ms` / `gap_ms` / `hold_ms` 是**计划，不是 sleep 时长**。`input/_schedule.py::play_on_deadline` 是这一层唯一的调度器：它在发出任何东西之前就把全部间隔折算成**绝对 deadline**（slot *i* 到期于 `start + sum(dt[: i + 1])`），然后逐个 yield。调用方在两次 yield 之间 await 的东西（一次 CDP 往返，headless Chrome 实测 ~17 ms/`mouseMoved`、~12 ms/`mouseWheel`）因此花在它所属的 slot **里面**，而不是加在它**上面**。
+
+先 sleep 间隔、再 await 派发，等于给每个 tick 加一次传输成本。实测后果：50 Hz 的 learned 路径被放成 32.6 Hz，windmouse（ease-out 尾巴每几毫秒就要一个 waypoint）被放慢到 **5.06 倍**，12 ms 的滚轮步被拉到 28 ms。改成绝对截止时间后 windmouse 1.10×、learned 1.01× @ 49.7 Hz（defect F14）。**这一层的时间就是它的全部意义**——learned 模型是按「在录制速率下匹配人类速度」挑出来的，滚动的步进节奏正是 anti-bot 系统读的东西——所以 wall time 必须跟着 schedule 走，不能跟着 transport 走。
+
+跟不上的时候，规则是**丢点，不拖时间**：一个 slot 的整段时间在它能被发出之前就已经过去，就跳过它（掉帧，不是慢放），总时长与速度曲线保持诚实，只是采样变粗。**最后一个 slot 永远不会被跳过**——这正是端点不变量在调度器一侧的保证。「被跳过的 slot 意味着什么」属于调用方：`move_to` 干脆不发那个位置；`wheel` 把 delta 折进下一个真正发出的步（增量仍精确求和到 `(dx, dy)`）；`HumanKeyboard.type_text` 与 `HumanMouse.click` 则把积压的事件一起补发——按键可以迟到，但绝不能被丢（否则键就一直按着）。点击尤其如此：`click` 的 schedule 是 `[0.0, click_hold_ms()]` 配 `events = [pressed, released]`，补发的写法让「比 hold 还慢的传输」只会**缩短** hold，结构上不可能放出一个从未按下过的 release。
+
+被 yield 而调用方选择不动作的 slot 依然花掉了它的时间——这就是「重复 waypoint」表达静止的方式：路径里一个与前点相同的坐标，调度器等它、`move_to` 不派发事件，于是 learned 模型里「点击前停在目标上」的那段留白按原样保留，而不被摊成 1 px 的微动。
+
+#### `learned`：meta.json 对模型参数有最终解释权
+
+`learned` 的 `weights_dir` 指向一个导出目录（`generator.npz` + `meta.json`）。**里面是哪个模型、以什么 tick 率、在多大的归一化窗口里训练的，一律从 `meta.json` 读，不从 YAML 读**（defect F7）：`format` / `kind` 决定走哪套 numpy 推理；`hz` 与训练窗口只要 meta 声明了就以 meta 为准，而 `mouse_trajectory` 块里写了不同的值会在**构造时**报错并同时指出双方，而不是静默地把模型按错误的速率或错误的尺度回放。理由与受体那条同源：配置不得与它所指的权重互相矛盾，而当两者必有一错时，权威属于产出权重的那一侧。
+
+新训练出来的模型（比如一个 diffusion 导出）**不是一个新策略**，而是 `learned` 的一个 backend，按导出格式分派——这与 capability 的 backend 是同一个模式。真正的新策略是另一种运动模型：加一个类文件，加一个 wiring key，消费者零改动。
+
+numpy 来自可选 extra `learned-mouse`，只在构造 `LearnedTrajectory` 时导入，绝不在模块导入时——所以没装 extra 的机器上注册与 config 生成照常工作。`input/_timing.py` 和 `input/_aim.py` 被 `learned` 导入，因此这两个模块必须保持 **numpy-free**。
+
 ---
 
 ## 5. RunTrace 全量落盘体系
@@ -1804,8 +1951,11 @@ class RunTrace:
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
 | `ActionRegistrar` | `action_id` (flat, dotted key `source.id`) | 每个 Action 独立注册；键含 source 前缀避免跨 capability 撞名（`browser.click` vs `desktop.click`） | ✅ |
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
+| `NegotiationResultRegistrar` | `result_type` (flat) | 协商结果类型；内置 `observation` / `action` 自动注册，自定义协商协议注册自己的结果类型并作为 `target_class` 传给 `negotiate()` | ✅ |
 | `DOMCleanerRegistrar` | `cleaner_type` (flat) | DOM 清洗策略 | ✅（browser 内部） |
 | `DOMSerializerRegistrar` | `serializer_type` (flat) | DOM 序列化策略 | ✅（browser 内部） |
+| `MouseTrajectoryRegistrar` | `trajectory_type` (flat) | 光标轨迹策略（`instant` / `windmouse` / `bezier` / `learned`）；同时是鼠标侧唯一的拟人化开关，见 §4.13 | ✅（browser 内部） |
+| `TypingRhythmRegistrar` | `rhythm_type` (flat) | 键入节奏策略（`instant` / `human`）；键盘侧的同一形状，独立于轨迹轴，见 §4.13 | ✅（browser 内部） |
 
 > **Provider 目录归属**：每个 capability 的 backend provider 文件物理上属于 `spectragent/core/capabilities/{cap}/backends/`，对应的 `*ProviderRegistrar` 也在该目录的 `_registrar.py` 里。Browser 已落地；Docker / Desktop / Android 等 P2/P3 时按同样模式增设。
 
@@ -1820,7 +1970,8 @@ class RunTrace:
 | **Protocol (结构化类型)** | 所有公共契约（`BaseAgent`、`AgentLoop`、`BaseCapability` 等） |
 | **Slot 校验** | Loop 兼容性：每个 Loop 用 `__required_slots__: set[str]` 声明它需要的 agent 方法名；`weave()` 用 `callable(getattr(agent, slot))` 校验。避免 `*Compatible(Protocol)` 在 Loop 子类化时爆炸 |
 | **Monkey-patch / Loop-on-agent** | `loop.weave(agent)` 把 `loop._execute(agent, task)` 装成 `agent.run(task)`，Loop 物理上"安装"到 agent 上 |
-| **Strategy** | Loop 策略、DOM cleaners/serializers、Memory、Evaluator — 通过注册表 key 切换 |
+| **Strategy** | Loop 策略、DOM cleaners/serializers、mouse trajectory / typing rhythm、Memory、Evaluator — 通过注册表 key 切换 |
+| **策略即开关** | 拟人化没有与策略并列的布尔：`humanized` 是策略自身的属性，只有 `instant` 为 `False`（§4.13）。同一语义两个声明点必然产生无人报错的矛盾组合 |
 | **Registry (自动注册)** | conscribe 注册表，metaclass 驱动导入时注册 |
 | **`__wiring__` 跨注册表依赖** | Agent↔Loop 兼容性、Env↔Capability 注入、Capability↔Backend 注入、Observation 协商 |
 | **IoC / setattr-injected wired receptor** | `agent.llm`、`env.capabilities`、`capability.backend` 都是 conscribe `WiredField` descriptor + ConfigComposer setattr 注入 |
@@ -1955,6 +2106,8 @@ environment:
 | **新增 Memory** | 继承 `MemoryBase` | RAG-based memory |
 | **新增 Benchmark Loader** | 继承 `TaskLoaderBase` / `EvalLoaderBase` | SWE-bench, WebArena |
 | **新增 DOM Cleaner/Serializer** | 继承对应 Base | Markdown 序列化 |
+| **新增 Mouse Trajectory / Typing Rhythm 策略** | 继承 `MouseTrajectoryBase` / `TypingRhythmBase`，设 `__registry_key__`，实现 Protocol 全部成员（含 `click_hold_ms` / `aim_offset_px`），knobs 写成 `__init__` 关键字参数 | 新的运动模型；已训练模型的新导出格式属于 `learned` 的 backend，不是新策略（§4.13） |
+| **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 CLAUDE.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `scripts/generate_all.py::_collect_registrars` 注册，否则字段发成裸 `str` | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里 |
 | **配置字段扩展** | 给注册类添加 `Annotated[type, Field(...)]` | 自动出现在生成的 `_composed.py` config schema 中 |
 
 ---
@@ -2042,7 +2195,11 @@ Browser Capability
 │   │            ├── DownloadsWatchdog    → 下载监控
 │   │            ├── PopupsWatchdog       → 弹窗处理
 │   │            └── SecurityWatchdog     → 域名白/黑名单
-│   └── DOM Pipeline (capture → clean → serialize)
+│   ├── DOM Pipeline (capture → clean → serialize)
+│   └── Input 拟人化层 (input/, §4.13)
+│        ├── MouseTrajectoryRegistrar  → HumanMouse    → Input.dispatchMouseEvent
+│        ├── TypingRhythmRegistrar     → HumanKeyboard → Input.dispatchKeyEvent
+│        └── play_on_deadline —— 两条链共用的唯一时钟（绝对截止时间）
 │
 └── Backend (core/capabilities/browser/backends/, IoC-injected via __wiring__["backend"])
     ├── local_chrome, lexmount, skyvern_lite, browser_use_lite,
@@ -2051,7 +2208,9 @@ Browser Capability
         capability.setup() 调 backend.open() 拿到 cdp_url 后启 agent-cdp
 ```
 
-BrowserProfileConfig 将 cleaner + serializer + watchdog 组合成命名预设（standard, skyvern, vision_only, lightweight），支持 override 和增量修改。
+`BrowserProfileConfig` 是命名预设（`standard` / `skyvern` / `vision_only` / `lightweight`），但只承载两类事实：**安装哪些 watchdog**（`watchdogs_exclude`，反向声明——注册表里没被排除的都装，名字在 setup 时对着注册表校验，写错是硬报错而不是静默 no-op），和**允许花多少次 CDP 往返**（`js_click_listener_detection`、`cross_site_iframe_capture`），外加 SecurityWatchdog 的域名白 / 黑名单。
+
+**策略一律不在 profile 上**：`dom_cleaner`、`dom_serializer`、`mouse_trajectory`、`typing_rhythm` 全部是 `BrowserCapability` 上的 `__wiring__` 受体（§4.12 / §4.13）。profile 曾经用字符串名持有 cleaner 与 serializer，后果是消费者拿着名字去注册表里 `get(name)()` 现造一个默认实例，把 Composer 已经按 YAML 构造好的那个丢掉——策略的 knobs 生成在 config 里却无人可达。profile 也不支持 override 或增量修改：一个预设要么被整体选中，要么另起一个。区分规则是「谁为它买单」——改变一次 capture 花多少次 CDP 往返的，属于 profile；改变产出的 observation 让 prompt 花多少 token 的（`screenshot_quality`、`dom_max_elements`），是 capability 自己的 `Annotated` 标量。
 
 其他 capability 的中间层各不相同：Docker 用 Docker Engine API（`core/capabilities/docker/backends/` P2 占位），Android 用 ADB + gRPC，Desktop VM 用 VNC + AT-SPI，GPU Profiling 用 Unix socket IPC → bare-metal harness。这些都是 capability 的实现细节，framework 不感知。
 
