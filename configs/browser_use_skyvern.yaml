@@ -17,7 +17,15 @@ agent:
       loop_id: react
       max_steps: 30
       max_actions_per_step: 1
+      # Re-ask inside the step the observation already paid for; see the
+      # note in browser_use_local.yaml. ``0`` restores the old behaviour.
+      parse_retries_per_step: 2
 
+    # ``model_type`` is the protocol, not the brand: gemini-* takes
+    # ``google`` at the gateway root, claude-* takes ``anthropic`` at the
+    # root, and ``openai`` (at ``<root>/v1``) is for models whose native API
+    # is already the OpenAI one. See browser_use_local.yaml for the measured
+    # reason, and docs/llm/dmxapi.cn.md for the numbers.
     llm:
       model_type: openai
       model: gpt-4o
@@ -46,6 +54,9 @@ environment:
 
         dom_cleaner:
           cleaner_type: browser_use
+
+        dom_serializer:
+          serializer_type: text
 
         # Switch backend = edit only this block.
         backend:

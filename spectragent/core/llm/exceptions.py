@@ -46,10 +46,19 @@ class StructuredOutputValidationError(ModelProviderError):
     generic :class:`ModelProviderError` and aborted the run at the LLM
     phase.
 
-    ``raw_output`` carries the text as the model wrote it, so the caller
-    can put it back through the agent's own parser: the agent knows the
-    negotiated verb set and produces one located error, where the provider
-    can only report a schema mismatch.
+    ``raw_output`` carries the reply as the *validator* saw it, so the
+    caller can put it back through the agent's own parser: the agent knows
+    the negotiated verb set and produces one located error, where the
+    provider can only report a schema mismatch.
+
+    Deliberately not "as the model wrote it", which is what this said while
+    being untrue on most paths: a provider unwraps a Markdown fence
+    (``core/llm/fences.py``), and some trim surrounding prose or parse the
+    text to a dict, before validating. The unwrapped form is the one the
+    agent's parser wants, so it is the one kept here — and when it differs
+    from the wire text the provider says so in ``message``, because "fenced
+    *and* the wrong shape" is the signature of a gateway that dropped
+    ``response_format`` and would otherwise leave no trace of itself.
 
     ``usage`` is whatever the call actually cost — the provider's own
     ``ChatInvokeUsage``, typed, because the Loop puts it straight into a

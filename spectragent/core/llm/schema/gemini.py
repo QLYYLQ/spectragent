@@ -1,13 +1,31 @@
-"""Gemini-specific schema fixes."""
+"""Gemini-specific schema fixes.
+
+What is *genuinely* Gemini-specific lives here: ``$ref`` resolution against
+a local ``$defs`` block, dropping ``default`` (the protobuf ``Schema`` has
+no slot for it), and the ``_placeholder`` invention that keeps an empty
+``properties`` map from compiling to an object with no fields.
+
+The ``additionalProperties`` removal is **not** specific to this function
+even though it is specific to Gemini: it is one of the named dialect
+transforms (:meth:`SchemaOptimizer.strip_additional_properties`), because
+``ChatGoogle`` has to apply it on requests that never come through here —
+a model the family table does not recognise skips ``fix_gemini_schema``
+entirely. So this delegates rather than filtering the key inline, and
+there is one implementation of "what Gemini does with
+``additionalProperties``" reachable from both call sites.
+"""
 
 from typing import Any
+
+from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 
 
 def fix_gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Convert a Pydantic schema to a Gemini-compatible schema.
 
-    Removes unsupported properties like ``additionalProperties`` and resolves
-    ``$ref`` references that Gemini doesn't support.
+    Resolves the ``$ref`` references Gemini does not support, drops the
+    keywords its ``Schema`` message has no field for, and fills an empty
+    ``properties`` map with a placeholder.
     """
     # Handle $defs and $ref resolution
     if "$defs" in schema:
@@ -39,7 +57,7 @@ def fix_gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
             cleaned: dict[str, Any] = {}
             for key, value in obj.items():
                 is_metadata_title = key == "title" and parent_key != "properties"
-                if key not in ["additionalProperties", "default"] and not is_metadata_title:
+                if key != "default" and not is_metadata_title:
                     cleaned_value = clean_schema(value, parent_key=key)
                     if (
                         key == "properties"
@@ -66,4 +84,10 @@ def fix_gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
             return [clean_schema(item, parent_key=parent_key) for item in obj]
         return obj
 
-    return clean_schema(schema)
+    cleaned = clean_schema(schema)
+    # One implementation, called from both places that need it — see the
+    # module docstring. Idempotent, so ``ChatGoogle`` calling it again on
+    # the way to the wire costs nothing and covers the models that skip
+    # this function.
+    SchemaOptimizer.strip_additional_properties(cleaned)
+    return cleaned

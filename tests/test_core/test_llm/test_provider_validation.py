@@ -499,6 +499,70 @@ async def test_a_bad_reply_reaches_the_caller_still_recoverable(case: _Case) -> 
     assert exc.value.status_code == 422
 
 
+# ── Row 2: the closed union is the shape af actually ships ──
+
+
+def _closed_union_model() -> type[BaseModel]:
+    """A plain ``Union`` of single-key models, each ``extra="forbid"``.
+
+    The shape ``agents/_action_union.py`` builds: ``anyOf`` of objects that
+    each name one verb as a *property*, so nothing beyond
+    ``object``/``properties``/``required``/``anyOf`` is needed — the
+    intersection of the OpenAI, Anthropic and Gemini dialects.
+    """
+    from typing import Union
+
+    from pydantic import ConfigDict, create_model
+
+    make: Any = create_model
+
+    def verb(name: str, **fields: Any) -> Any:
+        params = make(f"{name}Params", __config__=ConfigDict(extra="forbid"), **fields)
+        return make(
+            f"{name}Item",
+            __config__=ConfigDict(extra="forbid"),
+            **{name: (params, ...)},
+        )
+
+    click = verb("click", index=(int, ...))
+    type_ = verb("type", index=(int, ...), text=(str, ...))
+    return make(
+        "_ClosedUnionOut",
+        __config__=ConfigDict(extra="forbid"),
+        action=(list[Union[click, type_]], ...),  # noqa: UP007
+    )
+
+
+@pytest.mark.parametrize("case", _CASES, ids=[c.id for c in _CASES])
+async def test_a_closed_union_output_format_compiles_on_every_provider(
+    case: _Case,
+) -> None:
+    """The second behaviour every provider owes: it can *ship* this schema.
+
+    ``_Shape`` above is one integer field — flat, ``$ref``-free, and so it
+    exercises none of what af actually sends. Every real run ships a closed
+    action union, and that is where providers differ: Bedrock used to strip
+    an array's ``items``, Gemini's ``response_schema`` rejects
+    ``additionalProperties`` inside an ``anyOf`` branch, Ollama compiles the
+    schema into a decoding grammar, and ``google-genai`` refuses a
+    ``discriminator`` in its own local validation before any request.
+
+    A provider whose schema compilation cannot express the union fails
+    *here* — while building the request — with something other than
+    ``StructuredOutputValidationError``. Reaching the validator at all
+    means the schema went out and a reply came back, which is the thing
+    a per-provider split would silently take away.
+    """
+    provider = case.build()
+    with pytest.raises(StructuredOutputValidationError) as exc:
+        await provider.ainvoke([UserMessage(content="hi")], _closed_union_model())
+
+    # Still the model's mistake to fix, not the transport's — the stub
+    # answers `{"index": ...}`, which names no verb at all.
+    assert exc.value.status_code == 422
+    assert exc.value.raw_output
+
+
 def test_the_groq_salvage_path_is_exempt_on_purpose() -> None:
     """The one place a bad reply is *not* recoverable, asserted not assumed.
 

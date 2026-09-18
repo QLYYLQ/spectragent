@@ -10,13 +10,12 @@ ainvoke path (text + response_format structured output).
 # 跨模块类型解析失败，使 get_origin() 返回 None。
 
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypeVar, overload
 
 import httpx
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
-from openai.types.chat import ChatCompletionContentPartTextParam
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.responses import Response
 from openai.types.shared.chat_model import ChatModel
@@ -29,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
@@ -75,11 +75,33 @@ class OpenAICompatBase(ChatModelBase):
     service_tier: Annotated[str | None, Field(description="Service tier")] = None
     top_p: Annotated[float | None, Field(description="Top-p sampling")] = None
 
-    # --- Structured output options ---
-    add_schema_to_system_prompt: Annotated[bool, Field(description="Add JSON schema to system prompt")] = False
-    dont_force_structured_output: Annotated[bool, Field(description="Skip forcing structured output")] = False
-    remove_min_items_from_schema: Annotated[bool, Field(description="Remove minItems from JSON schema")] = False
-    remove_defaults_from_schema: Annotated[bool, Field(description="Remove defaults from JSON schema")] = False
+    # --- Structured output options: none, deliberately ---
+    #
+    # Four per-config booleans used to live here and all four are gone:
+    #
+    # * ``dont_force_structured_output`` sent the request *without*
+    #   ``response_format`` and hoped the model answered JSON anyway;
+    # * ``add_schema_to_system_prompt`` pasted the schema into the system
+    #   message in case the model ignored ``response_format``;
+    # * ``remove_min_items_from_schema`` / ``remove_defaults_from_schema``
+    #   let a YAML hand-edit the compiled schema's keywords.
+    #
+    # None of them was a property of a *model*. The first two were
+    # workarounds for a gateway whose OpenAI-compatible route translates to
+    # a vendor's native API and loses the schema on the way; native routing
+    # is the fix (Gemini at ``model_type: google``, Claude at
+    # ``model_type: anthropic``, both against the gateway root — see
+    # ``docs/llm/dmxapi.cn.md``). The last two are dialect rules, and
+    # ``architecture_design.md`` §4.5 says where a dialect rule goes:
+    # "去除写在 optimizer 里一次，而不是每个 provider 各配一个旋钮".
+    # ``strict`` implies the ``minItems`` removal inside
+    # ``create_optimized_json_schema``; a *non-strict* endpoint that also
+    # chokes on it says so through ``ModelFamily``, the same way
+    # ``schema_rejects_closed_union_branches`` does — not through YAML.
+    #
+    # Nothing in the repo ever set any of the four. If you are about to add
+    # the fifth, read ``how_to_extend`` in the dialect-transforms section of
+    # ``core/llm/schema/optimizer.py`` first.
 
     # --- Client params ---
     api_key: Annotated[str | None, Field(description="API key")] = None
@@ -313,36 +335,25 @@ class OpenAICompatBase(ChatModelBase):
         # node with no ``properties``; asking for strict alongside it ships a
         # schema OpenAI rejects outright.
         strict = self._use_strict_schema(output_format)
+        schema = SchemaOptimizer.create_optimized_json_schema(output_format, strict=strict)
+        # One dialect rule, applied where the family declares it: a gateway
+        # that translates this request into Gemini's ``response_schema``
+        # rejects ``additionalProperties`` inside an ``anyOf`` branch, which
+        # is exactly what a closed action union is made of. OpenAI's own
+        # strict mode wants the opposite, so this is not unconditional.
+        if self.model_family.schema_rejects_closed_union_branches:
+            SchemaOptimizer.open_union_branches(schema)
         response_format: JSONSchema = {
             "name": "agent_output",
             "strict": strict,
-            "schema": SchemaOptimizer.create_optimized_json_schema(
-                output_format,
-                strict=strict,
-                remove_min_items=self.remove_min_items_from_schema,
-                remove_defaults=self.remove_defaults_from_schema,
-            ),
+            "schema": schema,
         }
 
-        if self.add_schema_to_system_prompt and openai_messages and openai_messages[0]["role"] == "system":
-            schema_text = f"\n<json_schema>\n{response_format}\n</json_schema>"
-            if isinstance(openai_messages[0]["content"], str):
-                openai_messages[0]["content"] += schema_text
-            elif isinstance(openai_messages[0]["content"], Iterable):
-                openai_messages[0]["content"] = list(openai_messages[0]["content"]) + [
-                    ChatCompletionContentPartTextParam(text=schema_text, type="text")
-                ]
-
-        if self.dont_force_structured_output:
-            response = await self.get_client().chat.completions.create(
-                model=self.model, messages=openai_messages, **model_params, **extra_kwargs,
-            )
-        else:
-            response = await self.get_client().chat.completions.create(
-                model=self.model, messages=openai_messages,
-                response_format=ResponseFormatJSONSchema(json_schema=response_format, type="json_schema"),
-                **model_params, **extra_kwargs,
-            )
+        response = await self.get_client().chat.completions.create(
+            model=self.model, messages=openai_messages,
+            response_format=ResponseFormatJSONSchema(json_schema=response_format, type="json_schema"),
+            **model_params, **extra_kwargs,
+        )
 
         choice = response.choices[0] if response.choices else None
         if choice is None or choice.message.content is None:
@@ -373,8 +384,16 @@ class OpenAICompatBase(ChatModelBase):
         # structured path, so a compliant provider cannot return any.
         usage = self._get_usage(response)
         return ChatInvokeCompletion(
+            # This base is what every OpenAI-compatible *gateway* goes
+            # through, and a gateway is where a reply arrives fenced despite
+            # `response_format` — the translation to some vendor's native API
+            # dropped it. Five other providers each unwrapped fences on their
+            # own and this one, the widest path, did not.
             completion=self._validate_structured(
-                output_format, choice.message.content, usage=usage
+                output_format,
+                strip_code_fence(choice.message.content),
+                usage=usage,
+                wire_text=choice.message.content,
             ),
             usage=usage,
             stop_reason=choice.finish_reason,

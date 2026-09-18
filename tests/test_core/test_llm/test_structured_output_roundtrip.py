@@ -837,6 +837,69 @@ class TestIsStrictCompatible:
             {"oneOf": [{"type": "object", "properties": {"a": {"type": "string"}}}]}
         )
 
+    @pytest.mark.parametrize(
+        "node",
+        [
+            pytest.param({"type": "array", "minItems": 1}, id="minItems"),
+            pytest.param({"type": "array", "maxItems": 3}, id="maxItems"),
+            pytest.param({"type": "array", "uniqueItems": True}, id="uniqueItems"),
+            pytest.param(
+                {"allOf": [{"type": "object", "properties": {}}]}, id="allOf"
+            ),
+            pytest.param({"not": {"type": "string"}}, id="not"),
+            pytest.param(
+                {"type": "object", "properties": {},
+                 "patternProperties": {"^x": {"type": "string"}}},
+                id="patternProperties",
+            ),
+            pytest.param(
+                {"type": "object", "properties": {}, "dependentSchemas": {}},
+                id="dependentSchemas",
+            ),
+        ],
+    )
+    def test_any_keyword_outside_the_allowlist_is_not(self, node: dict[str, Any]) -> None:
+        """The predicate is an allowlist, so it fails closed.
+
+        ``oneOf``/``discriminator`` were once handled by name, which meant
+        every *other* unsupported keyword answered ``True`` and shipped. An
+        unknown keyword now costs constrained decoding (``strict: false``,
+        which every endpoint accepts) instead of a 400 on the schema.
+
+        Of the cases below, ``minItems`` is the one a production caller
+        cannot reach: both call sites compile with ``strict=True`` first,
+        and that compile already removes it (defect F12 is fixed in the
+        compiler, not here). It is kept as a case because the predicate is
+        also a public answer to "is this schema strict-legal" — but the
+        keywords this actually rescues in production are the rest, led by
+        ``maxItems``/``uniqueItems``, which survive a strict compile
+        untouched.
+        """
+        from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+
+        assert not SchemaOptimizer.is_strict_compatible(node)
+
+    def test_a_property_named_like_a_keyword_is_still_fine(self) -> None:
+        """``properties`` keys are names, not keywords.
+
+        The allowlist has to know where it is; checking the contents of a
+        ``properties`` map against it would refuse a schema for the crime
+        of having a field called ``items``.
+        """
+        from spectragent.core.llm.schema.optimizer import SchemaOptimizer
+
+        assert SchemaOptimizer.is_strict_compatible(
+            {
+                "type": "object",
+                "properties": {
+                    "items": {"type": "string"},
+                    "oneOf": {"type": "integer"},
+                    "browser.click": {"type": "object", "properties": {}},
+                },
+                "required": ["items"],
+            }
+        )
+
     def test_a_discriminator_is_not_either(self) -> None:
         from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 

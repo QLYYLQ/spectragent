@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.anthropic_format import AnthropicMessageSerializer
@@ -275,13 +276,11 @@ class AnthropicCompatBase(ChatModelBase):
                 usage = self._get_usage(response)
                 first_content = response.content[0] if response.content else None
                 text = first_content.text if isinstance(first_content, TextBlock) else str(first_content)
-                t = text.strip()
-                if t.startswith("```json") and t.endswith("```"):
-                    t = t[7:-3].strip()
-                elif t.startswith("```") and t.endswith("```"):
-                    t = t[3:-3].strip()
+                t = strip_code_fence(text)
                 return ChatInvokeCompletion(
-                    completion=self._validate_structured(output_format, t, usage=usage),
+                    completion=self._validate_structured(
+                        output_format, t, usage=usage, wire_text=text
+                    ),
                     usage=usage,
                     stop_reason=response.stop_reason,
                 )

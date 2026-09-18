@@ -1,0 +1,18 @@
+{
+  "action": "db75da7f57f94282",
+  "agent": "5c260b43b64e6f17",
+  "agent_loop": "a88da70d8ee003a9",
+  "browser_provider": "fc67fe2b7509148b",
+  "capability": "d62a16c9173aa95b",
+  "dom_cleaner": "d47148f612693618",
+  "dom_serializer": "8ca4a1c44062ce75",
+  "environment": "5df4d4cfd6d5f7b8",
+  "eval_loader": "733b17319c789088",
+  "evaluator": "39cd2fd719b410ea",
+  "hook": "15cb44d3518a26fb",
+  "llm": "9d7ff7796c43ef55",
+  "memory": "0eba10b49bab38b7",
+  "mouse_trajectory": "f72a02c1629d0121",
+  "task_loader": "6a5e9d23ee352d17",
+  "typing_rhythm": "832866739feb6eb2"
+}

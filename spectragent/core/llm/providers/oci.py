@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, SystemMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.oci_format import OCIRawMessageSerializer
@@ -221,14 +222,8 @@ class ChatOCI(ChatModelBase):
                     modified.insert(0, SystemMessage(content=system_instruction))
 
                 response = await self._make_request(modified)
-                text = self._extract_content(response).strip()
-                if text.startswith("```json"):
-                    text = text[7:]
-                if text.startswith("```"):
-                    text = text[3:]
-                if text.endswith("```"):
-                    text = text[:-3]
-                text = text.strip()
+                wire_text = self._extract_content(response)
+                text = strip_code_fence(wire_text)
                 if not text.startswith("{"):
                     start = text.find("{")
                     end = text.rfind("}")
@@ -237,7 +232,9 @@ class ChatOCI(ChatModelBase):
 
                 usage = self._extract_usage(response)
                 return ChatInvokeCompletion(
-                    completion=self._validate_structured(output_format, text, usage=usage),
+                    completion=self._validate_structured(
+                        output_format, text, usage=usage, wire_text=wire_text
+                    ),
                     usage=usage,
                 )
 

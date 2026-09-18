@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
 from spectragent.core.llm.exceptions import ModelProviderError
+from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.model_families import ModelFamily, detect_model_family
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
@@ -306,6 +307,21 @@ class ChatGoogle(ChatModelBase):
                         optimized_schema = SchemaOptimizer.create_gemini_optimized_schema(output_format)
                         if self.model_family.schema_requires_gemini_fix:
                             optimized_schema = fix_gemini_schema(optimized_schema)
+                        # Unconditional, and not a duplicate of the line above:
+                        # this provider *is* the Gemini dialect — every request
+                        # it makes lands on a ``generateContent`` endpoint whose
+                        # ``response_schema`` has no ``additionalProperties``
+                        # field to put a value in. Measured: the root node alone
+                        # is a 400. The family table decides whether a *model*
+                        # needs `fix_gemini_schema`'s other repairs; the
+                        # endpoint decides this, so it does not get a vote.
+                        #
+                        # It also used to work by accident: ``google-genai``
+                        # drops unknown keywords when it converts this dict to
+                        # its typed ``Schema``. That is an SDK side effect, and
+                        # a provider whose correctness lives in someone else's
+                        # conversion step has no test that can fail.
+                        SchemaOptimizer.strip_additional_properties(optimized_schema)
                         config["response_schema"] = optimized_schema
 
                         response = await self.get_client().aio.models.generate_content(
@@ -315,11 +331,7 @@ class ChatGoogle(ChatModelBase):
 
                         if response.parsed is None:
                             if response.text:
-                                text = response.text.strip()
-                                if text.startswith("```json") and text.endswith("```"):
-                                    text = text[7:-3].strip()
-                                elif text.startswith("```") and text.endswith("```"):
-                                    text = text[3:-3].strip()
+                                text = strip_code_fence(response.text)
                                 parsed_data = json.loads(text)
                                 return ChatInvokeCompletion(
                                     completion=self._validate_structured(output_format, _strip_placeholders(parsed_data), usage=usage),
@@ -361,11 +373,7 @@ class ChatGoogle(ChatModelBase):
                         usage = self._get_usage(response)
 
                         if response.text:
-                            text = response.text.strip()
-                            if text.startswith("```json") and text.endswith("```"):
-                                text = text[7:-3].strip()
-                            elif text.startswith("```") and text.endswith("```"):
-                                text = text[3:-3].strip()
+                            text = strip_code_fence(response.text)
                             parsed_data = json.loads(text)
                             return ChatInvokeCompletion(
                                 completion=self._validate_structured(output_format, _strip_placeholders(parsed_data), usage=usage),

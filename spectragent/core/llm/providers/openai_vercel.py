@@ -12,6 +12,7 @@ from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitErr
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage, SystemMessage
 from spectragent.core.llm.messages import ContentPartTextParam as MsgTextParam
 from spectragent.core.llm.providers.openai_base import OpenAICompatBase
@@ -167,15 +168,13 @@ class ChatVercel(OpenAICompatBase):
         if not content:
             raise ModelProviderError(message="No response from model", status_code=500, model=self.name)
 
-        text = content.strip()
-        if text.startswith("```json") and text.endswith("```"):
-            text = text[7:-3].strip()
-        elif text.startswith("```") and text.endswith("```"):
-            text = text[3:-3].strip()
+        text = strip_code_fence(content)
 
         usage = self._get_usage(response)
         return ChatInvokeCompletion(
-            completion=self._validate_structured(output_format, text, usage=usage),
+            completion=self._validate_structured(
+                output_format, text, usage=usage, wire_text=content
+            ),
             usage=usage,
             stop_reason=response.choices[0].finish_reason if response.choices else None,
         )

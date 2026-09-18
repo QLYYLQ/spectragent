@@ -6,6 +6,8 @@ from typing import TypeVar
 from groq import APIStatusError
 from pydantic import BaseModel
 
+from spectragent.core.llm.fences import strip_code_fence
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
@@ -33,13 +35,11 @@ def try_parse_groq_failed_generation(
     try:
         content = error.body["error"]["failed_generation"]  # type: ignore
 
-        # If content is wrapped in code blocks, extract just the JSON part
-        if "```" in content:
-            # Find the JSON content between code blocks
-            content = content.split("```")[1]
-            # Remove language identifier if present (e.g., 'json\n')
-            if "\n" in content:
-                content = content.split("\n", 1)[1]
+        # If content is wrapped in code blocks, extract just the JSON part.
+        # The unwrapping itself is the shared one — this path is exempt from
+        # ``_validate_structured``, not from agreeing with every other
+        # provider about what a fence is.
+        content = strip_code_fence(content)
 
         # remove html-like tags before the first { and after the last }
         # This handles cases like <|header_start|>assistant<|header_end|> and <function=AgentOutput>

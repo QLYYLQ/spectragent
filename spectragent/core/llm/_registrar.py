@@ -128,6 +128,7 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
         payload: str | dict[str, Any],
         *,
         usage: Any = None,
+        wire_text: str | None = None,
     ) -> T:
         """Validate a structured reply, or raise a *recoverable* error.
 
@@ -155,6 +156,20 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
 
         Takes a ``str`` (validated as JSON, so malformed text is caught
         here too) or an already-parsed mapping.
+
+        Args:
+            wire_text: What the provider actually received, when *payload*
+                is not that — a fence was unwrapped, prose was trimmed off,
+                the text was parsed to a dict. ``raw_output`` still carries
+                *payload*, because its job is to go back through the
+                agent's parser and the unwrapped form is the one that
+                parses. But the difference is a diagnosis: a reply that
+                arrived fenced *and* does not fit the schema is the
+                signature of a gateway that dropped ``response_format`` on
+                the way to a vendor's native API, and with only the
+                unwrapped body in the trace there is no sign of it. So the
+                fact is stated in the message, which
+                ``TraceWriter._failed_call`` records as ``detail``.
         """
         raw = payload if isinstance(payload, str) else json.dumps(payload)
         # ``getattr`` rather than ``type(self).__name__``: conscribe's
@@ -162,6 +177,12 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
         # checker, and this is the same spelling ``reject_unsupported_tools``
         # above already uses for the same reason.
         who = str(getattr(self, "name", None) or getattr(type(self), "__name__", "provider"))
+        unwrapped = (
+            " The reply was unwrapped before validation (it arrived fenced or "
+            "wrapped in prose); raw_output is the unwrapped body."
+            if wire_text is not None and wire_text.strip() != raw
+            else ""
+        )
         try:
             if isinstance(payload, str):
                 return output_format.model_validate_json(payload)
@@ -169,7 +190,7 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
         except ValidationError as exc:
             raise StructuredOutputValidationError(
                 f"{who} returned a reply that does not match "
-                f"{output_format.__name__}: {exc}",
+                f"{output_format.__name__}: {exc}{unwrapped}",
                 raw_output=raw,
                 model=str(getattr(self, "model", "")),
                 usage=usage,
@@ -179,7 +200,7 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
             # model's to fix, and equally not a transport failure.
             raise StructuredOutputValidationError(
                 f"{who} returned a reply that is not valid JSON for "
-                f"{output_format.__name__}: {exc}",
+                f"{output_format.__name__}: {exc}{unwrapped}",
                 raw_output=raw,
                 model=str(getattr(self, "model", "")),
                 usage=usage,

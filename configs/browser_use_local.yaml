@@ -35,12 +35,37 @@ agent:
       loop_id: react
       max_steps: 30
       max_actions_per_step: 3
+      # Re-ask inside the step the observation already paid for, rather than
+      # spending a whole step on a format mistake. Measured motivation: an
+      # image challenge expires in about two minutes, and one unparseable
+      # reply used to cost a fresh observe plus a step. ``0`` restores the
+      # old behaviour; the cross-step ``max_consecutive_parse_errors`` still
+      # terminates a model that cannot recover.
+      parse_retries_per_step: 2
 
+    # ``model_type`` is the *protocol*, not the vendor's brand — pick it by
+    # which API the model's own vendor speaks, never by which gateway you
+    # bought it through. Measured against dmxapi.cn (docs/llm/dmxapi.cn.md):
+    #
+    #   gemini-*   -> model_type: google     base_url: <root>       (no /v1)
+    #   claude-*   -> model_type: anthropic  base_url: <root>       (no /v1)
+    #   gpt-*, and anything whose *native* API is already the OpenAI one
+    #   (deepseek, qwen, glm)
+    #              -> model_type: openai     base_url: <root>/v1
+    #
+    # A gateway's OpenAI-compatible route reaches a non-OpenAI model by
+    # translating, and the translation is where structured output goes
+    # missing: gemini-3.5-flash answers 400 on a closed action union, and
+    # claude-haiku-4-5 came back 0/3 with a markdown-fenced reply whose keys
+    # were not even the schema's — the schema had been dropped entirely. The
+    # same two models pass on their native routes. This is why there is no
+    # ``dont_force_structured_output`` knob any more: routing is the fix.
     llm:
       model_type: openai
       model: gpt-4o
       provider:
         name: direct
+      # base_url: https://www.dmxapi.cn/v1   # gateway: OpenAI-family only
 
     memory:
       memory_id: simple
@@ -134,6 +159,29 @@ environment:
         dom_cleaner:
           cleaner_type: browser_use
           descendants_occlude: false
+
+        # How that tree becomes the text in the prompt. A wired receptor
+        # for the third time and for the third identical reason: it used
+        # to be ``profile: {serializer: text}``, a name, so the watchdog
+        # default-constructed the class and ``max_text_length`` was
+        # configurable in name only.
+        #
+        # ``text`` is the indented browser-use format; ``html`` is the
+        # compact skyvern one (its knob is ``max_href_length``).
+        dom_serializer:
+          serializer_type: text
+          max_text_length: 200
+
+        # What the browser.dom observation is allowed to cost. The DOM
+        # half of screenshot_format / screenshot_quality above, and off by
+        # default. Every one of these is a *cut*, so whenever one fires the
+        # fragment records it in ``DOMObs.budget`` and the trace can tell a
+        # truncated page from a sparse one.
+        #
+        # dom_max_elements: 150          # cap indexed elements (doc order)
+        # dom_max_serialized_chars: 40000  # cap the prompt text, cut at a line
+        # dom_interactive_only: true     # drop the page's prose, keep controls
+        # dom_viewport_only: true        # only what is on screen; scroll for more
 
         # Per-action behaviour lives on the action instance, so this list
         # is where you tune it. Every entry is validated against that

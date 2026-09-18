@@ -14,6 +14,7 @@ from openai import AsyncAzureOpenAI as AsyncAzureOpenAIClient
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.providers.openai_base import OpenAICompatBase
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
@@ -136,23 +137,23 @@ class ChatAzureOpenAI(OpenAICompatBase):
             else:
                 strict = self._use_strict_schema(output_format)
                 json_schema = SchemaOptimizer.create_optimized_json_schema(
-                    output_format,
-                    strict=strict,
-                    remove_min_items=self.remove_min_items_from_schema,
-                    remove_defaults=self.remove_defaults_from_schema,
+                    output_format, strict=strict
                 )
+                if self.model_family.schema_rejects_closed_union_branches:
+                    SchemaOptimizer.open_union_branches(json_schema)
                 model_params["text"] = {
                     "format": {"type": "json_schema", "name": "agent_output", "strict": strict, "schema": json_schema}
                 }
-                if self.dont_force_structured_output:
-                    model_params.pop("text", None)
                 response = await self.get_client().responses.create(**model_params)
                 if not response.output_text:
                     raise ModelProviderError(message="Failed to parse structured output", status_code=500, model=self.name)
                 usage = self._get_usage_from_responses(response)
                 return ChatInvokeCompletion(
                     completion=self._validate_structured(
-                        output_format, response.output_text, usage=usage
+                        output_format,
+                        strip_code_fence(response.output_text),
+                        usage=usage,
+                        wire_text=response.output_text,
                     ),
                     usage=usage,
                     stop_reason=response.status if response.status else None,
