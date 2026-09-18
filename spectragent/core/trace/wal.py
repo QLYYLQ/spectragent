@@ -15,7 +15,6 @@ See docs/execution_dag.md M10 for design details.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import os
 import tempfile
@@ -138,14 +137,31 @@ class WALWriter:
     def manifest(self) -> TraceManifest | None:
         return self._manifest
 
-    def init_run(self, config: TraceConfig) -> None:
-        """Create directory structure, write config snapshot and initial manifest."""
+    def init_run(self, config: TraceConfig, *, config_hash: str | None = None) -> None:
+        """Create directory structure, write config snapshot and initial manifest.
+
+        Args:
+            config: The snapshot written to ``config.json``.
+            config_hash: The run's configuration digest, computed by the
+                caller because only the caller still has the *unredacted*
+                configuration to compute it from — see
+                :meth:`~spectragent.core.trace.models.TraceConfig.configuration_digest`.
+                Omitting it falls back to a digest over the recorded
+                (redacted) snapshot, which is all this writer can see and
+                which cannot tell two runs apart that differ only in an
+                unmarked field.
+        """
         for subdir in ("steps", "observations", "messages", "evals"):
             (self._run_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-        # Write config snapshot
+        # Write config snapshot. The hash covers the *config* portion of
+        # it (``TraceConfig.configuration_digest``), not these bytes: the
+        # file also carries ``task`` and ``task_id``, so hashing it gave
+        # every task in a sweep a different config_hash and made "same
+        # hash means same configuration" unusable.
         config_bytes = config.model_dump_json(indent=2).encode("utf-8")
-        config_hash = hashlib.sha256(config_bytes).hexdigest()[:16]
+        if config_hash is None:
+            config_hash = config.configuration_digest()
         _atomic_write(self._run_dir / "config.json", config_bytes)
 
         # Write initial manifest

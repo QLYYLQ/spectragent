@@ -132,12 +132,22 @@ class TestTraceWriterLifecycle:
     async def test_config_records_full_identity(
         self, writer, fake_agent, fake_env, fake_loop, fake_llm
     ):
-        """A trace nothing can join back to its dataset is an orphan."""
+        """A trace nothing can join back to its dataset is an orphan.
+
+        Identity arrives as *values*. ``AgentRuntime`` resolves it off
+        the composed instances (``_component_id``) and passes it in; the
+        writer no longer re-derives it by ``getattr``, which is why the
+        objects below are handed over *and* the ids stated.
+        """
         await writer.on_run_start(
             agent=fake_agent,
             env=fake_env,
             loop=fake_loop,
             llm=fake_llm,
+            agent_id="test_agent",
+            loop_id="react",
+            env_type="browser",
+            llm_model="gpt-4o",
             task="find the price",
             task_id="task-42",
             benchmark="online_mind2web",
@@ -270,6 +280,69 @@ class TestTraceWriterLifecycle:
         assert task_obs is not None
         assert task_obs["user_request"] == "find the price"
         assert task_obs["fragment_id"] == "loop.task"
+
+    async def test_a_failed_fragment_reaches_the_trace_as_a_failure(
+        self, writer, fake_agent, fake_env
+    ):
+        """An optional fragment nobody could capture is recorded, not faked.
+
+        Same rule as a failed LLM call (``_failed_call``): the file says
+        ``{error, detail}`` under the fragment's own key, so an evaluator
+        reading the trace can tell "the device was offline" from "the
+        screen was blank" — and cannot mistake either for real data.
+        """
+        from spectragent.schemas.observation.failure import FragmentFailure
+
+        await writer.on_run_start(
+            agent=fake_agent, env=fake_env, task="test", config={}
+        )
+        Model = build_observation_model(
+            frozenset({"browser.screenshot", "loop.task"}),
+            failable=frozenset({"browser.screenshot"}),
+        )
+        obs = Model(
+            screenshot=FragmentFailure(
+                fragment_id="browser.screenshot",
+                capability="browser",
+                error="TimeoutError",
+                detail="CDP call timed out",
+            ),
+            task=TaskObs(user_request="find the price"),
+        )
+        await writer.after_ainvoke(_Completion(), args=([],), kwargs={})
+        await writer.after_record_step(
+            None, args=(_step(0),), kwargs={"observation": obs}
+        )
+
+        run_dir = writer._wal.run_dir
+        # No .png: nothing was captured, so no artifact is invented.
+        assert not (run_dir / "observations" / "000_browser.screenshot.png").exists()
+        record = json.loads(
+            (run_dir / "observations" / "000_browser.screenshot.json").read_text()
+        )
+        assert record["error"] == "TimeoutError"
+        assert record["detail"] == "CDP call timed out"
+        assert record["capability"] == "browser"
+        assert "image_bytes" not in record
+
+    async def test_capture_time_reaches_the_trace(
+        self, writer, fake_agent, fake_env
+    ):
+        """Without it, per-capability skew is unrecoverable after the run."""
+        await writer.on_run_start(
+            agent=fake_agent, env=fake_env, task="test", config={}
+        )
+        Model = build_observation_model(frozenset({"loop.task"}))
+        fragment = TaskObs(user_request="find the price")
+        obs = Model(task=fragment)
+        await writer.after_ainvoke(_Completion(), args=([],), kwargs={})
+        await writer.after_record_step(
+            None, args=(_step(0),), kwargs={"observation": obs}
+        )
+
+        assert writer.run_dir is not None
+        written = RunTrace(writer.run_dir).get_observation(0, "loop.task")
+        assert written["captured_at"] == fragment.captured_at
 
     async def test_on_run_end_writes_result(self, writer, fake_agent, fake_env):
         await writer.on_run_start(

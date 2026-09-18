@@ -86,8 +86,51 @@ class RuntimeHook(Protocol):
         subset: str,
         run_id: str | None,
         config: dict[str, Any],
+        agent_id: str,
+        loop_id: str,
+        env_type: str,
+        llm_model: str,
+        resolved_config: Any,
+        observation_negotiation: Any,
+        action_negotiation: Any,
+        **kwargs: Any,
     ) -> None:
-        """Called when AgentRuntime.execute() begins, before env setup."""
+        """Called when AgentRuntime.execute() begins, before env setup.
+
+        Two groups of parameters, and the distinction matters.
+
+        The *objects* (``agent``, ``env``, ``loop``, ``llm``) are for a
+        hook that needs to talk to them. They are not the place to read
+        the run's configuration from: an instance tells you what it is
+        now, not what it was configured as, and every hook that tried
+        ended up re-deriving a different subset by ``getattr``.
+
+        The *values* are what the run was set up as, resolved once by
+        AgentRuntime — the only component holding all of it:
+
+        - ``agent_id`` / ``loop_id`` / ``env_type`` / ``llm_model``:
+          component identity.
+        - ``resolved_config``: the composed, validated configuration
+          (``ComposedRun.top_level_cfg``) — every default applied and
+          every wired receptor inlined inside its owner, so it is what
+          *ran* rather than what the YAML said. Not a record of
+          everything a run resolved: a value a component derives at
+          construction (``BrowserCapability`` turning a profile name into
+          a watchdog set) lives on the instance and is not in here. It is
+          also where every credential in the run lives; a hook that
+          persists it must redact it (see
+          :mod:`spectragent.core.trace.redaction`).
+        - ``observation_negotiation`` / ``action_negotiation``: the
+          negotiation results — active fragments and actions, fully
+          qualified, plus what each relative ``__wiring__`` declaration
+          bound to in this environment.
+
+        ``**kwargs`` is part of the signature, not a convention: this
+        payload grows as the framework learns to record more about a run,
+        and ``AgentRuntime`` dispatches every keyword to every hook.
+        Declaring it here means a hook that would break on the next
+        addition fails a type-check instead of a run.
+        """
         ...
 
     async def on_run_end(self, *, result: Any, env: Any) -> None:

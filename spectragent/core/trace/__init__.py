@@ -12,16 +12,22 @@ from spectragent.core.trace.models import (
     StepManifestEntry,
     TraceConfig,
     TraceManifest,
+    TraceNegotiation,
 )
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.redaction import OMITTED, TraceSafe, redact_config
 from spectragent.core.trace.wal import WALWriter
 
 __all__ = [
+    "OMITTED",
     "RunStatus",
+    "RunTrace",
     "StepManifestEntry",
     "TraceConfig",
     "TraceManifest",
-    "RunTrace",
+    "TraceNegotiation",
+    "TraceSafe",
     "TraceSchemaError",
     "WALWriter",
+    "redact_config",
 ]

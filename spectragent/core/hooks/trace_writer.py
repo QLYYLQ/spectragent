@@ -22,6 +22,7 @@ See docs/execution_dag.md M11 for design details.
 """
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,11 +32,13 @@ from pydantic import Field
 
 from spectragent.core.aop.advice import Intercept
 from spectragent.core.hooks._registrar import HookBase
-from spectragent.core.trace.models import RunStatus, TraceConfig
+from spectragent.core.trace.models import RunStatus, TraceConfig, TraceNegotiation
+from spectragent.core.trace.redaction import redact_config, trace_safe
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.dynamic_model import iter_fragments
+from spectragent.schemas.step_record import StepRecord
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +53,20 @@ _ERROR_DONE_STATES = frozenset({AgentDoneStatus.TIMEOUT, AgentDoneStatus.ERROR})
 class TraceWriter(HookBase):
     """Full-trace WAL persistence hook.
 
+    At run start it writes the snapshot of *how the run was configured* —
+    identity, the redacted resolved config, the negotiation result — and
+    at each step it commits what the run *did*. The configuration half is
+    handed to it as values by ``AgentRuntime``: this hook derives nothing
+    about how the run was set up, it only chooses what of it to withhold.
+
     Buffers LLM messages (``after_ainvoke``, and ``around_ainvoke`` for a
     call that raised) and commits a complete step — observation fragments,
     messages, step record, manifest — when the Loop hands over its
     ``StepRecord`` (``after_record_step``).
+
+    The ``around`` advice does double duty: it is the only vantage point
+    that sees a call's start, its end and its failure, so it is also where
+    a step's model wait is measured (:meth:`_stamp_timings`).
 
     A run that dies between the completion and the step (timeout, crash)
     never reaches that commit point, so run end drains whatever is still
@@ -77,7 +90,8 @@ class TraceWriter(HookBase):
     # ── conscribe config-annotated fields ─────────────────────
     trace_dir: Annotated[
         str,
-        Field(
+        trace_safe(
+            "output location — where this trace already is, not a credential",
             default="traces",
             description=(
                 "Base directory for trace output. Each run lands in "
@@ -87,6 +101,22 @@ class TraceWriter(HookBase):
         ),
     ] = "traces"
 
+    record_secrets: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "Record the resolved configuration verbatim, including "
+                "api keys, CDP URLs carrying a token, session tokens and "
+                "proxy credentials. Off by default: only fields explicitly "
+                "marked trace-safe are recorded, everything else lands as "
+                "``\"<omitted>\"``. Turn it on for a local debugging run "
+                "whose trace directory will not be shared — the trace "
+                "records that you did (``config.secrets_recorded``)."
+            ),
+        ),
+    ] = False
+
     # ── internal state (not config) ───────────────────────────
     _wal: WALWriter | None = field(default=None, init=False, repr=False)
     _steps_written: int = field(default=0, init=False, repr=False)
@@ -94,6 +124,12 @@ class TraceWriter(HookBase):
     _pending_messages: list[tuple[Any, Any]] = field(
         default_factory=list, init=False, repr=False
     )
+    # ``perf_counter`` at the last step boundary — run start, then every
+    # commit. ``None`` before the run starts, which is what makes an
+    # unmeasured step record ``duration_ms=None`` rather than 0.
+    _step_started: float | None = field(default=None, init=False, repr=False)
+    # Model wait accumulated since the last commit, in milliseconds.
+    _pending_llm_ms: float = field(default=0.0, init=False, repr=False)
 
     @property
     def blocking(self) -> bool:
@@ -109,37 +145,101 @@ class TraceWriter(HookBase):
     async def on_run_start(
         self,
         *,
-        agent: Any = None,
-        env: Any = None,
-        loop: Any = None,
-        llm: Any = None,
         task: str = "",
         task_id: str = "",
         benchmark: str = "",
         subset: str = "",
         run_id: str | None = None,
         config: Any = None,
+        agent_id: str = "",
+        loop_id: str = "",
+        env_type: str = "",
+        llm_model: str = "",
+        resolved_config: Any = None,
+        observation_negotiation: Any = None,
+        action_negotiation: Any = None,
         **kwargs: Any,
     ) -> None:
+        """Open the trace: directory, config snapshot, initial manifest.
+
+        Everything here arrives as a value. This hook used to reconstruct
+        the run's identity by ``getattr``-ing ``agent_id`` / ``loop_id`` /
+        ``env_type`` off whatever objects it was handed, which made a
+        serializer responsible for *discovering* facts and left the
+        configuration itself — the thing the run was actually set up as —
+        recorded nowhere. ``AgentRuntime`` is the one component holding
+        the composed config and both negotiation results, so it resolves
+        them and passes them in; see
+        :meth:`spectragent.core.runtime.AgentRuntime.execute`.
+
+        The duck-typing did not vanish, it moved: identity is still read
+        off the live objects, by ``AgentRuntime._component_id``, once, in
+        the component that knows the run. That is why a run assembled
+        without the Composer still reports an ``agent_id`` while its
+        ``resolved_config`` is ``None``.
+
+        Args:
+            task / task_id / benchmark / subset: Dataset identity — the
+                key an Evaluator joins the trace back to ground truth by.
+            run_id: Trace directory name. Generated when omitted.
+            config: Caller-curated extra context, recorded verbatim (see
+                :attr:`~spectragent.core.trace.models.TraceConfig.extra`).
+            agent_id / loop_id / env_type / llm_model: Component identity.
+            resolved_config: The composed, validated configuration —
+                ``ComposedRun.top_level_cfg``. Passed through field-level
+                redaction on the way to disk unless
+                :attr:`record_secrets` is set. The ``config_hash`` in the
+                manifest is computed from it *before* that redaction; the
+                recorded view cannot carry a sweep.
+            observation_negotiation / action_negotiation: The two
+                negotiation results, recorded as
+                :class:`~spectragent.core.trace.models.TraceNegotiation`.
+        """
         resolved_run_id = run_id or str(uuid.uuid4())[:8]
         base_dir = Path(self.trace_dir)
 
         self._wal = WALWriter(base_dir, resolved_run_id)
         self._steps_written = 0
         self._pending_messages = []
+        self._step_started = time.perf_counter()
+        self._pending_llm_ms = 0.0
+
+        # Two views of the same object, and they are not interchangeable.
+        # ``resolved_full`` never reaches disk: it exists so the digest
+        # can cover ``max_steps``, ``temperature`` and every other
+        # unmarked knob a sweep varies, which the recorded view collapses
+        # into one ``"<omitted>"``. See ``configuration_digest``.
+        resolved_full = redact_config(resolved_config, record_secrets=True)
+        recorded = (
+            resolved_full if self.record_secrets else redact_config(resolved_config)
+        )
 
         trace_config = TraceConfig(
-            agent_id=getattr(agent, "agent_id", getattr(agent, "agent_name", "")),
-            loop_id=getattr(loop, "loop_id", ""),
-            env_type=getattr(env, "env_type", ""),
-            llm_model=_model_name(llm),
+            agent_id=agent_id,
+            loop_id=loop_id,
+            env_type=env_type,
+            llm_model=llm_model,
             benchmark=benchmark,
             subset=subset,
             task=task,
             task_id=task_id,
             extra=config if isinstance(config, dict) else {},
+            resolved=recorded,
+            negotiation=TraceNegotiation.from_results(
+                observation=observation_negotiation, action=action_negotiation
+            ),
+            secrets_recorded=bool(self.record_secrets),
         )
-        self._wal.init_run(trace_config)
+        self._wal.init_run(
+            trace_config,
+            config_hash=trace_config.configuration_digest(resolved=resolved_full),
+        )
+        if self.record_secrets:
+            logger.warning(
+                "TraceWriter: record_secrets is on — %s contains credentials "
+                "verbatim and must not be shared.",
+                self._wal.run_dir,
+            )
         logger.info(
             "TraceWriter: initialized run %s at %s", resolved_run_id, self._wal.run_dir
         )
@@ -210,13 +310,22 @@ class TraceWriter(HookBase):
         messages that *caused* a 429 or a timeout are the same messages,
         and ``on_run_end`` already drains the buffer as unfinished; a
         prompt that kills the endpoint is worth having in the trace.
+
+        This is also the only place that can measure what the step spent
+        waiting on the model: ``before``/``after`` see one edge each and
+        neither sees a call that raised. The accumulator is in a
+        ``finally`` for exactly that reason — a step whose LLM time was
+        spent on a refused reply spent it all the same.
         """
         input_msgs = args[0] if args else kwargs.get("messages")
+        started = time.perf_counter()
         try:
             return await proceed()
         except Exception as exc:
             self._pending_messages.append((input_msgs, _failed_call(exc)))
             raise
+        finally:
+            self._pending_llm_ms += (time.perf_counter() - started) * 1000
 
     async def after_record_step(
         self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
@@ -230,6 +339,8 @@ class TraceWriter(HookBase):
             return
         observation = kwargs.get("observation")
         step = int(getattr(record, "step", self._steps_written))
+
+        self._stamp_timings(record)
 
         obs_files = self._write_observation(step, observation)
 
@@ -261,6 +372,48 @@ class TraceWriter(HookBase):
         logger.debug("TraceWriter: committed step %d", step)
 
     # ── internals ─────────────────────────────────────────────
+
+    def _stamp_timings(self, record: Any) -> None:
+        """Write the step's wall clock and model wait onto its record.
+
+        Measured here rather than in the Loop on purpose: timing is a
+        cross-cutting concern, and a Loop that timed itself would have to
+        be re-instrumented once per Loop. The two clocks are the only
+        ones a hook can see — the boundary between commits, and the
+        ``around`` advice on ``ainvoke`` — and both are reset here so the
+        next step measures itself, not the run so far.
+
+        A record that already carries a value keeps it: the Loop is
+        allowed to know better, and nothing here should overwrite a
+        measurement made closer to the work.
+
+        Two things about this being a *mutation*, both honest limits
+        rather than guarantees:
+
+        - The object is the Loop's own ``StepRecord``, which is also the
+          payload of ``HistoryObs`` and therefore reachable from prompt
+          building. No shipped agent renders these fields (they enumerate
+          what they render), and a test pins that; an agent that dumps a
+          record wholesale would make its prompt depend on whether
+          ``trace_writer`` is in the ``hook:`` list, which is exactly the
+          non-transparency AOP exists to prevent.
+        - Nothing orders intercept handlers. ``priority`` orders
+          *lifecycle* dispatch only (``hooks/base.py``); the Weaver
+          indexes interceptors in hook-list order and ``core/aop/`` never
+          reads ``priority``. ``TraceWriter`` is today the only hook
+          intercepting ``record_step``, so the question does not arise —
+          but a second one reading ``record.duration_ms`` would see
+          ``None`` or a value purely by YAML order, silently. Treat these
+          fields as readable only after the commit point.
+        """
+        now = time.perf_counter()
+        if isinstance(record, StepRecord):
+            if record.duration_ms is None and self._step_started is not None:
+                record.duration_ms = int((now - self._step_started) * 1000)
+            if record.llm_latency_ms is None and self._pending_llm_ms:
+                record.llm_latency_ms = int(self._pending_llm_ms)
+        self._step_started = now
+        self._pending_llm_ms = 0.0
 
     def _flush_pending_messages(self) -> None:
         """Persist LLM calls the Loop never got to surrender as a step.
@@ -296,6 +449,10 @@ class TraceWriter(HookBase):
             files.extend((in_rel, out_rel))
         pending = len(self._pending_messages)
         self._pending_messages = []
+        # No StepRecord exists for these, so the accumulated model wait has
+        # nowhere to land. Cleared rather than carried, so a driver that
+        # drains and keeps going does not attribute it to a later step.
+        self._pending_llm_ms = 0.0
 
         self._wal.commit_unfinished_messages(files)
         logger.info(
@@ -367,12 +524,3 @@ def _status_for(result: Any) -> RunStatus:
     return RunStatus.COMPLETED
 
 
-def _model_name(llm: Any) -> str:
-    """Best-effort model identifier for the config snapshot."""
-    if llm is None:
-        return ""
-    for attr in ("model", "model_name", "name"):
-        value = getattr(llm, attr, None)
-        if isinstance(value, str) and value:
-            return value
-    return ""
