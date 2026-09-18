@@ -1,15 +1,22 @@
-"""DOMWatchdog — DOM tree capture and cleaning.
+"""DOMWatchdog — DOM tree capture, cleaning and serialization.
 
 Listens to ``BrowserStateRequestEvent``, captures the tab's DOM over CDP —
 the tab's own target plus, when the profile asks for it, every
 out-of-process iframe target below it (see ``dom/capture.py``) — delegates
-to the configured DOMCleaner strategy, and returns the cleaned DOMState.
+to the configured DOMCleaner strategy, serializes with the configured
+DOMSerializer strategy, and returns the cleaned DOMState.
 
-The cleaner is *injected*, not looked up: it arrives on
-:class:`WatchdogContext` as the instance ``BrowserCapability`` received
-from its ``dom_cleaner`` wiring, so a knob set in YAML
-(``descendants_occlude``, ``max_occlusion_nodes``, ...) is on the object
-that does the cleaning.
+Both strategies are *injected*, never looked up here: they arrive on
+:class:`WatchdogContext` as the instances ``BrowserCapability`` received
+from its ``dom_cleaner`` / ``dom_serializer`` wiring, so a knob set in
+YAML (``descendants_occlude``, ``max_occlusion_nodes``,
+``max_text_length``, ``max_href_length``, ...) is on the object that does
+the work. Looking one up by name is what made those knobs unreachable —
+twice; see ``tests/.../test_receptor_hygiene.py``.
+
+Between cleaning and returning, the DOM budget (``dom/budget.py``) decides
+what the fragment is allowed to cost, and — this is the part that matters
+for the trace — records every cut on ``DOMObs.budget``.
 """
 
 from __future__ import annotations
@@ -21,20 +28,23 @@ from typing import ClassVar
 
 from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 
+from spectragent.core.capabilities.browser.dom.budget import DOMBudget, DOMBudgetPass
 from spectragent.core.capabilities.browser.dom.capture import (
     FRAME_CAPTURE_TIMEOUT_S,
     FrameTargets,
     capture_target,
 )
-from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerProtocol
+from spectragent.core.capabilities.browser.dom.cleaning import (
+    DOMCleanerProtocol,
+    default_cleaner,
+)
 from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (
     REQUIRED_COMPUTED_STYLES,
-    BrowserUseCleaner,
 )
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, DOMState, TargetCapture
 from spectragent.core.capabilities.browser.dom.serializers import (
     DOMSerializerProtocol,
-    DOMSerializerRegistrar,
+    default_serializer,
 )
 from spectragent.core.capabilities.browser.observations import DOMObs
 from spectragent.core.capabilities.browser.watchdogs.base import (
@@ -62,7 +72,8 @@ class DOMWatchdog(BrowserWatchdog):
         cdp: CDPCommandProtocol,
         *,
         cleaner: DOMCleanerProtocol | None = None,
-        serializer_type: str = "text",
+        serializer: DOMSerializerProtocol | None = None,
+        budget: DOMBudget | None = None,
         viewport: tuple[int, int] = (1280, 720),
         enable_js_listener_detection: bool = False,
         enable_cross_site_iframe_capture: bool = False,
@@ -74,12 +85,20 @@ class DOMWatchdog(BrowserWatchdog):
         # The *instance* the capability was configured with, knobs and all —
         # never a registry key looked up here, which is what left
         # ``BrowserUseDom_CleanerConfig`` unreachable from YAML. ``None``
-        # means nobody configured one (a hand-built watchdog in a test), and
-        # the default strategy is default-constructed.
-        self._cleaner: DOMCleanerProtocol = cleaner or BrowserUseCleaner()
-        self._serializer: DOMSerializerProtocol | None = None
-        if serializer_type:
-            self._serializer = DOMSerializerRegistrar.get(serializer_type)()
+        # means nobody configured one (a hand-built watchdog in a test).
+        #
+        # The fallback calls the package's ``default_*`` factory rather
+        # than naming a class, because ``BrowserCapability.__init__``
+        # answers the same question for its receptors and the two answers
+        # must not drift: point the capability's default at a different
+        # strategy while this line still says ``TextSerializer()`` and
+        # every hand-built watchdog silently stays on the old one.
+        self._cleaner: DOMCleanerProtocol = cleaner or default_cleaner()
+        # Same contract as the cleaner, and the same reason it is an
+        # instance: ``TextSerializer(max_text_length=...)`` is only
+        # configurable if the *configured object* is the one that runs.
+        self._serializer: DOMSerializerProtocol = serializer or default_serializer()
+        self._budget = budget or DOMBudget()
         self._enable_js_listeners = enable_js_listener_detection
         self._frame_capture_timeout_s = frame_capture_timeout_s
         # Publishes the freshly-built selector map back to the capability
@@ -99,15 +118,26 @@ class DOMWatchdog(BrowserWatchdog):
         self._session_id: str | None = None
 
         # Latest DOM state (accessible by other watchdogs, e.g. ActionWatchdog).
+        # ``selector_map`` is *post*-budget: it is what the action layer
+        # routes on, so it must hold exactly what the model was shown.
         self.current_state: DOMState | None = None
         self.selector_map: DOMSelectorMap = {}
+        # What the cleaner indexed last step, *pre*-budget. Only the
+        # ``is_new`` marker reads it, and it has to be the pre-budget map:
+        # ``*`` means "this element was not on the page last step", and an
+        # element the budget declined to pay for last step was on the page.
+        # Comparing against the post-budget map makes anything the budget
+        # cut and then kept — every element a ``dom_viewport_only`` run
+        # scrolls back to — report as new.
+        self._previous_indexed: DOMSelectorMap = {}
 
     @classmethod
     def build(cls, ctx: WatchdogContext) -> DOMWatchdog:
         return cls(
             ctx.cdp,
             cleaner=ctx.dom_cleaner,
-            serializer_type=ctx.profile.serializer or "text",
+            serializer=ctx.dom_serializer,
+            budget=ctx.dom_budget,
             viewport=ctx.viewport,
             enable_js_listener_detection=ctx.profile.js_click_listener_detection,
             enable_cross_site_iframe_capture=ctx.profile.cross_site_iframe_capture,
@@ -145,8 +175,10 @@ class DOMWatchdog(BrowserWatchdog):
             # pixels, every other consumer wants CSS.
             capture, dpr = await self._capture_cdp_data()
 
-            # Previous selector_map for new-node tracking.
-            previous_map = self.selector_map if self.selector_map else None
+            # Previous selector_map for new-node tracking — pre-budget, so
+            # ``*`` marks what the page gained, not what the budget gave
+            # back. See ``self._previous_indexed``.
+            previous_map = self._previous_indexed or None
 
             # Delegate to cleaner strategy.
             state = await self._cleaner.clean(
@@ -155,12 +187,17 @@ class DOMWatchdog(BrowserWatchdog):
                 previous_selector_map=previous_map,
                 device_pixel_ratio=dpr,
             )
+            self._previous_indexed = dict(state.selector_map)
 
-            # Serialize if serializer is configured.
-            if self._serializer is not None and state.dom_tree is not None:
-                state.serialized_dom = self._serializer.serialize(state)
+            # One call, because the order — element cuts, serialize, length
+            # cut — is the budget's contract and not this resolver's to get
+            # right. Whatever it removed comes back as the report, or
+            # ``None`` when it removed nothing.
+            budget = DOMBudgetPass(self._budget).apply(state, self._serializer.serialize)
 
-            # Update internal state.
+            # Update internal state. The selector map is post-budget, so an
+            # element the budget dropped is not reachable by an action: this
+            # map is what ``build_guarded_act`` resolves an index against.
             self.current_state = state
             self.selector_map = state.selector_map
             if self._publish_selector_map is not None:
@@ -171,6 +208,7 @@ class DOMWatchdog(BrowserWatchdog):
                     "browser.dom": DOMObs(
                         element_tree=state,
                         selector_map=dict(state.selector_map),
+                        budget=budget,
                     ),
                 }
             )

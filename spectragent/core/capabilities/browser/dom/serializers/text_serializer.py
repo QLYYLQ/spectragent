@@ -332,9 +332,12 @@ class TextSerializer(DOMSerializerBase):
 
         # 9. Remove attrs that duplicate text content.
         for attr in ("aria-label", "placeholder", "title"):
-            if attr in attrs_out and text_content:
-                if attrs_out[attr].strip().lower() == text_content.strip().lower():
-                    del attrs_out[attr]
+            if (
+                attr in attrs_out
+                and text_content
+                and attrs_out[attr].strip().lower() == text_content.strip().lower()
+            ):
+                del attrs_out[attr]
 
         # 10. Format with value capping.
         formatted: list[str] = []

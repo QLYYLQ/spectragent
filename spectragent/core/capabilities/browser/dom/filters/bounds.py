@@ -68,10 +68,15 @@ def _walk(
         bounds = node.bounds
 
     # If there's an active parent, check containment.
-    if bounds is not None and node.bounds is not None and bounds is not node.bounds:
-        if _is_contained(node.bounds, bounds) and not _is_exempt(node):
-            if node.backend_node_id is not None:
-                excluded.append(node)
+    if (
+        bounds is not None
+        and node.bounds is not None
+        and bounds is not node.bounds
+        and _is_contained(node.bounds, bounds)
+        and not _is_exempt(node)
+        and node.backend_node_id is not None
+    ):
+        excluded.append(node)
 
     for child in node.children:
         _walk(child, bounds, excluded)
@@ -121,6 +126,4 @@ def _is_exempt(node: DOMElementNode) -> bool:
     if attrs.get("aria-label"):
         return True
     role = attrs.get("role", "").lower()
-    if role in INTERACTIVE_ARIA_ROLES:
-        return True
-    return False
+    return role in INTERACTIVE_ARIA_ROLES

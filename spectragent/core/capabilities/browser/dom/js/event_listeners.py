@@ -10,6 +10,7 @@ Ported from browser-use ``DomService._get_all_trees()`` (service.py:429-516).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Any, Protocol
 
@@ -124,14 +125,12 @@ async def detect_js_click_listeners(
         js_ids: set[int] = {bid for bid in backend_ids if bid is not None}
 
         # Step 5: Cleanup — release the array object.
-        try:
+        with contextlib.suppress(Exception):
             await cdp_send(
                 "Runtime.releaseObject",
                 {"objectId": result_object_id},
                 session_id=session_id,
             )
-        except Exception:
-            pass
 
         logger.debug("Detected %d elements with JS click listeners", len(js_ids))
         return js_ids

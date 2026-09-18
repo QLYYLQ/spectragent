@@ -130,9 +130,8 @@ def is_interactive(node: DOMElementNode) -> bool:
             return True
 
     # 4. Span wrapper detection.
-    if tag == "span":
-        if has_form_control_descendant(node, max_depth=2):
-            return True
+    if tag == "span" and has_form_control_descendant(node, max_depth=2):
+        return True
 
     # 5. Search widget heuristic.
     if _looks_like_search(node):
@@ -174,7 +173,10 @@ def is_interactive(node: DOMElementNode) -> bool:
         return True
 
     # 11. Cursor:pointer hint (from computed styles).
-    if node.cursor_style == "pointer":
+    # Left as a guard rather than collapsed into the return: this is the last
+    # item of the numbered list above, and it keeps the shape items 1-10 have
+    # so item 12 gets written the same way.
+    if node.cursor_style == "pointer":  # noqa: SIM103
         return True
 
     return False
@@ -205,9 +207,7 @@ def is_dropdown_container(node: DOMElementNode) -> bool:
     if role and role.lower() in ("combobox", "listbox"):
         return True
     tag = node.tag_name.lower()
-    if tag == "select":
-        return True
-    return False
+    return tag == "select"
 
 
 # ---------------------------------------------------------------------------

@@ -72,3 +72,20 @@ class DOMCleanerBase(metaclass=DOMCleanerRegistrar.Meta):
     @property
     def cleaner_type(self) -> str:
         return self.__registry_key__
+
+
+def default_cleaner() -> DOMCleanerProtocol:
+    """The cleaner used when no configuration named one.
+
+    Same contract and same reason as
+    :func:`~spectragent.core.capabilities.browser.dom.serializers.default_serializer`:
+    ``BrowserCapability.__init__`` and ``DOMWatchdog.__init__`` both need
+    a default and must not disagree about it. Not a registry lookup — the
+    receptor is the configuration surface, this is just the framework's
+    answer when nobody configured anything.
+    """
+    from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (
+        BrowserUseCleaner,
+    )
+
+    return BrowserUseCleaner()

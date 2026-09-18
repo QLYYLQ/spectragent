@@ -9,19 +9,25 @@ costs nothing unless its fragment is negotiated active — cost control
 belongs to negotiation (``BrowserStateRequestEvent.fragments``), not to
 a hand-maintained name list.
 
-The DOM *cleaner* is deliberately not here. It used to be a strategy key
-on this model, which meant the cleaner arrived default-constructed and
-every knob its config declared (``descendants_occlude``,
-``max_occlusion_nodes``, ...) was unreachable from YAML — the same shape
-``mouse_trajectory`` was fixed out of. It is a wired receptor on
+**No strategy name may live on this model.** It happened three times —
+``mouse_trajectory``, then ``dom_cleaner``, then ``serializer`` — and the
+failure is identical each time: a name on the profile means the consumer
+does ``SomeRegistrar.get(name)()``, the strategy arrives
+default-constructed, and every knob its generated config declares
+(``TextSerializer.max_text_length``, ``HTMLSerializer.max_href_length``,
+``BrowserUseCleaner.descendants_occlude``, ...) validates in YAML and then
+goes nowhere. All three are wired receptors on
 :class:`~spectragent.core.capabilities.browser.capability.BrowserCapability`
 now, so the configured *instance* is what reaches ``DOMWatchdog``.
+``tests/test_core/test_capabilities/test_receptor_hygiene.py`` is the
+structural guard that stops instance number four.
+
+What belongs here instead is what a profile actually is: which watchdogs
+are installed, and which CDP round trips they are allowed to spend.
 
 Usage::
 
     profile = resolve_profile("standard")
-    profile = resolve_profile("standard", override={"serializer": "html"})
-    profile = resolve_profile("standard", watchdogs_remove=["popups"])
 """
 
 from __future__ import annotations
@@ -31,8 +37,6 @@ from pydantic import BaseModel, Field
 
 class BrowserProfileConfig(BaseModel):
     """Configuration for a browser session's component stack."""
-
-    serializer: str | None = "text"
 
     #: Registry keys of watchdogs this profile deliberately does not
     #: install. Everything registered under ``WatchdogRegistrar`` that is
@@ -68,31 +72,32 @@ class BrowserProfileConfig(BaseModel):
 
 BUILTIN_PROFILES: dict[str, BrowserProfileConfig] = {
     "standard": BrowserProfileConfig(
-        serializer="text",
         watchdogs_exclude=[],
         # Accuracy-first profile: pay the extra round trip.
         js_click_listener_detection=True,
         cross_site_iframe_capture=True,
     ),
-    # Pair with ``dom_cleaner: {cleaner_type: skyvern}``: the html
-    # serializer prints what that cleaner produces, and the two capture
-    # switches are off because that cleaner reads neither
-    # ``js_click_listener_ids`` nor frame captures.
+    # Pair with ``dom_cleaner: {cleaner_type: skyvern}`` and
+    # ``dom_serializer: {serializer_type: html}``: that serializer prints
+    # what that cleaner produces, and the two capture switches are off
+    # because that cleaner reads neither ``js_click_listener_ids`` nor
+    # frame captures.
     "skyvern": BrowserProfileConfig(
-        serializer="html",
         watchdogs_exclude=["security"],
         js_click_listener_detection=False,
         cross_site_iframe_capture=False,
     ),
     "vision_only": BrowserProfileConfig(
-        serializer=None,
-        # Hard opt-out: this profile cannot serve ``browser.dom`` at all,
-        # so an agent that *requires* that fragment fails negotiation
-        # rather than silently receiving an empty tree every step.
+        # Hard opt-out, and the only one that ever worked: excluding the
+        # ``dom`` watchdog removes ``browser.dom`` from
+        # ``BrowserCapability.declared_fragments``, so an agent that
+        # *requires* that fragment fails negotiation rather than silently
+        # receiving an empty tree every step. The ``serializer: None`` that
+        # used to sit beside this line only suppressed the serialized
+        # string — it never touched what the capability declared.
         watchdogs_exclude=["dom", "security"],
     ),
     "lightweight": BrowserProfileConfig(
-        serializer="text",
         watchdogs_exclude=["crash", "popups", "security"],
         # Cuts CDP work: cross-site frames stay opaque.
         cross_site_iframe_capture=False,
@@ -100,45 +105,16 @@ BUILTIN_PROFILES: dict[str, BrowserProfileConfig] = {
 }
 
 
-def resolve_profile(
-    name: str,
-    *,
-    override: dict[str, str | None] | None = None,
-    watchdogs_add: list[str] | None = None,
-    watchdogs_remove: list[str] | None = None,
-) -> BrowserProfileConfig:
-    """Resolve a named profile with optional field overrides.
+def resolve_profile(name: str) -> BrowserProfileConfig:
+    """Resolve a named profile to its own mutable copy.
 
     Parameters
     ----------
     name:
         Built-in profile name (standard, skyvern, vision_only, lightweight).
-    override:
-        Override individual fields (``serializer``).
-    watchdogs_add:
-        Watchdog types to re-enable (drop them from ``watchdogs_exclude``).
-    watchdogs_remove:
-        Watchdog types to disable (add them to ``watchdogs_exclude``).
     """
     if name not in BUILTIN_PROFILES:
         available = ", ".join(sorted(BUILTIN_PROFILES))
         raise ValueError(f"Unknown browser profile {name!r}. Available: {available}")
 
-    profile = BUILTIN_PROFILES[name].model_copy(deep=True)
-
-    if override:
-        for key, value in override.items():
-            if key == "serializer":
-                setattr(profile, key, value)
-
-    if watchdogs_add:
-        profile.watchdogs_exclude = [
-            w for w in profile.watchdogs_exclude if w not in watchdogs_add
-        ]
-
-    if watchdogs_remove:
-        for wd in watchdogs_remove:
-            if wd not in profile.watchdogs_exclude:
-                profile.watchdogs_exclude.append(wd)
-
-    return profile
+    return BUILTIN_PROFILES[name].model_copy(deep=True)

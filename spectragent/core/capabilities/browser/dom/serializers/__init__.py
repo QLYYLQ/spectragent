@@ -37,3 +37,30 @@ class DOMSerializerBase(metaclass=DOMSerializerRegistrar.Meta):
     @property
     def serializer_type(self) -> str:
         return self.__registry_key__
+
+
+def default_serializer() -> DOMSerializerProtocol:
+    """The serializer used when no configuration named one.
+
+    Two places have to answer this question and they must answer it the
+    same way: ``BrowserCapability.__init__``, which assigns an in-Python
+    default over its ``dom_serializer`` ``WiredField`` so a hand-built
+    capability still works, and ``DOMWatchdog.__init__``, whose
+    ``WatchdogContext.dom_serializer`` is ``None`` for a hand-built
+    watchdog. Naming ``TextSerializer()`` in both is one fact in two
+    files: change the capability's default and every hand-built watchdog
+    silently stays on the old strategy.
+
+    Deliberately *not* a registry lookup — ``DOMSerializerRegistrar.get(
+    "text")()`` would be the very shape ``test_receptor_hygiene.py``
+    forbids. This is a named constructor for the framework default, not a
+    configuration surface; configuration goes through the receptor.
+
+    Imported lazily because ``text_serializer`` imports this module for
+    ``DOMSerializerBase``.
+    """
+    from spectragent.core.capabilities.browser.dom.serializers.text_serializer import (
+        TextSerializer,
+    )
+
+    return TextSerializer()

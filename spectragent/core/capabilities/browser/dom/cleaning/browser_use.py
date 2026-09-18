@@ -393,9 +393,12 @@ def _is_visible_by_css(
     # (e.g. <source> elements inheriting cursor:pointer from parent <a>).
     # Off-screen-left/top check: elements with large negative x/y are
     # visually hidden (e.g. position:fixed; left:-9999px).
+    # The x and y checks are one pair, so the y half stays a guard rather than
+    # collapsing into the return — reading them side by side is what shows the
+    # two axes get the same treatment.
     if b.x + b.width < -viewport_threshold:
         return False
-    if b.y + b.height < -viewport_threshold:
+    if b.y + b.height < -viewport_threshold:  # noqa: SIM103
         return False
     return True
 
@@ -851,9 +854,9 @@ def _should_keep(node: DOMElementNode) -> bool:
         return True
     # Validation attribute override: keep in tree for aria-*/pseudo attrs
     # even if not CSS-visible (matches original browser-use behavior).
-    if node.attributes and any(k.startswith(("aria-", "pseudo")) for k in node.attributes):
-        return True
-    return False
+    return bool(
+        node.attributes and any(k.startswith(("aria-", "pseudo")) for k in node.attributes)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -878,9 +881,7 @@ def _keep_in_optimized(node: DOMElementNode) -> bool:
         return True
     if node.shadow_roots:
         return True
-    if node.content_document is not None:
-        return True
-    return False
+    return node.content_document is not None
 
 
 # ---------------------------------------------------------------------------
@@ -973,10 +974,9 @@ def _assign_interactive_indices(
             if is_scrollable_container(node):
                 should_index = True
             # Everything else requires visibility.
-            elif is_visible(node):
-                if is_interactive(node) or is_dropdown_container(node):
-                    node.is_interactive = True
-                    should_index = True
+            elif is_visible(node) and (is_interactive(node) or is_dropdown_container(node)):
+                node.is_interactive = True
+                should_index = True
 
         handle = (
             element_handle(node._handle_namespace, node.backend_node_id)
