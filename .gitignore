@@ -69,3 +69,7 @@ CLAUDE.md
 /ref/
 /test_reality
 
+# Icon / logo source art and the raster check that renders it. Build inputs
+# for the published icons, not something the package reads at runtime.
+/assets/
+
