@@ -453,11 +453,16 @@ class TestReactLoopDriveBrowserUse:
             )
         )
 
-        ctx = dict(
-            env=env, llm=llm, memory=agent.memory,
-            act_fn=_act_fn, negotiated_obs=_MockNegotiated(),
-            active_descriptors=[], session_id=None, task_id="t1",
-        )
+        ctx = {
+            "env": env,
+            "llm": llm,
+            "memory": agent.memory,
+            "act_fn": _act_fn,
+            "negotiated_obs": _MockNegotiated(),
+            "active_descriptors": [],
+            "session_id": None,
+            "task_id": "t1",
+        }
         result = await loop._execute(agent, task="Find the answer", ctx=ctx)
 
         # The agent emitted "done" → result should reflect that.

@@ -11,7 +11,6 @@ from spectragent.core.data_loader.task._registrar import (
 from spectragent.core.data_loader.task.base import BaseTaskLoader
 from spectragent.schemas.task import BrowserSetup, TaskDefinition
 
-
 # ── Hand-rolled in-memory loader for tests ─────────────────────────────
 
 

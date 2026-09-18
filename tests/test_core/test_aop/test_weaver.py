@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from spectragent.core.aop.advice import AdviceType, Intercept
+from spectragent.core.aop.advice import Intercept
 from spectragent.core.aop.weaver import Weaver
 
 
