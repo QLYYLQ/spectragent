@@ -74,9 +74,12 @@ class SecurityWatchdog(BrowserWatchdog):
             msg = f"Navigation BLOCKED: unsafe scheme in {event.url}"
             logger.warning(msg)
             if self._scope:
-                self._scope.emit(BrowserErrorEvent(
-                    error_type="security_blocked", message=msg,
-                ))
+                self._scope.emit(
+                    BrowserErrorEvent(
+                        error_type="security_blocked",
+                        message=msg,
+                    )
+                )
             raise ValueError(msg)
         domain = url_check
 
@@ -85,10 +88,12 @@ class SecurityWatchdog(BrowserWatchdog):
             msg = f"Navigation BLOCKED by SecurityWatchdog: {event.url} (domain: {domain})"
             logger.warning(msg)
             if self._scope:
-                self._scope.emit(BrowserErrorEvent(
-                    error_type="security_blocked",
-                    message=msg,
-                ))
+                self._scope.emit(
+                    BrowserErrorEvent(
+                        error_type="security_blocked",
+                        message=msg,
+                    )
+                )
             raise ValueError(msg)
 
     def _is_blocked(self, domain: str) -> bool:

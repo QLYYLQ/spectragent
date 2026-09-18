@@ -68,7 +68,8 @@ class CDPClient:
             additional_headers=self._additional_headers,
         )
         self._recv_task = asyncio.create_task(
-            self._recv_loop(), name="cdp-recv-loop",
+            self._recv_loop(),
+            name="cdp-recv-loop",
         )
         logger.debug("CDPClient connected to %s", self._url)
 

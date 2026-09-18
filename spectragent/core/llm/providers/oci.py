@@ -74,20 +74,28 @@ class ChatOCI(ChatModelBase):
             if self.auth_type == "INSTANCE_PRINCIPAL":
                 signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
                 self._client = GenerativeAiInferenceClient(
-                    config={}, signer=signer, service_endpoint=self.service_endpoint,
-                    retry_strategy=oci.retry.NoneRetryStrategy(), timeout=(10, 240),
+                    config={},
+                    signer=signer,
+                    service_endpoint=self.service_endpoint,
+                    retry_strategy=oci.retry.NoneRetryStrategy(),
+                    timeout=(10, 240),
                 )
             elif self.auth_type == "RESOURCE_PRINCIPAL":
                 signer = oci.auth.signers.get_resource_principals_signer()
                 self._client = GenerativeAiInferenceClient(
-                    config={}, signer=signer, service_endpoint=self.service_endpoint,
-                    retry_strategy=oci.retry.NoneRetryStrategy(), timeout=(10, 240),
+                    config={},
+                    signer=signer,
+                    service_endpoint=self.service_endpoint,
+                    retry_strategy=oci.retry.NoneRetryStrategy(),
+                    timeout=(10, 240),
                 )
             else:
                 config = oci.config.from_file("~/.oci/config", self.auth_profile)
                 self._client = GenerativeAiInferenceClient(
-                    config=config, service_endpoint=self.service_endpoint,
-                    retry_strategy=oci.retry.NoneRetryStrategy(), timeout=(10, 240),
+                    config=config,
+                    service_endpoint=self.service_endpoint,
+                    retry_strategy=oci.retry.NoneRetryStrategy(),
+                    timeout=(10, 240),
                 )
         return self._client
 
@@ -99,7 +107,9 @@ class ChatOCI(ChatModelBase):
                     usage = chat_response.usage
                     return ChatInvokeUsage(
                         prompt_tokens=getattr(usage, "prompt_tokens", 0),
-                        prompt_cached_tokens=None, prompt_cache_creation_tokens=None, prompt_image_tokens=None,
+                        prompt_cached_tokens=None,
+                        prompt_cache_creation_tokens=None,
+                        prompt_image_tokens=None,
                         completion_tokens=getattr(usage, "completion_tokens", 0),
                         total_tokens=getattr(usage, "total_tokens", 0),
                     )
@@ -109,7 +119,9 @@ class ChatOCI(ChatModelBase):
 
     def _extract_content(self, response) -> str:
         if not hasattr(response, "data"):
-            raise ModelProviderError(message="Invalid response format", status_code=500, model=self.name)
+            raise ModelProviderError(
+                message="Invalid response format", status_code=500, model=self.name
+            )
         chat_response = response.data.chat_response
         if hasattr(chat_response, "text"):
             return chat_response.text or ""
@@ -117,7 +129,9 @@ class ChatOCI(ChatModelBase):
             choice = chat_response.choices[0]
             return "\n".join(part.text for part in choice.message.content if hasattr(part, "text"))
         raise ModelProviderError(
-            message=f"Unsupported response format: {type(chat_response).__name__}", status_code=500, model=self.name,
+            message=f"Unsupported response format: {type(chat_response).__name__}",
+            status_code=500,
+            model=self.name,
         )
 
     async def _make_request(self, messages: Sequence[BaseMessage]):
@@ -157,7 +171,9 @@ class ChatOCI(ChatModelBase):
                 status_code = getattr(e, "status", 500)
                 if status_code == 429:
                     raise ModelRateLimitError(message=str(e), model=self.name) from e
-                raise ModelProviderError(message=str(e), status_code=status_code, model=self.name) from e
+                raise ModelProviderError(
+                    message=str(e), status_code=status_code, model=self.name
+                ) from e
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _sync_request)
@@ -195,7 +211,8 @@ class ChatOCI(ChatModelBase):
             if output_format is None:
                 response = await self._make_request(messages)
                 return ChatInvokeCompletion(
-                    completion=self._extract_content(response), usage=self._extract_usage(response),
+                    completion=self._extract_content(response),
+                    usage=self._extract_usage(response),
                 )
             else:
                 optimized_schema = SchemaOptimizer.create_optimized_json_schema(output_format)

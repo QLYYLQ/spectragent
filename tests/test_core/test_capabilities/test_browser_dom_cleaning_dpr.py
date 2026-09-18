@@ -119,8 +119,8 @@ class TestPerFrameVisibilityRegression:
     def test_html_client_rect_preserved_at_dpr_2(self) -> None:
         # CDP-reported HTML root: bounds in device px, clientRect in CSS px.
         snap = _make_snapshot(
-            bounds=[0, 0, 2560, 1162],         # device 2x of 1280×581
-            client_rects=[0, 0, 1280, 581],    # CSS viewport
+            bounds=[0, 0, 2560, 1162],  # device 2x of 1280×581
+            client_rects=[0, 0, 1280, 581],  # CSS viewport
         )
         lookup = _build_snapshot_lookup(snap, device_pixel_ratio=2.0)
         data = lookup[42]

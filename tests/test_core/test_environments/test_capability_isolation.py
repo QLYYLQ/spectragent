@@ -61,9 +61,7 @@ class CallToolAction(ActionBase):
         self, params: dict[str, Any], *, capability: Any, **extra: Any
     ) -> ActionResult:
         self.seen_extra.append(extra)
-        return ActionResult(
-            success=True, extracted_content=f"called {params.get('tool')}"
-        )
+        return ActionResult(success=True, extracted_content=f"called {params.get('tool')}")
 
 
 @dataclass
@@ -133,9 +131,7 @@ class TestNoRoutingHandleInTheABI:
         ("label", "owner"),
         [("Environment", Environment), ("EnvironmentBase", EnvironmentBase)],
     )
-    def test_environment_has_no_session_param(
-        self, label: str, owner: type, method: str
-    ) -> None:
+    def test_environment_has_no_session_param(self, label: str, owner: type, method: str) -> None:
         params = inspect.signature(getattr(owner, method)).parameters
         assert "session_id" not in params, f"{label}.{method}"
 
@@ -160,9 +156,7 @@ class TestNonBrowserCapabilitySeesNoBrowserArgument:
         cap = env.capabilities["f8_sandbox"]
         assert isinstance(cap, ToolSandboxCapability)
 
-        result = await env.act(
-            Action(name="f8_sandbox.call_tool", params={"tool": "book_flight"})
-        )
+        result = await env.act(Action(name="f8_sandbox.call_tool", params={"tool": "book_flight"}))
 
         assert result.success
         assert result.extracted_content == "called book_flight"
@@ -194,9 +188,7 @@ class TestSubContextIsCapabilityState:
         assert isinstance(cap, TabbedCapability)
 
         await env.act(Action(name="f8_tabbed.click"))
-        await env.act(
-            Action(name="f8_tabbed.switch_tab", params={"target": "tab-2"})
-        )
+        await env.act(Action(name="f8_tabbed.switch_tab", params={"target": "tab-2"}))
         await env.act(Action(name="f8_tabbed.click"))
 
         # No caller ever named a tab; the capability remembered.
@@ -208,9 +200,7 @@ class TestSubContextIsCapabilityState:
         sandbox = env.capabilities["f8_sandbox"]
         assert isinstance(sandbox, ToolSandboxCapability)
 
-        await env.act(
-            Action(name="f8_tabbed.switch_tab", params={"target": "tab-2"})
-        )
+        await env.act(Action(name="f8_tabbed.switch_tab", params={"target": "tab-2"}))
         await env.act(Action(name="f8_sandbox.call_tool", params={"tool": "t"}))
 
         assert sandbox.action.seen_extra == [{}]

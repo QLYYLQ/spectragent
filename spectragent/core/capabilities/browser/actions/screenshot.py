@@ -94,13 +94,11 @@ class ScreenshotAction(ActionBase):
     class Params(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        full_page: Annotated[
-            bool | None, PydanticField(description="capture beyond viewport")
-        ] = None
+        full_page: Annotated[bool | None, PydanticField(description="capture beyond viewport")] = (
+            None
+        )
         format: Literal["png", "jpeg", "webp"] | None = None
-        quality: Annotated[
-            int | None, PydanticField(description="jpeg/webp quality 0-100")
-        ] = None
+        quality: Annotated[int | None, PydanticField(description="jpeg/webp quality 0-100")] = None
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return self.describe(
@@ -124,9 +122,7 @@ class ScreenshotAction(ActionBase):
             scope = focused_scope(capability)
             requested_full_page = params.get("full_page")
             full_page = (
-                self.default_full_page
-                if requested_full_page is None
-                else bool(requested_full_page)
+                self.default_full_page if requested_full_page is None else bool(requested_full_page)
             )
             fmt = params.get("format") or self.default_format
             quality = params.get("quality", self.default_quality)

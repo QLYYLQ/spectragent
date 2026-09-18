@@ -167,8 +167,11 @@ class TestOpenUnionBranches:
         """af never emits ``oneOf``, but a caller's own model might."""
         schema = {
             "oneOf": [
-                {"type": "object", "properties": {"a": {"type": "string"}},
-                 "additionalProperties": False}
+                {
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}},
+                    "additionalProperties": False,
+                }
             ]
         }
         SchemaOptimizer.open_union_branches(schema)
@@ -340,9 +343,7 @@ class TestWhatReachesATranslatedGeminiRoute:
                 return SimpleNamespace(
                     choices=[
                         SimpleNamespace(
-                            message=SimpleNamespace(
-                                content=json.dumps(payload), tool_calls=None
-                            ),
+                            message=SimpleNamespace(content=json.dumps(payload), tool_calls=None),
                             finish_reason="stop",
                         )
                     ],
@@ -398,9 +399,7 @@ class TestTheUnionStaysPlain:
 
     @pytest.mark.parametrize("strict", [False, True])
     def test_no_discriminator_no_const_no_one_of(self, strict: bool) -> None:
-        schema = SchemaOptimizer.create_optimized_json_schema(
-            _agent_output_model(), strict=strict
-        )
+        schema = SchemaOptimizer.create_optimized_json_schema(_agent_output_model(), strict=strict)
         text = json.dumps(schema)
         assert "discriminator" not in text
         assert "const" not in text
@@ -408,9 +407,7 @@ class TestTheUnionStaysPlain:
 
     def test_the_union_is_an_any_of_of_single_key_objects(self) -> None:
         """The positive half: what it *is*, not only what it is not."""
-        schema = SchemaOptimizer.create_optimized_json_schema(
-            _agent_output_model(), strict=True
-        )
+        schema = SchemaOptimizer.create_optimized_json_schema(_agent_output_model(), strict=True)
         branches = schema["properties"]["action"]["items"]["anyOf"]
         assert branches
         for branch in branches:
@@ -424,9 +421,7 @@ class TestTheUnionStaysPlain:
         fails here — loudly, in a test — instead of as a silent drop to
         ``strict: false`` on the next real run.
         """
-        schema = SchemaOptimizer.create_optimized_json_schema(
-            _agent_output_model(), strict=True
-        )
+        schema = SchemaOptimizer.create_optimized_json_schema(_agent_output_model(), strict=True)
         seen: set[str] = set()
 
         def collect(node: Any, *, in_properties: bool = False) -> None:
@@ -520,7 +515,9 @@ class TestOneSchemaCompiler:
         def _compile(node: dict[str, Any]) -> Any:
             return params_model_from_schema(
                 ActionDescriptor(
-                    name="probe.enum", description="d", params={"direction": ""},
+                    name="probe.enum",
+                    description="d",
+                    params={"direction": ""},
                     params_schema=node,
                 )
             )
@@ -531,8 +528,10 @@ class TestOneSchemaCompiler:
         with pytest.raises(UnsupportedParamsSchema):
             _compile(
                 {
-                    "type": "object", "properties": {"direction": raw_node},
-                    "required": ["direction"], "additionalProperties": False,
+                    "type": "object",
+                    "properties": {"direction": raw_node},
+                    "required": ["direction"],
+                    "additionalProperties": False,
                 }
             )
 

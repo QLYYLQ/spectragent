@@ -95,9 +95,7 @@ def _parse_feedback(exc: ParseError) -> str:
     )
 
 
-def _merge_token_usage(
-    base: TokenUsage | None, addition: TokenUsage | None
-) -> TokenUsage | None:
+def _merge_token_usage(base: TokenUsage | None, addition: TokenUsage | None) -> TokenUsage | None:
     """Accumulate the LLM calls of one step into a single ``TokenUsage``.
 
     A step used to be exactly one call, so ``StepRecord.token_usage`` was
@@ -339,9 +337,7 @@ class ReactLoop(AgentLoopBase):
             #    different world from the one its unparseable reply was
             #    about.
             output_model = (
-                agent.get_react_output_model()
-                if hasattr(agent, "get_react_output_model")
-                else None
+                agent.get_react_output_model() if hasattr(agent, "get_react_output_model") else None
             )
             retries_left = self.parse_retries_per_step
             # Accumulated over every attempt this step makes, so the
@@ -460,8 +456,7 @@ class ReactLoop(AgentLoopBase):
                         break
                     retries_left -= 1
                     logger.info(
-                        "ReactLoop: step %d re-asking after parse error "
-                        "(%d retr%s left): %s",
+                        "ReactLoop: step %d re-asking after parse error (%d retr%s left): %s",
                         step_idx,
                         retries_left,
                         "y" if retries_left == 1 else "ies",
@@ -532,8 +527,7 @@ class ReactLoop(AgentLoopBase):
                 dropped = [a.name for a in actions[self.max_actions_per_step :]]
                 actions = actions[: self.max_actions_per_step]
                 logger.warning(
-                    "ReactLoop: step %d emitted %d actions, max_actions_per_step=%d "
-                    "— discarded %s",
+                    "ReactLoop: step %d emitted %d actions, max_actions_per_step=%d — discarded %s",
                     step_idx,
                     truncated + self.max_actions_per_step,
                     self.max_actions_per_step,

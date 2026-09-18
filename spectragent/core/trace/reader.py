@@ -162,16 +162,8 @@ class RunTrace:
         input_path = self._trace_dir / f"messages/{step:03d}_input.json"
         output_path = self._trace_dir / f"messages/{step:03d}_output.json"
 
-        input_data = (
-            json.loads(input_path.read_text("utf-8"))
-            if input_path.exists()
-            else None
-        )
-        output_data = (
-            json.loads(output_path.read_text("utf-8"))
-            if output_path.exists()
-            else None
-        )
+        input_data = json.loads(input_path.read_text("utf-8")) if input_path.exists() else None
+        output_data = json.loads(output_path.read_text("utf-8")) if output_path.exists() else None
         return input_data, output_data
 
     @cached_property
@@ -204,9 +196,7 @@ class RunTrace:
         if not obs_dir.exists():
             return []
         return sorted(
-            path
-            for suffix in _BINARY_SUFFIXES
-            for path in obs_dir.glob(f"*.screenshot{suffix}")
+            path for suffix in _BINARY_SUFFIXES for path in obs_dir.glob(f"*.screenshot{suffix}")
         )
 
 
@@ -215,9 +205,7 @@ def _load_step(path: Path) -> StepRecord:
     try:
         return StepRecord.model_validate(raw)
     except ValidationError as exc:
-        raise TraceSchemaError(
-            f"{path} does not parse as a StepRecord: {exc}"
-        ) from exc
+        raise TraceSchemaError(f"{path} does not parse as a StepRecord: {exc}") from exc
 
 
 def _current_result_schema() -> str:

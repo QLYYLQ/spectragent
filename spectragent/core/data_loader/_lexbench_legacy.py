@@ -72,9 +72,7 @@ def normalize_legacy_record(raw: dict[str, Any]) -> dict[str, Any]:
         if value
     ]
 
-    metadata: dict[str, Any] = {
-        key: value for key, value in raw.items() if key not in _CONSUMED
-    }
+    metadata: dict[str, Any] = {key: value for key, value in raw.items() if key not in _CONSUMED}
     # Keep the upstream classifiers reachable — graders read ``task_type``.
     for key in ("task_type", "reasoning_type", "scenario_tier", "score_threshold"):
         if raw.get(key) is not None:

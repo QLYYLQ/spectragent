@@ -91,10 +91,7 @@ class SkyvernAgent(AgentBase):
     action_history_window: Annotated[
         int,
         PydanticField(
-            description=(
-                "Number of most recent actions replayed in each step's "
-                "user message"
-            )
+            description=("Number of most recent actions replayed in each step's user message")
         ),
     ] = 5
     # Hand-written rather than computed from the directory listing: a
@@ -119,17 +116,12 @@ class SkyvernAgent(AgentBase):
     complete_criterion: Annotated[
         str | None,
         PydanticField(
-            description=(
-                "Condition that must hold before the agent may finish with "
-                "success=true"
-            )
+            description=("Condition that must hold before the agent may finish with success=true")
         ),
     ] = None
     terminate_criterion: Annotated[
         str | None,
-        PydanticField(
-            description="Condition on which the agent must give up (success=false)"
-        ),
+        PydanticField(description="Condition on which the agent must give up (success=false)"),
     ] = None
     verification_code_check: Annotated[
         bool,
@@ -153,9 +145,7 @@ class SkyvernAgent(AgentBase):
         default_factory=list, init=False, repr=False
     )
     _system_prompt_text: str = field(default="", init=False, repr=False)
-    _prompt_snapshot: PromptSnapshot | None = field(
-        default=None, init=False, repr=False
-    )
+    _prompt_snapshot: PromptSnapshot | None = field(default=None, init=False, repr=False)
 
     # ``llm`` and ``memory`` are wired from ``__wiring__`` (inherited from
     # ``AgentBase``) via conscribe's ``WiredField`` descriptors.
@@ -228,9 +218,7 @@ class SkyvernAgent(AgentBase):
                 f"<step_info>step {step_info.step}/{step_info.max_steps} "
                 f"(today={step_info.today})</step_info>"
             )
-        prefix_parts.append(
-            f"<action_history>\n{self._render_action_history()}\n</action_history>"
-        )
+        prefix_parts.append(f"<action_history>\n{self._render_action_history()}\n</action_history>")
         body = "\n".join(prefix_parts) + "\n\n" + self._render_browser_state(observation)
         return [UserMessage(content=body, cache=True)]
 
@@ -243,9 +231,7 @@ class SkyvernAgent(AgentBase):
             # (the default). ``extracted_content`` flows straight into
             # ``DoneAction.execute`` — no renaming hack needed.
             if llm_output.is_done:
-                done = self._done_action(
-                    llm_output.extracted_content, llm_output.success
-                )
+                done = self._done_action(llm_output.extracted_content, llm_output.success)
                 self._action_history.append(f"{done.name}({done.params})")
                 return [done]
 
@@ -385,9 +371,7 @@ class SkyvernAgent(AgentBase):
         lines: list[str] = []
         for d in descriptors:
             params_part = (
-                ", ".join(f"{k}: {v}" for k, v in d.params.items())
-                if d.params
-                else "no params"
+                ", ".join(f"{k}: {v}" for k, v in d.params.items()) if d.params else "no params"
             )
             lines.append(f"- `{d.name}({params_part})` — {d.description}")
         return "\n".join(lines)

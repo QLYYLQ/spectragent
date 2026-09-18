@@ -25,9 +25,7 @@ class TestScrollConfig:
         assert event.amount == 600
         assert event.direction == "down"
 
-    async def test_max_amount_caps_requested_amount(
-        self, fake_capability: FakeCapability
-    ) -> None:
+    async def test_max_amount_caps_requested_amount(self, fake_capability: FakeCapability) -> None:
         action = ScrollAction(default_amount=300, max_amount=500)
         await action.execute(
             {"direction": "up", "amount": 9999},

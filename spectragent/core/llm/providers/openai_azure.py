@@ -27,8 +27,12 @@ T = TypeVar("T", bound=BaseModel)
 
 # Azure models that require the Responses API
 RESPONSES_API_ONLY_MODELS: list[str] = [
-    "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.1-codex-max",
-    "gpt-5-codex", "codex-mini-latest", "computer-use-preview",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5.1-codex-max",
+    "gpt-5-codex",
+    "codex-mini-latest",
+    "computer-use-preview",
 ]
 
 # Accepted spellings for the tri-state `use_responses_api` YAML field.
@@ -48,7 +52,9 @@ class ChatAzureOpenAI(OpenAICompatBase):
     azure_deployment: Annotated[str | None, Field(description="Azure deployment name")] = None
     azure_ad_token: Annotated[str | None, Field(description="Azure AD token")] = None
     azure_ad_token_provider: Any | None = None
-    use_responses_api: Annotated[str, Field(description="Use Responses API: true, false, or auto")] = "auto"
+    use_responses_api: Annotated[
+        str, Field(description="Use Responses API: true, false, or auto")
+    ] = "auto"
 
     @property
     def provider(self) -> str:
@@ -56,7 +62,10 @@ class ChatAzureOpenAI(OpenAICompatBase):
 
     def get_client(self) -> AsyncAzureOpenAIClient:
         import os
-        self.api_key = self.api_key or os.getenv("AZURE_OPENAI_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
+
+        self.api_key = (
+            self.api_key or os.getenv("AZURE_OPENAI_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
+        )
         self.azure_endpoint = self.azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
         self.azure_deployment = self.azure_deployment or os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
@@ -142,11 +151,20 @@ class ChatAzureOpenAI(OpenAICompatBase):
                 if self.model_family.schema_rejects_closed_union_branches:
                     SchemaOptimizer.open_union_branches(json_schema)
                 model_params["text"] = {
-                    "format": {"type": "json_schema", "name": "agent_output", "strict": strict, "schema": json_schema}
+                    "format": {
+                        "type": "json_schema",
+                        "name": "agent_output",
+                        "strict": strict,
+                        "schema": json_schema,
+                    }
                 }
                 response = await self.get_client().responses.create(**model_params)
                 if not response.output_text:
-                    raise ModelProviderError(message="Failed to parse structured output", status_code=500, model=self.name)
+                    raise ModelProviderError(
+                        message="Failed to parse structured output",
+                        status_code=500,
+                        model=self.name,
+                    )
                 usage = self._get_usage_from_responses(response)
                 return ChatInvokeCompletion(
                     completion=self._validate_structured(
@@ -169,7 +187,9 @@ class ChatAzureOpenAI(OpenAICompatBase):
         except APIConnectionError as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
         except APIStatusError as e:
-            raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+            raise ModelProviderError(
+                message=e.message, status_code=e.status_code, model=self.name
+            ) from e
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
 

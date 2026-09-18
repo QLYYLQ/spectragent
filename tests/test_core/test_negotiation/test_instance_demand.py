@@ -112,24 +112,18 @@ def test_dropping_a_class_required_key_is_refused() -> None:
 def test_a_key_outside_the_declaration_is_refused() -> None:
     """It could not have come from YAML: it is not in the generated Literal."""
     with pytest.raises(DemandOutsideWiringError) as exc:
-        bounded_demand(
-            _Declared(), "observation", {"screenshot", "task", "terminal"}, set()
-        )
+        bounded_demand(_Declared(), "observation", {"screenshot", "task", "terminal"}, set())
     assert "terminal" in str(exc.value)
 
 
 def test_an_undeclared_optional_key_is_refused_too() -> None:
     with pytest.raises(DemandOutsideWiringError):
-        bounded_demand(
-            _Declared(), "observation", {"screenshot", "task"}, {"accessibility_tree"}
-        )
+        bounded_demand(_Declared(), "observation", {"screenshot", "task"}, {"accessibility_tree"})
 
 
 def test_required_and_optional_may_not_overlap() -> None:
     with pytest.raises(DemandOutsideWiringError) as exc:
-        bounded_demand(
-            _Declared(), "observation", {"screenshot", "task", "dom"}, {"dom"}
-        )
+        bounded_demand(_Declared(), "observation", {"screenshot", "task", "dom"}, {"dom"})
     assert "both required and optional" in str(exc.value)
 
 

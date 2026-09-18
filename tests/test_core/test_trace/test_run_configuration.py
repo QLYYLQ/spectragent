@@ -132,16 +132,12 @@ class _Memory:
 async def _run(
     tmp_path, composer, *, mutate=None, task_id="runcfg--0001", record_secrets=False
 ) -> Path:
-    raw = copy.deepcopy(
-        yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8"))
-    )
+    raw = copy.deepcopy(yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8")))
     if mutate is not None:
         mutate(raw)
     resolved = composer.top_level_type.model_validate(raw)
 
-    writer = TraceWriter(
-        trace_dir=str(tmp_path / task_id), record_secrets=record_secrets
-    )
+    writer = TraceWriter(trace_dir=str(tmp_path / task_id), record_secrets=record_secrets)
     run = make_run(
         agent=_Agent(),
         loop=ReactLoop(max_steps=2),
@@ -186,9 +182,7 @@ class TestResolvedConfigIsRecorded:
         is not what a trace should record.
         """
         agent = trace.config.resolved["agent"][0]
-        source = yaml.safe_load(
-            (CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8")
-        )
+        source = yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8"))
         assert "coordinate_space" not in source["agent"][0]
         assert agent["coordinate_space"] == "screenshot_pixels"
         assert agent["llm"]["provider"]["name"] == "direct"
@@ -238,22 +232,16 @@ class TestNegotiationIsRecorded:
         """
         assert TraceNegotiation.from_results(None, None) is None
 
-        empty = TraceNegotiation.from_results(
-            observation=_EmptyObsResult(), action=None
-        )
+        empty = TraceNegotiation.from_results(observation=_EmptyObsResult(), action=None)
         assert empty is not None
         assert empty.active_fragments == []
 
-        on_disk = TraceConfig.model_validate_json(
-            TraceConfig(negotiation=None).model_dump_json()
-        )
+        on_disk = TraceConfig.model_validate_json(TraceConfig(negotiation=None).model_dump_json())
         assert on_disk.negotiation is None
 
 
 class TestConfigHash:
-    async def test_two_tasks_one_configuration_share_a_hash(
-        self, tmp_path, composer
-    ):
+    async def test_two_tasks_one_configuration_share_a_hash(self, tmp_path, composer):
         """The property that was false: hashing the whole snapshot folded
         in ``task_id``, so every task of a sweep got its own hash."""
         a = RunTrace(await _run(tmp_path, composer, task_id="t-a"))
@@ -277,9 +265,7 @@ class TestConfigHash:
             ("model", lambda raw: raw["agent"][0]["llm"].update(model="gpt-4o-mini")),
         ],
     )
-    async def test_a_changed_unmarked_knob_breaks_the_hash(
-        self, tmp_path, composer, label, mutate
-    ):
+    async def test_a_changed_unmarked_knob_breaks_the_hash(self, tmp_path, composer, label, mutate):
         """The sweep case, and the one that was broken.
 
         ``max_steps`` / ``temperature`` / ``model`` are open-typed and
@@ -290,9 +276,7 @@ class TestConfigHash:
         unredacted config, before redaction.
         """
         a = RunTrace(await _run(tmp_path, composer, task_id=f"t-{label}-a"))
-        b = RunTrace(
-            await _run(tmp_path, composer, mutate=mutate, task_id=f"t-{label}-b")
-        )
+        b = RunTrace(await _run(tmp_path, composer, mutate=mutate, task_id=f"t-{label}-b"))
         # The recorded views really are indistinguishable...
         assert a.config.resolved == b.config.resolved
         # ...and the hash still tells the two runs apart.
@@ -306,9 +290,7 @@ class TestConfigHash:
         the config, not from the recorded view.
         """
         a = RunTrace(await _run(tmp_path, composer, task_id="t-plain"))
-        b = RunTrace(
-            await _run(tmp_path, composer, task_id="t-secret", record_secrets=True)
-        )
+        b = RunTrace(await _run(tmp_path, composer, task_id="t-secret", record_secrets=True))
         assert a.config.secrets_recorded is False
         assert b.config.secrets_recorded is True
         assert a.config.resolved != b.config.resolved

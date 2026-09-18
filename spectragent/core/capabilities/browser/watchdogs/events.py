@@ -19,6 +19,7 @@ from agent_cdp import BaseEvent
 # Result container for BrowserStateRequestEvent
 # ---------------------------------------------------------------------------
 
+
 @dataclass(slots=True)
 class BrowserStateSummary:
     """One watchdog's contribution to an observe cycle.

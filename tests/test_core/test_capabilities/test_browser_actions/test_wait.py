@@ -16,7 +16,8 @@ from tests.test_core.test_capabilities.test_browser_actions.conftest import (
 
 class TestWaitExecute:
     async def test_default_seconds_applied(
-        self, fake_capability: FakeCapability,
+        self,
+        fake_capability: FakeCapability,
     ) -> None:
         action = WaitAction(default_seconds=0.05)
         start = time.perf_counter()
@@ -34,7 +35,8 @@ class TestWaitExecute:
         assert fake_capability._scopes["sid_main"].emitted == []
 
     async def test_param_overrides_default(
-        self, fake_capability: FakeCapability,
+        self,
+        fake_capability: FakeCapability,
     ) -> None:
         action = WaitAction(default_seconds=5.0)  # would be too slow if used
         start = time.perf_counter()
@@ -47,7 +49,8 @@ class TestWaitExecute:
         assert elapsed < 0.5  # well under default_seconds=5.0
 
     async def test_negative_seconds_returns_error(
-        self, fake_capability: FakeCapability,
+        self,
+        fake_capability: FakeCapability,
     ) -> None:
         result = await WaitAction().execute(
             {"seconds": -1},
@@ -57,7 +60,8 @@ class TestWaitExecute:
         assert result.error is not None and "must be >= 0" in result.error
 
     async def test_above_max_returns_error(
-        self, fake_capability: FakeCapability,
+        self,
+        fake_capability: FakeCapability,
     ) -> None:
         action = WaitAction(max_seconds=10.0)
         result = await action.execute(
@@ -69,7 +73,8 @@ class TestWaitExecute:
         assert "exceeds max_seconds=10.0" in result.error
 
     async def test_invalid_param_type_returns_error(
-        self, fake_capability: FakeCapability,
+        self,
+        fake_capability: FakeCapability,
     ) -> None:
         result = await WaitAction().execute(
             {"seconds": "not-a-number"},

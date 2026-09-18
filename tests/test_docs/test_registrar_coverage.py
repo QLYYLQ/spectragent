@@ -120,9 +120,7 @@ def _discriminators(call: ast.Call) -> tuple[str, ...]:
         if kw.arg == "discriminator_field" and isinstance(kw.value, ast.Constant):
             return (str(kw.value.value),)
         if kw.arg == "discriminator_fields" and isinstance(kw.value, ast.List):
-            return tuple(
-                str(elt.value) for elt in kw.value.elts if isinstance(elt, ast.Constant)
-            )
+            return tuple(str(elt.value) for elt in kw.value.elts if isinstance(elt, ast.Constant))
     return ()
 
 
@@ -191,9 +189,7 @@ def _map_rows(path: Path, heading: str) -> dict[str, str]:
 
 # Computed once at import; both are inputs to every test below.
 CODE_REGISTRARS = _code_registrars()
-MAP_ROWS = {
-    label: _map_rows(*spec) for label, spec in _MAPS.items() if spec[0].exists()
-}
+MAP_ROWS = {label: _map_rows(*spec) for label, spec in _MAPS.items() if spec[0].exists()}
 
 
 def _rows_or_skip(label: str) -> dict[str, str]:

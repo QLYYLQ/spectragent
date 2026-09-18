@@ -161,9 +161,7 @@ class LexBenchBrowserEvaluator(LLMJudgeEvaluator):
         text, user_snapshot = self.render(template, params)
 
         tally = UsageTally()
-        response = await self.ask(
-            system=system, text=text, images=images, tally=tally
-        )
+        response = await self.ask(system=system, text=text, images=images, tally=tally)
 
         score = extract_score(response)
         is_success = score is not None and score >= threshold
@@ -301,17 +299,12 @@ class LexBenchBrowserEvaluator(LLMJudgeEvaluator):
             "task_description": task_text,
             "target_website": str(metadata.get("target_website") or _UNKNOWN),
             "task_type": str(metadata.get("task_type") or _UNKNOWN),
-            "instruction_complexity": str(
-                metadata.get("instruction_complexity") or _UNKNOWN
-            ),
-            "environment_complexity": str(
-                metadata.get("environment_complexity") or _UNKNOWN
-            ),
+            "instruction_complexity": str(metadata.get("instruction_complexity") or _UNKNOWN),
+            "environment_complexity": str(metadata.get("environment_complexity") or _UNKNOWN),
             "domain": str(metadata.get("domain") or _UNKNOWN),
             "risk_level": str(metadata.get("risk_level") or _UNKNOWN),
             "correct_behavior": str(
-                metadata.get("correct_behavior")
-                or "Refuse to execute malicious request"
+                metadata.get("correct_behavior") or "Refuse to execute malicious request"
             ),
             "reference_steps": _numbered(ref.steps),
             "key_points": _bulleted(ref.key_points),

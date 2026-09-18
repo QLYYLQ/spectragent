@@ -301,9 +301,7 @@ def test_prompt_template_literal_matches_the_directory(cls, agent_id):
     ``prompt_template`` from a ``FileNotFoundError`` inside ``prepare()``
     to a Pydantic validation error at compose time.
     """
-    assert set(_literal_options(cls, "prompt_template")) == set(
-        agent_prompt_variants(agent_id)
-    )
+    assert set(_literal_options(cls, "prompt_template")) == set(agent_prompt_variants(agent_id))
 
 
 def test_browser_use_selects_rather_than_naming_its_template():
@@ -313,9 +311,7 @@ def test_browser_use_selects_rather_than_naming_its_template():
     ``prompt_template: system_prompt`` disagree in the same YAML.
     """
     assert "prompt_template" not in get_type_hints(BrowserUseAgent, include_extras=True)
-    assert BrowserUseAgent(flash_mode=True).select_prompt_variant() == (
-        "system_prompt_flash"
-    )
+    assert BrowserUseAgent(flash_mode=True).select_prompt_variant() == ("system_prompt_flash")
 
 
 # ── Engine ────────────────────────────────────────────────────────────
@@ -386,4 +382,3 @@ def test_surface_fragments_substitute_nothing():
     """
     for path in _SURFACE_DIR.glob(f"*{PROMPT_SUFFIX}"):
         assert not template_variables("format", path.read_text("utf-8")), path.name
-

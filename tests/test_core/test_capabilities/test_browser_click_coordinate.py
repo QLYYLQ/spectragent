@@ -61,7 +61,9 @@ class _HitTestCDP(FakeCDP):
         super().__init__()
         self._border = border
 
-    async def send(self, method: str, params: dict[str, Any] | None = None, *, session_id: str | None = None) -> dict[str, Any]:
+    async def send(
+        self, method: str, params: dict[str, Any] | None = None, *, session_id: str | None = None
+    ) -> dict[str, Any]:
         if method == "DOM.getNodeForLocation":
             self.calls.append(_Call(method=method, params=params or {}))
             return {"backendNodeId": 7}
@@ -138,7 +140,5 @@ class TestTargetBox:
         cdp = FakeCDP(raise_on={"DOM.getNodeForLocation"})
         wd = ActionWatchdog(cdp=cdp, mouse_trajectory=WindMouseTrajectory(seed=1))  # type: ignore[arg-type]
         assert await wd._target_box_at(5, 5) == (0.0, 0.0)
-        result = await wd._on_click_coordinate(
-            ClickCoordinateEvent(coordinate_x=5, coordinate_y=5)
-        )
+        result = await wd._on_click_coordinate(ClickCoordinateEvent(coordinate_x=5, coordinate_y=5))
         assert result == {"clicked": True, "x": 5, "y": 5}

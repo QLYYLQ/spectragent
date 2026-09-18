@@ -314,9 +314,7 @@ class _TruncatingOpenAIClient:
         self._content = content
         self._finish_reason = finish_reason
         self._usage = usage
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     async def _create(self, **_kwargs):
         return SimpleNamespace(
@@ -360,9 +358,7 @@ class TestStructuredOutputTruncation:
 
         return ChatOpenAI(model="gpt-4o", api_key="test", **kw)
 
-    async def test_length_stop_names_the_ceiling_not_the_schema(
-        self, monkeypatch
-    ) -> None:
+    async def test_length_stop_names_the_ceiling_not_the_schema(self, monkeypatch) -> None:
         from spectragent.core.llm.exceptions import ModelProviderError
 
         chat = self._chat(max_completion_tokens=16384)
@@ -397,16 +393,12 @@ class TestStructuredOutputTruncation:
         assert result.usage is not None
         assert result.usage.completion_tokens == 5
 
-    async def test_genuine_schema_violations_are_still_reported_as_such(
-        self, monkeypatch
-    ) -> None:
+    async def test_genuine_schema_violations_are_still_reported_as_such(self, monkeypatch) -> None:
         """The ceiling check must not swallow real non-compliance."""
         from spectragent.core.llm.exceptions import ModelProviderError
 
         chat = self._chat()
-        client = _TruncatingOpenAIClient(
-            json.dumps({"wrong_field": 1}), finish_reason="stop"
-        )
+        client = _TruncatingOpenAIClient(json.dumps({"wrong_field": 1}), finish_reason="stop")
         monkeypatch.setattr(chat, "get_client", lambda: client)
 
         with pytest.raises(ModelProviderError) as excinfo:

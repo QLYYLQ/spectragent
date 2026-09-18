@@ -91,9 +91,7 @@ class MetricsCollector(HookBase):
                 llm_calls=self._llm_calls,
                 usage=self._usage if self._llm_calls else None,
             )
-            if hasattr(result, "agent_metadata") and isinstance(
-                result.agent_metadata, dict
-            ):
+            if hasattr(result, "agent_metadata") and isinstance(result.agent_metadata, dict):
                 result.agent_metadata["metrics"] = fallback.model_dump()
         else:
             if metrics.usage is None:
@@ -117,9 +115,7 @@ class MetricsCollector(HookBase):
 
     # ── AOP intercept handler ─────────────────────────────────
 
-    async def after_ainvoke(
-        self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
-    ) -> None:
+    async def after_ainvoke(self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any) -> None:
         """Extract token usage from ChatInvokeCompletion."""
         self._llm_calls += 1
         self._usage.add_llm_usage(
@@ -127,9 +123,7 @@ class MetricsCollector(HookBase):
             model=_extract_model_name(kwargs, ctx),
         )
 
-    async def around_ainvoke(
-        self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any
-    ) -> Any:
+    async def around_ainvoke(self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any) -> Any:
         """Count the call whose *reply* was refused; ``after`` cannot see it.
 
         A structured reply that does not fit the schema leaves ``ainvoke``

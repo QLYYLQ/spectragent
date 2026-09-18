@@ -30,16 +30,24 @@ from spectragent.core.capabilities.browser.geometry import (
 REAL_CHROME_CROSS_FRAME = {
     "model": {
         "content": [
-            286.2311706542969, 71.02269744873047,
-            541.8803100585938, 84.42070007324219,
-            534.3439331054688, 228.22335815429688,
-            278.6947937011719, 214.82534790039062,
+            286.2311706542969,
+            71.02269744873047,
+            541.8803100585938,
+            84.42070007324219,
+            534.3439331054688,
+            228.22335815429688,
+            278.6947937011719,
+            214.82534790039062,
         ],
         "border": [
-            278.66082763671875, 62.61497497558594,
-            550.2880859375, 76.85035705566406,
-            541.914306640625, 236.63108825683594,
-            270.2870788574219, 222.3957061767578,
+            278.66082763671875,
+            62.61497497558594,
+            550.2880859375,
+            76.85035705566406,
+            541.914306640625,
+            236.63108825683594,
+            270.2870788574219,
+            222.3957061767578,
         ],
         "width": 340,
         "height": 200,
@@ -55,10 +63,14 @@ def rect_model(
         "model": {
             "content": [x, y, x + content_w, y, x + content_w, y + content_h, x, y + content_h],
             "border": [
-                x - edge, y - edge,
-                x + content_w + edge, y - edge,
-                x + content_w + edge, y + content_h + edge,
-                x - edge, y + content_h + edge,
+                x - edge,
+                y - edge,
+                x + content_w + edge,
+                y - edge,
+                x + content_w + edge,
+                y + content_h + edge,
+                x - edge,
+                y + content_h + edge,
             ],
             "width": content_w + 2 * edge,
             "height": content_h + 2 * edge,
@@ -82,7 +94,10 @@ def linear_model(
 
     def quad(width: float, height: float) -> list[float]:
         points = [
-            (0.0, 0.0), (width, 0.0), (width, height), (0.0, height),
+            (0.0, 0.0),
+            (width, 0.0),
+            (width, height),
+            (0.0, height),
         ]
         return [
             value
@@ -115,9 +130,7 @@ class TestTheFramesViewportLandsOnItsContentQuad:
             ((1.0, 0.0), (0.4, 1.0)),  # skewX
         ],
     )
-    def test_every_corner(
-        self, ex: tuple[float, float], ey: tuple[float, float]
-    ) -> None:
+    def test_every_corner(self, ex: tuple[float, float], ey: tuple[float, float]) -> None:
         model = linear_model((400.0, 250.0), ex, ey)
         projection = FrameProjection.of_box_model(model)
         content = model["model"]["content"]  # type: ignore[index]

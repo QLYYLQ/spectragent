@@ -141,9 +141,7 @@ class TestLazyBatchPopulation:
             fragments={
                 "browser.dom": cached_dom,
                 "browser.screenshot": ScreenshotObs(image_bytes=b"X"),
-                "browser.browser_meta": BrowserMetaObs(
-                    url="https://cached.example.com"
-                ),
+                "browser.browser_meta": BrowserMetaObs(url="https://cached.example.com"),
             },
             fired=True,  # mark as already populated
         )
@@ -181,9 +179,7 @@ class TestLazyBatchPopulation:
         import asyncio
 
         async def _go() -> object:
-            return await cap.resolve_fragment(
-                "totally_made_up_fragment"
-            )
+            return await cap.resolve_fragment("totally_made_up_fragment")
 
         with pytest.raises(ValueError, match="cannot resolve fragment"):
             asyncio.run(_go())
@@ -262,9 +258,7 @@ class TestCachePartialFailure:
         cap, scope = self._cap_with_scope(
             [
                 None,
-                BrowserStateSummary(
-                    fragments={"browser.dom": DOMObs(element_tree="TREE")}
-                ),
+                BrowserStateSummary(fragments={"browser.dom": DOMObs(element_tree="TREE")}),
             ]
         )
 
@@ -290,9 +284,7 @@ class TestCachePartialFailure:
                 BrowserStateSummary(
                     fragments={"browser.screenshot": ScreenshotObs(image_bytes=b"PNG")}
                 ),
-                BrowserStateSummary(
-                    fragments={"browser.dom": DOMObs(element_tree="TREE")}
-                ),
+                BrowserStateSummary(fragments={"browser.dom": DOMObs(element_tree="TREE")}),
             ]
         )
 
@@ -363,7 +355,9 @@ class TestEveryObservationSeesThePageAsItIsNow:
             }
         )
 
-    def _cap(self, replies: list[object], fragments: set[str]) -> tuple[BrowserCapability, _ReplayScope]:
+    def _cap(
+        self, replies: list[object], fragments: set[str]
+    ) -> tuple[BrowserCapability, _ReplayScope]:
         cap = BrowserCapability()
         cap._default_session_id = "fake_sid"
         scope = _ReplayScope(replies)
@@ -405,9 +399,7 @@ class TestEveryObservationSeesThePageAsItIsNow:
         """
         import asyncio
 
-        cap, scope = self._cap(
-            [self._shot(b"one"), self._shot(b"two")], {"browser.screenshot"}
-        )
+        cap, scope = self._cap([self._shot(b"one"), self._shot(b"two")], {"browser.screenshot"})
 
         async def _twice() -> tuple[object, object]:
             await cap.begin_observation(1)

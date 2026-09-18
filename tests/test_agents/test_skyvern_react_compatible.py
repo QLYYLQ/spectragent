@@ -86,8 +86,11 @@ class _FakeObservation:
 
 def _make_agent(**overrides: Any) -> SkyvernAgent:
     from tests._helpers.assembly import make_agent
+
     return make_agent(
-        SkyvernAgent, memory=SimpleMemory(max_messages=100), **overrides,
+        SkyvernAgent,
+        memory=SimpleMemory(max_messages=100),
+        **overrides,
     )
 
 
@@ -143,9 +146,7 @@ class TestWiring:
 class TestPrepare:
     def test_returns_jinja_rendered_system_prompt_seed(self) -> None:
         agent = _make_agent()
-        seed = agent.prepare(
-            task="Find the cheapest flight", action_descriptors=_DESCRIPTORS
-        )
+        seed = agent.prepare(task="Find the cheapest flight", action_descriptors=_DESCRIPTORS)
         assert isinstance(seed, list)
         assert len(seed) == 1
         assert isinstance(seed[0], SystemMessage)
@@ -172,9 +173,7 @@ class TestPrepare:
 
     def test_renders_the_loops_action_budget(self) -> None:
         agent = _make_agent()
-        seed = agent.prepare(
-            task="t", action_descriptors=_DESCRIPTORS, max_actions_per_step=4
-        )
+        seed = agent.prepare(task="t", action_descriptors=_DESCRIPTORS, max_actions_per_step=4)
         text = seed[0].content
         assert isinstance(text, str)
         assert {int(n) for n in re.findall(r"maximum of (\d+) actions", text)} == {4}
@@ -228,9 +227,7 @@ class TestBuildReactPrompt:
         )
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree=state),
-            browser_meta=_FakeBrowserMeta(
-                url="https://www.example.com", page_title="Ex"
-            ),
+            browser_meta=_FakeBrowserMeta(url="https://www.example.com", page_title="Ex"),
             task=_FakeTask(user_request="find the cheapest flight"),
         )
         messages = agent.build_react_prompt(obs)
@@ -267,11 +264,7 @@ class TestBuildReactPrompt:
         for i in range(3):
             agent.parse_react_output(
                 SkyvernOutput(
-                    actions=[
-                        SkyvernActionItem(
-                            action_type="browser.click", index=i, reasoning="r"
-                        )
-                    ]
+                    actions=[SkyvernActionItem(action_type="browser.click", index=i, reasoning="r")]
                 )
             )
         later = agent.build_react_prompt(obs)[0].content
@@ -295,16 +288,12 @@ class TestBuildReactPrompt:
         for i in range(3):
             agent.parse_react_output(
                 SkyvernOutput(
-                    actions=[
-                        SkyvernActionItem(
-                            action_type="browser.click", index=i, reasoning="r"
-                        )
-                    ]
+                    actions=[SkyvernActionItem(action_type="browser.click", index=i, reasoning="r")]
                 )
             )
-        content = agent.build_react_prompt(
-            _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
-        )[0].content
+        content = agent.build_react_prompt(_FakeObservation(dom=_FakeDOM(element_tree="<x/>")))[
+            0
+        ].content
         assert isinstance(content, str)
         assert "browser.click(" not in content
 
@@ -378,12 +367,8 @@ class TestParseReactOutput:
         actions = agent.parse_react_output(
             SkyvernOutput(
                 actions=[
-                    SkyvernActionItem(
-                        action_type="browser.scroll", direction="up", reasoning="r"
-                    ),
-                    SkyvernActionItem(
-                        action_type="browser.send_keys", keys="Enter", reasoning="r"
-                    ),
+                    SkyvernActionItem(action_type="browser.scroll", direction="up", reasoning="r"),
+                    SkyvernActionItem(action_type="browser.send_keys", keys="Enter", reasoning="r"),
                     SkyvernActionItem(
                         action_type="browser.type",
                         index=3,
@@ -488,11 +473,7 @@ class TestParseReactOutput:
         """
         agent = _make_agent()
         actions = agent.parse_react_output(
-            SkyvernOutput(
-                actions=[
-                    SkyvernActionItem(action_type="click", index=1, reasoning="r")
-                ]
-            )
+            SkyvernOutput(actions=[SkyvernActionItem(action_type="click", index=1, reasoning="r")])
         )
         assert actions[0].name == "click"
 
@@ -513,9 +494,7 @@ class TestOutputModel:
         """
         from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 
-        schema = SchemaOptimizer.create_optimized_json_schema(
-            SkyvernOutput, strict=True
-        )
+        schema = SchemaOptimizer.create_optimized_json_schema(SkyvernOutput, strict=True)
         assert SchemaOptimizer.is_strict_compatible(schema)
         item = schema["properties"]["actions"]["items"]
         assert item["additionalProperties"] is False

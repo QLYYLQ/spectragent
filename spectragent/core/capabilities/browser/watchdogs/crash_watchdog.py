@@ -88,5 +88,6 @@ class CrashWatchdog(BrowserWatchdog):
     async def _on_target_crashed(self, event: TargetCrashedEvent) -> None:
         logger.error(
             "Target crashed: target_id=%s error=%s",
-            event.target_id, event.error,
+            event.target_id,
+            event.error,
         )

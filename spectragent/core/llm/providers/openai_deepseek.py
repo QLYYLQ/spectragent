@@ -37,7 +37,8 @@ class ChatDeepSeek(OpenAICompatBase):
     def get_client(self) -> AsyncOpenAI:
         effective_base_url = self.base_url or "https://api.deepseek.com/v1"
         params: dict[str, Any] = {
-            "api_key": self.api_key, "max_retries": self.max_retries,
+            "api_key": self.api_key,
+            "max_retries": self.max_retries,
             "base_url": effective_base_url,
         }
         if self.client_params:
@@ -93,14 +94,17 @@ class ChatDeepSeek(OpenAICompatBase):
 
             if output_format is None:
                 response = await self.get_client().chat.completions.create(
-                    model=self.model, messages=openai_messages,
-                    **self._tool_kwargs(tools, tool_choice), **model_params,
+                    model=self.model,
+                    messages=openai_messages,
+                    **self._tool_kwargs(tools, tool_choice),
+                    **model_params,
                 )
                 choice = response.choices[0] if response.choices else None
                 if choice is None:
                     raise ModelProviderError(
                         message="Invalid response: missing or empty `choices`.",
-                        status_code=502, model=self.name,
+                        status_code=502,
+                        model=self.name,
                     )
                 return ChatInvokeCompletion(
                     completion=choice.message.content or "",
@@ -128,11 +132,24 @@ class ChatDeepSeek(OpenAICompatBase):
                     output_format, strict=self._use_strict_schema(output_format)
                 )
                 schema.pop("title", None)
-                schema_tools = [{"type": "function", "function": {"name": tool_name, "description": f"Return a JSON object of type {tool_name}", "parameters": schema}}]
+                schema_tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "description": f"Return a JSON object of type {tool_name}",
+                            "parameters": schema,
+                        },
+                    }
+                ]
                 schema_tool_choice = {"type": "function", "function": {"name": tool_name}}
 
                 resp = await self.get_client().chat.completions.create(
-                    model=self.model, messages=openai_messages, tools=schema_tools, tool_choice=schema_tool_choice, **model_params,
+                    model=self.model,
+                    messages=openai_messages,
+                    tools=schema_tools,
+                    tool_choice=schema_tool_choice,
+                    **model_params,
                 )
                 msg = resp.choices[0].message
                 if not msg.tool_calls:
@@ -154,6 +171,8 @@ class ChatDeepSeek(OpenAICompatBase):
         except APIConnectionError as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
         except APIStatusError as e:
-            raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+            raise ModelProviderError(
+                message=e.message, status_code=e.status_code, model=self.name
+            ) from e
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e

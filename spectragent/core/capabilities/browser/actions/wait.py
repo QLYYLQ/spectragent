@@ -75,9 +75,7 @@ class WaitAction(ActionBase):
                 f"clearly incomplete. Default={self.default_seconds}s, "
                 f"max={self.max_seconds}s."
             ),
-            hints={
-                "seconds": f"default={self.default_seconds}, max={self.max_seconds}"
-            },
+            hints={"seconds": f"default={self.default_seconds}, max={self.max_seconds}"},
             **context,
         )
 
@@ -89,27 +87,26 @@ class WaitAction(ActionBase):
     ) -> ActionResult:
         try:
             requested = params.get("seconds")
-            seconds = float(
-                self.default_seconds if requested is None else requested
-            )
+            seconds = float(self.default_seconds if requested is None else requested)
         except (TypeError, ValueError) as exc:
             return ActionResult(
-                success=False, error=f"Invalid seconds: {exc}",
+                success=False,
+                error=f"Invalid seconds: {exc}",
             )
 
         if seconds < 0:
             return ActionResult(
-                success=False, error=f"seconds={seconds} must be >= 0",
+                success=False,
+                error=f"seconds={seconds} must be >= 0",
             )
         if seconds > self.max_seconds:
             return ActionResult(
                 success=False,
-                error=(
-                    f"seconds={seconds} exceeds max_seconds={self.max_seconds}"
-                ),
+                error=(f"seconds={seconds} exceeds max_seconds={self.max_seconds}"),
             )
 
         await asyncio.sleep(seconds)
         return ActionResult(
-            success=True, extracted_content=f"waited {seconds}s",
+            success=True,
+            extracted_content=f"waited {seconds}s",
         )

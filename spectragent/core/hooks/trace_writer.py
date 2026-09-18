@@ -110,7 +110,7 @@ class TraceWriter(HookBase):
                 "api keys, CDP URLs carrying a token, session tokens and "
                 "proxy credentials. Off by default: only fields explicitly "
                 "marked trace-safe are recorded, everything else lands as "
-                "``\"<omitted>\"``. Turn it on for a local debugging run "
+                '``"<omitted>"``. Turn it on for a local debugging run '
                 "whose trace directory will not be shared — the trace "
                 "records that you did (``config.secrets_recorded``)."
             ),
@@ -121,9 +121,7 @@ class TraceWriter(HookBase):
     _wal: WALWriter | None = field(default=None, init=False, repr=False)
     _steps_written: int = field(default=0, init=False, repr=False)
     # [(input_msgs, output)] for the LLM calls made since the last commit
-    _pending_messages: list[tuple[Any, Any]] = field(
-        default_factory=list, init=False, repr=False
-    )
+    _pending_messages: list[tuple[Any, Any]] = field(default_factory=list, init=False, repr=False)
     # ``perf_counter`` at the last step boundary — run start, then every
     # commit. ``None`` before the run starts, which is what makes an
     # unmeasured step record ``duration_ms=None`` rather than 0.
@@ -210,9 +208,7 @@ class TraceWriter(HookBase):
         # unmarked knob a sweep varies, which the recorded view collapses
         # into one ``"<omitted>"``. See ``configuration_digest``.
         resolved_full = redact_config(resolved_config, record_secrets=True)
-        recorded = (
-            resolved_full if self.record_secrets else redact_config(resolved_config)
-        )
+        recorded = resolved_full if self.record_secrets else redact_config(resolved_config)
 
         trace_config = TraceConfig(
             agent_id=agent_id,
@@ -240,9 +236,7 @@ class TraceWriter(HookBase):
                 "verbatim and must not be shared.",
                 self._wal.run_dir,
             )
-        logger.info(
-            "TraceWriter: initialized run %s at %s", resolved_run_id, self._wal.run_dir
-        )
+        logger.info("TraceWriter: initialized run %s at %s", resolved_run_id, self._wal.run_dir)
 
     async def on_run_end(self, *, result: Any = None, env: Any = None, **kwargs: Any) -> None:
         """Write result.json and finalize — on every termination path."""
@@ -275,23 +269,17 @@ class TraceWriter(HookBase):
         # that only dispatches ``on_run_error`` must not lose the buffer.
         self._flush_pending_messages()
         self._wal.finalize(RunStatus.ERROR)
-        logger.warning(
-            "TraceWriter: run errored after %d steps: %s", self._steps_written, error
-        )
+        logger.warning("TraceWriter: run errored after %d steps: %s", self._steps_written, error)
 
     # ── AOP intercept handlers ────────────────────────────────
 
-    async def after_ainvoke(
-        self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
-    ) -> None:
+    async def after_ainvoke(self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any) -> None:
         """Buffer one LLM call; it is written when the step commits."""
         # args[0] is the messages list passed to ainvoke()
         input_msgs = args[0] if args else kwargs.get("messages")
         self._pending_messages.append((input_msgs, result))
 
-    async def around_ainvoke(
-        self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any
-    ) -> Any:
+    async def around_ainvoke(self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any) -> Any:
         """Buffer a call whose *reply* was refused, which ``after`` misses.
 
         A structured reply that does not match the schema comes back as an
@@ -348,9 +336,7 @@ class TraceWriter(HookBase):
         first_in: str | None = None
         first_out: str | None = None
         for call_idx, (input_msgs, output) in enumerate(self._pending_messages):
-            in_rel, out_rel = self._wal.write_messages(
-                step, input_msgs, output, call=call_idx
-            )
+            in_rel, out_rel = self._wal.write_messages(step, input_msgs, output, call=call_idx)
             message_files.extend((in_rel, out_rel))
             if call_idx == 0:
                 first_in, first_out = in_rel, out_rel
@@ -437,15 +423,11 @@ class TraceWriter(HookBase):
         # manifest rather than a local counter so it stays right for a
         # Loop that numbers its steps from something other than 0.
         manifest = self._wal.manifest
-        step = (
-            manifest.last_step_completed + 1 if manifest is not None else self._steps_written
-        )
+        step = manifest.last_step_completed + 1 if manifest is not None else self._steps_written
 
         files: list[str] = []
         for call_idx, (input_msgs, output) in enumerate(self._pending_messages):
-            in_rel, out_rel = self._wal.write_messages(
-                step, input_msgs, output, call=call_idx
-            )
+            in_rel, out_rel = self._wal.write_messages(step, input_msgs, output, call=call_idx)
             files.extend((in_rel, out_rel))
         pending = len(self._pending_messages)
         self._pending_messages = []
@@ -455,9 +437,7 @@ class TraceWriter(HookBase):
         self._pending_llm_ms = 0.0
 
         self._wal.commit_unfinished_messages(files)
-        logger.info(
-            "TraceWriter: flushed %d unfinished LLM call(s) as step %d", pending, step
-        )
+        logger.info("TraceWriter: flushed %d unfinished LLM call(s) as step %d", pending, step)
 
     def _write_observation(self, step: int, observation: Any) -> list[str]:
         """Write every populated fragment; binaries land as real files.
@@ -485,13 +465,9 @@ class TraceWriter(HookBase):
 
             if binary is not None:
                 suffix, data = binary
-                obs_files.append(
-                    self._wal.write_observation(step, key, data, suffix=suffix)
-                )
+                obs_files.append(self._wal.write_observation(step, key, data, suffix=suffix))
                 # JSON sidecar without the bytes, plus a pointer to them.
-                payload = fragment.model_dump(
-                    mode="json", exclude=fragment.trace_json_exclude()
-                )
+                payload = fragment.model_dump(mode="json", exclude=fragment.trace_json_exclude())
                 payload["artifact_file"] = f"{step:03d}_{key}{suffix}"
 
             obs_files.append(self._wal.write_observation(step, key, payload))
@@ -522,5 +498,3 @@ def _status_for(result: Any) -> RunStatus:
     if getattr(result, "error", None):
         return RunStatus.ERROR
     return RunStatus.COMPLETED
-
-

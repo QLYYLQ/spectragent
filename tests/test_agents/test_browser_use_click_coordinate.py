@@ -164,17 +164,13 @@ class TestParamSeam:
         (action,) = agent.parse_react_output(
             _reply({"browser.click_coordinate": {"coordinate_x": 10, "coordinate_y": 20}})
         )
-        descriptor = next(
-            d for d in harness["descriptors"] if d.name == "browser.click_coordinate"
-        )
+        descriptor = next(d for d in harness["descriptors"] if d.name == "browser.click_coordinate")
         assert descriptor.params_schema is not None
         required = set(descriptor.params_schema["required"])
         assert required <= set(action.params) <= set(descriptor.params)
         assert all(isinstance(action.params[k], int) for k in required)
 
-    async def test_reply_parses_guards_and_executes_at_the_converted_point(
-        self, harness
-    ) -> None:
+    async def test_reply_parses_guards_and_executes_at_the_converted_point(self, harness) -> None:
         """DPR 2: a 2560x1440 image of a 1280x720 viewport halves every point."""
         agent = harness["agent"]
         messages = agent.build_react_prompt(_observation(image=(2560, 1440)))
@@ -235,9 +231,7 @@ class TestRefusals:
         agent.build_react_prompt(_observation(image=(1280, 720)))
         with pytest.raises(ParseError, match="browser.click_coordinate: coordinate_x"):
             agent.parse_react_output(
-                _reply(
-                    {"browser.click_coordinate": {"coordinate_x": "left", "coordinate_y": 2}}
-                )
+                _reply({"browser.click_coordinate": {"coordinate_x": "left", "coordinate_y": 2}})
             )
 
     def test_in_dom_mode_it_is_neither_taught_nor_accepted(self) -> None:

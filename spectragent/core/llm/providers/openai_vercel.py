@@ -40,7 +40,8 @@ class ChatVercel(OpenAICompatBase):
     def get_client(self) -> AsyncOpenAI:
         effective_base_url = self.base_url or "https://ai-gateway.vercel.sh/v1"
         params: dict[str, Any] = {
-            "api_key": self.api_key, "max_retries": self.max_retries,
+            "api_key": self.api_key,
+            "max_retries": self.max_retries,
             "base_url": effective_base_url,
         }
         return AsyncOpenAI(**params)
@@ -132,12 +133,16 @@ class ChatVercel(OpenAICompatBase):
         except APIConnectionError as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
         except APIStatusError as e:
-            raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+            raise ModelProviderError(
+                message=e.message, status_code=e.status_code, model=self.name
+            ) from e
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
 
     async def _structured_vercel_prompt(
-        self, messages: Sequence[BaseMessage], output_format: type[T],
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
         extra_kwargs: dict[str, Any],
     ) -> ChatInvokeCompletion[T]:
 
@@ -162,11 +167,16 @@ class ChatVercel(OpenAICompatBase):
         vercel_messages = OpenAIMessageSerializer.serialize_messages(modified)
         model_params = self._common_model_params()
         response = await self.get_client().chat.completions.create(
-            model=self.model, messages=vercel_messages, **model_params, **extra_kwargs,
+            model=self.model,
+            messages=vercel_messages,
+            **model_params,
+            **extra_kwargs,
         )
         content = response.choices[0].message.content if response.choices else None
         if not content:
-            raise ModelProviderError(message="No response from model", status_code=500, model=self.name)
+            raise ModelProviderError(
+                message="No response from model", status_code=500, model=self.name
+            )
 
         text = strip_code_fence(content)
 

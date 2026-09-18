@@ -60,8 +60,11 @@ class _FakeObservation:
 
 def _make_agent(**overrides: Any) -> UITarsAgent:
     from tests._helpers.assembly import make_agent
+
     return make_agent(
-        UITarsAgent, memory=SimpleMemory(max_messages=100), **overrides,
+        UITarsAgent,
+        memory=SimpleMemory(max_messages=100),
+        **overrides,
     )
 
 
@@ -355,12 +358,13 @@ class TestParseReactOutput:
 
     def test_drag_carries_both_endpoints(self) -> None:
         agent = _looking_at_screen()
-        actions = agent.parse_react_output(
-            "Action: drag(start_point='(1, 2)', end_point='(3, 4)')"
-        )
+        actions = agent.parse_react_output("Action: drag(start_point='(1, 2)', end_point='(3, 4)')")
         assert actions[0].name == "drag"
         assert actions[0].params == {
-            "start_x": 1, "start_y": 2, "end_x": 3, "end_y": 4,
+            "start_x": 1,
+            "start_y": 2,
+            "end_x": 3,
+            "end_y": 4,
         }
 
     def test_wait_takes_no_arguments(self) -> None:

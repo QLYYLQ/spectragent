@@ -55,10 +55,11 @@ def _is_bare_exception(node: ast.expr | None) -> bool:
 
 
 def _mentions_run_abort(node: ast.expr | None) -> bool:
-    return any(
-        isinstance(child, ast.Name) and child.id == "RunAbort"
-        for child in ast.walk(node)
-    ) if node is not None else False
+    return (
+        any(isinstance(child, ast.Name) and child.id == "RunAbort" for child in ast.walk(node))
+        if node is not None
+        else False
+    )
 
 
 def _captured_names(handler: ast.ExceptHandler) -> set[str]:
@@ -91,11 +92,7 @@ def _reraises_abort(scope: ast.AST, names: set[str]) -> bool:
         if len(node.args) != 2:
             continue
         subject, wanted = node.args
-        if (
-            isinstance(subject, ast.Name)
-            and subject.id in names
-            and _mentions_run_abort(wanted)
-        ):
+        if isinstance(subject, ast.Name) and subject.id in names and _mentions_run_abort(wanted):
             return True
     return False
 
@@ -108,11 +105,7 @@ def _functions_with_tries(
 
     def walk(node: ast.AST, scope: ast.AST) -> None:
         for child in ast.iter_child_nodes(node):
-            inner = (
-                child
-                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
-                else scope
-            )
+            inner = child if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef) else scope
             if isinstance(child, ast.Try):
                 found.append((scope, child))
             walk(child, inner)
@@ -134,9 +127,7 @@ def _offenders(path: Path) -> list[str]:
             line = lines[handler.lineno - 1]
             if _EXEMPT in line:
                 continue
-            earlier_abort = any(
-                _mentions_run_abort(h.type) for h in node.handlers[:idx]
-            )
+            earlier_abort = any(_mentions_run_abort(h.type) for h in node.handlers[:idx])
             if earlier_abort:
                 continue
             if _reraises_abort(scope, _captured_names(handler)):
@@ -183,9 +174,7 @@ class TestTheRuleItself:
         return bad
 
     def test_a_lone_blanket_handler_is_caught(self) -> None:
-        assert self._check(
-            "def f():\n    try:\n        g()\n    except Exception:\n        pass\n"
-        )
+        assert self._check("def f():\n    try:\n        g()\n    except Exception:\n        pass\n")
 
     def test_an_abort_handler_below_the_blanket_does_not_count(self) -> None:
         """Python matches top-down — order is the whole point."""

@@ -109,6 +109,7 @@ class TestExtractActionWiring:
     def test_no_wiring(self) -> None:
         class NoWiring:
             pass
+
         req, opt = extract_wiring(NoWiring, "action")
         assert req == set()
         assert opt == set()
@@ -118,6 +119,7 @@ class TestExtractActionWiring:
             __wiring__ = {
                 "action": ("action", ["click", "done"]),
             }
+
         req, opt = extract_wiring(WithRequired, "action")
         assert req == {"click", "done"}
         assert opt == set()
@@ -127,6 +129,7 @@ class TestExtractActionWiring:
             __wiring__ = {
                 "action": ("action", ["click"], ["scroll", "send_keys"]),
             }
+
         req, opt = extract_wiring(WithBoth, "action")
         assert req == {"click"}
         assert opt == {"scroll", "send_keys"}
@@ -136,6 +139,7 @@ class TestExtractActionWiring:
             __wiring__ = {
                 "observation": ("observation", ["dom"]),
             }
+
         req, opt = extract_wiring(ObsOnly, "action")
         assert req == set()
         assert opt == set()

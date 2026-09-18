@@ -173,9 +173,7 @@ def _chain(depth: int, first_id: int) -> tuple[DOMElementNode, DOMElementNode]:
     root = DOMElementNode(tag_name="div", backend_node_id=first_id)
     leaf = root
     for offset in range(1, depth):
-        leaf = _link(
-            leaf, DOMElementNode(tag_name="div", backend_node_id=first_id + offset)
-        )
+        leaf = _link(leaf, DOMElementNode(tag_name="div", backend_node_id=first_id + offset))
     return root, leaf
 
 
@@ -285,9 +283,7 @@ class TestWhatTheTraceContains:
 
     def test_summary_counts_interactive_elements(self) -> None:
         state = build_page()
-        assert DOMObs(selector_map=dict(state.selector_map)).summary() == (
-            "1 interactive elements"
-        )
+        assert DOMObs(selector_map=dict(state.selector_map)).summary() == ("1 interactive elements")
 
 
 # ── the mechanism, not the names ───────────────────────────────────

@@ -118,12 +118,8 @@ class TestFlatContextRoutesByDeclaration:
 
         await env.setup({"image": "x"}, negotiation={"f8s_dockerish.terminal"})
 
-        assert browser._negotiated_fragments == frozenset(
-            {"f8s_dockerish.terminal"}
-        )
-        assert docker._negotiated_fragments == frozenset(
-            {"f8s_dockerish.terminal"}
-        )
+        assert browser._negotiated_fragments == frozenset({"f8s_dockerish.terminal"})
+        assert docker._negotiated_fragments == frozenset({"f8s_dockerish.terminal"})
 
     async def test_empty_context_is_fine(self) -> None:
         browser, docker = _pair()
@@ -185,9 +181,7 @@ class TestNamespacedContextGivesIndependence:
         browser, docker = _pair()
         env = _env(browser, docker)
 
-        await env.setup(
-            {"start_url": "https://a.example", "f8s_dockerish": {"timeout": 600}}
-        )
+        await env.setup({"start_url": "https://a.example", "f8s_dockerish": {"timeout": 600}})
 
         assert browser.got["start_url"] == "https://a.example"
         assert docker.got["timeout"] == 600

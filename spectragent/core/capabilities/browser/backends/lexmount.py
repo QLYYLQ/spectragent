@@ -38,14 +38,22 @@ class LexmountProvider(BrowserProviderBase):
     }
 
     # ── connection config ─────────────────────────────────────────────
-    api_key: Annotated[str | None, Field(description="Lexmount API key (env: LEXMOUNT_API_KEY)")] = None
-    project_id: Annotated[str | None, Field(description="Lexmount project ID (env: LEXMOUNT_PROJECT_ID)")] = None
+    api_key: Annotated[
+        str | None, Field(description="Lexmount API key (env: LEXMOUNT_API_KEY)")
+    ] = None
+    project_id: Annotated[
+        str | None, Field(description="Lexmount project ID (env: LEXMOUNT_PROJECT_ID)")
+    ] = None
     base_url: Annotated[str | None, Field(description="API base URL override")] = None
 
     # ── capability config (visible at init, overrideable in open()) ───
     browser_mode: Annotated[str, Field(description="Browser mode: 'normal' or 'light'")] = "normal"
-    context_id: Annotated[str | None, Field(description="Context ID for persistence across sessions")] = None
-    context_mode: Annotated[str, Field(description="Context access mode: 'read_write' or 'read_only'")] = "read_write"
+    context_id: Annotated[
+        str | None, Field(description="Context ID for persistence across sessions")
+    ] = None
+    context_mode: Annotated[
+        str, Field(description="Context access mode: 'read_write' or 'read_only'")
+    ] = "read_write"
 
     # ── internal state (excluded from config) ─────────────────────────
     _client: Any = field(default=None, init=False, repr=False)
@@ -86,9 +94,7 @@ class LexmountProvider(BrowserProviderBase):
             create_kwargs["context"] = {"id": ctx_id, "mode": ctx_mode}
 
         loop = asyncio.get_running_loop()
-        session = await loop.run_in_executor(
-            None, partial(client.sessions.create, **create_kwargs)
-        )
+        session = await loop.run_in_executor(None, partial(client.sessions.create, **create_kwargs))
 
         try:
             self._sessions[session.id] = session

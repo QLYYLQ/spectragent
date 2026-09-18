@@ -82,9 +82,7 @@ class _Env:
             raise RuntimeError("CDP disconnected")
         values = {}
         if "browser.browser_meta" in self._active:
-            values["browser_meta"] = BrowserMetaObs(
-                url="https://example.com", page_title="Example"
-            )
+            values["browser_meta"] = BrowserMetaObs(url="https://example.com", page_title="Example")
         return self._model(**values)
 
 
@@ -259,11 +257,13 @@ class TestActionTruncation:
         loop = ReactLoop(max_steps=1, max_actions_per_step=1)
         await loop._execute(
             _Agent(
-                [[
-                    Action(name="browser.click"),
-                    Action(name="browser.type"),
-                    Action(name="browser.scroll"),
-                ]]
+                [
+                    [
+                        Action(name="browser.click"),
+                        Action(name="browser.type"),
+                        Action(name="browser.scroll"),
+                    ]
+                ]
             ),
             "t",
             ctx=_ctx(
@@ -276,10 +276,7 @@ class TestActionTruncation:
             ),
         )
         assert recorder.records[0].truncated_actions == 2
-        feedback = [
-            m for m in memory.messages
-            if "did NOT" in str(getattr(m, "content", ""))
-        ]
+        feedback = [m for m in memory.messages if "did NOT" in str(getattr(m, "content", ""))]
         assert feedback, "the model must be told its extra actions never ran"
 
 

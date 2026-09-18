@@ -63,9 +63,7 @@ def _registered_classes() -> list[tuple[str, str, type]]:
     _registered_classes(),
     ids=lambda v: v if isinstance(v, str) else getattr(v, "__name__", str(v)),
 )
-def test_declared_annotated_fields_survive_extraction(
-    layer: str, key: str, cls: type
-) -> None:
+def test_declared_annotated_fields_survive_extraction(layer: str, key: str, cls: type) -> None:
     schema = extract_config_schema(cls)
     extracted = set(schema.model_fields) if schema is not None else set()
     dropped = {

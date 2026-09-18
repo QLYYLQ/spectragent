@@ -230,9 +230,7 @@ class TestSlidingWindowKeepsPairsIntact:
 
     def test_system_messages_still_lead(self) -> None:
         memory = SlidingWindowMemory(window_size=2)
-        memory.add_messages(
-            [SystemMessage(content="s"), _assistant("c1"), _result("c1")]
-        )
+        memory.add_messages([SystemMessage(content="s"), _assistant("c1"), _result("c1")])
         assert _ids(memory.get_context_messages()) == ["S", "A[c1]", "T[c1]"]
 
     def test_keep_system_false_path_is_repaired_too(self) -> None:

@@ -50,16 +50,12 @@ class _Cap(CapabilityBase):
 
     async def execute_action(self, action, **kw):
         if action.name.endswith("done"):
-            return ActionResult(
-                success=True, is_done=True, extracted_content="42 dollars"
-            )
+            return ActionResult(success=True, is_done=True, extracted_content="42 dollars")
         return ActionResult(success=True, extracted_content="clicked")
 
     async def resolve_fragment(self, fragment_key, **kwargs):
         if fragment_key == "browser.screenshot":
-            return ScreenshotObs(
-                image_bytes=_PNG, viewport_width=1280, viewport_height=720
-            )
+            return ScreenshotObs(image_bytes=_PNG, viewport_width=1280, viewport_height=720)
         if fragment_key == "browser.browser_meta":
             return BrowserMetaObs(url="https://example.com", page_title="Example")
         return None
@@ -340,9 +336,7 @@ class TestTimedOutRunTrace:
         assert t.config.benchmark and t.config.task_id
         assert t.config.llm_model and t.config.loop_id
         assert result.agent_done.value == "timeout"
-        assert json.loads((t.trace_dir / "result.json").read_text())["agent_done"] == (
-            "timeout"
-        )
+        assert json.loads((t.trace_dir / "result.json").read_text())["agent_done"] == ("timeout")
 
 
 class TestAbnormalEndKeepsTheLastExchange:
@@ -353,9 +347,7 @@ class TestAbnormalEndKeepsTheLastExchange:
     """
 
     async def test_timeout_flushes_the_buffered_call(self, tmp_path):
-        run, writer = _run_with_hooks(
-            tmp_path, plan=["done"], loop=_StallAfterLLMLoop()
-        )
+        run, writer = _run_with_hooks(tmp_path, plan=["done"], loop=_StallAfterLLMLoop())
         result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
             "find the price", task_id="mind2web--0042", timeout=0.05
         )
@@ -375,9 +367,7 @@ class TestAbnormalEndKeepsTheLastExchange:
         assert t.manifest.status == RunStatus.ERROR
 
     async def test_exception_flushes_the_buffered_call(self, tmp_path):
-        run, writer = _run_with_hooks(
-            tmp_path, plan=["done"], loop=_CrashAfterLLMLoop()
-        )
+        run, writer = _run_with_hooks(tmp_path, plan=["done"], loop=_CrashAfterLLMLoop())
         result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
             "find the price",
             task_id="mind2web--0042",

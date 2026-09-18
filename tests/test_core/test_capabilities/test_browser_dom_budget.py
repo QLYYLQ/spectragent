@@ -149,9 +149,7 @@ def _scrollable_page() -> Any:
                     styles={"overflow-y": "scroll"},
                     client=(0, 0, 300, 100),
                     scroll=(0, 0, 300, 900),
-                    children=[
-                        El("#text", 21, bounds=(10, 60, 300, 100), text="feed items here")
-                    ],
+                    children=[El("#text", 21, bounds=(10, 60, 300, 100), text="feed items here")],
                 ),
             ],
         ),
@@ -425,8 +423,7 @@ class TestDomBudgetReportsEveryCut:
         report = _apply(state, DOMBudget(max_serialized_chars=limit))
 
         assert "[dom budget:" in state.serialized_dom, (
-            "the model reading the prompt must be told the page was cut, "
-            "not just the trace"
+            "the model reading the prompt must be told the page was cut, not just the trace"
         )
         assert report is not None
         assert report.applied == ["max_serialized_chars"]
@@ -534,9 +531,7 @@ class TestTheFragmentCarriesTheBudget:
     async def test_the_watchdog_serializes_with_the_instance_it_was_given(self) -> None:
         fragment = await _resolve_dom(serializer=TextSerializer(max_text_length=15))
         long_run = await _resolve_dom(serializer=TextSerializer(max_text_length=400))
-        assert len(fragment.element_tree.serialized_dom) < len(
-            long_run.element_tree.serialized_dom
-        )
+        assert len(fragment.element_tree.serialized_dom) < len(long_run.element_tree.serialized_dom)
 
     async def test_a_budget_cut_does_not_make_an_element_new_next_step(self) -> None:
         """``*`` means "not on the page last step", not "not paid for last step".

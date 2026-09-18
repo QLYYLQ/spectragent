@@ -10,20 +10,55 @@ from __future__ import annotations
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode
 
 # Tags that never carry visible content.
-NON_CONTENT_TAGS: frozenset[str] = frozenset({
-    "script", "style", "head", "meta", "link", "title",
-    "noscript", "template",
-})
+NON_CONTENT_TAGS: frozenset[str] = frozenset(
+    {
+        "script",
+        "style",
+        "head",
+        "meta",
+        "link",
+        "title",
+        "noscript",
+        "template",
+    }
+)
 
 # SVG child elements that are purely decorative.
-SVG_DECORATIVE_TAGS: frozenset[str] = frozenset({
-    "path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
-    "g", "defs", "clipPath", "mask", "pattern", "linearGradient",
-    "radialGradient", "stop", "use", "symbol", "marker", "filter",
-    "feGaussianBlur", "feOffset", "feBlend", "feComposite",
-    "feFlood", "feMerge", "feMergeNode", "animate", "animateTransform",
-    "set", "desc", "metadata",
-})
+SVG_DECORATIVE_TAGS: frozenset[str] = frozenset(
+    {
+        "path",
+        "rect",
+        "circle",
+        "ellipse",
+        "line",
+        "polyline",
+        "polygon",
+        "g",
+        "defs",
+        "clipPath",
+        "mask",
+        "pattern",
+        "linearGradient",
+        "radialGradient",
+        "stop",
+        "use",
+        "symbol",
+        "marker",
+        "filter",
+        "feGaussianBlur",
+        "feOffset",
+        "feBlend",
+        "feComposite",
+        "feFlood",
+        "feMerge",
+        "feMergeNode",
+        "animate",
+        "animateTransform",
+        "set",
+        "desc",
+        "metadata",
+    }
+)
 
 
 def is_visible(node: DOMElementNode) -> bool:
@@ -34,7 +69,9 @@ def is_visible(node: DOMElementNode) -> bool:
     """
     # TEXT_NODE: visible if has non-empty text (> 1 char).
     if node.node_type == 3:
-        return bool(node.node_value and node.node_value.strip() and len(node.node_value.strip()) > 1)
+        return bool(
+            node.node_value and node.node_value.strip() and len(node.node_value.strip()) > 1
+        )
 
     # Non-content tags are always invisible.
     if node.tag_name.lower() in NON_CONTENT_TAGS:
@@ -65,8 +102,6 @@ def has_meaningful_size(node: DOMElementNode, min_area: float = 1.0) -> bool:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_file_input(node: DOMElementNode) -> bool:
-    return (
-        node.tag_name.lower() == "input"
-        and node.attributes.get("type", "").lower() == "file"
-    )
+    return node.tag_name.lower() == "input" and node.attributes.get("type", "").lower() == "file"

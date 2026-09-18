@@ -117,12 +117,8 @@ class TestJsListenerDetectionIsReachable:
     def test_dom_watchdog_receives_the_profile_flag(self) -> None:
         """The factory must pass it — it never did, so it was always False."""
         cap, _ = _make_cap("standard")
-        watchdogs = cap._create_watchdogs_for_scope(
-            level="tab", cdp_session_id="sid-1"
-        )
-        dom = next(
-            wd for wd in watchdogs if type(wd).__name__ == "DOMWatchdog"
-        )
+        watchdogs = cap._create_watchdogs_for_scope(level="tab", cdp_session_id="sid-1")
+        dom = next(wd for wd in watchdogs if type(wd).__name__ == "DOMWatchdog")
         assert dom._enable_js_listeners is True
 
     def test_cheap_profiles_opt_out(self) -> None:
@@ -130,9 +126,7 @@ class TestJsListenerDetectionIsReachable:
         # lightweight profile exists to cut CDP work.
         for name in ("skyvern", "lightweight"):
             cap, _ = _make_cap(name)
-            watchdogs = cap._create_watchdogs_for_scope(
-                level="tab", cdp_session_id="sid-1"
-            )
+            watchdogs = cap._create_watchdogs_for_scope(level="tab", cdp_session_id="sid-1")
             dom = [wd for wd in watchdogs if type(wd).__name__ == "DOMWatchdog"]
             if dom:
                 assert dom[0]._enable_js_listeners is False
@@ -189,9 +183,7 @@ class TestDownloadsWatchdogIsGone:
 
     def test_module_deleted(self) -> None:
         with pytest.raises(ImportError):
-            __import__(
-                "spectragent.core.capabilities.browser.watchdogs.downloads_watchdog"
-            )
+            __import__("spectragent.core.capabilities.browser.watchdogs.downloads_watchdog")
 
     def test_events_deleted(self) -> None:
         from spectragent.core.capabilities.browser.watchdogs import events

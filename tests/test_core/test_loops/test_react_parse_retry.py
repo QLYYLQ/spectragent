@@ -245,9 +245,7 @@ class TestRetryDoesNotOpenANewObservationCycle:
         )
 
         first, second = llm.contexts
-        obs_turns = [
-            m for m in second if "[OBS cycle=" in str(getattr(m, "content", ""))
-        ]
+        obs_turns = [m for m in second if "[OBS cycle=" in str(getattr(m, "content", ""))]
         assert [str(m.content) for m in obs_turns] == ["[OBS cycle=1]"]
         # The re-ask is a strict extension of the first ask.
         assert [str(getattr(m, "content", "")) for m in second[: len(first)]] == [
@@ -309,9 +307,7 @@ class TestRetrySavesTheStep:
         assert result.metrics.steps == 1
         assert len(recorder.records) == 1
         # The one record is the successful step, not a parse-error no-op.
-        assert [a.name for a in recorder.records[0].actions] == [
-            "retry_cycle_test_cap.done"
-        ]
+        assert [a.name for a in recorder.records[0].actions] == ["retry_cycle_test_cap.done"]
 
     async def test_default_is_the_old_behaviour(self) -> None:
         """``parse_retries_per_step`` defaults to 0: nothing changes."""

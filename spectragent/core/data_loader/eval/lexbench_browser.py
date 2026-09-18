@@ -18,8 +18,15 @@ class LexBenchBrowserEvalLoader(EvalLoaderBase):
 
     subset: Annotated[
         Literal[
-            "All", "L1", "L2", "L3-api", "L3-security",
-            "omw", "omw-20pct", "omw-80pct", "private",
+            "All",
+            "L1",
+            "L2",
+            "L3-api",
+            "L3-security",
+            "omw",
+            "omw-20pct",
+            "omw-80pct",
+            "private",
         ],
         Field("All", description="LexBench data subset"),
     ] = "All"

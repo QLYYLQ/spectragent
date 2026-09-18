@@ -139,20 +139,12 @@ class WatchdogContext:
     #: Lossy-encoder quality 1-100. Ignored for ``png``.
     screenshot_quality: int = 80
 
-    selector_map_getter: Callable[[], DOMSelectorMap] = field(
-        default=_no_selector_map
-    )
-    selector_map_setter: Callable[[DOMSelectorMap], None] = field(
-        default=_discard_selector_map
-    )
-    main_frame_id_getter: Callable[[], str | None] = field(
-        default=_no_main_frame_id
-    )
+    selector_map_getter: Callable[[], DOMSelectorMap] = field(default=_no_selector_map)
+    selector_map_setter: Callable[[DOMSelectorMap], None] = field(default=_discard_selector_map)
+    main_frame_id_getter: Callable[[], str | None] = field(default=_no_main_frame_id)
     #: Enumerate open tabs. Browser-level state, so the capability owns
     #: it and lends it to whichever watchdog reports tab metadata.
-    tabs_getter: Callable[[], Awaitable[list[dict[str, Any]]]] = field(
-        default=_no_tabs
-    )
+    tabs_getter: Callable[[], Awaitable[list[dict[str, Any]]]] = field(default=_no_tabs)
 
 
 class BrowserWatchdog(WatchdogBase):
@@ -205,9 +197,7 @@ def browser_watchdog_classes(
     return {
         name: cls
         for name, cls in sorted(WatchdogRegistrar.get_all().items())
-        if isinstance(cls, type)
-        and issubclass(cls, BrowserWatchdog)
-        and name not in excluded
+        if isinstance(cls, type) and issubclass(cls, BrowserWatchdog) and name not in excluded
     }
 
 
@@ -223,8 +213,7 @@ def validate_watchdog_names(names: Iterable[str]) -> frozenset[str]:
     unknown = sorted(set(names) - set(known))
     if unknown:
         raise ValueError(
-            f"Unknown browser watchdog(s): {unknown}. "
-            f"Registered watchdogs: {sorted(known)}."
+            f"Unknown browser watchdog(s): {unknown}. Registered watchdogs: {sorted(known)}."
         )
     return frozenset(names)
 

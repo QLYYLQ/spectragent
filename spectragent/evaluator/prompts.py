@@ -50,9 +50,7 @@ def load_prompt(evaluator_id: str, name: str) -> tuple[str, PromptRef]:
     path = evaluator_prompt_dir(evaluator_id) / f"{name}.txt"
     if not path.is_file():
         available = (
-            sorted(p.stem for p in path.parent.glob("*.txt"))
-            if path.parent.is_dir()
-            else []
+            sorted(p.stem for p in path.parent.glob("*.txt")) if path.parent.is_dir() else []
         )
         raise PromptNotFoundError(
             f"Evaluator {evaluator_id!r} requested prompt {name!r} but "

@@ -70,11 +70,15 @@ class AnthropicCompatBase(ChatModelBase):
     # to tool-use for endpoints/proxies that don't forward the output_config param.
     use_native_structured_output: Annotated[
         bool,
-        Field(description="Use native output_config.format structured outputs instead of forced tool-use"),
+        Field(
+            description="Use native output_config.format structured outputs instead of forced tool-use"
+        ),
     ] = True
     structured_outputs_beta: Annotated[
         str | None,
-        Field(description="anthropic-beta header enabling native structured outputs (None/'' to omit)"),
+        Field(
+            description="anthropic-beta header enabling native structured outputs (None/'' to omit)"
+        ),
     ] = "structured-outputs-2025-12-15"
 
     # --- Client params ---
@@ -154,7 +158,8 @@ class AnthropicCompatBase(ChatModelBase):
 
     def _get_usage(self, response: Message) -> ChatInvokeUsage:
         return ChatInvokeUsage(
-            prompt_tokens=response.usage.input_tokens + (response.usage.cache_read_input_tokens or 0),
+            prompt_tokens=response.usage.input_tokens
+            + (response.usage.cache_read_input_tokens or 0),
             completion_tokens=response.usage.output_tokens,
             total_tokens=response.usage.input_tokens + response.usage.output_tokens,
             prompt_cached_tokens=response.usage.cache_read_input_tokens,
@@ -227,7 +232,8 @@ class AnthropicCompatBase(ChatModelBase):
                 if not isinstance(response, Message):
                     raise ModelProviderError(
                         message=f"Unexpected response type: {type(response).__name__}",
-                        status_code=502, model=self.name,
+                        status_code=502,
+                        model=self.name,
                     )
 
                 usage = self._get_usage(response)
@@ -263,19 +269,26 @@ class AnthropicCompatBase(ChatModelBase):
                     **self._get_invoke_params(),
                 )
                 if self.structured_outputs_beta:
-                    create_kwargs["extra_headers"] = {"anthropic-beta": self.structured_outputs_beta}
+                    create_kwargs["extra_headers"] = {
+                        "anthropic-beta": self.structured_outputs_beta
+                    }
 
                 response = await self.get_client().messages.create(**create_kwargs)
 
                 if not isinstance(response, Message):
                     raise ModelProviderError(
                         message=f"Unexpected response type: {type(response).__name__}",
-                        status_code=502, model=self.name,
+                        status_code=502,
+                        model=self.name,
                     )
 
                 usage = self._get_usage(response)
                 first_content = response.content[0] if response.content else None
-                text = first_content.text if isinstance(first_content, TextBlock) else str(first_content)
+                text = (
+                    first_content.text
+                    if isinstance(first_content, TextBlock)
+                    else str(first_content)
+                )
                 t = strip_code_fence(text)
                 return ChatInvokeCompletion(
                     completion=self._validate_structured(
@@ -315,7 +328,8 @@ class AnthropicCompatBase(ChatModelBase):
                 if not isinstance(response, Message):
                     raise ModelProviderError(
                         message=f"Unexpected response type: {type(response).__name__}",
-                        status_code=502, model=self.name,
+                        status_code=502,
+                        model=self.name,
                     )
 
                 usage = self._get_usage(response)
@@ -330,8 +344,11 @@ class AnthropicCompatBase(ChatModelBase):
                         # back out as a bare ``JSONDecodeError`` — a reply the
                         # model could have fixed, laundered into one it cannot.
                         return ChatInvokeCompletion(
-                            completion=self._validate_structured(output_format, block.input, usage=usage),
-                            usage=usage, stop_reason=response.stop_reason,
+                            completion=self._validate_structured(
+                                output_format, block.input, usage=usage
+                            ),
+                            usage=usage,
+                            stop_reason=response.stop_reason,
                         )
                 raise ValueError("Expected tool use in response but none found")
 
@@ -348,7 +365,9 @@ class AnthropicCompatBase(ChatModelBase):
         except RateLimitError as e:
             raise ModelRateLimitError(message=e.message, model=self.name) from e
         except APIStatusError as e:
-            raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+            raise ModelProviderError(
+                message=e.message, status_code=e.status_code, model=self.name
+            ) from e
         except Exception as e:
             # Include the concrete exception type: a bare str(e) turned client-side
             # contract bugs (TypeError from an unsupported kwarg) into an opaque

@@ -32,36 +32,102 @@ from spectragent.core.capabilities.browser.dom.serializers import DOMSerializerB
 # Attributes to include in serialized output — matches browser-use
 # DEFAULT_INCLUDE_ATTRIBUTES (views.py:18-82).
 _INCLUDE_ATTRS: list[str] = [
-    "title", "type", "checked", "id", "name", "role", "value", "placeholder",
-    "data-date-format", "alt", "aria-label", "aria-expanded", "data-state",
-    "aria-checked", "aria-valuemin", "aria-valuemax", "aria-valuenow",
+    "title",
+    "type",
+    "checked",
+    "id",
+    "name",
+    "role",
+    "value",
+    "placeholder",
+    "data-date-format",
+    "alt",
+    "aria-label",
+    "aria-expanded",
+    "data-state",
+    "aria-checked",
+    "aria-valuemin",
+    "aria-valuemax",
+    "aria-valuenow",
     "aria-placeholder",
     # Validation
-    "pattern", "min", "max", "minlength", "maxlength", "step",
-    "accept", "multiple", "inputmode", "autocomplete", "aria-autocomplete",
-    "list", "data-mask", "data-inputmask", "data-datepicker",
-    "format", "expected_format", "contenteditable",
+    "pattern",
+    "min",
+    "max",
+    "minlength",
+    "maxlength",
+    "step",
+    "accept",
+    "multiple",
+    "inputmode",
+    "autocomplete",
+    "aria-autocomplete",
+    "list",
+    "data-mask",
+    "data-inputmask",
+    "data-datepicker",
+    "format",
+    "expected_format",
+    "contenteditable",
     # Webkit shadow DOM
     "pseudo",
     # AX properties (also scanned from ax_properties)
-    "selected", "expanded", "pressed", "disabled", "invalid",
-    "valuemin", "valuemax", "valuenow", "keyshortcuts", "haspopup",
-    "multiselectable", "required", "valuetext", "level", "busy", "live",
+    "selected",
+    "expanded",
+    "pressed",
+    "disabled",
+    "invalid",
+    "valuemin",
+    "valuemax",
+    "valuenow",
+    "keyshortcuts",
+    "haspopup",
+    "multiselectable",
+    "required",
+    "valuetext",
+    "level",
+    "busy",
+    "live",
     "ax_name",
 ]
 
 _INCLUDE_ATTRS_SET: frozenset[str] = frozenset(_INCLUDE_ATTRS)
 
 # Non-content tags to skip entirely during serialization.
-_DISABLED_ELEMENTS: frozenset[str] = frozenset({
-    "style", "script", "head", "meta", "link", "title", "noscript", "template",
-})
+_DISABLED_ELEMENTS: frozenset[str] = frozenset(
+    {
+        "style",
+        "script",
+        "head",
+        "meta",
+        "link",
+        "title",
+        "noscript",
+        "template",
+    }
+)
 
 # SVG child elements to skip (decorative only).
-_SVG_ELEMENTS: frozenset[str] = frozenset({
-    "path", "rect", "g", "circle", "ellipse", "line", "polyline", "polygon",
-    "use", "defs", "clippath", "mask", "pattern", "image", "text", "tspan",
-})
+_SVG_ELEMENTS: frozenset[str] = frozenset(
+    {
+        "path",
+        "rect",
+        "g",
+        "circle",
+        "ellipse",
+        "line",
+        "polyline",
+        "polygon",
+        "use",
+        "defs",
+        "clippath",
+        "mask",
+        "pattern",
+        "image",
+        "text",
+        "tspan",
+    }
+)
 
 # Date/time format map for HTML5 date inputs.
 _DATE_FORMAT_MAP: dict[str, str] = {
@@ -98,7 +164,10 @@ class TextSerializer(DOMSerializerBase):
     # ------------------------------------------------------------------
 
     def _walk(
-        self, node: DOMElementNode, depth: int, lines: list[str],
+        self,
+        node: DOMElementNode,
+        depth: int,
+        lines: list[str],
     ) -> None:
         tag = node.tag_name.lower()
         pad = "\t" * depth
@@ -137,7 +206,9 @@ class TextSerializer(DOMSerializerBase):
             prefix = ""
             if node.is_interactive and node.element_index is not None:
                 prefix = f"[{node.element_index}]"
-            lines.append(f"{pad}{prefix}<svg{' ' + attrs_str if attrs_str else ''} /> <!-- SVG content collapsed -->")
+            lines.append(
+                f"{pad}{prefix}<svg{' ' + attrs_str if attrs_str else ''} /> <!-- SVG content collapsed -->"
+            )
             return
 
         if tag in _SVG_ELEMENTS:
@@ -158,7 +229,10 @@ class TextSerializer(DOMSerializerBase):
             self._recurse(node, depth, lines)
 
     def _recurse(
-        self, node: DOMElementNode, depth: int, lines: list[str],
+        self,
+        node: DOMElementNode,
+        depth: int,
+        lines: list[str],
     ) -> None:
         for child in node.children:
             self._walk(child, depth, lines)
@@ -265,7 +339,12 @@ class TextSerializer(DOMSerializerBase):
             # AX tree value for form elements (reflects actual typed value).
             if node.tag_name.lower() in ("input", "textarea", "select"):
                 for prop in node.ax_properties:
-                    if prop.name == "valuetext" and prop.value or prop.name == "value" and prop.value:
+                    if (
+                        prop.name == "valuetext"
+                        and prop.value
+                        or prop.name == "value"
+                        and prop.value
+                    ):
                         val = str(prop.value).strip()
                         if val:
                             attrs_out["value"] = val
@@ -277,24 +356,24 @@ class TextSerializer(DOMSerializerBase):
             for child_info in node._compound_children:
                 parts: list[str] = []
                 if child_info.get("name"):
-                    parts.append(f'name={child_info["name"]}')
+                    parts.append(f"name={child_info['name']}")
                 if child_info.get("role"):
-                    parts.append(f'role={child_info["role"]}')
+                    parts.append(f"role={child_info['role']}")
                 if child_info.get("valuemin") is not None:
-                    parts.append(f'min={child_info["valuemin"]}')
+                    parts.append(f"min={child_info['valuemin']}")
                 if child_info.get("valuemax") is not None:
-                    parts.append(f'max={child_info["valuemax"]}')
+                    parts.append(f"max={child_info['valuemax']}")
                 if child_info.get("valuenow") is not None:
-                    parts.append(f'current={child_info["valuenow"]}')
+                    parts.append(f"current={child_info['valuenow']}")
                 if child_info.get("options_count") is not None:
-                    parts.append(f'count={child_info["options_count"]}')
+                    parts.append(f"count={child_info['options_count']}")
                 if child_info.get("first_options"):
                     opts = "|".join(child_info["first_options"][:4])
                     parts.append(f"options={opts}")
                 if child_info.get("format_hint"):
-                    parts.append(f'format={child_info["format_hint"]}')
+                    parts.append(f"format={child_info['format_hint']}")
                 if parts:
-                    compound_parts.append(f'({",".join(parts)})')
+                    compound_parts.append(f"({','.join(parts)})")
             if compound_parts:
                 attrs_out["compound_components"] = ",".join(compound_parts)
 
@@ -354,6 +433,7 @@ class TextSerializer(DOMSerializerBase):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_scroll_info_text(node: DOMElementNode) -> str:
     """Generate scroll position text like ``1.2 pages above, 0.5 pages below``."""

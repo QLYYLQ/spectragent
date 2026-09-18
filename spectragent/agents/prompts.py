@@ -103,9 +103,7 @@ def load_prompt(agent_id: str, name: str) -> tuple[str, PromptRef]:
     )
 
 
-def load_prompt_fragment(
-    agent_id: str, directory: str, name: str
-) -> tuple[str, PromptRef]:
+def load_prompt_fragment(agent_id: str, directory: str, name: str) -> tuple[str, PromptRef]:
     """Read a prompt *fragment* from a subdirectory of an agent's tree.
 
     A fragment is a piece spliced into a template as a render param —

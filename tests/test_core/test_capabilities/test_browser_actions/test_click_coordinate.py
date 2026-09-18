@@ -14,9 +14,7 @@ from tests.test_core.test_capabilities.test_browser_actions.conftest import (
 
 
 class TestClickCoordinate:
-    async def test_emits_event_with_coordinates(
-        self, fake_capability: FakeCapability
-    ) -> None:
+    async def test_emits_event_with_coordinates(self, fake_capability: FakeCapability) -> None:
         await ClickCoordinateAction().execute(
             {"coordinate_x": 100, "coordinate_y": 200},
             capability=fake_capability,  # type: ignore[arg-type]
@@ -26,18 +24,14 @@ class TestClickCoordinate:
         assert event.coordinate_x == 100
         assert event.coordinate_y == 200
 
-    async def test_missing_coordinates_fails(
-        self, fake_capability: FakeCapability
-    ) -> None:
+    async def test_missing_coordinates_fails(self, fake_capability: FakeCapability) -> None:
         result = await ClickCoordinateAction().execute(
             {"coordinate_x": 10},  # missing coordinate_y
             capability=fake_capability,  # type: ignore[arg-type]
         )
         assert result.success is False
 
-    async def test_does_not_touch_selector_map(
-        self, fake_capability: FakeCapability
-    ) -> None:
+    async def test_does_not_touch_selector_map(self, fake_capability: FakeCapability) -> None:
         # No selector_map entries at all.
         result = await ClickCoordinateAction().execute(
             {"coordinate_x": 1, "coordinate_y": 2},

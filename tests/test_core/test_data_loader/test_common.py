@@ -67,9 +67,7 @@ class TestResolveDataDir:
         assert resolve_data_dir("browser", "browsecomp", None) == (
             tmp_path / "browser" / "browsecomp"
         )
-        assert BENCHMARK_DATA_ROOT not in resolve_data_dir(
-            "browser", "browsecomp", None
-        ).parents
+        assert BENCHMARK_DATA_ROOT not in resolve_data_dir("browser", "browsecomp", None).parents
 
     def test_explicit_data_dir_beats_the_env_var(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -79,9 +77,7 @@ class TestResolveDataDir:
             tmp_path / "here"
         )
 
-    def test_an_empty_env_var_is_not_a_root(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_an_empty_env_var_is_not_a_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``SPECTRAGENT_BENCHMARK_DATA=`` must not resolve to the CWD."""
         monkeypatch.setenv(BENCHMARK_DATA_ENV, "")
         assert resolve_data_dir("browser", "browsecomp", None) == (
@@ -96,16 +92,12 @@ class TestResolveDataDir:
         assert resolve_data_dir("browser", "browsecomp", None) == (
             home / "agent-data" / "browser" / "browsecomp"
         )
-        assert resolve_data_dir("browser", "browsecomp", "~/one-off") == (
-            home / "one-off"
-        )
+        assert resolve_data_dir("browser", "browsecomp", "~/one-off") == (home / "one-off")
 
 
 class TestLoadSplitMap:
     def test_reads_split_mapping(self, tmp_path: Path) -> None:
-        (tmp_path / "data_info.json").write_text(
-            json.dumps({"split": {"All": "tasks.jsonl"}})
-        )
+        (tmp_path / "data_info.json").write_text(json.dumps({"split": {"All": "tasks.jsonl"}}))
         assert load_split_map(tmp_path) == {"All": "tasks.jsonl"}
 
     def test_missing_data_info_raises(self, tmp_path: Path) -> None:
@@ -125,9 +117,7 @@ class TestLoadSplitMap:
 
 class TestResolveSplitFile:
     def test_resolves_declared_subset(self, tmp_path: Path) -> None:
-        (tmp_path / "data_info.json").write_text(
-            json.dumps({"split": {"All": "tasks.jsonl"}})
-        )
+        (tmp_path / "data_info.json").write_text(json.dumps({"split": {"All": "tasks.jsonl"}}))
         assert resolve_split_file(tmp_path, "All") == tmp_path / "tasks.jsonl"
 
     def test_unknown_subset_raises_and_lists_available(self, tmp_path: Path) -> None:
@@ -191,9 +181,7 @@ class TestResolveTaskId:
 
     def test_falls_back_to_instance_id(self) -> None:
         # SWE-bench's native identity key.
-        assert resolve_task_id({"instance_id": "django__django-11333"}) == (
-            "django__django-11333"
-        )
+        assert resolve_task_id({"instance_id": "django__django-11333"}) == ("django__django-11333")
 
     def test_no_identity_raises(self) -> None:
         with pytest.raises(BenchmarkDataError, match="no task identity"):

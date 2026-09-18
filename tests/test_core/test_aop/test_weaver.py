@@ -50,18 +50,24 @@ class TestWeaverIndex:
         assert weaver.intercepted_methods == {}
 
     def test_index_built(self) -> None:
-        hook = _MockHook("h1", [
-            Intercept("observe", role="env", advice="after"),
-        ])
+        hook = _MockHook(
+            "h1",
+            [
+                Intercept("observe", role="env", advice="after"),
+            ],
+        )
         weaver = Weaver([hook])
         assert "env" in weaver.intercepted_methods
         assert "observe" in weaver.intercepted_methods["env"]
 
     def test_missing_handler_warned(self) -> None:
         """Hook declares intercept but has no matching handler method."""
-        hook = _MockHook("h1", [
-            Intercept("nonexistent_method", role="env", advice="after"),
-        ])
+        hook = _MockHook(
+            "h1",
+            [
+                Intercept("nonexistent_method", role="env", advice="after"),
+            ],
+        )
         weaver = Weaver([hook])
         # Should not crash, just warn (logged)
         assert weaver.intercepted_methods == {}
@@ -77,16 +83,17 @@ class TestWeaverWrap:
         assert wrapped is env  # No wrapping needed
 
     def test_wrapped_preserves_non_intercepted(self) -> None:
-        hook = _MockHook("h1", [
-            Intercept("observe", role="env", advice="after"),
-        ])
+        hook = _MockHook(
+            "h1",
+            [
+                Intercept("observe", role="env", advice="after"),
+            ],
+        )
         weaver = Weaver([hook])
         env = _MockEnv()
         wrapped = weaver.wrap(env, role="env")
         # act() is not intercepted, should still work
-        result = asyncio.run(
-            wrapped.act({"name": "click"})
-        )
+        result = asyncio.run(wrapped.act({"name": "click"}))
         assert result["success"] is True
 
 
@@ -94,16 +101,17 @@ class TestAfterAdvice:
     """After advice fires after the original method."""
 
     def test_after_observe(self) -> None:
-        hook = _MockHook("h1", [
-            Intercept("observe", role="env", advice="after"),
-        ])
+        hook = _MockHook(
+            "h1",
+            [
+                Intercept("observe", role="env", advice="after"),
+            ],
+        )
         weaver = Weaver([hook])
         env = _MockEnv()
         wrapped = weaver.wrap(env, role="env")
 
-        result = asyncio.run(
-            wrapped.observe(negotiated="neg")
-        )
+        result = asyncio.run(wrapped.observe(negotiated="neg"))
 
         # Original result preserved
         assert result["dom"] == "tree"
@@ -114,16 +122,17 @@ class TestAfterAdvice:
         assert hook.calls[0][0] == "after_observe"
 
     def test_after_ainvoke(self) -> None:
-        hook = _MockHook("h1", [
-            Intercept("ainvoke", role="llm", advice="after"),
-        ])
+        hook = _MockHook(
+            "h1",
+            [
+                Intercept("ainvoke", role="llm", advice="after"),
+            ],
+        )
         weaver = Weaver([hook])
         llm = _MockLLM()
         wrapped = weaver.wrap(llm, role="llm")
 
-        result = asyncio.run(
-            wrapped.ainvoke([{"role": "user", "content": "hi"}])
-        )
+        result = asyncio.run(wrapped.ainvoke([{"role": "user", "content": "hi"}]))
 
         assert result["completion"] == "hello"
         assert len(hook.calls) == 1
@@ -134,16 +143,17 @@ class TestBeforeAdvice:
     """Before advice fires before the original method."""
 
     def test_before_observe(self) -> None:
-        hook = _MockHook("h1", [
-            Intercept("observe", role="env", advice="before"),
-        ])
+        hook = _MockHook(
+            "h1",
+            [
+                Intercept("observe", role="env", advice="before"),
+            ],
+        )
         weaver = Weaver([hook])
         env = _MockEnv()
         wrapped = weaver.wrap(env, role="env")
 
-        result = asyncio.run(
-            wrapped.observe()
-        )
+        result = asyncio.run(wrapped.observe())
 
         assert result["dom"] == "tree"
         assert len(hook.calls) == 1
@@ -154,12 +164,18 @@ class TestMultipleHooks:
     """Multiple hooks on the same method."""
 
     def test_two_after_hooks(self) -> None:
-        hook1 = _MockHook("h1", [
-            Intercept("observe", role="env", advice="after"),
-        ])
-        hook2 = _MockHook("h2", [
-            Intercept("observe", role="env", advice="after"),
-        ])
+        hook1 = _MockHook(
+            "h1",
+            [
+                Intercept("observe", role="env", advice="after"),
+            ],
+        )
+        hook2 = _MockHook(
+            "h2",
+            [
+                Intercept("observe", role="env", advice="after"),
+            ],
+        )
         weaver = Weaver([hook1, hook2])
         env = _MockEnv()
         wrapped = weaver.wrap(env, role="env")

@@ -84,8 +84,7 @@ class TestObservationNegotiation:
 
         assert "browser.screenshot" in result.active_fragments
         assert "browser.dom" not in result.active_fragments, (
-            "UITars must not trigger DOM resolution — wiring requires "
-            "only 'browser.screenshot'"
+            "UITars must not trigger DOM resolution — wiring requires only 'browser.screenshot'"
         )
         assert "browser.browser_meta" not in result.active_fragments
 
@@ -223,8 +222,7 @@ def _resolve(agent: Any, action: Any, capability: Any) -> str:
     """What ``build_guarded_act`` would send to ``env.act`` for *action*."""
     negotiated = negotiate_action(agent, _ActionsOnlyEnv(capability))
     descriptors = [
-        ActionDescriptor(name=name, description="")
-        for name in sorted(negotiated.active_actions)
+        ActionDescriptor(name=name, description="") for name in sorted(negotiated.active_actions)
     ]
     routed: list[Any] = []
 
@@ -232,9 +230,7 @@ def _resolve(agent: Any, action: Any, capability: Any) -> str:
         routed.append(executed)
         return ActionResult(success=True)
 
-    _kept, guard = build_guarded_act(
-        _act, descriptors, bindings=negotiated.action_bindings
-    )
+    _kept, guard = build_guarded_act(_act, descriptors, bindings=negotiated.action_bindings)
 
     async def _drive() -> ActionResult:
         return await guard(action)
@@ -271,18 +267,14 @@ class TestAgentToCapabilityActionVocabulary:
 
         negotiated = negotiate_action(agent, _ActionsOnlyEnv(capability))
         descriptors = [
-            a.descriptor()
-            for a in capability.actions
-            if a.action_id in negotiated.active_actions
+            a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
         ]
         agent.prepare(task="t", action_descriptors=descriptors)
         model = agent.get_react_output_model()
 
         for descriptor in descriptors:
             params = minimal_params(descriptor)
-            out = model.model_validate(
-                {"memory": "", "action": [{descriptor.name: params}]}
-            )
+            out = model.model_validate({"memory": "", "action": [{descriptor.name: params}]})
             for action in agent.parse_react_output(out):
                 routed = _resolve(agent, action, capability)
                 assert routed in provided, (
@@ -314,9 +306,7 @@ class TestAgentToCapabilityActionVocabulary:
                 },
             )()
         )
-        actions = agent.parse_react_output(
-            "Thought: click it.\nAction: click(point='(100, 200)')"
-        )
+        actions = agent.parse_react_output("Thought: click it.\nAction: click(point='(100, 200)')")
         assert len(actions) == 1
         assert actions[0].name == "click_coordinate"
         capability = BrowserCapability()
@@ -347,9 +337,7 @@ class TestAgentToCapabilityActionVocabulary:
         bu_out = bu.get_react_output_model().model_validate(
             {
                 "memory": "",
-                "action": [
-                    {"browser.done": {"extracted_content": "answer bu", "success": True}}
-                ],
+                "action": [{"browser.done": {"extracted_content": "answer bu", "success": True}}],
             }
         )
         bu_actions = bu.parse_react_output(bu_out)
@@ -369,9 +357,7 @@ class TestAgentToCapabilityActionVocabulary:
 
         # UITarsAgent
         ut = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
-        ut_actions = ut.parse_react_output(
-            "Action: finished(content='answer ut')"
-        )
+        ut_actions = ut.parse_react_output("Action: finished(content='answer ut')")
         assert _resolve(ut, ut_actions[0], capability) == "browser.done"
         assert ut_actions[0].params["extracted_content"] == "answer ut"
 
@@ -390,11 +376,14 @@ class TestReactLoopDriveBrowserUse:
                 "dom": DOMObs(),
                 "screenshot": ScreenshotObs(image_bytes=b"\x89PNG\r\n\x1a\n"),
                 "browser_meta": BrowserMetaObs(
-                    url="https://example.com", page_title="Example",
+                    url="https://example.com",
+                    page_title="Example",
                 ),
                 "task": TaskObs(user_request="Find the answer"),
                 "step_info": StepInfoObs(
-                    step=1, max_steps=2, today="2026-05-01",
+                    step=1,
+                    max_steps=2,
+                    today="2026-05-01",
                 ),
                 "history": HistoryObs(),
             },
@@ -420,9 +409,7 @@ class TestReactLoopDriveBrowserUse:
             BrowserCapability,
         )
 
-        negotiated_actions = negotiate_action(
-            agent, _ActionsOnlyEnv(BrowserCapability())
-        )
+        negotiated_actions = negotiate_action(agent, _ActionsOnlyEnv(BrowserCapability()))
         _kept, _act_fn = build_guarded_act(
             env.act,
             [

@@ -127,9 +127,7 @@ def harness() -> tuple[UITarsAgent, Any, dict[str, Any]]:
         assert impl is not None, f"{action.name} did not route to a capability action"
         return await impl.execute(action.params, capability=fake)  # type: ignore[arg-type]
 
-    _kept, guard = build_guarded_act(
-        _execute, descriptors, bindings=negotiated.action_bindings
-    )
+    _kept, guard = build_guarded_act(_execute, descriptors, bindings=negotiated.action_bindings)
     agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
     return agent, guard, {"descriptors": descriptors, "scope": fake._scopes["sid_main"]}
 
@@ -178,9 +176,7 @@ class TestPromptVocabulary:
             calls = _TAUGHT_CALL.findall(_rendered(agent, extra["descriptors"], variant))
             assert len(calls) == len(extra["descriptors"]), variant
 
-    def test_the_prompt_teaches_the_negotiated_set_and_nothing_else(
-        self, harness
-    ) -> None:
+    def test_the_prompt_teaches_the_negotiated_set_and_nothing_else(self, harness) -> None:
         """One vocabulary, not two.
 
         The templates used to carry a hand-written ``# Output Format``
@@ -226,9 +222,7 @@ class TestPromptVocabulary:
                     else:
                         assert rendered in prompt, (variant, descriptor.name, param)
 
-    def test_what_a_verb_produces_is_what_its_action_declares(
-        self, harness
-    ) -> None:
+    def test_what_a_verb_produces_is_what_its_action_declares(self, harness) -> None:
         """The contract that did not exist, and whose absence is the bug.
 
         Negotiation matches *names*; nothing ever checked that the params
@@ -251,9 +245,7 @@ class TestPromptVocabulary:
                 f"which the {verb!r} verb never produces"
             )
 
-    async def test_every_taught_call_parses_guards_and_executes(
-        self, harness
-    ) -> None:
+    async def test_every_taught_call_parses_guards_and_executes(self, harness) -> None:
         """The load-bearing assertion, and the one that did not exist.
 
         No ``Missing param``, no "not in the active action set" — for
@@ -269,15 +261,11 @@ class TestPromptVocabulary:
                 assert result.success, f"{variant}: {call} -> {result.error}"
                 assert "Missing param" not in (result.error or "")
 
-    async def test_typing_carries_the_text_not_the_empty_string(
-        self, harness
-    ) -> None:
+    async def test_typing_carries_the_text_not_the_empty_string(self, harness) -> None:
         """The second, independent breakage: ``content`` vs ``text``."""
         agent, guard, extra = harness
         _rendered(agent, extra["descriptors"], _VARIANTS[0])
-        actions = agent.parse_react_output(
-            "Action: type(content='hello world', point='(10, 20)')"
-        )
+        actions = agent.parse_react_output("Action: type(content='hello world', point='(10, 20)')")
         result = await guard(actions[0])
         assert result.success
         event = extra["scope"].emitted[-1]

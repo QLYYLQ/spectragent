@@ -61,9 +61,7 @@ def test_nothing_imports_a_capability(module: Path) -> None:
             imported += [alias.name for alias in node.names]
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
-    offenders = [
-        name for name in imported if name.startswith("spectragent.core.capabilities")
-    ]
+    offenders = [name for name in imported if name.startswith("spectragent.core.capabilities")]
     assert not offenders, (
         f"{module.name} imports {offenders}. The dependency runs the other "
         f"way: capabilities import the fragment base, never the reverse."

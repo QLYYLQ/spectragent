@@ -30,9 +30,7 @@ def _step(idx: int, llm_output: str) -> StepRecord:
         actions=[Action(name="browser.click", params={"index": idx})],
         action_results=[ActionResult(success=True, extracted_content="ok")],
         timestamp=100.0 + idx,
-        token_usage=TokenUsage(
-            prompt_tokens=10, completion_tokens=5, total_tokens=15
-        ),
+        token_usage=TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
 
 
@@ -61,15 +59,11 @@ def _result(**kw) -> AgentResult:
 def populated_trace(tmp_path):
     """Create a trace directory with 2 completed steps + result."""
     wal = WALWriter(tmp_path, "run-test")
-    config = TraceConfig(
-        agent_id="test_agent", loop_id="react", task="find the answer"
-    )
+    config = TraceConfig(agent_id="test_agent", loop_id="react", task="find the answer")
     wal.init_run(config)
 
     # Step 0
-    obs_rel = wal.write_observation(
-        0, "browser.dom", {"element_tree": "<div>step0</div>"}
-    )
+    obs_rel = wal.write_observation(0, "browser.dom", {"element_tree": "<div>step0</div>"})
     in_rel, out_rel = wal.write_messages(
         0,
         [{"role": "user", "content": "observe"}],
@@ -261,9 +255,7 @@ class TestTheReaderGivesBackWhatTheWriterWasHanded:
         # was re-validated on read, not just re-wrapped.
         assert result.metrics.usage.total_tokens == 30
 
-    def test_a_wrong_field_name_is_an_attribute_error_not_a_key_error(
-        self, populated_trace
-    ):
+    def test_a_wrong_field_name_is_an_attribute_error_not_a_key_error(self, populated_trace):
         """The failure mode that motivated this: ``step_index``.
 
         On a dict it was a ``KeyError`` naming nothing useful; on the
@@ -289,9 +281,7 @@ class TestTheManifestIsTheCommitPoint:
     def _half_committed(self, tmp_path):
         wal = WALWriter(tmp_path, "run-crash")
         wal.init_run(TraceConfig(agent_id="a", loop_id="react"))
-        wal.commit_step(
-            step=0, step_file=wal.write_step_record(0, _step(0, "click(btn)"))
-        )
+        wal.commit_step(step=0, step_file=wal.write_step_record(0, _step(0, "click(btn)")))
         # Step 1: written, never committed — the crash window.
         wal.write_step_record(1, _step(1, "done()"))
         return RunTrace(wal.run_dir)
@@ -349,9 +339,7 @@ class TestUnreadableTracesSayWhy:
 
     def test_a_malformed_current_result_keeps_the_field_errors(self, tmp_path):
         """When the versions agree, pydantic's detail is the only clue."""
-        trace = self._trace_with_result(
-            tmp_path, {"schema_version": "2.1", "task_id": "t-1"}
-        )
+        trace = self._trace_with_result(tmp_path, {"schema_version": "2.1", "task_id": "t-1"})
 
         with pytest.raises(TraceSchemaError) as exc_info:
             _ = trace.result

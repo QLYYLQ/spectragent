@@ -35,14 +35,17 @@ def teardown_module():
 
 class _GoodAgent:
     name = "good"
+
     def build_prompt(self, obs):
         return []
+
     def parse_output(self, out):
         return []
 
 
 class _PlanAgent:
     name = "planner"
+
     def build_plan(self, obs):
         return []
 
@@ -132,13 +135,20 @@ class TestWeave:
 
     def test_deepcopy_different_loops(self) -> None:
         """deepcopy agent can be woven with different loops."""
+
         # _GoodAgent does not satisfy _NoEnvLoop — it needs build_plan.
         # Use a dual agent.
         class DualAgent:
             name = "dual"
-            def build_prompt(self, obs): return []
-            def parse_output(self, out): return []
-            def build_plan(self, obs): return []
+
+            def build_prompt(self, obs):
+                return []
+
+            def parse_output(self, out):
+                return []
+
+            def build_plan(self, obs):
+                return []
 
         original = DualAgent()
         agent_react = copy.deepcopy(original)

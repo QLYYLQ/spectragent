@@ -54,9 +54,7 @@ def resolve_index(
     Raises:
         ValueError: If the element is missing from the selector_map.
     """
-    selector_map = capability._selector_maps.get(
-        capability.default_session_id, {}
-    )
+    selector_map = capability._selector_maps.get(capability.default_session_id, {})
     node = selector_map.get(index)
     if node is None or node.backend_node_id is None:
         raise ValueError(f"Element {index} not found in selector_map")

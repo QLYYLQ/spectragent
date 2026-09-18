@@ -196,9 +196,7 @@ class MockDesktopCapability(CapabilityBase):
 
     async def resolve_fragment(self, fragment_key: str) -> Any:
         assert fragment_key == "desktop.screenshot"
-        return DesktopScreenshotObs(
-            image_bytes=b"\x89PNG", viewport_width=800, viewport_height=600
-        )
+        return DesktopScreenshotObs(image_bytes=b"\x89PNG", viewport_width=800, viewport_height=600)
 
 
 # ── Agents whose wiring names no capability ───────────────────────────
@@ -237,12 +235,8 @@ class _ProvidesActions:
         self.provided_actions = frozenset(keys)
 
 
-_BROWSER_ACTIONS = _ProvidesActions(
-    "browser.click_coordinate", "browser.done", "browser.scroll"
-)
-_DESKTOP_ACTIONS = _ProvidesActions(
-    "desktop.click_coordinate", "desktop.done"
-)
+_BROWSER_ACTIONS = _ProvidesActions("browser.click_coordinate", "browser.done", "browser.scroll")
+_DESKTOP_ACTIONS = _ProvidesActions("desktop.click_coordinate", "desktop.done")
 _COMPOSITE_ACTIONS = _ProvidesActions(
     *_BROWSER_ACTIONS.provided_actions, *_DESKTOP_ACTIONS.provided_actions
 )
@@ -273,9 +267,7 @@ class TestRelativeKeysResolveAgainstWhoeverIsPresent:
         subtraction cannot see that they mean the same verb.
         """
         result = negotiate_action(_RelativeAgent(), _DESKTOP_ACTIONS)
-        assert result.active_actions == frozenset(
-            {"desktop.click_coordinate", "desktop.done"}
-        )
+        assert result.active_actions == frozenset({"desktop.click_coordinate", "desktop.done"})
 
     def test_unprovided_optional_is_dropped_not_missing(self) -> None:
         result = negotiate_action(_RelativeAgent(), _DESKTOP_ACTIONS)
@@ -289,9 +281,9 @@ class TestRelativeKeysResolveAgainstWhoeverIsPresent:
         class of failure ``type`` shipped with.
         """
         provides = _ProvidesActions("desktop.type", "desktop.type_coordinate")
-        assert negotiate_action(
-            _TypeCoordinateAgent(), provides
-        ).active_actions == frozenset({"desktop.type_coordinate"})
+        assert negotiate_action(_TypeCoordinateAgent(), provides).active_actions == frozenset(
+            {"desktop.type_coordinate"}
+        )
 
     def test_a_relative_key_nobody_provides_is_reported_as_written(self) -> None:
         """The diagnosis must name the string in the wiring line."""
@@ -334,9 +326,7 @@ class TestFullyQualifiedKeysPinTheirProvider:
 
     def test_pinning_one_key_leaves_the_others_relative(self) -> None:
         result = negotiate_action(_PinnedAgent(), _DESKTOP_ACTIONS)
-        assert result.active_actions == frozenset(
-            {"desktop.click_coordinate", "desktop.done"}
-        )
+        assert result.active_actions == frozenset({"desktop.click_coordinate", "desktop.done"})
 
 
 # ── 3. Ambiguity is refused, with both candidates named ───────────────
@@ -398,9 +388,7 @@ class TestAmbiguityIsRefused:
         assert "browser.click_coordinate" in caplog.text
         assert "desktop.click_coordinate" in caplog.text
 
-    def test_an_unambiguous_set_stays_quiet(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_an_unambiguous_set_stays_quiet(self, caplog: pytest.LogCaptureFixture) -> None:
         """No warning on the configuration every shipped run has."""
         with caplog.at_level("WARNING"):
             _action_rules(
@@ -467,12 +455,8 @@ class TestRoutingStillSpeaksFullyQualifiedNames:
         env = _desktop_env()
         agent = _RelativeAgent()
         negotiated = negotiate_action(agent, env)
-        descriptors = env.get_action_space(
-            active_actions=negotiated.active_actions
-        )
-        _kept, guard = build_guarded_act(
-            env.act, descriptors, bindings=negotiated.action_bindings
-        )
+        descriptors = env.get_action_space(active_actions=negotiated.active_actions)
+        _kept, guard = build_guarded_act(env.act, descriptors, bindings=negotiated.action_bindings)
 
         emitted = Action(
             name="click_coordinate",
@@ -502,10 +486,7 @@ class TestRoutingStillSpeaksFullyQualifiedNames:
     async def test_descriptors_advertise_the_fully_qualified_name(self) -> None:
         env = _desktop_env()
         negotiated = negotiate_action(_RelativeAgent(), env)
-        names = {
-            d.name
-            for d in env.get_action_space(active_actions=negotiated.active_actions)
-        }
+        names = {d.name for d in env.get_action_space(active_actions=negotiated.active_actions)}
         assert names == {
             "desktop.click_coordinate",
             "desktop.done",
@@ -517,12 +498,8 @@ class TestRoutingStillSpeaksFullyQualifiedNames:
     ) -> None:
         env = _desktop_env()
         negotiated = negotiate_action(_RelativeAgent(), env)
-        descriptors = env.get_action_space(
-            active_actions=negotiated.active_actions
-        )
-        _kept, guard = build_guarded_act(
-            env.act, descriptors, bindings=negotiated.action_bindings
-        )
+        descriptors = env.get_action_space(active_actions=negotiated.active_actions)
+        _kept, guard = build_guarded_act(env.act, descriptors, bindings=negotiated.action_bindings)
 
         result = await guard(Action(name="type", params={"text": "hi"}))
 
@@ -533,9 +510,7 @@ class TestRoutingStillSpeaksFullyQualifiedNames:
         """A binding whose target the filter dropped must not resolve."""
         env = _desktop_env()
         negotiated = negotiate_action(_RelativeAgent(), env)
-        descriptors = env.get_action_space(
-            active_actions=negotiated.active_actions
-        )
+        descriptors = env.get_action_space(active_actions=negotiated.active_actions)
         _kept, guard = build_guarded_act(
             env.act,
             descriptors,
@@ -638,9 +613,7 @@ class TestUITarsRunsWhereverItsVerbsExist:
 
     def test_the_observation_axis_refuses_the_same_way(self) -> None:
         class _Composite:
-            provided_fragments = frozenset(
-                {"browser.screenshot", "desktop.screenshot"}
-            )
+            provided_fragments = frozenset({"browser.screenshot", "desktop.screenshot"})
 
         with pytest.raises(AmbiguousFragmentError) as exc:
             negotiate_observation(UITarsAgent(), ReactLoop(), _Composite())
@@ -685,11 +658,7 @@ class TestUITarsRunsWhereverItsVerbsExist:
         )
 
         class _CompositeFragments:
-            provided_fragments = frozenset(
-                {"browser.screenshot", "desktop.screenshot"}
-            )
+            provided_fragments = frozenset({"browser.screenshot", "desktop.screenshot"})
 
-        observed = negotiate_observation(
-            _PinnedUITars(), ReactLoop(), _CompositeFragments()
-        )
+        observed = negotiate_observation(_PinnedUITars(), ReactLoop(), _CompositeFragments())
         assert observed.env_sourced == frozenset({"desktop.screenshot"})

@@ -91,8 +91,7 @@ class BackgroundTasks:
             return
 
         logger.warning(
-            "%d background hook handler(s) still running %.1fs after the run "
-            "ended; cancelling: %s",
+            "%d background hook handler(s) still running %.1fs after the run ended; cancelling: %s",
             len(unfinished),
             timeout,
             sorted(task.get_name() for task in unfinished),

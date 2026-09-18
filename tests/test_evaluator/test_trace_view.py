@@ -60,9 +60,7 @@ def _legacy_trace(traces_dir: Path, task_id: str = "t-old") -> Path:
 
 class TestTheProjectionReadsModels:
     def test_the_four_things_come_off_the_typed_result(self, traces_dir):
-        view = TraceView(
-            RunTrace(write_trace(traces_dir, task="Find it", answer="42", steps=2))
-        )
+        view = TraceView(RunTrace(write_trace(traces_dir, task="Find it", answer="42", steps=2)))
 
         assert view.task_text == "Find it"
         assert view.answer == "42"
@@ -121,9 +119,7 @@ class TestUnreadableIsNotUnfinished:
         with pytest.raises(TraceSchemaError):
             _ = view.answer
 
-    async def test_a_legacy_trace_costs_the_sweep_one_entry_not_the_run(
-        self, traces_dir
-    ):
+    async def test_a_legacy_trace_costs_the_sweep_one_entry_not_the_run(self, traces_dir):
         """The runner must survive it, and say what it survived.
 
         A schema failure and a judge outage both leave the task unscored,

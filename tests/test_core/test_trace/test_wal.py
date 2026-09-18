@@ -213,9 +213,7 @@ class TestWALWriter:
         )
 
         # Re-read manifest from disk
-        manifest = TraceManifest.model_validate_json(
-            (wal.run_dir / "manifest.json").read_text()
-        )
+        manifest = TraceManifest.model_validate_json((wal.run_dir / "manifest.json").read_text())
         assert manifest.last_step_completed == 0
         assert len(manifest.steps) == 1
         assert manifest.steps[0].step == 0
@@ -227,9 +225,7 @@ class TestWALWriter:
             wal.write_step_record(i, _step(i))
             wal.commit_step(step=i, step_file=f"steps/{i:03d}.json")
 
-        manifest = TraceManifest.model_validate_json(
-            (wal.run_dir / "manifest.json").read_text()
-        )
+        manifest = TraceManifest.model_validate_json((wal.run_dir / "manifest.json").read_text())
         assert manifest.last_step_completed == 2
         assert len(manifest.steps) == 3
 
@@ -244,17 +240,13 @@ class TestWALWriter:
     def test_finalize_completed(self, wal, config):
         wal.init_run(config)
         wal.finalize(RunStatus.COMPLETED)
-        manifest = TraceManifest.model_validate_json(
-            (wal.run_dir / "manifest.json").read_text()
-        )
+        manifest = TraceManifest.model_validate_json((wal.run_dir / "manifest.json").read_text())
         assert manifest.status == RunStatus.COMPLETED
 
     def test_finalize_error(self, wal, config):
         wal.init_run(config)
         wal.finalize(RunStatus.ERROR)
-        manifest = TraceManifest.model_validate_json(
-            (wal.run_dir / "manifest.json").read_text()
-        )
+        manifest = TraceManifest.model_validate_json((wal.run_dir / "manifest.json").read_text())
         assert manifest.status == RunStatus.ERROR
 
     def test_commit_without_init_raises(self, wal):

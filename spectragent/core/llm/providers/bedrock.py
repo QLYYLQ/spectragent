@@ -33,7 +33,9 @@ class ChatBedrock(ChatModelBase):
     __registry_key__ = "bedrock.default"
     """AWS Bedrock chat model using the boto3 converse API."""
 
-    model: Annotated[str, Field(description="Bedrock model identifier")] = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    model: Annotated[str, Field(description="Bedrock model identifier")] = (
+        "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    )
     max_tokens: Annotated[int | None, Field(description="Maximum tokens to generate")] = 4096
     temperature: Annotated[float | None, Field(description="Sampling temperature")] = None
     top_p: Annotated[float | None, Field(description="Top-p sampling parameter")] = None
@@ -251,7 +253,8 @@ class ChatBedrock(ChatModelBase):
                                 usage=usage,
                             )
                     raise ModelProviderError(
-                        message="Expected structured output but no tool use found", model=self.name,
+                        message="Expected structured output but no tool use found",
+                        model=self.name,
                     )
 
             if output_format is None:

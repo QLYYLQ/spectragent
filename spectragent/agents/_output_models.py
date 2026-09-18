@@ -49,9 +49,7 @@ _FIELDS: Mapping[str, tuple[Any, Any]] = MappingProxyType(
             str,
             Field(
                 default="",
-                description=(
-                    "1-3 sentences of step-level memory and overall progress."
-                ),
+                description=("1-3 sentences of step-level memory and overall progress."),
             ),
         ),
         "next_goal": (
@@ -156,9 +154,7 @@ class UITarsOutput(BaseModel):
 class SkyvernActionItem(BaseModel):
     """A single action within a Skyvern step."""
 
-    action_type: str = Field(
-        description="Canonical action name, e.g. 'browser.click'"
-    )
+    action_type: str = Field(description="Canonical action name, e.g. 'browser.click'")
     index: int | None = Field(
         default=None,
         description="Target element index from the element tree; null if the action takes no element",
@@ -169,9 +165,7 @@ class SkyvernActionItem(BaseModel):
     direction: str | None = Field(
         default=None, description="Scroll direction: up | down | left | right"
     )
-    keys: str | None = Field(
-        default=None, description="Keyboard keys to send, e.g. 'Enter'"
-    )
+    keys: str | None = Field(default=None, description="Keyboard keys to send, e.g. 'Enter'")
     reasoning: str = Field(default="", description="Why this action was chosen")
 
 

@@ -104,9 +104,7 @@ class TestScreenshotExecute:
         assert event.format == "webp"
         assert event.quality == 50
 
-    async def test_return_mode_base64(
-        self, fake_capability: FakeCapability
-    ) -> None:
+    async def test_return_mode_base64(self, fake_capability: FakeCapability) -> None:
         scope = fake_capability._scopes["sid_main"]
         _stub_screenshot_handler(scope)
 
@@ -120,15 +118,11 @@ class TestScreenshotExecute:
         b64 = base64.b64encode(_PNG_BYTES).decode("ascii")
         assert result.extracted_content == f"data:image/png;base64,{b64}"
 
-    async def test_return_mode_both(
-        self, fake_capability: FakeCapability, tmp_path: Path
-    ) -> None:
+    async def test_return_mode_both(self, fake_capability: FakeCapability, tmp_path: Path) -> None:
         scope = fake_capability._scopes["sid_main"]
         _stub_screenshot_handler(scope)
 
-        action = ScreenshotAction(
-            output_dir=str(tmp_path), return_mode="both"
-        )
+        action = ScreenshotAction(output_dir=str(tmp_path), return_mode="both")
         result = await action.execute(
             {},
             capability=fake_capability,  # type: ignore[arg-type]

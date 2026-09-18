@@ -184,9 +184,7 @@ def runner_factory(tmp_path):
                 hooks=[writer],
             )
 
-        return BenchmarkRunner(
-            loader=_TaskLoader(), compose=compose, timeout=10, **kwargs
-        )
+        return BenchmarkRunner(loader=_TaskLoader(), compose=compose, timeout=10, **kwargs)
 
     return build
 
@@ -259,9 +257,7 @@ async def test_the_verdict_joins_back_to_the_dataset(runner_factory, tmp_path):
 
 async def test_the_agents_self_report_is_not_the_verdict(runner_factory, tmp_path):
     """``agent_reported_success`` and ``predicted_label`` are different facts."""
-    await runner_factory(
-        evaluator=ExactMatchEvaluator(), eval_loader=_EvalLoader()
-    ).run()
+    await runner_factory(evaluator=ExactMatchEvaluator(), eval_loader=_EvalLoader()).run()
 
     for trace_dir in sorted((tmp_path / "traces").iterdir()):
         result = json.loads((trace_dir / "result.json").read_text("utf-8"))
@@ -286,9 +282,7 @@ async def test_evaluation_failure_does_not_lose_the_sweep(runner_factory):
         async def evaluate(self, trace, reference):
             raise RuntimeError("judge exploded")
 
-    summary = await runner_factory(
-        evaluator=_Exploding(), eval_loader=_EvalLoader()
-    ).run()
+    summary = await runner_factory(evaluator=_Exploding(), eval_loader=_EvalLoader()).run()
 
     assert summary.total == 2
     assert summary.completed == 2  # the runs themselves survived

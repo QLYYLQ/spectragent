@@ -141,9 +141,7 @@ class TestActiveActionsNarrowing:
             EnvironmentBase,
             {"prefix_cap_a": CapA(), "prefix_cap_b": CapB()},
         )
-        assert len(env.get_action_space(active_actions=None)) == len(
-            env.get_action_space()
-        )
+        assert len(env.get_action_space(active_actions=None)) == len(env.get_action_space())
 
 
 class TestDuplicateCapabilityInstances:

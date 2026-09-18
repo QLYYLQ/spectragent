@@ -183,8 +183,14 @@ class AgentResult(BaseModel):
 
     @model_validator(mode="after")
     def _validate_result_consistency(self) -> "AgentResult":
-        if self.env_status == EnvironmentStatus.SUCCESS and self.agent_done == AgentDoneStatus.DONE and self.error is not None:
-            raise ValueError("env_status is 'success' and agent_done is 'done' but error is not None")
+        if (
+            self.env_status == EnvironmentStatus.SUCCESS
+            and self.agent_done == AgentDoneStatus.DONE
+            and self.error is not None
+        ):
+            raise ValueError(
+                "env_status is 'success' and agent_done is 'done' but error is not None"
+            )
         # A self-report can only exist if the agent actually called done().
         # This constrains the *self-report*, never the ``answer`` — which is
         # exactly why the verdict lives in EvalResult and not here.

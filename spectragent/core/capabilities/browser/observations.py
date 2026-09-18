@@ -90,9 +90,7 @@ def _node_ref(node: DOMElementNode) -> dict[str, Any]:
     }
 
 
-def _node_to_json(
-    node: DOMElementNode, visited: set[int], depth: int
-) -> dict[str, Any]:
+def _node_to_json(node: DOMElementNode, visited: set[int], depth: int) -> dict[str, Any]:
     nid = id(node)
     if nid in visited:
         return {"__cycle__": _node_ref(node)}

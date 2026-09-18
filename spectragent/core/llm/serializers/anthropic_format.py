@@ -195,9 +195,7 @@ class AnthropicMessageSerializer:
                 if part.type == "text":
                     blocks.append(TextBlockParam(text=part.text, type="text"))
                 elif part.type == "image_url":
-                    blocks.append(
-                        AnthropicMessageSerializer._serialize_content_part_image(part)
-                    )
+                    blocks.append(AnthropicMessageSerializer._serialize_content_part_image(part))
 
         block = ToolResultBlockParam(
             tool_use_id=message.tool_call_id,

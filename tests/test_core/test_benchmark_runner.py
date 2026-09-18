@@ -198,15 +198,11 @@ class TestBenchmarkRunner:
         assert all(e.torn_down for e in envs)
         # Task context reached the environment — the loader→capability
         # link that did not exist before.
-        assert envs[0].setup_kwargs["context"] == {
-            "start_url": "https://example.com/t-1"
-        }
+        assert envs[0].setup_kwargs["context"] == {"start_url": "https://example.com/t-1"}
         cap = envs[0].capabilities["bench_runner_cap"]
         assert isinstance(cap, _Cap)
         assert cap.start_url == "https://example.com/t-1"
-        assert envs[1].setup_kwargs["context"] == {
-            "start_url": "https://example.com/t-2"
-        }
+        assert envs[1].setup_kwargs["context"] == {"start_url": "https://example.com/t-2"}
 
     async def test_traces_are_identifiable_per_task(self, tmp_path):
         envs: list[_Env] = []
@@ -242,9 +238,7 @@ class TestBenchmarkRunner:
         summary = await runner.run(limit=1)
         assert summary.total == 1
 
-    async def test_an_environment_that_never_came_up_is_not_a_completed_task(
-        self, tmp_path
-    ):
+    async def test_an_environment_that_never_came_up_is_not_a_completed_task(self, tmp_path):
         """A sweep in which no browser ever started must not exit 0.
 
         ``execute`` is called with ``raise_on_error=False``, so an env
@@ -276,9 +270,7 @@ class TestBenchmarkRunner:
                 hooks=[writer],
             )
 
-        summary = await BenchmarkRunner(
-            loader=_Loader(), compose=compose, timeout=10
-        ).run()
+        summary = await BenchmarkRunner(loader=_Loader(), compose=compose, timeout=10).run()
 
         assert summary.total == 2
         assert summary.completed == 0
@@ -292,9 +284,7 @@ class TestBenchmarkRunner:
         assert "cannot connect to CDP" in outcome.infrastructure_error
         assert "cannot connect to CDP" in summary.format_table()
 
-    async def test_an_agent_that_ran_out_of_steps_is_still_a_completed_task(
-        self, tmp_path
-    ):
+    async def test_an_agent_that_ran_out_of_steps_is_still_a_completed_task(self, tmp_path):
         """The infra check must not swallow ordinary agent failure.
 
         ``max_steps`` in a healthy browser is a real attempt that scored
@@ -323,9 +313,7 @@ class TestBenchmarkRunner:
                 hooks=[writer],
             )
 
-        summary = await BenchmarkRunner(
-            loader=_Loader(), compose=compose, timeout=10
-        ).run()
+        summary = await BenchmarkRunner(loader=_Loader(), compose=compose, timeout=10).run()
 
         assert summary.count_by_done() == {"max_steps": 2}
         assert summary.completed == 2

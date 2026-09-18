@@ -24,18 +24,25 @@ from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOM
 PROPAGATING_TAGS: frozenset[str] = frozenset({"a", "button"})
 
 # (tag, role) combos that propagate.
-PROPAGATING_ROLES: frozenset[tuple[str, str]] = frozenset({
-    ("div", "button"),
-    ("span", "button"),
-    ("div", "combobox"),
-    ("span", "combobox"),
-    ("input", "combobox"),
-})
+PROPAGATING_ROLES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("div", "button"),
+        ("span", "button"),
+        ("div", "combobox"),
+        ("span", "combobox"),
+        ("input", "combobox"),
+    }
+)
 
 # Children with these tags are never excluded.
-EXEMPT_CHILD_TAGS: frozenset[str] = frozenset({
-    "input", "select", "textarea", "label",
-})
+EXEMPT_CHILD_TAGS: frozenset[str] = frozenset(
+    {
+        "input",
+        "select",
+        "textarea",
+        "label",
+    }
+)
 
 _CONTAINMENT_THRESHOLD = 0.99
 

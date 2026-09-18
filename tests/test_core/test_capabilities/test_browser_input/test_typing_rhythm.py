@@ -109,9 +109,7 @@ class TestHumanRhythmIsADistribution:
         quantities at once. Drawn with both sigmas at zero so the structure
         is the only thing left varying.
         """
-        rhythm = HumanRhythm(
-            seed=5, iki_sigma=0.0, hold_sigma=0.0, pause_probability=0.0
-        )
+        rhythm = HumanRhythm(seed=5, iki_sigma=0.0, hold_sigma=0.0, pause_probability=0.0)
         keystrokes = rhythm.generate(text)
         previous_hold = 0.0
         intervals: list[float] = []
@@ -146,9 +144,14 @@ class TestHumanRhythmIsADistribution:
         assert all(k.gap_ms <= 600.0 for k in rhythm.generate("a" * 500))
 
     def test_gaps_and_holds_stay_inside_their_bounds(self) -> None:
-        rhythm = HumanRhythm(seed=9, min_gap_ms=30.0, max_gap_ms=500.0,
-                             min_hold_ms=40.0, max_hold_ms=120.0,
-                             pause_probability=0.0)
+        rhythm = HumanRhythm(
+            seed=9,
+            min_gap_ms=30.0,
+            max_gap_ms=500.0,
+            min_hold_ms=40.0,
+            max_hold_ms=120.0,
+            pause_probability=0.0,
+        )
         for k in rhythm.generate(TEXT * 10):
             assert 30.0 <= k.gap_ms <= 500.0
             assert 40.0 <= k.hold_ms <= 120.0

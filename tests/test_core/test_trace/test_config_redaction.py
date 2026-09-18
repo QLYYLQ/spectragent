@@ -50,12 +50,10 @@ class _Cfg(BaseModel):
     # Open types: a number and two strings.
     max_steps: int = 30
     model: str = "gpt-4o"
-    marked_model: Annotated[
-        str, trace_safe("model identity is public", default="gpt-4o")
-    ] = "gpt-4o"
-    annotated_mark: Annotated[
-        str, Field(default="x"), TraceSafe("hand-written model")
-    ] = "x"
+    marked_model: Annotated[str, trace_safe("model identity is public", default="gpt-4o")] = (
+        "gpt-4o"
+    )
+    annotated_mark: Annotated[str, Field(default="x"), TraceSafe("hand-written model")] = "x"
     schema_extra_mark: Annotated[
         str, Field(default="y", json_schema_extra={"trace_safe": True})
     ] = "y"
@@ -135,15 +133,13 @@ class TestDenyByDefault:
         assert dumped["tags"] == OMITTED
 
     def test_empty_container_records_as_itself(self, dumped):
-        """"Configured, and empty" — an ablation list naming no actions —
+        """ "Configured, and empty" — an ablation list naming no actions —
         is a fact worth having, and carries nothing to leak."""
         assert dumped["children"] == []
 
     def test_list_of_models_is_structure(self):
         dumped = redact_config(_Cfg(children=[_Backend(api_key="sk-x")]))
-        assert dumped["children"] == [
-            {"provider_id": "local", "api_key": OMITTED, "cdp_url": None}
-        ]
+        assert dumped["children"] == [{"provider_id": "local", "api_key": OMITTED, "cdp_url": None}]
 
     def test_undeclared_extra_is_withheld(self):
         """``extra="allow"`` fields have no declaration, so no mark. The

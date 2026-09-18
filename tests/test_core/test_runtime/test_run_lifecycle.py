@@ -239,9 +239,7 @@ class TestEnvLifecycle:
         """TaskLoader.get_task_context() → Capability.setup(), finally wired."""
         env = _make_env()
         runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env), AGENT_ID)
-        await runtime.execute(
-            "t", task_id="t-1", env_context={"start_url": "https://example.com"}
-        )
+        await runtime.execute("t", task_id="t-1", env_context={"start_url": "https://example.com"})
         # The context arrives as one mapping and is routed by the env to
         # the capability that declares the key — it is not splatted at
         # ``env.setup`` as loose kwargs any more.
@@ -256,9 +254,7 @@ class TestEnvLifecycle:
         log: list[str] = []
         env = _make_env()
         hook = _RecordingHook(log)
-        runtime = AgentRuntime.for_agent(
-            _mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID
-        )
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID)
         await runtime.execute("t", task_id="t-1")
 
         # on_run_end sees a live env (setup done, teardown not yet) — the
@@ -270,9 +266,7 @@ class TestEnvLifecycle:
     async def test_setup_failure_still_produces_a_result(self):
         env = _make_env(_FailingSetupEnv)
         hook = _RecordingHook([])
-        runtime = AgentRuntime.for_agent(
-            _mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID
-        )
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID)
         result = await runtime.execute("t", task_id="t-1", raise_on_error=False)
 
         assert result.agent_done.value == "error"
@@ -381,18 +375,14 @@ class TestTerminationPaths:
         assert result.error is not None and "loop exploded" in result.error
 
     async def test_exception_returns_result_when_not_raising(self):
-        runtime = AgentRuntime.for_agent(
-            _mk(_Agent(), _BoomLoop(), _make_env()), AGENT_ID
-        )
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), _BoomLoop(), _make_env()), AGENT_ID)
         result = await runtime.execute("t", task_id="t-1", raise_on_error=False)
         assert result.agent_done.value == "error"
         assert result.error is not None and "loop exploded" in result.error
 
     async def test_timeout_result_usage_is_none_not_zero(self):
         """A zero-filled usage would claim the run was measured."""
-        runtime = AgentRuntime.for_agent(
-            _mk(_Agent(), _SlowLoop(), _make_env()), AGENT_ID
-        )
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), _SlowLoop(), _make_env()), AGENT_ID)
         result = await runtime.execute("t", task_id="t-1", timeout=0.05)
         assert result.metrics.usage is None
 
@@ -443,9 +433,12 @@ class TestMemoryReset:
         assert agent.prepare_calls == 2
         # Not 2x: the second run started from an empty context.
         assert len(memory.messages) == first_len
-        assert sum(
-            1 for m in memory.messages if getattr(m, "get", lambda _k: None)("role") == "system"
-        ) == 1
+        assert (
+            sum(
+                1 for m in memory.messages if getattr(m, "get", lambda _k: None)("role") == "system"
+            )
+            == 1
+        )
 
 
 class TestNonBlockingHooksAreDrained:

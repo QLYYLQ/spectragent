@@ -41,14 +41,30 @@ from pydantic import BaseModel
 STRICT_DIALECT_KEYWORDS: frozenset[str] = frozenset(
     {
         # structure
-        "type", "properties", "required", "additionalProperties", "items",
-        "anyOf", "$ref", "$defs",
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "anyOf",
+        "$ref",
+        "$defs",
         # value domains
-        "enum", "const",
-        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
-        "multipleOf", "minLength", "maxLength", "pattern", "format",
+        "enum",
+        "const",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "format",
         # annotations
-        "description", "title", "default",
+        "description",
+        "title",
+        "default",
     }
 )
 
@@ -57,10 +73,23 @@ STRICT_DIALECT_KEYWORDS: frozenset[str] = frozenset(
 #: were schema keywords and answer ``False`` for a perfectly legal schema.
 _STRICT_LEAF_KEYWORDS: frozenset[str] = frozenset(
     {
-        "type", "required", "enum", "const", "description", "title", "default",
-        "format", "pattern", "$ref",
-        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
-        "multipleOf", "minLength", "maxLength",
+        "type",
+        "required",
+        "enum",
+        "const",
+        "description",
+        "title",
+        "default",
+        "format",
+        "pattern",
+        "$ref",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
     }
 )
 

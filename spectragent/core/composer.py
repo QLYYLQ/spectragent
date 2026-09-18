@@ -322,9 +322,7 @@ class ConfigComposer:
                 # the ``provider:`` block on every LLM. Splat its
                 # explicitly-set fields into the owner's kwargs instead
                 # of dropping the whole block on the floor.
-                init_kwargs.update(
-                    self._splat_subconfig(cls, name, value, init_params, path=path)
-                )
+                init_kwargs.update(self._splat_subconfig(cls, name, value, init_params, path=path))
             else:
                 raise UnresolvedWiringError(
                     f"{path}.{name}: config field has no matching __init__ "
@@ -427,9 +425,7 @@ class ConfigComposer:
             return [self._instantiate(value, state, path=path)]
         if isinstance(value, list):
             return [
-                self._instantiate(v, state, path=f"{path}[{i}]")
-                if isinstance(v, BaseModel)
-                else v
+                self._instantiate(v, state, path=f"{path}[{i}]") if isinstance(v, BaseModel) else v
                 for i, v in enumerate(value)
             ]
         raise UnresolvedWiringError(

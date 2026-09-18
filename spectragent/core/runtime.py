@@ -197,9 +197,7 @@ class AgentRuntime:
 
     # -- environment lifecycle ---------------------------------
 
-    async def setup_environment(
-        self, context: Mapping[str, Any] | None = None
-    ) -> None:
+    async def setup_environment(self, context: Mapping[str, Any] | None = None) -> None:
         """Set up the bound environment, threading the negotiation result.
 
         Must run after :meth:`prepare` — negotiation is what tells each

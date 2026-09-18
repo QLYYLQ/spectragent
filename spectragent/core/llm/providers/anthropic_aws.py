@@ -36,12 +36,14 @@ class ChatAnthropicAWS(AnthropicCompatBase):
         params: dict[str, Any] = {}
         if self.session:
             creds = self.session.get_credentials()
-            params.update({
-                "aws_access_key": creds.access_key,
-                "aws_secret_key": creds.secret_key,
-                "aws_session_token": creds.token,
-                "aws_region": self.session.region_name,
-            })
+            params.update(
+                {
+                    "aws_access_key": creds.access_key,
+                    "aws_secret_key": creds.secret_key,
+                    "aws_session_token": creds.token,
+                    "aws_region": self.session.region_name,
+                }
+            )
         else:
             if self.aws_access_key:
                 params["aws_access_key"] = self.aws_access_key

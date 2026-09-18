@@ -68,10 +68,7 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return self.describe(
-            (
-                "Click a point in the page viewport to focus a text field, "
-                "then type into it."
-            ),
+            ("Click a point in the page viewport to focus a text field, then type into it."),
             # Interpolated, not literal: ``clear_by_default`` is a YAML
             # knob, and this string is what the prompt teaches.
             hints={"clear": f"default={str(self.clear_by_default).lower()}"},
@@ -91,9 +88,7 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
                 coordinate_y=int(params["coordinate_y"]),
                 text=params["text"],
                 clear=(
-                    self.clear_by_default
-                    if params.get("clear") is None
-                    else bool(params["clear"])
+                    self.clear_by_default if params.get("clear") is None else bool(params["clear"])
                 ),
             )
             scope.emit(event)

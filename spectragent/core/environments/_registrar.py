@@ -62,8 +62,7 @@ def _setup_keys(capability: BaseCapability) -> frozenset[str]:
         name
         for name, param in sig.parameters.items()
         if name not in _RESERVED_SETUP_PARAMS
-        and param.kind
-        in (param.KEYWORD_ONLY, param.POSITIONAL_OR_KEYWORD)
+        and param.kind in (param.KEYWORD_ONLY, param.POSITIONAL_OR_KEYWORD)
     )
 
 
@@ -189,9 +188,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                     f"reached. Use one instance per capability class, or give "
                     f"each environment its own."
                 )
-            self._capability_router = {
-                cap.capability_id: cap for cap in self.capabilities.values()
-            }
+            self._capability_router = {cap.capability_id: cap for cap in self.capabilities.values()}
         return self._capability_router
 
     def capability_ids(self) -> frozenset[str]:
@@ -271,8 +268,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             return ActionResult(
                 success=False,
                 error=(
-                    f"Action name must be fully qualified "
-                    f"('source.action_id'), got '{action.name}'"
+                    f"Action name must be fully qualified ('source.action_id'), got '{action.name}'"
                 ),
             )
         cap = self._by_capability_id().get(prefix)
@@ -318,16 +314,13 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         affected = [
             cap
             for cap in self.capabilities.values()
-            if cap is not actor
-            and getattr(type(cap), "__invalidated_by_foreign_actions__", False)
+            if cap is not actor and getattr(type(cap), "__invalidated_by_foreign_actions__", False)
         ]
         if not affected:
             return
         self._observation_cycle += 1
         cycle = self._observation_cycle
-        errors = await asyncio.gather(
-            *(self._begin_cycle(cap, cycle) for cap in affected)
-        )
+        errors = await asyncio.gather(*(self._begin_cycle(cap, cycle) for cap in affected))
         for cap, exc in zip(affected, errors, strict=True):
             if exc is not None:
                 logger.warning(
@@ -427,9 +420,9 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         if failures:
             fatal = sorted(set(failures) & required)
             if fatal:
-                raise ObservationFailedError(
-                    cycle, failures, owners, required
-                ) from failures[fatal[0]]
+                raise ObservationFailedError(cycle, failures, owners, required) from failures[
+                    fatal[0]
+                ]
             for frag_key, exc in failures.items():
                 logger.warning(
                     "observe cycle %d: optional fragment %r from capability %r "
@@ -441,8 +434,8 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                     type(exc).__name__,
                     exc,
                 )
-                field_values[fragment_field_name(frag_key)] = (
-                    FragmentFailure.from_exception(frag_key, owners[frag_key], exc)
+                field_values[fragment_field_name(frag_key)] = FragmentFailure.from_exception(
+                    frag_key, owners[frag_key], exc
                 )
 
         # Which slots may carry a failure is derived by the model builder
@@ -471,9 +464,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         router = self._fragment_router or {}
         unroutable = env_sourced - router.keys()
         if unroutable:
-            raise UnroutableFragmentError(
-                frozenset(unroutable), frozenset(router)
-            )
+            raise UnroutableFragmentError(frozenset(unroutable), frozenset(router))
         # Keyed by ``id()`` because a capability is genuinely unhashable:
         # ``CapabilityBase`` is a ``@dataclass`` with the default
         # ``eq=True``, which sets ``__hash__ = None``, so
@@ -574,9 +565,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         for inst_id, cap in self.capabilities.items():
             await cap.setup(negotiation=negotiation, **routed[inst_id])
 
-    def route_setup_context(
-        self, context: Mapping[str, Any]
-    ) -> dict[str, dict[str, Any]]:
+    def route_setup_context(self, context: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         """Split a task context into one keyword mapping per capability.
 
         Two forms, which compose:
@@ -602,23 +591,15 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         # ``type(self).__name__`` through the conscribe metaclass is not
         # visible to the type checker; the value is always there.
         where = getattr(type(self), "__name__", "Environment")
-        accepted = {
-            inst_id: _setup_keys(cap) for inst_id, cap in self.capabilities.items()
-        }
-        routed: dict[str, dict[str, Any]] = {
-            inst_id: {} for inst_id in self.capabilities
-        }
+        accepted = {inst_id: _setup_keys(cap) for inst_id, cap in self.capabilities.items()}
+        routed: dict[str, dict[str, Any]] = {inst_id: {} for inst_id in self.capabilities}
         by_cap_id: dict[str, list[str]] = {}
         for inst_id, cap in self.capabilities.items():
             by_cap_id.setdefault(cap.capability_id, []).append(inst_id)
 
         unclaimed: list[str] = []
         for key, value in context.items():
-            targets = (
-                [key]
-                if key in self.capabilities
-                else by_cap_id.get(key)
-            )
+            targets = [key] if key in self.capabilities else by_cap_id.get(key)
             if targets is not None and isinstance(value, Mapping):
                 for inst_id in targets:
                     unknown = sorted(set(value) - accepted[inst_id])

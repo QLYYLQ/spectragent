@@ -51,7 +51,7 @@ from spectragent.core.capabilities.browser.input.rhythm import (
 #: Characters treated as punctuation for timing. CJK marks included: this
 #: strategy times a Chinese string too, even though its characters are
 #: delivered differently (see ``HumanKeyboard``).
-_PUNCTUATION = frozenset(".,;:!?'\"()[]{}<>/\\-_=+@#$%^&*|~`" "。，、；：！？（）【】《》…—“”‘’")
+_PUNCTUATION = frozenset(".,;:!?'\"()[]{}<>/\\-_=+@#$%^&*|~`。，、；：！？（）【】《》…—“”‘’")
 
 #: Characters a US layout needs Shift for, beyond the uppercase letters.
 _SHIFTED = frozenset('~!@#$%^&*()_+{}|:"<>?')

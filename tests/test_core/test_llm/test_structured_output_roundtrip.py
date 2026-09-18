@@ -67,9 +67,7 @@ class TestPerRunModelRoundTrip:
         assert model is not None
 
         out = model.model_validate(_PAYLOAD)
-        assert agent.parse_react_output(out) == [
-            Action(name="browser.click", params={"index": 1})
-        ]
+        assert agent.parse_react_output(out) == [Action(name="browser.click", params={"index": 1})]
 
     def test_the_wire_shape_is_upstream_browser_use_s(self) -> None:
         """A validated item is a model now, and dumps back to the same JSON.
@@ -112,9 +110,7 @@ class TestPerRunModelRoundTrip:
 
         for alias in ("click_element", "click"):
             with pytest.raises(ValidationError):
-                model.model_validate(
-                    {"memory": "m", "action": [{alias: {"index": 4}}]}
-                )
+                model.model_validate({"memory": "m", "action": [{alias: {"index": 4}}]})
 
     def test_done_names_its_answer_field_once(self) -> None:
         """``done.text`` → ``extracted_content`` used to happen in the parser.
@@ -146,9 +142,7 @@ class TestHallucinatedVerbRejection:
 
     def test_text_path_rejects_hallucinated_verb(self) -> None:
         agent = _prepared_agent()
-        raw = json.dumps(
-            {"memory": "m", "action": [{"totally_hallucinated_verb": {}}]}
-        )
+        raw = json.dumps({"memory": "m", "action": [{"totally_hallucinated_verb": {}}]})
         with pytest.raises(ParseError) as exc:
             agent.parse_react_output(raw)
 
@@ -163,9 +157,7 @@ class TestHallucinatedVerbRejection:
         assert model is not None
 
         with pytest.raises(ValidationError) as exc:
-            model.model_validate(
-                {"memory": "m", "action": [{"totally_hallucinated_verb": {}}]}
-            )
+            model.model_validate({"memory": "m", "action": [{"totally_hallucinated_verb": {}}]})
         assert "unknown action 'totally_hallucinated_verb'" in str(exc.value)
 
     def test_negotiated_out_verb_is_rejected(self) -> None:
@@ -278,9 +270,11 @@ class TestReactLoopRoutesOutputFormat:
     def test_agents_output_model_reaches_ainvoke(self) -> None:
         agent = _prepared_agent()
         model = agent.get_react_output_model()
-        llm = _RecordingLLM(model.model_validate(  # type: ignore[union-attr]
-            {"memory": "m", "action": [{"browser.done": {"extracted_content": "ok"}}]}
-        ))
+        llm = _RecordingLLM(
+            model.model_validate(  # type: ignore[union-attr]
+                {"memory": "m", "action": [{"browser.done": {"extracted_content": "ok"}}]}
+            )
+        )
 
         result = _run_loop(agent, llm)
 
@@ -351,8 +345,12 @@ class TestCompletionSerialization:
                 _StubAgent(model),
                 "task",
                 ctx={
-                    "env": env, "llm": ok_llm, "memory": ok_memory,
-                    "act_fn": env.act, "session_id": None, "task_id": "t",
+                    "env": env,
+                    "llm": ok_llm,
+                    "memory": ok_memory,
+                    "act_fn": env.act,
+                    "session_id": None,
+                    "task_id": "t",
                 },
             )
         )
@@ -370,8 +368,12 @@ class TestCompletionSerialization:
                 _FailingAgent(model),
                 "task",
                 ctx={
-                    "env": env, "llm": _RecordingLLM(completion), "memory": bad_memory,
-                    "act_fn": env.act, "session_id": None, "task_id": "t",
+                    "env": env,
+                    "llm": _RecordingLLM(completion),
+                    "memory": bad_memory,
+                    "act_fn": env.act,
+                    "session_id": None,
+                    "task_id": "t",
                 },
             )
         )
@@ -405,9 +407,7 @@ def _anthropic_tool_message(payload: dict[str, Any]):
     return Message(
         id="msg_1",
         content=[
-            ToolUseBlock(
-                id="tu_1", input=payload, name="BrowserUseOutputForRun", type="tool_use"
-            )
+            ToolUseBlock(id="tu_1", input=payload, name="BrowserUseOutputForRun", type="tool_use")
         ],
         model="claude-sonnet-4-5",
         role="assistant",
@@ -498,9 +498,13 @@ class TestAnthropicRoundTrip:
 
         fenced = f"```json\n{json.dumps(_PAYLOAD)}\n```"
         response = Message(
-            id="m", content=[TextBlock(text=fenced, type="text")],
-            model="claude-sonnet-4-5", role="assistant", stop_reason="end_turn",
-            type="message", usage=Usage(input_tokens=1, output_tokens=1),
+            id="m",
+            content=[TextBlock(text=fenced, type="text")],
+            model="claude-sonnet-4-5",
+            role="assistant",
+            stop_reason="end_turn",
+            type="message",
+            usage=Usage(input_tokens=1, output_tokens=1),
         )
         chat = self._chat()
         monkeypatch.setattr(chat, "get_client", lambda: _FakeAnthropicClient(response))
@@ -631,9 +635,9 @@ class TestOpenAIStrictModeGap:
 
     def test_every_action_branch_declares_its_properties(self) -> None:
         agent = _prepared_agent()
-        node = self._response_format(agent.get_react_output_model())["schema"][
-            "properties"
-        ]["action"]["items"]
+        node = self._response_format(agent.get_react_output_model())["schema"]["properties"][
+            "action"
+        ]["items"]
 
         assert "oneOf" not in node
         branches = node["anyOf"]
@@ -713,9 +717,7 @@ class TestOpenAIStrictModeDowngrade:
                 return SimpleNamespace(
                     choices=[
                         SimpleNamespace(
-                            message=SimpleNamespace(
-                                content=json.dumps(_PAYLOAD), tool_calls=None
-                            ),
+                            message=SimpleNamespace(content=json.dumps(_PAYLOAD), tool_calls=None),
                             finish_reason="stop",
                         )
                     ],
@@ -843,13 +845,14 @@ class TestIsStrictCompatible:
             pytest.param({"type": "array", "minItems": 1}, id="minItems"),
             pytest.param({"type": "array", "maxItems": 3}, id="maxItems"),
             pytest.param({"type": "array", "uniqueItems": True}, id="uniqueItems"),
-            pytest.param(
-                {"allOf": [{"type": "object", "properties": {}}]}, id="allOf"
-            ),
+            pytest.param({"allOf": [{"type": "object", "properties": {}}]}, id="allOf"),
             pytest.param({"not": {"type": "string"}}, id="not"),
             pytest.param(
-                {"type": "object", "properties": {},
-                 "patternProperties": {"^x": {"type": "string"}}},
+                {
+                    "type": "object",
+                    "properties": {},
+                    "patternProperties": {"^x": {"type": "string"}},
+                },
                 id="patternProperties",
             ),
             pytest.param(
@@ -933,7 +936,10 @@ class TestIsStrictCompatible:
         assert SchemaOptimizer.is_strict_compatible(
             {
                 "anyOf": [
-                    {"type": "object", "properties": {"browser.click": {"type": "object", "properties": {}}}},
+                    {
+                        "type": "object",
+                        "properties": {"browser.click": {"type": "object", "properties": {}}},
+                    },
                 ]
             }
         )
@@ -1053,9 +1059,7 @@ class TestStructuredValidationIsFedBack:
             model = "gpt-4o"
 
             async def ainvoke(self, _messages: Any, output_format: Any = None) -> Any:
-                raise ModelProviderError(
-                    "rate limited upstream", status_code=429, model="gpt-4o"
-                )
+                raise ModelProviderError("rate limited upstream", status_code=429, model="gpt-4o")
 
         memory = _FakeMemory()
         loop = ReactLoop()

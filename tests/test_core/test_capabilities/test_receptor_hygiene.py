@@ -204,9 +204,7 @@ class Surface:
     check_values: bool = False
 
 
-def collisions(
-    specs: list[Any], surfaces: list[Surface], registrars: dict[str, Any]
-) -> list[str]:
+def collisions(specs: list[Any], surfaces: list[Surface], registrars: dict[str, Any]) -> list[str]:
     """Every surface that offers a second way to choose one of ``specs``.
 
     Pure, and takes its inputs explicitly, so the positive control below
@@ -223,8 +221,7 @@ def collisions(
             elif surface.check_values and keys and surface.values & keys:
                 hit = sorted(surface.values & keys)
                 found.append(
-                    f"{surface.where} (holds {hit} — keys of the "
-                    f"{spec.registry_name!r} registry)"
+                    f"{surface.where} (holds {hit} — keys of the {spec.registry_name!r} registry)"
                 )
     return found
 
@@ -369,9 +366,7 @@ def _surfaces_of(cls: type) -> list[Surface]:
 
 def _python_files() -> list[Path]:
     return sorted(
-        path
-        for path in CAPABILITIES_ROOT.rglob("*.py")
-        if "__pycache__" not in path.parts
+        path for path in CAPABILITIES_ROOT.rglob("*.py") if "__pycache__" not in path.parts
     )
 
 

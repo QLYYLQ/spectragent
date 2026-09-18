@@ -46,9 +46,7 @@ class ClickAction(SettleableAction, ActionBase):
         ]
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return self.describe(
-            "Click a DOM element by its index in the selector map.", **context
-        )
+        return self.describe("Click a DOM element by its index in the selector map.", **context)
 
     async def execute(
         self,

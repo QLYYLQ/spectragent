@@ -33,14 +33,38 @@ from spectragent.core.capabilities.browser.dom.models import (
 logger = logging.getLogger(__name__)
 
 # Skyvern attribute allowlist — only these survive server-side trimming.
-_ALLOWED_ATTRS: frozenset[str] = frozenset({
-    "accept", "alt", "aria-checked", "aria-current", "aria-disabled",
-    "aria-label", "aria-readonly", "aria-required", "aria-role",
-    "aria-selected", "checked", "data-original-title", "data-ui",
-    "disabled", "for", "href", "maxlength", "name", "pattern",
-    "placeholder", "readonly", "required", "selected",
-    "shape-description", "src", "title", "type", "value",
-})
+_ALLOWED_ATTRS: frozenset[str] = frozenset(
+    {
+        "accept",
+        "alt",
+        "aria-checked",
+        "aria-current",
+        "aria-disabled",
+        "aria-label",
+        "aria-readonly",
+        "aria-required",
+        "aria-role",
+        "aria-selected",
+        "checked",
+        "data-original-title",
+        "data-ui",
+        "disabled",
+        "for",
+        "href",
+        "maxlength",
+        "name",
+        "pattern",
+        "placeholder",
+        "readonly",
+        "required",
+        "selected",
+        "shape-description",
+        "src",
+        "title",
+        "type",
+        "value",
+    }
+)
 
 
 class SkyvernCleaner(DOMCleanerBase):
@@ -233,7 +257,11 @@ def _load_extraction_script() -> str:
     If not found, returns a minimal placeholder.
     """
     try:
-        js_path = resources.files("spectragent.core.capabilities.browser.dom.cleaning") / "js" / "domUtils.js"
+        js_path = (
+            resources.files("spectragent.core.capabilities.browser.dom.cleaning")
+            / "js"
+            / "domUtils.js"
+        )
         return js_path.read_text(encoding="utf-8")
     except (FileNotFoundError, TypeError):
         logger.warning("domUtils.js not found, skyvern JS extraction will not work")

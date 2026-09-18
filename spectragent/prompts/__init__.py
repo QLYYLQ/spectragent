@@ -51,9 +51,7 @@ def text_snapshot(text: str, ref: PromptRef) -> TextPrompt:
     return TextPrompt(ref=ref, text=text)
 
 
-def template_snapshot(
-    template: str, ref: PromptRef, params: dict[str, object]
-) -> TemplatePrompt:
+def template_snapshot(template: str, ref: PromptRef, params: dict[str, object]) -> TemplatePrompt:
     """Snapshot a prompt plus the substitutions that were applied.
 
     Params are stringified because ``TemplatePrompt.params`` is

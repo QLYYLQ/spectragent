@@ -20,7 +20,8 @@ from tests.test_core.test_capabilities.test_browser_actions.conftest import (
 
 class TestSettleableMixin:
     async def test_navigate_post_delay_runs(
-        self, fake_capability: FakeCapability,
+        self,
+        fake_capability: FakeCapability,
     ) -> None:
         # 50ms — enough to detect, fast enough to run as a unit test.
         action = NavigateAction(post_delay_ms=50)
@@ -32,12 +33,11 @@ class TestSettleableMixin:
         elapsed = time.perf_counter() - start
 
         assert result.success is True
-        assert elapsed >= 0.04, (
-            f"settle() should have slept ≥40ms, got {elapsed:.3f}s"
-        )
+        assert elapsed >= 0.04, f"settle() should have slept ≥40ms, got {elapsed:.3f}s"
 
     async def test_click_post_delay_runs(
-        self, fake_capability: FakeCapability,
+        self,
+        fake_capability: FakeCapability,
     ) -> None:
         # ClickAction also inherits the mixin — different action path.
         fake_capability._selector_maps["sid_main"][1] = FakeElementNode(
@@ -56,7 +56,8 @@ class TestSettleableMixin:
         assert elapsed >= 0.04
 
     async def test_zero_delay_is_fast(
-        self, fake_capability: FakeCapability,
+        self,
+        fake_capability: FakeCapability,
     ) -> None:
         action = NavigateAction()  # post_delay_ms=0 default
         start = time.perf_counter()

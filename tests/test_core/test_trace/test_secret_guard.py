@@ -147,9 +147,7 @@ class _Memory:
 
 def _raw_config_with_secrets() -> dict[str, Any]:
     """The shipped local config, with a credential in every slot it has."""
-    raw = copy.deepcopy(
-        yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8"))
-    )
+    raw = copy.deepcopy(yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8")))
     raw["agent"][0]["llm"]["api_key"] = API_KEY
     raw["agent"][0]["llm"]["base_url"] = GATEWAY_URL
     backend = raw["environment"][0]["capabilities"][0]["backend"]
@@ -162,9 +160,7 @@ async def _run_and_scan(tmp_path, composer, *, record_secrets: bool) -> Path:
     """Drive a full run whose ComposedRun carries the real secret config."""
     resolved = composer.top_level_type.model_validate(_raw_config_with_secrets())
 
-    writer = TraceWriter(
-        trace_dir=str(tmp_path / "traces"), record_secrets=record_secrets
-    )
+    writer = TraceWriter(trace_dir=str(tmp_path / "traces"), record_secrets=record_secrets)
     run = make_run(
         agent=_Agent(),
         loop=ReactLoop(max_steps=2),
@@ -214,9 +210,7 @@ class TestTraceCarriesNoCredentials:
     def test_no_planted_secret_appears_anywhere(self, redacted_run):
         for path, text in _all_text(redacted_run):
             for secret in SECRETS:
-                assert secret not in text, (
-                    f"{path.relative_to(redacted_run)} leaked {secret[:12]}…"
-                )
+                assert secret not in text, f"{path.relative_to(redacted_run)} leaked {secret[:12]}…"
 
     def test_no_secret_shaped_string_appears_anywhere(self, redacted_run):
         """The half that protects fields that do not exist yet."""
@@ -224,8 +218,7 @@ class TestTraceCarriesNoCredentials:
             for label, pattern in SECRET_PATTERNS:
                 match = pattern.search(text)
                 assert match is None, (
-                    f"{path.relative_to(redacted_run)} contains a {label}: "
-                    f"{match.group(0)[:40]!r}"
+                    f"{path.relative_to(redacted_run)} contains a {label}: {match.group(0)[:40]!r}"
                 )
 
     def test_the_fields_are_recorded_as_withheld_not_dropped(self, redacted_run):
@@ -240,9 +233,7 @@ class TestTraceCarriesNoCredentials:
     def test_the_trace_says_it_is_redacted(self, redacted_run):
         assert RunTrace(redacted_run).config.secrets_recorded is False
 
-    def test_the_config_hash_is_a_digest_of_secrets_not_a_copy_of_them(
-        self, redacted_run
-    ):
+    def test_the_config_hash_is_a_digest_of_secrets_not_a_copy_of_them(self, redacted_run):
         """A new surface, knowingly taken — so it gets its own assertion.
 
         ``config_hash`` is computed *before* redaction, because a digest

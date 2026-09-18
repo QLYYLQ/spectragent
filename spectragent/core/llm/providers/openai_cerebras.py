@@ -38,7 +38,8 @@ class ChatCerebras(OpenAICompatBase):
     def get_client(self) -> AsyncOpenAI:
         effective_base_url = self.base_url or "https://api.cerebras.ai/v1"
         params: dict[str, Any] = {
-            "api_key": self.api_key, "max_retries": self.max_retries,
+            "api_key": self.api_key,
+            "max_retries": self.max_retries,
             "base_url": effective_base_url,
         }
         if self.client_params:
@@ -108,7 +109,9 @@ class ChatCerebras(OpenAICompatBase):
                 openai_messages.append({"role": "user", "content": json_prompt})
 
             resp = await self.get_client().chat.completions.create(
-                model=self.model, messages=openai_messages, **model_params,
+                model=self.model,
+                messages=openai_messages,
+                **model_params,
             )
             content = resp.choices[0].message.content
             if not content:
@@ -129,6 +132,8 @@ class ChatCerebras(OpenAICompatBase):
         except APIConnectionError as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
         except APIStatusError as e:
-            raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+            raise ModelProviderError(
+                message=e.message, status_code=e.status_code, model=self.name
+            ) from e
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e

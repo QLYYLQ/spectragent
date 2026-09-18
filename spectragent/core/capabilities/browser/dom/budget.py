@@ -208,11 +208,7 @@ class DOMBudgetPass:
         if self._budget.interactive_only:
             self._drop(
                 state,
-                [
-                    handle
-                    for handle, node in state.selector_map.items()
-                    if not node.is_interactive
-                ],
+                [handle for handle, node in state.selector_map.items() if not node.is_interactive],
                 "interactive_only",
             )
         if self._budget.max_elements is not None:

@@ -534,8 +534,7 @@ class TestDeclaredConfigSurfaceIsReachable:
                         "capabilities": [
                             _capability(
                                 actions=[
-                                    {"action_id": name, "post_delay_ms": 250}
-                                    for name in settleable
+                                    {"action_id": name, "post_delay_ms": 250} for name in settleable
                                 ]
                             )
                         ],
@@ -556,9 +555,7 @@ class TestDeclaredConfigSurfaceIsReachable:
             {"environment": [{"env_type": "browser", "capabilities": [_CAPABILITY]}]}
         )
         cap = run.single("capability")
-        assert cap.provided_actions == frozenset(
-            BrowserCapability.__wiring__["actions"][1]
-        )
+        assert cap.provided_actions == frozenset(BrowserCapability.__wiring__["actions"][1])
 
     def test_listing_a_subset_ablates_the_rest(
         self,
@@ -582,9 +579,7 @@ class TestDeclaredConfigSurfaceIsReachable:
             }
         )
         env = run.instances("environment")[0]
-        assert env.provided_actions == frozenset(
-            {"browser.click", "browser.done"}
-        )
+        assert env.provided_actions == frozenset({"browser.click", "browser.done"})
 
     def test_ablating_a_required_action_fails_negotiation_by_name(
         self,
@@ -679,9 +674,7 @@ class TestDeclaredConfigSurfaceIsReachable:
                     {"action_id": "browser.scroll", "default_amount": 900},
                     {"action_id": "browser.done"},
                 ],
-                "environment": [
-                    {"env_type": "browser", "capabilities": [_CAPABILITY]}
-                ],
+                "environment": [{"env_type": "browser", "capabilities": [_CAPABILITY]}],
             }
         )
         cap = run.single("capability")
@@ -812,9 +805,7 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                     _Block(
                         f"agent[{i}].{child}",
                         lambda r, i=i, c=child: r["agent"][i][c],
-                        lambda run, i=i, aid=aid, c=child: getattr(
-                            agent_of(run, i, aid), c
-                        ),
+                        lambda run, i=i, aid=aid, c=child: getattr(agent_of(run, i, aid), c),
                     )
                 )
 
@@ -832,9 +823,9 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                 _Block(
                     f"environment[{j}].capabilities[{k}]",
                     lambda r, j=j, k=k: r["environment"][j]["capabilities"][k],
-                    lambda run, j=j, eid=eid, k=k: list(
-                        env_of(run, j, eid).capabilities.values()
-                    )[k],
+                    lambda run, j=j, eid=eid, k=k: list(env_of(run, j, eid).capabilities.values())[
+                        k
+                    ],
                 )
             )
             for child in (
@@ -848,9 +839,7 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                     blocks.append(
                         _Block(
                             f"environment[{j}].capabilities[{k}].{child}",
-                            lambda r, j=j, k=k, c=child: r["environment"][j][
-                                "capabilities"
-                            ][k][c],
+                            lambda r, j=j, k=k, c=child: r["environment"][j]["capabilities"][k][c],
                             lambda run, j=j, eid=eid, k=k, c=child: getattr(
                                 list(env_of(run, j, eid).capabilities.values())[k], c
                             ),

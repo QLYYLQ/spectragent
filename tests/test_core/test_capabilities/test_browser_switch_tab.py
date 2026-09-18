@@ -64,9 +64,7 @@ class _MultiTabCDP:
             cbs.remove(callback)
 
     def activations(self) -> list[str]:
-        return [
-            p["targetId"] for m, p, _ in self.sent if m == "Target.activateTarget"
-        ]
+        return [p["targetId"] for m, p, _ in self.sent if m == "Target.activateTarget"]
 
 
 class _Scope:
@@ -94,9 +92,9 @@ class _ScopeGroup:
         return None
 
 
-async def _make_cap(target_ids: list[str], attached: list[str]) -> tuple[
-    BrowserCapability, _MultiTabCDP
-]:
+async def _make_cap(
+    target_ids: list[str], attached: list[str]
+) -> tuple[BrowserCapability, _MultiTabCDP]:
     """Capability whose browser has ``target_ids`` tabs, ``attached`` adopted."""
     from spectragent.core.capabilities.browser.profiles import resolve_profile
 
@@ -215,9 +213,7 @@ class TestSwitchTabActionContract:
         by reading the focus ``switch_tab`` moved.
         """
         cap, _ = await _make_cap(["T1", "T2"], attached=["T1", "T2"])
-        await cap.execute_action(
-            Action(name="browser.switch_tab", params={"target_id": "T2"})
-        )
+        await cap.execute_action(Action(name="browser.switch_tab", params={"target_id": "T2"}))
 
         seen: list[str] = []
 

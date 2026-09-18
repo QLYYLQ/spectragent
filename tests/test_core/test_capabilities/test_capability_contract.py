@@ -62,24 +62,16 @@ class TestObservationCycleContract:
     async def test_next_cycle_resamples(self, harness: CaptureHarness) -> None:
         await assert_next_cycle_resamples(harness)
 
-    async def test_begin_observation_clears_the_cache(
-        self, harness: CaptureHarness
-    ) -> None:
+    async def test_begin_observation_clears_the_cache(self, harness: CaptureHarness) -> None:
         await assert_begin_observation_clears_the_cache(harness)
 
-    async def test_fragments_carry_capture_time(
-        self, harness: CaptureHarness
-    ) -> None:
+    async def test_fragments_carry_capture_time(self, harness: CaptureHarness) -> None:
         await assert_fragments_carry_capture_time(harness, now=time.time)
 
-    async def test_a_failed_cycle_costs_one_capture(
-        self, harness: CaptureHarness
-    ) -> None:
+    async def test_a_failed_cycle_costs_one_capture(self, harness: CaptureHarness) -> None:
         await assert_a_failed_cycle_costs_one_capture(harness)
 
-    def test_foreign_action_policy_is_declared(
-        self, harness: CaptureHarness
-    ) -> None:
+    def test_foreign_action_policy_is_declared(self, harness: CaptureHarness) -> None:
         assert_foreign_action_policy_is_declared(harness)
 
 
@@ -255,12 +247,8 @@ class TestCapabilitiesObserveConcurrently:
         alpha.arrived, beta.arrived = asyncio.Event(), asyncio.Event()
         alpha.peer_arrived, beta.peer_arrived = beta.arrived, alpha.arrived
 
-        env = make_env(
-            EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta}
-        )
-        obs = await env.observe(
-            _negotiated({"contract_alpha.alpha", "contract_beta.beta"})
-        )
+        env = make_env(EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta})
+        obs = await env.observe(_negotiated({"contract_alpha.alpha", "contract_beta.beta"}))
 
         # Each capability only got past its rendezvous because the other
         # was already inside its own resolve. Serial resolution would have
@@ -279,9 +267,7 @@ class TestCapabilitiesObserveConcurrently:
     ) -> None:
         alpha = _AlphaCapability().prime()
         beta = _BetaCapability().prime()
-        env = make_env(
-            EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta}
-        )
+        env = make_env(EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta})
 
         await env.observe(_negotiated({"contract_alpha.alpha", "contract_beta.beta"}))
 
@@ -321,13 +307,9 @@ class TestPartialFailureIsIsolated:
         alpha = _AlphaCapability().prime()
         beta = _BetaCapability().prime()
         beta.boom = TimeoutError("screen grab timed out")
-        env = make_env(
-            EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta}
-        )
+        env = make_env(EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta})
 
-        obs = await env.observe(
-            _negotiated({"contract_alpha.alpha", "contract_beta.beta"})
-        )
+        obs = await env.observe(_negotiated({"contract_alpha.alpha", "contract_beta.beta"}))
         failed = _fragment(obs, "contract_beta.beta")
 
         assert isinstance(failed, FragmentFailure), (
@@ -345,9 +327,7 @@ class TestPartialFailureIsIsolated:
         alpha = _AlphaCapability().prime()
         beta = _BetaCapability().prime()
         beta.boom = RuntimeError("container died")
-        env = make_env(
-            EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta}
-        )
+        env = make_env(EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta})
 
         with pytest.raises(ObservationFailedError) as caught:
             await env.observe(
@@ -370,13 +350,9 @@ class TestPartialFailureIsIsolated:
         alpha = _AlphaCapability().prime()
         beta = _BetaCapability().prime()
         beta.begin_boom = RuntimeError("session gone")
-        env = make_env(
-            EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta}
-        )
+        env = make_env(EnvironmentBase, {"contract_alpha#0": alpha, "contract_beta#0": beta})
 
-        obs = await env.observe(
-            _negotiated({"contract_alpha.alpha", "contract_beta.beta"})
-        )
+        obs = await env.observe(_negotiated({"contract_alpha.alpha", "contract_beta.beta"}))
 
         assert beta.log == ["begin:1"], "no resolve may follow a failed begin"
         failed = _fragment(obs, "contract_beta.beta")
@@ -388,9 +364,7 @@ class TestPartialFailureIsIsolated:
         env = make_env(EnvironmentBase, {"contract_alpha#0": alpha})
 
         with pytest.raises(UnroutableFragmentError, match="contract_beta.beta"):
-            await env.observe(
-                _negotiated({"contract_alpha.alpha", "contract_beta.beta"})
-            )
+            await env.observe(_negotiated({"contract_alpha.alpha", "contract_beta.beta"}))
 
 
 class TestRealCapabilitySurvivesAPeersFailure:
@@ -462,9 +436,7 @@ class TestAFailedObservationDoesNotScaleWithFragmentCount:
         for key in harness.fragments:
             assert isinstance(_fragment(obs, key), FragmentFailure)
 
-    async def test_the_whole_slice_reports_the_same_cause(
-        self, harness: CaptureHarness
-    ) -> None:
+    async def test_the_whole_slice_reports_the_same_cause(self, harness: CaptureHarness) -> None:
         """One capture failed once, so one reason is owed to every fragment.
 
         Not cosmetic: a capability that re-captured per fragment could
@@ -491,9 +463,7 @@ class TestForeignActionPolicy:
     async def test_independent_capability_is_not_disturbed(self) -> None:
         actor = _ActingCapability()
         peer = _BetaCapability().prime()  # default: False
-        env = make_env(
-            EnvironmentBase, {"contract_actor#0": actor, "contract_beta#0": peer}
-        )
+        env = make_env(EnvironmentBase, {"contract_actor#0": actor, "contract_beta#0": peer})
 
         await env.act(Action(name="contract_actor.poke", params={}))
 
@@ -627,9 +597,7 @@ class TestTheContractHasTeeth:
         # capture. This is the recorded failure — a step's screenshot 5.5
         # seconds older than the page it claims to show.
         with pytest.raises(AssertionError, match="did not drop cycle 1's capture"):
-            await assert_begin_observation_clears_the_cache(
-                _WrongCapability("served").harness()
-            )
+            await assert_begin_observation_clears_the_cache(_WrongCapability("served").harness())
         # Note it passes assert_next_cycle_resamples, which reads every
         # fragment in both cycles: that clause cannot tell the two apart.
         await assert_next_cycle_resamples(_WrongCapability("served").harness())
@@ -645,9 +613,7 @@ class TestTheContractHasTeeth:
         sticky = _WrongCapability("sticky").harness()
         await assert_one_cycle_is_one_capture(sticky)  # happy path is fine
         with pytest.raises(AssertionError, match="scaling with the number of"):
-            await assert_a_failed_cycle_costs_one_capture(
-                _WrongCapability("sticky").harness()
-            )
+            await assert_a_failed_cycle_costs_one_capture(_WrongCapability("sticky").harness())
 
 
 def _fragment(obs: Any, fragment_key: str) -> Any:

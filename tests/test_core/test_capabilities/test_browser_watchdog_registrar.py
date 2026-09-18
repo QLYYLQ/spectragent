@@ -170,9 +170,7 @@ def network_watchdog() -> Iterator[type[BrowserWatchdog]]:
             if not (event.fragments & self.provides):
                 return None
             await self._cdp.send("Network.getRequestPostData", {})
-            return BrowserStateSummary(
-                fragments={"browser.network": NetworkObs(request_count=7)}
-            )
+            return BrowserStateSummary(fragments={"browser.network": NetworkObs(request_count=7)})
 
     NetworkWatchdog.fragment_cls = NetworkObs  # type: ignore[attr-defined]
     yield NetworkWatchdog
@@ -182,9 +180,7 @@ def network_watchdog() -> Iterator[type[BrowserWatchdog]]:
 
 
 class TestNewFragmentIsOneClass:
-    def test_registration_is_automatic(
-        self, network_watchdog: type[BrowserWatchdog]
-    ) -> None:
+    def test_registration_is_automatic(self, network_watchdog: type[BrowserWatchdog]) -> None:
         # Subclassing BrowserWatchdog registered it under agent_cdp's
         # registrar with the suffix stripped. No table to update.
         assert browser_watchdog_classes()["network"] is network_watchdog
@@ -238,9 +234,7 @@ class TestNegotiationDrivenCost:
         fragment, group = await _observe_once(cap, cdp, "browser.screenshot")
         try:
             assert fragment.image_bytes == b"hi"
-            assert cdp.dom_calls() == [], (
-                "a vision-only agent must not trigger DOM extraction"
-            )
+            assert cdp.dom_calls() == [], "a vision-only agent must not trigger DOM extraction"
             # One round trip for the whole step.
             assert cdp.sent == ["Page.captureScreenshot"]
         finally:
@@ -354,9 +348,7 @@ class TestUnknownWatchdogIsHardError:
             cap._watchdog_classes()
 
     def test_known_names_pass(self) -> None:
-        assert validate_watchdog_names(["dom", "screenshot"]) == frozenset(
-            {"dom", "screenshot"}
-        )
+        assert validate_watchdog_names(["dom", "screenshot"]) == frozenset({"dom", "screenshot"})
 
 
 # ─── watchdog contract ────────────────────────────────────────────────
@@ -418,9 +410,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
 
         from spectragent.generated._composed import BrowserCapabilityConfig
 
-        annotation = BrowserCapabilityConfig.model_fields[
-            "mouse_trajectory"
-        ].annotation
+        annotation = BrowserCapabilityConfig.model_fields["mouse_trajectory"].annotation
         return list(get_args(annotation))
 
     def test_generated_config_is_a_union_of_strategy_configs(self) -> None:
@@ -438,9 +428,7 @@ class TestMouseTrajectoryIsAWiredReceptor:
             MouseTrajectoryRegistrar,
         )
 
-        keys = sorted(
-            c.model_fields["trajectory_type"].default for c in self._member_configs()
-        )
+        keys = sorted(c.model_fields["trajectory_type"].default for c in self._member_configs())
         assert keys == sorted(MouseTrajectoryRegistrar.keys())
 
     def test_per_strategy_knobs_are_in_the_generated_config(self) -> None:
@@ -593,7 +581,7 @@ class TestDomCleanerIsAWiredReceptor:
                     {
                         "capability_id": "browser",
                         "mouse_trajectory": {"trajectory_type": "instant"},
-                    "typing_rhythm": {"rhythm_type": "instant"},
+                        "typing_rhythm": {"rhythm_type": "instant"},
                         "dom_cleaner": cleaner_block,
                         "dom_serializer": {"serializer_type": "text"},
                         "backend": {"provider_id": "local_chrome"},
@@ -605,7 +593,9 @@ class TestDomCleanerIsAWiredReceptor:
 
     @staticmethod
     async def _indexed_ids(cap: BrowserCapability) -> set[str | None]:
-        fragment, group = await _observe_once(cap, _PageCDP(_self_painting_control()), "browser.dom")
+        fragment, group = await _observe_once(
+            cap, _PageCDP(_self_painting_control()), "browser.dom"
+        )
         try:
             return {
                 node.attributes.get("id") for node in fragment.element_tree.selector_map.values()

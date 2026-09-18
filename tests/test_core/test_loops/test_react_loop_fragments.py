@@ -120,8 +120,14 @@ class _CapturingAgent:
         return None
 
 
-def _drive(loop: ReactLoop, agent: _CapturingAgent, env: _FakeEnv,
-           negotiated: _FakeNegotiated, completions: list[str], task: str = "t") -> Any:
+def _drive(
+    loop: ReactLoop,
+    agent: _CapturingAgent,
+    env: _FakeEnv,
+    negotiated: _FakeNegotiated,
+    completions: list[str],
+    task: str = "t",
+) -> Any:
     ctx = {
         "env": env,
         "llm": _FakeLLM(completions),
@@ -193,6 +199,7 @@ class TestStepInfoFragment:
         today = agent.received[0].step_info.today
         # Just check it parses as ISO date.
         from datetime import date as _date
+
         _date.fromisoformat(today)
 
 

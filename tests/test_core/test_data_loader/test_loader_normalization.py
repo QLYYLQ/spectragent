@@ -77,9 +77,7 @@ class TestOnlineMind2WebNormalization:
                 }
             ],
         )
-        assert loader.get_task_context("m2w_001") == {
-            "start_url": "https://example.com"
-        }
+        assert loader.get_task_context("m2w_001") == {"start_url": "https://example.com"}
 
 
 # ── LexBench-Browser ───────────────────────────────────────────────────

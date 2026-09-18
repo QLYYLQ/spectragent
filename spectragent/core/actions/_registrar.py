@@ -130,9 +130,7 @@ class ActionBase(metaclass=ActionRegistrar.Meta):
         :class:`~spectragent.core.actions.base.BaseAction` Protocol) so a
         capability holding ``list[ActionBase]`` can call it.
         """
-        raise NotImplementedError(
-            f"{self.__registry_key__} must implement descriptor()"
-        )
+        raise NotImplementedError(f"{self.__registry_key__} must implement descriptor()")
 
     def requires_fragments(self) -> frozenset[str]:
         """Observation fragments this action cannot run without.

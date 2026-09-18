@@ -71,7 +71,9 @@ class BrowserMetaWatchdog(BrowserWatchdog):
         page_title = ""
         try:
             nav_history = await self._cdp.send(
-                "Page.getNavigationHistory", {}, session_id=self._session_id,
+                "Page.getNavigationHistory",
+                {},
+                session_id=self._session_id,
             )
             if nav_history is not None:
                 entries = nav_history.get("entries", [])
@@ -90,7 +92,9 @@ class BrowserMetaWatchdog(BrowserWatchdog):
         return BrowserStateSummary(
             fragments={
                 "browser.browser_meta": BrowserMetaObs(
-                    url=url, page_title=page_title, tabs=tabs,
+                    url=url,
+                    page_title=page_title,
+                    tabs=tabs,
                 ),
             }
         )

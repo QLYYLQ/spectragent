@@ -1,6 +1,5 @@
 """Tests for ObservationFragment registration via conscribe bridge."""
 
-
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
     DOMObs,
@@ -92,9 +91,7 @@ class TestFragmentIsPydanticModel:
         assert obs.image_bytes is None
 
     def test_screenshot_with_path(self) -> None:
-        obs = ScreenshotObs(
-            image_path="/tmp/s.png", viewport_width=1920, viewport_height=1080
-        )
+        obs = ScreenshotObs(image_path="/tmp/s.png", viewport_width=1920, viewport_height=1080)
         assert obs.image_path == "/tmp/s.png"
 
     def test_screenshot_with_bytes(self) -> None:

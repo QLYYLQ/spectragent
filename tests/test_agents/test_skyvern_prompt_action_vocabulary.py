@@ -80,9 +80,7 @@ def _negotiated() -> tuple[list[ActionDescriptor], Mapping[str, str]]:
 
 
 def _taught_verbs(prompt: str) -> set[str]:
-    return set(_BACKTICKED.findall(prompt)) | set(
-        _ACTION_TYPE_LITERAL.findall(prompt)
-    )
+    return set(_BACKTICKED.findall(prompt)) | set(_ACTION_TYPE_LITERAL.findall(prompt))
 
 
 @pytest.fixture
@@ -133,11 +131,7 @@ class TestPromptVocabulary:
         for verb in sorted(_taught_verbs(prompt)):
             actions = agent.parse_react_output(
                 SkyvernOutput(
-                    actions=[
-                        SkyvernActionItem(
-                            action_type=verb, index=1, reasoning="probe"
-                        )
-                    ]
+                    actions=[SkyvernActionItem(action_type=verb, index=1, reasoning="probe")]
                 )
             )
             assert len(actions) == 1, verb

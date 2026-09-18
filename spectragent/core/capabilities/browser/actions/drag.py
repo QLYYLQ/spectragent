@@ -32,18 +32,10 @@ class DragAction(SettleableAction, ActionBase):
     class Params(BaseModel):
         model_config = ConfigDict(extra="forbid")
 
-        start_x: Annotated[
-            int, PydanticField(description="CSS px from the viewport's left edge")
-        ]
-        start_y: Annotated[
-            int, PydanticField(description="CSS px from the viewport's top edge")
-        ]
-        end_x: Annotated[
-            int, PydanticField(description="CSS px from the viewport's left edge")
-        ]
-        end_y: Annotated[
-            int, PydanticField(description="CSS px from the viewport's top edge")
-        ]
+        start_x: Annotated[int, PydanticField(description="CSS px from the viewport's left edge")]
+        start_y: Annotated[int, PydanticField(description="CSS px from the viewport's top edge")]
+        end_x: Annotated[int, PydanticField(description="CSS px from the viewport's left edge")]
+        end_y: Annotated[int, PydanticField(description="CSS px from the viewport's top edge")]
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return self.describe(

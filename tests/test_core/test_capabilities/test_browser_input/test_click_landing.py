@@ -277,9 +277,7 @@ class TestEveryMeasuredBoxComesThroughTheSeam:
         wd = _watchdog(strategy)
         aims: set[tuple[int, int]] = set()
         for _ in range(40):
-            await wd._on_scroll(
-                ScrollEvent(direction="down", amount=120, backend_node_id=42)
-            )
+            await wd._on_scroll(ScrollEvent(direction="down", amount=120, backend_node_id=42))
             wheels = [
                 (c.params["x"], c.params["y"])
                 for c in wd._cdp.calls  # type: ignore[attr-defined]

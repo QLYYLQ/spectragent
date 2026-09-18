@@ -57,9 +57,7 @@ def _jpeg(width: int, height: int, quality: int = 70) -> bytes:
     from PIL import Image
 
     buffer = io.BytesIO()
-    Image.new("RGB", (width, height), (12, 34, 56)).save(
-        buffer, format="JPEG", quality=quality
-    )
+    Image.new("RGB", (width, height), (12, 34, 56)).save(buffer, format="JPEG", quality=quality)
     return buffer.getvalue()
 
 

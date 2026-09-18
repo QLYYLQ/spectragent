@@ -139,11 +139,7 @@ def _observation(*, with_dom: bool = True) -> Any:
             viewport_width=1280,
             viewport_height=720,
         ),
-        dom=DOMObs(
-            element_tree=SimpleNamespace(
-                serialized_dom="[3]<button>Submit</button>"
-            )
-        )
+        dom=DOMObs(element_tree=SimpleNamespace(serialized_dom="[3]<button>Submit</button>"))
         if with_dom
         else None,
         browser_meta=BrowserMetaObs(url="https://example.test", page_title="Example"),
@@ -589,9 +585,7 @@ def test_the_strict_schema_carries_nothing_strict_refuses(mode: str) -> None:
     """
     run = _Run(mode)
     strict = SchemaOptimizer.create_optimized_json_schema(run.model, strict=True)
-    offenders = {
-        key for node in _walk(strict) for key in node if key in _REFUSED_BY_STRICT
-    }
+    offenders = {key for node in _walk(strict) for key in node if key in _REFUSED_BY_STRICT}
     assert offenders == set()
 
     # The bound is still enforced where it belongs — locally, by Pydantic.
@@ -659,9 +653,7 @@ def test_each_action_branch_names_exactly_one_verb(mode: str) -> None:
 
 @pytest.mark.parametrize("mode", MODES)
 def test_the_gemini_transform_keeps_the_union(mode: str) -> None:
-    schema = fix_gemini_schema(
-        SchemaOptimizer.create_gemini_optimized_schema(_Run(mode).model)
-    )
+    schema = fix_gemini_schema(SchemaOptimizer.create_gemini_optimized_schema(_Run(mode).model))
     text = json.dumps(schema)
     assert "anyOf" in text
     assert "oneOf" not in text and "$ref" not in text
@@ -698,10 +690,7 @@ def test_strict_is_decided_by_the_family_and_the_payload() -> None:
     assert ChatOpenAI(model="gpt-4o", api_key="t")._use_strict_schema(model) is True
     # A Gemini model behind an OpenAI-compatible gateway is not a strict
     # family, so the request stays non-strict whatever the schema can do.
-    assert (
-        ChatOpenAI(model="gemini-3.5-flash", api_key="t")._use_strict_schema(model)
-        is False
-    )
+    assert ChatOpenAI(model="gemini-3.5-flash", api_key="t")._use_strict_schema(model) is False
 
 
 # ── Reasoning fields follow the template that was rendered ────────────

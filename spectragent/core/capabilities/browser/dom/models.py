@@ -231,9 +231,7 @@ class DOMElementNode:
     # is exactly how ``selector_map`` entries are encoded, walks straight
     # back to the document root and re-emits the whole page under every
     # entry (measured 17.7x on a 341-node page).
-    parent: DOMElementNode | None = field(
-        default=None, repr=False, metadata=TRACE_SKIP
-    )
+    parent: DOMElementNode | None = field(default=None, repr=False, metadata=TRACE_SKIP)
 
     def composed_children(self) -> list[DOMElementNode]:
         """Every subtree root below this node, in the order it is rendered.

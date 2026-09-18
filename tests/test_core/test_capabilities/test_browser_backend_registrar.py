@@ -75,9 +75,7 @@ class TestRegistrarKeysSnapshot:
             pytest.skip(f"browser providers package failed to import: {exc}")
 
         keys = BrowserProviderRegistrar.keys()
-        assert len(keys) >= 1, (
-            f"Expected at least one browser provider registered, got: {keys}"
-        )
+        assert len(keys) >= 1, f"Expected at least one browser provider registered, got: {keys}"
 
 
 class TestComposerInjectsBackend:

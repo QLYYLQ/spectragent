@@ -19,21 +19,63 @@ from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOM
 from spectragent.core.capabilities.browser.dom.serializers import DOMSerializerBase
 
 # Skyvern-style attribute allowlist — only these survive trimming.
-_ALLOWED_ATTRS: frozenset[str] = frozenset({
-    "id", "name", "type", "value", "placeholder", "href", "src", "alt",
-    "title", "role", "for", "action", "method",
-    "checked", "selected", "disabled", "readonly", "required",
-    "maxlength", "pattern", "min", "max", "step",
-    "aria-label", "aria-checked", "aria-current", "aria-disabled",
-    "aria-expanded", "aria-readonly", "aria-required", "aria-role",
-    "aria-selected",
-    "accept", "shape-description", "data-ui",
-})
+_ALLOWED_ATTRS: frozenset[str] = frozenset(
+    {
+        "id",
+        "name",
+        "type",
+        "value",
+        "placeholder",
+        "href",
+        "src",
+        "alt",
+        "title",
+        "role",
+        "for",
+        "action",
+        "method",
+        "checked",
+        "selected",
+        "disabled",
+        "readonly",
+        "required",
+        "maxlength",
+        "pattern",
+        "min",
+        "max",
+        "step",
+        "aria-label",
+        "aria-checked",
+        "aria-current",
+        "aria-disabled",
+        "aria-expanded",
+        "aria-readonly",
+        "aria-required",
+        "aria-role",
+        "aria-selected",
+        "accept",
+        "shape-description",
+        "data-ui",
+    }
+)
 
-_VOID_TAGS: frozenset[str] = frozenset({
-    "img", "input", "br", "hr", "meta", "link", "area", "base",
-    "col", "embed", "source", "track", "wbr",
-})
+_VOID_TAGS: frozenset[str] = frozenset(
+    {
+        "img",
+        "input",
+        "br",
+        "hr",
+        "meta",
+        "link",
+        "area",
+        "base",
+        "col",
+        "embed",
+        "source",
+        "track",
+        "wbr",
+    }
+)
 
 
 class HTMLSerializer(DOMSerializerBase):

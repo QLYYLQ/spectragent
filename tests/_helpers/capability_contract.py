@@ -132,8 +132,7 @@ async def assert_next_cycle_resamples(harness: CaptureHarness) -> None:
     )
     for key in harness.fragments:
         assert before[key] is not after[key], (
-            f"{cap.capability_id}: {key!r} came back from the previous cycle's "
-            f"capture."
+            f"{cap.capability_id}: {key!r} came back from the previous cycle's capture."
         )
 
 
@@ -168,12 +167,10 @@ async def assert_begin_observation_clears_the_cache(harness: CaptureHarness) -> 
     )
     fresh = await cap.resolve_fragment(first_key)
     assert harness.captures() == 2, (
-        f"{cap.capability_id}: re-reading {first_key!r} inside cycle 2 started "
-        f"a third capture."
+        f"{cap.capability_id}: re-reading {first_key!r} inside cycle 2 started a third capture."
     )
     assert stale is not fresh, (
-        f"{cap.capability_id}: {first_key!r} is still the object captured in "
-        f"cycle 1."
+        f"{cap.capability_id}: {first_key!r} is still the object captured in cycle 1."
     )
 
 
@@ -275,9 +272,7 @@ def assert_foreign_action_policy_is_declared(harness: CaptureHarness) -> None:
     the environment can read, rather than an assumption the environment
     makes on the capability's behalf.
     """
-    declared = getattr(
-        type(harness.capability), "__invalidated_by_foreign_actions__", None
-    )
+    declared = getattr(type(harness.capability), "__invalidated_by_foreign_actions__", None)
     assert isinstance(declared, bool), (
         f"{harness.capability.capability_id}: "
         f"__invalidated_by_foreign_actions__ must be a bool ClassVar; it is "
@@ -335,6 +330,7 @@ def browser_harness() -> CaptureHarness:
     cap._selector_maps["contract_sid"] = {}
     # What negotiation would have narrowed it to for this run.
     cap.apply_negotiation({"browser.dom", "browser.screenshot"})
+
     def break_capture() -> None:
         scope.broken = True
 

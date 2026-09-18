@@ -55,9 +55,7 @@ from spectragent.schemas.prompt import PromptSnapshot
 logger = logging.getLogger(__name__)
 
 _SCORE_DIGIT = re.compile(r"[1-5]")
-_FAILURE_CATEGORY = re.compile(
-    r"Failure Category\s*:\s*([A-Za-z0-9_-]+)", re.IGNORECASE
-)
+_FAILURE_CATEGORY = re.compile(r"Failure Category\s*:\s*([A-Za-z0-9_-]+)", re.IGNORECASE)
 _REASONING_PATTERNS = (
     re.compile(r"Reasoning\s*:\s*(.+?)(?:\n(?:Category|Status)\s*:|$)", re.IGNORECASE | re.DOTALL),
     re.compile(r"Thoughts\s*:\s*(.+?)(?:\nStatus\s*:|$)", re.IGNORECASE | re.DOTALL),
@@ -147,9 +145,7 @@ class OnlineMind2WebEvaluator(LLMJudgeEvaluator):
         )
 
         predicted_label = extract_predication(response)
-        failure_category = (
-            extract_failure_category(response) if predicted_label == 0 else None
-        )
+        failure_category = extract_failure_category(response) if predicted_label == 0 else None
 
         details = EvalDetails(
             system_prompt=system_snapshot,
@@ -217,14 +213,9 @@ class OnlineMind2WebEvaluator(LLMJudgeEvaluator):
         snapshots["judge_image_system"] = system_snapshot
         snapshots["judge_image_user"] = user_snapshot
 
-        parts = [
-            image_part(path, detail=self.image_detail) for path in screenshots
-        ]
+        parts = [image_part(path, detail=self.image_detail) for path in screenshots]
         responses = await asyncio.gather(
-            *(
-                self.ask(system=system, text=user, images=[part], tally=tally)
-                for part in parts
-            )
+            *(self.ask(system=system, text=user, images=[part], tally=tally) for part in parts)
         )
 
         records: list[dict[str, Any]] = []
@@ -263,9 +254,7 @@ class OnlineMind2WebEvaluator(LLMJudgeEvaluator):
                 "thoughts": _numbered(thoughts),
             },
         )
-        response = await self.ask(
-            system=system, text=text, images=images, tally=tally
-        )
+        response = await self.ask(system=system, text=text, images=images, tally=tally)
         return response, user_snapshot, system_snapshot
 
 

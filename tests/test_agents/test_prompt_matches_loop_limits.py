@@ -135,8 +135,6 @@ def test_agent_renders_whatever_limit_it_is_handed() -> None:
     from spectragent.core.actions._registrar import ActionRegistrar
 
     descriptors = [ActionRegistrar.get("browser.done")().descriptor()]
-    seed = agent.prepare(
-        task="t", action_descriptors=descriptors, max_actions_per_step=7
-    )
+    seed = agent.prepare(task="t", action_descriptors=descriptors, max_actions_per_step=7)
     text = _message_text(seed[0])
     assert {int(n) for n in re.findall(r"maximum of (\d+) actions", text)} == {7}

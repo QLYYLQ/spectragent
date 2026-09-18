@@ -182,11 +182,7 @@ def _fence_literals(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found: list[str] = []
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and "```" in node.value
-        ):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and "```" in node.value:
             where = path.relative_to(_PROVIDERS_DIR)
             found.append(f"{where}:{node.lineno}: {node.value!r}")
     return found

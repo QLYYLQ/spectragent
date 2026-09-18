@@ -112,15 +112,11 @@ def test_the_verdict_filename_carries_the_configuration(three_traces):
     assert strict.verdict_slug == ExactMatchEvaluator(case_sensitive=True).verdict_slug
 
 
-async def test_flat_evals_dir_collects_results_and_summary(
-    tmp_path, three_traces, loader
-):
+async def test_flat_evals_dir_collects_results_and_summary(tmp_path, three_traces, loader):
     evals_dir = tmp_path / "evals"
     evaluator = ExactMatchEvaluator()
     slug = evaluator.verdict_slug
-    runner = EvaluationRunner(
-        evaluator=evaluator, eval_loader=loader, evals_dir=evals_dir
-    )
+    runner = EvaluationRunner(evaluator=evaluator, eval_loader=loader, evals_dir=evals_dir)
 
     await runner.run(three_traces, benchmark="offline_bench")
 
@@ -151,9 +147,9 @@ async def test_one_bad_trace_does_not_destroy_the_sweep(traces_dir, three_traces
     """A sweep that dies on trace 2 of 300 has thrown away 298 verdicts."""
     orphan = write_trace(traces_dir, run_id="r4", task_id="not-in-the-split")
 
-    report = await EvaluationRunner(
-        evaluator=ExactMatchEvaluator(), eval_loader=loader
-    ).run([*three_traces, orphan])
+    report = await EvaluationRunner(evaluator=ExactMatchEvaluator(), eval_loader=loader).run(
+        [*three_traces, orphan]
+    )
 
     assert len(report.graded) == 3
     assert len(report.errors) == 1
@@ -193,8 +189,7 @@ class _FlakyEvaluator:
 def all_correct(traces_dir: Path) -> list[Path]:
     """Three traces whose answers are all right."""
     return [
-        write_trace(traces_dir, run_id=f"r{i}", task_id=f"t-{i}", answer="42")
-        for i in (1, 2, 3)
+        write_trace(traces_dir, run_id=f"r{i}", task_id=f"t-{i}", answer="42") for i in (1, 2, 3)
     ]
 
 
@@ -288,9 +283,9 @@ async def test_the_summary_headline_carries_its_own_caveat(all_correct):
 
 async def test_a_clean_sweep_prints_no_warning(three_traces, loader):
     """The caveat must not cry wolf when every task really was judged."""
-    report = await EvaluationRunner(
-        evaluator=ExactMatchEvaluator(), eval_loader=loader
-    ).run(three_traces, expected_task_ids=["t-1", "t-2", "t-3"])
+    report = await EvaluationRunner(evaluator=ExactMatchEvaluator(), eval_loader=loader).run(
+        three_traces, expected_task_ids=["t-1", "t-2", "t-3"]
+    )
 
     printed = format_summary(report.summary())
 
@@ -300,9 +295,7 @@ async def test_a_clean_sweep_prints_no_warning(three_traces, loader):
 
 async def test_a_task_that_produced_no_trace_counts_as_failed(three_traces, loader):
     """Dropping crashed tasks from the denominator inflates the score."""
-    report = await EvaluationRunner(
-        evaluator=ExactMatchEvaluator(), eval_loader=loader
-    ).run(
+    report = await EvaluationRunner(evaluator=ExactMatchEvaluator(), eval_loader=loader).run(
         three_traces[:1],
         expected_task_ids=["t-1", "t-2", "t-3"],
         benchmark="offline_bench",
@@ -316,8 +309,7 @@ async def test_a_task_that_produced_no_trace_counts_as_failed(three_traces, load
     # it stays "not_evaluated" and never becomes "evaluation_error".
     assert all(r.verdict_source == "not_evaluated" for r in synthetic)
     assert all(
-        r.evaluation_details.benchmark_details["is_synthetic_failure"] is True
-        for r in synthetic
+        r.evaluation_details.benchmark_details["is_synthetic_failure"] is True for r in synthetic
     )
     assert report.summary().overall_statistics.total_tasks == 3
     assert report.summary().overall_statistics.success_rate == pytest.approx(100 / 3)
@@ -329,13 +321,15 @@ async def test_a_task_that_produced_no_trace_counts_as_failed(three_traces, load
 async def test_summary_partitions_metrics_by_outcome(traces_dir, loader):
     """'Successes take 8 steps, failures burn 31' is the useful statement."""
     traces = [
-        write_trace(traces_dir, run_id="p", task_id="t-1", answer="42", steps=2, end_to_end_ms=1000),
-        write_trace(traces_dir, run_id="f", task_id="t-2", answer="nope", steps=6, end_to_end_ms=9000),
+        write_trace(
+            traces_dir, run_id="p", task_id="t-1", answer="42", steps=2, end_to_end_ms=1000
+        ),
+        write_trace(
+            traces_dir, run_id="f", task_id="t-2", answer="nope", steps=6, end_to_end_ms=9000
+        ),
     ]
 
-    report = await EvaluationRunner(
-        evaluator=ExactMatchEvaluator(), eval_loader=loader
-    ).run(traces)
+    report = await EvaluationRunner(evaluator=ExactMatchEvaluator(), eval_loader=loader).run(traces)
     summary = report.summary()
 
     assert summary.successful_tasks_metrics["steps"].mean == 2
@@ -350,9 +344,7 @@ async def test_summary_counts_failure_categories(traces_dir, loader):
         write_trace(traces_dir, run_id="b", task_id="t-2", answer="nope"),
     ]
 
-    report = await EvaluationRunner(
-        evaluator=ExactMatchEvaluator(), eval_loader=loader
-    ).run(traces)
+    report = await EvaluationRunner(evaluator=ExactMatchEvaluator(), eval_loader=loader).run(traces)
     stats = report.summary().failure_category_statistics
 
     assert stats.total_failed_tasks == 1
@@ -369,9 +361,9 @@ def test_summary_of_nothing_does_not_divide_by_zero():
 
 
 async def test_task_list_names_who_passed_and_who_failed(traces_dir, three_traces, loader):
-    report = await EvaluationRunner(
-        evaluator=ExactMatchEvaluator(), eval_loader=loader
-    ).run(three_traces)
+    report = await EvaluationRunner(evaluator=ExactMatchEvaluator(), eval_loader=loader).run(
+        three_traces
+    )
 
     task_list = report.summary().task_list
     assert task_list["successful"] == ["t-1", "t-3"]
@@ -379,9 +371,9 @@ async def test_task_list_names_who_passed_and_who_failed(traces_dir, three_trace
 
 
 async def test_summary_records_which_evaluator_produced_it(three_traces, loader):
-    report = await EvaluationRunner(
-        evaluator=ExactMatchEvaluator(), eval_loader=loader
-    ).run(three_traces, benchmark="offline_bench", subset="All")
+    report = await EvaluationRunner(evaluator=ExactMatchEvaluator(), eval_loader=loader).run(
+        three_traces, benchmark="offline_bench", subset="All"
+    )
 
     config = report.summary().evaluation_config
     assert config["evaluator_id"] == "exact_match"
@@ -393,9 +385,9 @@ async def test_judge_costs_aggregate_when_present(traces_dir, loader):
     """exact_match spends nothing, so there is nothing to report."""
     trace = write_trace(traces_dir, run_id="c", task_id="t-1", answer="42")
 
-    report = await EvaluationRunner(
-        evaluator=ExactMatchEvaluator(), eval_loader=loader
-    ).run([trace])
+    report = await EvaluationRunner(evaluator=ExactMatchEvaluator(), eval_loader=loader).run(
+        [trace]
+    )
 
     assert report.summary().evaluation_cost is None
 
@@ -407,12 +399,8 @@ async def test_the_same_traces_can_be_scored_twice_by_different_evaluators(
     strict = ExactMatchEvaluator(case_sensitive=True)
     lenient = ExactMatchEvaluator(allow_substring=True)
 
-    strict_report = await EvaluationRunner(evaluator=strict, eval_loader=loader).run(
-        three_traces
-    )
-    lenient_report = await EvaluationRunner(evaluator=lenient, eval_loader=loader).run(
-        three_traces
-    )
+    strict_report = await EvaluationRunner(evaluator=strict, eval_loader=loader).run(three_traces)
+    lenient_report = await EvaluationRunner(evaluator=lenient, eval_loader=loader).run(three_traces)
 
     # "paris" vs "Paris" passes leniently and fails under case sensitivity.
     strict_labels = {r.task_id: r.predicted_label for r in strict_report.results}
@@ -427,7 +415,5 @@ async def test_the_same_traces_can_be_scored_twice_by_different_evaluators(
     # opposing labels still readable in them.
     written = sorted((three_traces[2] / "evals").glob("*.json"))
     assert len(written) == 2
-    labels = {
-        json.loads(p.read_text("utf-8"))["predicted_label"] for p in written
-    }
+    labels = {json.loads(p.read_text("utf-8"))["predicted_label"] for p in written}
     assert labels == {0, 1}

@@ -54,9 +54,7 @@ def _watchdog(cdp: FakeCDP, rhythm: object | None) -> ActionWatchdog:
 
 def _typing_calls(cdp: FakeCDP) -> list[str]:
     return [
-        c.method
-        for c in cdp.calls
-        if c.method in ("Input.insertText", "Input.dispatchKeyEvent")
+        c.method for c in cdp.calls if c.method in ("Input.insertText", "Input.dispatchKeyEvent")
     ]
 
 
@@ -86,18 +84,14 @@ class TestTheDefaultIsOneBulkInsert:
     async def test_type_at_coordinate_sends_exactly_one_insert_text(self) -> None:
         cdp = FakeCDP()
         result = await _watchdog(cdp, None)._on_type_at_coordinate(
-            TypeAtCoordinateEvent(
-                coordinate_x=10, coordinate_y=20, text="hello", clear=False
-            )
+            TypeAtCoordinateEvent(coordinate_x=10, coordinate_y=20, text="hello", clear=False)
         )
         assert result == {"typed": True, "length": 5}
         assert _typing_calls(cdp) == ["Input.insertText"]
 
 
 class TestTheStrategyReachesTheWatchdog:
-    async def test_a_human_rhythm_dispatches_key_events_per_character(
-        self, no_sleep: None
-    ) -> None:
+    async def test_a_human_rhythm_dispatches_key_events_per_character(self, no_sleep: None) -> None:
         cdp = FakeCDP()
         await _watchdog(cdp, HumanRhythm(seed=1))._on_type_text(
             TypeTextEvent(backend_node_id=42, text="hello", clear=False)
@@ -109,9 +103,7 @@ class TestTheStrategyReachesTheWatchdog:
     async def test_the_coordinate_path_humanizes_too(self, no_sleep: None) -> None:
         cdp = FakeCDP()
         await _watchdog(cdp, HumanRhythm(seed=1))._on_type_at_coordinate(
-            TypeAtCoordinateEvent(
-                coordinate_x=10, coordinate_y=20, text="hi", clear=False
-            )
+            TypeAtCoordinateEvent(coordinate_x=10, coordinate_y=20, text="hi", clear=False)
         )
         key_events = [c for c in cdp.calls if c.method == "Input.dispatchKeyEvent"]
         assert [c.params["type"] for c in key_events] == ["keyDown", "keyUp"] * 2

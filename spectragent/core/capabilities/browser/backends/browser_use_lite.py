@@ -29,14 +29,22 @@ class BrowserUseProvider(BrowserProviderBase):
     __capabilities__: ClassVar[set[str]] = {CDP, PROXY, CUSTOM_PROXY, SCREEN_SIZE}
 
     # ── connection config ─────────────────────────────────────────────
-    api_key: Annotated[str | None, Field(description="Browser-Use API key (env: BROWSER_USE_API_KEY)")] = None
+    api_key: Annotated[
+        str | None, Field(description="Browser-Use API key (env: BROWSER_USE_API_KEY)")
+    ] = None
     base_url: Annotated[str | None, Field(description="API base URL override")] = None
 
     # ── capability config (visible at init, overrideable in open()) ───
-    proxy_country: Annotated[str | None, Field(description="Managed proxy country code (e.g. 'US')")] = None
-    proxy_server: Annotated[str | None, Field(description="Custom proxy server URL (e.g. 'http://proxy:8080')")] = None
+    proxy_country: Annotated[
+        str | None, Field(description="Managed proxy country code (e.g. 'US')")
+    ] = None
+    proxy_server: Annotated[
+        str | None, Field(description="Custom proxy server URL (e.g. 'http://proxy:8080')")
+    ] = None
     screen_width: Annotated[int | None, Field(description="Browser screen width in pixels")] = None
-    screen_height: Annotated[int | None, Field(description="Browser screen height in pixels")] = None
+    screen_height: Annotated[int | None, Field(description="Browser screen height in pixels")] = (
+        None
+    )
 
     # ── internal state ────────────────────────────────────────────────
     _client: Any = field(default=None, init=False, repr=False)

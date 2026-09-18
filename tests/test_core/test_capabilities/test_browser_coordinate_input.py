@@ -74,9 +74,7 @@ class TestTypeAtCoordinate:
     async def test_clear_false_skips_the_select_all_sequence(self) -> None:
         cdp = _FakeCDP()
         await _watchdog(cdp)._on_type_at_coordinate(
-            TypeAtCoordinateEvent(
-                coordinate_x=1, coordinate_y=2, text="x", clear=False
-            )
+            TypeAtCoordinateEvent(coordinate_x=1, coordinate_y=2, text="x", clear=False)
         )
         assert "Input.dispatchKeyEvent" not in {c.method for c in cdp.calls}
 
@@ -88,8 +86,7 @@ class TestTypeAtCoordinate:
         pressed = next(
             c
             for c in cdp.calls
-            if c.method == "Input.dispatchMouseEvent"
-            and c.params.get("type") == "mousePressed"
+            if c.method == "Input.dispatchMouseEvent" and c.params.get("type") == "mousePressed"
         )
         assert (pressed.params["x"], pressed.params["y"]) == (137, 42)
 
@@ -112,14 +109,8 @@ class TestDrag:
     async def test_moves_between_press_and_release(self) -> None:
         """The gesture is a drag, not two clicks: the button stays down."""
         cdp = _FakeCDP()
-        await _watchdog(cdp)._on_drag(
-            DragEvent(start_x=0, start_y=0, end_x=99, end_y=99)
-        )
-        types = [
-            c.params["type"]
-            for c in cdp.calls
-            if c.method == "Input.dispatchMouseEvent"
-        ]
+        await _watchdog(cdp)._on_drag(DragEvent(start_x=0, start_y=0, end_x=99, end_y=99))
+        types = [c.params["type"] for c in cdp.calls if c.method == "Input.dispatchMouseEvent"]
         press_at = types.index("mousePressed")
         release_at = types.index("mouseReleased")
         assert "mouseMoved" in types[press_at:release_at]

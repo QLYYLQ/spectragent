@@ -98,8 +98,12 @@ class PopupsWatchdog(BrowserWatchdog):
             event.message[:100],
         )
         try:
-            await self._cdp.send("Page.handleJavaScriptDialog", {
-                "accept": accept,
-            }, session_id=self._session_id)
+            await self._cdp.send(
+                "Page.handleJavaScriptDialog",
+                {
+                    "accept": accept,
+                },
+                session_id=self._session_id,
+            )
         except Exception as exc:
             logger.error("Failed to handle dialog: %s", exc)

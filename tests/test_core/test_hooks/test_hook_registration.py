@@ -119,6 +119,4 @@ class TestHookConfigIsExtractable:
         from spectragent.generated._composed import TraceWriterHookConfig
 
         assert "trace_dir" in TraceWriterHookConfig.model_fields
-        assert (
-            TraceWriterHookConfig(trace_dir="/tmp/t").trace_dir == "/tmp/t"
-        )
+        assert TraceWriterHookConfig(trace_dir="/tmp/t").trace_dir == "/tmp/t"

@@ -188,8 +188,7 @@ _POINT_PARAMS: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType(
 _POINT_DESCRIPTIONS: Mapping[CoordinateSpace, str] = MappingProxyType(
     {
         "screenshot_pixels": (
-            "int -- {axis} in pixels of the screenshot you are shown, from its "
-            "{edge} edge"
+            "int -- {axis} in pixels of the screenshot you are shown, from its {edge} edge"
         ),
         "normalized_1000": (
             "int -- {axis} on a 0-1000 grid laid over the screenshot whatever its "
@@ -375,12 +374,12 @@ class BrowserUseAgent(AgentBase):
         default_factory=list, init=False, repr=False
     )
     _per_run_output_model: type[BaseModel] | None = field(
-        default=None, init=False, repr=False,
+        default=None,
+        init=False,
+        repr=False,
     )
     _system_prompt_text: str = field(default="", init=False, repr=False)
-    _prompt_snapshot: PromptSnapshot | None = field(
-        default=None, init=False, repr=False
-    )
+    _prompt_snapshot: PromptSnapshot | None = field(default=None, init=False, repr=False)
     _max_history_steps: int = field(default=10, init=False, repr=False)
     #: The grid over the screenshot attached to the *current* step's
     #: prompt, set by ``build_react_prompt`` and read by
@@ -544,8 +543,7 @@ class BrowserUseAgent(AgentBase):
         """
         screenshot = getattr(observation, "screenshot", None)
         shows_screenshot = (
-            self.observation_mode in _MODES_WITH_IMAGE
-            and _image_bytes(screenshot) is not None
+            self.observation_mode in _MODES_WITH_IMAGE and _image_bytes(screenshot) is not None
         )
         self._grid = None
         if shows_screenshot and self._has_point_actions():
@@ -806,9 +804,7 @@ class BrowserUseAgent(AgentBase):
             text = self.override_system_message
             snapshot = text_snapshot(
                 text,
-                PromptRef(
-                    path=_OVERRIDE_REF_PATH, content_hash=hash_text(text)
-                ),
+                PromptRef(path=_OVERRIDE_REF_PATH, content_hash=hash_text(text)),
             )
         else:
             params: dict[str, Any] = {
@@ -932,9 +928,7 @@ class BrowserUseAgent(AgentBase):
             items = items[-self._max_history_steps :]
         blocks: list[str] = []
         for rec in items:
-            actions_str = (
-                ", ".join(f"{a.name}({a.params})" for a in rec.actions) or "(none)"
-            )
+            actions_str = ", ".join(f"{a.name}({a.params})" for a in rec.actions) or "(none)"
             results_str = (
                 "; ".join(
                     f"ok={r.success} {r.error or r.extracted_content or ''}".rstrip()
@@ -1037,9 +1031,7 @@ def _render_action_list(
     for d in descriptors:
         if d.params:
             labels = relabel.get(d.name, {})
-            params_part = ", ".join(
-                f"{k}: {labels.get(k, v)}" for k, v in d.params.items()
-            )
+            params_part = ", ".join(f"{k}: {labels.get(k, v)}" for k, v in d.params.items())
         else:
             params_part = "no params"
         lines.append(f"- `{d.name}({params_part})` — {d.description}")

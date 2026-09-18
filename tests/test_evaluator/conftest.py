@@ -103,20 +103,16 @@ def write_trace(
         obs_files: list[str] = []
         if step < len(frames):
             data = frames[step]
-            obs_files.append(
-                wal.write_observation(step, "browser.screenshot", data, suffix=".png")
+            obs_files.append(wal.write_observation(step, "browser.screenshot", data, suffix=".png"))
+            sidecar = ScreenshotObs(viewport_width=1280, viewport_height=720).model_dump(
+                mode="json", exclude={"image_bytes"}
             )
-            sidecar = ScreenshotObs(
-                viewport_width=1280, viewport_height=720
-            ).model_dump(mode="json", exclude={"image_bytes"})
             # Derived from the same rule ``TraceWriter`` writes it by
             # (``NNN_<fragment_id><suffix>``), not spelled out: a
             # hand-written name is how this pointer came to name a file
             # the fixture never wrote.
             sidecar["artifact_file"] = f"{step:03d}_{ScreenshotObs.__registry_key__}.png"
-            obs_files.append(
-                wal.write_observation(step, "browser.screenshot", sidecar)
-            )
+            obs_files.append(wal.write_observation(step, "browser.screenshot", sidecar))
 
         record = StepRecord(
             step=step,
@@ -125,9 +121,7 @@ def write_trace(
             actions=[Action(name="browser.click", params={"index": step})],
             action_results=[ActionResult(success=True)],
             timestamp=float(step),
-            token_usage=TokenUsage(
-                prompt_tokens=30, completion_tokens=15, total_tokens=45
-            ),
+            token_usage=TokenUsage(prompt_tokens=30, completion_tokens=15, total_tokens=45),
         )
         step_file = wal.write_step_record(step, record)
         wal.commit_step(step=step, step_file=step_file, observation_files=obs_files)

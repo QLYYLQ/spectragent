@@ -101,20 +101,20 @@ logger = logging.getLogger(__name__)
 # + keyUp is enough for navigation keys (arrows, Esc, Home/End, Pg*).
 # Reference: ref/browser-use/browser_use/actor/element.py:423-501.
 _KEY_INFO: dict[str, tuple[str, str, int, str | None]] = {
-    "enter":      ("Enter",      "Enter",       13, "\r"),
-    "tab":        ("Tab",        "Tab",          9, "\t"),
-    "escape":     ("Escape",     "Escape",      27, None),
-    "backspace":  ("Backspace",  "Backspace",    8, None),
-    "delete":     ("Delete",     "Delete",      46, None),
-    "arrowup":    ("ArrowUp",    "ArrowUp",     38, None),
-    "arrowdown":  ("ArrowDown",  "ArrowDown",   40, None),
-    "arrowleft":  ("ArrowLeft",  "ArrowLeft",   37, None),
-    "arrowright": ("ArrowRight", "ArrowRight",  39, None),
-    "home":       ("Home",       "Home",        36, None),
-    "end":        ("End",        "End",         35, None),
-    "pageup":     ("PageUp",     "PageUp",      33, None),
-    "pagedown":   ("PageDown",   "PageDown",    34, None),
-    "space":      (" ",          "Space",       32, " "),
+    "enter": ("Enter", "Enter", 13, "\r"),
+    "tab": ("Tab", "Tab", 9, "\t"),
+    "escape": ("Escape", "Escape", 27, None),
+    "backspace": ("Backspace", "Backspace", 8, None),
+    "delete": ("Delete", "Delete", 46, None),
+    "arrowup": ("ArrowUp", "ArrowUp", 38, None),
+    "arrowdown": ("ArrowDown", "ArrowDown", 40, None),
+    "arrowleft": ("ArrowLeft", "ArrowLeft", 37, None),
+    "arrowright": ("ArrowRight", "ArrowRight", 39, None),
+    "home": ("Home", "Home", 36, None),
+    "end": ("End", "End", 35, None),
+    "pageup": ("PageUp", "PageUp", 33, None),
+    "pagedown": ("PageDown", "PageDown", 34, None),
+    "space": (" ", "Space", 32, " "),
 }
 
 
@@ -124,6 +124,7 @@ _STALE_FRAME_ELEMENT = (
     "(navigated, reloaded or removed), so it cannot be located; observe the "
     "page again before acting on it."
 )
+
 
 def _visible_span(centre: float, size: float, extent: int) -> float:
     """The part of a box that is on screen, kept symmetric about its centre.
@@ -480,8 +481,7 @@ class ActionWatchdog(BrowserWatchdog):
             # still correct for the static-page case but vulnerable to
             # layout shift / scroll between observe and act.
             logger.warning(
-                "Live viewport center unavailable for node %d; falling back "
-                "to snapshot bounds",
+                "Live viewport center unavailable for node %d; falling back to snapshot bounds",
                 event.backend_node_id,
             )
             cx_f, cy_f = node.bounds.center
@@ -490,14 +490,16 @@ class ActionWatchdog(BrowserWatchdog):
 
         ax, ay = self._aim_inside(cx, cy, target_w, target_h)
         return await self._click_at(
-            ax, ay, event.button, event.click_count,
+            ax,
+            ay,
+            event.button,
+            event.click_count,
             label=self._describe_node(node),
-            target_w=target_w, target_h=target_h,
+            target_w=target_w,
+            target_h=target_h,
         )
 
-    def _aim_inside(
-        self, cx: float, cy: float, width: float, height: float
-    ) -> tuple[int, int]:
+    def _aim_inside(self, cx: float, cy: float, width: float, height: float) -> tuple[int, int]:
         """Pick the point inside an element's box that this action aims at.
 
         A box does not say where to click, it says where it is legal to.
@@ -539,14 +541,15 @@ class ActionWatchdog(BrowserWatchdog):
         is only a hit-test guess. The box we do find is for the trajectory's
         timing (``_target_box_at``), never for moving the point.
         """
-        target_w, target_h = await self._target_box_at(
-            event.coordinate_x, event.coordinate_y
-        )
+        target_w, target_h = await self._target_box_at(event.coordinate_x, event.coordinate_y)
         return await self._click_at(
-            event.coordinate_x, event.coordinate_y,
-            event.button, event.click_count,
+            event.coordinate_x,
+            event.coordinate_y,
+            event.button,
+            event.click_count,
             label=f"({event.coordinate_x}, {event.coordinate_y})",
-            target_w=target_w, target_h=target_h,
+            target_w=target_w,
+            target_h=target_h,
         )
 
     async def _target_box_at(self, x: int, y: int) -> tuple[float, float]:
@@ -579,7 +582,9 @@ class ActionWatchdog(BrowserWatchdog):
             if not backend_node_id:
                 return 0.0, 0.0
             box = await self._cdp.send(
-                "DOM.getBoxModel", {"backendNodeId": backend_node_id}, session_id=sid,
+                "DOM.getBoxModel",
+                {"backendNodeId": backend_node_id},
+                session_id=sid,
             )
             quad = ((box or {}).get("model") or {}).get("border") or []
             if len(quad) < 8:
@@ -595,8 +600,15 @@ class ActionWatchdog(BrowserWatchdog):
             return 0.0, 0.0
 
     async def _click_at(
-        self, x: int, y: int, button: str, click_count: int,
-        *, label: str = "", target_w: float = 0.0, target_h: float = 0.0,
+        self,
+        x: int,
+        y: int,
+        button: str,
+        click_count: int,
+        *,
+        label: str = "",
+        target_w: float = 0.0,
+        target_h: float = 0.0,
     ) -> dict[str, Any]:
         """Execute click at (x, y) via the HumanMouse middle layer.
 
@@ -607,8 +619,12 @@ class ActionWatchdog(BrowserWatchdog):
         """
         try:
             await self._mouse.click(
-                x, y, button, click_count,
-                target_w=target_w, target_h=target_h,
+                x,
+                y,
+                button,
+                click_count,
+                target_w=target_w,
+                target_h=target_h,
             )
             await self._paint_click(x, y, label)
             return {"clicked": True, "x": x, "y": y}
@@ -646,9 +662,7 @@ class ActionWatchdog(BrowserWatchdog):
             logger.error("Type failed: %s", e)
             return {"error": str(e)}
 
-    async def _on_type_at_coordinate(
-        self, event: TypeAtCoordinateEvent
-    ) -> dict[str, Any] | None:
+    async def _on_type_at_coordinate(self, event: TypeAtCoordinateEvent) -> dict[str, Any] | None:
         """Type into whatever is at (x, y) — the vision-only path.
 
         A vision-only agent negotiates no DOM fragment, so the
@@ -690,18 +704,39 @@ class ActionWatchdog(BrowserWatchdog):
         """
         sid = self._element_session(session_id)
         if clear:
-            await self._cdp.send("Input.dispatchKeyEvent", {
-                "type": "keyDown", "key": "a", "commands": ["selectAll"],
-            }, session_id=sid)
-            await self._cdp.send("Input.dispatchKeyEvent", {
-                "type": "keyUp", "key": "a",
-            }, session_id=sid)
-            await self._cdp.send("Input.dispatchKeyEvent", {
-                "type": "keyDown", "key": "Backspace",
-            }, session_id=sid)
-            await self._cdp.send("Input.dispatchKeyEvent", {
-                "type": "keyUp", "key": "Backspace",
-            }, session_id=sid)
+            await self._cdp.send(
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyDown",
+                    "key": "a",
+                    "commands": ["selectAll"],
+                },
+                session_id=sid,
+            )
+            await self._cdp.send(
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyUp",
+                    "key": "a",
+                },
+                session_id=sid,
+            )
+            await self._cdp.send(
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyDown",
+                    "key": "Backspace",
+                },
+                session_id=sid,
+            )
+            await self._cdp.send(
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyUp",
+                    "key": "Backspace",
+                },
+                session_id=sid,
+            )
 
         await self._keyboard.type_text(text, session_id=sid)
         return {"typed": True, "length": len(text)}
@@ -729,7 +764,11 @@ class ActionWatchdog(BrowserWatchdog):
         except Exception as e:
             logger.error(
                 "Drag failed (%d, %d) -> (%d, %d): %s",
-                event.start_x, event.start_y, event.end_x, event.end_y, e,
+                event.start_x,
+                event.start_y,
+                event.end_x,
+                event.end_y,
+                e,
             )
             return {"error": str(e)}
 
@@ -759,9 +798,7 @@ class ActionWatchdog(BrowserWatchdog):
                             event.backend_node_id, event.session_id, owners
                         )
                     except FrameGeometryError as exc:
-                        logger.warning(
-                            "Not scrolling %s: %s", self._describe_node(node), exc
-                        )
+                        logger.warning("Not scrolling %s: %s", self._describe_node(node), exc)
                         return
                     if live is not None:
                         cx, cy, w, h = live
@@ -778,9 +815,7 @@ class ActionWatchdog(BrowserWatchdog):
                         return
                     elif node.bounds is not None:
                         cx_f, cy_f = node.bounds.center
-                        cx, cy = self._aim_inside(
-                            cx_f, cy_f, node.bounds.width, node.bounds.height
-                        )
+                        cx, cy = self._aim_inside(cx_f, cy_f, node.bounds.width, node.bounds.height)
                     else:
                         return
                     await self._mouse.wheel(cx, cy, dx, dy)
@@ -836,9 +871,7 @@ class ActionWatchdog(BrowserWatchdog):
             target_evt, base_predicate = lifecycle_target
             future = asyncio.get_running_loop().create_future()
             main_frame_id = (
-                self._main_frame_id_getter()
-                if self._main_frame_id_getter is not None
-                else None
+                self._main_frame_id_getter() if self._main_frame_id_getter is not None else None
             )
             # ``main_loader_holder`` is mutated after Page.navigate
             # returns so we can tighten the predicate to the just-issued
@@ -852,11 +885,7 @@ class ActionWatchdog(BrowserWatchdog):
                     return
                 # Main-frame filter (only when both sides are known).
                 e_frame = getattr(e, "frame_id", None)
-                if (
-                    main_frame_id is not None
-                    and e_frame is not None
-                    and e_frame != main_frame_id
-                ):
+                if main_frame_id is not None and e_frame is not None and e_frame != main_frame_id:
                     return
                 # Loader filter (only when both sides are known).
                 e_loader = getattr(e, "loader_id", None)
@@ -877,22 +906,29 @@ class ActionWatchdog(BrowserWatchdog):
             )
 
         # 3. Emit start, then fire Page.navigate, then wait, then emit complete.
-        self._scope.emit(NavigationStartedEvent(
-            target_id=self._session_id or "", url=event.url,
-        ))
+        self._scope.emit(
+            NavigationStartedEvent(
+                target_id=self._session_id or "",
+                url=event.url,
+            )
+        )
 
         error_text: str | None = None
         try:
             try:
                 result = await self._cdp.send(
-                    "Page.navigate", {"url": event.url},
+                    "Page.navigate",
+                    {"url": event.url},
                     session_id=self._session_id,
                 )
             except Exception as exc:
                 logger.error("Page.navigate failed: %s", exc)
-                self._scope.emit(BrowserErrorEvent(
-                    error_type="navigation", message=str(exc),
-                ))
+                self._scope.emit(
+                    BrowserErrorEvent(
+                        error_type="navigation",
+                        message=str(exc),
+                    )
+                )
                 return
 
             if result:
@@ -911,14 +947,18 @@ class ActionWatchdog(BrowserWatchdog):
                         "emitting NavigationCompleteEvent anyway; tune "
                         "post_delay_ms or use browser.wait if popups arrive "
                         "later via JS timer",
-                        event.wait_until, wait_s, event.url,
+                        event.wait_until,
+                        wait_s,
+                        event.url,
                     )
 
-            self._scope.emit(NavigationCompleteEvent(
-                target_id=self._session_id or "",
-                url=event.url,
-                error_text=error_text,
-            ))
+            self._scope.emit(
+                NavigationCompleteEvent(
+                    target_id=self._session_id or "",
+                    url=event.url,
+                    error_text=error_text,
+                )
+            )
         finally:
             if connection is not None:
                 try:
@@ -927,7 +967,8 @@ class ActionWatchdog(BrowserWatchdog):
                     logger.debug("Lifecycle connection disconnect failed: %s", exc)
 
     def _lifecycle_target(
-        self, wait_until: str,
+        self,
+        wait_until: str,
     ) -> tuple[type[BaseEvent[Any]], Callable[[Any], bool]] | None:
         """Map ``wait_until`` to (event class, predicate).
 
@@ -945,8 +986,7 @@ class ActionWatchdog(BrowserWatchdog):
             # which Chrome emits a few hundred ms earlier. Accepting both
             # makes timeouts on long-poll sites less catastrophic.
             return LifecycleEvent, (
-                lambda e: getattr(e, "name", "") in
-                ("networkIdle", "networkAlmostIdle")
+                lambda e: getattr(e, "name", "") in ("networkIdle", "networkAlmostIdle")
             )
         return None
 
@@ -1048,9 +1088,13 @@ class ActionWatchdog(BrowserWatchdog):
         try:
             sid = self._element_session(event.session_id)
             # Resolve the backend node to a remote object.
-            resolve_result = await self._cdp.send("DOM.resolveNode", {
-                "backendNodeId": event.backend_node_id,
-            }, session_id=sid)
+            resolve_result = await self._cdp.send(
+                "DOM.resolveNode",
+                {
+                    "backendNodeId": event.backend_node_id,
+                },
+                session_id=sid,
+            )
             if not resolve_result or "object" not in resolve_result:
                 logger.error("Cannot resolve node %d for dropdown", event.backend_node_id)
                 return
@@ -1058,45 +1102,57 @@ class ActionWatchdog(BrowserWatchdog):
             object_id = resolve_result["object"]["objectId"]
 
             if event.value is not None:
-                await self._cdp.send("Runtime.callFunctionOn", {
-                    "functionDeclaration": (
-                        "function(value) {"
-                        "  this.value = value;"
-                        "  this.dispatchEvent(new Event('change', {bubbles: true}));"
-                        "}"
-                    ),
-                    "objectId": object_id,
-                    "arguments": [{"value": event.value}],
-                }, session_id=sid)
+                await self._cdp.send(
+                    "Runtime.callFunctionOn",
+                    {
+                        "functionDeclaration": (
+                            "function(value) {"
+                            "  this.value = value;"
+                            "  this.dispatchEvent(new Event('change', {bubbles: true}));"
+                            "}"
+                        ),
+                        "objectId": object_id,
+                        "arguments": [{"value": event.value}],
+                    },
+                    session_id=sid,
+                )
             elif event.text is not None:
-                await self._cdp.send("Runtime.callFunctionOn", {
-                    "functionDeclaration": (
-                        "function(text) {"
-                        "  for (const opt of this.options) {"
-                        "    if (opt.text.trim() === text) {"
-                        "      this.value = opt.value;"
-                        "      this.dispatchEvent(new Event('change', {bubbles: true}));"
-                        "      return;"
-                        "    }"
-                        "  }"
-                        "}"
-                    ),
-                    "objectId": object_id,
-                    "arguments": [{"value": event.text}],
-                }, session_id=sid)
+                await self._cdp.send(
+                    "Runtime.callFunctionOn",
+                    {
+                        "functionDeclaration": (
+                            "function(text) {"
+                            "  for (const opt of this.options) {"
+                            "    if (opt.text.trim() === text) {"
+                            "      this.value = opt.value;"
+                            "      this.dispatchEvent(new Event('change', {bubbles: true}));"
+                            "      return;"
+                            "    }"
+                            "  }"
+                            "}"
+                        ),
+                        "objectId": object_id,
+                        "arguments": [{"value": event.text}],
+                    },
+                    session_id=sid,
+                )
             elif event.index is not None:
-                await self._cdp.send("Runtime.callFunctionOn", {
-                    "functionDeclaration": (
-                        "function(idx) {"
-                        "  if (this.options && this.options[idx]) {"
-                        "    this.selectedIndex = idx;"
-                        "    this.dispatchEvent(new Event('change', {bubbles: true}));"
-                        "  }"
-                        "}"
-                    ),
-                    "objectId": object_id,
-                    "arguments": [{"value": event.index}],
-                }, session_id=sid)
+                await self._cdp.send(
+                    "Runtime.callFunctionOn",
+                    {
+                        "functionDeclaration": (
+                            "function(idx) {"
+                            "  if (this.options && this.options[idx]) {"
+                            "    this.selectedIndex = idx;"
+                            "    this.dispatchEvent(new Event('change', {bubbles: true}));"
+                            "  }"
+                            "}"
+                        ),
+                        "objectId": object_id,
+                        "arguments": [{"value": event.index}],
+                    },
+                    session_id=sid,
+                )
         except Exception as e:
             logger.error("Select dropdown failed: %s", e)
 
@@ -1108,14 +1164,22 @@ class ActionWatchdog(BrowserWatchdog):
         """Extract text content from page or element."""
         try:
             if event.backend_node_id is not None:
-                result = await self._cdp.send("DOM.getOuterHTML", {
-                    "backendNodeId": event.backend_node_id,
-                }, session_id=self._element_session(event.session_id))
+                result = await self._cdp.send(
+                    "DOM.getOuterHTML",
+                    {
+                        "backendNodeId": event.backend_node_id,
+                    },
+                    session_id=self._element_session(event.session_id),
+                )
                 return result.get("outerHTML", "") if result else ""
             else:
-                result = await self._cdp.send("Runtime.evaluate", {
-                    "expression": "document.body.innerText",
-                }, session_id=self._session_id)
+                result = await self._cdp.send(
+                    "Runtime.evaluate",
+                    {
+                        "expression": "document.body.innerText",
+                    },
+                    session_id=self._session_id,
+                )
                 return result.get("result", {}).get("value", "") if result else ""
         except Exception as e:
             logger.error("Extract content failed: %s", e)
@@ -1249,9 +1313,7 @@ class ActionWatchdog(BrowserWatchdog):
         except Exception as exc:
             logger.debug("debug overlay set_visible(%s) failed: %s", flag, exc)
 
-    async def _highlight_node(
-        self, backend_node_id: int, session_id: str | None = None
-    ) -> None:
+    async def _highlight_node(self, backend_node_id: int, session_id: str | None = None) -> None:
         """DevTools-style highlight on the target node, then sleep briefly.
 
         No-op when ``debug_highlight`` is off. Lazy-enables the Overlay
@@ -1297,8 +1359,7 @@ class ActionWatchdog(BrowserWatchdog):
                 "Runtime.evaluate",
                 {
                     "expression": (
-                        f"window.__af_move_cursor__ && "
-                        f"window.__af_move_cursor__({x}, {y});"
+                        f"window.__af_move_cursor__ && window.__af_move_cursor__({x}, {y});"
                     )
                 },
                 session_id=self._session_id,
@@ -1306,9 +1367,7 @@ class ActionWatchdog(BrowserWatchdog):
         except Exception as exc:
             logger.debug("overlay cursor move to (%d,%d) failed: %s", x, y, exc)
 
-    async def _approach_node(
-        self, backend_node_id: int, session_id: str | None = None
-    ) -> None:
+    async def _approach_node(self, backend_node_id: int, session_id: str | None = None) -> None:
         """Move the humanized cursor onto an element before a keyboard/DOM action.
 
         No-op unless the trajectory strategy is humanized, i.e. anything but
@@ -1385,7 +1444,8 @@ class ActionWatchdog(BrowserWatchdog):
                 # (e.g. fixed-positioned). Continue rather than abort.
                 logger.warning(
                     "scrollIntoViewIfNeeded failed for node %d: %s",
-                    backend_node_id, exc,
+                    backend_node_id,
+                    exc,
                 )
 
             if frame_owners:
@@ -1401,7 +1461,8 @@ class ActionWatchdog(BrowserWatchdog):
         except Exception as exc:
             logger.warning(
                 "Live viewport center query failed for node %d: %s",
-                backend_node_id, exc,
+                backend_node_id,
+                exc,
             )
             return None
 
@@ -1449,7 +1510,9 @@ class ActionWatchdog(BrowserWatchdog):
             if owner.backend_node_id is None:
                 return None
             model = await self._cdp.send(
-                "DOM.getBoxModel", {"backendNodeId": owner.backend_node_id}, session_id=owner_session
+                "DOM.getBoxModel",
+                {"backendNodeId": owner.backend_node_id},
+                session_id=owner_session,
             )
             points = FrameProjection.of_box_model(model).quad(points)
             local_root = owner_session

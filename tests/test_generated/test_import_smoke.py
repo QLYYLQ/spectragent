@@ -61,11 +61,7 @@ def test_guard_only_swallows_a_missing_module() -> None:
     # docstring mentions ``except Exception`` while explaining why it is
     # gone, so a substring scan would report the opposite of the truth.
     source = pathlib.Path(generated_pkg.__file__).read_text()
-    handlers = [
-        node
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.ExceptHandler)
-    ]
+    handlers = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ExceptHandler)]
     assert handlers, "the bootstrap guard disappeared"
     caught = {h.type.id for h in handlers if isinstance(h.type, ast.Name)}
     assert caught == {"ImportError"}, f"guard widened back out to {sorted(caught)}"

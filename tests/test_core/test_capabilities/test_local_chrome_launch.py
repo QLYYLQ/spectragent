@@ -48,15 +48,11 @@ class TestFindChrome:
         monkeypatch.setattr(local_chrome.sys, "platform", "linux")
         assert _search_paths() is local_chrome._LINUX_PATHS
 
-    def test_macos_app_bundle_is_discovered_without_an_env_override(
-        self, monkeypatch
-    ) -> None:
+    def test_macos_app_bundle_is_discovered_without_an_env_override(self, monkeypatch) -> None:
         bundle = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         monkeypatch.delenv("CHROME_EXECUTABLE_PATH", raising=False)
         monkeypatch.setattr(local_chrome.sys, "platform", "darwin")
-        monkeypatch.setattr(
-            local_chrome.shutil, "which", lambda p: p if p == bundle else None
-        )
+        monkeypatch.setattr(local_chrome.shutil, "which", lambda p: p if p == bundle else None)
 
         assert find_chrome() == bundle
 
@@ -145,9 +141,7 @@ class TestWaitForCdp:
 
         assert record["kwargs"].get("trust_env") is False
 
-    async def test_read_timeout_keeps_polling_to_the_deadline(
-        self, monkeypatch
-    ) -> None:
+    async def test_read_timeout_keeps_polling_to_the_deadline(self, monkeypatch) -> None:
         """The regression: a Chrome slower than one poll used to abort here."""
         record = self._install(
             monkeypatch,
@@ -206,9 +200,7 @@ class _FakeProcess:
 
 
 class TestLaunchStdio:
-    async def test_chrome_stdio_is_discarded_rather_than_piped(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    async def test_chrome_stdio_is_discarded_rather_than_piped(self, monkeypatch, tmp_path) -> None:
         """A pipe nobody reads is a stall waiting to happen — see the sibling
         test below for the mechanism. Asserts on what ``open()`` passes, not on
         anything the test itself wired up."""
@@ -222,9 +214,7 @@ class TestLaunchStdio:
         async def _fake_wait(_self, _port):
             return "ws://127.0.0.1:9222/devtools/browser/x"
 
-        monkeypatch.setattr(
-            local_chrome.asyncio, "create_subprocess_exec", _fake_exec
-        )
+        monkeypatch.setattr(local_chrome.asyncio, "create_subprocess_exec", _fake_exec)
         monkeypatch.setattr(LocalChromeProvider, "_wait_for_cdp", _fake_wait)
 
         provider = LocalChromeProvider()

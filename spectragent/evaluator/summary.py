@@ -153,9 +153,7 @@ def format_summary(summary: EvalSummary) -> str:
     # breakdown. A judge that timed out is not an agent that was wrong.
     unscored = max(0, overall.total_tasks - overall.evaluated_tasks)
     if unscored:
-        broken = summary.failure_category_statistics.by_category.get(
-            "evaluation_error"
-        )
+        broken = summary.failure_category_statistics.by_category.get("evaluation_error")
         infra = int(broken["count"]) if broken else 0
         lines.append(
             f"  WARNING: {unscored} task(s) carry no verdict "
@@ -171,9 +169,7 @@ def format_summary(summary: EvalSummary) -> str:
     if categories:
         lines.append("  failures by category:")
         for name, entry in sorted(categories.items()):
-            lines.append(
-                f"    {name}: {int(entry['count'])} ({entry['percentage']:.1f}%)"
-            )
+            lines.append(f"    {name}: {int(entry['count'])} ({entry['percentage']:.1f}%)")
     cost = summary.evaluation_cost
     if cost is not None:
         lines.append(

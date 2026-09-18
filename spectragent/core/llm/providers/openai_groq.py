@@ -34,9 +34,12 @@ class ChatGroq(OpenAICompatBase):
 
     def get_client(self):
         from groq import AsyncGroq
+
         return AsyncGroq(
-            api_key=self.api_key, base_url=self.base_url,
-            timeout=self.timeout, max_retries=self.max_retries,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
         )
 
     @overload
@@ -98,12 +101,15 @@ class ChatGroq(OpenAICompatBase):
         try:
             if output_format is None:
                 resp = await client.chat.completions.create(
-                    messages=groq_messages, model=self.model,
-                    service_tier=self.service_tier, temperature=self.temperature,
-                    top_p=self.top_p, seed=self.seed,
+                    messages=groq_messages,
+                    model=self.model,
+                    service_tier=self.service_tier,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    seed=self.seed,
                     **self._tool_kwargs(tools, tool_choice),
                 )
-                usage = self._get_usage(resp) if hasattr(resp, 'usage') else None
+                usage = self._get_usage(resp) if hasattr(resp, "usage") else None
                 return ChatInvokeCompletion(
                     completion=resp.choices[0].message.content or "",
                     usage=usage,
@@ -116,19 +122,26 @@ class ChatGroq(OpenAICompatBase):
                     output_format, strict=self._use_strict_schema(output_format)
                 )
                 resp = await client.chat.completions.create(
-                    model=self.model, messages=groq_messages,
-                    temperature=self.temperature, top_p=self.top_p, seed=self.seed,
+                    model=self.model,
+                    messages=groq_messages,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                    seed=self.seed,
                     response_format=ResponseFormatResponseFormatJsonSchema(
                         json_schema=ResponseFormatResponseFormatJsonSchemaJsonSchema(
-                            name=output_format.__name__, description="Model output schema", schema=schema,
+                            name=output_format.__name__,
+                            description="Model output schema",
+                            schema=schema,
                         ),
                         type="json_schema",
                     ),
                     service_tier=self.service_tier,
                 )
                 if not resp.choices[0].message.content:
-                    raise ModelProviderError(message="No content in response", status_code=500, model=self.name)
-                usage = self._get_usage(resp) if hasattr(resp, 'usage') else None
+                    raise ModelProviderError(
+                        message="No content in response", status_code=500, model=self.name
+                    )
+                usage = self._get_usage(resp) if hasattr(resp, "usage") else None
                 parsed = self._validate_structured(
                     output_format, resp.choices[0].message.content, usage=usage
                 )
@@ -148,11 +161,14 @@ class ChatGroq(OpenAICompatBase):
                     from spectragent.core.llm.providers._groq_parser import (
                         try_parse_groq_failed_generation,
                     )
+
                     parsed = try_parse_groq_failed_generation(e, output_format)
                     return ChatInvokeCompletion(completion=parsed, usage=None)
                 except Exception:
                     pass
-            raise ModelProviderError(message=str(e), status_code=e.response.status_code, model=self.name) from e
+            raise ModelProviderError(
+                message=str(e), status_code=e.response.status_code, model=self.name
+            ) from e
         except APIError as e:
             raise ModelProviderError(message=e.message, model=self.name) from e
         except Exception as e:

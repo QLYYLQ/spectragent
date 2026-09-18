@@ -215,9 +215,7 @@ def action_union(
 
     items: dict[str, type[BaseModel]] = {}
     for descriptor in descriptors:
-        params = params_model_from_schema(
-            descriptor, relabel=relabel.get(descriptor.name)
-        )
+        params = params_model_from_schema(descriptor, relabel=relabel.get(descriptor.name))
         # The verb is the *field name*, dot and all. Pydantic keeps it
         # verbatim through ``model_dump_json``, so no alias is involved and
         # a recorded reply replays as the key the model wrote.
@@ -254,9 +252,7 @@ def action_union(
         verb, params = next(iter(value.items()))
         model = items.get(verb)
         if model is None:
-            raise ValueError(
-                f"unknown action {verb!r}. Allowed verbs: {allowed}"
-            )
+            raise ValueError(f"unknown action {verb!r}. Allowed verbs: {allowed}")
         try:
             return model.model_validate({verb: params})
         except ValidationError as exc:

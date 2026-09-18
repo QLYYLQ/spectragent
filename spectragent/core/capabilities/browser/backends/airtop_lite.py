@@ -49,7 +49,9 @@ class AirtopProvider(BrowserProviderBase):
     # ── capability config (visible at init, overrideable in open()) ───
     profile_name: Annotated[str | None, Field(description="Browser profile name to restore")] = None
     solve_captcha: Annotated[bool, Field(description="Enable automatic CAPTCHA solving")] = False
-    proxy_country: Annotated[str | None, Field(description="Managed proxy country code (e.g. 'US')")] = None
+    proxy_country: Annotated[
+        str | None, Field(description="Managed proxy country code (e.g. 'US')")
+    ] = None
 
     # ── internal state ────────────────────────────────────────────────
     _client: Any = field(default=None, init=False, repr=False)

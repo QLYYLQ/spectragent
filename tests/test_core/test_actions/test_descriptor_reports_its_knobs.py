@@ -75,9 +75,7 @@ def _stated_defaults() -> list[tuple[str, str, Any]]:
         for name, default in _configurable_defaults(cls):
             if _perturb(default) is None:
                 continue
-            phrase = re.compile(
-                rf"defaults?\b[\s=:]*{re.escape(_render(default))}", re.IGNORECASE
-            )
+            phrase = re.compile(rf"defaults?\b[\s=:]*{re.escape(_render(default))}", re.IGNORECASE)
             if phrase.search(text):
                 found.append((key, name, default))
     return found

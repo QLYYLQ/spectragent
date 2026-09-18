@@ -64,9 +64,7 @@ def wheel_names(tmp_path_factory: pytest.TempPathFactory) -> frozenset[str]:
 
 
 class TestRuntimeDataShips:
-    def test_every_prompt_file_is_in_the_wheel(
-        self, wheel_names: frozenset[str]
-    ) -> None:
+    def test_every_prompt_file_is_in_the_wheel(self, wheel_names: frozenset[str]) -> None:
         expected = _source_data_files(PROMPT_PATH)
         assert expected, "no prompt files found on disk — did prompts/ move?"
         assert expected <= wheel_names, sorted(expected - wheel_names)
@@ -89,22 +87,16 @@ class TestRuntimeDataShips:
 
 
 class TestBenchmarkDataDoesNotShip:
-    def test_no_benchmark_data_member_at_all(
-        self, wheel_names: frozenset[str]
-    ) -> None:
+    def test_no_benchmark_data_member_at_all(self, wheel_names: frozenset[str]) -> None:
         """Includes the ``__init__.py`` markers: they were the data's only
         reason to be a package, and they would make the wheel's contents
         depend on whether the dataset happened to be on disk."""
         strays = sorted(
-            name
-            for name in wheel_names
-            if name.startswith(f"{_PACKAGE}/benchmark_data/")
+            name for name in wheel_names if name.startswith(f"{_PACKAGE}/benchmark_data/")
         )
         assert strays == []
 
-    def test_a_stale_build_cache_cannot_resurrect_deleted_data(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_stale_build_cache_cannot_resurrect_deleted_data(self, tmp_path: Path) -> None:
         """The nondeterminism ``build_wheel`` exists to remove.
 
         setuptools copies the package into ``build/lib`` and never prunes
@@ -143,9 +135,7 @@ class TestTheDeclarationHoldsTheOtherHalf:
     make the assertion pass for the wrong reason.
     """
 
-    def test_a_stale_manifest_cannot_resurrect_unglobbed_data(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_stale_manifest_cannot_resurrect_unglobbed_data(self, tmp_path: Path) -> None:
         if shutil.which("uv") is None:
             pytest.skip("uv is not on PATH; cannot build a wheel to inspect")
 

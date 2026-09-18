@@ -90,8 +90,7 @@ class EvaluatorBase(metaclass=EvaluatorRegistrar.Meta):
 
     async def evaluate(self, trace: RunTrace, reference: EvalReference) -> EvalResult:
         raise NotImplementedError(
-            f"Evaluator {self.evaluator_id!r} does not implement "
-            f"evaluate(trace, reference)."
+            f"Evaluator {self.evaluator_id!r} does not implement evaluate(trace, reference)."
         )
 
     # ── Prompt access ───────────────────────────────────────────────
@@ -344,9 +343,7 @@ class LLMJudgeEvaluator(LLMJudgeReceptors, EvaluatorBase):
         text, ref = self.prompt(name)
         return text, text_snapshot(text, ref)
 
-    def render(
-        self, name: str, params: dict[str, Any]
-    ) -> tuple[str, TemplatePrompt]:
+    def render(self, name: str, params: dict[str, Any]) -> tuple[str, TemplatePrompt]:
         """Format a template and snapshot exactly what was substituted."""
         template, ref = self.prompt(name)
         return template.format(**params), template_snapshot(template, ref, params)

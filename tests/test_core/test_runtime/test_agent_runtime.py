@@ -15,6 +15,7 @@ from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 # ── Shared fixtures ───────────────────────────────────────────
 
+
 class SimpleCap(CapabilityBase):
     __registry_key__ = "rt_simple_cap"
     __wiring__ = {"action": ("action", ["rt_simple_cap.done"])}
@@ -52,20 +53,26 @@ class MockCompletion:
 
 class MockLLM:
     model = "test"
+
     async def ainvoke(self, messages, **kwargs):
         return MockCompletion()
 
 
 class MockMemory:
     supports_protocols = frozenset({"user_assistant"})
+
     def __init__(self):
         self.messages = []
+
     def add_message(self, msg):
         self.messages.append(msg)
+
     def add_messages(self, msgs):
         self.messages.extend(msgs)
+
     def get_context_messages(self):
         return list(self.messages)
+
     def clear(self):
         self.messages.clear()
 
@@ -75,6 +82,7 @@ def _make_env():
 
 
 # ── Composite-env fixtures ────────────────────────────────────
+
 
 class _ClickTypeCap(CapabilityBase):
     __registry_key__ = "rt_composite_cap_click_type"
@@ -98,21 +106,22 @@ class _CompositeDoneCap(CapabilityBase):
         return [ActionDescriptor(name="finish.done", description="Done")]
 
     async def execute_action(self, action, **kw):
-        return ActionResult(
-            success=True, is_done=True, extracted_content="ok"
-        )
+        return ActionResult(success=True, is_done=True, extracted_content="ok")
 
 
 def _make_composite_env():
     return make_env(
-        SimpleEnv, {"browser": _ClickTypeCap(), "finish": _CompositeDoneCap()},
+        SimpleEnv,
+        {"browser": _ClickTypeCap(), "finish": _CompositeDoneCap()},
     )
 
 
 # ── Mock loop helpers ─────────────────────────────────────────
 
+
 class _MockLoopBase:
     """Minimal loop mock that supports the weave interface."""
+
     __required_slots__: set[str] = set()
     __optional_slots__: set[str] = set()
     __requires_env__ = True
@@ -123,8 +132,10 @@ class _MockLoopBase:
     def weave(self, agent, **deps):
         self.ctx = deps
         loop = self
+
         async def run(task, **kw):
             return await loop._execute(agent, task, **kw)
+
         agent.run = run
         return agent
 
@@ -138,6 +149,7 @@ class _SlowLoop(_MockLoopBase):
 
 class _SpyLoop(_MockLoopBase):
     """Captures active_descriptors from ctx for assertion."""
+
     def __init__(self, loop_id: str, seen_names: list[str]):
         self._loop_id = loop_id
         self._seen_names = seen_names
@@ -147,9 +159,7 @@ class _SpyLoop(_MockLoopBase):
         return self._loop_id
 
     async def _execute(self, agent, task, **kw):
-        self._seen_names.extend(
-            d.name for d in self.ctx.get("active_descriptors", [])
-        )
+        self._seen_names.extend(d.name for d in self.ctx.get("active_descriptors", []))
         from datetime import datetime
 
         from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
@@ -158,6 +168,7 @@ class _SpyLoop(_MockLoopBase):
             AgentResult,
             AgentUsage,
         )
+
         return AgentResult(
             task_id="t",
             task=task,
@@ -170,20 +181,23 @@ class _SpyLoop(_MockLoopBase):
 
 # ── Tests ─────────────────────────────────────────────────────
 
+
 def _mk(agent, loop, env, *, hooks=None):
     """Shortcut: build a test ComposedRun with mock LLM/memory."""
     return make_run(
-        agent=agent, loop=loop, env=env,
-        llm=MockLLM(), memory=MockMemory(), hooks=hooks,
+        agent=agent,
+        loop=loop,
+        env=env,
+        llm=MockLLM(),
+        memory=MockMemory(),
+        hooks=hooks,
     )
 
 
 class TestFullPipeline:
     def test_execute_returns_done(self) -> None:
         run = _mk(SimpleAgent(), ReactLoop(), _make_env())
-        result = asyncio.run(
-            AgentRuntime.for_agent(run, AGENT_ID).execute("test", task_id="t-001")
-        )
+        result = asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("test", task_id="t-001"))
         assert result.agent_done.value == "done"
         assert result.answer == "answer"
         assert result.agent_reported_success is True
@@ -228,9 +242,7 @@ class TestPrepare:
             llm=MockLLM(),
             memory=memory,
         )
-        asyncio.run(
-            AgentRuntime.for_agent(run, AGENT_ID).execute("seed-task", task_id="t-seed")
-        )
+        asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("seed-task", task_id="t-seed"))
 
         assert len(prepare_calls) == 1
         assert prepare_calls[0][0] == "seed-task"
@@ -247,9 +259,7 @@ class TestPrepare:
             llm=MockLLM(),
             memory=memory,
         )
-        asyncio.run(
-            AgentRuntime.for_agent(run, AGENT_ID).execute("noop", task_id="t-noop")
-        )
+        asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("noop", task_id="t-noop"))
         # SimpleAgent does not define ``prepare``, so no system prompt
         # was seeded by the runtime.
         assert memory.messages == [] or all(
@@ -260,9 +270,7 @@ class TestPrepare:
 class TestTimeout:
     def test_timeout_result(self) -> None:
         run = _mk(SimpleAgent(), _SlowLoop(), _make_env())
-        result = asyncio.run(
-            AgentRuntime.for_agent(run, AGENT_ID).execute("timeout", timeout=0.05)
-        )
+        result = asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("timeout", timeout=0.05))
         assert result.agent_done.value == "timeout"
 
 
@@ -284,9 +292,15 @@ class TestHookLifecycle:
             hook_id = "tracker"
             blocking = True
             __intercepts__ = []
-            async def on_run_start(self, **kw): log.append("start")
-            async def on_run_end(self, **kw): log.append("end")
-            async def on_run_error(self, **kw): log.append("error")
+
+            async def on_run_start(self, **kw):
+                log.append("start")
+
+            async def on_run_end(self, **kw):
+                log.append("end")
+
+            async def on_run_error(self, **kw):
+                log.append("error")
 
         run = _mk(SimpleAgent(), ReactLoop(), _make_env(), hooks=[Hook()])
         asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("hook"))
@@ -299,14 +313,18 @@ class TestHookLifecycle:
             hook_id = "tracker2"
             blocking = True
             __intercepts__ = []
-            async def on_run_start(self, **kw): log.append("start")
-            async def on_run_end(self, **kw): log.append("end")
-            async def on_run_error(self, **kw): log.append("error")
+
+            async def on_run_start(self, **kw):
+                log.append("start")
+
+            async def on_run_end(self, **kw):
+                log.append("end")
+
+            async def on_run_error(self, **kw):
+                log.append("error")
 
         run = _mk(SimpleAgent(), _SlowLoop(), _make_env(), hooks=[Hook()])
-        asyncio.run(
-            AgentRuntime.for_agent(run, AGENT_ID).execute("timeout hook", timeout=0.05)
-        )
+        asyncio.run(AgentRuntime.for_agent(run, AGENT_ID).execute("timeout hook", timeout=0.05))
         # on_run_end fires on the timeout path too — it is the only place
         # a persistence hook writes result.json, so skipping it is what
         # left timed-out runs as orphan traces stuck at status=running.
@@ -483,9 +501,7 @@ class TestDescriptorContext:
 
             def get_action_descriptors(self, **ctx):
                 seen.update(ctx)
-                return [
-                    ActionDescriptor(name="rt_spy_cap.done", description="Done")
-                ]
+                return [ActionDescriptor(name="rt_spy_cap.done", description="Done")]
 
         class _SpyAgent(SimpleAgent):
             __wiring__ = {
@@ -509,4 +525,3 @@ class TestDescriptorContext:
         fragments = seen["fragments"]
         assert fragments == negotiated.active_fragments
         assert "loop.task" in negotiated.active_fragments
-

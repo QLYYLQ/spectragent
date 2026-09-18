@@ -157,9 +157,7 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
             self._prompt_cache[name] = cached
         return cached
 
-    def render(
-        self, name: str, params: dict[str, Any]
-    ) -> tuple[str, TemplatePrompt]:
+    def render(self, name: str, params: dict[str, Any]) -> tuple[str, TemplatePrompt]:
         """Render a template and snapshot exactly what was substituted.
 
         The snapshot carries the template *and* the params rather than

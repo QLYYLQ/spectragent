@@ -50,9 +50,7 @@ class TestClosedUnion:
 
     def test_accepts_the_fully_qualified_key(self) -> None:
         model = self._model("browser.click", "browser.navigate")
-        out = model.model_validate(
-            {"memory": "x", "action": [{"browser.click": {"index": 1}}]}
-        )
+        out = model.model_validate({"memory": "x", "action": [{"browser.click": {"index": 1}}]})
         assert out.action[0].model_dump() == {"browser.click": {"index": 1}}
 
     def test_refuses_the_local_id(self) -> None:
@@ -74,9 +72,7 @@ class TestClosedUnion:
         """
         model = self._model("browser.click")
         with pytest.raises(ValidationError) as exc:
-            model.model_validate(
-                {"memory": "", "action": [{"click_element": {"index": 1}}]}
-            )
+            model.model_validate({"memory": "", "action": [{"click_element": {"index": 1}}]})
         assert "unknown action 'click_element'" in str(exc.value)
 
     def test_unknown_verb_is_one_error_that_lists_the_allowed_set(self) -> None:
@@ -145,9 +141,7 @@ class TestClosedUnion:
         in the trace where the verb belongs.
         """
         model = self._model("browser.click", "browser.navigate")
-        out = model.model_validate(
-            {"memory": "m", "action": [{"browser.click": {"index": 3}}]}
-        )
+        out = model.model_validate({"memory": "m", "action": [{"browser.click": {"index": 3}}]})
         text = out.model_dump_json()
         assert json.loads(text)["action"] == [{"browser.click": {"index": 3}}]
         assert model.model_validate_json(text).action[0].model_dump() == {

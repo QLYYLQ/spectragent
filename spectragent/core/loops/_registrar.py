@@ -101,8 +101,7 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
             IncompatibleError: with the list of missing method names.
         """
         missing = sorted(
-            s for s in self.__required_slots__
-            if not callable(getattr(agent, s, None))
+            s for s in self.__required_slots__ if not callable(getattr(agent, s, None))
         )
         if missing:
             agent_name = getattr(agent, "agent_name", type(agent).__name__)

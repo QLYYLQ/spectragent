@@ -83,11 +83,21 @@ logger = logging.getLogger(__name__)
 # for index-based parsing of layout['styles']. ``DOMWatchdog`` passes this
 # list to the capture, so the request and the parse cannot drift apart.
 REQUIRED_COMPUTED_STYLES: list[str] = [
-    "display", "visibility", "opacity", "overflow",
-    "overflow-x", "overflow-y",
-    "cursor", "pointer-events", "position", "background-color",
+    "display",
+    "visibility",
+    "opacity",
+    "overflow",
+    "overflow-x",
+    "overflow-y",
+    "cursor",
+    "pointer-events",
+    "position",
+    "background-color",
     # A frame owner's border and padding: its document starts inside both.
-    "border-left-width", "border-top-width", "padding-left", "padding-top",
+    "border-left-width",
+    "border-top-width",
+    "padding-left",
+    "padding-top",
 ]
 
 # Overflow values that indicate scrollability.
@@ -212,6 +222,7 @@ class BrowserUseCleaner(DOMCleanerBase):
 # own ``TargetCapture`` and grafted under its ``<iframe>``.
 # ---------------------------------------------------------------------------
 
+
 @dataclass(slots=True)
 class _SnapshotData:
     """Layout data extracted from DOMSnapshot, keyed by backend_node_id."""
@@ -267,7 +278,9 @@ def _build_snapshot_lookup(
             if li < len(layout_bounds):
                 b = layout_bounds[li]
                 if len(b) >= 4:
-                    bounds = DOMRect(x=b[0] / dpr, y=b[1] / dpr, width=b[2] / dpr, height=b[3] / dpr)
+                    bounds = DOMRect(
+                        x=b[0] / dpr, y=b[1] / dpr, width=b[2] / dpr, height=b[3] / dpr
+                    )
 
             paint_order: int | None = None
             if li < len(layout_paint_orders):
@@ -304,8 +317,12 @@ def _build_snapshot_lookup(
                     scroll_rects = DOMRect(x=sr[0], y=sr[1], width=sr[2], height=sr[3])
 
             lookup[bid] = _SnapshotData(
-                bounds=bounds, client_rect=client_rect, scroll_rects=scroll_rects,
-                paint_order=paint_order, computed_styles=computed_styles, cursor_style=cursor_style,
+                bounds=bounds,
+                client_rect=client_rect,
+                scroll_rects=scroll_rects,
+                paint_order=paint_order,
+                computed_styles=computed_styles,
+                cursor_style=cursor_style,
             )
 
     return lookup
@@ -405,7 +422,12 @@ def _is_visible_by_css(
 
 def _detect_scrollable(snap: _SnapshotData | None) -> bool:
     """Detect scrollability from overflow CSS + scroll/client rects."""
-    if snap is None or snap.computed_styles is None or snap.scroll_rects is None or snap.client_rect is None:
+    if (
+        snap is None
+        or snap.computed_styles is None
+        or snap.scroll_rects is None
+        or snap.client_rect is None
+    ):
         return False
     cs = snap.computed_styles
     overflow = cs.get("overflow", "visible").lower()
@@ -413,9 +435,8 @@ def _detect_scrollable(snap: _SnapshotData | None) -> bool:
     overflow_y = cs.get("overflow-y", overflow).lower()
     if not any(v in _SCROLLABLE_OVERFLOW for v in (overflow, overflow_x, overflow_y)):
         return False
-    return (
-        snap.scroll_rects.height > (snap.client_rect.height + 1)
-        or snap.scroll_rects.width > (snap.client_rect.width + 1)
+    return snap.scroll_rects.height > (snap.client_rect.height + 1) or snap.scroll_rects.width > (
+        snap.client_rect.width + 1
     )
 
 
@@ -543,11 +564,15 @@ def _content_frame(
     only that element knows the frame's viewport size.
     """
     styles = owner.computed_styles or {}
-    content_x = owner_bounds.x + _css_px(styles.get("border-left-width")) + _css_px(
-        styles.get("padding-left")
+    content_x = (
+        owner_bounds.x
+        + _css_px(styles.get("border-left-width"))
+        + _css_px(styles.get("padding-left"))
     )
-    content_y = owner_bounds.y + _css_px(styles.get("border-top-width")) + _css_px(
-        styles.get("padding-top")
+    content_y = (
+        owner_bounds.y
+        + _css_px(styles.get("border-top-width"))
+        + _css_px(styles.get("padding-top"))
     )
     return _Frame(
         origin_x=content_x - scroll[0],
@@ -576,7 +601,9 @@ def _construct_node(
     """
     ntype = node.get("nodeType", 1)
 
-    def build(child: dict[str, Any], child_target: _Target, child_frame: _Frame) -> DOMElementNode | None:
+    def build(
+        child: dict[str, Any], child_target: _Target, child_frame: _Frame
+    ) -> DOMElementNode | None:
         return _construct_node(
             child, child_target, child_frame, include_shadow_dom=include_shadow_dom
         )
@@ -823,6 +850,7 @@ def _build_tree_from_cdp(
 # Stage 1: Simplify tree
 # ---------------------------------------------------------------------------
 
+
 def _simplify_tree(node: DOMElementNode) -> None:
     """Remove non-content elements in-place (depth-first, composed tree)."""
     node.children = [c for c in node.children if _should_keep(c)]
@@ -854,14 +882,13 @@ def _should_keep(node: DOMElementNode) -> bool:
         return True
     # Validation attribute override: keep in tree for aria-*/pseudo attrs
     # even if not CSS-visible (matches original browser-use behavior).
-    return bool(
-        node.attributes and any(k.startswith(("aria-", "pseudo")) for k in node.attributes)
-    )
+    return bool(node.attributes and any(k.startswith(("aria-", "pseudo")) for k in node.attributes))
 
 
 # ---------------------------------------------------------------------------
 # Stage 2: Optimize tree
 # ---------------------------------------------------------------------------
+
 
 def _optimize_tree(node: DOMElementNode) -> None:
     """Remove structural-only nodes with no visible content (composed tree)."""
@@ -887,6 +914,7 @@ def _keep_in_optimized(node: DOMElementNode) -> bool:
 # ---------------------------------------------------------------------------
 # Stage 3: Paint-order occlusion
 # ---------------------------------------------------------------------------
+
 
 def _mark_paint_occluded(
     root: DOMElementNode, *, max_nodes: int, descendants_occlude: bool = False
@@ -936,6 +964,7 @@ def _mark_paint_occluded(
 # ---------------------------------------------------------------------------
 # Stage 5: Interactive index assignment
 # ---------------------------------------------------------------------------
+
 
 def _assign_interactive_indices(
     root: DOMElementNode,
@@ -1010,6 +1039,7 @@ def _assign_interactive_indices(
 # Compound components
 # ---------------------------------------------------------------------------
 
+
 def _add_compound_components(node: DOMElementNode) -> None:
     """Enhance compound controls with virtual sub-component info.
 
@@ -1024,23 +1054,62 @@ def _add_compound_components(node: DOMElementNode) -> None:
         if input_type == "range":
             min_val = _safe_parse_number(attrs.get("min", "0"), 0.0)
             max_val = _safe_parse_number(attrs.get("max", "100"), 100.0)
-            node._compound_children.append({
-                "role": "slider", "name": "Value",
-                "valuemin": min_val, "valuemax": max_val, "valuenow": None,
-            })
+            node._compound_children.append(
+                {
+                    "role": "slider",
+                    "name": "Value",
+                    "valuemin": min_val,
+                    "valuemax": max_val,
+                    "valuenow": None,
+                }
+            )
         elif input_type == "number":
             min_val = _safe_parse_optional_number(attrs.get("min"))
             max_val = _safe_parse_optional_number(attrs.get("max"))
-            node._compound_children.extend([
-                {"role": "button", "name": "Increment", "valuemin": None, "valuemax": None, "valuenow": None},
-                {"role": "button", "name": "Decrement", "valuemin": None, "valuemax": None, "valuenow": None},
-                {"role": "textbox", "name": "Value", "valuemin": min_val, "valuemax": max_val, "valuenow": None},
-            ])
+            node._compound_children.extend(
+                [
+                    {
+                        "role": "button",
+                        "name": "Increment",
+                        "valuemin": None,
+                        "valuemax": None,
+                        "valuenow": None,
+                    },
+                    {
+                        "role": "button",
+                        "name": "Decrement",
+                        "valuemin": None,
+                        "valuemax": None,
+                        "valuenow": None,
+                    },
+                    {
+                        "role": "textbox",
+                        "name": "Value",
+                        "valuemin": min_val,
+                        "valuemax": max_val,
+                        "valuenow": None,
+                    },
+                ]
+            )
         elif input_type == "color":
-            node._compound_children.extend([
-                {"role": "textbox", "name": "Hex Value", "valuemin": None, "valuemax": None, "valuenow": None},
-                {"role": "button", "name": "Color Picker", "valuemin": None, "valuemax": None, "valuenow": None},
-            ])
+            node._compound_children.extend(
+                [
+                    {
+                        "role": "textbox",
+                        "name": "Hex Value",
+                        "valuemin": None,
+                        "valuemax": None,
+                        "valuenow": None,
+                    },
+                    {
+                        "role": "button",
+                        "name": "Color Picker",
+                        "valuemin": None,
+                        "valuemax": None,
+                        "valuenow": None,
+                    },
+                ]
+            )
         elif input_type == "file":
             multiple = "multiple" in attrs
             # Extract current file selection state from AX properties.
@@ -1061,25 +1130,44 @@ def _add_compound_components(node: DOMElementNode) -> None:
                                     val = val.split(sep)[-1]
                             current_value = val
                         break
-            node._compound_children.extend([
-                {"role": "button", "name": "Browse Files", "valuemin": None, "valuemax": None, "valuenow": None},
-                {
-                    "role": "textbox",
-                    "name": f"{'Files' if multiple else 'File'} Selected",
-                    "valuemin": None, "valuemax": None, "valuenow": current_value,
-                },
-            ])
+            node._compound_children.extend(
+                [
+                    {
+                        "role": "button",
+                        "name": "Browse Files",
+                        "valuemin": None,
+                        "valuemax": None,
+                        "valuenow": None,
+                    },
+                    {
+                        "role": "textbox",
+                        "name": f"{'Files' if multiple else 'File'} Selected",
+                        "valuemin": None,
+                        "valuemax": None,
+                        "valuenow": current_value,
+                    },
+                ]
+            )
         # date/time/datetime-local/month/week — skip compound (format in placeholder).
 
     elif tag == "select":
         base = [
-            {"role": "button", "name": "Dropdown Toggle", "valuemin": None, "valuemax": None, "valuenow": None},
+            {
+                "role": "button",
+                "name": "Dropdown Toggle",
+                "valuemin": None,
+                "valuemax": None,
+                "valuenow": None,
+            },
         ]
         options_info = _extract_select_options(node)
         if options_info:
             opt_comp: dict[str, Any] = {
-                "role": "listbox", "name": "Options",
-                "valuemin": None, "valuemax": None, "valuenow": None,
+                "role": "listbox",
+                "name": "Options",
+                "valuemin": None,
+                "valuemax": None,
+                "valuenow": None,
                 "options_count": options_info["count"],
                 "first_options": options_info["first_options"],
             }
@@ -1087,31 +1175,111 @@ def _add_compound_components(node: DOMElementNode) -> None:
                 opt_comp["format_hint"] = options_info["format_hint"]
             base.append(opt_comp)
         else:
-            base.append({"role": "listbox", "name": "Options", "valuemin": None, "valuemax": None, "valuenow": None})
+            base.append(
+                {
+                    "role": "listbox",
+                    "name": "Options",
+                    "valuemin": None,
+                    "valuemax": None,
+                    "valuenow": None,
+                }
+            )
         node._compound_children.extend(base)
 
     elif tag == "details":
-        node._compound_children.extend([
-            {"role": "button", "name": "Toggle Disclosure", "valuemin": None, "valuemax": None, "valuenow": None},
-            {"role": "region", "name": "Content Area", "valuemin": None, "valuemax": None, "valuenow": None},
-        ])
+        node._compound_children.extend(
+            [
+                {
+                    "role": "button",
+                    "name": "Toggle Disclosure",
+                    "valuemin": None,
+                    "valuemax": None,
+                    "valuenow": None,
+                },
+                {
+                    "role": "region",
+                    "name": "Content Area",
+                    "valuemin": None,
+                    "valuemax": None,
+                    "valuenow": None,
+                },
+            ]
+        )
 
     elif tag == "audio":
-        node._compound_children.extend([
-            {"role": "button", "name": "Play/Pause", "valuemin": None, "valuemax": None, "valuenow": None},
-            {"role": "slider", "name": "Progress", "valuemin": 0, "valuemax": 100, "valuenow": None},
-            {"role": "button", "name": "Mute", "valuemin": None, "valuemax": None, "valuenow": None},
-            {"role": "slider", "name": "Volume", "valuemin": 0, "valuemax": 100, "valuenow": None},
-        ])
+        node._compound_children.extend(
+            [
+                {
+                    "role": "button",
+                    "name": "Play/Pause",
+                    "valuemin": None,
+                    "valuemax": None,
+                    "valuenow": None,
+                },
+                {
+                    "role": "slider",
+                    "name": "Progress",
+                    "valuemin": 0,
+                    "valuemax": 100,
+                    "valuenow": None,
+                },
+                {
+                    "role": "button",
+                    "name": "Mute",
+                    "valuemin": None,
+                    "valuemax": None,
+                    "valuenow": None,
+                },
+                {
+                    "role": "slider",
+                    "name": "Volume",
+                    "valuemin": 0,
+                    "valuemax": 100,
+                    "valuenow": None,
+                },
+            ]
+        )
 
     elif tag == "video":
-        node._compound_children.extend([
-            {"role": "button", "name": "Play/Pause", "valuemin": None, "valuemax": None, "valuenow": None},
-            {"role": "slider", "name": "Progress", "valuemin": 0, "valuemax": 100, "valuenow": None},
-            {"role": "button", "name": "Mute", "valuemin": None, "valuemax": None, "valuenow": None},
-            {"role": "slider", "name": "Volume", "valuemin": 0, "valuemax": 100, "valuenow": None},
-            {"role": "button", "name": "Fullscreen", "valuemin": None, "valuemax": None, "valuenow": None},
-        ])
+        node._compound_children.extend(
+            [
+                {
+                    "role": "button",
+                    "name": "Play/Pause",
+                    "valuemin": None,
+                    "valuemax": None,
+                    "valuenow": None,
+                },
+                {
+                    "role": "slider",
+                    "name": "Progress",
+                    "valuemin": 0,
+                    "valuemax": 100,
+                    "valuenow": None,
+                },
+                {
+                    "role": "button",
+                    "name": "Mute",
+                    "valuemin": None,
+                    "valuemax": None,
+                    "valuenow": None,
+                },
+                {
+                    "role": "slider",
+                    "name": "Volume",
+                    "valuemin": 0,
+                    "valuemax": 100,
+                    "valuenow": None,
+                },
+                {
+                    "role": "button",
+                    "name": "Fullscreen",
+                    "valuemin": None,
+                    "valuemax": None,
+                    "valuenow": None,
+                },
+            ]
+        )
 
 
 def _extract_select_options(select_node: DOMElementNode) -> dict[str, Any] | None:
@@ -1170,6 +1338,7 @@ def _extract_select_options(select_node: DOMElementNode) -> dict[str, Any] | Non
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _extract_scroll_info(
     snapshot: dict[str, Any],

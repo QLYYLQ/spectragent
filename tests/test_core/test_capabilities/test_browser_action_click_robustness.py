@@ -43,8 +43,11 @@ class FakeCDP:
         self._raise_on = raise_on or set()
 
     async def send(
-        self, method: str, params: dict[str, Any] | None = None,
-        *, session_id: str | None = None,
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append(_Call(method=method, params=params or {}))
         if method in self._raise_on:
@@ -66,7 +69,8 @@ def _make_node(backend_node_id: int, bounds: DOMRect) -> DOMElementNode:
 
 
 def _watchdog(
-    cdp: FakeCDP, selector_map: DOMSelectorMap,
+    cdp: FakeCDP,
+    selector_map: DOMSelectorMap,
 ) -> ActionWatchdog:
     return ActionWatchdog(
         cdp=cdp,  # type: ignore[arg-type]
@@ -98,7 +102,9 @@ class TestClickUsesLiveRect:
         # NOT node.bounds.center (450, 820).
         mouse_events = cdp.calls[3:]
         assert {evt.params["type"] for evt in mouse_events} == {
-            "mouseMoved", "mousePressed", "mouseReleased",
+            "mouseMoved",
+            "mousePressed",
+            "mouseReleased",
         }
         for evt in mouse_events:
             assert (evt.params["x"], evt.params["y"]) == (55, 70)

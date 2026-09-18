@@ -129,8 +129,11 @@ def _descriptors(*keys: str) -> list[ActionDescriptor]:
 
 def _make_agent(**overrides: Any) -> BrowserUseAgent:
     from tests._helpers.assembly import make_agent
+
     return make_agent(
-        BrowserUseAgent, memory=SimpleMemory(max_messages=100), **overrides,
+        BrowserUseAgent,
+        memory=SimpleMemory(max_messages=100),
+        **overrides,
     )
 
 
@@ -213,9 +216,7 @@ class TestPrepare:
     def test_prepare_returns_system_prompt_seed(self) -> None:
         agent = _make_agent()
         descriptors = _descriptors("browser.click")
-        seed = agent.prepare(
-            task="navigate to example.com", action_descriptors=descriptors
-        )
+        seed = agent.prepare(task="navigate to example.com", action_descriptors=descriptors)
 
         assert isinstance(seed, list)
         assert len(seed) == 1
@@ -243,9 +244,7 @@ class TestBuildReactPrompt:
 
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<html><body>hi</body></html>"),
-            browser_meta=_FakeBrowserMeta(
-                url="https://example.com", page_title="Example"
-            ),
+            browser_meta=_FakeBrowserMeta(url="https://example.com", page_title="Example"),
         )
         messages = agent.build_react_prompt(obs)
 
@@ -260,9 +259,7 @@ class TestBuildReactPrompt:
         agent.prepare(task="t", action_descriptors=_descriptors())
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<DOM>tree</DOM>"),
-            browser_meta=_FakeBrowserMeta(
-                url="https://example.com", page_title="Example"
-            ),
+            browser_meta=_FakeBrowserMeta(url="https://example.com", page_title="Example"),
             task=_FakeTask(user_request="navigate to example.com"),
         )
         messages = agent.build_react_prompt(obs)
@@ -457,9 +454,7 @@ class TestParseReactOutput:
         """
         agent = _prepared()
         (action,) = agent.parse_react_output(
-            _reply(
-                {"browser.done": {"extracted_content": "the final answer", "success": True}}
-            )
+            _reply({"browser.done": {"extracted_content": "the final answer", "success": True}})
         )
         assert action.name == "browser.done"
         assert action.params.get("extracted_content") == "the final answer"
@@ -516,9 +511,7 @@ class TestFrameElementIndices:
 
     async def test_through_the_text_path(self) -> None:
         agent = _prepared()
-        (action,) = agent.parse_react_output(
-            _reply({"browser.click": {"index": self.KEY}})
-        )
+        (action,) = agent.parse_react_output(_reply({"browser.click": {"index": self.KEY}}))
         assert action.params == {"index": self.KEY}
         assert type(action.params["index"]) is int
 

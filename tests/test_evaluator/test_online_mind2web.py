@@ -88,9 +88,7 @@ async def test_screenshots_reach_the_image_judge(traces_dir, reference):
     assert result.predicted_label == 1
 
 
-async def test_low_scoring_frames_are_filtered_out_of_the_final_call(
-    traces_dir, reference
-):
+async def test_low_scoring_frames_are_filtered_out_of_the_final_call(traces_dir, reference):
     """Only frames at or above ``score_threshold`` become evidence."""
     trace = RunTrace(
         write_trace(
@@ -106,15 +104,11 @@ async def test_low_scoring_frames_are_filtered_out_of_the_final_call(
 
     assert result.evaluation_details.benchmark_details["images_forwarded"] == 1
     assert len(judge.calls[-1].image_parts) == 1
-    scores = [
-        r["Score"] for r in result.evaluation_details.benchmark_details["image_judge_record"]
-    ]
+    scores = [r["Score"] for r in result.evaluation_details.benchmark_details["image_judge_record"]]
     assert scores == [5, 1, 1]
 
 
-async def test_final_call_uses_the_image_template_when_frames_survive(
-    traces_dir, reference
-):
+async def test_final_call_uses_the_image_template_when_frames_survive(traces_dir, reference):
     trace = RunTrace(
         write_trace(traces_dir, task_id=reference.task_id, steps=1, screenshots=[png_bytes()])
     )
@@ -146,9 +140,7 @@ async def test_screenshotless_trace_records_its_degradation(traces_dir, referenc
     assert len(judge.calls) == 2  # key points + final; no image judgements
 
 
-async def test_require_screenshots_turns_degradation_into_an_error(
-    traces_dir, reference
-):
+async def test_require_screenshots_turns_degradation_into_an_error(traces_dir, reference):
     trace = RunTrace(write_trace(traces_dir, task_id=reference.task_id, screenshots=[]))
     judge = FakeJudge(replies=[_KEY_POINTS])
 
@@ -172,12 +164,8 @@ async def test_max_images_caps_what_reaches_the_final_call(traces_dir, reference
 # ── Prompt payload ──────────────────────────────────────────────────
 
 
-async def test_action_history_and_key_points_reach_the_final_prompt(
-    traces_dir, reference
-):
-    trace = RunTrace(
-        write_trace(traces_dir, task_id=reference.task_id, steps=2, screenshots=[])
-    )
+async def test_action_history_and_key_points_reach_the_final_prompt(traces_dir, reference):
+    trace = RunTrace(write_trace(traces_dir, task_id=reference.task_id, steps=2, screenshots=[]))
     judge = FakeJudge(replies=[_KEY_POINTS, _SUCCESS])
 
     result = await _evaluator(judge).evaluate(trace, reference)
@@ -225,7 +213,9 @@ async def test_usage_does_not_leak_between_traces(traces_dir, reference):
     """One evaluator instance scores many traces; billing must not accrue."""
     evaluator = _evaluator(FakeJudge(replies=[_KEY_POINTS, _SUCCESS]))
     first = RunTrace(write_trace(traces_dir, run_id="a", task_id=reference.task_id, screenshots=[]))
-    second = RunTrace(write_trace(traces_dir, run_id="b", task_id=reference.task_id, screenshots=[]))
+    second = RunTrace(
+        write_trace(traces_dir, run_id="b", task_id=reference.task_id, screenshots=[])
+    )
 
     one = await evaluator.evaluate(first, reference)
     two = await evaluator.evaluate(second, reference)

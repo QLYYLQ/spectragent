@@ -200,9 +200,7 @@ class Weaver:
 
             target = self._wrapped_targets.get(role)
             if target is None:
-                dead.append(
-                    (point, hook_ids, f"this run has no {role!r} object to intercept")
-                )
+                dead.append((point, hook_ids, f"this run has no {role!r} object to intercept"))
                 continue
 
             original = static_target_method(target, method)

@@ -441,9 +441,7 @@ class TestFramesUnderATransform:
         assert result is not None and "perspective transform" in result["error"]
         assert cdp.mouse() == []
 
-    async def test_a_frame_scaled_to_nothing_is_refused(
-        self, selector_map: DOMSelectorMap
-    ) -> None:
+    async def test_a_frame_scaled_to_nothing_is_refused(self, selector_map: DOMSelectorMap) -> None:
         cdp = FrameCDP(
             owner_models={("tab", 15): transformed_frame((100.0, 200.0), (0.0, 0.0), (0.0, 0.0))}
         )

@@ -51,13 +51,7 @@ class ScreenshotFilterStats:
     @property
     def kept(self) -> int:
         """Frames that actually reached the judge."""
-        return (
-            self.total
-            - self.blank
-            - self.duplicate
-            - self.unreadable
-            - self.elided
-        )
+        return self.total - self.blank - self.duplicate - self.unreadable - self.elided
 
     def as_dict(self) -> dict[str, int]:
         return {

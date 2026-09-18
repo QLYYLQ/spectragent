@@ -231,9 +231,7 @@ def test_a_numeric_knob_pair_shows_up_too() -> None:
 
 @pytest.mark.parametrize("key", _KEYS)
 def test_action_level_dependencies_are_the_declared_ones(key: str) -> None:
-    assert _action(key).requires_fragments() == frozenset(
-        _GOLDEN_DEPENDENCIES.get(key, set())
-    )
+    assert _action(key).requires_fragments() == frozenset(_GOLDEN_DEPENDENCIES.get(key, set()))
 
 
 def test_a_dependency_is_declared_with_a_fully_qualified_key() -> None:
@@ -315,8 +313,7 @@ def test_every_agent_mode_can_satisfy_its_actions_dependencies() -> None:
                     missing = {
                         key
                         for key in _action(full).requires_fragments()
-                        if key not in fragments
-                        and key.rsplit(".", 1)[-1] not in fragments
+                        if key not in fragments and key.rsplit(".", 1)[-1] not in fragments
                     }
                     assert not missing, (
                         f"{agent_id}{label} requires action {declared!r}, which "

@@ -162,6 +162,7 @@ class TestExtractWiring:
     def test_no_wiring(self) -> None:
         class NoWiring:
             pass
+
         req, opt = extract_wiring(NoWiring, "observation")
         assert req == set()
         assert opt == set()
@@ -171,6 +172,7 @@ class TestExtractWiring:
             __wiring__ = {
                 "observation": ("observation", ["dom", "screenshot"]),
             }
+
         req, opt = extract_wiring(WithRequired, "observation")
         assert req == {"dom", "screenshot"}
         assert opt == set()
@@ -180,6 +182,7 @@ class TestExtractWiring:
             __wiring__ = {
                 "observation": ("observation", ["terminal"], ["filesystem"]),
             }
+
         req, opt = extract_wiring(WithBoth, "observation")
         assert req == {"terminal"}
         assert opt == {"filesystem"}
@@ -189,6 +192,7 @@ class TestExtractWiring:
             __wiring__ = {
                 "agent_loop": ("agent_loop", ["react"]),
             }
+
         req, opt = extract_wiring(OtherWiring, "observation")
         assert req == set()
         assert opt == set()

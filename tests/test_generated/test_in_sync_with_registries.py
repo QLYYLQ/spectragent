@@ -50,8 +50,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FINGERPRINT = _REPO_ROOT / "spectragent" / "generated" / ".fingerprint.json"
 
 _REGENERATE = (
-    "Regenerate with `uv run spectragent-gen` "
-    "(or `python -m spectragent.scripts.generate_all`)."
+    "Regenerate with `uv run spectragent-gen` (or `python -m spectragent.scripts.generate_all`)."
 )
 
 #: Mirrors what ``generate_all.main()`` fingerprints, and nothing else.

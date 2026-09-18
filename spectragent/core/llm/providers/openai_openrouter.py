@@ -35,7 +35,8 @@ class ChatOpenRouter(OpenAICompatBase):
     def get_client(self) -> AsyncOpenAI:
         effective_base_url = self.base_url or "https://openrouter.ai/api/v1"
         params: dict[str, Any] = {
-            "api_key": self.api_key, "max_retries": self.max_retries,
+            "api_key": self.api_key,
+            "max_retries": self.max_retries,
             "base_url": effective_base_url,
         }
         return AsyncOpenAI(**params)

@@ -33,9 +33,7 @@ class _FakeResult:
     """Mimics AgentResult with mutable metrics."""
 
     def __init__(self, metrics=None):
-        self.metrics = metrics if metrics is not None else AgentMetrics(
-            end_to_end_ms=0, steps=0
-        )
+        self.metrics = metrics if metrics is not None else AgentMetrics(end_to_end_ms=0, steps=0)
         self.agent_metadata = {}
 
 
@@ -71,9 +69,7 @@ class TestMetricsCollectorAccumulation:
     async def test_single_call_accumulation(self, collector):
         await collector.on_run_start()
         usage = _FakeUsage(prompt=10, completion=5, cached=2, total=15)
-        await collector.after_ainvoke(
-            _FakeCompletion(usage=usage), args=(), kwargs={}
-        )
+        await collector.after_ainvoke(_FakeCompletion(usage=usage), args=(), kwargs={})
         assert collector._usage.total_prompt_tokens == 10
         assert collector._usage.total_completion_tokens == 5
         assert collector._usage.total_prompt_cached_tokens == 2
@@ -84,9 +80,7 @@ class TestMetricsCollectorAccumulation:
         await collector.on_run_start()
         for _ in range(3):
             usage = _FakeUsage(prompt=10, completion=5, cached=0, total=15)
-            await collector.after_ainvoke(
-                _FakeCompletion(usage=usage), args=(), kwargs={}
-            )
+            await collector.after_ainvoke(_FakeCompletion(usage=usage), args=(), kwargs={})
         assert collector._usage.total_prompt_tokens == 30
         assert collector._usage.total_completion_tokens == 15
         assert collector._usage.total_tokens == 45
@@ -94,9 +88,7 @@ class TestMetricsCollectorAccumulation:
 
     async def test_none_usage_handled(self, collector):
         await collector.on_run_start()
-        await collector.after_ainvoke(
-            _FakeCompletion(usage=None), args=(), kwargs={}
-        )
+        await collector.after_ainvoke(_FakeCompletion(usage=None), args=(), kwargs={})
         assert collector._usage.total_tokens == 0
         assert collector.llm_calls == 1
 
@@ -118,9 +110,7 @@ class TestMetricsCollectorAccumulation:
     async def test_on_run_end_adopts_metrics_when_unmeasured(self, collector):
         await collector.on_run_start()
         usage = _FakeUsage(prompt=20, completion=10, cached=5, total=30)
-        await collector.after_ainvoke(
-            _FakeCompletion(usage=usage), args=(), kwargs={}
-        )
+        await collector.after_ainvoke(_FakeCompletion(usage=usage), args=(), kwargs={})
 
         result = _FakeResult()
         await collector.on_run_end(result=result, env=None)
@@ -163,9 +153,7 @@ class TestMetricsCollectorAccumulation:
     async def test_reset_on_run_start(self, collector):
         """on_run_start resets all counters."""
         await collector.on_run_start()
-        await collector.after_ainvoke(
-            _FakeCompletion(usage=_FakeUsage()), args=(), kwargs={}
-        )
+        await collector.after_ainvoke(_FakeCompletion(usage=_FakeUsage()), args=(), kwargs={})
         assert collector.llm_calls == 1
 
         # Second run should reset

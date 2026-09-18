@@ -36,9 +36,7 @@ class TestUnionMembership:
         assert len(claims) == len(set(claims))
 
     @pytest.mark.parametrize("variant", TASK_SETUP_VARIANTS)
-    def test_every_variant_implements_to_context(
-        self, variant: type[SetupBase]
-    ) -> None:
+    def test_every_variant_implements_to_context(self, variant: type[SetupBase]) -> None:
         assert isinstance(variant().to_context(), dict)
 
 
@@ -83,9 +81,7 @@ class TestSetupClassForEnv:
             ("desktop_vm", VMSetup),
         ],
     )
-    def test_known_env_types(
-        self, env_type: str, expected: type[SetupBase]
-    ) -> None:
+    def test_known_env_types(self, env_type: str, expected: type[SetupBase]) -> None:
         assert setup_class_for_env(env_type) is expected
 
     def test_unknown_env_type_raises_with_the_known_list(self) -> None:
@@ -149,9 +145,7 @@ class TestToContext:
 
 class TestDockerTestListDecoding:
     def test_accepts_json_encoded_strings(self) -> None:
-        setup = DockerSetup.model_validate(
-            {"FAIL_TO_PASS": '["a", "b"]', "PASS_TO_PASS": '["c"]'}
-        )
+        setup = DockerSetup.model_validate({"FAIL_TO_PASS": '["a", "b"]', "PASS_TO_PASS": '["c"]'})
         assert setup.fail_to_pass == ["a", "b"]
         assert setup.pass_to_pass == ["c"]
 
@@ -162,7 +156,5 @@ class TestDockerTestListDecoding:
 
 class TestSetupPreservesUnknownKeys:
     def test_extra_setup_keys_are_not_dropped(self) -> None:
-        setup = BrowserSetup.model_validate(
-            {"setup_type": "browser", "future_key": 42}
-        )
+        setup = BrowserSetup.model_validate({"setup_type": "browser", "future_key": 42})
         assert (setup.model_extra or {})["future_key"] == 42

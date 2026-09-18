@@ -20,9 +20,7 @@ from tests.test_evaluator.conftest import write_trace
 
 
 def _reference(expected: str, task_id: str = "task-0") -> EvalReference:
-    return EvalReference(
-        task_id=task_id, benchmark="exact_match_bench", expected_answer=expected
-    )
+    return EvalReference(task_id=task_id, benchmark="exact_match_bench", expected_answer=expected)
 
 
 async def test_correct_answer_scores_one(traces_dir):
@@ -143,9 +141,7 @@ async def test_missing_expected_answer_is_a_loud_error(traces_dir):
     trace = RunTrace(write_trace(traces_dir))
 
     with pytest.raises(ReferenceMismatchError, match="expected_answer"):
-        await ExactMatchEvaluator().evaluate(
-            trace, EvalReference(task_id="task-0", benchmark="b")
-        )
+        await ExactMatchEvaluator().evaluate(trace, EvalReference(task_id="task-0", benchmark="b"))
 
 
 async def test_an_agent_that_never_finished_is_still_scorable(traces_dir):

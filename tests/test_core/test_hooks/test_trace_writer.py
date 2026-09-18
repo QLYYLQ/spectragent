@@ -38,17 +38,13 @@ def _step(idx: int = 0, **kw) -> StepRecord:
         "actions": [Action(name="browser.click", params={"index": 1})],
         "action_results": [ActionResult(success=True, extracted_content="ok")],
         "timestamp": 1234.5,
-        "token_usage": TokenUsage(
-            prompt_tokens=10, completion_tokens=5, total_tokens=15
-        ),
+        "token_usage": TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     }
     defaults.update(kw)
     return StepRecord(**defaults)
 
 
-def _result(
-    agent_done: AgentDoneStatus = AgentDoneStatus.DONE, **kw
-) -> AgentResult:
+def _result(agent_done: AgentDoneStatus = AgentDoneStatus.DONE, **kw) -> AgentResult:
     """A terminal result of the shape ``AgentRuntime`` actually dispatches."""
     defaults = {
         "task_id": "t1",
@@ -121,9 +117,7 @@ class TestTraceWriterLifecycle:
         return _M()
 
     async def test_on_run_start_creates_directory(self, writer, fake_agent, fake_env):
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test task", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test task", config={})
         assert writer._wal is not None
         assert writer._wal.run_dir.exists()
         assert (writer._wal.run_dir / "manifest.json").exists()
@@ -167,14 +161,10 @@ class TestTraceWriterLifecycle:
         assert writer.run_dir.name == "fixed-run-id"
 
     async def test_record_step_commits_full_record(self, writer, fake_agent, fake_env):
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         messages = [{"role": "user", "content": "what do you see?"}]
         await writer.after_ainvoke(_Completion(), args=(messages,), kwargs={})
-        await writer.after_record_step(
-            None, args=(_step(0),), kwargs={"observation": None}
-        )
+        await writer.after_record_step(None, args=(_step(0),), kwargs={"observation": None})
 
         run_dir = writer._wal.run_dir
         assert (run_dir / "steps" / "000.json").exists()
@@ -194,15 +184,11 @@ class TestTraceWriterLifecycle:
         assert rec["action_results"][0]["success"] is True
         assert rec["token_usage"]["total_tokens"] == 15
 
-        manifest = TraceManifest.model_validate_json(
-            (run_dir / "manifest.json").read_text()
-        )
+        manifest = TraceManifest.model_validate_json((run_dir / "manifest.json").read_text())
         assert manifest.last_step_completed == 0
 
     async def test_multi_step_commit(self, writer, fake_agent, fake_env):
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         for i in range(3):
             await writer.after_ainvoke(
                 _Completion(), args=([{"role": "user", "content": f"step {i}"}],), kwargs={}
@@ -215,12 +201,8 @@ class TestTraceWriterLifecycle:
         assert manifest.last_step_completed == 2
         assert writer._steps_written == 3
 
-    async def test_multiple_llm_calls_in_one_step_all_persisted(
-        self, writer, fake_agent, fake_env
-    ):
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+    async def test_multiple_llm_calls_in_one_step_all_persisted(self, writer, fake_agent, fake_env):
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         await writer.after_ainvoke(_Completion(), args=([{"m": 1}],), kwargs={})
         await writer.after_ainvoke(_Completion(), args=([{"m": 2}],), kwargs={})
         await writer.after_record_step(None, args=(_step(0),), kwargs={})
@@ -231,14 +213,10 @@ class TestTraceWriterLifecycle:
 
     async def test_screenshot_written_as_real_png(self, writer, fake_agent, fake_env):
         """Binary artifacts land as files, not base64 buried in JSON."""
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         Model = build_observation_model(frozenset({"browser.screenshot", "loop.task"}))
         obs = Model(
-            screenshot=ScreenshotObs(
-                image_bytes=_PNG, viewport_width=1280, viewport_height=720
-            ),
+            screenshot=ScreenshotObs(image_bytes=_PNG, viewport_width=1280, viewport_height=720),
             task=TaskObs(user_request="find the price"),
         )
         await writer.after_ainvoke(_Completion(), args=([],), kwargs={})
@@ -249,9 +227,7 @@ class TestTraceWriterLifecycle:
         assert png.exists()
         assert png.read_bytes() == _PNG
 
-        sidecar = json.loads(
-            (run_dir / "observations" / "000_browser.screenshot.json").read_text()
-        )
+        sidecar = json.loads((run_dir / "observations" / "000_browser.screenshot.json").read_text())
         assert sidecar["viewport_width"] == 1280
         assert "image_bytes" not in sidecar
         assert sidecar["artifact_file"] == "000_browser.screenshot.png"
@@ -261,9 +237,7 @@ class TestTraceWriterLifecycle:
 
     async def test_loop_fragments_reach_disk(self, writer, fake_agent, fake_env):
         """The observation recorded is the one the *agent* saw."""
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         Model = build_observation_model(frozenset({"loop.task"}))
         obs = Model(task=TaskObs(user_request="find the price"))
         await writer.after_ainvoke(_Completion(), args=([],), kwargs={})
@@ -293,9 +267,7 @@ class TestTraceWriterLifecycle:
         """
         from spectragent.schemas.observation.failure import FragmentFailure
 
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         Model = build_observation_model(
             frozenset({"browser.screenshot", "loop.task"}),
             failable=frozenset({"browser.screenshot"}),
@@ -310,44 +282,32 @@ class TestTraceWriterLifecycle:
             task=TaskObs(user_request="find the price"),
         )
         await writer.after_ainvoke(_Completion(), args=([],), kwargs={})
-        await writer.after_record_step(
-            None, args=(_step(0),), kwargs={"observation": obs}
-        )
+        await writer.after_record_step(None, args=(_step(0),), kwargs={"observation": obs})
 
         run_dir = writer._wal.run_dir
         # No .png: nothing was captured, so no artifact is invented.
         assert not (run_dir / "observations" / "000_browser.screenshot.png").exists()
-        record = json.loads(
-            (run_dir / "observations" / "000_browser.screenshot.json").read_text()
-        )
+        record = json.loads((run_dir / "observations" / "000_browser.screenshot.json").read_text())
         assert record["error"] == "TimeoutError"
         assert record["detail"] == "CDP call timed out"
         assert record["capability"] == "browser"
         assert "image_bytes" not in record
 
-    async def test_capture_time_reaches_the_trace(
-        self, writer, fake_agent, fake_env
-    ):
+    async def test_capture_time_reaches_the_trace(self, writer, fake_agent, fake_env):
         """Without it, per-capability skew is unrecoverable after the run."""
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         Model = build_observation_model(frozenset({"loop.task"}))
         fragment = TaskObs(user_request="find the price")
         obs = Model(task=fragment)
         await writer.after_ainvoke(_Completion(), args=([],), kwargs={})
-        await writer.after_record_step(
-            None, args=(_step(0),), kwargs={"observation": obs}
-        )
+        await writer.after_record_step(None, args=(_step(0),), kwargs={"observation": obs})
 
         assert writer.run_dir is not None
         written = RunTrace(writer.run_dir).get_observation(0, "loop.task")
         assert written["captured_at"] == fragment.captured_at
 
     async def test_on_run_end_writes_result(self, writer, fake_agent, fake_env):
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
 
         await writer.on_run_end(result=_result(), env=fake_env)
 
@@ -356,16 +316,12 @@ class TestTraceWriterLifecycle:
         parsed = json.loads((run_dir / "result.json").read_text())
         assert parsed["answer"] == "42"
 
-        manifest = TraceManifest.model_validate_json(
-            (run_dir / "manifest.json").read_text()
-        )
+        manifest = TraceManifest.model_validate_json((run_dir / "manifest.json").read_text())
         assert manifest.status == RunStatus.COMPLETED
 
     async def test_timeout_result_finalizes_as_error(self, writer, fake_agent, fake_env):
         """status must not stay 'running' just because the agent timed out."""
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         result = AgentResult(
             task_id="t1",
             task="test",
@@ -381,18 +337,14 @@ class TestTraceWriterLifecycle:
         assert trace.manifest.status == RunStatus.ERROR
         assert trace.result is not None
 
-    async def test_the_hook_writes_what_the_reader_reads_back(
-        self, writer, fake_agent, fake_env
-    ):
+    async def test_the_hook_writes_what_the_reader_reads_back(self, writer, fake_agent, fake_env):
         """Round-trip through the production writer, not a hand-built file.
 
         ``RunTrace`` promises typed models. That promise is only worth
         anything if the hook that produces the files on a real run is
         what these assertions read.
         """
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         await writer.after_ainvoke(_Completion(), args=([{"m": 0}],), kwargs={})
         await writer.after_record_step(None, args=(_step(0),), kwargs={})
         await writer.on_run_end(result=_result(), env=fake_env)
@@ -412,29 +364,21 @@ class TestTraceWriterLifecycle:
         assert result.agent_done is AgentDoneStatus.DONE
         assert result.metrics.end_to_end_ms == 1000
 
-    async def test_a_run_with_no_result_writes_no_result_file(
-        self, writer, fake_agent, fake_env
-    ):
+    async def test_a_run_with_no_result_writes_no_result_file(self, writer, fake_agent, fake_env):
         """``result is None`` must mean "absent", never "unparseable".
 
         A ``null`` result.json would read back as a schema failure and
         make a run that simply never finished look like a corrupt trace.
         """
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
         await writer.on_run_end(result=None, env=fake_env)
 
         assert not (writer.run_dir / "result.json").exists()
         assert RunTrace(writer.run_dir).result is None
 
     async def test_on_run_error_finalizes(self, writer, fake_agent, fake_env):
-        await writer.on_run_start(
-            agent=fake_agent, env=fake_env, task="test", config={}
-        )
-        await writer.on_run_error(
-            error=RuntimeError("boom"), partial_steps=[], env=fake_env
-        )
+        await writer.on_run_start(agent=fake_agent, env=fake_env, task="test", config={})
+        await writer.on_run_error(error=RuntimeError("boom"), partial_steps=[], env=fake_env)
 
         manifest = TraceManifest.model_validate_json(
             (writer._wal.run_dir / "manifest.json").read_text()
@@ -573,9 +517,7 @@ class TestACallThatRaisedIsStillRecorded:
             model="gpt-4o",
         )
         with pytest.raises(StructuredOutputValidationError):
-            await writer.around_ainvoke(
-                proceed=self._raiser(exc), args=(messages,), kwargs={}
-            )
+            await writer.around_ainvoke(proceed=self._raiser(exc), args=(messages,), kwargs={})
         # The Loop turns this into a parse error and surrenders a step.
         await writer.after_record_step(None, args=(_step(0),), kwargs={})
 
@@ -585,9 +527,7 @@ class TestACallThatRaisedIsStillRecorded:
         assert got["error"] == "StructuredOutputValidationError"
         assert got["raw_output"] == '{"action": [{}]}'
 
-    async def test_a_transport_failure_is_recorded_without_inventing_a_reply(
-        self, writer
-    ):
+    async def test_a_transport_failure_is_recorded_without_inventing_a_reply(self, writer):
         """No ``raw_output``: the provider had no text to give."""
         run_dir = await self._start(writer)
         with pytest.raises(TimeoutError):

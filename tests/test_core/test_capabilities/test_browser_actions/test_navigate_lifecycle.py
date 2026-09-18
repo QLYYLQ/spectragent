@@ -63,8 +63,9 @@ class _FakeCDP:
         self._loader_id = loader_id
         self.sent: list[tuple[str, dict, str | None]] = []
 
-    async def send(self, method: str, params: dict | None = None,
-                   session_id: str | None = None) -> Any:
+    async def send(
+        self, method: str, params: dict | None = None, session_id: str | None = None
+    ) -> Any:
         self.sent.append((method, params or {}, session_id))
         if method == "Page.navigate":
             return {"loaderId": self._loader_id} if self._loader_id else {}
@@ -175,12 +176,8 @@ class TestOnNavigateLifecycleWiring:
         # No connect() was called.
         assert scope.handlers == []
         # NavigationCompleteEvent emitted as soon as Page.navigate returned.
-        assert any(
-            isinstance(e, NavigationCompleteEvent) for e in scope.emitted
-        )
-        assert any(
-            isinstance(e, NavigationStartedEvent) for e in scope.emitted
-        )
+        assert any(isinstance(e, NavigationCompleteEvent) for e in scope.emitted)
+        assert any(isinstance(e, NavigationStartedEvent) for e in scope.emitted)
 
     async def test_networkidle_accepts_almostidle_too(self) -> None:
         scope = _FakeScope()
@@ -249,13 +246,17 @@ class TestOnNavigateLifecycleWiring:
     async def test_resolve_lifecycle_timeout_priority(self) -> None:
         # lifecycle_timeout_ms wins.
         evt = NavigateToUrlEvent(
-            url="x", wait_until="load",
-            timeout_ms=10000, lifecycle_timeout_ms=2500,
+            url="x",
+            wait_until="load",
+            timeout_ms=10000,
+            lifecycle_timeout_ms=2500,
         )
         assert ActionWatchdog._resolve_lifecycle_timeout_s(evt) == 2.5
         # Falls back to timeout_ms when lifecycle_timeout_ms is None.
         evt2 = NavigateToUrlEvent(
-            url="x", wait_until="load", timeout_ms=7000,
+            url="x",
+            wait_until="load",
+            timeout_ms=7000,
         )
         assert ActionWatchdog._resolve_lifecycle_timeout_s(evt2) == 7.0
         # Defaults to 30s when both are None.

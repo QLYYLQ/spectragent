@@ -1,6 +1,5 @@
 """Tests for dynamic Pydantic model generation from negotiated fragments."""
 
-
 # Ensure fragments are registered
 from spectragent.core.negotiation import ObservationNegotiationResult
 from spectragent.schemas.observation import fragments as _  # noqa: F401
@@ -111,11 +110,7 @@ class TestFailableSlots:
 
         Model = build_observation_model(frozenset({"docker.terminal"}))
         with pytest.raises(ValidationError):
-            Model(
-                terminal=FragmentFailure(
-                    fragment_id="docker.terminal", error="RuntimeError"
-                )
-            )
+            Model(terminal=FragmentFailure(fragment_id="docker.terminal", error="RuntimeError"))
 
     def test_failability_is_part_of_the_cache_key(self) -> None:
         """Same fragments, different contract — not the same model.
@@ -140,9 +135,7 @@ class TestFailableSlots:
             required_fragments=frozenset(),
         )
         Model = build_observation_model_from_result(result)
-        obs = Model(
-            terminal=FragmentFailure(fragment_id="docker.terminal", error="OSError")
-        )
+        obs = Model(terminal=FragmentFailure(fragment_id="docker.terminal", error="OSError"))
         assert isinstance(obs.terminal, FragmentFailure)  # type: ignore[attr-defined]
 
         required = ObservationNegotiationResult(

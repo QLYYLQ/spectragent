@@ -96,9 +96,7 @@ class TestActFnAOPWrapping:
         descriptors = [
             ActionDescriptor(name="click", description="Click"),
         ]
-        active_descs, act_fn = build_guarded_act(
-            wrapped_env.act, descriptors, None
-        )
+        active_descs, act_fn = build_guarded_act(wrapped_env.act, descriptors, None)
 
         action = Action(name="click", params={"selector": "#btn"})
         result = await act_fn(action)

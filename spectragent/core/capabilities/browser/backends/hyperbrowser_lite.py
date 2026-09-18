@@ -46,7 +46,9 @@ class HyperbrowserProvider(BrowserProviderBase):
     }
 
     # ── connection config ─────────────────────────────────────────────
-    api_key: Annotated[str | None, Field(description="Hyperbrowser API key (env: HYPERBROWSER_API_KEY)")] = None
+    api_key: Annotated[
+        str | None, Field(description="Hyperbrowser API key (env: HYPERBROWSER_API_KEY)")
+    ] = None
     base_url: Annotated[str | None, Field(description="API base URL override")] = None
 
     # ── capability config (visible at init, overrideable in open()) ───
@@ -54,8 +56,12 @@ class HyperbrowserProvider(BrowserProviderBase):
     solve_captchas: Annotated[bool, Field(description="Enable automatic CAPTCHA solving")] = False
     adblock: Annotated[bool, Field(description="Enable ad / tracker blocking")] = False
     enable_recording: Annotated[bool, Field(description="Enable web session recording")] = False
-    proxy_country: Annotated[str | None, Field(description="Managed proxy country code (e.g. 'US')")] = None
-    proxy_server: Annotated[str | None, Field(description="Custom proxy server URL (e.g. 'http://proxy:8080')")] = None
+    proxy_country: Annotated[
+        str | None, Field(description="Managed proxy country code (e.g. 'US')")
+    ] = None
+    proxy_server: Annotated[
+        str | None, Field(description="Custom proxy server URL (e.g. 'http://proxy:8080')")
+    ] = None
 
     # ── internal state ────────────────────────────────────────────────
     _client: Any = field(default=None, init=False, repr=False)

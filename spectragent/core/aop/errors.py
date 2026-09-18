@@ -110,7 +110,8 @@ class UnclaimedRoleError(RegistryError):
         self.unclaimed = unclaimed
         self.claimed = claimed
         detail = "; ".join(
-            f"role={role!r} declared by {sorted(set(hooks))}" for role, hooks in sorted(unclaimed.items())
+            f"role={role!r} declared by {sorted(set(hooks))}"
+            for role, hooks in sorted(unclaimed.items())
         )
         super().__init__(
             f"Hook interception declared for role(s) nothing wraps: {detail}. "

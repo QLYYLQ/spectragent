@@ -118,8 +118,15 @@ class OpenAICompatBase(ChatModelBase):
     _strict_response_validation: bool = False
     reasoning_models: list[ChatModel | str] | None = field(
         default_factory=lambda: [
-            "o4-mini", "o3", "o3-mini", "o1", "o1-pro", "o3-pro",
-            "gpt-5", "gpt-5-mini", "gpt-5-nano",
+            "o4-mini",
+            "o3",
+            "o3-mini",
+            "o1",
+            "o1-pro",
+            "o3-pro",
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5-nano",
         ]
     )
 
@@ -180,7 +187,8 @@ class OpenAICompatBase(ChatModelBase):
             prompt_tokens=response.usage.prompt_tokens,
             prompt_cached_tokens=(
                 response.usage.prompt_tokens_details.cached_tokens
-                if response.usage.prompt_tokens_details else None
+                if response.usage.prompt_tokens_details
+                else None
             ),
             prompt_cache_creation_tokens=None,
             prompt_image_tokens=None,
@@ -291,14 +299,17 @@ class OpenAICompatBase(ChatModelBase):
 
             if output_format is None:
                 response = await self.get_client().chat.completions.create(
-                    model=self.model, messages=openai_messages,
-                    **model_params, **extra,
+                    model=self.model,
+                    messages=openai_messages,
+                    **model_params,
+                    **extra,
                 )
                 choice = response.choices[0] if response.choices else None
                 if choice is None:
                     raise ModelProviderError(
                         message="Invalid response: missing or empty `choices`.",
-                        status_code=502, model=self.name,
+                        status_code=502,
+                        model=self.name,
                     )
                 return ChatInvokeCompletion(
                     completion=choice.message.content or "",
@@ -310,7 +321,10 @@ class OpenAICompatBase(ChatModelBase):
                 )
             else:
                 return await self._structured_response_format(
-                    openai_messages, output_format, model_params, extra,
+                    openai_messages,
+                    output_format,
+                    model_params,
+                    extra,
                 )
 
         except ModelProviderError:
@@ -320,7 +334,9 @@ class OpenAICompatBase(ChatModelBase):
         except APIConnectionError as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
         except APIStatusError as e:
-            raise ModelProviderError(message=e.message, status_code=e.status_code, model=self.name) from e
+            raise ModelProviderError(
+                message=e.message, status_code=e.status_code, model=self.name
+            ) from e
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
 
@@ -328,7 +344,11 @@ class OpenAICompatBase(ChatModelBase):
     # Structured output: response_format (shared by multiple providers)
     # ------------------------------------------------------------------
     async def _structured_response_format(
-        self, openai_messages, output_format: type[T], model_params: dict, extra_kwargs: dict,
+        self,
+        openai_messages,
+        output_format: type[T],
+        model_params: dict,
+        extra_kwargs: dict,
     ) -> ChatInvokeCompletion[T]:
         # Strict is only requested when the *compiled schema* can satisfy the
         # strict dialect. An open map (``dict[str, Any]``) compiles to an object
@@ -350,14 +370,20 @@ class OpenAICompatBase(ChatModelBase):
         }
 
         response = await self.get_client().chat.completions.create(
-            model=self.model, messages=openai_messages,
-            response_format=ResponseFormatJSONSchema(json_schema=response_format, type="json_schema"),
-            **model_params, **extra_kwargs,
+            model=self.model,
+            messages=openai_messages,
+            response_format=ResponseFormatJSONSchema(
+                json_schema=response_format, type="json_schema"
+            ),
+            **model_params,
+            **extra_kwargs,
         )
 
         choice = response.choices[0] if response.choices else None
         if choice is None or choice.message.content is None:
-            raise ModelProviderError(message="Failed to parse structured output", status_code=500, model=self.name)
+            raise ModelProviderError(
+                message="Failed to parse structured output", status_code=500, model=self.name
+            )
 
         # A completion stopped at the token ceiling is half-written JSON, so
         # parsing it first reports a schema violation and points at the model's

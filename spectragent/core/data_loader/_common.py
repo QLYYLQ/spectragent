@@ -81,8 +81,7 @@ def load_split_map(root: Path) -> dict[str, str]:
     split = info.get("split")
     if not isinstance(split, dict) or not split:
         raise BenchmarkDataError(
-            f"{info_path} has no usable 'split' mapping "
-            f"(top-level keys: {sorted(info)})."
+            f"{info_path} has no usable 'split' mapping (top-level keys: {sorted(info)})."
         )
     return split
 

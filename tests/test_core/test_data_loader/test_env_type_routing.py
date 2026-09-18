@@ -117,9 +117,7 @@ class TestDockerRouting:
         assert isinstance(setup, DockerSetup)
         assert setup.repo == "django/django"
         assert setup.base_commit == "55b68de643b5c2d5f0a8ea7587ab3b2966021ccc"
-        assert setup.environment_setup_commit == (
-            "419a78300f7cd27611196e1e464d50fd0385ff27"
-        )
+        assert setup.environment_setup_commit == ("419a78300f7cd27611196e1e464d50fd0385ff27")
         assert setup.version == "3.0"
         assert setup.instance_id == "django__django-11333"
 
@@ -133,9 +131,7 @@ class TestDockerRouting:
 
     def test_plain_list_test_lists_also_accepted(self) -> None:
         loader = _DockerLoader()
-        loader.seed(
-            [{"instance_id": "x", "FAIL_TO_PASS": ["a"], "PASS_TO_PASS": ["b"]}]
-        )
+        loader.seed([{"instance_id": "x", "FAIL_TO_PASS": ["a"], "PASS_TO_PASS": ["b"]}])
         setup = loader["x"].setup
         assert isinstance(setup, DockerSetup)
         assert setup.fail_to_pass == ["a"]

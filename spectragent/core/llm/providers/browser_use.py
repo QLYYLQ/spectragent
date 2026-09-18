@@ -31,20 +31,30 @@ class ChatBrowserUse(ChatModelBase):
         base_url: Annotated[str | None, Field(description="API base URL")] = None,
         timeout: Annotated[float, Field(description="Request timeout in seconds")] = 120.0,
         max_retries: Annotated[int, Field(description="Maximum retry attempts")] = 5,
-        retry_base_delay: Annotated[float, Field(description="Base delay for exponential backoff")] = 1.0,
-        retry_max_delay: Annotated[float, Field(description="Maximum delay between retries")] = 60.0,
-        request_type: Annotated[str, Field(description="Browser-use API request_type tag")] = "browser_agent",
+        retry_base_delay: Annotated[
+            float, Field(description="Base delay for exponential backoff")
+        ] = 1.0,
+        retry_max_delay: Annotated[
+            float, Field(description="Maximum delay between retries")
+        ] = 60.0,
+        request_type: Annotated[
+            str, Field(description="Browser-use API request_type tag")
+        ] = "browser_agent",
         **kwargs,
     ):
         valid_models = ["bu-latest", "bu-1-0", "bu-2-0"]
         is_valid = model in valid_models or model.startswith("browser-use/")
         if not is_valid:
-            raise ValueError(f"Invalid model: '{model}'. Must be one of {valid_models} or start with 'browser-use/'")
+            raise ValueError(
+                f"Invalid model: '{model}'. Must be one of {valid_models} or start with 'browser-use/'"
+            )
 
         self.model = "bu-1-0" if model == "bu-latest" else model
         self.fast = False
         self.api_key = api_key or os.getenv("BROWSER_USE_API_KEY")
-        self.base_url = base_url or os.getenv("BROWSER_USE_LLM_URL", "https://llm.api.browser-use.com")
+        self.base_url = base_url or os.getenv(
+            "BROWSER_USE_LLM_URL", "https://llm.api.browser-use.com"
+        )
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
@@ -67,14 +77,20 @@ class ChatBrowserUse(ChatModelBase):
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: None = None,
-        request_type: str | None = None, **kwargs: Any,
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: None = None,
+        request_type: str | None = None,
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[str]: ...
 
     @overload
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T],
-        request_type: str | None = None, **kwargs: Any,
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T],
+        request_type: str | None = None,
+        **kwargs: Any,
     ) -> ChatInvokeCompletion[T]: ...
 
     @property
@@ -83,8 +99,11 @@ class ChatBrowserUse(ChatModelBase):
         return False
 
     async def ainvoke(
-        self, messages: Sequence[BaseMessage], output_format: type[T] | None = None,
-        request_type: str | None = None, *,
+        self,
+        messages: Sequence[BaseMessage],
+        output_format: type[T] | None = None,
+        request_type: str | None = None,
+        *,
         tools: Sequence[ToolDefinition] | None = None,
         tool_choice: ToolChoice = "auto",
         **kwargs: Any,
@@ -114,7 +133,10 @@ class ChatBrowserUse(ChatModelBase):
                 break
             except httpx.HTTPStatusError as e:
                 last_error = e
-                if e.response.status_code in RETRYABLE_STATUS_CODES and attempt < self.max_retries - 1:
+                if (
+                    e.response.status_code in RETRYABLE_STATUS_CODES
+                    and attempt < self.max_retries - 1
+                ):
                     delay = min(self.retry_base_delay * (2**attempt), self.retry_max_delay)
                     await asyncio.sleep(delay + random.uniform(0, delay * 0.1))
                     continue
@@ -138,6 +160,7 @@ class ChatBrowserUse(ChatModelBase):
         usage = None
         if "usage" in result and result["usage"] is not None:
             from spectragent.core.llm.views import ChatInvokeUsage
+
             usage = ChatInvokeUsage(**result["usage"])
 
         if output_format is not None:
@@ -146,9 +169,7 @@ class ChatBrowserUse(ChatModelBase):
             # "action" and validated *every* element against `get_args(...)[0]` —
             # i.e. an arbitrary member of the union — so heterogeneous action lists
             # were coerced to the wrong type.
-            completion = self._validate_structured(
-                output_format, result["completion"], usage=usage
-            )
+            completion = self._validate_structured(output_format, result["completion"], usage=usage)
         else:
             completion = result["completion"]
 
@@ -159,7 +180,10 @@ class ChatBrowserUse(ChatModelBase):
             response = await client.post(
                 f"{self.base_url}/v1/chat/completions",
                 json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
             )
             response.raise_for_status()
             return response.json()
@@ -171,15 +195,25 @@ class ChatBrowserUse(ChatModelBase):
             error_detail = str(e)
         sc = e.response.status_code
         if sc == 401:
-            raise ModelProviderError(message=f"Invalid API key. {error_detail}", status_code=401, model=self.name)
+            raise ModelProviderError(
+                message=f"Invalid API key. {error_detail}", status_code=401, model=self.name
+            )
         elif sc == 402:
-            raise ModelProviderError(message=f"Insufficient credits. {error_detail}", status_code=402, model=self.name)
+            raise ModelProviderError(
+                message=f"Insufficient credits. {error_detail}", status_code=402, model=self.name
+            )
         elif sc == 429:
-            raise ModelRateLimitError(message=f"Rate limit exceeded. {error_detail}", status_code=429, model=self.name)
+            raise ModelRateLimitError(
+                message=f"Rate limit exceeded. {error_detail}", status_code=429, model=self.name
+            )
         elif sc in {500, 502, 503, 504}:
-            raise ModelProviderError(message=f"Server error. {error_detail}", status_code=sc, model=self.name)
+            raise ModelProviderError(
+                message=f"Server error. {error_detail}", status_code=sc, model=self.name
+            )
         else:
-            raise ModelProviderError(message=f"API request failed: {error_detail}", status_code=sc, model=self.name)
+            raise ModelProviderError(
+                message=f"API request failed: {error_detail}", status_code=sc, model=self.name
+            )
 
     def _serialize_message(self, message: BaseMessage) -> dict:
         msg_dict = message.model_dump()

@@ -39,12 +39,10 @@ class SelectDropdownAction(SettleableAction, ActionBase):
             PydanticField(description="element index of the <select>"),
         ]
         value: str | None = None
-        text: Annotated[
-            str | None, PydanticField(description="visible option text")
-        ] = None
-        option_index: Annotated[
-            int | None, PydanticField(description="0-based option index")
-        ] = None
+        text: Annotated[str | None, PydanticField(description="visible option text")] = None
+        option_index: Annotated[int | None, PydanticField(description="0-based option index")] = (
+            None
+        )
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
         return self.describe("Select an option from a dropdown element.", **context)

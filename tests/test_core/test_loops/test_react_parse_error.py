@@ -43,7 +43,8 @@ class _FakeEnv:
     async def act(self, action: Action, **kw: Any) -> ActionResult:
         if action.name == "done":
             return ActionResult(
-                success=True, is_done=True,
+                success=True,
+                is_done=True,
                 extracted_content=action.params.get("extracted_content", "ok"),
             )
         return ActionResult(success=True)
@@ -113,8 +114,10 @@ class TestParseErrorRecovery:
 
         loop = _make_loop(max_steps=10, max_consecutive_parse_errors=3)
         ctx = {
-            "env": _FakeEnv(), "llm": _FakeLLM(["bad", "good"]),
-            "memory": _FakeMemory(), "act_fn": _FakeEnv().act,
+            "env": _FakeEnv(),
+            "llm": _FakeLLM(["bad", "good"]),
+            "memory": _FakeMemory(),
+            "act_fn": _FakeEnv().act,
             "task_id": "t",
         }
         result = asyncio.run(loop._execute(_Agent(), "test", ctx=ctx))
@@ -147,8 +150,10 @@ class TestParseErrorRecovery:
 
         loop = _make_loop(max_steps=10, max_consecutive_parse_errors=2)
         ctx = {
-            "env": _FakeEnv(), "llm": _FakeLLM(["a"] * 10),
-            "memory": _FakeMemory(), "act_fn": _FakeEnv().act,
+            "env": _FakeEnv(),
+            "llm": _FakeLLM(["a"] * 10),
+            "memory": _FakeMemory(),
+            "act_fn": _FakeEnv().act,
             "task_id": "t",
         }
         result = asyncio.run(loop._execute(_Agent(), "test", ctx=ctx))
@@ -175,8 +180,10 @@ class TestParseErrorTermination:
 
         loop = _make_loop(max_steps=10, max_consecutive_parse_errors=3)
         ctx = {
-            "env": _FakeEnv(), "llm": _FakeLLM(["x"] * 10),
-            "memory": _FakeMemory(), "act_fn": _FakeEnv().act,
+            "env": _FakeEnv(),
+            "llm": _FakeLLM(["x"] * 10),
+            "memory": _FakeMemory(),
+            "act_fn": _FakeEnv().act,
             "task_id": "t",
         }
         result = asyncio.run(loop._execute(_AlwaysFail(), "test", ctx=ctx))
@@ -206,15 +213,16 @@ class TestParseErrorTermination:
 
         loop = _make_loop(max_steps=10)
         ctx = {
-            "env": _FakeEnv(), "llm": _FakeLLM(["x", "y"]),
-            "memory": mem, "act_fn": _FakeEnv().act,
+            "env": _FakeEnv(),
+            "llm": _FakeLLM(["x", "y"]),
+            "memory": mem,
+            "act_fn": _FakeEnv().act,
             "task_id": "t",
         }
         asyncio.run(loop._execute(_FailOnce(), "test", ctx=ctx))
         # Memory should contain the parse error feedback message.
         feedback_msgs = [
-            m for m in mem.messages
-            if hasattr(m, "content") and "[SYSTEM]" in str(m.content)
+            m for m in mem.messages if hasattr(m, "content") and "[SYSTEM]" in str(m.content)
         ]
         assert len(feedback_msgs) == 1
         assert "bad format" in str(feedback_msgs[0].content)
@@ -242,8 +250,10 @@ class TestParseErrorTermination:
 
         loop = _make_loop(max_steps=10)
         ctx = {
-            "env": _FakeEnv(), "llm": _FakeLLM(["x", "y"]),
-            "memory": _FakeMemory(), "act_fn": _FakeEnv().act,
+            "env": _FakeEnv(),
+            "llm": _FakeLLM(["x", "y"]),
+            "memory": _FakeMemory(),
+            "act_fn": _FakeEnv().act,
             "task_id": "t",
         }
         result = asyncio.run(loop._execute(_FailThenDone(), "test", ctx=ctx))

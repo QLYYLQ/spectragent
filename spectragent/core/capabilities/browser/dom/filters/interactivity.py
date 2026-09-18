@@ -12,25 +12,61 @@ from __future__ import annotations
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode
 
 # Native interactive HTML tags.
-INTERACTIVE_TAGS: frozenset[str] = frozenset({
-    "a", "button", "input", "select", "textarea",
-    "details", "summary", "option", "optgroup",
-})
+INTERACTIVE_TAGS: frozenset[str] = frozenset(
+    {
+        "a",
+        "button",
+        "input",
+        "select",
+        "textarea",
+        "details",
+        "summary",
+        "option",
+        "optgroup",
+    }
+)
 
 # ARIA roles that imply interactivity.
-INTERACTIVE_ARIA_ROLES: frozenset[str] = frozenset({
-    "button", "link", "menuitem", "menuitemcheckbox", "menuitemradio",
-    "checkbox", "radio", "tab", "slider", "switch",
-    "combobox", "textbox", "searchbox", "spinbutton",
-    "option", "treeitem", "gridcell", "cell", "row",
-    "scrollbar", "progressbar", "listbox", "search",
-})
+INTERACTIVE_ARIA_ROLES: frozenset[str] = frozenset(
+    {
+        "button",
+        "link",
+        "menuitem",
+        "menuitemcheckbox",
+        "menuitemradio",
+        "checkbox",
+        "radio",
+        "tab",
+        "slider",
+        "switch",
+        "combobox",
+        "textbox",
+        "searchbox",
+        "spinbutton",
+        "option",
+        "treeitem",
+        "gridcell",
+        "cell",
+        "row",
+        "scrollbar",
+        "progressbar",
+        "listbox",
+        "search",
+    }
+)
 
 # HTML attributes that imply interactivity.
-_INTERACTIVE_ATTRS: frozenset[str] = frozenset({
-    "onclick", "onmousedown", "onmouseup", "onkeydown", "onkeyup",
-    "tabindex", "contenteditable",
-})
+_INTERACTIVE_ATTRS: frozenset[str] = frozenset(
+    {
+        "onclick",
+        "onmousedown",
+        "onmouseup",
+        "onkeydown",
+        "onkeyup",
+        "tabindex",
+        "contenteditable",
+    }
+)
 
 # A frame at least this large (CSS px, each side) is a target of its own,
 # whatever is inside it — browser-use's rule. It is how an agent reaches what
@@ -46,10 +82,20 @@ _FRAME_MIN_PX = 100
 _OPAQUE_FRAME_MIN_PX = 10
 
 # Class/ID substrings that suggest a search widget.
-_SEARCH_HINTS: frozenset[str] = frozenset({
-    "search", "magnify", "glass", "lookup", "find", "query",
-    "search-icon", "search-btn", "search-button", "searchbox",
-})
+_SEARCH_HINTS: frozenset[str] = frozenset(
+    {
+        "search",
+        "magnify",
+        "glass",
+        "lookup",
+        "find",
+        "query",
+        "search-icon",
+        "search-btn",
+        "search-button",
+        "searchbox",
+    }
+)
 
 
 def has_form_control_descendant(node: DOMElementNode, max_depth: int = 2) -> bool:
@@ -213,6 +259,7 @@ def is_dropdown_container(node: DOMElementNode) -> bool:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _effective_role(node: DOMElementNode) -> str | None:
     """Return the effective ARIA role of *node*."""

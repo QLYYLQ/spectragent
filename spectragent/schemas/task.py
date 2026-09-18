@@ -77,9 +77,7 @@ class SetupBase(BaseModel):
         Each variant decides what its capability needs to know; nothing
         outside this module should introspect the setup type.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement to_context()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} must implement to_context()")
 
 
 class BrowserSetup(SetupBase):

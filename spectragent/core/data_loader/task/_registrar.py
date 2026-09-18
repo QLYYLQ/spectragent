@@ -58,9 +58,7 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
     ] = None
 
     # internal storage — not a config field
-    _tasks: dict[str, TaskDefinition] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _tasks: dict[str, TaskDefinition] = field(default_factory=dict, init=False, repr=False)
 
     # Default environment type — subclasses targeting other envs override.
     env_type: str = "browser"
@@ -151,7 +149,8 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
         raw_copy["setup"] = setup_data
         raw_copy["env_type"] = self.env_type  # the loader owns this identity
         raw_copy.setdefault(
-            "benchmark", self.__registry_key__  # type: ignore[attr-defined]
+            "benchmark",
+            self.__registry_key__,  # type: ignore[attr-defined]
         )
 
         return TaskDefinition.model_validate(raw_copy)

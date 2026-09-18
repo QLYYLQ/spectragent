@@ -104,8 +104,7 @@ def _missing_benchmark_data(datasets: tuple[str, ...]) -> list[str]:
         env_type, _, benchmark = dataset.partition("/")
         if not env_type or not benchmark:
             raise ValueError(
-                "requires_benchmark_data expects '<env_type>/<benchmark>', "
-                f"got {dataset!r}"
+                f"requires_benchmark_data expects '<env_type>/<benchmark>', got {dataset!r}"
             )
         if not (resolve_data_dir(env_type, benchmark, None) / "data_info.json").is_file():
             absent.append(dataset)

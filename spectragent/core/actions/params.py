@@ -224,12 +224,7 @@ def params_view(
     kept_required: list[str] = []
     for name, field_schema in properties.items():
         needs = dependencies.get(name, frozenset())
-        if (
-            fragments is not None
-            and needs
-            and name not in required
-            and not needs <= fragments
-        ):
+        if fragments is not None and needs and name not in required and not needs <= fragments:
             continue
         # ``title`` is Pydantic's auto-generated echo of the field name; it
         # tells a model nothing and costs tokens in every provider dialect.
@@ -246,9 +241,7 @@ def params_view(
         # ``execute``: the agent strips it (``model_dump(exclude_none)``),
         # so an omission and a written null arrive identically — which is
         # what stops ``clear: null`` from overriding ``clear_by_default``.
-        field_schema = {
-            k: v for k, v in field_schema.items() if k not in ("title", "default")
-        }
+        field_schema = {k: v for k, v in field_schema.items() if k not in ("title", "default")}
         line = _prose_line(field_schema, required=name in required, hint=hints.get(name, ""))
         prose[name] = line
         # The description a provider sees is the line the prompt shows, so

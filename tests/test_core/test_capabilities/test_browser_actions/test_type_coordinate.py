@@ -35,9 +35,7 @@ class TestTypeCoordinate:
         assert event.text == "hello"
         assert event.clear is True
 
-    async def test_does_not_touch_the_selector_map(
-        self, fake_capability: FakeCapability
-    ) -> None:
+    async def test_does_not_touch_the_selector_map(self, fake_capability: FakeCapability) -> None:
         """The whole reason this class exists: no index, no DOM."""
         assert fake_capability._selector_maps["sid_main"] == {}
         result = await TypeCoordinateAction().execute(

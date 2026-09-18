@@ -73,9 +73,7 @@ class TestActionDescriptors:
 
     def test_done_action_has_extracted_content_param(self) -> None:
         cap = BrowserCapability()
-        done = next(
-            d for d in cap.get_action_descriptors() if d.name == "browser.done"
-        )
+        done = next(d for d in cap.get_action_descriptors() if d.name == "browser.done")
         assert "extracted_content" in done.params
 
     def test_descriptors_are_a_copy(self) -> None:
@@ -183,9 +181,7 @@ class TestDefaultActionInstantiation:
         assert set(cap._actions_by_name) == cap.provided_actions
 
     def test_per_action_config_lands_on_the_instance(self) -> None:
-        cap = BrowserCapability(
-            actions=[ScrollAction(default_amount=777, max_amount=9999)]
-        )
+        cap = BrowserCapability(actions=[ScrollAction(default_amount=777, max_amount=9999)])
         scroll = cap._actions_by_name["browser.scroll"]
         assert scroll.default_amount == 777  # type: ignore[attr-defined]
         assert scroll.max_amount == 9999  # type: ignore[attr-defined]
@@ -194,9 +190,7 @@ class TestDefaultActionInstantiation:
         """Actions the config does not name are not instantiated."""
         cap = BrowserCapability(actions=[ScrollAction(), ClickAction()])
         assert set(cap._actions_by_name) == {"browser.scroll", "browser.click"}
-        assert cap.provided_actions == frozenset(
-            {"browser.scroll", "browser.click"}
-        )
+        assert cap.provided_actions == frozenset({"browser.scroll", "browser.click"})
 
     def test_empty_list_falls_back_to_the_full_wired_set(self) -> None:
         """The Composer setattrs ``[]`` when no top-level pool exists."""
@@ -344,11 +338,7 @@ class TestBackendIoC:
                 return None
 
             async def send(self, *args, **kwargs):  # noqa: ARG002
-                return {
-                    "targetInfos": [
-                        {"type": "page", "targetId": "t0", "url": ""}
-                    ]
-                }
+                return {"targetInfos": [{"type": "page", "targetId": "t0", "url": ""}]}
 
         class _StubScopeGroup:
             """Drop-in replacement for agent_cdp ``ScopeGroup``.
@@ -383,9 +373,7 @@ class TestBackendIoC:
         async def _fake_attach_tab(_self, _tid, _url=""):
             return "fake-cdp-session"
 
-        monkeypatch.setattr(
-            BrowserCapability, "_attach_tab", _fake_attach_tab, raising=True
-        )
+        monkeypatch.setattr(BrowserCapability, "_attach_tab", _fake_attach_tab, raising=True)
         monkeypatch.setattr(
             BrowserCapability,
             "_attach_browser_level_watchdogs",
@@ -518,9 +506,7 @@ class TestBackendIoC:
         self._patch_heavy_setup(monkeypatch)
 
         asyncio.run(cap.setup())
-        assert self.constructed_kwargs == [
-            {"additional_headers": {"x-api-key": "secret-123"}}
-        ]
+        assert self.constructed_kwargs == [{"additional_headers": {"x-api-key": "secret-123"}}]
 
     def test_no_headers_when_backend_supplies_none(self, monkeypatch) -> None:
         """Providers without CDP auth must not get an empty-dict header set."""
@@ -588,9 +574,11 @@ class _RecordingScope:
 
     def connect(self, event_type: type, handler: Any, **_: Any) -> Any:
         self.connections.append((event_type, handler))
+
         class _Conn:
             def disconnect(self) -> None:
                 pass
+
         return _Conn()
 
     def emit(self, _event: Any) -> None:
@@ -625,7 +613,9 @@ class TestPageLifecycleWiring:
 
     @staticmethod
     def _make_cap_with_stub() -> tuple[
-        BrowserCapability, _RecordingCDPClient, _RecordingScopeGroup,
+        BrowserCapability,
+        _RecordingCDPClient,
+        _RecordingScopeGroup,
     ]:
         cap = BrowserCapability()
         cdp = _RecordingCDPClient()
@@ -639,6 +629,7 @@ class TestPageLifecycleWiring:
         from spectragent.core.capabilities.browser.profiles import (
             resolve_profile,
         )
+
         cap._resolved_profile = resolve_profile("standard")
 
         # Skip real watchdog construction — the dom_cleaner/serializer
@@ -779,10 +770,7 @@ class TestPageLifecycleWiring:
             "Page.lifecycleEvent",
         ):
             cbs = cdp.event_callbacks.get(method, [])
-            assert cbs == [], (
-                f"Expected {method} callbacks emptied after close_tab, "
-                f"got {cbs}"
-            )
+            assert cbs == [], f"Expected {method} callbacks emptied after close_tab, got {cbs}"
 
     def test_teardown_closes_all_bridges(self) -> None:
         import asyncio
@@ -871,9 +859,7 @@ class TestFailedSetupReleasesResources:
             memory=_Memory(),
         )
 
-    async def test_start_url_failure_still_releases_the_backend_session(
-        self, monkeypatch
-    ) -> None:
+    async def test_start_url_failure_still_releases_the_backend_session(self, monkeypatch) -> None:
         from spectragent.core.environments.browser import BrowserEnvironment
         from spectragent.core.runtime import AgentRuntime
         from tests._helpers.assembly import AGENT_ID, make_env

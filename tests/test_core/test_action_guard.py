@@ -35,13 +35,17 @@ class TestGuardedAct:
 
     def test_filter_narrows_set(self) -> None:
         filtered, _ = build_guarded_act(
-            _mock_act, _DESCRIPTORS, action_filter=["click", "done"],
+            _mock_act,
+            _DESCRIPTORS,
+            action_filter=["click", "done"],
         )
         assert {d.name for d in filtered} == {"click", "done"}
 
     def test_filter_rejects_excluded(self) -> None:
         _, guard = build_guarded_act(
-            _mock_act, _DESCRIPTORS, action_filter=["click"],
+            _mock_act,
+            _DESCRIPTORS,
+            action_filter=["click"],
         )
         result = asyncio.run(guard(Action(name="type")))
         assert not result.success

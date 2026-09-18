@@ -126,9 +126,7 @@ async def test_summary_block_is_captured_as_reasoning(traces_dir):
     """The ported grader built this block and threw it away."""
     trace = RunTrace(write_trace(traces_dir, task="打开网站"))
 
-    result = await _evaluator(FakeJudge(replies=[_ZH_PASS])).evaluate(
-        trace, _rubric_reference()
-    )
+    result = await _evaluator(FakeJudge(replies=[_ZH_PASS])).evaluate(trace, _rubric_reference())
 
     assert result.evaluation_details.reasoning == "Agent 完成了全部关键步骤。"
     assert result.evaluation_details.benchmark_details["verdict_line"] == "成功"
@@ -145,17 +143,13 @@ async def test_language_follows_the_task_script(traces_dir, task, expected_lang)
     trace = RunTrace(write_trace(traces_dir, run_id=expected_lang, task=task))
     reply = _ZH_PASS if expected_lang == "zh" else _EN_PASS
 
-    result = await _evaluator(FakeJudge(replies=[reply])).evaluate(
-        trace, _rubric_reference()
-    )
+    result = await _evaluator(FakeJudge(replies=[reply])).evaluate(trace, _rubric_reference())
 
     details = result.evaluation_details.benchmark_details
     assert details["language"] == expected_lang
     assert details["template"].endswith(f"_{expected_lang}")
     assert result.evaluation_details.system_prompt is not None
-    assert result.evaluation_details.system_prompt.ref.path.endswith(
-        f"system_{expected_lang}.txt"
-    )
+    assert result.evaluation_details.system_prompt.ref.path.endswith(f"system_{expected_lang}.txt")
 
 
 async def test_reference_metadata_language_wins_over_the_script(traces_dir):
@@ -190,7 +184,7 @@ async def test_reverse_scoring_selects_the_safety_templates(traces_dir):
 
 
 async def test_the_verdict_says_whether_auto_detection_found_anything(traces_dir):
-    """"The data said normal" and "nothing said anything" are not the same.
+    """ "The data said normal" and "nothing said anything" are not the same.
 
     They produce the same template, so the verdict is the only place the
     difference can be recorded. It matters here because **no shipped
@@ -207,23 +201,18 @@ async def test_the_verdict_says_whether_auto_detection_found_anything(traces_dir
     declared = await _evaluator(FakeJudge(replies=[_ZH_PASS])).evaluate(
         trace, _rubric_reference(metadata={"scoring_type": "normal"})
     )
-    forced = await _evaluator(
-        FakeJudge(replies=[_ZH_PASS]), scoring_mode="reverse"
-    ).evaluate(trace, _rubric_reference())
+    forced = await _evaluator(FakeJudge(replies=[_ZH_PASS]), scoring_mode="reverse").evaluate(
+        trace, _rubric_reference()
+    )
 
     # Same template and same verdict either way — only the source differs.
-    assert undeclared.evaluation_details.benchmark_details["template"] == (
-        declared.evaluation_details.benchmark_details["template"]
+    assert (
+        undeclared.evaluation_details.benchmark_details["template"]
+        == (declared.evaluation_details.benchmark_details["template"])
     )
     assert undeclared.evaluation_details.benchmark_details["scoring_type"] == "normal"
-    assert (
-        undeclared.evaluation_details.benchmark_details["scoring_type_source"]
-        == "default"
-    )
-    assert (
-        declared.evaluation_details.benchmark_details["scoring_type_source"]
-        == "metadata"
-    )
+    assert undeclared.evaluation_details.benchmark_details["scoring_type_source"] == "default"
+    assert declared.evaluation_details.benchmark_details["scoring_type_source"] == "metadata"
     assert forced.evaluation_details.benchmark_details["scoring_type_source"] == "config"
 
 
@@ -247,9 +236,7 @@ def test_the_reverse_rubric_is_reachable_from_shipped_data(loader):
     assert all(r.metadata.get("scoring_type") == "reverse" for r in references)
 
     # ...and that value is what selects the reverse template.
-    assert _template_name(reverse=True, strategy="final", lang="en") == (
-        "eval_reverse_final_en"
-    )
+    assert _template_name(reverse=True, strategy="final", lang="en") == ("eval_reverse_final_en")
 
 
 @pytest.mark.parametrize(
@@ -298,9 +285,7 @@ async def test_final_strategy_judges_only_the_last_frame(traces_dir):
     trace = RunTrace(write_trace(traces_dir, task="打开网站", steps=3, screenshots=frames))
     judge = FakeJudge(replies=[_ZH_PASS])
 
-    result = await _evaluator(judge, eval_strategy="final").evaluate(
-        trace, _rubric_reference()
-    )
+    result = await _evaluator(judge, eval_strategy="final").evaluate(trace, _rubric_reference())
 
     assert len(judge.calls[0].image_parts) == 1
     assert result.evaluation_details.benchmark_details["template"] == "eval_final_zh"
@@ -335,15 +320,11 @@ async def test_blank_and_duplicate_frames_are_dropped(traces_dir):
     white = blank_png_bytes()
     real = png_bytes((10, 90, 200))
     trace = RunTrace(
-        write_trace(
-            traces_dir, task="打开网站", steps=4, screenshots=[white, real, real, white]
-        )
+        write_trace(traces_dir, task="打开网站", steps=4, screenshots=[white, real, real, white])
     )
     judge = FakeJudge(replies=[_ZH_PASS])
 
-    result = await _evaluator(judge, image_scale_factor=1.0).evaluate(
-        trace, _rubric_reference()
-    )
+    result = await _evaluator(judge, image_scale_factor=1.0).evaluate(trace, _rubric_reference())
 
     stats = result.evaluation_details.benchmark_details["screenshots"]
     assert stats["total"] == 4
@@ -364,14 +345,10 @@ async def test_the_final_strategy_reports_no_duplicates_it_did_not_find(traces_d
     and made the same key mean different things under the two strategies.
     """
     frames = [png_bytes((i * 20, i * 3, 7)) for i in range(10)]
-    trace = RunTrace(
-        write_trace(traces_dir, task="打开网站", steps=10, screenshots=frames)
-    )
+    trace = RunTrace(write_trace(traces_dir, task="打开网站", steps=10, screenshots=frames))
     judge = FakeJudge(replies=[_ZH_PASS])
 
-    result = await _evaluator(judge, eval_strategy="final").evaluate(
-        trace, _rubric_reference()
-    )
+    result = await _evaluator(judge, eval_strategy="final").evaluate(trace, _rubric_reference())
 
     details = result.evaluation_details.benchmark_details
     stats = details["screenshots"]
@@ -392,14 +369,10 @@ async def test_the_final_strategy_reports_no_duplicates_it_did_not_find(traces_d
 async def test_stepwise_sampling_is_reported_as_elision_too(traces_dir):
     """``kept`` must mean "reached the judge" under either strategy."""
     frames = [png_bytes((i * 20, i * 3, 7)) for i in range(6)]
-    trace = RunTrace(
-        write_trace(traces_dir, task="打开网站", steps=6, screenshots=frames)
-    )
+    trace = RunTrace(write_trace(traces_dir, task="打开网站", steps=6, screenshots=frames))
     judge = FakeJudge(replies=[_ZH_PASS])
 
-    result = await _evaluator(judge, max_screenshots=3).evaluate(
-        trace, _rubric_reference()
-    )
+    result = await _evaluator(judge, max_screenshots=3).evaluate(trace, _rubric_reference())
 
     details = result.evaluation_details.benchmark_details
     stats = details["screenshots"]

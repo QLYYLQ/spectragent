@@ -43,10 +43,7 @@ class _Rect:
 
     def intersects(self, other: _Rect) -> bool:
         return not (
-            self.x2 <= other.x1
-            or other.x2 <= self.x1
-            or self.y2 <= other.y1
-            or other.y2 <= self.y1
+            self.x2 <= other.x1 or other.x2 <= self.x1 or self.y2 <= other.y1 or other.y2 <= self.y1
         )
 
     def contains(self, other: _Rect) -> bool:

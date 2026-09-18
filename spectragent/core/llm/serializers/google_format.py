@@ -176,8 +176,7 @@ class GoogleMessageSerializer:
                 body_parts = GoogleMessageSerializer._content_to_parts(message.content)
                 if isinstance(message, AssistantMessage) and message.tool_calls:
                     body_parts = body_parts + [
-                        GoogleMessageSerializer._tool_call_part(call)
-                        for call in message.tool_calls
+                        GoogleMessageSerializer._tool_call_part(call) for call in message.tool_calls
                     ]
             message_parts: list[Part] = body_parts
 

@@ -147,10 +147,7 @@ def is_trace_safe(field_info: FieldInfo) -> bool:
     hand-written Pydantic model whose author reaches for the spelling
     pydantic documents.
     """
-    if any(
-        isinstance(meta, TraceSafe) or meta is TraceSafe
-        for meta in field_info.metadata
-    ):
+    if any(isinstance(meta, TraceSafe) or meta is TraceSafe for meta in field_info.metadata):
         return True
     extra = field_info.json_schema_extra
     return isinstance(extra, Mapping) and bool(extra.get(TRACE_SAFE_EXTRA))
@@ -234,9 +231,7 @@ def _redact_model(model: BaseModel, *, record_secrets: bool) -> dict[str, Any]:
     return out
 
 
-def _redact_field(
-    value: Any, field_info: FieldInfo, *, record_secrets: bool
-) -> Any:
+def _redact_field(value: Any, field_info: FieldInfo, *, record_secrets: bool) -> Any:
     if record_secrets:
         return _jsonable(value)
     if value is None:

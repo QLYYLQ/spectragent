@@ -315,9 +315,7 @@ def resolve_demand(
     return ResolvedDemand(bindings=bindings, missing=frozenset(missing))
 
 
-def group_by_short_name(
-    keys: Collection[str], separator: str
-) -> dict[str, list[str]]:
+def group_by_short_name(keys: Collection[str], separator: str) -> dict[str, list[str]]:
     """Group fully-qualified keys by their trailing segment.
 
     One computation, two readers: :func:`bind_short_names` takes the
@@ -345,7 +343,5 @@ def bind_short_names(grouped: Mapping[str, Sequence[str]]) -> dict[str, str]:
     genuinely means neither.
     """
     return {
-        short: group[0]
-        for short, group in grouped.items()
-        if len(group) == 1 and group[0] != short
+        short: group[0] for short, group in grouped.items() if len(group) == 1 and group[0] != short
     }

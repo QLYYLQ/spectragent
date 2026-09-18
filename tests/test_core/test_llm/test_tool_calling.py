@@ -305,7 +305,9 @@ class TestAnthropicSerializer:
 
         blocks = [
             SimpleNamespace(type="text", text="thinking"),
-            SimpleNamespace(type="tool_use", id="toolu_1", name="get_weather", input={"city": "SF"}),
+            SimpleNamespace(
+                type="tool_use", id="toolu_1", name="get_weather", input={"city": "SF"}
+            ),
         ]
         [call] = AnthropicMessageSerializer.parse_tool_calls(blocks)
         assert call.id == "toolu_1"
@@ -832,9 +834,7 @@ class TestProvidersThatCannotFailLoudly:
 
             asyncio.run(chat.ainvoke([UserMessage(content="hi")], tools=[_tool()]))
 
-    def test_browser_use_reports_and_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_browser_use_reports_and_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("BROWSER_USE_API_KEY", "test")
         from spectragent.core.llm.providers.browser_use import ChatBrowserUse
 
@@ -1019,6 +1019,4 @@ class TestToolChoiceLimits:
 
         chat = ChatOllama(model="llama3.1")
         with pytest.raises(ToolsUnsupportedError, match="no tool_choice parameter"):
-            await chat.ainvoke(
-                [UserMessage(content="hi")], tools=[_tool()], tool_choice="required"
-            )
+            await chat.ainvoke([UserMessage(content="hi")], tools=[_tool()], tool_choice="required")

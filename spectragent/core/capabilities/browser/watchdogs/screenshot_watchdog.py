@@ -174,7 +174,9 @@ class ScreenshotWatchdog(BrowserWatchdog):
             params["clip"] = {**clip, "scale": 1}
 
         result = await self._cdp.send(
-            "Page.captureScreenshot", params, session_id=self._session_id,
+            "Page.captureScreenshot",
+            params,
+            session_id=self._session_id,
         )
         b64_data = result.get("data", "") if result else ""
         return base64.b64decode(b64_data)

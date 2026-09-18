@@ -89,9 +89,27 @@ _PUNCTUATION_KEYS: dict[str, tuple[str, int]] = {
 #: Shifted character → the unshifted character on the same physical key, so
 #: ``code`` and ``keyCode`` report the *key*, which is what they mean.
 _SHIFT_PAIRS: dict[str, str] = {
-    "~": "`", "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
-    "&": "7", "*": "8", "(": "9", ")": "0", "_": "-", "+": "=",
-    "{": "[", "}": "]", "|": "\\", ":": ";", '"': "'", "<": ",", ">": ".", "?": "/",
+    "~": "`",
+    "!": "1",
+    "@": "2",
+    "#": "3",
+    "$": "4",
+    "%": "5",
+    "^": "6",
+    "&": "7",
+    "*": "8",
+    "(": "9",
+    ")": "0",
+    "_": "-",
+    "+": "=",
+    "{": "[",
+    "}": "]",
+    "|": "\\",
+    ":": ";",
+    '"': "'",
+    "<": ",",
+    ">": ".",
+    "?": "/",
 }
 
 #: Control characters a typed string can carry, as their own keys.
@@ -178,9 +196,7 @@ class HumanKeyboard:
         self._cdp = cdp
         # Nothing configured → the no-op strategy, exactly the legacy bulk
         # insert. The strategy alone decides whether we humanize.
-        self._rhythm: TypingRhythmProtocol = (
-            rhythm if rhythm is not None else InstantRhythm()
-        )
+        self._rhythm: TypingRhythmProtocol = rhythm if rhythm is not None else InstantRhythm()
         self._humanized = self._rhythm.humanized
 
     @property
@@ -208,9 +224,7 @@ class HumanKeyboard:
         and the last slot is never dropped.
         """
         if not self._humanized or not text:
-            await self._cdp.send(
-                "Input.insertText", {"text": text}, session_id=session_id
-            )
+            await self._cdp.send("Input.insertText", {"text": text}, session_id=session_id)
             return
 
         keystrokes = self._rhythm.generate(text)

@@ -90,9 +90,7 @@ async def test_unparseable_grader_reply_defaults_to_incorrect(traces_dir, refere
     assert result.evaluation_details.benchmark_details["grader_matched_pattern"] is False
 
 
-async def test_the_grader_prompt_carries_decrypted_question_and_key(
-    traces_dir, reference
-):
+async def test_the_grader_prompt_carries_decrypted_question_and_key(traces_dir, reference):
     trace = RunTrace(write_trace(traces_dir, task_id=reference.task_id, answer="my answer"))
     judge = FakeJudge(replies=["correct: yes"])
 
@@ -109,9 +107,7 @@ async def test_the_grader_prompt_carries_decrypted_question_and_key(
     assert result.task and result.task in call.user_text
 
 
-async def test_prompt_snapshot_pins_the_template_and_substitutions(
-    traces_dir, reference
-):
+async def test_prompt_snapshot_pins_the_template_and_substitutions(traces_dir, reference):
     """A verdict must be re-derivable: which prompt text, which values."""
     trace = RunTrace(write_trace(traces_dir, task_id=reference.task_id))
     judge = FakeJudge(replies=["correct: yes"])

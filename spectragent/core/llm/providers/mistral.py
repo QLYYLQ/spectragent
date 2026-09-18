@@ -61,7 +61,9 @@ class ChatMistral(ChatModelBase):
 
     # Client params
     api_key: Annotated[str | None, Field(description="Mistral API key")] = None
-    base_url: Annotated[str, Field(description="Mistral API base URL")] = "https://api.mistral.ai/v1"
+    base_url: Annotated[str, Field(description="Mistral API base URL")] = (
+        "https://api.mistral.ai/v1"
+    )
     timeout: Annotated[float | None, Field(description="Request timeout in seconds")] = None
     max_retries: Annotated[int, Field(description="Max request retries")] = 5
     default_headers: Mapping[str, str] | None = None
@@ -86,7 +88,10 @@ class ChatMistral(ChatModelBase):
         return str(os.getenv("MISTRAL_BASE_URL", self.base_url)).rstrip("/")
 
     def _auth_headers(self) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {self._get_api_key()}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {self._get_api_key()}",
+            "Content-Type": "application/json",
+        }
         if self.default_headers:
             headers.update(self.default_headers)
         return headers
@@ -167,12 +172,18 @@ class ChatMistral(ChatModelBase):
         if response.status_code >= 400:
             message = self._parse_error(response)
             if response.status_code == 429:
-                raise ModelRateLimitError(message=message, status_code=response.status_code, model=self.name)
-            raise ModelProviderError(message=message, status_code=response.status_code, model=self.name)
+                raise ModelRateLimitError(
+                    message=message, status_code=response.status_code, model=self.name
+                )
+            raise ModelProviderError(
+                message=message, status_code=response.status_code, model=self.name
+            )
         try:
             return response.json()
         except Exception as e:
-            raise ModelProviderError(message=f"Failed to parse Mistral response: {e}", model=self.name) from e
+            raise ModelProviderError(
+                message=f"Failed to parse Mistral response: {e}", model=self.name
+            ) from e
 
     @overload
     async def ainvoke(
@@ -204,7 +215,10 @@ class ChatMistral(ChatModelBase):
                 ),
             )
 
-        payload: dict[str, Any] = {"model": self.model, "messages": self._serialize_messages(messages)}
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": self._serialize_messages(messages),
+        }
         if tools:
             # Mistral's /chat/completions mirrors the OpenAI tool vocabulary.
             payload["tools"] = OpenAIMessageSerializer.serialize_tools(tools)
@@ -226,7 +240,9 @@ class ChatMistral(ChatModelBase):
                 "json_schema": {
                     "name": "agent_output",
                     "strict": True,
-                    "schema": MistralSchemaOptimizer.create_mistral_compatible_schema(output_format),
+                    "schema": MistralSchemaOptimizer.create_mistral_compatible_schema(
+                        output_format
+                    ),
                 },
             }
 

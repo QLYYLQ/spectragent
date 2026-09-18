@@ -50,9 +50,7 @@ class _ScriptedRhythm:
 class TestInstantRhythmEquivalence:
     """``instant`` must reproduce the legacy single bulk insert exactly."""
 
-    async def test_typing_is_one_insert_text_and_nothing_else(
-        self, no_sleep: list[float]
-    ) -> None:
+    async def test_typing_is_one_insert_text_and_nothing_else(self, no_sleep: list[float]) -> None:
         cdp = RecordCDP()
         keyboard = HumanKeyboard(cdp)  # instant by default
         await keyboard.type_text("hello world", session_id="sid")
@@ -62,9 +60,7 @@ class TestInstantRhythmEquivalence:
         assert cdp.key_events() == []
         assert no_sleep == []
 
-    async def test_an_explicit_instant_rhythm_is_the_same(
-        self, no_sleep: list[float]
-    ) -> None:
+    async def test_an_explicit_instant_rhythm_is_the_same(self, no_sleep: list[float]) -> None:
         cdp = RecordCDP()
         keyboard = HumanKeyboard(cdp, rhythm=InstantRhythm())
         assert keyboard.humanized is False
@@ -93,9 +89,7 @@ class TestInstantRhythmEquivalence:
         await HumanKeyboard(cdp, rhythm=rhythm).type_text("x", session_id="frame-42")  # type: ignore[arg-type]
         assert sessions and set(sessions) == {"frame-42"}
 
-    async def test_empty_text_still_goes_through_the_bulk_path(
-        self, no_sleep: list[float]
-    ) -> None:
+    async def test_empty_text_still_goes_through_the_bulk_path(self, no_sleep: list[float]) -> None:
         # Nothing to time, and the legacy call is what downstream code (and
         # a page's own ``input`` handler for a cleared field) has seen.
         cdp = RecordCDP()
@@ -107,16 +101,17 @@ class TestInstantRhythmEquivalence:
 
 
 class TestHumanizedKeyEvents:
-    async def test_one_keydown_keyup_pair_per_character(
-        self, no_sleep: list[float]
-    ) -> None:
+    async def test_one_keydown_keyup_pair_per_character(self, no_sleep: list[float]) -> None:
         cdp = RecordCDP()
         keyboard = HumanKeyboard(cdp, rhythm=_ScriptedRhythm())
         assert keyboard.humanized is True
         await keyboard.type_text("ab")
 
         assert [p["type"] for p in cdp.key_events()] == [
-            "keyDown", "keyUp", "keyDown", "keyUp",
+            "keyDown",
+            "keyUp",
+            "keyDown",
+            "keyUp",
         ]
         assert cdp.inserts() == []  # no bulk insert anywhere
 
@@ -153,7 +148,7 @@ class TestHumanizedKeyEvents:
             (" ", "Space", 32, False),
             (".", "Period", 190, False),
             ("-", "Minus", 189, False),
-            ("!", "Digit1", 49, True),   # the shifted key reports the *key*
+            ("!", "Digit1", 49, True),  # the shifted key reports the *key*
             ("?", "Slash", 191, True),
             ("\n", "Enter", 13, False),
             ("\t", "Tab", 9, False),
@@ -168,9 +163,7 @@ class TestHumanizedKeyEvents:
         assert (down["code"], down["windowsVirtualKeyCode"]) == (code, vk)
         assert down.get("modifiers", 0) == (8 if shift else 0)
 
-    async def test_the_modifier_is_on_the_release_too(
-        self, no_sleep: list[float]
-    ) -> None:
+    async def test_the_modifier_is_on_the_release_too(self, no_sleep: list[float]) -> None:
         # A listener reading ``shiftKey`` off keyup must see it as well.
         cdp = RecordCDP()
         await HumanKeyboard(cdp, rhythm=_ScriptedRhythm()).type_text("A")
@@ -191,9 +184,7 @@ class TestHumanizedKeyEvents:
 
 
 class TestTheScheduleIsTheRhythm:
-    async def test_the_gaps_and_holds_are_spent_as_wall_time(
-        self, clock: VirtualClock
-    ) -> None:
+    async def test_the_gaps_and_holds_are_spent_as_wall_time(self, clock: VirtualClock) -> None:
         cdp = RecordCDP(clock)
         start = clock.now
         await HumanKeyboard(cdp, rhythm=_ScriptedRhythm(100.0, 80.0)).type_text("abc")
@@ -263,9 +254,7 @@ class TestTheScheduleIsTheRhythm:
 
 
 class TestNonAsciiDelivery:
-    async def test_cjk_goes_through_per_character_insert_text(
-        self, clock: VirtualClock
-    ) -> None:
+    async def test_cjk_goes_through_per_character_insert_text(self, clock: VirtualClock) -> None:
         """No key event bears '你'.
 
         Dispatching a keydown whose ``key`` is a Han character produces (as
@@ -285,18 +274,16 @@ class TestNonAsciiDelivery:
         # spends holding still.
         assert clock.sleeps == pytest.approx([0.120, 0.060] * 2)
 
-    async def test_a_mixed_string_uses_both_paths_in_order(
-        self, clock: VirtualClock
-    ) -> None:
+    async def test_a_mixed_string_uses_both_paths_in_order(self, clock: VirtualClock) -> None:
         cdp = RecordCDP(clock)
         await HumanKeyboard(cdp, rhythm=_ScriptedRhythm()).type_text("a好b")
 
         assert [m for m, _ in cdp.calls] == [
-            "Input.dispatchKeyEvent",   # a down
-            "Input.dispatchKeyEvent",   # a up
-            "Input.insertText",         # 好
-            "Input.dispatchKeyEvent",   # b down
-            "Input.dispatchKeyEvent",   # b up
+            "Input.dispatchKeyEvent",  # a down
+            "Input.dispatchKeyEvent",  # a up
+            "Input.insertText",  # 好
+            "Input.dispatchKeyEvent",  # b down
+            "Input.dispatchKeyEvent",  # b up
         ]
         assert cdp.inserts() == ["好"]
 
@@ -307,7 +294,6 @@ class TestNonAsciiDelivery:
         cdp = RecordCDP()
         await HumanKeyboard(cdp, rhythm=_ScriptedRhythm()).type_text(text)
         typed = "".join(
-            e["text"] for m, e in cdp.calls
-            if m == "Input.insertText" or e.get("type") == "keyDown"
+            e["text"] for m, e in cdp.calls if m == "Input.insertText" or e.get("type") == "keyDown"
         )
         assert typed == text

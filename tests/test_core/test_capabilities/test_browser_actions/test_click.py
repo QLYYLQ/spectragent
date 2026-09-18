@@ -21,9 +21,7 @@ class TestClickExecute:
     async def test_looks_up_backend_node_id_and_emits(
         self, fake_capability: FakeCapability
     ) -> None:
-        fake_capability._selector_maps["sid_main"][42] = FakeElementNode(
-            backend_node_id=777
-        )
+        fake_capability._selector_maps["sid_main"][42] = FakeElementNode(backend_node_id=777)
         result = await ClickAction().execute(
             {"index": 42},
             capability=fake_capability,  # type: ignore[arg-type]
@@ -45,9 +43,7 @@ class TestClickExecute:
         assert result.success is False
         assert "99" in (result.error or "")
 
-    async def test_missing_index_param_fails(
-        self, fake_capability: FakeCapability
-    ) -> None:
+    async def test_missing_index_param_fails(self, fake_capability: FakeCapability) -> None:
         result = await ClickAction().execute(
             {},  # no index
             capability=fake_capability,  # type: ignore[arg-type]

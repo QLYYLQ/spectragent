@@ -57,9 +57,7 @@ class EvalLoaderBase(metaclass=EvalLoaderRegistrar.Meta):
     ] = None
 
     # internal storage — not a config field
-    _refs: dict[str, EvalReference] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _refs: dict[str, EvalReference] = field(default_factory=dict, init=False, repr=False)
 
     # Default environment type — selects the data directory segment.
     env_type: str = "browser"

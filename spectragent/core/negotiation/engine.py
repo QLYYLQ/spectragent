@@ -51,7 +51,6 @@ def negotiate(
     result = rules(**resolved)
     if not isinstance(result, target_class):
         raise TypeError(
-            f"Negotiation rules returned {type(result).__name__}, "
-            f"expected {target_class.__name__}"
+            f"Negotiation rules returned {type(result).__name__}, expected {target_class.__name__}"
         )
     return result

@@ -948,9 +948,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "``cdp_url`` in config, pass it as a kwarg, or wire "
                     "a ``browser_provider`` backend via __wiring__."
                 )
-            self._cdp = CDPClient(
-                cdp_url, additional_headers=self._session_cdp_headers()
-            )
+            self._cdp = CDPClient(cdp_url, additional_headers=self._session_cdp_headers())
             await self._cdp.start()
 
         # 2. Global scope — browser-level watchdogs.
@@ -960,14 +958,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # 3. Initial tab.
         result = await self._cdp.send("Target.getTargets", {})
         targets = (result or {}).get("targetInfos", [])
-        page_target = next(
-            (t for t in targets if t.get("type") == "page"), None
-        )
+        page_target = next((t for t in targets if t.get("type") == "page"), None)
 
         if page_target:
-            sid = await self._attach_tab(
-                page_target["targetId"], page_target.get("url", "")
-            )
+            sid = await self._attach_tab(page_target["targetId"], page_target.get("url", ""))
         else:
             r = await self._cdp.send("Target.createTarget", {"url": "about:blank"})
             target_id = (r or {}).get("targetId")
@@ -1062,9 +1056,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             try:
                 wd.detach()
             except Exception as exc:  # pragma: no cover — defensive
-                logger.debug(
-                    "Watchdog %s detach failed: %s", type(wd).__name__, exc
-                )
+                logger.debug("Watchdog %s detach failed: %s", type(wd).__name__, exc)
 
     async def execute_action(self, action: Action) -> ActionResult:
         """Delegate action execution to the registered action instance.
@@ -1088,7 +1080,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         impl = self._actions_by_name.get(action.name)
         if impl is None:
             return ActionResult(
-                success=False, error=f"Unknown action: {action.name}",
+                success=False,
+                error=f"Unknown action: {action.name}",
             )
 
         # Invalidate the cache for this tab BEFORE executing the action.
@@ -1313,9 +1306,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             error = getattr(result_obj, "error", None)
             if error is not None:
                 outcome.errors.append(f"{result_obj.handler_name}: {error}")
-            if result_obj.is_success and isinstance(
-                result_obj.result, BrowserStateSummary
-            ):
+            if result_obj.is_success and isinstance(result_obj.result, BrowserStateSummary):
                 summary: BrowserStateSummary = result_obj.result
                 outcome.fragments.update(summary.fragments)
         return outcome
@@ -1398,16 +1389,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         if target_id is None:
             candidates = [t for t in page_targets if t != current_target]
             if not candidates:
-                raise ValueError(
-                    "switch_tab: no other tab is open — only the current "
-                    "tab exists."
-                )
+                raise ValueError("switch_tab: no other tab is open — only the current tab exists.")
             target_id = candidates[-1]
         elif target_id not in page_targets:
-            raise ValueError(
-                f"switch_tab: unknown tab {target_id!r}. Open tabs: "
-                f"{page_targets}"
-            )
+            raise ValueError(f"switch_tab: unknown tab {target_id!r}. Open tabs: {page_targets}")
 
         # Attach lazily — a tab opened by the page itself (target=_blank)
         # has no scope/watchdogs until we adopt it here.
@@ -1462,9 +1447,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         if self._cdp is not None:
             try:
-                await self._cdp.send(
-                    "Target.closeTarget", {"targetId": target_id}
-                )
+                await self._cdp.send("Target.closeTarget", {"targetId": target_id})
             except Exception as exc:
                 logger.debug("Failed to close target %s: %s", target_id, exc)
 
@@ -1509,7 +1492,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             logger.warning(
                 "Page.enable / setLifecycleEventsEnabled failed on %s: %s — "
                 "lifecycle-aware navigation will degrade to fire-and-forget",
-                cdp_session_id, exc,
+                cdp_session_id,
+                exc,
             )
 
         # 3. Apply the configured viewport to this tab.
@@ -1520,17 +1504,17 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         main_frame_id: str | None = None
         try:
             tree_result = await self._cdp.send(
-                "Page.getFrameTree", {}, session_id=cdp_session_id,
+                "Page.getFrameTree",
+                {},
+                session_id=cdp_session_id,
             )
             if tree_result:
-                main_frame_id = (
-                    tree_result.get("frameTree", {})
-                    .get("frame", {})
-                    .get("id")
-                )
+                main_frame_id = tree_result.get("frameTree", {}).get("frame", {}).get("id")
         except Exception as exc:
             logger.debug(
-                "Page.getFrameTree failed on %s: %s", cdp_session_id, exc,
+                "Page.getFrameTree failed on %s: %s",
+                cdp_session_id,
+                exc,
             )
         if main_frame_id is not None:
             self._main_frame_ids[cdp_session_id] = main_frame_id
@@ -1572,7 +1556,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         # 7. Per-tab watchdogs.
         watchdogs = self._create_watchdogs_for_scope(
-            level="tab", cdp_session_id=cdp_session_id,
+            level="tab",
+            cdp_session_id=cdp_session_id,
         )
         for wd in watchdogs:
             wd.attach(scope, session_id=cdp_session_id)
@@ -1662,4 +1647,3 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         for wd in watchdogs:
             wd.attach(scope, session_id=None)
         self._watchdogs[_GLOBAL_SCOPE_ID] = watchdogs
-

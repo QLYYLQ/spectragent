@@ -39,9 +39,7 @@ _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 #: JPEG frame markers carrying a height/width pair. Everything in the SOF
 #: family except DHT (0xC4), DNL (0xC8) and DAC (0xCC), which share the
 #: 0xC0-0xCF block without being frame headers.
-_JPEG_SOF_MARKERS = frozenset(
-    set(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
-)
+_JPEG_SOF_MARKERS = frozenset(set(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC})
 
 #: Extension each media type is persisted under. ``.jpg`` rather than
 #: ``.jpeg`` to match what ``browser.screenshot`` (the action) already

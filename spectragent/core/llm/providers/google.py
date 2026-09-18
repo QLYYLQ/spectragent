@@ -73,16 +73,28 @@ class ChatGoogle(ChatModelBase):
     temperature: Annotated[float | None, Field(description="Sampling temperature")] = 0.5
     top_p: Annotated[float | None, Field(description="Nucleus sampling top-p")] = None
     seed: Annotated[int | None, Field(description="Random seed for reproducibility")] = None
-    thinking_budget: Annotated[int | None, Field(description="Thinking token budget (-1 dynamic, 0 disable)")] = None
-    thinking_level: Annotated[str | None, Field(description="Thinking level (minimal/low/medium/high)")] = None
+    thinking_budget: Annotated[
+        int | None, Field(description="Thinking token budget (-1 dynamic, 0 disable)")
+    ] = None
+    thinking_level: Annotated[
+        str | None, Field(description="Thinking level (minimal/low/medium/high)")
+    ] = None
     max_output_tokens: Annotated[int | None, Field(description="Maximum output tokens")] = 8096
     config: types.GenerateContentConfigDict | None = None
-    include_system_in_user: Annotated[bool, Field(description="Include system messages in first user message")] = False
-    supports_structured_output: Annotated[bool, Field(description="Use native JSON mode for structured output")] = True
+    include_system_in_user: Annotated[
+        bool, Field(description="Include system messages in first user message")
+    ] = False
+    supports_structured_output: Annotated[
+        bool, Field(description="Use native JSON mode for structured output")
+    ] = True
     max_retries: Annotated[int, Field(description="Number of retries for retryable errors")] = 5
     retryable_status_codes: list[int] = field(default_factory=lambda: [429, 500, 502, 503, 504])
-    retry_base_delay: Annotated[float, Field(description="Base delay in seconds for exponential backoff")] = 1.0
-    retry_max_delay: Annotated[float, Field(description="Maximum delay in seconds between retries")] = 60.0
+    retry_base_delay: Annotated[
+        float, Field(description="Base delay in seconds for exponential backoff")
+    ] = 1.0
+    retry_max_delay: Annotated[
+        float, Field(description="Maximum delay in seconds between retries")
+    ] = 60.0
 
     # Client initialization parameters
     api_key: Annotated[str | None, Field(description="Google API key")] = None
@@ -166,7 +178,9 @@ class ChatGoogle(ChatModelBase):
             prompt_image_tokens=image_tokens,
         )
 
-    def _build_config(self, output_format: type[BaseModel] | None) -> types.GenerateContentConfigDict:
+    def _build_config(
+        self, output_format: type[BaseModel] | None
+    ) -> types.GenerateContentConfigDict:
         """Build the generate_content config dict."""
         config: types.GenerateContentConfigDict = {}
         if self.config:
@@ -204,16 +218,22 @@ class ChatGoogle(ChatModelBase):
             else:
                 if self.thinking_budget is None:
                     self.thinking_budget = -1
-                config["thinking_config"] = types.ThinkingConfigDict(thinking_budget=self.thinking_budget)
+                config["thinking_config"] = types.ThinkingConfigDict(
+                    thinking_budget=self.thinking_budget
+                )
         else:
             if self.thinking_level is not None:
                 self.logger.warning(
                     f'thinking_level="{self.thinking_level}" not supported for this model. Use thinking_budget.'
                 )
-            if self.thinking_budget is None and ("gemini-2.5" in self.model or "gemini-flash" in self.model):
+            if self.thinking_budget is None and (
+                "gemini-2.5" in self.model or "gemini-flash" in self.model
+            ):
                 self.thinking_budget = -1
             if self.thinking_budget is not None:
-                config["thinking_config"] = types.ThinkingConfigDict(thinking_budget=self.thinking_budget)
+                config["thinking_config"] = types.ThinkingConfigDict(
+                    thinking_budget=self.thinking_budget
+                )
 
         if self.max_output_tokens is not None:
             config["max_output_tokens"] = self.max_output_tokens
@@ -283,7 +303,9 @@ class ChatGoogle(ChatModelBase):
             try:
                 if output_format is None:
                     response = await self.get_client().aio.models.generate_content(
-                        model=self.model, contents=contents, config=config,  # type: ignore
+                        model=self.model,
+                        contents=contents,
+                        config=config,  # type: ignore
                     )
                     # `response.text` is a convenience accessor that concatenates
                     # text parts; with tools advertised the reply can be a bare
@@ -304,7 +326,9 @@ class ChatGoogle(ChatModelBase):
                 else:
                     if self.supports_structured_output:
                         config["response_mime_type"] = "application/json"
-                        optimized_schema = SchemaOptimizer.create_gemini_optimized_schema(output_format)
+                        optimized_schema = SchemaOptimizer.create_gemini_optimized_schema(
+                            output_format
+                        )
                         if self.model_family.schema_requires_gemini_fix:
                             optimized_schema = fix_gemini_schema(optimized_schema)
                         # Unconditional, and not a duplicate of the line above:
@@ -325,7 +349,9 @@ class ChatGoogle(ChatModelBase):
                         config["response_schema"] = optimized_schema
 
                         response = await self.get_client().aio.models.generate_content(
-                            model=self.model, contents=contents, config=config,
+                            model=self.model,
+                            contents=contents,
+                            config=config,
                         )
                         usage = self._get_usage(response)
 
@@ -334,20 +360,28 @@ class ChatGoogle(ChatModelBase):
                                 text = strip_code_fence(response.text)
                                 parsed_data = json.loads(text)
                                 return ChatInvokeCompletion(
-                                    completion=self._validate_structured(output_format, _strip_placeholders(parsed_data), usage=usage),
+                                    completion=self._validate_structured(
+                                        output_format, _strip_placeholders(parsed_data), usage=usage
+                                    ),
                                     usage=usage,
                                     stop_reason=self._get_stop_reason(response),
                                 )
                             raise ModelProviderError(
-                                message=f"No response from model {response}", status_code=500, model=self.model,
+                                message=f"No response from model {response}",
+                                status_code=500,
+                                model=self.model,
                             )
 
                         if isinstance(response.parsed, output_format):
                             return ChatInvokeCompletion(
-                                completion=response.parsed, usage=usage, stop_reason=self._get_stop_reason(response),
+                                completion=response.parsed,
+                                usage=usage,
+                                stop_reason=self._get_stop_reason(response),
                             )
                         return ChatInvokeCompletion(
-                            completion=self._validate_structured(output_format, _strip_placeholders(response.parsed), usage=usage),
+                            completion=self._validate_structured(
+                                output_format, _strip_placeholders(response.parsed), usage=usage
+                            ),
                             usage=usage,
                             stop_reason=self._get_stop_reason(response),
                         )
@@ -361,14 +395,17 @@ class ChatGoogle(ChatModelBase):
                             )
 
                         fb_contents, fb_system = GoogleMessageSerializer.serialize_messages(
-                            modified_messages, include_system_in_user=self.include_system_in_user,
+                            modified_messages,
+                            include_system_in_user=self.include_system_in_user,
                         )
                         fb_config = config.copy()
                         if fb_system:
                             fb_config["system_instruction"] = fb_system
 
                         response = await self.get_client().aio.models.generate_content(
-                            model=self.model, contents=fb_contents, config=fb_config,  # type: ignore
+                            model=self.model,
+                            contents=fb_contents,
+                            config=fb_config,  # type: ignore
                         )
                         usage = self._get_usage(response)
 
@@ -376,11 +413,15 @@ class ChatGoogle(ChatModelBase):
                             text = strip_code_fence(response.text)
                             parsed_data = json.loads(text)
                             return ChatInvokeCompletion(
-                                completion=self._validate_structured(output_format, _strip_placeholders(parsed_data), usage=usage),
+                                completion=self._validate_structured(
+                                    output_format, _strip_placeholders(parsed_data), usage=usage
+                                ),
                                 usage=usage,
                                 stop_reason=self._get_stop_reason(response),
                             )
-                        raise ModelProviderError(message="No response from model", status_code=500, model=self.model)
+                        raise ModelProviderError(
+                            message="No response from model", status_code=500, model=self.model
+                        )
             except Exception:
                 raise
 
@@ -406,10 +447,14 @@ class ChatGoogle(ChatModelBase):
                     status_code = 504 if isinstance(e, asyncio.CancelledError) else 408
                 elif "rate limit" in error_message.lower() or "429" in error_message.lower():
                     status_code = 429
-                elif "service unavailable" in error_message.lower() or "503" in error_message.lower():
+                elif (
+                    "service unavailable" in error_message.lower() or "503" in error_message.lower()
+                ):
                     status_code = 503
                 raise ModelProviderError(
-                    message=error_message, status_code=status_code or 502, model=self.name,
+                    message=error_message,
+                    status_code=status_code or 502,
+                    model=self.name,
                 ) from e
 
         raise RuntimeError("Retry loop completed without return or exception")

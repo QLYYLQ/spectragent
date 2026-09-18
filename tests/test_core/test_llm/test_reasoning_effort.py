@@ -44,9 +44,7 @@ class TestWhatGoesOnTheWire:
         assert params["temperature"] == 0.2
 
     def test_explicit_value_reaches_a_model_the_list_does_not_know(self) -> None:
-        params = ChatOpenAI(
-            model="gemini-3.5-flash", reasoning_effort="low"
-        )._common_model_params()
+        params = ChatOpenAI(model="gemini-3.5-flash", reasoning_effort="low")._common_model_params()
         assert params["reasoning_effort"] == "low"
         # Not an OpenAI reasoning model: sampling knobs stay.
         assert params["temperature"] == 0.2

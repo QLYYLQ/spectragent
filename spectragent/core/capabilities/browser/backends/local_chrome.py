@@ -88,9 +88,7 @@ CHROME_DEFAULT_ARGS: tuple[str, ...] = (
     "DialMediaRouteProvider",
 )
 
-CHROME_HEADLESS_ARGS: tuple[str, ...] = (
-    "--headless=new",
-)
+CHROME_HEADLESS_ARGS: tuple[str, ...] = ("--headless=new",)
 
 CHROME_DOCKER_ARGS: tuple[str, ...] = (
     "--no-sandbox",
@@ -213,7 +211,9 @@ class LocalChromeProvider(BrowserProviderBase):
     # ── executable ─────────────────────────────────────────────────────
     executable_path: Annotated[
         str | None,
-        Field(description="Chrome / Chromium binary path (auto-detected if None). Env: CHROME_EXECUTABLE_PATH"),
+        Field(
+            description="Chrome / Chromium binary path (auto-detected if None). Env: CHROME_EXECUTABLE_PATH"
+        ),
     ] = None
 
     # ── display & window ───────────────────────────────────────────────
@@ -240,7 +240,9 @@ class LocalChromeProvider(BrowserProviderBase):
     # ── profile / user data ────────────────────────────────────────────
     user_data_dir: Annotated[
         str | None,
-        Field(description="Chrome profile directory. A temp dir is created if None. Env: CHROME_USER_DATA_DIR"),
+        Field(
+            description="Chrome profile directory. A temp dir is created if None. Env: CHROME_USER_DATA_DIR"
+        ),
     ] = None
 
     profile_directory: Annotated[
@@ -256,7 +258,9 @@ class LocalChromeProvider(BrowserProviderBase):
     # ── network / proxy ────────────────────────────────────────────────
     proxy_server: Annotated[
         str | None,
-        Field(description="Proxy server URL, e.g. 'socks5://127.0.0.1:1080' or 'http://proxy:8080'"),
+        Field(
+            description="Proxy server URL, e.g. 'socks5://127.0.0.1:1080' or 'http://proxy:8080'"
+        ),
     ] = None
 
     proxy_bypass_list: Annotated[
@@ -267,7 +271,9 @@ class LocalChromeProvider(BrowserProviderBase):
     # ── security ───────────────────────────────────────────────────────
     disable_security: Annotated[
         bool,
-        Field(description="Disable web security (--disable-web-security, --ignore-certificate-errors). Use for testing only!"),
+        Field(
+            description="Disable web security (--disable-web-security, --ignore-certificate-errors). Use for testing only!"
+        ),
     ] = False
 
     no_sandbox: Annotated[
@@ -289,7 +295,9 @@ class LocalChromeProvider(BrowserProviderBase):
 
     disable_dev_shm_usage: Annotated[
         bool,
-        Field(description="Disable /dev/shm usage (--disable-dev-shm-usage). Recommended in Docker."),
+        Field(
+            description="Disable /dev/shm usage (--disable-dev-shm-usage). Recommended in Docker."
+        ),
     ] = False
 
     # ── user agent ─────────────────────────────────────────────────────
@@ -321,7 +329,9 @@ class LocalChromeProvider(BrowserProviderBase):
 
     disable_automation_controlled: Annotated[
         bool,
-        Field(description="Hide automation flag from navigator.webdriver (--disable-blink-features=AutomationControlled)"),
+        Field(
+            description="Hide automation flag from navigator.webdriver (--disable-blink-features=AutomationControlled)"
+        ),
     ] = True
 
     mute_audio: Annotated[
@@ -342,7 +352,9 @@ class LocalChromeProvider(BrowserProviderBase):
     # ── deterministic rendering ────────────────────────────────────────
     deterministic_rendering: Annotated[
         bool,
-        Field(description="Force deterministic rendering (fixed seed, font hinting off). Useful for visual regression."),
+        Field(
+            description="Force deterministic rendering (fixed seed, font hinting off). Useful for visual regression."
+        ),
     ] = False
 
     force_device_scale_factor: Annotated[
@@ -358,12 +370,16 @@ class LocalChromeProvider(BrowserProviderBase):
 
     extra_args: Annotated[
         list[str] | None,
-        Field(description="Additional raw Chrome CLI flags (e.g. ['--disable-features=Foo', '--enable-logging'])"),
+        Field(
+            description="Additional raw Chrome CLI flags (e.g. ['--disable-features=Foo', '--enable-logging'])"
+        ),
     ] = None
 
     ignore_default_args: Annotated[
         bool,
-        Field(description="If True, skip all CHROME_DEFAULT_ARGS and only use flags from explicit config"),
+        Field(
+            description="If True, skip all CHROME_DEFAULT_ARGS and only use flags from explicit config"
+        ),
     ] = False
 
     startup_url: Annotated[
@@ -382,7 +398,9 @@ class LocalChromeProvider(BrowserProviderBase):
     ] = 5.0
 
     # ── internal state (excluded from config) ──────────────────────────
-    _processes: dict[str, asyncio.subprocess.Process] = field(default_factory=dict, init=False, repr=False)
+    _processes: dict[str, asyncio.subprocess.Process] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _temp_dirs: dict[str, str] = field(default_factory=dict, init=False, repr=False)
 
     # -------------------------------------------------------------------
@@ -411,11 +429,13 @@ class LocalChromeProvider(BrowserProviderBase):
 
         # Deterministic rendering.
         if self.deterministic_rendering:
-            args.extend((
-                "--deterministic-mode",
-                "--js-flags=--random-seed=1157259159",
-                "--font-render-hinting=none",
-            ))
+            args.extend(
+                (
+                    "--deterministic-mode",
+                    "--js-flags=--random-seed=1157259159",
+                    "--font-render-hinting=none",
+                )
+            )
 
         # CDP port + user data.
         args.append(f"--remote-debugging-port={port}")
@@ -482,10 +502,16 @@ class LocalChromeProvider(BrowserProviderBase):
         session_id = str(uuid.uuid4())
 
         # Resolve port.
-        port = kwargs.get("remote_debugging_port") or self.remote_debugging_port or _find_free_port()
+        port = (
+            kwargs.get("remote_debugging_port") or self.remote_debugging_port or _find_free_port()
+        )
 
         # Resolve user data dir.
-        udd = kwargs.get("user_data_dir") or self.user_data_dir or os.environ.get("CHROME_USER_DATA_DIR")
+        udd = (
+            kwargs.get("user_data_dir")
+            or self.user_data_dir
+            or os.environ.get("CHROME_USER_DATA_DIR")
+        )
         temp_dir: str | None = None
         if udd is None:
             temp_dir = tempfile.mkdtemp(prefix="chrome-profile-")

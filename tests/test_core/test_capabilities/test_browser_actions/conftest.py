@@ -64,9 +64,7 @@ class FakeCapability:
     """
 
     _scopes: dict[str, FakeScope] = field(default_factory=dict)
-    _selector_maps: dict[str, dict[int, FakeElementNode]] = field(
-        default_factory=dict
-    )
+    _selector_maps: dict[str, dict[int, FakeElementNode]] = field(default_factory=dict)
     _cdp: Any = None
     _default_session_id: str | None = None
 

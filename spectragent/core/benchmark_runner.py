@@ -195,9 +195,7 @@ class BenchmarkRunSummary:
             from spectragent.evaluator.summary import format_summary
 
             lines.append("evaluation:")
-            lines.extend(
-                f"  {line}" for line in format_summary(self.eval_summary).splitlines()
-            )
+            lines.extend(f"  {line}" for line in format_summary(self.eval_summary).splitlines())
         for message in self.eval_errors:
             lines.append(f"  eval error: {message}")
         return "\n".join(lines)
@@ -358,9 +356,7 @@ class BenchmarkRunner:
         except Exception as exc:
             logger.exception("BenchmarkRunner: evaluation pass failed")
             return None, [f"{type(exc).__name__}: {exc}"]
-        return report.summary(), [
-            f"{o.task_id}: {o.error}" for o in report.errors if o.error
-        ]
+        return report.summary(), [f"{o.task_id}: {o.error}" for o in report.errors if o.error]
 
     async def run_task(self, task_id: str) -> TaskOutcome:
         """Run one task end to end. Never raises — a failure is data.
@@ -511,9 +507,7 @@ def _resolve_evaluator(run: ComposedRun, evaluator_id: str | None) -> Any:
     return matches[0]
 
 
-def _resolve_eval_loader(
-    run: ComposedRun, benchmark: str | None, subset: str | None
-) -> Any:
+def _resolve_eval_loader(run: ComposedRun, benchmark: str | None, subset: str | None) -> Any:
     """Reference data for scoring: config first, then the registry.
 
     Falls back to ``EvalLoaderRegistrar.get(benchmark)`` because the eval
@@ -556,10 +550,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--evaluator",
-        help=(
-            "evaluator_id to score with. Only needed when the config "
-            "declares more than one."
-        ),
+        help=("evaluator_id to score with. Only needed when the config declares more than one."),
     )
     parser.add_argument(
         "--evals-dir",
@@ -592,11 +583,7 @@ def main(argv: list[str] | None = None) -> int:
     evaluator = None if args.no_eval else _resolve_evaluator(probe, args.evaluator)
     benchmark = args.benchmark or getattr(loader, "benchmark_name", "")
     subset = args.subset if args.subset is not None else getattr(loader, "subset", "")
-    eval_loader = (
-        _resolve_eval_loader(probe, benchmark, subset)
-        if evaluator is not None
-        else None
-    )
+    eval_loader = _resolve_eval_loader(probe, benchmark, subset) if evaluator is not None else None
 
     runner = BenchmarkRunner(
         loader=loader,

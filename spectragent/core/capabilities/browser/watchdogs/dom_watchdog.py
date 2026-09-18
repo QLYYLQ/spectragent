@@ -216,10 +216,12 @@ class DOMWatchdog(BrowserWatchdog):
         except Exception as exc:
             logger.error("DOMWatchdog capture failed: %s", exc, exc_info=True)
             if self._scope:
-                self._scope.emit(BrowserErrorEvent(
-                    error_type="dom_capture",
-                    message=str(exc),
-                ))
+                self._scope.emit(
+                    BrowserErrorEvent(
+                        error_type="dom_capture",
+                        message=str(exc),
+                    )
+                )
             return None
 
     async def _capture_cdp_data(self) -> tuple[TargetCapture, float]:

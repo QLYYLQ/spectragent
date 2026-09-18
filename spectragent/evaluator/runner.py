@@ -199,9 +199,7 @@ class EvaluationRunner:
             try:
                 result = await self.evaluate_trace(trace_dir)
                 outcomes.append(
-                    EvaluationOutcome(
-                        task_id=result.task_id, trace_dir=trace_dir, result=result
-                    )
+                    EvaluationOutcome(task_id=result.task_id, trace_dir=trace_dir, result=result)
                 )
             except Exception as exc:
                 logger.exception("Evaluation failed for %s", trace_dir)
@@ -209,9 +207,7 @@ class EvaluationRunner:
                 message = f"{type(exc).__name__}: {exc}"
                 failures[task_id] = message
                 outcomes.append(
-                    EvaluationOutcome(
-                        task_id=task_id, trace_dir=trace_dir, error=message
-                    )
+                    EvaluationOutcome(task_id=task_id, trace_dir=trace_dir, error=message)
                 )
 
         # Which tasks owe a verdict and have none. With a declared split
@@ -229,9 +225,7 @@ class EvaluationRunner:
             outcomes.append(
                 EvaluationOutcome(
                     task_id=task_id,
-                    result=self._unscored(
-                        task_id, benchmark, subset, reason=failures.get(task_id)
-                    ),
+                    result=self._unscored(task_id, benchmark, subset, reason=failures.get(task_id)),
                 )
             )
 
@@ -274,9 +268,7 @@ class EvaluationRunner:
             benchmark=benchmark,
             subset=subset,
             timestamp=now,
-            agent_result_ref=AgentResultRef(
-                task_id=task_id, timestamp=now, result_dir=""
-            ),
+            agent_result_ref=AgentResultRef(task_id=task_id, timestamp=now, result_dir=""),
             predicted_label=0,
             verdict_source=source,
             failure_category=source,
@@ -295,9 +287,7 @@ class EvaluationRunner:
         )
 
     def _persist(self, trace_dir: Path, result: EvalResult) -> None:
-        payload = json.dumps(
-            result.model_dump(mode="json"), ensure_ascii=False, indent=2
-        )
+        payload = json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2)
         slug = self.verdict_slug
         if self._write_into_trace:
             evals_dir = trace_dir / "evals"
@@ -313,9 +303,7 @@ class EvaluationRunner:
             return
         self._evals_dir.mkdir(parents=True, exist_ok=True)
         (self._evals_dir / f"{self.verdict_slug}_summary.json").write_text(
-            json.dumps(
-                report.summary().model_dump(mode="json"), ensure_ascii=False, indent=2
-            ),
+            json.dumps(report.summary().model_dump(mode="json"), ensure_ascii=False, indent=2),
             "utf-8",
         )
 

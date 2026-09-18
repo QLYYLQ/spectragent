@@ -108,9 +108,7 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
     #: run, or ``None`` before ``setup()``. Set through
     #: :meth:`apply_negotiation`; narrows :attr:`provided_fragments` so a
     #: capability only pays for what the agent and loop asked for.
-    _negotiated_fragments: frozenset[str] | None = field(
-        default=None, init=False, repr=False
-    )
+    _negotiated_fragments: frozenset[str] | None = field(default=None, init=False, repr=False)
 
     @property
     def capability_id(self) -> str:

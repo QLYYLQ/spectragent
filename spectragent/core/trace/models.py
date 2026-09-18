@@ -106,9 +106,7 @@ class TraceNegotiation(BaseModel):
     action_bindings: dict[str, str] = Field(default_factory=dict)
 
     @classmethod
-    def from_results(
-        cls, observation: Any = None, action: Any = None
-    ) -> TraceNegotiation | None:
+    def from_results(cls, observation: Any = None, action: Any = None) -> TraceNegotiation | None:
         """Build from the two negotiation results ``AgentRuntime`` holds.
 
         Args:
@@ -292,12 +290,8 @@ class TraceConfig(BaseModel):
             "resolved_fidelity": "recorded" if resolved is None else "full",
             "resolved": source,
             "negotiation": (
-                self.negotiation.model_dump(mode="json")
-                if self.negotiation is not None
-                else None
+                self.negotiation.model_dump(mode="json") if self.negotiation is not None else None
             ),
         }
-        blob = json.dumps(
-            payload, sort_keys=True, ensure_ascii=False, default=str
-        ).encode("utf-8")
+        blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()[:16]

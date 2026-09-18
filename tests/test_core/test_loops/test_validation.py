@@ -34,8 +34,10 @@ class TestValidateSlots:
     def test_compatible_passes(self) -> None:
         class GoodAgent:
             agent_name = "good"
+
             def build_react_prompt(self, observation):
                 return []
+
             def parse_react_output(self, llm_output):
                 return []
 
@@ -61,6 +63,7 @@ class TestValidateSlots:
     def test_error_lists_missing_slots(self) -> None:
         class PartialAgent:
             agent_name = "partial"
+
             def build_react_prompt(self, observation):
                 return []
 
@@ -72,10 +75,13 @@ class TestValidateSlots:
     def test_optional_slot_missing_does_not_raise(self) -> None:
         class MinimalAgent:
             agent_name = "minimal"
+
             def build_react_prompt(self, observation):
                 return []
+
             def parse_react_output(self, llm_output):
                 return []
+
             # get_react_output_model is optional — not implemented
 
         _SlotLoop()._validate_slots(MinimalAgent())  # Should not raise
@@ -88,6 +94,7 @@ class TestValidateCompatibilityWrapper:
         class GoodAgent:
             def build_react_prompt(self, observation):
                 return []
+
             def parse_react_output(self, llm_output):
                 return []
 

@@ -31,9 +31,7 @@ class SendKeysAction(SettleableAction, ActionBase):
         keys: str
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return self.describe(
-            "Send keyboard keys (e.g. Enter, Escape, Ctrl+A).", **context
-        )
+        return self.describe("Send keyboard keys (e.g. Enter, Escape, Ctrl+A).", **context)
 
     async def execute(
         self,

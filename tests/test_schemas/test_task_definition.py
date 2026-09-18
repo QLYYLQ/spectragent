@@ -139,9 +139,7 @@ class TestTaskDefinition:
             encrypted_question="ENC_Q",
             encrypted_answer="ENC_A",
         )
-        task = TaskDefinition(
-            task_id="t1", benchmark="browsecomp", reference=ref
-        )
+        task = TaskDefinition(task_id="t1", benchmark="browsecomp", reference=ref)
         assert task.reference is not None
         assert task.reference.encrypted_answer == "ENC_A"
 
@@ -149,9 +147,7 @@ class TestTaskDefinition:
 class TestSchemasInitExports:
     def test_browser_task_module_removed(self) -> None:
         # Hard-cutover assertion: the legacy schema file no longer exists.
-        legacy = Path(__file__).resolve().parents[2] / (
-            "spectragent/schemas/browser_task.py"
-        )
+        legacy = Path(__file__).resolve().parents[2] / ("spectragent/schemas/browser_task.py")
         assert not legacy.exists(), (
             f"Legacy browser_task.py should be deleted but exists at {legacy}"
         )
