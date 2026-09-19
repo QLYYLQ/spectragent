@@ -151,3 +151,64 @@ class TestAnthropicMultipleSystemMessages:
         openai_system_text = [m["content"] for m in openai_messages if m["role"] == "system"]
         anthropic_text = [b["text"] for b in anthropic_system]  # type: ignore[index]
         assert anthropic_text == openai_system_text == ["FIRST", "SECOND"]
+
+
+def _cache_marked(blocks: object) -> list[int]:
+    """Indices of the content blocks carrying a ``cache_control`` marker.
+
+    Bare-string content counts as "nothing marked": the serializer collapses an
+    uncached single text block back to a plain string, which is exactly the
+    shape a message left behind by ``_clean_cache_messages`` takes.
+    """
+    if not isinstance(blocks, list):
+        return []
+    return [i for i, b in enumerate(blocks) if b.get("cache_control")]
+
+
+class TestAnthropicCacheBreakpoints:
+    """``cache=True`` must actually reach the wire.
+
+    The regression this guards: a vision step's content is ``[text, image]``,
+    and the serializer used to put the marker on the last *text* part. Text is
+    not last there and the image branch carried no marker, so every vision run
+    silently sent zero breakpoints — a 200 with a full-price prefix, which no
+    existing assertion could see.
+    """
+
+    def test_text_only_user_message_is_marked(self) -> None:
+        serialized, _system = AnthropicMessageSerializer.serialize_messages(
+            [UserMessage(content="state", cache=True)]
+        )
+        assert _cache_marked(serialized[0]["content"]) == [0]
+
+    def test_vision_user_message_is_marked_on_the_image(self) -> None:
+        message = UserMessage(
+            content=[ContentPartTextParam(text="state"), _image_part()],
+            cache=True,
+        )
+        serialized, _system = AnthropicMessageSerializer.serialize_messages([message])
+
+        blocks = serialized[0]["content"]
+        assert _cache_marked(blocks) == [1], "the breakpoint must land on the trailing image"
+        assert blocks[1]["type"] == "image"  # type: ignore[index]
+
+    def test_vision_user_message_without_cache_is_unmarked(self) -> None:
+        message = UserMessage(content=[ContentPartTextParam(text="state"), _image_part()])
+        serialized, _system = AnthropicMessageSerializer.serialize_messages([message])
+        assert _cache_marked(serialized[0]["content"]) == []
+
+    def test_system_and_tail_are_both_marked(self) -> None:
+        """The two breakpoints the agents place: static prefix + growing tail."""
+        serialized, system = AnthropicMessageSerializer.serialize_messages(
+            [
+                SystemMessage(content="SYS", cache=True),
+                UserMessage(content="step 1", cache=True),
+                AssistantMessage(content="ok"),
+                UserMessage(content="step 2", cache=True),
+            ]
+        )
+        assert _cache_marked(system) == [0]
+        # Only the last cached message keeps its marker; the earlier step's is
+        # cleared, so the request stays well under Anthropic's 4-breakpoint cap.
+        marked_messages = [i for i, m in enumerate(serialized) if _cache_marked(m["content"])]
+        assert marked_messages == [2]

@@ -494,7 +494,15 @@ class BrowserUseAgent(AgentBase):
             relabel,
             max_actions_per_step,
         )
-        return [SystemMessage(content=self._system_prompt_text)]
+        # ``cache=True`` marks the static prefix. The per-step breakpoint on the
+        # user message (``build_react_prompt``) already covers system + history,
+        # so in the steady state this second one is redundant — it earns its
+        # place when the tail entry is gone: a step that took longer than the
+        # 5-minute TTL, or a memory strategy that evicts from the front and so
+        # rewrites the prefix the tail breakpoint was written against. A read
+        # can only land where some earlier request wrote a breakpoint, and
+        # without this one the fallback is *no* read at all.
+        return [SystemMessage(content=self._system_prompt_text, cache=True)]
 
     # ── ReactLoop slots ────────────────────────────────────────
 

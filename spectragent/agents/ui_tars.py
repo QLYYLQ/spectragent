@@ -623,7 +623,9 @@ class UITarsAgent(AgentBase):
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
             task, self._action_descriptors, max_actions_per_step
         )
-        return [SystemMessage(content=self._system_prompt_text)]
+        # cache=True: static-prefix breakpoint — see BrowserUseAgent for why it
+        # is kept alongside the per-step one.
+        return [SystemMessage(content=self._system_prompt_text, cache=True)]
 
     # ── ReactLoop slots ────────────────────────────────────────
 

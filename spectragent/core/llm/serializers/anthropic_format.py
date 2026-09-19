@@ -136,18 +136,30 @@ class AnthropicMessageSerializer:
                 return content
 
         serialized_blocks: list[TextBlockParam | ImageBlockParam] = []
-        for i, part in enumerate(content):
-            is_last = i == len(content) - 1
+        for part in content:
             if part.type == "text":
                 serialized_blocks.append(
-                    AnthropicMessageSerializer._serialize_content_part_text(
-                        part, use_cache=use_cache and is_last
-                    )
+                    AnthropicMessageSerializer._serialize_content_part_text(part, use_cache=False)
                 )
             elif part.type == "image_url":
                 serialized_blocks.append(
                     AnthropicMessageSerializer._serialize_content_part_image(part)
                 )
+
+        # The breakpoint goes on whichever block ends up *last*, image included
+        # — not on the last text block. Two reasons, and the first is a bug this
+        # replaced: a vision message is ``[text, image]``, so keying off the last
+        # *text* part put the marker nowhere (text is not last, and the image
+        # branch never carried one), and ``cache=True`` silently produced zero
+        # ``cache_control`` blocks for every vision run.
+        #
+        # Second, ``image`` is a cache-eligible block type, and in this loop's
+        # append-only history the whole message becomes the next step's prefix.
+        # Marking the true last block pulls the screenshot into the cached
+        # prefix instead of leaving it past the breakpoint to be re-sent at full
+        # price on the step that appends it and again as a write on the next.
+        if use_cache and serialized_blocks:
+            serialized_blocks[-1]["cache_control"] = CacheControlEphemeralParam(type="ephemeral")
 
         return serialized_blocks
 
