@@ -22,21 +22,29 @@ class AgentUsage(BaseModel):
     nobody instrumented indistinguishable from a run that genuinely
     consumed zero tokens, and every downstream ``if usage is not None``
     guard passes while reading zeros.
+
+    **Tokens, never money.** This class carried four ``*_cost: float`` fields
+    that no code ever wrote, so every trace ever recorded claimed the run cost
+    $0.00 — the exact confusion the paragraph above exists to prevent, one
+    level down, and worse for being a plausible number rather than a missing
+    one. Pricing is deliberately out of scope: a rate depends on the model id,
+    the service tier, the context-length bracket, the billing mode and (on at
+    least one provider) the wall-clock hour, none of which a run can observe
+    through a gateway that load-balances across upstreams. Record what the
+    provider reported and let whoever holds the invoice do the arithmetic.
     """
 
     model_config = ConfigDict(extra="allow")
 
-    # Token counts
+    # Token counts. ``total_prompt_tokens`` is the whole prompt: the two
+    # fields below are *breakdowns of it*, not additions to it, so summing all
+    # three double-counts. They are kept separate because the three are billed
+    # at different rates by every provider that caches at all.
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     total_prompt_cached_tokens: int = 0
+    total_prompt_cache_creation_tokens: int = 0
     total_tokens: int = 0
-
-    # Cost breakdown
-    total_prompt_cost: float = 0.0
-    total_prompt_cached_cost: float = 0.0
-    total_completion_cost: float = 0.0
-    total_cost: float = 0.0
 
     # Invocation info
     entry_count: int = 0
@@ -65,11 +73,13 @@ class AgentUsage(BaseModel):
         prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
         completion = int(getattr(usage, "completion_tokens", 0) or 0)
         cached = int(getattr(usage, "prompt_cached_tokens", 0) or 0)
+        cache_write = int(getattr(usage, "prompt_cache_creation_tokens", 0) or 0)
         total = int(getattr(usage, "total_tokens", 0) or 0) or (prompt + completion)
 
         self.total_prompt_tokens += prompt
         self.total_completion_tokens += completion
         self.total_prompt_cached_tokens += cached
+        self.total_prompt_cache_creation_tokens += cache_write
         self.total_tokens += total
 
         if not model:
@@ -81,6 +91,7 @@ class AgentUsage(BaseModel):
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
                 "cached_tokens": 0,
+                "cache_creation_tokens": 0,
                 "total_tokens": 0,
                 "calls": 0,
             },
@@ -88,6 +99,7 @@ class AgentUsage(BaseModel):
         entry["prompt_tokens"] += prompt
         entry["completion_tokens"] += completion
         entry["cached_tokens"] += cached
+        entry["cache_creation_tokens"] = entry.get("cache_creation_tokens", 0) + cache_write
         entry["total_tokens"] += total
         entry["calls"] += 1
         self.by_model = by_model

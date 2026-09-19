@@ -157,11 +157,25 @@ class AnthropicCompatBase(ChatModelBase):
         raise NotImplementedError
 
     def _get_usage(self, response: Message) -> ChatInvokeUsage:
+        """Anthropic's three input counters, folded into one prompt total.
+
+        ``input_tokens`` here is the *uncached remainder only* — it excludes
+        both ``cache_read_input_tokens`` and ``cache_creation_input_tokens``,
+        so the prompt actually processed is the sum of all three. Reading any
+        one of them as "the input" under-reports the call.
+
+        This used to add only the cache read, which dropped every cache write
+        on the floor and left ``total_tokens`` (``input + output``) *smaller
+        than* ``prompt_tokens`` on any cached step — the run looked cheaper the
+        better the cache worked.
+        """
+        cache_read = response.usage.cache_read_input_tokens or 0
+        cache_write = response.usage.cache_creation_input_tokens or 0
+        prompt_tokens = response.usage.input_tokens + cache_read + cache_write
         return ChatInvokeUsage(
-            prompt_tokens=response.usage.input_tokens
-            + (response.usage.cache_read_input_tokens or 0),
+            prompt_tokens=prompt_tokens,
             completion_tokens=response.usage.output_tokens,
-            total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+            total_tokens=prompt_tokens + response.usage.output_tokens,
             prompt_cached_tokens=response.usage.cache_read_input_tokens,
             prompt_cache_creation_tokens=response.usage.cache_creation_input_tokens,
             prompt_image_tokens=None,

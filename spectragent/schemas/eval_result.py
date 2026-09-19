@@ -39,7 +39,6 @@ class EvalUsage(BaseModel):
     completion_tokens: int = 0
     cached_tokens: int = 0
     non_cached_prompt: int = 0
-    costs: dict[str, float] | None = None
 
 
 class EvalDetails(BaseModel):

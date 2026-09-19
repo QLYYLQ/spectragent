@@ -356,7 +356,7 @@ def test_summary_of_nothing_does_not_divide_by_zero():
     summary = summarize([])
     assert summary.overall_statistics.total_tasks == 0
     assert summary.overall_statistics.success_rate == 0.0
-    assert summary.evaluation_cost is None
+    assert summary.judge_token_usage is None
     assert "tasks=0" in format_summary(summary)
 
 
@@ -389,7 +389,7 @@ async def test_judge_costs_aggregate_when_present(traces_dir, loader):
         [trace]
     )
 
-    assert report.summary().evaluation_cost is None
+    assert report.summary().judge_token_usage is None
 
 
 async def test_the_same_traces_can_be_scored_twice_by_different_evaluators(

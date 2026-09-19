@@ -20,9 +20,9 @@ from spectragent.schemas.eval_result import (
     FailureClassification,
 )
 from spectragent.schemas.eval_summary import (
-    CostSummary,
     EvalSummary,
     FailureCategoryStats,
+    JudgeTokenUsage,
     MetricStats,
     OverallStatistics,
 )
@@ -90,6 +90,6 @@ __all__ = [
     "MetricStats",
     "OverallStatistics",
     "FailureCategoryStats",
-    "CostSummary",
+    "JudgeTokenUsage",
     "EvalSummary",
 ]

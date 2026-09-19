@@ -155,6 +155,7 @@ def _merge_missing(target: Any, collected: Any) -> None:
         target.total_prompt_tokens = collected.total_prompt_tokens
         target.total_completion_tokens = collected.total_completion_tokens
         target.total_prompt_cached_tokens = collected.total_prompt_cached_tokens
+        target.total_prompt_cache_creation_tokens = collected.total_prompt_cache_creation_tokens
         target.total_tokens = collected.total_tokens
     if target.entry_count == 0:
         target.entry_count = collected.entry_count

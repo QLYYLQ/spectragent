@@ -18,9 +18,9 @@ from collections.abc import Iterable, Sequence
 
 from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.eval_summary import (
-    CostSummary,
     EvalSummary,
     FailureCategoryStats,
+    JudgeTokenUsage,
     MetricStats,
     OverallStatistics,
 )
@@ -63,9 +63,13 @@ def _metric_block(results: Sequence[EvalResult]) -> dict[str, MetricStats]:
     return block
 
 
-def aggregate_costs(results: Iterable[EvalResult]) -> CostSummary | None:
-    """Sum the judge's own token spend across every verdict."""
-    summary = CostSummary()
+def aggregate_judge_tokens(results: Iterable[EvalResult]) -> JudgeTokenUsage | None:
+    """Sum the judge's own token spend across every verdict.
+
+    ``None`` when no verdict carried usage at all — a zero-filled summary
+    would claim the judge ran for free rather than admit it was not measured.
+    """
+    summary = JudgeTokenUsage()
     seen = False
     for result in results:
         usage = result.evaluation_details.eval_usage
@@ -76,8 +80,6 @@ def aggregate_costs(results: Iterable[EvalResult]) -> CostSummary | None:
         summary.total_completion_tokens += usage.completion_tokens
         summary.total_cached_tokens += usage.cached_tokens
         summary.total_non_cached_prompt += usage.non_cached_prompt
-        for name, amount in (usage.costs or {}).items():
-            summary.costs[name] = summary.costs.get(name, 0.0) + amount
     return summary if seen else None
 
 
@@ -136,7 +138,7 @@ def summarize(
             "failed": [r.task_id for r in failed],
         },
         evaluation_config=dict(evaluation_config or {}),
-        evaluation_cost=aggregate_costs(results),
+        judge_token_usage=aggregate_judge_tokens(results),
     )
 
 
@@ -170,11 +172,11 @@ def format_summary(summary: EvalSummary) -> str:
         lines.append("  failures by category:")
         for name, entry in sorted(categories.items()):
             lines.append(f"    {name}: {int(entry['count'])} ({entry['percentage']:.1f}%)")
-    cost = summary.evaluation_cost
-    if cost is not None:
+    judge = summary.judge_token_usage
+    if judge is not None:
         lines.append(
-            f"  judge tokens: prompt={cost.total_prompt_tokens} "
-            f"completion={cost.total_completion_tokens} "
-            f"cached={cost.total_cached_tokens}"
+            f"  judge tokens: prompt={judge.total_prompt_tokens} "
+            f"completion={judge.total_completion_tokens} "
+            f"cached={judge.total_cached_tokens}"
         )
     return "\n".join(lines)

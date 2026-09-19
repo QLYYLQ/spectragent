@@ -27,12 +27,19 @@ class FailureCategoryStats(BaseModel):
     by_category: dict[str, dict[str, float]]
 
 
-class CostSummary(BaseModel):
+class JudgeTokenUsage(BaseModel):
+    """What the judge model itself spent, summed over every verdict.
+
+    Named for tokens because that is all it holds. It used to be
+    ``CostSummary`` with a ``costs: dict[str, float]`` that nothing ever
+    wrote — see :class:`~spectragent.schemas.agent_result.AgentUsage` for why
+    pricing is not this framework's job.
+    """
+
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     total_cached_tokens: int = 0
     total_non_cached_prompt: int = 0
-    costs: dict[str, float] = Field(default_factory=dict)
 
 
 class EvalSummary(BaseModel):
@@ -45,5 +52,5 @@ class EvalSummary(BaseModel):
     failure_category_statistics: FailureCategoryStats
     task_list: dict[str, list[str]]
     evaluation_config: dict[str, Any] = Field(default_factory=dict)
-    evaluation_cost: CostSummary | None = None
+    judge_token_usage: JudgeTokenUsage | None = None
     benchmark_summary: dict[str, Any] = Field(default_factory=dict)
