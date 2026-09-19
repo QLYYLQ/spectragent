@@ -67,12 +67,9 @@ _LAZY_IMPORTS = {
     "ChatBrowserUse": ("spectragent.core.llm.providers.browser_use", "ChatBrowserUse"),
 }
 
-# Cache for model instances - only created when accessed
-_model_cache: dict[str, "BaseChatModel"] = {}
-
 
 def __getattr__(name: str):
-    """Lazy import mechanism for heavy chat model imports and model instances."""
+    """Lazy import mechanism for heavy chat model imports."""
     if name in _LAZY_IMPORTS:
         module_path, attr_name = _LAZY_IMPORTS[name]
         try:
@@ -83,20 +80,6 @@ def __getattr__(name: str):
             return attr
         except ImportError as e:
             raise ImportError(f"Failed to import {name} from {module_path}: {e}") from e
-
-    # Check cache first for model instances
-    if name in _model_cache:
-        return _model_cache[name]
-
-    # Try to get model instances from models module on-demand
-    try:
-        from spectragent.core.llm.models import __getattr__ as models_getattr
-
-        attr = models_getattr(name)
-        _model_cache[name] = attr
-        return attr
-    except (AttributeError, ImportError):
-        pass
 
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 

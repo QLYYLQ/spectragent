@@ -1326,7 +1326,10 @@ BaseChatModel (Protocol)
 
 **双层判别器**：`model_type.provider`（如 `openai.azure`）。
 
-**MODEL_CATALOG** 提供声明式的模型元数据表，`get_llm_by_name()` 工厂方法通过模型名查表 → 注册表解析 → 实例化。
+LLM 实例**只有一条构造路径**：YAML 写 `model_type` + `provider` 判别键 → `ConfigComposer`
+（`core/composer.py`）解析成判别联合配置 → 查 `LLMRegistrar` 拿 provider 类 → 实例化 → 按
+`__wiring__` setattr 注入 `agent.llm`。**没有模型昵称表，没有 `get_llm_by_name()` 这类字符串工厂**——
+模型的 wire id 直接写在配置里。
 
 ### 4.8 Memory 抽象
 
@@ -1979,7 +1982,7 @@ class RunTrace:
 | **Resolver / IoC** | Capability 内部按需解析 observation fragment（Watchdog 即 Resolver） |
 | **Avro-style Negotiation** | Observation 三方协商（Capability provides / Agent requires / Loop requires） |
 | **Observer / Event Bus** | Watchdog 系统 + Lifecycle Hooks |
-| **Factory** | `get_llm_by_name()` 查表 → 注册表解析 → 实例化 |
+| **Factory** | `ConfigComposer` 按判别键查注册表 → 实例化 → setattr 注入 |
 | **Adapter** | Message serializers (7 种 provider 格式) |
 | **Composite + Prefix Router** | Environment 组合 capabilities，前缀路由 action（`browser.click`） |
 | **Profile / Preset** | BrowserProfileConfig 命名组合 |
