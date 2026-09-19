@@ -89,7 +89,6 @@ REASONING_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
         "system_prompt_flash": ("memory",),
         "system_prompt_flash_anthropic": ("memory",),
-        "system_prompt_anthropic_flash": ("memory",),
         "system_prompt_browser_use": (
             "thinking",
             "evaluation_previous_goal",

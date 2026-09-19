@@ -239,23 +239,12 @@ _TERSE_VARIANTS: frozenset[str] = frozenset(
     {
         "system_prompt_flash",
         "system_prompt_flash_anthropic",
-        "system_prompt_anthropic_flash",
     }
 )
 
 
 def _local_id(name: str) -> str:
     return name.rsplit(".", 1)[-1]
-
-
-def _is_anthropic_4_5_model(model_name: str | None) -> bool:
-    """Check if the model is Claude Opus 4.5 or Haiku 4.5."""
-    if not model_name:
-        return False
-    model_lower = model_name.lower()
-    is_opus_4_5 = "opus" in model_lower and ("4.5" in model_lower or "4-5" in model_lower)
-    is_haiku_4_5 = "haiku" in model_lower and ("4.5" in model_lower or "4-5" in model_lower)
-    return is_opus_4_5 or is_haiku_4_5
 
 
 @dataclass
@@ -751,9 +740,26 @@ class BrowserUseAgent(AgentBase):
         share one prompt tree and differ only by the surface fragment
         spliced into it, so a DOM/vision ablation cannot be confounded by
         two separately worded templates.
-        """
-        is_anthropic_4_5 = _is_anthropic_4_5_model(self.model_name)
 
+        Neither is the model *version*, and that is a deletion, not an
+        omission. Upstream browser-use keys a separate, deliberately
+        9x-longer Anthropic template off Opus 4.5 / Haiku 4.5 for one
+        reason: those two models need a >=4096-token prefix before a
+        prompt-cache entry is written at all, so the prompt is padded to
+        clear the bar. That premise does not survive the port. The
+        threshold applies to the whole prefix ending at the breakpoint,
+        and this loop's breakpoint sits on the newest user message —
+        which carries a serialized DOM, and past step 1 the entire
+        history as well. The bar is cleared by the observation, not by
+        the system prompt, so padding bought nothing here.
+
+        What it cost was reproducibility, which matters more: the same
+        YAML run against two models silently rendered two different
+        system prompts, with nothing in the config to show it. On an
+        evaluation platform the prompt is an independent variable, so it
+        may vary with what the agent *is* (its mode, its verbs) but never
+        with which model happens to be behind it.
+        """
         if self.is_browser_use_model:
             if self.flash_mode:
                 return "system_prompt_browser_use_flash"
@@ -761,8 +767,6 @@ class BrowserUseAgent(AgentBase):
                 return "system_prompt_browser_use"
             else:
                 return "system_prompt_browser_use_no_thinking"
-        elif is_anthropic_4_5 and self.flash_mode:
-            return "system_prompt_anthropic_flash"
         elif self.flash_mode and self.is_anthropic:
             return "system_prompt_flash_anthropic"
         elif self.flash_mode:
