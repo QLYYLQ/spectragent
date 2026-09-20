@@ -13,7 +13,7 @@ from google.genai.types import MediaModality
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
-from spectragent.core.llm.exceptions import ModelProviderError
+from spectragent.core.llm.exceptions import ModelOutputTruncatedError, ModelProviderError
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.model_families import ModelFamily, detect_model_family
@@ -146,6 +146,34 @@ class ChatGoogle(ChatModelBase):
     @property
     def name(self) -> str:
         return str(self.model)
+
+    def _reject_if_truncated(
+        self, response: types.GenerateContentResponse, usage: ChatInvokeUsage | None
+    ) -> None:
+        """Refuse a reply the output-token ceiling cut off.
+
+        Compared against the enum member, not the string it renders to:
+        ``_get_stop_reason`` returns ``str(finish_reason)``, which is
+        ``'FinishReason.MAX_TOKENS'`` — so the obvious ``== "MAX_TOKENS"``
+        never matches and the guard would look installed while never firing.
+
+        Raised inside ``_make_api_call``, so it passes through this class's
+        own retry loop below. That loop retries on
+        ``retryable_status_codes``, and ``ModelOutputTruncatedError`` carries
+        400 precisely so it does not qualify: retrying a truncation re-runs a
+        maximum-length generation against an unchanged ceiling.
+        """
+        candidates = getattr(response, "candidates", None)
+        if not candidates:
+            return
+        if getattr(candidates[0], "finish_reason", None) is types.FinishReason.MAX_TOKENS:
+            raise ModelOutputTruncatedError(
+                model=self.name,
+                stop_reason=self._get_stop_reason(response),
+                ceiling_field="max_output_tokens",
+                ceiling=self.max_output_tokens,
+                usage=usage,
+            )
 
     def _get_stop_reason(self, response: types.GenerateContentResponse) -> str | None:
         if hasattr(response, "candidates") and response.candidates:
@@ -317,6 +345,7 @@ class ChatGoogle(ChatModelBase):
                     except (ValueError, AttributeError):
                         text = ""
                     usage = self._get_usage(response)
+                    self._reject_if_truncated(response, usage)
                     return ChatInvokeCompletion(
                         completion=text,
                         usage=usage,
@@ -354,6 +383,7 @@ class ChatGoogle(ChatModelBase):
                             config=config,
                         )
                         usage = self._get_usage(response)
+                        self._reject_if_truncated(response, usage)
 
                         if response.parsed is None:
                             if response.text:
@@ -408,6 +438,7 @@ class ChatGoogle(ChatModelBase):
                             config=fb_config,  # type: ignore
                         )
                         usage = self._get_usage(response)
+                        self._reject_if_truncated(response, usage)
 
                         if response.text:
                             text = strip_code_fence(response.text)

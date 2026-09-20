@@ -126,22 +126,28 @@ class MetricsCollector(HookBase):
     async def around_ainvoke(self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any) -> Any:
         """Count the call whose *reply* was refused; ``after`` cannot see it.
 
-        A structured reply that does not fit the schema leaves ``ainvoke``
-        as an exception, so no ``after`` advice fires — but the tokens were
-        spent, and the Loop goes on to feed the model its own text back and
-        counts the call in the run's total. Uncounted here, the metrics and
+        A reply that does not fit the schema, or that the token ceiling cut
+        off, leaves ``ainvoke`` as an exception, so no ``after`` advice
+        fires — but the tokens were spent. Uncounted here, the metrics and
         the result would disagree by one call and its tokens, and the
-        disagreement would grow with every correction a run needed.
+        disagreement would grow with every correction a run needed. The
+        truncated call is the worse of the two to lose: it is a
+        maximum-length completion by definition, so the most expensive call
+        of the run would be the one recorded as free.
 
-        Only this one error. A 429 or a dead socket carries no usage and no
-        reply; those stay invisible, which is the honest answer for a call
-        that never happened.
+        The rule is whether the provider billed for a reply, not whether we
+        could use it — which is why both of these are counted and a 429 or a
+        dead socket is not. Those carry no usage and no reply, and staying
+        invisible is the honest answer for a call that never happened.
         """
-        from spectragent.core.llm.exceptions import StructuredOutputValidationError
+        from spectragent.core.llm.exceptions import (
+            ModelOutputTruncatedError,
+            StructuredOutputValidationError,
+        )
 
         try:
             return await proceed()
-        except StructuredOutputValidationError as exc:
+        except (StructuredOutputValidationError, ModelOutputTruncatedError) as exc:
             self._llm_calls += 1
             self._usage.add_llm_usage(exc.usage, model=_extract_model_name(kwargs, ctx))
             raise

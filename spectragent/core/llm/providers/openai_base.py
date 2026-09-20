@@ -27,7 +27,11 @@ from openai.types.shared_params.response_format_json_schema import (
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
-from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.exceptions import (
+    ModelOutputTruncatedError,
+    ModelProviderError,
+    ModelRateLimitError,
+)
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
@@ -311,6 +315,14 @@ class OpenAICompatBase(ChatModelBase):
                         status_code=502,
                         model=self.name,
                     )
+                if choice.finish_reason == "length":
+                    raise ModelOutputTruncatedError(
+                        model=self.name,
+                        stop_reason=choice.finish_reason,
+                        ceiling_field="max_completion_tokens",
+                        ceiling=self.max_completion_tokens,
+                        usage=self._get_usage(response),
+                    )
                 return ChatInvokeCompletion(
                     completion=choice.message.content or "",
                     usage=self._get_usage(response),
@@ -385,25 +397,16 @@ class OpenAICompatBase(ChatModelBase):
                 message="Failed to parse structured output", status_code=500, model=self.name
             )
 
-        # A completion stopped at the token ceiling is half-written JSON, so
-        # parsing it first reports a schema violation and points at the model's
-        # compliance instead of the budget that actually cut it off. Name the
-        # real cause, and carry the usage across — the parse path never reaches
-        # `_get_usage`, which is why a truncated call otherwise costs real
-        # tokens and still lands in the metrics as zero.
+        # Before the parse, not after: half-written JSON fails validation, and
+        # the resulting report would name the model's compliance instead of the
+        # budget. See ModelOutputTruncatedError for why this is its own type.
         if choice.finish_reason == "length":
-            usage = self._get_usage(response)
-            spent = getattr(usage, "completion_tokens", None)
-            raise ModelProviderError(
-                message=(
-                    f"Response truncated at the completion-token ceiling: "
-                    f"finish_reason='length', max_completion_tokens="
-                    f"{self.max_completion_tokens}"
-                    + (f", completion_tokens={spent}" if spent is not None else "")
-                    + ". The structured output is incomplete — raise "
-                    "max_completion_tokens or reduce what the step asks for."
-                ),
+            raise ModelOutputTruncatedError(
                 model=self.name,
+                stop_reason=choice.finish_reason,
+                ceiling_field="max_completion_tokens",
+                ceiling=self.max_completion_tokens,
+                usage=self._get_usage(response),
             )
 
         # No `tool_calls=` here: `_standard_ainvoke` refuses tools on the

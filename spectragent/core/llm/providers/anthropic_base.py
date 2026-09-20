@@ -26,7 +26,11 @@ from httpx import Timeout
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
-from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
+from spectragent.core.llm.exceptions import (
+    ModelOutputTruncatedError,
+    ModelProviderError,
+    ModelRateLimitError,
+)
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
@@ -181,6 +185,24 @@ class AnthropicCompatBase(ChatModelBase):
             prompt_image_tokens=None,
         )
 
+    def _reject_if_truncated(self, response: Message, usage: ChatInvokeUsage) -> None:
+        """Refuse a reply the token ceiling cut off, on every return path.
+
+        All three of this class's paths need it and all three would word it
+        differently if each wrote its own, so the ceiling field is named once
+        here. ``max_tokens`` is required by this API rather than optional, so
+        unlike the OpenAI paths there is no configuration in which the ceiling
+        is absent and this check cannot fire.
+        """
+        if response.stop_reason == "max_tokens":
+            raise ModelOutputTruncatedError(
+                model=self.name,
+                stop_reason=response.stop_reason,
+                ceiling_field="max_tokens",
+                ceiling=self.max_tokens,
+                usage=usage,
+            )
+
     @overload
     async def ainvoke(
         self,
@@ -251,6 +273,7 @@ class AnthropicCompatBase(ChatModelBase):
                     )
 
                 usage = self._get_usage(response)
+                self._reject_if_truncated(response, usage)
                 # With tools advertised the model may answer with tool_use blocks
                 # and no text at all, so the first block is not necessarily text.
                 text_blocks = [b for b in response.content if isinstance(b, TextBlock)]
@@ -297,6 +320,7 @@ class AnthropicCompatBase(ChatModelBase):
                     )
 
                 usage = self._get_usage(response)
+                self._reject_if_truncated(response, usage)
                 first_content = response.content[0] if response.content else None
                 text = (
                     first_content.text
@@ -347,6 +371,7 @@ class AnthropicCompatBase(ChatModelBase):
                     )
 
                 usage = self._get_usage(response)
+                self._reject_if_truncated(response, usage)
                 for block in response.content:
                     if hasattr(block, "type") and block.type == "tool_use":
                         # ``input`` is a dict on the normal path and a JSON

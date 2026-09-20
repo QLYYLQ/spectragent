@@ -22,7 +22,10 @@ from typing import Annotated, Any, ClassVar
 from pydantic import Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
-from spectragent.core.llm.exceptions import StructuredOutputValidationError
+from spectragent.core.llm.exceptions import (
+    ModelOutputTruncatedError,
+    StructuredOutputValidationError,
+)
 from spectragent.core.llm.messages import AssistantMessage, UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops._loop_fragments import (
@@ -381,6 +384,46 @@ class ReactLoop(AgentLoopBase):
                         step_records=step_records,
                     )
                     raise
+                except ModelOutputTruncatedError as exc:
+                    # Our ceiling, not the model's mistake — so this must
+                    # not get what a ParseError gets. Re-asking cannot help
+                    # (the budget is unchanged and the history is now
+                    # longer, so the retry truncates sooner) and each
+                    # attempt costs a maximum-length completion. Ending here
+                    # also keeps the trace honest: routed through the parse
+                    # path, a run died reporting "Parse failed 3 consecutive
+                    # times", which on an evaluation platform charges our
+                    # configuration to the model under test.
+                    #
+                    # The call was billed, and this is the one abort path
+                    # that knows what it cost, so its usage joins the totals
+                    # before the result is built.
+                    llm_calls += 1
+                    if exc.usage is not None:
+                        usage_measured = True
+                        total_usage.add_llm_usage(exc.usage, model=model_id)
+                        step_token_usage = _merge_token_usage(
+                            step_token_usage, TokenUsage.from_llm_usage(exc.usage)
+                        )
+                    return await self._abort(
+                        phase="llm",
+                        exc=exc,
+                        recorder=recorder,
+                        observation=observation,
+                        observation_summary=observation_summary,
+                        step_idx=step_idx,
+                        step_records=step_records,
+                        action_history=action_history,
+                        task_id=task_id,
+                        task=task,
+                        start_time=start_time,
+                        usage=total_usage if usage_measured else None,
+                        llm_calls=llm_calls,
+                        model_id=model_id,
+                        answer=last_answer,
+                        env_status="success",
+                        token_usage=step_token_usage,
+                    )
                 except Exception as exc:
                     # The environment is fine; the model call is not. A 429
                     # should not be indistinguishable from a dead browser.
@@ -766,6 +809,7 @@ class ReactLoop(AgentLoopBase):
         answer: str,
         observation_summary: str = "",
         env_status: str = "failed",
+        token_usage: TokenUsage | None = None,
     ) -> AgentResult:
         """Terminate on an infrastructure failure, with the step recorded.
 
@@ -773,6 +817,12 @@ class ReactLoop(AgentLoopBase):
         run down as an unhandled exception. Now it produces a normal
         terminal result whose ``env_status`` says whether the environment
         was the thing that broke.
+
+        ``token_usage`` defaults to ``None`` because most failures here cost
+        nothing — a dead socket bills no tokens, and the schema's ``None``
+        already means "not measured". A caller passes it only when the
+        failed call did have a price, which is why a truncated reply hands
+        one over and a 429 does not.
         """
         logger.exception("ReactLoop: %s failed at step %d", phase, step_idx)
         record = StepRecord(
@@ -781,6 +831,7 @@ class ReactLoop(AgentLoopBase):
             timestamp=time.time(),
             error_phase=phase,
             error=str(exc),
+            token_usage=token_usage,
         )
         step_records.append(record)
         await self._surrender(recorder, record, observation)

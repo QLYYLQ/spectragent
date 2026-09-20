@@ -80,6 +80,61 @@ class StructuredOutputValidationError(ModelProviderError):
         self.usage = usage
 
 
+class ModelOutputTruncatedError(ModelProviderError):
+    """Generation stopped at the token ceiling, mid-answer.
+
+    The reply is half-written, so whatever reads it next fails — the JSON
+    does not close, the agent's parser finds no actions. Letting it fail
+    there names the wrong culprit: the run ends saying the model would not
+    follow the schema, when the budget cut it off. On an evaluation
+    platform that is the expensive half of the bug, because the benchmark
+    then attributes *our* ceiling to the model under test.
+
+    Separate from :class:`StructuredOutputValidationError` for the reason
+    that class exists: that one is the error the *model* can fix, and this
+    one is not. Re-asking cannot help — the ceiling is unchanged and the
+    history is now longer, so the retry truncates earlier. Everything the
+    Loop does for a parse failure (feed the error back, re-ask, count a
+    streak) is wasted here, and each wasted attempt is a *maximum-length*
+    completion, the most expensive kind there is.
+
+    **``status_code`` is 400 on purpose and load-bearing.** The base
+    defaults to 502, which sits inside ``ChatGoogle.retryable_status_codes``
+    — so a truncation raised with the default would be retried five times
+    with backoff by the provider's own loop, turning one wasted generation
+    into five. 400 also says the right thing: the request asked for more
+    than it allowed itself, which is the caller's error, not the server's.
+
+    ``usage`` carries what the truncated call actually cost. It is billed
+    like any other, and the paths that raise this never reach the normal
+    return, so without it the most expensive call of the run is the one
+    that lands in the metrics as zero.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        stop_reason: str | None = None,
+        ceiling_field: str = "max_tokens",
+        ceiling: int | None = None,
+        usage: "ChatInvokeUsage | None" = None,
+    ) -> None:
+        spent = getattr(usage, "completion_tokens", None)
+        message = (
+            f"Response truncated at the completion-token ceiling: "
+            f"stop_reason={stop_reason!r}, {ceiling_field}={ceiling}"
+            + (f", completion_tokens={spent}" if spent is not None else "")
+            + f". The reply is incomplete — raise {ceiling_field}, or reduce "
+            "what the step asks the model to write."
+        )
+        super().__init__(message, 400, model)
+        self.stop_reason = stop_reason
+        self.ceiling_field = ceiling_field
+        self.ceiling = ceiling
+        self.usage = usage
+
+
 class ToolsUnsupportedError(ModelProviderError):
     """Raised when ``tools=`` is passed to a provider or path that cannot honour it.
 
