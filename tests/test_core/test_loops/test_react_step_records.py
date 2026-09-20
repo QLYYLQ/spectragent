@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs
-from spectragent.core.loops.react import ReactLoop
+from spectragent.core.loops.react import ReactLoop, _UsageTally
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation import build_observation_model
@@ -402,3 +402,39 @@ class TestAnswerSurvivesMaxSteps:
         assert result.answer == "partial output"
         # The self-report stays None — the agent never called done().
         assert result.agent_reported_success is None
+
+
+class TestUsageTally:
+    """The accumulator that holds "not measured" apart from "measured zero".
+
+    The distinction used to live in a second local, restated at each of the
+    seven call sites that report usage; one of them written as a bare total
+    would have made an uninstrumented run claim confident zeros.
+    """
+
+    def test_unmeasured_calls_still_leave_evidence(self) -> None:
+        """A provider reporting nothing must not erase the fact that it ran.
+
+        Subtle and otherwise invisible: with the totals suppressed, the only
+        trace of that first call is ``entry_count``, and it only becomes
+        observable once a *later* call does report usage. Folding the ``None``
+        in anyway is what keeps the two calls from looking like one.
+        """
+        tally = _UsageTally()
+        tally.add(None, model="m")
+        assert tally.snapshot() is None, "one unmeasured call is not a measured zero"
+
+        tally.add(_Usage(), model="m")
+        snapshot = tally.snapshot()
+        assert snapshot is not None
+        assert snapshot.entry_count == 2
+        assert snapshot.total_tokens == 14
+
+    def test_nothing_measured_reports_nothing(self) -> None:
+        tally = _UsageTally()
+        for _ in range(3):
+            tally.add(None, model="m")
+        assert tally.snapshot() is None
+
+    def test_a_fresh_tally_has_not_measured_anything(self) -> None:
+        assert _UsageTally().snapshot() is None

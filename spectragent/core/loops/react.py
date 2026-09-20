@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Annotated, Any, ClassVar
 
@@ -96,6 +96,46 @@ def _parse_feedback(exc: ParseError) -> str:
         f"Error: {exc.detail}\n"
         f"Please try again with valid output format."
     )
+
+
+@dataclass
+class _UsageTally:
+    """The run's token totals, holding "not measured" apart from "measured zero".
+
+    ``AgentMetrics.usage is None`` is the schema's sentinel for a run nobody
+    instrumented; a zero-filled ``AgentUsage`` is the different claim that the
+    run genuinely cost nothing. Keeping the flag beside the totals is what
+    makes that distinction unlosable — it used to live in a separate local,
+    spelled out again at each of the seven ``_build_result`` / ``_abort`` call
+    sites, where one of them written as a bare ``total_usage`` would have made
+    an uninstrumented run report confident zeros. Exactly the failure the
+    ``AgentUsage`` docstring warns about, one spelling mistake away.
+
+    It is deliberately not on ``AgentLoopBase``. Accumulation would generalise
+    (it never needs to know when a run ends — a caller asks for
+    :meth:`snapshot` when it is building a result), but there is one Loop, and
+    the rule is to generalise at the second instance. This is the shape to
+    lift when that instance exists.
+    """
+
+    _total: AgentUsage = field(default_factory=AgentUsage)
+    _measured: bool = False
+
+    def add(self, usage: Any, *, model: str) -> None:
+        """Fold in one LLM call, measured or not.
+
+        A ``None`` usage still counts the call: ``add_llm_usage`` leaves
+        ``entry_count`` behind as evidence it happened, which is how a
+        provider that reports nothing stays visible instead of vanishing.
+        Only the totals go unrecorded, which is what ``_measured`` says.
+        """
+        if usage is not None:
+            self._measured = True
+        self._total.add_llm_usage(usage, model=model)
+
+    def snapshot(self) -> AgentUsage | None:
+        """What to report — or ``None`` if nothing measurable ever arrived."""
+        return self._total if self._measured else None
 
 
 def _merge_token_usage(base: TokenUsage | None, addition: TokenUsage | None) -> TokenUsage | None:
@@ -233,8 +273,7 @@ class ReactLoop(AgentLoopBase):
         # Reported as ``usage=None`` unless some provider actually reported
         # numbers: an all-zero AgentUsage masquerades as "measured, cost
         # nothing" and destroys the schema's own unmeasured sentinel.
-        total_usage = AgentUsage()
-        usage_measured = False
+        tally = _UsageTally()
         llm_calls = 0
         parse_error_streak = 0
         prev_step_record: StepRecord | None = None
@@ -283,7 +322,7 @@ class ReactLoop(AgentLoopBase):
                     task_id=task_id,
                     task=task,
                     start_time=start_time,
-                    usage=total_usage if usage_measured else None,
+                    usage=tally.snapshot(),
                     llm_calls=llm_calls,
                     model_id=model_id,
                     answer=last_answer,
@@ -399,12 +438,10 @@ class ReactLoop(AgentLoopBase):
                     # that knows what it cost, so its usage joins the totals
                     # before the result is built.
                     llm_calls += 1
-                    if exc.usage is not None:
-                        usage_measured = True
-                        total_usage.add_llm_usage(exc.usage, model=model_id)
-                        step_token_usage = _merge_token_usage(
-                            step_token_usage, TokenUsage.from_llm_usage(exc.usage)
-                        )
+                    tally.add(exc.usage, model=model_id)
+                    step_token_usage = _merge_token_usage(
+                        step_token_usage, TokenUsage.from_llm_usage(exc.usage)
+                    )
                     return await self._abort(
                         phase="llm",
                         exc=exc,
@@ -417,7 +454,7 @@ class ReactLoop(AgentLoopBase):
                         task_id=task_id,
                         task=task,
                         start_time=start_time,
-                        usage=total_usage if usage_measured else None,
+                        usage=tally.snapshot(),
                         llm_calls=llm_calls,
                         model_id=model_id,
                         answer=last_answer,
@@ -439,7 +476,7 @@ class ReactLoop(AgentLoopBase):
                         task_id=task_id,
                         task=task,
                         start_time=start_time,
-                        usage=total_usage if usage_measured else None,
+                        usage=tally.snapshot(),
                         llm_calls=llm_calls,
                         model_id=model_id,
                         answer=last_answer,
@@ -450,9 +487,7 @@ class ReactLoop(AgentLoopBase):
                 # Duck-typed: a provider that reports nothing yields None,
                 # and None must stay None all the way to ``metrics.usage``.
                 call_usage = getattr(completion, "usage", None)
-                if call_usage is not None:
-                    usage_measured = True
-                total_usage.add_llm_usage(call_usage, model=model_id)
+                tally.add(call_usage, model=model_id)
                 step_token_usage = _merge_token_usage(
                     step_token_usage, TokenUsage.from_llm_usage(call_usage)
                 )
@@ -545,7 +580,7 @@ class ReactLoop(AgentLoopBase):
                         start_time=start_time,
                         step_records=step_records,
                         action_history=action_history,
-                        usage=total_usage if usage_measured else None,
+                        usage=tally.snapshot(),
                         llm_calls=llm_calls,
                         model_id=model_id,
                         agent_done="error",
@@ -677,7 +712,7 @@ class ReactLoop(AgentLoopBase):
                     start_time=start_time,
                     step_records=step_records,
                     action_history=action_history,
-                    usage=total_usage if usage_measured else None,
+                    usage=tally.snapshot(),
                     llm_calls=llm_calls,
                     model_id=model_id,
                     agent_done="error",
@@ -694,7 +729,7 @@ class ReactLoop(AgentLoopBase):
                     start_time=start_time,
                     step_records=step_records,
                     action_history=action_history,
-                    usage=total_usage if usage_measured else None,
+                    usage=tally.snapshot(),
                     llm_calls=llm_calls,
                     model_id=model_id,
                     agent_done="done",
@@ -710,7 +745,7 @@ class ReactLoop(AgentLoopBase):
             start_time=start_time,
             step_records=step_records,
             action_history=action_history,
-            usage=total_usage if usage_measured else None,
+            usage=tally.snapshot(),
             llm_calls=llm_calls,
             model_id=model_id,
             agent_done="max_steps",
