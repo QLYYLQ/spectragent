@@ -15,6 +15,8 @@ Output example::
 
 from __future__ import annotations
 
+from html import escape
+
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMState
 from spectragent.core.capabilities.browser.dom.serializers import DOMSerializerBase
 
@@ -94,8 +96,12 @@ class HTMLSerializer(DOMSerializerBase):
     def _render(self, node: DOMElementNode, depth: int) -> str:
         tag = node.tag_name.lower()
 
+        if node.node_type == 3:
+            text = (node.node_value or "").strip()
+            return f"{'  ' * depth}{escape(text)}\n" if node.is_visible and text else ""
+
         # Skip non-content wrappers (a shadow root included).
-        if tag in ("html", "body", "#document-fragment"):
+        if node.node_type == 11 or tag in ("html", "body", "#document-fragment"):
             return self._render_children(node, depth)
 
         attrs = self._filter_attrs(node)
@@ -103,7 +109,8 @@ class HTMLSerializer(DOMSerializerBase):
         if node.element_index is not None:
             attrs = f' data-idx="{node.element_index}"' + attrs
 
-        text = node.text_content.strip() if node.text_content else ""
+        has_text_children = any(child.node_type == 3 for child in node.children)
+        text = node.text_content.strip() if node.text_content and not has_text_children else ""
 
         if tag in _VOID_TAGS:
             return f"{'  ' * depth}<{tag}{attrs} />\n"

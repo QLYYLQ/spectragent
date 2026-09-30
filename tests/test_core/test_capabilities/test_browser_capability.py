@@ -330,6 +330,13 @@ class TestBackendIoC:
             def __init__(self, url: str, **kwargs) -> None:
                 cdp_clients_constructed.append(url)
                 recorded_kwargs.append(kwargs)
+                self.callbacks: dict[str, list[Any]] = {}
+
+            def on_event(self, method: str, callback: Any) -> None:
+                self.callbacks.setdefault(method, []).append(callback)
+
+            def off_event(self, method: str, callback: Any) -> None:
+                self.callbacks[method].remove(callback)
 
             async def start(self) -> None:
                 return None

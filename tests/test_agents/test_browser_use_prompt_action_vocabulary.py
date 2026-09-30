@@ -49,8 +49,6 @@ MODES = ("dom", "dom_vision", "vision")
 #: with DOM modes alone.
 _CONFIGURATIONS: list[tuple[str, dict[str, Any]]] = [
     *[(mode, {"flash_mode": True}) for mode in MODES],
-    *[(mode, {"flash_mode": True, "is_anthropic": True}) for mode in MODES],
-    *[(mode, {"flash_mode": True, "model_name": "claude-opus-4.5"}) for mode in MODES],
     *[(mode, {"flash_mode": False, "use_thinking": True}) for mode in MODES],
     *[(mode, {"flash_mode": False, "use_thinking": False}) for mode in MODES],
     ("dom", {"is_browser_use_model": True, "flash_mode": True}),

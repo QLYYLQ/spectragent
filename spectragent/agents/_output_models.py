@@ -88,7 +88,6 @@ REASONING_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "plan_update",
         ),
         "system_prompt_flash": ("memory",),
-        "system_prompt_flash_anthropic": ("memory",),
         "system_prompt_browser_use": (
             "thinking",
             "evaluation_previous_goal",
@@ -115,22 +114,6 @@ def reasoning_fields(variant: str) -> dict[str, tuple[Any, Any]]:
     """
     names = REASONING_FIELDS[variant]
     return {name: _FIELDS[name] for name in names}
-
-
-# ── UI-TARS ────────────────────────────────────────────────────
-
-
-class UITarsOutput(BaseModel):
-    """Structured output for UITarsAgent.
-
-    UI-TARS produces a thought followed by a single action
-    with screen coordinates.
-    """
-
-    thought: str = Field(description="Chain-of-thought reasoning")
-    action_type: str = Field(description="Action type (click, type, scroll, etc.)")
-    point: str | None = Field(default=None, description="Screen coordinates as '(x, y)'")
-    text: str | None = Field(default=None, description="Text to type or content")
 
 
 # ── Skyvern ────────────────────────────────────────────────────

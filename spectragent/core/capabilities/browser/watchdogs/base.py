@@ -31,7 +31,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from agent_cdp import WatchdogBase, WatchdogRegistrar
+from agent_cdp import EventScope, WatchdogBase, WatchdogRegistrar
 
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget
 
@@ -49,9 +49,11 @@ if TYPE_CHECKING:
     )
     from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
 
-#: Which EventScope a watchdog binds to. ``"tab"`` watchdogs are built
-#: once per attached tab; ``"browser"`` watchdogs once on the global scope.
-WatchdogLevel = Literal["tab", "browser"]
+#: How the capability constructs and binds a watchdog. ``"tab"`` means a
+#: fresh instance for each tab's observation scope; ``"browser"`` binds one
+#: instance to the global scope; ``"shared"`` builds one instance whose
+#: connections may fan in from any number of tab scopes.
+WatchdogLevel = Literal["tab", "browser", "shared"]
 
 
 async def _no_tabs() -> list[dict[str, Any]]:
@@ -93,6 +95,10 @@ class WatchdogContext:
     #: CDP session id of the tab this watchdog serves. ``None`` for
     #: browser-level watchdogs.
     cdp_session_id: str | None = None
+
+    #: The tab's separate JS execution domain.  Only present while building
+    #: tab watchdogs; it is paired with the observation scope at attach time.
+    js_scope: EventScope | None = None
 
     debug_highlight: bool = False
     #: The configured trajectory *instance* — already carrying its own
@@ -181,6 +187,26 @@ class BrowserWatchdog(WatchdogBase):
         ``CDPEventBridge`` need to override it. Declared here so
         ``close_tab`` / ``teardown`` can call it unconditionally.
         """
+        return None
+
+    def bind_tab_scopes(
+        self,
+        observation_scope: EventScope,
+        js_scope: EventScope,
+        *,
+        session_id: str,
+    ) -> None:
+        """Optionally connect a shared watchdog to a newly attached tab.
+
+        Shared watchdogs are built once, but a handler may listen to
+        any number of tab observation scopes.  Their connections can target
+        a different execution scope.  The default needs no per-tab binding.
+        Closing either scope disconnects its connections in agent-cdp.
+        """
+        return None
+
+    def unbind_tab(self, session_id: str) -> None:
+        """Forget per-tab state before its scopes are closed, if any."""
         return None
 
 

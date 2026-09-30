@@ -2,15 +2,19 @@
 
 Two strategies registered via conscribe:
 - ``browser_use``: 5-stage pipeline (simplify → optimize → paint-order → bounds → index)
-- ``skyvern``:     JS extraction (Runtime.evaluate domUtils.js) + server-side trim
+- ``skyvern``:     original page-side JS extraction + server-side trim
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
 
+from agent_cdp import CDPCommandProtocol
 from conscribe import create_registrar
 
+from spectragent.core.capabilities.browser.dom.capture import FrameTargets
 from spectragent.core.capabilities.browser.dom.models import (
     DOMSelectorMap,
     DOMState,
@@ -18,9 +22,30 @@ from spectragent.core.capabilities.browser.dom.models import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class DOMCaptureSource:
+    """Live, tab-bound capture abilities passed to one cleaning strategy.
+
+    The configured cleaner is shared by the capability. A source is created
+    for each observation, so no tab's CDP session or event scope is retained
+    on that configured instance.
+    """
+
+    cdp: CDPCommandProtocol
+    session_id: str | None
+    frames: FrameTargets | None
+    run_js: Callable[[str, dict[str, Any], str | None], Awaitable[dict[str, Any] | None]]
+    js_click_listeners: bool = False
+    frame_timeout_s: float = 2.0
+
+
 @runtime_checkable
 class DOMCleanerProtocol(Protocol):
-    """Strategy for converting raw CDP data into a clean DOMState."""
+    """Strategy that selects capture work and converts it to DOMState."""
+
+    async def capture(self, source: DOMCaptureSource) -> tuple[TargetCapture, float]:
+        """Choose and run the CDP, JS, or combined capture for this strategy."""
+        ...
 
     async def clean(
         self,
@@ -35,13 +60,11 @@ class DOMCleanerProtocol(Protocol):
         Parameters
         ----------
         capture:
-            The tab's own target — ``DOM.getDocument(depth=-1, pierce=True)``,
-            ``DOMSnapshot.captureSnapshot(...)``, the accessibility nodes of
-            each of its frames, optional JS click-listener ids — with the
-            captures of its out-of-process frames nested in
-            ``capture.frames``. A cleaner that reads frame content must key
-            the selector map with ``dom.models.element_handle``: backend node
-            ids of different targets collide.
+            The strategy's capture for the tab and its frames. BrowserUse
+            fills raw CDP document/snapshot/AX fields; Skyvern fills a JS
+            tree and CDP-resolved node references. A cleaner that indexes
+            frame content must use ``dom.models.element_handle`` because
+            backend node ids of different targets collide.
         viewport:
             ``(width, height)`` in CSS pixels.
         previous_selector_map:

@@ -89,19 +89,3 @@ def is_non_content_tag(tag_name: str) -> bool:
 def is_svg_decorative(tag_name: str) -> bool:
     """Return *True* if *tag_name* is a decorative SVG child element."""
     return tag_name in SVG_DECORATIVE_TAGS
-
-
-def has_meaningful_size(node: DOMElementNode, min_area: float = 1.0) -> bool:
-    """Return *True* if the node's bounding box has visible area."""
-    if node.bounds is None:
-        return False
-    return node.bounds.width * node.bounds.height >= min_area
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _is_file_input(node: DOMElementNode) -> bool:
-    return node.tag_name.lower() == "input" and node.attributes.get("type", "").lower() == "file"

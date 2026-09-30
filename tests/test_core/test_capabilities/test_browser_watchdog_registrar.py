@@ -357,7 +357,7 @@ class TestUnknownWatchdogIsHardError:
 class TestWatchdogContract:
     def test_every_registered_watchdog_declares_a_level(self) -> None:
         for name, cls in browser_watchdog_classes().items():
-            assert cls.level in ("tab", "browser"), name
+            assert cls.level in ("tab", "browser", "shared"), name
 
     def test_every_registered_watchdog_is_buildable_from_context(self) -> None:
         cap = BrowserCapability()

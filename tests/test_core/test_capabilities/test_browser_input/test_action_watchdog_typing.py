@@ -71,15 +71,17 @@ class TestTheDefaultIsOneBulkInsert:
         insert = next(c for c in cdp.calls if c.method == "Input.insertText")
         assert insert.params == {"text": "hello"}
 
-    async def test_clear_still_sends_its_four_key_events_then_the_insert(self) -> None:
-        # The clear is a shortcut, not typing: select-all + Backspace, at
-        # once, in both modes. ``clear`` defaults to True on the event, so
-        # this is what the default type verb actually emits.
+    async def test_clear_sends_a_complete_shortcut_then_the_insert(self) -> None:
+        # ``clear`` defaults to True. The focused element sees a held
+        # modifier, A, and Backspace before the instant bulk insert.
         cdp = FakeCDP()
         await _watchdog(cdp, InstantRhythm())._on_type_text(
             TypeTextEvent(backend_node_id=42, text="hi", clear=True)
         )
-        assert _typing_calls(cdp) == ["Input.dispatchKeyEvent"] * 4 + ["Input.insertText"]
+        assert _typing_calls(cdp) == ["Input.dispatchKeyEvent"] * 6 + ["Input.insertText"]
+        keys = [c.params["key"] for c in cdp.calls if c.method == "Input.dispatchKeyEvent"]
+        assert keys[0] in {"Meta", "Control"}
+        assert keys == [keys[0], "a", "a", keys[0], "Backspace", "Backspace"]
 
     async def test_type_at_coordinate_sends_exactly_one_insert_text(self) -> None:
         cdp = FakeCDP()
@@ -88,6 +90,13 @@ class TestTheDefaultIsOneBulkInsert:
         )
         assert result == {"typed": True, "length": 5}
         assert _typing_calls(cdp) == ["Input.insertText"]
+
+    async def test_coordinate_clear_uses_the_same_keyboard_gesture(self) -> None:
+        cdp = FakeCDP()
+        await _watchdog(cdp, InstantRhythm())._on_type_at_coordinate(
+            TypeAtCoordinateEvent(coordinate_x=10, coordinate_y=20, text="hi", clear=True)
+        )
+        assert _typing_calls(cdp) == ["Input.dispatchKeyEvent"] * 6 + ["Input.insertText"]
 
 
 class TestTheStrategyReachesTheWatchdog:

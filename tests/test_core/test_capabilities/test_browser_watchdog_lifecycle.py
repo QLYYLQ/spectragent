@@ -158,9 +158,8 @@ class TestJsListenerDetectionIsReachable:
         assert capture.js_click_listener_ids == {42}
 
     def test_cross_site_iframe_capture_follows_the_profile(self) -> None:
-        """Accuracy-first ``standard`` captures cross-site frames; the cheap
-        profiles, and skyvern whose cleaner never reads them, do not."""
-        expected = {"standard": True, "skyvern": False, "lightweight": False}
+        """DOM strategies with frame support retain frame-target discovery."""
+        expected = {"standard": True, "skyvern": True, "lightweight": False}
         for name, enabled in expected.items():
             assert resolve_profile(name).cross_site_iframe_capture is enabled
             cap, _ = _make_cap(name)

@@ -23,6 +23,7 @@ import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.capabilities.browser.dom.models import DOMState
 from spectragent.core.llm.messages import (
     BaseMessage,
     SystemMessage,
@@ -269,6 +270,19 @@ class TestBuildReactPrompt:
         assert "https://example.com" in content
         assert "Example" in content
         assert "<DOM>tree</DOM>" in content
+
+    def test_dom_text_reaches_the_model_after_the_old_agent_cutoff(self) -> None:
+        agent = _make_agent()
+        agent.prepare(task="t", action_descriptors=_descriptors())
+        tail = "[173]<button>Reachable at the end</button>"
+        state = DOMState(serialized_dom="x" * 10_100 + tail)
+        content = agent.build_react_prompt(_FakeObservation(dom=_FakeDOM(element_tree=state)))[
+            0
+        ].content
+
+        assert isinstance(content, str)
+        assert tail in content
+        assert "... (truncated)" not in content
 
     def test_user_request_present_in_user_message(self) -> None:
         agent = _make_agent()

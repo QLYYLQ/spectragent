@@ -72,8 +72,6 @@ from spectragent.schemas.prompt import PromptRef, PromptSnapshot
 #: one — the hash still pins the exact text the model was given.
 _OVERRIDE_REF_PATH = "<override_system_message>"
 
-ObservationMode = Literal["dom", "dom_vision", "vision"]
-
 
 @dataclass(frozen=True)
 class _ModeDemand:
@@ -238,7 +236,6 @@ _FINE_TUNED_VARIANTS: frozenset[str] = frozenset(
 _TERSE_VARIANTS: frozenset[str] = frozenset(
     {
         "system_prompt_flash",
-        "system_prompt_flash_anthropic",
     }
 )
 
@@ -345,10 +342,6 @@ class BrowserUseAgent(AgentBase):
     is_browser_use_model: Annotated[
         bool, PydanticField(description="Using fine-tuned browser-use model")
     ] = False
-    is_anthropic: Annotated[bool, PydanticField(description="Using Anthropic model")] = False
-    model_name: Annotated[
-        str | None, PydanticField(description="Model name for prompt selection")
-    ] = None
     override_system_message: Annotated[
         str | None, PydanticField(description="Override the entire system prompt")
     ] = None
@@ -775,8 +768,6 @@ class BrowserUseAgent(AgentBase):
                 return "system_prompt_browser_use"
             else:
                 return "system_prompt_browser_use_no_thinking"
-        elif self.flash_mode and self.is_anthropic:
-            return "system_prompt_flash_anthropic"
         elif self.flash_mode:
             return "system_prompt_flash"
         elif self.use_thinking:
@@ -988,9 +979,8 @@ class BrowserUseAgent(AgentBase):
             dom = getattr(observation, "dom", None)
             element_tree = getattr(dom, "element_tree", None) if dom is not None else None
             if element_tree is not None:
-                dom_str = getattr(element_tree, "serialized_dom", "") or str(element_tree)
-                if len(dom_str) > 10000:
-                    dom_str = dom_str[:10000] + "\n... (truncated)"
+                serialized = getattr(element_tree, "serialized_dom", None)
+                dom_str = serialized if isinstance(serialized, str) else str(element_tree)
                 parts.append(f"DOM:\n{dom_str}")
 
         return "\n\n".join(parts) if parts else "(empty browser state)"

@@ -82,8 +82,6 @@ _CONFIGURATIONS: list[tuple[str, dict[str, Any]]] = [
         "browser_use",
         {"is_browser_use_model": True, "flash_mode": False, "use_thinking": False},
     ),
-    ("browser_use", {"flash_mode": True, "model_name": "claude-opus-4.5"}),
-    ("browser_use", {"flash_mode": True, "is_anthropic": True}),
     ("browser_use", {"flash_mode": True}),
     ("browser_use", {"flash_mode": False, "use_thinking": True}),
     ("browser_use", {"flash_mode": False, "use_thinking": False}),

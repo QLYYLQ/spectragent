@@ -44,6 +44,25 @@ class _ScriptedRhythm:
         return [Keystroke(ch, self.gap_ms, self.hold_ms) for ch in text]
 
 
+class _VersionCDP(RecordCDP):
+    """A browser whose OS can differ from the agent host's."""
+
+    def __init__(
+        self,
+        user_agent: str,
+        clock: VirtualClock | None = None,
+        cost_ms: float = 0.0,
+    ) -> None:
+        super().__init__(clock, cost_ms)
+        self.user_agent = user_agent
+
+    async def send(self, method, params=None, session_id=None):  # type: ignore[no-untyped-def]
+        result = await super().send(method, params, session_id)
+        if method == "Browser.getVersion":
+            return {"userAgent": self.user_agent}
+        return result
+
+
 # ── 1. the default is untouched ───────────────────────────────────────
 
 
@@ -95,6 +114,149 @@ class TestInstantRhythmEquivalence:
         cdp = RecordCDP()
         await HumanKeyboard(cdp, rhythm=HumanRhythm(seed=1)).type_text("")
         assert cdp.inserts() == [""]
+
+
+class TestClearFocused:
+    @pytest.mark.parametrize(
+        ("user_agent", "modifier", "code", "vk", "mask"),
+        [
+            ("Chrome (Macintosh; Intel Mac OS X)", "Meta", "MetaLeft", 91, 4),
+            ("Chrome (X11; Linux x86_64)", "Control", "ControlLeft", 17, 2),
+        ],
+        ids=["mac-browser", "linux-cloud-browser"],
+    )
+    async def test_the_browser_os_gets_a_physical_select_all_and_backspace(
+        self,
+        no_sleep: list[float],
+        user_agent: str,
+        modifier: str,
+        code: str,
+        vk: int,
+        mask: int,
+    ) -> None:
+        cdp = _VersionCDP(user_agent)
+        keyboard = HumanKeyboard(cdp, rhythm=InstantRhythm())
+        await keyboard.clear_focused(session_id="focused-frame")
+
+        assert cdp.calls[0][0] == "Browser.getVersion"
+        events = cdp.key_events()
+        assert [(e["type"], e["key"], e["code"], e["windowsVirtualKeyCode"]) for e in events] == [
+            ("keyDown", modifier, code, vk),
+            ("keyDown", "a", "KeyA", 65),
+            ("keyUp", "a", "KeyA", 65),
+            ("keyUp", modifier, code, vk),
+            ("keyDown", "Backspace", "Backspace", 8),
+            ("keyUp", "Backspace", "Backspace", 8),
+        ]
+        assert [e["nativeVirtualKeyCode"] for e in events] == [vk, 65, 65, vk, 8, 8]
+        assert [e.get("modifiers", 0) for e in events] == [mask, mask, mask, 0, 0, 0]
+        assert [e.get("commands") for e in events] == [
+            None,
+            ["selectAll"],
+            None,
+            None,
+            None,
+            None,
+        ]
+        assert all("text" not in event for event in events)
+        assert no_sleep == []
+
+    async def test_the_browser_platform_is_reused_for_the_next_clear(
+        self, no_sleep: list[float]
+    ) -> None:
+        cdp = _VersionCDP("Chrome (X11; Linux x86_64)")
+        keyboard = HumanKeyboard(cdp)
+        await keyboard.clear_focused()
+        await keyboard.clear_focused()
+        assert [method for method, _ in cdp.calls].count("Browser.getVersion") == 1
+        assert [e["key"] for e in cdp.key_events() if e["type"] == "keyDown"] == [
+            "Control",
+            "a",
+            "Backspace",
+            "Control",
+            "a",
+            "Backspace",
+        ]
+
+    async def test_human_rhythm_pauses_after_selection_before_deleting(
+        self, clock: VirtualClock
+    ) -> None:
+        class _ClearRhythm:
+            humanized = True
+
+            def generate(self, text: str) -> list[Keystroke]:
+                assert text == "a\b"
+                return [Keystroke("a", 100.0, 80.0), Keystroke("\b", 240.0, 90.0)]
+
+        class _TimedCDP(_VersionCDP):
+            def __init__(self) -> None:
+                super().__init__("Chrome (Macintosh)", clock, cost_ms=17.0)
+                self.key_times: list[float] = []
+
+            async def send(self, method, params=None, session_id=None):  # type: ignore[no-untyped-def]
+                if method == "Input.dispatchKeyEvent":
+                    self.key_times.append(clock.now)
+                return await super().send(method, params, session_id)
+
+        cdp = _TimedCDP()
+        await HumanKeyboard(cdp, rhythm=_ClearRhythm()).clear_focused()  # type: ignore[arg-type]
+        assert len(cdp.key_times) == 6
+        # The flight is measured from A's release; the modifier's own
+        # release consumes one CDP round trip inside that same interval.
+        assert cdp.key_times[4] - cdp.key_times[2] == pytest.approx(0.240)
+        assert cdp.key_times[4] - cdp.key_times[3] >= 0.200
+        assert cdp.key_times[5] - cdp.key_times[4] == pytest.approx(0.090)
+
+    @pytest.mark.requires_chrome
+    async def test_chrome_sees_real_keys_and_the_field_is_cleared(self) -> None:
+        """The CDP editing command must select; modifier bits alone do not."""
+        from spectragent.core.capabilities.browser import BrowserCapability
+        from spectragent.core.capabilities.browser.backends.local_chrome import (
+            LocalChromeProvider,
+        )
+
+        cap = BrowserCapability()
+        cap.backend = LocalChromeProvider(headless=True)  # type: ignore[assignment]
+        try:
+            await cap.setup()
+            sid = cap.default_session_id
+            await cap.cdp.send(
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        "document.body.innerHTML = '<input id=field>';"
+                        "window.keysSeen = [];"
+                        "const field = document.getElementById('field');"
+                        "field.value = 'old value'; field.focus();"
+                        "field.setSelectionRange(field.value.length, field.value.length);"
+                        "field.addEventListener('keydown', e => keysSeen.push({"
+                        "key:e.key, code:e.code, keyCode:e.keyCode,"
+                        "ctrl:e.ctrlKey, meta:e.metaKey}));"
+                    )
+                },
+                session_id=sid,
+            )
+            await HumanKeyboard(cap.cdp).clear_focused(session_id=sid)
+            result = await cap.cdp.send(
+                "Runtime.evaluate",
+                {
+                    "expression": "({value: field.value, keys: window.keysSeen})",
+                    "returnByValue": True,
+                },
+                session_id=sid,
+            )
+            observed = (result or {})["result"]["value"]
+            assert observed["value"] == ""
+            keys = observed["keys"]
+            assert len(keys) == 3
+            assert keys[0]["key"] in {"Meta", "Control"}
+            assert keys[1]["key"] == "a" and keys[1]["code"] == "KeyA"
+            assert keys[1]["keyCode"] == 65
+            assert keys[1]["meta"] or keys[1]["ctrl"]
+            assert keys[2]["key"] == keys[2]["code"] == "Backspace"
+            assert keys[2]["keyCode"] == 8
+        finally:
+            await cap.teardown()
 
 
 # ── 2. the humanized path dispatches real key events ──────────────────

@@ -117,6 +117,8 @@ class FrameCDP:
         self.calls.append(Call(method, params, session_id))
         if (method, session_id) in self.raise_on:
             raise RuntimeError(f"CDP error: injected failure: {method} on {session_id}")
+        if method == "Browser.getVersion":
+            return {"userAgent": "Chrome (X11; Linux x86_64)"}
         key = (session_id or "", params.get("backendNodeId", -1))
         if method == "DOM.getContentQuads":
             if key in self.raw_quads:
@@ -569,6 +571,9 @@ class TestKeyboardAndDom:
         ]
         assert keyboard == [
             ("DOM.focus", "cross"),
+            ("Browser.getVersion", None),
+            ("Input.dispatchKeyEvent", "cross"),
+            ("Input.dispatchKeyEvent", "cross"),
             ("Input.dispatchKeyEvent", "cross"),
             ("Input.dispatchKeyEvent", "cross"),
             ("Input.dispatchKeyEvent", "cross"),

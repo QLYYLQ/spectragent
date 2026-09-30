@@ -699,44 +699,13 @@ class ActionWatchdog(BrowserWatchdog):
         The text itself belongs to :class:`HumanKeyboard`: one bulk
         ``Input.insertText`` under the ``instant`` rhythm (the default), a
         real key event per character on modelled timings under any other.
-        The clear is deliberately left alone in both modes — it is not
-        typing, it is a shortcut a human would also perform at once.
+        The clear is also keyboard input: ``HumanKeyboard`` sends a complete
+        select-all shortcut followed by Backspace, with the configured
+        rhythm deciding its timing.
         """
         sid = self._element_session(session_id)
         if clear:
-            await self._cdp.send(
-                "Input.dispatchKeyEvent",
-                {
-                    "type": "keyDown",
-                    "key": "a",
-                    "commands": ["selectAll"],
-                },
-                session_id=sid,
-            )
-            await self._cdp.send(
-                "Input.dispatchKeyEvent",
-                {
-                    "type": "keyUp",
-                    "key": "a",
-                },
-                session_id=sid,
-            )
-            await self._cdp.send(
-                "Input.dispatchKeyEvent",
-                {
-                    "type": "keyDown",
-                    "key": "Backspace",
-                },
-                session_id=sid,
-            )
-            await self._cdp.send(
-                "Input.dispatchKeyEvent",
-                {
-                    "type": "keyUp",
-                    "key": "Backspace",
-                },
-                session_id=sid,
-            )
+            await self._keyboard.clear_focused(session_id=sid)
 
         await self._keyboard.type_text(text, session_id=sid)
         return {"typed": True, "length": len(text)}

@@ -645,26 +645,21 @@ Agent 基类改造是三个 Browser Agent 适配（M14）的前提。改造的�
 
 #### 业务实现
 
-将当前 `BrowserSession` 包装为 `BrowserCapability`（adapter 模式）。BrowserCapability 对外满足 `BaseCapability` protocol，对内委托给现有的 BrowserSession + Watchdog 系统 + DOM Pipeline。
+`BrowserCapability` 直接实现 Capability 契约，持有独立注册的 browser actions、IoC 注入的 backend，以及由 Watchdog 提供的 observation fragments。旧 `BrowserSession` 路径已删除。
 
 #### 业务逻辑
 
-**Adapter 策略**：不拆解 `BrowserSession` 内部实现，而是在外层包一个 adapter：
-- `get_action_descriptors()` → 委托给 BrowserSession 已有的 `_ACTION_DESCRIPTORS` 列表
-- `execute_action(action)` → 委托给 BrowserSession.act(action)
-- `resolve_fragment("dom")` → 从 BrowserSession.observe() 结果中提取 DOM 部分
-- `resolve_fragment("screenshot")` → 从 BrowserSession.observe() 结果中提取 screenshot 部分
-- `setup()` / `teardown()` → 委托给 BrowserSession.setup() / teardown()
+**当前执行链**：`actions: list[ActionBase]` 由 YAML 或 `__wiring__` 默认全集构造；`execute_action()` 按全限定 action key 委托对应实例。`resolve_fragment()` 在一个已声明的 observation cycle 内复用一次 `BrowserStateRequestEvent` 的结果，Watchdog 以 `provides` 声明并产出 fragment。DOMWatchdog 是 `browser.dom` 的唯一 resolver，配置的 cleaner 实例自行选择 CDP 三路或页内 JS 采集，再交由同一预算、serializer 与 selector map 链消费。
 
-**Backend 管理**：当前各 BrowserProvider（local_chrome, browseruse_lite, skyvern_lite 等）降级为 BrowserCapability 的 backend 选项。通过 `__wiring__` 的 `"backend"` 声明可选列表，YAML 配置选择具体 backend。
+**Backend 管理**：`BrowserProviderRegistrar` 的 local Chrome 与六个 lite cloud SDK 由 `__wiring__["backend"]` 注入；backend 只负责 session 生命周期与 CDP URL。
 
-**Watchdog 即 Resolver**：BrowserCapability 的 `resolve_fragment()` 内部利用 Watchdog 系统 — DOMWatchdog 即 dom fragment 的 resolver，ScreenshotWatchdog 即 screenshot fragment 的 resolver。协商结果决定哪些 Watchdog 被激活。
+**Scope 编排**：每个已接管 tab 有观测与 JS 执行两个 EventScope；前者的 DOM handler 可跨 scope 等待后者的 JS handler。一个共享 JavaScriptExecutionWatchdog 服务多个 tab，且不发布第二份 `browser.dom`。这利用 agent-cdp 的 N:M scope↔watchdog 连接能力，见 `architecture_design.md` §4.4/§4.12/§11。
 
 #### 设计思考
 
-选择 adapter 模式而非从头重写的原因：BrowserSession + Watchdog 系统已有约 3000 行成熟代码和大量 edge case 处理（crash recovery、multi-tab、security watchdog 等）。重写风险高且收益低。Adapter 让我们在不动 BrowserSession 内部的情况下获得 Capability 抽象，待架构稳定后再考虑内联。
+Browser 特有的 CDP、tab/frame 和输入实现留在 capability 内；Runtime 只看 Capability Protocol、协商结果及环境路由。策略可替换，但一次 run 的观测和动作仍由同一协商结果约束。
 
-**2026-04-08 修订**：初版实现（见 `.claude/plans/polymorphic-munching-pillow.md` 的 M13 节）虽然把 BrowserSession 重写成了 `BrowserCapability`，但保留了 `_ACTION_EVENT_MAP` / `_ACTION_DESCRIPTORS` / `_translate_params` 这套硬编码中心节点反模式。M13-Rev（见同文件 M13-Rev 节）修正为 per-action conscribe 注册 + 对称协商：每个 browser action 是一个独立注册类，agent wiring 用 `(required, optional)` 声明需要的动作名，capability wiring 用 `[provides]` 声明能提供的动作名，AgentRuntime 执行 `negotiate_actions`，配置错误在 runtime 启动前抛 `IncompatibleActionError`。这才真正符合 `architecture_design.md §4.5` 和 `design_discussion.md §3.3` 的对称协商设计意图。
+**2026-04-08 修订**：初版仍有 `_ACTION_EVENT_MAP` / `_ACTION_DESCRIPTORS` / `_translate_params` 硬编码中心节点；现已由 per-action conscribe 注册与对称协商取代。agent 声明相对动作需求，能力声明可提供的全限定动作，`AgentRuntime.prepare()` 在运行前验证并绑定，不保留旧 dispatch 路径。
 
 ---
 
@@ -811,7 +806,7 @@ Memory 协商看似小功能，但避免了一类隐蔽 bug：用户配置 `agen
 
 #### 业务逻辑
 
-**验证矩阵**：3 Agent × 3 Benchmark × 新旧架构 A/B 对比。
+**验证矩阵**：3 Agent × 3 Benchmark，与保存的改造前基线对比；不恢复或保留旧架构运行路径。
 
 **验证标准**：
 - 功能正确性：所有 benchmark task 的 pass/fail 结果与旧架构一致
@@ -819,7 +814,7 @@ Memory 协商看似小功能，但避免了一类隐蔽 bug：用户配置 `agen
 - Trace 完整性：RunTrace 文件可被 Evaluator 正确读取和评分
 - 配置驱动：通过 YAML 配置切换 Agent / LLM / Memory / Hook，无需改代码
 
-**回退策略**：过渡期 shim（M12）保持旧 API 可用。如果新架构在某个 benchmark 上有问题，可以临时回退到旧路径排查。
+**问题定位**：若端到端结果与改造前不同，比较同一 task 的配置快照、prompt、action 和 RunTrace，定位差异后修正新路径。
 
 #### 设计思考
 
