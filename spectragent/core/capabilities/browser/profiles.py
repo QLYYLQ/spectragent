@@ -56,13 +56,11 @@ class BrowserProfileConfig(BaseModel):
     # Capture the documents of cross-site iframes — the ones Chrome runs in
     # another renderer process (captcha widgets, payment fields, embeds,
     # ads), whose content is not in the tab's own ``DOM.getDocument``. Each
-    # such frame is reached through a CDP session of its own and costs its
-    # own DOM + DOMSnapshot + Accessibility round trips per observe (plus
-    # one ``Target.setAutoAttach`` when first seen), all frames together
-    # bounded by ``dom.capture.FRAME_CAPTURE_TIMEOUT_S``. Off, such an iframe
-    # stays opaque: the ``<iframe>`` element is its only target. Same-site
-    # iframes and shadow roots are captured either way — they arrive with
-    # the tab's own ``DOM.getDocument(pierce=True)`` at no extra cost.
+    # such frame is reached through a CDP session of its own. Its capture
+    # cost is strategy-selected: CDP Document/Snapshot/AX for BrowserUse,
+    # JS extraction for Skyvern, with one ``Target.setAutoAttach`` on first
+    # discovery and a shared frame deadline. Off, the iframe stays opaque.
+    # Same-site frames and shadow roots are handled by each strategy too.
     cross_site_iframe_capture: bool = False
 
     # SecurityWatchdog configuration.
@@ -78,14 +76,13 @@ BUILTIN_PROFILES: dict[str, BrowserProfileConfig] = {
         cross_site_iframe_capture=True,
     ),
     # Pair with ``dom_cleaner: {cleaner_type: skyvern}`` and
-    # ``dom_serializer: {serializer_type: html}``: that serializer prints
-    # what that cleaner produces, and the two capture switches are off
-    # because that cleaner reads neither ``js_click_listener_ids`` nor
-    # frame captures.
+    # ``dom_serializer: {serializer_type: html}``. The cleaner chooses its
+    # own JS capture and ignores BrowserUse's listener-detection switch,
+    # but still needs frame-target discovery for cross-site iframes.
     "skyvern": BrowserProfileConfig(
         watchdogs_exclude=["security"],
         js_click_listener_detection=False,
-        cross_site_iframe_capture=False,
+        cross_site_iframe_capture=True,
     ),
     "vision_only": BrowserProfileConfig(
         # Hard opt-out, and the only one that ever worked: excluding the

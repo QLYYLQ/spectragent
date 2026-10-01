@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_cdp import BaseEvent
+from pydantic import Field as PydanticField
 
 # ---------------------------------------------------------------------------
 # Result container for BrowserStateRequestEvent
@@ -225,6 +226,25 @@ class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
 
     fragments: frozenset[str] = frozenset()
     event_timeout: float = 30.0
+
+
+class ExecuteJavaScriptEvent(BaseEvent[dict[str, Any]]):
+    """Run one permitted CDP JavaScript command for the named tab session.
+
+    The observation scope emits this event, but its handler runs on that
+    tab's separate JS execution scope.  A request may therefore be awaited
+    from a queued DOM observation handler without waiting on its own queue.
+    The JS watchdog checks ``session_id`` against the connection's tab before
+    sending anything to CDP.
+    """
+
+    method: str
+    params: dict[str, Any] = PydanticField(default_factory=dict)
+    #: Tab that owns the observation scope and connection.
+    session_id: str
+    #: OOP iframe target discovered under this tab, if different.
+    target_session_id: str | None = None
+    event_timeout: float = 15.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════

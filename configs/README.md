@@ -174,7 +174,7 @@ Edit only `environment[0].capabilities[0].backend`:
 
 ```yaml
 backend:
-  provider_id: skyvern_lite       # was: local_chrome
+  provider_id: skyvern       # was: local_chrome
   api_key: sk-...                 # provider-specific fields
   timeout_minutes: 30
 ```

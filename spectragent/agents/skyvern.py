@@ -59,7 +59,6 @@ class SkyvernAgent(AgentBase):
                 "screenshot",
                 "browser_meta",
                 "step_info",
-                "history",
             ],
         ),
         # The *negotiated* action names are Skyvern's vocabulary:
@@ -409,12 +408,9 @@ class SkyvernAgent(AgentBase):
             element_tree = getattr(dom, "element_tree", None)
             if element_tree is not None:
                 # ``element_tree`` is a ``DOMState``; the form the agent
-                # is meant to read is its ``serialized_dom`` field. Its
-                # bare repr is dataclass noise that the truncation below
-                # would eat long before any ``[index]`` appeared.
-                dom_str = getattr(element_tree, "serialized_dom", "") or str(element_tree)
-                if len(dom_str) > 10000:
-                    dom_str = dom_str[:10000] + "\n... (truncated)"
+                # is meant to read is its ``serialized_dom`` field.
+                serialized = getattr(element_tree, "serialized_dom", None)
+                dom_str = serialized if isinstance(serialized, str) else str(element_tree)
                 parts.append(f"Element Tree:\n{dom_str}")
 
         return "\n\n".join(parts) if parts else "(empty browser state)"

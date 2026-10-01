@@ -46,11 +46,13 @@ with (``BrowserCapability.__wiring__["dom_cleaner"]``), so the generated
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerBase
+from spectragent.core.capabilities.browser.dom.capture import capture_target
+from spectragent.core.capabilities.browser.dom.cleaning import DOMCaptureSource, DOMCleanerBase
 from spectragent.core.capabilities.browser.dom.filters.bounds import propagate_parent_bounds
 from spectragent.core.capabilities.browser.dom.filters.interactivity import (
     is_dropdown_container,
@@ -130,6 +132,35 @@ class BrowserUseCleaner(DOMCleanerBase):
     """
 
     __registry_key__ = "browser_use"
+
+    async def capture(self, source: DOMCaptureSource) -> tuple[TargetCapture, float]:
+        """Capture the CDP DOM, snapshot and accessibility tree for this tab."""
+
+        async def get_dpr() -> float:
+            try:
+                result = await source.cdp.send(
+                    "Runtime.evaluate",
+                    {"expression": "window.devicePixelRatio || 1", "returnByValue": True},
+                    session_id=source.session_id,
+                )
+                value = (result or {}).get("result", {}).get("value")
+                if isinstance(value, (int, float)) and value > 0:
+                    return float(value)
+            except Exception as exc:
+                logger.warning("DPR query failed for session %s: %s", source.session_id, exc)
+            return 1.0
+
+        return await asyncio.gather(
+            capture_target(
+                source.cdp,
+                source.session_id,
+                frames=source.frames,
+                js_click_listeners=source.js_click_listeners,
+                required_computed_styles=REQUIRED_COMPUTED_STYLES,
+                frame_timeout_s=source.frame_timeout_s,
+            ),
+            get_dpr(),
+        )
 
     def __init__(
         self,

@@ -8,7 +8,7 @@ plus per-fragment observation resolution to the framework.
 Key design points:
 
 - **Watchdog = Resolver, for real**: watchdogs come from ``agent_cdp``'s
-  ``WatchdogRegistrar``. Each declares ``level`` (tab / browser) and
+  ``WatchdogRegistrar``. Each declares ``level`` (tab / browser / shared) and
   ``provides`` (the fragment keys it resolves) and is constructed from a
   single :class:`WatchdogContext`. This module names no watchdog class
   and holds no per-fragment branch, so adding an observation fragment is
@@ -392,13 +392,17 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     _cdp: CDPClient | None
     _session: ProviderSession | None
     _scope_group: ScopeGroup | None
+    #: Observation scopes by tab CDP session.
     _scopes: dict[str, EventScope]
+    #: Independent JS execution scopes for the same tab sessions.
+    _js_scopes: dict[str, EventScope]
     _bridges: dict[str, CDPEventBridge]
     _main_frame_ids: dict[str, str]
     _selector_maps: dict[str, DOMSelectorMap]
     _target_to_session: dict[str, str]
     _session_to_target: dict[str, str]
     _watchdogs: dict[str, list[BrowserWatchdog]]
+    _shared_watchdogs: list[BrowserWatchdog]
     _global_scope: EventScope | None
     _default_session_id: str | None
     _alive: bool
@@ -596,12 +600,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._session = None
         self._scope_group = None
         self._scopes = {}
+        self._js_scopes = {}
         self._bridges = {}
         self._main_frame_ids = {}
         self._selector_maps = {}
         self._target_to_session = {}
         self._session_to_target = {}
         self._watchdogs = {}
+        self._shared_watchdogs = []
         self._global_scope = None
         self._default_session_id = None
         self._alive = False
@@ -954,6 +960,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # 2. Global scope — browser-level watchdogs.
         self._global_scope = await self._scope_group.create_scope(_GLOBAL_SCOPE_ID)
         self._attach_browser_level_watchdogs(self._global_scope)
+        self._shared_watchdogs = self._create_watchdogs_for_scope(level="shared")
+        for wd in self._shared_watchdogs:
+            wd.attach(self._global_scope)
 
         # 3. Initial tab.
         result = await self._cdp.send("Target.getTargets", {})
@@ -1010,12 +1019,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # to close.
         for wd_list in list(self._watchdogs.values()):
             self._detach_watchdogs(wd_list)
+        self._detach_watchdogs(self._shared_watchdogs)
 
         if self._scope_group is not None:
             await self._scope_group.close_all()
         self._scopes.clear()
+        self._js_scopes.clear()
         self._selector_maps.clear()
         self._watchdogs.clear()
+        self._shared_watchdogs.clear()
         self._target_to_session.clear()
         self._session_to_target.clear()
         self._cycle_cache.clear()
@@ -1344,7 +1356,21 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             raise RuntimeError("BrowserCapability not set up")
         result = await self._cdp.send("Target.createTarget", {"url": url})
         target_id = (result or {}).get("targetId", "")
-        return await self._attach_tab(target_id, url)
+        if not target_id:
+            raise RuntimeError("Target.createTarget returned no targetId")
+        try:
+            return await self._attach_tab(target_id, url)
+        except BaseException:
+            # This method created the target, so a failed attach must close
+            # it.  _attach_tab also serves page-owned targets discovered by
+            # switch_tab, where closing the page would be wrong.
+            try:
+                await self._cdp.send("Target.closeTarget", {"targetId": target_id})
+            except Exception as exc:
+                logger.warning(
+                    "Failed to close newly created tab %s after attach error: %s", target_id, exc
+                )
+            raise
 
     async def _page_target_ids(self) -> list[str]:
         """Every open page target id, in ``Target.getTargets`` order."""
@@ -1434,10 +1460,17 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # Same for the bridges the tab's own watchdogs opened.
         self._detach_watchdogs(self._watchdogs.get(target_id, []))
 
+        # A shared watchdog may hold session ownership for this tab and its
+        # child targets. Revoke that authority before closing either scope.
+        for wd in self._shared_watchdogs:
+            wd.unbind_tab(session_id)
+
         if self._scope_group is not None:
             await self._scope_group.close_scope(target_id)
+            await self._scope_group.close_scope(f"{target_id}:js")
 
         self._scopes.pop(session_id, None)
+        self._js_scopes.pop(session_id, None)
         self._selector_maps.pop(session_id, None)
         self._watchdogs.pop(target_id, None)
         self._target_to_session.pop(target_id, None)
@@ -1465,6 +1498,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         """
         if self._cdp is None or self._scope_group is None:
             raise RuntimeError("BrowserCapability not set up")
+        if target_id in self._target_to_session:
+            raise ValueError(f"Tab {target_id!r} is already attached")
 
         # 1. Flatten attach.
         result = await self._cdp.send(
@@ -1476,6 +1511,25 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             raise RuntimeError(
                 f"Target.attachToTarget returned no sessionId for target {target_id}"
             )
+
+        created_scope_ids: list[str] = []
+        try:
+            return await self._finish_tab_attach(target_id, url, cdp_session_id, created_scope_ids)
+        except BaseException:
+            # An attach may fail after the scopes and CDP bridges exist.  All
+            # provisional resources must go before a retry can adopt the tab.
+            await self._rollback_tab_attach(target_id, cdp_session_id, created_scope_ids)
+            raise
+
+    async def _finish_tab_attach(
+        self,
+        target_id: str,
+        url: str,
+        cdp_session_id: str,
+        created_scope_ids: list[str],
+    ) -> str:
+        """Finish an attached CDP session; caller rolls back on any failure."""
+        assert self._cdp is not None and self._scope_group is not None
 
         # 2. Enable Page domain + lifecycle events for this session.
         # Without these calls, loadEventFired / lifecycleEvent never fire.
@@ -1519,16 +1573,28 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         if main_frame_id is not None:
             self._main_frame_ids[cdp_session_id] = main_frame_id
 
-        # 5. EventScope per tab.
+        # 5. Two independent processing domains for this tab.  DOM and
+        # action watchdogs use the observation scope.  A shared JS executor
+        # listens to it but runs its handler in the separate JS queue.
         scope = await self._scope_group.create_scope(
             target_id,
             target_id=target_id,
             url=url,
             cdp_session_id=cdp_session_id,
         )
+        created_scope_ids.append(target_id)
+        js_scope = await self._scope_group.create_scope(
+            f"{target_id}:js",
+            target_id=target_id,
+            url=url,
+            cdp_session_id=cdp_session_id,
+        )
+        created_scope_ids.append(f"{target_id}:js")
+        self._js_scopes[cdp_session_id] = js_scope
 
         # 6. CDP → scope bridge for Page-domain lifecycle events.
         bridge = CDPEventBridge(self._cdp, scope, session_id=cdp_session_id)
+        self._bridges[cdp_session_id] = bridge
         bridge.bridge(
             "Page.loadEventFired",
             lambda p: PageLoadEvent(
@@ -1552,24 +1618,71 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 timestamp=p.get("timestamp"),
             ),
         )
-        self._bridges[cdp_session_id] = bridge
-
         # 7. Per-tab watchdogs.
         watchdogs = self._create_watchdogs_for_scope(
             level="tab",
             cdp_session_id=cdp_session_id,
         )
+        self._watchdogs[target_id] = watchdogs
         for wd in watchdogs:
             wd.attach(scope, session_id=cdp_session_id)
+
+        # Shared watchdogs may fan in events from many tabs.  The
+        # binding hook is generic: each watchdog decides whether it needs
+        # either scope, and closing a scope disconnects its connections.
+        for wd in self._shared_watchdogs:
+            wd.bind_tab_scopes(scope, js_scope, session_id=cdp_session_id)
 
         # 8. Register mappings.
         self._scopes[cdp_session_id] = scope
         self._selector_maps[cdp_session_id] = {}
         self._target_to_session[target_id] = cdp_session_id
         self._session_to_target[cdp_session_id] = target_id
-        self._watchdogs[target_id] = watchdogs
 
         return cdp_session_id
+
+    async def _rollback_tab_attach(
+        self, target_id: str, cdp_session_id: str, created_scope_ids: list[str]
+    ) -> None:
+        """Release every provisional resource from one failed tab attach."""
+        bridge = self._bridges.pop(cdp_session_id, None)
+        if bridge is not None:
+            try:
+                bridge.close()
+            except Exception as exc:
+                logger.debug("Attach rollback: bridge close failed for %s: %s", cdp_session_id, exc)
+
+        for wd in self._watchdogs.pop(target_id, []):
+            try:
+                wd.detach()
+            except Exception as exc:
+                logger.debug("Attach rollback: watchdog detach failed for %s: %s", target_id, exc)
+        for wd in self._shared_watchdogs:
+            try:
+                wd.unbind_tab(cdp_session_id)
+            except Exception as exc:
+                logger.debug("Attach rollback: shared unbind failed for %s: %s", target_id, exc)
+
+        if self._scope_group is not None:
+            for scope_id in created_scope_ids:
+                try:
+                    await self._scope_group.close_scope(scope_id)
+                except Exception as exc:
+                    logger.debug("Attach rollback: scope close failed for %s: %s", scope_id, exc)
+
+        self._scopes.pop(cdp_session_id, None)
+        self._js_scopes.pop(cdp_session_id, None)
+        self._selector_maps.pop(cdp_session_id, None)
+        self._target_to_session.pop(target_id, None)
+        self._session_to_target.pop(cdp_session_id, None)
+        self._cycle_cache.pop(cdp_session_id, None)
+        self._main_frame_ids.pop(cdp_session_id, None)
+
+        if self._cdp is not None:
+            try:
+                await self._cdp.send("Target.detachFromTarget", {"sessionId": cdp_session_id})
+            except Exception as exc:
+                logger.debug("Attach rollback: CDP detach failed for %s: %s", cdp_session_id, exc)
 
     # ── Watchdog construction ─────────────────────────────────────────
 
@@ -1607,6 +1720,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             profile=self.profile_config,
             viewport=(self.viewport_width, self.viewport_height),
             cdp_session_id=cdp_session_id,
+            js_scope=self._js_scopes.get(cdp_session_id) if cdp_session_id is not None else None,
             debug_highlight=self.debug_highlight,
             mouse_trajectory=self.mouse_trajectory,
             typing_rhythm=self.typing_rhythm,

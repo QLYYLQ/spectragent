@@ -29,23 +29,25 @@ a user decision. Never bulk-apply the old cleanup list.
 
 ### `HANDOFF_260918_skyvern_cleaner.md`
 
-This is explicitly unfinished, not dead-code documentation. The current code still
-exposes `SkyvernCleaner`, still expects JS-derived elements, and still has no working
-end-to-end injection path.
+Preserve this record of work that was explicitly unfinished and the user's later
+decision to complete it. Sections §0–§8 retain the historical gaps and decisions;
+§9 records the 2026-10-01 implementation. The current JS capture path is connected:
+the configured cleaner requests a separate JS execution scope, runs this project's
+own extraction script in isolated worlds, resolves CDP node identities, and produces
+`DOMState`. It does not copy upstream AGPL `domUtils.js` or silently fall back to
+BrowserUse snapshots. See `docs/architecture_design.md` §4.4/§4.12 for the current
+contract and `docs/ref_gap_analysis.md` C1 for the decision history.
 
-The unresolved gates are:
+The verification entry points under `tests/test_core/test_capabilities/` are:
 
-1. licensing/distribution — do not copy Skyvern's AGPL `domUtils.js` into the
-   Apache-licensed package without an approved legal/packaging decision;
-2. injection and same-world bootstrap placement;
-3. conversion between the upstream positional result and AF's capture shape;
-4. an effect test proving the selected cleaner changes the produced `DOMState`, not
-   merely that configuration constructed a `SkyvernCleaner` instance;
-5. whether to fail loudly or remove the YAML option until the path is real.
+- `test_browser_skyvern_live.py`: real Chrome verification of YAML-selected JS
+  extraction, indexed actions, same-process and OOP frames, navigation, tab isolation,
+  scope cleanup, sensitive-value masking, serialization, and DOM budgets;
+- `test_browser_js_scope.py`: cross-scope execution, session ownership, and rollback;
+- `test_browser_skyvern_dom.py`: explicit failure without fallback and frame deadlines.
 
-Treat this document as the specific blocker record for the cleaner. Do not silently
-fall back and call the feature complete. Before choosing an implementation, read the
-later delete-vs-complete analysis in `docs/ref_gap_analysis.md` C1.
+These capability checks do not complete M18's three-Agent × three-benchmark
+integration matrix. Revalidate that separate gate before declaring it complete.
 
 ## Older evidence, not the active queue
 

@@ -1,10 +1,8 @@
 """DOMWatchdog — DOM tree capture, cleaning and serialization.
 
-Listens to ``BrowserStateRequestEvent``, captures the tab's DOM over CDP —
-the tab's own target plus, when the profile asks for it, every
-out-of-process iframe target below it (see ``dom/capture.py``) — delegates
-to the configured DOMCleaner strategy, serializes with the configured
-DOMSerializer strategy, and returns the cleaned DOMState.
+Listens to ``BrowserStateRequestEvent`` and lets the configured cleaner
+choose CDP capture or page-side JS extraction. It then serializes with the
+configured DOMSerializer strategy and returns the cleaned DOMState.
 
 Both strategies are *injected*, never looked up here: they arrive on
 :class:`WatchdogContext` as the instances ``BrowserCapability`` received
@@ -21,25 +19,18 @@ for the trace — records every cut on ``DOMObs.budget``.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Callable
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget, DOMBudgetPass
-from spectragent.core.capabilities.browser.dom.capture import (
-    FRAME_CAPTURE_TIMEOUT_S,
-    FrameTargets,
-    capture_target,
-)
+from spectragent.core.capabilities.browser.dom.capture import FRAME_CAPTURE_TIMEOUT_S, FrameTargets
 from spectragent.core.capabilities.browser.dom.cleaning import (
+    DOMCaptureSource,
     DOMCleanerProtocol,
     default_cleaner,
-)
-from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (
-    REQUIRED_COMPUTED_STYLES,
 )
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, DOMState, TargetCapture
 from spectragent.core.capabilities.browser.dom.serializers import (
@@ -56,13 +47,14 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     BrowserStateRequestEvent,
     BrowserStateSummary,
+    ExecuteJavaScriptEvent,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class DOMWatchdog(BrowserWatchdog):
-    """Captures DOM state via 3 CDP protocols, cleans via pluggable strategy."""
+    """The sole browser.dom resolver, using a pluggable capture strategy."""
 
     level: ClassVar[WatchdogLevel] = "tab"
     provides: ClassVar[frozenset[str]] = frozenset({"browser.dom"})
@@ -170,9 +162,9 @@ class DOMWatchdog(BrowserWatchdog):
             return None
 
         try:
-            # Capture every target of the tab, plus a parallel
-            # devicePixelRatio query — CDP DOMSnapshot bounds are device
-            # pixels, every other consumer wants CSS.
+            # The selected strategy decides which capture calls are needed.
+            # In particular the JS strategy must not pay for the fixed
+            # DOM/Snapshot/AX triple used by the browser-use strategy.
             capture, dpr = await self._capture_cdp_data()
 
             # Previous selector_map for new-node tracking — pre-budget, so
@@ -225,45 +217,38 @@ class DOMWatchdog(BrowserWatchdog):
             return None
 
     async def _capture_cdp_data(self) -> tuple[TargetCapture, float]:
-        """Capture the tab and its frame targets, and query the DPR in parallel.
-
-        Returns ``(capture, dpr)``. ``dpr`` is the live
-        ``window.devicePixelRatio`` for this tab — frames share it. We
-        re-query every observe rather than cache because the user may zoom
-        or move windows between physical displays mid-run, and the cost
-        (single Runtime.evaluate, run in parallel with the capture) is well
-        under 1ms relative to the 1-5s LLM step.
-        """
-        cdp = self._cdp
-        sid = self._session_id
-
-        async def get_dpr() -> float:
-            try:
-                result = await cdp.send(
-                    "Runtime.evaluate",
-                    {
-                        "expression": "window.devicePixelRatio || 1",
-                        "returnByValue": True,
-                    },
-                    session_id=sid,
-                )
-                value = (result or {}).get("result", {}).get("value")
-                if isinstance(value, (int, float)) and value > 0:
-                    return float(value)
-                return 1.0
-            except Exception as exc:
-                logger.warning("DPR query failed for session %s: %s", sid, exc)
-                return 1.0
-
-        capture, dpr = await asyncio.gather(
-            capture_target(
-                cdp,
-                sid,
-                frames=self._frames if sid is not None else None,
+        """Let the configured cleaner select capture calls for this tab."""
+        return await self._cleaner.capture(
+            DOMCaptureSource(
+                cdp=self._cdp,
+                session_id=self._session_id,
+                frames=self._frames if self._session_id is not None else None,
+                run_js=self._run_js,
                 js_click_listeners=self._enable_js_listeners,
-                required_computed_styles=REQUIRED_COMPUTED_STYLES,
                 frame_timeout_s=self._frame_capture_timeout_s,
-            ),
-            get_dpr(),
+            )
         )
-        return capture, dpr
+
+    async def _run_js(
+        self, method: str, params: dict[str, Any], session_id: str | None
+    ) -> dict[str, Any] | None:
+        """Route a Runtime command to the tab's separate JS execution scope."""
+        if self._scope is None or self._session_id is None or session_id is None:
+            raise RuntimeError("Skyvern JS capture requires an attached tab scope")
+        event = ExecuteJavaScriptEvent(
+            method=method,
+            params=params,
+            session_id=self._session_id,
+            target_session_id=session_id if session_id != self._session_id else None,
+        )
+        self._scope.emit(event)
+        await event
+        results = list(event.event_results.values())
+        if len(results) != 1:
+            raise RuntimeError(f"JS execution expected one handler, got {len(results)}")
+        result = results[0]
+        if not result.is_success:
+            raise RuntimeError(f"JS execution failed: {result.error}")
+        if not isinstance(result.result, dict):
+            raise RuntimeError("JS execution returned no CDP reply")
+        return result.result

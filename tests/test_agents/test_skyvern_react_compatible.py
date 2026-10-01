@@ -122,7 +122,8 @@ class TestWiring:
 
     def test_observation_wiring_dom_required_screenshot_optional(self) -> None:
         # Skyvern is element-tree based: DOM is required + the task.
-        # Screenshot, browser_meta, step_info, history are optional.
+        # Screenshot, browser_meta and step_info are optional. The agent
+        # renders its own bounded action history, not loop.history.
         wiring = SkyvernAgent.__wiring__
         assert wiring["observation"] == (
             "observation",
@@ -131,7 +132,6 @@ class TestWiring:
                 "screenshot",
                 "browser_meta",
                 "step_info",
-                "history",
             ],
         )
 
@@ -216,9 +216,8 @@ class TestBuildReactPrompt:
         ``DOMObs.element_tree`` carries a ``DOMState``; the form the model
         is meant to read is its ``serialized_dom``. The old fixture passed
         a plain ``str``, which made ``str(element_tree)`` a no-op and hid
-        the fact that a real run got a dataclass repr — dozens of
-        ``DOMElementNode(tag_name=...)`` fields that the 10k truncation
-        ate long before the first ``[index]``.
+        the fact that a real run got a dataclass repr instead of the
+        indexed DOM the model needs.
         """
         agent = _make_agent()
         agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
@@ -241,6 +240,19 @@ class TestBuildReactPrompt:
         # The dataclass repr must not be what the model reads.
         assert "DOMElementNode(" not in content
         assert "serialized_dom=" not in content
+
+    def test_dom_text_reaches_the_model_after_the_old_agent_cutoff(self) -> None:
+        agent = _make_agent()
+        agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        tail = "[173]<button>Reachable at the end</button>"
+        state = DOMState(serialized_dom="x" * 10_100 + tail)
+        content = agent.build_react_prompt(_FakeObservation(dom=_FakeDOM(element_tree=state)))[
+            0
+        ].content
+
+        assert isinstance(content, str)
+        assert tail in content
+        assert "... (truncated)" not in content
 
     def test_action_history_is_rendered_per_step_not_in_the_system_prompt(
         self,

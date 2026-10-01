@@ -115,9 +115,9 @@
 ├──────────────────────────────────────────────────────────────────┤
 │  Backends / Providers (执行层适配器，按 capability 分目录)         │
 │  core/capabilities/{cap}/backends/                                │
-│   browser  → local_chrome / lexmount / skyvern_lite /             │
-│              browser_use_lite / agentbay_lite / airtop_lite /     │
-│              hyperbrowser_lite                                    │
+│   browser  → local_chrome / lexmount / skyvern /             │
+│              browser_use / agentbay / airtop /     │
+│              hyperbrowser                                    │
 │   docker   → local_docker / ssh_docker (P2 占位)                  │
 │   desktop_vm / android / gpu_profiling / tool_sandbox: 待 P3      │
 ├──────────────────────────────────────────────────────────────────┤
@@ -845,25 +845,24 @@ Capability 内部通过 Resolver 按需提供 fragment，不需要在 observe() 
 **Browser Capability：Watchdog 即 Resolver**
 
 ```python
-class DOMWatchdog(WatchdogBase):
-    __registry_key__ = "dom_watchdog"
-    __wiring__ = {"observation": ("observation", ["dom"])}
+class DOMWatchdog(BrowserWatchdog):
+    level = "tab"
+    provides = frozenset({"browser.dom"})
 
-class ScreenshotWatchdog(WatchdogBase):
-    __registry_key__ = "screenshot_watchdog"
-    __wiring__ = {"observation": ("observation", ["screenshot"])}
+class ScreenshotWatchdog(BrowserWatchdog):
+    level = "tab"
+    provides = frozenset({"browser.screenshot"})
 
-# BrowserCapability.setup() — IoC 驱动，零 if-else：
-async def setup(self, negotiated: NegotiationResult, **kwargs):
-    for wd_cls in WatchdogRegistrar.registry.values():
-        obs_wiring = resolve_wiring(wd_cls).get("observation")
-        if obs_wiring is None:
-            wd_cls(self._cdp, ...).attach(self._scope, session_id=sid)
-        elif set(obs_wiring.allowed_keys) & negotiated.active_fragments:
-            wd_cls(self._cdp, ...).attach(self._scope, session_id=sid)
+# BrowserCapability 从注册表发现 watchdog，按 level 建立 scope 连接；
+# negotiated fragments 决定一次 BrowserStateRequestEvent 激活哪些 resolver。
 ```
 
-**新增 Watchdog = 新增一个类。BrowserCapability 不改。**
+**新增 observation fragment = 新增一个 Resolver Watchdog。BrowserCapability 不改。**
+不提供 fragment 的执行型 watchdog 可以共享实例。`JavaScriptExecutionWatchdog`
+声明 `level="shared"`、`provides=∅`，把每个 tab 的观测 scope 连接到该 tab 的 JS
+执行 scope；它不发布第二份 `browser.dom`。agent-cdp 的 scope↔handler 连接是 N:M：
+一个 scope 可连多个 watchdog，一个 watchdog 可连多个 scope。按任务选择连接和队列策略，
+不把当前 DOMWatchdog 按 tab 持有 selector map 的实现选择当成中间层限制。
 
 **非浏览器 Capability：直接实现 Resolver**
 
@@ -1423,7 +1422,7 @@ class BaseCapability(Protocol):
 
 #### 4.9.x Capability ↔ Backend 生命周期
 
-**设计决策**：`backend` 是 capability 的执行层配置——回答"这个 capability 通过什么 backend 提供 transport 端点"。Browser 选 `local_chrome` / `lexmount` / `skyvern_lite` 等；Docker 选 `local_docker` / `ssh_docker`；Desktop VM 选不同的 VNC 后端。Backend 通过与 `agent.llm` / `env.capabilities` 完全同构的 IoC 路径注入。
+**设计决策**：`backend` 是 capability 的执行层配置——回答"这个 capability 通过什么 backend 提供 transport 端点"。Browser 选 `local_chrome` / `lexmount` / `skyvern` 等；Docker 选 `local_docker` / `ssh_docker`；Desktop VM 选不同的 VNC 后端。Backend 通过与 `agent.llm` / `env.capabilities` 完全同构的 IoC 路径注入。
 
 **装配链路**：
 
@@ -1458,7 +1457,7 @@ BrowserCapability.teardown()
 └── if self._session is not None: await self.backend.close(self._session)
 ```
 
-**`__wiring__["backend"]` 字段类型**：Mode 1 字符串（`"browser_provider"`），表示"任意已注册到这个 registry 的 provider"。如果某个 capability 想限制 backend 子集，可改 Mode 2/3 的 tuple 形式（如 `("browser_provider", ["local_chrome", "skyvern_lite"])`）——conscribe 把 backend 字段约束为对应的 discriminated union 子集。
+**`__wiring__["backend"]` 字段类型**：Mode 1 字符串（`"browser_provider"`），表示"任意已注册到这个 registry 的 provider"。如果某个 capability 想限制 backend 子集，可改 Mode 2/3 的 tuple 形式（如 `("browser_provider", ["local_chrome", "skyvern"])`）——conscribe 把 backend 字段约束为对应的 discriminated union 子集。
 
 **Backend 文件归属**：所有 browser provider 文件物理上属于 `spectragent/core/capabilities/browser/backends/`，与 `BrowserCapability` 同目录；`BrowserProviderRegistrar` 也在 `backends/_registrar.py`。这让"backend 是 capability 的从属配置"在文件结构上一目了然。其他 capability 的 backend 同理：`spectragent/core/capabilities/docker/backends/`、`spectragent/core/capabilities/desktop_vm/backends/` 等。
 
@@ -1648,23 +1647,30 @@ Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可
 ### 4.12 DOM Pipeline 抽象
 
 ```
-CDP 原始数据 ──→ DOMCleanerProtocol ──→ DOMState ──→ DOMSerializerProtocol ──→ str
-                 (Strategy)                            (Strategy)
+DOMWatchdog (browser.dom 唯一 resolver)
+    └── DOMCleanerProtocol.capture(tab-bound DOMCaptureSource)
+          ├── browser_use: CDP Document + DOMSnapshot + AX 并行采集
+          └── skyvern: 观测 scope → JS 执行 scope → 页内树遍历
+                       → DOM.describeNode 关联 backendNodeId / session
+    └── DOMCleanerProtocol.clean(capture) → DOMState
+          ├── browser_use: simplify→optimize→paint-order→bounds→index
+          └── skyvern: 属性裁剪→frame/shadow 组装→索引
+    └── DOMBudgetPass → DOMSerializerProtocol → str + selector_map
 
-Stage 1: CDP Capture (并行调用)
-    ├── DOM.getDocument(depth=-1, pierce=True)
-    ├── DOMSnapshot.captureSnapshot(...)
-    ├── Accessibility.getFullAXTree()
-    └── [可选] JS event listener 检测
-
-Stage 2: Cleaning (可插拔策略)
-    ├── browser_use: 5阶段管道 (simplify→optimize→paint-order→bounds→index)
-    └── skyvern: JS提取 + 服务端裁剪
-
-Stage 3: Serialization (可插拔策略)
+Serialization (可插拔策略)
     ├── text: 缩进文本 + [backend_node_id] 标记
     └── html: HTML 格式
 ```
+
+`DOMCaptureSource` 是每次观测、按 tab 构造的运行期能力；配置层只有一个带 YAML knobs 的
+cleaner 实例，不在它身上保存某个 tab 的 scope 或 CDP session。Skyvern 的页内脚本由本项目
+独立实现，每次执行都在同一 JS world 构树并返回远程节点引用，采集端在释放引用前用
+`DOM.describeNode` 取得现有动作链需要的节点身份。每个可识别的 frame（含 tab root、
+same-process 与 OOP root）都在所属 CDP session 的 isolated world 执行；OOP frame
+使用独立索引命名空间。导航后重建
+运行期上下文，不复用旧页面 bootstrap。JS 路径失败时报告 DOM 观测失败，不静默降级为
+BrowserUse snapshot。两种策略最终都交出同形的 `DOMState`，由同一个预算、serializer、
+selector map 和 trace 路径消费。
 
 ### 4.13 Input 拟人化层（mouse_trajectory + typing_rhythm）
 
@@ -1960,7 +1966,7 @@ class RunTrace:
 | `LLMRegistrar` | `model_type.provider` (nested) | LLM provider 实现 | ✅ |
 | `EnvironmentRegistrar` | `env_type` (flat) | 环境实现，通过 `__wiring__["capabilities"]` 注入 Capabilities，按前缀路由 action | ✅（仅 BrowserEnvironment；CompositeEnvironment 待） |
 | `CapabilityRegistrar` | `capability_id` (flat) | 能力 = ActionGroup + Resolver 合体；持 backend wired field | ✅（仅 BrowserCapability；docker / tool_sandbox / desktop_vm / android / gpu_profiling 待） |
-| `BrowserProviderRegistrar` | `provider_id` (flat) | Browser capability 的 backend：`local_chrome` / `lexmount` / `skyvern_lite` / `browser_use_lite` / `airtop_lite` / `agentbay_lite` / `hyperbrowser_lite`。文件位于 `core/capabilities/browser/backends/` | ✅ |
+| `BrowserProviderRegistrar` | `provider_id` (flat) | Browser capability 的 backend：`local_chrome` / `lexmount` / `skyvern` / `browser_use` / `airtop` / `agentbay` / `hyperbrowser`。文件位于 `core/capabilities/browser/backends/` | ✅ |
 | `DockerProviderRegistrar` | `provider_id` (flat) | Docker capability 的 backend（`local_docker` / `ssh_docker` ...） | P2 占位待实现 |
 | `MemoryRegistrar` | `memory_id` (flat) | 记忆策略 | ✅（3 种；协议兼容性在 `prepare()` 校验，SummaryMemory 待实现） |
 | `HookRegistrar` | `hook_id` (flat) | Lifecycle hooks (AOP) | ✅（trace_writer / metrics；live_monitor 待 P3） |
@@ -2063,13 +2069,13 @@ hook:
 #     judge_model: claude-sonnet-4-6
 ```
 
-**切到 cloud backend（skyvern_lite）**——只动 `backend` 块：
+**切到 cloud backend（skyvern）**——只动 `backend` 块：
 
 ```yaml
 capability:
   - capability_id: browser
     backend:
-      provider_id: skyvern_lite
+      provider_id: skyvern
       api_key: ${SKYVERN_API_KEY}
       # ... skyvern 自身的 conscribe 字段
 ```
@@ -2204,28 +2210,33 @@ environment:
 Browser Capability
 ├── agent-cdp 中间层
 │   ├── CDPClient (WebSocket → Chrome/Chromium)
-│   ├── ScopeGroup (browser-level)
-│   │   └── EventScope (per-tab)
-│   │       └── Watchdogs (subscribe to events on their scope)
-│   │            ├── DOMWatchdog          → BrowserStateRequestEvent
-│   │            ├── ActionWatchdog       → ClickEvent, TypeEvent, ScrollEvent, ...
-│   │            ├── ScreenshotWatchdog   → ScreenshotRequestEvent
-│   │            ├── CrashWatchdog        → 浏览器崩溃检测
-│   │            ├── DownloadsWatchdog    → 下载监控
-│   │            ├── PopupsWatchdog       → 弹窗处理
-│   │            └── SecurityWatchdog     → 域名白/黑名单
-│   ├── DOM Pipeline (capture → clean → serialize)
+│   ├── ScopeGroup
+│   │   ├── browser EventScope → CrashWatchdog
+│   │   └── 每个已接管 tab（同一 tab/CDP session）
+│   │       ├── 观测 EventScope → DOM / Action / Screenshot / Meta 等 Watchdogs
+│   │       └── JS 执行 EventScope ← 跨 scope QUEUED 连接
+│   │                              ← 共享 JavaScriptExecutionWatchdog 的 handler
+│   ├── DOM Pipeline (策略选择 capture → clean → budget → serialize)
 │   └── Input 拟人化层 (input/, §4.13)
 │        ├── MouseTrajectoryRegistrar  → HumanMouse    → Input.dispatchMouseEvent
 │        ├── TypingRhythmRegistrar     → HumanKeyboard → Input.dispatchKeyEvent
 │        └── play_on_deadline —— 两条链共用的唯一时钟（绝对截止时间）
 │
 └── Backend (core/capabilities/browser/backends/, IoC-injected via __wiring__["backend"])
-    ├── local_chrome, lexmount, skyvern_lite, browser_use_lite,
-    │   agentbay_lite, airtop_lite, hyperbrowser_lite
+    ├── local_chrome, lexmount, skyvern, browser_use,
+    │   agentbay, airtop, hyperbrowser
     └── 每个 backend 提供 async open() → ProviderSession.cdp_url
         capability.setup() 调 backend.open() 拿到 cdp_url 后启 agent-cdp
 ```
+
+两个 per-tab scope 是 Skyvern JS 提取的编排选择，不是 agent-cdp 的基数约束：
+scope 与 watchdog/handler 为 N:M。当前 DOMWatchdog 因持有该 tab 的 selector map 和 frame
+发现状态而按 tab 建实例；JS 执行 watchdog 一个实例服务多个 tab，只维护从 CDP
+attach/detach 事件得出的 tab→iframe session 归属表，以拒绝跨 tab 的 JS 请求，不持有
+任何 tab 的 DOM 提取缓存或 cleaner 配置。
+同一 scope 的 QUEUED handler 逐个等待，观测 scope 通过 `target_scope` 投递到另一个
+JS scope 后可等待其结果而不自等待。`_attach_tab()` 成组创建并绑定两个 scope；
+`switch_tab()` 懒附加走同一路径，`close_tab()` 和 teardown 成组释放。
 
 `BrowserProfileConfig` 是命名预设（`standard` / `skyvern` / `vision_only` / `lightweight`），但只承载两类事实：**安装哪些 watchdog**（`watchdogs_exclude`，反向声明——注册表里没被排除的都装，名字在 setup 时对着注册表校验，写错是硬报错而不是静默 no-op），和**允许花多少次 CDP 往返**（`js_click_listener_detection`、`cross_site_iframe_capture`），外加 SecurityWatchdog 的域名白 / 黑名单。
 

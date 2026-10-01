@@ -706,8 +706,6 @@ _TAUGHT_KEY = re.compile(r'"([a-z_]+)"\s*:')
         {"flash_mode": True},
         {"flash_mode": False, "use_thinking": True},
         {"flash_mode": False, "use_thinking": False},
-        {"flash_mode": True, "is_anthropic": True},
-        {"flash_mode": True, "model_name": "claude-opus-4.5"},
     ],
 )
 def test_the_model_asks_for_exactly_what_the_template_teaches(

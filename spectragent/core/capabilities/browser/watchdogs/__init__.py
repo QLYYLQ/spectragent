@@ -32,6 +32,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     ClickElementEvent,
     DialogOpenedEvent,
     DOMContentLoadedEvent,
+    ExecuteJavaScriptEvent,
     GoBackEvent,
     GoForwardEvent,
     LifecycleEvent,
@@ -47,6 +48,9 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     TabCreatedEvent,
     TargetCrashedEvent,
     TypeTextEvent,
+)
+from spectragent.core.capabilities.browser.watchdogs.js_execution import (
+    JavaScriptExecutionWatchdog,
 )
 from spectragent.core.capabilities.browser.watchdogs.popups_watchdog import (
     PopupsWatchdog,
@@ -71,6 +75,7 @@ __all__ = [
     "BrowserMetaWatchdog",
     "CrashWatchdog",
     "DOMWatchdog",
+    "JavaScriptExecutionWatchdog",
     "PopupsWatchdog",
     "ScreenshotWatchdog",
     "SecurityWatchdog",
@@ -86,6 +91,7 @@ __all__ = [
     "RefreshEvent",
     "ScreenshotRequestEvent",
     "BrowserStateRequestEvent",
+    "ExecuteJavaScriptEvent",
     # CDP Page-domain bridged events
     "PageLoadEvent",
     "DOMContentLoadedEvent",

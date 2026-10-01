@@ -58,18 +58,21 @@ here. **A page that gates on ``keydown`` sees nothing for CJK text.**
 from __future__ import annotations
 
 import logging
+import sys
 from typing import Any
 
 from agent_cdp import CDPCommandProtocol
 
 from spectragent.core.capabilities.browser.input._schedule import play_on_deadline
 from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
-from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmProtocol
+from spectragent.core.capabilities.browser.input.rhythm import Keystroke, TypingRhythmProtocol
 
 logger = logging.getLogger(__name__)
 
 #: CDP ``modifiers`` bit for Shift.
 _SHIFT = 8
+_CONTROL = 2
+_META = 4
 
 #: US-layout punctuation reachable without Shift: char → (code, virtual key).
 _PUNCTUATION_KEYS: dict[str, tuple[str, int]] = {
@@ -198,10 +201,142 @@ class HumanKeyboard:
         # insert. The strategy alone decides whether we humanize.
         self._rhythm: TypingRhythmProtocol = rhythm if rhythm is not None else InstantRhythm()
         self._humanized = self._rhythm.humanized
+        self._select_all_modifier: tuple[str, str, int, int] | None = None
 
     @property
     def humanized(self) -> bool:
         return self._humanized
+
+    async def _modifier_for_select_all(self, session_id: str | None) -> tuple[str, str, int, int]:
+        """Choose the shortcut for the browser's OS, not the agent host's.
+
+        A macOS runner may control a Linux cloud browser. ``Browser.getVersion``
+        reports the browser's own user agent even when a tab has overridden
+        ``navigator.userAgent``; the page's platform and then the host are
+        fallbacks for CDP gateways that do not expose that browser command.
+        """
+        if self._select_all_modifier is not None:
+            return self._select_all_modifier
+
+        platform = ""
+        try:
+            version = await self._cdp.send("Browser.getVersion", {})
+            platform = str((version or {}).get("userAgent", ""))
+        except Exception as exc:
+            logger.debug("Browser.getVersion unavailable for select-all: %s", exc)
+
+        if not platform:
+            try:
+                result = await self._cdp.send(
+                    "Runtime.evaluate",
+                    {"expression": "navigator.platform", "returnByValue": True},
+                    session_id=session_id,
+                )
+                platform = str((result or {}).get("result", {}).get("value") or "")
+            except Exception as exc:
+                logger.debug("navigator.platform unavailable for select-all: %s", exc)
+
+        if not platform:
+            logger.warning(
+                "Browser platform unavailable for select-all; using agent host %s",
+                sys.platform,
+            )
+            platform = sys.platform
+
+        is_mac = "mac" in platform.lower() or platform == "darwin"
+        self._select_all_modifier = (
+            ("Meta", "MetaLeft", 91, _META) if is_mac else ("Control", "ControlLeft", 17, _CONTROL)
+        )
+        return self._select_all_modifier
+
+    def _keystrokes(self, text: str) -> list[Keystroke]:
+        """Check the strategy's promise before using its timing."""
+        keystrokes = self._rhythm.generate(text)
+        if len(keystrokes) != len(text) or any(
+            k.char != ch for k, ch in zip(keystrokes, text, strict=False)
+        ):
+            raise ValueError(
+                f"{type(self._rhythm).__name__}.generate() must return one "
+                f"Keystroke per character of the text it was given, carrying "
+                f"those characters unchanged — a rhythm decides when, never "
+                f"what. Got {len(keystrokes)} keystrokes for {len(text)} "
+                f"characters."
+            )
+        return keystrokes
+
+    async def _play_events(
+        self,
+        schedule: list[float],
+        events: list[tuple[str, dict[str, Any]] | None],
+        session_id: str | None,
+    ) -> None:
+        """Deliver every key event, including slots a slow transport misses."""
+        unsent = 0
+        async for i in play_on_deadline(schedule):
+            for event in events[unsent : i + 1]:
+                if event is None:
+                    continue
+                method, params = event
+                await self._cdp.send(method, params, session_id=session_id)
+            unsent = i + 1
+
+    async def clear_focused(self, *, session_id: str | None = None) -> None:
+        """Select all and delete with observable, physically possible keys.
+
+        CDP does not run the platform's select-all accelerator from a bare
+        synthetic keydown, even when its modifier bits are correct. The
+        ``selectAll`` editing command is therefore attached to the real
+        Ctrl/Meta+A keydown; the page still sees the complete modifier, A,
+        and Backspace press/release sequence with proper code and keyCode.
+        """
+        key, code, vk, mask = await self._modifier_for_select_all(session_id)
+        modifier = {
+            "key": key,
+            "code": code,
+            "windowsVirtualKeyCode": vk,
+            "nativeVirtualKeyCode": vk,
+        }
+        letter = {
+            "key": "a",
+            "code": "KeyA",
+            "windowsVirtualKeyCode": 65,
+            "nativeVirtualKeyCode": 65,
+        }
+        backspace = {
+            "key": "Backspace",
+            "code": "Backspace",
+            "windowsVirtualKeyCode": 8,
+            "nativeVirtualKeyCode": 8,
+        }
+        events: list[tuple[str, dict[str, Any]] | None] = [
+            ("Input.dispatchKeyEvent", {**modifier, "type": "keyDown", "modifiers": mask}),
+            (
+                "Input.dispatchKeyEvent",
+                {**letter, "type": "keyDown", "modifiers": mask, "commands": ["selectAll"]},
+            ),
+            ("Input.dispatchKeyEvent", {**letter, "type": "keyUp", "modifiers": mask}),
+            ("Input.dispatchKeyEvent", {**modifier, "type": "keyUp", "modifiers": 0}),
+            ("Input.dispatchKeyEvent", {**backspace, "type": "keyDown"}),
+            ("Input.dispatchKeyEvent", {**backspace, "type": "keyUp"}),
+        ]
+
+        if self._humanized:
+            select, delete = self._keystrokes("a\b")
+            # The shortcut's first gap precedes the modifier press. A is
+            # pressed immediately after it; the transport gives the two
+            # distinct events their natural separation. The second gap is
+            # the pause after selection before Backspace is pressed.
+            schedule = [
+                select.gap_ms,
+                0.0,
+                select.hold_ms,
+                0.0,
+                delete.gap_ms,
+                delete.hold_ms,
+            ]
+        else:
+            schedule = [0.0] * len(events)
+        await self._play_events(schedule, events, session_id)
 
     async def type_text(self, text: str, *, session_id: str | None = None) -> None:
         """Enter *text* into whatever currently has focus.
@@ -227,17 +362,7 @@ class HumanKeyboard:
             await self._cdp.send("Input.insertText", {"text": text}, session_id=session_id)
             return
 
-        keystrokes = self._rhythm.generate(text)
-        if len(keystrokes) != len(text) or any(
-            k.char != ch for k, ch in zip(keystrokes, text, strict=False)
-        ):
-            raise ValueError(
-                f"{type(self._rhythm).__name__}.generate() must return one "
-                f"Keystroke per character of the text it was given, carrying "
-                f"those characters unchanged — a rhythm decides when, never "
-                f"what. Got {len(keystrokes)} keystrokes for {len(text)} "
-                f"characters."
-            )
+        keystrokes = self._keystrokes(text)
 
         # Two slots per character — press, then dwell — so the schedule's
         # total is the string's typing duration whichever delivery a
@@ -260,11 +385,4 @@ class HumanKeyboard:
                 )
                 events.append(("Input.dispatchKeyEvent", {**payload, "type": "keyUp"}))
 
-        unsent = 0
-        async for i in play_on_deadline(schedule):
-            for event in events[unsent : i + 1]:
-                if event is None:
-                    continue
-                method, params = event
-                await self._cdp.send(method, params, session_id=session_id)
-            unsent = i + 1
+        await self._play_events(schedule, events, session_id)
