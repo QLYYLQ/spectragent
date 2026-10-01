@@ -28,8 +28,8 @@
 | `@Component` / `@Service` | `metaclass=XRegistrar.Meta` + `__registry_key__` |
 | Component Scanning | `discover("module.path")` 导入所有子模块触发注册 |
 | `@Qualifier` | `__registry_key__` 字符串标识（如 `"swe_agent"`、`"openai.direct"`） |
-| `@Autowired` interface | Loop 兼容性 Protocol（`ReactCompatible`、`CodeActCompatible`） |
-| `@Qualifier` / 跨 Bean 依赖 | `__wiring__` 跨注册表依赖声明（如 Agent 声明兼容哪些 Loop） |
+| `@Autowired` interface | Agent 与 Loop 的装配边界；Loop 用 `__required_slots__` 检查 Agent 的实际方法 |
+| `@Qualifier` / 跨 Bean 依赖 | `__wiring__` 跨注册表依赖声明（如 Agent 限定可配置的 Loop） |
 | `application.yml` | `configs/*.yaml` |
 | Auto-configuration | `conscribe.generate_layer_config_source()` 自动生成 discriminated-union 配置类 |
 | `@ConfigurationProperties` | `__config_annotated_only__ = True` + `Annotated[type, Field(...)]` |
@@ -156,8 +156,10 @@
 ```
 Agent = 领域知识 (domain)  ← 一份代码，不因 loop 翻倍
 Loop  = 执行策略 (strategy) ← __required_slots__ 声明它需要的 agent 方法
-__wiring__ 声明跨注册表依赖 ← 配置生成时自动约束为 Literal[...] 合法组合
+__wiring__ 声明跨注册表依赖 ← 配置生成时限定可选注册键和子配置
 ```
+
+`__wiring__` 保护的是配置表面：用户只能选择声明范围内的注册实现，并填写该实现的子配置。它不证明两个选中的实现能协作。Agent 是否提供 Loop 所需方法由 `prepare()` 的 slot 校验判断；失败时 `IncompatibleError` 点名 Loop 和缺失方法。
 
 **依赖方向：单向，无循环**
 
@@ -256,7 +258,7 @@ AgentLoop (Protocol)
 class SWEAgent(AgentBase):
     __registry_key__ = "swe_agent"
 
-    # __wiring__: 声明兼容的 loop、需要的 capability、observation
+    # __wiring__: 声明可配置的 loop 范围、需要的 capability、observation
     # llm 继承自 AgentBase（auto-discovery，允许所有 LLM）
     __wiring__ = {
         "agent_loop": ("agent_loop", ["react", "codeact"]),
@@ -338,14 +340,16 @@ class ReactLoop(AgentLoopBase):
 
 **Loop 反向"安装"到 agent**：调用方拿到的不是 `loop.run(agent, ...)`，而是 `agent.run(task)`——`AgentLoopBase.weave(agent, **deps)` 在执行前把 `agent.run` monkey-patch 成一个调 `loop._execute(agent, task)` 的闭包，并把 deps 绑到 `loop.ctx`。这样从外部看 agent 是一个自包含的可执行单元（`await agent.run(task)`），而 Loop 只是它内部的"编排策略"——这与"Loop 本质就是在调度 agent 的 method"的语义最贴近。
 
-**关键设计：AOP 透明织入**。AgentRuntime 通过 Weaver 将 hook 拦截器织入 agent/env/llm 的方法调用中。Loop weave 时拿到的 agent/env/llm 实际上是 AOPProxy 包装后的对象——`env.observe()` 调用时，AOP 自动在调用前/后触发 hook handler。Loop 代码中零 hook 感知，零 emit 调用。
+**关键设计：AOP 透明织入**。AgentRuntime 通过 Weaver 将 hook 拦截器织入 agent/env/llm 和作为 loop 角色的 StepRecorder 方法调用中。Loop 收到的是包装后的依赖，照常调用其方法；代理按 hook 的声明触发 handler。Loop 代码中零 hook 感知，零 emit 调用。
 
 **AOP 拦截点与 Loop 的对应关系**：
 
 | 拦截点 | advice | 触发时机 | 典型 Hook 用途 |
 |--------|--------|---------|---------------|
-| `env.observe` | after | 每步 observe 返回后 | TraceWriter 缓存 observation |
-| `llm.ainvoke` | after | 每步 LLM 返回后 | TraceWriter commit 当步数据；MetricsCollector 累加 token |
+| `env.observe` | after | 每步 observe 返回后 | 可选的环境观测 hook；当前 TraceWriter 不拦截此方法 |
+| `llm.ainvoke` | after | 每次 LLM 成功返回后 | TraceWriter 暂存这次调用；MetricsCollector 累加 token |
+| `llm.ainvoke` | around | LLM 调用成功或抛异常 | TraceWriter 记录失败调用并测量等待时间 |
+| `loop.record_step` | after | Loop 交出完整 StepRecord 后 | TraceWriter 写入本步观测、消息和动作结果，再更新 WAL manifest |
 | `env.act` | after | 每次 action 执行后 | 可选：action 级别追踪 |
 | `agent.build_react_prompt` | around | prompt 构建时 | 可选：prompt 审计（同步方法，`proceed()` 直接返回值而非 awaitable） |
 
@@ -436,7 +440,7 @@ class AgentRuntime:
 
 **为什么两段式**：`prepare()` 是纯装配（slot 校验 → 协商 → AOP 织入 → loop weave），返回值就是一个 self-contained 的 agent —— 测试和需要细粒度控制的调用方可以直接 `await prepared_agent.run(task)`，跳过 timeout/lifecycle 包装。`execute()` 只是 prepare + 围绕 `agent.run` 加 timeout 和 lifecycle hook。两段都是独立的、零全局状态的 run 上下文，并行多个 run 互不干扰。
 
-**AOP 织入流程**：Weaver 读取所有 hook 的 `__intercepts__` 声明（如 `Intercept("observe", role="env", advice="after")`），为 agent/env/llm 生成 `AOPProxy` 包装。Loop weave 时拿到的是 wrapped 对象——调 `env.observe()` 时 AOP 自动触发 `TraceWriter.after_observe()`，调 `llm.ainvoke()` 自动触发 `MetricsCollector.after_ainvoke()`。Loop 代码零 hook 感知。
+**AOP 织入流程**：Weaver 读取所有 hook 的 `__intercepts__` 声明（如 `Intercept("ainvoke", role="llm", advice="after")`），为 agent/env/llm 和 StepRecorder 生成 `AOPProxy` 包装。Loop 调用 `llm.ainvoke()` 时，代理触发 TraceWriter 的暂存 handler 与 MetricsCollector；Loop 调用 `recorder.record_step()` 时，代理触发 TraceWriter 写入完整 step。Loop 代码零 hook 感知。
 
 **Lifecycle vs AOP 两层 hook 接口**：
 - **Lifecycle 回调**（`on_run_start/end/error`）：由 AgentRuntime 在结构边界直接调用
@@ -773,13 +777,13 @@ class ReactLoop(AgentLoopBase):
 
 #### 协商规则（Avro-style resolution）
 
-Config 时，AgentRuntime 读取三方 wiring 执行协商：
+配置校验先保证 wiring 引用的 fragment 键在允许范围内；`AgentRuntime.prepare()` 再读取选中实例的三方声明，执行协商：
 
 ```
 env-sourced ∧ Agent/Loop required ∧ Env 提供  → 激活 resolver，填充到 Observation
 env-sourced ∧ Agent/Loop optional ∧ Env 提供  → 激活 resolver，填充到 Observation
 env-sourced ∧ Env 提供 ∧ 无人请求             → 不激活 resolver（性能优化，如 UITars 不算 DOM）
-env-sourced ∧ Agent/Loop required ∧ Env 不提供 → CONFIG ERROR（不兼容组合）
+env-sourced ∧ Agent/Loop required ∧ Env 不提供 → IncompatibleFragmentError（运行前指出缺失项和请求方）
 loop-sourced（如 action_result）              → 始终激活，Loop 自行填充
 ```
 
@@ -1224,7 +1228,7 @@ GAIA 场景：
 
 ### 4.6 Lifecycle Hooks 体系（AOP）
 
-**设计决策**：TraceWriter、MetricsCollector、LiveMonitor 等横切关注点通过 AOP Weaver 透明织入。Loop 不持有任何 hook/emitter 引用，调用 `env.observe()` / `llm.ainvoke()` 时 AOP 自动触发对应 hook handler。hook 走 conscribe 注册表，通过 YAML 配置启用和参数化。
+**设计决策**：TraceWriter、MetricsCollector、LiveMonitor 等横切关注点通过 AOP Weaver 透明织入。Loop 不持有任何 hook/emitter 引用，调用 `env.observe()`、`llm.ainvoke()` 或 `recorder.record_step()` 时，代理按已声明的拦截点触发对应 handler。hook 走 conscribe 注册表，通过 YAML 配置启用和参数化。
 
 **两层 hook 接口**：
 
@@ -1253,7 +1257,7 @@ class RuntimeHook(Protocol):
 ```python
 class Intercept:
     method: str           # 目标方法名（如 "observe", "ainvoke"）
-    role: str             # 目标角色（"env", "agent", "llm"）
+    role: str             # 目标角色（"env", "agent", "llm", "loop"）
     advice: AdviceType    # BEFORE, AFTER, AROUND
 
 class AdviceType(Enum):
@@ -1271,14 +1275,16 @@ Handler 命名约定：`{advice}_{method}` — 如 `after_observe`、`after_ainv
 **Weaver 织入流程**：
 
 ```python
-# AgentRuntime.execute() 中：
+# AgentRuntime.prepare() 中：
 weaver = Weaver(active_hooks)
-wrapped_env = weaver.wrap(env, role="env")       # env.observe → after_observe 自动触发
-wrapped_llm = weaver.wrap(llm, role="llm")       # llm.ainvoke → after_ainvoke 自动触发
+wrapped_env = weaver.wrap(env, role="env")
+wrapped_llm = weaver.wrap(llm, role="llm")       # llm.ainvoke → 暂存 LLM 调用
 wrapped_agent = weaver.wrap(agent, role="agent")
+wrapped_recorder = weaver.wrap(StepRecorder(), role="loop")  # record_step → 完整 step 落盘
 
-# Loop 接收 wrapped 对象，调用方法时 hook 透明拦截
-await loop.run(wrapped_agent, wrapped_env, task, llm=wrapped_llm, ...)
+# Loop 收到 wrapped 依赖，照常调用其方法；不直接调用 Hook
+loop.weave(wrapped_agent, env=wrapped_env, llm=wrapped_llm,
+           step_recorder=wrapped_recorder, ...)
 ```
 
 `AOPProxy` **懒解析**：wrapped 方法在首次属性访问时构建，并在底层属性被重新绑定时重建。这是必须的——`agent.run` 要到 `Loop.weave()` 之后才存在，wrap 时预构建会把框架的招牌拦截点 `Intercept("run", role="agent")` 判死。未被拦截的属性访问透明委托给原始对象；如果某个角色没有任何拦截器，`weaver.wrap()` 直接返回原始对象（零开销）。
@@ -1333,7 +1339,7 @@ LLM 实例**只有一条构造路径**：YAML 写 `model_type` + `provider` 判�
 
 ### 4.8 Memory 抽象
 
-**当前状态**：Memory 走 `MemoryRegistrar`（`memory_id`, flat），AgentBase 通过 `__wiring__["memory"] = "memory"`（Mode 1，自动发现）注入；Loop 直接调 `memory.add_message` / `memory.get_context_messages`，**不做协议协商**。
+**当前状态**：Memory 走 `MemoryRegistrar`（`memory_id`, flat），AgentBase 通过 `__wiring__["memory"] = "memory"`（Mode 1，自动发现）选择并注入实例。配置校验保证 `memory_id` 和所选策略的子配置有效；Loop 通过 `memory.add_message` / `memory.get_context_messages` 使用该实例。
 
 ```
 MemoryRegistrar = create_registrar("memory", BaseMemoryManager, discriminator_field="memory_id")
@@ -1342,15 +1348,15 @@ BaseMemoryManager (Protocol)
     ├── add_message(message)
     ├── get_context_messages() → list[BaseMessage]
     ├── clear()
-    └── memory_id: str
+    └── supports_protocols: frozenset[MessageProtocol]
          │
          ├── SimpleMemory          所有消息，有上限
          ├── SlidingWindowMemory   最近 N 条消息
          ├── TokenBudgetMemory     在 token 预算内尽量保留
-         └── SummaryMemory         LLM 压缩摘要
+         └── SummaryMemory         LLM 压缩摘要（规划中，未实现）
 ```
 
-> **未来工作（P1，未实现）**：Memory 协议协商——不同 Loop 范式需要不同的消息协议（ReAct 用 user/assistant，FunctionCalling 需要 tool_call/tool_result，PlanExecute 需要 planning/execution 分区）。届时 Loop 声明 `__wiring__["memory"] = ("memory", ["user_assistant", ...])`，Memory 声明支持的协议，AgentRuntime 在 prepare 阶段做 "Loop requires ⊆ Memory supports" 校验。在那之前，新 Loop 的 memory 兼容性由 Loop 自己在 `_execute` 内处理（如把 tool_call 退化为 assistant message）。
+**消息协议兼容性在装配期检查**：Loop 用 `__required_message_protocols__` 声明需求，Memory 用 `supports_protocols` 声明支持范围。`AgentRuntime.prepare()` 校验 `Loop requires ⊆ Memory supports`；失败时 `IncompatibleMemoryError` 点名 Loop、Memory 和缺失协议。`__wiring__` 在此处负责选择并注入 Memory，不把 `user_assistant` / `tool_call` 等协议名当作 `memory_id`。目前 ReAct 要求 `user_assistant`；`simple` 支持它，`sliding_window` 和 `token_budget` 还支持 `tool_call`。未来 Loop 的具体消息形状仍须在实现时定义。
 
 ### 4.9 Capability 抽象（ActionGroup + Resolver 合体）
 
@@ -1854,6 +1860,7 @@ class TraceWriter(HookBase):
     __registry_key__ = "trace_writer"
     __intercepts__ = [
         Intercept("ainvoke", role="llm", advice="after"),
+        Intercept("ainvoke", role="llm", advice="around"),
         Intercept("record_step", role="loop", advice="after"),
     ]
 
@@ -1870,8 +1877,16 @@ class TraceWriter(HookBase):
         """缓存本步的 LLM input/output — 等 commit point 一起写入。"""
         self._pending_messages.append((args[0], result))
 
+    async def around_ainvoke(self, *, proceed, args, kwargs, **ctx):
+        """失败时缓存调用及错误并重抛；成功路径仍由 after_ainvoke 缓存。"""
+        try:
+            return await proceed()
+        except Exception as exc:
+            self._pending_messages.append((args[0], _failed_call(exc)))
+            raise
+
     async def after_record_step(self, result, *, args, kwargs, **ctx):
-        """Commit point：Loop 交出 StepRecord 时，写入 observation +
+        """完整 step 的写入触发点：Loop 交出 StepRecord 时，写入 observation +
         LLM messages + step record，并原子更新 manifest。以「步完成」
         而非「LLM 返回」为边界，是因为一步可以有多次 LLM 调用。"""
         # 1. 写入 observation fragments（agent 实际看到的那一份）
@@ -1885,7 +1900,7 @@ class TraceWriter(HookBase):
         self._wal.finalize(RunStatus.COMPLETED)
 ```
 
-> **Commit 粒度说明**：与传统的 `step_end` 事件不同，AOP 方案以 `after_ainvoke` 为 commit point — 这是每步中最昂贵的操作（LLM 推理数秒，不可重试）。Action 执行结果不包含在本步 commit 中，但会在下一步的 observation 中自然被捕获。
+> **Commit 粒度说明**：`after_ainvoke` 只暂存 LLM 调用；一次 step 可能包含多次调用，而动作及其结果要到调用之后才产生。Loop 将含本步 actions、action results 和 usage 的完整 `StepRecord` 交给 `record_step()` 后，`after_record_step` 才写入观测、所有 LLM 消息和 step record，并调用 `WALWriter.commit_step()`。manifest 的原子更新是持久化提交点。若运行在 `record_step()` 前结束，已暂存的调用可作为 unfinished messages 落盘，但不冒充一个完成的 step。
 
 ### 5.5 RunTrace 的 lazy loading
 
@@ -1940,14 +1955,14 @@ class RunTrace:
 
 | 注册表 | 判别方式 | 说明 | 状态 |
 |--------|---------|------|------|
-| `AgentRegistrar` | `agent_id` (flat) | Agent 实现（领域知识），通过 `__wiring__` 声明兼容的 Loop / Capability | ✅ |
+| `AgentRegistrar` | `agent_id` (flat) | Agent 实现（领域知识），通过 `__wiring__` 限定可配置的 Loop / Capability 范围；实际兼容性在装配期校验 | ✅ |
 | `AgentLoopRegistrar` | `loop_id` (flat) | Loop 实现（执行策略）；通过 `__required_slots__` 声明所需 agent 方法 | ✅（仅 ReactLoop；CodeAct/FunctionCalling/PlanExecute 待 P2/P3） |
 | `LLMRegistrar` | `model_type.provider` (nested) | LLM provider 实现 | ✅ |
 | `EnvironmentRegistrar` | `env_type` (flat) | 环境实现，通过 `__wiring__["capabilities"]` 注入 Capabilities，按前缀路由 action | ✅（仅 BrowserEnvironment；CompositeEnvironment 待） |
 | `CapabilityRegistrar` | `capability_id` (flat) | 能力 = ActionGroup + Resolver 合体；持 backend wired field | ✅（仅 BrowserCapability；docker / tool_sandbox / desktop_vm / android / gpu_profiling 待） |
 | `BrowserProviderRegistrar` | `provider_id` (flat) | Browser capability 的 backend：`local_chrome` / `lexmount` / `skyvern_lite` / `browser_use_lite` / `airtop_lite` / `agentbay_lite` / `hyperbrowser_lite`。文件位于 `core/capabilities/browser/backends/` | ✅ |
 | `DockerProviderRegistrar` | `provider_id` (flat) | Docker capability 的 backend（`local_docker` / `ssh_docker` ...） | P2 占位待实现 |
-| `MemoryRegistrar` | `memory_id` (flat) | 记忆策略 | ✅（4 种；协议协商待 P1） |
+| `MemoryRegistrar` | `memory_id` (flat) | 记忆策略 | ✅（3 种；协议兼容性在 `prepare()` 校验，SummaryMemory 待实现） |
 | `HookRegistrar` | `hook_id` (flat) | Lifecycle hooks (AOP) | ✅（trace_writer / metrics；live_monitor 待 P3） |
 | `EvaluatorRegistrar` | `evaluator_id` (flat) | 评测策略 | 🚧 partial |
 | `TaskLoaderRegistrar` | `benchmark_name` (flat) | 任务数据加载 | ✅ |
@@ -1976,7 +1991,7 @@ class RunTrace:
 | **Strategy** | Loop 策略、DOM cleaners/serializers、mouse trajectory / typing rhythm、Memory、Evaluator — 通过注册表 key 切换 |
 | **策略即开关** | 拟人化没有与策略并列的布尔：`humanized` 是策略自身的属性，只有 `instant` 为 `False`（§4.13）。同一语义两个声明点必然产生无人报错的矛盾组合 |
 | **Registry (自动注册)** | conscribe 注册表，metaclass 驱动导入时注册 |
-| **`__wiring__` 跨注册表依赖** | Agent↔Loop 兼容性、Env↔Capability 注入、Capability↔Backend 注入、Observation 协商 |
+| **`__wiring__` 跨注册表依赖** | 限定可配置的注册键及子配置，并为 Env↔Capability、Capability↔Backend 等受体提供注入声明；Observation 协商读取其中的需求声明 |
 | **IoC / setattr-injected wired receptor** | `agent.llm`、`env.capabilities`、`capability.backend` 都是 conscribe `WiredField` descriptor + ConfigComposer setattr 注入 |
 | **AOP / Lifecycle Hooks** | TraceWriter, MetricsCollector — 通过 Weaver + `__intercepts__` + AOPProxy 透明织入 |
 | **Resolver / IoC** | Capability 内部按需解析 observation fragment（Watchdog 即 Resolver） |
@@ -2110,7 +2125,7 @@ environment:
 | **新增 Benchmark Loader** | 继承 `TaskLoaderBase` / `EvalLoaderBase` | SWE-bench, WebArena |
 | **新增 DOM Cleaner/Serializer** | 继承对应 Base | Markdown 序列化 |
 | **新增 Mouse Trajectory / Typing Rhythm 策略** | 继承 `MouseTrajectoryBase` / `TypingRhythmBase`，设 `__registry_key__`，实现 Protocol 全部成员（含 `click_hold_ms` / `aim_offset_px`），knobs 写成 `__init__` 关键字参数 | 新的运动模型；已训练模型的新导出格式属于 `learned` 的 backend，不是新策略（§4.13） |
-| **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 CLAUDE.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `scripts/generate_all.py::_collect_registrars` 注册，否则字段发成裸 `str` | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里 |
+| **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `scripts/generate_all.py::_collect_registrars` 注册，否则字段发成裸 `str` | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里 |
 | **配置字段扩展** | 给注册类添加 `Annotated[type, Field(...)]` | 自动出现在生成的 `_composed.py` config schema 中 |
 
 ---
@@ -2158,9 +2173,10 @@ environment:
        │                  agent.run(task), timeout=...)            │
        │                  → on_run_end                              │
        │                                                           │
-       │ AOP 拦截：env.observe → TraceWriter.after_observe          │
-       │           llm.ainvoke → MetricsCollector.after_ainvoke    │
-       │                       → TraceWriter.after_ainvoke (commit)│
+       │ AOP 拦截：llm.ainvoke → TraceWriter 暂存 LLM 调用             │
+       │                         MetricsCollector 累加 token       │
+       │           loop.record_step → TraceWriter 写入完整 step     │
+       │                              → manifest 原子提交          │
        │                                                           │
        └── 输出 AgentResult                                          │
                 │                                                  │
@@ -2251,11 +2267,11 @@ Browser Capability
 
 ### 13.2 Memory 协商（已决定）
 
-Memory 也通过 `__wiring__` 注入和协商。Loop 声明需要的消息协议（user_assistant / tool_call / planning 等），Memory 声明支持的协议。协商规则：Loop requires ⊆ Memory supports。详见 4.8 节。
+Agent 通过 `__wiring__` 选择并注入 Memory 策略，配置校验覆盖可选实现及其子配置。Loop 声明需要的消息协议（`user_assistant` / `tool_call` / `planning` 等），Memory 声明支持的协议；`AgentRuntime.prepare()` 检查 `Loop requires ⊆ Memory supports`，不把组件行为兼容性委托给配置生成。详见 §4.8。
 
 ### 13.3 Observation 二次协商（已决定）
 
-**方案 C — config 时 + runtime 启动前都做**。Config 时做静态验证（wiring 声明层面），AgentRuntime.execute() 启动前做二次验证（env setup 后 provides 可能因参数变化）。
+**两层检查，职责不同**。配置校验保证 wiring 引用的 fragment 键和子配置有效；选定 Agent、Loop、Environment 后，`AgentRuntime.prepare()` 执行三方协商，检查 required 是否由本次环境提供，并在失败时点名请求方和缺失 fragment。配置有效不代表组件组合在行为上兼容。
 
 ### 13.4 Observation 完整序列化（已决定）
 
@@ -2275,10 +2291,7 @@ conscribe 0.6.1 将支持 `__wiring__` Mode 2 三元素 tuple（`required + opti
 
 ### 14.1 Memory 消息协议的具体设计
 
-Loop 声明 `"memory": ("memory", ["user_assistant", "tool_call"])` 中的协议 key 具体是什么？需要定义：
-- 基础协议 key 清单（`user_assistant`, `tool_call`, `planning`, `code_execution` 等）
-- 每种协议对应的 BaseMessage 子类型
-- Memory 实现如何声明和适配不同协议
+当前协议键已有 `user_assistant`、`tool_call`、`planning`、`code_execution`，Loop 需求和 Memory 支持范围按 §4.8 在 `prepare()` 比较。新 Loop 引入 `planning` 或 `code_execution` 时，仍需定义这些协议对应的消息类型，以及 Memory 如何保存、裁剪并回放它们；这属于组件契约设计，不是把协议键写进 Memory 的 `__wiring__`。
 
 ### 14.2 Hierarchical / Multi-agent 编排
 

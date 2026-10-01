@@ -23,7 +23,7 @@ here is how this agent uses it:
   ``ParseError`` — never a DPR-1 guess; a point off the grid is clamped,
   like every screenshot point in the framework; a screenshot fragment that
   reports no geometry at all stops the run;
-- the seam CLAUDE.md §2.5 asks for: real negotiation against
+- the seam AGENTS.md §2.5 asks for: real negotiation against
   ``BrowserCapability`` → rendered prompt → a multi-action reply →
   ``parse_react_output`` → ``guarded_act`` → the real action classes → the
   emitted events, with the params each action declares.

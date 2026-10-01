@@ -1,6 +1,6 @@
 """Every registrar in the code must appear in the docs' registrar maps.
 
-CLAUDE.md §0.1 makes ``docs/architecture_design.md`` the source of truth and
+AGENTS.md §0.1 makes ``docs/architecture_design.md`` the source of truth and
 says the code is wrong when the two disagree. A registrar is this framework's
 top-level unit of extension — a whole varying axis, its own YAML block, its own
 generated config classes — so a registrar the design doc does not mention is
@@ -10,7 +10,7 @@ session, which will read the doc, not find it, and conclude the layer is legacy.
 That nearly happened: ``core/capabilities/browser/input/`` carried
 ``MouseTrajectoryRegistrar`` and ``TypingRhythmRegistrar`` — 16 files, two
 registries, the entire input humanization layer — through several rounds while
-neither the design doc nor CLAUDE.md's registrar map named either one. This
+neither the design doc nor AGENTS.md's registrar map named either one. This
 test is the mechanical version of the rule that was previously a habit, and it
 found a third omission (``NegotiationResultRegistrar``) the first time it ran.
 
@@ -40,12 +40,9 @@ worse than no guard:
 - The prose. §4.13 of the design doc explains the input humanization layer;
   this test only guarantees §6 lists its two registries. Deleting the prose
   and keeping the rows would pass.
-- ``CLAUDE.md`` when it is absent. It is **gitignored** (``.gitignore``
-  line 16) and therefore missing from a fresh clone, so its half of the rule
-  is enforced only where the file exists — which is every working tree an
-  agent session runs in, and none of CI. ``docs/architecture_design.md`` is
-  tracked and is required to exist; if it ever stops being the source of
-  truth, this test fails rather than quietly checking nothing.
+- Both maps are tracked inputs. If either ``AGENTS.md`` or
+  ``docs/architecture_design.md`` disappears, the test fails rather than
+  quietly checking only the surviving copy.
 """
 
 from __future__ import annotations
@@ -60,22 +57,21 @@ import pytest
 
 from spectragent import PACKAGE_ROOT, REPO_ROOT
 
-#: The design doc's registrar table (§6) and CLAUDE.md's (§2.2). Both are
+#: The design doc's registrar table (§6) and AGENTS.md's (§2.2). Both are
 #: "the registrar map" to a reader, so both are held to the same rule.
 _MAPS: dict[str, tuple[Path, str]] = {
     "docs/architecture_design.md §6": (
         REPO_ROOT / "docs" / "architecture_design.md",
         "## 6. conscribe 注册表总览",
     ),
-    "CLAUDE.md §2.2": (
-        REPO_ROOT / "CLAUDE.md",
+    "AGENTS.md §2.2": (
+        REPO_ROOT / "AGENTS.md",
         "### 2.2 Registrar map",
     ),
 }
 
-#: The map that must exist. The other is gitignored, so it is checked where it
-#: is present and skipped where it is not — see the module docstring.
-_REQUIRED_MAP = "docs/architecture_design.md §6"
+#: Both maps are version-controlled migration targets and must exist.
+_REQUIRED_MAPS = frozenset(_MAPS)
 
 #: Backticked ``SomethingRegistrar`` token inside a markdown table cell.
 _REGISTRAR_TOKEN = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*Registrar)`")
@@ -192,20 +188,21 @@ CODE_REGISTRARS = _code_registrars()
 MAP_ROWS = {label: _map_rows(*spec) for label, spec in _MAPS.items() if spec[0].exists()}
 
 
-def _rows_or_skip(label: str) -> dict[str, str]:
+def _rows_or_fail(label: str) -> dict[str, str]:
     rows = MAP_ROWS.get(label)
     if rows is None:
-        pytest.skip(f"{label}: file is gitignored and absent from this checkout")
+        pytest.fail(f"{label}: tracked instruction map is absent from this checkout")
     return rows
 
 
-def test_the_required_map_is_present() -> None:
-    """The tracked map may not go missing or get renamed unnoticed.
+def test_the_required_maps_are_present() -> None:
+    """Neither tracked map may go missing or get renamed unnoticed.
 
     Without this, deleting §6 from the design doc would turn every check
     below into a skip — the map would be gone and nothing would say so.
     """
-    assert _REQUIRED_MAP in MAP_ROWS, f"{_REQUIRED_MAP} is missing — retarget this test"
+    missing = sorted(_REQUIRED_MAPS - MAP_ROWS.keys())
+    assert not missing, f"required registrar maps are missing: {missing}"
 
 
 def test_the_scan_and_the_maps_are_both_non_trivial() -> None:
@@ -231,17 +228,17 @@ def test_every_registrar_in_the_code_is_in_the_map(label: str) -> None:
     The remedy depends on who wrote the registrar, and the two branches are
     not the same move — see the assertion message.
     """
-    rows = _rows_or_skip(label)
+    rows = _rows_or_fail(label)
     missing = sorted(name for name in CODE_REGISTRARS if name not in rows)
     assert not missing, (
         f"{label} does not mention: "
         + ", ".join(f"{n} ({CODE_REGISTRARS[n].where})" for n in missing)
         + ". A registrar is a top-level extension axis; one the docs do not "
-        "name is deletable on sight under CLAUDE.md §0.1. Two remedies, and "
+        "name is deletable on sight under AGENTS.md §0.1. Two remedies, and "
         "which one applies depends on whether you wrote it: (a) you are "
         "adding this registrar — write the row in this same change, that "
         "coupling is what this test buys; (b) this fired on a registrar you "
-        "did not author — do not just add a row. CLAUDE.md §3.1 lists "
+        "did not author — do not just add a row. AGENTS.md §3.1 lists "
         "'existing code implements something architecture_design.md does not "
         "mention' as a stop-and-ask, because the doc is the *target* state "
         "and a row is an endorsement that the axis should exist. Confirm "
@@ -257,7 +254,7 @@ def test_the_map_names_the_discriminator_the_code_uses(label: str) -> None:
     Checked as containment rather than equality because the maps spell the
     nested case as ``model_type.provider`` and annotate rows with ``(flat)``.
     """
-    rows = _rows_or_skip(label)
+    rows = _rows_or_fail(label)
     wrong: list[str] = []
     for name, reg in CODE_REGISTRARS.items():
         row = rows.get(name)

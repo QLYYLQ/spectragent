@@ -273,13 +273,13 @@ Resolver 模式使 Capability 内部通过 IoC 方式激活 fragment 提供者�
 
 ---
 
-### M03: AgentLoop 注册表 + 兼容性 Protocol
+### M03: AgentLoop 注册表 + slot 兼容性校验
 
 **优先级**: P0 | **前置依赖**: M01 | **被依赖方**: M08, M09, M12, M17, M20, M22, M24
 
 #### 业务实现
 
-创建 `AgentLoopRegistrar` — 独立于 Agent 的 Loop 策略注册表。定义 `AgentLoop` Protocol 以及每种 Loop 对 Agent 的要求 Protocol（`ReactCompatible`、`CodeActCompatible`、`FuncCallCompatible`、`PlanExecCompatible`）。
+创建 `AgentLoopRegistrar` — 独立于 Agent 的 Loop 策略注册表。`AgentLoop` 是公共契约；每种 Loop 用 `__required_slots__` 声明它要求 Agent 提供的方法。
 
 #### 业务逻辑
 
@@ -294,20 +294,20 @@ Resolver 模式使 Capability 内部通过 IoC 方式激活 fragment 提供者�
 
 **AgentLoop Protocol**：
 - `loop_id: str` — 注册表判别字段
-- `run(agent, env, task, **kwargs) → AgentResult` — 唯一核心方法
-- kwargs 中包含 `llm`、`memory`、`active_descriptors`、`act_fn`(guarded_act)、`negotiated_obs` 等由 AgentRuntime 注入的协商结果
+- `weave(agent, **deps)` — 装配运行依赖并把 Loop 的执行闭包装到 `agent.run`
+- `_execute(agent, task, **kwargs)` — Loop 的执行入口；依赖包括 `llm`、`memory`、`active_descriptors`、`act_fn`(guarded_act)、`negotiated_obs`
 - agent/env/llm 实际上是 AOPProxy 包装对象，方法调用时 hook 自动触发
 
-**兼容性 Protocol 体系**：
+**每种 Loop 的方法要求**：
 
-| Protocol | 要求 Agent 实现 | 对应 Loop |
-|----------|----------------|----------|
-| ReactCompatible | `build_react_prompt()`, `parse_react_output()`, `get_react_output_model()` | ReactLoop |
-| CodeActCompatible | `build_code_prompt()`, `parse_code_output()` | CodeActLoop |
-| FuncCallCompatible | `build_funccall_prompt()`, `get_tool_schemas()` | FunctionCallingLoop |
-| PlanExecCompatible | `build_plan_prompt()`, `build_exec_prompt()`, `parse_plan()` | PlanExecuteLoop |
+| Loop | 要求 Agent 实现的 slots |
+|------|------------------------|
+| ReactLoop | `build_react_prompt()`, `parse_react_output()`；`get_react_output_model()` 可选 |
+| CodeActLoop（规划） | `build_code_prompt()`, `parse_code_output()` |
+| FunctionCallingLoop（规划） | `build_funccall_prompt()`, `get_tool_schemas()` |
+| PlanExecuteLoop（规划） | `build_plan_prompt()`, `build_exec_prompt()`, `parse_plan()` |
 
-一个 Agent 可以同时实现多个 Protocol（一份代码支持多种 Loop），通过 `__wiring__` 声明兼容哪些 Loop。AgentRuntime 在运行前通过 `isinstance` 检查实际兼容性。
+一个 Agent 可以提供多种 Loop 所需的 slots。`__wiring__` 只限定配置能选择哪些 Loop 注册键及其子配置；`AgentRuntime.prepare()` 调用 Loop 的 slot 校验，缺方法时抛 `IncompatibleError`，点名 Loop 和缺失方法。
 
 **依赖方向**：单向无循环。Loop 调用 Agent 的方法（Loop → Agent），Agent 不持有 Loop 引用。Agent 是被动的「知识提供者」，Loop 是主动的「编排驱动者」。
 
@@ -315,7 +315,7 @@ Resolver 模式使 Capability 内部通过 IoC 方式激活 fragment 提供者�
 
 Agent-Loop 分离是整个框架从「browser-only」走向「multi-scenario」的核心杠杆。当前三个 Agent（BrowserUse / Skyvern / UITars）共享同一个 ReAct 循环，但循环逻辑混在 `BaseReactAgent.run()` 中。SWE 场景需要 CodeAct 循环、Tool-Use 需要 FunctionCalling 循环 — 如果不分离，每种新循环都要重复实现超时控制、错误处理、指标收集等样板代码。
 
-`__wiring__` 跨注册表声明解决了 N×M 组合爆炸：不需要 `SWEReactAgent` + `SWECodeActAgent`，只需一个 `SWEAgent` 同时实现 `ReactCompatible` + `CodeActCompatible`，配置中选 `agent_loop: codeact` 即可。conscribe 在生成配置类时自动将 loop 字段约束为 `Literal["react", "codeact"]`，非法组合在 Pydantic 校验阶段即被拒绝。
+`__wiring__` 跨注册表声明让一个 `SWEAgent` 的配置可选择 `react` 或 `codeact`，无需拆成 `SWEReactAgent` 与 `SWECodeActAgent`。conscribe 生成的配置拒绝范围外的 Loop 键；范围内的 Loop 是否真能调用这个 Agent，由 `prepare()` 校验 slots。
 
 ---
 
@@ -343,9 +343,9 @@ Agent-Loop 分离是整个框架从「browser-only」走向「multi-scenario」�
 
 - `blocking: bool` — 标识此 hook 是否必须完成后 agent 才继续（TraceWriter=True 确保落盘，LiveMonitor=False 异步推送）
 
-**AOP Weaver**：AgentRuntime 在驱动 Loop 之前，通过 Weaver 读取所有 hook 的 `__intercepts__` 声明，为 agent/env/llm 构建 `AOPProxy` 包装对象。Loop 接收到的是 wrapped 对象 — 调用方法时 hook handler 透明触发。Weaver 只包装有拦截器的方法，无拦截器的角色直接返回原始对象（零开销）。
+**AOP Weaver**：AgentRuntime 在驱动 Loop 之前，通过 Weaver 读取所有 hook 的 `__intercepts__` 声明，为 agent/env/llm 以及作为 loop 角色的 StepRecorder 构建 `AOPProxy` 包装对象。Loop 接收到的是 wrapped 依赖 — 调用方法时 hook handler 透明触发。Weaver 只包装有拦截器的方法，无拦截器的角色直接返回原始对象（零开销）。
 
-**拦截点覆盖**：不同 Hook 拦截不同方法 — TraceWriter 拦截 `env.observe`（缓存 observation）和 `llm.ainvoke`（commit point），MetricsCollector 拦截 `llm.ainvoke`（提取 token usage）。对于不映射到方法调用的语义事件（如 PlanExecuteLoop 的「规划完成」），解决方案是将该语义建模为 Agent Protocol 方法（如 `agent.parse_plan()`），AOP 自然覆盖。
+**拦截点覆盖**：不同 Hook 声明各自需要的方法。TraceWriter 在 `llm.ainvoke` 后暂存消息，并在 `loop.record_step` 后写入完整 step；MetricsCollector 拦截 `llm.ainvoke` 统计 token。两者都通过 `around_ainvoke` 处理各自需要记录的失败调用。对于尚无方法对应的语义事件（如 PlanExecuteLoop 的「规划完成」），将其建模为 Agent/Loop Protocol 方法（如 `agent.parse_plan()`），再由 Hook 声明拦截。
 
 **YAML 驱动的 hook 配置**：hook 走 conscribe 注册表，通过 YAML 配置启用、参数化、设置 blocking 属性。
 
@@ -478,8 +478,8 @@ Resolver 模式使 Capability 内部按需提供 fragment。以 Browser 为例�
 
 #### 业务逻辑
 
-**execute() 主流程**：
-1. **兼容性验证** — 检查 Agent 是否满足 Loop 要求的 Protocol（如 ReactLoop 要求 ReactCompatible）
+**prepare() 装配、execute() 驱动的主流程**：
+1. **兼容性验证** — 检查 Agent 是否提供 Loop 要求的 callable slots（如 ReactLoop 要求 `build_react_prompt` 和 `parse_react_output`）
 2. **Observation 协商** — 调用 `spectragent.core.negotiation.negotiate_observation(agent, loop, env)`，综合 Capability provides / Agent requires / Loop requires，输出 `ObservationNegotiationResult`
 3. **Action 协商** — 调用 `negotiate_action(agent, env)` → `ActionNegotiationResult`，生成 active_descriptors + guarded_act 闭包
 4. **AOP 织入** — Weaver 读取所有 hook 的 `__intercepts__` 声明，为 agent/env/llm 构建 AOPProxy 包装对象
@@ -584,20 +584,20 @@ WAL 设计借鉴了数据库 WAL 的核心思想：每步确认持久化后才�
 
 #### 业务实现
 
-实现两个核心 RuntimeHook：`TraceWriter`（全量落盘，blocking=True）和 `MetricsCollector`（token/cost 统计，blocking=True 但开销极低）。将当前散落在 `BaseReactAgent.run()` 中的 metrics 逻辑迁移到 Hook 中。
+实现两个核心 RuntimeHook：`TraceWriter`（全量落盘，blocking=True）和 `MetricsCollector`（token 统计，blocking=True 但开销极低）。将当前散落在 `BaseReactAgent.run()` 中的 metrics 逻辑迁移到 Hook 中。
 
 #### 业务逻辑
 
 **TraceWriter**（AOP 拦截 + lifecycle 回调）：
-- `__intercepts__` = `[Intercept("observe", role="env", advice="after"), Intercept("ainvoke", role="llm", advice="after")]`
+- `__intercepts__` = `[Intercept("ainvoke", role="llm", advice="after"), Intercept("ainvoke", role="llm", advice="around"), Intercept("record_step", role="loop", advice="after")]`
 - `on_run_start` — 创建 WALWriter + run 目录 + 写入 config 快照 + 初始化 manifest
-- `after_observe(result, ...)` — 缓存 observation 数据，等待 commit point
-- `after_ainvoke(result, ...)` — **commit point**：写入缓存的 observation fragments + LLM input/output + step record，原子更新 manifest。以 LLM 返回（每步最昂贵的不可重试操作）为 commit 边界
-- `on_run_end` — 写入 result.json + 标记 manifest 为 COMPLETED
+- `after_ainvoke(result, ...)` — 暂存一次成功的 LLM 调用；`around_ainvoke` 暂存抛异常的调用并测量等待时间
+- `after_record_step(result, ...)` — Loop 交出完整 StepRecord 后写入本步观测、所有 LLM 消息、动作及结果；调用 `WALWriter.commit_step()` 原子更新 manifest，这才是持久化提交点
+- `on_run_end` — 写入 result.json、处理尚未形成完整 step 的消息并更新最终状态
 - blocking=True — 必须确认落盘后 agent 才能继续下一步
 
 **MetricsCollector**（AOP 拦截 + lifecycle 回调）：
-- `__intercepts__` = `[Intercept("ainvoke", role="llm", advice="after")]`
+- `__intercepts__` = `[Intercept("ainvoke", role="llm", advice="after"), Intercept("ainvoke", role="llm", advice="around")]`
 - `after_ainvoke(result, ...)` — 从 ChatInvokeCompletion.usage 中提取 token usage
 - 按 model 分组累加 prompt_tokens / completion_tokens / cached_tokens
 - `on_run_end` — 将聚合的 AgentMetrics + AgentUsage 附加到 AgentResult
@@ -615,7 +615,7 @@ WAL 设计借鉴了数据库 WAL 的核心思想：每步确认持久化后才�
 
 #### 业务实现
 
-改造 `AgentBase` 和 `BaseAgent` Protocol，从「内嵌 run/step 的编排者」变为「被动的领域知识提供者」。增加 `__wiring__` 声明，实现 Loop 兼容性 Protocol。提供过渡期 shim 保持旧 API 兼容。
+改造 `AgentBase` 和 `BaseAgent` Protocol，从「内嵌 run/step 的编排者」变为「被动的领域知识提供者」。增加 `__wiring__` 声明可配置的 Loop 范围，并实现各 Loop 所需的方法 slots。
 
 #### 业务逻辑
 
@@ -631,11 +631,11 @@ WAL 设计借鉴了数据库 WAL 的核心思想：每步确认持久化后才�
 - 基类默认 `"agent_loop": "agent_loop"` — 允许所有 Loop（子类收窄）
 - `__wiring__` 支持 MRO 合并 — 子类可以收窄父类的声明
 
-**过渡期 shim**：在 `BaseReactAgent` 上保留 `run()` 方法签名，内部委托给 `AgentRuntime + ReactLoop`。这样现有的直接调用 `agent.run(env, task)` 的外部代码不受影响。shim 层会在迁移完成后移除。
+**运行入口**：`AgentRuntime.prepare()` 校验 slots、协商依赖，再由 Loop 把 `agent.run(task)` 安装到实例上；不保留旧的 `agent.run(env, task)` 路径。
 
 #### 设计思考
 
-Agent 基类改造是三个 Browser Agent 适配（M14）的前提。改造的核心原则是「一份代码支持多种 Loop」— BrowserUseAgent 未来可能不仅用 ReactLoop，还可能用 PlanExecuteLoop（先规划再执行）。通过实现多个兼容性 Protocol，同一个 Agent 类无需翻倍。
+Agent 基类改造是三个 Browser Agent 适配（M14）的前提。改造的核心原则是「一份代码支持多种 Loop」— BrowserUseAgent 未来可能不仅用 ReactLoop，还可能用 PlanExecuteLoop（先规划再执行）。同一个 Agent 提供各 Loop 所需的 slots 即可，无需为每种 Loop 建一个 Agent 类。
 
 ---
 
@@ -664,7 +664,7 @@ Agent 基类改造是三个 Browser Agent 适配（M14）的前提。改造的�
 
 选择 adapter 模式而非从头重写的原因：BrowserSession + Watchdog 系统已有约 3000 行成熟代码和大量 edge case 处理（crash recovery、multi-tab、security watchdog 等）。重写风险高且收益低。Adapter 让我们在不动 BrowserSession 内部的情况下获得 Capability 抽象，待架构稳定后再考虑内联。
 
-**2026-04-08 修订**：初版实现（见 `.claude/plans/polymorphic-munching-pillow.md` 的 M13 节）虽然把 BrowserSession 重写成了 `BrowserCapability`，但保留了 `_ACTION_EVENT_MAP` / `_ACTION_DESCRIPTORS` / `_translate_params` 这套硬编码中心节点反模式。M13-Rev（见同文件 M13-Rev 节）修正为 per-action conscribe 注册 + 对称协商：每个 browser action 是一个独立注册类，agent wiring 用 `(required, optional)` 声明需要的动作名，capability wiring 用 `[provides]` 声明能提供的动作名，AgentRuntime 执行 `negotiate_actions`，配置错误在 runtime 启动前抛 `IncompatibleActionError`。这才真正符合 `architecture_design.md §4.5` 和 `design_discussion.md §3.3` 的对称协商设计意图。
+**2026-04-08 修订**：初版 M13 实现虽然把 BrowserSession 重写成了 `BrowserCapability`，但保留了 `_ACTION_EVENT_MAP` / `_ACTION_DESCRIPTORS` / `_translate_params` 这套硬编码中心节点反模式。M13-Rev 修正为 per-action conscribe 注册 + 对称协商：每个 browser action 是一个独立注册类，agent wiring 用 `(required, optional)` 声明需要的动作名，capability wiring 用 `[provides]` 声明能提供的动作名，AgentRuntime 执行 `negotiate_actions`，配置错误在 runtime 启动前抛 `IncompatibleActionError`。这才真正符合 `architecture_design.md §4.5` 和 `design_discussion.md §3.3` 的对称协商设计意图。
 
 ---
 
@@ -674,7 +674,7 @@ Agent 基类改造是三个 Browser Agent 适配（M14）的前提。改造的�
 
 #### 业务实现
 
-将 BrowserUseAgent、SkyvernAgent、UITarsAgent 三个现有 agent 适配到新的 Agent-Loop 分离架构：实现 `ReactCompatible` Protocol、添加 `__wiring__` 声明、将编排逻辑移交 ReactLoop。
+将 BrowserUseAgent、SkyvernAgent、UITarsAgent 三个现有 agent 适配到新的 Agent-Loop 分离架构：实现 ReactLoop 要求的 slots、添加 `__wiring__` 配置范围声明、将编排逻辑移交 ReactLoop。
 
 #### 业务逻辑
 
@@ -686,7 +686,7 @@ Agent 基类改造是三个 Browser Agent 适配（M14）的前提。改造的�
 | SkyvernAgent | Jinja2 模板渲染 prompt、action_history_window、TOTP/2FA 支持 | 模板渲染保留在 build_react_prompt 中（Agent 领域知识）；action_history_window 影响 Memory 策略 |
 | UITarsAgent | 坐标解析（AST parser）、prompt_template 切换（COMPUTER_USE / MOBILE_USE） | 坐标解析保留在 parse_react_output 中；prompt_template 保留为 Agent 配置字段 |
 
-**统一适配模式**：每个 Agent 实现三个 ReactCompatible 方法：
+**统一适配模式**：每个 Agent 提供 ReactLoop 所需的方法；`get_react_output_model()` 是可选 slot：
 - `build_react_prompt(observation)` ← 从当前的 `build_messages()` 重构
 - `parse_react_output(llm_output)` ← 从当前的 `parse_llm_output()` 重构
 - `get_react_output_model()` ← 从当前的 `get_output_model()` 重构
@@ -773,7 +773,7 @@ Record Once, Evaluate Many 是框架的核心原则 — agent 运行时全量落
 
 #### 业务实现
 
-扩展 Memory 的注册和使用方式，支持通过 `__wiring__` 进行 Loop-Memory 消息协议协商。不同 Loop 范式需要不同的消息结构（ReAct 用 user/assistant，FunctionCalling 需要 tool_call/tool_result），Memory 需要声明自己支持哪些协议。
+Agent 通过 `__wiring__` 选择并注入 Memory 策略；Loop 与 Memory 各自声明消息协议需求和支持范围，由 `AgentRuntime.prepare()` 检查两者能否配合。配置校验负责 `memory_id` 和所选策略的子配置，不判定这两个实例的行为兼容性。
 
 #### 业务逻辑
 
@@ -783,21 +783,21 @@ Record Once, Evaluate Many 是框架的核心原则 — agent 运行时全量落
 - `planning` — 规划协议（planning/execution 分区消息）
 - `code_execution` — 代码执行协议（code_generated + execution_result 消息）
 
-**Loop 声明需求**（通过 `__wiring__`）：
-- ReactLoop: `"memory": ("memory", ["user_assistant"])` — 只需基础对话
-- FunctionCallingLoop: `"memory": ("memory", ["user_assistant", "tool_call"])` — 需要 tool 消息支持
-- PlanExecuteLoop: `"memory": ("memory", ["user_assistant", "planning"])` — 需要规划分区
+**Loop 声明需求**（`__required_message_protocols__`）：
+- ReactLoop: `{ "user_assistant" }` — 只需基础对话，已实现
+- FunctionCallingLoop（规划）: `{ "user_assistant", "tool_call" }` — 需要 tool 消息支持
+- PlanExecuteLoop（规划）: `{ "user_assistant", "planning" }` — 需要规划分区
 
-**Memory 声明支持**（通过 `__wiring__`）：
-- SlidingWindowMemory: 支持 `["user_assistant", "tool_call"]`
-- TokenBudgetMemory: 支持 `["user_assistant", "tool_call"]`
-- SummaryMemory: 支持 `["user_assistant"]`（压缩摘要与 tool_call 消息不兼容）
+**Memory 声明支持**（`supports_protocols`）：
+- SimpleMemory: 支持 `{ "user_assistant" }`
+- SlidingWindowMemory、TokenBudgetMemory: 支持 `{ "user_assistant", "tool_call" }`
+- SummaryMemory（规划）: 预计只支持 `{ "user_assistant" }`；具体契约在实现时确定
 
-**协商规则**：Loop requires ⊆ Memory supports，否则配置错误。
+**协商规则**：`Loop requires ⊆ Memory supports`，否则 `prepare()` 抛 `IncompatibleMemoryError`，说明 Loop、Memory 和缺失协议。
 
 #### 设计思考
 
-Memory 协商看似小功能，但避免了一类隐蔽 bug：用户配置 `agent_loop: function_calling` + `memory: summary` → SummaryMemory 不知道怎么处理 tool_call 消息 → 运行时出现难以排查的消息格式错误。通过 `__wiring__` 在配置阶段就拒绝非法组合，把运行时错误提升为配置时错误。
+Memory 协商避免了用户选择的 Loop 需要 `tool_call`、Memory 却只能保存普通对话时，直到调用 LLM 才出现难以定位的消息错误。两个子配置各自有效仍可能无法协作；`prepare()` 在运行前报出明确的组合错误。
 
 ---
 
@@ -819,7 +819,7 @@ Memory 协商看似小功能，但避免了一类隐蔽 bug：用户配置 `agen
 - Trace 完整性：RunTrace 文件可被 Evaluator 正确读取和评分
 - 配置驱动：通过 YAML 配置切换 Agent / LLM / Memory / Hook，无需改代码
 
-**回退策略**：过渡期 shim（M12）保持旧 API 可用。如果新架构在某个 benchmark 上有问题，可以临时回退到旧路径排查。
+**问题定位**：若端到端结果与改造前不同，比较同一 task 的配置快照、prompt、action 和 RunTrace，定位差异后修正新路径。
 
 #### 设计思考
 
@@ -876,7 +876,7 @@ DockerCapability 是从 browser-only 走向 multi-scenario 的第一个新 capab
 - `code_generated` — LLM 生成代码后触发
 - `verification` — 代码执行后验证结果时触发
 
-**与 CodeActCompatible Protocol 的关系**：
+**与 CodeActLoop slots 的关系**：
 - Agent 实现 `build_code_prompt(observation)` — 构建面向代码生成的 prompt
 - Agent 实现 `parse_code_output(code_result)` — 从代码执行结果中提取 action
 
@@ -892,7 +892,7 @@ CodeActLoop 验证了 Agent-Loop 分离的核心价值 — 同一个 SWEAgent �
 
 #### 业务实现
 
-实现 `SWEAgent`（`__registry_key__ = "swe_agent"`），面向软件工程 benchmark（SWE-bench 等）。Agent 同时实现 ReactCompatible + CodeActCompatible，通过配置选择不同 Loop。
+实现 `SWEAgent`（`__registry_key__ = "swe_agent"`），面向软件工程 benchmark（SWE-bench 等）。Agent 提供 ReactLoop 与 CodeActLoop 各自要求的 slots，通过配置选择不同 Loop。
 
 #### 业务逻辑
 
@@ -906,12 +906,12 @@ CodeActLoop 验证了 Agent-Loop 分离的核心价值 — 同一个 SWEAgent �
 - 输出解析理解代码结构（diff 格式、bash 命令）
 - 支持 task-specific 上下文（issue 描述、repo 结构、已有测试）
 
-**ReactCompatible 实现**：逐步 action — observe 终端输出 → 构建 prompt → LLM 决定下一个 bash/edit 命令
-**CodeActCompatible 实现**：代码生成 — observe 终端输出 → 构建 prompt → LLM 生成完整修复代码 → sandbox 执行 → 验证
+**ReactLoop slots**：逐步 action — observe 终端输出 → 构建 prompt → LLM 决定下一个 bash/edit 命令
+**CodeActLoop slots**：代码生成 — observe 终端输出 → 构建 prompt → LLM 生成完整修复代码 → sandbox 执行 → 验证
 
 #### 设计思考
 
-SWE Agent 是 Agent-Loop 分离后第一个「一个 Agent 支持多种 Loop」的实例。它验证了 __wiring__ 跨注册表依赖声明的实际效果：`agent_loop: codeact` 时 conscribe 自动验证 SWEAgent 实现了 CodeActCompatible，否则配置错误。
+SWE Agent 是 Agent-Loop 分离后第一个「一个 Agent 支持多种 Loop」的实例。`__wiring__` 让配置可以选择 `codeact`，但不验证 SWEAgent 的方法实现；缺少 CodeActLoop 要求的 slots 时，`prepare()` 抛出解释缺失方法的错误。
 
 ---
 
@@ -980,7 +980,7 @@ ToolSandboxCapability 是 get_action_descriptors() 接口设计的压力测试 �
 #### 业务逻辑
 
 **两阶段编排**：
-1. **Planning 阶段** — 调用 `agent.build_plan_prompt()` → LLM 生成执行计划 → `agent.parse_plan()` 解析为步骤列表 → dispatch "plan_generated" 事件
+1. **Planning 阶段** — 调用 `agent.build_plan_prompt()` → LLM 生成执行计划 → `agent.parse_plan()` 解析为步骤列表；需要观察规划完成时可拦截 `parse_plan` 方法
 2. **Execution 阶段** — 逐步执行计划中的步骤。每步：observe → 构建 step-specific prompt → LLM → action → act
 3. **可选 Replan** — 如果执行过程中偏离计划（如遇到意外状态），可触发重新规划
 
@@ -988,16 +988,16 @@ ToolSandboxCapability 是 get_action_descriptors() 接口设计的压力测试 �
 - ReactLoop：每步独立决策（observe → think → act）
 - PlanExecuteLoop：先整体规划，然后按计划执行（plan → execute × N）
 
-**特有 emit 事件**：`plan_generated` — 仅在规划/重规划时触发，其他 Loop 没有此事件。
+**特有方法边界**：`agent.parse_plan()` — 规划/重规划完成后返回计划；Hook 可声明 `after_parse_plan` 拦截，不增加 emitter 旁路。
 
-**PlanExecCompatible Protocol 要求**：
+**PlanExecuteLoop 所需 slots**：
 - `build_plan_prompt(observation)` — 构建规划 prompt
 - `build_exec_prompt(observation, plan, current_step)` — 构建执行 prompt
 - `parse_plan(llm_output)` — 解析执行计划
 
 #### 设计思考
 
-PlanExecuteLoop 适用于 GAIA 等需要多步推理的 benchmark — 先分析任务需要哪些步骤（搜索信息 → 计算 → 验证），再逐步执行。它也验证了 Hook 体系的灵活性 — plan_generated 事件只有 PlanExecuteLoop 会发出，TraceWriter 通过通用的 handle() 方法自动记录，无需为新 Loop 修改 TraceWriter 代码。
+PlanExecuteLoop 适用于 GAIA 等需要多步推理的 benchmark — 先分析任务需要哪些步骤（搜索信息 → 计算 → 验证），再逐步执行。若计划需要进入 trace，应明确其数据契约并让相应 Hook 拦截 `parse_plan()`；不会凭一个通用 `handle()` 自动落盘。
 
 ---
 

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to OpenAI Codex when working with code in this repository.
 
 ## 0. Read this first — this repo is mid-refactor
 
@@ -8,13 +8,21 @@ This project is a **large-scale refactor in progress**. Its current shape is tra
 
 1. **Source of truth is `docs/architecture_design.md`, not the code.** All code under `spectragent/` is disposable — deletable, renameable, rewritable. When code disagrees with `architecture_design.md`, the code is wrong and the task is to change it. Never reshape a new design to accommodate existing files, class names, or import paths.
 
-2. **`architecture_design.md` itself evolves.** Re-read the relevant section at the start of every non-trivial task (use `Grep`/`Read` with offset/limit — the file is >1700 lines). Do not rely on memories of prior sessions. If the doc is ambiguous or stale, flag it and ask the user before coding — **do not** invent a compromise.
+2. **`architecture_design.md` itself evolves.** Re-read the relevant section at the start of every non-trivial task (locate it with `rg`, then use a bounded read — the file is >1700 lines). Do not rely on memories of prior sessions. If the doc is ambiguous or stale, flag it and ask the user before coding — **do not** invent a compromise.
 
 3. **Supplementary design docs (read on demand):**
-   - `docs/execution_dag.md` — M01–M26 module breakdown with priorities (P0–P3), dependencies, and status. This is the authoritative implementation order.
+   - `docs/execution_dag.md` — M01–M26 module breakdown with priorities (P0–P3), dependencies, and status. This is the authoritative implementation order; revalidate status against current code and tests.
    - `docs/design_discussion.md` — rationales and rejected alternatives for key decisions (Agent-Loop split, Observation fragments, Action wiring, Environment composition).
    - `docs/a2a_protocol_design.md`, `docs/self_evolution_design.md`, `docs/benchmark_design_fixes.md` — orthogonal subsystems; skim only when the task touches them.
    - `docs/flat_capability_architecture.svg` — Capability layer visual.
+   - `docs/llm/dmxapi.cn.md` — measured routing rules for the dmxapi.cn gateway (which `model_type` + `base_url` per model family) and the gateway failure modes behind them. Read it **before** debugging structured output against any gateway: the headline is that HTTP 200 does not mean the schema was honoured, and that DMX round-robins upstream channels, which makes its Claude routes unfit for reproducible evaluation.
+
+   **Unfinished continuation records (not design authority):**
+   - `HANDOFF_260918_port_residue.md` + `HANDOFF_260918_skyvern_cleaner.md` — the preserved heavy continuation pair. The broad residue report has mixed status because later commits completed part of it. The SkyvernCleaner path remains explicitly unfinished; read `docs/ref_gap_analysis.md` C1 for the later delete-vs-complete decision context before acting.
+   - `docs/jev_system_one_model.md` — user-owned, unfinished Jev/System One research and decision memo. Preserve it. Every proposed integration remains pending; read it when work touches decision models, cascade loops, dense probes, evaluator triage, or non-agent LLM attribution. It is not permission to implement a proposal or a substitute for `architecture_design.md`.
+   - `HANDOFF_260916_findings.md` + `HANDOFF_260916_next.md` — the anti-bot/input-research evidence pair. Preserve as dated evidence; many backlog items were later completed, rejected, or superseded.
+
+   All root `HANDOFF_*.md` files are dated evidence, not current task lists. Follow their explicit supersession notices and revalidate every apparently open item against current design, code, tests, and later commits.
 
 4. **Do not preserve the legacy code path.** Specifically: no `# deprecated` re-exports, no parallel old/new class pairs, no "bridge" adapters that keep an obsolete shape alive, no migration shims. If `architecture_design.md` calls for a new registry or protocol, delete the old one outright. Backwards-compat concerns do not apply — there are no external consumers.
 
@@ -78,17 +86,23 @@ All registrars use `conscribe.create_registrar(...)`. The ones marked ✅ alread
 | `MemoryRegistrar` | `memory_id` (flat) | `agents/memory/_registrar.py` | ✅ stable |
 | `EvaluatorRegistrar` | `evaluator_id` (flat) | `evaluator/` | 🚧 partial |
 | `TaskLoaderRegistrar` / `EvalLoaderRegistrar` | `benchmark_name` (flat) | `core/data_loader/` | ✅; needs generalisation past browser |
-| `DOMCleanerRegistrar` / `DOMSerializerRegistrar` | flat | `core/capabilities/browser/dom/` | browser-internal |
+| `NegotiationResultRegistrar` | `result_type` (flat) | `core/negotiation/_registrar.py` | ✅; built-in `observation` / `action` results |
+| `BrowserProviderRegistrar` | `provider_id` (flat) | `core/capabilities/browser/backends/` | ✅ local_chrome + 6 cloud lite SDKs |
+| `DOMCleanerRegistrar` / `DOMSerializerRegistrar` | `cleaner_type` / `serializer_type` (flat) | `core/capabilities/browser/dom/` | browser-internal |
+| `MouseTrajectoryRegistrar` | `trajectory_type` (flat) | `core/capabilities/browser/input/trajectory.py` | browser-internal; `instant` / `windmouse` / `bezier` / `learned` |
+| `TypingRhythmRegistrar` | `rhythm_type` (flat) | `core/capabilities/browser/input/rhythm.py` | browser-internal; `instant` / `human` |
+
+**This table is enforced, not decorative.** `tests/test_docs/test_registrar_coverage.py` AST-scans `spectragent/` for every `create_registrar(...)` and fails if one is missing here or from `docs/architecture_design.md` §6, or if the discriminator named in either table disagrees with the code. A registrar is this framework's top-level unit of extension; an undocumented one is deletable-on-sight under §0.1, which is exactly how the input humanization layer (§4.13 of the design doc) nearly got lost. When you add a registrar, add the row in the same change.
 
 Generated configs land in `spectragent/generated/*.py` — **do not edit these by hand**; they are derived from `__wiring__` + `Annotated[...]` fields at build time.
 
 ### 2.3 Agent-Loop separation (the most load-bearing idea)
 
-Two independent registries connected by `__wiring__` plus Protocols:
+Two independent registries connected by `__wiring__` plus slot validation:
 
-- **Agent** = domain knowledge (prompt building, output parsing). One `Agent` class supports many Loops by implementing the matching `*Compatible` Protocol (`ReactCompatible`, `CodeActCompatible`, `FuncCallCompatible`, `PlanExecCompatible`). Agents are **passive** — they do not hold a Loop reference.
+- **Agent** = domain knowledge (prompt building, output parsing). One `Agent` class supports many Loops by **providing the method slots** each Loop declares. Agents are **passive** — they do not hold a Loop reference. Compatibility is checked by slot validation (`callable(getattr(agent, slot))` in `weave()`), failing at `prepare()` with `IncompatibleError(missing_slots=[...])` — **not** by `*Compatible` Protocols. `architecture_design.md` §4.1 rejects the Protocol approach outright (a Loop subclass that adds one method would need a whole new Protocol → N×M explosion), and `rg "class .*Compatible" spectragent/` returns zero.
 - **Loop** = execution strategy (drives `observe → think → act`). Each Loop defines its required agent method slots (`__required_slots__` / `__optional_slots__`) and patches them onto `agent.run` via `weave()`.
-- **`__wiring__`** on the Agent class lists allowed loops, capabilities, and observation fragments (required + optional). `conscribe` turns these into `Literal[...]` constraints at config-generation time, so illegal combinations fail in Pydantic validation, never at runtime.
+- **`__wiring__`** on the Agent class lists configurable Loop choices and observation/action fragment demands (required + optional). `conscribe` uses it to constrain registry keys and nested configs during configuration validation. Whether the selected implementations can actually cooperate is checked by `AgentRuntime.prepare()` and reported with an error naming the unmet contract.
 
 `AgentRuntime` (`core/runtime.py`) is the loop-agnostic orchestrator: it validates compatibility, runs three-party observation negotiation (Capability provides / Agent requires / Loop requires), runs action negotiation, builds `guarded_act`, weaves AOP hooks via `core/aop/weaver.py`, weaves the Loop onto the Agent, then drives with timeout + lifecycle callbacks.
 
@@ -98,15 +112,21 @@ Two independent registries connected by `__wiring__` plus Protocols:
 
 Within a Capability, fragments are produced by **Resolvers** (the Browser Capability uses Watchdogs as Resolvers — adding a new fragment = adding one class, the capability does not change).
 
+`fragment_id` is a real serialized field defaulted from `__registry_key__`, and the WAL names observation files by the fully-qualified key (`000_browser.dom.json`). Both exist so a `RunTrace` says *which capability* produced a fragment — an evaluator has the file, not the config.
+
 ### 2.5 Action system — symmetric to Observation
 
-Actions are individually registered (`ActionRegistrar`). Each is a dataclass with conscribe metaclass; side-effect parameters live on the action instance (e.g. `ScrollAction.default_amount`). A Capability holds a `list[ActionBase]` — populated from YAML or defaulted from `__wiring__["action"]` — and routes by `action_id`. Agents declare `(required, optional)` action keys; negotiation yields an `active_actions` set; `build_guarded_act` returns a closure that rejects anything outside the set. **Result: prompt advertises exactly what the env can execute, and config errors surface at negotiation, not at first LLM call.**
+The symmetry is literal, on both axes: same registry-key shape (`source.local_id`), same relative declaration surface, same delivery. Do not restore an asymmetry between them.
 
-Composite environments add a prefix (`browser.click`, `tool_sandbox.call_tool`); single-capability environments stay un-prefixed.
+Actions are individually registered (`ActionRegistrar`). Each is a dataclass with conscribe metaclass; side-effect parameters live on the action instance (e.g. `ScrollAction.default_amount`) — an agent declares that it can scroll, never how far. A Capability holds a `list[ActionBase]` — populated from YAML or defaulted from `__wiring__["action"]` — and routes by `action_id`. Agents declare `(required, optional)` action keys; negotiation yields an `active_actions` set; `build_guarded_act` returns a closure that rejects anything outside the set. **Result: prompt advertises exactly what the env can execute, and config errors surface at negotiation, not at first LLM call.**
+
+**Registry keys are always fully qualified** (`browser.click`, `tool_sandbox.call_tool`) — including in a single-capability environment; `EnvironmentBase.act` routes on the prefix and refuses a bare name. **`__wiring__` declarations are not.** An agent writes `click`, and negotiation binds it to the one capability in *this* environment that offers it (`action_bindings` / `fragment_bindings` on the negotiation result). Two providers of one relative key raises, naming both candidates; writing the fully-qualified key in `__wiring__` pins one. `build_guarded_act` is the only place a relative name becomes qualified — everything downstream (routing, descriptors, the trace) sees the full key. Same rule, same code path, for observation fragments.
+
+Corollary the action layer paid for once already: negotiation matches *names*, not parameter contracts. An agent that emits an action must produce the params `descriptor().params` declares — put a test on that seam.
 
 ### 2.6 AOP hooks — no emitter, no opt-in
 
-Hooks declare `__intercepts__ = [Intercept("observe", role="env", advice="after"), …]`. The Weaver builds an `AOPProxy` around agent/env/llm; the Loop calls plain methods and the proxy triggers the right handler. `TraceWriter` (WAL persistence, commits per step at `after_ainvoke`), `MetricsCollector`, `LiveMonitor` are all implemented this way. If a semantic event does not correspond to an existing method, model it as an Agent/Loop Protocol method instead of adding an emitter sidechannel.
+Hooks declare `__intercepts__ = [Intercept("observe", role="env", advice="after"), …]`. The Weaver builds an `AOPProxy` around agent/env/llm/loop roles; the Loop calls plain methods and the proxy triggers the right handler. `TraceWriter` buffers LLM calls at `after_ainvoke` (and the recoverable-error `around_ainvoke` path), then commits the complete step only at `after_record_step`; `MetricsCollector` uses the same interception layer. `LiveMonitor` remains a P3 design placeholder, not a registered implementation. If a semantic event does not correspond to an existing method, model it as an Agent/Loop Protocol method instead of adding an emitter sidechannel.
 
 Two layers of hook:
 - **Lifecycle callbacks** (`on_run_start/end/error`) — `AgentRuntime` calls these directly.
@@ -137,11 +157,35 @@ Test layout mirrors `spectragent/` (`tests/test_core/test_loops/`, `tests/test_a
 
 ### 3.4 Generated config files
 
-`spectragent/generated/*.py` is output of `conscribe` config generation driven by `__wiring__` + `Annotated[...]` fields. Do not hand-edit them; change the source class and regenerate. The generator entry points are the `generate_config.py` files scattered under each registrar directory (`core/loops/`, `core/capabilities/`, `core/llm/`, `agents/`, `agents/memory/`, `core/data_loader/`, `core/environments/`, `core/actions/`).
+`spectragent/generated/*.py` is output of `conscribe` config generation driven by `__wiring__` + `Annotated[...]` fields. Do not hand-edit them; change the source class and regenerate.
+
+There is **one** generator entry point for every registrar:
+
+```bash
+uv run spectragent-gen                             # or: .venv/bin/python -m spectragent.scripts.generate_all
+```
+
+It discovers every registrar via `_collect_registrars()` and writes `_composed.py`, `_composed.schema.json`, `.fingerprint.json` and the `.pyi` stubs in one pass. Regenerate after **any** change to a `__wiring__` entry or an `Annotated[...]` constructor field.
+
+A new strategy axis must be added to `_collect_registrars()` as well as registered. A registrar the Composer does not collect degrades to `Literal[<keys>]` instead of the discriminated union, **so every knob the strategy declares stays unreachable from YAML** — measured, not assumed: regenerating with and without `dom_serializer` collected gives `Union[HtmlDom_SerializerConfig, TextDom_SerializerConfig]` versus `Literal['text', 'html']`. The `Literal` still rejects a typo, so the loss is silent only for a *brand-new* axis that no YAML names yet; once a config block exists, the degraded field rejects it loudly. (An earlier note here claimed a bare `str` and a silently-defaulted typo — that was the pre-`__wiring__` shape `mouse_trajectory` had, not what an uncollected registrar does today.)
+
+`spectragent/generated/` is untracked build output (only `__init__.py` and `.fingerprint.json` are in git), so regeneration mostly produces no diff. `.fingerprint.json` records each registrar's content fingerprint precisely so staleness is detectable. A stale `_composed.py` remains internally consistent and can pass tests that merely consume it; `tests/test_generated/test_in_sync_with_registries.py` is the dedicated guard that compares the tracked fingerprint with the live registries.
 
 ### 3.5 Priority order when choosing what to do next
 
 Follow `docs/execution_dag.md` priorities (P0 foundation → P0 abstractions → P0 framework → P1 persistence/migration/generalize → P1 E2E → P2 Docker/SWE → P3 advanced). Do not start a P2/P3 module if its P0/P1 dependencies in the DAG are not in place — the DAG is dependency-ordered, not wish-list-ordered.
+
+### 3.6 Commit and branch names
+
+Names must explain the resulting code change without requiring a planning document. Do not put module IDs such as `M05` in commit messages, do not use process words such as `handoff` as the substance of a branch name, and do not add `Co-Authored-By` trailers. Leave pre-existing opaque branches unchanged.
+
+### 3.7 Protected local visual assets
+
+`/assets/` is intentionally gitignored, locally retained source artwork accepted by the user — not disposable residue. Never delete, clean, or overwrite it unless explicitly requested. Read `assets/README.md` and run its verifier before visual changes.
+
+### 3.8 Migrated project history
+
+The repo-scoped `af-project-history` skill under `.agents/skills/` contains curated historical decisions, experiment context, and an unfinished-work ledger migrated from Claude project memory and handoffs. Use it when the user asks to resume earlier work, explain why a boundary exists, or revisit prior anti-bot, input, LLM-routing, JEV, roadmap, handoff, or asset work. Its references are historical evidence and continuation state, not a source of current implementation truth: re-check the relevant architecture section, code, and tests before acting.
 
 ## 4. External dependencies worth knowing
 

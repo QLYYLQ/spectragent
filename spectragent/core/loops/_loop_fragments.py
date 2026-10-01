@@ -5,8 +5,9 @@ NegotiatedObservation, the Loop fills in the loop-source fragments it
 owns (task, step_info, history, action_result, ...). This helper is
 the seam between those two halves.
 
-See docs/architecture_design.md §4.4 (negotiation) and the plan at
-``~/.claude/plans/b-1-user-message-agile-papert.md``.
+See ``docs/architecture_design.md`` §4.4 (negotiation) and
+``tests/test_core/test_loops/test_react_loop_fragments.py`` for the executable
+contract.
 """
 
 from __future__ import annotations

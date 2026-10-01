@@ -60,7 +60,7 @@ class BaseCapability(Protocol):
         environment — not an implementation detail of the concrete base.
 
         It was missing from this Protocol while ``CapabilityBase``
-        implemented it, which left the two axes asymmetric (CLAUDE.md
+        implemented it, which left the two axes asymmetric (AGENTS.md
         §2.5) and made a *structural* implementer — the usage
         Protocol-First exists to allow — type-check clean and then fail
         at negotiation.

@@ -3,7 +3,7 @@
 Three claims are under test here, all of which were false before:
 
 1. **"Adding a fragment = adding one class"** (``capability.py`` header,
-   CLAUDE.md §2.4). It used to take edits in nine places: two watchdog
+   AGENTS.md §2.4). It used to take edits in nine places: two watchdog
    name sets, the fixed-field cache dataclass, ``__wiring__``, the
    ``resolve_fragment`` if/elif chain, the event's include flags, the
    result-harvest loop, an in-function factory dict, and every

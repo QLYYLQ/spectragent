@@ -6,7 +6,7 @@ point is taught and parsed on the grid ``coordinate_space`` names and executed
 by ``browser.click_coordinate`` in **CSS viewport pixels**; the two differ by
 the device scale factor, so the agent converts in exactly one place.
 
-The seam CLAUDE.md §2.5 asks for is pinned end to end: negotiation against the
+The seam AGENTS.md §2.5 asks for is pinned end to end: negotiation against the
 real ``BrowserCapability`` → the rendered prompt → a reply → ``parse_react_output``
 → ``guarded_act`` → the real ``ClickCoordinateAction`` → the emitted event.
 """

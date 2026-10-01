@@ -10,13 +10,13 @@
 # `--no-sync` because plain `uv run` re-resolves and reinstalls the project on
 # every invocation, and a hook that rebuilds the package twice per commit is a
 # hook people disable. It needs `uv sync --extra dev` to have been run once,
-# which CLAUDE.md §1 already asks for.
+# which AGENTS.md §1 already asks for.
 #
 # Both hooks skip test_reality/. The directory is named on .gitignore:70 but its
 # ten files are tracked, and git ignores nothing already in the index — so
 # `ruff check .` honours the ignore and never walks it, while pre-commit
 # enumerates tracked files and does. Left alone, the hook would enforce a wider
-# surface than the command CLAUDE.md §1 documents and would fail a commit on
+# surface than the command AGENTS.md §1 documents and would fail a commit on
 # nine lint errors that were already there. It is format-clean either way.
 repos:
   - repo: local

@@ -54,7 +54,7 @@ CLAUDE.md
 !/spectragent/generated/.fingerprint.json
 
 # ``docs/`` is tracked. ``architecture_design.md`` is this repo's source of
-# truth (CLAUDE.md §0.1) — a source of truth that is not in the repository
+# truth (AGENTS.md §0.1) — a source of truth that is not in the repository
 # cannot be reviewed alongside the change that follows it, and rule 1 was
 # effectively dangling for as long as this said ``/docs/``.
 # Local-only data sets
@@ -72,4 +72,3 @@ CLAUDE.md
 # Icon / logo source art and the raster check that renders it. Build inputs
 # for the published icons, not something the package reads at runtime.
 /assets/
-
