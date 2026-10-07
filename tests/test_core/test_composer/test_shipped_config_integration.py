@@ -744,6 +744,18 @@ _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
             "hook[0].trace_dir",
         }
     ),
+    "skyvern_agent_local.yaml": frozenset(
+        {
+            "environment[0].capabilities[0].profile",
+            "hook[0].trace_dir",
+        }
+    ),
+    "ui_tars_local.yaml": frozenset(
+        {
+            "environment[0].capabilities[0].profile",
+            "hook[0].trace_dir",
+        }
+    ),
 }
 
 

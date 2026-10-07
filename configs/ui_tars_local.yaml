@@ -1,0 +1,35 @@
+# UI-TARS text-protocol, screenshot-only agent on local Chrome. Select a
+# vision model that can emit the UI-TARS Action: syntax; see runbook.
+agent:
+  - agent_id: ui_tars
+    id: main
+    prompt_template: computer_use
+    coordinate_space: screenshot_pixels
+    agent_loop:
+      loop_id: react
+      max_steps: 30
+      max_actions_per_step: 1
+    llm:
+      model_type: openai
+      model: gpt-4o
+      provider: { name: direct }
+    memory: { memory_id: simple, max_messages: 200 }
+
+environment:
+  - env_type: browser
+    id: browser_env
+    capabilities:
+      - capability_id: browser
+        profile: standard
+        mouse_trajectory: { trajectory_type: instant }
+        typing_rhythm: { rhythm_type: instant }
+        dom_cleaner: { cleaner_type: browser_use }
+        dom_serializer: { serializer_type: text }
+        backend:
+          provider_id: local_chrome
+          headless: false
+
+hook:
+  - hook_id: trace_writer
+    trace_dir: traces
+  - hook_id: metrics

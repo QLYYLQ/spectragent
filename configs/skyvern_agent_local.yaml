@@ -1,0 +1,34 @@
+# Skyvern-style DOM agent on local Chrome. This agent_id is independent of
+# the Skyvern cloud browser provider_id; see docs/browser_agent_runbook.md.
+agent:
+  - agent_id: skyvern
+    id: main
+    action_history_window: 5
+    agent_loop:
+      loop_id: react
+      max_steps: 30
+      max_actions_per_step: 1
+    llm:
+      model_type: openai
+      model: gpt-4o
+      provider: { name: direct }
+    memory: { memory_id: simple, max_messages: 200 }
+
+environment:
+  - env_type: browser
+    id: browser_env
+    capabilities:
+      - capability_id: browser
+        profile: standard
+        mouse_trajectory: { trajectory_type: instant }
+        typing_rhythm: { rhythm_type: instant }
+        dom_cleaner: { cleaner_type: skyvern }
+        dom_serializer: { serializer_type: html }
+        backend:
+          provider_id: local_chrome
+          headless: false
+
+hook:
+  - hook_id: trace_writer
+    trace_dir: traces
+  - hook_id: metrics

@@ -77,6 +77,7 @@ dev = [
 
 [project.scripts]
 spectragent-gen = "spectragent.scripts.generate_all:main"
+spectragent-run = "spectragent.core.run_cli:main"
 spectragent-bench = "spectragent.core.benchmark_runner:main"
 # Always build through this, never bare `uv build`: setuptools reuses
 # `build/lib` without pruning, so two builds of one commit can differ.

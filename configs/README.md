@@ -2,31 +2,36 @@
 
 End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 
+需要直接启动三种 browser agent、切换本地/云浏览器或跑数据集时，先看 [Browser agent 运行手册](../docs/browser_agent_runbook.md)。
+
 ## Layout
 
 | File | Purpose |
 |---|---|
 | `browser_use_local.yaml` | BrowserUseAgent + ReactLoop + LocalChrome backend |
 | `browser_use_skyvern.yaml` | Same agent/loop, switched to the hosted Skyvern backend |
+| `skyvern_agent_local.yaml` | SkyvernAgent + ReactLoop + LocalChrome backend |
+| `ui_tars_local.yaml` | UITarsAgent + ReactLoop + LocalChrome backend |
 
 ## Quick start
 
 ```bash
 # Validate compose pipeline only (no real LLM / Chrome required)
-uv run python demo_yaml_compose.py --config configs/browser_use_local.yaml --dry-run
+uv run spectragent-run --config configs/browser_use_local.yaml --dry-run
 
 # Run end-to-end (needs OPENAI_API_KEY + a Chrome binary)
-uv run python demo_yaml_compose.py --config configs/browser_use_local.yaml \
-    --task "navigate to https://example.com and report the page title"
+uv run spectragent-run --config configs/browser_use_local.yaml \
+    --start-url https://example.com --task "report the page title"
 ```
 
 `--dry-run` exercises:
 
 1. YAML schema validation against `ConfigComposer.top_level_type`.
 2. `ConfigComposer.compose()` — instantiates every layer, setattr-injects all wired receptors (including `capability.backend`, `agent.llm`, `agent.memory`).
-3. Surface report (`agent`, `llm`, `capability`, `backend`, `env`).
+3. Surface report (`agent`, `loop`, `model`, `environment`, `capabilities` and their backends).
+4. `AgentRuntime.prepare()` — loop slots plus observation/action negotiation.
 
-It does **not** call `agent.run(task)` — useful for CI smoke tests.
+It does **not** start a browser or call the LLM — useful for CI smoke tests.
 
 ## YAML shape
 
