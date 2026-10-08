@@ -44,7 +44,7 @@ CLAUDE.md
 /spectragent/generated/*
 # ...except the fingerprint. The generated config is the surface users write
 # YAML against, so a `__wiring__` change is a user-visible API change — and by
-# the same argument that made ``docs/`` tracked below, it cannot be reviewed
+# the same argument that keeps the three golden docs tracked below, it cannot be reviewed
 # alongside the change that causes it while it lives outside the repository.
 # Tracking ``_composed.py`` itself would put a 68k derived file in the path of
 # every parallel branch; the 575-byte fingerprint carries the same signal as a
@@ -53,16 +53,20 @@ CLAUDE.md
 # internally consistent and passes the entire suite.
 !/spectragent/generated/.fingerprint.json
 
-# ``docs/`` is tracked. ``architecture_design.md`` is this repo's source of
-# truth (AGENTS.md §0.1) — a source of truth that is not in the repository
-# cannot be reviewed alongside the change that follows it, and rule 1 was
-# effectively dangling for as long as this said ``/docs/``.
+# Keep only the golden docs in Git. Other design notes and historical handoffs
+# remain available locally, outside Git history.
+/HANDOFF_*.md
+/F10_registry_key_decoupling.md
+/docs/*
+!/docs/architecture_design.md
+!/docs/browser_agent_runbook.md
+!/docs/execution_dag.md
+
 # Local-only data sets
 /benchmarks/
 # Benchmark data is fetched, not tracked, and no longer ships in the wheel.
 # Loaders find it via `data_dir:` or $SPECTRAGENT_BENCHMARK_DATA — see
-# configs/README.md. (Inert while the current copies are still in the index:
-# git ignores nothing it already tracks.)
+# configs/README.md.
 /spectragent/benchmark_data/
 
 # Vendored upstream sources kept locally for inspection only

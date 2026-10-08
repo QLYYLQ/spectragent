@@ -10,7 +10,7 @@ This project is a **large-scale refactor in progress**. Its current shape is tra
 
 2. **`architecture_design.md` itself evolves.** Re-read the relevant section at the start of every non-trivial task (locate it with `rg`, then use a bounded read — the file is >1700 lines). Do not rely on memories of prior sessions. If the doc is ambiguous or stale, flag it and ask the user before coding — **do not** invent a compromise.
 
-3. **Supplementary design docs (read on demand):**
+3. **Versioned docs and local references.** The three docs kept in Git are `docs/architecture_design.md`, `docs/execution_dag.md`, and `docs/browser_agent_runbook.md`. The supplementary docs and continuation records below are local-only; they may be absent in a fresh clone. Read them on demand when present, and use the versioned design, code, and tests when they are absent.
    - `docs/execution_dag.md` — M01–M26 module breakdown with priorities (P0–P3), dependencies, and status. This is the authoritative implementation order; revalidate status against current code and tests.
    - `docs/design_discussion.md` — rationales and rejected alternatives for key decisions (Agent-Loop split, Observation fragments, Action wiring, Environment composition).
    - `docs/a2a_protocol_design.md`, `docs/self_evolution_design.md`, `docs/benchmark_design_fixes.md` — orthogonal subsystems; skim only when the task touches them.
