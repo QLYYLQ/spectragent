@@ -414,7 +414,11 @@ class BenchmarkRunner:
             # summarises the tasks that did finish.
             logger.warning("BenchmarkRunner: task %s vetoed the sweep", task_id)
             raise
-        except Exception as exc:  # execute already closed the trace out
+        except Exception as exc:
+            # With ``raise_on_error=False`` what reaches here never got a
+            # clean close-out: ``prepare`` or ``on_run_start`` failed, or a
+            # blocking hook raised while closing the run out — ``execute``
+            # closes a run out once and does not retry it.
             logger.exception("BenchmarkRunner: task %s failed", task_id)
             result = None
             error = f"{type(exc).__name__}: {exc}"

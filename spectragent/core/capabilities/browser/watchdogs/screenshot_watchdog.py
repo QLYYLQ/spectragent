@@ -159,6 +159,18 @@ class ScreenshotWatchdog(BrowserWatchdog):
         ``quality`` is never sent for PNG: it is meaningless there, and
         omitting it keeps the default capture's parameters exactly what
         they have always been.
+
+        Raises:
+            RuntimeError: The reply carried no image. Chrome answers
+                ``Page.captureScreenshot`` successfully only with bytes, so
+                an empty one is a broken reply, not a blank screen — and
+                zero bytes are not a screenshot. Raising is the resolver
+                rule ("raise, never fabricate"): the observe cycle then
+                records a ``FragmentFailure`` for an optional screenshot,
+                or fails a run that required one, and the action reports a
+                failed capture instead of "captured bytes=0". Returning
+                ``b""`` put an empty frame into the trace, which its reader
+                rightly refuses as damage.
         """
         if format_ is None:
             fmt: str = self._format
@@ -178,5 +190,8 @@ class ScreenshotWatchdog(BrowserWatchdog):
             params,
             session_id=self._session_id,
         )
-        b64_data = result.get("data", "") if result else ""
-        return base64.b64decode(b64_data)
+        b64_data = result.get("data") if result else None
+        data = base64.b64decode(b64_data) if b64_data else b""
+        if not data:
+            raise RuntimeError("Page.captureScreenshot returned no image data")
+        return data

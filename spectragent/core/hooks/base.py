@@ -136,6 +136,21 @@ class RuntimeHook(Protocol):
     async def on_run_end(self, *, result: Any, env: Any) -> None:
         """Called on **every** termination path, before env teardown.
 
+        Every path after ``on_run_start``: done, max_steps, timeout, an
+        exception, and external cancellation (``asyncio.CancelledError`` —
+        Ctrl-C, a cancelled sweep), which arrives here as a *result* with
+        ``agent_done=ERROR`` and ``error="Execution cancelled"`` before
+        ``AgentRuntime.execute`` re-raises the cancellation. A cancellation
+        that lands while the run is already being closed out does not
+        dispatch it again. The one path it cannot cover is the process
+        being killed outright.
+
+        Called once per run. A blocking hook that raises here is not
+        retried: the error propagates out of ``execute`` (a later hook in
+        priority order does not get the call) — except under a
+        cancellation, where it is logged and the ``CancelledError`` is what
+        the caller sees.
+
         *env* is live here on purpose: env-state scoring (SWE-bench
         running ``pytest FAIL_TO_PASS`` in the container, OSWorld
         evaluating predicates against the VM) has no other moment where
@@ -147,10 +162,13 @@ class RuntimeHook(Protocol):
     async def on_run_error(
         self, *, error: BaseException, partial_steps: list[Any], env: Any
     ) -> None:
-        """Called when AgentRuntime.execute() encounters an exception.
+        """Called when a run ends in a timeout, an exception or a cancellation.
 
         Always paired with :meth:`on_run_end`, which fires first with a
         result carrying ``agent_done=ERROR|TIMEOUT``. This callback is for
-        exception detail only.
+        the detail only: *error* is the exception itself — a
+        ``TimeoutError``, whatever the run raised, or the
+        ``asyncio.CancelledError`` that cancelled it — and *partial_steps*
+        the records the Loop surrendered before it ended.
         """
         ...

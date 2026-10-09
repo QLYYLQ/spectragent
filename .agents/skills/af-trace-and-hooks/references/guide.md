@@ -14,10 +14,10 @@ dispatched by two different components:
 
 | Surface | Declared as | Dispatched by |
 |---|---|---|
-| Lifecycle | `on_run_start` / `on_run_end` / `on_run_error` | `AgentRuntime._dispatch_lifecycle` (`core/runtime.py:638`), directly, in `priority` order |
+| Lifecycle | `on_run_start` / `on_run_end` / `on_run_error` | `AgentRuntime._dispatch_lifecycle` (`core/runtime.py:699`), directly, in `priority` order — on every termination path, external cancellation included (§2) |
 | Method interception | `__intercepts__ = [Intercept("observe", role="env", advice="after")]` | `Weaver` → `AOPProxy` (`core/aop/weaver.py:105`, `core/aop/proxy.py:168`) |
 
-`AgentRuntime.prepare` wraps four roles (`core/runtime.py:314-320`): `agent`, `env`,
+`AgentRuntime.prepare` wraps four roles (`core/runtime.py:317-322`): `agent`, `env`,
 `llm`, and `loop` — the last being the `StepRecorder`. Loop code receives the wrapped
 objects and calls plain methods. `ReactLoop` contains no `emit()`, no hook reference,
 and no stopwatch.
@@ -74,9 +74,9 @@ commit point, so whatever it computes lands on no artifact. `trace_writer` and `
 are both blocking for that reason; `blocking=False` is only for side channels nothing
 downstream reads (the designed one is `live_monitor`).
 
-## 2. `around` — the advice for calls that failed (defect F17)
+## 2. `around` — the advice for calls that fail or never finish (defect F17)
 
-`after` does not fire when the target raises. Usually right; once wrong.
+`after` does not fire when the target raises. Usually right; twice wrong.
 
 A structured reply that does not match the schema leaves `ainvoke` as
 `StructuredOutputValidationError` — and the run *continues*, because the Loop feeds the
@@ -86,45 +86,96 @@ with no message file at all, and precisely the steps a researcher most wants to 
 tokens, so metrics and `result` disagreed, and the gap widened with every correction a
 run needed. That is F17 (`HANDOFF_260916_findings.md:67`, fixed in `cf45ee2`).
 
-The fix is one `around` per affected hook — no fourth advice type
-(`docs/architecture_design.md:1267-1269`). Success still flows through `after`
-(`around`'s innermost link *is* the before/after chain, `proxy.py:471`
-`_apply_around_chain`), so nothing is double-counted.
+The second is cancellation. `CancelledError` is a `BaseException`: neither `after` nor
+an `except Exception` ever sees it, so a call a timeout or a Ctrl-C cut off took its
+prompt with it — the one exchange that says what the agent was doing when the run died.
 
-The two hooks deliberately catch different things:
+The fix is `around`, with no fourth advice type (`docs/architecture_design.md` §4.6).
+The two hooks use it differently:
 
-- `TraceWriter.around_ainvoke` (`core/hooks/trace_writer.py:292`) buffers **every**
-  exception. The messages that caused a 429 or a timeout are the same messages, and
-  `on_run_end` drains the buffer as *unfinished*.
-- `MetricsCollector.around_ainvoke` (`core/hooks/metrics_collector.py:130`) counts
-  **only** `StructuredOutputValidationError`. A dead socket carries no usage and no
-  reply; counting it would invent a call that never happened.
+- `TraceWriter.around_ainvoke` (`core/hooks/trace_writer.py:311`) is the **only** place
+  an LLM call is recorded; `TraceWriter` has no `after_ainvoke`. It registers the call
+  *before* `proceed()` (`_register_call`, `:428` — the prompt from `args[0]`, the
+  requested reply model from `kwargs["output_format"]`, the start time) and settles it
+  exactly once: `completed` on return, `failed` on any `Exception`, `cancelled` on a
+  `BaseException`. It always re-raises. One advice owns the call from start to end, so
+  nothing has to correlate an `after` with an in-flight record — which would break the
+  day a Loop issues calls concurrently. The prompt is a JSON snapshot taken at
+  registration (`PendingLLMCall`, `core/trace/encoding.py:376`): a memory that mutates a
+  message object afterwards cannot rewrite what the record says the model was asked.
+- `MetricsCollector.around_ainvoke` (`core/hooks/metrics_collector.py:126`) counts
+  **only** the failures the provider billed: `StructuredOutputValidationError` and
+  `ModelOutputTruncatedError`. A dead socket carries no usage and no reply; counting it
+  would invent a call that never happened. Its successes still flow through `after`
+  (`around`'s innermost link *is* the before/after chain, `proxy.py:471`
+  `_apply_around_chain`), so nothing is double-counted.
+
+A registered call whose step never commits — the run timed out, was cancelled or crashed
+between the call and `record_step` — is committed at run end as a *trailing* call
+(`_flush_trailing`, `trace_writer.py:461`; §3). That needs the runtime's half too:
+`AgentRuntime.execute` dispatches `on_run_end` / `on_run_error` on **every** termination
+path, and catches `asyncio.CancelledError` to close a cancelled run out with an
+`agent_done=ERROR`, `error="Execution cancelled"` result before re-raising it unchanged
+(`docs/architecture_design.md` §4.2). Before that, external cancellation reached no
+lifecycle callback at all: no `result.json`, a manifest stuck at `running`, and the
+in-flight prompt lost however the hook recorded it.
+
+"Unchanged" holds even when the close-out itself fails. A blocking hook that raises
+while a cancelled run is being closed out — `TraceWriter.on_run_end` on a full disk — is
+logged, and the `CancelledError` is still what the caller sees. Letting the hook's
+`OSError` win turned Ctrl-C into an ordinary task failure: a sweep's `except Exception`
+recorded it and started the next task, and a caller's `asyncio.timeout` saw `OSError`
+instead of `TimeoutError`. On every other path a close-out failure propagates as it is,
+and the run is closed out **once**: the success path's `_finish` sits in the `try`'s
+`else`, so a hook raising in `on_run_end` is not mistaken for the run failing and
+dispatched a second `on_run_end`. When you write a blocking hook, its `on_run_end`
+failing is the caller's error, not a retry.
 
 ### The discipline that came with it: never fabricate a reply
 
-`_failed_call` (`trace_writer.py:501`) returns a plain dict:
+A failed or cancelled call is recorded with a `CallFailure` (`core/trace/models.py:172`),
+built by `_failure` (`core/trace/encoding.py:349`) from what the exception carried and
+nothing else:
 
 ```python
-{"error": type(exc).__name__, "detail": str(exc)}   # + "raw_output" only if the provider had text
+{"error": type(exc).__name__, "detail": str(exc)}
+# + "raw_output"      the provider handed over text the validator refused
+# + "partial_output"  what a reply cut off at the token ceiling had generated
+# + "stop_reason", "usage"   a failed call is billed all the same
+# — each one only when the exception carries it
 ```
 
 Not a stand-in `ChatInvokeCompletion`. Whoever reads the trace must be able to tell a
 reply the model wrote from one the framework invented, and a completion-shaped object
 with an error inside it reads as the former. `raw_output` appears for a schema mismatch
-(the provider handed over text) and not for a dead socket (it did not). Apply the same
-rule anywhere you record a failure: say it failed, say what came back, invent nothing.
+(the provider handed over text) and not for a dead socket (it did not).
+`partial_output` is deliberately not `raw_output` — that name means "as the validator
+saw it", and nothing validated a truncated reply. Every truncation raise site passes it
+(`openai_base`, `anthropic_base` with serialised `tool_use` input, `google`), because the
+Loop aborts the step on truncation and this record is the only place the text survives.
+A call still in flight when its step commits or the run closes out is `cancelled` with
+no failure record at all: no exception reached the hook. Apply the same rule anywhere
+you record a failure: say it failed, say what came back, invent nothing.
+
+The reply schema a structured call asked for lands once per run, content-addressed, at
+`messages/output_formats/<sha256>.json`, and every call references it
+(`OutputFormatRef`). It is the *requested* schema — the reply model's
+`model_json_schema()` — not what the provider compiled and sent, so it is no evidence the
+schema was honoured. A class whose schema cannot be generated is recorded as
+`output_format: null` with a warning; the trace is never what fails a call.
 
 **`around` is also the only place a hook can measure time** — `before`/`after` see one
 edge each and neither sees a call that raised. `around_ainvoke` accumulates into
-`_pending_llm_ms` in a `finally` (`trace_writer.py:327`), and `_stamp_timings`
-(`trace_writer.py:376`) writes `duration_ms` / `llm_latency_ms` onto the `StepRecord` at
-the commit point. To add a per-step measurement: put it on `StepRecord`
+`_pending_llm_ms` in a `finally` (`trace_writer.py:350`), and `_stamp_timings`
+(`trace_writer.py:386`) writes `duration_ms` / `llm_latency_ms` onto the `StepRecord` at
+the commit point; each call record also carries its own `latency_ms`. To add a
+per-step measurement: put it on `StepRecord`
 (`schemas/step_record.py:77,81`) with `None` meaning "not measured", fill it in
 `_stamp_timings` from an `around` intercept, never in the Loop — then extend
 `test_run_configuration.py::test_the_stamp_does_not_reach_the_prompt` (`:364`), because
 `StepRecord` is also the payload of `HistoryObs` and is therefore prompt-reachable.
 
-Two honest limits, documented at `trace_writer.py:390-407`: `duration_ms` for step 0
+Two honest limits, documented at `trace_writer.py:400-417`: `duration_ms` for step 0
 includes environment setup (`on_run_start` fires *before* `setup_environment` on purpose,
 so a setup failure still lands in a trace), and **nothing orders intercept handlers** —
 `priority` orders lifecycle dispatch only and `core/aop/` never reads it. Treat the
@@ -132,38 +183,182 @@ timing fields as readable only after the commit point.
 
 ## 3. WAL ordering is the commit protocol
 
-Per step, in this order (`core/trace/wal.py:6-10`):
+One commit per step: `WALWriter.commit_step(step, record, *, fragments, llm_calls,
+extra_files)` (`core/trace/wal.py:185`), in this order (`wal.py:7-16`):
 
-1. observation fragment files — `write_observation` (`wal.py:179`)
-2. LLM message files — `write_messages` (`wal.py:216`)
-3. the step record — `write_step_record` (`wal.py:239`)
-4. **`manifest.json` atomic rename — `commit_step` (`wal.py:253`)**
+0. validate everything before writing a byte — path rules, content addresses, a step
+   not already committed (`_Plan`, `wal.py:341`);
+1. every content file — fragment JSON and artifacts, one record per LLM call, output
+   schemas this run has not committed yet, extra files — through `fsio.write_durable`
+   (`core/trace/fsio.py:104`): temp file → write and flush → `fsync(file)` →
+   `os.replace`, and **no** directory `fsync`;
+2. `steps/NNN.json`, plus `steps/NNN.extra.json` when the step carries extra files;
+3. `fsio.fsync_dir` (`fsio.py:79`) once per distinct directory, deepest first, plus the
+   parent of every directory on the way that is not yet known durable;
+4. **`manifest.json` atomic rewrite — the commit point** (`fsio.atomic_write`,
+   `fsio.py:153`).
 
-Step 4 is the commit point. `_atomic_write` (`wal.py:57`) is write-tmp → fsync →
-`os.replace` → `_fsync_dir` (`:37`) — atomic is not durable without the directory fsync.
-Crash recovery reads the manifest and ignores orphan files: a complete, parseable
-`steps/007.json` for a step the manifest never listed **did not happen**.
+The per-file data `fsync` stays; only the directory `fsync` is batched. Renaming a file
+whose bytes never reached the disk lets a power loss leave the manifest listing an empty
+file, and then the commit point lies. One directory `fsync` covers every entry written
+under that directory, so batching costs no guarantee — and saves an `fsync` per file on
+a step that carries hundreds of evidence files. Atomic is still not durable without it.
 
-`RunTrace.step()` (`core/trace/reader.py:110`) resolves through the manifest rather than
-probing the filename, for exactly that reason — one reader, one answer to "did this step
-happen". Do not add an accessor that stats a path.
+The flush before the data `fsync` is just as load-bearing, and harder to see.
+`os.fdopen` buffers up to `st_blksize` (4 KiB on APFS and ext4), so an `fsync` issued
+before the flush — or ahead of the write — covers an empty file for everything smaller
+than that, which is most of a trace: step records, the early manifests, call records,
+verdicts. Their bytes reach the kernel at `close()`, after the `fsync`. The count and the
+order of `fsync` calls are identical either way, so a test that counts cannot tell;
+`test_fsio.py` and the 1000-file budget test record each file's size at the moment of
+its data `fsync`. Do the same in any test that claims a file is durable.
 
-Two things that are files but not steps: `commit_unfinished_messages` (`wal.py:285`)
-lists the prompt and completion of a step the Loop never surrendered (timeout, crash)
-*without* advancing `last_step_completed` — claiming a step would put an action-less
-phantom in the manifest. And `finalize` (`wal.py:316`) sets the terminal status; a trace
-stuck at `running` is a trace no evaluator will touch.
+Directory `fsync` errors are **not** swallowed (`fsio.py:29-36`): skipped only on
+Windows; only `EINVAL` / `ENOTSUP` / `EOPNOTSUPP` from the `fsync` itself are tolerated
+("this filesystem cannot"); everything else raises, `os.open` failing with `EMFILE` /
+`EACCES` / `ENOENT` included. The old helper returned silently on all of them.
+`TraceWriter` is blocking, so such an error ends the run — a manifest claiming a commit
+it is not sure of is worse. `F_FULLFSYNC` is deliberately off; `wal.py:34-37` has the
+measurement.
 
-**No SQLite.** Trace schemas are heterogeneous and evolve; querying is lazy accessors on
-`RunTrace` (`reader.py:42`) — `config`, `result`, `step_records`, `get_observation`,
-`get_messages`, `unfinished_message_files`, `screenshots`, each a `cached_property` or a
-path lookup. `result` returning `None` means `result.json` is absent (the run died);
-a file that exists and does not parse raises `TraceSchemaError` instead
-(`reader.py:80-98`) — "written by an older schema" and "never finished" are different
-facts and must not collapse.
+A failure anywhere before the manifest rename raises with the manifest untouched — on
+disk and in the writer's memory — so what was written is an orphan and the same commit
+can be retried. Crash recovery reads the manifest and ignores orphans: a complete,
+parseable `steps/007.json` for a step the manifest never listed **did not happen**.
 
-On-disk layout: `docs/architecture_design.md:1812-1841` (the doc says `config.yaml`;
-the writer produces `config.json` — believe the code).
+"Not yet known durable" in step 3 is what keeps a retry honest. A directory's name is an
+entry in its parent, durable only once the parent is `fsync`-ed. The writer remembers
+which directories `init_run` or a *successful* commit made durable (`_durable_dirs`,
+updated after the manifest rewrite like everything else it remembers), and `fsync`-s the
+parent of every other directory a commit writes under. "Created by this call" — what
+`write_durable` reports — is not enough: a failed attempt already created `env/` and
+`env/steps/000/`, the retry finds them present, and the manifest would then commit files
+under names a power loss can still take back. M28's run end, flushing evidence with
+`commit_trailing` after a step commit failed, is the same case.
+
+`init_run` (`wal.py:122`) is the run's first commit, by the same rule: `config.json`
+through `write_durable` (which creates the run directory, and `traces/` on a sweep's first
+run), the WAL's subdirectories, one directory `fsync` each for the run directory and the
+parent of every directory created on the way, and only then the first manifest. A run
+exists once its manifest does — `discover_traces` looks for nothing else — so a failure
+before it leaves no run, and a run that exists has its config. The `fsync` of `traces/`
+looks redundant next to the manifest's own `fsync` of the run directory, and is not: no
+later commit `fsync`-s a directory outside the run, so this is the only place the run's
+own name becomes durable. `test_wal_batch_commit.py::TestInitRun` pins the order and
+every failure before the manifest.
+
+Files get the permissions a plain write would: the temp file is created with
+`os.open(..., 0o666)`, which the kernel masks with the umask, and a file being replaced
+keeps its mode (set before a byte is written). `tempfile.mkstemp` forced `0o600`, so every
+trace file and verdict came out owner-only — a shared `--evals-dir` was unreadable to a
+teammate or a dashboard, and a re-score reset a mode set on purpose. Whether a trace is
+private is the umask's (or the directory's) decision; reading the umask would race other
+threads, because `os.umask` can only set it.
+
+**One module spells the layout.** `core/trace/encoding.py` decides every file name and
+every byte that goes in it (`fragment_path`, `call_path`, `encode_fragment`,
+`encode_llm_call`, …); `TraceWriter`, `RunTrace` and the test fixtures
+(`tests/_helpers/trace_builder.py`) all go through it, because hand-written fixtures are
+how test traces drifted from what production writes. The WAL checks the paths
+(`_Plan`, `wal.py:341-514`): POSIX relative with no empty, `.` or `..` segment
+(`encoding.check_relative_path`, which the reader applies too) — on every channel, the
+names `encoding.py` decides included. A fragment file is named by its key, a
+`FragmentFailure`'s `fragment_id` is free text, and "under `observations/`" is a prefix
+test that `observations/000_x/../../../escaped.json` passes, so that check is not
+redundant with the directory rule. An extra file may not take a name the WAL owns
+(`manifest.json`, `config.json`, `result.json`, anything under
+`steps/`, `observations/`, `messages/`, `evals/`) — judged by the first segment, so
+`result.json/evidence.txt` cannot turn the result into a directory the close-out then
+fails to write; a path is a file or a directory of the run, never both (`env/a` with
+`env/a/b`, in one commit or across two, and no file on a WAL directory such as
+`messages/output_formats`), or the commit would die half-way with `NotADirectoryError`;
+a committed path is immutable; a content-addressed path names its data's full sha256
+(whole, or sharded `ab/cdef…`) and is written once per run however many commits list it
+— deduplication skips the write, never that check. All case-insensitively — macOS is.
+
+Two things that are files but not steps: `commit_trailing(*, llm_calls, extra_files)`
+(`wal.py:253`) commits the calls of a step the Loop never surrendered (timeout,
+cancellation, crash) — and whatever a producer flushes at run end — by the same
+protocol, *without* a step record and without advancing `last_step_completed`:
+claiming a step would put an action-less phantom in the manifest. Each call appends one
+`manifest.trailing` entry. And `finalize` (`wal.py:297`) sets the terminal status; a
+trace stuck at `running` is a trace no evaluator will touch.
+
+Fragments and calls are few per step, so the manifest indexes them itself:
+`fragments: {key: {file, artifact, failed}}` and `llm_calls`. Extra files are not:
+they are listed in `steps/NNN.extra.json` (path, size, sha256, content_addressed,
+meta) and the manifest holds only that path. It is rewritten whole on every commit and
+read eagerly by every reader, so inlining a step's hundred evidence files would make it
+grow quadratically with the run. `failed: true` exists because a `FragmentFailure` has
+no discriminator in its JSON and validates silently as an empty `ScreenshotObs`,
+`DOMObs` or `BrowserMetaObs`; the flag is written by the one component that knew which
+it was.
+
+### The read side
+
+`RunTrace` (`core/trace/reader.py:100`) resolves **every** file through the manifest —
+the commit point is also the reader's only directory. No accessor probes a file name or
+globs a directory, so whatever the manifest does not list is invisible to all of them
+alike. It used to be otherwise: `step()` went through the manifest while the
+observation, message and screenshot reads probed and globbed, so a frame written for a
+step that never committed was in the trace for one accessor and not another. Do not add
+an accessor that stats a path; `tests/test_core/test_trace/test_crash_window.py` holds
+every accessor to this, for a crash before the rename and for hand-planted orphans.
+
+**And it opens nothing outside the run directory.** The manifest and the extra indexes
+are data, and traces travel (§6): a crafted one could list `/home/me/.ssh/id_rsa` as
+step 0's screenshot, and `screenshots` handed that path to an image judge, which
+base64-encoded the file into its request. Every listed path now goes through `_listed`
+(`reader.py:397`) before anything opens it: the WAL's own rule
+(`encoding.check_relative_path`), then containment once symlinks are resolved
+(`(trace_dir / rel).resolve()` inside `trace_dir.resolve()`). The three names a run
+gives itself — `manifest.json`, `config.json`, `result.json` — must not lead out either.
+A violation is a `TraceSchemaError` whose `.path` is the file that *listed* the path;
+the file it points at is never opened. `ExtraFileRecord.path` is checked when the index
+is read, because `extra_files` hands those paths to callers. A symlink that stays inside
+the run reads normally. `test_reader_errors.py::TestAPathTheTraceListsStaysInsideIt` has
+a row per accessor — add one when you add an accessor.
+
+**No SQLite.** Trace schemas are heterogeneous and evolve; querying is lazy, typed
+accessors — what comes back is the type that was written:
+
+| Accessor | Returns | Not there |
+|---|---|---|
+| `config` / `result` | `TraceConfig` / `AgentResult` | `result` is `None` when `result.json` is absent |
+| `step_records` / `step(idx)` / `step_count` | `StepRecord`s, in manifest order | `step` → `None` |
+| `observation_fragment(step, key)` | the class registered under the qualified key, rebuilt by `from_trace` — or the `FragmentFailure` recorded in its place | `None` |
+| `screenshot(step)` / `screenshots` | the bytes / every committed frame's `Path`, step order | `None` / skipped |
+| `llm_messages(step)` | every `RecordedLLMCall` of the step, start order | `[]` |
+| `trailing_calls` | the calls of the step never surrendered | `[]` |
+| `extra_files(step)` / `trailing_extra_files` | `ExtraFileRecord`s | `[]` |
+| `read_extra(path)` / `output_schema(sha256)` | bytes / `dict`, checked against size and sha256 | `KeyError` |
+
+"Not there" and "not readable" never collapse. Anything the manifest lists that cannot
+be read — corrupt JSON, bytes that are not UTF-8, an empty file, a schema mismatch, a
+listed file missing on disk, bytes that disagree with their index — raises
+`TraceSchemaError` naming the file (`.path`), through one helper (`_parse` /
+`_read_model`, `reader.py:534-570`). It parses with `json.loads` after a strict UTF-8
+decode and validates in pydantic's Python mode — never `validate_json`, whose parser
+refuses nesting past 200 levels while pydantic-core's serializer, the writer, emits up
+to ~254: a DOM page about a hundred elements deep, or a deep structured reply, committed
+fine and could never be read back. `result.json` is the one file allowed to be absent,
+because nothing lists it: `None` means the run died before writing it, while a file that
+exists and does not parse raises — "written by an older schema" and "never finished" are
+different facts. Other `OSError`s (permissions, I/O) propagate; they say nothing about
+the trace. An evaluation process may never have imported the module that registers a
+fragment class, so a registry miss runs `discover` over `spectragent.schemas` and
+`spectragent.core.capabilities` once before giving up (`_fragment_class`, `:482`).
+
+**The trace has a format version.** `TraceManifest.format_version` is 2 since the
+per-step index; a manifest without the field reads as 1. The accessors whose on-disk
+shape changed refuse a format-1 trace with `TraceSchemaError` (`_require_indexed`,
+`reader.py:379`) — its fragment failures carry no marker — while `config`, `result` and
+the step records stay readable. No shim (AGENTS.md §0.4): re-scoring an old trace with
+an image judge means re-running the task. A newer version than the build reads is
+refused when `RunTrace` is constructed.
+
+On-disk layout, every file name and every record model: `docs/architecture_design.md`
+§5.3.
 
 ## 4. What belongs in a trace — the judgement
 
@@ -213,14 +408,14 @@ invent a compromise.
 
 ## 5. Configuration and negotiation reach the trace
 
-`TraceConfig` (`core/trace/models.py:162`) used to be nine identity strings — enough to
+`TraceConfig` (`core/trace/models.py:307`) used to be nine identity strings — enough to
 say *which* agent and *which* task, not *how it was set up*. Two runs that differed in
 `observation_mode` and mouse strategy were indistinguishable on disk, so every cross-run
 comparison depended on an external harness keeping its own notes. That was the blank
 spot in the framework's own "Record Once, Evaluate Many" (`HANDOFF_260916_findings.md:123`,
 N6 at `HANDOFF_260916_next.md`).
 
-Three layers now (`models.py:165-197`):
+Three layers now (`models.py:307-372`):
 
 - **Identity** — `(benchmark, subset, task_id)` is the key an Evaluator joins ground
   truth by. Resolved from the live objects by `AgentRuntime._component_id`
@@ -232,7 +427,7 @@ Three layers now (`models.py:165-197`):
   mentions `coordinate_space` or `provider.name` and both are in the object. It is also
   not everything a run resolved: a value a component derives at construction
   (`BrowserCapability` turning a profile name into a watchdog set) lives on the instance
-  and is not here. `negotiation` is `TraceNegotiation` (`models.py:72`) — active and
+  and is not here. `negotiation` is `TraceNegotiation` (`models.py:219`) — active and
   *required* fragments, active actions, and the `fragment_bindings` / `action_bindings`
   that say what each relative `__wiring__` name meant in *this* environment. Everything
   fully qualified, everything sorted (the upstream results are `frozenset`s and iteration
@@ -240,29 +435,29 @@ Three layers now (`models.py:165-197`):
 - **Provenance** — `secrets_recorded`, the one field a reader must check before sharing
   the directory.
 
-`AgentRuntime` passes both explicitly (`runtime.py:466-485`) because it is the only
+`AgentRuntime` passes both explicitly (`runtime.py:486-505`) because it is the only
 component holding both, and it dispatches `on_run_start` *after* `prepare()` so the
 negotiation results exist, but *before* `setup_environment` so a setup failure still
-lands in a trace. `TraceWriter.on_run_start` (`trace_writer.py:145`) accepts them **by
+lands in a trace. `TraceWriter.on_run_start` (`trace_writer.py:161`) accepts them **by
 name and derives nothing** — a serializer that rediscovers facts by `getattr` is how the
 configuration ended up recorded nowhere in the first place.
 
 ### The digest has two fidelities and they must not be confused
 
-`configuration_digest` (`models.py:229`) covers identity + benchmark/subset + resolved
+`configuration_digest` (`models.py:374`) covers identity + benchmark/subset + resolved
 config + negotiation, and deliberately **not** `task` / `task_id` / `extra`, so two tasks
 of one sweep share a hash.
 
-It hashes the **unredacted** view. `TraceWriter` builds both (`trace_writer.py:212-215`):
+It hashes the **unredacted** view. `TraceWriter` builds both (`trace_writer.py:230-231`):
 `resolved_full = redact_config(cfg, record_secrets=True)`, which never reaches disk and
 exists only to be hashed, and `recorded`, which does. `WALWriter.init_run` takes it as a
-keyword-only `config_hash` (`wal.py:140`) because only the caller still has the
+keyword-only `config_hash` (`wal.py:122`) because only the caller still has the
 unredacted object. The earlier version hashed the post-redaction dict, where every
 unmarked value is the same `"<omitted>"` string — so `max_steps`, `temperature`,
 `viewport_*` and `dom_max_elements` all collapsed and the digest merged the arms of every
 sweep a researcher actually runs, silently, while looking like it worked.
 
-The payload stamps `resolved_fidelity` (`models.py:292`), so **a reader cannot recompute
+The payload stamps `resolved_fidelity` (`models.py:437`), so **a reader cannot recompute
 the manifest's `config_hash` and should not try.** Readers compare two manifests. Pinned
 by `test_run_configuration.py::TestConfigHash` (`:253`).
 
@@ -270,10 +465,10 @@ by `test_run_configuration.py::TestConfigHash` (`:253`).
 
 1. Add the field to `TraceConfig` with a docstring saying what question it answers that
    identity cannot.
-2. Decide whether it joins `configuration_digest`'s payload (`models.py:280`): yes if two
+2. Decide whether it joins `configuration_digest`'s payload (`models.py:425`): yes if two
    runs differing in it are different *configurations*; no if it is per-task.
 3. Resolve it in `AgentRuntime` — the only component holding the whole run — and add it
-   as a keyword to the `on_run_start` dispatch (`runtime.py:466`). Document it on the
+   as a keyword to the `on_run_start` dispatch (`runtime.py:486`). Document it on the
    `RuntimeHook` Protocol (`core/hooks/base.py:76`).
 4. Accept it **by name** in `TraceWriter.on_run_start`. Do not derive it there.
 5. Extend `tests/test_core/test_trace/test_run_configuration.py`. If it can carry
@@ -303,7 +498,7 @@ Two things make a field safe (`_redact_field`, `redaction.py:237`):
 
 1. **An explicit mark** — `trace_safe("<why this cannot be a credential>", ...)`
    (`redaction.py:102`) in place of the field's `Field(...)`. Example in the wild:
-   `TraceWriter.trace_dir` (`trace_writer.py:91-102`).
+   `TraceWriter.trace_dir` (`trace_writer.py:101-112`).
 2. **A closed-set annotation** — `Literal[...]`, an `Enum` subclass, `bool`, `None`
    (`is_closed_set`, `redaction.py:159`). This is a *proof*, not a heuristic: the value
    can only be one of the alternatives the source enumerates, so recording it leaks
@@ -319,12 +514,12 @@ equal — the digest is taken before redaction (§5). Nothing is blocked on a ma
 pass, and there is a reason not to do one yet: the recipe asks `core/loops/`,
 `core/capabilities/`, `core/llm/providers/` and `agents/` to import
 `spectragent.core.trace.redaction` *in their field declarations*, which drags `wal` and
-`reader` into their import graphs and inverts the rule `models.py:133` states in the same
+`reader` into their import graphs and inverts the rule `models.py:278` states in the same
 package ("the trace layer is downstream of everything and must stay importable on its
 own"). **The mark's home in
 `core/trace/` is provisional** — probably `spectragent/schemas/` or conscribe itself.
 
-`record_secrets: bool = False` (`trace_writer.py:104`) is the escape hatch for a local
+`record_secrets: bool = False` (`trace_writer.py:114`) is the escape hatch for a local
 run you will not share. It logs a warning, and the trace says so in
 `config.secrets_recorded`. It is Config-Driven working as designed — a registrar field,
 set in YAML, per run — not a global or an env var.
@@ -366,9 +561,9 @@ point of the polarity.
   generated file.
 - **No `from __future__ import annotations` in a module using `trace_safe()`.** Under
   PEP 563 the annotation is a string resolved in the *subclass's* globals, conscribe sees
-  `field_info is None`, and the whole field is dropped. `trace_writer.py:17-22` carries
+  `field_info is None`, and the whole field is dropped. `trace_writer.py:27-31` carries
   the note. `tests/test_generated/test_no_dropped_annotated_fields.py` catches it.
-- **`TraceConfig.extra` is NOT redacted** (`models.py:210-215`). It is whatever the
+- **`TraceConfig.extra` is NOT redacted** (`models.py:355-360`). It is whatever the
   caller passed to `execute(config=...)` — `BenchmarkRunner._task_snapshot` puts
   difficulty/domain/tags there. A plain dict has no declarations to consult, so
   deny-by-default would omit everything. It is documented as caller-curated, and it is a
@@ -390,14 +585,34 @@ evaluators, months apart, on a machine with no browser installed.
   what it saw — each spread across two or three files. Every grader ported in
   reimplemented those joins with slightly different fallbacks.
 - **Observation files are named by the fully-qualified fragment key** —
-  `000_browser.dom.json`, not `000_dom.json` (`wal.py:186-202`,
-  `docs/architecture_design.md:1926`). The negotiated local name is a per-run artefact of
-  which capability won negotiation, so `000_screenshot.png` means a different thing in a
-  browser run and a desktop run and no reader could tell. `RunTrace.get_observation`
-  takes the qualified key (`reader.py:128`); `RunTrace.screenshots` (`:187`) globs
-  `*.screenshot.<ext>` across capabilities, and across every image extension, because a
-  run configured for JPEG writes `.jpg` and a judge that silently found no frames would
-  score the run text-only.
+  `000_browser.dom.json`, not `000_dom.json` (`fragment_path`,
+  `core/trace/encoding.py:77`; `docs/architecture_design.md` §5.5). The negotiated local
+  name is a per-run artefact of which capability won negotiation, so
+  `000_screenshot.png` means a different thing in a browser run and a desktop run and no
+  reader could tell.
+- **Read fragments typed.** `RunTrace.observation_fragment(step, key)` (`reader.py:193`)
+  takes the qualified key and hands back the fragment's own class, rebuilt by
+  `FragmentBase.from_trace` — a `DOMObs` whose `element_tree` is a `DOMState` and whose
+  `selector_map` holds `DOMElementNode`s with their bounds, a `ScreenshotObs` with its
+  `image_bytes` — or the `FragmentFailure` recorded in its place when the capture
+  failed. Test the type (`isinstance(frag, DOMObs)`): a failure is not `None`, and is
+  never an empty fragment of the class the key names. Do not write a second decoder for
+  a fragment's JSON; if `from_trace` loses something you need, that is the fragment's
+  bug.
+- **Screenshots come from the manifest's fragment index**, not a glob.
+  `RunTrace.screenshot(step)` (`reader.py:231`) is one step's bytes;
+  `RunTrace.screenshots` (`:246`) is every committed step's frame as a `Path`, in step
+  order — any capability's `screenshot` fragment, whatever image suffix the header gave
+  it, because a run configured for JPEG writes `.jpg` and a judge that silently found no
+  frames would score the run text-only. A frame written for a step that never committed
+  is not a frame of the run, and neither is a capture that came back empty: the
+  resolver raises on one (it becomes a `FragmentFailure`), and a `ScreenshotObs` still
+  holding `b""` writes no artifact, so the step has no frame — rather than a 0-byte file
+  the reader would call damage, failing `screenshots` for the whole run.
+- **Every LLM call of a step is there**, in start order: `RunTrace.llm_messages(step)`
+  (`reader.py:266`) returns parse retries, refused structured replies (`raw_output`),
+  truncations (`partial_output`) and calls cut off by a cancellation (prompt only) as
+  `RecordedLLMCall`s; a step that never committed has its calls in `trailing_calls`.
 - **Read `negotiation` before you read steps.** `required_fragments` is what tells you
   whether a capture failure ended the run or was recorded as a `FragmentFailure`. A trace
   without it cannot explain its own degraded steps.
@@ -407,11 +622,17 @@ evaluators, months apart, on a machine with no browser installed.
   reachable by a framework-aware component (`core/hooks/base.py:136`). Such a hook writes
   its findings *into the trace*, and an Evaluator reads them back like any other recorded
   fact.
-- Verdicts land in each trace's own `evals/` (`evaluator/runner.py:297-309`), named by
-  evaluator slug, so a new judge never requires re-running the agent.
+- Verdicts land in each trace's own `evals/` (`evaluator/runner.py:290-313`), named by
+  evaluator slug, so a new judge never requires re-running the agent. They are written
+  with `fsio.atomic_write` like every other trace file: a re-score that dies half way
+  leaves the previous verdict whole, never a torn one the next pass reads as corrupt —
+  and with a plain write's permissions, so a results directory another user reads stays
+  readable.
 - Fail loudly on an unusable trace. `TraceIncompleteError` with the directory named beats
-  a zero score — see `online_mind2web.py:106-133` for the pattern (no task text, no
-  screenshots for an image judge).
+  a zero score — see `online_mind2web.py:104-125` for the pattern (no task text, no
+  screenshots for an image judge). The reader already fails loudly on its side: a
+  `TraceSchemaError` is a damaged trace, or a format-1 trace read through a format-2
+  accessor, and re-running the evaluation will never change it.
 
 ## File map
 
@@ -422,11 +643,19 @@ evaluators, months apart, on a machine with no browser installed.
 | `core/aop/proxy.py` | `AOPProxy`, `_apply_around_chain` (`:471`), `validate_advice_shape` (`:109`) |
 | `core/hooks/base.py` | `RuntimeHook` Protocol — lifecycle signatures, `blocking` contract |
 | `core/hooks/_registrar.py` | `HookBase`, priority constants, `MissingHandlerError` |
-| `core/hooks/trace_writer.py` | the reference hook: `around` for failures, commit at `record_step` |
+| `core/hooks/trace_writer.py` | the reference hook: `around` registers every call, one `commit_step` at `record_step`, trailing calls at run end |
 | `core/step_recorder.py` | "model it as a Protocol method" — the worked example |
-| `core/trace/wal.py` | write order, atomic commit, durability |
-| `core/trace/models.py` | `TraceManifest`, `TraceConfig`, `TraceNegotiation`, the digest |
+| `core/trace/encoding.py` | the one on-disk rule: file names, `TraceFile`, `encode_fragment` / `decode_fragment`, `PendingLLMCall`, `encode_llm_call`, output schemas |
+| `core/trace/fsio.py` | `write_durable`, `fsync_dir` and its errno policy, `atomic_write`, plain-write permissions |
+| `core/trace/wal.py` | the commit protocol, path rules (file-or-directory included), content-addressed dedup, durable-directory tracking, `commit_trailing` |
+| `core/trace/models.py` | `TraceManifest` and its per-step index, `RecordedLLMCall`, `CallFailure`, `TraceConfig`, `TraceNegotiation`, the digest |
 | `core/trace/redaction.py` | `trace_safe`, `is_closed_set`, `redact_config` |
-| `core/trace/reader.py` | `RunTrace` lazy accessors |
+| `core/trace/reader.py` | `RunTrace` — typed accessors resolved through the manifest, `_listed` (containment), `_read_model` (`json.loads`), the format gate |
+| `core/trace/errors.py` | `TraceSchemaError` — every way a committed trace is unreadable |
 | `evaluator/base.py`, `evaluator/trace_view.py` | the read side |
+| `tests/_helpers/trace_builder.py` | builds traces through the real encoder and `WALWriter` — use it, do not hand-write sidecars |
+| `tests/test_core/test_trace/test_crash_window.py` | every accessor ignores what the manifest does not list |
+| `tests/test_core/test_trace/test_reader_errors.py` | every reader input × every corruption → `TraceSchemaError` naming the file; every listed path × every way out of the run directory |
+| `tests/test_core/test_trace/test_fsio.py` | the directory `fsync` errno policy, plain-write permissions, every data `fsync` holding the file's bytes |
+| `tests/test_core/test_trace/test_wal_batch_commit.py` | `init_run`'s order, commit order, one `fsync` per directory, the path rule on every channel, injected failures, the 1000-file budget |
 | `tests/test_core/test_trace/test_secret_guard.py` | the artifact-level guard |

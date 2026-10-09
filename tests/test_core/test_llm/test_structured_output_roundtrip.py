@@ -1093,16 +1093,17 @@ class TestStructuredValidationIsFedBack:
         """Recoverable does not mean invisible.
 
         ``after`` advice does not fire when the target raises, so a call
-        the run *continues past* would leave a step whose messages file is
-        simply absent — and absent for exactly the steps a researcher
-        wants to read. ``around`` advice sees it; this walks the real
-        Weaver to prove the wiring, not just the handler.
+        the run *continues past* would leave a step with no record of it —
+        and absent for exactly the steps a researcher wants to read.
+        ``around`` advice records it; this walks the real Weaver to prove
+        the wiring, not just the handler.
         """
         from spectragent.core.aop.weaver import Weaver
         from spectragent.core.hooks.metrics_collector import MetricsCollector
         from spectragent.core.hooks.trace_writer import TraceWriter
         from spectragent.core.llm.exceptions import StructuredOutputValidationError
         from spectragent.core.llm.views import ChatInvokeUsage
+        from spectragent.core.step_recorder import StepRecorder
         from spectragent.core.trace.reader import RunTrace
 
         agent = _prepared_agent()
@@ -1139,7 +1140,9 @@ class TestStructuredValidationIsFedBack:
         async def _run() -> Any:
             await writer.on_run_start(agent=agent, env=env, task="task", config={})
             await metrics.on_run_start()
-            recorder = weaver.wrap(loop, "loop")
+            # The step recorder the runtime wraps under ``role="loop"`` —
+            # its ``record_step`` is TraceWriter's commit point.
+            recorder = weaver.wrap(StepRecorder(), "loop")
             result = await loop._execute(
                 agent,
                 "task",
@@ -1150,7 +1153,7 @@ class TestStructuredValidationIsFedBack:
                     "act_fn": env.act,
                     "session_id": None,
                     "task_id": "t",
-                    "recorder": recorder,
+                    "step_recorder": recorder,
                 },
             )
             await writer.on_run_end(result=result)
@@ -1159,11 +1162,19 @@ class TestStructuredValidationIsFedBack:
         result = asyncio.run(_run())
 
         assert writer.run_dir is not None
-        sent, got = RunTrace(writer.run_dir).get_messages(0)
-        assert sent, "the prompt that produced the refused reply was not recorded"
-        assert got is not None
-        assert got["error"] == "StructuredOutputValidationError"
-        assert got["raw_output"] == bad
+        trace = RunTrace(writer.run_dir)
+        # Committed with the step it belongs to, not left trailing.
+        assert trace.step_count == 1
+        assert trace.trailing_calls == []
+        (call,) = trace.llm_messages(0)
+        assert call.messages, "the prompt that produced the refused reply was not recorded"
+        assert call.status == "failed"
+        assert call.completion is None
+        assert call.failure is not None
+        assert call.failure.error == "StructuredOutputValidationError"
+        assert call.failure.raw_output == bad
+        assert call.failure.usage is not None
+        assert call.failure.usage.total_tokens == 15
         # And what it cost is counted once on both sides, rather than only
         # by the loop that kept going.
         assert metrics.llm_calls == 1

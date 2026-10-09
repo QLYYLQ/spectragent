@@ -83,6 +83,6 @@ uv run spectragent-bench --config configs/browser_use_local.yaml \
 
 ## 看结果与定位入口
 
-每次运行的 trace 写在 `traces/<run_id>/`；`manifest.json` 是已提交步骤的索引，`config.json` 是配置快照，`steps/`、`observations/`、`messages/` 存放过程数据，完成后还有 `result.json`。`spectragent-bench` 会在终端列出每个任务的终止状态与 trace 目录名。配置里的 `hook: [{hook_id: trace_writer}]` 决定是否落盘。
+每次运行的 trace 写在 `traces/<run_id>/`；`manifest.json` 是已提交内容的唯一索引，`config.json` 是配置快照，`steps/` 存每步的记录，`observations/` 存观测和截图，`messages/` 每次 LLM 调用一个 `NNN_call_KK.json`（parse 重试、校验失败、截断、被取消的调用各占一个），完成后还有 `result.json`。manifest 没列出的文件不算数：用 `RunTrace` 读 trace，它只按 manifest 找文件；manifest 里没有 `format_version: 2` 的旧 trace，只能读出配置、结果和步骤记录。`spectragent-bench` 会在终端列出每个任务的终止状态与 trace 目录名。配置里的 `hook: [{hook_id: trace_writer}]` 决定是否落盘。
 
 需要继续改入口时，按执行顺序看 [单任务入口](../spectragent/core/run_cli.py)、[基准入口](../spectragent/core/benchmark_runner.py)、[装配器](../spectragent/core/composer.py)、[运行时](../spectragent/core/runtime.py)。agent 的配置与输出协议分别在 `spectragent/agents/browser_use.py`、`skyvern.py`、`ui_tars.py`；browser capability 与 backend 在 `spectragent/core/capabilities/browser/`。配置字段细节见 [configs/README.md](../configs/README.md)。

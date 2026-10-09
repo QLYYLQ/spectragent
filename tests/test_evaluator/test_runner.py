@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -141,6 +142,120 @@ async def test_read_only_mode_writes_nothing(three_traces, loader):
     # The WAL creates ``evals/`` itself, so "wrote nothing" means the
     # directory is empty — not that it is absent.
     assert list((three_traces[0] / "evals").glob("*.json")) == []
+
+
+# ── Verdicts are written atomically ─────────────────────────────────
+#
+# ``os.replace`` failing stands in for the disk filling up or the process
+# dying between writing a verdict and publishing it. ``write_text`` had no
+# such step: it truncated the file first and wrote second, so the same
+# failure left a half verdict that the next pass reads as a corrupt
+# evaluation — or destroyed the verdict a re-score was replacing.
+
+
+def _disk_full(*_args, **_kwargs):
+    raise OSError("DISK FULL")
+
+
+async def test_a_verdict_that_cannot_be_published_leaves_no_partial_file(
+    three_traces, loader, monkeypatch
+):
+    monkeypatch.setattr(os, "replace", _disk_full)
+
+    report = await EvaluationRunner(evaluator=ExactMatchEvaluator(), eval_loader=loader).run(
+        three_traces[:1]
+    )
+
+    failure = report.errors[0].error
+    assert failure is not None and "DISK FULL" in failure
+    # Neither a partial verdict nor the temp file it was staged in.
+    assert list((three_traces[0] / "evals").iterdir()) == []
+
+
+async def test_a_failed_rescore_keeps_the_previous_verdict_whole(three_traces, loader, monkeypatch):
+    evaluator = ExactMatchEvaluator()
+    runner = EvaluationRunner(evaluator=evaluator, eval_loader=loader)
+    await runner.run(three_traces[:1])
+    verdict = three_traces[0] / "evals" / f"{evaluator.verdict_slug}.json"
+    before = verdict.read_bytes()
+
+    monkeypatch.setattr(os, "replace", _disk_full)
+    report = await runner.run(three_traces[:1])
+
+    assert report.errors, "the second write was expected to fail"
+    assert verdict.read_bytes() == before
+    assert [p.name for p in (three_traces[0] / "evals").iterdir()] == [verdict.name]
+
+
+async def test_the_flat_copy_and_summary_are_atomic_too(
+    tmp_path, three_traces, loader, monkeypatch
+):
+    evals_dir = tmp_path / "flat-evals"
+    monkeypatch.setattr(os, "replace", _disk_full)
+    runner = EvaluationRunner(
+        evaluator=ExactMatchEvaluator(), eval_loader=loader, evals_dir=evals_dir
+    )
+
+    # The summary is written once, after the sweep, outside the per-trace
+    # isolation — so its failure reaches the caller.
+    with pytest.raises(OSError, match="DISK FULL"):
+        await runner.run(three_traces[:1])
+
+    assert list(evals_dir.iterdir()) == []
+    assert list((three_traces[0] / "evals").iterdir()) == []
+
+
+async def test_the_flat_copy_alone_is_atomic(tmp_path, three_traces, loader, monkeypatch):
+    """With the in-trace write off, the flat copy is the first write that can fail.
+
+    In the test above the in-trace verdict fails first, so the flat copy is
+    never attempted; this one reaches it.
+    """
+    evals_dir = tmp_path / "flat-evals"
+    monkeypatch.setattr(os, "replace", _disk_full)
+    runner = EvaluationRunner(
+        evaluator=ExactMatchEvaluator(),
+        eval_loader=loader,
+        evals_dir=evals_dir,
+        write_into_trace=False,
+    )
+
+    with pytest.raises(OSError, match="DISK FULL"):
+        await runner.run(three_traces[:1])
+
+    assert list(evals_dir.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+async def test_verdicts_are_as_readable_as_a_plain_write(tmp_path, three_traces, loader):
+    """A results directory another user reads must not come out owner-only.
+
+    The atomic write staged through ``mkstemp``, whose ``0o600`` survived
+    the rename: a teammate or a dashboard reading ``--evals-dir`` got
+    ``PermissionError`` where ``write_text`` had given ``0o644``.
+    """
+    import stat
+
+    evals_dir = tmp_path / "flat-evals"
+    evaluator = ExactMatchEvaluator()
+    previous = os.umask(0o022)
+    try:
+        (tmp_path / "plain.json").write_text("{}")
+        await EvaluationRunner(evaluator=evaluator, eval_loader=loader, evals_dir=evals_dir).run(
+            three_traces[:1], benchmark="offline_bench"
+        )
+    finally:
+        os.umask(previous)
+
+    plain = stat.S_IMODE((tmp_path / "plain.json").stat().st_mode)
+    written = [
+        three_traces[0] / "evals" / f"{evaluator.verdict_slug}.json",
+        *sorted(evals_dir.iterdir()),
+    ]
+    assert len(written) == 3  # in-trace verdict, flat copy, summary
+    assert {path.name: stat.S_IMODE(path.stat().st_mode) for path in written} == {
+        path.name: plain for path in written
+    }
 
 
 async def test_one_bad_trace_does_not_destroy_the_sweep(traces_dir, three_traces, loader):

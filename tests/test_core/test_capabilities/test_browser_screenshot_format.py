@@ -93,8 +93,8 @@ class _CaptureCDP:
         return [p for m, p in self.calls if m == "Page.captureScreenshot"]
 
 
-async def _observe(cap: BrowserCapability, cdp: _CaptureCDP) -> tuple[Any, ScopeGroup]:
-    """One real observe cycle for ``browser.screenshot`` over a real EventScope."""
+async def _attach(cap: BrowserCapability, cdp: _CaptureCDP) -> ScopeGroup:
+    """The capability's tab watchdogs on a real EventScope, negotiated for ``browser.screenshot``."""
     cap._cdp = cdp  # type: ignore[assignment]
     cap.apply_negotiation({"browser.screenshot"})
     group = ScopeGroup("test")
@@ -103,6 +103,12 @@ async def _observe(cap: BrowserCapability, cdp: _CaptureCDP) -> tuple[Any, Scope
         wd.attach(scope, session_id="sid1")
     cap._scopes["sid1"] = scope
     cap._default_session_id = "sid1"
+    return group
+
+
+async def _observe(cap: BrowserCapability, cdp: _CaptureCDP) -> tuple[Any, ScopeGroup]:
+    """One real observe cycle for ``browser.screenshot`` over a real EventScope."""
+    group = await _attach(cap, cdp)
     return await cap.resolve_fragment("browser.screenshot"), group
 
 
@@ -215,6 +221,70 @@ class TestActionAndObservationAreSeparate:
         assert {"full_page", "format", "quality"} <= set(params)
 
 
+# ── an empty capture is a failed capture ──────────────────────────────
+
+
+class _ReplyCDP(_CaptureCDP):
+    """Answers ``Page.captureScreenshot`` with *reply* verbatim — however malformed."""
+
+    def __init__(self, reply: Any) -> None:
+        super().__init__()
+        self._reply = reply
+
+    async def send(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> Any:
+        self.calls.append((method, params or {}))
+        return self._reply if method == "Page.captureScreenshot" else {}
+
+
+class TestAnEmptyCaptureIsAFailedCapture:
+    """Zero bytes are not a screenshot, so the resolver raises ("raise, never fabricate").
+
+    ``_capture`` turned a reply without ``data`` into ``b""``, which became
+    ``ScreenshotObs(image_bytes=b"")``; the trace committed it as a 0-byte
+    ``.png`` and its reader then refused the whole run's ``screenshots`` as
+    damaged. Chrome only answers success with bytes, so an empty reply is a
+    broken one — and the observe cycle is where that becomes a recorded
+    ``FragmentFailure`` (optional) or a stopped run (required).
+    """
+
+    @pytest.mark.parametrize(
+        "reply",
+        [{}, {"data": ""}, None],
+        ids=["no data", "empty data", "no result"],
+    )
+    async def test_the_capture_raises(self, reply: Any) -> None:
+        wd = ScreenshotWatchdog(_ReplyCDP(reply))  # type: ignore[arg-type]
+        with pytest.raises(RuntimeError, match="no image data"):
+            await wd._capture()
+
+    async def test_the_observe_cycle_serves_no_empty_frame(self) -> None:
+        cap = BrowserCapability(profile="vision_only")
+        cdp = _CaptureCDP(b"")
+        group = await _attach(cap, cdp)
+        try:
+            with pytest.raises(RuntimeError, match="browser.screenshot"):
+                await cap.resolve_fragment("browser.screenshot")
+        finally:
+            await group.close_all()
+        # Re-asked, then refused: the cycle's retry budget, not a silent pass.
+        assert len(cdp.shots()) > 1
+
+    async def test_the_action_path_fails_the_capture_too(self) -> None:
+        """``browser.screenshot`` (the action) no longer reports "captured bytes=0"."""
+        from spectragent.core.capabilities.browser.watchdogs.events import (
+            ScreenshotRequestEvent,
+        )
+
+        wd = ScreenshotWatchdog(_CaptureCDP(b""))  # type: ignore[arg-type]
+        with pytest.raises(RuntimeError, match="no image data"):
+            await wd._on_screenshot_request(ScreenshotRequestEvent())
+
+
 # ── the image header readers ──────────────────────────────────────────
 
 
@@ -251,3 +321,7 @@ class TestTraceExtensionFollowsTheBytes:
 
     def test_no_bytes_means_nothing_to_persist(self) -> None:
         assert ScreenshotObs(image_path="x.png").trace_binary() is None
+
+    def test_empty_bytes_are_no_bytes(self) -> None:
+        """A 0-byte artifact reads back as damage, so none is written."""
+        assert ScreenshotObs(image_bytes=b"").trace_binary() is None

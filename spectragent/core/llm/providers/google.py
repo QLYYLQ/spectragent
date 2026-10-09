@@ -53,6 +53,21 @@ def _strip_placeholders(value: Any) -> Any:
     return value
 
 
+def _candidate_text(candidate: types.Candidate) -> str | None:
+    """The text a candidate had written, for a truncation record.
+
+    The parts ``response.text`` would concatenate — text parts, minus the
+    model's thoughts — read off the candidate itself. A part that carries
+    no text (a ``function_call``) contributes nothing. ``None`` when no
+    part carried text.
+    """
+    content = candidate.content
+    if content is None or not content.parts:
+        return None
+    texts = [part.text for part in content.parts if isinstance(part.text, str) and not part.thought]
+    return "".join(texts) if texts else None
+
+
 #: ``tool_choice`` spelled the Gemini way (``function_calling_config.mode``).
 _GEMINI_TOOL_MODE: dict[str, types.FunctionCallingConfigMode] = {
     "auto": types.FunctionCallingConfigMode.AUTO,
@@ -162,6 +177,10 @@ class ChatGoogle(ChatModelBase):
         ``retryable_status_codes``, and ``ModelOutputTruncatedError`` carries
         400 precisely so it does not qualify: retrying a truncation re-runs a
         maximum-length generation against an unchanged ceiling.
+
+        What the candidate had written goes with the error
+        (``partial_output``, see :func:`_candidate_text`): the step aborts
+        here, so the failure record is the only place it survives.
         """
         candidates = getattr(response, "candidates", None)
         if not candidates:
@@ -173,6 +192,7 @@ class ChatGoogle(ChatModelBase):
                 ceiling_field="max_output_tokens",
                 ceiling=self.max_output_tokens,
                 usage=usage,
+                partial_output=_candidate_text(candidates[0]),
             )
 
     def _get_stop_reason(self, response: types.GenerateContentResponse) -> str | None:

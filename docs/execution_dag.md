@@ -1,6 +1,6 @@
 # All4One Agent Framework — 开发执行依赖图
 
-> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 26 个开发模块及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
+> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 27 个开发模块及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
 
 ---
 
@@ -41,6 +41,7 @@ flowchart TB
     subgraph P1_PERSISTENCE ["P1 · 持久化层"]
         M10["M10<br/>RunTrace<br/>WAL 持久化"]
         M11["M11<br/>TraceWriter +<br/>Metrics Hook"]
+        M27["M27<br/>Trace<br/>读写加固"]
     end
 
     %% ════════════════════════════════════════
@@ -114,6 +115,9 @@ flowchart TB
     M02 --> M10
     M04 --> M11
     M10 --> M11
+    M10 --> M27
+    M11 --> M27
+    %% M27 → M28 / M31 / M32：这三个模块的条目合入本文档时一起补边
 
     %% P0 → P1 迁移
     M01 --> M12
@@ -168,7 +172,7 @@ flowchart TB
     classDef milestone fill:#F59E0B30,stroke:#F59E0B,stroke-width:3px,color:#1a1a1a
 
     class M01,M02,M03,M04,M05,M06,M07,M08,M09 p0
-    class M10,M11,M12,M13,M14,M15,M16,M17 p1
+    class M10,M11,M12,M13,M14,M15,M16,M17,M27 p1
     class M18 milestone
     class M19,M20,M21 p2
     class M22,M23,M24,M25,M26 p3
@@ -345,7 +349,7 @@ Agent-Loop 分离是整个框架从「browser-only」走向「multi-scenario」�
 
 **AOP Weaver**：AgentRuntime 在驱动 Loop 之前，通过 Weaver 读取所有 hook 的 `__intercepts__` 声明，为 agent/env/llm 以及作为 loop 角色的 StepRecorder 构建 `AOPProxy` 包装对象。Loop 接收到的是 wrapped 依赖 — 调用方法时 hook handler 透明触发。Weaver 只包装有拦截器的方法，无拦截器的角色直接返回原始对象（零开销）。
 
-**拦截点覆盖**：不同 Hook 声明各自需要的方法。TraceWriter 在 `llm.ainvoke` 后暂存消息，并在 `loop.record_step` 后写入完整 step；MetricsCollector 拦截 `llm.ainvoke` 统计 token。两者都通过 `around_ainvoke` 处理各自需要记录的失败调用。对于尚无方法对应的语义事件（如 PlanExecuteLoop 的「规划完成」），将其建模为 Agent/Loop Protocol 方法（如 `agent.parse_plan()`），再由 Hook 声明拦截。
+**拦截点覆盖**：不同 Hook 声明各自需要的方法。TraceWriter 只在 `around_ainvoke` 里记录 LLM 调用（`proceed()` 之前登记，结束时记为 completed / failed / cancelled），并在 `loop.record_step` 后写入完整 step；MetricsCollector 用 `after_ainvoke` 统计成功调用的 token，用 `around_ainvoke` 统计计费了的失败调用（2026-10-10 修订，见 M27 与 `architecture_design.md` §4.6）。对于尚无方法对应的语义事件（如 PlanExecuteLoop 的「规划完成」），将其建模为 Agent/Loop Protocol 方法（如 `agent.parse_plan()`），再由 Hook 声明拦截。
 
 **YAML 驱动的 hook 配置**：hook 走 conscribe 注册表，通过 YAML 配置启用、参数化、设置 blocking 属性。
 
@@ -548,7 +552,7 @@ ReactLoop 是第一个也是最关键的 Loop 实现 — 三个现有 Browser Ag
 
 ### M10: RunTrace WAL 持久化
 
-**优先级**: P1 | **前置依赖**: M02 | **被依赖方**: M11, M16
+**优先级**: P1 | **前置依赖**: M02 | **被依赖方**: M11, M16, M27
 
 #### 业务实现
 
@@ -563,6 +567,8 @@ ReactLoop 是第一个也是最关键的 Loop 实现 — 三个现有 Browser Ag
 4. 原子更新 manifest（`manifest.json`，记录 `last_step_completed: N`）— commit point
 
 原子更新使用 POSIX `write-then-rename`：先写临时文件 → fsync → rename（POSIX 保证原子性）。
+
+**2026-10-10 修订**：上面的文件名（`observations/NNN_dom.json`、`NNN_screenshot.png`、`messages/NNN_input.json` / `NNN_output.json`）是 M10 当时的形状，已被 M27 的 trace 布局 v2 取代（全限定 fragment key、每次 LLM 调用一个 `messages/NNN_call_KK.json`、manifest `format_version: 2`），以 `architecture_design.md` §5.3 为准。
 
 **Crash recovery**：读 manifest → 知道最后一个完整 step → manifest 之后的孤立文件是未完成 step，安全忽略。
 
@@ -580,7 +586,7 @@ WAL 设计借鉴了数据库 WAL 的核心思想：每步确认持久化后才�
 
 ### M11: TraceWriter + Metrics Hook
 
-**优先级**: P1 | **前置依赖**: M04, M10 | **被依赖方**: M18
+**优先级**: P1 | **前置依赖**: M04, M10 | **被依赖方**: M18, M27
 
 #### 业务实现
 
@@ -595,6 +601,8 @@ WAL 设计借鉴了数据库 WAL 的核心思想：每步确认持久化后才�
 - `after_record_step(result, ...)` — Loop 交出完整 StepRecord 后写入本步观测、所有 LLM 消息、动作及结果；调用 `WALWriter.commit_step()` 原子更新 manifest，这才是持久化提交点
 - `on_run_end` — 写入 result.json、处理尚未形成完整 step 的消息并更新最终状态
 - blocking=True — 必须确认落盘后 agent 才能继续下一步
+
+**2026-10-10 修订**：上面 TraceWriter 一节里的 `Intercept("ainvoke", role="llm", advice="after")` 和 `after_ainvoke(result, ...)` 一条是 M11 当时的形状，已被 M27 取代：TraceWriter 的 `__intercepts__` 只剩 `[Intercept("ainvoke", role="llm", advice="around"), Intercept("record_step", role="loop", advice="after")]`，每次 LLM 调用只在 `around_ainvoke` 里记录——`proceed()` 之前登记（prompt、请求的 `output_format`、开始时间），返回记 `completed`，抛 `Exception` 记 `failed`，抛 `BaseException` 记 `cancelled`，一律重抛；等待时间仍在它的 `finally` 里累加。`after` 看不到被取消的调用，把成功的调用放回 `after` 会丢掉被取消调用的 prompt，或者把一次调用记两遍。以 M27 条目和 `architecture_design.md` §4.6、§5.4 为准。下面 MetricsCollector 的 `after` + `around` 不变。
 
 **MetricsCollector**（AOP 拦截 + lifecycle 回调）：
 - `__intercepts__` = `[Intercept("ainvoke", role="llm", advice="after"), Intercept("ainvoke", role="llm", advice="around")]`
@@ -1056,6 +1064,69 @@ GPUProfilingCapability 是 Capability 架构「flat peers, no hierarchy」设计
 #### 设计思考
 
 Desktop 和 Android Capability 验证了 Capability 抽象的终极泛化能力 — 从 CDP WebSocket 到 VNC 到 ADB，中间层协议完全不同，但 framework 层（AgentRuntime → Environment → Capability）的编排逻辑完全相同。如果新增 Capability 需要修改 framework 代码，说明 Capability 抽象有泄漏。
+
+---
+
+### M27: Trace 读写加固
+
+**优先级**: P1 | **前置依赖**: M10, M11 | **被依赖方**: M28, M31, M32
+
+#### 业务实现
+
+收尾 2026-10-01 复核出的 WAL 遗留项，把 trace 升到格式 v2：读侧每个访问器都经由 manifest、按写进去的类型读回；写侧一步只提交一次，能承载 M28 `env/` 那种每步上百个文件的证据；失败现场（截断、取消、校验失败）完整落盘。设计以 `architecture_design.md` §4.2、§4.6、§5.2–§5.5 为准。
+
+#### 业务逻辑
+
+**写侧**（`core/trace/fsio.py`、`core/trace/encoding.py`、`core/trace/wal.py`、`core/trace/models.py`）：
+- `WALWriter.commit_step(step, record, *, fragments=(), llm_calls=(), extra_files=())` 取代 `write_observation` / `write_messages` / `write_step_record` 与旧的 `commit_step`：内容文件逐个数据 fsync（不做逐文件目录 fsync）→ `steps/NNN.json` 与可选的 `steps/NNN.extra.json` → 每个不同目录 fsync 一次（含新建目录的父目录）→ 原子重写 manifest（提交点）。
+- `commit_trailing(*, llm_calls=(), extra_files=())` 取代 `commit_unfinished_messages`，不推进 `last_step_completed`。
+- `init_run` 是 run 的第一次提交：`config.json`（按需建 run 目录和 `traces/`）→ 建子目录 → 一批目录 fsync（run 目录，加上新建目录的父目录）→ 初始 manifest。之后的提交只 fsync run 目录之内的目录，run 目录自己的名字只在这里落盘。
+- 数据 fsync 之前先 flush：`os.fdopen` 缓冲着的小文件（step 记录、早期 manifest、调用记录）否则在 fsync 时还是空的。
+- `fsio.fsync_dir` 的 errno 策略：只在 Windows 跳过，只容忍 `EINVAL` / `ENOTSUP` / `EOPNOTSUPP`，其余（含 `os.open` 失败）一律上抛。`fsio.atomic_write` 是唯一公开的原子写 helper，`evaluator/runner.py` 写 evals 也走它。
+- 内容寻址文件 run 内去重（校验 sha256 与路径一致，已提交的路径也照样校验）；相对路径校验（POSIX 相对、无 `..`——每个通道都查，fragment 文件与 artifact、调用记录、output schema、extra 文件；不撞 WAL 自有名字——WAL 的文件名也不能当目录用、已提交文件不可覆盖、一个路径不能既是文件又是目录）。
+- WALWriter 记着哪些目录已确认落盘：重试或下一次提交，对失败那次建出来、还没落盘的目录照样 fsync 其父目录。
+- 文件权限同普通写入（`0o666` 经 umask；替换时沿用原权限），不用 `mkstemp` 的 `0o600`。
+- manifest v2：每步的 fragment 索引（key → `file` / `artifact` / `failed`）、`llm_calls`、`extra_index`；`trailing`、`output_formats`、`format_version: 2`。
+
+**记录侧**（`core/hooks/trace_writer.py`、`core/runtime.py`、`core/llm/`、`core/capabilities/browser/observations.py`）：
+- TraceWriter 只在 `around_ainvoke` 里记录 LLM 调用：`proceed()` 之前登记（messages、请求的 `output_format`、开始时间），返回记 completed，抛 `Exception` 记 failed，抛 `BaseException` 记 cancelled，一律重抛。删除 `after_ainvoke` 及其 `Intercept`。
+- 每次调用一个 `messages/NNN_call_KK.json`（`RecordedLLMCall`）；请求的 output schema 按内容寻址写一次 `messages/output_formats/<sha256>.json`。
+- `ModelOutputTruncatedError(..., partial_output=...)`，openai_base、anthropic_base、google 的抛出点传入已生成的文本。
+- 失败的 optional fragment 在 fragment 索引里标 `failed: true`；删除非 fragment observation 的 `NNN_observation.json` 兜底。
+- `DOMObs` 序列化 `selector_map` 时每个条目用自己的 visited 集合，条目自包含。
+- `AgentRuntime.execute` 捕获 `asyncio.CancelledError`：构造 `error="Execution cancelled"` 的 ERROR 结果 → `_finish`（`on_run_end` → `on_run_error` → drain）→ 重抛；teardown 留在 `finally`。收尾自身失败时只记日志，重抛的仍是那个 `CancelledError`；其余路径收尾只做一次，成功路径的 `_finish` 放在 `try` 的 `else` 里。
+- `ScreenshotWatchdog` 在 CDP 回复没有图像数据时抛错；`ScreenshotObs.trace_binary()` 对空字节不写 artifact。
+
+**读侧**（`core/trace/reader.py`、`schemas/observation/_registrar.py`）：
+- 访问器：`observation_fragment(step, key) -> FragmentBase | FragmentFailure | None`、`screenshot(step) -> bytes | None`、`screenshots -> list[Path]`、`llm_messages(step) -> list[RecordedLLMCall]`、`trailing_calls`、`extra_files(step)`、`trailing_extra_files`、`read_extra(path) -> bytes`、`output_schema(sha256) -> dict`。同一次改动删除 `get_observation`、`get_messages`、`unfinished_message_files`、截图 glob 和 `_BINARY_SUFFIXES`。
+- `FragmentBase.from_trace(payload, artifact) -> Self` 是 `trace_binary` / `trace_json_exclude` 的逆运算；`ScreenshotObs` 放回图像字节，`DOMObs` 读回 `DOMState` 与 `DOMElementNode`。
+- 注册表落空时懒执行 `discover("spectragent.schemas")` 与 `discover("spectragent.core.capabilities")` 再查，仍落空抛 `TraceSchemaError`。
+- 一个归一化入口（`_parse`，model 经 `_read_model`）把损坏 JSON、非 UTF-8、空文件、schema 不匹配、manifest 列了但磁盘上缺失统一成点名文件的 `TraceSchemaError`；`result.json` 不存在仍返回 `None`。解析用 `json.loads`，不用 pydantic 的 `validate_json`（后者拒绝超过 200 层的嵌套，写侧能写到约 254 层）。
+- manifest 和 extra 索引列出的路径，打开之前检查形状和是否留在 run 目录内（含符号链接）；越界抛点名列出它的文件的 `TraceSchemaError`。
+- `format_version` 低于 2 的旧 trace：v2 形状的访问器抛 `TraceSchemaError`，`config` / `result` / `step` / `step_records` / `step_count` 照常可读。
+
+#### 验收
+
+- 崩溃窗口：提交点之前写下的观测、调用记录、截图和类 `env/` 的 extra 文件（`env/steps/000/x.y/name`、`env/blobs/sha256/ab/...`），不论是模拟 manifest rename 之前崩溃，还是手工放置的孤立文件，对每个访问器都不可见。
+- 多次调用的步：每一次调用按顺序可读，包括 parse 重试、带 `raw_output` 的 `StructuredOutputValidationError`、带 `partial_output` 的截断、保留 prompt 的取消。
+- 1000 个小文件的提交：断言结构（文件 fsync 数 = 文件数 + WAL 自身文件数；目录 fsync 数 ≤ 不同目录数 + 新建目录的父目录数 + 1），并检查每次数据 fsync 那一刻文件里已是全部字节（只数次数，看不出 fsync 跑在 flush 之前），墙钟上限可用 `SPECTRAGENT_WAL_COMMIT_BUDGET_S` 覆盖（默认约 3 s；本机 APFS 实测约 0.2 s）。
+- `init_run`：I/O 顺序是 `config.json` → 目录 fsync（run 目录、`traces/`，这个 run 新建了 `traces/` 时再加它的父目录）→ manifest；manifest 写成之前任何一步失败，都不留下 manifest。
+- 写侧路径矩阵：每个写入通道（fragment 文件、artifact、调用记录、output schema、extra 文件，以及 `commit_trailing`）× {`..` 越出 run 目录、`.` 段、空段、反斜杠}，都在写任何字节之前抛 `ValueError`，manifest 不变。
+- 错误矩阵：每个读入口 × {非法 JSON、非 UTF-8、空文件、schema 不匹配、列了但缺失}，都抛点名文件的 `TraceSchemaError`。
+- 回归：`FragmentFailure` 读回仍是 `FragmentFailure`，不会变成空的 `ScreenshotObs` / `DOMObs` / `BrowserMetaObs`；按 `ObservationRegistrar` 全部注册类参数化的 encode → decode 往返不变。
+- 取消：`asyncio.wait_for` 超时和外部 `task.cancel()` 两种情况下，manifest 都收尾为 `error`，进行中那次调用作为 trailing call 保留 prompt，teardown 照常执行；收尾失败时调用方看到的仍是 `CancelledError`（`asyncio.timeout` 下是 `TimeoutError`）。
+- 深页面：深度截断过的 DOM 页面、嵌套超过 200 层的调用记录和 fragment，经 `RunTrace` 都能读回。
+- 路径越界矩阵：每个经 manifest 或索引取路径的访问器 × {绝对路径、`..`、指向目录外的符号链接}，都抛点名列出它的文件的 `TraceSchemaError`。
+
+#### 设计思考
+
+M27 兑现 architecture §5.5 的两条承诺："读回来的必须是写进去的那个类型"和"manifest 是提交点"。所有离线消费者都建在它上面：导出（M32）、分叉加载器（M31）、评测器，以及 M28 的 `env/` 归档读取。
+
+每个文件的数据 fsync 保留，只合并目录 fsync：只 rename 不 fsync 数据，掉电后 manifest 可能列着一个空文件，那就违背了 architecture §5.1 "确认落盘才继续"。目录 fsync 按目录合并不损失任何保证，省下的是 `env/` 那种大批量提交的逐文件目录 fsync。extra 文件走每步一个索引文件，而不是内联进 manifest：manifest 每次提交都整份重写、每个读者都 eager 读，内联会让它随 run 长度二次增长。
+
+TraceWriter 只在 `around` 里记录调用，因为 `CancelledError` 是 `BaseException`：`after` 看不到被取消的调用，在 `except Exception` 里才登记又会连 prompt 一起丢。光改 hook 还不够，外部取消之前根本不派发 lifecycle，所以 runtime 也要补一条取消分支。
+
+旧 trace 不做兼容 shim（AGENTS.md §0.4）：v1 的失败 fragment 没有判别字段，按 key 类型化读回会把失败变成空 fragment。代价是 v1 trace 不能再被图像 judge 重新打分，只能重跑任务。
 
 ---
 

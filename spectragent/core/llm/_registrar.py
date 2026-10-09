@@ -168,8 +168,8 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
                 signature of a gateway that dropped ``response_format`` on
                 the way to a vendor's native API, and with only the
                 unwrapped body in the trace there is no sign of it. So the
-                fact is stated in the message, which
-                ``TraceWriter._failed_call`` records as ``detail``.
+                fact is stated in the message, which the trace's
+                failure record keeps as ``CallFailure.detail``.
         """
         raw = payload if isinstance(payload, str) else json.dumps(payload)
         # ``getattr`` rather than ``type(self).__name__``: conscribe's

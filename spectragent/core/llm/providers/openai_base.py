@@ -322,6 +322,7 @@ class OpenAICompatBase(ChatModelBase):
                         ceiling_field="max_completion_tokens",
                         ceiling=self.max_completion_tokens,
                         usage=self._get_usage(response),
+                        partial_output=choice.message.content,
                     )
                 return ChatInvokeCompletion(
                     completion=choice.message.content or "",
@@ -407,6 +408,7 @@ class OpenAICompatBase(ChatModelBase):
                 ceiling_field="max_completion_tokens",
                 ceiling=self.max_completion_tokens,
                 usage=self._get_usage(response),
+                partial_output=choice.message.content,
             )
 
         # No `tool_calls=` here: `_standard_ainvoke` refuses tools on the

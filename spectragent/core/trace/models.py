@@ -1,10 +1,12 @@
-"""Trace data models — manifest, config snapshot, and run status.
+"""Trace data models — the manifest, the records it indexes, the config snapshot.
 
-These Pydantic models define the on-disk format for WAL persistence.
-The manifest is the atomic commit point; config is a frozen snapshot
-of the run's configuration.
+These Pydantic models define the on-disk format of a run directory
+(``docs/architecture_design.md`` §5.3). The manifest is the commit point
+and the reader's only directory; everything else is a record it points at.
 
-See docs/execution_dag.md M10 for design details.
+The file *names* and the bytes that go into them are decided in one place,
+:mod:`spectragent.core.trace.encoding`; this module only says what each
+record is.
 """
 
 from __future__ import annotations
@@ -12,11 +14,23 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from spectragent.core.llm.messages import BaseMessage, ToolCall
+from spectragent.core.llm.views import ChatInvokeUsage
 from spectragent.schemas._types import UTCDatetime
+
+#: The on-disk layout this build writes and the newest it reads.
+#:
+#: 1 is every trace written before the manifest carried the field: a flat
+#: fragment file list, paired ``NNN_input.json`` / ``NNN_output.json``
+#: message files, and a fragment-capture failure written under the
+#: fragment's own name with nothing to tell it from the fragment. 2 is the
+#: layout of §5.3: a per-step fragment index with an explicit failure
+#: marker, one record per LLM call, and an extra-file index.
+TRACE_FORMAT_VERSION = 2
 
 
 class RunStatus(StrEnum):
@@ -27,33 +41,75 @@ class RunStatus(StrEnum):
     ERROR = "error"
 
 
+class FragmentFiles(BaseModel):
+    """Where one fragment of one step landed.
+
+    ``failed`` is the reason this index exists rather than a flat file
+    list. A :class:`~spectragent.schemas.observation.failure.FragmentFailure`
+    has no discriminator in its JSON, and every field of ``ScreenshotObs`` /
+    ``DOMObs`` / ``BrowserMetaObs`` has a default, so the same bytes
+    validate silently as any of them: read back by key, a capture that
+    failed would become an empty fragment — the fabrication the failure
+    record exists to refuse. The flag is written by the one component that
+    knew which it was.
+    """
+
+    file: str  # observations/NNN_<key>.json
+    artifact: str | None = None  # observations/NNN_<key><suffix>
+    failed: bool = False  # True: ``file`` holds a FragmentFailure, not the fragment
+
+
 class StepManifestEntry(BaseModel):
-    """Per-step metadata pointing to file paths within the trace directory."""
+    """One committed step: its record, and every file it consists of."""
 
     model_config = ConfigDict(extra="allow")
 
     step: int
-    step_file: str  # relative path, e.g. "steps/000.json"
-    observation_files: list[str] = Field(default_factory=list)
-    # Canonical (first) LLM call of the step — kept as scalars so simple
-    # readers stay simple.
-    message_input_file: str | None = None
-    message_output_file: str | None = None
-    # Every LLM call of the step, in order. A loop that reflects or
-    # retries issues more than one call per step; those extra calls used
-    # to overwrite each other on disk.
-    message_files: list[str] = Field(default_factory=list)
+    step_file: str  # steps/NNN.json
+    #: Fully-qualified fragment key → its files. A key that is absent was
+    #: not recorded for this step (not active in this run, or the
+    #: observation carried no such fragment).
+    fragments: dict[str, FragmentFiles] = Field(default_factory=dict)
+    #: Every LLM call of the step, in start order — parse retries,
+    #: refused structured replies, truncations included.
+    llm_calls: list[str] = Field(default_factory=list)
+    #: ``steps/NNN.extra.json`` when the step committed extra files. The
+    #: files are listed there, not here: the manifest is rewritten whole on
+    #: every commit and read eagerly by every reader, so inlining a step's
+    #: hundred evidence files would make it grow quadratically with the run.
+    extra_index: str | None = None
+
+
+class TrailingEntry(BaseModel):
+    """What one ``commit_trailing`` call committed.
+
+    The LLM calls of a step the Loop never surrendered (timeout, external
+    cancellation, crash) and files flushed at the end of a run. Not a step:
+    claiming one would put an action-less phantom in the manifest.
+    """
+
+    llm_calls: list[str] = Field(default_factory=list)
+    extra_index: str | None = None  # steps/trailing_KK.extra.json
 
 
 class TraceManifest(BaseModel):
     """Atomic commit point for WAL persistence.
 
-    Written via write-then-rename to guarantee atomicity.
-    Recovery reads this to determine the last complete step.
+    Written via write-then-rename to guarantee atomicity. A file it does
+    not list was not committed, whatever is on disk.
+
+    ``extra="allow"`` so a format-1 manifest — different field names —
+    still parses: its identity, status and step files stay readable, and
+    the accessors whose on-disk shape changed refuse it by
+    ``format_version`` instead of failing on a field name.
     """
 
     model_config = ConfigDict(extra="allow")
 
+    #: Absent on every manifest written before the field existed, which is
+    #: exactly what makes the default 1 right. ``init_run`` writes
+    #: :data:`TRACE_FORMAT_VERSION`.
+    format_version: int = 1
     run_id: str
     last_step_completed: int = -1  # -1 means no step completed yet
     status: RunStatus = RunStatus.RUNNING
@@ -61,12 +117,103 @@ class TraceManifest(BaseModel):
     updated_at: UTCDatetime
     config_hash: str = ""
     steps: list[StepManifestEntry] = Field(default_factory=list)
-    # LLM calls that belong to a step the Loop never surrendered — a run
-    # killed by the timeout or an exception between the completion and
-    # ``record_step``. They are not a completed step, so they get no
-    # ``StepManifestEntry``; they are listed here so the last exchange
-    # before the run died is still findable.
-    unfinished_message_files: list[str] = Field(default_factory=list)
+    trailing: list[TrailingEntry] = Field(default_factory=list)
+    #: sha256 of every committed output schema
+    #: (``messages/output_formats/<sha256>.json``), each listed once.
+    output_formats: list[str] = Field(default_factory=list)
+
+
+class ExtraFileRecord(BaseModel):
+    """One file a commit carried beside the step's own records."""
+
+    path: str  # relative to the run directory
+    size: int
+    sha256: str
+    #: True when ``path`` is derived from ``sha256`` — the file is shared by
+    #: every commit that references it and written once per run.
+    content_addressed: bool = False
+    #: Whatever the producer attached (M28: the archiver key and the like).
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExtraFileIndex(BaseModel):
+    """``steps/NNN.extra.json`` / ``steps/trailing_KK.extra.json``."""
+
+    files: list[ExtraFileRecord]
+
+
+class OutputFormatRef(BaseModel):
+    """The reply model a structured call asked for, by content address."""
+
+    name: str  # the reply model's class name
+    sha256: str  # → messages/output_formats/<sha256>.json
+    #: The schema the *caller* requested — ``model_json_schema()`` of the
+    #: class passed as ``output_format``. Not what the provider compiled
+    #: and sent (strictness, Gemini's clean-up, union expansion all differ
+    #: per provider, and ``dont_force_structured_output`` sends none), so it
+    #: is no evidence that a schema was honoured.
+    source: Literal["requested"] = "requested"
+
+
+class RecordedCompletion(BaseModel):
+    """What a call that returned handed back — ``ChatInvokeCompletion``'s fields."""
+
+    #: The reply: ``str`` for text, the reply model's JSON form for a
+    #: structured call. Deliberately not rebuilt into the reply model: the
+    #: class is the agent's, and the reader may not be able to import it.
+    completion: Any
+    thinking: str | None = None
+    redacted_thinking: str | None = None
+    usage: ChatInvokeUsage | None = None
+    stop_reason: str | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+
+
+class CallFailure(BaseModel):
+    """Why a call produced no completion — only what the exception carried.
+
+    Not a stand-in completion: a reader must be able to tell a reply the
+    model wrote from one the framework invented, and a completion-shaped
+    object with an error inside reads as the former. A dead socket leaves
+    ``error`` and ``detail`` and nothing else.
+    """
+
+    error: str  # exception class name
+    detail: str  # str(exc)
+    #: The reply as the validator saw it (``StructuredOutputValidationError``).
+    raw_output: str | None = None
+    #: What a reply cut off at the token ceiling had generated
+    #: (``ModelOutputTruncatedError``). Not ``raw_output``: nothing validated it.
+    partial_output: str | None = None
+    stop_reason: str | None = None
+    #: A failed call is billed all the same.
+    usage: ChatInvokeUsage | None = None
+
+
+#: A prompt message, tagged by ``role`` so a malformed one fails naming the
+#: role it claimed rather than four union branches.
+RecordedMessage = Annotated[BaseMessage, Field(discriminator="role")]
+
+
+class RecordedLLMCall(BaseModel):
+    """``messages/NNN_call_KK.json`` — one LLM call, whatever its outcome."""
+
+    #: The step the Loop was on. For a trailing call, the step it never
+    #: surrendered (``last_step_completed + 1``).
+    step: int
+    #: Start order within the step, from 0.
+    call: int
+    status: Literal["completed", "failed", "cancelled"]
+    #: Wall-clock Unix time, comparable with ``StepRecord.timestamp`` and a
+    #: fragment's ``captured_at``.
+    started_at: float
+    #: From the start to the return, the raise or the cancellation.
+    latency_ms: int
+    #: The whole prompt, as the caller handed it to ``ainvoke``.
+    messages: list[RecordedMessage]
+    output_format: OutputFormatRef | None = None  # None: an unstructured call
+    completion: RecordedCompletion | None = None  # completed calls only
+    failure: CallFailure | None = None  # failed and cancelled calls
 
 
 class TraceNegotiation(BaseModel):

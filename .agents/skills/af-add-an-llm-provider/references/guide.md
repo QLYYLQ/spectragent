@@ -93,8 +93,9 @@ The framework's tell for this is `_validate_structured(..., wire_text=...)`
 (`_registrar.py:180-185`): the provider passes the **upstream text** while `payload` is
 the unwrapped/trimmed one, and when they differ the exception message says so. "Arrived
 fenced *and* the wrong shape" is the signature of a dropped `response_format`.
-`TraceWriter._failed_call` stores that message as `detail`, so it survives into the
-trace. (`StructuredOutputValidationError` itself takes only `raw_output`/`model`/`usage`
+The trace's failure record (`CallFailure` in the call's `messages/NNN_call_KK.json`)
+keeps that message as `detail`, so it survives into the trace.
+(`StructuredOutputValidationError` itself takes only `raw_output`/`model`/`usage`
 — there is no `wire_text` kwarg; don't copy one.)
 
 **(b) DMX round-robins upstream channels.** The same request with the same model id
@@ -113,7 +114,11 @@ and the reply is silently truncated into prose **that looks exactly like a model
 ignoring the schema**. Both defaults are safely above it, so this only bites someone
 who turned the knob down. Before blaming the route on a gemini-3.x schema failure, raise
 the budget above 1000 and reproduce once. (OpenAI's own path does catch the clean case:
-`finish_reason == "length"` raises a named truncation error at `openai_base.py:368`.)
+`finish_reason == "length"` raises `ModelOutputTruncatedError` at `openai_base.py:319`
+and `:405`.) A provider that detects truncation passes what the reply had generated as
+`partial_output` — every shipped raise site does, Anthropic including the serialised
+`tool_use` input — because the Loop aborts the step on this error and the trace's
+failure record is the only place that text survives.
 
 ## 4. Schema dialects
 
@@ -197,17 +202,22 @@ registered key and asserts `status_code == 422` and a usable `raw_output`.
 **A failing call must still be visible to hooks.** An exception fires no `after` advice,
 so both hooks also intercept `around` (defect F17):
 
-- `TraceWriter.around_ainvoke` (`hooks/trace_writer.py:292`, `Intercept` at `:82`)
-  buffers **every** exception, so the step's messages file exists for exactly the steps
-  a researcher most wants to read, and accumulates LLM wall time in a `finally`.
-- `MetricsCollector.around_ainvoke` (`hooks/metrics_collector.py:130`) counts **only**
-  `StructuredOutputValidationError` — a 429 or a dead socket carries no usage and no
-  reply, and staying invisible is the honest answer for a call that never happened.
+- `TraceWriter.around_ainvoke` (`hooks/trace_writer.py:303`, `Intercept` at `:92`) is
+  the only place a call is recorded: registered before `proceed()`, then settled as
+  `completed`, `failed` (any exception) or `cancelled` (`CancelledError`). Every call of
+  a step gets its own `messages/NNN_call_KK.json`, refused replies and truncations
+  included — exactly the steps a researcher most wants to read — and LLM wall time
+  accumulates in a `finally`.
+- `MetricsCollector.around_ainvoke` (`hooks/metrics_collector.py:126`) counts **only**
+  the failures the provider billed, `StructuredOutputValidationError` and
+  `ModelOutputTruncatedError` — a 429 or a dead socket carries no usage and no reply,
+  and staying invisible is the honest answer for a call that never happened.
 
-The failure is recorded as `{error, detail, raw_output?}` — a plain dict, never a
-fabricated `ChatInvokeCompletion` (`trace_writer.py:501`). A completion-shaped object
-with an error inside reads as something the model wrote. `raw_output` appears only when
-the provider had text to hand over.
+The failure is recorded as a `CallFailure` — `{error, detail}`, plus `raw_output`,
+`partial_output`, `stop_reason` and `usage` only when the exception carries them
+(`_failure`, `core/trace/encoding.py:331`) — never a fabricated `ChatInvokeCompletion`.
+A completion-shaped object with an error inside reads as something the model wrote.
+`raw_output` appears only when the provider had text to hand over.
 
 ## 6. Fences
 

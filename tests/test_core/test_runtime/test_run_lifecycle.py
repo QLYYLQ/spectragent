@@ -1,14 +1,15 @@
 """AgentRuntime owns the run lifecycle — F5.
 
 Covers the guarantees that used to be caller conventions (or absent):
-env setup/teardown ordering, on_run_end on *every* termination path,
-memory reset between tasks, hook priority ordering, and the identity
-payload a persistence hook needs.
+env setup/teardown ordering, on_run_end on *every* termination path
+(external cancellation included), memory reset between tasks, hook
+priority ordering, and the identity payload a persistence hook needs.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 from typing import Any
 
 import pytest
@@ -71,6 +72,21 @@ class _FailingSetupEnv(_Env):
     async def setup(self, context=None, *, negotiation=None):
         self.events.append("setup")
         raise RuntimeError("browser refused to start")
+
+
+class _HangingSetupEnv(_Env):
+    """An environment still coming up when the run is cancelled."""
+
+    __registry_key__ = "lifecycle_hanging_setup_env"
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.setup_started = asyncio.Event()
+
+    async def setup(self, context=None, *, negotiation=None):
+        self.events.append("setup")
+        self.setup_started.set()
+        await asyncio.sleep(100)
 
 
 class _AcquiringCap(_DoneCap):
@@ -181,6 +197,80 @@ class _BoomLoop(_SlowLoop):
     def weave(self, agent, **deps):
         async def run(task, **kw):
             raise RuntimeError("loop exploded")
+
+        agent.run = run
+        return agent
+
+
+class _GatedLoop(_SlowLoop):
+    """Says when the run has started, then runs until something stops it."""
+
+    loop_id = "lifecycle_gated"
+
+    def __init__(self):
+        self.started = asyncio.Event()
+
+    def weave(self, agent, **deps):
+        async def run(task, **kw):
+            self.started.set()
+            await asyncio.sleep(100)
+
+        agent.run = run
+        return agent
+
+
+class _SlowCloseOutHook(HookBase):
+    """Still inside ``on_run_end`` when the cancellation lands."""
+
+    __registry_key__ = "lifecycle_slow_close_out"
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.entered = asyncio.Event()
+        self.calls: list[str] = []
+
+    async def on_run_end(self, **kw):
+        self.calls.append(f"end(error={kw['result'].error!r})")
+        self.entered.set()
+        await asyncio.sleep(100)
+
+    async def on_run_error(self, **kw):
+        self.calls.append(f"error({type(kw['error']).__name__})")
+
+
+class _FailingCloseOutHook(HookBase):
+    """A blocking hook whose ``on_run_end`` hits a full disk."""
+
+    __registry_key__ = "lifecycle_failing_close_out"
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.calls: list[str] = []
+
+    async def on_run_end(self, **kw):
+        self.calls.append(f"end(error={kw['result'].error!r})")
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    async def on_run_error(self, **kw):
+        self.calls.append(f"error({type(kw['error']).__name__})")
+
+
+class _SecondRunHangsLoop(_SlowLoop):
+    """Finishes the first run it drives; every later one hangs until cancelled."""
+
+    loop_id = "lifecycle_second_run_hangs"
+
+    def __init__(self):
+        self.runs = 0
+        self.hanging = asyncio.Event()
+
+    def weave(self, agent, **deps):
+        async def run(task, **kw):
+            self.runs += 1
+            if self.runs == 1:
+                return None
+            self.hanging.set()
+            await asyncio.sleep(100)
 
         agent.run = run
         return agent
@@ -392,6 +482,206 @@ class TestTerminationPaths:
         runtime = AgentRuntime.for_agent(_mk(_Agent(), _SlowLoop(), env), AGENT_ID)
         result = await runtime.execute("t", task_id="t-1", timeout=0.05)
         assert result.env_status.value == "failed"
+
+
+class TestCancellation:
+    """External cancellation is a termination path like any other.
+
+    ``asyncio.CancelledError`` is a ``BaseException``, so neither of
+    ``execute``'s ``except Exception`` arms saw it: a cancelled run never
+    reached ``on_run_end``, left its trace at ``running`` with no
+    ``result.json``, and the prompt of the call in flight never reached
+    disk — although ``on_run_end`` promised to fire on every path.
+    """
+
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    async def test_cancelling_a_run_dispatches_end_then_error_then_reraises(
+        self, raise_on_error: bool
+    ):
+        log: list[str] = []
+        hook = _RecordingHook(log)
+        env = _make_env()
+        loop = _GatedLoop()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, env, hooks=[hook]), AGENT_ID)
+
+        task = asyncio.create_task(
+            runtime.execute("t", task_id="t-1", timeout=30, raise_on_error=raise_on_error)
+        )
+        await loop.started.wait()
+        task.cancel()
+        # Propagates unchanged whatever ``raise_on_error`` says: the
+        # cancellation belongs to whoever asked for it.
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        result = hook.end_kwargs["result"]
+        assert result.agent_done.value == "error"
+        assert result.error == "Execution cancelled"
+        assert result.metrics.usage is None
+        assert isinstance(hook.error_kwargs["error"], asyncio.CancelledError)
+        # on_run_end first, against a live environment; teardown after.
+        assert log == ["start(env_events=[])", "end(env_events=['setup'])", "error"]
+        assert env.events == ["setup", "teardown"]
+
+    async def test_cancelling_during_env_setup_still_closes_the_run_out(self):
+        hook = _RecordingHook([])
+        env = make_env(_HangingSetupEnv, {"lifecycle_done_cap": _DoneCap()})
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID)
+
+        task = asyncio.create_task(runtime.execute("t", task_id="t-1"))
+        await env.setup_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert hook.end_kwargs["result"].error == "Execution cancelled"
+        assert isinstance(hook.error_kwargs["error"], asyncio.CancelledError)
+        # A setup that was attempted may hold resources — it is torn down.
+        assert env.events == ["setup", "teardown"]
+
+    async def test_a_cancellation_inside_the_close_out_does_not_dispatch_it_again(self):
+        hook = _SlowCloseOutHook()
+        env = _make_env()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID)
+
+        task = asyncio.create_task(runtime.execute("t", task_id="t-1"))
+        await hook.entered.wait()  # the run finished; its close-out is under way
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # The successful run's close-out, once — no second pass reporting
+        # the same run as "Execution cancelled".
+        assert hook.calls == ["end(error=None)"]
+        assert env.events == ["setup", "teardown"]
+
+    async def test_the_timeout_path_is_not_a_cancellation(self):
+        """``wait_for`` cancels the loop internally; that must still read as a timeout."""
+        hook = _RecordingHook([])
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), _SlowLoop(), _make_env(), hooks=[hook]), AGENT_ID
+        )
+
+        result = await runtime.execute("t", task_id="t-1", timeout=0.05)
+
+        assert result.agent_done.value == "timeout"
+        assert result.error == "Execution timed out after 0.05s"
+        assert hook.end_kwargs["result"] is result
+        assert isinstance(hook.error_kwargs["error"], TimeoutError)
+
+    async def test_a_callers_own_timeout_still_reads_as_a_timeout(self):
+        """``asyncio.timeout`` converts only a cancellation handed back unchanged.
+
+        Swallowing it — returning the ERROR result instead — would make the
+        caller's timeout block exit normally, as if the run had finished.
+        """
+        hook = _RecordingHook([])
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), _SlowLoop(), _make_env(), hooks=[hook]), AGENT_ID
+        )
+
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.05):
+                await runtime.execute("t", task_id="t-1", timeout=30, raise_on_error=False)
+
+        assert hook.end_kwargs["result"].error == "Execution cancelled"
+
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    async def test_a_close_out_that_fails_under_cancellation_does_not_replace_it(
+        self, raise_on_error: bool, caplog: pytest.LogCaptureFixture
+    ):
+        """Ctrl-C must stay Ctrl-C when ``TraceWriter.on_run_end`` hits a full disk.
+
+        The hook's ``OSError`` used to replace the ``CancelledError``: a sweep's
+        ``except Exception`` recorded the task as failed and started the next
+        one, and the cancellation survived only as ``__context__``.
+        """
+        hook = _FailingCloseOutHook()
+        env = _make_env()
+        loop = _GatedLoop()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, env, hooks=[hook]), AGENT_ID)
+
+        task = asyncio.create_task(
+            runtime.execute("t", task_id="t-1", timeout=30, raise_on_error=raise_on_error)
+        )
+        await loop.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert task.cancelled()
+        assert hook.calls == ["end(error='Execution cancelled')"]
+        assert env.events == ["setup", "teardown"]
+        assert "closing out a cancelled run failed" in caplog.text
+
+    async def test_a_callers_timeout_survives_a_failing_close_out(self):
+        hook = _FailingCloseOutHook()
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), _SlowLoop(), _make_env(), hooks=[hook]), AGENT_ID
+        )
+
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.05):
+                await runtime.execute("t", task_id="t-1", timeout=30, raise_on_error=False)
+
+        assert hook.calls == ["end(error='Execution cancelled')"]
+
+    async def test_a_reused_runtime_closes_a_cancelled_second_run_out(self):
+        """The close-out guard is per run: one finished run must not disarm the next."""
+        hook = _RecordingHook([])
+        loop = _SecondRunHangsLoop()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, _make_env(), hooks=[hook]), AGENT_ID)
+        await runtime.execute("first", task_id="t-1")
+
+        task = asyncio.create_task(runtime.execute("second", task_id="t-2", timeout=30))
+        await loop.hanging.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert hook.end_kwargs["result"].error == "Execution cancelled"
+        assert isinstance(hook.error_kwargs["error"], asyncio.CancelledError)
+        # start, end for the first run; start, end, error for the second.
+        assert [entry.split("(")[0] for entry in hook.log] == [
+            "start",
+            "end",
+            "start",
+            "end",
+            "error",
+        ]
+
+
+class TestTheCloseOutRunsOnce:
+    """A blocking hook that raises while closing a run out is not a second ending.
+
+    The success path's ``_finish`` sat inside the ``try`` whose ``except
+    Exception`` builds a failed result, so a hook raising in ``on_run_end``
+    closed the same run out again — every hook saw ``on_run_end`` twice,
+    the second time with the hook's own error as the run's.
+    """
+
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    async def test_a_finished_run(self, raise_on_error: bool):
+        hook = _FailingCloseOutHook()
+        env = _make_env()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID)
+
+        with pytest.raises(OSError, match="No space left"):
+            await runtime.execute("t", task_id="t-1", raise_on_error=raise_on_error)
+
+        assert hook.calls == ["end(error=None)"]
+        assert env.events == ["setup", "teardown"]
+
+    async def test_a_timed_out_run(self):
+        hook = _FailingCloseOutHook()
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), _SlowLoop(), _make_env(), hooks=[hook]), AGENT_ID
+        )
+
+        with pytest.raises(OSError, match="No space left"):
+            await runtime.execute("t", task_id="t-1", timeout=0.05)
+
+        assert hook.calls == ["end(error='Execution timed out after 0.05s')"]
 
 
 class TestRunStartPayload:

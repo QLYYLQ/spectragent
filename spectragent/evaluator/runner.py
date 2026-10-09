@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from spectragent.core.trace.fsio import atomic_write
 from spectragent.core.trace.reader import RunTrace
 from spectragent.evaluator.base import BaseEvaluator
 from spectragent.evaluator.summary import summarize
@@ -287,25 +288,29 @@ class EvaluationRunner:
         )
 
     def _persist(self, trace_dir: Path, result: EvalResult) -> None:
+        """Write the verdict next to the evidence, and to the flat copy if asked.
+
+        Through :func:`~spectragent.core.trace.fsio.atomic_write`, like every
+        other file in a trace: a verdict torn by a crash or a full disk would
+        be read back by the next pass as a corrupt evaluation rather than a
+        missing one, and a re-score that failed half way through used to
+        truncate the verdict it was replacing. Either the old file or the new
+        one is on disk, never part of one.
+        """
         payload = json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2)
+        data = payload.encode("utf-8")
         slug = self.verdict_slug
         if self._write_into_trace:
-            evals_dir = trace_dir / "evals"
-            evals_dir.mkdir(parents=True, exist_ok=True)
-            (evals_dir / f"{slug}.json").write_text(payload, "utf-8")
+            atomic_write(trace_dir / "evals" / f"{slug}.json", data)
         if self._evals_dir is not None:
-            self._evals_dir.mkdir(parents=True, exist_ok=True)
             name = f"{result.run_id or result.task_id}__{slug}.json"
-            (self._evals_dir / _safe_name(name)).write_text(payload, "utf-8")
+            atomic_write(self._evals_dir / _safe_name(name), data)
 
     def _persist_summary(self, report: EvaluationReport) -> None:
         if self._evals_dir is None:
             return
-        self._evals_dir.mkdir(parents=True, exist_ok=True)
-        (self._evals_dir / f"{self.verdict_slug}_summary.json").write_text(
-            json.dumps(report.summary().model_dump(mode="json"), ensure_ascii=False, indent=2),
-            "utf-8",
-        )
+        summary = json.dumps(report.summary().model_dump(mode="json"), ensure_ascii=False, indent=2)
+        atomic_write(self._evals_dir / f"{self.verdict_slug}_summary.json", summary.encode("utf-8"))
 
 
 def _task_id_or_dirname(trace_dir: Path) -> str:

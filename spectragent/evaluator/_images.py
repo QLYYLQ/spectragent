@@ -2,8 +2,9 @@
 
 Screenshots reach an evaluator as real image files under the trace's
 ``observations/`` directory — ``.png``, or ``.jpg`` when the run captured
-JPEG observations — so the default path is "read the bytes, base64 them,
-label them by extension" — no re-encode, no quality loss, no PIL round-trip.
+JPEG observations — listed by ``RunTrace.screenshots`` from the manifest's
+fragment index. So the default path is "read the bytes, base64 them, label
+them by extension" — no re-encode, no quality loss, no PIL round-trip.
 
 Downscaling is opt-in and exists for one reason: a stepwise judge that
 feeds forty full-resolution screenshots into one request is expensive

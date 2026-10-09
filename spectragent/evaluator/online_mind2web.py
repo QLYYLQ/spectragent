@@ -23,8 +23,9 @@ base64'd inside — so the list was empty for every trace ever recorded, the
 grader took the ``webjudge_user_no_images`` branch, and emitted a weaker
 text-only verdict with no error and no warning. Screenshots now persist as
 real image files via ``ScreenshotObs.trace_binary()`` — ``.png``, or
-``.jpg`` when the capability was configured for JPEG observations, both of
-which ``RunTrace.screenshots`` globs — so stage 2 actually runs.
+``.jpg`` when the capability was configured for JPEG observations — and
+``RunTrace.screenshots`` lists each committed step's file from the
+manifest's fragment index, so stage 2 actually runs.
 
 To make sure that can never silently regress, degradation is now recorded
 in the verdict: ``benchmark_details`` carries ``screenshots_found`` and

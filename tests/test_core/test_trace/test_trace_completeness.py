@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.browser.observations import (
@@ -22,11 +23,18 @@ from spectragent.core.capabilities.browser.observations import (
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.metrics_collector import MetricsCollector
 from spectragent.core.hooks.trace_writer import TraceWriter
+from spectragent.core.llm.exceptions import (
+    ModelOutputTruncatedError,
+    StructuredOutputValidationError,
+)
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops.errors import ParseError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import RunStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.observation.fragments import TaskObs
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 _PNG = b"\x89PNG\r\n\x1a\n-pretend-this-is-a-screenshot"
@@ -63,6 +71,16 @@ class _Cap(CapabilityBase):
 
 class _Env(EnvironmentBase):
     __registry_key__ = "trace_e2e_env"
+
+
+class _TeardownRecordingEnv(EnvironmentBase):
+    __registry_key__ = "trace_e2e_teardown_env"
+
+    torn_down = False
+
+    async def teardown(self) -> None:
+        self.torn_down = True
+        await super().teardown()
 
 
 class _Agent:
@@ -156,7 +174,7 @@ class _SlowLoop:
 class _StallAfterLLMLoop:
     """Gets an answer, then dies before surrendering the step.
 
-    The real timeout shape: ``after_ainvoke`` has already buffered a
+    The real timeout shape: ``around_ainvoke`` has already recorded a
     prompt+completion when ``asyncio.wait_for`` cancels the loop, so
     ``record_step`` — the commit point — is never reached.
     """
@@ -196,15 +214,28 @@ class _CrashAfterLLMLoop(_StallAfterLLMLoop):
         return agent
 
 
-def _run_with_hooks(tmp_path, *, plan, loop=None, hooks=None):
+class _HangingLLM:
+    """A model that never answers — until something cancels the call."""
+
+    model = "gpt-4o-mini"
+
+    def __init__(self) -> None:
+        self.called = asyncio.Event()
+
+    async def ainvoke(self, messages, **kw):
+        self.called.set()
+        await asyncio.Event().wait()
+
+
+def _run_with_hooks(tmp_path, *, plan, loop=None, hooks=None, llm=None, env=None, agent=None):
     writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
     # Declared in the order that used to zero out every result.json.
     hook_list = hooks if hooks is not None else [writer, MetricsCollector()]
     run = make_run(
-        agent=_Agent(plan),
+        agent=agent or _Agent(plan),
         loop=loop or ReactLoop(max_steps=3),
-        env=make_env(_Env, {"trace_e2e_cap": _Cap()}),
-        llm=_LLM(),
+        env=env or make_env(_Env, {"trace_e2e_cap": _Cap()}),
+        llm=llm or _LLM(),
         memory=_Memory(),
         hooks=hook_list,
     )
@@ -258,8 +289,12 @@ class TestCompletedRunTrace:
         t, _ = trace
         assert t.screenshots, "RunTrace.screenshots must not be empty"
         assert t.screenshots[0].read_bytes() == _PNG
-        sidecar = t.get_observation(0, "browser.screenshot")
-        assert sidecar["viewport_width"] == 1280
+        shot = t.observation_fragment(0, "browser.screenshot")
+        assert isinstance(shot, ScreenshotObs)
+        assert shot.viewport_width == 1280
+        assert shot.image_bytes == _PNG
+        files = t.manifest.steps[0].fragments["browser.screenshot"]
+        sidecar = json.loads((t.trace_dir / files.file).read_text())
         assert "image_bytes" not in sidecar
 
     async def test_fragment_files_carry_their_producer(self, trace):
@@ -273,17 +308,32 @@ class TestCompletedRunTrace:
         ``RunTrace`` is the only reader these files have.
         """
         t, _ = trace
-        obs_files = list((t.trace_dir / "observations").iterdir())
-        written = {p.name.split("_", 1)[1].rsplit(".", 1)[0] for p in obs_files}
+        written = set(t.manifest.steps[0].fragments)
         assert "loop.task" in written
         assert "browser.screenshot" in written
         assert all("." in key for key in written), written
+        assert all(
+            files.file == f"observations/000_{key}.json"
+            for key, files in t.manifest.steps[0].fragments.items()
+        )
 
-        payload = t.get_observation(0, "loop.task")
-        assert payload["user_request"] == "find the price"
-        assert payload["fragment_id"] == "loop.task"
+        task = t.observation_fragment(0, "loop.task")
+        assert isinstance(task, TaskObs)
+        assert task.user_request == "find the price"
+        assert task.fragment_id == "loop.task"
         # And the junk 0.0 timestamp file is gone.
         assert "timestamp" not in written
+
+    async def test_every_call_is_recorded_with_its_step(self, trace):
+        t, _ = trace
+        for step in range(t.step_count):
+            (call,) = t.llm_messages(step)
+            assert (call.step, call.status) == (step, "completed")
+            assert call.completion is not None
+            assert call.completion.completion == '{"action": "done"}'
+            assert call.completion.usage is not None
+            assert call.completion.usage.total_tokens == 150
+        assert t.trailing_calls == []
 
     async def test_recorded_actions_carry_their_producer(self, trace):
         """The action axis keeps provenance too — same rule, same trace.
@@ -346,7 +396,7 @@ class TestAbnormalEndKeepsTheLastExchange:
     one more ``record_step`` — which is every timeout and every crash.
     """
 
-    async def test_timeout_flushes_the_buffered_call(self, tmp_path):
+    async def test_timeout_commits_the_answered_call_as_trailing(self, tmp_path):
         run, writer = _run_with_hooks(tmp_path, plan=["done"], loop=_StallAfterLLMLoop())
         result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
             "find the price", task_id="mind2web--0042", timeout=0.05
@@ -355,18 +405,17 @@ class TestAbnormalEndKeepsTheLastExchange:
         assert writer.run_dir is not None
 
         t = RunTrace(writer.run_dir)
-        prompt, completion = t.get_messages(0)
-        assert prompt == [{"role": "user", "content": "find the price"}]
-        assert completion is not None
-        assert [p.name for p in t.unfinished_message_files] == [
-            "000_input.json",
-            "000_output.json",
-        ]
-        # Recorded as unfinished, not as a step that never happened.
+        (call,) = t.trailing_calls
+        assert (call.step, call.call, call.status) == (0, 0, "completed")
+        assert [m.text for m in call.messages] == ["find the price"]
+        assert call.completion is not None
+        assert call.completion.completion == '{"action": "done"}'
+        # Recorded as trailing, not as a step that never happened.
         assert t.step_count == 0
+        assert t.llm_messages(0) == []
         assert t.manifest.status == RunStatus.ERROR
 
-    async def test_exception_flushes_the_buffered_call(self, tmp_path):
+    async def test_exception_commits_the_answered_call_as_trailing(self, tmp_path):
         run, writer = _run_with_hooks(tmp_path, plan=["done"], loop=_CrashAfterLLMLoop())
         result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
             "find the price",
@@ -378,8 +427,274 @@ class TestAbnormalEndKeepsTheLastExchange:
         assert writer.run_dir is not None
 
         t = RunTrace(writer.run_dir)
-        assert t.get_messages(0)[0] == [{"role": "user", "content": "find the price"}]
+        assert [m.text for m in t.trailing_calls[0].messages] == ["find the price"]
         assert t.manifest.status == RunStatus.ERROR
+
+
+class TestACancelledCallKeepsItsPrompt:
+    """The call in flight when a run is cut off is the one most worth reading.
+
+    ``CancelledError`` is a ``BaseException``: no ``after`` advice sees the
+    call, and recording it only in ``except Exception`` lost the prompt.
+    TraceWriter registers every call before it goes out, and the runtime
+    closes the run out on cancellation too — so the prompt lands as a
+    trailing call, ``cancelled``, whichever side did the cancelling.
+    """
+
+    @staticmethod
+    def _assert_the_prompt_survived(t: RunTrace) -> None:
+        assert t.manifest.status == RunStatus.ERROR
+        assert t.step_count == 0
+        (call,) = t.trailing_calls
+        assert (call.step, call.call, call.status) == (0, 0, "cancelled")
+        assert call.completion is None
+        assert call.failure is not None
+        assert call.failure.error == "CancelledError"
+        assert [m.text for m in call.messages] == ["go"]
+
+    async def test_cut_off_by_the_runs_own_timeout(self, tmp_path):
+        llm = _HangingLLM()
+        env = make_env(_TeardownRecordingEnv, {"trace_e2e_cap": _Cap()})
+        run, writer = _run_with_hooks(tmp_path, plan=["done"], llm=llm, env=env)
+        result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
+            "find the price", task_id="mind2web--0042", timeout=0.1
+        )
+
+        assert result.agent_done.value == "timeout"
+        assert writer.run_dir is not None
+        self._assert_the_prompt_survived(RunTrace(writer.run_dir))
+        assert env.torn_down
+
+    async def test_cut_off_by_an_external_cancel(self, tmp_path):
+        llm = _HangingLLM()
+        env = make_env(_TeardownRecordingEnv, {"trace_e2e_cap": _Cap()})
+        run, writer = _run_with_hooks(tmp_path, plan=["done"], llm=llm, env=env)
+        task = asyncio.create_task(
+            AgentRuntime.for_agent(run, AGENT_ID).execute(
+                "find the price", task_id="mind2web--0042", timeout=30
+            )
+        )
+        await llm.called.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert writer.run_dir is not None
+        t = RunTrace(writer.run_dir)
+        self._assert_the_prompt_survived(t)
+        assert t.result is not None
+        assert t.result.error == "Execution cancelled"
+        assert env.torn_down
+
+
+class _Reply(BaseModel):
+    """The reply model the parsing agent asks for, so every call carries a schema."""
+
+    action: str
+
+
+class _ParsingAgent(_Agent):
+    """Parses the way a shipped agent does: a reply naming no known verb is a ParseError."""
+
+    def get_react_output_model(self):
+        return _Reply
+
+    def parse_react_output(self, out):
+        if isinstance(out, _Reply):
+            name = out.action
+        else:
+            try:
+                name = json.loads(out)["action"]
+            except (TypeError, ValueError, KeyError):
+                raise ParseError(f"not a reply: {out!r}") from None
+        if name not in ("done", "click"):
+            raise ParseError(f"unknown action {name!r}")
+        return [Action(name=name, params={"index": 1})]
+
+
+#: Script entry for :class:`_ScriptedLLM`: never answer, until cancelled.
+_HANG = object()
+
+
+class _ScriptedLLM:
+    """Answers each call from a script: a completion, an exception to raise, or ``_HANG``."""
+
+    model = "gpt-4o-mini"
+
+    def __init__(self, *script: Any) -> None:
+        self._script = list(script)
+        self.hanging = asyncio.Event()
+
+    async def ainvoke(self, messages, **kw):
+        answer = self._script.pop(0)
+        if answer is _HANG:
+            self.hanging.set()
+            await asyncio.Event().wait()
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+
+def _billed(completion_tokens: int) -> ChatInvokeUsage:
+    return ChatInvokeUsage(
+        prompt_tokens=100,
+        prompt_cached_tokens=0,
+        prompt_cache_creation_tokens=None,
+        prompt_image_tokens=None,
+        completion_tokens=completion_tokens,
+        total_tokens=100 + completion_tokens,
+    )
+
+
+def _refused() -> StructuredOutputValidationError:
+    """The schema rejected the reply; the Loop hands the model its own text back."""
+    return StructuredOutputValidationError(
+        "reply does not match _Reply",
+        raw_output='{"action": 7}',
+        model="gpt-4o-mini",
+        usage=_billed(5),
+    )
+
+
+def _unusable() -> ChatInvokeCompletion:
+    """A reply the schema accepts and the agent cannot act on: a parse retry."""
+    return ChatInvokeCompletion(
+        completion=_Reply(action="scroll"), usage=_billed(6), stop_reason="end_turn"
+    )
+
+
+def _truncated() -> ModelOutputTruncatedError:
+    return ModelOutputTruncatedError(
+        model="gpt-4o-mini",
+        stop_reason="length",
+        ceiling=64,
+        usage=_billed(64),
+        partial_output='{"action": "cli',
+    )
+
+
+class TestEveryCallOfAStepThroughTheRealLoop:
+    """One ReactLoop step, several calls — each one readable, in the order it was made.
+
+    The step re-asks in place (``parse_retries_per_step``): a structured reply
+    the schema refused, then one the agent could not use, then a third that
+    the token ceiling cut off (which aborts the step) or that a cancellation
+    cut off (which ends the run). Real Loop, real Weaver, real TraceWriter,
+    read back through ``RunTrace``.
+    """
+
+    @staticmethod
+    def _run(tmp_path, llm: _ScriptedLLM, **kwargs: Any) -> tuple[Any, TraceWriter]:
+        return _run_with_hooks(
+            tmp_path,
+            plan=["done"],
+            agent=_ParsingAgent(["done"]),
+            loop=ReactLoop(max_steps=3, parse_retries_per_step=2),
+            llm=llm,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _assert_the_first_two_attempts(calls: list[Any]) -> None:
+        refused, unusable = calls[:2]
+        assert refused.failure is not None
+        assert refused.failure.error == "StructuredOutputValidationError"
+        assert refused.failure.raw_output == '{"action": 7}'
+        assert refused.completion is None
+        assert unusable.completion is not None
+        assert unusable.completion.completion == {"action": "scroll"}
+        # Each attempt was asked with the feedback the one before it earned:
+        # the recorded prompt is the one sent, not the memory at commit time.
+        assert [len(call.messages) for call in calls] == [1, 3, 5][: len(calls)]
+        assert [m.role for m in calls[1].messages] == ["user", "assistant", "user"]
+        assert "could not be parsed" in calls[1].messages[-1].text
+
+    async def test_a_committed_step_keeps_every_call_in_start_order(self, tmp_path):
+        llm = _ScriptedLLM(_refused(), _unusable(), _truncated())
+        run, writer = self._run(tmp_path, llm)
+        result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
+            "find the price", task_id="mind2web--0042", timeout=10
+        )
+
+        assert result.agent_done.value == "error"
+        assert writer.run_dir is not None
+        t = RunTrace(writer.run_dir)
+        assert t.step_count == 1
+        assert t.trailing_calls == []
+        calls = t.llm_messages(0)
+        assert [(c.step, c.call, c.status) for c in calls] == [
+            (0, 0, "failed"),
+            (0, 1, "completed"),
+            (0, 2, "failed"),
+        ]
+        self._assert_the_first_two_attempts(calls)
+        truncated = calls[2]
+        assert truncated.failure is not None
+        assert truncated.failure.error == "ModelOutputTruncatedError"
+        assert truncated.failure.partial_output == '{"action": "cli'
+        assert truncated.failure.stop_reason == "length"
+        assert truncated.failure.raw_output is None
+
+        # Every call asked for the same reply model, committed once.
+        (schema_sha,) = t.manifest.output_formats
+        assert {c.output_format.sha256 for c in calls if c.output_format} == {schema_sha}
+        assert t.output_schema(schema_sha)["title"] == "_Reply"
+        # The calls account for what the step says it cost.
+        billed = 0
+        for call in calls:
+            outcome = call.failure or call.completion
+            assert outcome is not None
+            assert outcome.usage is not None
+            billed += outcome.usage.total_tokens
+        step = t.step(0)
+        assert step is not None
+        assert step.error_phase == "llm"
+        assert step.token_usage is not None
+        assert step.token_usage.total_tokens == billed
+        assert t.manifest.status == RunStatus.ERROR
+
+    async def test_a_step_cut_off_by_a_cancel_keeps_every_call_as_trailing(self, tmp_path):
+        llm = _ScriptedLLM(_refused(), _unusable(), _HANG)
+        env = make_env(_TeardownRecordingEnv, {"trace_e2e_cap": _Cap()})
+        run, writer = self._run(tmp_path, llm, env=env)
+        task = asyncio.create_task(
+            AgentRuntime.for_agent(run, AGENT_ID).execute(
+                "find the price", task_id="mind2web--0042", timeout=30
+            )
+        )
+        await llm.hanging.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert writer.run_dir is not None
+        t = RunTrace(writer.run_dir)
+        assert t.step_count == 0
+        assert t.llm_messages(0) == []
+        calls = t.trailing_calls
+        assert [(c.step, c.call, c.status) for c in calls] == [
+            (0, 0, "failed"),
+            (0, 1, "completed"),
+            (0, 2, "cancelled"),
+        ]
+        self._assert_the_first_two_attempts(calls)
+        cancelled = calls[2]
+        assert cancelled.completion is None
+        assert cancelled.failure is not None
+        assert cancelled.failure.error == "CancelledError"
+        assert [m.role for m in cancelled.messages] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+            "user",
+        ]
+        assert cancelled.output_format is not None
+        assert cancelled.output_format.sha256 in t.manifest.output_formats
+        assert t.result is not None
+        assert t.result.error == "Execution cancelled"
+        assert t.manifest.status == RunStatus.ERROR
+        assert env.torn_down
 
 
 class TestNoHooksConfigured:

@@ -143,14 +143,17 @@ class TraceView:
 
     @cached_property
     def screenshots(self) -> list[Path]:
-        """On-disk PNG paths, in step order.
+        """On-disk screenshot paths of the committed steps, in step order.
 
         Real files, not base64 buried in JSON: ``ScreenshotObs`` persists
         ``image_bytes`` through ``trace_binary()`` as
-        ``NNN_browser.screenshot.png`` — the fully-qualified fragment key,
-        so the path says which capability took the frame — with a metadata
-        sidecar. An image judge that finds this list empty must say so
-        rather than silently switching to a text-only prompt.
+        ``NNN_browser.screenshot.png`` (``.jpg`` for a JPEG run — the suffix
+        comes from the image header) — named by the fully-qualified fragment
+        key, so the path says which capability took the frame. Resolved
+        through the manifest's fragment index, so a frame written for a step
+        that never committed is not one of them. An image judge that finds
+        this list empty must say so rather than silently switching to a
+        text-only prompt.
         """
         return list(self._trace.screenshots)
 

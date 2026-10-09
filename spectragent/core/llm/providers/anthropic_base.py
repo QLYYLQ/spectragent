@@ -5,6 +5,7 @@
 # 类型对象来做 __config_annotated_only__ 过滤；future annotations 会导致
 # 跨模块类型解析失败，使 get_origin() 返回 None。
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, TypeVar, overload
@@ -22,6 +23,7 @@ from anthropic import (
 from anthropic.types import CacheControlEphemeralParam, Message, ToolParam
 from anthropic.types.text_block import TextBlock
 from anthropic.types.tool_choice_tool_param import ToolChoiceToolParam
+from anthropic.types.tool_use_block import ToolUseBlock
 from httpx import Timeout
 from pydantic import BaseModel, Field
 
@@ -39,6 +41,31 @@ from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _generated_text(response: Message) -> str | None:
+    """Everything a reply had written, as one string — for a truncation record.
+
+    A text block contributes its text. A ``tool_use`` block contributes its
+    input serialised as JSON, because on the forced-tool structured path
+    (``use_native_structured_output=False``) that input *is* the reply, and
+    leaving it out would record a truncated structured answer as no answer.
+    Pieces keep block order, joined by newlines. Thinking blocks are the model's
+    reasoning, not its reply, and are left out. ``None`` when the reply
+    carried neither kind of block.
+    """
+    pieces: list[str] = []
+    for block in response.content:
+        if isinstance(block, TextBlock):
+            pieces.append(block.text)
+        elif isinstance(block, ToolUseBlock):
+            tool_input: object = block.input
+            pieces.append(
+                tool_input
+                if isinstance(tool_input, str)
+                else json.dumps(tool_input, ensure_ascii=False, default=str)
+            )
+    return "\n".join(pieces) if pieces else None
 
 
 @dataclass
@@ -193,6 +220,10 @@ class AnthropicCompatBase(ChatModelBase):
         here. ``max_tokens`` is required by this API rather than optional, so
         unlike the OpenAI paths there is no configuration in which the ceiling
         is absent and this check cannot fire.
+
+        What the reply had written goes with the error (``partial_output``,
+        see :func:`_generated_text`): the step aborts here, so the failure
+        record is the only place it survives.
         """
         if response.stop_reason == "max_tokens":
             raise ModelOutputTruncatedError(
@@ -201,6 +232,7 @@ class AnthropicCompatBase(ChatModelBase):
                 ceiling_field="max_tokens",
                 ceiling=self.max_tokens,
                 usage=usage,
+                partial_output=_generated_text(response),
             )
 
     @overload

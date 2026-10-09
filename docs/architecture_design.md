@@ -347,9 +347,9 @@ class ReactLoop(AgentLoopBase):
 | 拦截点 | advice | 触发时机 | 典型 Hook 用途 |
 |--------|--------|---------|---------------|
 | `env.observe` | after | 每步 observe 返回后 | 可选的环境观测 hook；当前 TraceWriter 不拦截此方法 |
-| `llm.ainvoke` | after | 每次 LLM 成功返回后 | TraceWriter 暂存这次调用；MetricsCollector 累加 token |
-| `llm.ainvoke` | around | LLM 调用成功或抛异常 | TraceWriter 记录失败调用并测量等待时间 |
-| `loop.record_step` | after | Loop 交出完整 StepRecord 后 | TraceWriter 写入本步观测、消息和动作结果，再更新 WAL manifest |
+| `llm.ainvoke` | after | 每次 LLM 成功返回后 | MetricsCollector 累加 token |
+| `llm.ainvoke` | around | 每次 LLM 调用：返回、抛异常或被取消 | TraceWriter 在 `proceed()` 之前登记这次调用，按结局记为 completed / failed / cancelled，并测量等待时间；MetricsCollector 补记计费了的失败回复（校验失败、截断） |
+| `loop.record_step` | after | Loop 交出完整 StepRecord 后 | TraceWriter 一次 `commit_step` 提交本步观测、全部 LLM 调用记录和 step record，manifest 原子重写即提交点 |
 | `env.act` | after | 每次 action 执行后 | 可选：action 级别追踪 |
 | `agent.build_react_prompt` | around | prompt 构建时 | 可选：prompt 审计（同步方法，`proceed()` 直接返回值而非 awaitable） |
 
@@ -416,31 +416,76 @@ class AgentRuntime:
         return wrapped_agent
 
     # ── execute(task): 一站式驱动 ───────────────────────────────────
-    async def execute(self, task, *, timeout=300, config=None, **kwargs):
+    async def execute(self, task, *, timeout=300, config=None,
+                      env_context=None, raise_on_error=True, **kwargs):
         prepared_agent = self.prepare(**kwargs)
 
+        # 在 env setup 之前打开 trace：setup 失败也要落进 trace
         await self._dispatch_lifecycle("on_run_start",
             agent=self._run.agent, env=self._run.env,
-            task=task, config=config or {})
+            task=task, config=config or {}, ...)
 
+        self._finish_started = False
         try:
-            result = await asyncio.wait_for(
-                prepared_agent.run(task), timeout=timeout
-            )
-            await self._dispatch_lifecycle("on_run_end", result=result)
-            return result
-        except TimeoutError:
-            ...   # build timeout AgentResult
-        except Exception as exc:
-            await self._dispatch_lifecycle(
-                "on_run_error", error=exc, partial_steps=[]
-            )
-            raise
+            try:
+                await self.setup_environment(env_context)
+            except Exception as exc:
+                result = ...   # agent_done=ERROR, env_status=FAILED
+                await self._finish(result, error=exc)
+                if raise_on_error:
+                    raise
+                return result
+
+            try:
+                result = await asyncio.wait_for(
+                    prepared_agent.run(task), timeout=timeout
+                )
+            except TimeoutError:
+                result = ...   # agent_done=TIMEOUT
+                await self._finish(result, error=TimeoutError(result.error))
+                return result
+            except Exception as exc:
+                result = ...   # agent_done=ERROR
+                await self._finish(result, error=exc)
+                if raise_on_error or isinstance(exc, RunAbort):   # guard 的否决总是上抛
+                    raise
+                return result
+            else:
+                await self._finish(result)   # 在 try 之外：收尾失败不会被当成 run 失败再收尾一次
+                return result
+
+        except asyncio.CancelledError as exc:
+            # 外部取消（Ctrl-C、sweep 被取消），不论落在 setup 还是 run 期间
+            if not self._finish_started:   # 收尾已经开始：不再二次派发
+                result = ...   # agent_done=ERROR, error="Execution cancelled"
+                try:
+                    await self._finish(result, error=exc)
+                except Exception:
+                    logger.exception(...)  # 收尾失败只记日志：取消优先
+            raise              # 原样交还调用方，不看 raise_on_error
+        finally:
+            try:
+                await self._drain_background()     # 兜底：收尾没走到它自己的 drain 时
+            finally:
+                await self.teardown_environment()  # 永远在 on_run_end 之后；失败只记日志
+
+    async def _finish(self, result, error=None):
+        """收尾：on_run_end → （有异常时）on_run_error → drain 后台 handler。"""
+        self._finish_started = True
+        await self._dispatch_lifecycle("on_run_end", result=result, env=self._env)
+        if error is not None:
+            await self._dispatch_lifecycle("on_run_error", error=error,
+                partial_steps=self._recorder.records, env=self._env)
+        await self._drain_background()
 ```
 
 **为什么两段式**：`prepare()` 是纯装配（slot 校验 → 协商 → AOP 织入 → loop weave），返回值就是一个 self-contained 的 agent —— 测试和需要细粒度控制的调用方可以直接 `await prepared_agent.run(task)`，跳过 timeout/lifecycle 包装。`execute()` 只是 prepare + 围绕 `agent.run` 加 timeout 和 lifecycle hook。两段都是独立的、零全局状态的 run 上下文，并行多个 run 互不干扰。
 
-**AOP 织入流程**：Weaver 读取所有 hook 的 `__intercepts__` 声明（如 `Intercept("ainvoke", role="llm", advice="after")`），为 agent/env/llm 和 StepRecorder 生成 `AOPProxy` 包装。Loop 调用 `llm.ainvoke()` 时，代理触发 TraceWriter 的暂存 handler 与 MetricsCollector；Loop 调用 `recorder.record_step()` 时，代理触发 TraceWriter 写入完整 step。Loop 代码零 hook 感知。
+**每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `running`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
+
+**收尾只做一次，取消永远优先。** 被取消的 run 收尾时，blocking hook 自己失败了（`TraceWriter.on_run_end` 遇到磁盘写满），这个错误只记日志，重抛的仍是原来那个 `CancelledError`：否则 Ctrl-C 会变成一个普通的 `OSError`，sweep 的 `except Exception` 把它记成一次任务失败、接着跑下一个任务，调用方的 `asyncio.timeout` 也只会看到 `OSError` 而不是 `TimeoutError`。其余路径（完成、超时、异常、setup 失败）上收尾失败，hook 的错误照原样上抛，不看 `raise_on_error`；run 不会被再收尾一次。成功路径的 `_finish` 因此放在 `try` 的 `else` 里：放在 `try` 之内时，hook 在 `on_run_end` 里抛的错会落进 `except Exception`，同一个 run 被当成失败再收尾一次，每个 hook 都收到两次 `on_run_end`。
+
+**AOP 织入流程**：Weaver 读取所有 hook 的 `__intercepts__` 声明（如 `Intercept("ainvoke", role="llm", advice="after")`），为 agent/env/llm 和 StepRecorder 生成 `AOPProxy` 包装。Loop 调用 `llm.ainvoke()` 时，代理触发 TraceWriter 的 `around` handler（调用前登记、结束时记下结局）与 MetricsCollector；Loop 调用 `recorder.record_step()` 时，代理触发 TraceWriter 一次提交完整 step。Loop 代码零 hook 感知。
 
 **Lifecycle vs AOP 两层 hook 接口**：
 - **Lifecycle 回调**（`on_run_start/end/error`）：由 AgentRuntime 在结构边界直接调用
@@ -1231,7 +1276,7 @@ GAIA 场景：
 
 **两层 hook 接口**：
 
-1. **Lifecycle 回调**（结构边界）：`on_run_start/end/error`，由 AgentRuntime 在运行开始/结束/异常时直接调用。
+1. **Lifecycle 回调**（结构边界）：`on_run_start/end/error`，由 AgentRuntime 在运行开始/结束/异常时直接调用；外部取消也是一条终止路径，同样派发（§4.2）。
 2. **方法拦截**（AOP 织入）：`__intercepts__` 声明 + `{advice}_{method}` handler，由 Weaver 自动织入目标对象的方法调用。
 
 ```python
@@ -1247,8 +1292,8 @@ class RuntimeHook(Protocol):
 
     # ── Lifecycle 回调（AgentRuntime 直接调用）──
     async def on_run_start(self, *, agent, env, task, config) -> None: ...
-    async def on_run_end(self, *, result: AgentResult) -> None: ...
-    async def on_run_error(self, *, error, partial_steps) -> None: ...
+    async def on_run_end(self, *, result: AgentResult) -> None: ...     # 每条终止路径，含外部取消
+    async def on_run_error(self, *, error, partial_steps) -> None: ... # 超时 / 异常 / 取消，紧跟 on_run_end
 ```
 
 **AOP 拦截声明**：Hook 通过 `__intercepts__` 声明要拦截的方法、目标角色和 advice 类型：
@@ -1267,7 +1312,9 @@ class AdviceType(Enum):
 
 Handler 命名约定：`{advice}_{method}` — 如 `after_observe`、`after_ainvoke`、`around_build_react_prompt`。
 
-**目标方法抛异常时，`after` 不触发。** 通常这是对的：没返回的调用没什么可记。但有**一个** LLM 错误是可恢复的——结构化回复不符合 schema（`StructuredOutputValidationError`），Loop 会把模型自己的文本喂回去继续跑。这一次调用如果没人记，trace 里就会出现一个 messages 文件干脆缺失的 step，而且缺的正是研究者最想看的那些 step（模型答错的那些），metrics 的 token 数也会比 result 自己算的少一次调用。所以 `trace_writer` / `metrics` 各加一条 `around_ainvoke`：`try: await proceed() except ...: 记下来再 raise`。成功路径仍然走 `after`（`around` 的最内层就是 before/after 链），两者不会重复记账。
+**目标方法抛异常时，`after` 不触发。** 通常这是对的：没返回的调用没什么可记。但有**一个** LLM 错误是可恢复的——结构化回复不符合 schema（`StructuredOutputValidationError`），Loop 会把模型自己的文本喂回去继续跑。这一次调用如果没人记，trace 里就会出现一个调用记录干脆缺失的 step，而且缺的正是研究者最想看的那些 step（模型答错的那些），metrics 的 token 数也会比 result 自己算的少一次调用。所以 `metrics` 加一条 `around_ainvoke`：`try: await proceed() except (StructuredOutputValidationError, ModelOutputTruncatedError): 记下来再 raise`——只补记 provider 计费了的失败回复。成功路径仍然走 `after`（`around` 的最内层就是 before/after 链），两者不会重复记账。
+
+`trace_writer` 走得更远：它**只**用 `around_ainvoke` 记录 LLM 调用，没有 `after_ainvoke`。在 `proceed()` **之前**登记这次调用（messages、`kwargs["output_format"]`、开始时间）；返回记 `completed`，抛 `Exception` 记 `failed`，抛 `BaseException`（`CancelledError` 等）记 `cancelled`；每条路径都原样重抛。理由是取消：`CancelledError` 是 `BaseException`，`after` 永远看不到被取消的调用，在 `except Exception` 里才登记的调用会连 prompt 一起丢——而超时和外部取消正是最需要知道"模型当时被问了什么"的时刻。只用一个 advice 也省掉了在 `after` 与 `around` 之间关联同一次调用：Loop 一旦并发发起调用，这种关联就会出错。记录的字段见 §5.3、§5.4。
 
 这里没有引入第四种 advice。"哪些失败的调用该进 trace"是个值得单独决定的问题，而 `around` 已经能表达这一个确定的答案。
 
@@ -1277,7 +1324,7 @@ Handler 命名约定：`{advice}_{method}` — 如 `after_observe`、`after_ainv
 # AgentRuntime.prepare() 中：
 weaver = Weaver(active_hooks)
 wrapped_env = weaver.wrap(env, role="env")
-wrapped_llm = weaver.wrap(llm, role="llm")       # llm.ainvoke → 暂存 LLM 调用
+wrapped_llm = weaver.wrap(llm, role="llm")       # llm.ainvoke → around 里登记 LLM 调用
 wrapped_agent = weaver.wrap(agent, role="agent")
 wrapped_recorder = weaver.wrap(StepRecorder(), role="loop")  # record_step → 完整 step 落盘
 
@@ -1300,7 +1347,7 @@ loop.weave(wrapped_agent, env=wrapped_env, llm=wrapped_llm,
 
 | hook_id | 状态 | blocking | `__intercepts__` | 职责 |
 |---------|------|----------|-------------------|------|
-| `trace_writer` | ✅ | True | `after_ainvoke(llm)`, `around_ainvoke(llm)`, `after_record_step(loop)` | 缓存每步 LLM 消息 → Loop 交出 StepRecord 时 commit 当步数据到 WAL |
+| `trace_writer` | ✅ | True | `around_ainvoke(llm)`, `after_record_step(loop)` | 在 `around` 中按开始顺序登记每次 LLM 调用（completed / failed / cancelled）→ Loop 交出 StepRecord 时一次 `commit_step` 提交当步数据到 WAL；run 结束时未交出的调用经 `commit_trailing` 落盘 |
 | `metrics` | ✅ | True | `after_ainvoke(llm)`, `around_ainvoke(llm)` | 从 ChatInvokeCompletion 提取 token usage，内存累加 |
 | `live_monitor` | **P3 未实现** | False | `after_observe(env)`, `after_ainvoke(llm)` | WebSocket 推送实时状态。设计保留位，目前框架内未注册；按本表的 schema 实现一个 `HookBase` 子类即可纳入。 |
 
@@ -1796,66 +1843,331 @@ numpy 来自可选 extra `learned-mouse`，只在构造 `LearnedTrajectory` 时�
 
 ### 5.2 写入协议
 
+每步只提交一次：`TraceWriter.after_record_step` 把这一步要落盘的全部东西一次交给 `WALWriter.commit_step`，WAL 按固定顺序写完，再原子更新 manifest。
+
 ```
-写入顺序（每步）:
-  1. 先写不可变的内容物（observation fragments, screenshot 文件）
-  2. 再写 step record（引用上述文件路径）
-  3. 最后原子更新 manifest（记录最新完成的 step 编号）← commit point
+commit_step(step, record, *, fragments, llm_calls, extra_files) 的顺序:
+  0. 校验（写任何字节之前）：路径规则见下；内容寻址文件的摘要与路径一致
+  1. 内容物：fragment JSON 与 artifact、每次 LLM 调用的记录、本 run 还没提交过的 output schema、
+     extra 文件 —— 逐个 tmp → fsync(file) → os.replace；不做逐文件的目录 fsync，
+     只记下写入触及的目录和新建的目录
+  2. steps/NNN.json（StepRecord）；有 extra 文件时再写 steps/NNN.extra.json（ExtraFileIndex），
+     同样只做数据 fsync
+  3. 每个触及的不同目录 fsync 一次；路径上每个还没确认落盘的目录，其父目录也各 fsync 一次
+  4. 原子重写 manifest.json（tmp → fsync → os.replace → fsync run 目录）← commit point
 
 crash recovery:
-  - 读 manifest → 知道最后一个完整的 step
-  - manifest 之后的孤立文件 → 未完成的 step，安全忽略
+  - 读 manifest → 知道哪些 step、哪些 trailing 条目已提交
+  - manifest 没有列出的文件 → 未提交，对所有访问器都不可见（§5.5），安全忽略
+  - 0–4 任何一处在 manifest rename 之前失败（包括目录 fsync 的真实 I/O 错误）→ 异常上抛，
+    manifest 保持原样（磁盘上和 WALWriter 内存里都不变；写下的文件是孤立文件，同一次提交可以重试）。
+    WALWriter 内存里的 manifest、已提交路径集合和已确认落盘的目录集合只在 manifest 写成功之后才更新
 ```
 
-原子更新使用 POSIX `write-then-rename`：
+**"还没确认落盘"按 WAL 自己的记录算，不按"这次调用新建了谁"算。** 目录的名字是它父目录里的一个目录项，只有父目录 fsync 之后才落盘。WALWriter 记着哪些目录的名字已经由 `init_run` 或一次成功的提交确认落盘；一次提交写到的每个文件，其路径上不在这个集合里的目录，父目录都要 fsync。只看"这次新建了哪些目录"会漏掉重试：失败的那次已经把 `env/`、`env/steps/000/` 建出来了，重试时它们"已存在"，父目录就没人 fsync，manifest 却把它们下面的文件列成已提交，掉电后这些文件可能整个不见。M28 在一步提交失败之后用 `commit_trailing` 往同一批目录里冲刷证据，也是同一种情形。
+
+`WALWriter`（`core/trace/wal.py`）是纯 I/O 引擎，不认识 Hook/AOP。它的写接口只有下面这些；逐文件写入的 `write_observation` / `write_messages` / `write_step_record` 和 `commit_unfinished_messages` 已删除，不保留并存的旧路径：
 
 ```python
-def atomic_write_json(path: Path, data: dict) -> None:
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, 'w') as f:
-            json.dump(data, f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.rename(tmp_path, path)  # POSIX 原子操作
-    except:
-        os.unlink(tmp_path)
-        raise
+class WALWriter:
+    def __init__(self, base_dir: Path, run_id: str) -> None: ...
+
+    def init_run(self, config: TraceConfig, *, config_hash: str | None = None) -> None:
+        """write_durable config.json（按需建 run 目录和 traces/），建 steps/ observations/ messages/ evals/，
+        把这些目录项一批 fsync：run 目录，加上为它新建的每个目录的父目录（traces/；这个 run
+        新建了 traces/ 时再加 traces/ 的父目录），然后才 atomic_write 初始 manifest
+        （format_version=2，last_step_completed=-1，status=running）。
+        先有 config.json 才有 manifest：run 存在了，它的配置就一定在。之后的提交只 fsync run 目录
+        之内的目录，run 目录自己的名字只在这里落盘。manifest 写成之前任何一步失败，都不留下 run。"""
+
+    def commit_step(
+        self,
+        step: int,
+        record: StepRecord,
+        *,
+        fragments: Sequence[EncodedFragment] = (),
+        llm_calls: Sequence[EncodedLLMCall] = (),
+        extra_files: Sequence[TraceFile] = (),
+    ) -> None:
+        """按上面的 0–4 提交一步；返回即已落盘。"""
+
+    def commit_trailing(
+        self,
+        *,
+        llm_calls: Sequence[EncodedLLMCall] = (),
+        extra_files: Sequence[TraceFile] = (),
+    ) -> None:
+        """同一协议，但不写 StepRecord、不推进 last_step_completed：
+        manifest.trailing 追加一条 TrailingEntry。两样都为空时什么也不做。"""
+
+    def write_result(self, result: AgentResult) -> None: ...   # atomic_write result.json
+    def finalize(self, status: RunStatus) -> None: ...         # 写终态，原子重写 manifest
 ```
+
+参数类型来自 `core/trace/encoding.py`。它是落盘形状的唯一规则，`TraceWriter`、`RunTrace` 和测试 fixture 共用同一份（文件名与记录类型见 §5.3）：
+
+```python
+@dataclass(frozen=True)
+class TraceFile:
+    rel_path: str                    # run 目录下的 POSIX 相对路径
+    data: bytes
+    content_addressed: bool = False  # True：路径由 sha256(data) 决定，run 内去重
+    meta: Mapping[str, Any] = field(default_factory=dict)   # 写进 ExtraFileRecord.meta
+
+@dataclass(frozen=True)
+class EncodedFragment:               # encode_observation(step, observation) -> list[EncodedFragment]
+    key: str                         # 全限定 fragment key
+    file: TraceFile                  # observations/NNN_<key>.json
+    artifact: TraceFile | None       # observations/NNN_<key><suffix>
+    failed: bool                     # True：file 里是 FragmentFailure
+
+@dataclass(frozen=True)
+class EncodedLLMCall:                # encode_llm_call(step, call, pending) -> EncodedLLMCall
+    file: TraceFile                  # messages/NNN_call_KK.json
+    output_format: TraceFile | None = None  # messages/output_formats/<sha256>.json（内容寻址）
+```
+
+`encode_llm_call` 的 `pending`（`PendingLLMCall`）是 TraceWriter 在 `around_ainvoke` 里登记的那次调用：登记那一刻取下的 prompt 的 JSON 快照（之后 memory 或 serializer 再改 message 对象，记录不变）、按类缓存、已编码的请求 schema（`EncodedOutputFormat`：`OutputFormatRef` 加它指向的内容寻址文件）、开始时间，以及结局——由 `complete` / `fail` / `cancel` 中先到的那一个定下，同样在发生时取快照（§5.4）。快照由 `snapshot(value)` 取：pydantic model、dataclass、映射和序列按结构转换，bytes 记成 base64，其余 JSON 装不下的东西变成它的 `str()`，自身永不抛错。同一模块还有：
+
+- `encode_llm_calls(step, pending, *, first_call=0)`：按开始顺序编号，从 `first_call` 起；TraceWriter 用它让一步的调用接在这一步已提交的 trailing 调用之后；
+- `encode_output_format(output_format) -> EncodedOutputFormat`：回复模型的 `model_json_schema()`，规范化 JSON 加 sha256；不是 pydantic model 类就抛 `TypeError`；
+- `encode_fragment(step, value)`：单个 slot，`encode_observation` 逐个调用它；
+- 读侧用的 `decode_fragment(key, cls, payload, artifact)`：先核对 payload 的 `fragment_id`，再调 `from_trace`。
+
+fixture 与 `RunTrace` 共用这些函数。
+
+**路径校验**（第 0 步；任何一条不满足，都在写任何字节之前抛 `ValueError` 并点名路径）：
+
+- POSIX 相对路径：不以 `/` 开头，不含 `\`，没有空段、`.` 段或 `..` 段（`encoding.check_relative_path`，读侧用同一条规则，§5.5）。每个通道都查，`encoding.py` 命名的文件也不例外：fragment 文件按 key 命名，而 `FragmentFailure.fragment_id` 是自由文本；下面"待在自己的目录里"那条只是前缀判断，`observations/000_x/../../../escaped.json` 照样通过，output schema 的父目录判断经 `PurePosixPath` 规范化，`.` 段和空段会被吃掉；
+- extra 文件不得落在 WAL 自有的名字上：`manifest.json`、`config.json`、`result.json`，以及 `steps/`、`observations/`、`messages/`、`evals/` 之下的任何路径。这些名字由 WAL 和 `encoding.py` 自己决定。按第一段判断，所以 WAL 的文件名也不能被当成目录：`result.json/evidence.txt` 会建出一个叫 `result.json` 的目录，run 收尾时写 `result.json` 就会失败；
+- 一个路径要么是文件、要么是目录，不能两者都是：`env/a` 和 `env/a/b` 不能同时出现，不论在同一次提交里还是跨提交（不区分大小写），WAL 自己的目录（`steps/`、`observations/`、`messages/`、`messages/output_formats/`、`evals/`）也不能被文件占用。不在校验里拦住，它会在写到一半时变成 `NotADirectoryError`；
+- 已提交的文件不可变：非内容寻址文件不得与本 run 已提交的路径同名；
+- 内容寻址文件的路径必须包含 `sha256(data)` 的完整十六进制摘要，允许按 `<前两位>/<其余>` 分片（如 M28 的 `env/blobs/sha256/ab/cdef…`）；
+- `encoding.py` 命名的文件待在自己的目录里：fragment 文件和 artifact 在 `observations/` 下，调用记录在 `messages/` 下（不在 `messages/output_formats/` 里），output schema 必须内容寻址、直接位于 `messages/output_formats/` 下；
+- 同一次提交里同一路径只能出现一次（内容寻址文件除外，只写一次），同一步里同一个 fragment key 只能出现一次；`record.step` 必须等于 `step`，一个 step 只能提交一次；
+- 以上比较一律不区分大小写（casefold）：macOS 默认的 APFS 不区分大小写，`env/A.txt` 和 `env/a.txt` 是同一个文件，trace 拷到这样的文件系统上也不能互相覆盖。
+
+**内容寻址文件在 run 内去重。** WAL 在内存里记着本 run 已提交的内容寻址路径，只在 manifest 提交成功之后更新。再遇到同一路径就跳过写入：extra 文件照常列进本次提交的索引（同一个响应体会被很多步引用）；output schema 只在 `manifest.output_formats` 里出现一次，由引用它的每条调用记录指向（同一个回复模型会被几十次调用使用）。去重跳过的只是写入，摘要校验照做：同一路径换了字节再提交会被拒绝，否则索引会记下磁盘上那个文件并不具有的 size 和 sha256。
+
+**为什么每个文件的数据 fsync 都保留，只合并目录 fsync。** §5.1 承诺每步确认落盘才继续。只 rename、不 fsync 数据，掉电后 manifest 可能列着一个空文件，提交点本身就在说谎。数据 fsync 之前还要先把字节 flush 出 Python 的缓冲：`os.fdopen` 最多缓冲 `st_blksize`（APFS、ext4 上是 4 KiB），漏了 flush 或者把 fsync 挪到写之前，所有比它小的文件（step 记录、前几步的 manifest、调用记录、verdict）fsync 时都还是空的，字节要到 `close()` 才进内核。fsync 的次数和顺序都不变，只有 fsync 那一刻的文件大小看得出来，测试就按这个检查。目录 fsync 让 `os.replace` 和 `mkdir` 产生的目录项落盘；一个目录 fsync 一次，就覆盖本批在它下面产生的全部目录项，所以按目录合并不损失任何保证。省下的是逐文件的目录 fsync，M28 那种每步上百个证据文件时尤其明显。macOS（APFS）上 1000 个 1 KiB 文件一次提交约 0.2 s；macOS 的 `os.fsync` 不刷设备缓存，fsync 的真实代价在 Linux ext4/xfs 上。
+
+**目录 fsync 的 errno 策略**（`core/trace/fsio.py` 的 `fsync_dir`）：
+
+- `os.name == "nt"`：跳过（Windows 打不开目录）；
+- 目录 fd 上的 `os.fsync` 抛 `EINVAL` / `ENOTSUP` / `EOPNOTSUPP`：容忍，那是文件系统不支持目录 fsync；
+- 其余一律原样上抛，包括 `os.open` 自己的失败（`EMFILE`、`EACCES`、`ENOENT`）和 `EIO`、`ENOSPC`。数据 fsync 和 `os.replace` 出错时本来就是这个策略：一个声称已落盘、其实没有把握的 manifest，比一次中断的 run 更糟。TraceWriter 是 blocking hook，所以这类错误会结束 run。
+
+macOS 上提交点的 `fcntl(F_FULLFSYNC)` 不启用。本机实测每次约 5.2–5.4 ms（`os.fsync` 约 0.06–0.14 ms）；测试套件约 1600 次 manifest 提交，会多出约 8.5 s，约占一次 85 s 全量运行的 10%。它也只在 macOS 上生效，而评测主要跑在 Linux 上。
+
+`core/trace/fsio.py` 提供三个原语，WAL 和 evaluator 共用：
+
+```python
+def write_durable(path: Path, data: bytes) -> set[Path]:
+    """同目录临时文件（os.open(..., 0o666)）→ write、flush → fsync(file) → os.replace；不 fsync 目录。
+    按需建父目录。任何一步失败都删掉临时文件，path 上原来的文件保持完整。
+    权限与普通写入相同：新文件是 0o666 经 umask 屏蔽，替换已有文件时沿用它的权限位。
+    返回之后需要 fsync 的目录：path 所在目录，加上为它新建的每个目录的父目录。"""
+
+def fsync_dir(path: Path) -> None:
+    """按上面的 errno 策略 fsync 一个目录。以 O_DIRECTORY 打开：传进来的是文件时
+    抛 NotADirectoryError，而不是默默 fsync 那个文件、把该落盘的目录项留在缓存里。"""
+
+def atomic_write(path: Path, data: bytes) -> None:
+    """单文件持久写：write_durable，再对返回的每个目录 fsync_dir（深的先）。
+    manifest、result.json 和 evals/ 都走它；它是唯一公开的原子写 helper。
+    config.json 不走它：init_run 用 write_durable 写下它，建好子目录，再一批 fsync run 目录和
+    为它新建的每个目录的父目录。"""
+```
+
+**文件权限就是普通写入会给的权限。** 临时文件用 `os.open(..., 0o666)` 创建，由内核按 umask 屏蔽；替换已有文件时，写入第一个字节之前先把临时文件改成原文件的权限位，所以它从来不比被替换的文件更宽。不用 `tempfile.mkstemp`：它固定 `0o600`，适合临时数据，不适合马上要 rename 到位的文件——结果每个 trace 文件和每个 verdict 都只有属主可读，另一个用户（队友、看板、CI 上传）读共享的 `--evals-dir` 拿到 `PermissionError`，重新打分还会把运维特意设的权限改回 `0o600`。读 umask 也不行：`os.umask` 只能"设置并返回旧值"，会和其他线程创建文件互相竞争。trace 是否私有，由 umask 或目录权限决定，和进程写的其他文件一样；需要私有的 trace（`record_secrets` 打开时）放在私有目录里。
+
+**不属于任何已提交 step 的文件走 `commit_trailing`。** 它落盘 Loop 没来得及交出的那一步的 LLM 调用（超时、外部取消、崩溃），以及 M28 在 run 结束时冲刷的环境证据。它走同一套校验、同一种批量 fsync、同一个提交点，但不写 StepRecord，也不推进 `last_step_completed`：声称一个完成的 step，会在 manifest 里放进一个没有动作的幽灵步。`finalize(status)` 则写终态；停在 `running` 的 trace 没有 evaluator 会碰。
 
 ### 5.3 目录结构
 
 ```
 traces/
-  ├── suite_index.json             # 可选：后置生成的聚合索引
+  ├── suite_index.json                  # 可选：后置生成的聚合索引
   │
   └── {run_id}/
-      ├── manifest.json            # 进度指针（每步原子更新）← commit point
-      ├── config.yaml              # 完整配置快照（run 开始时写一次）
-      ├── result.json              # AgentResult（run 完成时写一次）
+      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 2
+      ├── config.json                   # TraceConfig 快照（init_run 写一次）
+      ├── result.json                   # AgentResult（run 结束时写一次）
       │
-      ├── steps/                   # 每步记录
-      │   ├── 000.json
+      ├── steps/
+      │   ├── 000.json                  # StepRecord
       │   ├── 001.json
+      │   ├── 001.extra.json            # 可选：第 1 步的 extra 文件索引（ExtraFileIndex）
+      │   ├── trailing_00.extra.json    # 可选：第 0 次 commit_trailing 的 extra 文件索引
       │   └── ...
       │
-      ├── observations/            # Observation fragments（每步追加）
-      │   ├── 000_browser.dom.json         # 文件名 = 全限定 fragment key
-      │   ├── 000_browser.screenshot.png   # 后缀取自图像字节头（jpeg 则是 .jpg）
-      │   ├── 001_browser.dom.json
-      │   ├── 001_docker.terminal.json     # SWE 场景
+      ├── observations/                 # Observation fragments（每步追加）
+      │   ├── 000_browser.dom.json            # 文件名 = 全限定 fragment key
+      │   ├── 000_browser.screenshot.json     # fragment JSON（不含 trace_json_exclude() 的字段）
+      │   ├── 000_browser.screenshot.png      # artifact：trace_binary() 的字节，后缀取自字节头（jpeg 则是 .jpg）
+      │   ├── 000_browser.browser_meta.json   # 采集失败的 optional fragment：FragmentFailure，索引里 failed: true
+      │   ├── 000_loop.history.json           # loop 来源的 fragment 同样落盘
+      │   ├── 001_docker.terminal.json        # SWE 场景
       │   └── ...
       │
-      ├── messages/                # LLM 完整交互记录（每步追加）
-      │   ├── 000_input.json
-      │   ├── 000_output.json
-      │   └── ...
+      ├── messages/                     # 每次 LLM 调用一个文件（RecordedLLMCall）
+      │   ├── 000_call_00.json
+      │   ├── 000_call_01.json          # 同一步的第二次调用：parse 重试、校验失败后重问……
+      │   ├── 002_call_00.json          # trailing：第 2 步没有提交，列在 manifest.trailing
+      │   ├── ...
+      │   └── output_formats/
+      │       └── <sha256>.json         # 请求的 output schema，run 内按内容寻址、只写一次
       │
-      └── evals/                   # 评测结果（后置，可多次运行不同 judge）
+      ├── env/                          # 保留给 M28 的环境证据（经 extra_files 提交）
+      │
+      └── evals/                        # 评测结果（后置、原子写，可多次运行不同 judge）
           ├── exact_match_v1.json
           ├── llm_judge_gpt4o_v1.json
-          └── llm_judge_claude_v2.json   # 新 judge 无需重跑 agent
+          └── llm_judge_claude_v2.json  # 新 judge 无需重跑 agent
 ```
+
+**文件名规则**（`encoding.py` 是唯一出处）：
+
+| 文件 | 路径 | 内容 |
+|---|---|---|
+| fragment JSON | `observations/{step:03d}_{key}.json` | `fragment.model_dump(mode="json", exclude=fragment.trace_json_exclude())`；采集失败时是 `FragmentFailure.model_dump(mode="json")` |
+| fragment artifact | `observations/{step:03d}_{key}{suffix}` | `trace_binary()` 返回的字节，`suffix` 来自字节头 |
+| LLM 调用 | `messages/{step:03d}_call_{call:02d}.json` | `RecordedLLMCall`；`call` 是本步内按开始顺序的序号，从 0 起 |
+| output schema | `messages/output_formats/{sha256}.json` | 请求的 JSON schema，序列化为规范化 JSON（键排序、紧凑分隔符、UTF-8）；`sha256` 是这些字节的摘要 |
+| step record | `steps/{step:03d}.json` | `StepRecord` |
+| extra 文件索引 | `steps/{step:03d}.extra.json`、`steps/trailing_{n:02d}.extra.json` | `ExtraFileIndex`；`n` 是该条目在 `manifest.trailing` 里的位置 |
+
+**manifest（format_version 2）**，以一个在第 2 步超时的 run 为例：
+
+```json
+{
+  "format_version": 2,
+  "run_id": "f2bbae22",
+  "last_step_completed": 1,
+  "status": "error",
+  "created_at": "2026-10-10T08:00:00Z",
+  "updated_at": "2026-10-10T08:05:00Z",
+  "config_hash": "…",
+  "steps": [
+    {
+      "step": 0,
+      "step_file": "steps/000.json",
+      "fragments": {
+        "browser.dom":          {"file": "observations/000_browser.dom.json", "artifact": null, "failed": false},
+        "browser.screenshot":   {"file": "observations/000_browser.screenshot.json",
+                                 "artifact": "observations/000_browser.screenshot.png", "failed": false},
+        "browser.browser_meta": {"file": "observations/000_browser.browser_meta.json", "artifact": null, "failed": true},
+        "loop.history":         {"file": "observations/000_loop.history.json", "artifact": null, "failed": false}
+      },
+      "llm_calls": ["messages/000_call_00.json", "messages/000_call_01.json"],
+      "extra_index": null
+    },
+    {
+      "step": 1,
+      "step_file": "steps/001.json",
+      "fragments": {"…": "…"},
+      "llm_calls": ["messages/001_call_00.json"],
+      "extra_index": "steps/001.extra.json"
+    }
+  ],
+  "trailing": [
+    {"llm_calls": ["messages/002_call_00.json"], "extra_index": null}
+  ],
+  "output_formats": ["3b6f…"]
+}
+```
+
+**记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 2`）：
+
+```python
+class FragmentFiles(BaseModel):
+    file: str                          # observations/NNN_<key>.json
+    artifact: str | None = None        # observations/NNN_<key><suffix>
+    failed: bool = False               # True：file 里是 FragmentFailure，不是 fragment
+
+class StepManifestEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")                # v1 的旧字段名照样能解析
+    step: int
+    step_file: str                                          # steps/NNN.json
+    fragments: dict[str, FragmentFiles] = Field(default_factory=dict)  # 全限定 key → 文件
+    llm_calls: list[str] = Field(default_factory=list)      # 本步每次调用，按开始顺序
+    extra_index: str | None = None                          # steps/NNN.extra.json；无 extra 文件为 None
+
+class TrailingEntry(BaseModel):                             # 每次 commit_trailing 追加一条
+    llm_calls: list[str] = Field(default_factory=list)
+    extra_index: str | None = None                          # steps/trailing_KK.extra.json
+
+class TraceManifest(BaseModel):
+    model_config = ConfigDict(extra="allow")   # v1 manifest 照样能解析，由 format_version 决定哪些访问器拒绝它
+    format_version: int = 1            # 缺省 = M27 之前写的 trace；init_run 写 TRACE_FORMAT_VERSION
+    run_id: str
+    last_step_completed: int = -1
+    status: RunStatus = RunStatus.RUNNING
+    created_at: UTCDatetime
+    updated_at: UTCDatetime
+    config_hash: str = ""
+    steps: list[StepManifestEntry] = Field(default_factory=list)
+    trailing: list[TrailingEntry] = Field(default_factory=list)
+    output_formats: list[str] = Field(default_factory=list)  # 已提交的 output schema 的 sha256
+
+class ExtraFileRecord(BaseModel):      # extra 文件索引里的一条
+    path: str                          # run 目录下的相对路径
+    size: int
+    sha256: str
+    content_addressed: bool = False
+    meta: dict[str, Any] = Field(default_factory=dict)      # 生产者自带的元数据（M28：archiver key 等）
+
+class ExtraFileIndex(BaseModel):       # steps/NNN.extra.json、steps/trailing_KK.extra.json
+    files: list[ExtraFileRecord]
+
+class OutputFormatRef(BaseModel):
+    name: str                          # 回复模型的类名
+    sha256: str                        # → messages/output_formats/<sha256>.json
+    source: Literal["requested"] = "requested"   # 请求的 schema，不是 provider 实际发出的那份
+
+class RecordedCompletion(BaseModel):
+    completion: Any                    # 文本回复是 str；结构化回复是它的 JSON 形式，不还原成回复模型
+    thinking: str | None = None
+    redacted_thinking: str | None = None
+    usage: ChatInvokeUsage | None = None
+    stop_reason: str | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+
+class CallFailure(BaseModel):
+    error: str                         # 异常类名
+    detail: str                        # str(exc)
+    raw_output: str | None = None      # 校验器看到的原文（StructuredOutputValidationError）
+    partial_output: str | None = None  # 被截断的回复已经生成的部分（ModelOutputTruncatedError）
+    stop_reason: str | None = None
+    usage: ChatInvokeUsage | None = None
+
+class RecordedLLMCall(BaseModel):      # messages/NNN_call_KK.json
+    step: int                          # 调用时 Loop 所在的 step；trailing 调用 = 没提交的那一步
+    call: int                          # 本步内按开始顺序的序号，从 0 起
+    status: Literal["completed", "failed", "cancelled"]
+    started_at: float                  # 墙钟 Unix 时间，与 StepRecord.timestamp、captured_at 可比
+    latency_ms: int                    # 从开始到返回 / 抛出 / 取消
+    messages: list[RecordedMessage]    # 发给模型的完整 prompt；= Annotated[BaseMessage, Field(discriminator="role")]
+    output_format: OutputFormatRef | None = None   # None = 非结构化调用
+    completion: RecordedCompletion | None = None   # 仅 completed
+    failure: CallFailure | None = None             # failed、cancelled
+```
+
+**fragment 索引进 manifest，extra 文件索引不进。** 每步的 fragment 和 LLM 调用只有几个，放进 manifest，读者一次 eager 读就知道每步记录了什么。extra 文件（M28 的环境证据）每步可能上百个；manifest 每次提交都整份重写，每个 `RunTrace` 又都 eager 读它，把这些文件内联进去会让 manifest 随 run 长度二次增长。所以每步一个 `steps/NNN.extra.json`，manifest 只记它的路径（`extra_index`）。
+
+**失败的 fragment 显式标记。** `FragmentFailure` 的 JSON 没有判别字段，而 `ScreenshotObs` / `DOMObs` / `BrowserMetaObs` 的字段都有默认值，同一份 JSON 能被它们静默接受（已验证）。按 key 类型化读回时，一次失败的采集就会变成一个空 fragment，正是 `failure.py` 要拒绝的伪造。所以失败落在同一个文件名下，fragment 索引带 `failed: true`；读侧见到它就返回 `FragmentFailure`，从不尝试按 fragment 类解析。
+
+**fragment JSON 就是 fragment 自己的 JSON。** `file` 的内容恰好是 `model_dump(mode="json", exclude=trace_json_exclude())`，不再往里塞 `artifact_file`：二进制文件只由索引的 `artifact` 指向，WAL 的布局信息不混进 fragment 的数据。读侧用 `from_trace(payload, artifact)` 还原（§5.5）。
+
+**每次 LLM 调用一个文件，不论结局。** 一步可能有多次调用（ReactLoop 的 parse 重试、结构化输出校验失败后重问），它们按开始顺序编号、全部提交。`completed` 记 `RecordedCompletion`，`failed` / `cancelled` 记 `CallFailure`（字段语义见 §5.4）。写侧把登记时拿到的 prompt 直接序列化成 JSON，不做 model 校验，hook 永远不会因为 trace 的类型问题让 run 失败；读侧按 `RecordedLLMCall` 校验，不合法就是 `TraceSchemaError`。Loop 没来得及交出的那一步，其调用沿用那一步的编号（`last_step_completed + 1`），由 `commit_trailing` 提交、列在 `manifest.trailing`。驱动冲刷之后若继续跑并提交了这一步，它的调用编号接在已提交的 trailing 调用之后，已提交的文件不会被覆盖。
+
+**output schema 记的是请求的那份。** `OutputFormatRef.source = "requested"`：文件内容是回复模型的 `model_json_schema()`，不是 provider 编译后真正发出的 schema（strict 与否、Gemini 的清理、union 分支的展开，各家不同；`dont_force_structured_output` 时根本不发）。它不能当作"schema 被遵守了"的证据。记录 wire 级 schema 是后续工作。
+
+**不是 fragment 的 observation 不落盘。** 旧版把它整个写成 `NNN_observation.json` 兜底，没有任何访问器能读回；生产路径总是 `NegotiatedObservation`。这条兜底已删除，那一步的 fragment 索引为空。
+
+**`env/` 留给 M28。** M27 只提供通用的 extra 文件机制：任意不撞 WAL 自有名字的相对路径、每步一个索引、内容寻址文件 run 内去重、`commit_trailing` 收尾。`env/` 下的布局和归档语义由 M28 定义；在那之前没有任何组件往 `env/` 写文件。
+
+**`evals/` 也是原子写。** `EvaluationRunner` 写 `evals/<verdict_slug>.json`，以及可选的平铺副本和 summary，都走 `fsio.atomic_write`：半写的 verdict 文件会被下一个读者当成损坏的评测。权限与普通写入相同（§5.2），共享的 `--evals-dir` 对其他用户照常可读，重新打分也不改动已有文件的权限。evals 是后置产物，不进 manifest。
 
 ### 5.4 TraceWriter 作为 Hook 实现
 
@@ -1865,95 +2177,196 @@ TraceWriter 不是 AgentRuntime 的核心组件，而是一个 Hook，通过 AOP
 class TraceWriter(HookBase):
     __registry_key__ = "trace_writer"
     __intercepts__ = [
-        Intercept("ainvoke", role="llm", advice="after"),
         Intercept("ainvoke", role="llm", advice="around"),
         Intercept("record_step", role="loop", advice="after"),
     ]
 
-    trace_dir: Annotated[str, Field(default="traces")] = "traces"
-    blocking = True  # 确认落盘后才继续
+    priority = HookBase.PRIORITY_PERSIST       # 所有 enricher 改完 result 之后才序列化
 
-    async def on_run_start(self, *, agent, env, task, config):
-        run_id = str(uuid.uuid4())[:8]
-        self._wal = WALWriter(Path(self.trace_dir), run_id)
-        self._wal.init_run(trace_config)
+    trace_dir: Annotated[str, trace_safe("…", default="traces")] = "traces"
+    record_secrets: Annotated[bool, Field(default=False)] = False
+
+    @property
+    def blocking(self) -> bool:
+        return True                            # 确认落盘后才继续
+
+    async def on_run_start(self, *, run_id=None, resolved_config=None, **kwargs):
+        self._wal = WALWriter(Path(self.trace_dir), run_id or str(uuid.uuid4())[:8])
+        self._wal.init_run(trace_config, config_hash=...)   # 摘要取自未脱敏的配置，见 §5 configuration_digest
 
     # ── AOP 拦截 handler ──────────────────────────────────
-    async def after_ainvoke(self, result, *, args, kwargs, **ctx):
-        """缓存本步的 LLM input/output — 等 commit point 一起写入。"""
-        self._pending_messages.append((args[0], result))
-
     async def around_ainvoke(self, *, proceed, args, kwargs, **ctx):
-        """失败时缓存调用及错误并重抛；成功路径仍由 after_ainvoke 缓存。"""
+        """每次 LLM 调用唯一的记录点：先登记，再 proceed()。"""
+        # 开始前登记，prompt 从此不会丢：prompt = args[0]（或 kwargs["messages"]），
+        # 请求的 schema = kwargs["output_format"]（或第二个位置参数）
+        call = self._register_call(args, kwargs)
+        started = time.perf_counter()
         try:
-            return await proceed()
+            result = await proceed()
         except Exception as exc:
-            self._pending_messages.append((args[0], _failed_call(exc)))
+            call.fail(exc)                     # status="failed"，CallFailure；绝不伪造回复
             raise
+        except BaseException as exc:
+            call.cancel(exc)                   # status="cancelled"（CancelledError 等）
+            raise
+        finally:
+            self._pending_llm_ms += (time.perf_counter() - started) * 1000
+        call.complete(result)                  # status="completed"，RecordedCompletion
+        return result
 
     async def after_record_step(self, result, *, args, kwargs, **ctx):
-        """完整 step 的写入触发点：Loop 交出 StepRecord 时，写入 observation +
-        LLM messages + step record，并原子更新 manifest。以「步完成」
-        而非「LLM 返回」为边界，是因为一步可以有多次 LLM 调用。"""
-        # 1. 写入 observation fragments（agent 实际看到的那一份）
-        # 2. 写入本步累积的 LLM input/output messages
-        # 3. 写入 step record
-        # 4. 原子 commit（write-then-rename manifest）
-        self._wal.commit_step(step=..., ...)
+        """完整 step 唯一的提交点：Loop 交出 StepRecord 时，一次 commit_step。
+        以「步完成」而非「LLM 返回」为边界，是因为一步可以有多次 LLM 调用。"""
+        record = args[0] if args else kwargs.get("record")
+        step = int(getattr(record, "step", self._steps_written))
+        self._stamp_timings(record)
+        pending = list(self._pending_calls)    # 本步全部调用，按开始顺序
+        self._wal.commit_step(
+            step, record,
+            fragments=encode_observation(step, kwargs.get("observation")),
+            llm_calls=encode_llm_calls(step, pending, first_call=self._calls_flushed),
+        )
+        del self._pending_calls[: len(pending)]   # 提交成功之后才移出
+        self._calls_flushed = 0
 
-    async def on_run_end(self, *, result):
-        self._wal.write_result(result)
-        self._wal.finalize(RunStatus.COMPLETED)
+    async def on_run_end(self, *, result, env, **kwargs):
+        try:
+            self._flush_trailing()             # 未交出的调用 → commit_trailing
+        finally:                               # trailing 提交失败，终态也照样写
+            status = _status_for(result)
+            try:
+                if result is not None:
+                    self._wal.write_result(result)
+            except BaseException:
+                status = RunStatus.ERROR       # result.json 写不进去：trace 不是这个 run 的完整记录
+                raise
+            finally:
+                self._wal.finalize(status)
+
+    async def on_run_error(self, *, error, partial_steps, env, **kwargs):
+        try:
+            self._flush_trailing()             # 幂等：on_run_end 通常已经冲刷过
+        finally:
+            self._wal.finalize(RunStatus.ERROR)
 ```
 
-> **Commit 粒度说明**：`after_ainvoke` 只暂存 LLM 调用；一次 step 可能包含多次调用，而动作及其结果要到调用之后才产生。Loop 将含本步 actions、action results 和 usage 的完整 `StepRecord` 交给 `record_step()` 后，`after_record_step` 才写入观测、所有 LLM 消息和 step record，并调用 `WALWriter.commit_step()`。manifest 的原子更新是持久化提交点。若运行在 `record_step()` 前结束，已暂存的调用可作为 unfinished messages 落盘，但不冒充一个完成的 step。
+> **Commit 粒度说明**：`around_ainvoke` 只登记 LLM 调用，不写盘；一次 step 可能包含多次调用，而动作及其结果要到调用之后才产生。Loop 将含本步 actions、action results 和 usage 的完整 `StepRecord` 交给 `record_step()` 后，`after_record_step` 才把观测、本步全部调用记录和 step record 一次交给 `WALWriter.commit_step()`；manifest 的原子更新是持久化提交点。若运行在 `record_step()` 前结束（超时、外部取消、崩溃），已登记的调用（包括被取消、只有 prompt 的那一次）在 `on_run_end` / `on_run_error` 里经 `commit_trailing()` 落盘为 trailing calls，但不冒充一个完成的 step。
+
+**失败记录只写拿到的东西。** `CallFailure.error` 是异常类名，`detail` 是 `str(exc)`；其余字段只在异常确实带着它们时出现：
+
+- `raw_output`：provider 交回了文本，校验器没接受（`StructuredOutputValidationError`）；
+- `partial_output`：回复被 token 上限截断时已经生成的部分。`ModelOutputTruncatedError(..., partial_output=...)` 在 openai_base、anthropic_base（含序列化后的 tool_use 输入）、google 的抛出点都传入。它刻意不叫 `raw_output`，那个名字的意思是"校验器看到的原文"；
+- `stop_reason` / `usage`：失败的调用照样计费。
+
+死掉的 socket 什么也没交回，记录就只有 `error` 和 `detail`。不造一个装着错误的 completion：读 trace 的人必须分得清模型写的回复和框架编的回复。被取消的调用 `status: cancelled`，`completion` 为空，`failure.error` 是取消异常的类名（`CancelledError`），prompt 完整保留。提交或收尾时仍在进行中的调用（目前的 Loop 不会出现，调用都在 Loop 内 await）同样记为 `cancelled`，但 `failure` 为空：trace 到此为止，hook 没见到任何异常，prompt 照样保留。
+
+**提交失败不丢调用，收尾失败不丢终态。** `commit_step` 抛错（I/O 错误）时，这一步登记的调用仍留在 TraceWriter 里，run 结束时经 `commit_trailing` 落盘。`on_run_end` 里 trailing 提交本身失败时，`result.json` 和终态照样写，错误随后上抛。`result.json` 自己写不进去时，终态也照样写，但记为 `error`：没有 `result.json` 的 trace 不是这个 run 的干净记录，不能标成 `completed`；停在 `running` 则更糟，没有 evaluator 会碰它。
+
+**output schema 每个类每个 run 只算一次。** `output_format` 来自 `kwargs["output_format"]`（ReactLoop 以 `llm.ainvoke(context, output_format=output_model)` 调用）。TraceWriter 按类缓存 `model_json_schema()`，编码成内容寻址的 `messages/output_formats/<sha256>.json`，随第一次引用它的提交落盘；之后的调用只带 `OutputFormatRef`。生成不了 schema 的回复模型记为没有 schema（`output_format: null`）并打 warning，不因为 trace 让调用失败：provider 用同一个 schema 构造请求，那个失败由 provider 自己报。
+
+**等待时间仍然只在 `around` 里量。** `_pending_llm_ms` 在 `finally` 里累加，`_stamp_timings` 在提交点把 `duration_ms` / `llm_latency_ms` 写到 `StepRecord` 上；每条调用记录另带自己的 `latency_ms`。
 
 ### 5.5 RunTrace 的 lazy loading
 
-30MB 的 trace 不一次性读入内存。不同 judge 按需加载不同部分：
+30MB 的 trace 不一次性读入内存。不同 judge 按需加载不同部分；只有 manifest 是 eager 读的（每步一条索引，几百字节）：
 
 ```python
 class RunTrace:
-    def __init__(self, trace_dir: Path):
-        self._dir = trace_dir
-        self._manifest = json.loads((trace_dir / "manifest.json").read_text())
+    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json
 
     @property
-    def result(self) -> AgentResult | None: ...    # lazy load result.json
-
+    def trace_dir(self) -> Path: ...
     @property
-    def step_records(self) -> list[StepRecord]: ...
+    def manifest(self) -> TraceManifest: ...
+    @property
+    def run_id(self) -> str: ...
+    @property
+    def step_count(self) -> int: ...                        # last_step_completed + 1，无 I/O
 
-    def step(self, idx: int) -> StepRecord | None: ...  # lazy load steps/NNN.json
+    # ── 形状自 v1 未变：任何 format_version 都可读 ─────────────────
+    @cached_property
+    def config(self) -> TraceConfig: ...                    # config.json
+    @cached_property
+    def result(self) -> AgentResult | None: ...             # result.json；None = 文件不存在
+    @cached_property
+    def step_records(self) -> list[StepRecord]: ...         # 每个已提交 step，manifest 顺序
+    def step(self, idx: int) -> StepRecord | None: ...      # None = 该步没有提交
 
-    def observation_fragment(self, step: int, fragment_type: str) -> ObservationFragment | None: ...
-
+    # ── v2 形状：format_version < 2 时抛 TraceSchemaError ────────────
+    def observation_fragment(self, step: int, key: str) -> FragmentBase | FragmentFailure | None: ...
     def screenshot(self, step: int) -> bytes | None: ...
-
-    def llm_messages(self, step: int) -> list[dict] | None: ...
+    @cached_property
+    def screenshots(self) -> list[Path]: ...
+    def llm_messages(self, step: int) -> list[RecordedLLMCall]: ...
+    @cached_property
+    def trailing_calls(self) -> list[RecordedLLMCall]: ...
+    def extra_files(self, step: int) -> list[ExtraFileRecord]: ...
+    @cached_property
+    def trailing_extra_files(self) -> list[ExtraFileRecord]: ...
+    def read_extra(self, path: str) -> bytes: ...
+    def output_schema(self, sha256: str) -> dict[str, Any]: ...
 ```
 
 `exact_match` judge 只读 `result.json`（几 KB），`visual_judge` 才会加载所有 screenshot。
 
+**每个读取都经由 manifest。** manifest 是提交点（§5.2），所以也是读侧唯一的目录：每个访问器都从 manifest（及其引用的 extra 索引）解析路径，不按文件名探测，不 glob。提交点之前写下的文件，不论是崩溃窗口里的观测、调用记录、截图、extra 文件，还是手工放进目录的孤立文件，对每个访问器都不可见。旧的 `get_observation`、`get_messages`、`unfinished_message_files` 和截图 glob 已删除，没有并存的旧访问器。
+
+**trace 只读它自己目录里的文件。** manifest 和 extra 索引也是数据，而 trace 是拿来分享的（附在 issue 上、随论文上传）。一个伪造或损坏的 manifest 可以把 `/home/me/.ssh/id_rsa` 或 `../../secret.png` 列成第 0 步的截图：不加检查，`screenshots` 会把这个路径交给图像 judge，judge 把文件 base64 进请求发出去；解析失败的 JSON 还会把文件开头几个字节带进报错和日志。所以 manifest 或索引列出的每个路径，打开之前都先检查：形状符合写侧同一条规则（`encoding.check_relative_path`：POSIX 相对路径、无空段、`.`、`..`），并且解析符号链接之后仍在 run 目录之内（`(trace_dir / rel).resolve()` 落在 `trace_dir.resolve()` 之下）。`manifest.json`、`config.json`、`result.json` 这三个固定名字同样要在 run 目录之内。违反时抛 `TraceSchemaError`，点名列出它的那个文件（manifest 或 extra 索引；固定名字则是它自己）。索引里的 `ExtraFileRecord.path` 在读索引时就检查，因为 `extra_files` 会把这些路径交给调用方。run 目录之内的符号链接照常可读。
+
+各访问器的语义：
+
+- `step(idx)` / `step_records`：只看 manifest 列出的 step。列了但文件缺失抛 `TraceSchemaError`，不再静默跳过或返回 `None`。
+- `observation_fragment(step, key)`：`key` 是全限定 fragment key（`browser.dom`）。该步没提交，或它的 fragment 索引里没有这个 key（本 run 没激活、这一步没记录）→ `None`。索引 `failed: true` → 按 `FragmentFailure` 读回并返回（它记录的 `fragment_id` 也必须等于 `key`）。否则用 `ObservationRegistrar.get(key)` 找到类，要求 payload 的 `fragment_id == key`，返回 `cls.from_trace(payload, artifact)`；`from_trace` 抛的 `ValueError`（以及嵌套深到解码器走不下去的 `RecursionError`，远超写侧的深度）转成点名文件和类的 `TraceSchemaError`。
+- `screenshot(step)`：该步本地名为 `screenshot` 的 fragment（`browser.screenshot`、`desktop.screenshot`……，协商保证一步至多一个）的 artifact 字节。该步没提交、没有截图 fragment、或截图采集失败 → `None`；失败原因用 `observation_fragment` 读。
+- `screenshots`：按 step 顺序，每个已提交 step 的截图 artifact 的路径，由 manifest 索引得出；采集失败、没有 artifact 的 step 跳过。索引列了的 artifact 缺失或为空 → `TraceSchemaError`。evaluator 继续拿路径（`online_mind2web`、`lexbench_browser` 按后缀判媒体类型）。写侧保证不会提交空 artifact：CDP 回复里没有图像数据时，`ScreenshotWatchdog` 抛错（resolver 规则"抛错，不伪造"），这一步按 optional / required 记成 `FragmentFailure` 或终止 run；仍然带着 `b""` 的 `ScreenshotObs` 不写 artifact（`trace_binary()` 返回 `None`），读回时 `image_bytes=None`。过去空截图被写成 0 字节的 `.png`，读侧把它当损坏，一帧就让整个 run 的 `screenshots` 抛错。
+- `llm_messages(step)`：该步**每一次** LLM 调用，按开始顺序：parse 重试、带 `raw_output` 的校验失败、带 `partial_output` 的截断、只有 prompt 的取消。该步没提交 → `[]`；它的调用如果有，在 `trailing_calls` 里。
+- `trailing_calls`：Loop 没来得及交出的那一步的调用（`manifest.trailing`），先按提交顺序、再按开始顺序。
+- `extra_files(step)` / `trailing_extra_files`：已提交的 extra 文件记录，来自 `steps/NNN.extra.json` / `steps/trailing_KK.extra.json`；没有 → `[]`。
+- `read_extra(path)`：只读已提交的 extra 文件。`path` 不在任何已提交的索引里 → `KeyError`（没提交和没写过，对读者是同一个事实）；读出的字节与记录的 `size` / `sha256` 不符 → `TraceSchemaError`。
+- `output_schema(sha256)`：`OutputFormatRef.sha256` 指向的那份请求的 JSON schema。不在 `manifest.output_formats` 里 → `KeyError`；字节的摘要不符 → `TraceSchemaError`。
+
 **读回来的必须是写进去的那个类型。** Writer 拿到的是 `StepRecord` / `AgentResult`，reader 就必须还原成同一个 model，而不是 `dict[str, Any]` —— 否则字段名只能靠翻 JSON 文件去猜，猜错（`rec["step_index"]`，实际是 `rec.step`）能通过全部静态检查、到运行时才炸。这也是 Evaluator 唯一的输入契约。
+
+fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact: bytes | None) -> Self`（classmethod）是 `trace_binary()` / `trace_json_exclude()` 的成文逆运算。默认实现处理没有二进制载荷的 fragment：要求 `artifact is None`（不是 `None` 就说明 fragment 漏了覆盖，直接报错），返回 `cls.model_validate(payload)`。覆盖了 `trace_binary()` 的 fragment 必须同时覆盖 `from_trace`，把 artifact 放回被排除的字段：`ScreenshotObs.from_trace` 把字节放回 `image_bytes`。`DOMObs.from_trace` 把 `element_tree` 还原成 `DOMState`（`serialized_dom`、`scroll_info`、`dom_tree`；不单独落盘的 `DOMState.selector_map` 指向同一份 `selector_map`），把 `selector_map` 还原成 `dict[int, DOMElementNode]`，每个条目带 `tag_name`、`attributes`、`bounds` 和子树里的文本。编码里仍然有损的部分（深度截断留下的 `__truncated__`、树内的 `__cycle__` 指针、不追踪的 `parent` 与私有字段）写在 `DOMObs` 的 docstring 里，`from_trace` 不伪造被截掉的节点，两种标记读回时直接丢掉。`parent` 不落盘，但可以由结构推出：`from_trace` 在每棵解码出的子树内按 children / shadow root / frame 文档重建它，所以 `frame_owners()` 在树内可用；条目根节点之上的部分不在条目里，条目根的 `parent` 为 `None`。一个按 `ObservationRegistrar` 全部注册类参数化的往返测试守住这条契约：encode 再 decode，JSON 形式不变。
+
+写侧的配套修正：`DOMObs` 序列化 `selector_map` 时，每个条目用自己的 visited 集合。过去所有条目共享一个，嵌套在前一个已索引元素之下的元素被写成 `{"__cycle__": …}` 桩，丢了自己的 `bounds`（M18 的 BrowserUse trace 里 59/60、70/71、106/107 个条目是桩）。条目带完整子树，不做浅条目：BrowserUse 清洗出的元素节点不带 `text_content`，文本在后代 `#text` 节点里。代价随已索引元素的嵌套深度增长：把 M18 的 45 个 `dom.json`（BrowserUse 与 Skyvern-JS 清洗，38 个非空）按新编码重写，带缩进的文件中位数增大 14%、最多 65%（紧凑 JSON 中位数 31%、最多 98%），7 个文件超过 30%；Skyvern-JS 那几步 34.6 MB 的页面变成约 50 MB。这是下限：条目是从受深度限制的树里重建的。M33 的存储评估从这组数开始。M31 的元素重定位和 M32 的 index → 坐标换算直接读 `selector_map[index]`，不再各写一个解码器。
+
+`DOMObs` 的解码器按 dataclass 字段的注解建解码计划（与编码器读同一份声明），认得标量、`Any`、dataclass、`X | None`、标量联合、`Literal`、`list`、`tuple`、`set` / `frozenset` 和 `dict`。其余泛型（如 `Sequence[str]`）在建计划时抛点名注解的 `TypeError`：那是编程错误，第一个读回 DOM 的测试就会暴露，而不是无限递归成一个 `RecursionError`。
 
 **三种“读不到”必须互相可区分**：
 
 | 情况 | 表现 | 含义 |
 |---|---|---|
-| 文件不存在 | 返回 `None` | run 死在写 `result.json` 之前，没到任何终态 |
-| 文件存在但 schema 过旧/损坏 | 抛 `TraceSchemaError` | trace 本身不可读，重跑评测也没用，只能重跑任务 |
+| 不存在：`result.json` 缺失；或所问的 step、fragment、调用、extra 文件不在 manifest 里 | 返回 `None`（`result`、`step`、`observation_fragment`、`screenshot`）或 `[]`（`llm_messages`、`extra_files`）；`read_extra` / `output_schema` 抛 `KeyError` | 没有发生：run 死在写 `result.json` 之前，或者那一步没有提交 |
+| 存在但不可读 | 抛 `TraceSchemaError`，点名文件（以及 model、key 或版本） | trace 本身不可读，重跑评测也没用，只能重跑任务 |
 | 评测器自己失败 | `EvaluationError` | 与 trace 无关（judge 429、prompt 缺失等） |
 
+`TraceSchemaError` 的全部来源：
+
+| 来源 | 说明 |
+|---|---|
+| JSON 损坏、非 UTF-8、空文件 | manifest、config、result、step、fragment、调用记录、extra 索引、output schema 一视同仁；嵌套深到连解释器都解析不了的 JSON 同样算（远超写侧能写出的深度） |
+| schema 不匹配 | 包括 `AgentResult.schema_version` 不是当前版本 |
+| manifest 列了、磁盘上没有 | 提交过的文件丢了是损坏，不是"没跑完"；`manifest.json`、`config.json` 缺失同理 |
+| 路径出了 run 目录 | manifest 或 extra 索引列出的路径不符合写侧的路径规则（绝对路径、`..` 段等），或解析符号链接之后不在 run 目录里；三个固定名字的文件是指向目录外的链接。点名列出它的文件，被指向的文件不会被打开 |
+| 字节与索引不符 | 空的 artifact；extra 文件或 output schema 的 size / sha256 对不上；同一个 extra 路径在两个索引里的 size / sha256 不一致 |
+| 记录与位置不符 | step 文件里的 `step`、调用记录里的 `step` 与 manifest 提交它的那一步不符；一步里有两个截图 fragment（协商只允许一个） |
+| fragment key 不认识 | 懒发现之后注册表里仍然没有这个 key；或 payload 的 `fragment_id` 与 key 不符 |
+| `format_version` 不支持 | 低于 2：只有 v2 形状的访问器抛错；高于 reader 支持的版本：构造 `RunTrace` 时就抛 |
+
 把前两者都塌缩成 `None`，会让一批旧 schema 的 trace 静默地表现为“agent 没跑完”。`AgentResult.schema_version` 只接受当前版本：旧版本字段名对不上，接受它只会换来一条指着某个被改名字段的 pydantic 报错，而不是“这个 trace 太旧”。
+
+**一个归一化入口。** 一个 run 必有的 `manifest.json`、`config.json`，以及 manifest 列出的每个 JSON 文件（step、fragment、调用记录、extra 索引、output schema），都经 `_read_bytes` 读字节、经同一个 `_parse` 解析和校验：model 用 `_read_model(path, model)` 读，fragment 的 JSON 先读成 dict 交给 `from_trace`。解析是严格 UTF-8 解码加标准库 `json.loads`，校验是 pydantic 的 Python 模式（`model_validate` / `validate_python`）。不用 pydantic 的 `validate_json`：它的 JSON 解析器拒绝超过 200 层的嵌套，而写侧用的 pydantic-core 序列化器能写到约 254 层，DOM 编码器的深度预算本身就到约 204 层——一个嵌套一百来层的页面（正是深度截断要照顾的页面）、一个深层的结构化回复或工具结果，都能顺利提交，却永远读不回来，还被报成"Invalid JSON"。`json.loads` 只受解释器递归上限约束，远高于写侧能写出的深度；真超过了，同样转成点名文件的 `TraceSchemaError`。非 UTF-8、JSON 损坏、空文件（`UnicodeDecodeError` / `JSONDecodeError`，都是 `ValueError`）和 schema 不匹配（`ValidationError`）都由 `_parse` 转成点名文件和 model 的 `TraceSchemaError`（`path` 属性就是那个文件；format_version、fragment key 和一步两个截图 fragment 的情形是 `manifest.json`）；`_read_bytes` 把 manifest 列了而磁盘上没有的文件同样转成 `TraceSchemaError`；其余 `OSError`（权限、I/O）原样上抛，那不是 trace 本身的问题。`result.json` 是唯一的例外，因为没有谁列出它：它自己读字节，不存在就返回 `None`（唯一返回 `None` 的缺文件情形），解析和校验失败同样转成点名文件的 `TraceSchemaError`；版本不符时，报错按 `result.json` 自己声明的版本说"这个 trace 早于当前 AgentResult schema"。
 
 **落盘文件名带 provenance。** Observation 文件名用的是**全限定 fragment key**（`000_browser.dom.json`），不是协商后的 field name（`000_dom.json`）。后者是"本次装配里哪个 capability 赢了协商"的产物：同一个 `000_screenshot.png` 在 browser run 和 desktop run 里含义不同，而读 trace 的人无从分辨——"Record Once, Evaluate Many" 的前提是 trace 自带足够信息，evaluator 不需要回头猜配置。
 
 同一份 provenance 在数据里再写一遍：`fragment_id` 是 `FragmentBase` 上的**真实字段**（默认值来自 `__registry_key__`），不是 `@property`——property 不进 `model_dump()`，于是每个 fragment 落盘时都是匿名的。
 
-**二进制 fragment 的后缀来自字节本身，不来自配置。** 截图的编码是 capability 配置（`screenshot_format: png | jpeg`，默认 png 与旧行为逐字节相同），但 `ScreenshotObs.trace_binary()` 是从图像头读出后缀的——一个"声明的格式"字段能和字节不一致（provider 没听配置、fragment 从磁盘文件重建），而不一致会在几层之外变成 vision provider 的 400。同理，agent 拼 `data:` URL 的 media type、`RunTrace.screenshots` 的 glob、evaluator 按后缀判类型，读的都是同一个来源（`spectragent/schemas/observation/image.py`）。
+**二进制 fragment 的后缀来自字节本身，不来自配置。** 截图的编码是 capability 配置（`screenshot_format: png | jpeg`，默认 png 与旧行为逐字节相同），但 `ScreenshotObs.trace_binary()` 是从图像头读出后缀的——一个"声明的格式"字段能和字节不一致（provider 没听配置、fragment 从磁盘文件重建），而不一致会在几层之外变成 vision provider 的 400。同理，agent 拼 `data:` URL 的 media type、artifact 落盘时的后缀、evaluator 按后缀判类型，读的都是同一个来源（`spectragent/schemas/observation/image.py`）。
 
-因此 `observation_fragment` 加具体类型的前置条件已经满足（key 就是 registry key，`ObservationRegistrar.get(key)` 直接给出类）；只等一个真正要读它的 evaluator，因为那同时会改掉一个公开访问器的返回类型。
+**trace 格式有版本。** `TraceManifest.format_version` 从 M27 起写 `2`（`TRACE_FORMAT_VERSION`）；M27 之前的 manifest 没有这个字段，按 1 读。v1 的 fragment 列表、成对的 `NNN_input.json` / `NNN_output.json` 和没有判别字段的失败 JSON 无法安全地类型化读回，所以 v2 形状的访问器（上面代码块的第二组）对 v1 trace 抛 `TraceSchemaError` 并点名版本；`config` / `result` / `step` / `step_records` / `step_count` 照常可读。不做兼容 shim（AGENTS.md §0.4）：要用图像 judge 重新给 v1 trace 打分，只能重跑任务。
+
+**离线读者找得到 fragment 类。** 评测进程未必 import 过定义 fragment 的模块（browser 的 fragment 是被各自的 watchdog import 时才注册的）。`ObservationRegistrar.get(key)` 落空时，reader 懒执行一次 `discover("spectragent.schemas")` 和 `discover("spectragent.core.capabilities")` 再查；仍然落空就抛 `TraceSchemaError`，点名 key，并说明定义它的模块必须在读侧可导入。
 
 ---
 
@@ -2179,7 +2592,7 @@ environment:
        │                  agent.run(task), timeout=...)            │
        │                  → on_run_end                              │
        │                                                           │
-       │ AOP 拦截：llm.ainvoke → TraceWriter 暂存 LLM 调用             │
+       │ AOP 拦截：llm.ainvoke → TraceWriter 登记 LLM 调用             │
        │                         MetricsCollector 累加 token       │
        │           loop.record_step → TraceWriter 写入完整 step     │
        │                              → manifest 原子提交          │

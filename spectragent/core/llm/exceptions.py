@@ -109,6 +109,18 @@ class ModelOutputTruncatedError(ModelProviderError):
     like any other, and the paths that raise this never reach the normal
     return, so without it the most expensive call of the run is the one
     that lands in the metrics as zero.
+
+    ``partial_output`` is what the reply had generated when the ceiling cut
+    it: the half-written JSON or prose, and on Anthropic the serialised
+    ``tool_use`` input that carries a forced-tool structured reply. The Loop
+    aborts the step on this error, so the trace's failure record is the
+    only place that text survives — without it a reader sees *that* the
+    budget ran out and never *what* the model was spending it on.
+    ``None`` means the provider handed back no text at all; ``""`` means it
+    handed back an empty one. Deliberately not called ``raw_output``: on
+    :class:`StructuredOutputValidationError` that name means the reply *as
+    the validator saw it*, and nothing validated this one. Never part of
+    the message — it can be tens of thousands of tokens long.
     """
 
     def __init__(
@@ -119,6 +131,7 @@ class ModelOutputTruncatedError(ModelProviderError):
         ceiling_field: str = "max_tokens",
         ceiling: int | None = None,
         usage: "ChatInvokeUsage | None" = None,
+        partial_output: str | None = None,
     ) -> None:
         spent = getattr(usage, "completion_tokens", None)
         message = (
@@ -133,6 +146,7 @@ class ModelOutputTruncatedError(ModelProviderError):
         self.ceiling_field = ceiling_field
         self.ceiling = ceiling
         self.usage = usage
+        self.partial_output = partial_output
 
 
 class ToolsUnsupportedError(ModelProviderError):

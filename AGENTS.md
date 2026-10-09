@@ -11,7 +11,7 @@ This project is a **large-scale refactor in progress**. Its current shape is tra
 2. **`architecture_design.md` itself evolves.** Re-read the relevant section at the start of every non-trivial task (locate it with `rg`, then use a bounded read — the file is >1700 lines). Do not rely on memories of prior sessions. If the doc is ambiguous or stale, flag it and ask the user before coding — **do not** invent a compromise.
 
 3. **Versioned docs and local references.** The three docs kept in Git are `docs/architecture_design.md`, `docs/execution_dag.md`, and `docs/browser_agent_runbook.md`. The supplementary docs and continuation records below are local-only; they may be absent in a fresh clone. Read them on demand when present, and use the versioned design, code, and tests when they are absent.
-   - `docs/execution_dag.md` — M01–M26 module breakdown with priorities (P0–P3), dependencies, and status. This is the authoritative implementation order; revalidate status against current code and tests.
+   - `docs/execution_dag.md` — M01–M27 module breakdown with priorities (P0–P3), dependencies, and status. This is the authoritative implementation order; revalidate status against current code and tests.
    - `docs/design_discussion.md` — rationales and rejected alternatives for key decisions (Agent-Loop split, Observation fragments, Action wiring, Environment composition).
    - `docs/a2a_protocol_design.md`, `docs/self_evolution_design.md`, `docs/benchmark_design_fixes.md` — orthogonal subsystems; skim only when the task touches them.
    - `docs/flat_capability_architecture.svg` — Capability layer visual.
@@ -126,15 +126,15 @@ Corollary the action layer paid for once already: negotiation matches *names*, n
 
 ### 2.6 AOP hooks — no emitter, no opt-in
 
-Hooks declare `__intercepts__ = [Intercept("observe", role="env", advice="after"), …]`. The Weaver builds an `AOPProxy` around agent/env/llm/loop roles; the Loop calls plain methods and the proxy triggers the right handler. `TraceWriter` buffers LLM calls at `after_ainvoke` (and the recoverable-error `around_ainvoke` path), then commits the complete step only at `after_record_step`; `MetricsCollector` uses the same interception layer. `LiveMonitor` remains a P3 design placeholder, not a registered implementation. If a semantic event does not correspond to an existing method, model it as an Agent/Loop Protocol method instead of adding an emitter sidechannel.
+Hooks declare `__intercepts__ = [Intercept("observe", role="env", advice="after"), …]`. The Weaver builds an `AOPProxy` around agent/env/llm/loop roles; the Loop calls plain methods and the proxy triggers the right handler. `TraceWriter` records each LLM call in `around_ainvoke` alone — registered before `proceed()`, settled as `completed` / `failed` / `cancelled` — then commits the complete step only at `after_record_step`; calls of a step the Loop never surrendered are committed as trailing calls at run end. `MetricsCollector` uses the same interception layer. `LiveMonitor` remains a P3 design placeholder, not a registered implementation. If a semantic event does not correspond to an existing method, model it as an Agent/Loop Protocol method instead of adding an emitter sidechannel.
 
 Two layers of hook:
-- **Lifecycle callbacks** (`on_run_start/end/error`) — `AgentRuntime` calls these directly.
+- **Lifecycle callbacks** (`on_run_start/end/error`) — `AgentRuntime` calls these directly, on every termination path including external cancellation.
 - **Method interception** (`__intercepts__`) — the Weaver does this transparently.
 
 ### 2.7 RunTrace persistence (WAL)
 
-Writes per step: content files first (observations, screenshots, messages), then step record, then an atomic `manifest.json` rename — the manifest is the commit point. Crash recovery reads `manifest.json` and ignores orphan files. No SQLite — trace schemas are heterogeneous and evolve frequently; querying is via lazy-loaded accessors on `RunTrace`. See `core/trace/wal.py`.
+One `WALWriter.commit_step` per step: content files first (observation fragments and their artifacts, one record per LLM call, extra files), each with its own data `fsync`; then `steps/NNN.json` and its extra-file index; then one `fsync` per distinct directory (not one per file); then an atomic `manifest.json` rewrite — the manifest is the commit point. `RunTrace` resolves every file through the manifest, never by probing a name or globbing, so an orphan file is invisible to every accessor; it opens nothing outside the run directory, whatever a manifest lists or a symlink points at; it reads back the type that was written, and anything committed but unreadable raises `TraceSchemaError`. The manifest carries `format_version` (2 since the per-step fragment index); accessors whose on-disk shape changed refuse older traces. No SQLite — trace schemas are heterogeneous and evolve frequently; querying is via lazy-loaded accessors on `RunTrace`. See `core/trace/` (`wal.py`, `encoding.py`, `reader.py`).
 
 ## 3. Working style in this repo
 

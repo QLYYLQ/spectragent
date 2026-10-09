@@ -8,7 +8,7 @@ Validated by conscribe's own test suite (test_pydantic_generic.py:183-239).
 from __future__ import annotations
 
 import time
-from typing import ClassVar, Literal, Self
+from typing import Any, ClassVar, Literal, Self
 
 from conscribe import create_registrar
 from pydantic import BaseModel, Field, model_validator
@@ -147,6 +147,12 @@ class FragmentBase(_BridgeBase):  # type: ignore[misc]
     # fragment that carries bytes overrides ``trace_binary`` to hand them
     # over verbatim and ``trace_json_exclude`` to keep them out of the
     # JSON sidecar.
+    #
+    # ``from_trace`` is the inverse of the two: what a reader calls to get
+    # the fragment back from the sidecar and the artifact. A fragment that
+    # overrides ``trace_binary`` overrides it too, and one whose JSON shape
+    # is its own (a ``field_serializer`` encoding a graph) owns the decoder
+    # for that shape — so no reader ever writes a second one.
 
     def trace_binary(self) -> tuple[str, bytes] | None:
         """Binary artifact as ``(file_suffix, payload)``, or ``None``.
@@ -162,6 +168,38 @@ class FragmentBase(_BridgeBase):  # type: ignore[misc]
         Use for anything already persisted by :meth:`trace_binary`.
         """
         return set()
+
+    @classmethod
+    def from_trace(cls, payload: dict[str, Any], artifact: bytes | None) -> Self:
+        """Rebuild the fragment a trace recorded — the inverse of the two hooks above.
+
+        *payload* is the JSON sidecar as written,
+        ``model_dump(mode="json", exclude=trace_json_exclude())``, and
+        *artifact* is the bytes :meth:`trace_binary` returned, or ``None``
+        when it returned ``None``. Reading the type that was written back
+        as that type, rather than as a ``dict``, is the reader's contract
+        (``docs/architecture_design.md`` §5.5): a field name guessed off a
+        JSON file passes every static check and fails at run time.
+
+        This default serves a fragment with no binary payload. It refuses
+        an artifact instead of dropping it: bytes here mean the class
+        overrides :meth:`trace_binary` without overriding this, and
+        validating the sidecar alone would hand back a fragment with its
+        payload silently missing.
+
+        Raises:
+            ValueError: The payload or the artifact cannot be this
+                fragment — pydantic's ``ValidationError`` for a sidecar of
+                the wrong shape, or an artifact this class never writes.
+        """
+        if artifact is not None:
+            raise ValueError(
+                f"{cls.__name__} ({getattr(cls, '__registry_key__', '?')!r}) reads no binary "
+                f"artifact back, but was handed one ({len(artifact)} bytes). A fragment that "
+                f"overrides trace_binary() must override from_trace() to put the bytes back; "
+                f"otherwise the trace names an artifact this fragment never writes."
+            )
+        return cls.model_validate(payload)
 
     def summary(self) -> str:
         """One-line human-readable digest for ``StepRecord.observation_summary``.

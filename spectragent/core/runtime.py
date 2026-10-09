@@ -115,6 +115,10 @@ class AgentRuntime:
         self._memory: Any = None
         self._recorder = StepRecorder()
         self._env_needs_teardown = False
+        # Set the moment :meth:`_finish` starts closing out the current
+        # ``execute``; reset per run. It is what stops a cancellation that
+        # lands *inside* the close-out from dispatching the lifecycle twice.
+        self._finish_started = False
         # Owns every ``blocking=False`` handler task this run spawns —
         # method interceptions via the Weaver, lifecycle callbacks
         # directly. Per-runtime, so two runs in one process drain
@@ -396,11 +400,29 @@ class AgentRuntime:
         guarantee instead of a convention every demo re-implements
         differently.
 
-        Every termination path (done, max_steps, timeout, exception)
-        dispatches ``on_run_end`` with a real ``AgentResult``. Persistence
-        hooks write the result there, so skipping it on the failure paths
-        is what left two thirds of the traces on disk permanently marked
-        ``running`` with no ``result.json``.
+        Every termination path (done, max_steps, timeout, exception,
+        external cancellation) dispatches ``on_run_end`` with a real
+        ``AgentResult``. Persistence hooks write the result there, so
+        skipping it on the failure paths is what left two thirds of the
+        traces on disk permanently marked ``running`` with no
+        ``result.json``.
+
+        External cancellation — ``asyncio.CancelledError`` from Ctrl-C or a
+        sweep being cancelled, during setup or the run — is closed out with
+        an ``agent_done=ERROR``, ``error="Execution cancelled"`` result
+        through the same ``on_run_end`` → ``on_run_error`` → drain, and then
+        **re-raised unchanged**, whatever ``raise_on_error`` says: a caller's
+        ``asyncio.timeout`` or ``TaskGroup`` must still see its own
+        cancellation. That holds even when the close-out itself fails (a
+        blocking hook's disk error): the failure is logged and the
+        cancellation still wins, or a cancelled sweep would record one task
+        as failed and go on to the next. A cancellation that arrives after
+        the close-out has started does not dispatch it a second time.
+
+        A run is closed out once. When a blocking hook raises during the
+        close-out of a run that finished, timed out or failed, that error
+        propagates as it is — the run is not closed out again as if the
+        hook's failure had been the run's.
 
         Args:
             task: Task text handed to the agent.
@@ -483,6 +505,7 @@ class AgentRuntime:
         )
 
         started = time.monotonic()
+        self._finish_started = False
         try:
             try:
                 await self.setup_environment(env_context)
@@ -506,9 +529,6 @@ class AgentRuntime:
                     prepared_agent.run(task),
                     timeout=timeout,
                 )
-                await self._finish(result)
-                return result
-
             except TimeoutError:
                 logger.warning("AgentRuntime: execution timed out after %.1fs", timeout)
                 result = self._terminal_result(
@@ -546,10 +566,52 @@ class AgentRuntime:
                 if raise_on_error or isinstance(exc, RunAbort):
                     raise
                 return result
+            else:
+                # Outside the ``try`` above on purpose: a blocking hook that
+                # raises while closing out a finished run must not land in
+                # ``except Exception`` and close the same run out a second
+                # time, as a failure, with every hook seeing ``on_run_end``
+                # twice.
+                await self._finish(result)
+                return result
+
+        except asyncio.CancelledError as exc:
+            # Ctrl-C, a cancelled sweep: not an exception of the run's own
+            # (``CancelledError`` is a ``BaseException``, so neither arm
+            # above sees it), but a termination path all the same. Without
+            # this the trace stayed ``running`` with no ``result.json``, and
+            # the prompt of the call in flight never reached disk. Not
+            # dispatched again if the cancellation landed inside a close-out
+            # that had already begun.
+            if not self._finish_started:
+                result = self._terminal_result(
+                    task=task,
+                    task_id=task_id,
+                    agent_done=AgentDoneStatus.ERROR,
+                    env_status=self._probe_env_status(),
+                    error="Execution cancelled",
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+                try:
+                    await self._finish(result, error=exc)
+                except Exception:
+                    # The cancellation outranks a close-out that failed
+                    # under it (a full disk in ``TraceWriter.on_run_end``).
+                    # Raising the hook's error instead would turn Ctrl-C
+                    # into an ordinary task failure — a sweep's
+                    # ``except Exception`` would record it and start the
+                    # next task — and a caller's ``asyncio.timeout`` would
+                    # see an ``OSError`` rather than its ``TimeoutError``.
+                    logger.exception("AgentRuntime: closing out a cancelled run failed")
+            # Unchanged, and regardless of ``raise_on_error``: the
+            # cancellation belongs to whoever asked for it.
+            raise
         finally:
-            # Backstop drain, for the paths that never reach ``_finish``
-            # (cancellation). Normally a no-op — and it must not be able
-            # to skip teardown, hence the bare ``finally``.
+            # Backstop drain, for a close-out that did not get as far as its
+            # own drain (a blocking hook raising in ``on_run_end``, or a
+            # second cancellation landing inside ``_finish``). Normally a
+            # no-op — and it must not be able to skip teardown, hence the
+            # bare ``finally``.
             try:
                 await self._drain_background()
             finally:
@@ -564,6 +626,7 @@ class AgentRuntime:
 
     async def _finish(self, result: Any, error: BaseException | None = None) -> None:
         """Close a run out: ``on_run_end`` first, then error detail, then drain."""
+        self._finish_started = True
         await self._dispatch_lifecycle("on_run_end", result=result, env=self._env)
         if error is not None:
             await self._dispatch_lifecycle(

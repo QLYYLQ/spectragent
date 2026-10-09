@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
+from spectragent.core.trace.encoding import EncodedFragment, encode_fragment
 from spectragent.core.trace.models import RunStatus, TraceConfig
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
@@ -79,10 +80,11 @@ def write_trace(
 ) -> Path:
     """Write one complete trace and return its directory.
 
-    ``screenshots`` are persisted the way ``ScreenshotObs`` does it — a
-    real ``NNN_browser.screenshot.png`` plus a JSON sidecar, named by the
-    fully-qualified fragment key — so ``RunTrace.screenshots`` finds them
-    exactly as it would in production.
+    ``screenshots`` become ``ScreenshotObs`` fragments encoded by the same
+    function ``TraceWriter`` uses (``encode_fragment``) and committed through
+    the real ``WALWriter.commit_step`` — so the artifact, its JSON and the
+    manifest's fragment index are exactly what production writes, and
+    ``RunTrace.screenshots`` finds them the way it does on a real run.
     """
     wal = WALWriter(base_dir, run_id)
     wal.init_run(
@@ -100,19 +102,12 @@ def write_trace(
 
     frames = screenshots or []
     for step in range(steps):
-        obs_files: list[str] = []
+        fragments: list[EncodedFragment] = []
         if step < len(frames):
-            data = frames[step]
-            obs_files.append(wal.write_observation(step, "browser.screenshot", data, suffix=".png"))
-            sidecar = ScreenshotObs(viewport_width=1280, viewport_height=720).model_dump(
-                mode="json", exclude={"image_bytes"}
-            )
-            # Derived from the same rule ``TraceWriter`` writes it by
-            # (``NNN_<fragment_id><suffix>``), not spelled out: a
-            # hand-written name is how this pointer came to name a file
-            # the fixture never wrote.
-            sidecar["artifact_file"] = f"{step:03d}_{ScreenshotObs.__registry_key__}.png"
-            obs_files.append(wal.write_observation(step, "browser.screenshot", sidecar))
+            shot = ScreenshotObs(image_bytes=frames[step], viewport_width=1280, viewport_height=720)
+            encoded = encode_fragment(step, shot)
+            assert encoded is not None
+            fragments.append(encoded)
 
         record = StepRecord(
             step=step,
@@ -123,8 +118,7 @@ def write_trace(
             timestamp=float(step),
             token_usage=TokenUsage(prompt_tokens=30, completion_tokens=15, total_tokens=45),
         )
-        step_file = wal.write_step_record(step, record)
-        wal.commit_step(step=step, step_file=step_file, observation_files=obs_files)
+        wal.commit_step(step, record, fragments=fragments)
 
     wal.write_result(
         AgentResult(

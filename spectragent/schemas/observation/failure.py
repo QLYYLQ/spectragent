@@ -8,11 +8,11 @@ work; but filling the slot with an empty ``DOMObs`` would be worse, and is
 the failure this module exists to refuse.
 
 So the slot carries a :class:`FragmentFailure`: not a fragment at all, and
-not mistakable for one. Same discipline as the LLM layer's
-``_failed_call`` (``core/hooks/trace_writer.py``), which records a failed
-completion as ``{error, detail}`` rather than as a completion-shaped object
-with an error inside it — whoever reads the trace has to be able to tell
-data the world produced from data the framework invented.
+not mistakable for one. Same discipline as the trace's record of a failed
+LLM call (``CallFailure`` in ``core/trace/models.py``), which says
+``{error, detail}`` rather than shaping a completion with an error inside
+it — whoever reads the trace has to be able to tell data the world produced
+from data the framework invented.
 
 Two consequences worth stating, because both are deliberate:
 

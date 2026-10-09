@@ -649,21 +649,6 @@ class TestWhatTheModelReads:
         assert f'data-idx="{by_id(state, "shadow-btn")[0]}"' in html
 
 
-def _encoded(payload: object, element_id: str) -> dict[str, object]:
-    """The full encoding of the node whose ``id`` attribute is ``element_id``."""
-    stack = [payload]
-    while stack:
-        item = stack.pop()
-        if isinstance(item, dict):
-            attributes = item.get("attributes")
-            if isinstance(attributes, dict) and attributes.get("id") == element_id:
-                return item
-            stack.extend(item.values())
-        elif isinstance(item, list):
-            stack.extend(item)
-    raise AssertionError(f"#{element_id} is not encoded")
-
-
 class TestWhatTheTraceRecords:
     async def test_frame_subtrees_are_recorded_under_their_owner(self) -> None:
         state = await clean(reference_page())
@@ -681,18 +666,14 @@ class TestWhatTheTraceRecords:
         entries = payload["selector_map"]
         assert set(entries) == {str(k) for k in state.selector_map}
         cb_key = by_id(state, "cb")[0]
-        # ``#cross`` is indexed too and its entry records its document, so
-        # cb's own entry may be a pointer — one that names cb exactly.
-        cb_entry = entries[str(cb_key)]
-        if "__cycle__" in cb_entry:
-            assert cb_entry["__cycle__"] == {
-                "element_index": cb_key,
-                "backend_node_id": 10,
-                "target_id": "CROSS",
-            }
-        cb = _encoded(entries, "cb")
+        # ``#cross`` is indexed too and its entry records its document — and
+        # cb's own entry is still written in full, not as a pointer into it.
+        cb = entries[str(cb_key)]
+        assert "__cycle__" not in cb
+        assert cb["attributes"]["id"] == "cb"
         assert cb["element_index"] == cb_key
         assert (cb["backend_node_id"], cb["session_id"], cb["target_id"]) == (10, "cross", "CROSS")
+        assert cb["bounds"] == {"x": 50.0, "y": 650.0, "width": 30.0, "height": 30.0}
         main = entries["10"]
         assert (main["backend_node_id"], main["session_id"]) == (10, "tab")
 

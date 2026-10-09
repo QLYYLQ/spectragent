@@ -46,7 +46,7 @@ ObservationRegistrar = create_registrar(
 )
 ```
 
-A concrete fragment — `spectragent/core/capabilities/browser/observations.py:144`
+A concrete fragment — `spectragent/core/capabilities/browser/observations.py:383`
 is the canonical one:
 
 ```python
@@ -87,17 +87,38 @@ A fragment owns its own JSON shape. `DOMObs` cannot be encoded without knowing
 type, not in the shared schemas package. `spectragent/schemas/observation/` names
 no field of any domain — keep it that way.
 
-Two hooks for trace persistence, both on `FragmentBase`
-(`_registrar.py:151`, `:159`):
+Three methods carry a fragment to the trace and back, all on `FragmentBase`
+(`_registrar.py:157`, `:165`, `:173`):
 
 - `trace_binary() -> (suffix, bytes) | None` — binary payloads must **not** be
-  base64'd into the JSON record. `ScreenshotObs` (`observations.py:229`) returns
+  base64'd into the JSON record. `ScreenshotObs` (`observations.py:578`) returns
   the real bytes and its suffix comes from the bytes' own header, so a JPEG run
   writes `000_browser.screenshot.jpg`.
 - `trace_json_exclude() -> set[str]` — keep those bytes out of the sidecar.
-- `summary() -> str` — one line for `StepRecord.observation_summary`. Empty means
-  "skip me". This is what makes a trace skimmable without loading megabytes of
-  DOM per step.
+- `from_trace(payload, artifact) -> Self` (classmethod) — the documented inverse
+  of the two: rebuild the fragment from its sidecar (the parsed JSON) and the
+  artifact bytes. It is what `RunTrace.observation_fragment` calls, so what an
+  evaluator reads back is the type that was written. The default validates the
+  sidecar and **refuses** an artifact rather than dropping it: bytes there mean
+  the class overrode `trace_binary` without overriding `from_trace`, and the
+  sidecar alone would read back as a fragment with its payload silently missing.
+  So override them together — `ScreenshotObs.from_trace` (`observations.py:606`)
+  puts the bytes back into `image_bytes`. A fragment whose JSON shape is its own
+  (a `field_serializer` encoding a graph) owns the decoder for that shape too:
+  `DOMObs.from_trace` (`observations.py:465`) gives back a `DOMState` and
+  `DOMElementNode`s, so no reader ever writes a second decoder. That decoder plans from
+  the dataclass annotations, as the encoder does; a traced field annotated with a shape
+  it has no rule for (it knows scalars, `Any`, dataclasses, `X | None`, scalar unions,
+  `Literal`, `list`, `tuple`, `set` / `frozenset`, `dict`) is a `TypeError` naming the
+  annotation when the plan is built — teach `_GraphDecoder` the shape first. Report every
+  failure as a `ValueError` (pydantic's `ValidationError` is one); the reader
+  turns it into a `TraceSchemaError` naming the file. Whatever your encoding
+  still loses, write it in the class docstring — `DOMObs`'s lists four losses —
+  and do not invent it back on read.
+
+Plus `summary() -> str` — one line for `StepRecord.observation_summary`. Empty
+means "skip me". This is what makes a trace skimmable without loading megabytes
+of DOM per step.
 
 ### Getting it registered
 
@@ -199,14 +220,18 @@ This is the rule agents and capabilities get wrong in opposite directions.
 | `fragment_id` field | `browser.dom` | Same reason, carried in the data. |
 | Agent / Loop `__wiring__` | `dom`, `screenshot`, `task` | The agent does not know which capability this run assembled. |
 
-`spectragent/core/hooks/trace_writer.py:462` names observation files after
-`fragment_id`, explicitly not after the negotiated local name:
+`fragment_path` (`spectragent/core/trace/encoding.py:77`) names observation
+files after `fragment_id`, explicitly not after the negotiated local name:
 
-> The local name is a per-run artefact of which capability won negotiation, so a
-> trace keyed by it cannot tell an evaluator which capability produced the data.
+> Not the negotiated local name: that is a per-run artefact of which capability
+> won negotiation, so `000_screenshot.json` would mean a different thing in a
+> browser run and a desktop run.
 
-Binary artifacts land beside the sidecar, and the sidecar carries
-`payload["artifact_file"] = f"{step:03d}_{key}{suffix}"` (`trace_writer.py:495`).
+Binary artifacts land beside the sidecar as `observations/{step:03d}_{key}{suffix}`
+(`artifact_path`, `encoding.py:87`). The sidecar is the fragment's own JSON and
+nothing else — no pointer to the artifact. The manifest's per-step fragment index
+(`FragmentFiles.artifact`) is the only pointer, and `from_trace` is handed the
+bytes.
 
 The relative→qualified binding happens exactly once, in `resolve_demand`
 (`spectragent/core/negotiation/_base.py:265`), and the result is
@@ -235,7 +260,7 @@ A separate failure catches the pinned-both case: `DuplicateFragmentNameError`
 names collide, because the generated model has one attribute per local name.
 This is why a desktop capability that wants a screenshot registers
 `desktop.screenshot` as its own fragment rather than reusing
-`browser.screenshot` (`observations.py:195`) — and why stub fragments in tests
+`browser.screenshot` (`observations.py:534`) — and why stub fragments in tests
 must be named distinctly.
 
 The declaration form for an agent (`spectragent/agents/browser_use.py:285`):
@@ -421,15 +446,24 @@ After the gather:
 
 `FragmentFailure` is a plain `BaseModel`, deliberately **not** a `FragmentBase`:
 no registry key, never negotiates, so `isinstance(x, FragmentBase)` stays a
-reliable "this is real data" test and the trace writer's binary path skips it
-with no special case. It mirrors the LLM layer's `_failed_call`
-(`core/hooks/trace_writer.py:501`) field for field: `{error, detail}`.
+reliable "this is real data" test. The trace records it under the key that
+failed and flags it `failed: true` in the step's fragment index
+(`encode_fragment`, `core/trace/encoding.py:174`), because its JSON carries no
+discriminator: every field of `ScreenshotObs` / `DOMObs` / `BrowserMetaObs` has a
+default, so the same bytes would validate silently as an empty fragment of the
+class the key names. `RunTrace.observation_fragment` reads a flagged file back as
+the `FragmentFailure`. It mirrors the trace's record of a failed LLM call
+(`CallFailure`, `core/trace/models.py:172`) in its two required fields:
+`{error, detail}`.
 
 **Never fabricate a value.** A reader of the trace has to be able to tell "the
 environment is like this" from "we failed to sample it". Filling the slot with an
 empty `DOMObs`, or a defaulted `url=""`, is the framework inventing data — the
 exact failure `failure.py` exists to refuse. From your resolver: **raise**. Do
-not return `None`, do not return an empty fragment. The environment decides what
+not return `None`, do not return an empty fragment. Zero bytes count as empty:
+`ScreenshotWatchdog._capture` raises when `Page.captureScreenshot` returns no image
+data, where it used to hand over `b""` — which the trace committed as a 0-byte
+artifact its reader then refused, failing every screenshot of the run. The environment decides what
 your failure costs by consulting what the run declared required; softening it in
 the capability removes that decision from the only place that can make it.
 (`_expect_failure` in the contract suite, `capability_contract.py:254`, fails a
@@ -587,12 +621,12 @@ it"** indistinguishable from **"we cut it"** — the lying-trace class of defect
 "the page had 900 and the run paid for 42", and the evaluator reading it months
 later cannot tell.
 
-So `DOMObs.budget: DOMBudgetReport | None` (`observations.py:165`), where
+So `DOMObs.budget: DOMBudgetReport | None` (`observations.py:440`), where
 **`None` is load-bearing**: it is the encoding of "nothing was cut", so the
 field's mere presence is the signal. `DOMBudgetReport` (`budget.py:99`) records
 `applied`, `elements_before` / `elements_after`, `nodes_dropped`,
 `serialized_chars_before` / `_after`, and feeds `DOMObs.summary()`
-(`observations.py:167`) so the step line says it too.
+(`observations.py:442`) so the step line says it too.
 
 Checklist for a new cost knob:
 
@@ -617,6 +651,13 @@ Checklist for a new cost knob:
 - [ ] Lives in the package that owns the types it encodes; `field_serializer` for
       anything pydantic cannot encode; `trace_binary` / `trace_json_exclude` for
       bytes; a `summary()` worth reading.
+- [ ] `from_trace` inverts what you write: overrode `trace_binary` → override
+      `from_trace` to put the artifact back; encoded a graph in a
+      `field_serializer` → decode it in `from_trace`. Add the class to `SAMPLES`
+      in `tests/_helpers/fragment_samples.py` so
+      `tests/test_schemas/test_observation/test_fragment_from_trace.py` round-trips
+      it (encode → decode → encode is unchanged) —
+      `test_every_shipped_fragment_class_has_a_sample` fails until you do.
 - [ ] Did **not** declare `captured_at` or `fragment_id` — inherited both.
 - [ ] Produced by a Resolver that declares it (`provides` for a watchdog) and
       imports the fragment class, so it registers.
