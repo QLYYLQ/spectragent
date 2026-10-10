@@ -205,3 +205,23 @@ class TestNamespacedContextGivesIndependence:
 
         message = str(exc.value)
         assert "image" in message and "f8s_browserish" in message
+
+
+class TestReplayArchiveRouting:
+    """M30: ``replay_archive`` is a task-context key the browser declares by name (§4.10)."""
+
+    def test_replay_archive_routes_only_to_the_browser_capability(self) -> None:
+        from spectragent.core.capabilities.browser import BrowserCapability
+
+        browser = BrowserCapability()
+        docker = Dockerish()
+        env = _env(browser, docker)
+        routed = env.route_setup_context({"replay_archive": "/runs/src", "image": "swe:latest"})
+        assert routed[browser.capability_id] == {"replay_archive": "/runs/src"}
+        assert routed[docker.capability_id] == {"image": "swe:latest"}
+
+    def test_a_capability_that_does_not_declare_it_refuses_it(self) -> None:
+        browser, docker = _pair()
+        env = _env(browser, docker)
+        with pytest.raises(ValueError, match="replay_archive"):
+            env.route_setup_context({"replay_archive": "/runs/src"})

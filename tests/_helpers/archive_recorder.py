@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,6 +20,7 @@ from spectragent.core.capabilities.browser.archive.base import (
     BrowserArchiverBase,
     BrowserArchiveSession,
     RawCaptureStore,
+    ReplayLogFeed,
 )
 from spectragent.core.capabilities.browser.recorder import (
     PausedRequest,
@@ -124,9 +126,12 @@ def scripted_context(
     parked: list[Any] | None = None,
     cycle: int = 1,
     fresh_profile: bool = True,
+    replay_log: ReplayLogFeed | None = None,
+    clock: Callable[[], float] | None = None,
 ) -> BrowserArchiveContext:
     """A context around *recorder*; ``parked`` collects ``park_raw`` calls."""
     sink = parked if parked is not None else []
+    extra: dict[str, Any] = {"clock": clock} if clock is not None else {}
     return BrowserArchiveContext(
         recorder=recorder,
         channel=None,  # type: ignore[arg-type] — sessions under test never use it
@@ -136,6 +141,8 @@ def scripted_context(
         viewport=(1280, 720),
         cycle=lambda: cycle,
         fresh_profile=fresh_profile,
+        replay_log=replay_log,
+        **extra,
     )
 
 

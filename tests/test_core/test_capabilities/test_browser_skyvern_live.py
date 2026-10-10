@@ -29,6 +29,7 @@ def configured_capability(
                     "mouse_trajectory": {"trajectory_type": "instant"},
                     "typing_rhythm": {"rhythm_type": "instant"},
                     "replayability": {"replayability_id": "off"},
+                    "network_source": {"source_id": "live"},
                     "dom_cleaner": {
                         "cleaner_type": "skyvern",
                         "max_text_length": max_text_length,

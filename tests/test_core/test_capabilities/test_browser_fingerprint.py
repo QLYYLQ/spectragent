@@ -234,3 +234,47 @@ async def test_the_page_can_neither_see_nor_bend_the_off_probe() -> None:
                 session_id=cap.default_session_id,
             )
             assert reads["result"]["value"] == 0, "the page saw the probe read navigator"
+
+
+# ── M30: routing switches and the network source ─────────────────────
+
+
+def test_digest_ignores_routing_switches() -> None:
+    """The recording's fixture MAP rules and the replay's isolation switches never enter it."""
+    from spectragent.core.capabilities.browser.archive.fingerprint import flags_digest
+    from spectragent.core.capabilities.browser.backends.chrome_switches import (
+        NETWORK_ISOLATION_ARGS,
+    )
+
+    base = ["--headless=new", "--user-data-dir=<user-data-dir>"]
+    recorded = {
+        "launch_flags": [
+            *base,
+            "--host-resolver-rules=MAP shop.test 127.0.0.1:9000, MAP * ~NOTFOUND",
+            "--no-proxy-server",
+        ]
+    }
+    replaying = [*base, *NETWORK_ISOLATION_ARGS]
+    assert launch_flags_digest(recorded) == flags_digest(replaying) == flags_digest(base)
+    assert flags_digest([*base, "--lang=fr"]) != flags_digest(base), "other switches still count"
+
+
+async def test_a_live_run_records_its_source() -> None:
+    document = await _measure({"tier": "off", "params": {}})
+    assert document["network_source"] == {"source_id": "live"}
+
+
+async def test_replay_block() -> None:
+    block = {
+        "source_id": "archive",
+        "source_run_id": "run-src",
+        "source_fingerprint_sha256": "ab" * 32,
+        "site_rules_sha256": None,
+        "matcher": {"levels": ["exact"], "fuzzy_threshold": 0.5, "site_rules": None},
+        "miss_policy_id": "strict",
+        "shift_dates": "none",
+        "isolation": "required",
+        "warnings": ["Chrome version differs"],
+    }
+    document = await _measure({"tier": "off", "params": {}}, network_fingerprint=block)
+    assert document["network_source"] == block

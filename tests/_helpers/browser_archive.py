@@ -39,6 +39,7 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
     LAUNCH_ARGS,
     NETWORK_CAPTURE,
+    NETWORK_ISOLATION,
 )
 from spectragent.schemas.provider_session import ProviderSession
 from tests._helpers.fake_cdp import FakeBrowser, FakeClient
@@ -49,6 +50,8 @@ class OwnedBrowser:
 
     __capabilities__: ClassVar[set[str]] = {CDP, NETWORK_CAPTURE, LAUNCH_ARGS}
     provider_id = "fake_local"
+    #: The provider's own switches (what ``launch_flags`` records before ``launch_args``).
+    BASE_FLAGS: ClassVar[tuple[str, ...]] = ("--headless=new", "--user-data-dir=<user-data-dir>")
 
     def __init__(self, *, profile: str | None = None) -> None:
         self.open_calls: list[dict[str, Any]] = []
@@ -61,7 +64,7 @@ class OwnedBrowser:
             session_id="s",
             provider_id=self.provider_id,
             cdp_url="ws://127.0.0.1:9222/devtools/browser/fake",
-            metadata={"launch_flags": ["--headless=new", "--user-data-dir=<user-data-dir>"]},
+            metadata={"launch_flags": self.planned_launch_flags(kwargs.get("launch_args", ()))},
         )
 
     async def close(self, session: ProviderSession | None = None) -> None:
@@ -70,8 +73,25 @@ class OwnedBrowser:
     def launch_arg_conflicts(self, launch_args: Any) -> list[str]:
         return []
 
+    def planned_launch_flags(self, launch_args: Any) -> list[str]:
+        return [*self.BASE_FLAGS, *launch_args]
+
     def persistent_profile(self) -> str | None:
         return self.profile
+
+
+class IsolatingBrowser(OwnedBrowser):
+    """An :class:`OwnedBrowser` that can also be cut off from the network (M30)."""
+
+    __capabilities__: ClassVar[set[str]] = {CDP, NETWORK_CAPTURE, LAUNCH_ARGS, NETWORK_ISOLATION}
+    provider_id = "fake_isolating"
+
+    def __init__(self, *, conflicts: list[str] | None = None, profile: str | None = None) -> None:
+        super().__init__(profile=profile)
+        self.conflicts = list(conflicts or [])
+
+    def isolation_conflicts(self) -> list[str]:
+        return list(self.conflicts)
 
 
 async def settle(rounds: int = 30) -> None:

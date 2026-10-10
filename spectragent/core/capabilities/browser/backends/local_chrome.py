@@ -35,10 +35,13 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
     EXTENSIONS,
     LAUNCH_ARGS,
     NETWORK_CAPTURE,
+    NETWORK_ISOLATION,
     PROFILE,
     SCREEN_SIZE,
 )
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
+    NETWORK_ISOLATION_ARGS,
+    NETWORK_ROUTING_SWITCHES,
     contradicting_switch,
     merge_chrome_switches,
     split_switch,
@@ -238,6 +241,7 @@ class LocalChromeProvider(BrowserProviderBase):
         EXTENSIONS,
         LAUNCH_ARGS,
         NETWORK_CAPTURE,
+        NETWORK_ISOLATION,
         PROFILE,
         SCREEN_SIZE,
     }
@@ -521,6 +525,13 @@ class LocalChromeProvider(BrowserProviderBase):
 
         return args
 
+    def _chrome_args(self, port: int, user_data: str, launch_args: Sequence[str]) -> list[str]:
+        """The switches of one launch: the provider's, then ``launch_args``, list switches merged.
+
+        The one builder behind :meth:`open` and :meth:`planned_launch_flags`.
+        """
+        return merge_chrome_switches([*self._build_args(port, user_data), *launch_args])
+
     # -------------------------------------------------------------------
     # Provider interface
     # -------------------------------------------------------------------
@@ -561,7 +572,7 @@ class LocalChromeProvider(BrowserProviderBase):
         executable = kwargs.get("executable_path") or self.executable_path or find_chrome()
 
         # Build args.
-        chrome_args = merge_chrome_switches([*self._build_args(port, udd), *launch_args])
+        chrome_args = self._chrome_args(port, udd, launch_args)
         cmd = [executable, *chrome_args, self.startup_url]
 
         logger.info("Launching Chrome: %s (port=%d)", executable, port)
@@ -658,6 +669,51 @@ class LocalChromeProvider(BrowserProviderBase):
                 if clash is not None:
                     problems.append(f"{knob} contradicts {clash}")
                     break
+        return problems
+
+    def planned_launch_flags(self, launch_args: Sequence[str]) -> list[str]:
+        """``metadata["launch_flags"]`` of an ``open(launch_args=...)``, before launching.
+
+        The same builder as :meth:`open`; the per-launch values (port,
+        profile directory) are placeholders in both, so the two are equal.
+        """
+        return _fingerprintable_flags(self._chrome_args(0, "<planned>", launch_args))
+
+    # -------------------------------------------------------------------
+    # NetworkIsolatingProvider (NETWORK_ISOLATION)
+    # -------------------------------------------------------------------
+
+    def isolation_conflicts(self) -> list[str]:
+        """This provider's knobs that would route traffic around the isolation switches.
+
+        One entry per knob: a proxy (the resolver rules then cover only the
+        proxy host), a routing switch in ``extra_args`` other than an exact
+        repeat of an isolation switch, and a ``startup_url`` other than
+        ``about:blank`` (it loads before anything is intercepted).
+        """
+        problems: list[str] = []
+        if self.proxy_server:
+            problems.append(
+                f"proxy_server={self.proxy_server!r} sends traffic through a proxy, around "
+                f"the isolation's resolver rules"
+            )
+        if self.proxy_bypass_list:
+            problems.append(
+                f"proxy_bypass_list={self.proxy_bypass_list!r} is a proxy routing rule; "
+                f"isolation runs with --no-proxy-server"
+            )
+        problems.extend(
+            f"extra_args entry {arg!r} sets network routing that overrides the isolation "
+            f"switches {list(NETWORK_ISOLATION_ARGS)}"
+            for arg in self.extra_args or ()
+            if split_switch(arg)[0] in NETWORK_ROUTING_SWITCHES
+            and arg not in NETWORK_ISOLATION_ARGS
+        )
+        if self.startup_url != "about:blank":
+            problems.append(
+                f"startup_url={self.startup_url!r} loads before the replay intercepts "
+                f"anything; it must be 'about:blank'"
+            )
         return problems
 
     # -------------------------------------------------------------------

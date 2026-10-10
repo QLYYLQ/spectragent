@@ -66,6 +66,7 @@ def _capability_config(replayability: Any) -> Any:
             "mouse_trajectory": {"trajectory_type": "instant"},
             "typing_rhythm": {"rhythm_type": "instant"},
             "replayability": replayability,
+            "network_source": {"source_id": "live"},
             "dom_cleaner": {"cleaner_type": "browser_use"},
             "dom_serializer": {"serializer_type": "text"},
             "backend": {"provider_id": "local_chrome"},
@@ -380,6 +381,9 @@ class _Provider:
     def launch_arg_conflicts(self, launch_args: Any) -> list[str]:
         return list(self._conflicts)
 
+    def planned_launch_flags(self, launch_args: Any) -> list[str]:
+        return ["--headless=new", *launch_args]
+
     def persistent_profile(self) -> str | None:
         return self._profile
 
@@ -456,7 +460,20 @@ class TestCooperation:
     def test_pinned_from_archive_vs_a_live_network_source(self) -> None:
         cap = _pinned_capability(_Provider(), base_time="from_archive")
         (problem,) = cooperation_problems(cap, cdp_url=None, injected_client=False)
-        assert problem.startswith("replayability: pinned base_time=from_archive ↔ network source")
+        assert problem.startswith(
+            "replayability: pinned base_time=from_archive ↔ network_source: live"
+        )
+
+    def test_pinned_from_archive_with_an_archive_source_is_not_this_rows_problem(self) -> None:
+        """The clock row names the live source only; an archive source answers it (M30)."""
+        from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource
+
+        cap = _pinned_capability(_Provider(), base_time="from_archive")
+        cap.network_source = ArchiveNetworkSource(isolation="none_acknowledged")
+        problems = cooperation_problems(
+            cap, cdp_url=None, injected_client=False, replay_archive="/runs/src"
+        )
+        assert not any("base_time" in problem for problem in problems)
 
     def test_every_problem_is_reported_at_once(self) -> None:
         cap = _pinned_capability(

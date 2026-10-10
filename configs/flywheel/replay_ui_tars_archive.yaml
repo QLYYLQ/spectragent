@@ -1,0 +1,67 @@
+# Replay a recorded UI-TARS run offline (data flywheel, M30): the network is
+# the recorded run's archive, never the live web. Pair it with the recording
+# config (record_ui_tars_pinned.yaml) — everything a replay compares with its
+# source run is set the same here: the tier and its seed, the viewport, the
+# backend's own switches. The source run directory arrives per task:
+#
+#   spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
+#       --task "..." --start-url URL --replay-archive traces/<recorded-run>
+#
+# What changes against the recording:
+# - network_source: archive — every request Chrome makes is answered from the
+#   source run's browser.network archive at the Fetch Request stage, or by the
+#   strict miss policy (documents fail, beacons 204, the rest 404); nothing is
+#   ever sent to the network, and the browser is cut off from it
+#   (isolation: required → local_chrome gets the resolver blackhole and
+#   --no-proxy-server).
+# - base_time: from_archive — the page clock starts at the recording's T0.
+# - browser.network records the replay log (env/steps/NNN/browser.network/
+#   replay.jsonl: hits, misses, divergence) instead of a WARC.
+# Before Chrome starts, setup checks the source run's environment fingerprint
+# against this file (tier and parameters, shim, viewport, launch flags) and
+# refuses a mismatch naming both sides. docs/architecture_design.md §4.14.
+agent:
+  - agent_id: ui_tars
+    id: main
+    prompt_template: computer_use
+    coordinate_space: screenshot_pixels
+    agent_loop:
+      loop_id: react
+      max_steps: 30
+      max_actions_per_step: 1
+    llm:
+      model_type: openai
+      model: gpt-4o
+      provider: { name: direct }
+    memory: { memory_id: simple, max_messages: 200 }
+
+environment:
+  - env_type: browser
+    id: browser_env
+    capabilities:
+      - capability_id: browser
+        profile: standard
+        mouse_trajectory: { trajectory_type: instant }
+        typing_rhythm: { rhythm_type: instant }
+        replayability: { replayability_id: pinned, random_seed: 7, base_time: from_archive }
+        network_source:
+          source_id: archive
+          # isolation defaults to required; write isolation: none_acknowledged
+          # to run on Fetch interception alone (preconnects and WebSockets escape it).
+          shift_dates: none              # all: shift every date (pairs with base_time: run_start)
+          matcher: { site_rules: configs/replay_rules }
+          miss_policy: { miss_policy_id: strict }
+        dom_cleaner: { cleaner_type: browser_use }
+        dom_serializer: { serializer_type: text }
+        backend:
+          provider_id: local_chrome
+          headless: true
+
+hook:
+  - hook_id: trace_writer
+    trace_dir: traces
+    archive:
+      - archiver_id: browser.network     # required: it records the replay log
+      - archiver_id: browser.storage
+      - archiver_id: browser.dom_raw
+  - hook_id: metrics

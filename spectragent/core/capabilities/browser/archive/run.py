@@ -133,8 +133,12 @@ class BrowserArchiveRun:
         session_metadata: Mapping[str, Any] | None,
         fresh_profile: bool,
         clock: Callable[[], float],
+        network_fingerprint: Mapping[str, Any] | None = None,
     ) -> ArchiveBatch:
-        """Barrier → each session in binding order → fingerprint → one batch."""
+        """Barrier → each session in binding order → fingerprint → one batch.
+
+        *network_fingerprint* is the network source's block (``None``: live).
+        """
         ctx = self._ctx
         if ctx is None or not self._sessions:
             return ArchiveBatch()
@@ -158,6 +162,7 @@ class BrowserArchiveRun:
             archivers=self.archivers,
             fresh_profile=fresh_profile,
             clock=clock,
+            network_fingerprint=network_fingerprint,
         )
         if record is not None:
             files.append(record)

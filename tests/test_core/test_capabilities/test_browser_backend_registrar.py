@@ -101,7 +101,11 @@ class TestComposerInjectsBackend:
             MouseTrajectoryRegistrar,
             TypingRhythmRegistrar,
         )
-        from spectragent.core.capabilities.browser.replay import ReplayabilityRegistrar
+        from spectragent.core.capabilities.browser.replay import (
+            MissPolicyRegistrar,
+            NetworkSourceRegistrar,
+            ReplayabilityRegistrar,
+        )
         from spectragent.core.composer import ConfigComposer
         from spectragent.core.environments._registrar import EnvironmentRegistrar
         from spectragent.core.hooks._registrar import HookRegistrar
@@ -114,6 +118,8 @@ class TestComposerInjectsBackend:
                 "mouse_trajectory": MouseTrajectoryRegistrar,
                 "typing_rhythm": TypingRhythmRegistrar,
                 "replayability": ReplayabilityRegistrar,
+                "miss_policy": MissPolicyRegistrar,
+                "network_source": NetworkSourceRegistrar,
                 "dom_cleaner": DOMCleanerRegistrar,
                 "dom_serializer": DOMSerializerRegistrar,
                 "action": ActionRegistrar,
@@ -141,6 +147,7 @@ class TestComposerInjectsBackend:
                     "mouse_trajectory": {"trajectory_type": "instant"},
                     "typing_rhythm": {"rhythm_type": "instant"},
                     "replayability": {"replayability_id": "off"},
+                    "network_source": {"source_id": "live"},
                     "dom_cleaner": {"cleaner_type": "browser_use"},
                     "dom_serializer": {"serializer_type": "text"},
                     "backend": {"provider_id": "local_chrome"},
@@ -186,7 +193,11 @@ class TestComposerInjectsBackend:
             MouseTrajectoryRegistrar,
             TypingRhythmRegistrar,
         )
-        from spectragent.core.capabilities.browser.replay import ReplayabilityRegistrar
+        from spectragent.core.capabilities.browser.replay import (
+            MissPolicyRegistrar,
+            NetworkSourceRegistrar,
+            ReplayabilityRegistrar,
+        )
         from spectragent.core.composer import ConfigComposer
         from spectragent.core.environments._registrar import EnvironmentRegistrar
         from spectragent.core.hooks._registrar import HookRegistrar
@@ -199,6 +210,8 @@ class TestComposerInjectsBackend:
                 "mouse_trajectory": MouseTrajectoryRegistrar,
                 "typing_rhythm": TypingRhythmRegistrar,
                 "replayability": ReplayabilityRegistrar,
+                "miss_policy": MissPolicyRegistrar,
+                "network_source": NetworkSourceRegistrar,
                 "dom_cleaner": DOMCleanerRegistrar,
                 "dom_serializer": DOMSerializerRegistrar,
                 "action": ActionRegistrar,
@@ -263,6 +276,7 @@ class TestComposerInjectsBackend:
                     "mouse_trajectory": {"trajectory_type": "instant"},
                     "typing_rhythm": {"rhythm_type": "instant"},
                     "replayability": {"replayability_id": "off"},
+                    "network_source": {"source_id": "live"},
                     "dom_cleaner": {"cleaner_type": "browser_use"},
                     "dom_serializer": {"serializer_type": "text"},
                     "backend": {"provider_id": "local_chrome"},

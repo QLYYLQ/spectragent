@@ -19,6 +19,14 @@ The rows this module owns:
   ``LAUNCH_ARGS`` (the only way the switches reach Chrome), none of the
   provider's knobs may contradict them, the profile must be fresh, and a
   clock read from an archive needs an archive network source (M30).
+- **Network source** (M30) — an intercepting source (``archive``) opens the
+  recorder connection too (the ownership rows), needs the task's
+  ``replay_archive`` (and a ``live`` source refuses one), needs a bound
+  archiver that records the replay log (the ``replay_log`` need — found by
+  need, never by archiver id: a miss must always be recorded), and with
+  ``isolation: required`` a provider declaring ``NETWORK_ISOLATION`` whose
+  own knobs do not route around the isolation — unless the configuration
+  says ``isolation: none_acknowledged``.
 
 - **Archivers** — every bound browser archiver opens the recorder connection
   (the ownership rows above), a ``require_replayable`` archiver refuses the
@@ -26,8 +34,14 @@ The rows this module owns:
   ``allow_session_state`` on every bound archiver (§5.6: the definition of
   ``logged_in``), and a profile that excludes the ``archive`` watchdog leaves
   nothing to drain the archive scope. :func:`binding_problems` is this group
-  alone: ``bind_archivers`` runs it at ``prepare()``, before it changes the
+  — plus, when any archiver is bound, the network source's
+  configuration-decidable rows (the replay-log archiver, isolation):
+  ``bind_archivers`` runs it at ``prepare()``, before it changes the
   binding.
+
+Whether a replay's *source run* matches this configuration is the replay
+layer's check (``replay/consistency.py``), run by setup after the archive is
+opened and folded into the same error.
 """
 
 from collections.abc import Sequence
@@ -37,14 +51,23 @@ from spectragent.core.capabilities.browser.archive.base import BrowserArchiverBa
 from spectragent.core.capabilities.browser.backends.base import (
     LaunchArgsProvider,
     NetworkCaptureProvider,
+    NetworkIsolatingProvider,
 )
 from spectragent.core.capabilities.browser.backends.capabilities import (
     LAUNCH_ARGS,
     NETWORK_CAPTURE,
+    NETWORK_ISOLATION,
 )
+from spectragent.core.capabilities.browser.backends.chrome_switches import NETWORK_ISOLATION_ARGS
 from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
-from spectragent.core.capabilities.browser.replay import ReplayabilityProtocol
+from spectragent.core.capabilities.browser.replay import (
+    NetworkSourceProtocol,
+    ReplayabilityProtocol,
+)
 from spectragent.core.capabilities.browser.watchdogs.archive_watchdog import ArchiveWatchdog
+
+#: The archive need of the archiver that records a replay's decisions.
+REPLAY_LOG_NEED = "replay_log"
 
 
 class CooperatingCapability(Protocol):
@@ -52,6 +75,9 @@ class CooperatingCapability(Protocol):
 
     @property
     def replayability(self) -> ReplayabilityProtocol: ...
+
+    @property
+    def network_source(self) -> NetworkSourceProtocol: ...
 
     @property
     def bound_archivers(self) -> tuple[BrowserArchiverBase, ...]: ...
@@ -91,11 +117,17 @@ def _archiver_name(archiver: BrowserArchiverBase) -> str:
     return f"archiver {archiver.archiver_id}"
 
 
+def _source_name(source: Any) -> str:
+    return f"network_source: {getattr(source, 'source_id', type(source).__name__)}"
+
+
 def recorder_needs(cap: CooperatingCapability) -> list[str]:
     """Every configured party that needs the recorder connection, by name."""
     needs = [_archiver_name(archiver) for archiver in cap.bound_archivers]
     if cap.replayability.replayable:
         needs.append(_tier_name(cap.replayability))
+    if cap.network_source.intercepts:
+        needs.append(_source_name(cap.network_source))
     return needs
 
 
@@ -147,13 +179,13 @@ def _ownership_problems(
     return problems
 
 
-def _replayability_problems(replayability: Any, backend: Any) -> list[str]:
+def _replayability_problems(replayability: Any, backend: Any, source: Any) -> list[str]:
     tier = _tier_name(replayability)
     problems: list[str] = []
-    if replayability.needs_archive_clock:
+    if replayability.needs_archive_clock and not source.intercepts:
         problems.append(
-            f"{tier} base_time=from_archive ↔ network source live: T0 can come from an "
-            f"archive only when the run replays one (archive network source, M30)"
+            f"{tier} base_time=from_archive ↔ {_source_name(source)}: T0 can come from an "
+            f"archive only when the run replays one (network_source: archive)"
         )
     launch_args = replayability.launch_args()
     if backend is None or not launch_args:
@@ -168,7 +200,8 @@ def _replayability_problems(replayability: Any, backend: Any) -> list[str]:
     if not isinstance(backend, LaunchArgsProvider):
         problems.append(
             f"{tier} ↔ {provider}: the provider declares LAUNCH_ARGS but does not "
-            f"implement LaunchArgsProvider (open(launch_args=...) / launch_arg_conflicts)"
+            f"implement LaunchArgsProvider (open(launch_args=...) / launch_arg_conflicts / "
+            f"planned_launch_flags)"
         )
         return problems
     problems.extend(
@@ -216,6 +249,51 @@ def _archiver_rows(
     return problems
 
 
+def _source_rows(
+    cap: CooperatingCapability, archivers: Sequence[BrowserArchiverBase], backend: Any
+) -> list[str]:
+    """An intercepting source's configuration rows: the replay-log archiver, isolation.
+
+    *backend* is ``None`` when the browser is not the capability's own
+    (explicit endpoint, injected client): the ownership rows refuse that.
+    """
+    source = cap.network_source
+    if not source.intercepts:
+        return []
+    name = _source_name(source)
+    problems: list[str] = []
+    if not any(REPLAY_LOG_NEED in archiver.needs for archiver in archivers):
+        bound = sorted(archiver.archiver_id for archiver in archivers)
+        problems.append(
+            f"{name} ↔ bound archivers {bound}: none records the replay log (the "
+            f"{REPLAY_LOG_NEED!r} need: browser.network); a replay must record every miss — "
+            f"bind browser.network on the trace writer"
+        )
+    if source.isolation != "required" or backend is None:
+        return problems
+    provider = _provider_name(backend)
+    declared = getattr(type(backend), "__capabilities__", set())
+    if NETWORK_ISOLATION not in declared or LAUNCH_ARGS not in declared:
+        problems.append(
+            f"{name} isolation=required ↔ {provider}: the provider does not declare "
+            f"NETWORK_ISOLATION and LAUNCH_ARGS, so the browser cannot be cut off from the "
+            f"network; use a provider that can (local_chrome) or write "
+            f"isolation: none_acknowledged"
+        )
+    elif not isinstance(backend, NetworkIsolatingProvider):
+        problems.append(
+            f"{name} isolation=required ↔ {provider}: the provider declares "
+            f"NETWORK_ISOLATION but does not implement NetworkIsolatingProvider "
+            f"(isolation_conflicts)"
+        )
+    else:
+        problems.extend(
+            f"{name} isolation=required ↔ {provider} knob {conflict}"
+            for conflict in backend.isolation_conflicts()
+        )
+    return problems
+
+
 def binding_problems(
     cap: CooperatingCapability,
     archivers: Sequence[BrowserArchiverBase],
@@ -226,7 +304,9 @@ def binding_problems(
     """The rows binding *archivers* decides — what ``bind_archivers`` refuses at ``prepare()``.
 
     ``cdp_url`` is what is known by then: the capability's ``cdp_url`` knob
-    (setup checks again with the task's).
+    (setup checks again with the task's). With any archiver bound, an
+    intercepting network source's configuration rows (the replay-log
+    archiver, isolation) are decided here too.
     """
     backend = cap.resolved_backend()
     problems: list[str] = []
@@ -241,22 +321,51 @@ def binding_problems(
         )
     owned = None if cdp_url or injected_client else backend
     problems.extend(_archiver_rows(cap, archivers, owned))
+    if archivers:
+        problems.extend(_source_rows(cap, archivers, owned))
     return problems
 
 
 def cooperation_problems(
-    cap: CooperatingCapability, *, cdp_url: str | None, injected_client: bool
+    cap: CooperatingCapability,
+    *,
+    cdp_url: str | None,
+    injected_client: bool,
+    replay_archive: str | None = None,
 ) -> list[str]:
     """Every reason this capability's configuration cannot run, at once.
 
     ``cdp_url`` is the explicit endpoint in effect (setup's argument or the
     ``cdp_url`` knob); ``injected_client`` whether a test injected the
-    control client. Empty when everything cooperates.
+    control client; ``replay_archive`` the task's source run directory, if
+    any. Empty when everything cooperates.
     """
     backend = None if cdp_url or injected_client else cap.resolved_backend()
     problems = binding_problems(
         cap, cap.bound_archivers, cdp_url=cdp_url, injected_client=injected_client
     )
+    source = cap.network_source
+    if source.intercepts:
+        problems.extend(
+            _ownership_problems(
+                _source_name(source),
+                cap.resolved_backend(),
+                cdp_url=cdp_url,
+                injected_client=injected_client,
+            )
+        )
+        if not cap.bound_archivers:
+            problems.extend(_source_rows(cap, (), backend))
+        if not replay_archive:
+            problems.append(
+                f"{_source_name(source)} ↔ task context: no replay_archive — the source run "
+                f"directory to replay (run_cli --replay-archive DIR)"
+            )
+    elif replay_archive:
+        problems.append(
+            f"{_source_name(source)} ↔ replay_archive={replay_archive!r}: a live source "
+            f"replays nothing; configure network_source: archive to replay that run"
+        )
     if cap.replayability.replayable:
         problems.extend(
             _ownership_problems(
@@ -266,5 +375,44 @@ def cooperation_problems(
                 injected_client=injected_client,
             )
         )
-        problems.extend(_replayability_problems(cap.replayability, backend))
+        problems.extend(_replayability_problems(cap.replayability, backend, source))
     return problems
+
+
+def launch_args(cap: CooperatingCapability) -> tuple[str, ...]:
+    """The launch switches this configuration hands the provider: the tier's, then isolation's.
+
+    The isolation switches only for an intercepting source that requires
+    them, and only to a provider declaring ``NETWORK_ISOLATION`` (the
+    cooperation check refused any other); never with ``none_acknowledged``.
+    """
+    args = tuple(cap.replayability.launch_args())
+    source = cap.network_source
+    backend = cap.resolved_backend()
+    if (
+        source.intercepts
+        and source.isolation == "required"
+        and NETWORK_ISOLATION in getattr(type(backend), "__capabilities__", set())
+    ):
+        args = (*args, *NETWORK_ISOLATION_ARGS)
+    return args
+
+
+def planned_launch_flags(
+    cap: CooperatingCapability, *, cdp_url: str | None, injected_client: bool
+) -> list[str] | None:
+    """The ``launch_flags`` the provider would record for this configuration — before launching.
+
+    ``None`` when nothing would be launched with known flags: an explicit
+    endpoint, an injected client, or a provider that does not take launch
+    switches (``LAUNCH_ARGS`` / ``LaunchArgsProvider``). A replay compares
+    these with its source run's at setup (``replay/consistency.py``).
+    """
+    if cdp_url or injected_client:
+        return None
+    backend = cap.resolved_backend()
+    if LAUNCH_ARGS not in getattr(type(backend), "__capabilities__", set()) or not isinstance(
+        backend, LaunchArgsProvider
+    ):
+        return None
+    return backend.planned_launch_flags(launch_args(cap))

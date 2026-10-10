@@ -22,6 +22,32 @@ itself builds its argv through it.
 
 from collections.abc import Sequence
 
+#: The switches that cut a replaying browser off from the network (M30, S2a):
+#: every host name resolves to nothing except exact ``localhost``, and no
+#: proxy — Chrome on macOS uses the system proxy and ignores ``http_proxy``,
+#: and with a proxy the resolver rules cover only the proxy host. Two argv
+#: elements, no shell quoting.
+NETWORK_ISOLATION_ARGS: tuple[str, ...] = (
+    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost",
+    "--no-proxy-server",
+)
+#: Switches that decide where the browser's traffic goes. They are left out
+#: of the launch-flag digest on both sides of a replay — a recording's
+#: fixture ``MAP`` rules and the replay's isolation switches would otherwise
+#: never compare equal — and a provider that sets one of its own undoes the
+#: isolation.
+NETWORK_ROUTING_SWITCHES = frozenset(
+    {
+        "--host-resolver-rules",
+        "--no-proxy-server",
+        "--proxy-server",
+        "--proxy-pac-url",
+        "--proxy-auto-detect",
+        "--proxy-bypass-list",
+    }
+)
+
+
 #: Switches whose value is a space-separated list of V8 flags.
 _SPACE_LISTS = frozenset({"--js-flags"})
 #: Switches whose value is a comma-separated list of feature names.
@@ -37,6 +63,11 @@ def split_switch(arg: str) -> tuple[str, str | None]:
     """``"--lang=en-US"`` → ``("--lang", "en-US")``; ``"--mute-audio"`` → ``(…, None)``."""
     name, sep, value = arg.partition("=")
     return name, (value if sep else None)
+
+
+def without_routing_switches(flags: Sequence[str]) -> list[str]:
+    """*flags* minus every network routing switch (:data:`NETWORK_ROUTING_SWITCHES`)."""
+    return [flag for flag in flags if split_switch(flag)[0] not in NETWORK_ROUTING_SWITCHES]
 
 
 def _space_items(value: str | None) -> list[str]:

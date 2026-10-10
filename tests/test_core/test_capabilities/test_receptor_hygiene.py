@@ -573,6 +573,37 @@ def test_the_guard_catches_a_switch_beside_the_replayability_receptor() -> None:
     assert all("replayability" in hit for hit in found)
 
 
+def test_the_guard_catches_a_switch_beside_the_network_source_receptor() -> None:
+    """Positive control for ``network_source`` (§4.14 "回放"): the source is the switch.
+
+    ``replay_from: str = "archive"`` on ``__init__`` is the "convenience" flag
+    that would sit beside the receptor and silently disagree with a configured
+    ``live`` block (or the PRD's withdrawn ``network_isolation`` boolean, which
+    is why isolation is a knob of the ``archive`` source instead). It is named
+    after nothing, so only the value check (``"archive"`` is a key of the
+    ``network_source`` registry) can catch it; a model field called
+    ``network_source`` is the name-shaped variant.
+    """
+    registrars = _collect_registrars()
+    assert "network_source" in registrars, "the registrar must be collected for Rule 1 to see it"
+
+    class _Profile(BaseModel):
+        network_source: str = "default"
+
+    class _Defective:
+        __wiring__ = {"network_source": ("network_source", ["archive", "live"])}
+        network_source: Any
+
+        def __init__(self, replay_from: str = "archive") -> None:
+            self.replay_from = replay_from
+
+    surfaces = _init_surfaces(_Defective) + _model_surfaces(_Profile, check_values=True)
+    found = collisions(_receptor_specs(_Defective), surfaces, registrars)
+    assert any("replay_from" in hit and "'archive'" in hit for hit in found), found
+    assert any("_Profile.network_source" in hit for hit in found), found
+    assert all("network_source" in hit for hit in found)
+
+
 def test_the_browser_profile_names_no_strategy() -> None:
     """The specific shape, pinned by name, so a regression reads clearly.
 
@@ -899,3 +930,29 @@ def test_rule_three_positive_control_on_the_trace_writer() -> None:
         archive: list | None = None
 
     assert receptor_trap(_DataclassWriter) == ["archive"]
+
+
+def test_rule_three_positive_control_on_the_archive_network_source() -> None:
+    """The first receptor nested in a strategy: clean as shipped, caught as a dataclass field.
+
+    ``ArchiveNetworkSource`` carries ``miss_policy`` (``__wiring__``) on a
+    hand-written ``__init__`` with the slot annotation-only, and Rule 3 visits
+    it as a class of the collected ``network_source`` layer. The same receptor
+    declared as a ``@dataclass`` field would have lost its default to a
+    ``WiredField``: the guard must say so.
+    """
+    from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource
+
+    assert ArchiveNetworkSource in _rule_three_classes()
+    assert ArchiveNetworkSource.__wiring__ == {"miss_policy": ("miss_policy", ["strict"])}
+    assert "miss_policy" in _slot_names(ArchiveNetworkSource)
+    assert not dataclass_synthesised_init(ArchiveNetworkSource)
+    assert receptor_trap(ArchiveNetworkSource) == []
+
+    @dataclass
+    class _DataclassSource:
+        __wiring__ = dict(ArchiveNetworkSource.__wiring__)
+        shift_dates: str = "none"
+        miss_policy: Any = None
+
+    assert receptor_trap(_DataclassSource) == ["miss_policy"]

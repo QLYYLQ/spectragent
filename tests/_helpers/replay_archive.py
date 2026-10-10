@@ -1,0 +1,403 @@
+"""Recorded network archives for replay tests — M29's own session, committed by the real WAL.
+
+:class:`RecordingScript` drives one real ``browser.network`` session
+(:class:`~spectragent.core.capabilities.browser.archive.network.NetworkSession`)
+the way the recorder would — ``Network.*`` events through the session's own
+admission, Response-stage ``Fetch.requestPaused`` pauses through
+``on_paused`` — over :class:`~tests._helpers.archive_recorder.ScriptedRecorder`.
+Each :meth:`RecordingScript.commit` collects the session like a commit point
+and commits the batch with ``WALWriter`` through ``encode_archive_file`` (what
+``TraceWriter`` commits with), plus the environment fingerprint built by the
+real ``BrowserFingerprint``. So the ``index.jsonl`` lines and WARC bytes a
+replay test loads are exactly what a recording writes: nothing here spells an
+index field, a WARC header or a trace path.
+
+:func:`indexed` builds an :class:`IndexedRecord` in memory for matcher tests
+that need no bytes (two-run affinity, tie-breaks), keyed by the same
+canonicaliser the loader uses.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from spectragent.core.archive import ArchiveFile
+from spectragent.core.capabilities.browser.archive import NetworkArchiver
+from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFingerprint
+from spectragent.core.capabilities.browser.archive.network import NetworkSession
+from spectragent.core.capabilities.browser.recorder import RecorderTarget
+from spectragent.core.capabilities.browser.replay import PinnedReplayability
+from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord
+from spectragent.core.capabilities.browser.replay.canonical import request_keys
+from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
+from spectragent.core.trace.encoding import encode_archive_file
+from spectragent.core.trace.models import RunStatus
+from spectragent.core.trace.wal import WALWriter
+from tests._helpers.archive_recorder import ScriptedRecorder, deliver, event, open_session, paused
+from tests._helpers.trace_builder import agent_result, new_wal, step_record
+
+#: The recording's T0 (epoch milliseconds) the fingerprint carries.
+RECORDED_T0_MS = 1_760_000_000_000
+#: The inline body tier of the scripted archiver: anything declared larger is not read inline.
+INLINE_LIMIT = 4096
+PAGE_SESSION = "page-s"
+
+
+class RecordingScript:
+    """One recorded run, exchange by exchange and commit by commit."""
+
+    def __init__(
+        self,
+        base: Path,
+        run_id: str = "run-recorded",
+        *,
+        fingerprint: bool = True,
+        t0_ms: int = RECORDED_T0_MS,
+        launch_flags: list[str] | None = None,
+        replayability: Any = None,
+        **archiver_knobs: Any,
+    ) -> None:
+        knobs: dict[str, Any] = {
+            "require_replayable": False,
+            "drain_timeout_s": 0.2,
+            "max_inline_body_bytes": INLINE_LIMIT,
+            **archiver_knobs,
+        }
+        self.archiver = NetworkArchiver(**knobs)
+        session, recorder = open_session(self.archiver)
+        assert isinstance(session, NetworkSession)
+        self.session: NetworkSession = session
+        self.recorder: ScriptedRecorder = recorder
+        self.page: RecorderTarget = recorder.add_target(PAGE_SESSION, "PAGE")
+        self.wal: WALWriter = new_wal(base, run_id)
+        self._fingerprint = BrowserFingerprint() if fingerprint else None
+        #: The recording's tier (``pinned``, seed 7, unless given) and launch flags.
+        self.replayability = replayability or PinnedReplayability(random_seed=7)
+        self.launch_flags = list(launch_flags) if launch_flags is not None else ["--headless=new"]
+        self._plan = self.replayability.plan(t0_ms=t0_ms, browser_user_agent="ScriptedChrome/1.0")
+        self._n = 0
+        self._wall = 1_700_000_000.0
+        self._run_version = 0
+        self._trailing = 0
+
+    @property
+    def run_dir(self) -> Path:
+        return self.wal.run_dir
+
+    # ── one exchange ──────────────────────────────────────────────────
+
+    def _ids(self) -> tuple[str, str]:
+        self._n += 1
+        return f"net-{self._n}", f"int-{self._n}"
+
+    def _request(
+        self,
+        network_id: str,
+        url: str,
+        *,
+        method: str,
+        headers: Mapping[str, str],
+        post: bytes | None,
+        resource_type: str,
+        redirect: dict[str, Any] | None = None,
+    ) -> None:
+        self._wall += 1.0
+        request: dict[str, Any] = {"url": url, "method": method, "headers": dict(headers)}
+        if post is not None:
+            request["hasPostData"] = True
+        params: dict[str, Any] = {
+            "requestId": network_id,
+            "loaderId": "L1",
+            "documentURL": "http://shop.test/",
+            "request": request,
+            "timestamp": self._wall - 1_600_000_000.0,
+            "wallTime": self._wall,
+            "type": resource_type,
+            "frameId": "frame-1",
+            "initiator": {"type": "script"},
+        }
+        if redirect is not None:
+            params["redirectResponse"] = redirect
+            params["redirectHasExtraInfo"] = False
+        deliver(self.session, event("Network.requestWillBeSent", params, PAGE_SESSION))
+
+    def _response(
+        self, network_id: str, url: str, status: int, headers: Mapping[str, str], resource_type: str
+    ) -> None:
+        deliver(
+            self.session,
+            event(
+                "Network.responseReceived",
+                {
+                    "requestId": network_id,
+                    "type": resource_type,
+                    "frameId": "frame-1",
+                    "hasExtraInfo": False,
+                    "response": {
+                        "url": url,
+                        "status": status,
+                        "statusText": "",
+                        "headers": dict(headers),
+                        "mimeType": headers.get("Content-Type", "text/plain"),
+                        "protocol": "http/1.1",
+                    },
+                },
+                PAGE_SESSION,
+            ),
+        )
+
+    def _finished(self, network_id: str) -> None:
+        deliver(
+            self.session,
+            event(
+                "Network.loadingFinished",
+                {"requestId": network_id, "timestamp": 1.0, "encodedDataLength": 10},
+                PAGE_SESSION,
+            ),
+        )
+
+    async def exchange(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        status: int = 200,
+        body: bytes = b"ok",
+        headers: Mapping[str, str] | None = None,
+        request_headers: Mapping[str, str] | None = None,
+        post: bytes | None = None,
+        resource_type: str = "XHR",
+    ) -> str:
+        """One request answered and finished; its network request id."""
+        network_id, interception = self._ids()
+        response_headers = {"Content-Type": "text/plain", **(headers or {})}
+        sent = {"Accept": "*/*", **(request_headers or {})}
+        self.recorder.bodies[interception] = body
+        self._request(
+            network_id, url, method=method, headers=sent, post=post, resource_type=resource_type
+        )
+        await self.session.on_paused(
+            paused(
+                request_id=interception,
+                network_id=network_id,
+                url=url,
+                status=status,
+                headers=response_headers,
+                method=method,
+                resource_type=resource_type,
+                request_headers=sent,
+                post_data_entries=[post] if post else None,
+                target=self.page,
+            )
+        )
+        self._response(network_id, url, status, response_headers, resource_type)
+        self._finished(network_id)
+        return network_id
+
+    async def redirect(
+        self, url: str, location: str, *, status: int = 302, body: bytes = b"landed"
+    ) -> str:
+        """A redirect hop and the page it lands on (one network request id, two records)."""
+        network_id, first = self._ids()
+        _, second = self._ids()
+        self._request(
+            network_id,
+            url,
+            method="GET",
+            headers={"Accept": "*/*"},
+            post=None,
+            resource_type="Document",
+        )
+        await self.session.on_paused(
+            paused(
+                request_id=first,
+                network_id=network_id,
+                url=url,
+                status=status,
+                headers={"Location": location},
+                resource_type="Document",
+                target=self.page,
+            )
+        )
+        self._request(
+            network_id,
+            location,
+            method="GET",
+            headers={"Accept": "*/*"},
+            post=None,
+            resource_type="Document",
+            redirect={"status": status, "statusText": "Found", "headers": {"Location": location}},
+        )
+        self.recorder.bodies[second] = body
+        await self.session.on_paused(
+            paused(
+                request_id=second,
+                network_id=network_id,
+                url=location,
+                headers={"Content-Type": "text/html"},
+                resource_type="Document",
+                target=self.page,
+            )
+        )
+        self._response(network_id, location, 200, {"Content-Type": "text/html"}, "Document")
+        self._finished(network_id)
+        return network_id
+
+    async def too_large(self, url: str, *, declared: int = 10 * INLINE_LIMIT) -> str:
+        """An XHR whose declared length is over the inline tier: recorded without a body."""
+        return await self.exchange(url, headers={"Content-Length": str(declared)}, body=b"")
+
+    async def streamed_later(
+        self, url: str, body: bytes, *, hold: bool = False
+    ) -> asyncio.Event | None:
+        """A large static GET refetched after its response; *hold* keeps its body back.
+
+        With *hold*, the refetch stalls until the returned event is set — so
+        the exchange line is committed first and its body line in a later
+        commit.
+        """
+        assert len(body) > INLINE_LIMIT
+        self.recorder.resources[url] = body
+        stalled = None
+        if hold:
+            stalled = self.recorder.holds["IO.read"] = asyncio.Event()
+        await self.exchange(
+            url,
+            body=b"",
+            resource_type="Script",
+            headers={"Content-Length": str(len(body)), "Content-Type": "text/javascript"},
+        )
+        return stalled
+
+    def failed(self, url: str) -> str:
+        """A request that failed before any response: an ``incomplete`` record."""
+        network_id, _ = self._ids()
+        self._request(
+            network_id, url, method="GET", headers={"Accept": "*/*"}, post=None, resource_type="XHR"
+        )
+        deliver(
+            self.session,
+            event(
+                "Network.loadingFailed",
+                {"requestId": network_id, "timestamp": 2.0, "errorText": "net::ERR_FAILED"},
+                PAGE_SESSION,
+            ),
+        )
+        return network_id
+
+    def in_flight(self, url: str) -> str:
+        """A request that never settles: every commit lists it ``pending``."""
+        network_id, _ = self._ids()
+        self._request(
+            network_id, url, method="GET", headers={"Accept": "*/*"}, post=None, resource_type="XHR"
+        )
+        return network_id
+
+    def websocket(self, url: str) -> str:
+        """A WebSocket handshake answered 101: a ``websocket`` record."""
+        network_id, _ = self._ids()
+        deliver(
+            self.session, event("Network.webSocketCreated", {"requestId": network_id, "url": url})
+        )
+        deliver(
+            self.session,
+            event(
+                "Network.webSocketWillSendHandshakeRequest",
+                {
+                    "requestId": network_id,
+                    "timestamp": 5.0,
+                    "wallTime": self._wall,
+                    "request": {"headers": {"Upgrade": "websocket"}},
+                },
+            ),
+        )
+        deliver(
+            self.session,
+            event(
+                "Network.webSocketHandshakeResponseReceived",
+                {
+                    "requestId": network_id,
+                    "response": {"status": 101, "statusText": "Switching", "headers": {}},
+                },
+            ),
+        )
+        return network_id
+
+    # ── commits ───────────────────────────────────────────────────────
+
+    async def _batch(self) -> list[ArchiveFile]:
+        files = list(await self.session.collect())
+        if self._fingerprint is not None:
+            record = await self._fingerprint.collect(
+                recorder=self.recorder,
+                tabs=[self.page],
+                plan_fingerprint=self._plan.fingerprint(),
+                viewport=(1280, 720),
+                session_metadata={"launch_flags": self.launch_flags},
+                archivers=[self.archiver],
+                fresh_profile=True,
+                clock=lambda: self._wall,
+            )
+            if record is not None:
+                files.append(record)
+        return files
+
+    def _encoded(self, files: list[ArchiveFile], **where: int) -> list[Any]:
+        encoded = []
+        for item in files:
+            if item.scope == "run":
+                encoded.append(encode_archive_file(item, run_version=self._run_version))
+                self._run_version += 1
+            else:
+                encoded.append(encode_archive_file(item, **where))
+        return encoded
+
+    async def commit(self, step: int) -> list[ArchiveFile]:
+        """Collect and commit as step *step*; the batch that went in."""
+        files = await self._batch()
+        self.wal.commit_step(step, step_record(step), extra_files=self._encoded(files, step=step))
+        return files
+
+    async def commit_trailing(self) -> list[ArchiveFile]:
+        files = await self._batch()
+        self.wal.commit_trailing(extra_files=self._encoded(files, trailing=self._trailing))
+        self._trailing += 1
+        return files
+
+    def finish(self) -> Path:
+        self.wal.write_result(agent_result())
+        self.wal.finalize(RunStatus.COMPLETED)
+        return self.run_dir
+
+
+def indexed(
+    url: str,
+    *,
+    record_id: str,
+    order: int,
+    run_id: str = "run-a",
+    method: str = "GET",
+    body: bytes | None = None,
+    content_type: str | None = None,
+    status: int = 200,
+    request_headers: Mapping[str, str] | None = None,
+    rule: SiteRule | None = None,
+    **fields: Any,
+) -> IndexedRecord:
+    """An in-memory record keyed by the loader's own canonicaliser (no bytes behind it)."""
+    return IndexedRecord(
+        record_id=record_id,
+        run_id=run_id,
+        order=order,
+        method=method,
+        url=url,
+        request_headers=dict(request_headers or {}),
+        body=body,
+        content_type=content_type,
+        keys=request_keys(method, url, body, content_type, rule),
+        status=status,
+        **fields,
+    )

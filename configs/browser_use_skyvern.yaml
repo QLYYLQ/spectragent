@@ -58,6 +58,12 @@ environment:
         replayability:
           replayability_id: "off"   # quoted: YAML 1.1 reads a bare off as false
 
+        # Where the network comes from (§4.14 "回放"): ``live`` is the network
+        # itself; ``archive`` replays a recorded run and needs a provider that
+        # launches its own browser, so a cloud backend like this one refuses it.
+        network_source:
+          source_id: live
+
         dom_cleaner:
           cleaner_type: browser_use
 

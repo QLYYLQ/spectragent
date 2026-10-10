@@ -21,6 +21,7 @@ from spectragent.core.capabilities.browser.archive.base import (
     RawCapture,
     RawCaptureStore,
     RecorderHandle,
+    ReplayLogFeed,
     archive_needs,
 )
 from spectragent.core.capabilities.browser.archive.dom_raw import DomRawArchiver
@@ -46,6 +47,7 @@ __all__ = [
     "RawCapture",
     "RawCaptureStore",
     "RecorderHandle",
+    "ReplayLogFeed",
     "StorageArchiver",
     "archive_needs",
     "redact_post_body",

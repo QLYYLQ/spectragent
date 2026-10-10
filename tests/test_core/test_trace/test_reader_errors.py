@@ -25,6 +25,7 @@ from spectragent.core.capabilities.browser.observations import BrowserMetaObs
 from spectragent.core.trace.encoding import EncodedFragment, EncodedLLMCall, TraceFile, sha256_hex
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
+from spectragent.schemas.step_record import StepRecord
 from tests._helpers.trace_builder import (
     ARCHIVE_CAPABILITY,
     STEPS_ARCHIVER,
@@ -428,6 +429,7 @@ V2_ACCESSORS: dict[str, Read] = {
     "iter_archive": lambda d: _trace(d).iter_archive("x.y"),
     "blob": lambda d: _trace(d).blob("0" * 64),
     "archive_run_file": lambda d: _trace(d).archive_run_file("x"),
+    "archive_lines": lambda d: _trace(d).archive_lines("env/x", StepRecord),
 }
 
 

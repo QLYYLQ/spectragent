@@ -18,8 +18,12 @@ what to send to a target and who owns a paused request:
   ``Fetch.requestPaused``) are handled in tasks spawned straight from the
   client callback — never through an agent-cdp scope queue, which drops the
   newest event at 1024 and a dropped pause wedges the page. Every waiting
-  target is resumed and every paused request continued in ``finally``, by
-  this module, whatever the participant did.
+  target is resumed and every paused request settled in ``finally``, by
+  this module, whatever the participant did: continued while recording;
+  failed, **never continued**, at the Request stage while a participant
+  serves requests itself (M30's replay server,
+  :attr:`RecorderParticipant.serves_requests`) — a replay sends nothing to
+  the network, whoever timed out or raised.
 - **Metadata events** go, with their session id, through a local dispatcher
   into the browser-level archive scope as :class:`RecorderEvent`; the
   :class:`ArchiveChannel` counts what it emitted against what was handled,
@@ -79,9 +83,13 @@ AUTO_ATTACH_PARAMS: Mapping[str, Any] = {
     "flatten": True,
 }
 #: Seconds a pause's owner gets beyond its own declared budget
-#: (:attr:`RecorderParticipant.pause_budget_s`) before the recorder continues
+#: (:attr:`RecorderParticipant.pause_budget_s`) before the recorder settles
 #: the request without it.
 PAUSE_OWNER_GRACE_S = 1.0
+#: How the recorder settles a Request-stage pause nobody answered while a
+#: participant serves requests: ``Failed``, the reason that keeps Chrome's
+#: http fallback alive (a 404 or ``BlockedByClient`` cuts it off — S2a).
+UNANSWERED_ERROR_REASON = "Failed"
 
 #: The first step of cleanup: stop pausing new targets.
 RELEASE_AUTO_ATTACH_PARAMS: Mapping[str, Any] = {
@@ -161,10 +169,11 @@ class PausedRequest:
     """One ``Fetch.requestPaused``, handed to the participant owning its stage.
 
     ``params`` is the raw event (the POST body may be in it twice; it never
-    goes into an event). The recorder continues the request on the pausing
-    session in ``finally``; an owner that answers the request itself
-    (``Fetch.fulfillRequest`` / ``failRequest`` — M30's replay) sets
-    ``answered`` so the recorder does not continue it as well.
+    goes into an event). The recorder settles the request on the pausing
+    session in ``finally`` (:meth:`RecorderConnection._settle`); an owner that
+    answers the request itself (``Fetch.fulfillRequest`` / ``failRequest`` —
+    M30's replay) sets ``answered`` **after its send succeeded**, so the
+    recorder neither answers it again nor leaves a failed send unanswered.
     """
 
     session_id: str
@@ -173,8 +182,8 @@ class PausedRequest:
     params: dict[str, Any]
     target: RecorderTarget | None = None
     answered: bool = False
-    #: Claimed by whoever sends the continue first (task or cleanup).
-    continued: bool = False
+    #: Claimed by whoever settles it first (task or cleanup).
+    settled: bool = False
 
     @property
     def network_id(self) -> str | None:
@@ -285,8 +294,21 @@ class RecorderParticipant(Protocol):
         """Most seconds :meth:`on_paused` may take, or ``None`` for the recorder's default.
 
         The recorder waits this long plus :data:`PAUSE_OWNER_GRACE_S` before it
-        gives up on the owner and continues the request anyway — so a budget
+        gives up on the owner and settles the request anyway — so a budget
         the owner's own knobs set (a body read's timeout) is the one honoured.
+        """
+        ...
+
+    @property
+    def serves_requests(self) -> bool:
+        """Whether this participant answers Request-stage pauses itself (M30's replay server).
+
+        While any participant present at :meth:`RecorderConnection.open`
+        serves requests, the recorder settles every Request-stage pause that
+        was not answered — the owner timed out or raised, no owner, no
+        prepared target, still held at :meth:`RecorderConnection.close` — with
+        ``Fetch.failRequest``, never ``continueRequest``: a replay never
+        sends a request to the network.
         """
         ...
 
@@ -326,6 +348,10 @@ class RecorderParticipantBase:
     @property
     def pause_budget_s(self) -> float | None:
         return None
+
+    @property
+    def serves_requests(self) -> bool:
+        return False
 
     async def on_paused(self, paused: PausedRequest) -> None:
         return None
@@ -468,6 +494,9 @@ class RecorderConnection:
         self._registrations: list[tuple[str, Callable[..., Any]]] = []
         self._auto_attach_set = False
         self._opened = False
+        #: A participant serves requests (fixed at :meth:`open`, like the
+        #: Fetch patterns): unanswered Request-stage pauses fail, never continue.
+        self._serving = False
         self._closing = False
         self._closed = False
         self._lost: RecorderLostError | None = None
@@ -537,6 +566,7 @@ class RecorderConnection:
         if self._opened:
             raise RuntimeError("RecorderConnection.open() called twice")
         self._opened = True
+        self._serving = any(participant.serves_requests for participant in self._participants())
         self._register_callbacks()
         await self._client.send(
             "Target.setAutoAttach",
@@ -559,12 +589,13 @@ class RecorderConnection:
         """Release the browser in a fixed order; idempotent; tolerant of each step.
 
         1. stop pausing new targets (``setAutoAttach{false, false}``);
-        2. continue every request still held, resume every target still
-           waiting;
+        2. settle every request still held (continued — or failed, at the
+           Request stage, while a participant serves requests), resume every
+           target still waiting;
         3. ``Fetch.disable`` on every session it was enabled on;
         4. detach every session;
         5. cancel and await the remaining tasks — only now, after every held
-           request was continued;
+           request was settled;
         6. stop the client.
 
         An unclean disconnect while holding browser-level
@@ -583,7 +614,7 @@ class RecorderConnection:
             )
 
         for paused in list(self._held.values()):
-            await self._continue(paused)
+            await self._settle(paused)
         for sid in list(self._waiting):
             # Tolerant like every other step: a target that went away, or a
             # browser too busy to answer in time, must not leave the rest of
@@ -864,7 +895,7 @@ class RecorderConnection:
         )
 
     async def _handle_paused(self, paused: PausedRequest) -> None:
-        """Route to the stage owner, then continue on the pausing session."""
+        """Route to the stage owner, then settle on the pausing session."""
         try:
             if not self._closing:
                 owner = self._owner(paused)
@@ -884,7 +915,7 @@ class RecorderConnection:
                 exc,
             )
         finally:
-            await self._continue(paused)
+            await self._settle(paused)
 
     def _owner(self, paused: PausedRequest) -> RecorderParticipant | None:
         if paused.target is None:
@@ -895,12 +926,26 @@ class RecorderConnection:
                     return participant
         return None
 
-    async def _continue(self, paused: PausedRequest) -> None:
-        """Continue exactly once, on the pausing session."""
+    async def _settle(self, paused: PausedRequest) -> None:
+        """Settle exactly once, on the pausing session, what the owner did not answer.
+
+        Answered by its owner → nothing. A Request-stage pause while a
+        participant serves requests → ``Fetch.failRequest`` (never a
+        continue: the request would go to the network). Anything else →
+        continued, as a recording always does.
+        """
         self._held.pop((paused.session_id, paused.request_id), None)
-        if paused.continued or paused.answered:
+        if paused.settled or paused.answered:
             return
-        paused.continued = True
+        paused.settled = True
+        if paused.stage == "Request" and self._serving:
+            await self._quietly(
+                "Fetch.failRequest",
+                {"requestId": paused.request_id, "errorReason": UNANSWERED_ERROR_REASON},
+                paused.session_id,
+                timeout=self._command_timeout_s,
+            )
+            return
         method = (
             "Fetch.continueResponse"
             if paused.stage == "Response" and "responseStatusCode" in paused.params

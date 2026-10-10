@@ -13,6 +13,7 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `skyvern_agent_local.yaml` | SkyvernAgent + ReactLoop + LocalChrome backend |
 | `ui_tars_local.yaml` | UITarsAgent + ReactLoop + LocalChrome backend |
 | `flywheel/record_ui_tars_pinned.yaml` | A **recording** run (data flywheel): UITarsAgent, `replayability: pinned`, the three browser archivers on the trace hook — see [Recording environment evidence](#recording-environment-evidence) |
+| `flywheel/replay_ui_tars_archive.yaml` | Its **offline replay**: the same agent and tier with `network_source: archive` (isolated, strict misses) and `base_time: from_archive`; the recorded run arrives as `--replay-archive DIR` — see [Replaying a recorded run](#replaying-a-recorded-run) |
 
 ## Quick start
 
@@ -58,6 +59,7 @@ environment:
         mouse_trajectory: { trajectory_type: instant }
         typing_rhythm: { rhythm_type: instant }
         replayability: { replayability_id: "off" }
+        network_source: { source_id: live }
         screenshot_format: png      # jpeg + screenshot_quality shrinks a
                                     # vision step's image ~2-4x
         backend:                    # ← execution-layer config (IoC)
@@ -73,11 +75,12 @@ Notes:
 
 - A wiring entry becomes a runtime receptor **only** when the owning class declares a slot for it. `observation` / `action` on the agent and `observation` on the capability have no slot: they are declaration-only constraints the negotiation engine reads off `__wiring__`. They are optional in the schema, and *populating* one is a hard `UnresolvedWiringError` — the value would otherwise be silently dropped.
 - Mode 1 wirings (`agent_loop`, `llm`, `memory`) become full discriminated unions of every registered config — you write the **complete child config** inline, no top-level reference list needed.
-- Single-instance receptors (`llm`, `agent_loop`, `capability.backend`, `capability.mouse_trajectory`, `capability.typing_rhythm`, `capability.dom_cleaner`, `capability.dom_serializer`, `capability.replayability`) are **required**; list-shaped ones (`environment.capabilities`, `capability.actions`) are optional and fall back to a sensible default when omitted.
+- Single-instance receptors (`llm`, `agent_loop`, `capability.backend`, `capability.mouse_trajectory`, `capability.typing_rhythm`, `capability.dom_cleaner`, `capability.dom_serializer`, `capability.replayability`, `capability.network_source`, and `miss_policy` inside an `archive` network source) are **required**; list-shaped ones (`environment.capabilities`, `capability.actions`) are optional and fall back to a sensible default when omitted.
 - A strategy is always a receptor block, never a name on `profile:`. `profile:` says which watchdogs run and which CDP round trips they may spend — nothing else. Naming a strategy there is what made `mouse_trajectory`, then `dom_cleaner`, then `dom_serializer` arrive default-constructed with every configured knob discarded.
 - `browser.dom` has a cost surface of its own, off by default: `dom_max_elements`, `dom_max_serialized_chars`, `dom_interactive_only`, `dom_viewport_only`. When any of them cuts, the observation fragment records the cut in `budget`, so a trace never shows a truncated page as a sparse one.
 - The two input-humanization receptors are independent axes and each is its own off-switch: `mouse_trajectory: { trajectory_type: instant }` and `typing_rhythm: { rhythm_type: instant }` are the legacy instant jump and the legacy single bulk `Input.insertText`. There is no boolean beside either — the strategy *is* the switch.
 - `replayability` has the same shape (`docs/architecture_design.md` §4.14): `{ replayability_id: "off" }` pins nothing and opens no second CDP connection (quote `"off"`: YAML 1.1 — PyYAML — reads a bare `off` as `false`, which no tier matches); `pinned` (knobs `base_time`, `random_seed`, `timezone`, `locale`, `device_scale_factor`, `user_agent`, `reduced_motion`) makes a recording replayable and needs a backend that launches its own browser (`local_chrome`).
+- `network_source` is the third axis of that shape (§4.14 "回放"): `{ source_id: live }` is the network itself and changes nothing; `archive` answers every request from a recorded run's archive at the Fetch Request stage and never sends one to the network (see [Replaying a recorded run](#replaying-a-recorded-run)). Whether the browser must be isolated from the network is the source's own `isolation` knob — there is no provider boolean beside it.
 
 ## Per-action configuration
 
@@ -203,6 +206,7 @@ environment:
     capabilities:
       - capability_id: browser
         replayability: { replayability_id: pinned, random_seed: 7 }   # replayable recording
+        network_source: { source_id: live }                           # recording: the real network
         backend: { provider_id: local_chrome, headless: true }        # must launch its own browser
         # ... the rest as in any capability block
 
@@ -228,6 +232,68 @@ hook:
   `local_chrome` can record (`NETWORK_CAPTURE`); a cloud backend, an explicit `cdp_url`,
   or a non-fresh profile without `allow_session_state: true` on every archiver is refused
   before anything launches, each problem naming both sides.
+
+## Replaying a recorded run
+
+`network_source: { source_id: archive }` replays a recorded run offline
+(`docs/architecture_design.md` §4.14 "回放"): every request the browser makes is matched
+against the run's `browser.network` archive and answered from it; what the archive does
+not hold is answered by the `miss_policy` receptor — never by the network. The source
+run's directory is per task, not per config: it arrives through the task context's
+`replay_archive`.
+
+```yaml
+network_source:
+  source_id: archive
+  isolation: required               # default; none_acknowledged = run without network isolation
+  shift_dates: none                 # none (default, pairs with base_time: from_archive) | all
+  matcher:
+    levels: [exact, normalized]     # default; add fuzzy for same-path query-ratio matching
+    fuzzy_threshold: 0.5            # lowest 2M/T score a fuzzy hit needs (inclusive)
+    site_rules: configs/replay_rules   # per-site <domain>.yaml rules (see its README)
+  miss_policy: { miss_policy_id: strict }   # required in an archive block
+  # max_fulfill_body_bytes: 67108864   (≤ 72 MiB)   fulfill_timeout_s: 10.0   log_repeat_limit: 3
+```
+
+- `matcher` is typed: a misspelled key (`levelz`), an unknown level or a threshold
+  outside `[0, 1]` is refused at validation, like a misspelled `source_id`.
+- `strict` fails a document it cannot serve (a main-frame one marks the step diverged),
+  answers beacons, pings, reports and analytics hosts (`extra_benign_hosts` adds more)
+  with 204, and every other subresource with 404 + `x-replay-miss: 1`.
+- `isolation: required` needs a backend that launches its own browser and declares
+  `NETWORK_ISOLATION` (`local_chrome`); replay also needs `browser.network` bound on the
+  trace hook, which records the replay log (`replay.jsonl`, one per step).
+
+`flywheel/replay_ui_tars_archive.yaml` replays a run recorded with
+`flywheel/record_ui_tars_pinned.yaml`:
+
+```bash
+uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
+    --start-url URL --task "the recorded task" --replay-archive traces/<recorded-run>
+```
+
+A relative `--replay-archive` is resolved against the working directory before it enters
+the task context, so the replay's trace records the source run by absolute path
+(`task_setup`) — what a fork of the replay rebuilds its environment from.
+
+- **Before Chrome starts**, setup opens the source run (only what its manifest committed)
+  and compares its environment fingerprint with this configuration: the tier and its
+  parameters (`base_time` aside), the shim, the viewport, the launch flags (without the
+  network routing switches on either side). Any mismatch refuses the run, naming both
+  sides, together with the configuration's own cooperation problems. A different Chrome
+  version, an unpinned user agent or a changed redaction policy only warns — the warnings
+  land in the replay's own `env/run.browser.json` (`network_source.warnings`).
+- **`base_time: from_archive`** starts the page clock at the recording's T0; it is refused
+  with `network_source: live`. `shift_dates: none` (default) serves recorded dates as they
+  were and pairs with it; `all` shifts `Date` / `Expires` / `Last-Modified` and cookie
+  expiry together and pairs with `base_time: run_start`.
+- **The replay log**: every decision (hit, exhausted repeat, synthesised CORS preflight,
+  miss) goes into the step's `env/steps/NNN/browser.network/replay.jsonl`; a step whose log
+  holds a main-frame document miss has diverged from the recording. Read it with
+  `spectragent.core.capabilities.browser.replay.replay_log` / `iter_replay_log` /
+  `diverged_steps` over `spectragent.core.archive.source.open_archive(run_dir)`.
+- Not replayed (v1): WebSocket traffic and a nested dedicated worker's script (both are
+  logged as misses); bodies over `max_fulfill_body_bytes`.
 
 ## Benchmark data
 

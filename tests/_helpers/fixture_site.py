@@ -73,6 +73,28 @@ SCENARIOS: tuple[str, ...] = (
     "websocket",
     "beacon",
 )
+#: M30's replay-only pages, kept apart so M29's scenario sweeps are unchanged:
+#: ``clock`` shows the page's pinned clock and seeded randomness in a button;
+#: ``canary`` fetches a host no recording can hold; ``strict`` makes one
+#: request of each miss class to hosts a hermetic recording cannot reach
+#: (a sub-frame document, a beacon, a subresource); ``egress`` is served by
+#: IP literal and reaches the fixture servers only by IP literal — a
+#: ``<link rel=preconnect>`` to cross, a script and a WebSocket — routes that
+#: need no name mapping, so in a replay only the isolation's blackhole
+#: (``MAP *`` covers IP literals, S2a Q2) cuts them, and a replay that let a
+#: request through would reach the fixture.
+REPLAY_SCENARIOS: tuple[str, ...] = ("clock", "canary", "strict", "egress")
+#: Hosts the replay-only pages ask for and no fixture server answers: a
+#: hermetic recording (:meth:`FixtureSite.chrome_args` ``hermetic=True``)
+#: records each as a request that failed, so a replay has nothing to serve.
+CANARY_HOST = "live-only.example.test"
+UNREACHABLE_HOSTS: tuple[str, ...] = (
+    CANARY_HOST,
+    "frames.example.test",
+    "stats.example.test",
+    "api.example.test",
+    "gone.example.test",
+)
 
 _HTML = "text/html; charset=utf-8"
 _JS = "application/javascript"
@@ -104,7 +126,7 @@ class LoggedRequest:
     @property
     def scenario(self) -> str | None:
         head = self.bare_path.strip("/").split("/", 1)[0]
-        return head if head in SCENARIOS else None
+        return head if head in SCENARIOS or head in REPLAY_SCENARIOS else None
 
 
 def _large_js() -> bytes:
@@ -199,6 +221,17 @@ class FixtureSite:
             process_request=self._log_handshake,
             compression=None,
         )
+        # Count the TCP accept, not the handshake: a client may connect and
+        # never send one — that is still egress. (Measured, Chrome 155: a
+        # replayed page's WebSocket to 127.0.0.1, launched without isolation,
+        # connects and closes before its request line.)
+        handshake = self._ws.handler
+
+        def count_then_handshake(sock: socket.socket, addr: Any) -> None:
+            self._count_accept("ws")
+            handshake(sock, addr)
+
+        self._ws.handler = count_then_handshake
         for target in (
             lambda: self._main and self._main.serve_forever(poll_interval=0.02),
             lambda: self._cross and self._cross.serve_forever(poll_interval=0.02),
@@ -256,22 +289,36 @@ class FixtureSite:
         return f"ws://{self.WS_HOST}" if self.mapped else f"ws://127.0.0.1:{self.ws_port}"
 
     @property
+    def ip_origin(self) -> str:
+        """The main server by IP literal — reachable without a name mapping, in both modes."""
+        return f"http://127.0.0.1:{self.main_port}"
+
+    @property
     def sw_origin(self) -> str:
         """Exact ``localhost`` — a secure context over plain http, in both modes."""
         return f"http://localhost:{self.cross_port}"
 
-    def chrome_args(self) -> list[str]:
-        """Switches that make the mapped hostnames reach the fixture servers."""
+    def chrome_args(self, *, hermetic: bool = False) -> list[str]:
+        """Switches that make the mapped hostnames reach the fixture servers.
+
+        *hermetic* (M30's recordings) resolves every other name to nothing
+        as well (``MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1``
+        after the fixture's own rules — the first match wins, S2a Q2), so a
+        recording never leaves the machine. Loopback stays reachable — exact
+        ``localhost`` and the IP literal ``127.0.0.1`` (which ``MAP *`` would
+        blackhole too), where the fixture servers are: the ``egress`` page
+        links them by IP literal. A replay's isolation has no such exclusion.
+        """
         if not self.mapped:
             return []
-        rules = ", ".join(
-            (
-                f"MAP {self.MAIN_HOST} 127.0.0.1:{self.main_port}",
-                f"MAP {self.CROSS_HOST} 127.0.0.1:{self.cross_port}",
-                f"MAP {self.WS_HOST} 127.0.0.1:{self.ws_port}",
-            )
-        )
-        return [f"--host-resolver-rules={rules}", "--no-proxy-server"]
+        rules = [
+            f"MAP {self.MAIN_HOST} 127.0.0.1:{self.main_port}",
+            f"MAP {self.CROSS_HOST} 127.0.0.1:{self.cross_port}",
+            f"MAP {self.WS_HOST} 127.0.0.1:{self.ws_port}",
+        ]
+        if hermetic:
+            rules.append("MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1")
+        return [f"--host-resolver-rules={', '.join(rules)}", "--no-proxy-server"]
 
     def url(self, scenario: str) -> str:
         """The URL a test navigates to for ``scenario``."""
@@ -280,9 +327,13 @@ class FixtureSite:
             "service_worker": "/service_worker/page.html",
             "popup": "/popup/opener.html",
         }.get(scenario, f"/{scenario}/page.html")
-        if scenario not in SCENARIOS:
-            raise KeyError(f"unknown fixture scenario {scenario!r}; known: {SCENARIOS}")
-        origin = self.sw_origin if scenario == "service_worker" else self.main_origin
+        if scenario not in SCENARIOS and scenario not in REPLAY_SCENARIOS:
+            raise KeyError(
+                f"unknown fixture scenario {scenario!r}; known: {SCENARIOS + REPLAY_SCENARIOS}"
+            )
+        origin = {"service_worker": self.sw_origin, "egress": self.ip_origin}.get(
+            scenario, self.main_origin
+        )
         return origin + entry
 
     @staticmethod
@@ -365,7 +416,6 @@ class FixtureSite:
     # ── WebSocket ─────────────────────────────────────────────────────
 
     def _log_handshake(self, connection: ServerConnection, request: Any) -> None:
-        self._count_accept("ws")
         self._log(
             LoggedRequest(
                 server="ws",
@@ -402,6 +452,9 @@ class FixtureSite:
 
         cross = self.cross_origin
         ws = self.ws_origin
+        ip_main = self.ip_origin
+        ip_cross = f"http://127.0.0.1:{self.cross_port}"
+        ip_ws = f"ws://127.0.0.1:{self.ws_port}"
         return {
             # redirect: 302 → 301 → 200
             "/redirect/hop1": lambda h, _b: self._redirect(h, 302, "/redirect/hop2"),
@@ -583,6 +636,60 @@ class FixtureSite:
                 _HTML,
             ),
             "/beacon/collect": lambda h, _b: self._send(h, 204, b"", "text/plain"),
+            # ── M30's replay-only pages ──
+            # the page's clock and randomness, where a DOM signature sees them
+            "/clock/page.html": static(
+                self._page(
+                    "clock",
+                    '<button id="clock" type="button">clock</button><script>'
+                    "document.getElementById('clock').textContent = "
+                    "new Date().toISOString() + ' ' + Math.random().toFixed(8);"
+                    "</script>",
+                ),
+                _HTML,
+            ),
+            # a host no recording can hold
+            "/canary/page.html": static(
+                self._page(
+                    "canary",
+                    "<p>canary</p><script>"
+                    f"fetch('http://{CANARY_HOST}/canary.json')"
+                    ".then(() => { document.title = 'canary answered'; })"
+                    ".catch(() => { document.title = 'canary failed'; });"
+                    "</script>",
+                ),
+                _HTML,
+            ),
+            # one request of each miss class, to hosts a hermetic recording cannot reach
+            "/strict/page.html": static(
+                self._page(
+                    "strict",
+                    "<p>strict</p>"
+                    '<iframe src="http://frames.example.test/sub.html" '
+                    'style="width:200px;height:60px;border:0"></iframe><script>'
+                    "navigator.sendBeacon('http://stats.example.test/collect', 'e=1');"
+                    "fetch('http://api.example.test/data.json').catch(() => {});"
+                    "</script>",
+                ),
+                _HTML,
+            ),
+            # served by IP literal; reaches the fixture servers by IP literal: a
+            # preconnect to cross (never a request, never paused), a script
+            # (paused at the Request stage) and a WebSocket (never paused);
+            # nothing on the page shows the socket's fate
+            "/egress/page.html": static(
+                self._page(
+                    "egress",
+                    f'<link rel="preconnect" href="{ip_cross}">'
+                    '<button id="ip" type="button">pending</button>'
+                    f'<script src="{ip_main}/egress/ip.js"></script>'
+                    f"<script>new WebSocket('{ip_ws}/egress/echo');</script>",
+                ),
+                _HTML,
+            ),
+            "/egress/ip.js": static(
+                b"document.getElementById('ip').textContent = 'served by IP literal';\n", _JS
+            ),
         }
 
     def _respond(self, handler: _Handler, body: bytes) -> None:

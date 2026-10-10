@@ -647,7 +647,7 @@ class TestTheArchiver:
     def test_knobs_and_declarations(self) -> None:
         archiver = NetworkArchiver()
         assert archiver.archiver_id == "browser.network"
-        assert archiver.needs == frozenset({"fetch_response"})
+        assert archiver.needs == frozenset({"fetch_response", "replay_log"})
         assert archiver.requires_replayable is True
         assert NetworkArchiver(require_replayable=False).requires_replayable is False
         assert "contains_session_state" in archiver.privacy_markers

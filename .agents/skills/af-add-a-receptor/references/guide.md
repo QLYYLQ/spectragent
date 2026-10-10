@@ -424,7 +424,24 @@ unchanged. `HookBase` and hooks without receptors (`metrics`) stay dataclasses;
   edited every capability block that writes one by hand — the set
   `rg -l typing_rhythm configs tests .agents` finds (shipped configs, `configs/README.md`,
   the test configs, this guide's example) — and the shipped-config gate
-  (`test_shipped_config_integration.py`) proves each new value arrives.
+  (`test_shipped_config_integration.py`) proves each new value arrives. `network_source`
+  (M30) rippled the same way (`rg -l replayability_id` is the index now), and every
+  hand-built `ConfigComposer(registrars={...})` map in the tests had to gain the new
+  layer too, or the capability's slot fails to compose (`UnresolvedWiringError`).
+- **A strategy can carry its own receptor** (`ArchiveNetworkSource.miss_policy`, nested in
+  the capability's `network_source` block: capability → `network_source` →
+  `miss_policy`). Same rules — not a dataclass, hand-written `__init__`, annotation-only
+  slot plus a `default_*()` factory. Two conscribe 1.3 traps measured on it:
+  (1) conscribe writes a `.pyi` stub next to every class with an injected receptor and
+  renders evaluated `Annotated[..., Field(...)]` parameters as `FieldInfo(...)` reprs —
+  an invalid stub, i.e. new pyright errors — so such a module takes
+  `from __future__ import annotations` (as `capability.py` does) and the strings are
+  copied verbatim; (2) a nested knob typed as your own pydantic `BaseModel` generates
+  an unimportable `_composed.py` (codegen assumes every `BaseModel` is a submodel it
+  emitted, so it writes no import): make it a pydantic *dataclass*
+  (`replay/matcher.py::MatcherConfig`), which codegen imports like any other type.
+  Do not move the receptor onto `__init__` to dodge the stub: a single-instance
+  receptor typed as a Protocol there is generated as `Any`.
 - **An optional *list* receptor omitted is not the same as empty.** `trace_writer.archive`
   (`__wiring__ = {"archive": "archiver"}`, `Annotated[list[ArchiverBase] | None, ...]`
   on the hand-written `__init__`, `archive: list[ArchiverBase]` on the

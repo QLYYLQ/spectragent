@@ -9,6 +9,9 @@ proxy settings.
 from __future__ import annotations
 
 import hashlib
+import re
+import socket
+import time
 
 import httpx
 import pytest
@@ -131,6 +134,19 @@ class TestLogs:
         assert after["main"] == before["main"] + 1
         assert after["cross"] == before["cross"] + 1
 
+    def test_a_websocket_connection_counts_without_a_handshake(self, site: FixtureSite) -> None:
+        """The ws server counts TCP accepts too: a socket that never sends a request is egress."""
+        before = site.accepts()["ws"]
+        socket.create_connection(("127.0.0.1", site.ws_port), timeout=2).close()
+        deadline = time.monotonic() + 5
+        while site.accepts()["ws"] == before and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert site.accepts()["ws"] == before + 1
+        assert site.requests_for("websocket") == [], "no handshake, nothing logged"
+        with ws_connect(f"ws://127.0.0.1:{site.ws_port}/websocket/echo", proxy=None):
+            pass
+        assert site.accepts()["ws"] == before + 2, "a handshake is counted once"
+
     def test_scenario_is_derived_from_the_path(self, site: FixtureSite) -> None:
         _get(site, "/beacon/page.html?x=1")
         _get(site, "/elsewhere")
@@ -167,3 +183,16 @@ class TestHostModes:
             response = _get(mapped, "/beacon/page.html", headers={"Host": "shop.example.test"})
             assert response.status_code == 200
             assert mapped.requests[-1].host == "shop.example.test"
+
+    def test_the_egress_page_needs_no_mapping(self) -> None:
+        """Served and linked by IP literal only; the hermetic recording lets loopback through."""
+        with FixtureSite(mapped=True) as mapped:
+            assert mapped.url("egress") == f"http://127.0.0.1:{mapped.main_port}/egress/page.html"
+            page = _get(mapped, "/egress/page.html").text
+            hosts = re.findall(r"(?:https?|wss?)://([^/'\"]+)", page)
+            assert sorted(hosts) == sorted(
+                f"127.0.0.1:{port}"
+                for port in (mapped.cross_port, mapped.main_port, mapped.ws_port)
+            )
+            rules = mapped.chrome_args(hermetic=True)[0]
+            assert rules.endswith("MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1")

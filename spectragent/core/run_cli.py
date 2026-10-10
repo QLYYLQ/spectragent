@@ -16,6 +16,25 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.scripts.generate_all import _collect_registrars
 
 
+def task_context(
+    *, start_url: str | None = None, replay_archive: str | None = None
+) -> dict[str, str] | None:
+    """The task context the flags name, routed to capabilities by key (§4.10); ``None`` if empty.
+
+    ``replay_archive`` is the source run directory an ``archive`` network
+    source replays (M30), resolved here against the working directory: the
+    context is recorded in the trace (``task_setup``), and a fork rebuilds the
+    environment from that record wherever it runs.
+    """
+    archive = str(Path(replay_archive).resolve()) if replay_archive else None
+    context = {
+        key: value
+        for key, value in (("start_url", start_url), ("replay_archive", archive))
+        if value
+    }
+    return context or None
+
+
 async def _run(
     *,
     config_path: Path,
@@ -23,6 +42,7 @@ async def _run(
     start_url: str | None,
     timeout: float,
     dry_run: bool,
+    replay_archive: str | None = None,
 ) -> int:
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     composer = ConfigComposer(registrars=_collect_registrars())
@@ -51,7 +71,7 @@ async def _run(
     result = await runtime.execute(
         task=task,
         timeout=timeout,
-        env_context={"start_url": start_url} if start_url else None,
+        env_context=task_context(start_url=start_url, replay_archive=replay_archive),
     )
     print(f"agent_done={result.agent_done} env_status={result.env_status}")
     if result.answer:
@@ -74,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", required=True, type=Path, help="YAML run config")
     parser.add_argument("--task", default="", help="Task text (required unless --dry-run)")
     parser.add_argument("--start-url", help="Browser page to open before the agent starts")
+    parser.add_argument(
+        "--replay-archive",
+        help="Recorded run directory to replay the browser's network from "
+        "(needs network_source: archive)",
+    )
     parser.add_argument("--timeout", type=float, default=300.0, help="Run timeout in seconds")
     parser.add_argument("--dry-run", action="store_true", help="Compose and negotiate only")
     parser.add_argument("--log-level", default="INFO")
@@ -93,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             start_url=args.start_url,
             timeout=args.timeout,
             dry_run=args.dry_run,
+            replay_archive=args.replay_archive,
         )
     )
 

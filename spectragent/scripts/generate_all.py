@@ -60,7 +60,11 @@ def _collect_registrars() -> dict[str, type]:
         MouseTrajectoryRegistrar,
         TypingRhythmRegistrar,
     )
-    from spectragent.core.capabilities.browser.replay import ReplayabilityRegistrar
+    from spectragent.core.capabilities.browser.replay import (
+        MissPolicyRegistrar,
+        NetworkSourceRegistrar,
+        ReplayabilityRegistrar,
+    )
     from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
     from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
     from spectragent.core.environments._registrar import EnvironmentRegistrar
@@ -85,6 +89,12 @@ def _collect_registrars() -> dict[str, type]:
         # collected so ``pinned``'s seed / time zone / locale / DPR knobs are
         # typed in the generated union rather than lost behind a Literal.
         "replayability": ReplayabilityRegistrar,
+        # Offline replay (§4.14 "回放"): the network source and, nested in its
+        # ``archive`` block, the miss policy — leaves before their owners, so
+        # the generated union nests capability → network_source → miss_policy
+        # with every knob (matcher, isolation, shift_dates, …) typed.
+        "miss_policy": MissPolicyRegistrar,
+        "network_source": NetworkSourceRegistrar,
         # Environment evidence (§4.5, §4.14): the trace hook's ``archive``
         # receptor draws from it, so each archiver's knobs are typed in YAML
         # and a mistyped archiver_id is refused.

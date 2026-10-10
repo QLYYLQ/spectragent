@@ -20,14 +20,19 @@ from spectragent.core.capabilities.browser.backends._registrar import BrowserPro
 from spectragent.core.capabilities.browser.backends.base import (
     LaunchArgsProvider,
     NetworkCaptureProvider,
+    NetworkIsolatingProvider,
 )
 from spectragent.core.capabilities.browser.backends.capabilities import (
     LAUNCH_ARGS,
     NETWORK_CAPTURE,
+    NETWORK_ISOLATION,
 )
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
+    NETWORK_ISOLATION_ARGS,
+    NETWORK_ROUTING_SWITCHES,
     contradicting_switch,
     merge_chrome_switches,
+    without_routing_switches,
 )
 from spectragent.core.capabilities.browser.backends.local_chrome import (
     CHROME_DEFAULT_ARGS,
@@ -87,6 +92,69 @@ class TestDeclarations:
 
     def test_local_chrome_reports_its_profile_as_network_capture_promises(self) -> None:
         assert isinstance(LocalChromeProvider(), NetworkCaptureProvider)
+
+    def test_only_local_chrome_declares_network_isolation(self) -> None:
+        """The static "supports" declaration of M30's isolation (§4.9.x)."""
+        providers = _shipped_providers()
+        declaring = sorted(
+            key for key, cls in providers.items() if NETWORK_ISOLATION in cls.__capabilities__
+        )
+        assert declaring == ["local_chrome"]
+        assert isinstance(LocalChromeProvider(), NetworkIsolatingProvider)
+        for provider_id in CLOUD_PROVIDERS:
+            assert NETWORK_ISOLATION not in providers[provider_id].__capabilities__
+
+
+class TestNetworkIsolation:
+    def test_isolation_args_have_no_shell_quotes(self) -> None:
+        """Two argv elements exactly as Chrome reads them (S2a) — never a quoted shell string."""
+        assert NETWORK_ISOLATION_ARGS == (
+            "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost",
+            "--no-proxy-server",
+        )
+        assert not any(quote in arg for arg in NETWORK_ISOLATION_ARGS for quote in "\"'")
+
+    def test_routing_switches_are_dropped_from_a_flag_list(self) -> None:
+        flags = [
+            "--headless=new",
+            "--host-resolver-rules=MAP shop.test 127.0.0.1:9000",
+            *NETWORK_ISOLATION_ARGS,
+            "--proxy-server=http://p:1",
+            "--proxy-pac-url=http://p/x.pac",
+            "--proxy-auto-detect",
+            "--proxy-bypass-list=*.local",
+            "--lang=en-US",
+        ]
+        assert without_routing_switches(flags) == ["--headless=new", "--lang=en-US"]
+        assert {"--host-resolver-rules", "--no-proxy-server", "--proxy-server"} <= (
+            NETWORK_ROUTING_SWITCHES
+        )
+
+    def test_a_clean_provider_has_no_isolation_conflict(self) -> None:
+        assert LocalChromeProvider().isolation_conflicts() == []
+        repeat = LocalChromeProvider(extra_args=["--no-proxy-server", "--mute-audio"])
+        assert repeat.isolation_conflicts() == [], "an exact repeat contradicts nothing"
+
+    def test_isolation_conflicts_name_each_knob(self) -> None:
+        provider = LocalChromeProvider(
+            proxy_server="http://127.0.0.1:7897",
+            proxy_bypass_list="localhost",
+            extra_args=[
+                "--host-resolver-rules=MAP shop.test 127.0.0.1:9000",
+                "--proxy-pac-url=http://p/x.pac",
+                "--lang=fr",
+            ],
+            startup_url="http://shop.test/",
+        )
+        problems = provider.isolation_conflicts()
+        assert len(problems) == 5
+        assert problems[0].startswith("proxy_server='http://127.0.0.1:7897'")
+        assert problems[1].startswith("proxy_bypass_list='localhost'")
+        assert problems[2].startswith(
+            "extra_args entry '--host-resolver-rules=MAP shop.test 127.0.0.1:9000'"
+        )
+        assert problems[3].startswith("extra_args entry '--proxy-pac-url=http://p/x.pac'")
+        assert problems[4].startswith("startup_url='http://shop.test/'")
 
 
 class TestMergeChromeSwitches:
@@ -222,6 +290,28 @@ class TestLaunchArgsReachChrome:
         provider = LocalChromeProvider(user_data_dir=str(tmp_path), remote_debugging_port=9666)
         cmd, _ = await self._open(monkeypatch, provider)
         assert cmd[1:-1] == merge_chrome_switches(provider._build_args(9666, str(tmp_path)))
+
+    @pytest.mark.parametrize(
+        "launch_args", [(), PINNED_LIKE, (*PINNED_LIKE, *NETWORK_ISOLATION_ARGS)]
+    )
+    async def test_planned_flags_are_what_open_records(
+        self, monkeypatch: pytest.MonkeyPatch, launch_args: tuple[str, ...]
+    ) -> None:
+        """Known before launch (a replay's consistency check) and equal to the launch's own."""
+        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
+        provider = LocalChromeProvider(extra_args=["--mute-audio"])
+        planned = provider.planned_launch_flags(launch_args)
+        _cmd, meta = await self._open(monkeypatch, provider, launch_args=launch_args)
+        assert planned == meta["launch_flags"]
+
+    async def test_the_isolation_switches_reach_chrome_as_two_elements(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
+        cmd, _ = await self._open(
+            monkeypatch, LocalChromeProvider(), launch_args=NETWORK_ISOLATION_ARGS
+        )
+        assert cmd[-3:-1] == list(NETWORK_ISOLATION_ARGS)
 
 
 class TestLaunchArgConflicts:

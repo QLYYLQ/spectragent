@@ -24,8 +24,13 @@ It holds:
   ``shim_sha256`` and the tier's own launch switches, kept apart from the
   rest of the command line so replay can compare them on their own.
 - **Launch flags** — the sha256 of ``ProviderSession.metadata["launch_flags"]``
-  (volatile values already replaced by placeholders); never the command line
-  itself.
+  (volatile values already replaced by placeholders) without the network
+  routing switches (``chrome_switches.NETWORK_ROUTING_SWITCHES``): a
+  recording's fixture ``MAP`` rules and a replay's isolation switches stay
+  out, so the two sides compare (M30); never the command line itself.
+- **The network source** (M30) — ``live``: ``{"source_id": "live"}``; a
+  replaying run: its server's block (source run, digests, matcher, policy,
+  ``shift_dates``, isolation, warnings).
 - **Redaction** — :data:`~.redaction.BROWSER_REDACTION_POLICY` and each bound
   archiver's own facts (which request headers it strips, whether cookie values
   are hashed).
@@ -48,6 +53,9 @@ from spectragent.core.archive.privacy import MARKER_SESSION_STATE
 from spectragent.core.capabilities.browser.archive.base import BrowserArchiverBase, RecorderHandle
 from spectragent.core.capabilities.browser.archive.encoding import canonical_json
 from spectragent.core.capabilities.browser.archive.redaction import BROWSER_REDACTION_POLICY
+from spectragent.core.capabilities.browser.backends.chrome_switches import (
+    without_routing_switches,
+)
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 
 logger = logging.getLogger(__name__)
@@ -71,12 +79,23 @@ PAGE_PROBE = (
 )
 
 
+def flags_digest(flags: Sequence[str]) -> str:
+    """sha256 of launch flags without the network routing switches.
+
+    One function for both sides of a replay: the recording's flags (its
+    fixture ``MAP`` rules dropped) and the replay's planned ones (its
+    isolation switches dropped) — that isolation is on is asserted by the
+    cooperation check, not by the digest.
+    """
+    return hashlib.sha256(canonical_json(without_routing_switches(flags))).hexdigest()
+
+
 def launch_flags_digest(metadata: Mapping[str, Any] | None) -> str | None:
-    """sha256 of the provider's placeholder-normalised launch flags, if it recorded any."""
+    """:func:`flags_digest` of the provider's placeholder-normalised launch flags, if any."""
     flags = (metadata or {}).get("launch_flags")
     if flags is None:
         return None
-    return hashlib.sha256(canonical_json(flags)).hexdigest()
+    return flags_digest([str(flag) for flag in flags])
 
 
 class BrowserFingerprint:
@@ -104,6 +123,7 @@ class BrowserFingerprint:
         archivers: Sequence[BrowserArchiverBase],
         fresh_profile: bool,
         clock: Callable[[], float],
+        network_fingerprint: Mapping[str, Any] | None = None,
         timeout: float = 1.0,
     ) -> ArchiveFile | None:
         """The fingerprint as a run record, or ``None`` when it did not change."""
@@ -115,6 +135,7 @@ class BrowserFingerprint:
             session_metadata=session_metadata,
             archivers=archivers,
             fresh_profile=fresh_profile,
+            network_fingerprint=network_fingerprint,
             timeout=timeout,
         )
         data = canonical_json(document)
@@ -140,6 +161,7 @@ class BrowserFingerprint:
         session_metadata: Mapping[str, Any] | None,
         archivers: Sequence[BrowserArchiverBase],
         fresh_profile: bool,
+        network_fingerprint: Mapping[str, Any] | None = None,
         timeout: float = 1.0,
     ) -> dict[str, Any]:
         version = await recorder.browser_version()
@@ -173,6 +195,7 @@ class BrowserFingerprint:
             "viewport": {"width": viewport[0], "height": viewport[1]},
             "replayability": dict(plan_fingerprint),
             "launch_flags_sha256": launch_flags_digest(session_metadata),
+            "network_source": dict(network_fingerprint or {"source_id": "live"}),
             "redaction": {
                 "policy": BROWSER_REDACTION_POLICY,
                 "archivers": {

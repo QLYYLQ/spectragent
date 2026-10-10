@@ -74,6 +74,10 @@ flowchart TB
     %% ════════════════════════════════════════
     %% P2 — Docker + SWE 生态
     %% ════════════════════════════════════════
+    subgraph P2_FLYWHEEL ["P2 · 数据飞轮（browser）"]
+        M30["M30<br/>离线回放"]
+    end
+
     subgraph P2_DOCKER ["P2 · Docker + SWE 生态"]
         M19["M19<br/>Docker<br/>Capability"]
         M20["M20<br/>CodeAct<br/>Loop"]
@@ -128,7 +132,10 @@ flowchart TB
     %% M27 → M31 / M32：这两个模块的条目合入时补边
     M13 --> M29
     M28 --> M29
-    %% M29 → M30 / M32：这两个模块的条目合入时补边（M32 的遮挡判断读 browser.dom_raw）
+    M29 --> M30
+    %% M18 只做了抽样验证；用户 2026-10-09 裁决：browser 的数据飞轮线在 M29 之后直接开始 M30（见 M18、M30 条目）
+    M18 -.->|抽样豁免| M30
+    %% M29 → M32、M30 → M31 / M32：这两个模块的条目合入时补边（M32 的遮挡判断读 browser.dom_raw，样本过滤读回放日志）
 
     %% P0 → P1 迁移
     M01 --> M12
@@ -185,7 +192,7 @@ flowchart TB
     class M01,M02,M03,M04,M05,M06,M07,M08,M09 p0
     class M10,M11,M12,M13,M14,M15,M16,M17,M27,M28,M29 p1
     class M18 milestone
-    class M19,M20,M21 p2
+    class M19,M20,M21,M30 p2
     class M22,M23,M24,M25,M26 p3
 
     style P0_FOUNDATION fill:none,stroke:#E83135,stroke-width:2px,stroke-dasharray:5 5
@@ -195,6 +202,7 @@ flowchart TB
     style P1_MIGRATION fill:none,stroke:#3B82F6,stroke-width:2px,stroke-dasharray:5 5
     style P1_GENERALIZE fill:none,stroke:#3B82F6,stroke-width:2px,stroke-dasharray:5 5
     style P1_VALIDATION fill:none,stroke:#F59E0B,stroke-width:2px,stroke-dasharray:5 5
+    style P2_FLYWHEEL fill:none,stroke:#10B981,stroke-width:2px,stroke-dasharray:5 5
     style P2_DOCKER fill:none,stroke:#10B981,stroke-width:2px,stroke-dasharray:5 5
     style P3_ADVANCED fill:none,stroke:#8B5CF6,stroke-width:2px,stroke-dasharray:5 5
 ```
@@ -839,6 +847,8 @@ Memory 协商避免了用户选择的 Loop 需要 `tool_call`、Memory 却只能
 
 M18 是 P1 结束的 gate — 只有三个 Browser Agent 全部通过端到端验证，才能开始 P2 的新场景扩展。这是「内核先行，不退化」策略的检验点。
 
+**豁免（用户 2026-10-09 裁决，仅限数据飞轮线）**：M18 目前只在抽样任务上验证过（2026-10-01 用户把 M18 放宽到抽样任务，三个 agent 都到达目标），完整矩阵没有跑完，M18 本身**不算通过**。只涉及 browser 的数据飞轮线（M30 起）在 M29 之后直接开始，抽样的 M18 对这条线算数；其他 P2 模块仍以完整的 M18 为门。
+
 ---
 
 ### M19: DockerCapability
@@ -1208,7 +1218,7 @@ capability 被拉取时产出证据，但不知道 WAL、步号和 `env/` 布局
 
 ### M29: Browser 归档器 + 可回放录制档位
 
-**优先级**: P1 | **前置依赖**: M13, M28 | **被依赖方**: M30（离线回放）、M32（遮挡判断用 `browser.dom_raw` 的 paint order）——两个条目合入时补边
+**优先级**: P1 | **前置依赖**: M13, M28 | **被依赖方**: M30（离线回放，边已补）、M32（遮挡判断用 `browser.dom_raw` 的 paint order）——M32 的条目合入时补边
 
 #### 业务实现
 
@@ -1269,6 +1279,57 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 
 ---
 
+### M30: 离线回放（网络来源、匹配、miss 策略、隔离、一致性）
+
+**优先级**: P2 | **前置依赖**: M29（录制档位、归档器、recorder 连接）；M18 只做了抽样验证——用户 2026-10-09 裁决：这条只涉及 browser 的数据飞轮线在 M29 之后直接开始 M30，抽样的 M18 对它算数（M18 本身不算通过，见 M18 条目） | **被依赖方**: M31（分叉在归档上恢复检查点）、M32（按回放日志的文档 miss 过滤样本）——两个条目合入时补边
+
+#### 业务实现
+
+从一个已录制 run 的环境证据离线回放网络：两根 browser 内部的策略轴 `NetworkSourceRegistrar`（`source_id`：`live` 默认 / `archive`）与 `MissPolicyRegistrar`（`miss_policy_id`：`strict`），回放的读侧 `ArchiveReader`（`core/archive`，`RunTrace` 满足它），匹配（规范化、L0/L1/L2、游标、站点规则），在 recorder 连接上 Request 阶段 fulfill 的回放服务，`strict` 的 miss 类别，回放日志（`replay.jsonl`）及其读侧，网络隔离（provider 能力 `NETWORK_ISOLATION`），以及启动浏览器之前的一致性检查。设计以 `architecture_design.md` §4.3、§4.9、§4.9.x、§4.10、§4.14（"回放"之后的几节与"回放实测"）、§5.3、§5.5、§6、§8、§9、§10、§11 为准；事实依据是 S2a 实测（Chrome 153）与 `ref/flywheel/MANIFEST.md` 里钉住的上游。
+
+#### 业务逻辑
+
+**S2 拆成两段**：S2a 是建服务之前的 CDP 行为探针（Request 阶段暂停与 DNS、IP 字面量与 `*.localhost`、worker 的暂停 session、弹窗、CORS 预检、最大 fulfill body、代理、Range、日期），已做完，结论写进 §4.14 "回放实测"；S2b 是 fixture 验收之后在 10 个真实 `online_mind2web` 任务上的度量（观测一致性、miss 类别分布、黑洞时序），要活站点与 LLM 花费，**须用户明确授权**（路由、N、token 上限），M30 只准备配置与命令，不跑。
+
+**受体**（`core/capabilities/browser/replay/`）：`network_source.py`、`live.py`、`archive_source.py`（`ArchiveNetworkSource`：不是 dataclass、手写 `__init__`，带 `miss_policy` 受体与 `matcher` 子配置，旋钮 `isolation: required | none_acknowledged`、`shift_dates: none | all`、`max_fulfill_body_bytes`、`fulfill_timeout_s`、`log_repeat_limit`）、`miss_policy.py`、`strict.py`。`BrowserCapability.__wiring__["network_source"]`、类级注解与 Python 默认（`live`）；`network_source` 与 `miss_policy` 进 `_collect_registrars()`，重新生成，生成配置是 capability → `network_source` → `miss_policy` 三层嵌套的判别联合；每一个手写的 capability 块（`configs/*.yaml`、`configs/flywheel/*.yaml`、`configs/README.md`、测试里的配置、`af-add-a-receptor` 的示例）加上 `network_source: {source_id: live}`；拼错的 `source_id` / `miss_policy_id` 被拒绝。
+
+**读侧**：`core/archive/source.py` 的 `ArchiveEntry` / `ArchiveReader` Protocol 与 `open_archive(run_dir)`（用 `RunTrace` 实现；`core/archive` 不 import `core.trace` 这条规则唯一的、由测试按模块名钉住的例外）；`RunTrace.archive_lines(path, model)`（逐行 JSON 的归档文件读成 model，失败抛点名文件与行号的 `TraceSchemaError`）。`replay_archive` 是源 run 目录，经任务上下文按 `setup()` 签名路由（§4.3、§4.10）；`spectragent-run --replay-archive`。只读已提交的部分：孤立的 `env/` 文件从不被送出，回放前后源目录树哈希不变。
+
+**加载与匹配**：`archive_index.py` 从 M29 的 `index.jsonl` 原始事实与 WARC 加载（revisit 按 `revisit_of` 取 payload、`streamed_later` 从之后的 blob 取、`too_large` / `incomplete` / 最后一行 `pending` 是 miss 原因、206 拼区间图、304 只给条件请求、`websocket` 不当候选），匹配键在加载时用唯一的 `canonical.py` 重算（URL 规范化与易变参数、移植 cdxj-indexer `postquery` 的 body 规范化——排序自己写、JSON 完整路径键、超过 4096 字符取 sha256、GraphQL 含批量、multipart 不看 boundary）；线上请求的 body 先过 M29 的 `redact_post_body` 再算键。`matcher.py`：L0 精确 / L1 规范化 / L2 模糊（同 host 同 path、`2M/T ≥ fuzzy_threshold`，阈值与"文档和非 GET 默认关"是我们的设计，WPR 没有阈值）；每 episode 每键按录制顺序的游标、每条只用一次、用尽重复最后一条并记 `exhausted`（我们的选择）；合并归档的 run 亲和；请求头只打破平局；miss 给出最近 3 个候选。`site_rules.py`：`<domain>.yaml` 按最长后缀选（不依赖 PSL），键 `ignore_query`、`ignore_body_paths`、`ignore_headers`、`fuzzy: on`、`synthesize_204`、`response_echo`。
+
+**服务**（`server.py` 的 `ReplayServer`，recorder 的贡献者）：每个 page / iframe / shared worker / SW target 在 resume 之前开 Request 阶段 Fetch 与 `Network.setCacheDisabled`，回放时拦住 SW；每个暂停一个受跟踪的 task，在暂停它的 session 上应答；recorder 对未应答的 Request 阶段暂停一律 `Fetch.failRequest`、从不 continue（`RecorderParticipant.serves_requests`）。`responder.py`：录下的 3xx 原样、未归档的 CORS 预检合成 204（回显 Origin）、Range 用区间图合成 206、去 CE/TE 重算 CL、去伪头、`Set-Cookie` 分条、`shift_dates`、超过上限的 body 按 `too_large` miss。`strict`：良性（beacon / ping / CSP 报告 / 分析类黑名单 / 站点规则）→ 204；主 frame 文档 → `failRequest(Failed)` 并标 `diverged`；子 frame 文档 → `failRequest`；其余 → 404 + `x-replay-miss: 1`；WebSocket 与绕过 Fetch 的请求（嵌套 worker 脚本）照记 miss。
+
+**回放日志**：`ReplayLogEntry`（命中带 `record_id` / `run_id` / level / 模糊得分，miss 带类别、原因、frame、resourceType、规范键、前 3 候选，`exhausted`，限流折叠的 `summary`）；`browser.network` 回放时只记日志（`ReplayLogSession` 写本步的 `replay.jsonl`，`needs` 多一个 `replay_log`），不重录 WARC；读侧 `replay_log` / `iter_replay_log` / `diverged_steps`，"这一步发散了"在读时推出，不改 `StepRecord`。回放日志导出成 HAR 推迟（还没有按 HAR 打分的评测器）。
+
+**隔离与一致性**：`isolation: required` 时 capability 把 `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost` 与 `--no-proxy-server` 经 `LAUNCH_ARGS` 交给声明了 `NETWORK_ISOLATION` 的 provider（v1 只有 `local_chrome`），provider 的 `isolation_conflicts()` 拒绝 `proxy_server`、`extra_args` 里的路由开关与不是 `about:blank` 的 `startup_url`；不支持的 provider 除非写了 `none_acknowledged` 否则报错。`archive` 来源必须绑定 `browser.network`（miss 总有记录）。setup 在启动浏览器之前比较源指纹：档位与参数（`base_time` 除外）、`shim_sha256`、viewport、去掉路由开关之后的启动开关摘要（`LaunchArgsProvider.planned_launch_flags` 在启动前算）；Chrome 版本与未固定的 UA、脱敏策略不同只警告并记进回放指纹；`base_time: from_archive` 从源指纹取 T0。回放 run 自己的 `env/run.browser.json` 记源 `run_id`、源指纹摘要、站点规则摘要。
+
+**依赖与 notice**：不加依赖（warcio 已是核心依赖；不引入 surt / py-wacz / cdxj-indexer，锁文件测试守着）；`THIRD_PARTY_NOTICES.md` 加 cdxj-indexer `postquery.py`（Apache-2.0，注明没带 surt）、WPR `archive.go` 的模糊匹配与按时间顺序服务 / `proxy.go` 的 `updateDates`（BSD-3）、mitmproxy 的 pop 语义与 `refresh`（MIT）、Playwright `harBackend.ts` 的精确匹配与 multipart 处理（Apache-2.0）。
+
+#### 验收
+
+全部在 fixture 上、真实 Chrome、不用 LLM（`tests/_helpers/replay_driver.py`：录制用脚本化的模型，回放把源 run 录下的模型输出原样重放给同一个 agent，于是 agent 发出同样的坐标 / 导航动作；M31 用恢复器替换它）：
+
+- 原路径回放：每一步的观测签名（URL、去掉 backend id 的元素签名、截图哈希）与录制时完全一致，miss 为 0；带密码与 token 的 POST 在归档只有脱敏值的情况下照样零 miss。
+- 零线上出口：回放期间 fixture 服务器的访问日志与 TCP accept 计数（WebSocket 服务器也数 accept、不数握手）都不变；录制的页面用非 localhost 的主机名，另有一页 `egress` 只走 IP 字面量（页面、脚本、preconnect、WebSocket）——回放去掉了名字映射，只有它还有通往 fixture 的路，`MAP *` 也黑洞 IP 字面量，所以挡住它的是隔离；对照组（同一回放写 `isolation: none_acknowledged`）里 accept 计数会动、HTTP 请求数不动（服务从不放行），零外联的断言因此不是空的；只在线上存在的金丝雀主机名失败并被记为 miss；隔离下 WebSocket 被挡住。
+- 没录到的请求归因到 step、frame 与 resourceType。
+- 同一个归档回放两次，截图哈希完全一致。
+- `strict` 的每个类别端到端；`base_time: from_archive`；`isolation: none_acknowledged` 的路径；没绑定 `browser.network` 的回放报错；拼错的 `source_id` 被拒绝；生成的三层嵌套联合；孤立文件不被送出、源目录树哈希不变。
+- 纯单测：规范化（含录制侧与回放侧脱敏后算键的一致性）、匹配器（各级、游标、`exhausted`、两 run 亲和、请求头平局、前 3 候选）、站点规则的每个键、每种应答形态（含 304 不顶替 200）、回放日志限流、一致性检查的每一条、"没有任何决定会 continue 请求"的不变量。
+- 锁文件测试（没有 surt / py-wacz / cdxj-indexer）；四个移植来源的 notice。
+- 文档：architecture §4.3、§4.9、§4.9.x、§4.10、§4.14、§5.3、§5.5、§6、§8、§9、§10、§11；`AGENTS.md` §2.2 与 §2.7；`configs/README.md` 与 `configs/replay_rules/README.md`；本条目；PRD 修订记录。
+- `CONVENTIONS.md` 的闸门全绿；`uv run spectragent-gen` 之后 `tests/test_generated` 全绿。
+- S2b 的配置与命令备好，等用户授权；不在 M30 里跑。
+
+**落地（2026-10-11，待验收）**：读侧与匹配在 `core/archive/source.py`、`replay/{network_source,live,archive_source,miss_policy,strict,canonical,site_rules,archive_index,matcher}.py`；服务在 `replay/{server,responder,replay_log,consistency}.py`、`recorder.py`（`serves_requests`）、`archive/network.py`（`ReplayLogSession`）、`cooperation.py`、`backends/{capabilities,base,chrome_switches,local_chrome}.py`；发布的回放配置 `configs/flywheel/replay_ui_tars_archive.yaml`；fixture 验收 `tests/test_core/test_capabilities/test_browser_replay_live.py`（真实 Chrome）。与本条目文字的差异见 PRD 修订记录 E20、E21。S2b 的脚本在本地 `tmp/flywheel/s2b/`，没跑。
+
+#### 设计思考
+
+回放放在 capability 里而不是做成代理 provider：Request 阶段 fulfill 让页面保留真实的 https origin、secure context 与 Secure cookie，不涉及 CA 与 HSTS，body 原字节返回（SRI 照样通过），frameId 与 resourceType 在同一条 CDP 通道里，逐步归因因此可行（WARC-Bench 的回放器是同类做法）。可是 S2a 证明 Fetch 本身不是隔离（preconnect 与 WebSocket 不经过它），所以隔离是必需的，并且由网络来源推出——provider 只静态声明它支持（`__capabilities__`），旁边没有第二个开关。回放从不放请求到线上：录制与回放之间唯一允许的差异是档位的 T0 与路由开关，其余都由一致性检查在启动浏览器之前点名。capability 不知道 WAL：它拿到的是 `ArchiveReader`，读的是已提交的证据；匹配键在加载时重算，所以改站点规则不需要重录。
+
+**使用的 skill**：`af-add-a-receptor`、`af-add-a-capability`、`af-regenerate-and-verify`、`af-trace-and-hooks`。
+
+---
+
 ## 3. 并行开发窗口
 
 ```
@@ -1319,3 +1380,4 @@ M01 ✅ 已完成（conscribe v0.6.1）
 | M14 | 高 | 三个 Agent 各有特殊逻辑，适配可能引入行为变化 | 逐个适配 + 逐个 benchmark 回归验证 |
 | M09 | 中 | ReactLoop 从 BaseReactAgent.run() 提取，需保持行为一致 | diff-based 验证：相同输入产生相同 LLM prompt |
 | M13 | 中 | BrowserSession adapter 的 observe() 拆分可能丢失状态 | adapter 内部保持 BrowserSession 完整调用，仅分拆返回值 |
+| M30 | 中 | 真实站点上的回放保真度未知（anti-bot、轮询、时间相关的 URL 与 body），Fetch 之外的外联只能靠隔离挡住，Chrome 行为随版本变化 | fixture 上的 `requires_chrome` 回归当版本金丝雀；隔离默认 `required`；S2b 在用户授权后度量 10 个真实任务，结果交给 M33 |

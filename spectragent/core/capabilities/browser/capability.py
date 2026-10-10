@@ -51,6 +51,7 @@ from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
 from spectragent.core.archive import ArchiveBatch, ArchiverBase
+from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — registration
     ClickAction,
@@ -86,7 +87,9 @@ from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     binding_problems,
     cooperation_problems,
+    launch_args,
     persistent_profile,
+    planned_launch_flags,
     recorder_needs,
 )
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget
@@ -128,12 +131,25 @@ from spectragent.core.capabilities.browser.recorder import (
     RecorderParticipant,
 )
 from spectragent.core.capabilities.browser.replay import (  # noqa: F401 — registration
+    ArchiveNetworkSource,
+    LiveNetworkSource,
+    NetworkSourceProtocol,
     OffReplayability,
     PinnedReplayability,
     ReplayabilityPlan,
     ReplayabilityProtocol,
+    StrictMissPolicy,
+    default_network_source,
     default_replayability,
 )
+from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
+from spectragent.core.capabilities.browser.replay.consistency import (
+    consistency_notes,
+    consistency_problems,
+    replay_t0,
+    version_warnings,
+)
+from spectragent.core.capabilities.browser.replay.server import ReplayContext, ReplayServer
 
 # Importing the package registers every watchdog under agent_cdp's
 # ``WatchdogRegistrar``. This module then looks them up by key — it never
@@ -410,6 +426,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # block, and nothing beside it can disagree with it. Anything but
         # ``off`` opens the recorder connection.
         "replayability": ("replayability", ["off", "pinned"]),
+        # ``network_source`` (§4.14 "回放") decides where the network comes
+        # from: ``live`` (the default, the no-op) or ``archive`` (every request
+        # answered from a recorded run's archive at the Fetch Request stage,
+        # never continued to the network; its ``miss_policy`` receptor answers
+        # what the recording lacks). Same shape again: the strategy is the
+        # switch — whether the browser must be isolated from the network is the
+        # source's own property, never a provider boolean beside it. Anything
+        # but ``live`` opens the recorder connection.
+        "network_source": ("network_source", ["archive", "live"]),
         # Archive provides (§4.5, §4.14) — the third axis, a negotiation-only
         # declaration like ``observation``: what a run records is the trace
         # hook's ``archive`` list, bound here by ``bind_archivers``. Keep in
@@ -432,6 +457,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     dom_cleaner: DOMCleanerProtocol  # type: ignore[misc]
     dom_serializer: DOMSerializerProtocol  # type: ignore[misc]
     replayability: ReplayabilityProtocol  # type: ignore[misc]
+    network_source: NetworkSourceProtocol  # type: ignore[misc]
     backend: BaseBrowserProvider  # type: ignore[misc]
 
     # ── conscribe-visible config (assigned in __init__) ──────────────
@@ -483,6 +509,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     _recorder_error: RecorderLostError | None
     #: This run's replayability plan (a recorder participant).
     _replay_plan: ReplayabilityPlan | None
+    #: This run's replay server, when the network source intercepts (M30).
+    _replay_server: ReplayServer | None
     #: The bound archivers (``bind_archivers``), in binding order.
     _archivers: list[BrowserArchiverBase]
     #: The archive side of the current recording, between setup and teardown,
@@ -669,6 +697,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.dom_cleaner = default_cleaner()
         self.dom_serializer = default_serializer()
         self.replayability = default_replayability()
+        self.network_source = default_network_source()
 
         # ── internal state (never config) ─────────────────────────
         self._actions_by_name = {}
@@ -694,6 +723,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._recorder = None
         self._recorder_error = None
         self._replay_plan = None
+        self._replay_server = None
         self._archivers = []
         self._archive = None
 
@@ -984,11 +1014,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         if archive is None or not self._archivers:
             return ArchiveBatch()
         self._ensure_recording()
+        server = self._replay_server
         return await archive.collect(
             plan_fingerprint=self._replay_plan.fingerprint() if self._replay_plan else {},
             session_metadata=self._session.metadata if self._session is not None else None,
             fresh_profile=self._fresh_profile(),
             clock=time.time,
+            network_fingerprint=(
+                server.fingerprint() if server is not None else self.network_source.fingerprint()
+            ),
         )
 
     def _fresh_profile(self) -> bool:
@@ -1017,6 +1051,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         negotiation: Any = None,
         cdp_url: str | None = None,
         start_url: str | None = None,
+        replay_archive: str | None = None,
         login_required: bool | None = None,
         login_type: str | None = None,
         credentials_ref: str | None = None,
@@ -1046,10 +1081,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         ``self._session`` is retained so :meth:`teardown` can release it.
 
         ``start_url`` opens the task's landing page before the agent's
-        first observe. The remaining keys are the rest of
-        :class:`BrowserSetup`'s vocabulary; they are accepted so a task
-        carrying them routes cleanly, and reported at WARNING because
-        this capability does not act on them yet.
+        first observe. ``replay_archive`` is the source run directory an
+        intercepting ``network_source`` (``archive``, M30) replays: opened
+        through ``core/archive``'s ``open_archive``, loaded and checked
+        against this configuration before anything is launched (§4.14).
+        The remaining keys are the rest of :class:`BrowserSetup`'s
+        vocabulary; they are accepted so a task carrying them routes
+        cleanly, and reported at WARNING because this capability does not
+        act on them yet.
         """
         self.apply_negotiation(negotiation)
 
@@ -1102,16 +1141,32 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # Resolve CDP URL: per-call override > constructor field.
         cdp_url = cdp_url or self.cdp_url
 
-        # Can the configured parts cooperate at all? Checked before anything
-        # is launched, every problem reported at once (§4.14).
+        # Can the configured parts cooperate at all — and, for a replay, does
+        # the source run match this configuration? Checked before anything is
+        # launched, every problem reported at once (§4.14).
+        injected = self._injected_client is not None
         problems = cooperation_problems(
-            self, cdp_url=cdp_url, injected_client=self._injected_client is not None
+            self, cdp_url=cdp_url, injected_client=injected, replay_archive=replay_archive
         )
+        planned = planned_launch_flags(self, cdp_url=cdp_url, injected_client=injected)
+        recorded: RecordedArchive | None = None
+        if self.network_source.intercepts and replay_archive:
+            recorded = self.network_source.open_replay(open_archive(replay_archive))
+            problems.extend(
+                consistency_problems(
+                    recorded,
+                    replayability=self.replayability,
+                    viewport=(self.viewport_width, self.viewport_height),
+                    planned_launch_flags=planned,
+                )
+            )
         if problems:
             raise BrowserCooperationError(problems)
         self._recorder_error = None
-        # The run's start: T0 of a pinned tier's clock.
-        t0_ms = int(time.time() * 1000)
+        # The run's start: T0 of a pinned tier's clock — or the recording's,
+        # under base_time: from_archive, resolved before any shim is built.
+        now_ms = int(time.time() * 1000)
+        t0_ms = replay_t0(recorded, self.replayability, now_ms) if recorded else now_ms
 
         self._scope_group = ScopeGroup("browser-capability")
 
@@ -1124,17 +1179,19 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             if cdp_url is None and backend is not None:
                 # ``open()`` gets no framework-level kwargs beyond
                 # ``launch_args``, and that one only when the provider declares
-                # ``LAUNCH_ARGS`` and the replayability tier has switches. Every
-                # cloud provider declares an explicit keyword-only signature
-                # of *its own* options (skyvern: timeout_minutes/adblock/...,
-                # airtop: profile_name/..., lexmount: browser_mode/...), so
-                # passing a generic ``viewport=`` here was a TypeError for all
-                # of them and a silently-ignored kwarg for LocalChrome. The
-                # viewport is a browser-level concern and is applied per tab
-                # via ``Emulation.setDeviceMetricsOverride`` in _attach_tab.
-                launch_args = self.replayability.launch_args()
-                if launch_args and LAUNCH_ARGS in getattr(type(backend), "__capabilities__", ()):
-                    self._session = await backend.open(launch_args=launch_args)
+                # ``LAUNCH_ARGS`` and the configuration has switches for it (the
+                # replayability tier's, then a replay's isolation switches —
+                # ``cooperation.launch_args``). Every cloud provider declares
+                # an explicit keyword-only signature of *its own* options
+                # (skyvern: timeout_minutes/adblock/..., airtop:
+                # profile_name/..., lexmount: browser_mode/...), so passing a
+                # generic ``viewport=`` here was a TypeError for all of them
+                # and a silently-ignored kwarg for LocalChrome. The viewport is
+                # a browser-level concern and is applied per tab via
+                # ``Emulation.setDeviceMetricsOverride`` in _attach_tab.
+                switches = launch_args(self)
+                if switches and LAUNCH_ARGS in getattr(type(backend), "__capabilities__", ()):
+                    self._session = await backend.open(launch_args=switches)
                 else:
                     self._session = await backend.open()
                 cdp_url = self._session.cdp_url
@@ -1162,7 +1219,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # archivers' sessions.
         if recorder_needs(self):
             assert cdp_url is not None  # the cooperation check refused anything else
-            await self._connect_recorder(cdp_url, t0_ms=t0_ms)
+            await self._connect_recorder(
+                cdp_url,
+                t0_ms=t0_ms,
+                recorded=recorded,
+                notes=consistency_notes(recorded, planned_launch_flags=planned)
+                if recorded is not None
+                else [],
+            )
 
         # 2. Global scope — browser-level watchdogs. Before the recorder
         # attaches: the ArchiveWatchdog (a shared watchdog, installed by
@@ -1216,7 +1280,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             self._default_session_id,
         )
 
-    async def _connect_recorder(self, cdp_url: str, *, t0_ms: int) -> None:
+    async def _connect_recorder(
+        self,
+        cdp_url: str,
+        *,
+        t0_ms: int,
+        recorded: RecordedArchive | None = None,
+        notes: Sequence[str] = (),
+    ) -> None:
         """Build the recorder connection; :meth:`setup` opens it after the watchdogs.
 
         Its own client: no compression (large frames are 13–48x slower with
@@ -1224,6 +1295,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         ``http_proxy``), no frame limit (a paused upload arrives twice). The
         connection is kept on ``self`` before it opens, so a failure part way
         is still cleaned up by :meth:`teardown`.
+
+        Replaying *recorded* (M30), the network source's server is built here
+        — pure construction, before the archive sessions, whose context
+        carries its log — and the source run's tolerated mismatches
+        (*notes*, the Chrome version) become its warnings.
         """
         client = self._new_cdp_client(
             cdp_url,
@@ -1253,6 +1329,19 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._replay_plan = self.replayability.plan(
             t0_ms=t0_ms, browser_user_agent=str(version.get("userAgent", ""))
         )
+        if recorded is not None:
+            server = self.network_source.serve(
+                recorded,
+                ReplayContext(recorder=recorder, cycle=lambda: self._observation_cycle),
+            )
+            for warning in [
+                *notes,
+                *version_warnings(
+                    recorded, browser_version=version, replayability=self.replayability
+                ),
+            ]:
+                server.warn(warning)
+            self._replay_server = server
         if self._archive is not None and channel is not None:
             # The bound archivers' run-time sessions — participants before the
             # first target is prepared.
@@ -1266,15 +1355,20 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     viewport=(self.viewport_width, self.viewport_height),
                     cycle=lambda: self._observation_cycle,
                     fresh_profile=self._fresh_profile(),
+                    replay_log=(
+                        self._replay_server.log if self._replay_server is not None else None
+                    ),
                 ),
                 self._archivers,
             )
 
     def _recorder_participants(self) -> list[RecorderParticipant]:
-        """Who contributes to every new target's preparation, in order."""
+        """Who contributes to every new target's preparation, in order: plan, server, sessions."""
         participants: list[RecorderParticipant] = []
         if self._replay_plan is not None:
             participants.append(self._replay_plan)
+        if self._replay_server is not None:
+            participants.append(self._replay_server)
         if self._archive is not None:
             participants.extend(self._archive.sessions)
         return participants
@@ -1346,6 +1440,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             except Exception as exc:  # pragma: no cover — close() is tolerant itself
                 logger.warning("Recorder close failed: %s", exc)
         self._replay_plan = None
+        # The replay server after the recorder (which failed every request
+        # still held — never continued it): stop answering, drop its state.
+        server, self._replay_server = self._replay_server, None
+        if server is not None:
+            server.close()
         # The archive sessions next (their scope closes with the scope group).
         archive, self._archive = self._archive, None
         if archive is not None:

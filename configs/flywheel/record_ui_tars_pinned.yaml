@@ -30,6 +30,7 @@ environment:
         mouse_trajectory: { trajectory_type: instant }
         typing_rhythm: { rhythm_type: instant }
         replayability: { replayability_id: pinned, random_seed: 7 }
+        network_source: { source_id: live }      # recording: the network is the network
         dom_cleaner: { cleaner_type: browser_use }
         dom_serializer: { serializer_type: text }
         backend:

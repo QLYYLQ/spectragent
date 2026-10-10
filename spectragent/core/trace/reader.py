@@ -413,6 +413,44 @@ class RunTrace:
             )
         return self.read_extra(path)
 
+    def archive_lines(self, path: str, model: type[M]) -> list[M]:
+        """A committed line-delimited JSON file, each non-blank line read back as *model*.
+
+        For the evidence a capability writes one JSON object per line
+        (``index.jsonl``, ``replay.jsonl``, …), in file order. Generic on
+        purpose: the line types are the capability's (the trace layer knows
+        none of them), and "what comes back is the type that was written"
+        holds for its evidence too. The bytes come through
+        :meth:`read_extra`, with its size and sha256 check.
+
+        Raises:
+            KeyError: *path* is not a committed extra file.
+            TraceSchemaError: As :meth:`read_extra`; or a line is not JSON,
+                or does not validate as *model* — naming the file and the
+                1-based line.
+        """
+        self._require_indexed("archive_lines")
+        data = self.read_extra(path)
+        file = self._trace_dir / path
+        lines: list[M] = []
+        for number, raw in enumerate(data.splitlines(), start=1):
+            if not raw.strip():
+                continue
+            try:
+                value = json.loads(raw.decode("utf-8"))
+            except (ValueError, RecursionError) as exc:  # JSONDecodeError, UnicodeDecodeError
+                raise TraceSchemaError(
+                    f"{file} line {number} does not parse as JSON: {exc}", path=file
+                ) from exc
+            try:
+                lines.append(model.model_validate(value))
+            except ValidationError as exc:
+                raise TraceSchemaError(
+                    f"{file} line {number} does not parse as a {model.__name__}: {exc}",
+                    path=file,
+                ) from exc
+        return lines
+
     def archive_run_file(self, capability_id: str) -> ArchiveRecord | None:
         """The highest committed version of *capability_id*'s run record, or ``None``.
 

@@ -12,7 +12,12 @@ tree and shown failing on planted sources:
    decision 2: runtime and trace hook never call a capture method.
 2. ``core/archive/*`` imports nothing from ``core.trace``, ``core.hooks``,
    ``core.negotiation``, ``core.environments`` or ``core.capabilities`` —
-   they depend on it, never the other way round.
+   they depend on it, never the other way round. **One exception, by exact
+   module name** (M30): ``core/archive/source.py``, the replay opener, imports
+   ``core.trace.reader`` (``RunTrace`` implements its ``ArchiveReader``) and
+   nothing else of the trace layer; the package ``__init__`` never imports
+   ``source``, so ``import spectragent.core.archive`` does not pull the trace
+   layer in and ``core/trace`` → ``core.archive.privacy`` stays acyclic.
 3. ``core/trace/*`` imports from ``core.archive`` only
    ``core.archive.privacy`` (the ledger type ``TaskSetupRecord`` carries);
    archive files cross into the trace layer duck-typed, and the WAL's
@@ -30,6 +35,8 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -54,6 +61,15 @@ ARCHIVE_MUST_NOT_IMPORT = (
     "spectragent.core.environments",
     "spectragent.core.capabilities",
 )
+
+#: Rule 2's only exceptions: module → the dependent modules it may import,
+#: by exact name (a submodule of an allowed module is allowed, its parent
+#: package is not). The replay opener implements ``ArchiveReader`` with
+#: ``RunTrace`` (architecture §10).
+ARCHIVE_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
+    "spectragent.core.archive.source": frozenset({"spectragent.core.trace.reader"}),
+}
+SOURCE_MODULE = "spectragent.core.archive.source"
 
 #: Field names that are about money (rule 4). A substring search: ``unit_cost``,
 #: ``price_usd`` and ``dollars`` all match.
@@ -138,13 +154,21 @@ def consumer_side_violations(
 
 
 def archive_package_violations(source: str, module: str, *, is_package: bool = False) -> list[str]:
-    """Rule 2 for one module of ``core/archive``."""
+    """Rule 2 for one module of ``core/archive``, with its exact-name exceptions."""
     imported = imported_modules(source, module, is_package=is_package)
+    allowed = ARCHIVE_IMPORT_EXCEPTIONS.get(module, frozenset())
     return [
         f"imports {name}"
         for name in sorted(imported)
         if any(_within(name, forbidden) for forbidden in ARCHIVE_MUST_NOT_IMPORT)
+        and not any(_within(name, permitted) for permitted in allowed)
     ]
+
+
+def package_init_imports_source(source: str) -> list[str]:
+    """``core/archive/__init__.py`` naming the replay opener, however it is reached."""
+    imported = imported_modules(source, ARCHIVE_PACKAGE, is_package=True)
+    return [f"imports {name}" for name in sorted(imported) if _within(name, SOURCE_MODULE)]
 
 
 def trace_layer_violations(source: str, module: str, *, is_package: bool = False) -> list[str]:
@@ -266,6 +290,36 @@ class TestTheTreeKeepsTheLayering:
             f"capabilities build on — an import the other way is a cycle waiting to happen."
         )
 
+    def test_the_replay_opener_is_the_one_exception_and_is_scanned(self) -> None:
+        """The exception names a real module, and that module still obeys the rest of rule 2."""
+        scanned = {module_name(path) for path in _modules(CORE / "archive")}
+        assert set(ARCHIVE_IMPORT_EXCEPTIONS) <= scanned
+        source = (CORE / "archive" / "source.py").read_text(encoding="utf-8")
+        imported = imported_modules(source, SOURCE_MODULE)
+        assert "spectragent.core.trace.reader" in imported, (
+            "the opener no longer imports the reader — drop the exception with it"
+        )
+
+    def test_the_package_init_never_imports_the_replay_opener(self) -> None:
+        source = (CORE / "archive" / "__init__.py").read_text(encoding="utf-8")
+        assert package_init_imports_source(source) == [], (
+            "core/archive/__init__.py imports the replay opener: `import "
+            "spectragent.core.archive` would pull the trace layer in, and core/trace → "
+            "core.archive.privacy becomes a cycle (architecture §10)."
+        )
+
+    def test_importing_core_archive_loads_no_trace_module(self) -> None:
+        """The same rule, measured: a fresh interpreter, ``import spectragent.core.archive``."""
+        probe = (
+            "import sys, spectragent.core.archive\n"
+            "print(sorted(m for m in sys.modules if m.startswith('spectragent.core.trace')"
+            " or m == 'spectragent.core.archive.source'))\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=60
+        )
+        assert result.stdout.strip() == "[]", result.stdout
+
     def test_core_trace_imports_only_the_privacy_module_from_core_archive(self) -> None:
         offenders = [
             line
@@ -378,6 +432,37 @@ class TestTheRulesHaveTeeth:
         assert (
             archive_package_violations("from spectragent.core.archive import types\n", module) == []
         )
+
+    def test_rule_two_s_exception_is_one_module_by_exact_name(self) -> None:
+        """The opener may import the reader — and nothing broader, and no one else may."""
+        allowed = "from spectragent.core.trace.reader import RunTrace\n"
+        assert archive_package_violations(allowed, SOURCE_MODULE) == []
+        assert (
+            archive_package_violations("from ..trace.reader import RunTrace\n", SOURCE_MODULE) == []
+        )
+        for broader in (
+            "from spectragent.core.trace import RunTrace\n",  # the package, not the module
+            "from spectragent.core.trace.models import ArchiveRecord\n",
+            "import spectragent.core.trace.wal\n",
+            "from spectragent.core.hooks.trace_writer import TraceWriter\n",
+            "from spectragent.core.capabilities.browser import BrowserCapability\n",
+        ):
+            assert archive_package_violations(broader, SOURCE_MODULE), broader
+        # Any other module of the package gets no exception at all.
+        assert archive_package_violations(allowed, "spectragent.core.archive.types")
+        assert archive_package_violations(allowed, "spectragent.core.archive")
+
+    def test_the_init_check_catches_the_opener_however_it_is_reached(self) -> None:
+        for planted in (
+            "from spectragent.core.archive.source import open_archive\n",
+            "from .source import ArchiveReader\n",
+            "from . import source\n",
+            "import spectragent.core.archive.source\n",
+        ):
+            assert package_init_imports_source(planted), planted
+        assert package_init_imports_source("from .types import ArchiveFile\n") == []
+        # ``sources`` is not ``source``.
+        assert package_init_imports_source("from .sources import x\n") == []
 
     def test_rule_three_allows_privacy_and_nothing_else(self) -> None:
         module = "spectragent.core.trace.models"

@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMState
 from spectragent.core.capabilities.browser.observations import DOMObs, ScreenshotObs
@@ -377,6 +378,77 @@ class TestArchiveAccessors:
         assert trace.archive_files(0, "browser.network") == []
         assert list(trace.iter_archive("browser.network", include_trailing=True)) == []
         assert trace.archive_run_file("browser") is None
+
+
+class _IndexLine(BaseModel):
+    """A line type a capability might write — the trace layer knows none of them."""
+
+    kind: str
+    n: int
+
+
+def _lines_trace(tmp_path, data: bytes) -> tuple[RunTrace, str]:
+    wal = new_wal(tmp_path)
+    file = archive_file(
+        "builder.steps", "index.jsonl", data, step=0, media_type="application/x-ndjson"
+    )
+    wal.commit_step(0, step_record(0), extra_files=[file])
+    return RunTrace(wal.run_dir), file.rel_path
+
+
+class TestArchiveLines:
+    """``archive_lines``: one committed JSON-lines file, read back as the caller's model."""
+
+    def test_each_line_comes_back_as_the_model_in_file_order(self, tmp_path):
+        trace, path = _lines_trace(
+            tmp_path, b'{"kind": "a", "n": 1}\n{"kind": "b", "n": 2}\n{"kind": "c", "n": 3}\n'
+        )
+        lines = trace.archive_lines(path, _IndexLine)
+        assert lines == [
+            _IndexLine(kind="a", n=1),
+            _IndexLine(kind="b", n=2),
+            _IndexLine(kind="c", n=3),
+        ]
+        assert all(type(line) is _IndexLine for line in lines)
+
+    def test_blank_lines_are_skipped_and_crlf_is_fine(self, tmp_path):
+        trace, path = _lines_trace(
+            tmp_path, b'\n{"kind": "a", "n": 1}\r\n\n   \n{"kind": "b", "n": 2}'
+        )
+        assert [line.n for line in trace.archive_lines(path, _IndexLine)] == [1, 2]
+
+    def test_an_empty_file_is_no_lines(self, tmp_path):
+        trace, path = _lines_trace(tmp_path, b"\n")
+        assert trace.archive_lines(path, _IndexLine) == []
+
+    def test_a_line_that_is_not_json_names_the_file_and_the_line(self, tmp_path):
+        trace, path = _lines_trace(tmp_path, b'{"kind": "a", "n": 1}\n\n{"kind": \n')
+        with pytest.raises(
+            TraceSchemaError, match=r"index\.jsonl line 3 does not parse as JSON"
+        ) as caught:
+            trace.archive_lines(path, _IndexLine)
+        assert caught.value.path == trace.trace_dir / path
+
+    def test_a_line_that_is_not_utf8_is_unreadable(self, tmp_path):
+        trace, path = _lines_trace(tmp_path, b'{"kind": "\xff", "n": 1}\n')
+        with pytest.raises(TraceSchemaError, match="line 1 does not parse as JSON"):
+            trace.archive_lines(path, _IndexLine)
+
+    def test_a_line_of_the_wrong_shape_names_the_model_and_the_line(self, tmp_path):
+        trace, path = _lines_trace(tmp_path, b'{"kind": "a", "n": 1}\n{"kind": "b", "n": "two"}\n')
+        with pytest.raises(TraceSchemaError, match=r"line 2 does not parse as a _IndexLine"):
+            trace.archive_lines(path, _IndexLine)
+
+    def test_an_uncommitted_path_is_a_key_error(self, tmp_path):
+        trace, _ = _lines_trace(tmp_path, b'{"kind": "a", "n": 1}\n')
+        with pytest.raises(KeyError):
+            trace.archive_lines("env/steps/000/builder.steps/other.jsonl", _IndexLine)
+
+    def test_bytes_that_changed_since_the_commit_are_refused(self, tmp_path):
+        trace, path = _lines_trace(tmp_path, b'{"kind": "a", "n": 1}\n')
+        (trace.trace_dir / path).write_bytes(b'{"kind": "a", "n": 9}\n')
+        with pytest.raises(TraceSchemaError, match="does not match its index entry"):
+            trace.archive_lines(path, _IndexLine)
 
 
 class TestTheReaderGivesBackWhatTheWriterWasHanded:

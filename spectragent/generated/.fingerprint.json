@@ -4,7 +4,7 @@
   "agent_loop": "a88da70d8ee003a9",
   "archiver": "da1740b33c4eb009",
   "browser_provider": "fc67fe2b7509148b",
-  "capability": "b86f0751adbdaea1",
+  "capability": "2cb7e046e812be58",
   "dom_cleaner": "d3759408cccf7556",
   "dom_serializer": "8ca4a1c44062ce75",
   "environment": "5df4d4cfd6d5f7b8",
@@ -13,7 +13,9 @@
   "hook": "d1a7acc789f58f58",
   "llm": "9d7ff7796c43ef55",
   "memory": "0eba10b49bab38b7",
+  "miss_policy": "a08e343465c0a749",
   "mouse_trajectory": "f72a02c1629d0121",
+  "network_source": "575d28cea9f32036",
   "replayability": "eda74154c90f2665",
   "task_loader": "6a5e9d23ee352d17",
   "typing_rhythm": "832866739feb6eb2"

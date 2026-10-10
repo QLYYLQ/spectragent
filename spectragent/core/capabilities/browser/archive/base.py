@@ -47,8 +47,12 @@ from spectragent.core.capabilities.browser.recorder import (
 #: - ``fetch_response`` — the recorder's Response-stage ``Fetch`` (bodies);
 #: - ``raw_dom`` — the DOM resolver's raw capture, parked on the observe cycle;
 #: - ``observation_cycle`` — the observation cycles, delivered into the archive
-#:   scope (a self-capture when no DOM fragment was negotiated).
-ArchiveNeed = Literal["fetch_response", "raw_dom", "observation_cycle"]
+#:   scope (a self-capture when no DOM fragment was negotiated);
+#: - ``replay_log`` — the replay server's decisions (M30): an archiver with it
+#:   records the replay log when the run replays an archive, and a replay
+#:   refuses to run without one bound (the cooperation check finds it by this
+#:   need, never by archiver id).
+ArchiveNeed = Literal["fetch_response", "raw_dom", "observation_cycle", "replay_log"]
 
 
 class RecorderHandle(Protocol):
@@ -70,6 +74,18 @@ class RecorderHandle(Protocol):
     def session_for_target(self, target_id: str) -> str | None: ...
 
     async def browser_version(self) -> dict[str, Any]: ...
+
+
+class ReplayLogFeed(Protocol):
+    """The replay server's log, as the archive side sees it (M30).
+
+    Plain JSON dicts, ready to be written one per line — so ``archive/``
+    never imports the replay package's entry type.
+    """
+
+    def drain(self) -> list[dict[str, Any]]:
+        """Every entry since the last drain, in order; forgotten by the log."""
+        ...
 
 
 #: The ``cleaner`` key of a capture dom_raw made itself (no DOM negotiated).
@@ -165,6 +181,9 @@ class BrowserArchiveContext:
     clock: Callable[[], float] = time.time
     #: Whether the browser started from a fresh profile (§5.6: session state).
     fresh_profile: bool = True
+    #: The replay server's log when the run replays an archive (M30), else
+    #: ``None``; an archiver needing ``replay_log`` records it then.
+    replay_log: ReplayLogFeed | None = None
 
     def tabs(self) -> list[RecorderTarget]:
         """The page targets the recorder prepared, one per target, in attach order."""

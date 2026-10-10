@@ -32,7 +32,7 @@ CONTEXT_PERSISTENCE = "context_persistence"  # Full context persistence across s
 SCREEN_SIZE = "screen_size"  # Custom screen / viewport size
 
 # Ownership and launch control (docs/architecture_design.md §4.9.x, §4.14).
-# v1: only ``local_chrome`` declares these two.
+# v1: only ``local_chrome`` declares these three.
 #
 # The browser process is launched by the capability through this provider and
 # killed at teardown, and its CDP endpoint accepts a second browser-level client
@@ -43,7 +43,16 @@ SCREEN_SIZE = "screen_size"  # Custom screen / viewport size
 # or ``replayability`` other than ``off``.
 NETWORK_CAPTURE = "network_capture"
 # ``open(*, launch_args=...)`` accepts extra Chrome switches for this session,
-# and the provider implements ``LaunchArgsProvider`` (``launch_arg_conflicts``).
-# Required by ``replayability: pinned``, whose switches can enter the browser
-# no other way.
+# and the provider implements ``LaunchArgsProvider`` (``launch_arg_conflicts``,
+# ``planned_launch_flags``). Required by ``replayability: pinned``, whose
+# switches can enter the browser no other way.
 LAUNCH_ARGS = "launch_args"
+# The provider's static "supports" declaration for a browser cut off from the
+# network (M30): the isolation switches
+# (``chrome_switches.NETWORK_ISOLATION_ARGS``) reach Chrome through
+# ``LAUNCH_ARGS`` and take effect — nothing of the provider's own routes
+# around them — and it implements ``NetworkIsolatingProvider``
+# (``isolation_conflicts``: the knobs that would undo them). Required by
+# ``network_source: archive`` with ``isolation: required``; v1: only
+# ``local_chrome``.
+NETWORK_ISOLATION = "network_isolation"

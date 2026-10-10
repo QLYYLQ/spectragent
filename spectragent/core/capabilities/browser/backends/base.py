@@ -66,3 +66,28 @@ class LaunchArgsProvider(Protocol):
     async def open(self, *, launch_args: Sequence[str] = (), **kwargs: Any) -> ProviderSession: ...
 
     def launch_arg_conflicts(self, launch_args: Sequence[str]) -> list[str]: ...
+
+    def planned_launch_flags(self, launch_args: Sequence[str]) -> list[str]:
+        """The ``metadata["launch_flags"]`` that ``open(launch_args=...)`` would record.
+
+        Known before anything is launched, so a replay compares the launch
+        flags of the recording with its own at setup, before Chrome starts
+        (§4.14 "一致性检查"). Built by the same code as ``open()``'s.
+        """
+        ...
+
+
+@runtime_checkable
+class NetworkIsolatingProvider(Protocol):
+    """What a provider declaring ``NETWORK_ISOLATION`` promises (§4.9.x, M30).
+
+    The isolation switches (``chrome_switches.NETWORK_ISOLATION_ARGS``) reach
+    the browser through ``LAUNCH_ARGS``; :meth:`isolation_conflicts` names
+    the provider's own knobs that would route traffic around them — a proxy,
+    a resolver rule or proxy switch of its own, a startup page loaded before
+    anything is intercepted — one entry per knob, so the cooperation check
+    can refuse the configuration naming both sides without reading the
+    provider's fields.
+    """
+
+    def isolation_conflicts(self) -> list[str]: ...

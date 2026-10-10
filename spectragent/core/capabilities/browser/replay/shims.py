@@ -155,3 +155,23 @@ def render_shim(*, t0_ms: int, seed: int) -> str:
     if not isinstance(seed, int) or isinstance(seed, bool):
         raise TypeError(f"seed must be an int, got {type(seed).__name__}")
     return SHIM_TEMPLATE.replace("__AF_T0_MS__", str(t0_ms)).replace("__AF_SEED__", str(seed))
+
+
+#: The replay server's own service-worker block (M30), injected into every
+#: frame of a replaying run whatever the tier: a service worker would answer
+#: navigations itself (they would pause on its session as ``XHR``, and a
+#: main-frame document miss could not be told apart). With
+#: ``Network.setBypassServiceWorker``. Idempotent by construction — it only
+#: replaces ``register`` — so it composes with ``pinned``'s shim, which
+#: refuses registration too.
+SERVICE_WORKER_BLOCK = r"""(() => {
+  const g = globalThis;
+  if (typeof g.ServiceWorkerContainer === 'function' && g.ServiceWorkerContainer.prototype
+      && typeof g.ServiceWorkerContainer.prototype.register === 'function') {
+    g.ServiceWorkerContainer.prototype.register = function register() {
+      return Promise.reject(new DOMException(
+        'Service worker registration is blocked while replaying an archive', 'SecurityError'));
+    };
+  }
+})();
+"""

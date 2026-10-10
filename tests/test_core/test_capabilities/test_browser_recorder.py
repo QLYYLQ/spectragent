@@ -492,6 +492,191 @@ class TestPausedRequests:
         await recorder.close()
 
 
+# ── a participant that serves requests (M30's replay server) ─────────
+
+REQUEST_STAGE = ({"urlPattern": "*", "requestStage": "Request"},)
+#: Every Fetch command that settles or answers a paused request.
+_ANSWERS = (
+    "Fetch.continueRequest",
+    "Fetch.continueResponse",
+    "Fetch.failRequest",
+    "Fetch.fulfillRequest",
+)
+
+
+class _Server(_Participant):
+    """A Request-stage owner that answers requests itself, like ``ReplayServer``."""
+
+    def __init__(self, *args: Any, frame_types: frozenset[str] | None = None, **kw: Any) -> None:
+        super().__init__(*args, **kw)
+        #: Target types it asks Fetch for (``None``: every target).
+        self.frame_types = frame_types
+
+    @property
+    def serves_requests(self) -> bool:
+        return True
+
+    def fetch_patterns(self, target: RecorderTarget) -> Sequence[Mapping[str, Any]]:
+        if self.frame_types is not None and target.type not in self.frame_types:
+            return ()
+        return self.patterns
+
+
+def _answers(client: FakeClient) -> list[tuple[str, str, str | None, Any]]:
+    """``(method, requestId, session, errorReason)`` of every answer sent."""
+    return [
+        (s.method, s.params["requestId"], s.session_id, s.params.get("errorReason"))
+        for s in client.sent
+        if s.method in _ANSWERS
+    ]
+
+
+class TestServingParticipant:
+    """While a participant serves requests, an unanswered Request pause fails — never continues.
+
+    §4.14 "事件": the replay server answers on the pausing session and sets
+    ``answered`` only after its send succeeded; the recorder settles
+    everything else with ``Fetch.failRequest{errorReason: Failed}`` — owner
+    timeout, owner exception, no owner, no prepared target, held at close.
+    """
+
+    async def _ready(self, participants: list[Any], **kwargs: Any):
+        browser = FakeBrowser()
+        recorder, client = await _recorder(browser, participants, **kwargs)
+        await recorder.open()
+        page_sid = recorder.session_for_target("page-1")
+        assert page_sid is not None
+        return browser, recorder, client, page_sid
+
+    @staticmethod
+    def _failed(request_id: str, sid: str | None) -> tuple[str, str, str | None, str]:
+        return ("Fetch.failRequest", request_id, sid, "Failed")
+
+    async def test_an_answered_request_is_not_answered_again(self) -> None:
+        recorder_box: list[RecorderConnection] = []
+
+        async def _fulfil(paused: PausedRequest) -> None:
+            await recorder_box[0].send(
+                "Fetch.fulfillRequest",
+                {"requestId": paused.request_id, "responseCode": 200},
+                paused.session_id,
+            )
+            paused.answered = True
+
+        server = _Server("server", patterns=REQUEST_STAGE, on_paused=_fulfil)
+        _browser, recorder, client, sid = await self._ready([server])
+        recorder_box.append(recorder)
+        _pause(client, sid, "q1", status=None)
+        await _settle()
+        assert _answers(client) == [("Fetch.fulfillRequest", "q1", sid, None)]
+        await recorder.close()
+        assert _answers(client) == [("Fetch.fulfillRequest", "q1", sid, None)]
+
+    async def test_the_owner_raising_fails_the_request(self) -> None:
+        async def _boom(_p: PausedRequest) -> None:
+            raise RuntimeError("the server broke")
+
+        server = _Server("server", patterns=REQUEST_STAGE, on_paused=_boom)
+        _browser, recorder, client, sid = await self._ready([server])
+        _pause(client, sid, "q1", status=None)
+        await _settle()
+        assert _answers(client) == [self._failed("q1", sid)]
+        await recorder.close()
+
+    async def test_the_owner_timing_out_fails_the_request(self) -> None:
+        async def _forever(_p: PausedRequest) -> None:
+            await asyncio.Event().wait()
+
+        class _Budgeted(_Server):
+            @property
+            def pause_budget_s(self) -> float:
+                return 0.01
+
+        server = _Budgeted("server", patterns=REQUEST_STAGE, on_paused=_forever)
+        _browser, recorder, client, sid = await self._ready([server])
+        _pause(client, sid, "q1", status=None)
+        await asyncio.sleep(1.2)  # the budget + PAUSE_OWNER_GRACE_S
+        assert _answers(client) == [self._failed("q1", sid)]
+        await recorder.close()
+
+    async def test_a_failed_send_is_failed_by_the_recorder(self) -> None:
+        """``answered`` follows a *successful* send: a fulfil Chrome refused is still settled."""
+        recorder_box: list[RecorderConnection] = []
+
+        async def _fulfil(paused: PausedRequest) -> None:
+            await recorder_box[0].send(
+                "Fetch.fulfillRequest", {"requestId": paused.request_id}, paused.session_id
+            )
+            paused.answered = True
+
+        server = _Server("server", patterns=REQUEST_STAGE, on_paused=_fulfil)
+        browser, recorder, client, sid = await self._ready([server])
+        recorder_box.append(recorder)
+        browser.fail("Fetch.fulfillRequest", RuntimeError("CDP error: Invalid header"))
+        _pause(client, sid, "q1", status=None)
+        await _settle()
+        assert _answers(client) == [
+            ("Fetch.fulfillRequest", "q1", sid, None),
+            self._failed("q1", sid),
+        ]
+        await recorder.close()
+
+    async def test_no_owner_for_the_target_fails_the_request(self) -> None:
+        """A pause on a target no participant asked Fetch for still fails."""
+        server = _Server("server", patterns=REQUEST_STAGE, frame_types=frozenset({"iframe"}))
+        _browser, recorder, client, sid = await self._ready([server])
+        _pause(client, sid, "q1", status=None)
+        await _settle()
+        assert server.paused == []
+        assert _answers(client) == [self._failed("q1", sid)]
+        await recorder.close()
+
+    async def test_a_pause_on_an_unprepared_session_fails(self) -> None:
+        """``target is None``: a session the recorder never prepared (or already dropped)."""
+        server = _Server("server", patterns=REQUEST_STAGE)
+        _browser, recorder, client, _sid = await self._ready([server])
+        _pause(client, "unknown-session", "q1", status=None)
+        await _settle()
+        assert server.paused == []
+        assert _answers(client) == [self._failed("q1", "unknown-session")]
+        await recorder.close()
+
+    async def test_a_request_held_at_close_is_failed(self) -> None:
+        async def _hold(_p: PausedRequest) -> None:
+            await asyncio.Event().wait()
+
+        server = _Server("server", patterns=REQUEST_STAGE, on_paused=_hold)
+        _browser, recorder, client, sid = await self._ready([server], pause_owner_timeout_s=60)
+        _pause(client, sid, "held", status=None)
+        await _settle()
+        assert _answers(client) == []
+        mark = len(client.sent)
+        await recorder.close()
+        tail = [(s.method, s.session_id) for s in client.sent[mark:]]
+        assert tail[:2] == [("Target.setAutoAttach", None), ("Fetch.failRequest", sid)]
+        assert _answers(client) == [self._failed("held", sid)]
+
+    async def test_serving_is_decided_by_the_participants_at_open(self) -> None:
+        """A non-serving owner of the Request stage still continues (recording mode)."""
+        owner = _Participant("m29", patterns=REQUEST_STAGE)
+        _browser, recorder, client, sid = await self._ready([owner])
+        _pause(client, sid, "q1", status=None)
+        await _settle()
+        assert _answers(client) == [("Fetch.continueRequest", "q1", sid, None)]
+        await recorder.close()
+
+    async def test_a_serving_participant_beside_an_archiver_still_never_continues(self) -> None:
+        """Whoever owns the stage, the Request pause is the server's to settle."""
+        archiver = _Participant("archiver")  # a replay-mode network session: no patterns
+        server = _Server("server", patterns=REQUEST_STAGE)  # answers nothing
+        _browser, recorder, client, sid = await self._ready([archiver, server])
+        _pause(client, sid, "q1", status=None)
+        await _settle()
+        assert [p.request_id for p in server.paused] == ["q1"]
+        assert _answers(client) == [self._failed("q1", sid)]
+        await recorder.close()
+
+
 # ── cleanup and liveness ──────────────────────────────────────────────
 
 
@@ -803,6 +988,9 @@ class _OwnBrowser:
 
     def launch_arg_conflicts(self, launch_args: Any) -> list[str]:
         return []
+
+    def planned_launch_flags(self, launch_args: Any) -> list[str]:
+        return list(launch_args)
 
     def persistent_profile(self) -> str | None:
         return None

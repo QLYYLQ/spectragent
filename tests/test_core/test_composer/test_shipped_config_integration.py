@@ -53,6 +53,7 @@ _CAPABILITY: dict[str, Any] = {
     "mouse_trajectory": {"trajectory_type": "instant"},
     "typing_rhythm": {"rhythm_type": "instant"},
     "replayability": {"replayability_id": "off"},
+    "network_source": {"source_id": "live"},
     "dom_cleaner": {"cleaner_type": "browser_use"},
     "dom_serializer": {"serializer_type": "text"},
     "backend": {"provider_id": "local_chrome"},
@@ -765,6 +766,12 @@ _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
             "hook[0].trace_dir",
         }
     ),
+    "replay_ui_tars_archive.yaml": frozenset(
+        {
+            "environment[0].capabilities[0].profile",
+            "hook[0].trace_dir",
+        }
+    ),
 }
 
 
@@ -853,6 +860,7 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                 "mouse_trajectory",
                 "typing_rhythm",
                 "replayability",
+                "network_source",
                 "dom_cleaner",
                 "dom_serializer",
                 "backend",
@@ -864,6 +872,22 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                             lambda r, j=j, k=k, c=child: r["environment"][j]["capabilities"][k][c],
                             lambda run, j=j, eid=eid, k=k, c=child: getattr(
                                 list(env_of(run, j, eid).capabilities.values())[k], c
+                            ),
+                        )
+                    )
+            # Nested one level further: an archive network source's own
+            # receptor (``miss_policy``) and its typed ``matcher`` sub-config.
+            for grandchild in ("miss_policy", "matcher"):
+                if grandchild in (cap_entry.get("network_source") or {}):
+                    blocks.append(
+                        _Block(
+                            f"environment[{j}].capabilities[{k}].network_source.{grandchild}",
+                            lambda r, j=j, k=k, g=grandchild: r["environment"][j]["capabilities"][
+                                k
+                            ]["network_source"][g],
+                            lambda run, j=j, eid=eid, k=k, g=grandchild: getattr(
+                                list(env_of(run, j, eid).capabilities.values())[k].network_source,
+                                g,
                             ),
                         )
                     )
