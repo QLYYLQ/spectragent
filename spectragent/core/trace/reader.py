@@ -40,7 +40,7 @@ file to an image judge.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from functools import cached_property
 from pathlib import Path
 from typing import Any, TypeVar
@@ -49,9 +49,11 @@ from conscribe import discover
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from spectragent.core.trace.encoding import (
+    ARCHIVE_META_KEY,
     CONFIG_FILE,
     MANIFEST_FILE,
     RESULT_FILE,
+    archive_blob_path,
     check_relative_path,
     decode_fragment,
     output_format_path,
@@ -60,6 +62,8 @@ from spectragent.core.trace.encoding import (
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import (
     TRACE_FORMAT_VERSION,
+    ArchiveMeta,
+    ArchiveRecord,
     ExtraFileIndex,
     ExtraFileRecord,
     FragmentFiles,
@@ -121,6 +125,7 @@ class RunTrace:
             )
         self._discovered = False
         self._indexes: dict[str, ExtraFileIndex] = {}
+        self._archives: dict[str, list[ArchiveRecord]] = {}
 
     # ── shape unchanged since format 1: readable at any version ───
 
@@ -351,6 +356,83 @@ class RunTrace:
             )
         return _parse(path, data, _JSON_OBJECT.validate_python, "JSON object")
 
+    # ── environment evidence (env/): through the extra indexes ─
+
+    def archive_files(self, step: int, archiver_id: str) -> list[ArchiveRecord]:
+        """The step evidence of *archiver_id* that *step*'s commit took, in index order.
+
+        Step-scoped files only (content-addressed ones included — a blob a
+        step references is that step's evidence too); a run record is
+        :meth:`archive_run_file`'s. ``[]`` when the step did not commit or
+        its commit took nothing of that archiver. Bytes:
+        ``read_extra(record.path)``.
+        """
+        self._require_indexed("archive_files")
+        entry = self._entries.get(step)
+        if entry is None or entry.extra_index is None:
+            return []
+        return [
+            record
+            for record in self._archive_records(entry.extra_index)
+            if record.scope == "step" and record.archiver_id == archiver_id
+        ]
+
+    def iter_archive(
+        self, archiver_id: str, *, include_trailing: bool = False
+    ) -> Iterator[tuple[int | None, ArchiveRecord]]:
+        """``(step, record)`` for every step file of *archiver_id*, in step order.
+
+        With *include_trailing*, the step evidence the trailing commits took
+        follows as ``(None, record)``, in ``manifest.trailing`` order — never
+        under a step number: it belongs to no committed step. Run records
+        are not yielded.
+
+        The format check happens here, at the call, not at the first
+        ``next()``: a format-1 trace is refused where it is asked about.
+        """
+        self._require_indexed("iter_archive")
+        return self._iter_archive(archiver_id, include_trailing)
+
+    def blob(self, sha256: str) -> bytes:
+        """The bytes of a committed content-addressed archive file.
+
+        ``read_extra(archive_blob_path(sha256))`` — once a committed index
+        lists that path as an archive file (``meta["archive"]``); an extra
+        file another producer put at that path is not one.
+
+        Raises:
+            KeyError: No committed index lists an archive file at that
+                address.
+            TraceSchemaError: As :meth:`read_extra`.
+        """
+        self._require_indexed("blob")
+        path = archive_blob_path(sha256)
+        if path not in self._archive_blobs:
+            raise KeyError(
+                f"{sha256!r} is not a committed content-addressed archive file of {self._trace_dir}"
+            )
+        return self.read_extra(path)
+
+    def archive_run_file(self, capability_id: str) -> ArchiveRecord | None:
+        """The highest committed version of *capability_id*'s run record, or ``None``.
+
+        Searched across the step and the trailing indexes: a version is
+        committed with whichever commit came next, and the version number
+        in the index — not the commit order — says which is latest. The
+        writer keeps that the newest capture: it never commits a record
+        collected before the latest one as a later version. Bytes:
+        ``read_extra(record.path)``.
+        """
+        self._require_indexed("archive_run_file")
+        latest: ArchiveRecord | None = None
+        for rel in self._extra_indexes:
+            for record in self._archive_records(rel):
+                if record.scope != "run" or record.capability_id != capability_id:
+                    continue
+                if latest is None or _run_version(record) > _run_version(latest):
+                    latest = record
+        return latest
+
     # ── internals ─────────────────────────────────────────────
 
     @cached_property
@@ -358,14 +440,83 @@ class RunTrace:
         return {entry.step: entry for entry in reversed(self._manifest.steps)}
 
     @cached_property
-    def _extra_records(self) -> dict[str, tuple[ExtraFileRecord, Path]]:
-        """Every committed extra file by path — its record, and the index that lists it."""
+    def _extra_indexes(self) -> list[str]:
+        """Every committed extra index: the steps' in manifest order, then the trailing ones'."""
         indexes = [entry.extra_index for entry in self._manifest.steps]
         indexes += [entry.extra_index for entry in self._manifest.trailing]
-        records: dict[str, tuple[ExtraFileRecord, Path]] = {}
-        for rel in indexes:
-            if rel is None:
+        return [rel for rel in indexes if rel is not None]
+
+    @cached_property
+    def _archive_blobs(self) -> frozenset[str]:
+        """Paths of every committed content-addressed archive file."""
+        return frozenset(
+            record.path
+            for rel in self._extra_indexes
+            for record in self._archive_records(rel)
+            if record.content_addressed
+        )
+
+    def _iter_archive(
+        self, archiver_id: str, include_trailing: bool
+    ) -> Iterator[tuple[int | None, ArchiveRecord]]:
+        for entry in sorted(self._manifest.steps, key=lambda item: item.step):
+            if entry.extra_index is None:
                 continue
+            for record in self._archive_records(entry.extra_index):
+                if record.scope == "step" and record.archiver_id == archiver_id:
+                    yield entry.step, record
+        if not include_trailing:
+            return
+        for trailing in self._manifest.trailing:
+            if trailing.extra_index is None:
+                continue
+            for record in self._archive_records(trailing.extra_index):
+                if record.scope == "step" and record.archiver_id == archiver_id:
+                    yield None, record
+
+    def _archive_records(self, rel: str) -> list[ArchiveRecord]:
+        """The archive files the extra index *rel* lists, in index order.
+
+        An entry is an archive file when its ``meta`` carries
+        ``ARCHIVE_META_KEY``; anything else in the index is some other
+        producer's extra file and is skipped. Metadata that does not parse
+        as :class:`ArchiveMeta` makes the index unreadable — the error
+        names it.
+        """
+        records = self._archives.get(rel)
+        if records is not None:
+            return records
+        index = self._read_index(rel)
+        records = []
+        for entry in index.files:
+            if ARCHIVE_META_KEY not in entry.meta:
+                continue
+            try:
+                meta = ArchiveMeta.model_validate(entry.meta[ARCHIVE_META_KEY])
+            except ValidationError as exc:
+                path = self._trace_dir / rel
+                raise TraceSchemaError(
+                    f"{path} lists {entry.path!r} with archive metadata that does not parse "
+                    f"as an ArchiveMeta: {exc}",
+                    path=path,
+                ) from exc
+            records.append(
+                ArchiveRecord(
+                    path=entry.path,
+                    size=entry.size,
+                    sha256=entry.sha256,
+                    content_addressed=entry.content_addressed,
+                    **meta.model_dump(),
+                )
+            )
+        self._archives[rel] = records
+        return records
+
+    @cached_property
+    def _extra_records(self) -> dict[str, tuple[ExtraFileRecord, Path]]:
+        """Every committed extra file by path — its record, and the index that lists it."""
+        records: dict[str, tuple[ExtraFileRecord, Path]] = {}
+        for rel in self._extra_indexes:
             index = self._trace_dir / rel
             for record in self._read_index(rel).files:
                 seen, _ = records.setdefault(record.path, (record, index))
@@ -496,6 +647,11 @@ class RunTrace:
                 path=self._manifest_path,
             )
         return cls
+
+
+def _run_version(record: ArchiveRecord) -> int:
+    """A run record's version — always set: :class:`ArchiveMeta` refuses a run record without one."""
+    return record.run_version if record.run_version is not None else -1
 
 
 def _registered(key: str) -> type[FragmentBase] | None:

@@ -10,9 +10,9 @@ See docs/execution_dag.md M04 for the registrar design.
    This module deliberately does **not** use ``from __future__ import
    annotations``, for the same reason ``capabilities/_registrar.py``
    doesn't: every ``Annotated[...]`` a hook declares must stay a real
-   object so the dataclass-generated ``__init__`` of a subclass (whose
-   ``__globals__`` belong to *its* module) carries a resolvable
-   annotation for conscribe's config extractor.
+   object so the ``__init__`` of a subclass — dataclass-generated (whose
+   ``__globals__`` belong to *its* module) or hand-written — carries a
+   resolvable annotation for conscribe's config extractor.
 """
 
 from dataclasses import dataclass
@@ -31,20 +31,29 @@ HookRegistrar = create_registrar(
 )
 
 
-@dataclass
+# ``eq=False``: a hook is a stateful object, compared by identity. A
+# subclass with a hand-written ``__init__`` (``TraceWriter``) would
+# otherwise inherit a field-less ``__eq__`` under which every two
+# instances are "equal" — and be unhashable.
+@dataclass(eq=False)
 class HookBase(metaclass=HookRegistrar.Meta):
     """Concrete base for all hook implementations.
 
-    A ``@dataclass``, like every other registrar base in this package
-    (actions, capabilities, agents, loaders, evaluators). That is what
-    makes a class-level ``Annotated[...]`` declaration on a hook a real
-    ``__init__`` parameter, and therefore a field conscribe emits into
-    the generated per-key config model. Before this, hooks were the one
-    layer that hand-rolled ``__init__(self, **kwargs)``: conscribe reads
+    A ``@dataclass(eq=False)``; every other registrar base is a dataclass
+    too (actions, capabilities, agents, loaders, evaluators). Before
+    this, hooks were the one layer that hand-rolled
+    ``__init__(self, **kwargs)``: conscribe reads
     ``inspect.signature(cls.__init__)``, found no named parameter, and
     emitted a discriminator-only model with ``extra="forbid"`` — so
     ``TraceWriter.trace_dir`` was not merely ignored from YAML, it was a
-    hard validation error.
+    hard validation error. What conscribe needs is a *named* ``__init__``
+    parameter per knob; the two shapes below both give it one.
+
+    ``eq=False`` because a hook is a stateful object, compared by
+    identity: code that must tell hooks apart (archive negotiation
+    comparing consumers) uses ``is``. Without it, a subclass that is not
+    itself a dataclass would inherit a field-less ``__eq__`` under which
+    every two instances are equal.
 
     Subclasses must set:
     - ``__registry_key__``: conscribe key (e.g. ``"trace_writer"``)
@@ -55,11 +64,29 @@ class HookBase(metaclass=HookRegistrar.Meta):
     - ``on_run_start/end/error`` lifecycle callbacks
     - Handler methods named ``{advice}_{method}`` matching ``__intercepts__``
 
-    A subclass that carries config or mutable state must decorate itself
-    with ``@dataclass`` too, declare its knobs as ``Annotated`` fields
-    and its internals as ``field(init=False, repr=False)``.
+    **A hook with knobs takes one of two shapes**, chosen by one question:
+    does it carry a ``__wiring__`` receptor?
 
-    Example::
+    - **No receptor** (``metrics``): decorate the subclass with
+      ``@dataclass`` too, declare its knobs as ``Annotated`` fields and its
+      internals as ``field(init=False, repr=False)``. The synthesised
+      ``__init__`` makes each knob a named parameter. Example below.
+    - **A receptor** (``trace_writer``, whose ``archive`` becomes one in
+      M29): **not** a ``@dataclass``. conscribe's metaclass decides whether
+      a ``__wiring__`` entry is already a constructor parameter by reading
+      ``inspect.signature(cls.__init__)`` at class creation — before
+      ``@dataclass`` has synthesised anything — so a receptor that is a
+      dataclass field looks unreceived, gets a ``WiredField`` installed
+      over its default, and loses its optionality. Hand-write ``__init__``:
+      every knob a named ``Annotated`` parameter, and the receptor's
+      class-level annotation on a plain mixin (``list[...]`` for a list
+      receptor — the Composer reads the class annotation to choose list,
+      dict or single injection). ``TraceWriter`` is the worked case.
+      ``tests/test_core/test_capabilities/test_receptor_hygiene.py`` (Rule
+      3) fails a receptor that is a parameter of a synthesised
+      ``__init__``.
+
+    Example (no receptor)::
 
         @dataclass
         class MetricsHook(HookBase):

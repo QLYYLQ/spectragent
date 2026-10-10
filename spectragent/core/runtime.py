@@ -2,7 +2,8 @@
 
 AgentRuntime is loop-agnostic: it handles slot validation,
 three-party observation negotiation, action negotiation + guarded_act,
-AOP hook weaving, loop weaving, timeout control, and error handling.
+memory and archive negotiation, AOP hook weaving, loop weaving, binding
+the environment's archivers, timeout control, and error handling.
 
 ``prepare()`` assembles all dependencies and weaves the Loop into the
 agent instance — after which ``agent.run(task)`` is self-contained.
@@ -29,11 +30,13 @@ from typing import Any
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.aop.tasks import BackgroundTasks
 from spectragent.core.aop.weaver import Weaver
+from spectragent.core.archive.protocols import ArchiveConsumer
 from spectragent.core.composer import ComposedRun, ComposeError
 from spectragent.core.hooks.base import RuntimeHook
-from spectragent.core.loops.errors import RunAbort
+from spectragent.core.loops.errors import RunAbort, carried_outcome
 from spectragent.core.negotiation import (
     negotiate_action,
+    negotiate_archive,
     negotiate_memory,
     negotiate_observation,
 )
@@ -74,16 +77,35 @@ def _component_id(obj: Any, accessor: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _outcome_under(timed_out: TimeoutError) -> RunAbort | AgentResult | None:
+    """What the run had already ended in when its own timeout cut the Loop off, if anything.
+
+    ``asyncio.wait_for`` raises its ``TimeoutError`` *from* the cancellation
+    it delivered into the Loop — on 3.11 and 3.12 alike, and
+    ``tests/test_core/test_loops/test_errors.py`` pins it — and a Loop cut
+    off while recording the step its run ended on lets that cancellation
+    carry the outcome (``loops.errors.carry_outcome``). ``execute`` ends the
+    run with a ``RunAbort`` or an ``AgentResult``; anything else falls
+    through to an ordinary timeout.
+    """
+    cancelled = timed_out.__cause__
+    if not isinstance(cancelled, asyncio.CancelledError):
+        return None
+    return carried_outcome(cancelled)
+
+
 class AgentRuntime:
     """Loop-agnostic orchestration engine.
 
     Responsibilities:
     1. Validate Agent-Loop slot compatibility
     2. Run three-party observation negotiation
-    3. Aggregate action space + build guarded_act
-    4. Weave AOP hooks into agent/env/llm proxies
-    5. Weave Loop execution logic into agent.run
-    6. (execute only) Drive agent.run() with timeout + lifecycle hooks
+    3. Run action, memory and archive negotiation
+    4. Aggregate action space + build guarded_act
+    5. Weave AOP hooks into agent/env/llm proxies
+    6. Weave Loop execution logic into agent.run
+    7. Bind the environment's archivers (only when a hook archives)
+    8. (execute only) Drive agent.run() with timeout + lifecycle hooks
 
     An AgentRuntime drives exactly **one** agent instance. Its loop, llm
     and memory come from that agent's own wired receptors, never from a
@@ -111,6 +133,11 @@ class AgentRuntime:
         self._hooks: list[RuntimeHook] = list(run.hooks)
         self._negotiated_obs: Any = None
         self._negotiated_actions: Any = None
+        # The archive axis: ``None`` unless some hook asked to archive
+        # (see :meth:`prepare`), plus the privacy markers its archivers
+        # declare — both handed to ``on_run_start`` by name.
+        self._negotiated_archive: Any = None
+        self._env_evidence_privacy: list[str] = []
         self._active_descriptors: list[Any] = []
         self._memory: Any = None
         self._recorder = StepRecorder()
@@ -183,6 +210,16 @@ class AgentRuntime:
         included — could say what the run had actually agreed on.
         """
         return self._negotiated_actions
+
+    @property
+    def negotiated_archive(self) -> Any | None:
+        """Archive negotiation result, available after :meth:`prepare`.
+
+        ``None`` when no hook declared a non-empty ``archive`` — the run
+        records no environment evidence, and the environment was never
+        asked about archiving at all.
+        """
+        return self._negotiated_archive
 
     @property
     def active_descriptors(self) -> list[Any]:
@@ -287,6 +324,18 @@ class AgentRuntime:
         ``loop`` / ``llm`` / ``memory`` are read off the bound agent's own
         wired receptors; ``env`` is the one bound at construction time.
         After return, ``agent.run(task)`` is fully self-contained.
+
+        Archiving is validated early and bound last: when a hook declares
+        a non-empty ``archive`` (an
+        :class:`~spectragent.core.archive.protocols.ArchiveConsumer`),
+        ``negotiate_archive`` runs right after memory negotiation and
+        ``env.bind_archivers`` is the final statement. With no such hook
+        the environment receives no archive call at all.
+
+        Raises:
+            IncompatibleArchiveError: The archivers a hook asks for cannot
+                be bound to this run's environment — raised before
+                anything is woven, and before ``on_run_start``.
         """
         agent = self._agent
         loop = agent.agent_loop
@@ -310,6 +359,25 @@ class AgentRuntime:
 
         # Step 2.75: Memory protocol negotiation (Loop ⊆ Memory)
         negotiate_memory(loop, memory)
+
+        # Step 2.8: Archive negotiation (archive consumer ↔ environment).
+        # Validation only, and early, so a binding error surfaces during
+        # assembly — on a dry run too — before anything is woven. The
+        # binding itself is the last step of this method. A run whose
+        # hooks archive nothing makes no archive call on the environment
+        # at all: environments without the archive surface keep working.
+        # The runtime knows the consumer only through ``ArchiveConsumer``.
+        consumers = [h for h in self._hooks if isinstance(h, ArchiveConsumer) and h.archive]
+        if consumers:
+            negotiated_archive = negotiate_archive(consumers, env)
+            # Negotiation guarantees there is exactly one consumer.
+            archivers = list(consumers[0].archive)
+        else:
+            negotiated_archive, archivers = None, []
+        self._negotiated_archive = negotiated_archive
+        self._env_evidence_privacy = sorted(
+            {marker for archiver in archivers for marker in archiver.privacy_markers}
+        )
 
         # Step 3: AOP weaving (must happen before guarded_act so
         #          act_fn captures wrapped_env.act, enabling AOP intercepts)
@@ -373,6 +441,17 @@ class AgentRuntime:
         self._active_descriptors = active_descriptors
         self._memory = memory
 
+        # Step 6: Bind the archivers — the last statement, so no later
+        # assembly check can fail after a capability's state changed. On
+        # the *raw* environment (no hook intercepts it), still before
+        # ``on_run_start`` and ``setup_environment``: a capability decides
+        # at setup whether to build its capture channel. Binding acquires
+        # nothing, so a dry run that never sets up costs nothing here.
+        # (``env`` is never ``None`` here — negotiation refuses an archive
+        # without an environment — the check is for the type checker.)
+        if negotiated_archive is not None and env is not None:
+            env.bind_archivers(archivers)
+
         return wrapped_agent
 
     # -- execute: convenience one-shot -------------------------
@@ -419,10 +498,27 @@ class AgentRuntime:
         as failed and go on to the next. A cancellation that arrives after
         the close-out has started does not dispatch it a second time.
 
+        A guard's veto (``RunAbort`` out of the Loop) is also re-raised
+        whatever ``raise_on_error`` says, after the close-out — and it too
+        outranks a close-out that fails under it: the failure is logged and
+        attached to the veto as a note, or a vetoed sweep would record one
+        task as failed and go on to the next.
+
+        The run's own ``timeout`` is not an external cancellation, and it
+        does not outrank an outcome the run had already reached. When it
+        expires while the Loop is still recording the step its run ended
+        on, the cancellation that cut the Loop off carries that outcome
+        (``loops.errors.RunEnded``): a veto is closed out and re-raised as
+        above, with the timeout as a note on it and a remark in the result's
+        ``error``; a terminal result the Loop had built — an infrastructure
+        failure naming its root cause, say — is closed out and returned with
+        the same remark. Only a timeout that cut off a run still under way
+        produces an ``agent_done=TIMEOUT`` result.
+
         A run is closed out once. When a blocking hook raises during the
-        close-out of a run that finished, timed out or failed, that error
-        propagates as it is — the run is not closed out again as if the
-        hook's failure had been the run's.
+        close-out of a run that finished, timed out or failed (other than by
+        a veto), that error propagates as it is — the run is not closed out
+        again as if the hook's failure had been the run's.
 
         Args:
             task: Task text handed to the agent.
@@ -478,11 +574,15 @@ class AgentRuntime:
         # exist: a trace that cannot say which fragments and actions were
         # live cannot explain a single step it recorded.
         #
-        # The identity, the composed config and both negotiation results
+        # The identity, the composed config and the negotiation results
         # are resolved here and passed as values. A hook that had to
         # rediscover them would be doing the runtime's job with less
         # information — and did, by ``getattr``-ing ids off the agent and
-        # dropping the configuration entirely.
+        # dropping the configuration entirely. The same goes for the
+        # archive facts: whether evidence is recorded and what its
+        # archivers declare, and the setup context this task's environment
+        # is started from (``task_setup`` — exactly what is routed to
+        # ``setup_environment`` below; ``None`` when there is none).
         await self._dispatch_lifecycle(
             "on_run_start",
             agent=self._agent,
@@ -502,6 +602,10 @@ class AgentRuntime:
             resolved_config=self._run.top_level_cfg,
             observation_negotiation=self._negotiated_obs,
             action_negotiation=self._negotiated_actions,
+            archive_negotiation=self._negotiated_archive,
+            env_evidence_recorded=self._negotiated_archive is not None,
+            env_evidence_privacy=list(self._env_evidence_privacy),
+            task_setup=env_context,
         )
 
         started = time.monotonic()
@@ -529,7 +633,60 @@ class AgentRuntime:
                     prepared_agent.run(task),
                     timeout=timeout,
                 )
-            except TimeoutError:
+            except TimeoutError as timed_out:
+                # The run's own timeout — but the run may already have ended
+                # by then: the Loop was recording the step a guard vetoed, or
+                # the step a failure ended the run on (a slow archive
+                # collection of the very page the guard refused), and the
+                # cancellation that cut it off carries that outcome
+                # (``loops.errors.RunEnded``). The outcome came first, so it
+                # is the run's; the timeout is a remark on it. Reporting a
+                # timeout instead is how such a veto got lost — returned
+                # whatever ``raise_on_error`` says, recorded by a sweep as
+                # one more timed-out task, and followed by the next task
+                # against the site the guard had just refused.
+                ended = _outcome_under(timed_out)
+                if isinstance(ended, RunAbort):
+                    logger.warning(
+                        "AgentRuntime: the run's timeout (%.1fs) expired while its vetoed step "
+                        "was being recorded; the veto stands: %s",
+                        timeout,
+                        ended,
+                    )
+                    ended.add_note(
+                        f"The run's own timeout ({timeout}s) expired while the vetoed step was "
+                        "still being recorded; the veto stands."
+                    )
+                    result = self._terminal_result(
+                        task=task,
+                        task_id=task_id,
+                        agent_done=AgentDoneStatus.ERROR,
+                        env_status=self._probe_env_status(),
+                        error=(
+                            f"{type(ended).__name__}: {ended} (the run's timeout of {timeout}s "
+                            "expired while the vetoed step was being recorded)"
+                        ),
+                        elapsed_ms=int((time.monotonic() - started) * 1000),
+                    )
+                    await self._close_out_vetoed(result, ended)
+                    # From the timeout: it is why the veto leaves from here
+                    # rather than from the Loop, and its traceback shows
+                    # where the Loop was cut off.
+                    raise ended from timed_out
+                if isinstance(ended, AgentResult):
+                    logger.warning(
+                        "AgentRuntime: the run's timeout (%.1fs) expired while the step its run "
+                        "ended on was being recorded; the run's own result stands: %s",
+                        timeout,
+                        ended.error,
+                    )
+                    cut_off = f"recording this step was cut off by the run's timeout of {timeout}s"
+                    result = ended.model_copy(
+                        update={"error": f"{ended.error} ({cut_off})" if ended.error else cut_off}
+                    )
+                    # Closed out as the Loop would have returned it.
+                    await self._finish(result)
+                    return result
                 logger.warning("AgentRuntime: execution timed out after %.1fs", timeout)
                 result = self._terminal_result(
                     task=task,
@@ -555,17 +712,21 @@ class AgentRuntime:
                     error=f"{type(exc).__name__}: {exc}",
                     elapsed_ms=int((time.monotonic() - started) * 1000),
                 )
-                await self._finish(result, error=exc)
-                # ``raise_on_error=False`` means "a task that fails must not
-                # stop the sweep". A veto is the opposite instruction: a guard
-                # inspected this run and said *stop*, so collapsing it into a
-                # returned ``AgentResult`` would make the framework overrule
-                # the guard it just obeyed inside the loop. It propagates
-                # either way — but only after ``_finish``, so the veto and its
-                # evidence are already in the trace when it does.
-                if raise_on_error or isinstance(exc, RunAbort):
-                    raise
-                return result
+                if not isinstance(exc, RunAbort):
+                    await self._finish(result, error=exc)
+                    if raise_on_error:
+                        raise
+                    return result
+                # A veto. ``raise_on_error=False`` means "a task that fails
+                # must not stop the sweep"; a veto is the opposite
+                # instruction: a guard inspected this run and said *stop*, so
+                # collapsing it into a returned ``AgentResult`` would make the
+                # framework overrule the guard it just obeyed inside the loop.
+                # It propagates either way — after the close-out, so the veto
+                # and its evidence are in the trace when it does, and even if
+                # that close-out fails (``_close_out_vetoed``).
+                await self._close_out_vetoed(result, exc)
+                raise
             else:
                 # Outside the ``try`` above on purpose: a blocking hook that
                 # raises while closing out a finished run must not land in
@@ -642,6 +803,27 @@ class AgentRuntime:
         # every pending task, which is how a ``blocking=False`` handler
         # could be spawned and simply never execute.
         await self._drain_background()
+
+    async def _close_out_vetoed(self, result: Any, veto: RunAbort) -> None:
+        """Close a vetoed run out; a failure doing so is noted on the veto, never raised.
+
+        The caller re-raises *veto* afterwards. Nothing the close-out raises
+        takes its place: a veto outranks a close-out that fails under it, as
+        a cancellation does (a disk still full when ``TraceWriter`` flushes
+        the vetoed step's calls). Raising the hook's error instead would turn
+        the veto into an ordinary task failure — a sweep's ``except
+        Exception`` would record it and start the next task, against the
+        site the guard just refused. The failure is logged and travels on
+        the veto as a note. A cancellation that lands in the close-out is a
+        ``BaseException`` and is not caught: it still outranks the veto.
+        """
+        try:
+            await self._finish(result, error=veto)
+        except Exception as failure:
+            logger.exception("AgentRuntime: closing out a vetoed run failed")
+            veto.add_note(
+                f"Closing the vetoed run out failed too: {type(failure).__name__}: {failure}"
+            )
 
     async def _drain_background(self) -> None:
         """Wait out this run's non-blocking handler tasks, then move on."""

@@ -26,7 +26,11 @@ from spectragent.core.trace.encoding import EncodedFragment, EncodedLLMCall, Tra
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
 from tests._helpers.trace_builder import (
+    ARCHIVE_CAPABILITY,
+    STEPS_ARCHIVER,
+    ArchiveTrace,
     ReferenceTrace,
+    build_archive_trace,
     build_reference_trace,
     completed_call,
     new_wal,
@@ -97,6 +101,31 @@ JSON_INPUTS: dict[str, tuple[str, Read, bytes]] = {
         "steps/trailing_00.extra.json",
         lambda d: _trace(d).trailing_extra_files,
         b'{"files": [{"size": "big"}]}',
+    ),
+    "extra index via archive_files": (
+        "steps/000.extra.json",
+        lambda d: _trace(d).archive_files(0, "browser.network"),
+        b'{"files": "none"}',
+    ),
+    "extra index via iter_archive": (
+        "steps/001.extra.json",
+        lambda d: list(_trace(d).iter_archive("x.y")),
+        b'{"files": [{"path": "env/steps/001/x.y/name"}]}',
+    ),
+    "trailing extra index via iter_archive": (
+        "steps/trailing_00.extra.json",
+        lambda d: list(_trace(d).iter_archive("x.y", include_trailing=True)),
+        b'{"files": [{"size": "big"}]}',
+    ),
+    "extra index via archive_run_file": (
+        "steps/trailing_00.extra.json",
+        lambda d: _trace(d).archive_run_file("browser"),
+        b'{"files": "none"}',
+    ),
+    "extra index via blob": (
+        "steps/000.extra.json",
+        lambda d: _trace(d).blob("0" * 64),
+        b'{"files": [{"path": 3}]}',
     ),
 }
 
@@ -224,6 +253,68 @@ class TestBytesThatDisagreeWithTheirIndex:
         assert exc_info.value.path == wal.run_dir / rel
 
 
+ARCHIVE_READS: dict[str, Read] = {
+    "archive_files": lambda d: _trace(d).archive_files(0, STEPS_ARCHIVER),
+    "iter_archive": lambda d: list(_trace(d).iter_archive(STEPS_ARCHIVER)),
+    "blob": lambda d: _trace(d).blob("0" * 64),
+    "archive_run_file": lambda d: _trace(d).archive_run_file(ARCHIVE_CAPABILITY),
+}
+
+
+@pytest.fixture()
+def archived(tmp_path) -> ArchiveTrace:
+    return build_archive_trace(tmp_path)
+
+
+class TestArchiveMetadataThatDoesNotParse:
+    """``meta["archive"]`` is what makes an extra file an archive file — it must be one."""
+
+    @pytest.mark.parametrize(
+        "damage",
+        [
+            lambda meta: meta.update(archiver_id=5),
+            lambda meta: meta.pop("scope"),
+            lambda meta: meta.update(scope="session"),
+            lambda meta: meta.update(run_version=0),  # a step file claiming a version
+            lambda meta: meta.clear(),
+        ],
+        ids=["wrong type", "missing field", "unknown scope", "version on a step file", "empty"],
+    )
+    @pytest.mark.parametrize("accessor", list(ARCHIVE_READS))
+    def test_names_the_index(self, archived, accessor, damage):
+        index = archived.run_dir / "steps/000.extra.json"
+        payload = json.loads(index.read_text())
+        damage(payload["files"][0]["meta"]["archive"])
+        index.write_text(json.dumps(payload))
+
+        with pytest.raises(TraceSchemaError, match="ArchiveMeta") as exc_info:
+            ARCHIVE_READS[accessor](archived.run_dir)
+        assert exc_info.value.path == index
+
+    def test_a_run_record_without_its_version(self, archived):
+        index = archived.run_dir / "steps/002.extra.json"
+        payload = json.loads(index.read_text())
+        (entry,) = [f for f in payload["files"] if f["meta"]["archive"]["scope"] == "run"]
+        entry["meta"]["archive"]["run_version"] = None
+        index.write_text(json.dumps(payload))
+
+        with pytest.raises(TraceSchemaError, match="carries its version") as exc_info:
+            _trace(archived.run_dir).archive_run_file(ARCHIVE_CAPABILITY)
+        assert exc_info.value.path == index
+
+    def test_other_producers_metadata_is_not_read(self, archived):
+        """A record without the ``archive`` key is skipped, whatever else its meta holds."""
+        index = archived.run_dir / "steps/000.extra.json"
+        payload = json.loads(index.read_text())
+        (plain,) = [f for f in payload["files"] if "archive" not in f["meta"]]
+        plain["meta"] = {"kind": ["anything", {"at": "all"}]}
+        index.write_text(json.dumps(payload))
+
+        assert [r.name for r in _trace(archived.run_dir).archive_files(0, STEPS_ARCHIVER)] == [
+            "cycle_001.json"
+        ]
+
+
 class TestRecordsFiledInTheWrongPlace:
     def test_a_step_file_recording_another_step(self, reference):
         path = reference.run_dir / "steps/000.json"
@@ -332,6 +423,11 @@ V2_ACCESSORS: dict[str, Read] = {
     "trailing_extra_files": lambda d: _trace(d).trailing_extra_files,
     "read_extra": lambda d: _trace(d).read_extra("env/x"),
     "output_schema": lambda d: _trace(d).output_schema("0" * 64),
+    "archive_files": lambda d: _trace(d).archive_files(0, "x.y"),
+    # Not consumed: the format check happens at the call, not at the first ``next()``.
+    "iter_archive": lambda d: _trace(d).iter_archive("x.y"),
+    "blob": lambda d: _trace(d).blob("0" * 64),
+    "archive_run_file": lambda d: _trace(d).archive_run_file("x"),
 }
 
 
@@ -383,6 +479,11 @@ class TestNotThereIsNotAnError:
             trace.read_extra("env/x")
         with pytest.raises(KeyError):
             trace.output_schema("0" * 64)
+        assert trace.archive_files(0, "x.y") == []
+        assert list(trace.iter_archive("x.y", include_trailing=True)) == []
+        assert trace.archive_run_file("x") is None
+        with pytest.raises(KeyError):
+            trace.blob("0" * 64)
 
 
 class TestAPathTheTraceListsStaysInsideIt:
@@ -508,6 +609,40 @@ class TestAPathTheTraceListsStaysInsideIt:
             else (lambda d: _trace(d).read_extra(outside))
         )
         self._refused(read, reference.run_dir, listed_in=index)
+
+    @pytest.mark.parametrize("escape", ["absolute", "dot-dot"])
+    @pytest.mark.parametrize("accessor", list(ARCHIVE_READS))
+    def test_a_path_an_archive_index_lists(self, archived, secret, accessor, escape):
+        index = archived.run_dir / "steps/000.extra.json"
+        payload = json.loads(index.read_text())
+        payload["files"][0]["path"] = str(secret) if escape == "absolute" else "../outside/id_rsa"
+        index.write_text(json.dumps(payload))
+
+        self._refused(ARCHIVE_READS[accessor], archived.run_dir, listed_in=index)
+
+    def test_an_archive_blob_that_is_a_symlink_out(self, archived, secret):
+        shared = archived.shared_blob
+        (archived.run_dir / shared.rel_path).unlink()
+        (archived.run_dir / shared.rel_path).symlink_to(secret)
+
+        self._refused(
+            lambda d: _trace(d).blob(sha256_hex(shared.data)),
+            archived.run_dir,
+            listed_in=archived.run_dir / "steps/000.extra.json",
+        )
+
+    def test_a_run_record_that_is_a_symlink_out(self, archived, secret):
+        """The record is handed back; its bytes go through ``read_extra``'s containment."""
+        latest = _trace(archived.run_dir).archive_run_file(ARCHIVE_CAPABILITY)
+        assert latest is not None
+        (archived.run_dir / latest.path).unlink()
+        (archived.run_dir / latest.path).symlink_to(secret)
+
+        self._refused(
+            lambda d: _trace(d).read_extra(latest.path),
+            archived.run_dir,
+            listed_in=archived.run_dir / "steps/002.extra.json",
+        )
 
     def test_an_extra_file_that_is_a_symlink_out(self, reference, secret):
         rel = "env/steps/000/browser.network/response.json"

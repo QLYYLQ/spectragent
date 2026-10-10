@@ -9,10 +9,14 @@ See docs/architecture_design.md §4.3 and docs/execution_dag.md M07.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, Protocol, runtime_checkable
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+
+if TYPE_CHECKING:
+    from spectragent.core.archive._registrar import ArchiverBase
+    from spectragent.core.archive.types import ArchiveBatch
 
 
 @runtime_checkable
@@ -56,11 +60,75 @@ class Environment(Protocol):
         """Check if a specific capability is available."""
         ...
 
+    # ── The three provides axes ───────────────────────────────
+    #
+    # Declared alike, all three, and all fully qualified. ``provided_actions``
+    # used to live only on ``EnvironmentBase`` while ``negotiate_action``
+    # read it off whatever environment it was handed — so a structural
+    # implementer of this Protocol type-checked clean and then failed at
+    # negotiation. The archive axis is declared complete from its first day.
+
     @property
     def provided_fragments(self) -> frozenset[str]:
         """Observation fragment keys provided by all capabilities combined.
 
         Used by AgentRuntime for three-party observation negotiation.
+        """
+        ...
+
+    @property
+    def provided_actions(self) -> frozenset[str]:
+        """Action keys executable by all capabilities combined.
+
+        What ``negotiate_action`` resolves the agent's declared actions
+        against.
+        """
+        ...
+
+    @property
+    def provided_archivers(self) -> frozenset[str]:
+        """Archiver keys provided by the capabilities that archive.
+
+        The union over capabilities implementing
+        :class:`~spectragent.core.archive.protocols.ArchivingCapability`;
+        a capability that does not contributes nothing.
+        """
+        ...
+
+    # ── Archive (environment evidence) ────────────────────────
+
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
+        """Route each archiver to its capability by key prefix, and bind.
+
+        The same routing as :meth:`act`: the leading segment of
+        ``archiver_id`` names the capability. Validates every archiver
+        before binding any — an unroutable or unprovided key raises with
+        nothing bound — then hands every archiving capability its group,
+        an empty one to those that get none (which clears an earlier
+        binding). Acquires no resource: ``AgentRuntime.prepare`` calls it
+        as its last step, on a dry run too, before setup.
+
+        Raises:
+            UnroutableArchiverError: A key whose prefix names no
+                capability, whose capability does not archive, or that
+                the capability does not provide.
+        """
+        ...
+
+    async def collect_archive(self) -> ArchiveBatch:
+        """Pull everything the bound capabilities captured since the last pull.
+
+        Takes nothing — no step number or cycle ever reaches a capability;
+        "what step t's commit takes belongs to step t" is the consumer's
+        rule. With nothing bound, returns an empty batch without touching
+        any capability. Otherwise collects from every bound capability
+        concurrently, waits for all of them, and merges their batches in
+        capability order.
+
+        Raises:
+            ArchiveCollectionError: One or more capabilities failed (raised
+                or handed over another capability's file); names every
+                failure. Healthy batches are discarded with it.
         """
         ...
 

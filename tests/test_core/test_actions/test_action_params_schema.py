@@ -31,7 +31,15 @@ from spectragent.agents._action_union import params_model_from_schema
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.actions.params import RequiresFragment, param_fragments
 
-_KEYS = sorted(ActionRegistrar.get_all())
+#: The shipped actions only. The registry is process-global and test helpers
+#: register their own fakes into it on import (``tests/_helpers/archive_fakes.py``
+#: registers ``contract_archive.*``), so the raw key set depends on which test
+#: modules happened to be collected first — and this table is exact.
+_KEYS = sorted(
+    key
+    for key, cls in ActionRegistrar.get_all().items()
+    if cls.__module__.startswith("spectragent.")
+)
 
 #: What every action's ``params`` prose rendered before this change, to the
 #: byte. Not a restatement of the implementation: it is the *old*

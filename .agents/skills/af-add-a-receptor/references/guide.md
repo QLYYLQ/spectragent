@@ -125,7 +125,7 @@ silent — no YAML names it yet, so nothing goes red and you never learn the kno
 existed. (Once a YAML block *does* name it, the degraded `Literal` rejects the block
 and `tests/test_core/test_composer/test_shipped_config_integration.py` goes red. The
 older "a typo silently falls back to the default" phrasing in
-`generate_all.py:74-78` and `docs/architecture_design.md:1692` describes the
+`generate_all.py:74-78` and `docs/architecture_design.md:1996` describes the
 pre-receptor era, when the axis was a plain scalar; with a `__wiring__` entry the
 `Literal` does reject a typo. The knob loss is the part that is still true.)
 
@@ -204,6 +204,29 @@ importing, so an optional extra or an unimported module cannot hide one.
 > *collected-but-stale* one. A created-but-uncollected registrar is caught by neither.
 > Do step 3 when you do step 1.
 
+**The one exception: a registrar with no implementation yet.** An empty registry cannot
+be a Composer layer, three ways at once: `ConfigComposer` raises for a collected layer
+with no registered class ("register at least one subclass or omit this layer",
+`core/composer.py`); `generate_all` skips an empty layer, so the fingerprint test reports
+it as collected but never fingerprinted; and an owner whose wired slot points at an
+uncollected registry fails to compose (`UnresolvedWiringError`) — for every config that
+names the owner, whether or not it uses the slot. So create and document the registrar
+(step 1 and step 12) now, and do steps 3, 4, 5 and 9 — collect, the `__wiring__` entry,
+the class-level annotation, regenerate — **in the change that registers its first
+implementation**. Until then the owner takes the strategy list as a **plain, non-`Annotated`
+constructor parameter**: `__config_annotated_only__` keeps it out of the generated
+config, so a YAML block naming it fails validation instead of being dropped. Do not give
+it an `Annotated` type before the wiring entry exists: conscribe then generates
+`archive: Any` and hands the owner raw dicts — the name-not-instance defect of §0 in a
+new costume.
+
+Worked case: `ArchiverRegistrar` (`core/archive/_registrar.py`). M28 created it with only
+test fakes registered; `TraceWriter(archive=[...])` is a plain parameter there. M29 adds
+`TraceWriter.__wiring__["archive"]`, the `Annotated[list[ArchiverBase] | None,
+Field(...)]` type, the class-level `archive: list[ArchiverBase]` annotation, and
+`archiver` in `_collect_registrars()` in the same change as `browser.network` /
+`browser.storage` / `browser.dom_raw`.
+
 ## 3. The strategy IS the switch
 
 **No boolean may sit beside a receptor and disagree with it.**
@@ -266,7 +289,7 @@ A profile may still *recommend* a pairing in a comment (`profiles.py:80` pairs
 four. Two point fixes did not stop a third, so it states the rule about **shape**, not
 about the three known names. Read its module docstring before you argue with it.
 
-**Rule 1 — one place to choose** (`:411`). Nothing a capability configures may offer a
+**Rule 1 — one place to choose** (`:458`). Nothing a capability configures may offer a
 second way to pick a strategy it already wires. It scans two surfaces, because the
 defect has lived on both: every Pydantic model defined in the capability's package
 (where #2 and #3 lived) **and** the capability's own `__init__` parameters (the
@@ -278,14 +301,41 @@ wires). The value check is load-bearing — `BrowserProfileConfig` called them `
 and `serializer` while the receptors are `dom_cleaner` and `dom_serializer`, so a
 name-only check would have missed both.
 
-**Rule 2 — one place to look one up** (`:530`). An AST walk over everything under
-`core/capabilities/` forbidding `SomeRegistrar.get(key)` / `.get_or_none(key)` /
-`.children(prefix)` outside the module that *declares* a capability class.
+**Rule 2 — one place to look one up** (`:577`). An AST walk forbidding
+`SomeRegistrar.get(key)` / `.get_or_none(key)` / `.children(prefix)` over everything
+under `core/capabilities/` (outside the module that *declares* a capability class),
+`core/hooks/` and `core/archive/` (no exemption at all there: a hook or an archiver
+receives instances, it never resolves a name). A meta test asserts
+`core/hooks/trace_writer.py` and `core/archive/_registrar.py` are in the scanned set, so
+the roots cannot silently stop matching.
 `get_all()`, `keys()` and `tree()` are deliberately absent from `LOOKUP_METHODS`
-(`:105`): they take no key, so they are enumeration, not resolution — which is how
+(`:142`): they take no key, so they are enumeration, not resolution — which is how
 `browser_watchdog_classes` derives the installed set without naming a watchdog.
 
-There is a real **positive control** at `:463` that plants both historical shapes in
+**Rule 3 — no receptor on a synthesised `__init__`.** For every shipped class of every
+`_collect_registrars()` layer, plus `ArchiverRegistrar` (filtered to
+`cls.__module__.startswith("spectragent.")`): no `__wiring__` receptor may be a
+parameter of a dataclass-synthesised `__init__`, and no receptor parameter of any
+`__init__` may default to a conscribe `WiredField`. Two pure functions do the work:
+`dataclass_synthesised_init(cls)` (the class in the MRO that defines `__init__` is a
+dataclass and that `__init__` has no source file — `co_filename == "<string>"`) and
+`receptor_trap(cls) -> list[str]` (the offending receptor names). This is the precise
+form of "a class carrying a receptor must not be a `@dataclass`" (§6): the three shipped
+agents and the three LLM-judge evaluators *are* dataclasses with receptors and are
+correct, because their receptors are annotation-only on a plain mixin
+(`AgentReceptors`, `LLMJudgeReceptors`) and never become `__init__` parameters. A
+non-vacuity check pins that both kinds of owner are really visited (`BrowserCapability`,
+and at least one dataclass owner). Positive controls use unregistered plain classes only —
+never subclass a registrar base in a test (§7): a `@dataclass` with
+`__wiring__ = {"archive": ("archiver", [...])}` and a field `archive: list | None = None`
+is caught; the same with a hand-written `__init__` is clean; an AgentReceptors-shaped
+dataclass is clean; a hand-written `__init__(self, archive=<a WiredField>)` is caught; a
+`@dataclass` that hand-writes its `__init__` is not "synthesised". And one control
+reproduces the trap itself with conscribe's own code: `inject_wired_descriptors(cls)` (what
+the registrar metaclass runs at class creation) and then `dataclass(cls)` — the field's
+`None` default comes out a `WiredField`, and `receptor_trap` flags it.
+
+There is a real **positive control** at `:510` that plants both historical shapes in
 disguise (`output_style: str = "html"`, `dom_serializer_type: str = "text"`) and
 asserts the guard catches them. Whatever you add to the guard, add a case there — a
 guard nobody has watched fail may be asserting over an empty set.
@@ -295,11 +345,13 @@ total is worse than no guard: Rule 1's receptor list comes from `__wiring__`, so
 axis that *never got a receptor* is invisible to it; it skips `spectragent.generated`;
 its value check reaches only surfaces the capability actually configures; Rule 2
 exempts the capability's own module entirely (today exactly one file,
-`browser/capability.py`, which is where `_build_wired_action` lives on purpose).
+`browser/capability.py`, which is where `_build_wired_action` lives on purpose); Rule 3
+reads `__init__` signatures and the dataclass machinery, so a receptor that was never
+declared in `__wiring__` is invisible to it, exactly as to Rule 1.
 
-To extend it: `collisions(specs, surfaces, registrars)` (`:207`) is a pure function
+To extend it: `collisions(specs, surfaces, registrars)` (`:244`) is a pure function
 taking explicit inputs. Add a surface by writing `_x_surfaces(cls) -> list[Surface]`
-and folding it into `_surfaces_of` (`:358`).
+and folding it into `_surfaces_of` (`:392`).
 
 ## 6. Why `BrowserCapability` is not a `@dataclass`
 
@@ -322,6 +374,21 @@ expressible as `__wiring__`"* above the `mouse_trajectory` `Literal` — on a da
 capability it genuinely was not, and the axis stayed a name for another round because
 of it. **If your owner is a dataclass and a receptor misbehaves, that is the first
 thing to check.**
+
+**The precise statement, and it covers every layer — hooks included.** The trap is a
+receptor that is a *parameter of a dataclass-synthesised `__init__`* (a dataclass field):
+conscribe's `inject_wired_descriptors` reads the signature before `@dataclass` adds that
+parameter, installs a `WiredField`, and the field's default — and with it the receptor's
+optionality — is gone. A dataclass owner whose receptors are annotation-only on a plain,
+non-dataclass mixin (`agents/_registrar.py::AgentReceptors`, the evaluators'
+`LLMJudgeReceptors`) is the legitimate combination: the receptor never becomes a field,
+the Composer setattr-injects it, and those receptors are required anyway. Rule 3 (§5)
+checks exactly this. Hooks were the layer the trap reached next: `TraceWriter` gains a
+list receptor (`archive`), so M28 dropped its `@dataclass` and hand-wrote `__init__` —
+`trace_dir` / `record_secrets` stay named `Annotated` parameters, the generated config is
+unchanged. `HookBase` and hooks without receptors (`metrics`) stay dataclasses;
+`HookBase` is `@dataclass(eq=False)` so a hand-written subclass does not inherit an
+"all instances are equal" `__eq__`.
 
 ## 7. Gotchas worth the thirty seconds
 

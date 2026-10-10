@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import time
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -35,7 +36,7 @@ from pydantic import BaseModel
 from pydantic_core import to_json, to_jsonable_python
 
 from spectragent.core.llm.views import ChatInvokeUsage
-from spectragent.core.trace.models import OutputFormatRef
+from spectragent.core.trace.models import ArchiveMeta, OutputFormatRef
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.dynamic_model import iter_fragments
 from spectragent.schemas.observation.failure import FragmentFailure
@@ -99,6 +100,55 @@ def output_format_path(sha256: str) -> str:
     return f"{OUTPUT_FORMATS_DIR}/{sha256}.json"
 
 
+# ── environment evidence (env/) ───────────────────────────────
+
+#: The root of every environment-evidence file. The WAL does not know it:
+#: archive files are ordinary extra files (§5.2), and this module is the
+#: one place their names are spelled.
+ENV_DIR = "env"
+
+#: The ``ExtraFileRecord.meta`` key whose value is an
+#: :class:`~spectragent.core.trace.models.ArchiveMeta`. An extra file
+#: carrying it is an archive file; one without it is not, wherever it lies.
+ARCHIVE_META_KEY = "archive"
+
+
+def archive_step_path(step: int, archiver_id: str, name: str) -> str:
+    """``env/steps/NNN/<archiver_id>/<name>`` — what step NNN's commit took."""
+    return f"{ENV_DIR}/steps/{step:03d}/{archiver_id}/{name}"
+
+
+def archive_trailing_path(position: int, archiver_id: str, name: str) -> str:
+    """``env/trailing/KK/<archiver_id>/<name>`` — *position* is the entry's place in ``manifest.trailing``.
+
+    The same number as the commit's ``steps/trailing_KK.extra.json``.
+    """
+    return f"{ENV_DIR}/trailing/{position:02d}/{archiver_id}/{name}"
+
+
+def archive_blob_path(sha256: str) -> str:
+    """``env/blobs/sha256/<ab>/<rest>`` — a content-addressed archive file, sharded."""
+    return f"{ENV_DIR}/blobs/sha256/{sha256[:2]}/{sha256[2:]}"
+
+
+def archive_run_path(capability_id: str, version: int) -> str:
+    """``env/run.<capability_id>.json`` for version 0, ``env/run.<capability_id>.<k>.json`` after.
+
+    A committed path is immutable, so a run record whose content changed is
+    committed as the next version rather than rewritten. A capability id
+    never contains a ``.`` (it is the first segment of an archiver key), so
+    ``run.a.1.json`` cannot be read as version 0 of a capability ``a.1``.
+
+    Raises:
+        ValueError: *version* is negative.
+    """
+    if version < 0:
+        raise ValueError(f"a run record's version is >= 0, got {version}")
+    if version == 0:
+        return f"{ENV_DIR}/run.{capability_id}.json"
+    return f"{ENV_DIR}/run.{capability_id}.{version}.json"
+
+
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -119,6 +169,24 @@ def check_relative_path(rel_path: str) -> None:
         raise ValueError(f"{rel_path!r} is not a relative POSIX path inside the run directory")
     if any(part in ("", ".", "..") for part in rel_path.split("/")):
         raise ValueError(f"{rel_path!r} has an empty, '.' or '..' segment")
+
+
+def fold_path(rel_path: str) -> str:
+    """The key two paths share when a filesystem would store them as one file.
+
+    macOS's default APFS is case-insensitive *and* normalization-insensitive:
+    ``env/A.txt`` and ``env/a.txt`` are one file, and so are ``café.json``
+    spelled precomposed (NFC) and decomposed (NFD). A trace must survive
+    being copied to such a filesystem without one file replacing another, so
+    every comparison of paths — the WAL's immutability, its file-or-directory
+    rule, a producer's batch check — compares these keys.
+
+    The key is Unicode canonical caseless matching (Unicode §3.13, D145):
+    ``NFD(casefold(NFD(path)))``. Plain ``casefold`` misses normalization
+    variants, and ``casefold(NFC(path))`` still misses pairs whose case
+    folding leaves a decomposed sequence (``Ś`` and ``ſ`` + combining acute).
+    """
+    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", rel_path).casefold())
 
 
 # ── what the WAL commits ──────────────────────────────────────
@@ -490,3 +558,91 @@ def encode_llm_calls(
 ) -> list[EncodedLLMCall]:
     """Encode calls in start order, numbered from *first_call*."""
     return [encode_llm_call(step, first_call + offset, item) for offset, item in enumerate(pending)]
+
+
+# ── environment evidence ──────────────────────────────────────
+
+
+def encode_archive_file(
+    file: Any,
+    *,
+    step: int | None = None,
+    trailing: int | None = None,
+    run_version: int | None = None,
+) -> TraceFile:
+    """One ``ArchiveFile`` as the extra file a commit carries.
+
+    Read by its documented fields — ``archiver_id``, ``name``,
+    ``media_type``, ``data``, ``content_addressed``, ``scope`` and the
+    provenance ``meta`` (``captured_at``, ``cycle``, ``ids``) — rather than
+    by type, for the reason ``TraceNegotiation.from_results`` is typed
+    ``Any``: the trace layer imports nothing of ``core/archive`` but its
+    privacy rules, so the WAL's interface stays ``TraceFile``.
+
+    Where it lands:
+
+    - a run record (``scope == "run"``) at
+      :func:`archive_run_path` ``(capability_id, run_version)`` — the
+      version is the caller's to assign (a committed path is immutable);
+    - a content-addressed file at :func:`archive_blob_path` of its data's
+      sha256, written once per run however many commits list it;
+    - anything else under the commit that takes it: exactly one of *step*
+      (:func:`archive_step_path`) or *trailing* (:func:`archive_trailing_path`).
+
+    The extra-file index entry's ``meta`` is ``{ARCHIVE_META_KEY:
+    ArchiveMeta(...)}`` in JSON form; ``content_addressed`` is copied.
+
+    Raises:
+        ValueError: An unknown scope; a run record without a version, or a
+            content-addressed one; a version on a file that is not a run
+            record; both *step* and *trailing*, or neither where the path
+            needs one.
+    """
+    if step is not None and trailing is not None:
+        raise ValueError("an archive file is committed by one commit: pass step or trailing")
+    archiver_id: str = file.archiver_id
+    name: str = file.name
+    scope = file.scope
+    content_addressed = bool(file.content_addressed)
+    data: bytes = file.data
+    if scope == "run":
+        if run_version is None:
+            raise ValueError(f"run record {archiver_id}/{name} needs its run_version")
+        if content_addressed:
+            raise ValueError(f"run record {archiver_id}/{name} cannot be content-addressed")
+        rel_path = archive_run_path(archiver_id.partition(".")[0], run_version)
+    elif scope == "step":
+        if run_version is not None:
+            raise ValueError(
+                f"{archiver_id}/{name} is step evidence; only a run record has a run_version"
+            )
+        if content_addressed:
+            rel_path = archive_blob_path(sha256_hex(data))
+        elif step is not None:
+            rel_path = archive_step_path(step, archiver_id, name)
+        elif trailing is not None:
+            rel_path = archive_trailing_path(trailing, archiver_id, name)
+        else:
+            raise ValueError(
+                f"{archiver_id}/{name}: pass the step or trailing commit that takes it"
+            )
+    else:
+        raise ValueError(f"{archiver_id}/{name}: unknown archive scope {scope!r}")
+
+    provenance = file.meta
+    meta = ArchiveMeta(
+        archiver_id=archiver_id,
+        name=name,
+        media_type=file.media_type,
+        scope=scope,
+        captured_at=provenance.captured_at,
+        cycle=provenance.cycle,
+        ids=dict(provenance.ids),
+        run_version=run_version,
+    )
+    return TraceFile(
+        rel_path,
+        data,
+        content_addressed=content_addressed,
+        meta={ARCHIVE_META_KEY: meta.model_dump(mode="json")},
+    )

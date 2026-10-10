@@ -13,6 +13,7 @@ See docs/architecture_design.md 4.1 and docs/execution_dag.md M09.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -33,7 +34,7 @@ from spectragent.core.loops._loop_fragments import (
     populate_loop_fragments,
 )
 from spectragent.core.loops._registrar import AgentLoopBase
-from spectragent.core.loops.errors import ParseError, RunAbort
+from spectragent.core.loops.errors import ParseError, RunAbort, carry_outcome
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult, AgentUsage
@@ -136,6 +137,44 @@ class _UsageTally:
     def snapshot(self) -> AgentUsage | None:
         """What to report — or ``None`` if nothing measurable ever arrived."""
         return self._total if self._measured else None
+
+
+def _unrecorded_suffix(unrecorded: Exception | None) -> str:
+    """What a failure result's ``error`` adds when its step could not be recorded.
+
+    The trace is then missing exactly the step the error names, and
+    ``result.json`` is where a reader of that trace finds out why.
+    """
+    if unrecorded is None:
+        return ""
+    return f" (recording this step failed too: {type(unrecorded).__name__}: {unrecorded})"
+
+
+def _note_unrecorded(abort: BaseException, unrecorded: Exception | None) -> None:
+    """Attach a recording failure to the veto it must not replace.
+
+    A note, not a new message: the veto's text is the guard's, and what
+    ``AgentRuntime`` puts in the result is ``str()`` of it, unchanged. The
+    note travels with the exception into every traceback that prints it.
+    """
+    if unrecorded is not None:
+        abort.add_note(
+            f"Recording the vetoed step failed too: {type(unrecorded).__name__}: {unrecorded}"
+        )
+
+
+def _log_cut_off(record: StepRecord, outcome: str) -> None:
+    """Say that a cancellation cut off the recording of the step a run ended on.
+
+    The cancellation propagates and carries the outcome; this line is what
+    the log keeps of it whoever turns out to have cancelled.
+    """
+    logger.warning(
+        "ReactLoop: recording step %d was cut off by a cancellation; the run had already "
+        "ended (%s), and the cancellation carries that outcome",
+        record.step,
+        outcome,
+    )
 
 
 def _merge_token_usage(base: TokenUsage | None, addition: TokenUsage | None) -> TokenUsage | None:
@@ -571,27 +610,32 @@ class ReactLoop(AgentLoopBase):
                 )
                 step_records.append(record)
                 prev_step_record = record
-                await self._surrender(recorder, record, observation)
 
-                if parse_error_streak >= self.max_consecutive_parse_errors:
-                    return self._build_result(
-                        task_id=task_id,
-                        task=task,
-                        start_time=start_time,
-                        step_records=step_records,
-                        action_history=action_history,
-                        usage=tally.snapshot(),
-                        llm_calls=llm_calls,
-                        model_id=model_id,
-                        agent_done="error",
-                        env_status="success",
-                        answer=last_answer,
-                        error=(
-                            f"Parse failed {parse_error_streak} "
-                            f"consecutive times: {parse_failure.detail}"
-                        ),
-                    )
-                continue
+                if parse_error_streak < self.max_consecutive_parse_errors:
+                    await self._surrender(recorder, record, observation)
+                    continue
+                # The run ends on this step, in failure: recording it must
+                # not be what decides how the run ended (``_end_failing``).
+                return await self._end_failing(
+                    recorder,
+                    record,
+                    observation,
+                    error=(
+                        f"Parse failed {parse_error_streak} "
+                        f"consecutive times: {parse_failure.detail}"
+                    ),
+                    task_id=task_id,
+                    task=task,
+                    start_time=start_time,
+                    step_records=step_records,
+                    action_history=action_history,
+                    usage=tally.snapshot(),
+                    llm_calls=llm_calls,
+                    model_id=model_id,
+                    agent_done="error",
+                    env_status="success",
+                    answer=last_answer,
+                )
 
             # Successful parse resets the streak.
             parse_error_streak = 0
@@ -664,9 +708,9 @@ class ReactLoop(AgentLoopBase):
             )
             step_records.append(record)
             prev_step_record = record
-            await self._surrender(recorder, record, observation)
-
-            if isinstance(act_error, RunAbort):
+            if act_error is None:
+                await self._surrender(recorder, record, observation)
+            elif isinstance(act_error, RunAbort):
                 # Not an action failure — a veto. Something woven onto
                 # ``act`` (a safety guard watching for a risk-control
                 # response, say) has decided the run must not continue, and
@@ -675,11 +719,14 @@ class ReactLoop(AgentLoopBase):
                 # caller could not tell it from a click that happened to
                 # raise, and a benchmark driver went on to the next task.
                 #
-                # The step is surrendered *above* first — the evidence the
-                # guard fired on is the most valuable thing in the trace —
-                # and only then does the exception leave the Loop, so
-                # AgentRuntime closes the run out (``on_run_end`` +
+                # Logged first, so the veto is on record whatever becomes of
+                # the hand-over below. Then the step is surrendered — the
+                # evidence the guard fired on is the most valuable thing in
+                # the trace — and only then does the exception leave the
+                # Loop, so AgentRuntime closes the run out (``on_run_end`` +
                 # ``on_run_error``) and re-raises to whoever started it.
+                # ``_surrender_vetoed`` keeps the veto the outcome even if
+                # that hand-over fails or is cut off by the run's timeout.
                 #
                 # This is the second of the two abort shapes: the record is
                 # already written, with the actions and results ``_note_abort``
@@ -690,9 +737,9 @@ class ReactLoop(AgentLoopBase):
                     step_idx,
                     act_error,
                 )
+                await self._surrender_vetoed(recorder, record, observation, act_error)
                 raise act_error
-
-            if act_error is not None:
+            else:
                 # ``exc_info=act_error`` explicitly: the ``except`` handler
                 # that captured it exited several statements ago, so
                 # ``logger.exception`` here would read an already-popped
@@ -706,7 +753,12 @@ class ReactLoop(AgentLoopBase):
                     act_error,
                     exc_info=act_error,
                 )
-                return self._build_result(
+                # The run ends on this step, in failure (``_end_failing``).
+                return await self._end_failing(
+                    recorder,
+                    record,
+                    observation,
+                    error=f"Action execution failed at step {step_idx}: {act_error}",
                     task_id=task_id,
                     task=task,
                     start_time=start_time,
@@ -718,7 +770,6 @@ class ReactLoop(AgentLoopBase):
                     agent_done="error",
                     env_status="failed",
                     answer=last_answer,
-                    error=f"Action execution failed at step {step_idx}: {act_error}",
                 )
 
             # 9. Check termination
@@ -772,6 +823,112 @@ class ReactLoop(AgentLoopBase):
             return
         await recorder.record_step(record, observation=observation)
 
+    @staticmethod
+    async def _surrender_failing(
+        recorder: Any,
+        record: StepRecord,
+        observation: Any,
+    ) -> Exception | None:
+        """Hand over the step a failing run ends on; return a recording failure, don't raise it.
+
+        For the steps after which the run is over because it failed — a
+        veto in flight (``_note_abort``, the act phase), an infrastructure
+        failure (``_abort``), a failed action, the last tolerated parse
+        error — always through :meth:`_surrender_vetoed` or
+        :meth:`_end_failing`. On any other step a failure to record
+        propagates and ends the run: a recorder that cannot write is a run
+        that must stop (``hooks/base.py``). Here the run is stopping
+        already, and letting the recorder's error take the place of the
+        outcome is how a guard's veto used to vanish: the sink raised (an
+        archive collection broken by the very page the guard refused, a full
+        disk), that error left the Loop instead of the ``RunAbort``,
+        ``AgentRuntime.execute`` saw no veto to propagate past
+        ``raise_on_error=False``, and the sweep started the next task; an
+        ``_abort`` result likewise came back naming the recorder's error
+        instead of the failure that ended the run.
+
+        So the failure is logged and returned, and the caller attaches it to
+        the outcome (:func:`_note_unrecorded`, :func:`_unrecorded_suffix`).
+        Nothing is lost by not raising it: the recorder knows it could not
+        write (``TraceWriter`` keeps the step's calls owed, commits them as
+        trailing at close-out and closes the trace out as ``error``, as far
+        as the disk lets it). When that close-out fails too — a disk that
+        stays full — ``AgentRuntime.execute`` keeps the same precedence one
+        layer up: the veto is still what it raises, the close-out failure
+        one more note on it. A veto raised *by* the sink is still a veto and
+        propagates. A cancellation is not a recording failure: it propagates
+        too, and the two callers make it carry the outcome.
+        """
+        try:
+            await ReactLoop._surrender(recorder, record, observation)
+        except RunAbort:
+            raise
+        except Exception as exc:
+            logger.error(
+                "ReactLoop: step %d could not be recorded (%s: %s); the run's own outcome stands",
+                record.step,
+                type(exc).__name__,
+                exc,
+                exc_info=exc,
+            )
+            return exc
+        return None
+
+    async def _surrender_vetoed(
+        self,
+        recorder: Any,
+        record: StepRecord,
+        observation: Any,
+        veto: RunAbort,
+    ) -> None:
+        """Hand over the step a veto interrupted; the veto stays the outcome, whatever happens.
+
+        The caller re-raises *veto* afterwards. A recording failure becomes
+        a note on it (:meth:`_surrender_failing`, :func:`_note_unrecorded`).
+        A cancellation of the recording — the run's own timeout expiring
+        while a slow archive collection takes the page the guard refused,
+        or Ctrl-C — is re-raised unchanged but carries the veto
+        (:func:`~spectragent.core.loops.errors.carry_outcome`): when it is
+        the run's own timeout, ``AgentRuntime.execute`` still closes the run
+        out as vetoed and re-raises the veto, so a sweep stops instead of
+        recording one more timed-out task and starting the next.
+        """
+        try:
+            unrecorded = await self._surrender_failing(recorder, record, observation)
+        except asyncio.CancelledError as cancelled:
+            _log_cut_off(record, f"the veto: {veto}")
+            carry_outcome(cancelled, veto)
+            raise
+        _note_unrecorded(veto, unrecorded)
+
+    async def _end_failing(
+        self,
+        recorder: Any,
+        record: StepRecord,
+        observation: Any,
+        *,
+        error: str,
+        **result: Any,
+    ) -> AgentResult:
+        """Hand over the step a failing run ends on, then build the terminal result naming *error*.
+
+        *result* is the rest of :meth:`_build_result`'s arguments. A
+        recording failure is appended to *error* (:meth:`_surrender_failing`,
+        :func:`_unrecorded_suffix`). A cancellation of the recording is
+        re-raised unchanged but carries the result as it stood
+        (:func:`~spectragent.core.loops.errors.carry_outcome`): when it is
+        the run's own timeout, ``AgentRuntime.execute`` returns that result
+        instead of an ordinary timeout — which would charge a dead browser
+        or a refused action to a slow model.
+        """
+        try:
+            unrecorded = await self._surrender_failing(recorder, record, observation)
+        except asyncio.CancelledError as cancelled:
+            _log_cut_off(record, error)
+            carry_outcome(cancelled, self._build_result(error=error, **result))
+            raise
+        return self._build_result(error=f"{error}{_unrecorded_suffix(unrecorded)}", **result)
+
     async def _note_abort(
         self,
         *,
@@ -791,16 +948,21 @@ class ReactLoop(AgentLoopBase):
         ``_abort`` converts a failure into a terminal ``AgentResult``;
         this converts nothing. It writes the partial step to the sink so
         the trace still shows what the run was doing when it was vetoed,
-        and returns — the caller re-raises.
+        and returns — the caller re-raises. If the sink cannot take the
+        step, that failure becomes a note on the veto, never its
+        replacement, and a cancellation that cuts the hand-over off carries
+        the veto with it (:meth:`_surrender_vetoed`): the veto is what the
+        caller has to see.
 
         **This is one of two abort shapes in ``_execute``, not the only
         one.** Used by the phases that handle their exception where it is
         raised: observe, prompt, llm, parse. The act phase does *not* come
         through here — its per-action ``except`` captures the exception so
         the failure can be attributed to one action among several, builds
-        the ordinary (and richer) ``StepRecord``, ``_surrender``s it, and
-        only then re-raises on ``isinstance(act_error, RunAbort)``. Calling
-        ``_note_abort`` there would write the step twice.
+        the ordinary (and richer) ``StepRecord``, hands it over through the
+        same :meth:`_surrender_vetoed`, and only then re-raises on
+        ``isinstance(act_error, RunAbort)``. Calling ``_note_abort`` there
+        would write the step twice.
 
         Nothing enforces either shape. ``tests/test_core/test_loops/
         test_abort_handler_hygiene.py`` walks this package's AST and fails
@@ -823,7 +985,7 @@ class ReactLoop(AgentLoopBase):
             error=str(exc),
         )
         step_records.append(record)
-        await self._surrender(recorder, record, observation)
+        await self._surrender_vetoed(recorder, record, observation, exc)
 
     async def _abort(
         self,
@@ -869,8 +1031,11 @@ class ReactLoop(AgentLoopBase):
             token_usage=token_usage,
         )
         step_records.append(record)
-        await self._surrender(recorder, record, observation)
-        return self._build_result(
+        return await self._end_failing(
+            recorder,
+            record,
+            observation,
+            error=f"{phase} failed at step {step_idx}: {type(exc).__name__}: {exc}",
             task_id=task_id,
             task=task,
             start_time=start_time,
@@ -882,7 +1047,6 @@ class ReactLoop(AgentLoopBase):
             agent_done="error",
             env_status=env_status,
             answer=answer,
-            error=f"{phase} failed at step {step_idx}: {type(exc).__name__}: {exc}",
         )
 
     def _today_iso(self) -> str:

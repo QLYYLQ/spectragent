@@ -388,11 +388,26 @@ class AgentRuntime:
         # 3. Action 两方协商（见 §4.5）
         negotiated_actions = negotiate_action(agent, env)
 
-        # 4. AOP 织入 — Weaver 包装 agent / env / llm
+        # 3b. Memory 协议协商（Loop ⊆ Memory，见 §4.8）
+        negotiate_memory(loop, memory)
+
+        # 3c. 归档协商（hook ↔ environment，见 §4.5）：只校验，不绑定
+        consumers = [h for h in self._hooks if isinstance(h, ArchiveConsumer) and h.archive]
+        if consumers:
+            negotiated_archive = negotiate_archive(consumers, env)   # IncompatibleArchiveError
+            archivers = list(consumers[0].archive)                   # 协商保证至多一个消费者
+        else:
+            negotiated_archive, archivers = None, []                 # 对 env 零调用
+        self._negotiated_archive = negotiated_archive
+        self._env_evidence_privacy = sorted({m for a in archivers for m in a.privacy_markers})
+
+        # 4. AOP 织入 — Weaver 包装四个角色：agent / env / llm，以及 StepRecorder（role="loop"）
         weaver = Weaver(self._hooks)
         wrapped_agent = weaver.wrap(agent, role="agent")
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
+        wrapped_recorder = weaver.wrap(self._recorder, role="loop")  # record_step → 一次提交完整 step
+        weaver.raise_for_unclaimed_roles()
 
         # 5. 收窄 action space + guarded_act
         narrowed = wrapped_env.get_action_space(
@@ -408,11 +423,16 @@ class AgentRuntime:
             env=wrapped_env, llm=wrapped_llm, memory=memory,
             act_fn=act_fn, negotiated_obs=negotiated_obs,
             active_descriptors=active_descriptors,
+            step_recorder=wrapped_recorder,
             session_id=session_id, task_id=task_id, **kwargs,
         )
 
         # 7. 拦截点审计 —— 必须在 weave 之后：agent.run 到这一步才存在
         weaver.audit_intercepts()
+
+        # 8. 绑定归档器 —— prepare 的最后一步，作用在原始 env 上（不经 AOP 代理）
+        if negotiated_archive is not None:
+            env.bind_archivers(archivers)
         return wrapped_agent
 
     # ── execute(task): 一站式驱动 ───────────────────────────────────
@@ -422,8 +442,12 @@ class AgentRuntime:
 
         # 在 env setup 之前打开 trace：setup 失败也要落进 trace
         await self._dispatch_lifecycle("on_run_start",
-            agent=self._run.agent, env=self._run.env,
-            task=task, config=config or {}, ...)
+            agent=self._run.agent, env=self._run.env,          # env：原始环境，不是 AOP 代理
+            task=task, config=config or {}, ...,
+            archive_negotiation=self._negotiated_archive,      # 没有归档消费者时为 None
+            env_evidence_recorded=self._negotiated_archive is not None,
+            env_evidence_privacy=self._env_evidence_privacy,   # 有序、去重的隐私标记
+            task_setup=env_context)                            # 交给 setup_environment 的那份；没有时为 None
 
         self._finish_started = False
         try:
@@ -440,16 +464,30 @@ class AgentRuntime:
                 result = await asyncio.wait_for(
                     prepared_agent.run(task), timeout=timeout
                 )
-            except TimeoutError:
+            except TimeoutError as timed_out:
+                # 切断 Loop 的那次取消可能带着 Loop 已经定下的结局（RunEnded，见下文）
+                ended = _outcome_under(timed_out)
+                if isinstance(ended, RunAbort):         # 否决在先：照否决收尾、重抛
+                    ended.add_note(...)                 # 超时只是否决上的一条 note
+                    result = ...   # agent_done=ERROR，error 点名否决并注明超时
+                    await self._close_out_vetoed(result, ended)
+                    raise ended from timed_out
+                if isinstance(ended, AgentResult):      # Loop 已建好的终止结果：照它收尾、返回
+                    result = ended.model_copy(...)      # error 仍点名根因，后面注明记录被超时切断
+                    await self._finish(result)
+                    return result
                 result = ...   # agent_done=TIMEOUT
                 await self._finish(result, error=TimeoutError(result.error))
                 return result
             except Exception as exc:
                 result = ...   # agent_done=ERROR
-                await self._finish(result, error=exc)
-                if raise_on_error or isinstance(exc, RunAbort):   # guard 的否决总是上抛
-                    raise
-                return result
+                if not isinstance(exc, RunAbort):
+                    await self._finish(result, error=exc)
+                    if raise_on_error:
+                        raise
+                    return result
+                await self._close_out_vetoed(result, exc)   # guard 的否决：总是上抛，不看 raise_on_error
+                raise
             else:
                 await self._finish(result)   # 在 try 之外：收尾失败不会被当成 run 失败再收尾一次
                 return result
@@ -477,13 +515,35 @@ class AgentRuntime:
             await self._dispatch_lifecycle("on_run_error", error=error,
                 partial_steps=self._recorder.records, env=self._env)
         await self._drain_background()
+
+    async def _close_out_vetoed(self, result, veto):
+        """被否决的 run 收尾：收尾失败只记日志、作为 note 附在否决上，从不顶替它。"""
+        try:
+            await self._finish(result, error=veto)
+        except Exception as failure:      # CancelledError 不在此列：取消仍然优先
+            logger.exception(...)
+            veto.add_note(...)
 ```
 
 **为什么两段式**：`prepare()` 是纯装配（slot 校验 → 协商 → AOP 织入 → loop weave），返回值就是一个 self-contained 的 agent —— 测试和需要细粒度控制的调用方可以直接 `await prepared_agent.run(task)`，跳过 timeout/lifecycle 包装。`execute()` 只是 prepare + 围绕 `agent.run` 加 timeout 和 lifecycle hook。两段都是独立的、零全局状态的 run 上下文，并行多个 run 互不干扰。
 
+**归档：先校验，最后绑定。** 归档轴（§4.5）的协商与绑定分在 `prepare()` 的两头：
+
+- `negotiate_archive` 紧跟 `negotiate_memory`，在任何织入之前运行，所以绑定错误（`IncompatibleArchiveError`）和另外几条协商一样在装配期暴露——`spectragent-run --dry-run` 也调 `prepare()`，干跑就能发现；
+- `env.bind_archivers(...)` 是 `prepare()` 的最后一条语句，在拦截点审计之后：capability 的状态一旦改变，后面就不再有会失败的装配检查；
+- 它仍然在 `on_run_start` 和 `setup_environment` 之前，因为 capability 在 setup 时就要决定建不建自己的归档采集通道（browser 的 archive scope，M29）。`bind_archivers` 不获取任何资源：干跑也会走到这一步，而干跑从不 setup；
+- 没有任何 hook 声明非空的 `archive` 时，runtime 对 environment 不做任何归档调用——没有这些方法的 environment（测试里的 stub）照常工作；
+- runtime 只认 `ArchiveConsumer` Protocol（`core/archive/protocols.py`），从不认识 `TraceWriter`。
+
+协商结果留在 runtime 上：`negotiated_archive` 与 `negotiated_observation` / `negotiated_actions` 并列，`prepare()` 之后可读，没有归档消费者时为 `None`。它连同 `env_evidence_recorded`、`env_evidence_privacy`、`task_setup` 一起按名字传给 `on_run_start`：runtime 是唯一同时握有这些事实的组件，由它解析，hook 只按名字接收、不自己推导（记录到哪些 `TraceConfig` 字段见 §5.3）。
+
 **每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `running`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
 
-**收尾只做一次，取消永远优先。** 被取消的 run 收尾时，blocking hook 自己失败了（`TraceWriter.on_run_end` 遇到磁盘写满），这个错误只记日志，重抛的仍是原来那个 `CancelledError`：否则 Ctrl-C 会变成一个普通的 `OSError`，sweep 的 `except Exception` 把它记成一次任务失败、接着跑下一个任务，调用方的 `asyncio.timeout` 也只会看到 `OSError` 而不是 `TimeoutError`。其余路径（完成、超时、异常、setup 失败）上收尾失败，hook 的错误照原样上抛，不看 `raise_on_error`；run 不会被再收尾一次。成功路径的 `_finish` 因此放在 `try` 的 `else` 里：放在 `try` 之内时，hook 在 `on_run_end` 里抛的错会落进 `except Exception`，同一个 run 被当成失败再收尾一次，每个 hook 都收到两次 `on_run_end`。
+**收尾只做一次，取消永远优先。** 被取消的 run 收尾时，blocking hook 自己失败了（`TraceWriter.on_run_end` 遇到磁盘写满），这个错误只记日志，重抛的仍是原来那个 `CancelledError`：否则 Ctrl-C 会变成一个普通的 `OSError`，sweep 的 `except Exception` 把它记成一次任务失败、接着跑下一个任务，调用方的 `asyncio.timeout` 也只会看到 `OSError` 而不是 `TimeoutError`。被否决的 run 同理（下一段）。其余路径（完成、超时、其他异常、setup 失败）上收尾失败，hook 的错误照原样上抛，不看 `raise_on_error`；run 不会被再收尾一次。成功路径的 `_finish` 因此放在 `try` 的 `else` 里：放在 `try` 之内时，hook 在 `on_run_end` 里抛的错会落进 `except Exception`，同一个 run 被当成失败再收尾一次，每个 hook 都收到两次 `on_run_end`。
+
+**否决总是上抛，记录失败顶替不了它。** `execute` 只看从 Loop 里出来的是不是 `RunAbort`。Loop 重抛否决之前先把被否决的那一步交给 `record_step`；那次记录若失败（归档收集坏了、磁盘满），记录失败绝不能取代否决从 Loop 里出来——否则 `raise_on_error=False` 会把它当成普通失败吞成结果，sweep 接着跑下一个任务。Loop 把它作为 note 附在否决上照样重抛；基础设施失败的终止结果同理，`error` 仍然点名根因（§4.6 "记录失败不顶替 run 已经定下的结局"）。收尾失败同样顶替不了它：磁盘一直满着时，`TraceWriter` 收尾要把这一步还登记着的调用（归档时还有遗留批次和尾部）作为 trailing 提交，照样失败，`on_run_end` 抛出这个错误。`execute` 对否决和对取消一样处理（`_close_out_vetoed`）：`_finish` 抛出的 `Exception` 只记日志，并作为又一条 note 附在否决上，重抛的仍是 `RunAbort`，sweep 照样停下。取消落在否决的收尾里时，取消优先：`CancelledError` 是 `BaseException`，这一层不接它。
+
+**run 自己的超时顶替不了已经定下的结局。** 优先级从高到低：外部取消 > 否决 > run 自己的超时、收尾失败、记录失败。Loop 在结局离开之前要先记录 run 结束在的那一步，这次交接可能要等——归档时 `TraceWriter` 正是在这里收集环境证据，收的恰好是 guard 拒绝的那个重页面。run 的超时（`wait_for`）若在这时到期，取消落在 Loop 里。Loop 不吞取消（它也可能是 Ctrl-C 或调用方自己的 `asyncio.timeout`），可是只原样重抛的话，`wait_for` 把它变成 `TimeoutError`，`execute` 返回一个普通的超时结果——不看 `raise_on_error`——sweep 记下一个超时任务、接着对 guard 刚拒绝的站点跑下一个，日志和 trace 里都找不到 guard 说过停。所以 Loop 重抛的是同一个取消，但让它带上结局（`core/loops/errors.py`：`carry_outcome` 把一个 `RunEnded` 放到取消的 `__context__` 链最前面；在 `except RunAbort` 里等待时，否决本来就在那条链上）。`execute` 只在 `except TimeoutError` 里读这条链（`carried_outcome`，经 `wait_for` 的 `TimeoutError.__cause__`，3.11 与 3.12 一样）：带着否决，就照否决收尾——`agent_done=ERROR`，`error` 点名否决并注明超时在记录被否决那一步时到期，超时作为 note 附在 `RunAbort` 上——然后重抛它，不看 `raise_on_error`；带着 Loop 已建好的终止结果（基础设施失败、动作失败、最后一次容许的解析错误），就照这个结果收尾并返回它，`error` 仍点名根因，后面注明记录被 run 的超时切断——而不是把死掉的浏览器记成"模型太慢"。只有切断的是一个还在进行的 run，结果才是 `agent_done=TIMEOUT`。外部取消不读这条链，照旧原样重抛：结局只留在它的 traceback 里。ReactLoop 的做法见 §4.6 "记录失败不顶替 run 已经定下的结局"，新 Loop 的义务见 `af-add-a-loop` guide §3.3。
 
 **AOP 织入流程**：Weaver 读取所有 hook 的 `__intercepts__` 声明（如 `Intercept("ainvoke", role="llm", advice="after")`），为 agent/env/llm 和 StepRecorder 生成 `AOPProxy` 包装。Loop 调用 `llm.ainvoke()` 时，代理触发 TraceWriter 的 `around` handler（调用前登记、结束时记下结局）与 MetricsCollector；Loop 调用 `recorder.record_step()` 时，代理触发 TraceWriter 一次提交完整 step。Loop 代码零 hook 感知。
 
@@ -544,7 +604,9 @@ class ConfigComposer:
 - `dict[str, X]` 注解 → multi-instance receptor，注入 `{registry_key: instance, ...}`
 - `list[X]` 注解 → multi-instance receptor，注入 `[instance, ...]`
 - 单实例注解 → single receptor，注入唯一 instance
-- 不在 init_params 也不在 class_hints → 纯声明性约束（如 `agent.observation` 的 `Literal[...]` 限制），Composer 跳过，Pydantic 仍校验
+- list / dict / single 的判定读的是**类级注解**（`get_type_hints(cls)`），不是 `__init__` 签名：只在 `__init__` 参数里出现、类上没有注解的受体会走单实例分支。所以 list 受体必须在 MRO 里有一条类级注解（`archive: list[ArchiverBase]`；类体要把这个名字另作他用时放在 mixin 上，见 `_BrowserReceptors` / `AgentReceptors`）
+- 不在 init_params 也不在 class_hints → 纯协商声明（没有 slot，如 agent / loop 的 `observation:`、`action:`，capability 的 `observation:` 与 `archiver:` provides 声明）：conscribe 把它生成成可选字段，Pydantic 照样校验它的 `Literal[...]`；**但 YAML 一旦填了值，Composer 抛 `UnresolvedWiringError`**（"negotiation-only entry"）——没有任何地方接收这个值，静默丢掉它正是这条报错要堵的
+- 可选的 list / dict 受体在 YAML 里**省略**时不等于空：Composer 在所有实例建完之后的第二遍（`_resolve_deferred`，deferred resolution）把它绑定到所连注册表那一层的**全部**实例（wiring 条目列了 key 时只取被允许的那些）。后果之一落在 `trace_writer.archive` 上（M29 起 YAML 可达）：省略它、而配置里有顶层 `archiver:` 段时，归档会被打开；"不归档"是写 `archive: []`，或者根本没有顶层 `archiver:` 段。M29 用 Composer 测试钉住这三种情形
 
 **注入方式**：init param → 进 `__init__` 的 kwargs；class_hints-only → 通过 `setattr(instance, name, value)` 注入（conscribe `WiredField` descriptor 接受这次写入并把值放到 instance dict，遮蔽自身）。
 
@@ -559,31 +621,49 @@ EnvironmentRegistrar = create_registrar("environment", Environment, discriminato
 
 @runtime_checkable
 class Environment(Protocol):
-    # 已注入的 capabilities，由 ConfigComposer 通过 setattr 写入
+    env_type: str                              # 类身份（registry key）
+    id: str | None                             # 实例身份：同一 run 里两个 browser 环境靠它区分
+
+    # 已注入的 capabilities（实例 id → capability），由 ConfigComposer 通过 setattr 写入
     capabilities: dict[str, BaseCapability]
 
     # 能力发现（从注入的 capabilities 聚合）
     def capability_ids(self) -> frozenset[str]: ...
     def has_capability(self, cap_id: str) -> bool: ...
 
-    # 按需观察 — 委托给 capabilities 的 resolver
-    async def observe(self, negotiated: NegotiationResult,
-                      session_id: str | None = None) -> NegotiatedObservation: ...
+    # 三条 provides 轴：同样从 capabilities 聚合，同样是全限定键
+    @property
+    def provided_fragments(self) -> frozenset[str]: ...
+    @property
+    def provided_actions(self) -> frozenset[str]: ...     # negotiate_action 一直在读它；M28 补进 Protocol
+    @property
+    def provided_archivers(self) -> frozenset[str]: ...   # 归档轴（§4.5）
 
-    # 动作执行 — 前缀路由到对应 capability
-    async def act(self, action: Action, session_id: str | None = None) -> ActionResult: ...
+    # 按需观察 — 一次调用 = 一个 observation cycle，委托给 capabilities 的 resolver
+    async def observe(self, negotiated: NegotiationResult) -> NegotiatedObservation: ...
+
+    # 动作执行 — 前缀路由到对应 capability；不带任何路由句柄（子上下文是 capability 自己的状态）
+    async def act(self, action: Action) -> ActionResult: ...
 
     # Action space — 聚合所有 capabilities 的 descriptors，可按 active_actions 收窄
     def get_action_space(self, *, active_actions: frozenset[str] | None = None,
                          **context) -> list[ActionDescriptor]: ...
 
-    # 生命周期 — 把 setup/teardown 转发给所有 capabilities（capability 自己内部调 backend.open/close）
-    async def setup(self, **kwargs) -> None: ...
+    # 归档 — 按前缀路由绑定（prepare 的最后一步）；由归档消费者在自己的提交点拉取（§4.6）
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None: ...
+    async def collect_archive(self) -> ArchiveBatch: ...
+
+    # 生命周期 — setup 的 context 按 capability 路由，不广播（capability 自己内部调 backend.open/close）；
+    # teardown 在 setup 半途失败、或根本没有 setup 之后调用也必须安全
+    async def setup(self, context: Mapping[str, Any] | None = None, *,
+                    negotiation: Any = None) -> None: ...
     async def teardown(self) -> None: ...
 
     @property
     def is_alive(self) -> bool: ...
 ```
+
+**三条 provides 轴在 Protocol 上一样声明。** `provided_actions` 过去只在 `EnvironmentBase` 上，`negotiate_action` 却一直从环境上读它：结构化实现 `Environment` 的人照着 Protocol 写，类型检查通过，到协商时才失败。M28 把它补进 Protocol，第三条轴从第一天起就三样一起声明（`provided_archivers`、`bind_archivers`、`collect_archive`），不再复制那个不对称。代价写明：`Environment` 是 `@runtime_checkable`，多了这几个成员，一个没有归档面的结构化环境（测试里的 `SurfacelessEnv`）`isinstance(env, Environment)` 就变成 `False`。代码里没有任何地方做这个判断——runtime 只在有归档消费者时才碰这三个成员——以后也不要靠它分辨环境，否则不归档的 run 对 env 零调用这条保证就破了。
 
 **Environment 通过 `__wiring__` 注入 capabilities**：
 
@@ -620,6 +700,8 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 
     def __init__(self) -> None:
         self._fragment_router: dict[str, BaseCapability] | None = None
+        # 收到非空归档器组的 capability，按 capability 顺序；bind_archivers 每次整体替换
+        self._archiving: list[BaseCapability] = []
 
     def capability_ids(self) -> frozenset[str]:
         return frozenset(self.capabilities)
@@ -674,7 +756,44 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         ...
         obs_model = build_observation_model_from_result(negotiated)
         return obs_model(**field_values)
+
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
+        # 先校验、后绑定：任何一个键路由不了，就一个 capability 也不碰
+        by_cap = self._by_capability_id()
+        groups: dict[str, list[ArchiverBase]] = {}
+        problems: dict[str, str] = {}
+        for archiver in archivers:
+            prefix = archiver.archiver_id.partition(".")[0]
+            ...  # 前缀没有 capability / capability 不是 ArchivingCapability / 不在它的 provided_archivers 里
+                 # → 记进 problems；否则 groups[prefix].append(archiver)
+        if problems:
+            raise UnroutableArchiverError(problems, capability_ids=frozenset(by_cap))
+        self._archiving = []
+        for cap in self.capabilities.values():
+            if not isinstance(cap, ArchivingCapability):
+                continue
+            group = groups.get(cap.capability_id, [])
+            cap.bind_archivers(group)              # 空列表 = 清掉之前的绑定
+            if group:
+                self._archiving.append(cap)
+
+    async def collect_archive(self) -> ArchiveBatch:
+        if not self._archiving:
+            return ArchiveBatch()                  # 什么都没绑定：不碰任何 capability
+        # 每个 capability 一个任务；_collect_one 捕获 Exception 并把它返回，
+        # 不用 gather(..., return_exceptions=True)——那会把 CancelledError 也吞掉
+        outcomes = await asyncio.gather(*(self._collect_one(cap) for cap in self._archiving))
+        ...  # 全部跑完才裁决：异常，或批次里有 capability_id 不是自己的文件，都算该 capability 失败
+             # 有失败 → ArchiveCollectionError（点名每个失败的 capability），否则按 capability 顺序合并
+        return ArchiveBatch.merge(batches)
 ```
+
+**归档的路由与收集**（`core/environments/_registrar.py`，错误类在 `core/environments/errors.py`）：
+
+- `provided_archivers`：实现了 `ArchivingCapability` 的 capability 各自 `provided_archivers` 的并集；其余 capability 什么也不贡献。
+- `bind_archivers(archivers)`：按每个键的第一段经 `_by_capability_id()` 找 capability（与 `act()` 同一套路由）。下面任何一种情况都记一条问题，全部收集完一次抛 `UnroutableArchiverError(problems, capability_ids)`（`problems`：键 → 原因，按键排序写进消息；`capability_ids`：本环境的 capability id），抛错时没有任何 capability 被调用：前缀对应不到 capability；对应的 capability 不实现 `ArchivingCapability`；键不在该 capability 的 `provided_archivers` 里。校验通过后，**每个** `ArchivingCapability` 都收到自己的那一组——分不到的收到空列表，这会清掉它之前的绑定；收到非空组的 capability 按 capability 顺序记进 `_archiving`。绑定不获取任何资源（它可能发生在干跑里、setup 之前）。
+- `collect_archive()`：什么都没绑定时直接返回 `ArchiveBatch()`，一个 capability 也不碰。否则每个绑定了的 capability 一个任务**并发**收集；每个任务都跑完才裁决结果，不留孤儿任务。一个 capability 抛 `Exception`、交回的不是 `ArchiveBatch`，或交回的文件里有 `capability_id` 不是它自己的（后两条记成点名该 capability 的 `ArchiveContractError`，最后一条还点名那些 `archiver_id`），都算它失败；有任何失败就抛 `ArchiveCollectionError(env_type, failures)`——`failures` 是 capability id → 异常，消息按 capability 顺序点名每一个，`__cause__` 是按 capability 顺序的第一个失败；健康 capability 交回的批次随之丢弃（run 反正要失败，§4.6）。没有失败时按 capability 顺序把各批次合并成一个 `ArchiveBatch`。`CancelledError` 原样传播——包括某个 capability 自己抛出它的情形：`gather` 这时会让兄弟任务接着跑，所以先取消还没结束的任务、等它们收场，再原样重抛，同样不留孤儿任务。
+- 收集不带任何参数：environment 从不把步号（也不把 cycle）交给 capability。"第 t 步的提交取走的就归第 t 步"是记录器那一侧的规则（§4.6）。
 
 **Observation cycle 由 env 宣告，不由 capability 推断**：`Environment.observe` 持有单调递增的 cycle 计数器，每次 observe 自增一次，并在任何 fragment 解析之前调用每个参与 capability 的 `begin_observation(cycle)`。这正是 capability 敢批量抓取的前提——browser 一次 `BrowserStateRequestEvent` 同时拿到 DOM + screenshot + tab list，然后在本 cycle 内把每个 key 服务任意多次，因为下一个 cycle 会被**告知**而不是被**猜到**。此前这条规则只以"我是否已经服务过这个 key"的形式活在 `BrowserCapability` 内部：那是用推断代替调用方本来就握有的信息，并且对任何读同一 fragment 两次的调用方都是错的。同一步内重复读同一个 fragment 是**同一次** observation，不是下一次。
 
@@ -784,6 +903,9 @@ conscribe 0.6 的 `__wiring__` Mode 2 扩展为三元素 tuple 区分 required/o
 **语义由注册表身份决定**：
 - Capability 的 wiring → **provides**
 - Agent / Loop 的 wiring → **requires**
+- Capability 的 `__wiring__["archiver"]` → **provides** 归档器（全限定键，`browser.network`）
+
+归档轴没有类级的 requires：它的需求来自 trace hook 实例的配置（`archive` 列表），不来自任何类的 `__wiring__`（§4.5 "唯一的不对称"）。
 
 **provides 写全限定键，requires 写短名**——provides 是"我这个 capability 注册了哪些 fragment"，那是注册表事实；requires 是领域知识，与 provider 无关（见 §4.3 capability-relative wiring）。
 
@@ -964,22 +1086,50 @@ def build_observation_model(active_fragments: set[str]) -> type[BaseModel]:
 
 #### 对称对照表
 
-| 维度 | Observation | Action |
-|---|---|---|
-| 注册器 | `ObservationRegistrar` (`"observation"`) | `ActionRegistrar` (`"action"`) |
-| 基类 | `FragmentBase` (pydantic bridge) | `ActionBase` (dataclass + conscribe metaclass) |
-| 注册单元 | 每个 fragment 一个类 (`DOMObs` / `ScreenshotObs` / ...) | 每个 action 一个类 (`ClickAction` / `ScrollAction` / ...) |
-| 注册 key 命名空间 | `source.id` dotted key (`browser.dom` / `browser.screenshot` / `docker.terminal` / `loop.action_result`) | `source.id` dotted key (`browser.click` / `browser.scroll` / `sandbox.bash`) |
-| Agent wiring | `"observation": ("observation", [required], [optional])` — 默认写 capability-relative 短名（`screenshot`），写全限定键即钉死 provider | `"action": ("action", [required], [optional])` — 同左（`click_coordinate` / `browser.click_coordinate`） |
-| Capability wiring | `"observation": ("observation", [provides])` | `"action": ("action", [provides])` |
-| Environment 聚合 | `provided_fragments` (全限定键集合) | `provided_actions` (全限定键集合) |
-| 协商函数 | `negotiate_observation(agent, loop, env)` → `ObservationNegotiationResult` | `negotiate_action(agent, env)` → `ActionNegotiationResult` (loop 不参与) |
-| 协商失败 | `IncompatibleFragmentError` | `IncompatibleActionError` |
-| wiring 提取 | `extract_wiring(cls, "observation")` | `extract_wiring(cls, "action")` |
-| 统一入口 | `negotiate(target_class, wiring_name, rules, **kwargs)` — 见 `spectragent/core/negotiation/engine.py` | 同左 |
-| 副作用/状态配置位置 | Capability 端 (e.g. `DOMWatchdog.cleaner_type` 是 profile 的一部分) | **Capability 端** (e.g. `ScrollAction.default_amount` 是 capability 持有的 action 实例的 conscribe 字段) |
-| 运行时使用 | `env.observe(negotiated, session_id)` 只解析 active fragment | `guarded_act` 拒绝 non-active action；`active_descriptors` 只暴露 active set |
-| Loop 参与协商 | 是（`ActionResultObs` 等 loop-sourced fragment） | **否**（action 都是 env-sourced，loop 只是驱动器） |
+| 维度 | Observation | Action | Archive |
+|---|---|---|---|
+| 注册器 | `ObservationRegistrar` (`"observation"`) | `ActionRegistrar` (`"action"`) | `ArchiverRegistrar` (`"archiver"`, `discriminator_field="archiver_id"`, `key_separator="."`) |
+| 基类 | `FragmentBase` (pydantic bridge) | `ActionBase` (dataclass + conscribe metaclass) | `ArchiverBase`（普通类 + conscribe metaclass；框架层只有身份与声明：`archiver_id`、`source`、`privacy_markers`；旋钮是子类的 `Annotated` 构造参数；采集行为由所属 capability 自己的 archiver 基类定义，框架从不调用） |
+| 注册单元 | 每个 fragment 一个类 (`DOMObs` / `ScreenshotObs` / ...) | 每个 action 一个类 (`ClickAction` / `ScrollAction` / ...) | 每个归档器一个类（M29：`browser.network` / `browser.storage` / `browser.dom_raw`） |
+| 注册 key 命名空间 | `source.id` dotted key (`browser.dom` / `browser.screenshot` / `docker.terminal` / `loop.action_result`) | `source.id` dotted key (`browser.click` / `browser.scroll` / `sandbox.bash`) | `source.id` dotted key（`browser.network`） |
+| Agent wiring | `"observation": ("observation", [required], [optional])` — 默认写 capability-relative 短名（`screenshot`），写全限定键即钉死 provider | `"action": ("action", [required], [optional])` — 同左（`click_coordinate` / `browser.click_coordinate`） | 无。requires 不在任何类的 `__wiring__` 上，而是 `ArchiveConsumer.archive`——trace hook 实例的归档器列表（YAML `hook[].archive`，M29 起），**永远全限定**，没有 relative key |
+| Capability wiring | `"observation": ("observation", [provides])` | `"action": ("action", [provides])` | `"archiver": ("archiver", [provides])` |
+| Environment 聚合 | `provided_fragments` (全限定键集合) | `provided_actions` (全限定键集合) | `provided_archivers`（全限定键集合） |
+| 协商函数 | `negotiate_observation(agent, loop, env)` → `ObservationNegotiationResult` | `negotiate_action(agent, env)` → `ActionNegotiationResult` (loop 不参与) | `negotiate_archive(consumers, env)` → `ArchiveNegotiationResult`（注册为 `archive`） |
+| 协商失败 | `IncompatibleFragmentError` | `IncompatibleActionError` | `IncompatibleArchiveError` |
+| 绑定表 | `fragment_bindings`（短名 → 全限定键） | `action_bindings`（短名 → 全限定键） | `archive_bindings`（archiver key → `capability_id`） |
+| wiring 提取 | `extract_wiring(cls, "observation")` | `extract_wiring(cls, "action")` | 只有 provides 一侧：`_wiring_keys_for(cls, "archiver")` |
+| 统一入口 | `negotiate(target_class, wiring_name, rules, **kwargs)` — 见 `spectragent/core/negotiation/engine.py` | 同左 | 同左（`negotiate(ArchiveNegotiationResult, "archiver", _archive_rules, ...)`） |
+| 副作用/状态配置位置 | Capability 端 (e.g. `DOMWatchdog.cleaner_type` 是 profile 的一部分) | **Capability 端** (e.g. `ScrollAction.default_amount` 是 capability 持有的 action 实例的 conscribe 字段) | **记录器端**：旋钮在 trace hook 持有的归档器实例上（如 `max_inline_body_bytes`），绑定时把实例交给 capability |
+| 运行时使用 | `env.observe(negotiated, session_id)` 只解析 active fragment | `guarded_act` 拒绝 non-active action；`active_descriptors` 只暴露 active set | `prepare()` 末尾 `env.bind_archivers(...)`；归档消费者在自己的提交点拉取 `env.collect_archive()`（§4.6） |
+| Loop 参与协商 | 是（`ActionResultObs` 等 loop-sourced fragment） | **否**（action 都是 env-sourced，loop 只是驱动器） | **否** |
+
+#### 归档：第三条 provides 轴
+
+环境证据（§5.1）沿用 observation / action 的同一套形状：每个归档器独立注册，键是全限定的 `<capability>.<id>`；capability 在 `__wiring__["archiver"]` 里声明 provides，`provided_archivers` 由它派生（与 `declared_fragments` 同一种做法，`CapabilityBase` 的默认实现，§4.9）；environment 聚合；`negotiate_archive` 在 `prepare()` 里校验，结果是绑定表，下游只读这张表。
+
+**唯一的不对称**：requires 来自 trace hook **实例**的配置，而且永远全限定。记录什么是每次 run 的选择（用户裁决 D3，2026-10-09）——它既不是某个 agent 类的领域知识（§4.4："模式决定模型看到什么，不决定 run 记录什么"），也不是记录器类的固有属性。所以没有类级 `__wiring__` 需求，也就没有 relative key 要绑定：`ArchiveConsumer.archive` 里每个归档器的 `archiver_id` 本身就点名了 provider。
+
+**协商规则**（`core/negotiation/archive.py`）。`negotiate_archive(consumers, env)` 接收的是 runtime 筛出来的、`archive` 非空的 `ArchiveConsumer` 对象，不是一个扁平的归档器列表——请求方是谁、同一个键是不是跨消费者重复，只有从消费者那里才看得出来。`consumers` 为空是编程错误（`ValueError`），`archive` 里的元素不满足 `Archiver` Protocol 同样是编程错误（`TypeError`，点名消费者与元素类型）。消费者按身份（`is`）比较，不按相等：同一个对象列两次算一个消费者，两个相等的不同对象仍是两个。环境一侧的事实是 `env.env_type`，以及 `env.capabilities` 里每个 capability 的 `(capability_id, provided_archivers)`——不实现 `ArchivingCapability` 的 capability 视为一个也不提供；报错里"环境提供了什么"是这些集合的并集（按构造等于 `env.provided_archivers`）。请求方标签用 `demand_label(consumer)`（`trace_writer`）。每个请求的键按第一段找 capability，该 capability 必须提供这个键。下面的问题**全部收集完一次报出**，每条一行，按字典序排序，合成一个 `IncompatibleArchiveError`：
+
+| 问题 | 消息（逐字） |
+|---|---|
+| 前缀对应不到 capability | `{req} requests archiver {key!r}, but environment {env!r} has no capability {prefix!r} (its capabilities: {cap_ids}).` |
+| capability 不提供这个键 | `{req} requests archiver {key!r}, but environment {env!r} provides archivers: {env_provided} (capability {cap!r} declares {cap_provided}).` —— `{cap_provided}` 为空时写 `none`，否则是有序列表 |
+| 同一个键在一个列表里出现两次 | `{req} lists archiver {key!r} more than once; an archive list names each archiver at most once.` |
+| 同一个键出现在两个及以上消费者里 | `archiver {key!r} is requested by more than one hook ({req_a}, {req_b}); a run binds each archiver once.` —— 标签按消费者顺序、逗号分隔 |
+| 不止一个消费者声明了非空 `archive` | `more than one hook requests archivers ({req_1}: {keys_1}; {req_2}: {keys_2}); a run binds the archive of at most one hook.` —— 按消费者顺序、`; ` 分隔。v1 只绑定一个消费者：`collect_archive` 取走即遗忘，证据只能交给一个调用方 |
+| 本 run 没有 environment | `{req} requests archivers {keys}, but this run has no environment.` |
+
+`{env!r}` 是 `env_type`，所有列表都是有序的 `list` repr。`IncompatibleArchiveError` 带三个与 `IncompatibleFragmentError` 同构的属性：`missing`（前缀对应不到或不被提供的键；没有 environment 时是全部请求的键）、`provided`（环境提供的全部归档器；没有 environment 时为空）、`requested_by`（键 → 请求它的消费者标签，有序）；另有 `problems`：消息里那些行，排序并去重（两个标签相同的消费者可能产生一模一样的一句话，只报一次）。重复键与多消费者这两类问题只出现在消息里，不进 `missing`。最常见的一条长这样：
+
+```
+IncompatibleArchiveError: trace_writer requests archiver 'browser.network', but environment 'browser' provides archivers: [] (capability 'browser' declares none).
+```
+
+成功时返回 `ArchiveNegotiationResult`（`@dataclass(frozen=True)`，注册到 `NegotiationResultRegistrar`，`result_type == "archive"`）：`active_archivers: frozenset[str]`（全限定键）、`archive_bindings: Mapping[str, str]`（archiver key → 提供它的 capability 的 `capability_id`，即 registry key，不是 capability 实例 id）。
+
+**capability 配置上的 `archiver:` 字段**：capability 的 `__wiring__["archiver"]` 条目没有 slot，所以 conscribe 在 capability 的配置上生成一个可选的 `archiver: Optional[Literal[...]] = None`，和 `observation:` 一样；YAML 填了它，Composer 抛 `UnresolvedWiringError`（§4.2.1）。归档器在 trace hook 上选，不在 capability 上选。`tests/test_core/test_composer/test_archive_provides.py` 钉住这一点。
 
 #### ActionDescriptor
 
@@ -1291,10 +1441,17 @@ class RuntimeHook(Protocol):
         ...
 
     # ── Lifecycle 回调（AgentRuntime 直接调用）──
-    async def on_run_start(self, *, agent, env, task, config) -> None: ...
-    async def on_run_end(self, *, result: AgentResult) -> None: ...     # 每条终止路径，含外部取消
-    async def on_run_error(self, *, error, partial_steps) -> None: ... # 超时 / 异常 / 取消，紧跟 on_run_end
+    async def on_run_start(self, *, agent, env, loop, llm,          # 对象：给需要和它们说话的 hook
+                           task, task_id, benchmark, subset, run_id, config,
+                           agent_id, loop_id, env_type, llm_model,  # 值：runtime 解析好的 run 配置
+                           resolved_config, observation_negotiation, action_negotiation,
+                           archive_negotiation, env_evidence_recorded, env_evidence_privacy,
+                           task_setup, **kwargs) -> None: ...       # payload 会长，**kwargs 是签名的一部分
+    async def on_run_end(self, *, result: AgentResult, env) -> None: ...         # 每条终止路径，含外部取消
+    async def on_run_error(self, *, error, partial_steps, env) -> None: ...     # 超时 / 异常 / 取消，紧跟 on_run_end
 ```
+
+`env` 在三个回调里都是**原始**环境（不是 AOP 代理），而且都还活着：teardown 永远在 `on_run_end` / `on_run_error` 之后。
 
 **AOP 拦截声明**：Hook 通过 `__intercepts__` 声明要拦截的方法、目标角色和 advice 类型：
 
@@ -1347,13 +1504,34 @@ loop.weave(wrapped_agent, env=wrapped_env, llm=wrapped_llm,
 
 | hook_id | 状态 | blocking | `__intercepts__` | 职责 |
 |---------|------|----------|-------------------|------|
-| `trace_writer` | ✅ | True | `around_ainvoke(llm)`, `after_record_step(loop)` | 在 `around` 中按开始顺序登记每次 LLM 调用（completed / failed / cancelled）→ Loop 交出 StepRecord 时一次 `commit_step` 提交当步数据到 WAL；run 结束时未交出的调用经 `commit_trailing` 落盘 |
+| `trace_writer` | ✅ | True | `around_ainvoke(llm)`, `after_record_step(loop)` | 在 `around` 中按开始顺序登记每次 LLM 调用（completed / failed / cancelled）→ Loop 交出 StepRecord 时一次 `commit_step` 提交当步数据到 WAL；run 结束时未交出的调用经 `commit_trailing` 落盘。`archive` 归档器列表（M28：普通构造参数；M29 起是 YAML 受体）：非空时它是本 run 的归档消费者，在 `after_record_step` 与收尾时拉取原始 env 的 `collect_archive()`，证据进 `env/`（§5.2–§5.4） |
 | `metrics` | ✅ | True | `after_ainvoke(llm)`, `around_ainvoke(llm)` | 从 ChatInvokeCompletion 提取 token usage，内存累加 |
 | `live_monitor` | **P3 未实现** | False | `after_observe(env)`, `after_ainvoke(llm)` | WebSocket 推送实时状态。设计保留位，目前框架内未注册；按本表的 schema 实现一个 `HookBase` 子类即可纳入。 |
+
+**挂受体的 hook 手写 `__init__`。** conscribe 的元类在类创建时读 `inspect.signature(cls.__init__)` 判断一个 `__wiring__` 条目是不是构造参数，这一步早于 `@dataclass` 合成 `__init__`；dataclass 字段形式的受体因此看起来"没被接收"，conscribe 用 `WiredField` 盖掉字段默认值（§5.4、`af-add-a-receptor` guide §6）。所以挂 `__wiring__` 受体的 hook 不是 `@dataclass`：手写 `__init__`，旋钮写成具名的 `Annotated` 参数，受体另有一条类级注解（list 受体写 `list[...]`，§4.2.1）。不挂受体的 hook（`metrics`）可以继续是 dataclass。`HookBase` 本身是 `@dataclass(eq=False)`：hook 是有状态的对象，按身份比较——否则手写 `__init__`、不再是 dataclass 的子类（`TraceWriter`）会继承一个没有字段的 `__eq__`，任意两个实例都"相等"。需要区分 hook 的代码（归档协商比较消费者）一律用 `is`。
 
 **与 emitter.dispatch() 的权衡**：
 
 AOP 方案让 Loop 代码完全干净 — 没有 `emitter` 参数，没有 `dispatch` 调用，甚至不知道 hook 的存在。代价是只能拦截实际存在的方法调用。对于不映射到方法调用的语义事件（如 PlanExecuteLoop 的「规划完成」），解决方案是将该语义建模为 Agent Protocol 方法（如 `agent.parse_plan()` → `after_parse_plan` hook），AOP 自然覆盖。
+
+#### 记录器从环境拉取证据（先例）
+
+环境证据（§5.1）是生产代码里第一个"hook 通过 Environment Protocol 方法拉数据"的地方。它不是 emitter 旁路，规则是：
+
+1. **只在原始环境上拉。** 记录器从 `on_run_start(env=...)` 拿到的是没有被 AOP 包装的环境，拉取就调它的 `collect_archive()`——从不经过代理，所以没有 hook 会拦截这次拉取，也不会递归。
+2. **只在自己的提交点拉。** `after_record_step` 里、manifest 提交之前一次；收尾时（`on_run_end` / `on_run_error`）至多再一次。
+3. **从不驱动环境。** 不调 `act` / `observe`，不调任何会改变环境的方法；`collect_archive` 只交出 capability 已经采到的东西。
+4. **environment 永远拿不到步号。** "第 t 步的提交取走的东西就归第 t 步"：第 t 步动作引发的网络往来、第 t 步开头观测时的原始 DOM 与存储快照，都在第 t 步的 `record_step` 之后被取走，所以归第 t 步。cycle 也不等于步号，capability 只给每条证据带上自己的 `captured_at` / `cycle` / id。
+
+runtime 通过 `ArchiveConsumer` Protocol（`core/archive/protocols.py`）发现记录器：它只有一个属性 `archive: list[ArchiverBase]`，与 YAML 受体同名（M29）。`archive` 非空的 hook 就是本 run 的归档消费者，v1 至多一个（§4.5）；它必须是 blocking 的——`blocking=False` 的 handler 进不了 trace（见上）。
+
+**失败语义：fail closed。** 归档是显式要求的，静默不完整的归档会毒化回放和分叉（"一个写不了 trace 的 TraceWriter 就是一个必须停下的 run"）。所以：
+
+- 某一步的 `collect_archive` 抛错（或交回的批次违反契约，`ArchiveContractError`）→ 这一步**不提交**，它登记的 LLM 调用在收尾时作为 trailing 调用落盘，错误照原样上抛，run 失败，trace 以 `error` 收尾；之后不再收集——Loop 若吞掉了那个错误还要继续，下一次提交直接抛错，点名哪一步的收集失败了。
+- 收尾时至多再收集一次，而且只在之前没有失败过时收集。
+- 收尾那次收集失败：trace 记为 `error`；只有 run 本身没有失败时才把这个错误上抛（成功的 run 由 `execute` 抛出它），run 已经失败时只记日志，不掩盖 run 自己的错误。收尾那次收集被取消：调用照样冲刷、终态照样写（记为 `error`），然后原样重抛取消——冲刷或写终态在它底下又失败了（磁盘满），那个错误也只记日志，`on_run_end` 与 `on_run_error` 都一样（§4.2 "取消永远优先"）。
+- **记录失败不顶替 run 已经定下的结局。** 某一步的收集失败（或任何让 `record_step` 抛错的记录失败）恰好落在 run 正因失败而结束的那一步——guard 的否决正在上抛，Loop 正要把基础设施失败、动作失败或最后一次容许的解析错误变成终止结果——时，Loop 不让这个记录失败从 Loop 里取代那个结局：否决照样上抛（记录失败作为 note 附在 `RunAbort` 上，`execute` 因此照样越过 `raise_on_error=False` 把它交给 sweep，sweep 照样停下；记录失败若一直持续到收尾——磁盘一直满着——收尾的失败同样只是否决上的又一条 note，§4.2 "否决总是上抛"），终止结果的 `error` 仍然点名根因，后面附上"这一步也没能记录"及其原因（`result.json` 于是说清楚 trace 为什么少了这一步）。fail closed 不受影响：这一步照样不提交，它的调用照样作为 trailing 落盘、trace 照样以 `error` 收尾（磁盘写得进去的话；写不进去的就继续欠着），之后不再收集。只有在 run 本来要继续或成功结束的那一步，记录失败才是让 run 失败的那个错误。记录被取消切断（这一步的收集太慢，run 自己的超时恰好到期）也顶替不了那个结局：取消照样原样离开 Loop，但带着结局——否决本身，或已建好的终止结果（`loops.errors.carry_outcome`）——是 run 自己的超时时，`execute` 照这个结局收尾，外部取消照旧优先（§4.2 "run 自己的超时顶替不了已经定下的结局"）。被否决的那一步，Loop 在交出它之前先记下否决的日志，所以交接不论怎样结束，日志里都有 guard 说过停。（`ReactLoop._surrender_failing`、`_surrender_vetoed`、`_end_failing`；新 Loop 的义务见 `af-add-a-loop` guide §3。）
+- 取消不是采集失败：被取消的那一步不提交（交接之后才被取消的那一批证据随之丢失；已提交的步各自带着自己的证据，不受影响），收尾照常收集一次，run 以 `error` 收尾。交接之前就被取消的，按交接契约（§4.9 "交出并忘掉"）仍在 capability 里，由收尾那次收集取走，作为 trailing 证据落盘。
 
 ### 4.7 LLM 抽象
 
@@ -1465,7 +1643,68 @@ class BaseCapability(Protocol):
 
     @property
     def is_alive(self) -> bool: ...
+
+
+# core/archive/protocols.py —— 可选的归档面：只有提供归档器的 capability 才需要真正实现
+@runtime_checkable
+class ArchivingCapability(Protocol):
+    @property
+    def provided_archivers(self) -> frozenset[str]: ...                # 全限定键
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None: ...
+    async def collect_archive(self) -> ArchiveBatch: ...               # 取走自上次收集以来的全部证据
 ```
+
+**归档面是单独的 Protocol，不进 `BaseCapability`。** 它是可选的：不归档的 capability 不该为它实现任何东西，而往 `@runtime_checkable` 的 `BaseCapability` 加成员会改变每个结构化实现者的 `isinstance` 结果。`CapabilityBase`（`core/capabilities/_registrar.py`）带着惰性默认实现满足它：
+
+- `provided_archivers`：从 `__wiring__["archiver"]` 派生（`_wiring_keys_for(type(self), "archiver")`，与 `declared_fragments` 同一种做法）；
+- `bind_archivers([])` 什么也不做；非空的绑定抛 `NotImplementedError`，点名类名和那些键——声明了 provides 的 capability 必须同时覆盖 `bind_archivers` 和 `collect_archive`；
+- `collect_archive()` 返回空的 `ArchiveBatch()`。
+
+**归档契约**（`core/archive/` 定义类型，capability 实现行为；`tests/_helpers/archive_contract.py` 对每个提供归档器的 capability 检查能从外面检查的那些条：替换与清空绑定、不带参数、交出并忘掉、未绑定不采、只交已绑定归档器的证据、每批至多一份 run 记录、来源信封、采不到就抛错，以及这些证据经 TraceWriter 提交、读回、崩溃窗口与收尾的行为，和另一个归档 capability 同处一个环境时 run 记录仍按 capability 计数、编号与去重。"不无限阻塞"、"对生产者原子交接"与"在途条目恰好交出一次"取决于 capability 的内部时序，与 capability 无关的 harness 造不出来，由各 capability 自己的测试钉住——browser 的在 M29，用 fake CDP）：
+
+- `bind_archivers(archivers)` **替换**整个绑定（空列表 = 解除），不获取任何资源；runtime 只在 setup 之前绑定，capability 在 `setup()` 里读绑定，决定建不建自己的采集通道。收到的是 trace hook 持有的归档器实例，旋钮就在实例上。
+- `collect_archive()` 不带任何参数（没有步号，没有 cycle），交出自上次收集以来采到的全部证据并忘掉它们——批次从此归调用方。不无限阻塞；在没有 setup、或 setup 半途失败的 capability 上调用也安全（没采到东西就返回空批次）；采不到时**抛错**，不返回一个假装完整的空批次。
+- 它可能在共享环境里另一个 agent 正在动作时被调用，所以"交出并清空"对 capability 自己的生产者必须是原子的（例如在一条同步语句里把缓冲区换出去）。
+- 收集边界上还没完成的条目（还在读的响应体）留到之后的批次，恰好交出一次，不重复也不丢；收尾那次收集是最后一次——capability 要么在有限时间内把它们收完，要么把它们标成未完成交出（怎么标是 capability 自己的事，M29 的 `body_status`）。
+- 每个 `ArchiveFile` 自带来源信封 `meta: ArchiveProvenance`：`captured_at`（墙钟 Unix 时间）、适用时的 `cycle`、capability 作用域的 `ids`（session / frame / loader id 等）。文件的 `capability_id`（`archiver_id` 的第一段）必须是这个 capability 自己——environment 把别的前缀当作该 capability 的收集失败；步级文件必须属于一个已绑定的归档器键。
+- 每个批次里每个 capability 至多一份 run 记录（`scope="run"`，JSON，不内容寻址；`archiver_id` 可以是裸的 capability id，也可以是它的一个已绑定归档器键）。内容变化才需要再发；与上一版字节相同的再发会被记录器丢掉（§5.4）。
+
+**`ArchiveFile` 与 `ArchiveBatch`**（`core/archive/types.py`，frozen dataclass，不挂受体）：
+
+```python
+ArchiveScope = Literal["step", "run"]
+
+@dataclass(frozen=True)
+class ArchiveProvenance:
+    captured_at: float                                      # 墙钟，与 StepRecord.timestamp 可比
+    cycle: int | None = None
+    ids: Mapping[str, str] = field(default_factory=dict)    # capability 作用域的标识
+
+@dataclass(frozen=True)
+class ArchiveFile:
+    archiver_id: str              # 全限定键（run 记录也可以是裸 capability id）；进路径，作为 provenance
+    name: str                     # 归档器自定的文件名：单个路径段，如 "exchanges.warc.gz"、"storage.json"
+    media_type: str               # 如 "application/json"
+    data: bytes
+    meta: ArchiveProvenance
+    content_addressed: bool = False   # True → env/blobs/sha256/，run 内去重
+    scope: ArchiveScope = "step"
+
+    @property
+    def capability_id(self) -> str: ...   # archiver_id.partition(".")[0]
+
+@dataclass(frozen=True)
+class ArchiveBatch:               # 一次收集取走的全部文件
+    files: tuple[ArchiveFile, ...] = ()   # 传入 list 时转成 tuple
+    @property
+    def is_empty(self) -> bool: ...
+    @classmethod
+    def merge(cls, batches: Iterable["ArchiveBatch"]) -> "ArchiveBatch": ...   # 保持顺序
+
+class ArchiveContractError(ValueError): ...   # 收集到的批次违反契约（由消费者 / environment 抛出）
+```
+
+`ArchiveFile.__post_init__` 在构造时校验，违反就抛 `ValueError` / `TypeError`：`archiver_id` 非空，不含 `/` 或 `\`，不是 `.` / `..`；`scope == "step"` 要求带点的 `<capability>.<id>` 键；`scope == "run"` 允许裸 capability id，要求 `content_addressed is False` 且 `media_type == "application/json"`；`name` 是单个路径段（非空，不含 `/` 或 `\`，不是 `.` / `..`）；`archiver_id` 与 `name` 都必须能编码成 UTF-8，且编码后不超过 255 字节（`MAX_SEGMENT_BYTES`，ext4 等文件系统的 `NAME_MAX`：trace 在按字符计长度的 APFS 上写成，拷到按字节计的文件系统上也得放得下）；`media_type` 是 `type/subtype`（`/` 两侧都非空）且能编码成 UTF-8；`data` 是 `bytes`；`meta` 是 `ArchiveProvenance`；`content_addressed` 是 `bool`；`scope` 只能是那两个字面量。`ArchiveProvenance` 同样在构造时校验：`captured_at` 是有限的数（不是 `bool`），`cycle` 是 `int` 或 `None`，`ids` 是 str → str 的映射、每个键和值都能编码成 UTF-8，复制一份后只读暴露。规则写在 `core/archive/types.py` 的 `segment_problem` / `text_problem` 里。所有这些字符串最后都进 trace 的 JSON 索引或路径：孤立的代理字符（宽松解码留下的 `"\udc80"`）没有 UTF-8 编码，超长的名字会让文件系统报 `ENAMETOOLONG`，两者都会让带着它的提交失败，而且每次重试都以同样方式失败——所以在 capability 那里就拒绝。`archiver_id` 与 `name` 都是单段，所以 `env/` 下不会出现"一个路径既是文件又是目录"，也就不会在 WAL 里半途失败；拼出来的完整路径仍由消费者按 `encoding.check_relative_path` 再查一遍，上面的段规则也再查一遍（frozen dataclass 仍可能被绕过构造校验伪造出来）。
 
 #### 4.9.x Capability ↔ Backend 生命周期
 
@@ -1532,6 +1771,8 @@ class BrowserCapability(CapabilityBase):
                               "scroll", "send_keys", "go_back", "go_forward",
                               "switch_tab", "select_dropdown", "extract_content",
                               "done"]),
+        # 归档 provides（全限定键，M29 起）：没有 slot；requires 在 trace hook 的 archive 列表里
+        "archiver": ("archiver", ["browser.network", "browser.storage", "browser.dom_raw"]),
         "backend": "browser_provider",
     }
 
@@ -1621,10 +1862,11 @@ BENCHMARK_CAPABILITIES = {
 **Cross-cutting concerns 在 framework 层处理，不在 capability 内**：
 
 - **日志/trajectory 记录** — Hook（TraceWriter）自动记录每步事件
+- **环境证据的落盘** — 归档消费者（TraceWriter）在自己的提交点拉取、写进 `env/`（§4.6、§5）
 - **超时/资源控制** — AgentRuntime 对 loop.run() 加 timeout
 - **评分** — AgentRuntime 按 benchmark 注册的 evaluator 执行
 
-Capability 本身不需要知道日志、超时、评分的存在。
+Capability 本身不需要知道日志、超时、评分的存在。环境证据是唯一的分工：**被拉取时产出**环境证据是 capability 的职责（只有它够得着自己的世界），**持久化**不是——capability 不知道 WAL，不知道步号，也不知道 `env/` 的布局。
 
 **GPU Profiling Capability — DockerCapability 的插件**：
 
@@ -1841,6 +2083,14 @@ numpy 来自可选 extra `learned-mouse`，只在构造 `LearnedTrajectory` 时�
 
 **不使用 SQLite** — agent 场景的数据结构是异构的（不同 fragment 类型字段完全不同），schema 会随框架演进频繁变化，这与关系数据库的核心假设（同构行、稳定 schema）冲突。数据落盘速度不是运行瓶颈（LLM 推理每步需要数秒，文件写入只需毫秒），SQLite 的查询优势可通过后置索引实现。
 
+**环境证据（environment evidence）是第二类记录。** trace 记录 agent 行为（2026-09-16 的裁决："agent 换一个选择，这个值会不会变？"会变的才记）。环境在 run 中的状态与资源——响应体、存储快照、原始 DOM 采集、环境指纹——通过同一个检验：agent 换一个选择，它们就会不同，而且它们是那次决策所处的世界，不是框架执行决策的细节。按用户裁决 D2（2026-10-09），它作为单独的一类进 trace：
+
+- **显式开启**：只有绑定了非空 `archive`（§4.5）的 run 才有，默认没有；
+- **单独放在 `env/` 子树**（§5.3），读侧有自己的访问器（§5.5）；
+- **单独标记隐私**：`TraceConfig.env_evidence_recorded` / `env_evidence_privacy`，加上 capability 自己的 run 记录（§5.6）。
+
+2026-09-16 那条裁决的另一半照旧成立：不记 CDP 事件流，不记输入 tick。归档存的是资源和状态，不是把它们送过来的协议事件序列，也不是框架执行一次点击的轨迹。
+
 ### 5.2 写入协议
 
 每步只提交一次：`TraceWriter.after_record_step` 把这一步要落盘的全部东西一次交给 `WALWriter.commit_step`，WAL 按固定顺序写完，再原子更新 manifest。
@@ -1932,7 +2182,8 @@ class EncodedLLMCall:                # encode_llm_call(step, call, pending) -> E
 - `encode_llm_calls(step, pending, *, first_call=0)`：按开始顺序编号，从 `first_call` 起；TraceWriter 用它让一步的调用接在这一步已提交的 trailing 调用之后；
 - `encode_output_format(output_format) -> EncodedOutputFormat`：回复模型的 `model_json_schema()`，规范化 JSON 加 sha256；不是 pydantic model 类就抛 `TypeError`；
 - `encode_fragment(step, value)`：单个 slot，`encode_observation` 逐个调用它；
-- 读侧用的 `decode_fragment(key, cls, payload, artifact)`：先核对 payload 的 `fragment_id`，再调 `from_trace`。
+- 读侧用的 `decode_fragment(key, cls, payload, artifact)`：先核对 payload 的 `fragment_id`，再调 `from_trace`；
+- `encode_archive_file(file, *, step=None, trailing=None, run_version=None) -> TraceFile`：把一个 `ArchiveFile` 编码成 extra 文件，按它的文档化字段读（鸭子类型，与 `TraceNegotiation.from_results` 同样的理由：`core/trace` 不 import `core/archive` 的类型）。路径：`scope == "run"` → 必须给 `run_version`，`archive_run_path(capability_id, run_version)`；`content_addressed` → `archive_blob_path(sha256(data))`；其余 → `step` 与 `trailing` 恰好给一个，`archive_step_path(step, archiver_id, name)` / `archive_trailing_path(trailing, archiver_id, name)`；不满足抛 `ValueError`。同样抛 `ValueError` 的还有：`step` 与 `trailing` 同时给出（一个文件只属于一次提交）、不是 run 记录却给了 `run_version`、内容寻址的 run 记录、未知的 `scope`——鸭子类型，所以 `ArchiveFile` 自己会拒绝的这里再查一遍。`meta` = `{ARCHIVE_META_KEY: ArchiveMeta(...).model_dump(mode="json")}`（`ARCHIVE_META_KEY = "archive"`），`content_addressed` 照抄。
 
 fixture 与 `RunTrace` 共用这些函数。
 
@@ -1945,7 +2196,7 @@ fixture 与 `RunTrace` 共用这些函数。
 - 内容寻址文件的路径必须包含 `sha256(data)` 的完整十六进制摘要，允许按 `<前两位>/<其余>` 分片（如 M28 的 `env/blobs/sha256/ab/cdef…`）；
 - `encoding.py` 命名的文件待在自己的目录里：fragment 文件和 artifact 在 `observations/` 下，调用记录在 `messages/` 下（不在 `messages/output_formats/` 里），output schema 必须内容寻址、直接位于 `messages/output_formats/` 下；
 - 同一次提交里同一路径只能出现一次（内容寻址文件除外，只写一次），同一步里同一个 fragment key 只能出现一次；`record.step` 必须等于 `step`，一个 step 只能提交一次；
-- 以上比较一律不区分大小写（casefold）：macOS 默认的 APFS 不区分大小写，`env/A.txt` 和 `env/a.txt` 是同一个文件，trace 拷到这样的文件系统上也不能互相覆盖。
+- 以上比较一律按 `encoding.fold_path` 的键进行：macOS 默认的 APFS 既不区分大小写、也不区分 Unicode 规范化形式，`env/A.txt` 和 `env/a.txt` 是同一个文件，`café.json` 的预组合（NFC）与分解（NFD）两种写法也是同一个文件，trace 拷到这样的文件系统上也不能互相覆盖。键是 Unicode 的规范无大小写匹配（canonical caseless matching，Unicode §3.13 D145）：`NFD(casefold(NFD(path)))`。只做 `casefold` 漏掉规范化变体；先 NFC 再 `casefold` 仍会漏掉大小写折叠之后才分解出来的那些对（`Ś` 与 `ſ` + 组合尖音符）。
 
 **内容寻址文件在 run 内去重。** WAL 在内存里记着本 run 已提交的内容寻址路径，只在 manifest 提交成功之后更新。再遇到同一路径就跳过写入：extra 文件照常列进本次提交的索引（同一个响应体会被很多步引用）；output schema 只在 `manifest.output_formats` 里出现一次，由引用它的每条调用记录指向（同一个回复模型会被几十次调用使用）。去重跳过的只是写入，摘要校验照做：同一路径换了字节再提交会被拒绝，否则索引会记下磁盘上那个文件并不具有的 size 和 sha256。
 
@@ -1983,6 +2234,12 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 **不属于任何已提交 step 的文件走 `commit_trailing`。** 它落盘 Loop 没来得及交出的那一步的 LLM 调用（超时、外部取消、崩溃），以及 M28 在 run 结束时冲刷的环境证据。它走同一套校验、同一种批量 fsync、同一个提交点，但不写 StepRecord，也不推进 `last_step_completed`：声称一个完成的 step，会在 manifest 里放进一个没有动作的幽灵步。`finalize(status)` 则写终态；停在 `running` 的 trace 没有 evaluator 会碰。
 
+**环境证据走同一个提交。** 归档文件是普通的 extra 文件，WAL 不认识它们（接口仍然只有 `TraceFile`）：
+
+- 一步的 `after_record_step` 在 manifest 提交之前拉取的批次，随**这一步**的 `commit_step(..., extra_files=...)` 落盘，列在 `steps/NNN.extra.json`；内容寻址的文件由 WAL 在 run 内去重，每个引用它的步的索引都列它。
+- 收尾时每样欠 trace 的东西**各自一次** `commit_trailing`，按这个顺序：(1) 还登记着的 LLM 调用；(2) 提交失败的步遗留下来的每个批次（不止一个时——只有提交失败之后还继续跑的驱动会这样——两步的批次可能带着同名的归档文件，不能挤进同一个 `env/trailing/KK/`）；(3) 收尾时收集到的尾部。所以每一批证据都有自己的 `env/trailing/KK/`，调用那一次没有 extra 索引。没东西可提交的就不提交。
+- 一次提交失败时，它带的归档文件留在 TraceWriter 里，收尾时作为上面的 (2) 提交，重新按 trailing 路径编码（失败那次写下的文件是孤立文件，对读侧不可见）。归档文件的路径段与要进索引的字符串在交给 WAL 之前就校验过（§4.9、§5.4），所以这样的批次不会因为同样的路径错误再失败一次。即便如此，收尾的某一次 trailing 提交仍然失败——磁盘满，或某个批次因为任何重试都修不好的原因写不进去——它也只赔上它自己带的东西：那一样继续留在 TraceWriter 里，之后的冲刷（`on_run_end` 失败后驱动再派发的 `on_run_error`）再试一次，其余各样照常提交；全部试过之后抛出第一个错误（被取消或被否决的 run 上，`execute` 只把它记日志——否决上再附一条 note——重抛的仍是取消或否决，§4.2）。调用单独先提交，正是为了这一点：写不进去的一批证据不会连累未完成那一步的 LLM 调用和尾部（"提交失败不丢调用"，§5.4）。
+
 ### 5.3 目录结构
 
 ```
@@ -2018,7 +2275,12 @@ traces/
       │   └── output_formats/
       │       └── <sha256>.json         # 请求的 output schema，run 内按内容寻址、只写一次
       │
-      ├── env/                          # 保留给 M28 的环境证据（经 extra_files 提交）
+      ├── env/                                  # 环境证据（经 extra_files 提交）；archive 为空的 run 没有它
+      │   ├── run.<capability_id>.json          # capability 的 run 记录（环境指纹等，JSON）：第 0 版
+      │   ├── run.<capability_id>.<k>.json      # 内容变化后再发出的第 k 版（k ≥ 1；已提交路径不可变）
+      │   ├── blobs/sha256/<ab>/<rest>          # content_addressed 的归档文件，run 内去重
+      │   ├── steps/NNN/<archiver_id>/<name>    # 第 NNN 步的提交取走的证据
+      │   └── trailing/KK/<archiver_id>/<name>  # 第 KK 次 commit_trailing 的证据（收尾、提交失败遗留）
       │
       └── evals/                        # 评测结果（后置、原子写，可多次运行不同 judge）
           ├── exact_match_v1.json
@@ -2036,6 +2298,12 @@ traces/
 | output schema | `messages/output_formats/{sha256}.json` | 请求的 JSON schema，序列化为规范化 JSON（键排序、紧凑分隔符、UTF-8）；`sha256` 是这些字节的摘要 |
 | step record | `steps/{step:03d}.json` | `StepRecord` |
 | extra 文件索引 | `steps/{step:03d}.extra.json`、`steps/trailing_{n:02d}.extra.json` | `ExtraFileIndex`；`n` 是该条目在 `manifest.trailing` 里的位置 |
+| 归档文件（步） | `env/steps/{step:03d}/{archiver_id}/{name}` | `archive_step_path(step, archiver_id, name)`；`ArchiveFile.data` 原样 |
+| 归档文件（trailing） | `env/trailing/{n:02d}/{archiver_id}/{name}` | `archive_trailing_path(n, archiver_id, name)`；`n` 同上，是该条目在 `manifest.trailing` 里的位置 |
+| 内容寻址的归档文件 | `env/blobs/sha256/{sha256[:2]}/{sha256[2:]}` | `archive_blob_path(sha256)`；run 内只写一次，`sha256` 是 `data` 的摘要 |
+| run 记录 | `env/run.{capability_id}.json`（第 0 版）、`env/run.{capability_id}.{k}.json`（第 k 版，k ≥ 1） | `archive_run_path(capability_id, version)`；JSON |
+
+归档路径的根是 `ENV_DIR = "env"`，四个函数都在 `encoding.py`。每个归档文件在它所在索引里的 `ExtraFileRecord.meta["archive"]` 是一份 `ArchiveMeta`（下面的记录类型）：读侧靠它知道一个 extra 文件是归档文件、属于哪个归档器、第几版 run 记录。
 
 **manifest（format_version 2）**，以一个在第 2 步超时的 run 为例：
 
@@ -2115,10 +2383,36 @@ class ExtraFileRecord(BaseModel):      # extra 文件索引里的一条
     size: int
     sha256: str
     content_addressed: bool = False
-    meta: dict[str, Any] = Field(default_factory=dict)      # 生产者自带的元数据（M28：archiver key 等）
+    meta: dict[str, Any] = Field(default_factory=dict)      # 生产者自带的元数据；归档文件：meta["archive"] = ArchiveMeta
 
 class ExtraFileIndex(BaseModel):       # steps/NNN.extra.json、steps/trailing_KK.extra.json
     files: list[ExtraFileRecord]
+
+class ArchiveMeta(BaseModel):          # ExtraFileRecord.meta["archive"]：一个归档文件的来源
+    archiver_id: str                   # 全限定 archiver key；run 记录也可以是裸 capability id
+    name: str                          # 归档器自定的文件名（单个路径段）
+    media_type: str
+    scope: Literal["step", "run"]
+    captured_at: float                 # 墙钟 Unix 时间，与 StepRecord.timestamp 可比
+    cycle: int | None = None
+    ids: dict[str, str] = Field(default_factory=dict)       # capability 作用域的标识（session / frame / loader …）
+    run_version: int | None = None     # 仅 run 记录：第几版，从 0 起（校验：run 记录必有且 ≥ 0，步级文件必无）
+
+class ArchiveRecord(BaseModel):        # 读侧：一条 ExtraFileRecord 与它的 ArchiveMeta 摊平
+    path: str
+    size: int
+    sha256: str
+    content_addressed: bool
+    archiver_id: str
+    name: str
+    media_type: str
+    scope: Literal["step", "run"]
+    captured_at: float
+    cycle: int | None = None
+    ids: dict[str, str] = Field(default_factory=dict)
+    run_version: int | None = None
+    @property
+    def capability_id(self) -> str: ...   # archiver_id 的第一段
 
 class OutputFormatRef(BaseModel):
     name: str                          # 回复模型的类名
@@ -2165,7 +2459,37 @@ class RecordedLLMCall(BaseModel):      # messages/NNN_call_KK.json
 
 **不是 fragment 的 observation 不落盘。** 旧版把它整个写成 `NNN_observation.json` 兜底，没有任何访问器能读回；生产路径总是 `NegotiatedObservation`。这条兜底已删除，那一步的 fragment 索引为空。
 
-**`env/` 留给 M28。** M27 只提供通用的 extra 文件机制：任意不撞 WAL 自有名字的相对路径、每步一个索引、内容寻址文件 run 内去重、`commit_trailing` 收尾。`env/` 下的布局和归档语义由 M28 定义；在那之前没有任何组件往 `env/` 写文件。
+**`env/` 是环境证据的子树。** 它建在 M27 的通用 extra 文件机制上（任意不撞 WAL 自有名字的相对路径、每步一个索引、内容寻址文件 run 内去重、`commit_trailing` 收尾），WAL 没有为它加任何东西。布局就是上面那棵树，语义如下：
+
+- **只在开启时存在。** 没有绑定归档器的 run 不会有任何组件往 `env/` 写文件，目录根本不出现；绑定了但从没收集到文件的 run 也没有它。
+- **步级文件归取走它的那一步。** `env/steps/NNN/` 下是第 NNN 步的提交取走的证据，路径段是全限定的 `archiver_id`（provenance）和归档器自定的 `name`。
+- **内容寻址的文件只存一份。** 同一个响应体被很多步引用：文件在 `env/blobs/sha256/` 下只写一次，每个引用它的步的索引各列一条。
+- **trailing 证据不冒充任何一步。** 收尾时的尾部、以及一次提交失败遗留的批次，落在 `env/trailing/KK/`，`KK` 与 `steps/trailing_KK.extra.json` 是同一个位置编号。
+- **run 记录按版本提交。** capability 的 run 级证据（环境指纹等）属于 capability，不属于某个归档器。已提交的路径不可变，所以内容变化后的再次发出写成新的一版：第一版是 `env/run.<capability_id>.json`，之后依次是 `.1.json`、`.2.json`……；与最新一版字节相同的再发被丢掉。版本号记在索引的 `ArchiveMeta.run_version` 里，所以 trailing 提交与步提交交错也不会把顺序弄乱。run 记录随紧接着的那次提交落盘，读侧取已提交的最高版本（§5.5）。版本保持采集顺序，不跟提交顺序走：提交失败遗留的批次在收尾才提交，晚于之后采集的批次；它的 run 记录若比该 capability 已提交的最新一版采集得早，就不再提交（记一条日志）——否则这份过时的指纹会成为最高版本，回放与分叉会照它重建环境（§5.4 "run 记录版本"）。
+- **崩溃窗口照旧。** manifest 没有列出的 `env/` 文件（崩溃在 rename 之前、或手工放进去的）对每个访问器都不可见，和其他 extra 文件一样。
+
+**`TraceConfig` / `TraceNegotiation` 的归档字段**（`core/trace/models.py`；都是带默认值的新增字段，不升 `format_version`）：
+
+```python
+class TraceNegotiation(BaseModel):
+    ...                                                     # fragment / action 字段不变
+    active_archivers: list[str] = Field(default_factory=list)      # 本 run 绑定的归档器，全限定、有序
+    archive_bindings: dict[str, str] = Field(default_factory=dict) # archiver key → capability_id，按键有序
+
+class TaskSetupRecord(BaseModel):      # 交给 setup_environment 的环境 setup context，脱敏后
+    context: dict[str, Any]            # encoding.snapshot(context) 再 redact_value；快照不是 JSON 对象时记成 {"value": <snapshot>}
+    redactions: RedactionLedger        # core/archive/privacy.py；record_secrets 打开时为空台账
+
+class TraceConfig(BaseModel):
+    ...                                                     # identity / resolved / negotiation / secrets_recorded 不变
+    env_evidence_recorded: bool = False                     # 本 run 是否绑定了归档器（trace 可能带 env/ 证据）
+    env_evidence_privacy: list[str] = Field(default_factory=list)  # 所绑定归档器 privacy_markers 的有序并集
+    task_setup: TaskSetupRecord | None = None               # None：execute() 没有收到 env_context
+```
+
+`TraceNegotiation.from_results(observation=None, action=None, archive=None)` 多收一个归档结果，三个都为 `None` 时才返回 `None`；绑定表原样记录（值都是 registry key，不是用户起的实例 id），排序的理由与另外两条轴相同。`task_setup` 回答的是"这个任务的环境是怎么起的"：分叉任务（M31）要靠它在没有源 benchmark 数据的情况下重建环境，所以从 M28 起就记录；它是按任务变化的数据，脱敏规则见 §5.6。`env_evidence_*` 是 provenance，和 `secrets_recorded` 一样回答"这个目录能不能直接分享"。
+
+**摘要（`config_hash`）不为归档开任何特例。** 归档设置经两条现成的路进入 `configuration_digest`：`negotiation`（`active_archivers` / `archive_bindings`）和 `resolved`（M29 起归档器的旋钮在 trace hook 的配置里）。`task_setup` 按任务变化，`env_evidence_*` 是 provenance，都不进摘要——同一次 sweep 里只差 `start_url` 的两个任务共享一个 `config_hash`。代价写明：`TraceNegotiation` 多了两个字段，M28 之后写的 trace 与同一配置在 M28 之前写的 trace 摘要不同；读者比较的是同一个框架版本写下的 manifest。
 
 **`evals/` 也是原子写。** `EvaluationRunner` 写 `evals/<verdict_slug>.json`，以及可选的平铺副本和 summary，都走 `fsio.atomic_write`：半写的 verdict 文件会被下一个读者当成损坏的评测。权限与普通写入相同（§5.2），共享的 `--evals-dir` 对其他用户照常可读，重新打分也不改动已有文件的权限。evals 是后置产物，不进 manifest。
 
@@ -2174,7 +2498,7 @@ class RecordedLLMCall(BaseModel):      # messages/NNN_call_KK.json
 TraceWriter 不是 AgentRuntime 的核心组件，而是一个 Hook，通过 AOP Weaver 透明织入 + YAML 配置参数化：
 
 ```python
-class TraceWriter(HookBase):
+class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂受体的 hook 手写 __init__"）
     __registry_key__ = "trace_writer"
     __intercepts__ = [
         Intercept("ainvoke", role="llm", advice="around"),
@@ -2183,16 +2507,33 @@ class TraceWriter(HookBase):
 
     priority = HookBase.PRIORITY_PERSIST       # 所有 enricher 改完 result 之后才序列化
 
-    trace_dir: Annotated[str, trace_safe("…", default="traces")] = "traces"
-    record_secrets: Annotated[bool, Field(default=False)] = False
+    def __init__(
+        self,
+        trace_dir: Annotated[str, trace_safe("…", default="traces", description="…")] = "traces",
+        record_secrets: Annotated[bool, Field(default=False, description="…")] = False,
+        archive: list[ArchiverBase] | None = None,   # 普通参数，不是 Annotated：不进生成的配置
+    ) -> None:
+        super().__init__()
+        self.trace_dir = trace_dir
+        self.record_secrets = record_secrets
+        self.archive: list[ArchiverBase] = list(archive or [])   # 非空 = 本 run 的归档消费者
+        ...                                    # 其余都是每个 run 在 on_run_start 里重置的内部状态
 
     @property
     def blocking(self) -> bool:
         return True                            # 确认落盘后才继续
 
-    async def on_run_start(self, *, run_id=None, resolved_config=None, **kwargs):
+    async def on_run_start(self, *, env=None, run_id=None, resolved_config=None,
+                           archive_negotiation=None, env_evidence_recorded=False,
+                           env_evidence_privacy=(), task_setup=None, **kwargs):
+        if self.archive:
+            ...  # 三种情况在建 trace 之前拒绝（RuntimeError，点名 AgentRuntime.prepare）：
+                 # archive_negotiation 为 None；它的 active_archivers 与 archive 的键不一致；env 为 None
+            self._env = env                    # 原始环境，不是 AOP 代理；收尾时释放
         self._wal = WALWriter(Path(self.trace_dir), run_id or str(uuid.uuid4())[:8])
-        self._wal.init_run(trace_config, config_hash=...)   # 摘要取自未脱敏的配置，见 §5 configuration_digest
+        self._wal.init_run(trace_config, config_hash=...)   # 摘要取自未脱敏的配置（§5.3）
+        # trace_config.negotiation = TraceNegotiation.from_results(obs, action, archive=archive_negotiation)
+        # trace_config.env_evidence_recorded / env_evidence_privacy / task_setup：按名字接收，不推导
 
     # ── AOP 拦截 handler ──────────────────────────────────
     async def around_ainvoke(self, *, proceed, args, kwargs, **ctx):
@@ -2220,20 +2561,48 @@ class TraceWriter(HookBase):
         record = args[0] if args else kwargs.get("record")
         step = int(getattr(record, "step", self._steps_written))
         self._stamp_timings(record)
+        extra = await self._step_archive(step) if self.archive else []
+        # ↑ 拉取 → 校验 → 定 run 记录版本 → encode_archive_file(..., step=step)。
+        #   collect_archive() 抛错、或批次违反契约（ArchiveContractError）：记下失败、原样上抛，
+        #   这一步不提交，它登记的调用留给收尾的 trailing
         pending = list(self._pending_calls)    # 本步全部调用，按开始顺序
         self._wal.commit_step(
             step, record,
             fragments=encode_observation(step, kwargs.get("observation")),
             llm_calls=encode_llm_calls(step, pending, first_call=self._calls_flushed),
+            extra_files=extra,                 # 提交抛错：这批归档文件留给收尾的 trailing（自己一次）
         )
         del self._pending_calls[: len(pending)]   # 提交成功之后才移出
         self._calls_flushed = 0
 
     async def on_run_end(self, *, result, env, **kwargs):
+        tail, archive_error = [], None
         try:
-            self._flush_trailing()             # 未交出的调用 → commit_trailing
+            tail = await self._collect_tail()  # 至多一次；之前失败过就不收集
+        except BaseException as exc:           # 先记下：收尾必须照常走完
+            archive_error = exc
+        cancelled = archive_error is not None and not isinstance(archive_error, Exception)
+        try:
+            self._close_out(tail, result=result, incomplete=archive_error is not None)
+        except Exception:
+            if not cancelled:
+                raise                          # 冲刷 / result.json 的失败照原样上抛（否决的 run 上 execute 只把它附成 note，§4.2）
+            logger.warning(...)                # 取消永远优先：收尾在它底下又失败了，只记日志
+        if archive_error is not None and (
+            cancelled                                         # 取消：原样重抛
+            or _status_for(result) is not RunStatus.ERROR     # 只在 run 本身没有失败时上抛
+        ):
+            raise archive_error
+
+    def _close_out(self, tail, *, result, incomplete):
+        flushed = False
+        try:
+            self._flush_trailing(tail)         # 调用、每个遗留批次、尾部 —— 各一次 commit_trailing
+            flushed = True
         finally:                               # trailing 提交失败，终态也照样写
             status = _status_for(result)
+            if incomplete or self._archive_failure is not None or not flushed:
+                status = RunStatus.ERROR       # 归档不完整（收尾或某一步的收集失败过），或欠 trace 的没提交完
             try:
                 if result is not None:
                     self._wal.write_result(result)
@@ -2242,13 +2611,39 @@ class TraceWriter(HookBase):
                 raise
             finally:
                 self._wal.finalize(status)
+                self._env = None               # 收尾之后不再持有环境
 
     async def on_run_error(self, *, error, partial_steps, env, **kwargs):
+        tail, cancellation = [], None
         try:
-            self._flush_trailing()             # 幂等：on_run_end 通常已经冲刷过
-        finally:
-            self._wal.finalize(RunStatus.ERROR)
+            tail = await self._collect_tail()  # on_run_end 已经收过就是 []；失败只记日志——run 本来就在失败
+        except Exception:
+            logger.warning(...)
+        except BaseException as exc:           # 取消：收尾走完之后再原样重抛
+            cancellation = exc
+        try:
+            try:
+                self._flush_trailing(tail)     # 幂等：on_run_end 通常已经冲刷过
+            finally:
+                self._wal.finalize(RunStatus.ERROR)
+                self._env = None
+        except Exception:
+            if cancellation is None:
+                raise
+            logger.warning(...)                # 同上：取消优先于它底下失败的收尾
+        if cancellation is not None:
+            raise cancellation
 ```
+
+**归档的写侧规则**（`archive` 非空时才生效；为空时 TraceWriter 不缓存环境、不碰任何归档方法，行为与 M27 完全相同）：
+
+- **`archive` 是普通构造参数。** 它不是 `Annotated`：`HookBase.__config_annotated_only__` 把它挡在生成的配置之外，所以在 M29 之前，YAML 里 `hook[].archive` 这个块会被 Pydantic 拒绝，而不是被静默丢掉。M29 加上 `__wiring__["archive"]`、同一参数上的 `Annotated` 类型、类级 `archive: list[ArchiverBase]` 受体注解（mixin），以及 `_collect_registrars()` 里的 `archiver`——空注册表不能成为 Composer 层（`composer.py` 对没有实现的已收集层直接抛错，`generate_all` 也跳过它），所以这些要和第一批具体归档器一起落地。M28 绝不能先给它一个没有 wiring 的 `Annotated` 类型：conscribe 会生成 `archive: Any`，把原始 dict 交给 hook。
+- **`on_run_start`**：在 `init_run` 之前核对（所以拒绝时不留下 trace 目录）：`archive_negotiation is None`、`set(archive_negotiation.active_archivers) != {a.archiver_id for a in self.archive}`、`env is None`，任何一条都抛 `RuntimeError`，说明归档器必须经 `AgentRuntime.prepare()` 协商并绑定。核对通过才缓存原始 `env`。
+- **`after_record_step`** 的顺序：`_stamp_timings` → 如果之前已经有过归档失败（Loop 吞掉了第一次的错误又提交了一步），直接抛 `RuntimeError`，点名收集失败的那一步，`__cause__` 是记下的那个失败，不再收集——从那以后归档已经不完整 → `batch = await env.collect_archive()`（抛 `Exception`：记为归档失败，原样上抛）→ 校验批次（违反时抛 `ArchiveContractError`，同样记为归档失败、整批丢弃，在写任何字节之前）→ 定 run 记录版本 → `encode_archive_file(..., step=step)` → `commit_step(..., extra_files=...)`。`commit_step` 自己抛错（I/O）时，这批文件留在 TraceWriter 里等收尾，错误照原样上抛；成功之后才更新 run 记录的版本表。
+- **批次校验**（`ArchiveContractError`，步提交与收尾的批次一样查）：步级文件的 `archiver_id` 必须是本 run 绑定的键之一，内容寻址的文件（响应体）也一样——用户故意没绑定的归档器，它的证据不能借 `env/blobs/` 落盘；run 记录的 `capability_id` 必须是某个绑定归档器所属的 capability（`archive_bindings` 的值），它的 `archiver_id` 是绑定键或那个裸 capability id；每个 capability 至多一份 run 记录；`archiver_id` 与 `name` 各是文件系统接受的单段（§4.9 的段规则：至多 255 字节 UTF-8），`media_type` 与 `ids` 的键和值都能编码成 UTF-8；编码后的路径在批次内按 `encoding.fold_path` 的键互不相同——不区分大小写、也不区分 Unicode 规范化形式（内容寻址的同一路径可以重复，只写一次）；每条路径都过 `encoding.check_relative_path`。`ArchiveFile` 构造时已经拒绝了其中大半，这里再查一遍：被拒绝的批次从不成为欠 trace 的东西，而因为这类原因失败的提交，每次重试都会同样失败。
+- **run 记录版本**：TraceWriter 给每次收集按发生顺序编号（步提交的收集与收尾那次都算），并记着每个 capability 已提交的最新一版（版本号、sha256、它来自第几次收集）。来自更早一次收集的 run 记录不再提交，记一条日志——这只发生在遗留批次上：它在收尾才提交，之后某次收集的 run 记录可能已经落盘（继续跑的驱动，或收尾写不进遗留批次、尾部却落了盘，之后 `on_run_error` 重试）；与最新一版字节相同的再发直接丢掉，但它的收集仍算作最新的采集；否则取下一个版本号（第一版是 0）。版本表只在提交成功之后生效，收尾的每一次 trailing 提交之前重新计算。
+- **收尾**：`_collect_tail()` 在 `archive` 非空、之前没有归档失败、也没有收尾收集过时才收集，并立刻标记"已收尾收集"——所以 `on_run_end` 之后的 `on_run_error` 不会再收集一次，只派发 `on_run_error` 的驱动也照样收集一次。冲刷按 §5.2：调用、每个遗留批次、尾部各自一次 `commit_trailing`，trailing 位置编号是提交前 `len(manifest.trailing)`；某一次失败只让它自己那一样继续欠着，其余照常提交，全部试过之后抛第一个错误。收尾的收集没有正常完成（抛错或被取消），manifest 记为 `error`；抛错只在 run 本身没有失败时才从 `on_run_end` 上抛（`execute` 因此抛出它），`on_run_error` 里只记日志；取消在终态写完之后原样重抛，两个 hook 都一样——即使冲刷或写终态又在它底下失败（磁盘满），那个错误也只记日志，重抛的仍是取消（§4.2 "取消永远优先"）。某一步的收集失败过时，不论 result 怎么说（Loop 吞掉了那个错误、最后报告成功），manifest 同样记为 `error`：归档不完整，trace 就不是这个 run 的完整记录。收尾之后 TraceWriter 不再持有环境；之后再有提交（排空之后还继续跑的驱动）抛 `RuntimeError`——归档已经收尾，那一步不能带着证据提交。
+- **耗时记在下一步上。** 拉取发生在 `_stamp_timings` 之后，和提交 I/O 一样算进下一步的 `duration_ms`；M29 的归档开销度量单独计时。
 
 > **Commit 粒度说明**：`around_ainvoke` 只登记 LLM 调用，不写盘；一次 step 可能包含多次调用，而动作及其结果要到调用之后才产生。Loop 将含本步 actions、action results 和 usage 的完整 `StepRecord` 交给 `record_step()` 后，`after_record_step` 才把观测、本步全部调用记录和 step record 一次交给 `WALWriter.commit_step()`；manifest 的原子更新是持久化提交点。若运行在 `record_step()` 前结束（超时、外部取消、崩溃），已登记的调用（包括被取消、只有 prompt 的那一次）在 `on_run_end` / `on_run_error` 里经 `commit_trailing()` 落盘为 trailing calls，但不冒充一个完成的 step。
 
@@ -2260,7 +2655,7 @@ class TraceWriter(HookBase):
 
 死掉的 socket 什么也没交回，记录就只有 `error` 和 `detail`。不造一个装着错误的 completion：读 trace 的人必须分得清模型写的回复和框架编的回复。被取消的调用 `status: cancelled`，`completion` 为空，`failure.error` 是取消异常的类名（`CancelledError`），prompt 完整保留。提交或收尾时仍在进行中的调用（目前的 Loop 不会出现，调用都在 Loop 内 await）同样记为 `cancelled`，但 `failure` 为空：trace 到此为止，hook 没见到任何异常，prompt 照样保留。
 
-**提交失败不丢调用，收尾失败不丢终态。** `commit_step` 抛错（I/O 错误）时，这一步登记的调用仍留在 TraceWriter 里，run 结束时经 `commit_trailing` 落盘。`on_run_end` 里 trailing 提交本身失败时，`result.json` 和终态照样写，错误随后上抛。`result.json` 自己写不进去时，终态也照样写，但记为 `error`：没有 `result.json` 的 trace 不是这个 run 的干净记录，不能标成 `completed`；停在 `running` 则更糟，没有 evaluator 会碰它。
+**提交失败不丢调用，收尾失败不丢终态。** `commit_step` 抛错（I/O 错误）时，这一步登记的调用仍留在 TraceWriter 里，run 结束时经 `commit_trailing` 落盘——它们自己一次提交，排在任何证据批次之前，所以一批写不进去的证据连累不到它们（§5.2）。`on_run_end` 里 trailing 提交本身失败时，`result.json` 和终态照样写，终态记为 `error`（欠 trace 的调用或证据没落盘，trace 不是这个 run 的完整记录——M28 之前这里沿用 result 的状态，成功的 run 因此可能带着丢失的尾部标成 `completed`），错误随后上抛。`result.json` 自己写不进去时，终态也照样写，但记为 `error`：没有 `result.json` 的 trace 不是这个 run 的干净记录，不能标成 `completed`；停在 `running` 则更糟，没有 evaluator 会碰它。
 
 **output schema 每个类每个 run 只算一次。** `output_format` 来自 `kwargs["output_format"]`（ReactLoop 以 `llm.ainvoke(context, output_format=output_model)` 调用）。TraceWriter 按类缓存 `model_json_schema()`，编码成内容寻址的 `messages/output_formats/<sha256>.json`，随第一次引用它的提交落盘；之后的调用只带 `OutputFormatRef`。生成不了 schema 的回复模型记为没有 schema（`output_format: null`）并打 warning，不因为 trace 让调用失败：provider 用同一个 schema 构造请求，那个失败由 provider 自己报。
 
@@ -2305,6 +2700,13 @@ class RunTrace:
     def trailing_extra_files(self) -> list[ExtraFileRecord]: ...
     def read_extra(self, path: str) -> bytes: ...
     def output_schema(self, sha256: str) -> dict[str, Any]: ...
+
+    # ── 环境证据（env/，§5.3）：同样只经 extra 索引解析 ─────────────
+    def archive_files(self, step: int, archiver_id: str) -> list[ArchiveRecord]: ...
+    def iter_archive(self, archiver_id: str, *,
+                     include_trailing: bool = False) -> Iterator[tuple[int | None, ArchiveRecord]]: ...
+    def blob(self, sha256: str) -> bytes: ...
+    def archive_run_file(self, capability_id: str) -> ArchiveRecord | None: ...
 ```
 
 `exact_match` judge 只读 `result.json`（几 KB），`visual_judge` 才会加载所有 screenshot。
@@ -2324,6 +2726,11 @@ class RunTrace:
 - `extra_files(step)` / `trailing_extra_files`：已提交的 extra 文件记录，来自 `steps/NNN.extra.json` / `steps/trailing_KK.extra.json`；没有 → `[]`。
 - `read_extra(path)`：只读已提交的 extra 文件。`path` 不在任何已提交的索引里 → `KeyError`（没提交和没写过，对读者是同一个事实）；读出的字节与记录的 `size` / `sha256` 不符 → `TraceSchemaError`。
 - `output_schema(sha256)`：`OutputFormatRef.sha256` 指向的那份请求的 JSON schema。不在 `manifest.output_formats` 里 → `KeyError`；字节的摘要不符 → `TraceSchemaError`。
+- `archive_files(step, archiver_id)`：第 `step` 步的提交取走的、属于 `archiver_id` 的步级归档文件（`scope == "step"`，含内容寻址的那些），按索引顺序，每条是 `ArchiveRecord`。该步没有提交、或它的索引里没有这个归档器 → `[]`。
+- `iter_archive(archiver_id, *, include_trailing=False)`：按 step 顺序走每个已提交 step 的 `(step, record)`；`include_trailing=True` 时再按 `manifest.trailing` 顺序给出 trailing 批次里的 `(None, record)`。只含步级文件；格式检查在调用时立即做，不等到第一次迭代。
+- `blob(sha256)`：一个已提交的内容寻址归档文件的字节，即 `read_extra(archive_blob_path(sha256))`：没有任何已提交的索引把它列为归档文件（`meta` 带 `"archive"`）→ `KeyError`——别的生产者放在同一地址上、不带归档元数据的 extra 文件不是归档文件；字节与索引不符 → `TraceSchemaError`。
+- `archive_run_file(capability_id)`：该 capability 已提交的 run 记录里 `run_version` 最高的那一版，跨步索引和 trailing 索引找；没有 → `None`。字节用 `read_extra(record.path)` 读。
+- 任何 `ArchiveRecord` 的字节都用 `read_extra(record.path)` 读，同一套 size / sha256 校验。这四个访问器全部只从每步和 trailing 的 extra 索引解析（索引里 `meta` 带 `"archive"` 键的记录才是归档文件），不探测路径、不 glob，所以孤立的 `env/` 文件对它们不可见；它们和 `extra_files` 一样拒绝 format 1 的 trace。
 
 **读回来的必须是写进去的那个类型。** Writer 拿到的是 `StepRecord` / `AgentResult`，reader 就必须还原成同一个 model，而不是 `dict[str, Any]` —— 否则字段名只能靠翻 JSON 文件去猜，猜错（`rec["step_index"]`，实际是 `rec.step`）能通过全部静态检查、到运行时才炸。这也是 Evaluator 唯一的输入契约。
 
@@ -2337,7 +2744,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 | 情况 | 表现 | 含义 |
 |---|---|---|
-| 不存在：`result.json` 缺失；或所问的 step、fragment、调用、extra 文件不在 manifest 里 | 返回 `None`（`result`、`step`、`observation_fragment`、`screenshot`）或 `[]`（`llm_messages`、`extra_files`）；`read_extra` / `output_schema` 抛 `KeyError` | 没有发生：run 死在写 `result.json` 之前，或者那一步没有提交 |
+| 不存在：`result.json` 缺失；或所问的 step、fragment、调用、extra 文件、归档文件不在 manifest 里 | 返回 `None`（`result`、`step`、`observation_fragment`、`screenshot`、`archive_run_file`）或 `[]`（`llm_messages`、`extra_files`、`archive_files`）；`read_extra` / `output_schema` / `blob` 抛 `KeyError` | 没有发生：run 死在写 `result.json` 之前，或者那一步没有提交 |
 | 存在但不可读 | 抛 `TraceSchemaError`，点名文件（以及 model、key 或版本） | trace 本身不可读，重跑评测也没用，只能重跑任务 |
 | 评测器自己失败 | `EvaluationError` | 与 trace 无关（judge 429、prompt 缺失等） |
 
@@ -2350,6 +2757,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | manifest 列了、磁盘上没有 | 提交过的文件丢了是损坏，不是"没跑完"；`manifest.json`、`config.json` 缺失同理 |
 | 路径出了 run 目录 | manifest 或 extra 索引列出的路径不符合写侧的路径规则（绝对路径、`..` 段等），或解析符号链接之后不在 run 目录里；三个固定名字的文件是指向目录外的链接。点名列出它的文件，被指向的文件不会被打开 |
 | 字节与索引不符 | 空的 artifact；extra 文件或 output schema 的 size / sha256 对不上；同一个 extra 路径在两个索引里的 size / sha256 不一致 |
+| 归档元数据不合法 | extra 索引里一条记录的 `meta["archive"]` 不能按 `ArchiveMeta` 校验通过；点名那个索引文件 |
 | 记录与位置不符 | step 文件里的 `step`、调用记录里的 `step` 与 manifest 提交它的那一步不符；一步里有两个截图 fragment（协商只允许一个） |
 | fragment key 不认识 | 懒发现之后注册表里仍然没有这个 key；或 payload 的 `fragment_id` 与 key 不符 |
 | `format_version` 不支持 | 低于 2：只有 v2 形状的访问器抛错；高于 reader 支持的版本：构造 `RunTrace` 时就抛 |
@@ -2367,6 +2775,28 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 **trace 格式有版本。** `TraceManifest.format_version` 从 M27 起写 `2`（`TRACE_FORMAT_VERSION`）；M27 之前的 manifest 没有这个字段，按 1 读。v1 的 fragment 列表、成对的 `NNN_input.json` / `NNN_output.json` 和没有判别字段的失败 JSON 无法安全地类型化读回，所以 v2 形状的访问器（上面代码块的第二组）对 v1 trace 抛 `TraceSchemaError` 并点名版本；`config` / `result` / `step` / `step_records` / `step_count` 照常可读。不做兼容 shim（AGENTS.md §0.4）：要用图像 judge 重新给 v1 trace 打分，只能重跑任务。
 
 **离线读者找得到 fragment 类。** 评测进程未必 import 过定义 fragment 的模块（browser 的 fragment 是被各自的 watchdog import 时才注册的）。`ObservationRegistrar.get(key)` 落空时，reader 懒执行一次 `discover("spectragent.schemas")` 和 `discover("spectragent.core.capabilities")` 再查；仍然落空就抛 `TraceSchemaError`，点名 key，并说明定义它的模块必须在读侧可导入。
+
+### 5.6 环境证据的隐私
+
+数据飞轮 PRD §5.10 的方案（用户裁决 D4，2026-10-09：剥离凭证、表单值脱敏、归档打标、导出前审查）在这里落成框架与 capability 的分工。**框架从不读、也从不改证据的字节**——采集和脱敏是 capability 的事（§4.9），框架不声称替任何证据脱敏。框架这一侧只做三件事：记录本 run 声明了什么；提供共享的规则与台账格式，让每个 capability 用同一套；在产物层面用 secret guard 检查。
+
+| 对象 | 默认处理 | 归属 |
+|---|---|---|
+| 本 run 有没有环境证据、声明了哪些隐私标记 | `TraceConfig.env_evidence_recorded`；`env_evidence_privacy` = 所绑定归档器 `privacy_markers` 的有序并集。它只陈述归档器的声明，不证明字节里没有秘密 | 框架（M28） |
+| 共享规则与脱敏台账 | `core/archive/privacy.py`：`PRIVACY_POLICY`（规则版本，`"af-privacy-1"`）、字段名模式 `password\|passwd\|pwd\|otp\|token\|secret\|card\|cvv`（子串匹配，有意宽）、凭证参数名模式（`key` / `apikey` / `sig` / `signature` / `auth` / `credential` 作尾段）、URL 规则、`RedactionLedger`、标记常量 `MARKER_REDACTED` / `MARKER_SESSION_STATE`。规则一改，`PRIVACY_POLICY` 必须升版本（测试用规则源码的摘要钉住：两个名字模式、占位符、URL 模式和每个规则函数的源码，URL 规则在内） | 框架（M28）；M29、M30 复用 |
+| 环境 setup context（`TraceConfig.task_setup`） | 值级脱敏：凭证形状的映射键，其值（整棵子树）换成 `<redacted>`；URL（以 `scheme://` 开头的字符串）的 userinfo 整段换掉；名字是凭证形状的 query / fragment 参数，值换掉；其余字节原样。`null` 与空参数值没有可换的东西，原样保留、不记台账（`null` 要与"设置过"区分开）。台账一起记录。`record_secrets` 打开时与 `resolved` 一样原样记录，台账为空 | 框架（M28） |
+| secret guard | 扫描整个 trace 目录（含 `env/`），gzip 文件（魔数 `1f 8b` 或 `.gz` 后缀）先解压再扫；正向对照：假归档器把凭证写进 `env/`（明文与 `.gz` 各一份），必须被发现 | 框架（M28） |
+| 归档本身 | 永不导出；导出物只含截图、动作和 thought | 导出（M32 遵守） |
+| 请求头 `Cookie` / `Authorization` / `Proxy-Authorization`（以及可配置的追加列表） | 采集时剥离，从不落盘 | browser（M29） |
+| 响应头 `Set-Cookie` | 保留（回放的 cookie jar 需要）；归档器声明 `contains_session_state`，capability 的 run 记录同样标出；`logged_in: true` 的 run 必须显式写 `allow_session_state: true`，否则 `prepare()` 报错 | browser（M29） |
+| DOM 原始采集里的输入值 | 按类型或 autocomplete 脱敏（password / one-time-code / cc-*） | browser（M29） |
+| POST body | 按字段名模式脱敏，写入台账；回放时先用同一个函数脱敏再算匹配键 | browser（M29）；M30 复用 |
+
+**脱敏写成 `<redacted>`，不是 `"<omitted>"`。** 后者是配置脱敏（`core/trace/redaction.py`，deny by default）的"设置了、没记录"；前者是"值被这条规则换掉了"，两者回答不同的问题。`<redacted>` 也不会被 secret guard 的凭证形状误认成凭证。
+
+**台账**（`RedactionLedger`）：`policy`（写下它时的 `PRIVACY_POLICY`）加一串 `RedactionEntry(location, field, rule)`——`location` 是 JSON pointer（`/start_url`），`field` 是被换掉的键或参数名，`rule` 是 `field_name` / `url_userinfo` / `url_query` / `url_fragment` 之一，按遍历顺序。它让读者知道哪里被换过，而不是猜一个空值是不是本来就空。
+
+**残余，写明。** `task_setup` 是没有字段声明的按任务数据，`core/trace/redaction.py` 那种"没标记就不记"在这里会把每个值都吞掉、让分叉任务（M31）无法重建环境，所以它走值级规则——规则只认得凭证形状的名字和 URL 里的凭证位置：一个藏在规则不认识的名字下面的秘密（`{"note": "the password is hunter2"}`）会原样记录；嵌在非凭证 query 参数里、没有百分号编码的 URL 的 userinfo 也一样。还有一条具体的：`BrowserCapability.setup` 接受 `cdp_url`，调用方若经 `env_context` 传一个 devtools URL（`ws://…/devtools/browser/<id>`），它会原样进 `task_setup`——发布的入口都不这么传（`TaskSetup.to_context()` 没有这个键，`spectragent-run` 只传 `start_url`），要覆盖它得新增规则并升 `PRIVACY_POLICY`。`TraceConfig.extra` 仍然不脱敏（调用方自己挑的字段）。v1 的数据来源选的是无需登录的公开站点；登录态采集是单独的决定。
 
 ---
 
@@ -2388,7 +2818,8 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
 | `ActionRegistrar` | `action_id` (flat, dotted key `source.id`) | 每个 Action 独立注册；键含 source 前缀避免跨 capability 撞名（`browser.click` vs `desktop.click`） | ✅ |
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
-| `NegotiationResultRegistrar` | `result_type` (flat) | 协商结果类型；内置 `observation` / `action` 自动注册，自定义协商协议注册自己的结果类型并作为 `target_class` 传给 `negotiate()` | ✅ |
+| `ArchiverRegistrar` | `archiver_id` (flat, dotted key `source.id`) | 环境证据归档器；键含提供它的 capability 前缀（`browser.network`）。capability 的 `__wiring__["archiver"]` 声明 provides，trace hook 实例的 `archive` 列表声明 requires（全限定）；`negotiate_archive` 在 `prepare()` 校验，并在 `prepare()` 末尾绑定（§4.5） | 🚧 M28：框架机制（协商、绑定、trace 拉取），没有具体归档器，不进 `_collect_registrars()`；M29 随首批 browser 归档器进 Composer、由 YAML 选择 |
+| `NegotiationResultRegistrar` | `result_type` (flat) | 协商结果类型；内置 `observation` / `action` / `archive` 自动注册，自定义协商协议注册自己的结果类型并作为 `target_class` 传给 `negotiate()` | ✅ |
 | `DOMCleanerRegistrar` | `cleaner_type` (flat) | DOM 清洗策略 | ✅（browser 内部） |
 | `DOMSerializerRegistrar` | `serializer_type` (flat) | DOM 序列化策略 | ✅（browser 内部） |
 | `MouseTrajectoryRegistrar` | `trajectory_type` (flat) | 光标轨迹策略（`instant` / `windmouse` / `bezier` / `learned`）；同时是鼠标侧唯一的拟人化开关，见 §4.13 | ✅（browser 内部） |
@@ -2463,8 +2894,8 @@ capability:
     profile: standard
     viewport_width: 1280
     viewport_height: 720
-    observation: browser.dom        # declarative-only literal (Pydantic 校验)
-    action: { action_id: browser.click }   # declarative-only union pick
+    # observation: / archiver: 是 provides 声明（没有 slot）：不在这里填值，
+    # 填了会被 Composer 以 UnresolvedWiringError 拒绝（§4.2.1）
     backend:
       provider_id: local_chrome     # 切 backend 只改这一行
       headless: true                # provider 自身的 conscribe 字段
@@ -2543,8 +2974,9 @@ environment:
 | **新增 Memory** | 继承 `MemoryBase` | RAG-based memory |
 | **新增 Benchmark Loader** | 继承 `TaskLoaderBase` / `EvalLoaderBase` | SWE-bench, WebArena |
 | **新增 DOM Cleaner/Serializer** | 继承对应 Base | Markdown 序列化 |
+| **新增 Archiver（环境证据归档器）** | 继承所属 capability 的 archiver 基类（框架基类 `ArchiverBase`），`__registry_key__ = "<capability>.<id>"`，旋钮写成 `Annotated` 构造参数，按需声明 `privacy_markers`；把键加进该 capability 的 `__wiring__["archiver"]`；capability 实现 `bind_archivers` / `collect_archive`（§4.9 归档契约）；把 capability 接入 `tests/_helpers/archive_contract.py` | `browser.network`、`browser.storage`、`browser.dom_raw`（M29）；以后的 `docker.fs_diff`、`android.ui_dump` |
 | **新增 Mouse Trajectory / Typing Rhythm 策略** | 继承 `MouseTrajectoryBase` / `TypingRhythmBase`，设 `__registry_key__`，实现 Protocol 全部成员（含 `click_hold_ms` / `aim_offset_px`），knobs 写成 `__init__` 关键字参数 | 新的运动模型；已训练模型的新导出格式属于 `learned` 的 backend，不是新策略（§4.13） |
-| **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `scripts/generate_all.py::_collect_registrars` 注册，否则字段发成裸 `str` | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里 |
+| **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `scripts/generate_all.py::_collect_registrars` 注册，否则字段退化成 `Literal[<keys>]`，策略的旋钮全部无法从 YAML 到达（AGENTS.md §3.4）。注册表还是空的时候不能成为 Composer 层（`composer.py` 对没有实现的已收集层直接抛错，`generate_all` 跳过它，fingerprint 测试随之失败）：先创建、先写文档，在注册第一个实现的那次改动里再收集 | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里。`ArchiverRegistrar`：M28 创建，M29 随首批归档器收集 |
 | **配置字段扩展** | 给注册类添加 `Annotated[type, Field(...)]` | 自动出现在生成的 `_composed.py` config schema 中 |
 
 ---
@@ -2586,25 +3018,38 @@ environment:
            ▼                                                       │
       AgentRuntime.from_composed(run)                              │
        ├── prepare(): slot 校验 → negotiate obs/action             │
+       │              → negotiate memory/archive                   │
        │              → Weaver 织入 → loop.weave(agent)             │
        │              → patch agent.run = closure(loop._execute)   │
+       │              → 拦截审计 → env.bind_archivers（有消费者时） │
        ├── execute(task): on_run_start → asyncio.wait_for(         │
        │                  agent.run(task), timeout=...)            │
        │                  → on_run_end                              │
        │                                                           │
        │ AOP 拦截：llm.ainvoke → TraceWriter 登记 LLM 调用             │
        │                         MetricsCollector 累加 token       │
-       │           loop.record_step → TraceWriter 写入完整 step     │
+       │           loop.record_step → TraceWriter 拉取原始           │
+       │                              env.collect_archive()        │
+       │                              → commit_step(extra_files)   │
        │                              → manifest 原子提交          │
        │                                                           │
        └── 输出 AgentResult                                          │
                 │                                                  │
                 ▼                                                  ▼
            AgentResult ──→ RunTrace (full persistence)     TaskDefinition
-                               │                           EvalReference
+                               │   env/：archive_files /    EvalReference
+                               │   iter_archive / blob /
+                               │   archive_run_file
                                ▼
                           Evaluator ──→ EvalResult ──→ EvalSummary
 ```
+
+**归档相关的 import 方向**（`tests/test_core/test_archive/test_archive_boundaries.py` 用 AST 守着：每一条 import 都算，函数里的、`if TYPE_CHECKING:` 下的也算——只为类型的依赖仍是设计上的依赖；名字 `TraceWriter` 从哪个模块 import、或经属性访问都算；包 `__init__` 顺带 import 了什么不在这几条的视野里，它们管的是每个模块自己点了哪些名字）：
+
+- `core/runtime.py`、`core/negotiation/*`、`core/environments/*` 不 import `core.hooks.trace_writer`，也不 import 任何定义具体归档器的模块——runtime 只认 `ArchiveConsumer`，environment 只认 `ArchivingCapability`；
+- `core/archive/*` 不 import `core.trace`、`core.hooks`、`core.negotiation`、`core.environments`、`core.capabilities`；
+- `core/trace/*` 从 `core.archive` 只 import `core.archive.privacy`（`TaskSetupRecord` 里的台账类型）；归档文件以鸭子类型跨进 trace 层，WAL 的接口仍然只有 `TraceFile`；
+- 新的归档与协商模型里没有 `price` / `cost` / `usd` / `dollar` 字段：只记 token，不记钱（2026-09-19）。
 
 外部核心依赖：
 - `conscribe` — 注册 + 配置生成

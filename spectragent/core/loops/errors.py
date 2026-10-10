@@ -12,10 +12,20 @@ failed, here is a terminal ``AgentResult`` saying so"; ``RunAbort``
 means the decision to stop was already made by somebody outside the
 Loop, and the Loop's job is to get out of the way.
 
+``RunEnded`` is never raised. It is how a Loop whose recording of the
+step its run ended on was cut off by a cancellation hands the outcome it
+had already reached to ``AgentRuntime.execute`` without swallowing the
+cancellation (:func:`carry_outcome`, :func:`carried_outcome`).
+
 See docs/execution_dag.md M09 "ReactLoop" for the control flow.
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from spectragent.schemas.agent_result import AgentResult
 
 
 class ParseError(Exception):
@@ -57,12 +67,16 @@ class RunAbort(Exception):
     must let it through.
 
     It derives from ``Exception``, **not** ``BaseException``, on purpose.
-    ``AgentRuntime.run`` catches ``Exception`` to close the trace out —
-    ``on_run_end`` with a terminal result, then ``on_run_error`` with the
-    partial steps — and *then* re-raises when ``raise_on_error`` is set.
-    An abort must not skip that: the evidence the guard fired on is the
-    most valuable thing in the trace. Deriving from ``BaseException``
-    would bypass the WAL commit entirely.
+    ``AgentRuntime.execute`` catches ``Exception`` to close the trace out
+    — ``on_run_end`` with a terminal result, then ``on_run_error`` with
+    the partial steps — and *then* re-raises a ``RunAbort`` whatever
+    ``raise_on_error`` says, even when that close-out failed (the failure
+    becomes a note on it), and even when the run's own timeout expired
+    while the Loop was still recording the vetoed step (:class:`RunEnded`;
+    the timeout becomes a note on it). An abort must not skip the
+    close-out: the evidence the guard fired on is the most valuable thing
+    in the trace. Deriving from ``BaseException`` would bypass the WAL
+    commit entirely. Only a cancellation from outside the run outranks it.
 
     Raise it from a hook handler that is ``blocking=True``. A
     non-blocking handler runs after the call it fired on has already
@@ -80,3 +94,81 @@ class RunAbort(Exception):
         self.reason = reason
         self.source = source
         super().__init__(f"{source}: {reason}" if source else reason)
+
+
+class RunEnded(Exception):
+    """The outcome a run had already reached when a cancellation cut its recording off.
+
+    Never raised. A Loop hands over the step its run ends on *before* the
+    outcome leaves it — the step a guard vetoed, or the one an
+    infrastructure failure, a failed action or the last tolerated parse
+    error ended the run on — because that step's evidence is what explains
+    the ending. The hand-over can take a while: a blocking recorder pulls
+    the environment's evidence then. A cancellation that lands in it is not
+    the Loop's to swallow — it may be Ctrl-C, or a caller's own
+    ``asyncio.timeout`` — so the Loop re-raises it unchanged, with the
+    outcome put in its ``__context__`` chain (:func:`carry_outcome`).
+
+    ``AgentRuntime.execute`` looks for it only when the cancellation is the
+    run's *own* timeout (:func:`carried_outcome`). The run then ends the way
+    the Loop had decided: a veto is closed out and re-raised whatever
+    ``raise_on_error`` says, a terminal result is closed out and returned.
+    An ordinary timeout result there is how such a veto got lost — returned,
+    recorded by a sweep as one more timed-out task, and followed by the next
+    task against the site the guard had just refused — and how a dead
+    browser got charged to a slow model. A cancellation from outside still
+    wins: the outcome only rides along in its traceback.
+
+    Attributes:
+        outcome: The ``RunAbort`` the Loop was re-raising, or the terminal
+            ``AgentResult`` it was about to return.
+    """
+
+    def __init__(self, outcome: RunAbort | AgentResult) -> None:
+        self.outcome = outcome
+        if isinstance(outcome, BaseException):
+            what = f"{type(outcome).__name__}: {outcome}"
+        else:
+            what = str(getattr(outcome, "error", None) or "a terminal result")
+        super().__init__(f"the run had already ended: {what}")
+
+
+def carry_outcome(cancelled: BaseException, outcome: RunAbort | AgentResult) -> None:
+    """Let *cancelled* carry the outcome its run had reached; the cancellation stays as it is.
+
+    For a Loop whose recording of the step its run ended on was cut off:
+    call it in the ``except asyncio.CancelledError`` handler, then re-raise
+    the same object. A :class:`RunEnded` holding *outcome* goes to the head
+    of the cancellation's ``__context__`` chain and whatever context it had
+    moves behind it, so nothing in the chain is lost. A veto already in the
+    chain — the cancellation landed while an ``except RunAbort`` block was
+    awaiting — is not carried twice.
+    """
+    if carried_outcome(cancelled) is outcome:
+        return
+    carrier = RunEnded(outcome)
+    carrier.__context__ = cancelled.__context__
+    cancelled.__context__ = carrier
+
+
+def carried_outcome(cancelled: BaseException) -> RunAbort | AgentResult | None:
+    """The outcome *cancelled* carries, when its run had already reached one.
+
+    The first :class:`RunEnded`'s outcome or the first ``RunAbort`` along
+    the ``__context__`` chain, whichever comes first. A bare ``RunAbort``
+    counts: a cancellation that lands while a veto is being handled carries
+    it as context without any Loop's help, and that veto is in flight all
+    the same. Only ``__context__`` — "was being handled when this was
+    raised" — is followed, never ``__cause__``: an error raised *from* a
+    ``RunAbort`` is a different failure naming it, not a veto in flight.
+    """
+    seen: set[int] = set()
+    link = cancelled.__context__
+    while link is not None and id(link) not in seen:
+        if isinstance(link, RunEnded):
+            return link.outcome
+        if isinstance(link, RunAbort):
+            return link
+        seen.add(id(link))
+        link = link.__context__
+    return None

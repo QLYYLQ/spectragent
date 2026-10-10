@@ -11,7 +11,11 @@ that it does not list, both pinned here against *every* accessor:
   ``messages/``, ``steps/`` and an ``env/``-like extra-file tree, including
   files a committed step's index does not name.
 
-Either way the reader's answers must be exactly what they were before.
+Either way the reader's answers must be exactly what they were before — the
+environment-evidence accessors included, over the M27 reference trace (where
+they answer empty: none of its ``env/`` files is an archive file) and over an
+archive trace (``build_archive_trace``), whose crash leaves step evidence, a
+shared body and a new run-record version on disk, uncommitted.
 """
 
 from __future__ import annotations
@@ -28,8 +32,15 @@ from spectragent.core.trace.encoding import encode_output_format, sha256_hex
 from spectragent.core.trace.reader import RunTrace
 from tests._helpers.fragment_samples import SAMPLES
 from tests._helpers.trace_builder import (
+    ARCHIVE_CAPABILITY,
+    BLOBS_ARCHIVER,
+    STEPS_ARCHIVER,
+    STORAGE_ARCHIVER,
+    ArchiveTrace,
     ReferenceTrace,
+    archive_file,
     blob,
+    build_archive_trace,
     build_reference_trace,
     cancelled_call,
     completed_call,
@@ -41,6 +52,11 @@ from tests._helpers.trace_builder import (
 
 STEPS = range(5)
 KEYS = ("browser.dom", "browser.screenshot", "browser.browser_meta", "loop.task", "browser.extra")
+#: Archivers asked about by every view — those both traces use, plus the
+#: M27 reference trace's ``env/`` producers, whose files carry no archive
+#: metadata and so must never show up here.
+ARCHIVERS = (STEPS_ARCHIVER, BLOBS_ARCHIVER, STORAGE_ARCHIVER, "browser.network", "x.y")
+CAPABILITIES = (ARCHIVE_CAPABILITY, "browser", "x")
 
 
 class LateReply(BaseModel):
@@ -74,6 +90,28 @@ def views(trace: RunTrace) -> dict[str, Any]:
             for record in [*trace.extra_files(i), *trace.trailing_extra_files]
         },
         "output_schema": {sha: trace.output_schema(sha) for sha in trace.manifest.output_formats},
+        "archive_files": {
+            f"{i}:{archiver}": [_dump(record) for record in trace.archive_files(i, archiver)]
+            for i in STEPS
+            for archiver in ARCHIVERS
+        },
+        "iter_archive": {
+            f"{archiver}:{trailing}": [
+                (step, _dump(record))
+                for step, record in trace.iter_archive(archiver, include_trailing=trailing)
+            ]
+            for archiver in ARCHIVERS
+            for trailing in (False, True)
+        },
+        "blob": {
+            record.sha256: trace.blob(record.sha256)
+            for archiver in ARCHIVERS
+            for _, record in trace.iter_archive(archiver, include_trailing=True)
+            if record.content_addressed
+        },
+        "archive_run_file": {
+            capability: _dump(trace.archive_run_file(capability)) for capability in CAPABILITIES
+        },
     }
 
 
@@ -106,6 +144,10 @@ class TestACrashBeforeTheManifestRename:
 
     def test_an_uncommitted_step_is_invisible_to_every_accessor(self, reference, crash_on_manifest):
         before = views(RunTrace(reference.run_dir))
+        assert before["blob"] == {}
+        assert not any(before["archive_files"].values())
+        assert not any(before["iter_archive"].values())
+        assert not any(before["archive_run_file"].values())
         late_blob = blob(b"evidence of a step that never happened")
         late_schema = encode_output_format(LateReply)
 
@@ -197,3 +239,89 @@ class TestHandPlantedOrphans:
             paths=["env/steps/002/x.y/name", "env/steps/000/orphan.bin"],
             schemas=[planted_sha],
         )
+
+
+@pytest.fixture()
+def archived(tmp_path) -> ArchiveTrace:
+    return build_archive_trace(tmp_path)
+
+
+class TestArchiveCrashWindow:
+    """Environment evidence of a commit that never reached its manifest did not happen."""
+
+    @pytest.fixture()
+    def crash_on_manifest(self, monkeypatch):
+        real = fsio.write_durable
+
+        def write_durable(path: Path, data: bytes) -> set[Path]:
+            if path.name == "manifest.json":
+                raise OSError(errno.EIO, "power lost before the commit point", str(path))
+            return real(path, data)
+
+        monkeypatch.setattr(fsio, "write_durable", write_durable)
+
+    def test_a_crashed_step_leaves_its_evidence_and_its_run_record_invisible(
+        self, archived, crash_on_manifest
+    ):
+        before = views(RunTrace(archived.run_dir))
+        assert before["blob"] and before["archive_run_file"][ARCHIVE_CAPABILITY] is not None
+        late_step = archive_file(STEPS_ARCHIVER, "cycle_004.json", b'{"cycle": 4}', step=3)
+        late_body = archive_file(
+            BLOBS_ARCHIVER, "response.bin", b"a body nobody committed", content_addressed=True
+        )
+        late_run = archive_file(
+            ARCHIVE_CAPABILITY, "fingerprint.json", b'{"generation": 2}', scope="run", run_version=2
+        )
+        late_tail = archive_file(STEPS_ARCHIVER, "late.json", b"{}", trailing=1)
+
+        with pytest.raises(OSError, match="power lost"):
+            archived.wal.commit_step(
+                3,
+                step_record(3),
+                # Call 1: call 0 of step 3 is the trailing call already committed.
+                llm_calls=[completed_call(3, 1, "late")],
+                extra_files=[late_step, late_body, late_run],
+            )
+        with pytest.raises(OSError, match="power lost"):
+            archived.wal.commit_trailing(extra_files=[late_tail])
+
+        run_dir = archived.run_dir
+        for file in (late_step, late_body, late_run, late_tail):
+            assert (run_dir / file.rel_path).is_file(), file.rel_path
+
+        trace = RunTrace(run_dir)
+        assert views(trace) == before
+        latest = trace.archive_run_file(ARCHIVE_CAPABILITY)
+        assert latest is not None and latest.run_version == 1
+        assert_not_visible(
+            trace,
+            paths=[late_step.rel_path, late_body.rel_path, late_run.rel_path, late_tail.rel_path],
+            schemas=[],
+        )
+        with pytest.raises(KeyError):
+            trace.blob(sha256_hex(late_body.data))
+
+    def test_hand_planted_evidence_is_invisible(self, archived):
+        before = views(RunTrace(archived.run_dir))
+        run_dir = archived.run_dir
+        orphan_body = b"a body nobody listed"
+        digest = sha256_hex(orphan_body)
+        planted = {
+            "env/steps/000/builder.steps/orphan.json": b"{}",
+            "env/steps/003/builder.steps/cycle_004.json": b'{"cycle": 4}',
+            f"env/blobs/sha256/{digest[:2]}/{digest[2:]}": orphan_body,
+            "env/run.builder.2.json": b'{"generation": 2}',
+            "env/run.x.json": b"{}",
+            "env/trailing/01/builder.steps/late.json": b"{}",
+            "env/trailing/00/builder.steps/extra.json": b"{}",
+        }
+        for rel, data in planted.items():
+            path = run_dir / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+
+        trace = RunTrace(run_dir)
+        assert views(trace) == before
+        assert_not_visible(trace, paths=list(planted), schemas=[])
+        with pytest.raises(KeyError):
+            trace.blob(digest)

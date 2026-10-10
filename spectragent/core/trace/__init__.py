@@ -12,6 +12,7 @@ from spectragent.core.trace.encoding import (
     EncodedLLMCall,
     PendingLLMCall,
     TraceFile,
+    encode_archive_file,
     encode_llm_call,
     encode_observation,
 )
@@ -19,6 +20,8 @@ from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.fsio import atomic_write
 from spectragent.core.trace.models import (
     TRACE_FORMAT_VERSION,
+    ArchiveMeta,
+    ArchiveRecord,
     CallFailure,
     ExtraFileIndex,
     ExtraFileRecord,
@@ -28,6 +31,7 @@ from spectragent.core.trace.models import (
     RecordedLLMCall,
     RunStatus,
     StepManifestEntry,
+    TaskSetupRecord,
     TraceConfig,
     TraceManifest,
     TraceNegotiation,
@@ -40,6 +44,8 @@ from spectragent.core.trace.wal import WALWriter
 __all__ = [
     "OMITTED",
     "TRACE_FORMAT_VERSION",
+    "ArchiveMeta",
+    "ArchiveRecord",
     "CallFailure",
     "EncodedFragment",
     "EncodedLLMCall",
@@ -53,6 +59,7 @@ __all__ = [
     "RunStatus",
     "RunTrace",
     "StepManifestEntry",
+    "TaskSetupRecord",
     "TraceConfig",
     "TraceFile",
     "TraceManifest",
@@ -62,6 +69,7 @@ __all__ = [
     "TrailingEntry",
     "WALWriter",
     "atomic_write",
+    "encode_archive_file",
     "encode_llm_call",
     "encode_observation",
     "redact_config",

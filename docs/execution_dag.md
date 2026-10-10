@@ -1,6 +1,6 @@
 # All4One Agent Framework — 开发执行依赖图
 
-> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 27 个开发模块及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
+> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 29 个开发模块及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
 
 ---
 
@@ -42,6 +42,8 @@ flowchart TB
         M10["M10<br/>RunTrace<br/>WAL 持久化"]
         M11["M11<br/>TraceWriter +<br/>Metrics Hook"]
         M27["M27<br/>Trace<br/>读写加固"]
+        M28["M28<br/>环境归档<br/>机制"]
+        M29["M29<br/>Browser 归档器<br/>+ 可回放档位"]
     end
 
     %% ════════════════════════════════════════
@@ -117,7 +119,15 @@ flowchart TB
     M10 --> M11
     M10 --> M27
     M11 --> M27
-    %% M27 → M28 / M31 / M32：这三个模块的条目合入本文档时一起补边
+    M04 --> M28
+    M06 --> M28
+    M07 --> M28
+    M08 --> M28
+    M11 --> M28
+    M27 --> M28
+    %% M27 → M31 / M32：这两个模块的条目合入时补边
+    M13 --> M29
+    M28 --> M29
 
     %% P0 → P1 迁移
     M01 --> M12
@@ -172,7 +182,7 @@ flowchart TB
     classDef milestone fill:#F59E0B30,stroke:#F59E0B,stroke-width:3px,color:#1a1a1a
 
     class M01,M02,M03,M04,M05,M06,M07,M08,M09 p0
-    class M10,M11,M12,M13,M14,M15,M16,M17,M27 p1
+    class M10,M11,M12,M13,M14,M15,M16,M17,M27,M28,M29 p1
     class M18 milestone
     class M19,M20,M21 p2
     class M22,M23,M24,M25,M26 p3
@@ -325,7 +335,7 @@ Agent-Loop 分离是整个框架从「browser-only」走向「multi-scenario」�
 
 ### M04: Hook + AOP Weaver 体系
 
-**优先级**: P0 | **前置依赖**: M01 | **被依赖方**: M08, M09, M11, M20, M22, M24
+**优先级**: P0 | **前置依赖**: M01 | **被依赖方**: M08, M09, M11, M20, M22, M24, M28
 
 #### 业务实现
 
@@ -393,7 +403,7 @@ blocking vs non-blocking 的区分是关键设计 — TraceWriter 必须 blockin
 
 ### M06: Capability 注册表
 
-**优先级**: P0 | **前置依赖**: M02, M05 | **被依赖方**: M07, M13, M19, M23, M25, M26
+**优先级**: P0 | **前置依赖**: M02, M05 | **被依赖方**: M07, M13, M19, M23, M25, M26, M28
 
 #### 业务实现
 
@@ -437,7 +447,7 @@ Resolver 模式使 Capability 内部按需提供 fragment。以 Browser 为例�
 
 ### M07: Environment + 前缀路由
 
-**优先级**: P0 | **前置依赖**: M01, M06 | **被依赖方**: M08
+**优先级**: P0 | **前置依赖**: M01, M06 | **被依赖方**: M08, M28
 
 #### 业务实现
 
@@ -474,7 +484,7 @@ Resolver 模式使 Capability 内部按需提供 fragment。以 Browser 为例�
 
 ### M08: AgentRuntime 通用编排
 
-**优先级**: P0 | **前置依赖**: M02, M03, M04, M05, M07 | **被依赖方**: M18
+**优先级**: P0 | **前置依赖**: M02, M03, M04, M05, M07 | **被依赖方**: M18, M28
 
 #### 业务实现
 
@@ -586,7 +596,7 @@ WAL 设计借鉴了数据库 WAL 的核心思想：每步确认持久化后才�
 
 ### M11: TraceWriter + Metrics Hook
 
-**优先级**: P1 | **前置依赖**: M04, M10 | **被依赖方**: M18, M27
+**优先级**: P1 | **前置依赖**: M04, M10 | **被依赖方**: M18, M27, M28
 
 #### 业务实现
 
@@ -649,7 +659,7 @@ Agent 基类改造是三个 Browser Agent 适配（M14）的前提。改造的�
 
 ### M13: BrowserCapability
 
-**优先级**: P1 | **前置依赖**: M06 | **被依赖方**: M14
+**优先级**: P1 | **前置依赖**: M06 | **被依赖方**: M14, M29
 
 #### 业务实现
 
@@ -1127,6 +1137,91 @@ M27 兑现 architecture §5.5 的两条承诺："读回来的必须是写进去�
 TraceWriter 只在 `around` 里记录调用，因为 `CancelledError` 是 `BaseException`：`after` 看不到被取消的调用，在 `except Exception` 里才登记又会连 prompt 一起丢。光改 hook 还不够，外部取消之前根本不派发 lifecycle，所以 runtime 也要补一条取消分支。
 
 旧 trace 不做兼容 shim（AGENTS.md §0.4）：v1 的失败 fragment 没有判别字段，按 key 类型化读回会把失败变成空 fragment。代价是 v1 trace 不能再被图像 judge 重新打分，只能重跑任务。
+
+---
+
+### M28: 环境归档机制（框架层，与 capability 无关）
+
+**优先级**: P1 | **前置依赖**: M04, M06, M07, M08, M11, M27 | **被依赖方**: M29
+
+#### 业务实现
+
+把环境证据做成继 observation、action 之后的第三条 provides 轴，只建框架层：注册表、capability 侧与 environment 侧的协议、协商与绑定、TraceWriter 在提交点的拉取、`env/` 子树与读侧访问器、隐私记录与 secret guard 的扩展。不带任何具体归档器，也还没有 YAML 面（见下面的 M28/M29 边界）。设计以 `architecture_design.md` §4.2、§4.2.1、§4.3–§4.6、§4.9、§5.1–§5.6、§6、§10 为准。
+
+#### 业务逻辑
+
+**归档轴**（`spectragent/core/archive/`，所有模块都不用 `from __future__ import annotations`）：
+- `_registrar.py`：`Archiver` Protocol；`ArchiverRegistrar = create_registrar("archiver", Archiver, discriminator_field="archiver_id", key_separator=".")`；`ArchiverBase`（`archiver_id` / `source` / `privacy_markers`，没有任何采集方法——采集行为归所属 capability 自己的 archiver 基类）。
+- `types.py`：`ArchiveFile`（`archiver_id`、`name`、`media_type`、`data`、`meta: ArchiveProvenance`、`content_addressed`、`scope`）、`ArchiveProvenance`（`captured_at`、`cycle`、`ids`）、`ArchiveBatch`、`ArchiveContractError`。
+- `protocols.py`：`ArchivingCapability`（`provided_archivers`、`bind_archivers`、`collect_archive`）、`ArchiveConsumer`（只有一个属性 `archive`）。
+- `privacy.py`：`PRIVACY_POLICY`、字段名与凭证参数名模式、`redact_url` / `redact_value`、`RedactionLedger`、隐私标记常量。
+
+**Capability 与 Environment**：
+- `CapabilityBase` 的默认实现：`provided_archivers` 从 `__wiring__["archiver"]` 派生；`bind_archivers([])` 无操作、非空绑定抛 `NotImplementedError`；`collect_archive()` 返回空批次。`BaseCapability` Protocol 不变。
+- `Environment` Protocol 补上一直缺着的 `provided_actions`，并新增 `provided_archivers`、`bind_archivers`、`collect_archive`；`EnvironmentBase` 按前缀路由绑定（先校验后绑定，分不到的 capability 被清空），并发收集、按 capability 顺序合并；新错误 `UnroutableArchiverError`、`ArchiveCollectionError`。
+
+**协商与绑定**：
+- `negotiate_archive(consumers, env)` → `ArchiveNegotiationResult`（注册为 `archive`：`active_archivers`、`archive_bindings`）；`IncompatibleArchiveError` 一次报全，点名请求方、键、环境与它提供的归档器。
+- `AgentRuntime.prepare()`：`negotiate_memory` 之后立即校验；拦截点审计之后、作为 `prepare()` 的最后一步在原始 env 上 `bind_archivers`；没有归档消费者时对 env 零调用。`on_run_start` 多传 `archive_negotiation`、`env_evidence_recorded`、`env_evidence_privacy`、`task_setup`。
+
+**TraceWriter**（`core/hooks/trace_writer.py`）：
+- 去掉 `@dataclass`，手写 `__init__`：`trace_dir`、`record_secrets` 仍是 `Annotated` 参数（生成的配置不变），`archive: list[ArchiverBase] | None = None` 是普通参数；`HookBase` 改为 `@dataclass(eq=False)`。
+- `on_run_start` 只在 archive 非空时核对协商结果并缓存原始 env；`after_record_step` 在 manifest 提交之前 `collect_archive()`，校验批次（步提交与收尾一样：只收已绑定归档器的证据，内容寻址的也一样；名字是至多 255 字节 UTF-8 的单段、进索引的字符串都能编码成 UTF-8；路径在批次内按 `encoding.fold_path` 不区分大小写和 Unicode 规范化形式地互不相同）后随 `commit_step(..., extra_files=...)` 落进 `env/`；收尾至多再收集一次，调用、每个遗留批次、尾部各自一次 `commit_trailing`，一次失败只赔上它自己那一样；run 记录按版本提交，版本保持采集顺序（遗留批次在收尾才提交，它的 run 记录若早于已提交的最新一版就不再提交）；采集失败即 run 失败。收尾那次收集被取消时，取消优先于它底下又失败的冲刷。
+- `ReactLoop`：run 因失败而结束的那一步（否决、基础设施失败、动作失败、最后一次容许的解析错误）记录失败时，记录失败只记日志并附在结局上（否决上的 note、ERROR 结果 `error` 的后缀），不顶替结局——否决照样越过 `raise_on_error=False` 让 sweep 停下。这一步的记录被取消切断（收集太慢、run 的超时恰好到期）时，取消原样重抛，但带着结局（`core/loops/errors.py` 的 `RunEnded` / `carry_outcome`：否决本身或已建好的终止结果）；act 阶段的否决在交出那一步之前先记日志。
+- `AgentRuntime.execute`：否决和取消一样优先于在它底下失败的收尾——记录失败一直持续到收尾（磁盘一直满着，`TraceWriter` 冲刷不了被否决那一步的调用）时，收尾的错误只记日志、作为 note 附在否决上，重抛的仍是 `RunAbort`；其他异常路径上收尾失败照原样上抛。run 自己的超时也顶替不了已经定下的结局：`except TimeoutError` 先看切断 Loop 的那次取消带没带结局（`carried_outcome`），带着否决就照否决收尾并重抛 `RunAbort`（超时是它上面的 note），带着终止结果就照它收尾并返回（`error` 仍点名根因）；外部取消照旧优先。
+
+**Trace**（`core/trace/`）：
+- `encoding.py`：`archive_step_path` / `archive_trailing_path` / `archive_blob_path` / `archive_run_path`、`encode_archive_file`；`models.py`：`ArchiveMeta`、`ArchiveRecord`、`TaskSetupRecord`，`TraceConfig.env_evidence_recorded` / `env_evidence_privacy` / `task_setup`，`TraceNegotiation.active_archivers` / `archive_bindings`。WAL 的接口不变（仍只有 `TraceFile`）；它的路径比较改用 `encoding.fold_path`——不区分大小写、也不区分 Unicode 规范化形式（APFS 两者都不区分），原先只做 `casefold`。
+- `RunTrace.archive_files(step, archiver_id)`、`iter_archive(archiver_id, *, include_trailing=False)`、`blob(sha256)`、`archive_run_file(capability_id)`，全部经 M27 的 extra 索引解析，不探测路径。
+
+**测试与守卫**：
+- 共享契约 harness `tests/_helpers/archive_contract.py`：capability 侧七条（不带步号、未绑定不采、按前缀路由且空绑定清空、交出并忘掉、只交已绑定归档器的证据且每批至多一份 JSON run 记录、来源信封、采不到就抛错），经直接驱动的 TraceWriter 六条（多步提交 → 读回、崩溃窗口、收尾、采集失败即 trace 以 error 收尾、空归档零开销、与另一个归档 capability 同处一个环境时 run 记录按 capability 计数、编号与去重——与对方字节相同的 run 记录照样提交）；先对假 capability（`contract_archive`）跑通。`TestTheArchiveContractHasTeeth` 用八个各错一条规则的 capability 证明 capability 侧每一条都只抓它针对的那一种错误，并用一个文件名与假 capability 完全不同的结构化 capability 跑通 TraceWriter 那六条（可移植性：M29 的 `browser` factory 不用改 harness）；完整性守卫在发布的 capability 声明了归档器却没有 factory 时失败。
+- `test_archive_binding_errors.py`：经真实的 `AgentRuntime` 与真实消费者（TraceWriter 本身），逐条验证绑定错误在 `prepare()` 抛出且点名双方、经 `execute()` 时发生在 `on_run_start` 与 setup 之前。
+- secret guard 扫描 `env/`（含 gzip）并带正向对照；`task_setup` 植入带 `?token=` 的 start_url，脱敏的 run 里不出现、`record_secrets` 的 run 里出现。
+- `test_receptor_hygiene.py`：Rule 2 扩到 `core/hooks/` 与 `core/archive/`；新增 Rule 3（受体不能是 dataclass 合成的 `__init__` 的参数，受体参数也不能默认成 conscribe 的 `WiredField`），正向对照只用未注册的普通类。
+- `test_archive_boundaries.py`：import 方向守卫（runtime / 协商 / environment 不 import TraceWriter 和具体归档器，`core/archive` 不 import trace / hooks / 协商 / environment / capability，`core/trace` 只 import `core.archive.privacy`）与"不记钱"字段名扫描。
+
+#### 验收
+
+- `archive` 为空：没有 `env/` 目录，对 env 零归档调用——没有这些方法的 stub env 照样跑完 `prepare` + `execute`。"不建 archive scope、不开 recorder 连接"在 M28 时空成立，由 M29 用 fake CDP 重新断言。
+- 绑定错误都在 `prepare()` 抛 `IncompatibleArchiveError`，点名请求方与环境（以及对应 capability）提供了什么：前缀找不到 capability；capability 不提供该键；同一个键在一个列表里重复；同一个键跨消费者重复；两个消费者都声明了非空 archive；没有 environment（这一条是归档协商自己的规则：真实的无 env run 在更早的 observation 协商就失败——它要读环境的 provides——所以 `prepare()` 层面的测试把前两步协商替换掉，钉住归档那一步的行为）。经 `execute()` 时报错发生在 `on_run_start` 和 setup 之前（没有 trace 目录，什么也没绑定），不看 `raise_on_error`。
+- 假 capability 契约测试全部通过：`uv run pytest tests/test_core/test_archive/test_archive_contract.py -q`。
+- `collect_archive` 失败使 run 失败：该步不提交，其 LLM 调用作为 trailing 落盘，manifest 收尾为 `error`；`raise_on_error=False` 时返回点名采集失败的 ERROR 结果。成功的 run 上收尾采集失败：manifest 记 `error`，错误从 `execute` 抛出。采集失败恰好落在被否决的那一步：`execute` 照样抛 `RunAbort`（即使 `raise_on_error=False`），sweep 停下；磁盘在被否决的那一步写满、一直满到收尾（有无归档都一样）：仍是 `RunAbort`，步提交与收尾的失败各是它上面的一条 note，sweep 停下、下一个任务不会被组装；落在基础设施失败的那一步：ERROR 结果仍点名根因。被否决那一步的收集太慢、run 自己的超时在收集时到期：`execute` 照样抛 `RunAbort`（`raise_on_error` 两种取值都一样），超时是它上面的一条 note，`result.json` 点名否决，sweep 停下、下一个任务不会被组装；基础设施失败的那一步同样被超时切断：返回的 ERROR 结果仍点名根因，不是超时结果。
+- secret guard 覆盖 `env/`（含 gzip），有正向对照。
+- 结构守卫（Rule 2 扩展、Rule 3、import 守卫、价格字段扫描）连同各自的正向对照全绿。
+- `uv run spectragent-gen` 之后 `uv run pytest tests/test_generated -q` 全绿；TraceWriter 生成的配置仍只有 `trace_dir`、`record_secrets`；YAML 里的 `hook[].archive` 块校验失败，而不是被静默丢弃。
+
+#### 设计思考
+
+归档是继 observation 和 action 之后的第三条对称轴：provides 写全限定键，绑定在协商期完成，下游只读绑定表（`archive_bindings`）。唯一的不对称是 requires 的来源：它来自 trace hook 实例的 `archive` 列表，永远全限定，而不是某个类的 `__wiring__`——记录什么是每次 run 的选择（用户裁决 D3），既不是 agent 的领域知识，也不是记录器类的固有属性。
+
+capability 被拉取时产出证据，但不知道 WAL、步号和 `env/` 布局；"第 t 步的提交取走的就归第 t 步"是记录器一侧的规则。这让 capability 侧的契约（交出并忘掉、不带参数、原子交接）可以被一个与 capability 无关的 harness 检查，M29 只需要把 BrowserCapability 接进去。
+
+采集失败即 run 失败（fail closed）：归档是显式要求的，一份静默不完整的归档会毒化之后的回放和分叉，而且没有人会发现。run 记录按版本提交，因为 WAL 已提交的路径不可变，而环境指纹在 run 中途可能变化（M29 会在变化时再发）。
+
+**M28/M29 边界**：一个还没有实现的注册表不能成为 Composer 层——`composer.py` 对没有实现的已收集层直接抛错；不收集它，TraceWriter 上一个连向它的 wired slot 又会让每个 `trace_writer` 都组装失败（四份发布配置都声明了 `trace_writer`）；`generate_all` 跳过空层，fingerprint 测试随之失败。所以 M28 落地归档轴除 YAML 面以外的全部：TraceWriter 把 `archive` 当普通构造参数接收（`__config_annotated_only__` 把它挡在生成的配置之外），既没有 `__wiring__["archive"]`，也没有 `Annotated` 类型，`archiver` 不进 `_collect_registrars()`——给它一个没有 wiring 的 `Annotated` 类型会生成 `archive: Any`，把原始 dict 交给 hook。M28 仍然运行 `uv run spectragent-gen`（TraceWriter 的构造函数变了），并保持 `tests/test_generated` 全绿。YAML 面随首批 browser 归档器进 M29，见 M29 条目。
+
+**使用的 skill**：`af-trace-and-hooks`、`af-add-a-receptor`、`af-add-a-capability`、`af-regenerate-and-verify`。
+
+---
+
+### M29: Browser 归档器 + 可回放录制档位
+
+**优先级**: P1 | **前置依赖**: M13, M28 | **被依赖方**: —（M30 条目合入时补）
+
+#### 业务实现
+
+recorder 连接、archive scope 与 ArchiveWatchdog，三个 browser 归档器 `browser.network` / `browser.storage` / `browser.dom_raw`，环境指纹（BrowserCapability 的 run 记录），以及 `ReplayabilityRegistrar`（`off` / `pinned`）。BrowserCapability 在 `__wiring__["archiver"]` 里声明这三个 provides，并按 `architecture_design.md` §4.9 的归档契约实现 `bind_archivers` / `collect_archive`。本条其余部分（业务逻辑、验收、设计思考）在 M29 的 docs-first 步骤补全。
+
+#### 业务逻辑
+
+**M28/M29 边界**：M29 在加入三个 browser 归档器的同一次改动里落地归档的 YAML 面：
+- `TraceWriter.__wiring__["archive"]`，以及同一个构造参数上的 `Annotated[list[ArchiverBase] | None, Field(...)]` 类型；
+- 类级的 `archive: list[ArchiverBase]` 受体注解，放在 mixin 上——Composer 读类级注解来决定按 list 注入，没有它就走单实例分支；
+- `archiver` 加进 `_collect_registrars()`，`uv run spectragent-gen` 重新生成，按 `af-regenerate-and-verify` 验证；
+- 新录制配置里的 YAML 块；Composer 测试钉住省略、`archive: []`、存在顶层 `archiver:` 段时被采纳这三种情形（deferred resolution，architecture §4.2.1）；拼错的 `archiver_id` 被拒绝的测试；
+- BrowserCapability 在 fake CDP 下接入 `tests/_helpers/archive_contract.py`；
+- 用 fake CDP 断言什么都没绑定时不开 recorder 连接、不建 archive scope（M28 验收里在 M28 时空成立的那一条）。
 
 ---
 

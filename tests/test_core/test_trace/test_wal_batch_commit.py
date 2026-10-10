@@ -17,6 +17,7 @@ import json
 import os
 import stat
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -728,6 +729,37 @@ class TestPathRules:
             wal.commit_step(
                 0, step_record(0), extra_files=[extra("env/a", b"1"), extra("env/a", b"2")]
             )
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            # Precomposed and decomposed: one file on a normalization-insensitive APFS.
+            (
+                unicodedata.normalize("NFC", "env/café.json"),
+                unicodedata.normalize("NFD", "env/café.json"),
+            ),
+            # Canonical caseless matching, not casefold(NFC(...)): the case fold of
+            # ``Ś`` decomposes, the long s with a combining acute never composes.
+            ("env/Ś.json", "env/\u017f\u0301.json"),
+        ],
+        ids=["nfc-nfd", "caseless"],
+    )
+    def test_two_spellings_of_one_name_are_one_path(self, tmp_path, io_log, first, second):
+        """A trace copied to macOS must not hold two files the filesystem stores as one."""
+        assert first != second
+        wal = new_wal(tmp_path)
+        with pytest.raises(ValueError, match="twice in one commit"):
+            wal.commit_step(
+                0, step_record(0), extra_files=[extra(first, b"1"), extra(second, b"2")]
+            )
+        wal.commit_step(0, step_record(0), extra_files=[extra(first, b"1")])
+        io_log.events.clear()
+        with pytest.raises(ValueError, match="already committed"):
+            wal.commit_step(1, step_record(1), extra_files=[extra(second, b"2")])
+        with pytest.raises(ValueError, match="never both"):
+            wal.commit_step(1, step_record(1), extra_files=[extra(f"{second}/x", b"3")])
+        assert io_log.writes() == []
+        assert RunTrace(wal.run_dir).read_extra(first) == b"1"
 
     def test_a_fragment_lives_under_observations(self, tmp_path):
         wal = new_wal(tmp_path)

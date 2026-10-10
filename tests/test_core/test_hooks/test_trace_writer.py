@@ -136,6 +136,74 @@ class TestTraceWriterRegistration:
         assert not hasattr(TraceWriter, "after_ainvoke")
 
 
+class TestTheConstructorSurface:
+    """A hand-written ``__init__`` (not a ``@dataclass``), with an unchanged config surface.
+
+    ``archive`` is about to become a ``__wiring__`` receptor (M29), and
+    conscribe reads ``inspect.signature(__init__)`` before ``@dataclass``
+    would have synthesised one — so the knobs are named ``Annotated``
+    parameters, and ``archive`` is a plain one the generated config does not
+    carry until then.
+    """
+
+    def test_keywords_and_defaults(self):
+        from tests._helpers.archive_fakes import FakeStepArchiver
+
+        default = TraceWriter()
+        assert (default.trace_dir, default.record_secrets, default.archive) == (
+            "traces",
+            False,
+            [],
+        )
+        archiver = FakeStepArchiver()
+        writer = TraceWriter(trace_dir="/tmp/t", record_secrets=True, archive=[archiver])
+        assert (writer.trace_dir, writer.record_secrets) == ("/tmp/t", True)
+        assert writer.archive == [archiver]
+        assert writer.archive is not TraceWriter(archive=writer.archive).archive
+
+    def test_not_a_dataclass(self):
+        import dataclasses
+
+        assert "__init__" in vars(TraceWriter)
+        assert "__dataclass_fields__" not in vars(TraceWriter)
+        assert not [f.name for f in dataclasses.fields(TraceWriter)]  # inherits HookBase's: none
+
+    def test_the_config_carries_the_knobs_and_not_the_archive(self):
+        from conscribe.config.extractor import extract_config_schema
+
+        schema = extract_config_schema(TraceWriter)
+        assert schema is not None
+        assert set(schema.model_fields) == {"trace_dir", "record_secrets"}
+
+    def test_the_generated_config_refuses_an_archive(self):
+        from pydantic import ValidationError
+
+        from spectragent.generated._composed import TraceWriterHookConfig
+
+        assert set(TraceWriterHookConfig.model_fields) == {"trace_dir", "record_secrets", "hook_id"}
+        with pytest.raises(ValidationError, match="archive"):
+            TraceWriterHookConfig.model_validate({"archive": [{"archiver_id": "browser.network"}]})
+
+    def test_two_writers_are_two_hooks(self):
+        """Compared by identity: ``HookBase`` is ``@dataclass(eq=False)``.
+
+        Otherwise a hand-written subclass inherits a field-less ``__eq__``
+        under which every two instances are equal — and is unhashable.
+        """
+        first, second = TraceWriter(), TraceWriter()
+        assert first != second
+        assert first == first
+        assert len({first, second}) == 2
+
+    def test_repr_names_the_knobs(self):
+        from tests._helpers.archive_fakes import FakeStepArchiver
+
+        writer = TraceWriter(trace_dir="t", archive=[FakeStepArchiver()])
+        assert repr(writer) == (
+            "TraceWriter(trace_dir='t', record_secrets=False, archive=['contract_archive.steps'])"
+        )
+
+
 class TestTraceWriterLifecycle:
     async def test_on_run_start_creates_directory(self, writer):
         run_dir = await _start(writer)

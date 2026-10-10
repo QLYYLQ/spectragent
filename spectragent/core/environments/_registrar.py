@@ -15,16 +15,21 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Mapping
-from typing import Annotated, Any, ClassVar
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Any, ClassVar, cast
 
 from conscribe import create_registrar
 from pydantic import Field
 
+from spectragent.core.archive._registrar import ArchiverBase
+from spectragent.core.archive.protocols import ArchivingCapability
+from spectragent.core.archive.types import ArchiveBatch, ArchiveContractError
 from spectragent.core.capabilities.base import BaseCapability
 from spectragent.core.environments.base import Environment
 from spectragent.core.environments.errors import (
+    ArchiveCollectionError,
     ObservationFailedError,
+    UnroutableArchiverError,
     UnroutableFragmentError,
 )
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
@@ -133,6 +138,11 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         #: never module state: two environments in one run each count
         #: their own observations, and a fresh run starts at zero.
         self._observation_cycle: int = 0
+        #: Capabilities that received a non-empty archiver group in the
+        #: last :meth:`bind_archivers`, in capability order — exactly the
+        #: ones :meth:`collect_archive` pulls from. Replaced whole by
+        #: every bind.
+        self._archiving: list[BaseCapability] = []
         if capabilities is not None:
             self.capabilities = capabilities
             # Reject a colliding capability set at construction rather
@@ -216,6 +226,22 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         for cap in self.capabilities.values():
             actions |= cap.provided_actions
         return frozenset(actions)
+
+    @property
+    def provided_archivers(self) -> frozenset[str]:
+        """Union of the archiving capabilities' provided_archivers.
+
+        The third provides axis, aggregated like the other two. Only a
+        capability implementing
+        :class:`~spectragent.core.archive.protocols.ArchivingCapability`
+        contributes — the archive surface is optional, and a structural
+        capability without it simply provides no archivers.
+        """
+        archivers: set[str] = set()
+        for cap in self.capabilities.values():
+            if isinstance(cap, ArchivingCapability):
+                archivers |= cap.provided_archivers
+        return frozenset(archivers)
 
     # ── Action space aggregation ──────────────────────────────
 
@@ -331,6 +357,160 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                     type(exc).__name__,
                     exc,
                 )
+
+    # ── Archive: routing the binding, collecting the evidence ─
+
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
+        """Route each archiver to its capability by key prefix, then bind.
+
+        Validate first, bind second. Every archiver is checked before any
+        capability is called — its key's leading segment must name a
+        capability here (the same routing :meth:`act` uses), that
+        capability must implement the archiving surface, and it must
+        provide the key — and every problem is reported in one
+        :class:`UnroutableArchiverError`, with nothing bound. Only then
+        does **every** archiving capability receive its group, in the
+        order given: the ones that get none receive an empty list, which
+        clears whatever an earlier call bound.
+
+        Binding acquires nothing. ``AgentRuntime.prepare`` makes this its
+        last statement — on a dry run that never sets up, too — and a
+        capability reads the binding in ``setup()`` to decide whether to
+        build its capture channel.
+
+        Raises:
+            UnroutableArchiverError: Naming every key that cannot be bound
+                and why.
+        """
+        by_cap = self._by_capability_id()
+        groups: dict[str, list[ArchiverBase]] = {}
+        problems: dict[str, str] = {}
+        for archiver in archivers:
+            key = archiver.archiver_id
+            prefix = key.partition(".")[0]
+            cap = by_cap.get(prefix)
+            if cap is None:
+                problems[key] = f"no capability {prefix!r} in this environment"
+            elif not isinstance(cap, ArchivingCapability):
+                problems[key] = (
+                    f"capability {prefix!r} does not implement the archiving surface "
+                    f"(ArchivingCapability)"
+                )
+            elif key not in cap.provided_archivers:
+                problems[key] = (
+                    f"capability {prefix!r} does not provide it "
+                    f"(it provides {sorted(cap.provided_archivers)})"
+                )
+            else:
+                groups.setdefault(prefix, []).append(archiver)
+        if problems:
+            raise UnroutableArchiverError(problems, capability_ids=frozenset(by_cap))
+
+        # Reset first, record as each bind succeeds: should a capability's
+        # own bind raise half way, collection only ever reaches the
+        # capabilities that really hold a binding.
+        self._archiving = []
+        for cap in self.capabilities.values():
+            if not isinstance(cap, ArchivingCapability):
+                continue
+            group = groups.get(cap.capability_id, [])
+            cap.bind_archivers(group)
+            if group:
+                self._archiving.append(cap)
+
+    async def collect_archive(self) -> ArchiveBatch:
+        """Pull every bound capability's evidence; merge in capability order.
+
+        Nothing bound → an empty batch, and no capability is touched: the
+        zero-overhead path of a run that records no evidence.
+
+        Otherwise one task per bound capability, run **concurrently**
+        (independent worlds — the cost is the slowest, not the sum), and
+        every task is waited for before the outcome is decided, so no task
+        outlives the call. Each task returns its failure rather than
+        raising it: ``gather(..., return_exceptions=True)`` would also
+        swallow a ``CancelledError``, and a cancelled run must stay
+        cancelled.
+
+        A capability fails by raising, or by handing over a file whose
+        ``capability_id`` is not its own — its evidence would land under
+        another capability's name, so that is a contract violation
+        (:class:`~spectragent.core.archive.types.ArchiveContractError`).
+        Any failure raises :class:`ArchiveCollectionError` naming every one,
+        in capability order, chained from the first; the healthy batches
+        are discarded with it — the run is about to fail anyway, because an
+        explicitly requested archive is now incomplete.
+
+        No argument, ever: the environment never hands a step number or a
+        cycle to a capability.
+
+        Raises:
+            ArchiveCollectionError: One or more capabilities failed.
+        """
+        bound = list(self._archiving)
+        if not bound:
+            return ArchiveBatch()
+        tasks = [asyncio.ensure_future(self._collect_one(cap)) for cap in bound]
+        try:
+            outcomes = await asyncio.gather(*tasks)
+        except BaseException:
+            # Only a cancellation reaches here — ``_collect_one`` returns
+            # every ``Exception``. ``gather`` lets the siblings of a child
+            # that raised ``CancelledError`` keep running; cancel whatever
+            # is still pending and wait it out, so no collection outlives
+            # this call, then let the cancellation through unchanged.
+            for task in tasks:
+                task.cancel()
+            await asyncio.wait(tasks)
+            raise
+
+        batches: list[ArchiveBatch] = []
+        failures: dict[str, BaseException] = {}
+        for cap, outcome in zip(bound, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                failures[cap.capability_id] = outcome
+                continue
+            foreign = [f for f in outcome.files if f.capability_id != cap.capability_id]
+            if foreign:
+                failures[cap.capability_id] = ArchiveContractError(
+                    f"capability {cap.capability_id!r} handed over evidence under "
+                    f"another capability's prefix: "
+                    f"{sorted({f.archiver_id for f in foreign})}"
+                )
+                continue
+            batches.append(outcome)
+        if failures:
+            # ``env_type`` is the registry key; the abstract base used
+            # directly (tests do) has none, so fall back to the class name.
+            where = getattr(self, "env_type", None) or getattr(
+                type(self), "__name__", "Environment"
+            )
+            raise ArchiveCollectionError(where, failures) from next(iter(failures.values()))
+        return ArchiveBatch.merge(batches)
+
+    @staticmethod
+    async def _collect_one(cap: BaseCapability) -> ArchiveBatch | Exception:
+        """Collect from one capability; return its failure instead of raising.
+
+        Catches ``Exception`` only — a ``CancelledError`` (a
+        ``BaseException``) propagates, the same shape as
+        :meth:`_begin_cycle`. A capability that returns something other
+        than an :class:`ArchiveBatch` has broken the contract, and that is
+        returned as its failure too.
+        """
+        # Only capabilities that passed the isinstance check in
+        # ``bind_archivers`` are ever collected from.
+        archiving = cast(ArchivingCapability, cap)
+        try:
+            batch = await archiving.collect_archive()
+        except Exception as exc:  # per-capability isolation
+            return exc
+        if not isinstance(batch, ArchiveBatch):
+            return ArchiveContractError(
+                f"capability {cap.capability_id!r} returned {type(batch).__name__} "
+                f"from collect_archive(), not an ArchiveBatch"
+            )
+        return batch
 
     # ── Observation delegation ────────────────────────────────
 

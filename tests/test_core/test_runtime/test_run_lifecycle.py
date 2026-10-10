@@ -19,10 +19,13 @@ from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks._registrar import HookBase
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops.errors import RunAbort, carry_outcome
 from spectragent.core.runtime import AgentRuntime
+from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
+from tests._helpers.trace_builder import agent_result
 
 
 class _DoneCap(CapabilityBase):
@@ -200,6 +203,88 @@ class _BoomLoop(_SlowLoop):
 
         agent.run = run
         return agent
+
+
+class _VetoLoop(_SlowLoop):
+    """A run a guard vetoed: ``RunAbort`` comes out of the Loop."""
+
+    loop_id = "lifecycle_veto"
+
+    def weave(self, agent, **deps):
+        async def run(task, **kw):
+            raise RunAbort("risk-control page detected", source="lifecycle_guard")
+
+        agent.run = run
+        return agent
+
+
+#: The ``error`` a vetoed run's result carries.
+_VETOED = "RunAbort: lifecycle_guard: risk-control page detected"
+
+
+class _CutOffLoop(_SlowLoop):
+    """The run ended in *outcome*; recording its last step then hangs until cancelled.
+
+    The way ``ReactLoop`` hands a cancellation of that recording back: the
+    same cancellation, carrying the outcome (``carry_outcome``). ``None``
+    carries nothing — a run cut off while still under way.
+    """
+
+    loop_id = "lifecycle_cut_off"
+
+    def __init__(self, outcome: Any = None):
+        self.outcome = outcome
+        self.recording = asyncio.Event()
+
+    def weave(self, agent, **deps):
+        async def run(task, **kw):
+            try:
+                self.recording.set()
+                await asyncio.sleep(100)  # recording the step the run ended on
+            except asyncio.CancelledError as cancelled:
+                if self.outcome is not None:
+                    carry_outcome(cancelled, self.outcome)
+                raise
+
+        agent.run = run
+        return agent
+
+
+class _VetoInFlightLoop(_SlowLoop):
+    """The inline abort shape: records the vetoed step inside ``except RunAbort``.
+
+    Nothing is carried explicitly — the cancellation lands while the veto is
+    being handled, so the veto is its context all the same.
+    """
+
+    loop_id = "lifecycle_veto_in_flight"
+
+    def weave(self, agent, **deps):
+        async def run(task, **kw):
+            try:
+                raise RunAbort("risk-control page detected", source="lifecycle_guard")
+            except RunAbort:
+                await asyncio.sleep(100)  # recording the vetoed step
+                raise
+
+        agent.run = run
+        return agent
+
+
+def _veto() -> RunAbort:
+    return RunAbort("risk-control page detected", source="lifecycle_guard")
+
+
+#: The note a veto gets when the run's own timeout (0.05s) cut its step's recording off.
+_CUT_OFF_NOTE = (
+    "The run's own timeout (0.05s) expired while the vetoed step was still being recorded; "
+    "the veto stands."
+)
+
+#: The ``error`` of such a run's result.
+_VETOED_UNDER_TIMEOUT = (
+    f"{_VETOED} (the run's timeout of 0.05s expired while the vetoed step was being recorded)"
+)
 
 
 class _GatedLoop(_SlowLoop):
@@ -614,6 +699,27 @@ class TestCancellation:
         assert env.events == ["setup", "teardown"]
         assert "closing out a cancelled run failed" in caplog.text
 
+    async def test_a_cancellation_inside_a_vetoed_runs_close_out_outranks_the_veto(self):
+        """The veto's precedence over its close-out stops at a cancellation.
+
+        A Ctrl-C landing while the vetoed run is being closed out is still
+        the cancellation the caller asked for — not swallowed as one more
+        close-out failure noted on the veto.
+        """
+        hook = _SlowCloseOutHook()
+        env = _make_env()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), _VetoLoop(), env, hooks=[hook]), AGENT_ID)
+
+        task = asyncio.create_task(runtime.execute("t", task_id="t-1", raise_on_error=False))
+        await hook.entered.wait()  # the veto's close-out is under way
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert task.cancelled()
+        assert hook.calls == [f"end(error={_VETOED!r})"]
+        assert env.events == ["setup", "teardown"]
+
     async def test_a_callers_timeout_survives_a_failing_close_out(self):
         hook = _FailingCloseOutHook()
         runtime = AgentRuntime.for_agent(
@@ -682,6 +788,169 @@ class TestTheCloseOutRunsOnce:
             await runtime.execute("t", task_id="t-1", timeout=0.05)
 
         assert hook.calls == ["end(error='Execution timed out after 0.05s')"]
+
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    async def test_a_failed_run(self, raise_on_error: bool):
+        """An ordinary failure has no precedence over its close-out: the hook's error is raised."""
+        hook = _FailingCloseOutHook()
+        env = _make_env()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), _BoomLoop(), env, hooks=[hook]), AGENT_ID)
+
+        with pytest.raises(OSError, match="No space left"):
+            await runtime.execute("t", task_id="t-1", raise_on_error=raise_on_error)
+
+        assert hook.calls == ["end(error='RuntimeError: loop exploded')"]
+        assert env.events == ["setup", "teardown"]
+
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    async def test_a_vetoed_run(self, raise_on_error: bool, caplog: pytest.LogCaptureFixture):
+        """A veto outranks a close-out that fails under it, as a cancellation does.
+
+        ``TraceWriter.on_run_end`` hitting a disk that is still full used to
+        replace the ``RunAbort``: ``execute(raise_on_error=False)`` raised the
+        ``OSError``, a sweep's ``except Exception`` recorded the task as an
+        ordinary failure and started the next one — against the site the
+        guard had just refused.
+        """
+        hook = _FailingCloseOutHook()
+        env = _make_env()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), _VetoLoop(), env, hooks=[hook]), AGENT_ID)
+
+        with pytest.raises(RunAbort, match="risk-control page detected") as caught:
+            await runtime.execute("t", task_id="t-1", raise_on_error=raise_on_error)
+
+        assert caught.value.__notes__ == [
+            "Closing the vetoed run out failed too: "
+            f"OSError: [Errno {errno.ENOSPC}] No space left on device"
+        ]
+        # Closed out once, and the failure logged — not retried, not dropped.
+        assert hook.calls == [f"end(error={_VETOED!r})"]
+        assert "closing out a vetoed run failed" in caplog.text
+        assert env.events == ["setup", "teardown"]
+
+
+class TestAnOutcomeOutranksTheRunsOwnTimeout:
+    """The run's own timeout cannot replace an outcome the run had already reached.
+
+    A Loop records the step its run ended on before the outcome leaves it,
+    and that hand-over can be slow — ``TraceWriter`` pulls the environment's
+    evidence then, of the very page the guard refused. A timeout landing
+    there used to win: ``execute`` returned an ordinary timeout result
+    whatever ``raise_on_error`` said, a sweep recorded it and went on to the
+    next task, and nothing said a guard had said stop. A cancellation from
+    outside still outranks the veto (``TestCancellation``).
+    """
+
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    @pytest.mark.parametrize("shape", ["carried", "in flight"])
+    async def test_a_veto_is_still_raised(
+        self, raise_on_error: bool, shape: str, caplog: pytest.LogCaptureFixture
+    ):
+        hook = _RecordingHook([])
+        env = _make_env()
+        veto = _veto()
+        loop = _CutOffLoop(veto) if shape == "carried" else _VetoInFlightLoop()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, env, hooks=[hook]), AGENT_ID)
+
+        with pytest.raises(RunAbort, match="risk-control page detected") as caught:
+            await runtime.execute("t", task_id="t-1", timeout=0.05, raise_on_error=raise_on_error)
+
+        if shape == "carried":
+            assert caught.value is veto
+        assert caught.value.__notes__ == [_CUT_OFF_NOTE]
+        result = hook.end_kwargs["result"]
+        assert result.agent_done == AgentDoneStatus.ERROR
+        assert result.error == _VETOED_UNDER_TIMEOUT
+        # Closed out as a vetoed run: on_run_error gets the veto, not a timeout.
+        assert hook.error_kwargs["error"] is caught.value
+        assert "the veto stands" in caplog.text
+        assert env.events == ["setup", "teardown"]
+
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    async def test_a_result_the_loop_had_built_is_still_the_result(self, raise_on_error: bool):
+        """A dead browser cut off mid-recording is not a slow model."""
+        hook = _RecordingHook([])
+        built = agent_result(
+            task_id="t-1",
+            env_status=EnvironmentStatus.FAILED,
+            agent_done=AgentDoneStatus.ERROR,
+            agent_reported_success=None,
+            error="observe failed at step 1: ConnectionError: CDP websocket closed",
+        )
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), _CutOffLoop(built), _make_env(), hooks=[hook]), AGENT_ID
+        )
+
+        result = await runtime.execute(
+            "t", task_id="t-1", timeout=0.05, raise_on_error=raise_on_error
+        )
+
+        assert result.agent_done == AgentDoneStatus.ERROR
+        assert result.env_status == EnvironmentStatus.FAILED
+        assert result.error == (
+            "observe failed at step 1: ConnectionError: CDP websocket closed "
+            "(recording this step was cut off by the run's timeout of 0.05s)"
+        )
+        # Closed out the way the Loop would have returned it: no on_run_error.
+        assert hook.end_kwargs["result"] is result
+        assert hook.error_kwargs == {}
+
+    async def test_a_run_still_under_way_is_an_ordinary_timeout(self):
+        hook = _RecordingHook([])
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), _CutOffLoop(None), _make_env(), hooks=[hook]), AGENT_ID
+        )
+        result = await runtime.execute("t", task_id="t-1", timeout=0.05, raise_on_error=False)
+
+        assert result.agent_done == AgentDoneStatus.TIMEOUT
+        assert result.error == "Execution timed out after 0.05s"
+        assert isinstance(hook.error_kwargs["error"], TimeoutError)
+
+    async def test_an_outcome_it_does_not_know_is_ignored(self):
+        """Only a veto or an ``AgentResult`` can end a run; anything else is a plain timeout."""
+        odd: Any = object()
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), _CutOffLoop(odd), _make_env()), AGENT_ID)
+        result = await runtime.execute("t", task_id="t-1", timeout=0.05)
+        assert result.agent_done == AgentDoneStatus.TIMEOUT
+
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    async def test_an_outside_cancellation_still_outranks_the_veto(self, raise_on_error: bool):
+        """Ctrl-C landing in the same place belongs to whoever pressed it."""
+        hook = _RecordingHook([])
+        loop = _CutOffLoop(_veto())
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), loop, _make_env(), hooks=[hook]), AGENT_ID)
+
+        task = asyncio.create_task(
+            runtime.execute("t", task_id="t-1", timeout=30, raise_on_error=raise_on_error)
+        )
+        await loop.recording.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert task.cancelled()
+        assert hook.end_kwargs["result"].error == "Execution cancelled"
+        assert isinstance(hook.error_kwargs["error"], asyncio.CancelledError)
+
+    async def test_a_close_out_that_fails_under_it_is_one_more_note(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        hook = _FailingCloseOutHook()
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), _CutOffLoop(_veto()), _make_env(), hooks=[hook]), AGENT_ID
+        )
+
+        with pytest.raises(RunAbort) as caught:
+            await runtime.execute("t", task_id="t-1", timeout=0.05, raise_on_error=False)
+
+        assert caught.value.__notes__ == [
+            _CUT_OFF_NOTE,
+            "Closing the vetoed run out failed too: "
+            f"OSError: [Errno {errno.ENOSPC}] No space left on device",
+        ]
+        # Closed out once, as the vetoed run it was.
+        assert hook.calls == [f"end(error={_VETOED_UNDER_TIMEOUT!r})"]
+        assert "closing out a vetoed run failed" in caplog.text
 
 
 class TestRunStartPayload:

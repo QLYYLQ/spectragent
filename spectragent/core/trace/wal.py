@@ -60,6 +60,7 @@ from spectragent.core.trace.encoding import (
     EncodedLLMCall,
     TraceFile,
     check_relative_path,
+    fold_path,
     sha256_hex,
     step_extra_index_path,
     step_record_path,
@@ -87,7 +88,11 @@ class WALWriter:
 
         traces/{run_id}/
             manifest.json   config.json   result.json
-            steps/  observations/  messages/  evals/  [env/ — M28]
+            steps/  observations/  messages/  evals/  [env/]
+
+    ``env/`` holds environment evidence when a run binds archivers. It is
+    made of ordinary extra files — this writer neither knows nor names
+    them; ``encoding.encode_archive_file`` does.
 
     Beyond the manifest it keeps four things in memory, all updated only
     once a manifest rewrite has succeeded: every committed path (so a
@@ -103,9 +108,10 @@ class WALWriter:
         self._run_dir = base_dir / run_id
         self._run_id = run_id
         self._manifest: TraceManifest | None = None
-        # Casefolded: on a case-insensitive filesystem (macOS by default)
-        # ``env/A.txt`` and ``env/a.txt`` are one file, and a trace must
-        # survive being copied to one.
+        # Folded (``encoding.fold_path``): on a case- and normalization-
+        # insensitive filesystem (macOS by default) ``env/A.txt`` and
+        # ``env/a.txt`` are one file, as are ``café`` precomposed and
+        # decomposed, and a trace must survive being copied to one.
         self._committed: set[str] = set()
         self._committed_dirs: set[str] = set()
         self._committed_blobs: set[str] = set()
@@ -178,7 +184,7 @@ class WALWriter:
         self._committed = set()
         # The WAL's own directories, and the one it creates on demand: no
         # file may ever take one of these names.
-        self._committed_dirs = {name.casefold() for name in (*own_dirs, OUTPUT_FORMATS_DIR)}
+        self._committed_dirs = {fold_path(name) for name in (*own_dirs, OUTPUT_FORMATS_DIR)}
         self._committed_blobs = set()
         self._durable_dirs = {self._run_dir / name for name in own_dirs}
 
@@ -346,9 +352,9 @@ class _Plan:
     records: list[TraceFile] = field(default_factory=list)
     #: Extra-file index entries, in the order the producer handed the files over.
     extra: list[ExtraFileRecord] = field(default_factory=list)
-    #: Casefolded paths this commit adds to the run.
+    #: Folded paths (``fold_path``) this commit adds to the run.
     claimed: set[str] = field(default_factory=set)
-    #: Casefolded directories those paths run through.
+    #: Folded directories those paths run through.
     dirs: set[str] = field(default_factory=set)
     #: Content-addressed paths this commit writes.
     blobs: set[str] = field(default_factory=set)
@@ -445,7 +451,7 @@ class _Plan:
         the writes — or, for a name the WAL writes later (``result.json``),
         turn the run's close-out into an ``IsADirectoryError``.
         """
-        folded = rel_path.casefold()
+        folded = fold_path(rel_path)
         if folded in self.wal._committed:
             raise ValueError(
                 f"{rel_path!r} is already committed to {self.wal.run_dir}: committed files are "
@@ -484,7 +490,7 @@ def _check_not_wal_owned(rel_path: str) -> None:
     ``result.json/evidence.txt`` would create a *directory* ``result.json``,
     and the run's close-out would then fail to write its result.
     """
-    head = rel_path.split("/", 1)[0].casefold()
+    head = fold_path(rel_path.split("/", 1)[0])
     if head in WAL_OWNED_FILES or head in WAL_OWNED_DIRS:
         raise ValueError(
             f"{rel_path!r} is a name the WAL owns ({sorted(WAL_OWNED_FILES)}, or anything "
@@ -516,7 +522,7 @@ def _check_address(item: TraceFile, digest: str | None = None) -> str:
 
 def _within(rel_path: str, directory: str) -> bool:
     """*rel_path* starts with ``directory/`` — a prefix test, sound only after ``check_relative_path``."""
-    return rel_path.casefold().startswith(f"{directory.casefold()}/")
+    return fold_path(rel_path).startswith(f"{fold_path(directory)}/")
 
 
 def _fsync_all(directories: Iterable[Path]) -> None:

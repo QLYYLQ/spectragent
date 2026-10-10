@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -42,20 +43,36 @@ from spectragent.core.llm.messages import (
 )
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.trace.encoding import (
+    ARCHIVE_META_KEY,
+    ENV_DIR,
     PendingLLMCall,
+    archive_blob_path,
+    archive_run_path,
+    archive_step_path,
+    archive_trailing_path,
     decode_fragment,
+    encode_archive_file,
     encode_fragment,
     encode_llm_call,
     encode_observation,
     encode_output_format,
+    fold_path,
 )
-from spectragent.core.trace.models import RecordedLLMCall
+from spectragent.core.trace.models import ArchiveMeta, RecordedLLMCall
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.observation import build_observation_model
 from spectragent.schemas.observation._registrar import ObservationRegistrar, fragment_field_name
 from spectragent.schemas.observation.failure import FragmentFailure
 from tests._helpers.fragment_samples import SAMPLES
-from tests._helpers.trace_builder import Reply, new_wal, prompt, step_record, usage
+from tests._helpers.trace_builder import (
+    CAPTURED_AT,
+    Reply,
+    archive_item,
+    new_wal,
+    prompt,
+    step_record,
+    usage,
+)
 
 CASES = [(key, variant) for key, variants in SAMPLES.items() for variant in variants]
 
@@ -410,3 +427,200 @@ class TestOutputSchemas:
     def test_only_a_model_class_has_a_schema(self) -> None:
         with pytest.raises(TypeError, match="not a pydantic model class"):
             encode_output_format({"type": "object"})
+
+
+# ── environment evidence ──────────────────────────────────────────
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+class TestArchiveFiles:
+    """Where an ``ArchiveFile`` lands under ``env/``, and what its index entry says (§5.3)."""
+
+    def test_the_paths_are_spelled_here(self) -> None:
+        assert (ENV_DIR, ARCHIVE_META_KEY) == ("env", "archive")
+        assert archive_step_path(7, "browser.network", "x.warc") == (
+            "env/steps/007/browser.network/x.warc"
+        )
+        assert archive_trailing_path(2, "a.b", "c.json") == "env/trailing/02/a.b/c.json"
+        sha = _digest(b"x")
+        assert archive_blob_path(sha) == f"env/blobs/sha256/{sha[:2]}/{sha[2:]}"
+        assert archive_run_path("browser", 0) == "env/run.browser.json"
+        assert archive_run_path("browser", 3) == "env/run.browser.3.json"
+        with pytest.raises(ValueError, match=">= 0"):
+            archive_run_path("browser", -1)
+
+    def test_a_step_file_lands_under_its_step_with_its_provenance(self) -> None:
+        item = archive_item(
+            "a.b", "page.html", b"<html/>", media_type="text/html", cycle=3, ids={"frame": "F1"}
+        )
+        encoded = encode_archive_file(item, step=4)
+
+        assert encoded.rel_path == "env/steps/004/a.b/page.html"
+        assert (encoded.data, encoded.content_addressed) == (b"<html/>", False)
+        assert dict(encoded.meta) == {
+            "archive": {
+                "archiver_id": "a.b",
+                "name": "page.html",
+                "media_type": "text/html",
+                "scope": "step",
+                "captured_at": CAPTURED_AT,
+                "cycle": 3,
+                "ids": {"frame": "F1"},
+                "run_version": None,
+            }
+        }
+        assert encode_archive_file(item, trailing=1).rel_path == "env/trailing/01/a.b/page.html"
+
+    @pytest.mark.parametrize("commit", [{"step": 0}, {"step": 9}, {"trailing": 2}, {}])
+    def test_a_content_addressed_file_lands_at_its_digest(self, commit: dict[str, int]) -> None:
+        item = archive_item(
+            "a.b",
+            "body.bin",
+            b"body",
+            media_type="application/octet-stream",
+            content_addressed=True,
+        )
+        encoded = encode_archive_file(item, **commit)
+        assert encoded.rel_path == archive_blob_path(_digest(b"body"))
+        assert encoded.content_addressed is True
+        assert encoded.meta["archive"]["name"] == "body.bin"
+
+    def test_a_run_record_lands_at_its_version_under_its_capability(self) -> None:
+        bare = archive_item("browser", "fingerprint.json", b"{}", scope="run")
+        assert encode_archive_file(bare, run_version=0).rel_path == "env/run.browser.json"
+        second = encode_archive_file(bare, run_version=2, step=5)
+        assert second.rel_path == "env/run.browser.2.json"
+        assert (second.meta["archive"]["scope"], second.meta["archive"]["run_version"]) == (
+            "run",
+            2,
+        )
+        keyed = archive_item("browser.network", "fingerprint.json", b"{}", scope="run")
+        assert encode_archive_file(keyed, run_version=0).rel_path == "env/run.browser.json"
+
+    @pytest.mark.parametrize(
+        ("item", "commit", "why"),
+        [
+            pytest.param(
+                archive_item("browser", "fp.json", b"{}", scope="run"),
+                {},
+                "needs its run_version",
+                id="a run record without a version",
+            ),
+            pytest.param(
+                archive_item("a.b", "x.json", b"{}"),
+                {"step": 0, "run_version": 0},
+                "only a run record",
+                id="a step file with a version",
+            ),
+            pytest.param(
+                archive_item("a.b", "x.json", b"{}"),
+                {},
+                "pass the step or trailing",
+                id="a step file with no commit",
+            ),
+            pytest.param(
+                archive_item("a.b", "x.json", b"{}"),
+                {"step": 0, "trailing": 0},
+                "one commit",
+                id="two commits",
+            ),
+        ],
+    )
+    def test_what_it_refuses(self, item: Any, commit: dict[str, int], why: str) -> None:
+        with pytest.raises(ValueError, match=why):
+            encode_archive_file(item, **commit)
+
+    @pytest.mark.parametrize(
+        ("scope", "content_addressed", "why"),
+        [("session", False, "unknown archive scope"), ("run", True, "cannot be content-addressed")],
+        ids=["unknown scope", "content-addressed run record"],
+    )
+    def test_it_reads_fields_not_the_type(
+        self, scope: str, content_addressed: bool, why: str
+    ) -> None:
+        """Duck-typed: the trace layer does not import the archive types.
+
+        So it checks what ``ArchiveFile`` would have refused itself.
+        """
+        duck = SimpleNamespace(
+            archiver_id="a.b",
+            name="n.txt",
+            media_type="text/plain",
+            data=b"d",
+            content_addressed=False,
+            scope="step",
+            meta=SimpleNamespace(captured_at=1.0, cycle=None, ids={}),
+        )
+        assert encode_archive_file(duck, step=0).rel_path == "env/steps/000/a.b/n.txt"
+        duck.scope, duck.content_addressed = scope, content_addressed
+        with pytest.raises(ValueError, match=why):
+            encode_archive_file(duck, step=0, run_version=0)
+
+    def test_the_metadata_validates_both_ways(self) -> None:
+        meta = encode_archive_file(archive_item("a.b", "x", b"1"), step=0).meta["archive"]
+        assert ArchiveMeta.model_validate(meta).run_version is None
+        with pytest.raises(ValidationError, match="only a run record"):
+            ArchiveMeta.model_validate({**meta, "run_version": 0})
+        run = {**meta, "scope": "run"}
+        with pytest.raises(ValidationError, match="carries its version"):
+            ArchiveMeta.model_validate(run)
+        with pytest.raises(ValidationError, match="carries its version"):
+            ArchiveMeta.model_validate({**run, "run_version": -1})
+        assert ArchiveMeta.model_validate({**run, "run_version": 0}).run_version == 0
+
+    def test_what_the_wal_commits_reads_back_as_the_file_handed_over(self, tmp_path) -> None:
+        item = archive_item("a.b", "x.json", b'{"k": 1}', cycle=2, ids={"session": "s"})
+        wal = new_wal(tmp_path)
+        wal.commit_step(0, step_record(0), extra_files=[encode_archive_file(item, step=0)])
+
+        (record,) = RunTrace(wal.run_dir).archive_files(0, "a.b")
+        assert (
+            record.archiver_id,
+            record.name,
+            record.media_type,
+            record.scope,
+            record.captured_at,
+            record.cycle,
+            record.ids,
+            record.content_addressed,
+            record.size,
+            record.sha256,
+            record.capability_id,
+        ) == (
+            item.archiver_id,
+            item.name,
+            item.media_type,
+            item.scope,
+            item.meta.captured_at,
+            item.meta.cycle,
+            dict(item.meta.ids),
+            item.content_addressed,
+            len(item.data),
+            _digest(item.data),
+            "a",
+        )
+        assert RunTrace(wal.run_dir).read_extra(record.path) == item.data
+
+
+class TestFoldPath:
+    """The one key every path comparison of a trace uses (``encoding.fold_path``)."""
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            ("env/A.txt", "env/a.txt"),
+            ("env/café.json", "env/cafe\u0301.json"),  # NFC and NFD
+            ("env/STRASSE", "env/straße"),  # full case folding
+            ("env/Ś", "env/\u017f\u0301"),  # the fold decomposes; NFC-then-fold misses it
+        ],
+    )
+    def test_names_a_filesystem_stores_as_one_file_share_a_key(self, a: str, b: str) -> None:
+        assert a != b
+        assert fold_path(a) == fold_path(b)
+
+    def test_names_that_differ_keep_different_keys(self) -> None:
+        assert fold_path("env/cafe.json") != fold_path("env/café.json")
+        assert fold_path("env/a/b").split("/") == ["env", "a", "b"]

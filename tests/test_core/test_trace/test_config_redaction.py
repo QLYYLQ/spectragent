@@ -184,10 +184,14 @@ class TestMarkSurvivesConscribe:
     """
 
     def test_source_declaration_carries_the_mark(self):
-        """Sanity: the mark is on the class before conscribe sees it."""
-        from typing import get_args
+        """Sanity: the mark is on the class before conscribe sees it.
 
-        annotation = TraceWriter.__annotations__["trace_dir"]
+        ``TraceWriter`` hand-writes ``__init__`` (it is not a dataclass), so
+        the declaration conscribe reads is that signature's annotation.
+        """
+        from typing import get_args, get_type_hints
+
+        annotation = get_type_hints(TraceWriter.__init__, include_extras=True)["trace_dir"]
         marks = [
             meta
             for arg in get_args(annotation)[1:]

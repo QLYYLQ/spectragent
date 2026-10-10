@@ -1,8 +1,9 @@
 """Unified negotiation module.
 
 Hosts the shared negotiation engine, result types, and wiring-extraction
-helper used by both observation (three-party) and action (two-party)
-negotiation flows. See docs/architecture_design.md §4.4 and §4.5.
+helper used by the observation (three-party), action (two-party) and
+archive (consumer ↔ environment) negotiation flows. See
+docs/architecture_design.md §4.4 and §4.5.
 """
 
 from spectragent.core.negotiation._base import (
@@ -24,6 +25,11 @@ from spectragent.core.negotiation.action import (
     IncompatibleActionError,
     negotiate_action,
 )
+from spectragent.core.negotiation.archive import (
+    ArchiveNegotiationResult,
+    IncompatibleArchiveError,
+    negotiate_archive,
+)
 from spectragent.core.negotiation.engine import negotiate
 from spectragent.core.negotiation.memory import (
     IncompatibleMemoryError,
@@ -41,8 +47,10 @@ __all__ = [
     "AmbiguousActionError",
     "AmbiguousFragmentError",
     "AmbiguousKeyError",
+    "ArchiveNegotiationResult",
     "DemandOutsideWiringError",
     "IncompatibleActionError",
+    "IncompatibleArchiveError",
     "IncompatibleFragmentError",
     "IncompatibleMemoryError",
     "NegotiationResult",
@@ -55,6 +63,7 @@ __all__ = [
     "extract_wiring",
     "negotiate",
     "negotiate_action",
+    "negotiate_archive",
     "negotiate_memory",
     "negotiate_observation",
 ]

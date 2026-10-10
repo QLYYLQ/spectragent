@@ -115,6 +115,44 @@ is sufficient.
 > explicitly (`capability_contract.py:37-42`): come change the suite, do not quietly
 > report one capture per resolve.
 
+### If your capability provides archivers — the archive contract
+
+A capability that declares `__wiring__["archiver"]` (environment evidence,
+`docs/architecture_design.md` §4.9) has a second shared contract, in
+`tests/_helpers/archive_contract.py`, run by
+`tests/test_core/test_archive/test_archive_contract.py`. Same deal: one factory in that
+module's own `HARNESS_FACTORIES`, the whole suite inherited. An
+`ArchiveHarness(capability, archivers, produce, break_collect, change_run_record=None)`
+hands it the capability (set up as far as capturing goes, no real browser/container), the
+archivers to bind (two or more, so evidence leaking from one into another shows),
+`produce(step)` (make the capability capture what one step of activity would — `step` is
+bookkeeping and must never reach the capability), `break_collect()` (make every
+`collect_archive` from then on fail — required, like `break_capture`) and, optionally,
+`change_run_record()` (make the next collection carry a changed run record, so the
+crash-window clause puts a new version into the step that never commits). The clauses
+are capability-agnostic. Capability side: collect takes no argument at all; an unbound
+capability archives nothing; every key routes by prefix and an empty bind clears; collect
+hands over and forgets; every step file belongs to a bound archiver and a batch holds at
+most one JSON run record; step files carry their provenance (`captured_at` inside the
+produce → collect window); a broken collection raises instead of returning an empty
+batch. Through the trace hook (driven directly, negotiated and bound as `prepare()` does,
+so no agent or loop has to fit your capability): steps commit and read back byte-for-byte
+through `RunTrace.archive_files` / `blob` / `archive_run_file`, each blob once; the crash
+window hides uncommitted evidence, which then lands as trailing evidence, never under the
+crashed step; the tail lands at run end; a failed collection fails the trace closed; an
+empty archive costs nothing; beside a second archiving capability in the same environment,
+each capability's run records are counted, numbered and deduplicated as its own (a record
+byte-equal to the other's is still committed). A completeness guard fails when a shipped capability that
+declares archivers (or whose default instance has non-empty `provided_archivers`) has no
+factory. `TestTheArchiveContractHasTeeth` runs eight one-rule-wrong capabilities, each
+failing exactly its capability clause and no other, and runs the trace clauses against a
+correct structural capability whose names are nothing like the fake's — the portability
+proof a `browser` factory relies on. M28 runs it against the fake `contract_archive`
+capability; M29 opts `BrowserCapability` in under fake CDP. Not in the harness, because no
+capability-agnostic harness can produce them: the timing rules of §4.9 — never blocking,
+the hand-over atomic with respect to your producers, an in-flight item handed over exactly
+once (or marked incomplete by the last collection). Your capability's own tests pin those.
+
 ---
 
 ## Step 1 — the two contract surfaces, and the hole between them
@@ -125,7 +163,7 @@ There are two, and knowing which is which is load-bearing:
   `@runtime_checkable` `Protocol`. This is what every consumer types against:
   `EnvironmentBase.capabilities` is `dict[str, BaseCapability]`, the fragment router holds
   `BaseCapability`, `CapabilityRegistrar` is created against it.
-- **`CapabilityBase`** — `spectragent/core/capabilities/_registrar.py:53`. The concrete
+- **`CapabilityBase`** — `spectragent/core/capabilities/_registrar.py:56`. The concrete
   `@dataclass` with `metaclass=CapabilityRegistrar.Meta`. Registration, the
   `Annotated` `id` field, default no-op lifecycle, `provided_fragments` narrowing.
 
@@ -134,9 +172,9 @@ without inheriting the concrete base** — and that is exactly how a hole hides.
 
 ### The live example
 
-`provided_actions` existed on `CapabilityBase` (`_registrar.py:161-176`) and was **missing
+`provided_actions` existed on `CapabilityBase` (`_registrar.py:170-185`) and was **missing
 from the `BaseCapability` Protocol**, while `EnvironmentBase.provided_actions`
-(`environments/_registrar.py:211-221`) unions it across capabilities typed as
+(`environments/_registrar.py:218-228`) unions it across capabilities typed as
 `BaseCapability` and hands the result to action negotiation. Pyright reported it. It
 worked anyway, because Python Protocols are structural and nothing enforced the
 declaration — a structural implementer (the usage Protocol-First exists to allow) would
@@ -147,12 +185,23 @@ have type-checked clean and then failed at negotiation. It was fixed only just n
 on both axes… do not restore an asymmetry between them."* If you add a member to one axis,
 add its twin:
 
-| | Observation axis | Action axis |
-|---|---|---|
-| Capability declares | `provided_fragments` (`base.py:96`) | `provided_actions` (`base.py:53`) |
-| Environment unions | `provided_fragments` (`environments/_registrar.py:204`) | `provided_actions` (`environments/_registrar.py:212`) |
-| Registry key shape | `source.local_id` (`browser.dom`) | `source.local_id` (`browser.click`) |
-| `__wiring__` declares | relative (`dom`) | relative (`click`) |
+| | Observation axis | Action axis | Archive axis |
+|---|---|---|---|
+| Capability declares | `provided_fragments` (`base.py:96`) | `provided_actions` (`base.py:53`) | `provided_archivers` — on the optional `ArchivingCapability` Protocol (`core/archive/protocols.py`), **not** on `BaseCapability` |
+| Environment unions | `provided_fragments` (`environments/_registrar.py:211`) | `provided_actions` (`environments/_registrar.py:219`) | `provided_archivers` (over capabilities that implement `ArchivingCapability`) |
+| Registry key shape | `source.local_id` (`browser.dom`) | `source.local_id` (`browser.click`) | `source.local_id` (`browser.network`) |
+| `__wiring__` declares | relative (`dom`) | relative (`click`) | no requires side: the trace hook's `archive` list, always fully qualified |
+
+The archive axis is the one deliberate exception to "declare it on `BaseCapability`": it
+is optional — a capability that records nothing should implement nothing — and adding
+members to a `@runtime_checkable` Protocol changes `isinstance` for every structural
+implementer (see the note below). `CapabilityBase` satisfies `ArchivingCapability` with
+inert defaults: `provided_archivers` derived from `__wiring__["archiver"]`
+(`_wiring_keys_for(type(self), "archiver")`), `bind_archivers([])` a no-op and a
+non-empty bind raising `NotImplementedError` naming the class, `collect_archive()`
+returning an empty `ArchiveBatch`. On the **Environment** Protocol all three axes are
+declared alike — `provided_actions` included, which M28 added after negotiation had been
+reading it from an undeclared member.
 
 **Rule:** when you touch `base.py`, run `uv run pyright spectragent/core/capabilities
 spectragent/core/environments`. Four errors are expected today, all conscribe-metaclass
@@ -219,7 +268,7 @@ class DockerCapability(CapabilityBase):
 Three wiring entries, three different jobs:
 
 - **`"observation"`** — what you *provide*. `CapabilityBase.declared_fragments`
-  (`_registrar.py:120-127`) derives from it by default. Override `declared_fragments` if
+  (`_registrar.py:128-136`) derives from it by default. Override `declared_fragments` if
   your resolver set is dynamic: `BrowserCapability` does (`capability.py:694-703`) because
   the `vision_only` profile genuinely cannot serve `browser.dom`, so an agent requiring it
   must fail **negotiation** rather than receive an empty tree every step.
@@ -229,7 +278,7 @@ Three wiring entries, three different jobs:
   `browser/capability.py:620-654`, which raises naming the unknown keys.
 - **`"backend"`** — Mode 1 bare string: any class registered in that registrar is allowed.
 
-`provided_actions` on the concrete base (`_registrar.py:161-176`) reads
+`provided_actions` on the concrete base (`_registrar.py:170-185`) reads
 `self._actions_by_name` when you have one and falls back to `__wiring__["action"]`
 otherwise. If you build a dispatch map, that map is the single source of truth — it is
 what an ablated config actually narrows.
@@ -254,15 +303,15 @@ needs to be optional, hand-write `__init__`.
 ## Step 3 — the observation cycle
 
 The environment owns the cycle. `EnvironmentBase.observe`
-(`environments/_registrar.py:344-455`) holds a monotonically increasing counter, increments
-it once per observe (`:396`), and in **phase 1** tells every participating capability
-before **phase 2** resolves anything (`:399-412`).
+(`environments/_registrar.py:517-628`) holds a monotonically increasing counter, increments
+it once per observe (`:569`), and in **phase 1** tells every participating capability
+before **phase 2** resolves anything (`:572-577`).
 
 `begin_observation(cycle)` is **told, never inferred** (`base.py:107-136`). "Have I served
 this key before" is a guess about a fact the caller already had, and it is wrong for any
 caller that reads one fragment twice.
 
-**If you capture per fragment:** the default no-op (`_registrar.py:186`) is correct. Skip
+**If you capture per fragment:** the default no-op (`_registrar.py:236`) is correct. Skip
 to Step 4 — but read the failure-path clause anyway, and re-read
 `capability_contract.py:37-42` about the suite's assumption.
 
@@ -280,7 +329,7 @@ cache entry stamped with an older cycle is simply not served (`_populate_cycle`,
 
 **Obligation 1 — record that *this cycle's* capture failed.** This is the clause no amount
 of happy-path testing catches. `Environment.observe` isolates failures per *fragment*
-(`_resolve_slice`, `environments/_registrar.py:540-543`) — right for a capability that
+(`_resolve_slice`, `environments/_registrar.py:707-714`) — right for a capability that
 captures one at a time, and it keeps a peer's good capture alive. But it means that after
 your first key raises, the environment **asks you for the next one**. A shared capture that
 does not remember it already failed re-enters the whole retry budget, once per negotiated
@@ -309,7 +358,7 @@ delete the pop.
 **Raise when you cannot capture** (`base.py:138-151`). Do not return `None`, do not return
 an empty fragment. The environment decides what your failure costs by consulting what the
 run declared *required*: a required fragment raises `ObservationFailedError`
-(`environments/errors.py:14`), an optional one lands in the observation as a
+(`environments/errors.py:15`), an optional one lands in the observation as a
 `FragmentFailure` (`schemas/observation/failure.py`) and the rest survives. Softening it
 inside the capability removes that decision from the only place that can make it. The
 contract suite asserts this directly — `_expect_failure` (`capability_contract.py:254`)
@@ -326,28 +375,28 @@ async def setup(self, *, negotiation: Any = None, image: str = "", timeout: int 
 ```
 
 **`negotiation` is how you stop paying for what nobody asked for.** `super().setup()` calls
-`apply_negotiation` (`_registrar.py:143-159`), which narrows `provided_fragments` from
+`apply_negotiation` (`_registrar.py:152-168`), which narrows `provided_fragments` from
 `declared_fragments` to the active set. Without it a vision-only agent still pays for a
 full DOM extraction every step. `BrowserCapability` puts the negotiated set on the wire: it
 fires one event carrying exactly those keys, so nothing else is collected at all.
 
 **The rest of the signature is your public setup vocabulary — and you must not write
 `**kwargs`.** `EnvironmentBase.route_setup_context`
-(`environments/_registrar.py:577-651`) reads each capability's `setup()` signature to decide
+(`environments/_registrar.py:748-812`) reads each capability's `setup()` signature to decide
 which task-context keys it may route where. Two forms compose: **flat** (`{"start_url":
 ...}`, goes to every capability that *names* it) and **namespaced** (`{"docker":
 {"timeout": 600}, "browser": {"timeout": 5}}`, private to one capability — this is how two
 capabilities take the same option name independently). A key **no capability names raises**
-(`:642-650`). A `**kwargs` catch-all declares nothing, receives nothing, and re-opens the
+(`:803-811`). A `**kwargs` catch-all declares nothing, receives nothing, and re-opens the
 silent-typo hole that check exists to close (`base.py:163-171`).
 
-**`teardown` failures are isolated per capability** (`environments/_registrar.py:653-678`).
+**`teardown` failures are isolated per capability** (`environments/_registrar.py:814-839`).
 Every capability gets its turn even if an earlier one raises; the first error is re-raised
 at the end, the rest logged. Two guarantees, both learned from leaked Chrome processes: it
 is safe after a partial setup and after no setup at all, because `AgentRuntime` calls it
 whenever it *attempted* setup — the capabilities that came up before the failure are
 exactly the ones holding OS processes and paid cloud sessions. `observe` now isolates the
-same way (`_begin_cycle` at `:493`, `_resolve_slice` at `:507`). **Make your `teardown`
+same way (`_begin_cycle` at `:665`, `_resolve_slice` at `:679`). **Make your `teardown`
 idempotent and safe on a half-built instance.**
 
 ### Backends
@@ -391,7 +440,7 @@ You will be the first person writing a capability that has to coexist with anoth
 things the browser never had to prove:
 
 **Capabilities resolve concurrently.** One task per capability; within a task, one fragment
-at a time (`environments/_registrar.py:359-368`). Both halves are load-bearing: concurrent
+at a time (`environments/_registrar.py:539-548`). Both halves are load-bearing: concurrent
 across capabilities because they are independent worlds (a 0.5 s browser scrape and a 3 s
 Android capture cost 3 s, not 3.5 s), sequential within one because its fragments share a
 capture. **Do not hold a lock across a resolve, and do not assume you are alone.**
@@ -403,7 +452,7 @@ instants. Wall clock, not `perf_counter`, so it is comparable to `StepRecord.tim
 *and* absent from the trace, and an evaluator replaying the run cannot tell how far apart
 the halves were.
 
-**`__invalidated_by_foreign_actions__` defaults to `False`** (`_registrar.py:90`,
+**`__invalidated_by_foreign_actions__` defaults to `False`** (`_registrar.py:101`,
 `base.py:34-48`). Capabilities are independent worlds: a `browser.click` does not change
 what an Android emulator is showing, so **it must not cost an ADB round trip**. Set it
 `True` only when two capabilities genuinely share one surface — a desktop VM whose screen
@@ -411,7 +460,7 @@ also hosts the browser, two views of one container's filesystem. It buys a re-ca
 foreign action, and that is exactly as expensive as re-capturing says it is.
 
 What it actually buys, so nobody mistakes it for more
-(`environments/_registrar.py:291-317`): for a plain observe → act → observe loop it changes
+(`environments/_registrar.py:317-343`): for a plain observe → act → observe loop it changes
 **nothing**, because `observe()` opens a new cycle for everyone anyway. It is the guarantee
 for reads *between* two observes — an action implementation resolving a fragment, a loop
 taking several actions per step. A passing `TestForeignActionPolicy` is proof the policy is
@@ -421,7 +470,7 @@ declared and consulted, **not** proof that browser+android sharing a screen is h
 and fragment keys are scoped to the capability *class*, so the second instance would be
 started and then never reached — with its Chrome fully launched, held for the whole run
 and unreachable. `_by_capability_id` refuses the config, naming the collision
-(`environments/_registrar.py:152-195`).
+(`environments/_registrar.py:162-205`).
 
 **Your fragments' local ids must not collide with a peer's.** The generated observation
 model has one attribute per *local* name (`fragment_field_name`,
@@ -440,7 +489,7 @@ AGENTS.md §2.5, and it applies identically on both axes.
 
 - `__registry_key__` on your actions (`docker.exec`) and fragments (`docker.terminal`).
 - `EnvironmentBase.act` routes on the prefix and **refuses a bare name**
-  (`environments/_registrar.py:269-277`), returning a failed `ActionResult` that says so.
+  (`environments/_registrar.py:295-303`), returning a failed `ActionResult` that says so.
 - `provided_actions` / `provided_fragments`, the trace, descriptors, the WAL filename
   (`000_browser.dom.json`).
 
@@ -476,7 +525,7 @@ Your knobs reach YAML through conscribe codegen, and **nothing about that is aut
    at runtime.
 2. **`Annotated[...]` constructor fields** — every YAML knob is a constructor parameter
    with a `pydantic.Field` description. See `browser/capability.py:415-460` for the shape.
-   `CapabilityBase.id` (`_registrar.py:96-105`) is inherited this way.
+   `CapabilityBase.id` (`_registrar.py:107-116`) is inherited this way.
 3. **A new registrar must be added to `_collect_registrars()`**
    (`spectragent/scripts/generate_all.py:40-97`). `CapabilityRegistrar` is already there
    (`:83`) — so a new *capability* needs no edit. A new **backend registrar** does:
@@ -489,6 +538,13 @@ Your knobs reach YAML through conscribe codegen, and **nothing about that is aut
    order is deliberate, for deterministic output.
 4. **Regenerate**: `uv run spectragent-gen`. A layer with **zero** registered classes is
    skipped (`:118`), so an empty new registrar silently produces nothing.
+5. **Provides entries are optional fields you must not fill.** `__wiring__["observation"]`
+   and `__wiring__["archiver"]` have no slot on the capability, so conscribe emits them as
+   `observation: Optional[Literal[...]] = None` / `archiver: Optional[Literal[...]] =
+   None` on its config. A YAML that populates either is refused by the Composer with
+   `UnresolvedWiringError` ("negotiation-only entry") — there is nothing to receive the
+   value. Archivers are chosen on the trace hook (`hook[].archive`, from M29), never on the
+   capability; `tests/test_core/test_composer/test_archive_provides.py` pins it.
 
 ### The fingerprint staleness trap
 
@@ -528,6 +584,10 @@ Before you call a capability done:
 - [ ] `teardown()` is idempotent and safe on a half-built instance
 - [ ] `__invalidated_by_foreign_actions__` left at `False` unless a surface is genuinely shared
 - [ ] Both axes declared: `provided_fragments` **and** `provided_actions`
+- [ ] If you declare `__wiring__["archiver"]`: override **both** `bind_archivers` and `collect_archive` (the `CapabilityBase` default refuses a non-empty bind), and add an `ArchiveHarness` factory to `tests/_helpers/archive_contract.py`
+- [ ] `bind_archivers` replaces the whole binding (an empty list unbinds) and acquires nothing — it may run on a dry run, before setup; `setup()` reads the binding to decide whether to build its capture channel
+- [ ] `collect_archive` takes no step or cycle, hands over everything since the last collect and forgets it, raises when it cannot collect (never a fake-complete empty batch), is safe on a half-built instance, swaps its buffer atomically with respect to its producers, and carries an in-flight item into a later batch exactly once
+- [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES` — derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
 - [ ] Backend registrar pinned in `_collect_registrars()` if you added one
 - [ ] `uv run spectragent-gen`, then `uv run pytest tests/test_generated/`
@@ -539,7 +599,7 @@ Before you call a capability done:
 
 - **`CapabilityBase` is unhashable.** It is a `@dataclass` with default `eq=True`, so
   `__hash__` is `None` and `{cap: keys}` raises `TypeError` at runtime — pyright will not
-  warn you. Group by `id(cap)` (`environments/_registrar.py:477-482`).
+  warn you. Group by `id(cap)` (`environments/_registrar.py:657-662`).
 - **A test stub capability must not define its own `__init__`.** `CapabilityBase.id` is an
   `Annotated` field, and a custom `__init__` hides it from conscribe's config extractor,
   which `tests/test_generated/test_no_dropped_annotated_fields.py` fails on. Set attributes
@@ -551,7 +611,7 @@ Before you call a capability done:
 - **`asyncio.gather(..., return_exceptions=True)` swallows `CancelledError`**, so a
   cancelled run comes back looking like a completed one with an exception in a list. The
   environment's helpers catch `Exception` and *return* it instead, leaving `BaseException`
-  to propagate (`environments/_registrar.py:493-505`). Copy that shape.
+  to propagate (`environments/_registrar.py:665-676`). Copy that shape.
 - **A hand-built negotiation result defaults to `required_fragments=frozenset()`** — i.e.
   nothing is required, so every failure is recorded rather than raised. Fine in a test
   (`_negotiated` at `test_capability_contract.py:234`); a *production* caller that builds

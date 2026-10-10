@@ -46,7 +46,25 @@ call may appear only in the module that declares the capability class.
 Registry-key → class is the *owner's* job (and the Composer's);
 everything downstream — watchdogs, cleaners, serializers, actions —
 receives instances. A resolver that resolves a name is a resolver holding
-a default-constructed strategy.
+a default-constructed strategy. Under ``core/hooks/`` and ``core/archive/``
+no module is exempt at all: a hook or an archiver receives instances — the
+trace hook's ``archive`` list is archiver *instances*, knobs and all — and
+never resolves a name.
+
+Rule 3 — **no receptor on a synthesised ``__init__``.** conscribe's
+metaclass decides whether a ``__wiring__`` entry is already a constructor
+parameter by reading ``inspect.signature(cls.__init__)`` at class creation
+— *before* ``@dataclass`` has synthesised anything. A receptor that is a
+dataclass field therefore looks unreceived: conscribe installs a
+``WiredField`` over the field's default, and the receptor's optionality is
+gone. So, for every shipped class of every Composer layer (plus the
+archiver registry, which the Composer collects only from M29): no
+``__wiring__`` receptor may be a parameter of a dataclass-synthesised
+``__init__``, and no receptor parameter of any ``__init__`` may default to
+a ``WiredField``. A dataclass whose receptors are annotation-only on a
+plain mixin (``AgentReceptors``, ``LLMJudgeReceptors``) is the legitimate
+combination: the receptor never becomes a field, and the guard leaves it
+alone.
 
 **What these rules do not cover**, stated here so nobody reads a
 guarantee that is not on offer:
@@ -72,6 +90,13 @@ guarantee that is not on offer:
   and ``tree()`` take no key and are enumeration, which is how
   ``browser_watchdog_classes`` derives "one class per fragment" without
   ever naming a watchdog — the opposite of the defect.
+* Rule 3 reads ``__init__`` signatures and the dataclass machinery, and
+  its receptor list comes from ``__wiring__`` exactly like Rule 1's: a
+  strategy that was never declared a receptor is invisible to it. It
+  visits the shipped (``spectragent.``) classes of the Composer's layers
+  plus the archiver registry — a class registered under a registrar the
+  Composer does not collect, or a class registered nowhere, is not
+  visited.
 """
 
 from __future__ import annotations
@@ -81,14 +106,18 @@ import contextlib
 import importlib
 import inspect
 import pkgutil
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Literal, get_args, get_origin, get_type_hints
 
-from conscribe.wiring import parse_wiring
+from conscribe import discover
+from conscribe.wiring import WiredField, inject_wired_descriptors, parse_wiring
 from pydantic import BaseModel
 
+import spectragent.core.archive as archive_pkg
 import spectragent.core.capabilities as capabilities_pkg
+import spectragent.core.hooks as hooks_pkg
+from spectragent.core.archive import ArchiverRegistrar
 from spectragent.core.capabilities._registrar import CapabilityRegistrar
 from spectragent.scripts.generate_all import _collect_registrars
 
@@ -98,6 +127,14 @@ from spectragent.scripts.generate_all import _collect_registrars
 import spectragent.core.capabilities.browser  # noqa: F401  isort:skip
 
 CAPABILITIES_ROOT = Path(capabilities_pkg.__file__).resolve().parent
+HOOKS_ROOT = Path(hooks_pkg.__file__).resolve().parent
+ARCHIVE_ROOT = Path(archive_pkg.__file__).resolve().parent
+REPO_ROOT = CAPABILITIES_ROOT.parents[2]
+
+#: Rule 2 roots with no exemption at all: a hook or an archiver receives
+#: instances and never resolves a name — not even in the module that
+#: declares it.
+STRICT_LOOKUP_ROOTS = (HOOKS_ROOT, ARCHIVE_ROOT)
 
 #: Registrar methods that turn a *name* into a class. ``get_all``,
 #: ``keys`` and ``tree`` take no key — enumeration, not resolution — and
@@ -364,10 +401,25 @@ def _surfaces_of(cls: type) -> list[Surface]:
     return surfaces
 
 
+def _python_files_under(root: Path) -> list[Path]:
+    return sorted(path for path in root.rglob("*.py") if "__pycache__" not in path.parts)
+
+
 def _python_files() -> list[Path]:
-    return sorted(
-        path for path in CAPABILITIES_ROOT.rglob("*.py") if "__pycache__" not in path.parts
-    )
+    return _python_files_under(CAPABILITIES_ROOT)
+
+
+def _rule_two_files() -> list[Path]:
+    """Every file Rule 2 scans.
+
+    All of ``core/capabilities/`` except the modules that declare a
+    capability class, and all of ``core/hooks/`` and ``core/archive/``.
+    """
+    allowed = _capability_module_files()
+    scanned = [path for path in _python_files() if path not in allowed]
+    for root in STRICT_LOOKUP_ROOTS:
+        scanned.extend(_python_files_under(root))
+    return sorted(scanned)
 
 
 def _capability_module_files() -> set[Path]:
@@ -529,13 +581,13 @@ def test_only_a_capability_module_resolves_a_registry_key() -> None:
     one line, and the entire generated serializer config surface was
     unreachable. The capability module is exempt because default-building
     the wired action set from ``__wiring__`` is the receptor owner's own
-    documented job (``_build_wired_action``).
+    documented job (``_build_wired_action``). Hooks and archivers get no
+    exemption: the trace hook holds archiver *instances*, and an archive
+    list that resolved names would be the same defect one layer over.
     """
-    allowed = _capability_module_files()
     offenders = [
-        f"{path.relative_to(CAPABILITIES_ROOT.parent.parent.parent)}:{lineno} {call}(...)"
-        for path in _python_files()
-        if path not in allowed
+        f"{path.relative_to(REPO_ROOT)}:{lineno} {call}(...)"
+        for path in _rule_two_files()
         for lineno, call in registrar_lookup_calls(path.read_text(), str(path))
     ]
     assert not offenders, (
@@ -545,6 +597,19 @@ def test_only_a_capability_module_resolves_a_registry_key() -> None:
         "away. Take the instance through __wiring__ / WatchdogContext "
         "instead — that is what dom_cleaner and dom_serializer now do."
     )
+
+
+def test_rule_two_reaches_hooks_and_archive_without_exemption() -> None:
+    """Meta: the two strict roots are really scanned, every file of them.
+
+    A root that silently stopped matching (a moved package, a typo'd path)
+    would leave the rule green over nothing.
+    """
+    scanned = set(_rule_two_files())
+    assert HOOKS_ROOT / "trace_writer.py" in scanned
+    assert ARCHIVE_ROOT / "_registrar.py" in scanned
+    for root in STRICT_LOOKUP_ROOTS:
+        assert set(_python_files_under(root)) <= scanned
 
 
 def test_rule_two_catches_every_key_taking_lookup() -> None:
@@ -576,3 +641,202 @@ def test_the_guard_is_looking_at_real_files() -> None:
     watchdog = CAPABILITIES_ROOT / "browser" / "watchdogs" / "dom_watchdog.py"
     assert watchdog in set(_python_files())
     assert watchdog not in _capability_module_files()
+    assert watchdog in set(_rule_two_files())
+
+
+# ── Rule 3: no receptor on a synthesised __init__ ────────────────────
+
+
+def dataclass_synthesised_init(cls: type) -> bool:
+    """True when ``cls.__init__`` is the one ``@dataclass`` wrote.
+
+    The class in the MRO that defines ``__init__`` is a dataclass, and that
+    ``__init__`` has no source file: dataclasses ``exec`` the function they
+    synthesise, so its code reports ``co_filename == "<string>"``. A
+    dataclass that hand-writes ``__init__`` in its body (``@dataclass``
+    keeps an explicit one) has a real source file and is not synthesised.
+    """
+    for klass in cls.__mro__:
+        init = vars(klass).get("__init__")
+        if init is None:
+            continue
+        code = getattr(init, "__code__", None)
+        return is_dataclass(klass) and code is not None and code.co_filename == "<string>"
+    return False
+
+
+def receptor_trap(cls: type) -> list[str]:
+    """The ``__wiring__`` receptors the conscribe-before-``@dataclass`` trap reaches, sorted.
+
+    Two shapes, both of which leave the receptor without its default:
+
+    - a receptor that is a parameter of a dataclass-synthesised ``__init__``
+      — conscribe read the signature before that parameter existed and
+      installed a ``WiredField`` over the field's default;
+    - a receptor parameter of *any* ``__init__`` whose default is a
+      ``WiredField`` — the trap's footprint, however it got there.
+
+    Pure over the class: an unregistered plain class works as well as a
+    registered one, which is what the positive controls rely on.
+    """
+    try:
+        params = inspect.signature(cls.__init__).parameters
+    except (TypeError, ValueError):  # pragma: no cover — defensive
+        return []
+    synthesised = dataclass_synthesised_init(cls)
+    return sorted(
+        {
+            spec.param_name
+            for spec in parse_wiring(cls)
+            if spec.param_name in params
+            and (synthesised or isinstance(params[spec.param_name].default, WiredField))
+        }
+    )
+
+
+def _rule_three_classes() -> list[type]:
+    """Every shipped class of every Composer layer, plus the archiver registry.
+
+    The archiver registry is not a Composer layer until its first concrete
+    archiver lands (M29), but its classes carry ``Annotated`` knobs and will
+    be configured from YAML — they are in scope from day one. Discovered and
+    filtered at run time: the registries are global and test modules
+    register fixtures into them.
+    """
+    discover("spectragent")
+    registrars = {**_collect_registrars(), "archiver": ArchiverRegistrar}
+    found: dict[str, type] = {}
+    for registrar in registrars.values():
+        for key in sorted(registrar.keys()):
+            cls = registrar.get(key)
+            if cls is not None and cls.__module__.startswith("spectragent."):
+                found[f"{cls.__module__}.{cls.__qualname__}"] = cls
+    return list(found.values())
+
+
+def test_no_receptor_is_a_parameter_of_a_synthesised_init() -> None:
+    """A receptor on a dataclass-synthesised ``__init__`` has lost its default.
+
+    ``TraceWriter`` is about to carry the ``archive`` receptor (M29), which
+    is why it stopped being a ``@dataclass`` in M28. This is the rule that
+    keeps the next owner from walking back into the trap — and that leaves
+    the agents and LLM-judge evaluators alone: they are dataclasses whose
+    receptors are annotation-only on a plain mixin, never ``__init__``
+    parameters.
+
+    Not parametrized: the registries are global, so which classes exist
+    depends on collection order. The loop runs at test time.
+    """
+    from spectragent.core.capabilities.browser import BrowserCapability
+
+    checked: list[type] = []
+    found: dict[str, list[str]] = {}
+    for cls in _rule_three_classes():
+        if not _receptor_specs(cls):
+            continue
+        checked.append(cls)
+        trapped = receptor_trap(cls)
+        if trapped:
+            found[f"{cls.__module__}.{cls.__qualname__}"] = trapped
+
+    assert BrowserCapability in checked, "a hand-written-__init__ receptor owner was not checked"
+    assert any(dataclass_synthesised_init(cls) for cls in checked), (
+        "no dataclass receptor owner was checked — the AgentReceptors shape this rule must "
+        "leave alone was never exercised, and the guard proves nothing about it"
+    )
+    assert not found, (
+        f"Receptor(s) on a dataclass-synthesised __init__, or defaulting to a WiredField: "
+        f"{found}. conscribe reads inspect.signature(cls.__init__) at class creation, before "
+        f"@dataclass synthesises it, so the receptor looks unreceived and its default is "
+        f"replaced by a WiredField. Hand-write __init__ (named Annotated parameters) and put "
+        f"the receptor's class-level annotation on a plain mixin — TraceWriter, "
+        f"BrowserCapability and EnvironmentBase are the worked cases (af-add-a-receptor §6)."
+    )
+
+
+_ARCHIVE_WIRING = {"archive": ("archiver", ["contract_archive.steps"])}
+
+#: The trap's footprint, planted by hand on a hand-written ``__init__``.
+_PLACEHOLDER = WiredField("archive", "archiver")
+
+
+class TestRuleThreeHasTeeth:
+    """Positive controls — unregistered plain classes only, never a registrar base."""
+
+    def test_a_receptor_that_is_a_dataclass_field_is_caught(self) -> None:
+        @dataclass
+        class _DataclassOwner:
+            __wiring__ = _ARCHIVE_WIRING
+            archive: list | None = None
+
+        assert dataclass_synthesised_init(_DataclassOwner)
+        assert receptor_trap(_DataclassOwner) == ["archive"]
+
+    def test_the_same_receptor_on_a_hand_written_init_is_clean(self) -> None:
+        class _HandWritten:
+            __wiring__ = _ARCHIVE_WIRING
+
+            def __init__(self, archive: list | None = None) -> None:
+                self.archive = list(archive or [])
+
+        assert not dataclass_synthesised_init(_HandWritten)
+        assert receptor_trap(_HandWritten) == []
+
+    def test_an_agent_receptors_shaped_dataclass_is_clean(self) -> None:
+        """Annotation-only receptor on a plain mixin: a receptor slot, never a field."""
+
+        class _Receptors:
+            archive: list
+
+        @dataclass
+        class _Shaped(_Receptors):
+            __wiring__ = _ARCHIVE_WIRING
+            knob: int = 1
+
+        assert dataclass_synthesised_init(_Shaped)
+        assert "archive" in _slot_names(_Shaped), "the receptor must still be in scope"
+        assert receptor_trap(_Shaped) == []
+
+    def test_a_wired_field_default_is_caught_on_a_hand_written_init(self) -> None:
+        class _WiredDefault:
+            __wiring__ = _ARCHIVE_WIRING
+
+            def __init__(self, archive: Any = _PLACEHOLDER) -> None:
+                self.archive = archive
+
+        assert not dataclass_synthesised_init(_WiredDefault)
+        assert receptor_trap(_WiredDefault) == ["archive"]
+
+    def test_the_trap_is_real_and_the_rule_catches_its_footprint(self) -> None:
+        """conscribe's own class-creation pass, then ``@dataclass`` — the order the metaclass imposes.
+
+        ``inject_wired_descriptors`` is exactly what the registrar metaclass
+        runs at class creation. Run in that order on a plain class, the
+        receptor's ``None`` default is gone, replaced by a ``WiredField`` —
+        so ``archive`` became a required argument in all but name, and a
+        config that omits it hands the hook a placeholder.
+        """
+
+        class _Owner:
+            __wiring__ = _ARCHIVE_WIRING
+            archive: list | None = None
+
+        inject_wired_descriptors(_Owner)  # the metaclass, at class creation
+        owner = dataclass(_Owner)  # the decorator, afterwards
+
+        default = inspect.signature(owner.__init__).parameters["archive"].default
+        assert isinstance(default, WiredField), "the field's None default should be gone"
+        assert receptor_trap(owner) == ["archive"]
+
+    def test_a_dataclass_that_hand_writes_its_init_is_not_synthesised(self) -> None:
+        @dataclass
+        class _ExplicitInit:
+            __wiring__ = _ARCHIVE_WIRING
+            knob: int = 1
+
+            def __init__(self, archive: list | None = None, knob: int = 1) -> None:
+                self.archive = archive
+                self.knob = knob
+
+        assert not dataclass_synthesised_init(_ExplicitInit)
+        assert receptor_trap(_ExplicitInit) == []

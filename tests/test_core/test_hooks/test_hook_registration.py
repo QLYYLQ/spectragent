@@ -89,9 +89,19 @@ class TestHookConfigIsExtractable:
     the knob in YAML was a hard ``extra_forbidden`` validation error, and
     passing it to the constructor was a ``TypeError`` from
     ``object.__init__``.
+
+    What conscribe needs is a *named* parameter per knob, and a hook gets
+    one in either of two shapes (``HookBase``'s docstring): a hook without
+    a ``__wiring__`` receptor is a ``@dataclass`` whose knobs are fields; a
+    hook that carries a receptor hand-writes ``__init__`` — a receptor on a
+    dataclass-synthesised ``__init__`` loses its default to conscribe's
+    ``WiredField`` (``test_receptor_hygiene.py`` Rule 3) — and its knobs are
+    named ``Annotated`` parameters there. Either way, a parameter that is
+    not ``Annotated`` stays out of the config (``__config_annotated_only__``).
     """
 
     def test_annotated_field_becomes_a_config_field(self) -> None:
+        """The dataclass shape — for a hook that carries no receptor."""
         from dataclasses import dataclass, field
         from typing import Annotated
 
@@ -114,6 +124,41 @@ class TestHookConfigIsExtractable:
             assert KnobHook()._state == []
         finally:
             HookRegistrar.unregister("test_knob_hook")
+
+    def test_a_hand_written_init_hook_exposes_only_its_annotated_params(self) -> None:
+        """The hand-written shape: named ``Annotated`` parameters in, a plain one out."""
+        from typing import Annotated
+
+        from conscribe.config.extractor import extract_config_schema
+        from pydantic import Field
+
+        from spectragent.core.hooks.trace_writer import TraceWriter
+
+        class HandWrittenHook(HookBase):
+            __registry_key__ = "test_hand_written_hook"
+
+            def __init__(
+                self,
+                where: Annotated[str, Field(description="Where to write")] = "here",
+                sinks: list | None = None,
+            ) -> None:
+                super().__init__()
+                self.where = where
+                self.sinks = list(sinks or [])
+
+        try:
+            schema = extract_config_schema(HandWrittenHook)
+            assert schema is not None
+            assert set(schema.model_fields) == {"where"}
+            hook = HandWrittenHook(where="/tmp/x", sinks=[1])
+            assert (hook.where, hook.sinks) == ("/tmp/x", [1])
+        finally:
+            HookRegistrar.unregister("test_hand_written_hook")
+
+        # The worked case: TraceWriter's knobs in, its plain ``archive`` out.
+        trace_schema = extract_config_schema(TraceWriter)
+        assert trace_schema is not None
+        assert set(trace_schema.model_fields) == {"trace_dir", "record_secrets"}
 
     def test_trace_writer_exposes_trace_dir(self) -> None:
         from spectragent.generated._composed import TraceWriterHookConfig

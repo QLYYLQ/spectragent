@@ -16,8 +16,13 @@ import json
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# The one ``core.archive`` module the trace layer imports: the shared
+# ``RedactionLedger`` that ``TaskSetupRecord`` carries. Archive *files*
+# cross into the trace layer duck-typed, so the WAL's interface stays
+# ``TraceFile``.
+from spectragent.core.archive.privacy import RedactionLedger
 from spectragent.core.llm.messages import BaseMessage, ToolCall
 from spectragent.core.llm.views import ChatInvokeUsage
 from spectragent.schemas._types import UTCDatetime
@@ -132,7 +137,9 @@ class ExtraFileRecord(BaseModel):
     #: True when ``path`` is derived from ``sha256`` — the file is shared by
     #: every commit that references it and written once per run.
     content_addressed: bool = False
-    #: Whatever the producer attached (M28: the archiver key and the like).
+    #: Whatever the producer attached. An environment-evidence file carries
+    #: ``meta["archive"]``, an :class:`ArchiveMeta` — the one mark that
+    #: makes an extra file an archive file for the reader.
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -140,6 +147,82 @@ class ExtraFileIndex(BaseModel):
     """``steps/NNN.extra.json`` / ``steps/trailing_KK.extra.json``."""
 
     files: list[ExtraFileRecord]
+
+
+class ArchiveMeta(BaseModel):
+    """Where one environment-evidence file came from — ``ExtraFileRecord.meta["archive"]``.
+
+    Written by ``TraceWriter`` through
+    :func:`~spectragent.core.trace.encoding.encode_archive_file` from the
+    ``ArchiveFile`` a capability handed over, so the index — not the path —
+    is what says which archiver produced a file, when, and which version of
+    a run record it is (``docs/architecture_design.md`` §5.3).
+
+    Attributes:
+        archiver_id: Fully-qualified archiver key. A run record may carry
+            the bare capability id instead: it belongs to the capability.
+        name: The archiver's own file name — one path segment.
+        media_type: ``type/subtype`` of the bytes.
+        scope: ``step`` (attributed to the commit that took it) or ``run``
+            (a capability's run record).
+        captured_at: Wall-clock Unix time of the capture, comparable with
+            ``StepRecord.timestamp`` and ``RecordedLLMCall.started_at``.
+        cycle: The environment's observation cycle, when the evidence
+            belongs to one — a counter of the environment's, not a step.
+        ids: Capability-scoped identifiers (session / frame / loader …).
+        run_version: Run records only: which version, from 0. A committed
+            path is immutable, so a changed re-emission is a new version.
+    """
+
+    archiver_id: str
+    name: str
+    media_type: str
+    scope: Literal["step", "run"]
+    captured_at: float
+    cycle: int | None = None
+    ids: dict[str, str] = Field(default_factory=dict)
+    run_version: int | None = None
+
+    @model_validator(mode="after")
+    def _a_version_exactly_when_a_run_record(self) -> ArchiveMeta:
+        # ``archive_run_file`` orders run records by version: a run record
+        # without one, or a step file claiming one, is not what was written.
+        if self.scope == "run" and (self.run_version is None or self.run_version < 0):
+            raise ValueError(
+                f"a run record carries its version (an int >= 0); got {self.run_version!r}"
+            )
+        if self.scope == "step" and self.run_version is not None:
+            raise ValueError(
+                f"only a run record carries a version; this step file says {self.run_version!r}"
+            )
+        return self
+
+
+class ArchiveRecord(BaseModel):
+    """One committed environment-evidence file, as ``RunTrace`` hands it back.
+
+    An :class:`ExtraFileRecord` flattened together with its
+    :class:`ArchiveMeta`. The bytes are ``RunTrace.read_extra(record.path)``,
+    checked against ``size`` and ``sha256`` like any extra file.
+    """
+
+    path: str
+    size: int
+    sha256: str
+    content_addressed: bool
+    archiver_id: str
+    name: str
+    media_type: str
+    scope: Literal["step", "run"]
+    captured_at: float
+    cycle: int | None = None
+    ids: dict[str, str] = Field(default_factory=dict)
+    run_version: int | None = None
+
+    @property
+    def capability_id(self) -> str:
+        """The capability that produced the file — the key's first segment."""
+        return self.archiver_id.partition(".")[0]
 
 
 class OutputFormatRef(BaseModel):
@@ -251,10 +334,20 @@ class TraceNegotiation(BaseModel):
     fragment_bindings: dict[str, str] = Field(default_factory=dict)
     active_actions: list[str] = Field(default_factory=list)
     action_bindings: dict[str, str] = Field(default_factory=dict)
+    #: The archivers this run bound — the third provides axis, fully
+    #: qualified. Empty when no hook asked to archive anything: then the
+    #: trace has no ``env/`` evidence, and a reader need not look.
+    active_archivers: list[str] = Field(default_factory=list)
+    #: Archiver key → the ``capability_id`` that provided it. Recorded
+    #: verbatim because every value is a registry key, never a name a user
+    #: chose.
+    archive_bindings: dict[str, str] = Field(default_factory=dict)
 
     @classmethod
-    def from_results(cls, observation: Any = None, action: Any = None) -> TraceNegotiation | None:
-        """Build from the two negotiation results ``AgentRuntime`` holds.
+    def from_results(
+        cls, observation: Any = None, action: Any = None, archive: Any = None
+    ) -> TraceNegotiation | None:
+        """Build from the negotiation results ``AgentRuntime`` holds.
 
         Args:
             observation: An
@@ -263,9 +356,13 @@ class TraceNegotiation(BaseModel):
             action: An
                 :class:`~spectragent.core.negotiation.action.ActionNegotiationResult`,
                 or ``None``.
+            archive: An
+                :class:`~spectragent.core.negotiation.archive.ArchiveNegotiationResult`,
+                or ``None`` for a run whose hooks archive nothing (the
+                runtime negotiates the archive axis only when one does).
 
         Returns:
-            ``None`` when neither result exists, so that
+            ``None`` when no result exists at all, so that
             :attr:`TraceConfig.negotiation` can mean it. An empty
             instance would be a different claim — "negotiation ran and
             bound nothing", which is a real and diagnosable state (an
@@ -285,7 +382,7 @@ class TraceNegotiation(BaseModel):
         iteration order varies between processes — an unsorted dump would
         make ``config_hash`` differ for two identical runs.
         """
-        if observation is None and action is None:
+        if observation is None and action is None and archive is None:
             return None
         fields: dict[str, Any] = {}
         if observation is not None:
@@ -301,7 +398,40 @@ class TraceNegotiation(BaseModel):
                 active_actions=sorted(action.active_actions),
                 action_bindings=dict(sorted(action.action_bindings.items())),
             )
+        if archive is not None:
+            fields.update(
+                active_archivers=sorted(archive.active_archivers),
+                archive_bindings=dict(sorted(archive.archive_bindings.items())),
+            )
         return cls(**fields)
+
+
+class TaskSetupRecord(BaseModel):
+    """The environment setup context a task was started with — redacted.
+
+    What ``AgentRuntime.execute`` handed ``setup_environment`` (``start_url``
+    and the like). A branch task (M31) re-creates its source environment
+    from this, without the source benchmark's data.
+
+    Redacted **by value**, not by declaration: it is free-form per-task data
+    with no field declarations, so the config redaction's deny-by-default
+    would withhold every value and leave nothing to rebuild from. The shared
+    rules of :mod:`spectragent.core.archive.privacy` apply instead
+    (credential-shaped keys, URL userinfo, credential query and fragment
+    parameters), and the ledger says where they fired
+    (``docs/architecture_design.md`` §5.6).
+
+    Attributes:
+        context: The context's JSON snapshot after redaction. A context
+            that does not snapshot to a JSON object is stored as
+            ``{"value": <snapshot>}``.
+        redactions: Every replacement made. Empty when nothing matched — or
+            when the trace was written with ``record_secrets``
+            (``TraceConfig.secrets_recorded`` says which).
+    """
+
+    context: dict[str, Any]
+    redactions: RedactionLedger
 
 
 class TraceConfig(BaseModel):
@@ -324,10 +454,17 @@ class TraceConfig(BaseModel):
     cross-run comparison used to depend on an external harness keeping
     its own notes.
 
-    **Provenance** (:attr:`secrets_recorded`) says how much of the above
-    is real. A trace recorded with ``record_secrets`` on contains
-    credentials verbatim and must not be shared; one without it contains
-    ``"<omitted>"`` wherever a field was set but not marked trace-safe.
+    **Provenance** (:attr:`secrets_recorded`, :attr:`env_evidence_recorded`,
+    :attr:`env_evidence_privacy`) says how much of the above is real and
+    what else the directory holds. A trace recorded with ``record_secrets``
+    on contains credentials verbatim and must not be shared; one without
+    it contains ``"<omitted>"`` wherever a field was set but not marked
+    trace-safe. A trace whose run bound archivers may also carry
+    environment evidence under ``env/`` — the state of the world the agent
+    acted in, privacy-marked on its own terms.
+
+    One per-task fact sits beside the layers: :attr:`task_setup`, the
+    environment setup context the task started from, redacted by value.
 
     Component identity appears twice by design and the two are not
     equals. The top-level :attr:`agent_id` / :attr:`loop_id` /
@@ -370,6 +507,21 @@ class TraceConfig(BaseModel):
     #: True when this trace was written with redaction disabled. It is
     #: the one field a reader must check before sharing the directory.
     secrets_recorded: bool = False
+    #: Did this run bind archivers — may the directory carry environment
+    #: evidence under ``env/``? Answers the second question a reader asks
+    #: before sharing a trace. Provenance, so not part of the digest.
+    env_evidence_recorded: bool = False
+    #: The sorted union of the bound archivers' declared
+    #: ``privacy_markers`` (``core/archive/privacy.py``). What the
+    #: archivers *declared*, not proof the bytes are clean — the framework
+    #: never reads evidence. Provenance, so not part of the digest.
+    env_evidence_privacy: list[str] = Field(default_factory=list)
+    #: How this task's environment was started — the setup context
+    #: ``execute()`` routed to ``setup_environment``, redacted by value —
+    #: or ``None`` when it received none. Per task, so not part of the
+    #: digest: two tasks differing only in ``start_url`` share a
+    #: ``config_hash``.
+    task_setup: TaskSetupRecord | None = None
 
     def configuration_digest(self, *, resolved: dict[str, Any] | None = None) -> str:
         """Stable hash of *how this run was configured*.
@@ -382,8 +534,12 @@ class TraceConfig(BaseModel):
 
         Included: the component identity, the benchmark and subset the
         run was pointed at, the resolved config and the negotiation
-        result. Excluded: ``task`` / ``task_id`` (which task, not which
-        configuration) and ``extra`` (per-task caller metadata).
+        result — the archive binding (``active_archivers`` /
+        ``archive_bindings``) moves it through the latter, with no special
+        case. Excluded: ``task`` / ``task_id`` (which task, not which
+        configuration), ``extra`` and ``task_setup`` (per-task data) and the
+        provenance fields ``env_evidence_recorded`` /
+        ``env_evidence_privacy``.
 
         Args:
             resolved: The **unredacted** config dump
@@ -420,6 +576,11 @@ class TraceConfig(BaseModel):
         ``secrets_recorded`` does **not** move the digest: it changes
         what lands on disk, not what the run was configured as, so a
         debugging run and a shared run of the same YAML compare equal.
+
+        One cost, stated: the archive axis added two fields to
+        :class:`TraceNegotiation`, so a trace written since then hashes
+        differently from a pre-archive trace of the same configuration.
+        Compare manifests written by one framework version.
         """
         source = self.resolved if resolved is None else resolved
         payload = {

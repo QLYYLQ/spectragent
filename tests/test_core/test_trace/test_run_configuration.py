@@ -11,9 +11,13 @@ Evaluator would:
 
 * the **resolved** config is recorded, not the YAML source — defaults and
   wired receptors the source text never mentioned are in it;
-* the **negotiation result** is recorded, fully qualified;
+* the **negotiation result** is recorded, fully qualified — the archive
+  binding included;
 * ``config_hash`` hashes the *configuration*, so two tasks of one sweep
-  share a hash and a changed knob breaks it.
+  share a hash and a changed knob breaks it;
+* the environment-evidence provenance (``env_evidence_*``) and the task's
+  setup context (``task_setup``, redacted by value) are recorded beside it,
+  and move the hash not at all.
 """
 
 from __future__ import annotations
@@ -26,15 +30,32 @@ from typing import Any
 import pytest
 import yaml
 
+from spectragent.core.archive.privacy import (
+    MARKER_REDACTED,
+    PRIVACY_POLICY,
+    REDACTED,
+    RedactionEntry,
+    RedactionLedger,
+)
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import ReactLoop
+from spectragent.core.negotiation import ArchiveNegotiationResult
 from spectragent.core.runtime import AgentRuntime
-from spectragent.core.trace.models import TraceConfig, TraceNegotiation
+from spectragent.core.trace.models import TaskSetupRecord, TraceConfig, TraceNegotiation
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from tests._helpers.archive_fakes import (
+    BLOBS_KEY,
+    CAPABILITY_ID,
+    STEPS_KEY,
+    ArchiveConsumerHook,
+    FakeBlobArchiver,
+    FakeStepArchiver,
+    make_archive_run,
+)
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
@@ -376,3 +397,197 @@ class TestStepTimings:
         assert rendered_plain == rendered_stamped
         assert "1234" not in rendered_stamped
         assert "999" not in rendered_stamped
+
+
+# ── The archive axis, environment evidence and the task's setup context ──
+
+
+_TOKEN_URL = "https://shop.example/landing?ref=guard&token=Zk3Lm9QpRt7Vx2BnQ8"
+
+
+async def _archive_run(
+    tmp_path: Path,
+    *,
+    archive: tuple[Any, ...] = (),
+    env_context: dict[str, Any] | None = None,
+    record_secrets: bool = False,
+    task_id: str = "arc--0001",
+) -> RunTrace:
+    """A run of the fake archiving capability; *archive* goes to a consumer hook.
+
+    The consumer is ``ArchiveConsumerHook``, not the trace hook: the runtime
+    knows consumers only through the ``ArchiveConsumer`` Protocol, and what
+    is recorded here is the runtime's resolution, whoever consumes.
+    """
+    writer = TraceWriter(trace_dir=str(tmp_path / task_id), record_secrets=record_secrets)
+    hooks: list[Any] = [writer]
+    if archive:
+        hooks.append(ArchiveConsumerHook(list(archive)))
+    run = make_archive_run(hooks=hooks)
+    await AgentRuntime.for_agent(run, AGENT_ID).execute(
+        "find the price",
+        task_id=task_id,
+        benchmark="runcfg",
+        subset="all",
+        timeout=10,
+        env_context=env_context,
+    )
+    assert writer.run_dir is not None
+    return RunTrace(writer.run_dir)
+
+
+class _UnsortedArchiveResult:
+    """A hand-built archive result whose mapping is not in key order."""
+
+    active_archivers = frozenset({STEPS_KEY, BLOBS_KEY})
+    archive_bindings = {STEPS_KEY: CAPABILITY_ID, BLOBS_KEY: CAPABILITY_ID}
+
+
+class TestArchiveNegotiationIsRecorded:
+    async def test_the_binding_is_recorded_sorted(self, tmp_path):
+        trace = await _archive_run(tmp_path, archive=(FakeStepArchiver(), FakeBlobArchiver()))
+        neg = trace.config.negotiation
+        assert neg is not None
+        assert neg.active_archivers == [BLOBS_KEY, STEPS_KEY]
+        assert list(neg.archive_bindings.items()) == [
+            (BLOBS_KEY, CAPABILITY_ID),
+            (STEPS_KEY, CAPABILITY_ID),
+        ]
+
+    async def test_empty_when_no_hook_archives(self, tmp_path):
+        trace = await _archive_run(tmp_path)
+        neg = trace.config.negotiation
+        assert neg is not None  # observation and action were still negotiated
+        assert neg.active_archivers == []
+        assert neg.archive_bindings == {}
+
+    def test_three_absent_results_are_no_negotiation(self):
+        assert TraceNegotiation.from_results(None, None, None) is None
+
+    def test_an_archive_result_alone_is_a_negotiation(self):
+        neg = TraceNegotiation.from_results(
+            archive=ArchiveNegotiationResult(
+                active_archivers=frozenset({STEPS_KEY}),
+                archive_bindings={STEPS_KEY: CAPABILITY_ID},
+            )
+        )
+        assert neg is not None
+        assert neg.active_archivers == [STEPS_KEY]
+        assert neg.active_fragments == []
+
+    def test_sorted_whatever_order_upstream_had(self):
+        neg = TraceNegotiation.from_results(archive=_UnsortedArchiveResult())
+        assert neg is not None
+        assert list(neg.archive_bindings) == [BLOBS_KEY, STEPS_KEY]
+
+
+class TestEnvEvidenceProvenance:
+    async def test_recorded_when_archivers_are_bound(self, tmp_path):
+        trace = await _archive_run(tmp_path, archive=(FakeStepArchiver(), FakeBlobArchiver()))
+        assert trace.config.env_evidence_recorded is True
+        assert trace.config.env_evidence_privacy == [MARKER_REDACTED]
+
+    async def test_absent_when_nothing_archives(self, tmp_path):
+        trace = await _archive_run(tmp_path)
+        assert trace.config.env_evidence_recorded is False
+        assert trace.config.env_evidence_privacy == []
+
+    def test_defaults_read_back_from_an_older_snapshot(self):
+        """Additive, defaulted fields: a snapshot without them still validates."""
+        cfg = TraceConfig.model_validate({"agent_id": "a"})
+        assert cfg.env_evidence_recorded is False
+        assert cfg.env_evidence_privacy == []
+        assert cfg.task_setup is None
+
+
+class TestTheDigestAndTheArchiveAxis:
+    async def test_the_archive_binding_moves_the_hash(self, tmp_path):
+        """Through ``negotiation``, with no special case."""
+        a = await _archive_run(tmp_path, task_id="arc-a")
+        b = await _archive_run(tmp_path, archive=(FakeStepArchiver(),), task_id="arc-b")
+        assert a.manifest is not None and b.manifest is not None
+        assert a.manifest.config_hash != b.manifest.config_hash
+
+    async def test_two_tasks_differing_only_in_start_url_share_a_hash(self, tmp_path):
+        a = await _archive_run(
+            tmp_path, env_context={"start_url": "https://a.example/"}, task_id="url-a"
+        )
+        b = await _archive_run(
+            tmp_path, env_context={"start_url": "https://b.example/"}, task_id="url-b"
+        )
+        assert a.config.task_setup != b.config.task_setup
+        assert a.manifest is not None and b.manifest is not None
+        assert a.manifest.config_hash == b.manifest.config_hash
+
+    def test_provenance_and_task_setup_are_not_configuration(self):
+        base = TraceConfig(agent_id="a")
+        varied = TraceConfig(
+            agent_id="a",
+            env_evidence_recorded=True,
+            env_evidence_privacy=[MARKER_REDACTED],
+            task_setup=TaskSetupRecord(
+                context={"start_url": "https://x.example/"}, redactions=RedactionLedger()
+            ),
+        )
+        assert base.configuration_digest() == varied.configuration_digest()
+
+    def test_the_archive_binding_is_configuration(self):
+        base = TraceConfig(agent_id="a", negotiation=TraceNegotiation())
+        bound = TraceConfig(
+            agent_id="a",
+            negotiation=TraceNegotiation(
+                active_archivers=[STEPS_KEY], archive_bindings={STEPS_KEY: CAPABILITY_ID}
+            ),
+        )
+        assert base.configuration_digest() != bound.configuration_digest()
+
+
+class TestTaskSetupIsRecorded:
+    async def test_typed_redacted_and_with_its_ledger(self, tmp_path):
+        trace = await _archive_run(tmp_path, env_context={"start_url": _TOKEN_URL})
+        record = trace.config.task_setup
+        assert isinstance(record, TaskSetupRecord)
+        assert record.context == {
+            "start_url": f"https://shop.example/landing?ref=guard&token={REDACTED}"
+        }
+        assert record.redactions == RedactionLedger(
+            policy=PRIVACY_POLICY,
+            entries=[RedactionEntry(location="/start_url", field="token", rule="url_query")],
+        )
+
+    async def test_none_without_a_context(self, tmp_path):
+        trace = await _archive_run(tmp_path)
+        assert trace.config.task_setup is None
+
+    async def test_record_secrets_records_it_verbatim_and_says_so(self, tmp_path):
+        trace = await _archive_run(
+            tmp_path, env_context={"start_url": _TOKEN_URL}, record_secrets=True
+        )
+        record = trace.config.task_setup
+        assert record is not None
+        assert record.context == {"start_url": _TOKEN_URL}
+        assert record.redactions.entries == []
+        assert trace.config.secrets_recorded is True
+
+    async def test_a_namespaced_context_is_redacted_by_value_too(self, tmp_path):
+        context = {CAPABILITY_ID: {"start_url": "https://u:p@shop.example/"}}
+        trace = await _archive_run(tmp_path, env_context=context)
+        record = trace.config.task_setup
+        assert record is not None
+        assert record.context == {CAPABILITY_ID: {"start_url": f"https://{REDACTED}@shop.example/"}}
+        assert [(e.location, e.rule) for e in record.redactions.entries] == [
+            (f"/{CAPABILITY_ID}/start_url", "url_userinfo")
+        ]
+
+    async def test_a_context_that_is_not_an_object_is_kept_under_value(self, tmp_path):
+        """The record never fails the run over the context's shape."""
+        writer = TraceWriter(trace_dir=str(tmp_path / "nonobject"))
+        await writer.on_run_start(
+            run_id="nonobject",
+            task_setup=["https://u:p@h.example/"],  # type: ignore[arg-type]
+        )
+        assert writer.run_dir is not None
+        record = RunTrace(writer.run_dir).config.task_setup
+        assert record is not None
+        assert record.context == {"value": [f"https://{REDACTED}@h.example/"]}
+        assert [e.location for e in record.redactions.entries] == ["/value/0"]

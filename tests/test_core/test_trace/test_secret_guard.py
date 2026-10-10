@@ -19,19 +19,39 @@ The environment is a fake capability (no browser, no network), but the
 *configuration* is validated against the real composed schema, which is
 where the real secret-carrying fields live: ``llm.api_key``,
 ``backend.proxy_server``, ``backend.user_data_dir``, ``llm.base_url``.
+
+One credential arrives by another road: the task's setup context. The run
+is started with a ``start_url`` carrying a ``?token=``, which the trace
+records as ``TraceConfig.task_setup`` — redacted by value with the shared
+privacy rules, so the token is replaced while the rest of the URL survives
+for a branch task to re-create the environment from.
+
+And the trace carries environment evidence: free-form bytes under ``env/``
+that no field declaration covers and the framework never redacts (the
+capability does — M29 for the browser). So the run binds an archiving fake
+capability, the scan reads ``env/`` like everything else — gunzipping a file
+whose first bytes are ``1f 8b`` or whose name ends in ``.gz`` before it looks
+— and a positive control plants the api key in a plain and a gzipped
+evidence file and requires the scan to find it in **each**.
 """
 
 from __future__ import annotations
 
 import copy
 import dataclasses
+import gzip
 import re
+import time
+import zlib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
+from spectragent.core.archive import ArchiveBatch, ArchiveFile, ArchiveProvenance, ArchiverBase
+from spectragent.core.archive.privacy import REDACTED
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
@@ -51,8 +71,11 @@ API_KEY = "sk-proj-9fQ2zLk4TgUvXr7NmPaB6HdEwYcJsRtVuZ1K"
 GATEWAY_URL = "https://gw.internal.example/v1?access_token=Zk3Lm9QpRt7Vx2Bn"
 PROXY_URL = "http://sweepbot:Hunter2Hunter2@proxy.internal.example:8080"
 PROFILE_DIR = "/home/researcher/.config/chrome-profile-7a3f9c2b"
+#: Not configuration: the task's setup context, routed to the capability's
+#: ``setup(start_url=...)`` and recorded as ``TraceConfig.task_setup``.
+START_URL = "https://shop.example/landing?ref=guard&token=Zk3Lm9QpRt7Vx2BnQ8"
 
-SECRETS = (API_KEY, GATEWAY_URL, PROXY_URL, PROFILE_DIR)
+SECRETS = (API_KEY, GATEWAY_URL, PROXY_URL, PROFILE_DIR, START_URL)
 
 #: Shapes, not names. A blocklist of key *names* lags the next backend;
 #: these catch a credential that reaches disk through a field nobody
@@ -89,6 +112,66 @@ class _Cap(CapabilityBase):
         if fragment_key == "browser.browser_meta":
             return BrowserMetaObs(url="https://example.com", page_title="Example")
         return None
+
+    async def setup(self, *, negotiation=None, start_url: str | None = None) -> None:
+        await super().setup(negotiation=negotiation)
+
+
+#: What the benign archiver records — evidence with nothing secret in it.
+EVIDENCE_TEXT = b"benign evidence: page title 'Example', status 200\n"
+EVIDENCE_KEY = "secret_guard_archive.evidence"
+LEAK_KEY = "secret_guard_archive.leak"
+
+
+class _EvidenceArchiver(ArchiverBase):
+    """Benign evidence, written plain and gzipped — so ``env/`` exists and is scanned."""
+
+    __registry_key__ = EVIDENCE_KEY
+
+
+class _LeakArchiver(ArchiverBase):
+    """The positive control: the planted api key, written plain and gzipped."""
+
+    __registry_key__ = LEAK_KEY
+
+
+class _ArchiveCap(CapabilityBase):
+    """An archiving capability: at setup, it captures one plain and one ``.gz`` file per archiver.
+
+    It never redacts what it captures — that is the point: the framework
+    does not either, so the guard is the framework's one check on ``env/``.
+    """
+
+    __registry_key__ = "secret_guard_archive"
+    __wiring__ = {"archiver": ("archiver", [EVIDENCE_KEY, LEAK_KEY])}
+
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
+        self.__dict__["_bound"] = tuple(a.archiver_id for a in archivers)
+
+    async def setup(self, *, negotiation=None) -> None:
+        await super().setup(negotiation=negotiation)
+        buffer: list[ArchiveFile] = []
+        for key in self.__dict__.get("_bound", ()):
+            text = EVIDENCE_TEXT if key == EVIDENCE_KEY else f"leaked: {API_KEY}\n".encode()
+            stem = key.rpartition(".")[2]
+            for name, data, media_type in (
+                (f"{stem}.txt", text, "text/plain"),
+                (f"{stem}.txt.gz", gzip.compress(text), "application/gzip"),
+            ):
+                buffer.append(
+                    ArchiveFile(
+                        archiver_id=key,
+                        name=name,
+                        media_type=media_type,
+                        data=data,
+                        meta=ArchiveProvenance(captured_at=time.time()),
+                    )
+                )
+        self.__dict__["_buffer"] = buffer
+
+    async def collect_archive(self) -> ArchiveBatch:
+        files, self.__dict__["_buffer"] = self.__dict__.get("_buffer", []), []
+        return ArchiveBatch(tuple(files))
 
 
 class _Env(EnvironmentBase):
@@ -156,15 +239,25 @@ def _raw_config_with_secrets() -> dict[str, Any]:
     return raw
 
 
-async def _run_and_scan(tmp_path, composer, *, record_secrets: bool) -> Path:
-    """Drive a full run whose ComposedRun carries the real secret config."""
+async def _run_and_scan(
+    tmp_path, composer, *, record_secrets: bool, archiver: ArchiverBase | None = None
+) -> Path:
+    """Drive a full run whose ComposedRun carries the real secret config.
+
+    The trace hook archives *archiver*'s evidence — the benign one unless a
+    test plants a leak.
+    """
     resolved = composer.top_level_type.model_validate(_raw_config_with_secrets())
 
-    writer = TraceWriter(trace_dir=str(tmp_path / "traces"), record_secrets=record_secrets)
+    writer = TraceWriter(
+        trace_dir=str(tmp_path / "traces"),
+        record_secrets=record_secrets,
+        archive=[archiver if archiver is not None else _EvidenceArchiver()],
+    )
     run = make_run(
         agent=_Agent(),
         loop=ReactLoop(max_steps=2),
-        env=make_env(_Env, {"secret_guard_cap": _Cap()}),
+        env=make_env(_Env, {"secret_guard_cap": _Cap(), "secret_guard_archive": _ArchiveCap()}),
         llm=_LLM(),
         memory=_Memory(),
         hooks=[writer],
@@ -181,9 +274,36 @@ async def _run_and_scan(tmp_path, composer, *, record_secrets: bool) -> Path:
         benchmark="secret_guard",
         subset="all",
         timeout=10,
+        env_context={"start_url": START_URL},
     )
     assert writer.run_dir is not None
     return writer.run_dir
+
+
+_GZIP_MAGIC = b"\x1f\x8b"
+#: Layers of gzip peeled off one file at most — a ``.gz`` inside a ``.gz``.
+_MAX_GZIP_LAYERS = 4
+
+
+def _readable(path: Path) -> str:
+    """A file's bytes as text — gunzipped first when it is gzip.
+
+    Gzip by its magic bytes (``1f 8b``) or by a ``.gz`` name, peeled
+    repeatedly for a gzip inside a gzip. A file that only looks like gzip
+    and does not decompress is scanned as it is: the guard never skips
+    bytes because they would not decode.
+    """
+    data = path.read_bytes()
+    named_gzip = path.name.endswith(".gz")
+    for _ in range(_MAX_GZIP_LAYERS):
+        if not (named_gzip or data[:2] == _GZIP_MAGIC):
+            break
+        try:
+            data = gzip.decompress(data)
+        except (OSError, EOFError, zlib.error):  # not gzip after all
+            break
+        named_gzip = False
+    return data.decode("utf-8", errors="replace")
 
 
 def _all_text(run_dir: Path) -> list[tuple[Path, str]]:
@@ -191,13 +311,14 @@ def _all_text(run_dir: Path) -> list[tuple[Path, str]]:
 
     Walks the directory rather than the manifest: a leak in a file
     nothing indexes is still a leak, and the manifest is exactly what a
-    careless writer would forget to list it in.
+    careless writer would forget to list it in. ``env/`` is walked like
+    the rest, gzip decoded (:func:`_readable`).
     """
     out: list[tuple[Path, str]] = []
     for path in sorted(run_dir.rglob("*")):
         if not path.is_file():
             continue
-        out.append((path, path.read_bytes().decode("utf-8", errors="replace")))
+        out.append((path, _readable(path)))
     return out
 
 
@@ -232,6 +353,27 @@ class TestTraceCarriesNoCredentials:
 
     def test_the_trace_says_it_is_redacted(self, redacted_run):
         assert RunTrace(redacted_run).config.secrets_recorded is False
+
+    def test_the_scan_reaches_env_and_reads_through_gzip(self, redacted_run):
+        """The scan above covered environment evidence — and decoded the gzipped file."""
+        evidence = redacted_run / "env/steps/000" / EVIDENCE_KEY
+        scanned = dict(_all_text(redacted_run))
+        assert scanned[evidence / "evidence.txt"] == EVIDENCE_TEXT.decode()
+        assert scanned[evidence / "evidence.txt.gz"] == EVIDENCE_TEXT.decode()
+        assert (evidence / "evidence.txt.gz").read_bytes()[:2] == _GZIP_MAGIC
+        config = RunTrace(redacted_run).config
+        assert config.env_evidence_recorded is True
+
+    def test_the_setup_context_is_redacted_by_value(self, redacted_run):
+        """The token is replaced, the rest of the URL survives, the ledger says where."""
+        record = RunTrace(redacted_run).config.task_setup
+        assert record is not None
+        assert record.context == {
+            "start_url": f"https://shop.example/landing?ref=guard&token={REDACTED}"
+        }
+        assert [e.model_dump() for e in record.redactions.entries] == [
+            {"location": "/start_url", "field": "token", "rule": "url_query"}
+        ]
 
     def test_the_config_hash_is_a_digest_of_secrets_not_a_copy_of_them(self, redacted_run):
         """A new surface, knowingly taken — so it gets its own assertion.
@@ -269,3 +411,36 @@ class TestGuardCanActuallyDetectALeak:
     async def test_and_the_trace_admits_it(self, tmp_path, composer):
         run_dir = await _run_and_scan(tmp_path, composer, record_secrets=True)
         assert RunTrace(run_dir).config.secrets_recorded is True
+
+    async def test_a_secret_in_environment_evidence_is_found_plain_and_gzipped(
+        self, tmp_path, composer
+    ):
+        """Redaction on, and still a leak: the framework never redacts evidence.
+
+        The guard has to find the planted key in the plain file *and* in the
+        gzipped one — per file, so the gzip path is proven rather than
+        carried by its plain twin. The compressed bytes themselves do not
+        contain it: only decoding finds it.
+        """
+        run_dir = await _run_and_scan(
+            tmp_path, composer, record_secrets=False, archiver=_LeakArchiver()
+        )
+        leak = run_dir / "env/steps/000" / LEAK_KEY
+        plain, gzipped = leak / "leak.txt", leak / "leak.txt.gz"
+        assert API_KEY in _readable(plain)
+        assert API_KEY in _readable(gzipped)
+        assert API_KEY.encode() not in gzipped.read_bytes()
+        assert any(pattern.search(_readable(gzipped)) for label, pattern in SECRET_PATTERNS), (
+            "the shape scan must catch it in the decoded bytes"
+        )
+        # Nowhere else: the rest of the run is still redacted.
+        leaking = [path for path, text in _all_text(run_dir) if API_KEY in text]
+        assert leaking == [plain, gzipped]
+
+    def test_a_file_that_only_looks_gzipped_is_scanned_as_it_is(self, tmp_path):
+        fake = tmp_path / "evidence.gz"
+        fake.write_bytes(b"\x1f\x8b" + API_KEY.encode())
+        assert API_KEY in _readable(fake)
+        nested = tmp_path / "nested.bin"
+        nested.write_bytes(gzip.compress(gzip.compress(API_KEY.encode())))
+        assert _readable(nested) == API_KEY

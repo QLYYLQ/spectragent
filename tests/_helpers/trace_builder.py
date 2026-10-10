@@ -11,6 +11,13 @@ accessor: a DOM page, screenshots in two encodings, a fragment whose capture
 failed, a step with a refused structured reply then a completed one, a
 shared output schema, per-step and content-addressed extra files, and the
 trailing calls and files of a step that never committed.
+
+:func:`build_archive_trace` writes one that exercises the environment
+evidence accessors: step evidence from several archivers, a
+content-addressed body two steps share, a capability's run record in two
+versions, trailing evidence, and an ``env/`` extra file that is *not* an
+archive file. Archive files go through :func:`archive_file` →
+``encode_archive_file``, the function ``TraceWriter`` commits with.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from spectragent.core.archive import ArchiveFile, ArchiveProvenance, ArchiveScope
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
 from spectragent.core.llm.messages import SystemMessage, UserMessage
@@ -32,6 +40,7 @@ from spectragent.core.trace.encoding import (
     EncodedLLMCall,
     PendingLLMCall,
     TraceFile,
+    encode_archive_file,
     encode_fragment,
     encode_llm_call,
     encode_output_format,
@@ -250,4 +259,172 @@ def build_reference_trace(base: Path, run_id: str = "run-test") -> ReferenceTrac
         schema_sha=encode_output_format(Reply).ref.sha256,
         shared_blob=shared,
         extras={0: step0_extra, 1: step1_extra, -1: trailing_extra},
+    )
+
+
+# ── environment evidence ──────────────────────────────────────────
+
+#: The fixed capture time every archive fixture carries unless told otherwise.
+CAPTURED_AT = 1_760_000_000.0
+
+
+def archive_item(
+    archiver_id: str,
+    name: str,
+    data: bytes,
+    *,
+    media_type: str = "application/json",
+    content_addressed: bool = False,
+    scope: ArchiveScope = "step",
+    captured_at: float = CAPTURED_AT,
+    cycle: int | None = None,
+    ids: dict[str, str] | None = None,
+) -> ArchiveFile:
+    """An ``ArchiveFile`` as a capability would hand it over."""
+    return ArchiveFile(
+        archiver_id=archiver_id,
+        name=name,
+        media_type=media_type,
+        data=data,
+        meta=ArchiveProvenance(captured_at=captured_at, cycle=cycle, ids=ids or {}),
+        content_addressed=content_addressed,
+        scope=scope,
+    )
+
+
+def archive_file(
+    archiver_id: str,
+    name: str,
+    data: bytes,
+    *,
+    step: int | None = None,
+    trailing: int | None = None,
+    run_version: int | None = None,
+    **fields: Any,
+) -> TraceFile:
+    """An archive file as ``TraceWriter`` commits it.
+
+    Through ``encode_archive_file`` — never a spelled path — so a fixture
+    cannot drift from the layout production writes (§5.3).
+    """
+    item = archive_item(archiver_id, name, data, **fields)
+    return encode_archive_file(item, step=step, trailing=trailing, run_version=run_version)
+
+
+#: The fictional capability :func:`build_archive_trace` records, and its archivers.
+ARCHIVE_CAPABILITY = "builder"
+STEPS_ARCHIVER = "builder.steps"
+BLOBS_ARCHIVER = "builder.blobs"
+STORAGE_ARCHIVER = "builder.storage"
+
+
+@dataclass
+class ArchiveTrace:
+    """What :func:`build_archive_trace` committed, for assertions."""
+
+    wal: WALWriter
+    #: The content-addressed body steps 0 and 1 both reference.
+    shared_blob: TraceFile
+    #: Run-record versions 0 and 1 of :data:`ARCHIVE_CAPABILITY`.
+    run_records: list[TraceFile]
+    #: Archive files by the step that committed them (``-1``: the trailing commit).
+    evidence: dict[int, list[TraceFile]] = field(default_factory=dict)
+    #: An ``env/`` extra file with no archive metadata — not an archive file.
+    plain_extra: TraceFile | None = None
+
+    @property
+    def run_dir(self) -> Path:
+        return self.wal.run_dir
+
+
+def build_archive_trace(base: Path, run_id: str = "run-archive") -> ArchiveTrace:
+    """Three committed steps and one trailing commit, carrying environment evidence.
+
+    - step 0: a step file of ``builder.steps``, the shared body
+      (``builder.blobs``, content-addressed), run record version 0, and an
+      ``env/`` extra file that is no archive file;
+    - step 1: a step file of ``builder.steps`` and one of
+      ``builder.storage``, the shared body again (deduplicated);
+    - step 2: a step file of ``builder.steps`` and run record version 1;
+    - trailing: a step file of ``builder.steps`` and a body of its own, with
+      the cancelled call of step 3.
+    """
+    wal = new_wal(base, run_id)
+    shared = archive_file(
+        BLOBS_ARCHIVER,
+        "response.bin",
+        b"HTTP/1.1 200 OK\r\n\r\nshared body",
+        step=0,
+        media_type="application/octet-stream",
+        content_addressed=True,
+        cycle=1,
+        ids={"request": "r1"},
+    )
+    run_v0 = archive_file(
+        ARCHIVE_CAPABILITY,
+        "fingerprint.json",
+        b'{"generation": 0}',
+        scope="run",
+        run_version=0,
+    )
+    run_v1 = archive_file(
+        ARCHIVE_CAPABILITY,
+        "fingerprint.json",
+        b'{"generation": 1}',
+        scope="run",
+        run_version=1,
+    )
+    plain = extra("env/notes/plain.txt", b"not evidence", kind="note")
+
+    evidence: dict[int, list[TraceFile]] = {
+        0: [
+            archive_file(
+                STEPS_ARCHIVER,
+                "cycle_001.json",
+                b'{"cycle": 1}',
+                step=0,
+                cycle=1,
+                ids={"frame": "main"},
+            ),
+            shared,
+            run_v0,
+        ],
+        1: [
+            archive_file(STEPS_ARCHIVER, "cycle_002.json", b'{"cycle": 2}', step=1, cycle=2),
+            archive_file(STORAGE_ARCHIVER, "storage.json", b'{"cookies": 3}', step=1, cycle=2),
+            shared,
+        ],
+        2: [
+            archive_file(STEPS_ARCHIVER, "cycle_003.json", b'{"cycle": 3}', step=2, cycle=3),
+            run_v1,
+        ],
+        -1: [
+            archive_file(STEPS_ARCHIVER, "tail.json", b'{"tail": true}', trailing=0),
+            archive_file(
+                BLOBS_ARCHIVER,
+                "response.bin",
+                b"HTTP/1.1 204 No Content\r\n\r\n",
+                trailing=0,
+                media_type="application/octet-stream",
+                content_addressed=True,
+            ),
+        ],
+    }
+    for step in (0, 1, 2):
+        files = evidence[step] + ([plain] if step == 0 else [])
+        wal.commit_step(
+            step,
+            step_record(step),
+            llm_calls=[completed_call(step, 0, f"step {step}")],
+            extra_files=files,
+        )
+    wal.commit_trailing(llm_calls=[cancelled_call(3, 0, "cut off")], extra_files=evidence[-1])
+    wal.write_result(agent_result())
+    wal.finalize(RunStatus.COMPLETED)
+    return ArchiveTrace(
+        wal=wal,
+        shared_blob=shared,
+        run_records=[run_v0, run_v1],
+        evidence=evidence,
+        plain_extra=plain,
     )

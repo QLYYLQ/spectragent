@@ -1,4 +1,5 @@
-"""Errors raised while assembling one observation.
+"""Errors raised by an environment: assembling an observation, routing
+and collecting environment evidence.
 
 Separate module rather than a class in ``_registrar.py`` for the same
 reason ``core/loops/errors.py`` exists: an evaluator or a hook may want to
@@ -75,3 +76,59 @@ class UnroutableFragmentError(Exception):
         )
         self.missing = missing
         self.provided = provided
+
+
+class UnroutableArchiverError(Exception):
+    """``bind_archivers`` was handed an archiver this environment cannot bind.
+
+    Raised before **any** capability is touched — binding validates every
+    archiver first, so a refused call leaves every capability's binding as
+    it was. Negotiation (``negotiate_archive``) already refuses the same
+    configurations with an error naming the requesting hook; this is the
+    environment's own guarantee for any caller that binds directly.
+
+    Attributes:
+        problems: Archiver key → why it cannot be bound (no capability with
+            that prefix; the capability does not archive; the capability
+            does not provide the key).
+        capability_ids: The capability ids this environment has.
+    """
+
+    def __init__(self, problems: Mapping[str, str], capability_ids: frozenset[str]) -> None:
+        ordered = dict(sorted(problems.items()))
+        detail = "; ".join(f"{key!r}: {reason}" for key, reason in ordered.items())
+        super().__init__(
+            f"Cannot bind archiver(s) {sorted(ordered)} — {detail}. This environment's "
+            f"capabilities: {sorted(capability_ids)}. Nothing was bound."
+        )
+        self.problems = ordered
+        self.capability_ids = capability_ids
+
+
+class ArchiveCollectionError(Exception):
+    """One or more capabilities failed to hand over their evidence.
+
+    Collection is concurrent and every capability is waited for before the
+    outcome is decided, so the message reports the *complete* failure set,
+    in capability order. A capability fails by raising, or by handing over
+    a file whose ``capability_id`` is not its own (recorded as an
+    ``ArchiveContractError``). The batches the healthy capabilities handed
+    over are discarded: an archive that was explicitly requested and is
+    now incomplete fails the run (``docs/architecture_design.md`` §4.6).
+
+    Attributes:
+        env_type: The environment that collected.
+        failures: Capability id → its exception, in capability order. The
+            first one is also this error's ``__cause__``.
+    """
+
+    def __init__(self, env_type: str, failures: Mapping[str, BaseException]) -> None:
+        detail = "; ".join(
+            f"{cap_id}: {type(exc).__name__}: {exc}" for cap_id, exc in failures.items()
+        )
+        super().__init__(
+            f"Environment {env_type!r} could not collect the archive from "
+            f"capability(ies) {list(failures)}: {detail}."
+        )
+        self.env_type = env_type
+        self.failures = dict(failures)

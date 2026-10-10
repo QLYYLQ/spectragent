@@ -5,7 +5,7 @@
 
 `ReactLoop` is the only Loop that exists. `CodeActLoop` (M20, P2), `FunctionCallingLoop`
 (M22, P3) and `PlanExecuteLoop` (M24, P3) are designed and unbuilt — target registry keys
-and slots are in `docs/architecture_design.md:228-247`. You are loop author #2. Several
+and slots are in `docs/architecture_design.md:231-249`. You are loop author #2. Several
 things in `react.py` are shaped the way they are *because* there is only one sample; this
 skill says which, so you know which lifts are yours.
 
@@ -15,7 +15,7 @@ Two independent registries. The Agent holds no Loop reference and never calls th
 the Loop holds no agent state and never stores deps on itself.
 
 ```python
-# spectragent/core/loops/react.py:153-159
+# spectragent/core/loops/react.py:233-239
 __registry_key__ = "react"
 __required_slots__ = {"build_react_prompt", "parse_react_output"}
 __optional_slots__ = {"get_react_output_model", "prepare"}
@@ -36,7 +36,7 @@ agent.run = run
 **Stateless on purpose.** Deps live only in that closure, so one Loop instance drives N
 agents concurrently and the Nth weave cannot rewrite the 1st agent's env. Everything your
 `_execute` needs arrives in `ctx`: `env`, `llm`, `memory`, `act_fn`, `negotiated_obs`,
-`active_descriptors`, `step_recorder`, `task_id` (`core/runtime.py:349-360`). Keep it that
+`active_descriptors`, `step_recorder`, `task_id` (`core/runtime.py:419-430`). Keep it that
 way: do not store per-run dependencies or mutable run state on `self`. Reading immutable
 config fields and calling stateless helper methods on `self` is fine.
 
@@ -60,12 +60,15 @@ Pydantic validation, never at runtime.
 
 ### Where your Loop is picked up
 
-`AgentRuntime.prepare` (`core/runtime.py:276-374`), in order: slot validation (`:295`) →
-observation negotiation (`:298`) → action negotiation (`:306`) → memory-protocol
-negotiation (`:310`, reads your `__required_message_protocols__`) → AOP weaving of
-agent/env/llm/recorder (`:314-323`) → `build_guarded_act` (`:341`) → `loop.weave` (`:349`)
-→ intercept audit (`:367`). Your Loop's observation demand goes in **unnarrowed**: an agent
-may narrow its own half per mode, but "cannot excuse itself from a fragment the Loop needs"
+`AgentRuntime.prepare` (`core/runtime.py:315-455`), in order: slot validation (`:346`) →
+observation negotiation (`:349`) → action negotiation (`:357`) → memory-protocol
+negotiation (`:361`, reads your `__required_message_protocols__`) → archive negotiation
+(`:363-380`; validation only, and only when a hook declares a non-empty `archive`) → AOP
+weaving of agent/env/llm/recorder (`:384-393`) → `build_guarded_act` (`:411`) →
+`loop.weave` (`:419`) → intercept audit (`:437`) → `env.bind_archivers` (`:453`, the last
+statement, on the raw environment; again only when a hook archives). Your Loop's
+observation demand goes in **unnarrowed**: an agent may narrow its own half per mode, but
+"cannot excuse itself from a fragment the Loop needs"
 (`core/negotiation/observation.py:245-272`).
 
 > **Known document drift:** `docs/architecture_design.md` §4.8 still describes memory
@@ -81,7 +84,7 @@ returning an `AgentResult`. Registration is automatic via the conscribe metaclas
 
 ## 2. Where a knob belongs — the worked example
 
-Three knobs sit together on `ReactLoop` (`react.py:162,166,173`):
+Three knobs sit together on `ReactLoop` (`react.py:242,246,253`):
 
 | field | meaning |
 |---|---|
@@ -99,10 +102,10 @@ look and no rule for which wins. One fact, one source: the knob goes on the Loop
 ### The seam that makes it work
 
 The Loop does not invent the feedback text. The agent raises `ParseError(detail,
-raw_output=...)` (`core/loops/errors.py:21-38`); the Loop renders it:
+raw_output=...)` (`core/loops/errors.py:31-48`); the Loop renders it:
 
 ```python
-# react.py:83-95
+# react.py:87-99
 def _parse_feedback(exc: ParseError) -> str:
     return (
         f"[SYSTEM] Your previous output could not be parsed into actions. "
@@ -116,14 +119,14 @@ agent's exception carries the thing only the agent knows, the Loop decides what 
 
 ### The invariant worth preserving
 
-`react.py:457-458` writes the rejected reply and the feedback into memory *before* deciding
+`react.py:570-571` writes the rejected reply and the feedback into memory *before* deciding
 whether to retry. So the in-step retry and the next step read **exactly the same two
 messages** — the only difference is whether a new observation follows. If they differed the
 model could tell which situation it was in, and the in-step path would be training on a
 prompt shape the cross-step path never produces. Do not "improve" one of them in isolation.
 
 One more convention, and it is a convention rather than something the design doc settles:
-in-step retries are invisible to the cross-step streak (`react.py:476-481`) — a step either
+in-step retries are invisible to the cross-step streak (`react.py:589-593`) — a step either
 parses or it does not. `test_react_parse_retry.py:380
 ::test_streak_counts_steps_not_attempts` documents the decision, not just the behaviour.
 Read it first if you ever unify the two budgets.
@@ -151,21 +154,62 @@ line, for a handler that genuinely cannot be vetoing anything (teardown, logging
 
 ### 3.3 The two shapes
 
-**(a) Handle inline** — observe (`react.py:263`), prompt (`:308`), llm (`:377`), parse
-(`:431`). `except RunAbort as exc:` **above** the blanket handler (Python matches top-down,
+**(a) Handle inline** — observe (`react.py:342`), prompt (`:387`), llm (`:454`), parse
+(`:544`). `except RunAbort as exc:` **above** the blanket handler (Python matches top-down,
 so position is load-bearing, not style), call `await self._note_abort(phase=..., exc=exc,
 recorder=..., observation=..., step_idx=..., step_records=...)`, then bare `raise`. Pass
 `llm_output=` / `token_usage=` if the phase has them — for a parser veto the refused reply
-*is* the evidence (`react.py:439-449`).
+*is* the evidence (`react.py:544-563`).
 
-**(b) Capture and re-raise** — the per-action loop only (`react.py:566-571`, resolved at
-`:597`). The blanket handler assigns to `act_error` and breaks, because the failure must be
+**(b) Capture and re-raise** — the per-action loop only (`react.py:682-687`, resolved at
+`:713`). The blanket handler assigns to `act_error` and breaks, because the failure must be
 attributed to one action among several; the ordinary (richer) `StepRecord` is built,
 `_surrender`ed, and only then `if isinstance(act_error, RunAbort): raise act_error`. **Do
 not call `_note_abort` here** — the record is already written and you would double it.
 
+**The step a failing run ends on can fail to record, and that must not replace the
+outcome.** The sink is woven: `TraceWriter`'s blocking `after` advice on `record_step`
+raises when the step's archive collection fails or the disk is full — and a page broken
+enough for a guard to veto is exactly when capture breaks too. If that error leaves the
+Loop instead of the veto, `AgentRuntime.execute`'s `isinstance(exc, RunAbort)` sees an
+ordinary exception, `raise_on_error=False` swallows it, and the sweep starts its next
+task; an `_abort` result likewise names the recorder's error instead of the root cause.
+So every surrender on a step after which the run is over *because it failed* — both
+abort shapes, `_abort`, a failed action, the last tolerated parse error — goes through
+`ReactLoop._surrender_failing`, which logs the recording failure and returns it: the
+veto is re-raised with it attached as a note (`_note_unrecorded`), the error result
+appends "recording this step failed too: …" (`_unrecorded_suffix`). A `RunAbort` the sink
+raises itself still propagates. On every other step — the run would go on, or succeed —
+a recording failure still ends the run (fail closed). Nothing is lost by not raising it:
+the recorder already knows (TraceWriter keeps the step's calls owed, commits them as
+trailing at close-out and closes the trace out as `error`, as far as the disk lets it).
+When the disk is still full at the close-out, that second failure is the runtime's to
+rank, not the Loop's: `AgentRuntime.execute` logs it and adds it to the veto as one more
+note (§3.4). A new Loop owes the same split.
+
+**A cancellation that cuts that hand-over off must carry the outcome.** The hand-over
+can take a while — `TraceWriter` pulls the environment's evidence there, of the very
+page the guard refused — and the run's own timeout can land in it. The Loop must not
+swallow the cancellation (it may be Ctrl-C, or a caller's own `asyncio.timeout`), but
+re-raising it bare loses the outcome: `asyncio.wait_for` turns it into `TimeoutError`,
+and `AgentRuntime.execute` returns an ordinary timeout result whatever `raise_on_error`
+says — the sweep starts its next task against the site the guard refused, and nothing
+says a guard said stop. So `_surrender_vetoed` and `_end_failing` catch
+`asyncio.CancelledError`, call `carry_outcome(cancelled, outcome)`
+(`core/loops/errors.py`: a `RunEnded` holding the veto or the terminal result goes to the
+head of the cancellation's `__context__` chain) and re-raise the same object; the
+runtime reads it back only for its own timeout (§3.4). The inline shape gets the veto
+for free — awaiting inside `except RunAbort` makes it the cancellation's context — but
+the capture-and-re-raise shape does not: there the veto is only a local, so carry it
+explicitly. A terminal result has to be carried explicitly in every shape: `_end_failing`
+builds it in the handler, without the "recording failed" suffix, and the runtime appends
+what cut it off. And log the veto *before* the hand-over (the act phase does), so it is
+on record however the hand-over ends. A new Loop owes this too: every await between
+deciding a failing outcome and leaving the Loop either carries that outcome on a
+cancellation or cannot be cancelled.
+
 The prompt phase is the one asymmetry: it catches `RunAbort` and *nothing else*
-(`react.py:297-318`). An exception out of the agent's own `build_react_prompt` is a bug in
+(`react.py:372-397`). An exception out of the agent's own `build_react_prompt` is a bug in
 the agent, and converting it to `agent_done="error"` would hide it.
 
 Guard side, for completeness: a hook raising `RunAbort` must be `blocking=True`
@@ -180,24 +224,43 @@ exists. Each layer above decides what the signal means:
 
 | layer | decision | code |
 |---|---|---|
-| `ReactLoop._execute` | record the interrupted step, then let it fly | `react.py:263/308/377/431/597` |
-| `AgentRuntime.execute` | does it travel past `raise_on_error=False`? | `runtime.py:527-550` |
+| `ReactLoop._execute` | record the interrupted step, then let it fly | `react.py:342/387/454/544/713` |
+| `AgentRuntime.execute` | does it travel past `raise_on_error=False`? | `runtime.py:636-729` |
 | `BenchmarkRunner.run` | does the sweep stop? | `benchmark_runner.py:301-328` |
 
-At the runtime layer the order is the point: build the terminal result, `await
-self._finish(result, error=exc)` — `on_run_end`, then `on_run_error` with `partial_steps`,
-then drain (`runtime.py:567-583`) — and *only then*:
+At the runtime layer the order is the point: build the terminal result, close the run out
+with `_finish` — `on_run_end`, then `on_run_error` with `partial_steps`, then drain
+(`runtime.py:788-805`) — and *only then* raise. The veto arm calls `_close_out_vetoed`,
+then re-raises:
 
 ```python
-# runtime.py:548
-if raise_on_error or isinstance(exc, RunAbort):
-    raise
+# runtime.py:820-826 — AgentRuntime._close_out_vetoed
+try:
+    await self._finish(result, error=veto)
+except Exception as failure:
+    logger.exception("AgentRuntime: closing out a vetoed run failed")
+    veto.add_note(f"Closing the vetoed run out failed too: {type(failure).__name__}: {failure}")
 ```
 
 `raise_on_error=False` means "a failed task must not stop the sweep". A veto is the
-opposite instruction, so it propagates either way — but after the trace is closed out.
+opposite instruction, so it propagates either way — after the trace is closed out, and
+even when that close-out fails (a disk that stays full makes `TraceWriter.on_run_end`
+raise): like a cancellation, a veto outranks a close-out that fails under it, and the
+failure becomes one more note on it. Every other failure keeps `if raise_on_error: raise`,
+and a close-out failure there propagates as it is.
 
-At the sweep layer, `run_task` re-raises `RunAbort` first (`benchmark_runner.py:413-420`)
+The run's own timeout is the other way a veto used to get lost, and it is not an outside
+cancellation. `except TimeoutError` first asks `_outcome_under(timed_out)`: `wait_for`
+raises its `TimeoutError` *from* the cancellation it delivered into the Loop, and when
+that cancellation carries an outcome (`carried_outcome`, §3.3) the run had already
+ended. A carried veto is closed out as vetoed — `agent_done="error"`, an `error` that
+names the veto and says the timeout expired while the vetoed step was being recorded,
+the timeout as a note on the `RunAbort` — and re-raised whatever `raise_on_error` says;
+a carried terminal result is closed out and returned with the same remark appended to
+its `error`. Only a run cut off while still under way gets `agent_done="timeout"`. An
+outside cancellation never reads the chain: it is re-raised unchanged, as before.
+
+At the sweep layer, `run_task` re-raises `RunAbort` first (`benchmark_runner.py:409-419`)
 while still absorbing ordinary failures, and `run` breaks out, records
 `BenchmarkRunSummary.aborted` naming the task (`:132-155`, `:304-317`) — **and then still
 evaluates the outcomes that finished** (`:318-320`). The guard said stop, not destroy the
@@ -205,18 +268,18 @@ evidence; under Record Once, Evaluate Many those traces are complete and worth s
 Without the `aborted` field a short sweep is indistinguishable from a small one.
 
 This is also why `RunAbort` derives from `Exception` and not `BaseException`
-(`core/loops/errors.py:59-65`): a `BaseException` would skip `_finish` and destroy exactly
+(`core/loops/errors.py:69-79`): a `BaseException` would skip `_finish` and destroy exactly
 the WAL commit the abort exists to preserve.
 
 Known gap, so you do not rediscover it: `AgentDoneStatus` (`schemas/_types.py:15-20`) has
 only done/max_steps/timeout/error. A finished veto reports `agent_done="error"` with
 `RunAbort` in the error string, so an evaluator selecting vetoed runs is string-matching
-(`tests/test_core/test_benchmark_runner.py:465`). The evidence is in the trace; the label
+(`tests/test_core/test_benchmark_runner.py:453`). The evidence is in the trace; the label
 is not in the artifact.
 
 ### 3.5 What is deliberately still ReactLoop-local
 
-`_note_abort` (`react.py:703-754`) and its per-phase bookkeeping live on `ReactLoop`, not
+`_note_abort` (`react.py:932-988`) and its per-phase bookkeeping live on `ReactLoop`, not
 on `AgentLoopBase`. That is intentional: React's phases are observe/prompt/llm/parse/act,
 CodeAct's would be generate/execute/verify, PlanExec's plan/execute. Phase vocabulary does
 not generalise from one sample, and inventing the abstraction now would be guessing at its
@@ -230,9 +293,9 @@ safe. The duplication is accidental shape; do not defend it as design.
 
 ## 4. One `Environment.observe` is one cycle
 
-`EnvironmentBase.observe` (`core/environments/_registrar.py:344-384`) holds a monotonic
+`EnvironmentBase.observe` (`core/environments/_registrar.py:517-577`) holds a monotonic
 counter, increments it on every call, and announces `begin_observation(cycle)` to each
-participating capability (`core/capabilities/_registrar.py:186-206`) before resolving
+participating capability (`core/capabilities/_registrar.py:236-259`) before resolving
 anything. Capabilities run concurrently; one capability's own fragments run sequentially
 because they share a capture.
 
@@ -244,8 +307,8 @@ reused it. The fix made the caller's `observe()` *be* the boundary.
 The consequence for any Loop that re-asks the model inside a step is blunt: **an in-step
 retry must not open a new cycle.** If it did, the model would be answering a follow-up
 question about a screenshot it was never shown — F11 from the other side. ReactLoop's retry
-therefore re-reads `memory.get_context_messages()` and nothing else (`react.py:470`; the
-reasoning is in the comment at `:322-340`).
+therefore re-reads `memory.get_context_messages()` and nothing else (`react.py:582`; the
+reasoning is in the comment at `:408-419`).
 
 Pinned by `tests/test_core/test_loops/test_react_parse_retry.py:193`
 (`TestRetryDoesNotOpenANewObservationCycle`). Note *how*: `_CycleCap` at `:56` is a fake
@@ -266,14 +329,14 @@ Loop config fields are `Annotated` conscribe fields on the dataclass. `AgentLoop
 the generated config.
 
 ```python
-# react.py:173-185 — the default appears twice, and that is this file's convention
+# react.py:253-265 — the default appears twice, and that is this file's convention
 parse_retries_per_step: Annotated[
     int, Field(default=0, description="...")
 ] = 0
 ```
 
 - Pick a default that is a **no-op**, so no shipped YAML changes behaviour on upgrade.
-- Add the field to the Loop class docstring's config list (`react.py:143-151`) — the only
+- Add the field to the Loop class docstring's config list (`react.py:223-230`) — the only
   prose inventory of that surface.
 - Never hand-edit `spectragent/generated/_composed.py`. Regenerate: `uv run spectragent-gen`.
 - The generated class is named after the *wiring*, not the loop: `ReactAgent_LoopConfig`
@@ -288,10 +351,30 @@ parse_retries_per_step: Annotated[
 - Weave is stateless: two agents, one loop instance, no cross-talk (`test_weave.py`).
 - Every phase, abort: the exception escapes **and** a record reached the sink. The hygiene
   test catches a missing pairing; only a behaviour test catches a pairing that forgets to
-  record. Model on `test_react_run_abort.py::TestAbortOnEveryPhase` (`:286-443`).
+  record. Model on `test_react_run_abort.py::TestAbortOnEveryPhase` (`:293-449`).
+- Every phase again, with a sink that raises on the step the run ends on: the veto still
+  escapes (the recording failure as a note), an error result still names its root cause,
+  and on an ordinary step the recording failure still propagates. Model on
+  `test_react_run_abort.py::TestARecordingFailureNeverReplacesTheOutcome`; the
+  end-to-end version with a real archive collection is
+  `test_trace_writer_archive.py::TestThroughTheRuntime::test_a_veto_at_a_step_whose_collection_fails_is_still_a_veto`,
+  and the one where the close-out fails too (a disk that stays full) is
+  `::test_a_veto_survives_a_disk_that_stays_full_through_the_close_out` — that half is the
+  runtime's (`test_run_lifecycle.py::TestTheCloseOutRunsOnce::test_a_vetoed_run`), so a new
+  Loop inherits it by raising `RunAbort` and nothing else.
+- Every phase a third time, with a sink a cancellation cuts off on the step the run ends
+  on: the cancellation escapes unchanged and `carried_outcome` reads back the veto, or the
+  terminal result naming its root cause; on a step the run goes on from, or succeeds on,
+  nothing is carried. Model on
+  `test_react_run_abort.py::TestACancelledRecordingCarriesTheOutcome` (it also pins that
+  the act-phase veto is logged before the hand-over). The runtime half is
+  `test_run_lifecycle.py::TestAnOutcomeOutranksTheRunsOwnTimeout`; end to end, with the
+  run's own timeout landing in a stalled archive collection,
+  `test_trace_writer_archive.py::TestThroughTheRuntime::test_a_veto_whose_step_the_runs_timeout_cuts_off_is_still_a_veto`
+  and `::test_such_a_veto_stops_the_sweep_when_the_timeout_cuts_its_step_off`.
 - Ordinary failures still return a terminal `AgentResult` with an honest `env_status` —
   `"failed"` only when the environment is what broke; a 429 is `"success"`
-  (`react.py:388-408`).
+  (`react.py:503-523`).
 - If your loop re-asks inside a step: the cycle test from §4.
 - The Action seam AGENTS.md §2.5 names: negotiation matches *names*, not parameter
   contracts. A loop that emits actions must produce the params `descriptor().params`

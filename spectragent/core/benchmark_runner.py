@@ -410,15 +410,19 @@ class BenchmarkRunner:
             # First, and re-raised: this handler exists so one bad task does
             # not stop the sweep, and a veto is precisely the case where it
             # should. ``execute`` has already closed the trace out, so the
-            # veto and its evidence survive; ``run`` catches it above and
-            # summarises the tasks that did finish.
+            # veto and its evidence survive — and a close-out that failed
+            # under the veto (a full disk), or the run's own timeout expiring
+            # while the vetoed step was being recorded, arrives as a note on
+            # it, never in its place; ``run`` catches it above and summarises
+            # the tasks that did finish.
             logger.warning("BenchmarkRunner: task %s vetoed the sweep", task_id)
             raise
         except Exception as exc:
             # With ``raise_on_error=False`` what reaches here never got a
             # clean close-out: ``prepare`` or ``on_run_start`` failed, or a
-            # blocking hook raised while closing the run out — ``execute``
-            # closes a run out once and does not retry it.
+            # blocking hook raised while closing out a run that was not
+            # vetoed — ``execute`` closes a run out once and does not retry
+            # it.
             logger.exception("BenchmarkRunner: task %s failed", task_id)
             result = None
             error = f"{type(exc).__name__}: {exc}"

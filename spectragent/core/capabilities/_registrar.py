@@ -16,6 +16,7 @@ See docs/execution_dag.md M06 for the registrar design.
    resolvable annotation for conscribe's config extractor.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar
 
@@ -23,6 +24,8 @@ from conscribe import create_registrar
 from conscribe.wiring import parse_wiring
 from pydantic import Field
 
+from spectragent.core.archive._registrar import ArchiverBase
+from spectragent.core.archive.types import ArchiveBatch
 from spectragent.core.capabilities.base import BaseCapability
 
 
@@ -55,7 +58,15 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
 
     Subclasses must set:
     - ``__registry_key__``: conscribe key (e.g. ``"browser"``, ``"docker"``)
-    - ``__wiring__``: observation provides declaration
+    - ``__wiring__``: observation provides declaration (and, for a
+      capability that hands over environment evidence, the
+      ``"archiver"`` provides declaration — see :attr:`provided_archivers`)
+
+    The base satisfies
+    :class:`~spectragent.core.archive.protocols.ArchivingCapability` with
+    inert defaults, so the environment can treat every capability alike;
+    one that declares archiver provides overrides :meth:`bind_archivers`
+    and :meth:`collect_archive`.
 
     Example::
 
@@ -172,6 +183,47 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
         if dispatch is not None:
             return frozenset(dispatch.keys())
         return _wiring_keys_for(type(self), "action")
+
+    # ── Archive axis (the optional ArchivingCapability surface) ─
+
+    @property
+    def provided_archivers(self) -> frozenset[str]:
+        """Archiver keys this capability class can provide.
+
+        Derived from ``__wiring__["archiver"]`` exactly as
+        :attr:`declared_fragments` is derived from
+        ``__wiring__["observation"]`` — the same declaration, on the third
+        axis. Empty for a capability that declares none, which is every
+        capability that records no environment evidence.
+        """
+        return _wiring_keys_for(type(self), "archiver")
+
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
+        """Inert default: an empty binding is fine, a real one is refused.
+
+        Unbinding (``[]``) is what ``Environment.bind_archivers`` sends
+        every capability that gets no archiver, so it must cost nothing
+        here. A non-empty binding reaching this default means a capability
+        declared ``__wiring__["archiver"]`` provides without implementing
+        the archiving surface — refused loudly, naming the class, rather
+        than accepted and then collected as nothing.
+        """
+        if not archivers:
+            return
+        keys = sorted(str(getattr(a, "archiver_id", a)) for a in archivers)
+        # Through the conscribe metaclass ``__name__`` is invisible to the
+        # type checker; the value is always there.
+        owner = getattr(type(self), "__name__", "capability")
+        raise NotImplementedError(
+            f"{owner} cannot bind archivers {keys}: it does not implement "
+            f"the archiving surface. A capability that declares __wiring__['archiver'] "
+            f"provides must override both bind_archivers() and collect_archive() "
+            f"(docs/architecture_design.md §4.9)."
+        )
+
+    async def collect_archive(self) -> ArchiveBatch:
+        """Inert default: nothing bound, nothing captured — an empty batch."""
+        return ArchiveBatch()
 
     # ── Default no-op lifecycle ───────────────────────────────
 

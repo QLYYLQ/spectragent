@@ -11,6 +11,7 @@ See docs/architecture_design.md §4.6 for the full Hook design.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -93,6 +94,10 @@ class RuntimeHook(Protocol):
         resolved_config: Any,
         observation_negotiation: Any,
         action_negotiation: Any,
+        archive_negotiation: Any,
+        env_evidence_recorded: bool,
+        env_evidence_privacy: list[str],
+        task_setup: Mapping[str, Any] | None,
         **kwargs: Any,
     ) -> None:
         """Called when AgentRuntime.execute() begins, before env setup.
@@ -124,6 +129,23 @@ class RuntimeHook(Protocol):
           negotiation results — active fragments and actions, fully
           qualified, plus what each relative ``__wiring__`` declaration
           bound to in this environment.
+        - ``archive_negotiation``: the archive negotiation result — the
+          archivers bound for this run and the capability each binds to —
+          or ``None`` when no hook declared a non-empty ``archive``.
+        - ``env_evidence_recorded``: whether archivers were bound, i.e.
+          whether the run may record environment evidence.
+        - ``env_evidence_privacy``: the sorted union of the bound
+          archivers' declared privacy markers (a declaration, not a
+          guarantee).
+        - ``task_setup``: the environment setup context ``execute()`` hands
+          ``setup_environment`` for this task (``start_url`` …), exactly as
+          given — unredacted; a hook that persists it must redact it — or
+          ``None`` when there is none.
+
+        *env* is the **raw** environment, never its AOP proxy. A recorder
+        that pulls environment evidence (``Environment.collect_archive``)
+        does so on this object, and only at its own commit points
+        (``docs/architecture_design.md`` §4.6).
 
         ``**kwargs`` is part of the signature, not a convention: this
         payload grows as the framework learns to record more about a run,
@@ -143,13 +165,21 @@ class RuntimeHook(Protocol):
         ``AgentRuntime.execute`` re-raises the cancellation. A cancellation
         that lands while the run is already being closed out does not
         dispatch it again. The one path it cannot cover is the process
-        being killed outright.
+        being killed outright. A run whose own timeout expired while the
+        Loop was still recording the step it had already ended on — vetoed,
+        or failed — arrives with that ending's result, not a timeout one.
 
         Called once per run. A blocking hook that raises here is not
         retried: the error propagates out of ``execute`` (a later hook in
         priority order does not get the call) — except under a
-        cancellation, where it is logged and the ``CancelledError`` is what
-        the caller sees.
+        cancellation or a guard's veto (``RunAbort``), where it is logged
+        (on a veto, also attached to it as a note) and the
+        ``CancelledError`` or the ``RunAbort`` is what the caller sees: a
+        sweep must stop either way. A hook whose close-out awaits can be
+        cancelled in the middle of it, and then the same precedence is its
+        own to keep: finish what it can, log any failure that happened
+        under the cancellation, and re-raise the cancellation
+        (``TraceWriter``'s close-out collection is the reference).
 
         *env* is live here on purpose: env-state scoring (SWE-bench
         running ``pytest FAIL_TO_PASS`` in the container, OSWorld
@@ -169,6 +199,10 @@ class RuntimeHook(Protocol):
         the detail only: *error* is the exception itself — a
         ``TimeoutError``, whatever the run raised, or the
         ``asyncio.CancelledError`` that cancelled it — and *partial_steps*
-        the records the Loop surrendered before it ended.
+        the records the Loop surrendered before it ended. A veto the run's
+        own timeout cut off while its step was being recorded arrives as
+        the ``RunAbort``; a terminal result the Loop had already built when
+        that happened is closed out like any result the Loop returns,
+        without this callback.
         """
         ...

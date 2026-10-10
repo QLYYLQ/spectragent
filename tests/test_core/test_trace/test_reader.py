@@ -14,6 +14,7 @@ import pytest
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMState
 from spectragent.core.capabilities.browser.observations import DOMObs, ScreenshotObs
 from spectragent.core.llm.messages import SystemMessage, UserMessage
+from spectragent.core.trace.encoding import sha256_hex
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import TRACE_FORMAT_VERSION, RunStatus, TraceConfig
 from spectragent.core.trace.reader import RunTrace
@@ -25,9 +26,16 @@ from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.fragment_samples import FRAME_BUTTON_HANDLE, JPEG_BYTES, PNG_BYTES
 from tests._helpers.trace_builder import (
+    ARCHIVE_CAPABILITY,
+    BLOBS_ARCHIVER,
+    STEPS_ARCHIVER,
+    STORAGE_ARCHIVER,
+    ArchiveTrace,
     ReferenceTrace,
     Reply,
     agent_result,
+    archive_file,
+    build_archive_trace,
     build_reference_trace,
     new_wal,
     step_record,
@@ -252,6 +260,123 @@ class TestExtraFiles:
     def test_an_uncommitted_path_is_a_key_error(self, trace):
         with pytest.raises(KeyError):
             trace.read_extra("env/steps/009/never")
+
+
+@pytest.fixture()
+def archived(tmp_path) -> ArchiveTrace:
+    return build_archive_trace(tmp_path)
+
+
+class TestArchiveAccessors:
+    """Environment evidence, resolved only through the extra indexes (§5.5)."""
+
+    def test_a_steps_files_of_one_archiver_in_index_order(self, archived):
+        trace = RunTrace(archived.run_dir)
+        assert [r.path for r in trace.archive_files(0, STEPS_ARCHIVER)] == [
+            archived.evidence[0][0].rel_path
+        ]
+        assert [r.name for r in trace.archive_files(1, STORAGE_ARCHIVER)] == ["storage.json"]
+        assert trace.archive_files(1, BLOBS_ARCHIVER)[0].path == archived.shared_blob.rel_path
+        # Another archiver's files, a run record, an uncommitted step: none.
+        assert trace.archive_files(0, STORAGE_ARCHIVER) == []
+        assert trace.archive_files(0, ARCHIVE_CAPABILITY) == []
+        assert trace.archive_files(3, STEPS_ARCHIVER) == []
+        assert trace.archive_files(9, STEPS_ARCHIVER) == []
+
+    def test_a_record_is_its_index_entry_and_its_metadata(self, archived):
+        trace = RunTrace(archived.run_dir)
+        (record,) = trace.archive_files(0, STEPS_ARCHIVER)
+        written = archived.evidence[0][0]
+        assert (record.path, record.size, record.sha256, record.content_addressed) == (
+            written.rel_path,
+            len(written.data),
+            sha256_hex(written.data),
+            False,
+        )
+        assert (
+            record.model_dump(exclude={"path", "size", "sha256", "content_addressed"})
+            == (written.meta["archive"])
+        )
+        assert (record.capability_id, record.cycle, record.ids) == (
+            ARCHIVE_CAPABILITY,
+            1,
+            {"frame": "main"},
+        )
+        assert trace.read_extra(record.path) == written.data
+
+    def test_iter_archive_walks_the_steps_then_the_trailing_commits_when_asked(self, archived):
+        trace = RunTrace(archived.run_dir)
+        assert [(step, r.name) for step, r in trace.iter_archive(STEPS_ARCHIVER)] == [
+            (0, "cycle_001.json"),
+            (1, "cycle_002.json"),
+            (2, "cycle_003.json"),
+        ]
+        assert [
+            (step, r.name) for step, r in trace.iter_archive(STEPS_ARCHIVER, include_trailing=True)
+        ][-1] == (None, "tail.json")
+        bodies = list(trace.iter_archive(BLOBS_ARCHIVER, include_trailing=True))
+        assert [step for step, _ in bodies] == [0, 1, None]
+        assert bodies[0][1].path == bodies[1][1].path == archived.shared_blob.rel_path
+        # Run records are not step evidence.
+        assert list(trace.iter_archive(ARCHIVE_CAPABILITY, include_trailing=True)) == []
+
+    def test_a_blob_is_read_by_its_digest(self, archived):
+        trace = RunTrace(archived.run_dir)
+        shared = archived.shared_blob
+        assert trace.blob(sha256_hex(shared.data)) == shared.data
+        tail_body = archived.evidence[-1][1]
+        assert trace.blob(sha256_hex(tail_body.data)) == tail_body.data
+        with pytest.raises(KeyError):
+            trace.blob(sha256_hex(b"never committed"))
+        with pytest.raises(KeyError):  # a path, not a digest, opens nothing
+            trace.blob("../../manifest.json")
+
+    def test_the_run_record_is_the_highest_committed_version(self, archived):
+        trace = RunTrace(archived.run_dir)
+        latest = trace.archive_run_file(ARCHIVE_CAPABILITY)
+        assert latest is not None
+        assert (latest.path, latest.run_version, latest.scope) == (
+            archived.run_records[1].rel_path,
+            1,
+            "run",
+        )
+        assert trace.read_extra(latest.path) == b'{"generation": 1}'
+        assert trace.archive_run_file("nobody") is None
+
+    def test_the_version_not_the_commit_order_decides(self, tmp_path):
+        """A version committed later in a trailing entry, but numbered lower, is not the latest."""
+        wal = new_wal(tmp_path)
+        v1 = archive_file("cap", "fp.json", b'{"v": 1}', scope="run", run_version=1)
+        v0 = archive_file("cap", "fp.json", b'{"v": 0}', scope="run", run_version=0)
+        wal.commit_step(0, step_record(0), extra_files=[v1])
+        wal.commit_trailing(extra_files=[v0])
+        latest = RunTrace(wal.run_dir).archive_run_file("cap")
+        assert latest is not None and latest.run_version == 1
+
+    def test_an_extra_file_without_archive_metadata_is_no_archive_file(self, archived):
+        trace = RunTrace(archived.run_dir)
+        plain = archived.plain_extra
+        assert plain is not None
+        assert plain.rel_path in [r.path for r in trace.extra_files(0)]
+        assert trace.read_extra(plain.rel_path) == b"not evidence"
+        everyone = [STEPS_ARCHIVER, BLOBS_ARCHIVER, STORAGE_ARCHIVER, ARCHIVE_CAPABILITY]
+        assert all(
+            plain.rel_path not in [r.path for r in trace.archive_files(0, a)] for a in everyone
+        )
+
+    def test_a_blob_another_producer_put_at_an_archive_address_is_no_archive_file(self, reference):
+        """``build_reference_trace`` puts a plain extra file at an ``env/blobs/`` address."""
+        trace = RunTrace(reference.run_dir)
+        shared = reference.shared_blob
+        assert trace.read_extra(shared.rel_path) == shared.data
+        with pytest.raises(KeyError):
+            trace.blob(sha256_hex(shared.data))
+
+    def test_a_trace_without_evidence_answers_empty(self, trace):
+        """The M27 reference trace has ``env/`` extra files, and none of them is an archive file."""
+        assert trace.archive_files(0, "browser.network") == []
+        assert list(trace.iter_archive("browser.network", include_trailing=True)) == []
+        assert trace.archive_run_file("browser") is None
 
 
 class TestTheReaderGivesBackWhatTheWriterWasHanded:

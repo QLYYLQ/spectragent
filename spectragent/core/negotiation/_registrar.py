@@ -1,9 +1,10 @@
 """Conscribe sub-registry for negotiation result types.
 
-Built-in results (``ObservationNegotiationResult``, ``ActionNegotiationResult``)
-register automatically. Users can define their own custom negotiation
-protocols by registering additional result types here and passing them as
-``target_class`` to :func:`spectragent.core.negotiation.negotiate`.
+Built-in results (``ObservationNegotiationResult``, ``ActionNegotiationResult``,
+``ArchiveNegotiationResult``) register automatically. Users can define their
+own custom negotiation protocols by registering additional result types here
+and passing them as ``target_class`` to
+:func:`spectragent.core.negotiation.negotiate`.
 """
 
 from __future__ import annotations
