@@ -144,6 +144,9 @@ class ArchiveHarness:
             record whose content changed (the fake's ``change_run_record``;
             M29's fingerprint moving). When given, the crash-window clause
             puts a new run-record version into the step that never commits.
+        close: Optional. Release what ``produce`` acquired (a capability that
+            set up scopes and connections tears them down); the test fixture
+            awaits it after every clause.
     """
 
     capability: Any
@@ -151,6 +154,7 @@ class ArchiveHarness:
     produce: Callable[[int], Awaitable[None]]
     break_collect: Callable[[], None]
     change_run_record: Callable[[], None] | None = None
+    close: Callable[[], Awaitable[None]] | None = None
     _env: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -178,6 +182,11 @@ class ArchiveHarness:
         if self._env is None:
             self._env = make_env(ContractArchiveEnv, {self.capability_id: self.capability})
         return self._env
+
+    async def aclose(self) -> None:
+        """Run :attr:`close`, if the harness has one."""
+        if self.close is not None:
+            await self.close()
 
 
 # ── Capability side: the archiving contract ───────────────────────────
@@ -833,12 +842,35 @@ def fake_archive_harness() -> ArchiveHarness:
     )
 
 
+def browser_archive_harness() -> ArchiveHarness:
+    """``BrowserCapability`` and its three archivers, against the fake browser (M29).
+
+    ``off`` tier with ``require_replayable: false`` (a pinned tier adds
+    nothing the contract checks); ``produce`` runs one committed cycle, one
+    network exchange and a storage change; ``break_collect`` drops the
+    recorder connection; ``change_run_record`` changes the user agent the
+    fingerprint measures. See ``tests/_helpers/browser_archive.py``.
+    """
+    from tests._helpers.browser_archive import archiving_capability
+
+    capability, driver = archiving_capability()
+    return ArchiveHarness(
+        capability=capability,
+        archivers=driver.archivers,
+        produce=driver.produce,
+        break_collect=driver.break_collect,
+        change_run_record=driver.change_run_record,
+        close=driver.close,
+    )
+
+
 #: capability_id → harness factory. **Add your archiving capability here.**
 #:
 #: A fresh harness per test: the clauses bind, capture and collect, and a
 #: shared instance would carry one test's binding and buffer into the next.
 HARNESS_FACTORIES: dict[str, Callable[[], ArchiveHarness]] = {
     "contract_archive": fake_archive_harness,
+    "browser": browser_archive_harness,
 }
 
 

@@ -153,6 +153,32 @@ capability-agnostic harness can produce them: the timing rules of §4.9 — neve
 the hand-over atomic with respect to your producers, an in-flight item handed over exactly
 once (or marked incomplete by the last collection). Your capability's own tests pin those.
 
+**The worked case: `browser`** (`browser_archive_harness` in `archive_contract.py`, driving
+`tests/_helpers/browser_archive.py`). Four things it had to get right, which any
+capability with real resources will meet too:
+
+- **Setup is lazy and opens every channel.** The factory is synchronous and the clauses
+  are async, so the capability sets up on the first `produce()` — with *every* harness
+  archiver bound for that moment (the channels a capability opens are decided at setup,
+  §4.14), then the clause's own binding is restored. Binding again after setup only
+  changes who receives and who is collected.
+- **`close`.** `ArchiveHarness(close=...)` releases what `produce` acquired; the test
+  fixture awaits `harness.aclose()` after every clause. Without it each clause leaks a
+  set-up capability (scopes, tasks) into the next.
+- **A state read at collection is written only when it changed.** "Hand over and
+  forget" means a second collection with nothing produced in between is *empty*; an
+  archiver that snapshots state at collection time (`browser.storage`) must therefore
+  emit on change, not every time.
+- **`break_collect` is the real failure** — the recorder connection drops
+  (`FakeClient.lose`), and `collect_archive` raises the same `RecorderLostError` every
+  other entry point does.
+
+The timing clauses live in `tests/test_core/test_capabilities/test_browser_archiving.py`
+(`TestTiming`), against the fake browser: a held body read cannot block a collection
+past `drain_timeout_s`; an exchange in flight at a collection gets a `pending` line there
+and its `exchange` line, exactly once, in the next; what settles while a collection drains
+lands in exactly one batch.
+
 ---
 
 ## Step 1 — the two contract surfaces, and the hole between them
@@ -425,12 +451,37 @@ class DockerProviderBase(metaclass=DockerProviderRegistrar.Meta):
 Mirror `browser/backends/_registrar.py:9-32`. Then on the capability: `__wiring__["backend"]
 = "docker_provider"`, plus a class-level annotation `backend: BaseDockerProvider` marking
 the receptor. Until the Composer setattrs it, `self.backend` is a `WiredField` descriptor,
-not an instance — `BrowserCapability._resolved_backend` (`capability.py:732-751`) shows the
+not an instance — `BrowserCapability.resolved_backend` (`capability.py:732-751`) shows the
 guard that distinguishes "use the wired backend" from "no backend was injected".
 
 A backend is a wired receptor like any other — see **`af-add-a-receptor`** for the
 mechanics, including what happens when a strategy's knobs are declared but nothing can
 reach them.
+
+**Provider capabilities decide what a capability may hand a backend** (§4.9.x). A
+provider class declares `__capabilities__: ClassVar[set[str]]` from
+`backends/capabilities.py`; the capability reads the set, never a `provider_id`. Two
+exist because of the browser recorder (M29), declared by `local_chrome` alone:
+`NETWORK_CAPTURE` — the provider launches a browser the capability owns, so a second
+CDP client holding `waitForDebuggerOnStart` cannot wedge someone else's browser, and it
+says whether that browser starts from a fresh profile (`NetworkCaptureProvider.
+persistent_profile()`; a provider declaring the constant without it is refused, never
+taken as fresh) — and `LAUNCH_ARGS` — `open(*, launch_args=...)` reaches the command line
+(the `LaunchArgsProvider` Protocol adds `launch_arg_conflicts()`).
+Every rule that combines a configured party with a provider lives in **one** function
+(`browser/cooperation.py`): it reports every problem at once, each line naming both
+parties, and the parts decidable at binding time run in `bind_archivers` (i.e. in
+`prepare()`, dry runs included) before anything changes; setup runs all of it again
+before it launches anything. A test proves "nothing launched" with a backend that counts
+`open()` calls.
+
+**A second connection is a lifecycle, not a helper.** The browser's recorder
+(`browser/recorder.py`, §4.14) is the pattern for any capability that needs a channel
+beside the agent's: built in setup before the first tab, its consumers (the
+`ArchiveWatchdog`) attached *before* it attaches anything — or the events it emits while
+opening have nobody to count them — liveness pushed by a close callback (a lost
+connection fails every later observation, action and collection with one named error),
+and torn down first, in a fixed, idempotent order that is safe on a half-built instance.
 
 ---
 

@@ -38,7 +38,9 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.scripts.generate_all import _collect_registrars
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
-SHIPPED_CONFIGS = sorted(CONFIG_DIR.glob("*.yaml"))
+#: Every shipped config, the data-flywheel recording configs included
+#: (``configs/flywheel/``, M29: they turn the browser archive on).
+SHIPPED_CONFIGS = sorted([*CONFIG_DIR.glob("*.yaml"), *CONFIG_DIR.glob("flywheel/*.yaml")])
 
 # A capability block that satisfies Pydantic on the agent's
 # declaration-only ``capability`` wiring entry. The Composer must build
@@ -50,6 +52,7 @@ _CAPABILITY: dict[str, Any] = {
     "capability_id": "browser",
     "mouse_trajectory": {"trajectory_type": "instant"},
     "typing_rhythm": {"rhythm_type": "instant"},
+    "replayability": {"replayability_id": "off"},
     "dom_cleaner": {"cleaner_type": "browser_use"},
     "dom_serializer": {"serializer_type": "text"},
     "backend": {"provider_id": "local_chrome"},
@@ -756,6 +759,12 @@ _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
             "hook[0].trace_dir",
         }
     ),
+    "record_ui_tars_pinned.yaml": frozenset(
+        {
+            "environment[0].capabilities[0].profile",
+            "hook[0].trace_dir",
+        }
+    ),
 }
 
 
@@ -843,6 +852,7 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
             for child in (
                 "mouse_trajectory",
                 "typing_rhythm",
+                "replayability",
                 "dom_cleaner",
                 "dom_serializer",
                 "backend",
@@ -858,7 +868,7 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                         )
                     )
 
-    for h in range(len(root.get("hook", []))):
+    for h, hook_entry in enumerate(root.get("hook", [])):
         blocks.append(
             _Block(
                 f"hook[{h}]",
@@ -866,6 +876,15 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                 lambda run, h=h: run.instances("hook")[h],
             )
         )
+        # The trace hook's archive receptor: one archiver instance per entry.
+        for a in range(len(hook_entry.get("archive") or [])):
+            blocks.append(
+                _Block(
+                    f"hook[{h}].archive[{a}]",
+                    lambda r, h=h, a=a: r["hook"][h]["archive"][a],
+                    lambda run, h=h, a=a: run.instances("hook")[h].archive[a],
+                )
+            )
     return blocks
 
 

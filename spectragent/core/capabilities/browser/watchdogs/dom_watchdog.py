@@ -47,6 +47,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     BrowserStateRequestEvent,
     BrowserStateSummary,
+    DocumentStamp,
     ExecuteJavaScriptEvent,
 )
 
@@ -71,6 +72,7 @@ class DOMWatchdog(BrowserWatchdog):
         enable_cross_site_iframe_capture: bool = False,
         frame_capture_timeout_s: float = FRAME_CAPTURE_TIMEOUT_S,
         selector_map_setter: Callable[[DOMSelectorMap], None] | None = None,
+        raw_capture_sink: Callable[[TargetCapture, float], None] | None = None,
     ) -> None:
         self._cdp = cdp
         self._viewport = viewport
@@ -97,6 +99,10 @@ class DOMWatchdog(BrowserWatchdog):
         # so actions can translate an element index into the element —
         # its backend_node_id and the session that owns it.
         self._publish_selector_map = selector_map_setter
+        # Hands every raw capture (and its DPR) back the same way. What the
+        # capability does with it — nothing, unless an archiver wants raw
+        # DOM — is none of this resolver's business (§4.12).
+        self._raw_capture_sink = raw_capture_sink
         # The tab's out-of-process iframes, or ``None`` when the profile does
         # not capture them. Owned here because this watchdog is the only
         # thing that reads their documents; the action layer finds each
@@ -134,6 +140,7 @@ class DOMWatchdog(BrowserWatchdog):
             enable_js_listener_detection=ctx.profile.js_click_listener_detection,
             enable_cross_site_iframe_capture=ctx.profile.cross_site_iframe_capture,
             selector_map_setter=ctx.selector_map_setter,
+            raw_capture_sink=ctx.raw_capture_sink,
         )
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
@@ -166,6 +173,8 @@ class DOMWatchdog(BrowserWatchdog):
             # In particular the JS strategy must not pay for the fixed
             # DOM/Snapshot/AX triple used by the browser-use strategy.
             capture, dpr = await self._capture_cdp_data()
+            if self._raw_capture_sink is not None:
+                self._raw_capture_sink(capture, dpr)
 
             # Previous selector_map for new-node tracking — pre-budget, so
             # ``*`` marks what the page gained, not what the budget gave
@@ -202,7 +211,12 @@ class DOMWatchdog(BrowserWatchdog):
                         selector_map=dict(state.selector_map),
                         budget=budget,
                     ),
-                }
+                },
+                document=(
+                    DocumentStamp(loader_id=capture.loader_id, url=capture.url)
+                    if capture.loader_id or capture.url
+                    else None
+                ),
             )
 
         except Exception as exc:

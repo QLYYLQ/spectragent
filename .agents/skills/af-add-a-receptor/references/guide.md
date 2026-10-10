@@ -413,3 +413,25 @@ unchanged. `HookBase` and hooks without receptors (`metrics`) stay dataclasses;
   `cls.__module__.startswith("spectragent.")`.
 - **A receptor is negotiated by name, not by contract.** Nothing checks that the
   strategy you register actually satisfies the Protocol. Put a test on that seam.
+- **A registry key that YAML 1.1 reads as something else must be quoted.** PyYAML is
+  YAML 1.1: a bare `off`, `on`, `yes`, `no` is a boolean. `replayability` (§4.14) has an
+  `off` tier, so every shipped block writes `replayability: { replayability_id: "off" }`;
+  unquoted, the discriminator arrives as `False` and validation rejects the block
+  (`test_browser_replayability.py::test_a_bare_yaml_off_is_a_boolean_and_is_rejected`).
+  Prefer a key that is a plain word in YAML when you name a new strategy.
+- **A required single-instance receptor ripples through every hand-written block.**
+  Adding `replayability` made it mandatory in the generated schema, so the same change
+  edited every capability block that writes one by hand — the set
+  `rg -l typing_rhythm configs tests .agents` finds (shipped configs, `configs/README.md`,
+  the test configs, this guide's example) — and the shipped-config gate
+  (`test_shipped_config_integration.py`) proves each new value arrives.
+- **An optional *list* receptor omitted is not the same as empty.** `trace_writer.archive`
+  (`__wiring__ = {"archive": "archiver"}`, `Annotated[list[ArchiverBase] | None, ...]`
+  on the hand-written `__init__`, `archive: list[ArchiverBase]` on the
+  `_TraceWriterReceptors` mixin): written inline, the list is used; `archive: []` records
+  nothing; **omitted**, `_resolve_deferred` adopts *every* instance of a top-level
+  `archiver:` section — and with no such section, nothing. A config that means "record
+  nothing" while a top-level section exists must say `[]`. Pinned in
+  `tests/test_core/test_composer/test_archive_yaml_surface.py`, which also shows the
+  receptor's other half: an `archiver:` block on the *capability* (a provides
+  declaration with no slot) is refused at compose time with the negotiation-only error.

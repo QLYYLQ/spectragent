@@ -51,6 +51,13 @@ environment:
         typing_rhythm:
           rhythm_type: instant
 
+        # How far the run is pinned for replay (docs/architecture_design.md
+        # §4.14). ``off`` pins nothing and opens no recorder connection;
+        # ``pinned`` needs a provider that launches its own browser
+        # (local_chrome), so a cloud backend like this one refuses it.
+        replayability:
+          replayability_id: "off"   # quoted: YAML 1.1 reads a bare off as false
+
         dom_cleaner:
           cleaner_type: browser_use
 

@@ -287,6 +287,18 @@ class TestLedger:
         with pytest.raises(ValueError):
             RedactionEntry(location="/a", field="a", rule="guess")  # type: ignore[arg-type]
 
+    @pytest.mark.parametrize("rule", ["request_header", "input_value", "value_hash"])
+    def test_capability_rules_share_the_vocabulary(self, rule: str) -> None:
+        """The browser's rules (M29) write the same ledger; the names widen, nothing else.
+
+        This module's rule functions do not change with them, so
+        ``PRIVACY_POLICY`` does not move (the digest below proves it); a
+        capability versions its own rules (``BROWSER_REDACTION_POLICY``).
+        """
+        entry = RedactionEntry(location="/request/headers", field="Cookie", rule=rule)  # type: ignore[arg-type]
+        ledger = RedactionLedger(policy="af-privacy-1+browser-1", entries=[entry])
+        assert RedactionLedger.model_validate_json(ledger.model_dump_json()) == ledger
+
 
 class TestPlaceholders:
     def test_redacted_is_not_the_config_omission(self) -> None:

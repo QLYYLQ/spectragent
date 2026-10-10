@@ -193,6 +193,8 @@ class TestResolvedConfigIsRecorded:
         assert cap["screenshot_format"] == "png"
         assert cap["mouse_trajectory"]["trajectory_type"] == "instant"
         assert cap["typing_rhythm"]["rhythm_type"] == "instant"
+        # How far the run was pinned for replay is part of what was run.
+        assert cap["replayability"]["replayability_id"] == "off"
         assert cap["dom_cleaner"]["cleaner_type"] == "browser_use"
 
     def test_it_is_the_resolved_object_not_the_yaml_source(self, trace):

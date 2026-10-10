@@ -253,6 +253,7 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
             url="https://shop.example/checkout",
             page_title="Checkout",
             tabs=[{"id": "T1", "url": "https://shop.example/checkout", "active": True}],
+            loader_id="7C0FFEE0LOADER",
         ),
     },
     "loop.action_result": {

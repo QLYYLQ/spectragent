@@ -137,13 +137,14 @@ class TestTraceWriterRegistration:
 
 
 class TestTheConstructorSurface:
-    """A hand-written ``__init__`` (not a ``@dataclass``), with an unchanged config surface.
+    """A hand-written ``__init__`` (not a ``@dataclass``) carrying the ``archive`` receptor.
 
-    ``archive`` is about to become a ``__wiring__`` receptor (M29), and
-    conscribe reads ``inspect.signature(__init__)`` before ``@dataclass``
-    would have synthesised one — so the knobs are named ``Annotated``
-    parameters, and ``archive`` is a plain one the generated config does not
-    carry until then.
+    ``archive`` is a ``__wiring__`` receptor wired from the archiver registry,
+    and conscribe reads ``inspect.signature(__init__)`` before ``@dataclass``
+    would have synthesised one — so every knob, the receptor included, is a
+    named ``Annotated`` parameter, and the receptor's class annotation lives
+    on a plain mixin. The YAML semantics are pinned in
+    ``tests/test_core/test_composer/test_archive_yaml_surface.py``.
     """
 
     def test_keywords_and_defaults(self):
@@ -168,21 +169,32 @@ class TestTheConstructorSurface:
         assert "__dataclass_fields__" not in vars(TraceWriter)
         assert not [f.name for f in dataclasses.fields(TraceWriter)]  # inherits HookBase's: none
 
-    def test_the_config_carries_the_knobs_and_not_the_archive(self):
+    def test_the_config_carries_the_knobs_and_the_archive_receptor(self):
         from conscribe.config.extractor import extract_config_schema
 
         schema = extract_config_schema(TraceWriter)
         assert schema is not None
-        assert set(schema.model_fields) == {"trace_dir", "record_secrets"}
+        assert set(schema.model_fields) == {"trace_dir", "record_secrets", "archive"}
+        assert TraceWriter.__wiring__ == {"archive": "archiver"}
 
-    def test_the_generated_config_refuses_an_archive(self):
+    def test_the_generated_config_types_the_archive(self):
         from pydantic import ValidationError
 
         from spectragent.generated._composed import TraceWriterHookConfig
 
-        assert set(TraceWriterHookConfig.model_fields) == {"trace_dir", "record_secrets", "hook_id"}
-        with pytest.raises(ValidationError, match="archive"):
-            TraceWriterHookConfig.model_validate({"archive": [{"archiver_id": "browser.network"}]})
+        assert set(TraceWriterHookConfig.model_fields) == {
+            "trace_dir",
+            "record_secrets",
+            "archive",
+            "hook_id",
+        }
+        config = TraceWriterHookConfig.model_validate(
+            {"archive": [{"archiver_id": "browser.network", "drain_timeout_s": 0.5}]}
+        )
+        assert config.archive is not None
+        assert config.archive[0].archiver_id == "browser.network"
+        with pytest.raises(ValidationError, match="archiver_id"):
+            TraceWriterHookConfig.model_validate({"archive": [{"archiver_id": "browser.nework"}]})
 
     def test_two_writers_are_two_hooks(self):
         """Compared by identity: ``HookBase`` is ``@dataclass(eq=False)``.

@@ -21,6 +21,7 @@ import socket
 import sys
 import tempfile
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar
 
@@ -32,8 +33,16 @@ from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
     CUSTOM_PROXY,
     EXTENSIONS,
+    LAUNCH_ARGS,
+    NETWORK_CAPTURE,
     PROFILE,
     SCREEN_SIZE,
+)
+from spectragent.core.capabilities.browser.backends.chrome_switches import (
+    contradicting_switch,
+    merge_chrome_switches,
+    split_switch,
+    v8_flags,
 )
 from spectragent.schemas.provider_session import ProviderSession
 
@@ -105,6 +114,19 @@ CHROME_DISABLE_SECURITY_ARGS: tuple[str, ...] = (
     "--ignore-ssl-errors",
     "--disable-features=IsolateOrigins,site-per-process",
 )
+
+CHROME_DETERMINISTIC_RENDERING_ARGS: tuple[str, ...] = (
+    "--deterministic-mode",
+    "--js-flags=--random-seed=1157259159",
+    "--font-render-hinting=none",
+)
+
+#: Switches whose values change every launch. ``launch_flags`` (the
+#: fingerprintable form of the command line) writes a placeholder instead.
+_VOLATILE_SWITCH_PLACEHOLDERS: dict[str, str] = {
+    "--user-data-dir": "<user-data-dir>",
+    "--remote-debugging-port": "<port>",
+}
 
 # Known Chrome executable search paths by platform.
 _LINUX_PATHS: tuple[str, ...] = (
@@ -179,6 +201,16 @@ def find_chrome() -> str:
     )
 
 
+def _fingerprintable_flags(chrome_args: Sequence[str]) -> list[str]:
+    """``chrome_args`` with every per-launch value replaced by a placeholder."""
+    flags: list[str] = []
+    for arg in chrome_args:
+        name, value = split_switch(arg)
+        placeholder = _VOLATILE_SWITCH_PLACEHOLDERS.get(name)
+        flags.append(f"{name}={placeholder}" if placeholder and value is not None else arg)
+    return flags
+
+
 def _find_free_port() -> int:
     """Bind to OS to find an available TCP port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -204,6 +236,8 @@ class LocalChromeProvider(BrowserProviderBase):
         CDP,
         CUSTOM_PROXY,
         EXTENSIONS,
+        LAUNCH_ARGS,
+        NETWORK_CAPTURE,
         PROFILE,
         SCREEN_SIZE,
     }
@@ -429,13 +463,7 @@ class LocalChromeProvider(BrowserProviderBase):
 
         # Deterministic rendering.
         if self.deterministic_rendering:
-            args.extend(
-                (
-                    "--deterministic-mode",
-                    "--js-flags=--random-seed=1157259159",
-                    "--font-render-hinting=none",
-                )
-            )
+            args.extend(CHROME_DETERMINISTIC_RENDERING_ARGS)
 
         # CDP port + user data.
         args.append(f"--remote-debugging-port={port}")
@@ -497,8 +525,20 @@ class LocalChromeProvider(BrowserProviderBase):
     # Provider interface
     # -------------------------------------------------------------------
 
-    async def open(self, **kwargs: Any) -> ProviderSession:
-        """Launch Chrome subprocess and return CDP URL."""
+    async def open(self, *, launch_args: Sequence[str] = (), **kwargs: Any) -> ProviderSession:
+        """Launch Chrome subprocess and return CDP URL.
+
+        ``launch_args`` are switches another party owns for this session
+        (``replayability: pinned``, through ``LAUNCH_ARGS``). They go after
+        ``extra_args``, and every ``--js-flags`` / ``--disable-features`` /
+        ``--enable-features`` is then merged into one switch, because Chrome
+        keeps only the last occurrence of each.
+
+        ``metadata["command_line"]`` is the exact argv. It may carry a proxy
+        credential, so it never enters a trace; ``metadata["launch_flags"]``
+        is the fingerprintable form — no executable, no startup URL, and the
+        per-launch profile path and port replaced by placeholders.
+        """
         session_id = str(uuid.uuid4())
 
         # Resolve port.
@@ -521,7 +561,7 @@ class LocalChromeProvider(BrowserProviderBase):
         executable = kwargs.get("executable_path") or self.executable_path or find_chrome()
 
         # Build args.
-        chrome_args = self._build_args(port, udd)
+        chrome_args = merge_chrome_switches([*self._build_args(port, udd), *launch_args])
         cmd = [executable, *chrome_args, self.startup_url]
 
         logger.info("Launching Chrome: %s (port=%d)", executable, port)
@@ -570,8 +610,84 @@ class LocalChromeProvider(BrowserProviderBase):
                 "executable": executable,
                 "user_data_dir": udd,
                 "headless": self.headless,
+                "command_line": list(cmd),
+                "launch_flags": _fingerprintable_flags(chrome_args),
             },
         )
+
+    # -------------------------------------------------------------------
+    # LaunchArgsProvider (LAUNCH_ARGS)
+    # -------------------------------------------------------------------
+
+    def launch_arg_conflicts(self, launch_args: Sequence[str]) -> list[str]:
+        """This provider's knobs that set what ``launch_args`` sets, differently.
+
+        One entry per knob, naming it and the switch it contradicts.
+        Repeating an owned switch with the same value is fine, and so is
+        adding unrelated V8 flags or features to a list switch — the merge
+        keeps both.
+        """
+        owned = list(launch_args)
+        if not owned:
+            return []
+        problems: list[str] = []
+        owned_v8 = v8_flags(owned)
+        if self.deterministic_rendering and "--random-seed" in owned_v8:
+            # Two sources of the V8 seed even when the values agree, and
+            # ``--deterministic-mode`` changes rendering on top of it.
+            problems.append(
+                "deterministic_rendering=true contradicts "
+                f"--js-flags=--random-seed={owned_v8['--random-seed']} (it sets its own V8 "
+                "seed and --deterministic-mode)"
+            )
+        knobs: list[tuple[str, tuple[str, ...]]] = []
+        if self.force_device_scale_factor is not None:
+            knobs.append(
+                (
+                    f"force_device_scale_factor={self.force_device_scale_factor:g}",
+                    (f"--force-device-scale-factor={self.force_device_scale_factor}",),
+                )
+            )
+        if self.user_agent:
+            knobs.append(("user_agent", (f"--user-agent={self.user_agent}",)))
+        knobs.extend((f"extra_args entry {arg!r}", (arg,)) for arg in self.extra_args or ())
+
+        for knob, args in knobs:
+            for arg in args:
+                clash = contradicting_switch(arg, owned)
+                if clash is not None:
+                    problems.append(f"{knob} contradicts {clash}")
+                    break
+        return problems
+
+    # -------------------------------------------------------------------
+    # NetworkCaptureProvider (NETWORK_CAPTURE)
+    # -------------------------------------------------------------------
+
+    def persistent_profile(self) -> str | None:
+        """Name what makes this browser start from a profile that is not fresh.
+
+        ``None`` when every run gets a new temporary ``--user-data-dir``.
+        Otherwise every source that applies, in ``open()``'s precedence: the
+        ``user_data_dir`` knob (else the ``CHROME_USER_DATA_DIR`` variable),
+        a ``profile_directory`` other than ``"Default"`` (counted
+        conservatively: it is how an existing profile is selected), and an
+        ``extra_args`` ``--user-data-dir``, which Chrome lets win because it
+        comes last.
+        """
+        found: list[str] = []
+        if self.user_data_dir:
+            found.append(f"user_data_dir={self.user_data_dir!r}")
+        elif os.environ.get("CHROME_USER_DATA_DIR"):
+            found.append(f"CHROME_USER_DATA_DIR={os.environ['CHROME_USER_DATA_DIR']!r}")
+        if self.profile_directory != "Default":
+            found.append(f"profile_directory={self.profile_directory!r}")
+        found.extend(
+            f"extra_args entry {arg!r}"
+            for arg in self.extra_args or ()
+            if split_switch(arg)[0] == "--user-data-dir"
+        )
+        return "; ".join(found) or None
 
     async def close(self, session: ProviderSession | None = None) -> None:
         """Shut down Chrome process(es)."""

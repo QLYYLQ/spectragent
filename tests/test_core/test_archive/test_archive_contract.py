@@ -16,7 +16,7 @@ import inspect
 import json
 import re
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 import pytest
@@ -65,9 +65,11 @@ FACTORY_IDS = sorted(HARNESS_FACTORIES)
 
 
 @pytest.fixture(params=FACTORY_IDS)
-def harness(request: pytest.FixtureRequest) -> ArchiveHarness:
-    """A fresh harness per test, for each archiving capability."""
-    return HARNESS_FACTORIES[request.param]()
+async def harness(request: pytest.FixtureRequest) -> AsyncIterator[ArchiveHarness]:
+    """A fresh harness per test, for each archiving capability — closed afterwards."""
+    built = HARNESS_FACTORIES[request.param]()
+    yield built
+    await built.aclose()
 
 
 # ── The contract, run against every archiving capability ──────────────

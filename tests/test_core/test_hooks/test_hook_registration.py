@@ -155,10 +155,11 @@ class TestHookConfigIsExtractable:
         finally:
             HookRegistrar.unregister("test_hand_written_hook")
 
-        # The worked case: TraceWriter's knobs in, its plain ``archive`` out.
+        # The worked case: TraceWriter's knobs and its ``archive`` receptor —
+        # an ``Annotated`` parameter wired from the archiver registry.
         trace_schema = extract_config_schema(TraceWriter)
         assert trace_schema is not None
-        assert set(trace_schema.model_fields) == {"trace_dir", "record_secrets"}
+        assert set(trace_schema.model_fields) == {"trace_dir", "record_secrets", "archive"}
 
     def test_trace_writer_exposes_trace_dir(self) -> None:
         from spectragent.generated._composed import TraceWriterHookConfig

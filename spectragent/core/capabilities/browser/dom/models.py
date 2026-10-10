@@ -309,6 +309,11 @@ class TargetCapture:
     #: Backend ids with JS click listeners; ``None`` = detection skipped.
     js_click_listener_ids: set[int] | None = None
     frames: dict[str, TargetCapture] = field(default_factory=dict)
+    #: The root frame's loader id and URL when this target was captured
+    #: (``Page.getFrameTree``, read by both capture paths). The tab capture's
+    #: pair is the DOM's document stamp for the cycle consistency check.
+    loader_id: str | None = None
+    url: str | None = None
 
 
 @dataclass(slots=True)

@@ -10,6 +10,7 @@ own session. The selector_map lookup happens at handler time in each watchdog.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,6 +22,40 @@ from pydantic import Field as PydanticField
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentStamp:
+    """Which document a piece of evidence describes: the main frame's loader + URL.
+
+    A new navigation gets a new ``loader_id``; a same-document change
+    (``pushState``, a fragment) keeps it. M18 found ``browser_meta``'s URL
+    about 0.25 s older than the DOM and screenshot of the same cycle, and
+    nothing in the capture recorded a loader id to notice it (§4.14).
+    """
+
+    loader_id: str | None = None
+    url: str | None = None
+
+
+def documents_disagree(stamps: Mapping[str, DocumentStamp]) -> bool:
+    """Whether a cycle's stamps name more than one document.
+
+    Only stamps that know their ``loader_id`` are compared, and only when
+    there are at least two of them: a watchdog (or a test double) that
+    reports no stamp has nothing to disagree with.
+    """
+    known = {stamp.loader_id for stamp in stamps.values() if stamp.loader_id}
+    counted = sum(1 for stamp in stamps.values() if stamp.loader_id)
+    return counted >= 2 and len(known) > 1
+
+
+def describe_stamps(stamps: Mapping[str, DocumentStamp]) -> str:
+    """``handler → loader_id url`` for every stamp, for an error message."""
+    return "; ".join(
+        f"{handler} → loader {stamp.loader_id or '?'} {stamp.url or ''}".rstrip()
+        for handler, stamp in stamps.items()
+    )
+
+
 @dataclass(slots=True)
 class BrowserStateSummary:
     """One watchdog's contribution to an observe cycle.
@@ -29,9 +64,14 @@ class BrowserStateSummary:
     the built fragment instance. The producing watchdog builds its own
     fragment — the capability only merges the dicts, so it needs no
     per-fragment knowledge and does not change when a fragment is added.
+
+    ``document`` is the watchdog's stamp of the document it observed, when
+    it knows one. The capability compares the stamps of one cycle and
+    re-fires a cycle whose evidence describes different documents.
     """
 
     fragments: dict[str, Any] = field(default_factory=dict)
+    document: DocumentStamp | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

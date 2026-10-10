@@ -85,8 +85,23 @@ MARKER_REDACTED = f"redacted:{PRIVACY_POLICY}"
 #: evidence carries session state — cookies kept for a replay's cookie jar.
 MARKER_SESSION_STATE = "contains_session_state"
 
-#: Which rule replaced a value.
-RedactionRule = Literal["field_name", "url_userinfo", "url_query", "url_fragment"]
+#: Which rule replaced a value. The first four are this module's own rules;
+#: the last three name capability rules that write into the same ledger
+#: format (the browser's, ``core/capabilities/browser/archive/redaction.py``):
+#: ``request_header`` — a request header stripped at capture (only its name is
+#: recorded); ``input_value`` — a sensitive form control's value in a raw DOM
+#: capture; ``value_hash`` — a value stored as its sha256 (cookie values).
+#: Widening the vocabulary changes no rule of this module, so
+#: :data:`PRIVACY_POLICY` stays; each capability versions its own rules.
+RedactionRule = Literal[
+    "field_name",
+    "url_userinfo",
+    "url_query",
+    "url_fragment",
+    "request_header",
+    "input_value",
+    "value_hash",
+]
 
 #: ``scheme://`` — the only strings :func:`redact_url` treats as URLs.
 _ABSOLUTE_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://")
@@ -115,7 +130,10 @@ class RedactionLedger(BaseModel):
     """Every replacement one redaction pass made, in traversal order.
 
     Attributes:
-        policy: The :data:`PRIVACY_POLICY` that was in force.
+        policy: The rule version that was in force — :data:`PRIVACY_POLICY`
+            for this module's rules, a capability's own version (which
+            names this one, ``"af-privacy-1+browser-1"``) for a ledger its
+            rules wrote.
         entries: The replacements. Empty means nothing matched — or, where
             the owner says so (``TraceConfig.secrets_recorded``), that
             redaction was switched off.

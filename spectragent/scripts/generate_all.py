@@ -47,6 +47,7 @@ def _collect_registrars() -> dict[str, type]:
     from spectragent.agents._registrar import AgentRegistrar
     from spectragent.agents.memory._registrar import MemoryRegistrar
     from spectragent.core.actions._registrar import ActionRegistrar
+    from spectragent.core.archive._registrar import ArchiverRegistrar
     from spectragent.core.capabilities._registrar import CapabilityRegistrar
     from spectragent.core.capabilities.browser.backends._registrar import (
         BrowserProviderRegistrar,
@@ -59,6 +60,7 @@ def _collect_registrars() -> dict[str, type]:
         MouseTrajectoryRegistrar,
         TypingRhythmRegistrar,
     )
+    from spectragent.core.capabilities.browser.replay import ReplayabilityRegistrar
     from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
     from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
     from spectragent.core.environments._registrar import EnvironmentRegistrar
@@ -79,6 +81,14 @@ def _collect_registrars() -> dict[str, type]:
         "typing_rhythm": TypingRhythmRegistrar,
         "dom_cleaner": DOMCleanerRegistrar,
         "dom_serializer": DOMSerializerRegistrar,
+        # How far a run is pinned for replay (``off`` / ``pinned``, §4.14):
+        # collected so ``pinned``'s seed / time zone / locale / DPR knobs are
+        # typed in the generated union rather than lost behind a Literal.
+        "replayability": ReplayabilityRegistrar,
+        # Environment evidence (§4.5, §4.14): the trace hook's ``archive``
+        # receptor draws from it, so each archiver's knobs are typed in YAML
+        # and a mistyped archiver_id is refused.
+        "archiver": ArchiverRegistrar,
         "action": ActionRegistrar,
         "capability": CapabilityRegistrar,
         "agent_loop": AgentLoopRegistrar,

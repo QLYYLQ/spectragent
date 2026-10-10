@@ -68,6 +68,10 @@ async def _capture_target(
     )
     capture.target_id = frame.target_id if frame is not None else None
     capture.namespace = frame.namespace if frame is not None else 0
+    # The document stamp: the root frame this extraction read (§4.14).
+    root_frame = root_entry.get("frame") or {}
+    capture.loader_id = root_frame.get("loaderId")
+    capture.url = root_frame.get("url")
 
     # Some Chrome versions omit OOP descendants from Page.getFrameTree on the
     # parent renderer. The target attachment itself is authoritative.

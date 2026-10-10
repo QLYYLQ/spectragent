@@ -1,0 +1,46 @@
+# Record a UI-TARS run with the full browser archive (data flywheel, M29):
+# `replayability: pinned` (seeded randomness, a stepped clock, fixed time zone,
+# locale and DPR, its own launch switches) and the three browser archivers —
+# every request/response with its body (WARC), cookies and Web Storage, and the
+# raw DOM of every committed cycle (a vision agent: dom_raw captures it itself).
+# Evidence lands under traces/<run>/env/; see configs/README.md and
+# docs/architecture_design.md §4.14. Local Chrome only: the recorder connection
+# needs a browser the capability launches itself (NETWORK_CAPTURE).
+agent:
+  - agent_id: ui_tars
+    id: main
+    prompt_template: computer_use
+    coordinate_space: screenshot_pixels
+    agent_loop:
+      loop_id: react
+      max_steps: 30
+      max_actions_per_step: 1
+    llm:
+      model_type: openai
+      model: gpt-4o
+      provider: { name: direct }
+    memory: { memory_id: simple, max_messages: 200 }
+
+environment:
+  - env_type: browser
+    id: browser_env
+    capabilities:
+      - capability_id: browser
+        profile: standard
+        mouse_trajectory: { trajectory_type: instant }
+        typing_rhythm: { rhythm_type: instant }
+        replayability: { replayability_id: pinned, random_seed: 7 }
+        dom_cleaner: { cleaner_type: browser_use }
+        dom_serializer: { serializer_type: text }
+        backend:
+          provider_id: local_chrome
+          headless: true
+
+hook:
+  - hook_id: trace_writer
+    trace_dir: traces
+    archive:
+      - archiver_id: browser.network
+      - archiver_id: browser.storage
+      - archiver_id: browser.dom_raw
+  - hook_id: metrics

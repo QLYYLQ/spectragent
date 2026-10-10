@@ -122,7 +122,8 @@ class TestDefaultIsUnchanged:
         fragment, group = await _observe(cap, cdp)
         try:
             assert cdp.shots() == [{"format": "png"}]
-            assert [m for m, _ in cdp.calls] == ["Page.captureScreenshot"]
+            # The capture, then the document stamp read right after it (M18).
+            assert [m for m, _ in cdp.calls] == ["Page.captureScreenshot", "Page.getFrameTree"]
             assert fragment.image_width, fragment.image_height == (1280, 720)
         finally:
             await group.close_all()
@@ -159,7 +160,8 @@ class TestEncodingIsWiredThrough:
         try:
             assert (fragment.image_width, fragment.image_height) == (1280, 720)
             assert (fragment.viewport_width, fragment.viewport_height) == (1280, 720)
-            assert [m for m, _ in cdp.calls] == ["Page.captureScreenshot"]
+            # No size query; the second call is the document stamp (M18).
+            assert [m for m, _ in cdp.calls] == ["Page.captureScreenshot", "Page.getFrameTree"]
         finally:
             await group.close_all()
 

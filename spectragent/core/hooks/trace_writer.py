@@ -48,7 +48,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, Any, NamedTuple
+from typing import Annotated, Any, ClassVar, NamedTuple
 
 from pydantic import Field
 
@@ -116,7 +116,19 @@ class _Collected(NamedTuple):
     files: tuple[ArchiveFile, ...]
 
 
-class TraceWriter(HookBase):
+class _TraceWriterReceptors:
+    """Annotation-only declaration of the ``archive`` receptor slot.
+
+    ``ConfigComposer`` reads the *class* annotation to decide between list,
+    dict and single injection (``composer._slot_annotation``), and the
+    receptor must not be a dataclass field (``af-add-a-receptor`` §6) — so the
+    annotation lives on this plain mixin, the ``_BrowserReceptors`` shape.
+    """
+
+    archive: list[ArchiverBase]
+
+
+class TraceWriter(_TraceWriterReceptors, HookBase):
     """Full-trace WAL persistence hook.
 
     At run start it writes the snapshot of *how the run was configured* —
@@ -139,17 +151,25 @@ class TraceWriter(HookBase):
     With a non-empty :attr:`archive` it also records environment evidence:
     see the module docstring and ``docs/architecture_design.md`` §5.4.
 
-    **Not a** ``@dataclass``. ``archive`` is the receptor M29 wires from
-    YAML, and conscribe's metaclass reads ``inspect.signature(__init__)``
-    at class creation — before ``@dataclass`` would have synthesised one —
-    so a receptor that is a dataclass field looks unreceived and loses its
-    default to a ``WiredField`` (``af-add-a-receptor`` §6). The knobs are
-    named ``Annotated`` parameters of the hand-written ``__init__``
-    instead, and the generated config is what it was: ``trace_dir`` and
-    ``record_secrets``.
+    **Not a** ``@dataclass``. ``archive`` is a receptor wired from YAML
+    (``__wiring__ = {"archive": "archiver"}``), and conscribe's metaclass
+    reads ``inspect.signature(__init__)`` at class creation — before
+    ``@dataclass`` would have synthesised one — so a receptor that is a
+    dataclass field looks unreceived and loses its default to a
+    ``WiredField`` (``af-add-a-receptor`` §6). The knobs are named
+    ``Annotated`` parameters of the hand-written ``__init__``, and the
+    receptor's class-level annotation is on :class:`_TraceWriterReceptors`.
+
+    **YAML** (``docs/architecture_design.md`` §4.2.1, §5.4): an inline
+    ``archive:`` list builds the archivers in place; ``archive: []`` records
+    nothing; an omitted ``archive`` adopts every instance of a top-level
+    ``archiver:`` section, so with no such section nothing is recorded either.
     """
 
     __registry_key__ = "trace_writer"
+    # The run's archive is the trace hook's: what a run records is a per-run
+    # choice (user ruling D3), so the receptor is here, never on an agent.
+    __wiring__: ClassVar[dict[str, Any]] = {"archive": "archiver"}
     __intercepts__ = [
         # The one recording point for LLM calls — see :meth:`around_ainvoke`.
         Intercept("ainvoke", role="llm", advice="around"),
@@ -189,18 +209,25 @@ class TraceWriter(HookBase):
                 ),
             ),
         ] = False,
-        archive: list[ArchiverBase] | None = None,
+        archive: Annotated[
+            list[ArchiverBase] | None,
+            Field(
+                description=(
+                    "Environment evidence this run records (``browser.network``, "
+                    "``browser.storage``, ``browser.dom_raw``, ...), each archiver with its "
+                    "own knobs; evidence lands under env/ with each step. [] records "
+                    "nothing; omitted, every instance of a top-level ``archiver:`` section "
+                    "is adopted (no such section: nothing)."
+                ),
+            ),
+        ] = None,
     ) -> None:
         super().__init__()
         self.trace_dir = trace_dir
         self.record_secrets = record_secrets
-        #: The archivers whose evidence this hook records. Non-empty makes
-        #: it the run's archive consumer. A plain parameter, deliberately
-        #: not ``Annotated``: ``HookBase.__config_annotated_only__`` keeps it
-        #: out of the generated config, so a YAML ``archive:`` block is
-        #: refused rather than silently dropped until M29 makes it a
-        #: receptor (an ``Annotated`` type without ``__wiring__`` would
-        #: generate ``archive: Any`` and hand the hook raw dicts).
+        #: The archivers whose evidence this hook records — a receptor
+        #: (``__wiring__``), so YAML builds each one with its knobs. Non-empty
+        #: makes this hook the run's archive consumer.
         self.archive: list[ArchiverBase] = list(archive or [])
 
         # ── per-run state, reset by on_run_start ──────────────

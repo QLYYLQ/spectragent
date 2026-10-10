@@ -99,8 +99,9 @@ class TestCoordinateSpaceIsDeclared:
         shot = summary.fragments["browser.screenshot"]
         assert (shot.image_width, shot.image_height) == (2560, 1440)
         assert (shot.viewport_width, shot.viewport_height) == (1280, 720)
-        # Measured from the bytes: still one CDP call per observe.
-        assert cdp.sent == ["Page.captureScreenshot"]
+        # Measured from the bytes: no layout query. The one other call is the
+        # document stamp read after the capture (M18, §4.14).
+        assert cdp.sent == ["Page.captureScreenshot", "Page.getFrameTree"]
 
 
 class TestTargetBox:

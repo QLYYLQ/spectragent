@@ -82,7 +82,8 @@ All registrars use `conscribe.create_registrar(...)`. The ones marked ✅ alread
 | `CapabilityRegistrar` | `capability_id` (flat) | `core/capabilities/_registrar.py` | ✅ browser; docker/tool_sandbox/desktop_vm/android/gpu_profiling pending |
 | `ActionRegistrar` | `action_id` (flat) | `core/actions/_registrar.py` | ✅ + negotiation |
 | `ObservationRegistrar` | `fragment_id` (flat) | `schemas/observation/` | ✅ with `__source__` |
-| `ArchiverRegistrar` | `archiver_id` (flat) | `core/archive/_registrar.py` | 🚧 framework axis (negotiation, binding, trace pull) with no concrete archiver yet; added to `_collect_registrars()` (YAML-selectable) together with the first browser archivers |
+| `ArchiverRegistrar` | `archiver_id` (flat) | `core/archive/_registrar.py` | ✅ framework axis (M28); browser archivers `browser.network` / `browser.storage` / `browser.dom_raw` (M29, `core/capabilities/browser/archive/`), collected in `_collect_registrars()`, selected in YAML through `trace_writer.archive` |
+| `ReplayabilityRegistrar` | `replayability_id` (flat) | `core/capabilities/browser/replay/` | browser-internal; `off` (default) / `pinned`; a required single-instance receptor, so every hand-written capability block writes `replayability: {replayability_id: "off"}` (quoted: YAML 1.1 reads a bare `off` as `false`) |
 | `HookRegistrar` | `hook_id` (flat) | `core/hooks/_registrar.py` | ✅ + AOP weaver |
 | `MemoryRegistrar` | `memory_id` (flat) | `agents/memory/_registrar.py` | ✅ stable |
 | `EvaluatorRegistrar` | `evaluator_id` (flat) | `evaluator/` | 🚧 partial |
@@ -196,4 +197,5 @@ The repo-scoped `af-project-history` skill under `.agents/skills/` contains cura
 - `agent-cdp` (v≥0.4.0, in-house) — CDP client + Watchdog + Event scope; **only the Browser Capability consumes it**, it is not a framework-level concern.
 - `bubus` — event bus used inside `agent-cdp` watchdogs (optional extra).
 - `pydantic` v2 — all data contracts.
-- Cloud browser "lite" SDKs (`lexmount`, `browser-use-lite`, `hyperbrowser-lite`, `agentbay-lite`, `airtop-lite`, `skyvern-lite`) — session lifecycle + CDP URL only, wrapped behind the Browser Capability's backend abstraction.
+- Cloud browser "lite" SDKs (`lexmount`, `browser-use-lite`, `hyperbrowser-lite`, `agentbay-lite`, `airtop-lite`, `skyvern-lite`) — session lifecycle + CDP URL only, wrapped behind the Browser Capability's backend abstraction. None of them declares `NETWORK_CAPTURE`, so browser archiving and `replayability: pinned` refuse them (`docs/architecture_design.md` §4.9.x, §4.14).
+- `warcio` (Apache-2.0) — writes `browser.network`'s WARC files. **Never** add `py-wacz`, `cdxj-indexer` or `surt` as dependencies: `surt` is AGPL and the other two pull it in. A lockfile test enforces this; port permissive code instead and record it in `THIRD_PARTY_NOTICES.md`.

@@ -9,6 +9,17 @@ exactly the coupling F9 removes.
 Tab enumeration is browser-level state (which target is focused is owned
 by the capability, not by any one tab's ``EventScope``), so the capability
 lends it to this watchdog through ``WatchdogContext.tabs_getter``.
+
+**It runs last in the cycle and stamps what it reads (M18, §4.14).** The
+tab's observation scope runs its queued handlers one at a time in priority
+order; at the default priority this watchdog's URL was read before the DOM
+and the screenshot and ran about 0.25 s stale on a page that was still
+navigating. It now connects with :data:`LAST` priority and takes the URL and
+``loaderId`` from ``Page.getFrameTree`` — the same tree the DOM capture
+reads — so its stamp can be compared with theirs. The URL is the frame's
+``url`` plus its ``urlFragment`` (CDP keeps the fragment apart; a hash-routed
+page is still told ``…#/inbox``). The title still comes from the navigation
+history, which is the only place CDP keeps it.
 """
 
 from __future__ import annotations
@@ -28,9 +39,14 @@ from spectragent.core.capabilities.browser.watchdogs.base import (
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
+    DocumentStamp,
 )
 
 logger = logging.getLogger(__name__)
+
+#: Connection priority: lower than every other ``BrowserStateRequestEvent``
+#: handler (they use agent-cdp's default 0), so this one runs last.
+LAST = -100
 
 
 class BrowserMetaWatchdog(BrowserWatchdog):
@@ -59,6 +75,7 @@ class BrowserMetaWatchdog(BrowserWatchdog):
             BrowserStateRequestEvent,
             self._on_browser_state_request,
             mode=ConnectionType.QUEUED,
+            priority=LAST,
         )
 
     async def _on_browser_state_request(
@@ -88,6 +105,24 @@ class BrowserMetaWatchdog(BrowserWatchdog):
                 exc,
             )
 
+        loader_id: str | None = None
+        try:
+            tree = await self._cdp.send("Page.getFrameTree", {}, session_id=self._session_id)
+            frame = ((tree or {}).get("frameTree") or {}).get("frame") or {}
+            loader_id = frame.get("loaderId")
+            if frame.get("unreachableUrl"):
+                # An error page's frame URL is chrome-error://; the agent is
+                # told the URL it tried (fragment included), as the navigation
+                # history always told it.
+                url = frame["unreachableUrl"]
+            elif frame.get("url"):
+                # ``Frame.url`` carries no fragment — CDP keeps it apart in
+                # ``urlFragment`` — and a hash-routed page is told its whole
+                # URL, as the navigation history told it.
+                url = f"{frame['url']}{frame.get('urlFragment') or ''}"
+        except Exception as exc:
+            logger.debug("Page.getFrameTree failed for %s: %s", self._session_id, exc)
+
         tabs = await self._tabs_getter() if self._tabs_getter is not None else []
         return BrowserStateSummary(
             fragments={
@@ -95,6 +130,8 @@ class BrowserMetaWatchdog(BrowserWatchdog):
                     url=url,
                     page_title=page_title,
                     tabs=tabs,
+                    loader_id=loader_id,
                 ),
-            }
+            },
+            document=DocumentStamp(loader_id=loader_id, url=url) if loader_id else None,
         )

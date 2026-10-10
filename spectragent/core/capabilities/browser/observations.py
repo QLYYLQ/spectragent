@@ -628,6 +628,9 @@ class BrowserMetaObs(FragmentBase):
     url: str = ""
     page_title: str = ""
     tabs: list[dict[str, Any]] = Field(default_factory=list)
+    #: The main frame's loader id when ``url`` was read — which document the
+    #: URL belongs to (§4.14). ``None`` when the frame tree was unavailable.
+    loader_id: str | None = None
 
     def summary(self) -> str:
         if not self.url and not self.page_title:

@@ -12,6 +12,7 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `browser_use_skyvern.yaml` | Same agent/loop, switched to the hosted Skyvern backend |
 | `skyvern_agent_local.yaml` | SkyvernAgent + ReactLoop + LocalChrome backend |
 | `ui_tars_local.yaml` | UITarsAgent + ReactLoop + LocalChrome backend |
+| `flywheel/record_ui_tars_pinned.yaml` | A **recording** run (data flywheel): UITarsAgent, `replayability: pinned`, the three browser archivers on the trace hook — see [Recording environment evidence](#recording-environment-evidence) |
 
 ## Quick start
 
@@ -56,6 +57,7 @@ environment:
         profile: standard
         mouse_trajectory: { trajectory_type: instant }
         typing_rhythm: { rhythm_type: instant }
+        replayability: { replayability_id: "off" }
         screenshot_format: png      # jpeg + screenshot_quality shrinks a
                                     # vision step's image ~2-4x
         backend:                    # ← execution-layer config (IoC)
@@ -71,10 +73,11 @@ Notes:
 
 - A wiring entry becomes a runtime receptor **only** when the owning class declares a slot for it. `observation` / `action` on the agent and `observation` on the capability have no slot: they are declaration-only constraints the negotiation engine reads off `__wiring__`. They are optional in the schema, and *populating* one is a hard `UnresolvedWiringError` — the value would otherwise be silently dropped.
 - Mode 1 wirings (`agent_loop`, `llm`, `memory`) become full discriminated unions of every registered config — you write the **complete child config** inline, no top-level reference list needed.
-- Single-instance receptors (`llm`, `agent_loop`, `capability.backend`, `capability.mouse_trajectory`, `capability.typing_rhythm`, `capability.dom_cleaner`, `capability.dom_serializer`) are **required**; list-shaped ones (`environment.capabilities`, `capability.actions`) are optional and fall back to a sensible default when omitted.
+- Single-instance receptors (`llm`, `agent_loop`, `capability.backend`, `capability.mouse_trajectory`, `capability.typing_rhythm`, `capability.dom_cleaner`, `capability.dom_serializer`, `capability.replayability`) are **required**; list-shaped ones (`environment.capabilities`, `capability.actions`) are optional and fall back to a sensible default when omitted.
 - A strategy is always a receptor block, never a name on `profile:`. `profile:` says which watchdogs run and which CDP round trips they may spend — nothing else. Naming a strategy there is what made `mouse_trajectory`, then `dom_cleaner`, then `dom_serializer` arrive default-constructed with every configured knob discarded.
 - `browser.dom` has a cost surface of its own, off by default: `dom_max_elements`, `dom_max_serialized_chars`, `dom_interactive_only`, `dom_viewport_only`. When any of them cuts, the observation fragment records the cut in `budget`, so a trace never shows a truncated page as a sparse one.
 - The two input-humanization receptors are independent axes and each is its own off-switch: `mouse_trajectory: { trajectory_type: instant }` and `typing_rhythm: { rhythm_type: instant }` are the legacy instant jump and the legacy single bulk `Input.insertText`. There is no boolean beside either — the strategy *is* the switch.
+- `replayability` has the same shape (`docs/architecture_design.md` §4.14): `{ replayability_id: "off" }` pins nothing and opens no second CDP connection (quote `"off"`: YAML 1.1 — PyYAML — reads a bare `off` as `false`, which no tier matches); `pinned` (knobs `base_time`, `random_seed`, `timezone`, `locale`, `device_scale_factor`, `user_agent`, `reduced_motion`) makes a recording replayable and needs a backend that launches its own browser (`local_chrome`).
 
 ## Per-action configuration
 
@@ -185,6 +188,46 @@ backend:
 ```
 
 Every other section stays identical. Trace output (`./traces/<run_id>/config.yaml`) records which `provider_id` was used so cross-backend runs are easy to diff.
+
+## Recording environment evidence
+
+A run records the world it acted in — every request and response with its body, cookies
+and Web Storage, the raw DOM of each observation cycle, the environment fingerprint —
+when its trace hook lists archivers (`docs/architecture_design.md` §4.14, §5.4). The
+evaluation configs above record none. `flywheel/record_ui_tars_pinned.yaml` is the
+shipped recording config:
+
+```yaml
+environment:
+  - env_type: browser
+    capabilities:
+      - capability_id: browser
+        replayability: { replayability_id: pinned, random_seed: 7 }   # replayable recording
+        backend: { provider_id: local_chrome, headless: true }        # must launch its own browser
+        # ... the rest as in any capability block
+
+hook:
+  - hook_id: trace_writer
+    trace_dir: traces
+    archive:                          # [] = record nothing
+      - archiver_id: browser.network  # WARC/1.1 + index.jsonl per step
+      - archiver_id: browser.storage  # cookies (values hashed) + local/session storage
+      - archiver_id: browser.dom_raw  # raw DOM of each committed cycle
+```
+
+- Evidence lands in `traces/<run>/env/` and is read through `RunTrace.archive_files` /
+  `blob` / `archive_run_file`.
+- `archive` omitted while the file has a top-level `archiver:` section adopts every
+  archiver of that section; with neither, nothing is recorded. Write `archive: []` to be
+  explicit.
+- Each archiver has knobs (`max_inline_body_bytes`, `strip_request_headers`,
+  `drain_timeout_s`, `allow_session_state`, …), validated against the generated schema;
+  a mistyped `archiver_id` is refused.
+- `browser.network` refuses `replayability: "off"` unless it says
+  `require_replayable: false` (an archive of an unpinned run may not replay). Only
+  `local_chrome` can record (`NETWORK_CAPTURE`); a cloud backend, an explicit `cdp_url`,
+  or a non-fresh profile without `allow_session_state: true` on every archiver is refused
+  before anything launches, each problem naming both sides.
 
 ## Benchmark data
 

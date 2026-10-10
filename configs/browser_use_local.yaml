@@ -144,6 +144,22 @@ environment:
         typing_rhythm:
           rhythm_type: instant
 
+        # How far the run is pinned for replay (docs/architecture_design.md
+        # §4.14) — the strategy is the switch, like the two above. ``off``
+        # pins nothing and opens no second CDP connection. ``pinned`` seeds
+        # Math.random / crypto, steps the JS clock from the run's start,
+        # fixes time zone, locale, user agent and DPR, and adds its own
+        # Chrome switches through this local_chrome backend:
+        #
+        # replayability:
+        #   replayability_id: pinned
+        #   random_seed: 1
+        #   timezone: UTC
+        #   locale: en-US
+        #   device_scale_factor: 1.0
+        replayability:
+          replayability_id: "off"   # quoted: YAML 1.1 reads a bare off as false
+
         # How the raw CDP capture becomes the tree the agent reads. Also a
         # wired receptor, so the strategy's knobs are reachable: this is
         # where you widen or narrow what gets an index.

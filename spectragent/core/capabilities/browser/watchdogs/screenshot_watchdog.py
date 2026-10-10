@@ -45,6 +45,7 @@ from spectragent.core.capabilities.browser.watchdogs.base import (
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
+    DocumentStamp,
     ScreenshotRequestEvent,
 )
 from spectragent.schemas.observation.image import image_size
@@ -133,11 +134,29 @@ class ScreenshotWatchdog(BrowserWatchdog):
                         image_width=image_width,
                         image_height=image_height,
                     ),
-                }
+                },
+                document=await self._document_after_capture(),
             )
         except Exception as exc:
             logger.error("Screenshot capture failed: %s", exc)
             return None
+
+    async def _document_after_capture(self) -> DocumentStamp | None:
+        """The main frame's loader and URL, read right after the capture.
+
+        After, not before: a document that swapped during the capture then
+        disagrees with the DOM stamp and the cycle is re-fired (§4.14). One
+        cheap round trip; a failure leaves the screenshot unstamped rather
+        than failing it.
+        """
+        try:
+            tree = await self._cdp.send("Page.getFrameTree", {}, session_id=self._session_id)
+        except Exception as exc:
+            logger.debug("Page.getFrameTree after the screenshot failed: %s", exc)
+            return None
+        frame = ((tree or {}).get("frameTree") or {}).get("frame") or {}
+        loader_id, url = frame.get("loaderId"), frame.get("url")
+        return DocumentStamp(loader_id=loader_id, url=url) if loader_id or url else None
 
     async def _capture(
         self,

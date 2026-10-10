@@ -26,8 +26,6 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
-import yaml
-from pydantic import ValidationError
 
 from spectragent.core.aop.advice import Intercept
 from spectragent.core.aop.weaver import Weaver
@@ -74,8 +72,6 @@ from tests._helpers.trace_builder import (
     step_record,
     usage,
 )
-
-CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 
 #: What a negotiation binding both fake archivers yields — for the scripted env.
 BOTH_BOUND = ArchiveNegotiationResult(
@@ -1901,30 +1897,7 @@ class TestThroughTheRuntime:
         assert spy.seen == 1
 
 
-# ── the configuration surface, and the fixtures ───────────────────────
-
-
-@pytest.fixture(scope="module")
-def composer() -> Any:
-    from spectragent.core.composer import ConfigComposer
-    from spectragent.scripts.generate_all import _collect_registrars
-
-    return ConfigComposer(registrars=_collect_registrars())
-
-
-class TestNoYamlSurfaceYet:
-    def test_a_yaml_archive_block_is_refused_not_dropped(self, composer) -> None:
-        """``archive`` is a plain parameter until M29 makes it a receptor.
-
-        So YAML cannot reach it — and must say so, rather than accept the
-        block and record nothing.
-        """
-        raw = yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8"))
-        (entry,) = [hook for hook in raw["hook"] if hook["hook_id"] == "trace_writer"]
-        composer.top_level_type.model_validate(raw)  # composes as shipped
-        entry["archive"] = [{"archiver_id": "browser.network"}]
-        with pytest.raises(ValidationError, match="archive"):
-            composer.top_level_type.model_validate(raw)
+# ── the fixtures ──────────────────────────────────────────────────────
 
 
 class TestTheFixtureEncodesWhatTheWriterWrites:

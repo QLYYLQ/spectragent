@@ -42,7 +42,6 @@ import dataclasses
 import gzip
 import re
 import time
-import zlib
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -61,6 +60,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.redaction import OMITTED
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
+from tests._helpers.secret_scan import GZIP_MAGIC, all_text, readable
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 
@@ -280,48 +280,6 @@ async def _run_and_scan(
     return writer.run_dir
 
 
-_GZIP_MAGIC = b"\x1f\x8b"
-#: Layers of gzip peeled off one file at most — a ``.gz`` inside a ``.gz``.
-_MAX_GZIP_LAYERS = 4
-
-
-def _readable(path: Path) -> str:
-    """A file's bytes as text — gunzipped first when it is gzip.
-
-    Gzip by its magic bytes (``1f 8b``) or by a ``.gz`` name, peeled
-    repeatedly for a gzip inside a gzip. A file that only looks like gzip
-    and does not decompress is scanned as it is: the guard never skips
-    bytes because they would not decode.
-    """
-    data = path.read_bytes()
-    named_gzip = path.name.endswith(".gz")
-    for _ in range(_MAX_GZIP_LAYERS):
-        if not (named_gzip or data[:2] == _GZIP_MAGIC):
-            break
-        try:
-            data = gzip.decompress(data)
-        except (OSError, EOFError, zlib.error):  # not gzip after all
-            break
-        named_gzip = False
-    return data.decode("utf-8", errors="replace")
-
-
-def _all_text(run_dir: Path) -> list[tuple[Path, str]]:
-    """Every readable byte under the trace dir, as text.
-
-    Walks the directory rather than the manifest: a leak in a file
-    nothing indexes is still a leak, and the manifest is exactly what a
-    careless writer would forget to list it in. ``env/`` is walked like
-    the rest, gzip decoded (:func:`_readable`).
-    """
-    out: list[tuple[Path, str]] = []
-    for path in sorted(run_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        out.append((path, _readable(path)))
-    return out
-
-
 @pytest.fixture()
 async def redacted_run(tmp_path, composer) -> Path:
     return await _run_and_scan(tmp_path, composer, record_secrets=False)
@@ -329,13 +287,13 @@ async def redacted_run(tmp_path, composer) -> Path:
 
 class TestTraceCarriesNoCredentials:
     def test_no_planted_secret_appears_anywhere(self, redacted_run):
-        for path, text in _all_text(redacted_run):
+        for path, text in all_text(redacted_run):
             for secret in SECRETS:
                 assert secret not in text, f"{path.relative_to(redacted_run)} leaked {secret[:12]}…"
 
     def test_no_secret_shaped_string_appears_anywhere(self, redacted_run):
         """The half that protects fields that do not exist yet."""
-        for path, text in _all_text(redacted_run):
+        for path, text in all_text(redacted_run):
             for label, pattern in SECRET_PATTERNS:
                 match = pattern.search(text)
                 assert match is None, (
@@ -357,10 +315,10 @@ class TestTraceCarriesNoCredentials:
     def test_the_scan_reaches_env_and_reads_through_gzip(self, redacted_run):
         """The scan above covered environment evidence — and decoded the gzipped file."""
         evidence = redacted_run / "env/steps/000" / EVIDENCE_KEY
-        scanned = dict(_all_text(redacted_run))
+        scanned = dict(all_text(redacted_run))
         assert scanned[evidence / "evidence.txt"] == EVIDENCE_TEXT.decode()
         assert scanned[evidence / "evidence.txt.gz"] == EVIDENCE_TEXT.decode()
-        assert (evidence / "evidence.txt.gz").read_bytes()[:2] == _GZIP_MAGIC
+        assert (evidence / "evidence.txt.gz").read_bytes()[:2] == GZIP_MAGIC
         config = RunTrace(redacted_run).config
         assert config.env_evidence_recorded is True
 
@@ -403,7 +361,7 @@ class TestGuardCanActuallyDetectALeak:
 
     async def test_record_secrets_puts_them_back(self, tmp_path, composer):
         run_dir = await _run_and_scan(tmp_path, composer, record_secrets=True)
-        blob = "\n".join(text for _, text in _all_text(run_dir))
+        blob = "\n".join(text for _, text in all_text(run_dir))
         for secret in SECRETS:
             assert secret in blob
         assert any(pattern.search(blob) for _, pattern in SECRET_PATTERNS)
@@ -427,20 +385,20 @@ class TestGuardCanActuallyDetectALeak:
         )
         leak = run_dir / "env/steps/000" / LEAK_KEY
         plain, gzipped = leak / "leak.txt", leak / "leak.txt.gz"
-        assert API_KEY in _readable(plain)
-        assert API_KEY in _readable(gzipped)
+        assert API_KEY in readable(plain)
+        assert API_KEY in readable(gzipped)
         assert API_KEY.encode() not in gzipped.read_bytes()
-        assert any(pattern.search(_readable(gzipped)) for label, pattern in SECRET_PATTERNS), (
+        assert any(pattern.search(readable(gzipped)) for label, pattern in SECRET_PATTERNS), (
             "the shape scan must catch it in the decoded bytes"
         )
         # Nowhere else: the rest of the run is still redacted.
-        leaking = [path for path, text in _all_text(run_dir) if API_KEY in text]
+        leaking = [path for path, text in all_text(run_dir) if API_KEY in text]
         assert leaking == [plain, gzipped]
 
     def test_a_file_that_only_looks_gzipped_is_scanned_as_it_is(self, tmp_path):
         fake = tmp_path / "evidence.gz"
         fake.write_bytes(b"\x1f\x8b" + API_KEY.encode())
-        assert API_KEY in _readable(fake)
+        assert API_KEY in readable(fake)
         nested = tmp_path / "nested.bin"
         nested.write_bytes(gzip.compress(gzip.compress(API_KEY.encode())))
-        assert _readable(nested) == API_KEY
+        assert readable(nested) == API_KEY

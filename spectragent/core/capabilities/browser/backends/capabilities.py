@@ -30,3 +30,20 @@ CONTEXT_PERSISTENCE = "context_persistence"  # Full context persistence across s
 
 # Display
 SCREEN_SIZE = "screen_size"  # Custom screen / viewport size
+
+# Ownership and launch control (docs/architecture_design.md §4.9.x, §4.14).
+# v1: only ``local_chrome`` declares these two.
+#
+# The browser process is launched by the capability through this provider and
+# killed at teardown, and its CDP endpoint accepts a second browser-level client
+# (``waitForDebuggerOnStart`` auto-attach, Network, Fetch); the provider
+# implements ``NetworkCaptureProvider`` (``persistent_profile``: whether that
+# browser starts from a fresh profile — §5.6's ``logged_in``). Required by every
+# configuration that opens the recorder connection: a bound browser archiver,
+# or ``replayability`` other than ``off``.
+NETWORK_CAPTURE = "network_capture"
+# ``open(*, launch_args=...)`` accepts extra Chrome switches for this session,
+# and the provider implements ``LaunchArgsProvider`` (``launch_arg_conflicts``).
+# Required by ``replayability: pinned``, whose switches can enter the browser
+# no other way.
+LAUNCH_ARGS = "launch_args"

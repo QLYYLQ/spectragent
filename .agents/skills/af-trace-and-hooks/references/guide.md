@@ -510,6 +510,26 @@ a step number or the `env/` layout.
 If you believe a case genuinely sits on the line, AGENTS.md §3.1 applies: ask, do not
 invent a compromise.
 
+### What the browser's evidence looks like on disk (M29)
+
+`docs/architecture_design.md` §4.14 is the authority; this is the reader's map. Every
+file is read back through `RunTrace.archive_files(step, key)` / `blob(sha)` /
+`archive_run_file("browser")` — never by globbing `env/`.
+
+| Archiver | Step files | What is in them |
+|---|---|---|
+| `browser.network` | `exchanges.warc.gz` | WARC/1.1, one gzip member per record (warcio). A `request` record per exchange (stripped headers, redacted POST body) linked by `WARC-Concurrent-To` to a `response` record — only when the body is known (`ok`, `redirect`, `websocket`); a payload already written this run is a `revisit` (`identical-payload-digest`). Bodies are stored **decoded**; `Content-Encoding` / `Transfer-Encoding` are dropped and `Content-Length` is the decoded length. |
+| | `index.jsonl` | One JSON object per line, three kinds. `exchange` — exactly once per request hop, when it settles: WARC offsets, method, url, status, resource type, frame / loader / session / target, initiator (no stack), timing, the raw request facts (headers, POST sha256 / length / content type), `payload_sha256`, `revisit_of`, `content_range`, `body_status` ∈ `ok` / `redirect` / `too_large` / `streamed_later` / `websocket` / `incomplete`, and a `redaction` ledger (policy `af-privacy-1+browser-1`). `pending` — still in flight at this collection, status only (also one per collection for a written `streamed_later` record whose body is still streaming, `waiting_for: streamed_body`); a record whose **last** line is `pending` was incomplete at run end. `body` — a `streamed_later` body refetched, pointing back at its `record_id`, with the blob's sha256. **No match key** — replay derives keys from the raw facts. |
+| | `websocket.jsonl` | Frames: `record_id` of the handshake, direction, opcode, wall time, payload (text) or `payload_base64`. |
+| | `body-<sha>.bin` (content-addressed) | A refetched large body. |
+| `browser.storage` | `storage.json` | Cookies (values `sha256:<hex>` unless `allow_session_state`), local storage per origin, session storage per tab and origin (values kept, credential-named keys redacted — so the archiver always declares `contains_session_state`), its ledger, and what it could not read: `unreadable_tabs`, `unreadable_origins`, `unread_frames` (out-of-process iframes, not read in v1). **Written only when the state changed**: a step's state is the latest `storage.json` at or before it. |
+| `browser.dom_raw` | `dom-<cycle>-<tab>.json.gz` (content-addressed) | Gzip canonical JSON per committed cycle: the redacted `TargetCapture`, DPR, viewport, cleaner key (`self_capture` for a vision run), source, tab, url / loader id, ledger. Cycle and capture time are in the record's provenance, not the bytes, so an unchanged document is stored once. `archive/dom_raw.capture_from_document` turns it back into a `TargetCapture` for an offline re-clean. |
+| (capability) | `env/run.browser.json` (run record) | The environment fingerprint, versioned on change. |
+
+Two rules a reader must not miss: an exchange line is written **once** (pending lines
+before it carry no evidence), and a `body` line can name a record whose `exchange` line
+came in an earlier step.
+
 ## 5. Configuration and negotiation reach the trace
 
 `TraceConfig` (`core/trace/models.py:437`) used to be nine identity strings — enough to

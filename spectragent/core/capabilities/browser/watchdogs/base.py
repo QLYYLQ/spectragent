@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from agent_cdp import CDPCommandProtocol
 
     from spectragent.core.capabilities.browser.dom.cleaning import DOMCleanerProtocol
-    from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
+    from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, TargetCapture
     from spectragent.core.capabilities.browser.dom.serializers import (
         DOMSerializerProtocol,
     )
@@ -48,6 +48,7 @@ if TYPE_CHECKING:
         TypingRhythmProtocol,
     )
     from spectragent.core.capabilities.browser.profiles import BrowserProfileConfig
+    from spectragent.core.capabilities.browser.recorder import ArchiveChannel
 
 #: How the capability constructs and binds a watchdog. ``"tab"`` means a
 #: fresh instance for each tab's observation scope; ``"browser"`` binds one
@@ -69,6 +70,10 @@ def _no_main_frame_id() -> str | None:
 
 
 def _discard_selector_map(_selector_map: DOMSelectorMap) -> None:
+    return None
+
+
+def _discard_raw_capture(_capture: TargetCapture, _device_pixel_ratio: float) -> None:
     return None
 
 
@@ -152,6 +157,17 @@ class WatchdogContext:
     #: it and lends it to whichever watchdog reports tab metadata.
     tabs_getter: Callable[[], Awaitable[list[dict[str, Any]]]] = field(default=_no_tabs)
 
+    #: The browser-level archive channel (§4.14): present only while the
+    #: recorder connection is open *and* archivers are bound. Its presence is
+    #: what installs ``ArchiveWatchdog`` (see :meth:`BrowserWatchdog.should_install`).
+    archive: ArchiveChannel | None = None
+    #: Where the DOM resolver hands each raw capture and its DPR, the
+    #: ``selector_map_setter`` kind of loan: a no-op unless an archiver needs
+    #: raw DOM, in which case the capability parks it on the observe cycle
+    #: and commits it only with a successful cycle (§4.12). The resolver never
+    #: learns why.
+    raw_capture_sink: Callable[[TargetCapture, float], None] = field(default=_discard_raw_capture)
+
 
 class BrowserWatchdog(WatchdogBase):
     """Base for every watchdog the Browser Capability installs.
@@ -170,6 +186,18 @@ class BrowserWatchdog(WatchdogBase):
     #: Empty for behavioural watchdogs (action, security, popups, crash)
     #: — those execute actions or guard navigation, they observe nothing.
     provides: ClassVar[frozenset[str]] = frozenset()
+
+    @classmethod
+    def should_install(cls, ctx: WatchdogContext) -> bool:
+        """Whether this run installs the watchdog at all. Default: yes.
+
+        Evaluated next to the profile's exclusions, where watchdogs are
+        built. A watchdog installed *by binding* rather than by profile —
+        ``ArchiveWatchdog``, which exists only while archivers are bound —
+        answers from the context: what a run records is a per-run choice,
+        not a property of the profile (ruling D3).
+        """
+        return True
 
     @classmethod
     def build(cls, ctx: WatchdogContext) -> BrowserWatchdog:

@@ -9,6 +9,9 @@ class, so adding a watchdog here is the whole change.
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
     ActionWatchdog,
 )
+from spectragent.core.capabilities.browser.watchdogs.archive_watchdog import (
+    ArchiveWatchdog,
+)
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
@@ -72,6 +75,7 @@ __all__ = [
     "validate_watchdog_names",
     # Watchdogs
     "ActionWatchdog",
+    "ArchiveWatchdog",
     "BrowserMetaWatchdog",
     "CrashWatchdog",
     "DOMWatchdog",

@@ -513,6 +513,7 @@ class TestBackendIoC:
         self._patch_heavy_setup(monkeypatch)
 
         asyncio.run(cap.setup())
+        # A remote endpoint keeps websockets' transport defaults.
         assert self.constructed_kwargs == [{"additional_headers": {"x-api-key": "secret-123"}}]
 
     def test_no_headers_when_backend_supplies_none(self, monkeypatch) -> None:
@@ -525,6 +526,19 @@ class TestBackendIoC:
 
         asyncio.run(cap.setup())
         assert self.constructed_kwargs == [{"additional_headers": None}]
+
+    def test_a_loopback_endpoint_is_reached_directly_and_uncompressed(self, monkeypatch) -> None:
+        """No ``http_proxy`` tunnel and no permessage-deflate on loopback (S2a, §4.14)."""
+        import asyncio
+
+        cap = BrowserCapability()
+        cap.backend = _FakeProvider(cdp_url="ws://127.0.0.1:9222/devtools/browser/x")  # type: ignore[assignment]
+        self._patch_heavy_setup(monkeypatch)
+
+        asyncio.run(cap.setup())
+        assert self.constructed_kwargs == [
+            {"additional_headers": None, "proxy": None, "compression": None}
+        ]
 
 
 # ─── Page lifecycle wiring (M13.5) ────────────────────────────────────

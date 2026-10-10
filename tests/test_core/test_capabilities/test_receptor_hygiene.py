@@ -543,6 +543,36 @@ def test_the_guard_fails_on_a_reintroduced_defect() -> None:
     assert all("dom_serializer" in hit for hit in found)
 
 
+def test_the_guard_catches_a_switch_beside_the_replayability_receptor() -> None:
+    """Positive control for the newest receptor (§4.14): the tier is the switch.
+
+    ``record_mode: str = "off"`` on ``__init__`` is the shape a "convenience"
+    flag would take next to ``replayability`` — a second place to say "not
+    pinned", which would silently disagree with a configured ``pinned``
+    block. It is named after nothing, so only the value check (``"off"`` is a
+    key of the ``replayability`` registry) can catch it. A profile-like model
+    field called ``replayability`` is the name-shaped variant.
+    """
+    registrars = _collect_registrars()
+    assert "replayability" in registrars, "the registrar must be collected for Rule 1 to see it"
+
+    class _Profile(BaseModel):
+        replayability: str = "default"
+
+    class _Defective:
+        __wiring__ = {"replayability": ("replayability", ["off", "pinned"])}
+        replayability: Any
+
+        def __init__(self, record_mode: str = "off") -> None:
+            self.record_mode = record_mode
+
+    surfaces = _init_surfaces(_Defective) + _model_surfaces(_Profile, check_values=True)
+    found = collisions(_receptor_specs(_Defective), surfaces, registrars)
+    assert any("record_mode" in hit and "'off'" in hit for hit in found), found
+    assert any("_Profile.replayability" in hit for hit in found), found
+    assert all("replayability" in hit for hit in found)
+
+
 def test_the_browser_profile_names_no_strategy() -> None:
     """The specific shape, pinned by name, so a regression reads clearly.
 
@@ -739,7 +769,12 @@ def test_no_receptor_is_a_parameter_of_a_synthesised_init() -> None:
         if trapped:
             found[f"{cls.__module__}.{cls.__qualname__}"] = trapped
 
+    from spectragent.core.hooks.trace_writer import TraceWriter
+
     assert BrowserCapability in checked, "a hand-written-__init__ receptor owner was not checked"
+    assert TraceWriter in checked, (
+        "TraceWriter carries the archive receptor (M29) and was not checked by Rule 3"
+    )
     assert any(dataclass_synthesised_init(cls) for cls in checked), (
         "no dataclass receptor owner was checked — the AgentReceptors shape this rule must "
         "leave alone was never exercised, and the guard proves nothing about it"
@@ -840,3 +875,27 @@ class TestRuleThreeHasTeeth:
 
         assert not dataclass_synthesised_init(_ExplicitInit)
         assert receptor_trap(_ExplicitInit) == []
+
+
+def test_rule_three_positive_control_on_the_trace_writer() -> None:
+    """TraceWriter is clean as shipped — and the same shape as a dataclass field is caught.
+
+    ``archive`` is a receptor (``__wiring__ = {"archive": "archiver"}``) on a
+    hand-written ``__init__``, its class annotation on ``_TraceWriterReceptors``.
+    A writer that declared it as a dataclass field instead would have lost its
+    ``None`` default to a ``WiredField``: the guard must say so.
+    """
+    from spectragent.core.hooks.trace_writer import TraceWriter
+
+    assert TraceWriter.__wiring__ == {"archive": "archiver"}
+    assert "archive" in _slot_names(TraceWriter)
+    assert not dataclass_synthesised_init(TraceWriter)
+    assert receptor_trap(TraceWriter) == []
+
+    @dataclass
+    class _DataclassWriter:
+        __wiring__ = dict(TraceWriter.__wiring__)
+        trace_dir: str = "traces"
+        archive: list | None = None
+
+    assert receptor_trap(_DataclassWriter) == ["archive"]

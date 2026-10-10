@@ -297,7 +297,7 @@ async def _capture_target(
             frame.target_id,
         )
         return None
-    raw_dom, snapshot, ax_tree, js_ids = documents
+    raw_dom, snapshot, (ax_tree, root_frame), js_ids = documents
     return TargetCapture(
         raw_dom=raw_dom,
         snapshot=snapshot,
@@ -311,6 +311,8 @@ async def _capture_target(
             for child, capture in zip(child_targets, children, strict=True)
             if capture is not None
         },
+        loader_id=root_frame.get("loaderId"),
+        url=root_frame.get("url"),
     )
 
 
@@ -332,8 +334,12 @@ async def _capture_documents(
     session_id: str | None,
     js_click_listeners: bool,
     required_computed_styles: list[str],
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], set[int] | None]:
-    """The three protocol captures (+ optional listener scan) for one session."""
+) -> tuple[dict[str, Any], dict[str, Any], tuple[dict[str, Any], dict[str, Any]], set[int] | None]:
+    """The three protocol captures (+ optional listener scan) for one session.
+
+    The accessibility capture also hands back the session's root frame
+    (``Page.getFrameTree``), whose ``loaderId`` / ``url`` stamp the capture.
+    """
 
     async def get_document() -> dict[str, Any]:
         try:
@@ -377,13 +383,19 @@ async def _capture_documents(
     return raw_dom, snapshot, ax_tree, js_ids
 
 
-async def _capture_ax_tree(cdp: CDPCommandProtocol, session_id: str | None) -> dict[str, Any]:
+async def _capture_ax_tree(
+    cdp: CDPCommandProtocol, session_id: str | None
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Accessibility nodes of every frame this session renders, merged.
 
     ``Accessibility.getFullAXTree`` without a ``frameId`` answers for the
     main frame only, so a same-process iframe's roles, names and states were
     missing even from the elements that did reach the tree. The session's
     frame tree lists exactly the frames it can answer for.
+
+    Returns the nodes and the frame tree's root frame (``{}`` when the tree
+    could not be read): its ``loaderId`` and ``url`` are the document stamp
+    of this capture.
     """
 
     async def full_tree(params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -401,11 +413,13 @@ async def _capture_ax_tree(cdp: CDPCommandProtocol, session_id: str | None) -> d
     except Exception as exc:
         logger.debug("Page.getFrameTree failed on %s: %s", session_id, exc)
         frame_tree = None
-    frame_ids = _frame_ids((frame_tree or {}).get("frameTree"))
+    tree = (frame_tree or {}).get("frameTree")
+    root_frame = dict((tree or {}).get("frame") or {})
+    frame_ids = _frame_ids(tree)
     if not frame_ids:
-        return {"nodes": await full_tree({})}
+        return {"nodes": await full_tree({})}, root_frame
     per_frame = await asyncio.gather(*(full_tree({"frameId": fid}) for fid in frame_ids))
-    return {"nodes": [node for nodes in per_frame for node in nodes]}
+    return {"nodes": [node for nodes in per_frame for node in nodes]}, root_frame
 
 
 def _frame_ids(tree: dict[str, Any] | None) -> list[str]:

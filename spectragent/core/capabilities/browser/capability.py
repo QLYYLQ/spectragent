@@ -41,6 +41,8 @@ See docs/architecture_design.md §4.9 and docs/execution_dag.md M13.
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -48,6 +50,7 @@ from agent_cdp import CDPEventBridge, EventScope, ScopeGroup
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
+from spectragent.core.archive import ArchiveBatch, ArchiverBase
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — registration
     ClickAction,
@@ -67,8 +70,25 @@ from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — re
     TypeCoordinateAction,
     WaitAction,
 )
+from spectragent.core.capabilities.browser.archive import (  # noqa: F401 — registration
+    BrowserArchiveContext,
+    BrowserArchiverBase,
+    BrowserArchiveRun,
+    DomRawArchiver,
+    NetworkArchiver,
+    ParkedRaw,
+    StorageArchiver,
+)
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
-from spectragent.core.capabilities.browser.cdp_client import CDPClient
+from spectragent.core.capabilities.browser.backends.capabilities import LAUNCH_ARGS
+from spectragent.core.capabilities.browser.cdp_client import CDPClient, transport_options
+from spectragent.core.capabilities.browser.cooperation import (
+    BrowserCooperationError,
+    binding_problems,
+    cooperation_problems,
+    persistent_profile,
+    recorder_needs,
+)
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget
 from spectragent.core.capabilities.browser.dom.cleaning import (
     DOMCleanerProtocol,
@@ -80,7 +100,7 @@ from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (  # 
 from spectragent.core.capabilities.browser.dom.cleaning.skyvern import (  # noqa: F401 — registration
     SkyvernCleaner,
 )
-from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap
+from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, TargetCapture
 from spectragent.core.capabilities.browser.dom.serializers import (
     DOMSerializerProtocol,
     default_serializer,
@@ -101,6 +121,19 @@ from spectragent.core.capabilities.browser.profiles import (
     BrowserProfileConfig,
     resolve_profile,
 )
+from spectragent.core.capabilities.browser.recorder import (
+    ArchiveChannel,
+    RecorderConnection,
+    RecorderLostError,
+    RecorderParticipant,
+)
+from spectragent.core.capabilities.browser.replay import (  # noqa: F401 — registration
+    OffReplayability,
+    PinnedReplayability,
+    ReplayabilityPlan,
+    ReplayabilityProtocol,
+    default_replayability,
+)
 
 # Importing the package registers every watchdog under agent_cdp's
 # ``WatchdogRegistrar``. This module then looks them up by key — it never
@@ -117,9 +150,12 @@ from spectragent.core.capabilities.browser.watchdogs import (
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
     BrowserStateSummary,
+    DocumentStamp,
     DOMContentLoadedEvent,
     LifecycleEvent,
     PageLoadEvent,
+    describe_stamps,
+    documents_disagree,
 )
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.provider_session import ProviderSession
@@ -129,6 +165,9 @@ logger = logging.getLogger(__name__)
 
 # Scope ID for browser-level (non-tab-specific) watchdogs.
 _GLOBAL_SCOPE_ID = "__browser__"
+# Scope ID of the browser-level archive scope (§4.14): the recorder's
+# lifecycle, created only while archivers are bound.
+_ARCHIVE_SCOPE_ID = "__archive__"
 
 # How many times one observe cycle re-fires ``BrowserStateRequestEvent``
 # before giving up. A DOM/screenshot scrape can lose a race against an
@@ -202,6 +241,11 @@ class _ObserveCycleCache:
     #: Why this cycle's capture failed, if it did. Re-raised for every
     #: other fragment of the same cycle instead of re-attempting it.
     error: BaseException | None = None
+    #: The pending raw-DOM slot (§4.12): captures parked by the DOM resolver's
+    #: sink or ``browser.dom_raw``'s self-capture during the current attempt.
+    #: Emptied when an attempt starts; committed to the archive only when the
+    #: cycle succeeds, so the archive holds exactly what the agent was served.
+    raw: list[ParkedRaw] = field(default_factory=list)
 
 
 def _build_wired_action(name: str) -> ActionBase:
@@ -224,11 +268,14 @@ class _StateEventOutcome:
     ``handler_count`` / ``errors`` exist purely so the failure message can
     distinguish "no watchdog is listening" (a config problem) from "the
     watchdogs ran and every CDP call failed" (a live-page problem).
+    ``stamps`` holds each watchdog's document stamp, by handler, for the
+    same-document check (§4.14).
     """
 
     fragments: dict[str, Any] = field(default_factory=dict)
     handler_count: int = 0
     errors: list[str] = field(default_factory=list)
+    stamps: dict[str, DocumentStamp] = field(default_factory=dict)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -355,6 +402,20 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # ``tests/.../test_receptor_hygiene.py`` is the structural guard
         # against a fourth.
         "dom_serializer": ("dom_serializer", ["text", "html"]),
+        # ``replayability`` (§4.14) decides how far a run is pinned for replay:
+        # ``off`` (the default, the no-op) or ``pinned`` (seeded randomness, a
+        # stepped clock from T0, fixed time zone / locale / user agent / DPR,
+        # its own Chrome launch switches). Same shape as ``typing_rhythm``:
+        # the strategy is the switch, so YAML names one in every capability
+        # block, and nothing beside it can disagree with it. Anything but
+        # ``off`` opens the recorder connection.
+        "replayability": ("replayability", ["off", "pinned"]),
+        # Archive provides (§4.5, §4.14) — the third axis, a negotiation-only
+        # declaration like ``observation``: what a run records is the trace
+        # hook's ``archive`` list, bound here by ``bind_archivers``. Keep in
+        # sync with the classes in ``browser/archive/`` (imported above, so
+        # the keys resolve when conscribe reads this entry).
+        "archiver": ("archiver", ["browser.dom_raw", "browser.network", "browser.storage"]),
         # ``browser_provider`` is the existing conscribe registrar for
         # the underlying browser backend (local_chrome, lexmount,
         # browseruse_lite, ...). Mode 1 (auto-discovery) allows any
@@ -370,6 +431,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     typing_rhythm: TypingRhythmProtocol  # type: ignore[misc]
     dom_cleaner: DOMCleanerProtocol  # type: ignore[misc]
     dom_serializer: DOMSerializerProtocol  # type: ignore[misc]
+    replayability: ReplayabilityProtocol  # type: ignore[misc]
     backend: BaseBrowserProvider  # type: ignore[misc]
 
     # ── conscribe-visible config (assigned in __init__) ──────────────
@@ -413,6 +475,19 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     _observation_cycle: int
     #: Optional injected client for tests.
     _injected_client: CDPClient | None
+    #: Optional transport factory for tests (control and recorder clients).
+    _cdp_factory: Callable[..., Any] | None
+    #: The recorder connection, while one is open (§4.14).
+    _recorder: RecorderConnection | None
+    #: Why the recorder connection was lost, once it was.
+    _recorder_error: RecorderLostError | None
+    #: This run's replayability plan (a recorder participant).
+    _replay_plan: ReplayabilityPlan | None
+    #: The bound archivers (``bind_archivers``), in binding order.
+    _archivers: list[BrowserArchiverBase]
+    #: The archive side of the current recording, between setup and teardown,
+    #: when archivers were bound at setup (§4.14).
+    _archive: BrowserArchiveRun | None
 
     # ── Init machinery ────────────────────────────────────────────────
 
@@ -593,6 +668,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # a hand-built watchdog, and one fact written in two files drifts.
         self.dom_cleaner = default_cleaner()
         self.dom_serializer = default_serializer()
+        self.replayability = default_replayability()
 
         # ── internal state (never config) ─────────────────────────
         self._actions_by_name = {}
@@ -614,6 +690,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._cycle_cache = {}
         self._observation_cycle = 0
         self._injected_client = None
+        self._cdp_factory = None
+        self._recorder = None
+        self._recorder_error = None
+        self._replay_plan = None
+        self._archivers = []
+        self._archive = None
 
         self.actions = actions
 
@@ -729,13 +811,34 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         """Inject a pre-built (typically mocked) CDPClient before setup().
 
         Used by tests to avoid spinning up a real CDP WebSocket. Must be
-        called before ``setup()``.
+        called before ``setup()``. Control connection only: an injected
+        client is a browser this capability did not launch, so a
+        configuration that needs the recorder connection refuses it at
+        setup (the cooperation check).
         """
         self._injected_client = client
 
+    def _inject_cdp_factory(self, factory: Callable[..., Any]) -> None:
+        """Replace the transport for both connections (tests).
+
+        ``factory(url, **options)`` stands in for ``CDPClient(url, **options)``
+        and receives exactly the options a real client would. Unlike
+        :meth:`_inject_cdp_client` it changes only the transport: the browser
+        still comes from the backend, so ownership is still decided by the
+        backend's declared ``__capabilities__`` and the recorder connection
+        can be exercised against a fake browser.
+        """
+        self._cdp_factory = factory
+
+    def _new_cdp_client(self, url: str, **options: Any) -> CDPClient:
+        """A CDP client for ``url`` — real, or from the injected factory."""
+        if self._cdp_factory is not None:
+            return self._cdp_factory(url, **options)
+        return CDPClient(url, **options)
+
     # ── Backend access ────────────────────────────────────────────────
 
-    def _resolved_backend(self) -> BaseBrowserProvider | None:
+    def resolved_backend(self) -> BaseBrowserProvider | None:
         """Return the wired backend instance, or ``None`` if not injected.
 
         ``self.backend`` is a conscribe ``WiredField`` descriptor until
@@ -787,8 +890,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         local window chrome happened to give us, so "in viewport" filtering
         was computed against the wrong rectangle.
 
-        ``deviceScaleFactor: 0`` keeps the platform's real DPR, which the
-        DOM watchdog queries live per observe — we must not pin it here.
+        The DPR is the ``replayability`` tier's: ``off`` answers ``0``, which
+        keeps the platform's real DPR (the DOM watchdog queries it live per
+        observe); ``pinned`` answers its own, so a recording and its replay
+        render at the same scale. This control connection is the only owner
+        of the viewport override (§4.14) — the recorder never sends it.
         Best-effort: a provider that rejects Emulation should degrade to the
         previous behaviour, not kill the run.
         """
@@ -800,7 +906,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 {
                     "width": self.viewport_width,
                     "height": self.viewport_height,
-                    "deviceScaleFactor": 0,
+                    "deviceScaleFactor": self.replayability.device_scale_factor,
                     "mobile": False,
                 },
                 session_id=cdp_session_id,
@@ -815,6 +921,79 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 cdp_session_id,
                 exc,
             )
+
+    # ── Archive axis (§4.5, §4.9, §4.14) ─────────────────────────────
+
+    @property
+    def bound_archivers(self) -> tuple[BrowserArchiverBase, ...]:
+        """The archivers bound by :meth:`bind_archivers`, in binding order."""
+        return tuple(self._archivers)
+
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
+        """Replace the binding; refuse, before changing anything, what cannot cooperate.
+
+        Acquires nothing (a dry run binds too). The rows of the cooperation
+        check decidable now — provider ownership, ``require_replayable`` vs
+        the tier, session state, the profile's watchdogs — are raised here,
+        from ``prepare()``; setup checks everything again. Bound before setup
+        (the runtime's order), the archivers decide which capture channels
+        setup opens; bound again after setup, only who receives events and
+        who is collected changes. An archiver bound after a setup that opened
+        no archive channel could capture nothing, so that is refused.
+        """
+        bound = list(archivers)
+        foreign = sorted(
+            str(getattr(a, "archiver_id", a))
+            for a in bound
+            if not isinstance(a, BrowserArchiverBase)
+        )
+        if foreign:
+            raise TypeError(
+                f"BrowserCapability can only bind browser archivers; got {foreign} "
+                f"(not BrowserArchiverBase)."
+            )
+        browser_archivers = [a for a in bound if isinstance(a, BrowserArchiverBase)]
+        problems = binding_problems(
+            self,
+            browser_archivers,
+            cdp_url=self.cdp_url,
+            injected_client=self._injected_client is not None,
+        )
+        if problems:
+            raise BrowserCooperationError(problems)
+        if browser_archivers and self._alive and self._archive is None:
+            raise RuntimeError(
+                f"BrowserCapability cannot start archiving "
+                f"{[a.archiver_id for a in browser_archivers]} after setup: no archiver was "
+                f"bound at setup, so the recorder opened no archive channel. Bind before setup()."
+            )
+        self._archivers = browser_archivers
+        if self._archive is not None:
+            self._archive.bind(browser_archivers)
+
+    async def collect_archive(self) -> ArchiveBatch:
+        """Hand over everything captured since the last collection (§4.14).
+
+        Liveness first — a recorder lost since the last collection raises the
+        same ``RecorderLostError`` as every other entry point — then the
+        archive channel's barrier, each bound archiver's session in binding
+        order, and the fingerprint run record. Never set up, or nothing
+        bound: an empty batch.
+        """
+        archive = self._archive
+        if archive is None or not self._archivers:
+            return ArchiveBatch()
+        self._ensure_recording()
+        return await archive.collect(
+            plan_fingerprint=self._replay_plan.fingerprint() if self._replay_plan else {},
+            session_metadata=self._session.metadata if self._session is not None else None,
+            fresh_profile=self._fresh_profile(),
+            clock=time.time,
+        )
+
+    def _fresh_profile(self) -> bool:
+        """Whether the browser started from a fresh profile (§5.6's ``logged_in``)."""
+        return persistent_profile(self.resolved_backend()) is None
 
     # ── CapabilityBase contract ──────────────────────────────────────
 
@@ -920,19 +1099,32 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 unhandled,
             )
 
-        self._scope_group = ScopeGroup("browser-capability")
-
         # Resolve CDP URL: per-call override > constructor field.
         cdp_url = cdp_url or self.cdp_url
+
+        # Can the configured parts cooperate at all? Checked before anything
+        # is launched, every problem reported at once (§4.14).
+        problems = cooperation_problems(
+            self, cdp_url=cdp_url, injected_client=self._injected_client is not None
+        )
+        if problems:
+            raise BrowserCooperationError(problems)
+        self._recorder_error = None
+        # The run's start: T0 of a pinned tier's clock.
+        t0_ms = int(time.time() * 1000)
+
+        self._scope_group = ScopeGroup("browser-capability")
 
         # 1. CDPClient (WebSocket) — either injected (tests) or fresh.
         if self._injected_client is not None:
             self._cdp = self._injected_client
         else:
             # Last-resort: ask the wired backend to allocate a session.
-            backend = self._resolved_backend()
+            backend = self.resolved_backend()
             if cdp_url is None and backend is not None:
-                # ``open()`` is called with no framework-level kwargs. Every
+                # ``open()`` gets no framework-level kwargs beyond
+                # ``launch_args``, and that one only when the provider declares
+                # ``LAUNCH_ARGS`` and the replayability tier has switches. Every
                 # cloud provider declares an explicit keyword-only signature
                 # of *its own* options (skyvern: timeout_minutes/adblock/...,
                 # airtop: profile_name/..., lexmount: browser_mode/...), so
@@ -940,7 +1132,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 # of them and a silently-ignored kwarg for LocalChrome. The
                 # viewport is a browser-level concern and is applied per tab
                 # via ``Emulation.setDeviceMetricsOverride`` in _attach_tab.
-                self._session = await backend.open()
+                launch_args = self.replayability.launch_args()
+                if launch_args and LAUNCH_ARGS in getattr(type(backend), "__capabilities__", ()):
+                    self._session = await backend.open(launch_args=launch_args)
+                else:
+                    self._session = await backend.open()
                 cdp_url = self._session.cdp_url
                 if cdp_url is None:
                     raise RuntimeError(
@@ -954,15 +1150,35 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "``cdp_url`` in config, pass it as a kwarg, or wire "
                     "a ``browser_provider`` backend via __wiring__."
                 )
-            self._cdp = CDPClient(cdp_url, additional_headers=self._session_cdp_headers())
+            self._cdp = self._new_cdp_client(
+                cdp_url,
+                additional_headers=self._session_cdp_headers(),
+                **transport_options(cdp_url),
+            )
             await self._cdp.start()
 
-        # 2. Global scope — browser-level watchdogs.
+        # 1b. The recorder connection (§4.14), built but not yet attached: its
+        # client, the archive scope and channel, this run's plan and the bound
+        # archivers' sessions.
+        if recorder_needs(self):
+            assert cdp_url is not None  # the cooperation check refused anything else
+            await self._connect_recorder(cdp_url, t0_ms=t0_ms)
+
+        # 2. Global scope — browser-level watchdogs. Before the recorder
+        # attaches: the ArchiveWatchdog (a shared watchdog, installed by
+        # binding) must consume the archive scope from the recorder's first
+        # event on, or the collection barrier counts those events as dropped.
         self._global_scope = await self._scope_group.create_scope(_GLOBAL_SCOPE_ID)
         self._attach_browser_level_watchdogs(self._global_scope)
         self._shared_watchdogs = self._create_watchdogs_for_scope(level="shared")
         for wd in self._shared_watchdogs:
             wd.attach(self._global_scope)
+
+        # 2b. The recorder attaches before the first tab: a popup or worker must
+        # be prepared before its first request, and the control connection
+        # adopts a tab only when it attaches to it.
+        if self._recorder is not None:
+            await self._recorder.open()
 
         # 3. Initial tab.
         result = await self._cdp.send("Target.getTargets", {})
@@ -1000,9 +1216,140 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             self._default_session_id,
         )
 
-    async def teardown(self) -> None:
-        """Tear down all scopes, close CDPClient, and release backend session."""
+    async def _connect_recorder(self, cdp_url: str, *, t0_ms: int) -> None:
+        """Build the recorder connection; :meth:`setup` opens it after the watchdogs.
+
+        Its own client: no compression (large frames are 13–48x slower with
+        permessage-deflate), no proxy (loopback CDP would tunnel through
+        ``http_proxy``), no frame limit (a paused upload arrives twice). The
+        connection is kept on ``self`` before it opens, so a failure part way
+        is still cleaned up by :meth:`teardown`.
+        """
+        client = self._new_cdp_client(
+            cdp_url,
+            additional_headers=self._session_cdp_headers(),
+            max_frame_size=None,
+            compression=None,
+            proxy=None,
+        )
+        await client.start()
+        # With archivers bound: the browser-level archive scope and its channel,
+        # before the recorder exists (it emits into the channel from its first
+        # attach). Shim-only (no archiver): neither.
+        channel: ArchiveChannel | None = None
+        if self._archivers:
+            assert self._scope_group is not None
+            scope = await self._scope_group.create_scope(_ARCHIVE_SCOPE_ID)
+            channel = ArchiveChannel(scope, self._recorder_participants)
+            self._archive = BrowserArchiveRun(channel=channel, archivers=self._archivers)
+        recorder = RecorderConnection(
+            client,
+            participants=self._recorder_participants,
+            channel=channel,
+            on_lost=self._recorder_lost,
+        )
+        self._recorder = recorder
+        version = await recorder.browser_version()
+        self._replay_plan = self.replayability.plan(
+            t0_ms=t0_ms, browser_user_agent=str(version.get("userAgent", ""))
+        )
+        if self._archive is not None and channel is not None:
+            # The bound archivers' run-time sessions — participants before the
+            # first target is prepared.
+            self._archive.start(
+                BrowserArchiveContext(
+                    recorder=recorder,
+                    channel=channel,
+                    raw_captures=self._archive.raw_captures,
+                    park_raw=self._park_self_capture,
+                    fragments=self.provided_fragments,
+                    viewport=(self.viewport_width, self.viewport_height),
+                    cycle=lambda: self._observation_cycle,
+                    fresh_profile=self._fresh_profile(),
+                ),
+                self._archivers,
+            )
+
+    def _recorder_participants(self) -> list[RecorderParticipant]:
+        """Who contributes to every new target's preparation, in order."""
+        participants: list[RecorderParticipant] = []
+        if self._replay_plan is not None:
+            participants.append(self._replay_plan)
+        if self._archive is not None:
+            participants.extend(self._archive.sessions)
+        return participants
+
+    # ── raw DOM for the archive (§4.12): parked on the cycle, committed with it ──
+
+    def _raw_capture_sink(self, sid: str) -> Callable[[TargetCapture, float], None]:
+        """The DOM resolver's sink for tab *sid*: park each capture on its cycle."""
+
+        def sink(capture: TargetCapture, device_pixel_ratio: float) -> None:
+            self._park_raw(sid, capture, device_pixel_ratio, "observation")
+
+        return sink
+
+    def _park_self_capture(
+        self, sid: str, capture: TargetCapture, device_pixel_ratio: float
+    ) -> None:
+        """``browser.dom_raw``'s self-capture of tab *sid*, parked the same way."""
+        self._park_raw(sid, capture, device_pixel_ratio, "archive")
+
+    def _park_raw(
+        self,
+        sid: str,
+        capture: TargetCapture,
+        device_pixel_ratio: float,
+        source: Literal["observation", "archive"],
+    ) -> None:
+        archive = self._archive
+        cache = self._cycle_cache.get(sid)
+        if archive is None or cache is None or cache.fired or not archive.wants("raw_dom"):
+            return
+        cache.raw.append(ParkedRaw(capture, device_pixel_ratio, time.time(), source))
+
+    def _recorder_lost(self, error: RecorderLostError) -> None:
+        """The recorder connection died on its own: fail closed, now.
+
+        Pushed by the recorder client's close callback. The capability stops
+        being alive, every command still waiting on the control connection
+        fails with the same error, and every later observation or action
+        raises it (:meth:`_ensure_recording`). A recording never continues
+        unrecorded; teardown still kills the browser, which is ours.
+        """
+        if self._recorder_error is None:
+            self._recorder_error = error
         self._alive = False
+        logger.error("BrowserCapability: %s", error)
+        if self._cdp is not None:
+            self._cdp.fail_pending(error)
+
+    def _ensure_recording(self) -> None:
+        """Raise the recorder loss, if there was one."""
+        if self._recorder_error is not None:
+            raise self._recorder_error
+
+    async def teardown(self) -> None:
+        """Tear down all scopes, close CDPClient, and release backend session.
+
+        The recorder connection goes first, with its fixed cleanup order
+        (§4.14): a recorder that disconnects while still holding paused
+        targets or requests wedges the browser, so nothing below may run
+        before it has let go.
+        """
+        self._alive = False
+
+        recorder, self._recorder = self._recorder, None
+        if recorder is not None:
+            try:
+                await recorder.close()
+            except Exception as exc:  # pragma: no cover — close() is tolerant itself
+                logger.warning("Recorder close failed: %s", exc)
+        self._replay_plan = None
+        # The archive sessions next (their scope closes with the scope group).
+        archive, self._archive = self._archive, None
+        if archive is not None:
+            await archive.aclose()
 
         # Close all CDP→scope bridges BEFORE closing scope_group, so late
         # CDP events don't try to dispatch into a half-torn-down scope.
@@ -1041,7 +1388,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._scope_group = None
 
         # Release the backend session if we opened one in setup().
-        backend = self._resolved_backend()
+        backend = self.resolved_backend()
         if self._session is not None and backend is not None:
             try:
                 await backend.close(self._session)
@@ -1082,6 +1429,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         The tab acted on is the focused one (:attr:`default_session_id`),
         changed via :meth:`switch_tab`.
         """
+        self._ensure_recording()
         sid = self._default_session_id
         if sid is None:
             return ActionResult(success=False, error="No active browser session")
@@ -1101,10 +1449,16 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._cycle_cache.pop(sid, None)
 
         try:
-            return await impl.execute(action.params, capability=self)
+            result = await impl.execute(action.params, capability=self)
+        except RecorderLostError:
+            raise
         except Exception as exc:
+            self._ensure_recording()
             logger.error("Action %s failed: %s", action.name, exc, exc_info=True)
             return ActionResult(success=False, error=str(exc))
+        # An action that completed while the recorder died acted unrecorded.
+        self._ensure_recording()
+        return result
 
     async def begin_observation(self, cycle: int) -> None:
         """Open observation cycle *cycle* — the next read re-captures.
@@ -1115,10 +1469,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         is actually asked for, and a tab nobody observes this cycle is not
         scraped at all.
 
-        No CDP call, so nothing here can fail; the environment still
-        treats a raise as this capability's whole slice failing, which is
-        what a capability that acquires something in here would want.
+        No CDP call. The one thing that can fail here is the recorder: once
+        its connection was lost, no observation of this run is served
+        (§4.14), and the environment treats the raise as this capability's
+        whole slice failing.
         """
+        self._ensure_recording()
         self._observation_cycle = cycle
 
     async def resolve_fragment(self, fragment_key: str) -> Any:
@@ -1232,6 +1588,18 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         cache.fragments.update(outcome.fragments)
         cache.fired = True
+        if cache.raw and self._archive is not None:
+            # Only a successful cycle's capture reaches the archive (§4.12).
+            self._archive.commit_raw(
+                cache.raw,
+                cycle=cache.cycle,
+                tab=self._session_to_target.get(sid, ""),
+                viewport=(self.viewport_width, self.viewport_height),
+                cleaner=str(
+                    getattr(self.dom_cleaner, "cleaner_type", type(self.dom_cleaner).__name__)
+                ),
+            )
+            cache.raw.clear()
 
     async def _capture_once(self, sid: str) -> _StateEventOutcome:
         """One tab's capture attempt-with-retries, or raise.
@@ -1247,11 +1615,30 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             raise RuntimeError(f"Unknown session_id: {sid}")
 
         wanted = self.provided_fragments
+        cache = self._cycle_cache.get(sid)
         outcome: _StateEventOutcome | None = None
         for attempt in range(1, _OBSERVE_MAX_ATTEMPTS + 1):
+            if cache is not None:
+                cache.raw.clear()  # a re-fired attempt's capture replaces the last one's
             outcome = await self._fire_state_event(sid, scope, wanted)
+            # A recorder lost during the capture: nothing of it is served,
+            # and the error says why rather than "no watchdog produced …".
+            self._ensure_recording()
             if wanted <= outcome.fragments.keys():
-                return outcome
+                if not documents_disagree(outcome.stamps):
+                    return outcome
+                # The page navigated during the capture: the DOM, the
+                # screenshot and the URL describe different documents. Same
+                # rule as a missing fragment — never serve it (§4.14, M18).
+                logger.warning(
+                    "observe cycle (sid=%s): attempt %d/%d captured different "
+                    "documents (%s); re-firing",
+                    sid,
+                    attempt,
+                    _OBSERVE_MAX_ATTEMPTS,
+                    describe_stamps(outcome.stamps),
+                )
+                continue
             logger.warning(
                 "observe cycle (sid=%s): BrowserStateRequestEvent attempt "
                 "%d/%d did not produce %s (handlers responded: %d%s)",
@@ -1264,6 +1651,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             )
 
         assert outcome is not None  # loop body runs at least once
+        if wanted <= outcome.fragments.keys():
+            raise RuntimeError(
+                f"observe cycle (sid={sid}): the evidence of every attempt described "
+                f"different documents after {_OBSERVE_MAX_ATTEMPTS} attempts: "
+                f"{describe_stamps(outcome.stamps)}."
+            )
         detail = (
             "; ".join(outcome.errors)
             if outcome.errors
@@ -1321,6 +1714,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             if result_obj.is_success and isinstance(result_obj.result, BrowserStateSummary):
                 summary: BrowserStateSummary = result_obj.result
                 outcome.fragments.update(summary.fragments)
+                if summary.document is not None:
+                    # By handler; a name two connections share keeps both stamps.
+                    key = result_obj.handler_name
+                    if key in outcome.stamps:
+                        key = f"{key}#{result_obj.connection_id}"
+                    outcome.stamps[key] = summary.document
         return outcome
 
     async def _get_tabs_safe(self) -> list[dict[str, Any]]:
@@ -1733,6 +2132,16 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,
             tabs_getter=self._get_tabs_safe,
+            archive=self._recorder.channel if self._recorder is not None else None,
+            # A real sink only when setup opened the raw-DOM channel (§4.12);
+            # otherwise the default no-op, and the resolver never knows.
+            **(
+                {"raw_capture_sink": self._raw_capture_sink(cdp_session_id)}
+                if cdp_session_id is not None
+                and self._archive is not None
+                and "raw_dom" in self._archive.needs
+                else {}
+            ),
         )
 
     def _create_watchdogs_for_scope(
@@ -1752,7 +2161,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         return [
             wd_cls.build(ctx)
             for wd_cls in self._watchdog_classes().values()
-            if wd_cls.level == level
+            if wd_cls.level == level and wd_cls.should_install(ctx)
         ]
 
     def _attach_browser_level_watchdogs(self, scope: EventScope) -> None:
