@@ -1710,6 +1710,20 @@ LLM 实例**只有一条构造路径**：YAML 写 `model_type` + `provider` 判�
 `__wiring__` setattr 注入 `agent.llm`。**没有模型昵称表，没有 `get_llm_by_name()` 这类字符串工厂**——
 模型的 wire id 直接写在配置里。
 
+**provider 建的客户端由 provider 关，不留给垃圾回收**（PRD H28）。OpenAI 系（`OpenAICompatBase`
+及其子类）、Anthropic 系（`AnthropicCompatBase`）与 `ChatGoogle` 的每个请求经 `get_client()`
+新建一个 SDK 客户端（连同它的连接池），并在这个请求返回之前关掉它——成功、失败、被取消都一样
+（`_request_client()`；`ChatGroq` 的 SDK 不是 openai 的，用它自己的 `async with`）。留给回收器不只是泄漏：
+openai / anthropic / groq / google-genai 的异步客户端在未关闭就被回收时，`__del__` 会在仍在运行的事件
+循环上排一个 `aclose()`。这类客户端多半挂在引用环上（它的资源对象引用回它，或持有它的 run 对象图成环），
+由循环回收器收；同一轮回收已经把它的 socket 关掉，号码随即被下一个新建的 socket 拿到，迟到的 `aclose()`
+关传输时却按旧号码把事件循环选择器里**新 socket 的**注册删掉——删掉的若是下一次模型调用的 connect 回调，
+这次调用就永远等不到连接完成，卡到超时为止，超时设多长都一样。调用方注入的 `http_client` 归注入方，
+provider 不关它。代价是调用之间不复用连接：OpenAI 系与 Anthropic 系原本就每次调用新建客户端，`ChatGoogle`
+原先按实例缓存一个；按 run 复用一个客户端需要 LLM 的生命周期（§14.3）。`ChatOllama`（SDK 没有关闭接口）
+与 `ChatMistral`（按实例缓存）也还没关自己的客户端；它们是纯 httpx，没有那种 `__del__`，只泄漏到回收为止，
+不会删别人的注册。
+
 ### 4.8 Memory 抽象
 
 **当前状态**：Memory 走 `MemoryRegistrar`（`memory_id`, flat），AgentBase 通过 `__wiring__["memory"] = "memory"`（Mode 1，自动发现）选择并注入实例。配置校验保证 `memory_id` 和所选策略的子配置有效；Loop 通过 `memory.add_message` / `memory.get_context_messages` 使用该实例。
@@ -2977,7 +2991,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 
 #### 各节与建议（PRD §10、§11，`report.py`）
 
-- **站点**：每个站点（任务 `start_url` 的主机，`core/trace/sources.py::task_identity(config).site`——导出 `split.by: site` 与 `exclude_sites` 用的同一个键；分叉 run 用它的源任务）的任务数、录制的结局、原路径保真、恢复校验率、分叉覆盖、miss 数。**剔除名单**：被拦截（下一条）、或原路径保真低于 `EXCLUDE_FIDELITY`（0.8）、或录制的环境在第 0 步就失败（观测或动作失败——循环以 `env_status: failed` 结束的那两个阶段——或一步都没提交）的站点；模型调用失败（`error_phase: llm`：429、PRD H28 的 connect 卡死、被拒的 schema）是路由的失败，从不剔除站点，按站点单独计数（`record_model_failures`）；输出成 `ExportFilters.exclude_sites` 的形状（主机名，后缀匹配）并附 YAML 片段。链不自动套用（导出在报告之前）：人把它放进导出配置再导一次。
+- **站点**：每个站点（任务 `start_url` 的主机，`core/trace/sources.py::task_identity(config).site`——导出 `split.by: site` 与 `exclude_sites` 用的同一个键；分叉 run 用它的源任务）的任务数、录制的结局、原路径保真、恢复校验率、分叉覆盖、miss 数。**剔除名单**：被拦截（下一条）、或原路径保真低于 `EXCLUDE_FIDELITY`（0.8）、或录制的环境在第 0 步就失败（观测或动作失败——循环以 `env_status: failed` 结束的那两个阶段——或一步都没提交）的站点；模型调用失败（`error_phase: llm`：429、超时、被拒的 schema）是路由的失败，从不剔除站点，按站点单独计数（`record_model_failures`）；输出成 `ExportFilters.exclude_sites` 的形状（主机名，后缀匹配）并附 YAML 片段。链不自动套用（导出在报告之前）：人把它放进导出配置再导一次。
 - **anti-bot / Cloudflare**：录制里文档请求（`resourceType: Document`，主 frame 与子 frame 都算——验证码 iframe 也是拦截）的应答带拦截特征（browser 的 `challenge_documents`：状态 403 / 429 / 503，且有 `cf-mitigated: challenge` 头、或 `server: cloudflare` 加 `cf-ray`）的站点、run 与步；建议：剔除。只认应答头——不带这些头的拦截页面认不出来（写明的残余）。
 - **重复分叉率**：同一 `branch_group_id` 里检查点步执行的动作（规范 JSON）与排在前面的分支相同的分叉占比（与导出的 `duplicate_of` 同一规则），并对照数据集 manifest 的 `duplicates`。
 - **POST 分叉的 miss**：分叉 run 检查点及之后方法为 POST 的 miss（文档、子资源分开），有 POST miss 的分叉占比。
@@ -3008,7 +3022,7 @@ browser 证据的格式知识留在 browser 的包里：纯函数，只经 `Arch
 
 #### 演练（fixture，零花费）
 
-`tests/_helpers/flywheel_rehearsal.py`——一条命令 `uv run python -m tests._helpers.flywheel_rehearsal --out <dir>`（`run_rehearsal`；除了链根，还写一份 `rehearsal.json`：各段、各模型的路由、外联审计），e2e 测试（`tests/test_flywheel/test_rehearsal_live.py`）在一个新的解释器里跑同一条命令再读它写下的东西（全量测试跑到后面时，进程里积累的状态让一次模型调用的 TCP connect 偶发地永远完不成——链之外的一个 fd 复用缺陷，PRD H28；新解释器也就是用户跑的样子）：起 M29 的 fixture 站点与每个运行段一个脚本化的模型（UI-TARS 的坐标回复，按任务文本里的标记与请求里 assistant 轮的个数——即步号——路由），把发布的 UI-TARS 录制 / 原路径回放 / 分叉 / 导出配置改成 fixture 的那份（模型地址与键、fixture 的路由开关、任务的 `data_dir`、仓库文件的绝对路径；与 M30–M32 的驱动同一种改法），加上对照组（录制配置 + `archive: []`），写出链规格（`evidence: rehearsal`，植入值写字面量），在进程内跑整条链。四个任务分在三个站点上（fixture 的 `FLYWHEEL_SCENARIOS`，每个站点一个映射主机，控件都绝对定位）：`shop.example.test` 上确定性的四步流程（输入框、GET 表单提交、商品链接、读价格；商品页的脚本请求 `recommend.json?session=<timeOrigin>`——每次回放都是一个子资源近邻 miss）与一个登录页（运行时拼出凭证，经 `Authorization` 头、urlencoded POST 的 `password`、密码框的值与 `document.cookie` 发出，值从不出现在任何应答的字节里）；`drift.example.test` 上点击后同步跳到 `next.html?visit=<timeOrigin>`（pinned 不固定 time origin，回放必然是文档 miss，而且停在 Chrome 的错误页上——错误页写着那个 URL，所以这一组的回放截图两次不同）；`blocked.example.test` 的 403 带 Cloudflare 的三个头。分叉段在商品流程的结果页（第 2 步）分三叉：一个与录制做同样的事（覆盖）、一个提交结果页上录制没用过的 POST "quick add" 表单（必然 miss）、一个与第一个重复。导出 YAML 加上指向 fixture 任务数据的 `eval_loader` / `task_loader`（泄漏扫描经它们读参考答案）。e2e 测试断言每个度量的值与它的解释，报告算两次逐字节相同，以及演练期间没有非 loopback 的外联：Python 侧审计每一次 `socket.connect` 的对端；Chrome 侧录制用 hermetic 的解析规则、回放用隔离，归档里出现的主机只有 fixture 的。整条链在本机约 40 s。
+`tests/_helpers/flywheel_rehearsal.py`——一条命令 `uv run python -m tests._helpers.flywheel_rehearsal --out <dir>`（`run_rehearsal`；除了链根，还写一份 `rehearsal.json`：各段、各模型的路由、外联审计），e2e 测试（`tests/test_flywheel/test_rehearsal_live.py`）在测试进程里调同一个 `run_rehearsal`，读它跑出的东西（链根与 `Rehearsal.summary()`）——有意放在全量测试的进程里、并让登录任务紧挨在漂移任务之前录：PRD H28 修好之前，正是这里一次模型调用的 TCP connect 永远完不成（provider 把客户端留给垃圾回收，见 §4.7）：起 M29 的 fixture 站点与每个运行段一个脚本化的模型（UI-TARS 的坐标回复，按任务文本里的标记与请求里 assistant 轮的个数——即步号——路由），把发布的 UI-TARS 录制 / 原路径回放 / 分叉 / 导出配置改成 fixture 的那份（模型地址与键、fixture 的路由开关、任务的 `data_dir`、仓库文件的绝对路径；与 M30–M32 的驱动同一种改法），加上对照组（录制配置 + `archive: []`），写出链规格（`evidence: rehearsal`，植入值写字面量），在进程内跑整条链。四个任务分在三个站点上（fixture 的 `FLYWHEEL_SCENARIOS`，每个站点一个映射主机，控件都绝对定位）：`shop.example.test` 上确定性的四步流程（输入框、GET 表单提交、商品链接、读价格；商品页的脚本请求 `recommend.json?session=<timeOrigin>`——每次回放都是一个子资源近邻 miss）与一个登录页（运行时拼出凭证，经 `Authorization` 头、urlencoded POST 的 `password`、密码框的值与 `document.cookie` 发出，值从不出现在任何应答的字节里）；`drift.example.test` 上点击后同步跳到 `next.html?visit=<timeOrigin>`（pinned 不固定 time origin，回放必然是文档 miss，而且停在 Chrome 的错误页上——错误页写着那个 URL，所以这一组的回放截图两次不同）；`blocked.example.test` 的 403 带 Cloudflare 的三个头。分叉段在商品流程的结果页（第 2 步）分三叉：一个与录制做同样的事（覆盖）、一个提交结果页上录制没用过的 POST "quick add" 表单（必然 miss）、一个与第一个重复。导出 YAML 加上指向 fixture 任务数据的 `eval_loader` / `task_loader`（泄漏扫描经它们读参考答案）。e2e 测试断言每个度量的值与它的解释，报告算两次逐字节相同，以及演练期间没有非 loopback 的外联：Python 侧审计每一次 `socket.connect` 的对端；Chrome 侧录制用 hermetic 的解析规则、回放用隔离，归档里出现的主机只有 fixture 的。整条链在本机约 40 s。
 
 #### 已知限制
 
@@ -4272,3 +4286,11 @@ conscribe 0.6.1 将支持 `__wiring__` Mode 2 三元素 tuple（`required + opti
 ### 14.2 Hierarchical / Multi-agent 编排
 
 DD 1.4 提到走独立的 A2A 通讯协议设计，不属于 agent loop 范畴。具体设计待定。
+
+### 14.3 LLM 客户端的生命周期
+
+provider 为每个请求建一个 SDK 客户端、请求返回前关掉（§4.7），所以请求之间不复用 TCP/TLS 连接；
+`ChatGoogle` 走 Vertex 且没给 `credentials` 时，每个新客户端还要重新加载一次 ADC、刷新一次 token。
+按 run 持有一个客户端能省掉这些，但得有人在 run 结束时关它：例如 `BaseChatModel` 加 `aclose()`，由持有
+LLM 实例的一方（组装出它的 run——agent 的 `llm`、动作的 LLM、评测器的 judge）在每条结束路径上调用。
+这是协议改动，待定。在它之前，按实例缓存客户端而不关是不可取的：对带 `__del__` 的 SDK，那正是 H28。

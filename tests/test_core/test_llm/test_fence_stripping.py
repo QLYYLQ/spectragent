@@ -31,6 +31,7 @@ from pydantic import BaseModel
 import spectragent.core.llm.providers as providers_pkg
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import UserMessage
+from tests._helpers.llm_clients import FakeClient
 
 _PROVIDERS_DIR = Path(providers_pkg.__file__).parent
 
@@ -118,7 +119,7 @@ class TestOpenAIBaseUnwraps:
                 )
 
         chat = ChatOpenAI(model="gpt-4o", api_key="stub", base_url="https://gw.invalid/v1")
-        chat.get_client = lambda: SimpleNamespace(  # type: ignore[method-assign]
+        chat.get_client = lambda: FakeClient(  # type: ignore[method-assign]
             chat=SimpleNamespace(completions=_Completions())
         )
         return chat

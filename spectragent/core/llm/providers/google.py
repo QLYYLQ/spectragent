@@ -2,7 +2,8 @@ import asyncio
 import json
 import logging
 import random
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypeVar, overload
 
@@ -120,9 +121,6 @@ class ChatGoogle(ChatModelBase):
     location: Annotated[str | None, Field(description="Google Cloud location")] = None
     http_options: types.HttpOptions | types.HttpOptionsDict | None = None
 
-    # Internal client cache
-    _client: genai.Client | None = None
-
     @property
     def model_type(self) -> str:
         return "google"
@@ -152,11 +150,32 @@ class ChatGoogle(ChatModelBase):
         return {k: v for k, v in base_params.items() if v is not None}
 
     def get_client(self) -> genai.Client:
-        if self._client is not None:
-            return self._client
-        client_params = self._get_client_params()
-        self._client = genai.Client(**client_params)
-        return self._client
+        """A new client: one per request, closed by :meth:`_request_client`."""
+        return genai.Client(**self._get_client_params())
+
+    @asynccontextmanager
+    async def _request_client(self) -> AsyncIterator[genai.Client]:
+        """The client one request runs on, closed before the request returns.
+
+        This provider used to keep one client per instance and never close
+        it. google-genai's async client, collected unclosed while the loop
+        runs, schedules a late ``aclose()`` from ``__del__`` that unregisters
+        a reused descriptor number from the event loop's selector — another
+        socket's connect with it (PRD H28; ``OpenAICompatBase._request_client``
+        has the mechanism). An instance is dropped at the end of every task
+        of a benchmark run, while the loop goes on to the next one.
+
+        Both halves are closed: ``aio.aclose()`` the async transport this
+        provider uses, ``close()`` the sync one the client builds with it.
+        A transport passed in ``http_options`` is its owner's: google-genai
+        leaves those open itself.
+        """
+        client = self.get_client()
+        try:
+            yield client
+        finally:
+            await client.aio.aclose()
+            client.close()
 
     @property
     def name(self) -> str:
@@ -347,10 +366,10 @@ class ChatGoogle(ChatModelBase):
                 )
             )
 
-        async def _make_api_call():
+        async def _make_api_call(client: genai.Client):
             try:
                 if output_format is None:
-                    response = await self.get_client().aio.models.generate_content(
+                    response = await client.aio.models.generate_content(
                         model=self.model,
                         contents=contents,
                         config=config,  # type: ignore
@@ -397,7 +416,7 @@ class ChatGoogle(ChatModelBase):
                         SchemaOptimizer.strip_additional_properties(optimized_schema)
                         config["response_schema"] = optimized_schema
 
-                        response = await self.get_client().aio.models.generate_content(
+                        response = await client.aio.models.generate_content(
                             model=self.model,
                             contents=contents,
                             config=config,
@@ -452,7 +471,7 @@ class ChatGoogle(ChatModelBase):
                         if fb_system:
                             fb_config["system_instruction"] = fb_system
 
-                        response = await self.get_client().aio.models.generate_content(
+                        response = await client.aio.models.generate_content(
                             model=self.model,
                             contents=fb_contents,
                             config=fb_config,  # type: ignore
@@ -479,7 +498,8 @@ class ChatGoogle(ChatModelBase):
         assert self.max_retries >= 1
         for attempt in range(self.max_retries):
             try:
-                return await _make_api_call()
+                async with self._request_client() as client:
+                    return await _make_api_call(client)
             except ModelProviderError as e:
                 if e.status_code in self.retryable_status_codes and attempt < self.max_retries - 1:
                     delay = min(self.retry_base_delay * (2**attempt), self.retry_max_delay)

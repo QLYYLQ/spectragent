@@ -14,6 +14,7 @@ from spectragent.core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
+from tests._helpers.llm_clients import FakeClient
 
 
 class _Out(BaseModel):
@@ -187,7 +188,7 @@ class TestDeepSeekUsage:
             async def create(self, **_kwargs):
                 return response
 
-        client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+        client = FakeClient(chat=SimpleNamespace(completions=_Completions()))
         monkeypatch.setattr(chat, "get_client", lambda: client)
 
         result = await chat.ainvoke([UserMessage(content="hi")], output_format=_Out)
@@ -307,10 +308,11 @@ class TestChatBrowserUse:
 # ── Truncation at the completion-token ceiling ─────────────────────
 
 
-class _TruncatingOpenAIClient:
+class _TruncatingOpenAIClient(FakeClient):
     """Replays one OpenAI-shaped chat completion with a chosen finish_reason."""
 
     def __init__(self, content: str, finish_reason: str, usage: Any = None) -> None:
+        super().__init__()
         self._content = content
         self._finish_reason = finish_reason
         self._usage = usage

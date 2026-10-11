@@ -35,6 +35,7 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.llm.tools import ToolDefinition
+from tests._helpers.llm_clients import FakeClient, FakeGenaiClient
 
 # ── Shared fixtures ───────────────────────────────────────────────
 
@@ -114,7 +115,7 @@ def _fake_openai_client(
                 usage=None,
             )
 
-    return SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    return FakeClient(chat=SimpleNamespace(completions=_Completions()))
 
 
 # ── 1. The message model ──────────────────────────────────────────
@@ -679,7 +680,7 @@ class TestAnthropicProviderTools:
                     ),
                 )
 
-        return SimpleNamespace(messages=_Messages())
+        return FakeClient(messages=_Messages())
 
     async def test_tools_reach_the_request(self) -> None:
         from anthropic.types.text_block import TextBlock
@@ -780,7 +781,7 @@ class TestOtherProvidersSendTools:
                 )
 
         chat = ChatGoogle(model="gemini-2.5-pro", api_key="test")
-        chat._client = SimpleNamespace(aio=SimpleNamespace(models=_Models()))  # type: ignore[assignment]
+        chat.get_client = lambda: FakeGenaiClient(_Models())  # type: ignore[method-assign]
 
         await chat.ainvoke([UserMessage(content="hi")], tools=[_tool()])
 

@@ -10,7 +10,8 @@ ainvoke path (text + response_format structured output).
 # 跨模块类型解析失败，使 get_origin() 返回 None。
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypeVar, overload
 
@@ -181,6 +182,36 @@ class OpenAICompatBase(ChatModelBase):
             params["http_client"] = self.http_client
         return AsyncOpenAI(**params)
 
+    @asynccontextmanager
+    async def _request_client(self) -> AsyncIterator[AsyncOpenAI]:
+        """The client one request runs on, closed before the request returns.
+
+        :meth:`get_client` builds a new client — and with it a connection
+        pool — every time, so every request site goes through here and the
+        pool is closed on success, failure and cancellation alike.
+
+        Not closing it is not merely a leak. openai's client is cyclic
+        garbage once the call returns, and when the collector reaches it,
+        one pass both closes the pooled socket (its own finalizer) and runs
+        the SDK's ``__del__``, which schedules ``aclose()`` on the running
+        loop. By the time that task runs, the next socket has taken the
+        freed descriptor number, and closing the stale transport
+        unregisters that number from the loop's selector — the next model
+        call's connect callback with it, so the connect never completes and
+        the call hangs to its timeout (PRD H28,
+        ``docs/architecture_design.md`` §4.7).
+
+        An injected ``http_client`` belongs to whoever injected it: closing
+        the SDK client would close it too, so a client built around it is
+        left open.
+        """
+        client = self.get_client()
+        try:
+            yield client
+        finally:
+            if self.http_client is None:
+                await client.close()
+
     # ------------------------------------------------------------------
     # Usage extraction
     # ------------------------------------------------------------------
@@ -302,12 +333,13 @@ class OpenAICompatBase(ChatModelBase):
             extra = {**(extra_kwargs or {}), **self._tool_kwargs(tools, tool_choice)}
 
             if output_format is None:
-                response = await self.get_client().chat.completions.create(
-                    model=self.model,
-                    messages=openai_messages,
-                    **model_params,
-                    **extra,
-                )
+                async with self._request_client() as client:
+                    response = await client.chat.completions.create(
+                        model=self.model,
+                        messages=openai_messages,
+                        **model_params,
+                        **extra,
+                    )
                 choice = response.choices[0] if response.choices else None
                 if choice is None:
                     raise ModelProviderError(
@@ -382,15 +414,16 @@ class OpenAICompatBase(ChatModelBase):
             "schema": schema,
         }
 
-        response = await self.get_client().chat.completions.create(
-            model=self.model,
-            messages=openai_messages,
-            response_format=ResponseFormatJSONSchema(
-                json_schema=response_format, type="json_schema"
-            ),
-            **model_params,
-            **extra_kwargs,
-        )
+        async with self._request_client() as client:
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=openai_messages,
+                response_format=ResponseFormatJSONSchema(
+                    json_schema=response_format, type="json_schema"
+                ),
+                **model_params,
+                **extra_kwargs,
+            )
 
         choice = response.choices[0] if response.choices else None
         if choice is None or choice.message.content is None:

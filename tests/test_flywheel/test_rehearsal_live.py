@@ -1,14 +1,14 @@
 """The metrics chain rehearsed end to end on the fixture site (M33 acceptance, arch §4.16 "演练").
 
-One rehearsal — the one command, ``python -m tests._helpers.flywheel_rehearsal
---out DIR``, run in a fresh interpreter (``run_rehearsal`` behind it) — runs
-the whole chain in a real Chrome with scripted models: record → control →
-same-path replay → branch → export twice → report. A fresh interpreter, not
-this one: deep in the full suite, a model call's TCP connect in the run's
-event loop has been seen never to complete (an fd-reuse race outside the
-chain, M33 report open issue 1); the command is also what a user runs. Each
-value of the report is asserted together with the reason it has that value,
-read back from the runs themselves where it can be:
+One rehearsal — ``run_rehearsal``, the function behind the one command
+``python -m tests._helpers.flywheel_rehearsal --out DIR``, called in this
+process — runs the whole chain in a real Chrome with scripted models:
+record → control → same-path replay → branch → export twice → report. In
+this process on purpose, deep in the full suite and with the sign-in task
+recorded right before the drift task: that is where a model call's TCP
+connect once never completed (PRD H28, fixed in the LLM providers, arch
+§4.7). Each value of the report is asserted together with the reason it has
+that value, read back from the runs themselves where it can be:
 
 - the deterministic shop flow (a GET form submission included) replays
   exactly — fidelity 1.0, strict hashes too; the drift site's click asks a
@@ -29,8 +29,6 @@ read back from the runs themselves where it can be:
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,7 +40,13 @@ from spectragent.core.capabilities.browser.replay.archive_index import BodyLine
 from spectragent.flywheel.chain import ChainSpec, resolve_planted
 from spectragent.flywheel.metrics import ChainLayout, open_chain
 from spectragent.flywheel.report import build_report, report_json
-from tests._helpers.flywheel_rehearsal import BRANCH_STEP, PLANTED, REPO, SHOP_KETTLE, TASKS
+from tests._helpers.flywheel_rehearsal import (
+    BRANCH_STEP,
+    PLANTED,
+    SHOP_KETTLE,
+    TASKS,
+    run_rehearsal,
+)
 
 pytestmark = pytest.mark.requires_chrome
 
@@ -51,7 +55,7 @@ SHOP, DRIFT, BLOCKED = "shop.example.test", "drift.example.test", "blocked.examp
 
 @dataclass
 class Rehearsed:
-    """What the command left: its directory, its summary (``rehearsal.json``), the chain root."""
+    """What the rehearsal left: its directory, its summary (``Rehearsal.summary``), the chain root."""
 
     out: Path
     summary: dict[str, Any]
@@ -64,19 +68,9 @@ class Rehearsed:
 @pytest.fixture(scope="module")
 def rehearsal(tmp_path_factory: pytest.TempPathFactory) -> Rehearsed:
     out = tmp_path_factory.mktemp("rehearsal")
-    run = subprocess.run(
-        [sys.executable, "-m", "tests._helpers.flywheel_rehearsal", "--out", str(out)],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-        timeout=900,
-    )
-    summary_path = out / "rehearsal.json"
-    assert run.returncode == 0 and summary_path.is_file(), (
-        f"the rehearsal command failed (rc {run.returncode}):\n{run.stdout[-3000:]}\n"
-        f"{run.stderr[-6000:]}"
-    )
-    return Rehearsed(out=out, summary=json.loads(summary_path.read_text()))
+    ran = run_rehearsal(out)
+    # Through JSON, exactly as the command writes ``rehearsal.json``.
+    return Rehearsed(out=ran.out, summary=json.loads(json.dumps(ran.summary())))
 
 
 @pytest.fixture(scope="module")

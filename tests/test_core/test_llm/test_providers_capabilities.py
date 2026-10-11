@@ -21,6 +21,7 @@ from spectragent.core.llm.providers.openai import ChatOpenAI
 from spectragent.core.llm.providers.openai_azure import ChatAzureOpenAI
 from spectragent.core.llm.providers.openai_openrouter import ChatOpenRouter
 from spectragent.core.llm.providers.openai_vercel import ChatVercel
+from tests._helpers.llm_clients import FakeClient
 
 
 class TestModelFamilyDetection:
@@ -170,7 +171,7 @@ class TestNoStructuredOutputOptOut:
                 )
 
         chat = ChatOpenAI(model="gpt-4o", api_key="stub", base_url="https://gw.invalid/v1")
-        chat.get_client = lambda: SimpleNamespace(  # type: ignore[method-assign]
+        chat.get_client = lambda: FakeClient(  # type: ignore[method-assign]
             chat=SimpleNamespace(completions=_Completions())
         )
         await chat.ainvoke([UserMessage(content="hi")], _Shape)

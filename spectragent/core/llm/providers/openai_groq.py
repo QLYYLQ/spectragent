@@ -96,19 +96,23 @@ class ChatGroq(OpenAICompatBase):
             )
 
         groq_messages = OpenAIMessageSerializer.serialize_messages(messages)
-        client = self.get_client()
 
+        # Each request's client is closed before it returns, for the reason
+        # ``OpenAICompatBase._request_client`` gives (PRD H28). ``AsyncGroq`` is
+        # not openai's client, so this is the SDK's own ``async with``; it never
+        # wraps an injected ``http_client``, so it is always this request's.
         try:
             if output_format is None:
-                resp = await client.chat.completions.create(
-                    messages=groq_messages,
-                    model=self.model,
-                    service_tier=self.service_tier,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    seed=self.seed,
-                    **self._tool_kwargs(tools, tool_choice),
-                )
+                async with self.get_client() as client:
+                    resp = await client.chat.completions.create(
+                        messages=groq_messages,
+                        model=self.model,
+                        service_tier=self.service_tier,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        seed=self.seed,
+                        **self._tool_kwargs(tools, tool_choice),
+                    )
                 usage = self._get_usage(resp) if hasattr(resp, "usage") else None
                 return ChatInvokeCompletion(
                     completion=resp.choices[0].message.content or "",
@@ -121,22 +125,23 @@ class ChatGroq(OpenAICompatBase):
                 schema = SchemaOptimizer.create_optimized_json_schema(
                     output_format, strict=self._use_strict_schema(output_format)
                 )
-                resp = await client.chat.completions.create(
-                    model=self.model,
-                    messages=groq_messages,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    seed=self.seed,
-                    response_format=ResponseFormatResponseFormatJsonSchema(
-                        json_schema=ResponseFormatResponseFormatJsonSchemaJsonSchema(
-                            name=output_format.__name__,
-                            description="Model output schema",
-                            schema=schema,
+                async with self.get_client() as client:
+                    resp = await client.chat.completions.create(
+                        model=self.model,
+                        messages=groq_messages,
+                        temperature=self.temperature,
+                        top_p=self.top_p,
+                        seed=self.seed,
+                        response_format=ResponseFormatResponseFormatJsonSchema(
+                            json_schema=ResponseFormatResponseFormatJsonSchemaJsonSchema(
+                                name=output_format.__name__,
+                                description="Model output schema",
+                                schema=schema,
+                            ),
+                            type="json_schema",
                         ),
-                        type="json_schema",
-                    ),
-                    service_tier=self.service_tier,
-                )
+                        service_tier=self.service_tier,
+                    )
                 if not resp.choices[0].message.content:
                     raise ModelProviderError(
                         message="No content in response", status_code=500, model=self.name

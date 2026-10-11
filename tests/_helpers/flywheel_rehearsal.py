@@ -4,8 +4,9 @@ One command runs the whole chain and writes the rehearsal report::
 
     uv run python -m tests._helpers.flywheel_rehearsal --out tmp/flywheel/m33_rehearsal
 
-``test_rehearsal_live.py`` runs that same command in a fresh interpreter and reads what it
-wrote: the chain root and ``rehearsal.json`` (:meth:`Rehearsal.summary`). What it does:
+``test_rehearsal_live.py`` calls :func:`run_rehearsal`, the function behind it, in the test
+process and reads what it ran: the chain root and :meth:`Rehearsal.summary` (the command
+writes that summary as ``rehearsal.json``). What it does:
 
 - starts M29's fixture site (mapped hosts) and one loopback scripted model per
   run stage (:class:`Router`: UI-TARS replies routed by the task's marker in
@@ -124,16 +125,14 @@ SHOP_LOGIN = RehearsalTask(
     "Check that the kettle shop's sign-in page loads.",
     (_finished("signed in"),),
 )
-#: In the order the recording sweeps them. The sign-in task runs last: right
-#: before the drift task, it made the drift task's step-1 model call hang in
-#: TCP connect — PRD H28, open: a suspected fd-reuse defect in one
-#: ``spectragent-bench`` process, not the chain's. The order is a temporary
-#: workaround that only hides it: remove it with the H28 fix. The live chain
-#: runs many tasks per process too (``tmp/flywheel/M33_live_plan.md`` makes
-#: H28 a blocking checklist item); the report lists runs that ended on a
-#: failed model call apart (``inputs.roles.<role>.model_failures``).
+#: In the order the recording sweeps them. The sign-in task right before the
+#: drift task is the order that once hung drift's step-1 model call in TCP
+#: connect, at any timeout (PRD H28: a provider left each request's SDK client
+#: to the garbage collector, whose late ``aclose()`` unregistered a reused
+#: descriptor from the event loop — ``docs/architecture_design.md`` §4.7).
 TASKS: tuple[RehearsalTask, ...] = (
     SHOP_KETTLE,
+    SHOP_LOGIN,
     RehearsalTask(
         "fw-drift-story",
         "flywheel_drift",
@@ -148,7 +147,6 @@ TASKS: tuple[RehearsalTask, ...] = (
         "Open the front page of the blocked site.",
         (_finished("blocked by a challenge"),),
     ),
-    SHOP_LOGIN,
 )
 #: The branch stage forks the shop flow at its results page (step 2) …
 BRANCH_STEP = 2
@@ -237,9 +235,6 @@ def _point_llm(raw: dict[str, Any], llm: ScriptedLLMServer) -> None:
             "base_url": llm.base_url,
             "api_key": TEACHER_KEY,
             "max_retries": 0,
-            # A loopback connect has timed out at openai's 5 s default under the
-            # full suite's load (M32); the chain, not the transport, is under test.
-            "timeout": 60,
         }
     )
 

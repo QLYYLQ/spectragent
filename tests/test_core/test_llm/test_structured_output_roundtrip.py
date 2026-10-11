@@ -36,6 +36,7 @@ from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop, _serialize_llm_output
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from tests._helpers.llm_clients import FakeClient
 
 # ── Shared fixtures ───────────────────────────────────────────────
 
@@ -417,8 +418,9 @@ def _anthropic_tool_message(payload: dict[str, Any]):
     )
 
 
-class _FakeAnthropicClient:
+class _FakeAnthropicClient(FakeClient):
     def __init__(self, response: Any) -> None:
+        super().__init__()
         self._response = response
         self.calls: list[dict[str, Any]] = []
         self.messages = SimpleNamespace(create=self._create)
@@ -729,7 +731,7 @@ class TestOpenAIStrictModeDowngrade:
         assert model is not None
 
         chat = self._chat()
-        chat.get_client = lambda: SimpleNamespace(  # type: ignore[method-assign]
+        chat.get_client = lambda: FakeClient(  # type: ignore[method-assign]
             chat=SimpleNamespace(completions=_Completions())
         )
         await chat.ainvoke([UserMessage(content="hi")], model)
@@ -769,7 +771,7 @@ class TestOpenAIStrictModeDowngrade:
                 )
 
         chat = self._chat()
-        chat.get_client = lambda: SimpleNamespace(  # type: ignore[method-assign]
+        chat.get_client = lambda: FakeClient(  # type: ignore[method-assign]
             chat=SimpleNamespace(completions=_Completions())
         )
         await chat.ainvoke([UserMessage(content="hi")], _Closed)
@@ -977,7 +979,7 @@ class TestStructuredValidationIsFedBack:
                     usage=None,
                 )
 
-        return SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+        return FakeClient(chat=SimpleNamespace(completions=_Completions()))
 
     async def test_the_provider_raises_the_recoverable_error(self) -> None:
         from spectragent.core.llm.exceptions import StructuredOutputValidationError

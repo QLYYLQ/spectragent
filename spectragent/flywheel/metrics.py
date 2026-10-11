@@ -1287,8 +1287,8 @@ class Sites(_Model):
 def failed_on_model_call(run: Run) -> bool:
     """Whether a step of *run* failed on its model call (``error_phase`` :data:`MODEL_CALL_PHASE`).
 
-    The model route's failure — a 429, a transport timeout (PRD H28's
-    connect hang), a reply the provider refused — not the environment's:
+    The model route's failure — a 429, a transport timeout, a reply the
+    provider refused — not the environment's:
     the loop ends such a run with ``env_status: success``. Never evidence
     about the site.
     """

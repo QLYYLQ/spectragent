@@ -26,6 +26,7 @@ from spectragent.core.llm.messages import UserMessage
 from spectragent.core.llm.providers.openai import ChatOpenAI
 from spectragent.core.llm.providers.openai_azure import ChatAzureOpenAI
 from spectragent.scripts.generate_all import _collect_registrars
+from tests._helpers.llm_clients import FakeClient
 
 SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
 
@@ -71,9 +72,7 @@ class TestWhatGoesOnTheWire:
                 usage=None,
             )
 
-        fake_client = SimpleNamespace(
-            chat=SimpleNamespace(completions=SimpleNamespace(create=_create))
-        )
+        fake_client = FakeClient(chat=SimpleNamespace(completions=SimpleNamespace(create=_create)))
         monkeypatch.setattr(chat, "get_client", lambda: fake_client)
 
         await chat.ainvoke([UserMessage(content="hi")])

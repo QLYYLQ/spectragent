@@ -93,12 +93,13 @@ class ChatDeepSeek(OpenAICompatBase):
             model_params = self._common_model_params()
 
             if output_format is None:
-                response = await self.get_client().chat.completions.create(
-                    model=self.model,
-                    messages=openai_messages,
-                    **self._tool_kwargs(tools, tool_choice),
-                    **model_params,
-                )
+                async with self._request_client() as client:
+                    response = await client.chat.completions.create(
+                        model=self.model,
+                        messages=openai_messages,
+                        **self._tool_kwargs(tools, tool_choice),
+                        **model_params,
+                    )
                 choice = response.choices[0] if response.choices else None
                 if choice is None:
                     raise ModelProviderError(
@@ -144,13 +145,14 @@ class ChatDeepSeek(OpenAICompatBase):
                 ]
                 schema_tool_choice = {"type": "function", "function": {"name": tool_name}}
 
-                resp = await self.get_client().chat.completions.create(
-                    model=self.model,
-                    messages=openai_messages,
-                    tools=schema_tools,
-                    tool_choice=schema_tool_choice,
-                    **model_params,
-                )
+                async with self._request_client() as client:
+                    resp = await client.chat.completions.create(
+                        model=self.model,
+                        messages=openai_messages,
+                        tools=schema_tools,
+                        tool_choice=schema_tool_choice,
+                        **model_params,
+                    )
                 msg = resp.choices[0].message
                 if not msg.tool_calls:
                     raise ValueError("Expected tool_calls in response but got none")

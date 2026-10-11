@@ -108,11 +108,12 @@ class ChatCerebras(OpenAICompatBase):
             else:
                 openai_messages.append({"role": "user", "content": json_prompt})
 
-            resp = await self.get_client().chat.completions.create(
-                model=self.model,
-                messages=openai_messages,
-                **model_params,
-            )
+            async with self._request_client() as client:
+                resp = await client.chat.completions.create(
+                    model=self.model,
+                    messages=openai_messages,
+                    **model_params,
+                )
             content = resp.choices[0].message.content
             if not content:
                 raise ModelProviderError("Empty response from Cerebras", model=self.name)

@@ -155,7 +155,7 @@ class RoleInputs(_Model):
     skipped: dict[str, str]
     components: list[ComponentCount]
     #: Runs that ended on a failed model call (``metrics.failed_on_model_call``): the route's
-    #: failure — a 429, a transport hang (PRD H28) — so what they did not do is not the site's.
+    #: failure — a 429, a timeout — so what they did not do is not the site's.
     model_failures: list[str]
 
 

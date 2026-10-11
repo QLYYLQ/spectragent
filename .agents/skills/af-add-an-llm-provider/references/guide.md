@@ -65,7 +65,7 @@ provider via `ChatModelBase.model_family` → `detect_model_family`). Currently 
 `supports_strict_mode`, `supports_json_schema`, `schema_requires_gemini_fix`,
 `schema_rejects_closed_union_branches`.
 
-Adding a provider owes the test suite three things:
+Adding a provider owes the test suite four things:
 
 1. A `_Case` row in `tests/test_core/test_llm/test_provider_validation.py:451-470` —
    19 rows for 15 keys, because a provider with two structured paths owes one per path.
@@ -77,6 +77,15 @@ Adding a provider owes the test suite three things:
 3. The structured path routed through `ChatModelBase._validate_structured` — enforced
    by an AST scan (`test_provider_validation.py:85`) that hunts bare
    `output_format.model_validate*`. One documented exemption: `_groq_parser.py`.
+4. Every request's SDK client closed before the request returns: go through the
+   family's `_request_client()` (or the SDK's own `async with`), never a bare
+   `self.get_client().…`. An unclosed openai / anthropic / groq / google-genai client
+   is collected later and its `__del__`'s late `aclose()` unregisters a reused
+   descriptor from the event loop — the next model call's connect never completes
+   (PRD H28, `architecture_design.md` §4.7). The `_Case` row above is re-run as
+   `test_a_request_closes_the_client_it_built` (stub clients from
+   `tests/_helpers/llm_clients.py`); a provider with no client of its own goes in
+   `_NO_REQUEST_CLIENT` with its reason. `test_request_clients.py` runs the real SDKs.
 
 ## 3. Three traps
 

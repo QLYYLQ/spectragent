@@ -137,7 +137,8 @@ class ChatAzureOpenAI(OpenAICompatBase):
 
         try:
             if output_format is None:
-                response = await self.get_client().responses.create(**model_params)
+                async with self._request_client() as client:
+                    response = await client.responses.create(**model_params)
                 return ChatInvokeCompletion(
                     completion=response.output_text or "",
                     usage=self._get_usage_from_responses(response),
@@ -158,7 +159,8 @@ class ChatAzureOpenAI(OpenAICompatBase):
                         "schema": json_schema,
                     }
                 }
-                response = await self.get_client().responses.create(**model_params)
+                async with self._request_client() as client:
+                    response = await client.responses.create(**model_params)
                 if not response.output_text:
                     raise ModelProviderError(
                         message="Failed to parse structured output",

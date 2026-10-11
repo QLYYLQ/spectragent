@@ -80,9 +80,6 @@ def _record_ui_tars(
                 "base_url": llm.base_url,
                 "api_key": "scripted",
                 "max_retries": 0,
-                # A connect to the loopback model has timed out (5 s default) once under
-                # the full suite's load; the export, not the transport, is under test.
-                "timeout": 60,
             }
         )
         raw["environment"][0]["capabilities"][0]["backend"]["extra_args"] = site.chrome_args()

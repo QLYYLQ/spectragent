@@ -25,6 +25,11 @@ re-raised a generic ``ModelProviderError`` — passing the scan while
 costing the run exactly what the scan exists to prevent. So the second
 half of this file drives every registered provider through a stub client
 that answers badly, and asserts on the type the *Loop* sees.
+
+The same cases carry one more thing every provider owes: the client it built
+for the request is closed before the request returns (PRD H28 — left to the
+collector, an SDK client's late ``aclose()`` unregisters a reused descriptor
+from the event loop; ``test_request_clients.py`` runs the real SDKs).
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from spectragent.core.llm.exceptions import (
     StructuredOutputValidationError,
 )
 from spectragent.core.llm.messages import UserMessage
+from tests._helpers.llm_clients import FakeClient, FakeGenaiClient
 
 _PROVIDERS_DIR = Path(providers_pkg.__file__).parent
 
@@ -199,7 +205,7 @@ def _openai_client(content: str | None = _BAD, *, tool_arguments: str | None = N
                 usage=None,
             )
 
-    return SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    return FakeClient(chat=SimpleNamespace(completions=_Completions()))
 
 
 def _anthropic_client(blocks: list[Any]) -> Any:
@@ -219,7 +225,7 @@ def _anthropic_client(blocks: list[Any]) -> Any:
                 usage=Usage(input_tokens=1, output_tokens=1),
             )
 
-    return SimpleNamespace(messages=_Messages())
+    return FakeClient(messages=_Messages())
 
 
 # -- builders -------------------------------------------------------------
@@ -298,9 +304,7 @@ def _google_native() -> Any:
             return SimpleNamespace(parsed=None, text=_BAD, usage_metadata=None, candidates=[])
 
     chat = ChatGoogle(model="gemini-2.5-flash", api_key="stub")
-    chat.get_client = lambda: SimpleNamespace(  # type: ignore[method-assign]
-        aio=SimpleNamespace(models=_Models())
-    )
+    chat.get_client = lambda: FakeGenaiClient(_Models())  # type: ignore[method-assign]
     return chat
 
 
@@ -396,9 +400,7 @@ def _azure_responses() -> Any:
         azure_endpoint="https://stub.invalid",
         use_responses_api="true",
     )
-    chat.get_client = lambda: SimpleNamespace(  # type: ignore[method-assign]
-        responses=_Responses()
-    )
+    chat.get_client = lambda: FakeClient(responses=_Responses())  # type: ignore[method-assign]
     return chat
 
 
@@ -563,6 +565,105 @@ async def test_a_closed_union_output_format_compiles_on_every_provider(
     assert exc.value.raw_output
 
 
+# ── Row 3: the client a request builds is closed before it returns ──
+
+#: Providers whose request does not run on a client from ``get_client``, and why.
+#: Every other case above doubles as a check that its request closes that client.
+_NO_REQUEST_CLIENT: dict[str, str] = {
+    "bedrock.default": "boto3 is synchronous: its client is not on the event loop",
+    "oci.default": "the OCI SDK is synchronous: its client is not on the event loop",
+    "browser_use.default": "``_make_request`` opens and closes its own ``httpx.AsyncClient``",
+    "mistral.default": "one plain-httpx client per instance, never closed — open (arch §4.7)",
+    "ollama.default": "the SDK has no close; one per request, never closed — open (arch §4.7)",
+}
+_CLIENT_CASES = [case for case in _CASES if case.key not in _NO_REQUEST_CLIENT]
+
+
+#: Modules whose requests may still use a client from ``get_client`` unclosed, and why.
+_UNCLOSED_GET_CLIENT = {"ollama.py": "ollama's AsyncClient has no close — open (arch §4.7)"}
+
+
+class _GetClientCalls(ast.NodeVisitor):
+    """``….get_client()`` calls that are neither ``_request_client``'s nor an ``async with``'s."""
+
+    def __init__(self) -> None:
+        self.functions: list[str] = []
+        self.with_contexts: set[int] = set()
+        self.bare: list[int] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.functions.append(node.name)
+        self.generic_visit(node)
+        self.functions.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self.with_contexts.update(id(item.context_expr) for item in node.items)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "get_client"
+            and id(node) not in self.with_contexts
+            and "_request_client" not in self.functions
+        ):
+            self.bare.append(node.lineno)
+        self.generic_visit(node)
+
+
+def test_every_request_client_is_opened_where_it_is_closed() -> None:
+    """Every request path, the text paths the behavioural row does not drive included."""
+    offenders: list[str] = []
+    for path in sorted(_PROVIDERS_DIR.glob("*.py")):
+        if path.name in _UNCLOSED_GET_CLIENT:
+            continue
+        calls = _GetClientCalls()
+        calls.visit(ast.parse(path.read_text(encoding="utf-8")))
+        offenders.extend(f"{path.name}:{line}" for line in calls.bare)
+    assert offenders == [], (
+        "These request paths take a client from get_client() outside _request_client() or "
+        "an `async with`, so nothing closes it before the request returns (PRD H28):\n  "
+        + "\n  ".join(offenders)
+    )
+    for name in _UNCLOSED_GET_CLIENT:
+        assert (_PROVIDERS_DIR / name).exists(), f"stale exemption: {name}"
+
+
+def test_every_exemption_names_a_registered_provider() -> None:
+    assert set(_NO_REQUEST_CLIENT) <= set(LLMRegistrar.get_all())
+
+
+def _closed_once(client: Any) -> bool:
+    if isinstance(client, FakeGenaiClient):
+        return client.async_closes == client.sync_closes == 1
+    return client.closes == 1
+
+
+@pytest.mark.parametrize("case", _CLIENT_CASES, ids=[c.id for c in _CLIENT_CASES])
+async def test_a_request_closes_the_client_it_built(case: _Case) -> None:
+    provider = case.build()
+    build = provider.get_client
+    built: list[Any] = []
+
+    def recording() -> Any:
+        client = build()
+        built.append(client)
+        return client
+
+    provider.get_client = recording
+    with pytest.raises(StructuredOutputValidationError):
+        await provider.ainvoke([UserMessage(content="hi")], _Shape)
+
+    assert built, "the request built no client through get_client"
+    assert all(_closed_once(client) for client in built), (
+        "a request returned with the client it built still open: closing it was left to "
+        "the garbage collector (PRD H28)"
+    )
+
+
 def test_the_groq_salvage_path_is_exempt_on_purpose() -> None:
     """The one place a bad reply is *not* recoverable, asserted not assumed.
 
@@ -589,7 +690,7 @@ def test_the_groq_salvage_path_is_exempt_on_purpose() -> None:
             raise status_error
 
     chat = ChatGroq(model="llama-3.3-70b-versatile", api_key="stub")
-    chat.get_client = lambda: SimpleNamespace(  # type: ignore[method-assign]
+    chat.get_client = lambda: FakeClient(  # type: ignore[method-assign]
         chat=SimpleNamespace(completions=_Completions())
     )
 

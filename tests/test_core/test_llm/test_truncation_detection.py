@@ -25,6 +25,7 @@ from spectragent.core.llm.providers.anthropic import ChatAnthropic
 from spectragent.core.llm.providers.google import ChatGoogle
 from spectragent.core.llm.providers.openai import ChatOpenAI
 from spectragent.core.llm.views import ChatInvokeUsage
+from tests._helpers.llm_clients import FakeClient
 
 
 def _usage(completion_tokens: int = 8192) -> ChatInvokeUsage:
@@ -102,10 +103,11 @@ class _Reply(BaseModel):
     memory: str
 
 
-class _LengthCappedClient:
+class _LengthCappedClient(FakeClient):
     """Replays one OpenAI chat completion that stopped at ``finish_reason="length"``."""
 
     def __init__(self, content: str | None) -> None:
+        super().__init__()
         self._content = content
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 

@@ -166,12 +166,13 @@ class ChatVercel(OpenAICompatBase):
 
         vercel_messages = OpenAIMessageSerializer.serialize_messages(modified)
         model_params = self._common_model_params()
-        response = await self.get_client().chat.completions.create(
-            model=self.model,
-            messages=vercel_messages,
-            **model_params,
-            **extra_kwargs,
-        )
+        async with self._request_client() as client:
+            response = await client.chat.completions.create(
+                model=self.model,
+                messages=vercel_messages,
+                **model_params,
+                **extra_kwargs,
+            )
         content = response.choices[0].message.content if response.choices else None
         if not content:
             raise ModelProviderError(

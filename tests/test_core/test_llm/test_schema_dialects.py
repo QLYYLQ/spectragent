@@ -40,6 +40,7 @@ from spectragent.core.llm.schema.optimizer import (
     STRICT_DIALECT_KEYWORDS,
     SchemaOptimizer,
 )
+from tests._helpers.llm_clients import FakeClient, FakeGenaiClient
 
 # ── shared fixtures ────────────────────────────────────────────────
 
@@ -280,9 +281,7 @@ class TestWhatReachesAGeminiRoute:
         payload = {"memory": "m", "action": [{"browser.click": {"index": 1}}]}
         chat = self._chat(model_name)
         models = _FakeGoogleModels(payload)
-        chat.get_client = lambda: SimpleNamespace(  # type: ignore[method-assign]
-            aio=SimpleNamespace(models=models)
-        )
+        chat.get_client = lambda: FakeGenaiClient(models)  # type: ignore[method-assign]
         await chat.ainvoke([UserMessage(content="hi")], _agent_output_model())
         return models.calls[0]["config"]["response_schema"]
 
@@ -351,7 +350,7 @@ class TestWhatReachesATranslatedGeminiRoute:
                 )
 
         chat = self._chat(model_name)
-        chat.get_client = lambda: SimpleNamespace(  # type: ignore[method-assign]
+        chat.get_client = lambda: FakeClient(  # type: ignore[method-assign]
             chat=SimpleNamespace(completions=_Completions())
         )
         await chat.ainvoke([UserMessage(content="hi")], _agent_output_model())

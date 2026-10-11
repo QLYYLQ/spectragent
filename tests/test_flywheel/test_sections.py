@@ -79,7 +79,7 @@ class TestSites:
 
 
 class TestAFailedModelCallIsNotTheSites:
-    """A failed model call — a 429, PRD H28's connect hang — is the route's failure, never site evidence."""
+    """A failed model call — a 429, a timeout — is the route's failure, never site evidence."""
 
     def test_it_excludes_nothing_and_is_flagged(self, tmp_path: Path) -> None:
         layout = empty_layout(tmp_path)

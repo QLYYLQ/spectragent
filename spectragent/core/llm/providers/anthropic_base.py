@@ -6,7 +6,8 @@
 # 跨模块类型解析失败，使 get_origin() 返回 None。
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, TypeVar, overload
 
@@ -187,6 +188,25 @@ class AnthropicCompatBase(ChatModelBase):
         """Override in sub-classes."""
         raise NotImplementedError
 
+    @asynccontextmanager
+    async def _request_client(self) -> AsyncIterator[AsyncAnthropic | AsyncAnthropicBedrock]:
+        """The client one request runs on, closed before the request returns.
+
+        :meth:`get_client` builds a new client and connection pool every
+        time. Left to the garbage collector, the SDK's ``__del__`` schedules
+        a late ``aclose()`` that unregisters a reused descriptor number from
+        the event loop's selector — the next model call's connect with it
+        (PRD H28; ``OpenAICompatBase._request_client`` has the mechanism).
+        An injected ``http_client`` belongs to whoever injected it and is
+        left open.
+        """
+        client = self.get_client()
+        try:
+            yield client
+        finally:
+            if self.http_client is None:
+                await client.close()
+
     def _get_usage(self, response: Message) -> ChatInvokeUsage:
         """Anthropic's three input counters, folded into one prompt total.
 
@@ -289,13 +309,14 @@ class AnthropicCompatBase(ChatModelBase):
 
         try:
             if output_format is None:
-                response = await self.get_client().messages.create(
-                    model=self.model,
-                    messages=anthropic_messages,
-                    system=system_prompt or omit,
-                    **self._tool_kwargs(tools, tool_choice),
-                    **self._get_invoke_params(),
-                )
+                async with self._request_client() as client:
+                    response = await client.messages.create(
+                        model=self.model,
+                        messages=anthropic_messages,
+                        system=system_prompt or omit,
+                        **self._tool_kwargs(tools, tool_choice),
+                        **self._get_invoke_params(),
+                    )
 
                 if not isinstance(response, Message):
                     raise ModelProviderError(
@@ -342,7 +363,8 @@ class AnthropicCompatBase(ChatModelBase):
                         "anthropic-beta": self.structured_outputs_beta
                     }
 
-                response = await self.get_client().messages.create(**create_kwargs)
+                async with self._request_client() as client:
+                    response = await client.messages.create(**create_kwargs)
 
                 if not isinstance(response, Message):
                     raise ModelProviderError(
@@ -386,14 +408,15 @@ class AnthropicCompatBase(ChatModelBase):
                 # here would read as if the caller's choice were being honoured.
                 schema_tool_choice = ToolChoiceToolParam(type="tool", name=tool_name)
 
-                response = await self.get_client().messages.create(
-                    model=self.model,
-                    messages=anthropic_messages,
-                    tools=[tool],
-                    system=system_prompt or omit,
-                    tool_choice=schema_tool_choice,
-                    **self._get_invoke_params(),
-                )
+                async with self._request_client() as client:
+                    response = await client.messages.create(
+                        model=self.model,
+                        messages=anthropic_messages,
+                        tools=[tool],
+                        system=system_prompt or omit,
+                        tool_choice=schema_tool_choice,
+                        **self._get_invoke_params(),
+                    )
 
                 if not isinstance(response, Message):
                     raise ModelProviderError(
