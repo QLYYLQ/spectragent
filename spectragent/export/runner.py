@@ -43,18 +43,12 @@ from typing import Any
 from spectragent.agents._registrar import AgentRegistrar
 from spectragent.core.composer import ComposedRun, ConfigComposer
 from spectragent.core.trace.errors import TraceSchemaError
+from spectragent.core.trace.sources import TaskIdentity, task_identity, unreadable_reason
 from spectragent.export._registrar import Exporter, ExportRecord
 from spectragent.export.benchmarks import BenchmarkLoaders
 from spectragent.export.canonical import canonicalise
 from spectragent.export.errors import ExportConfigError, ExportEmptyError
-from spectragent.export.filters import (
-    Source,
-    TaskIdentity,
-    filtered_out,
-    open_sources,
-    task_identity,
-    unreadable_reason,
-)
+from spectragent.export.filters import Source, filtered_out, open_sources
 from spectragent.export.render import RenderedSample, StudentRenderer, TrajectoryStep
 from spectragent.export.split import Decontaminator, Split, split_key, split_of
 from spectragent.export.validate import (

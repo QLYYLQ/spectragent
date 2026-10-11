@@ -23,10 +23,14 @@ from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities.browser.archive.network import INDEX_NAME, WARC_NAME
 from spectragent.core.capabilities.browser.replay.archive_index import (
     BlobPayload,
+    BodyLine,
+    ExchangeLine,
     IndexedRecord,
+    PendingLine,
     RecordedArchive,
     ReplayArchiveError,
     WarcPayload,
+    iter_index_lines,
     load_archive,
 )
 from spectragent.core.capabilities.browser.replay.canonical import request_keys
@@ -276,6 +280,40 @@ def _recommit(
         )
     wal.commit_step(0, step_record(0), extra_files=files)
     return wal.run_dir
+
+
+class TestTheLinesAsRead:
+    """``iter_index_lines``: the read the loader uses, handed out with each commit's step."""
+
+    async def test_step_order_then_the_trailing_commits_typed(self, tmp_path: Path) -> None:
+        recording = RecordingScript(tmp_path)
+        await recording.exchange(f"{SHOP}/a")
+        await recording.commit(0)
+        stalled = await recording.streamed_later(f"{SHOP}/late.js", b"l" * 6000, hold=True)
+        recording.in_flight(f"{SHOP}/never")
+        await recording.commit(2)
+        assert stalled is not None
+        stalled.set()
+        await recording.commit_trailing()
+        reader = open_archive(recording.finish())
+
+        lines = list(iter_index_lines(reader))
+
+        steps = [step for step, _line in lines]
+        assert steps == sorted(steps, key=lambda s: (s is None, s or 0)), "steps, then trailing"
+        assert set(steps) == {0, 2, None}
+        by_kind = {(step, type(line).__name__) for step, line in lines}
+        assert (0, "ExchangeLine") in by_kind and (None, "BodyLine") in by_kind
+        assert all(isinstance(line, ExchangeLine | PendingLine | BodyLine) for _s, line in lines)
+        loaded = {record.url for record in load_archive(reader).index.records}
+        exchanged = {line.url for _s, line in lines if isinstance(line, ExchangeLine)}
+        pending = {line.url for _s, line in lines if isinstance(line, PendingLine)}
+        assert loaded == exchanged | pending, "the loader read the same lines"
+
+    async def test_a_run_without_network_evidence_has_no_lines(self, tmp_path: Path) -> None:
+        recording = RecordingScript(tmp_path, fingerprint=False)
+        recording.wal.commit_step(0, step_record(0))
+        assert list(iter_index_lines(open_archive(recording.finish()))) == []
 
 
 class TestWhatFailsTheLoad:

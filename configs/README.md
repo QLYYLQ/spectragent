@@ -15,6 +15,7 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `flywheel/record_ui_tars_pinned.yaml` | A **recording** run (data flywheel): UITarsAgent, `replayability: pinned`, the three browser archivers on the trace hook — see [Recording environment evidence](#recording-environment-evidence) |
 | `flywheel/replay_ui_tars_archive.yaml` | Its **offline replay**: the same agent and tier with `network_source: archive` (isolated, strict misses) and `base_time: from_archive`; the recorded run arrives as `--replay-archive DIR` — see [Replaying a recorded run](#replaying-a-recorded-run) |
 | `flywheel/branch_ui_tars_archive.yaml` | **Branching** recorded runs (data flywheel, M31): `agent_loop: branch` (the `prefix_replay` restorer) over the replay browser block, tasks from `task_loader: trace_branches` — see [Branching a recorded run](#branching-a-recorded-run) |
+| `flywheel/same_path_ui_tars_archive.yaml` | **Same-path replay** (data flywheel, M33): the branch sweep restoring every recording to its last step (`step_selector: last`, `continue_steps: 0`, `verify: warn`, two tasks per source) — the metrics chain's fidelity measure, see [Measuring the flywheel](#measuring-the-flywheel) |
 | `flywheel/export_sft.yaml` | **Exporting** recorded runs as a training dataset (data flywheel, M32): one `exporter:` block, no agent, no environment — see [Exporting training data](#exporting-training-data) |
 | `flywheel/ui_tars_student.yaml` | The export's **student**: UITarsAgent with `coordinate_space: normalized_1000`, the recording's screenshot pipeline, no hooks; assembled by the export, never run by it |
 
@@ -347,7 +348,7 @@ task_loader:
   - benchmark_name: trace_branches
     data_dir: traces/recorded       # the sources root (default: traces)
     # sources: ["*"]                # globs relative to data_dir, sorted
-    step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps: [2, 5]}
+    step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps: [2, 5]} | last
     branches_per_step: 1            # b0, b1, ... per selected step
     require_status: completed       # error | any (reads the manifest status)
     # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
@@ -470,6 +471,56 @@ task_loader:
   the last step of a full 30-step segment at 1280x720 is ~36k image tokens before text.
   `max_tokens: 65536` holds that; for a shorter trainer context use a student with fewer
   `max_steps` — a longer record fails the export by name, it is never truncated.
+
+## Measuring the flywheel
+
+`spectragent-flywheel` runs the data flywheel end to end and reports on it
+(`docs/architecture_design.md` §4.16): record → same-path replay → branch → export (twice) →
+a report of every PRD §9 metric and §10 / §11 section, each with a rule-based, evidence-backed
+recommendation. The report reads only committed traces and published datasets, so it can be
+recomputed anywhere.
+
+The chain is a plain YAML spec — not a run root, so it does not live in `configs/flywheel/`
+(every file there must compose and prepare). Its stages name ordinary run YAMLs; the chain
+only writes their path fields (the trace writer's `trace_dir`, the `trace_branches` loader's
+`data_dir`, the exporter's `sources_root` / `sources` / `output_dir`) and runs the existing CLIs
+in this process. Relative paths are relative to the working directory.
+
+```yaml
+name: m33-live
+root: runs/m33-live                    # everything lands under it
+evidence: live                         # live | rehearsal: the basis of every recommendation
+tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # record / control flags
+record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # evaluate: false → --no-eval
+control:   {config: <the recording with archive: []>}                  # optional: the overhead control group
+same_path: {config: configs/flywheel/same_path_ui_tars_archive.yaml}
+branch:    {config: <branch YAML>}
+export:    {config: <export YAML>, repeat: 2}                          # 2: export determinism
+report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}  # searched for, never written
+```
+
+```bash
+set -a; . ./.env; set +a     # spectragent-bench and the chain never read .env
+uv run spectragent-flywheel run --spec chain.yaml                      # every configured stage
+uv run spectragent-flywheel run --spec chain.yaml --stages record      # one stage at a time
+uv run spectragent-flywheel report --spec chain.yaml                   # recompute the report
+uv run spectragent-flywheel report --root runs/m33-live --evidence live --out /tmp/report
+```
+
+- **Layout**: `<root>/traces/{record,control,same_path,branch}/`, `<root>/datasets/{first,second}/`,
+  `<root>/report/{report.json,report.md}`, `<root>/configs/<stage>.yaml` (what each stage ran),
+  `<root>/evals/<stage>/` (a stage with `evaluate: true`), `<root>/chain.json` (argv, exit codes,
+  runs and times — provenance only).
+- **Outcomes**: a run stage that exits 0 or 1 and wrote a run directory ran (a failed task is
+  data); anything else stops the chain naming the stage. An export never overwrites
+  `datasets/first|second`: with the export selected and either one present, the chain
+  refuses before any stage runs (exit 2) — remove them to export again.
+- **The export YAML** of a chain sets `filters.require_eval: null` (the chain does not evaluate)
+  and `decontamination: {against: []}` (the sources are the benchmark's own tasks).
+- **After the report**: `sections.sites.yaml` is the exclusion list in `filters.exclude_sites`
+  shape; put it into the export YAML and export again by hand.
+- **A rehearsal** on the fixture site with scripted models (no spend) runs the whole chain:
+  `uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>`.
 
 ## Benchmark data
 

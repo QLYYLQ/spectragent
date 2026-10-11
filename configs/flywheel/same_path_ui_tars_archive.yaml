@@ -1,0 +1,74 @@
+# Same-path replay of recorded UI-TARS runs (data flywheel, M33): the metrics
+# chain's measure of replay fidelity (docs/architecture_design.md §4.16). A
+# branch sweep in which every task restores a recorded run to its LAST
+# branchable step: prefix_replay re-executes and verifies every earlier step
+# (verify: warn — a step that does not verify is recorded and the run goes on,
+# so every step gets a check), then the teacher decides that last step once
+# (one model call per task) and the run ends with a terminal observation.
+# Two tasks per source: the same input twice, for replay determinism.
+#
+#   spectragent-bench --config configs/flywheel/same_path_ui_tars_archive.yaml --no-eval
+#
+# Pair it with the recording config (record_ui_tars_pinned.yaml): the agent,
+# the tier and the browser block are the branch config's
+# (branch_ui_tars_archive.yaml). The metrics chain (spectragent-flywheel run)
+# writes task_loader.data_dir (its traces/record) and trace_writer.trace_dir
+# (its traces/same_path) itself; run it by hand by pointing data_dir at your
+# recordings. There is no eval loader for branch tasks: pass --no-eval.
+agent:
+  - agent_id: ui_tars
+    id: main
+    prompt_template: computer_use
+    coordinate_space: screenshot_pixels
+    agent_loop:
+      loop_id: branch
+      max_steps: 30
+      max_actions_per_step: 1
+      continue_steps: 0                  # the recorded run's last step, decided once
+      restorer:
+        restorer_id: prefix_replay
+        verify: warn                     # record a failed check and go on: every step is checked
+        screenshot_max_distance: 5       # Hamming distance of the 64-bit dHashes
+    llm:                                 # the teacher: the recording's model
+      model_type: openai
+      model: gpt-4o
+      provider: { name: direct }
+    memory: { memory_id: simple, max_messages: 200 }
+
+environment:
+  - env_type: browser
+    id: browser_env
+    capabilities:
+      - capability_id: browser
+        profile: standard
+        mouse_trajectory: { trajectory_type: instant }
+        typing_rhythm: { rhythm_type: instant }
+        replayability: { replayability_id: pinned, random_seed: 7, base_time: from_archive }
+        network_source:
+          source_id: archive
+          shift_dates: none
+          matcher: { site_rules: configs/replay_rules }
+          miss_policy: { miss_policy_id: strict }
+        dom_cleaner: { cleaner_type: browser_use }
+        dom_serializer: { serializer_type: text }
+        retarget_tolerance_px: 2.0
+        backend:
+          provider_id: local_chrome
+          headless: true
+
+hook:
+  - hook_id: trace_writer
+    trace_dir: traces/same_path
+    archive:
+      - archiver_id: browser.network     # the replay log of every task
+      - archiver_id: browser.storage
+      - archiver_id: browser.dom_raw
+  - hook_id: metrics
+
+task_loader:
+  - benchmark_name: trace_branches
+    data_dir: traces/recorded            # placeholder: the directory your recorded runs are in
+    step_selector: { selector_id: last } # each source's last branchable step
+    branches_per_step: 2                 # the same input twice: replay determinism
+    require_status: any                  # a run that ended in error is measured too
+    on_unbranchable: skip                # an unbranchable source is left out, with its reason

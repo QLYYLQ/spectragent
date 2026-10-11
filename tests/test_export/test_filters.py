@@ -17,13 +17,9 @@ from spectragent.core.capabilities.browser.replay.replay_log import ReplayLog, R
 from spectragent.core.data_loader.task.require_eval import RequireEval
 from spectragent.core.trace.encoding import encode_archive_file
 from spectragent.core.trace.models import RunStatus
+from spectragent.core.trace.sources import task_identity
 from spectragent.export.canonical import canonicalise
-from spectragent.export.filters import (
-    Source,
-    filtered_out,
-    open_sources,
-    task_identity,
-)
+from spectragent.export.filters import Source, filtered_out, open_sources
 from spectragent.export.settings import ExportFilters
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from tests._helpers.archive_recorder import open_session

@@ -1,0 +1,387 @@
+"""PRD §10 / §11 sections and the decision rules over the known-answer chain (arch §4.16).
+
+Each section's numbers come from ``tests/_helpers/flywheel_traces.py::known_chain``;
+each rule is exercised on both sides of its named threshold, and on no data
+(``insufficient``, no verdict — never a default conclusion).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from spectragent.flywheel import report as rules
+from spectragent.flywheel.metrics import (
+    BranchCoverage,
+    BranchDocumentMisses,
+    ChainLayout,
+    ChainRuns,
+    MissDistribution,
+    Planted,
+    PlantedCount,
+    PostBranchMisses,
+    Privacy,
+    SiteRuleCandidates,
+    anti_bot,
+    branch_document_misses,
+    duplicate_branches,
+    export_yield,
+    post_branch_misses,
+    ratio,
+    read_dataset_manifest,
+    retention,
+    same_path_fidelity,
+    site_rules,
+    sites,
+    storage,
+)
+from spectragent.flywheel.report import FlywheelReport, build_report, render_markdown
+from tests._helpers.flywheel_traces import Step, click, write_plain
+from tests.test_flywheel.conftest import empty_layout
+
+
+class TestSites:
+    def test_by_site_and_the_exclusion_list(self, chain: ChainRuns) -> None:
+        found = sites(
+            chain,
+            fidelity=same_path_fidelity(chain),
+            blocked=["blocked.test"],
+            exclude_below=rules.EXCLUDE_FIDELITY,
+        )
+        shop = found.by_site["shop.test"]
+        assert (shop.tasks, shop.record_runs, shop.record_status) == (1, 1, {"completed": 1})
+        assert (shop.same_path.value, shop.restoration.numerator, shop.restoration.denominator) == (
+            1.0,
+            4,
+            6,
+        )
+        # Every replayed miss of the site counts here, before a checkpoint too: br-b1's POST and
+        # br-b2's restoration-time document miss; 2 same-path near misses and br-b0's two, br-b1's
+        # three folded image misses.
+        counts = (shop.branch_zero_document_miss.numerator, shop.document_misses, shop.other_misses)
+        assert counts == (2, 2, 7)
+        assert found.by_site["broken.test"].record_failed_at_step0 == 1
+        assert found.by_site["broken.test"].same_path.reason == "no same-path run of this site"
+        assert [(item.site, item.reasons) for item in found.exclusions] == [
+            (
+                "blocked.test",
+                ["an anti-bot challenge answered its recording", "same-path fidelity 0.00 < 0.8"],
+            ),
+            ("broken.test", ["1 recording(s) failed at step 0"]),
+        ]
+        assert found.exclude_sites == ["blocked.test", "broken.test"]
+        assert found.yaml == "filters:\n  exclude_sites: [blocked.test, broken.test]\n"
+
+    def test_the_exclusion_threshold_is_the_named_one(self, chain: ChainRuns) -> None:
+        lenient = sites(chain, fidelity=same_path_fidelity(chain), blocked=[], exclude_below=0.0)
+        assert lenient.exclude_sites == ["broken.test"], "0.0 is not below 0.0; no challenge given"
+
+
+class TestAFailedModelCallIsNotTheSites:
+    """A failed model call — a 429, PRD H28's connect hang — is the route's failure, never site evidence."""
+
+    def test_it_excludes_nothing_and_is_flagged(self, tmp_path: Path) -> None:
+        layout = empty_layout(tmp_path)
+        record = layout.traces("record")
+        runs = {
+            "rec-env": ("env.test", [Step(error_phase="observe")]),
+            "rec-llm": ("llm.test", [Step(error_phase="llm")]),
+            "rec-parse": ("parse.test", [Step(error_phase="parse")]),
+            "rec-later": ("later.test", [Step(actions=[click(1, 1)]), Step(error_phase="llm")]),
+        }
+        for run_id, (site, steps) in runs.items():
+            write_plain(record, run_id, steps, task_id=run_id, site=site)
+        report = build_report(layout, evidence="live")
+        found = report.sections.sites
+        assert found.exclude_sites == ["env.test"], "only the environment's failure at step 0"
+        counts = {
+            site: (item.record_failed_at_step0, item.record_model_failures)
+            for site, item in found.by_site.items()
+        }
+        assert counts == {
+            "env.test": (1, 0),
+            "later.test": (0, 1),
+            "llm.test": (0, 1),
+            "parse.test": (0, 0),
+        }
+        assert report.inputs.roles["record"].model_failures == ["rec-later", "rec-llm"]
+        assert "model call failed: `rec-llm`" in render_markdown(report)
+
+
+class TestAntiBot:
+    def test_the_challenged_recording(self, chain: ChainRuns) -> None:
+        found = anti_bot(chain.role("record"))
+        assert found.runs_checked == 3 and found.blocked_sites == ["blocked.test"]
+        (hit,) = found.hits
+        assert hit.model_dump() == {
+            "site": "blocked.test",
+            "run": "traces/record/rec-blocked",
+            "step": 0,
+            "status": 403,
+            "url": "http://blocked.test/",
+            "signals": ["cf-mitigated: challenge", "server: cloudflare + cf-ray"],
+        }
+
+
+class TestDuplicatesAndPostMisses:
+    def test_duplicate_branches_against_the_dataset(
+        self, chain: ChainRuns, layout: ChainLayout
+    ) -> None:
+        found = duplicate_branches(chain.role("branch"), read_dataset_manifest(layout))
+        assert (found.branches, found.groups, found.duplicates) == (3, 1, 1)
+        assert found.rate.value == pytest.approx(1 / 3)
+        assert found.dataset_duplicates == 1
+
+    def test_post_branch_misses(self, chain: ChainRuns) -> None:
+        found = post_branch_misses(chain.role("branch"))
+        assert (found.branches, found.document_misses, found.other_misses) == (3, 1, 0)
+        assert (
+            found.branches_with_post_miss.numerator,
+            found.branches_with_post_miss.denominator,
+        ) == (
+            1,
+            3,
+        )
+
+
+class TestStorageAndRetention:
+    def test_bytes_by_category_and_gzip_where_it_can_help(self, chain: ChainRuns) -> None:
+        found = storage(chain)
+        assert set(found.by_role) == {"record", "control", "same_path", "branch"}
+        record = found.by_role["record"]
+        assert (record.runs, record.steps) == (3, 5)
+        assert record.bytes == sum(item.bytes for item in record.categories.values())
+        shots = record.categories["artifacts:browser.screenshot"]
+        assert (shots.compressible_bytes, shots.ratio) == (0, None), "PNG: size only"
+        warc_and_index = record.categories["env:browser.network"]
+        assert 0 < warc_and_index.compressible_bytes < warc_and_index.bytes, (
+            "the index is text, the WARC is gzip already"
+        )
+        assert set(found.datasets) == {"first", "second"}
+
+    def test_retention_projects_from_the_chain_s_own_ratios(
+        self, chain: ChainRuns, layout: ChainLayout
+    ) -> None:
+        stored = storage(chain)
+        found = retention(chain, stored, samples=5, tasks=(10, 20))
+        assert found.runs_per_task["control"] == pytest.approx(1 / 3)
+        assert found.per_sample == stored.datasets["first"] / 5
+        assert found.per_task is not None
+        assert [(p.tasks, p.bytes) for p in found.projections] == [
+            (10, 10 * found.per_task),
+            (20, 20 * found.per_task),
+        ]
+
+    def test_no_recording_projects_nothing(self, tmp_path: Path) -> None:
+        empty = empty_layout(tmp_path)
+        from spectragent.flywheel.metrics import open_chain
+
+        chain = open_chain(empty)
+        found = retention(chain, storage(chain), samples=None, tasks=(10,))
+        assert (found.per_task, found.projections) == (None, [])
+
+
+class TestExportYield:
+    def test_from_the_first_dataset(self, layout: ChainLayout) -> None:
+        found = export_yield(layout, read_dataset_manifest(layout))
+        assert found.present and found.samples == {"train": 5}
+        assert (found.action_failed.numerator, found.action_failed.denominator) == (1, 5)
+        assert found.untranslatable == {"no_coordinate": 1}
+        assert found.sources_filtered == {
+            "branch/br-b1": "1 main-frame document miss(es) in replay"
+        }
+
+    def test_no_export_is_null(self, tmp_path: Path) -> None:
+        found = export_yield(empty_layout(tmp_path), None)
+        assert (found.present, found.action_failed.value) == (False, None)
+
+
+class TestDecisionInputs:
+    def test_branch_document_misses_and_site_rule_candidates(self, chain: ChainRuns) -> None:
+        misses = branch_document_misses(chain.role("branch"))
+        assert misses.document_misses == 1
+        assert (misses.get_no_match.numerator, misses.get_no_match.denominator) == (0, 1), (
+            "the one document miss after a checkpoint is br-b1's POST"
+        )
+        found = site_rules(chain)
+        assert found.model_dump() == {
+            "runs": 6,
+            "by_host": {"shop.test": 3},
+            "params": {"shop.test": {"session": 3}},
+        }
+
+
+# ── the rules ─────────────────────────────────────────────────────────
+
+
+class TestTheDecisionsOnTheKnownChain:
+    def test_each_decision_states_its_rule_evidence_and_basis(self, report: FlywheelReport) -> None:
+        decisions = report.decisions
+        assert decisions.q1_miss_policy.verdict == (
+            "evaluate a document fallback (live_fallback): only 2 of 3 branches stayed inside "
+            "the archive (1 POST document miss(es))"
+        )
+        assert decisions.q4_coverage.verdict is not None
+        assert decisions.q4_coverage.verdict.startswith("do not expand coverage: 0 of 1")
+        assert (
+            decisions.site_rules.verdict
+            == "generate ignore_query rules for review: shop.test [session]"
+        )
+        assert (
+            decisions.q7_retention.verdict is not None
+            and "per task" in decisions.q7_retention.verdict
+        )
+        for name in ("q1_miss_policy", "q4_coverage", "site_rules", "q7_retention"):
+            item = getattr(decisions, name)
+            assert (item.status, item.basis) == ("partial", "rehearsal"), name
+            assert item.evidence and item.rule, name
+
+
+def _coverage(clean: int, branches: int) -> BranchCoverage:
+    return BranchCoverage(
+        branches=branches,
+        zero_document_miss=ratio(clean, branches, empty="no branch run"),
+        document_misses=branches - clean,
+        other_misses=MissDistribution(),
+    )
+
+
+def _post(misses: int, branches: int) -> PostBranchMisses:
+    return PostBranchMisses(
+        branches=branches,
+        document_misses=misses,
+        other_misses=0,
+        branches_with_post_miss=ratio(min(misses, branches), branches, empty="no branch run"),
+    )
+
+
+class TestRuleThresholds:
+    @pytest.mark.parametrize(
+        ("clean", "branches", "starts"),
+        [(9, 10, "keep strict"), (8, 10, "evaluate a document fallback"), (0, 0, None)],
+    )
+    def test_q1(
+        self, report: FlywheelReport, clean: int, branches: int, starts: str | None
+    ) -> None:
+        metrics = report.metrics.model_copy(update={"branch_coverage": _coverage(clean, branches)})
+        sections = report.sections.model_copy(update={"post_branch_misses": _post(0, branches)})
+        found = rules._q1(metrics, sections, "live")
+        if starts is None:
+            assert (found.status, found.verdict) == ("insufficient", None)
+        else:
+            assert found.status == "supported" and found.verdict is not None
+            assert found.verdict.startswith(starts)
+        assert "0.9" in found.rule and "Q1_KEEP_STRICT" in found.rule
+
+    @pytest.mark.parametrize(
+        ("unrecorded", "misses", "starts"),
+        [
+            (1, 2, "expand coverage"),
+            (1, 3, "do not expand coverage: 1 of 3"),
+            (0, 0, "do not expand coverage: no"),
+        ],
+    )
+    def test_q4(self, report: FlywheelReport, unrecorded: int, misses: int, starts: str) -> None:
+        inputs = report.decision_inputs.model_copy(
+            update={
+                "branch_document_misses": BranchDocumentMisses(
+                    document_misses=misses,
+                    get_no_match=ratio(unrecorded, misses, empty="no document miss in any branch"),
+                )
+            }
+        )
+        found = rules._q4(inputs, report.metrics, "live")
+        assert found.verdict is not None and found.verdict.startswith(starts)
+
+    def test_q4_without_branches_is_insufficient(self, report: FlywheelReport) -> None:
+        metrics = report.metrics.model_copy(update={"branch_coverage": _coverage(0, 0)})
+        found = rules._q4(report.decision_inputs, metrics, "rehearsal")
+        assert (found.status, found.verdict) == ("insufficient", None)
+
+    @pytest.mark.parametrize(
+        ("misses", "verdict"),
+        [
+            (2, "generate ignore_query rules for review: a.test [q]"),
+            (1, "keep hand-written rules: no host reached 2 near misses"),
+        ],
+    )
+    def test_site_rules(self, report: FlywheelReport, misses: int, verdict: str) -> None:
+        inputs = report.decision_inputs.model_copy(
+            update={
+                "site_rule_candidates": SiteRuleCandidates(
+                    runs=4, by_host={"a.test": misses}, params={"a.test": {"q": misses}}
+                )
+            }
+        )
+        assert rules._site_rules_decision(inputs, "live").verdict == verdict
+
+    def test_no_data_anywhere_is_insufficient_everywhere(self, tmp_path: Path) -> None:
+        empty = build_report(empty_layout(tmp_path), evidence="live")
+        for group in (
+            empty.recommendations.metrics,
+            empty.recommendations.sections,
+            empty.decisions,
+        ):
+            for name, item in group:
+                assert (item.status, item.verdict) == ("insufficient", None), name
+
+    def test_live_evidence_is_supported(self, layout: ChainLayout) -> None:
+        live = build_report(layout, evidence="live")
+        assert live.decisions.q1_miss_policy.status == "supported"
+        assert live.recommendations.metrics.export_determinism.status == "supported"
+
+
+UNSET_KEY = Planted(label="teacher api key", value=None, source="env:OPENAI_API_KEY")
+SITE_PASSWORD = Planted(label="site password", value="pw-never-written-7", source="value")
+
+
+class TestThePrivacyRule:
+    """PRD §9 privacy is "planted occurrences = 0": a credential not searched for concludes nothing."""
+
+    @pytest.mark.parametrize(
+        "planted",
+        [[UNSET_KEY], [], [SITE_PASSWORD, UNSET_KEY]],
+        ids=["env_unset", "no_spec", "one_of_two_unset"],
+    )
+    def test_no_leak_is_concluded_while_a_planted_value_went_unsearched(
+        self, layout: ChainLayout, planted: list[Planted]
+    ) -> None:
+        live = build_report(layout, evidence="live", planted=planted)
+        found = live.recommendations.metrics.privacy
+        assert (found.status, found.verdict) == ("insufficient", None)
+        assert live.metrics.privacy.files_scanned > 0 and live.metrics.privacy.shapes == {}
+        assert "needs every planted credential searched for" in found.rule
+
+    def test_every_planted_value_searched_and_absent_is_supported(
+        self, layout: ChainLayout
+    ) -> None:
+        live = build_report(layout, evidence="live", planted=[SITE_PASSWORD])
+        found = live.recommendations.metrics.privacy
+        assert (found.status, found.verdict) == (
+            "supported",
+            "no planted credential (1 searched) and no credential shape under traces/ and "
+            "datasets/",
+        )
+
+    def test_a_credential_shape_is_a_leak_even_with_a_value_unsearched(self) -> None:
+        privacy = Privacy(
+            files_scanned=3,
+            planted=[
+                PlantedCount(
+                    label="teacher api key",
+                    source="env:OPENAI_API_KEY",
+                    occurrences=None,
+                    files=None,
+                    reason="env:OPENAI_API_KEY is not set: nothing to search for",
+                )
+            ],
+            shapes={"openai-style api key": 1},
+            shape_files={"openai-style api key": 1},
+        )
+        found = rules._rec_privacy(privacy, "live")
+        assert (found.status, found.verdict) == (
+            "supported",
+            "leak: no planted value found, 1 credential-shaped string(s): fix before sharing "
+            "traces or datasets; not searched: teacher api key",
+        )

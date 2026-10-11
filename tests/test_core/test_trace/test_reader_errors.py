@@ -259,6 +259,7 @@ ARCHIVE_READS: dict[str, Read] = {
     "iter_archive": lambda d: list(_trace(d).iter_archive(STEPS_ARCHIVER)),
     "blob": lambda d: _trace(d).blob("0" * 64),
     "archive_run_file": lambda d: _trace(d).archive_run_file(ARCHIVE_CAPABILITY),
+    "committed_files": lambda d: _trace(d).committed_files,
 }
 
 
@@ -430,6 +431,8 @@ V2_ACCESSORS: dict[str, Read] = {
     "blob": lambda d: _trace(d).blob("0" * 64),
     "archive_run_file": lambda d: _trace(d).archive_run_file("x"),
     "archive_lines": lambda d: _trace(d).archive_lines("env/x", StepRecord),
+    "committed_files": lambda d: _trace(d).committed_files,
+    "read_committed": lambda d: _trace(d).read_committed("manifest.json"),
 }
 
 
@@ -536,6 +539,38 @@ class TestAPathTheTraceListsStaysInsideIt:
             ("trailing", 0, "extra_index"),
             lambda d: _trace(d).trailing_extra_files,
         ),
+        "step file via committed_files": (
+            ("steps", 0, "step_file"),
+            lambda d: _trace(d).committed_files,
+        ),
+        "fragment via committed_files": (
+            ("steps", 0, "fragments", "browser.dom", "file"),
+            lambda d: _trace(d).committed_files,
+        ),
+        "artifact via committed_files": (
+            ("steps", 0, "fragments", "browser.screenshot", "artifact"),
+            lambda d: _trace(d).committed_files,
+        ),
+        "call via committed_files": (
+            ("steps", 0, "llm_calls", 0),
+            lambda d: _trace(d).committed_files,
+        ),
+        "trailing call via committed_files": (
+            ("trailing", 0, "llm_calls", 0),
+            lambda d: _trace(d).committed_files,
+        ),
+        "extra index via committed_files": (
+            ("steps", 0, "extra_index"),
+            lambda d: _trace(d).committed_files,
+        ),
+        "trailing extra index via committed_files": (
+            ("trailing", 0, "extra_index"),
+            lambda d: _trace(d).committed_files,
+        ),
+        "artifact via read_committed": (
+            ("steps", 0, "fragments", "browser.screenshot", "artifact"),
+            lambda d: _trace(d).read_committed("steps/001.json"),
+        ),
     }
 
     @pytest.fixture()
@@ -581,7 +616,8 @@ class TestAPathTheTraceListsStaysInsideIt:
         self._refused(read, run_dir, listed_in=run_dir / "manifest.json")
 
     @pytest.mark.parametrize("escape", ["absolute", "dot-dot", "symlink"])
-    def test_an_output_schema(self, reference, secret, escape):
+    @pytest.mark.parametrize("accessor", ["output_schema", "committed_files"])
+    def test_an_output_schema(self, reference, secret, escape, accessor):
         run_dir = reference.run_dir
         sha = reference.schema_sha
         if escape == "symlink":
@@ -592,12 +628,15 @@ class TestAPathTheTraceListsStaysInsideIt:
             sha = "/abs" if escape == "absolute" else "../../../outside/id_rsa"
             self._edit_manifest(run_dir, ("output_formats", 0), sha)
 
-        self._refused(
-            lambda d: _trace(d).output_schema(sha), run_dir, listed_in=run_dir / "manifest.json"
+        read: Read = (
+            (lambda d: _trace(d).output_schema(sha))
+            if accessor == "output_schema"
+            else (lambda d: _trace(d).committed_files)
         )
+        self._refused(read, run_dir, listed_in=run_dir / "manifest.json")
 
     @pytest.mark.parametrize("escape", ["absolute", "dot-dot"])
-    @pytest.mark.parametrize("accessor", ["extra_files", "read_extra"])
+    @pytest.mark.parametrize("accessor", ["extra_files", "read_extra", "committed_files"])
     def test_a_path_an_extra_index_lists(self, reference, secret, accessor, escape):
         index = reference.run_dir / "steps/000.extra.json"
         payload = json.loads(index.read_text())
@@ -605,12 +644,12 @@ class TestAPathTheTraceListsStaysInsideIt:
         payload["files"][0]["path"] = outside
         index.write_text(json.dumps(payload))
 
-        read: Read = (
-            (lambda d: _trace(d).extra_files(0))
-            if accessor == "extra_files"
-            else (lambda d: _trace(d).read_extra(outside))
-        )
-        self._refused(read, reference.run_dir, listed_in=index)
+        reads: dict[str, Read] = {
+            "extra_files": lambda d: _trace(d).extra_files(0),
+            "read_extra": lambda d: _trace(d).read_extra(outside),
+            "committed_files": lambda d: _trace(d).committed_files,
+        }
+        self._refused(reads[accessor], reference.run_dir, listed_in=index)
 
     @pytest.mark.parametrize("escape", ["absolute", "dot-dot"])
     @pytest.mark.parametrize("accessor", list(ARCHIVE_READS))
@@ -646,13 +685,19 @@ class TestAPathTheTraceListsStaysInsideIt:
             listed_in=archived.run_dir / "steps/002.extra.json",
         )
 
-    def test_an_extra_file_that_is_a_symlink_out(self, reference, secret):
+    @pytest.mark.parametrize("accessor", ["read_extra", "committed_files", "read_committed"])
+    def test_an_extra_file_that_is_a_symlink_out(self, reference, secret, accessor):
         rel = "env/steps/000/browser.network/response.json"
         (reference.run_dir / rel).unlink()
         (reference.run_dir / rel).symlink_to(secret)
 
+        reads: dict[str, Read] = {
+            "read_extra": lambda d: _trace(d).read_extra(rel),
+            "committed_files": lambda d: _trace(d).committed_files,
+            "read_committed": lambda d: _trace(d).read_committed(rel),
+        }
         self._refused(
-            lambda d: _trace(d).read_extra(rel),
+            reads[accessor],
             reference.run_dir,
             listed_in=reference.run_dir / "steps/000.extra.json",
         )
@@ -663,8 +708,10 @@ class TestAPathTheTraceListsStaysInsideIt:
             ("manifest.json", _trace),
             ("config.json", lambda d: _trace(d).config),
             ("result.json", lambda d: _trace(d).result),
+            ("config.json", lambda d: _trace(d).committed_files),
+            ("result.json", lambda d: _trace(d).committed_files),
         ],
-        ids=["manifest", "config", "result"],
+        ids=["manifest", "config", "result", "config_listed", "result_listed"],
     )
     def test_a_file_the_run_names_itself(self, reference, tmp_path, name, read):
         """Refused though the file it leads to would read: where it is, not what it holds."""

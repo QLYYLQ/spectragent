@@ -30,6 +30,7 @@ import pytest
 
 from spectragent.core.benchmark_runner import TaskOutcome
 from spectragent.core.trace.reader import RunTrace
+from spectragent.flywheel import metrics
 from tests._helpers import branch_driver as branch
 from tests._helpers import replay_driver as driver
 from tests._helpers.fixture_site import BRANCH_MARK, FixtureSite
@@ -126,7 +127,7 @@ def test_prefix_restores_with_every_step_verified(sweep: Sweep) -> None:
             assert evidence.document_misses == 0, "the archive served every main-frame document"
         result = sweep.outcomes[name].result
         assert result is not None and result.metrics.steps == 2, "only the teacher's steps count"
-    assert branch.restoration_rate(trace.trace_dir for trace in sweep.traces.values()).rate == 1.0
+    assert metrics.restoration_rate(sweep.traces.values()).rate == 1.0
 
 
 def test_each_branch_is_a_task_of_the_sweep(sweep: Sweep) -> None:
@@ -188,11 +189,11 @@ def test_branches_do_not_share_state(sweep: Sweep) -> None:
 def test_restoration_rate_is_reported(sweep: Sweep, capsys: pytest.CaptureFixture[str]) -> None:
     dirs = [outcome.trace_dir for outcome in sweep.outcomes.values()]
     assert all(isinstance(path, Path) for path in dirs)
-    rate = branch.restoration_rate(path for path in dirs if path is not None)
+    rate = metrics.restoration_rate(RunTrace(path) for path in dirs if path is not None)
     # Every restored step (0..3) and every checkpoint step (4), in each branch.
     assert rate.total == (branch.CHECKPOINT + 1) * len(TEACHERS)
     assert (rate.ok, dict(rate.by_reason)) == (rate.total, {})
-    ran = branch.components(sweep.traces["b0"])
+    ran = metrics.components(sweep.traces["b0"])
     assert {key: ran[key] for key in ran if key != "route"} == {
         "agent": "browser_use",
         "loop": "branch",

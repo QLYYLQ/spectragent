@@ -37,14 +37,18 @@ on every page so no favicon request is made.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import socket
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import parse_qsl
 
+from PIL import Image
 from websockets.sync.server import Server as WebSocketServer
 from websockets.sync.server import ServerConnection
 from websockets.sync.server import serve as serve_websocket
@@ -105,6 +109,52 @@ BRANCH_MARK = "branch_mark"
 HIT_TEST_SCENARIOS: tuple[str, ...] = ("sticky",)
 #: The scroll offset the ``sticky`` page sets on load, in CSS px.
 STICKY_SCROLL_Y = 500
+#: M33's form pages, kept apart for the same reason: a navigation a *page*
+#: starts in answer to an input event, which the action does not wait for (the
+#: observation does, §4.14). ``get.html`` and ``post.html`` hold a prefilled
+#: ``item`` field and an ``add`` submit button; ``enter.html`` holds one
+#: ``query`` field and no button (Enter submits it, implicit submission);
+#: ``result.html`` answers both methods, echoing the received fields.
+FORM_SCENARIOS: tuple[str, ...] = ("form_submit",)
+#: M33's metrics rehearsal, kept apart for the same reason: three *sites* (each
+#: its own mapped host, so the report's per-site statistics have something to
+#: tell apart), driven by UI-TARS coordinates — every control is absolutely
+#: positioned (:data:`FLYWHEEL_BOXES`):
+#:
+#: - ``flywheel_shop`` on ``shop.example.test``: a search field and a GET
+#:   submit button (``start.html``), the results with a product link and a POST
+#:   "quick add" form the recording never uses (``search.html?q=``), the product
+#:   page, whose script fetches ``recommend.json?session=<performance.timeOrigin>``
+#:   (pinned fixes Date and Math.random, not the time origin: every replay asks
+#:   another URL — a subresource near miss), and ``login.html``, whose script
+#:   assembles credentials at run time and sends them every way a page can
+#:   (an ``Authorization`` header, an urlencoded POST ``password``, a password
+#:   field's value, ``document.cookie``) — no response byte holds them;
+#: - ``flywheel_drift`` on ``drift.example.test``: a button whose click
+#:   navigates the main frame to ``next.html?visit=<performance.timeOrigin>``,
+#:   synchronously — a replay asks a URL the recording never fetched;
+#: - ``flywheel_blocked`` on ``blocked.example.test``: a 403 with Cloudflare's
+#:   challenge marks (``server: cloudflare``, ``cf-ray``, ``cf-mitigated``).
+FLYWHEEL_SCENARIOS: tuple[str, ...] = ("flywheel_shop", "flywheel_drift", "flywheel_blocked")
+#: Where the flywheel pages put their controls: ``(left, top, width, height)`` in CSS px.
+FLYWHEEL_BOXES: dict[str, tuple[int, int, int, int]] = {
+    "query": (40, 100, 300, 32),
+    "search": (360, 100, 100, 32),
+    "product": (40, 160, 240, 32),
+    "quick_add": (300, 160, 160, 32),
+    "drift": (40, 100, 200, 40),
+}
+#: The pieces ``login.html`` joins at run time; the joined values are the planted credentials.
+FLYWHEEL_PASSWORD_PARTS: tuple[str, ...] = ("fw", "pw", "Qx41", "Lm")
+FLYWHEEL_TOKEN_PARTS: tuple[str, ...] = ("tok", "9Zr", "Kp27", "wq81")
+FLYWHEEL_PASSWORD = "-".join(FLYWHEEL_PASSWORD_PARTS)
+FLYWHEEL_TOKEN = "_".join(FLYWHEEL_TOKEN_PARTS)
+#: Cloudflare's marks on the blocked site's answer.
+FLYWHEEL_CHALLENGE_HEADERS: tuple[tuple[str, str], ...] = (
+    ("Server", "cloudflare"),
+    ("CF-RAY", "8a1b2c3d4e5f6a7b-AMS"),
+    ("cf-mitigated", "challenge"),
+)
 #: Hosts the replay-only pages ask for and no fixture server answers: a
 #: hermetic recording (:meth:`FixtureSite.chrome_args` ``hermetic=True``)
 #: records each as a request that failed, so a replay has nothing to serve.
@@ -152,6 +202,8 @@ class LoggedRequest:
             or head in REPLAY_SCENARIOS
             or head in BRANCH_SCENARIOS
             or head in HIT_TEST_SCENARIOS
+            or head in FORM_SCENARIOS
+            or head in FLYWHEEL_SCENARIOS
         )
         return head if known else None
 
@@ -221,6 +273,9 @@ class FixtureSite:
     MAIN_HOST = "shop.example.test"
     CROSS_HOST = "ads.thirdparty.test"
     WS_HOST = "ws.example.test"
+    #: The flywheel rehearsal's other two sites, served by the main server.
+    DRIFT_HOST = "drift.example.test"
+    BLOCKED_HOST = "blocked.example.test"
 
     def __init__(self, *, mapped: bool = False) -> None:
         self.mapped = mapped
@@ -342,6 +397,8 @@ class FixtureSite:
             f"MAP {self.MAIN_HOST} 127.0.0.1:{self.main_port}",
             f"MAP {self.CROSS_HOST} 127.0.0.1:{self.cross_port}",
             f"MAP {self.WS_HOST} 127.0.0.1:{self.ws_port}",
+            f"MAP {self.DRIFT_HOST} 127.0.0.1:{self.main_port}",
+            f"MAP {self.BLOCKED_HOST} 127.0.0.1:{self.main_port}",
         ]
         if hermetic:
             rules.append("MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1")
@@ -353,14 +410,32 @@ class FixtureSite:
             "redirect": "/redirect/hop1",
             "service_worker": "/service_worker/page.html",
             "popup": "/popup/opener.html",
+            "form_submit": "/form_submit/get.html",
+            "flywheel_shop": "/flywheel_shop/start.html",
+            "flywheel_drift": "/flywheel_drift/start.html",
+            "flywheel_blocked": "/flywheel_blocked/start.html",
         }.get(scenario, f"/{scenario}/page.html")
-        known = SCENARIOS + REPLAY_SCENARIOS + BRANCH_SCENARIOS + HIT_TEST_SCENARIOS
+        known = (
+            SCENARIOS
+            + REPLAY_SCENARIOS
+            + BRANCH_SCENARIOS
+            + HIT_TEST_SCENARIOS
+            + FORM_SCENARIOS
+            + FLYWHEEL_SCENARIOS
+        )
         if scenario not in known:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {known}")
-        origin = {"service_worker": self.sw_origin, "egress": self.ip_origin}.get(
-            scenario, self.main_origin
-        )
+        origin = {
+            "service_worker": self.sw_origin,
+            "egress": self.ip_origin,
+            "flywheel_drift": self.site_origin(self.DRIFT_HOST),
+            "flywheel_blocked": self.site_origin(self.BLOCKED_HOST),
+        }.get(scenario, self.main_origin)
         return origin + entry
+
+    def site_origin(self, host: str) -> str:
+        """``http://<host>`` when mapped; the main server's loopback origin otherwise."""
+        return f"http://{host}" if self.mapped else f"http://127.0.0.1:{self.main_port}"
 
     @staticmethod
     def expected(scenario: str) -> list[str]:
@@ -399,9 +474,18 @@ class FixtureSite:
             "range_video": ["/range_video/page.html", "/range_video/clip.webm"],
             "websocket": ["/websocket/page.html", "/websocket/echo"],
             "beacon": ["/beacon/page.html", "/beacon/collect"],
+            # its entry page submitted (no request happens without the input event)
+            "form_submit": ["/form_submit/get.html", "/form_submit/result.html"],
+            "flywheel_shop": [
+                "/flywheel_shop/start.html",
+                "/flywheel_shop/site.css",
+                "/flywheel_shop/logo.png",
+            ],
+            "flywheel_drift": ["/flywheel_drift/start.html", "/flywheel_drift/site.css"],
+            "flywheel_blocked": ["/flywheel_blocked/start.html"],
         }
         if scenario not in paths:
-            raise KeyError(f"unknown fixture scenario {scenario!r}; known: {SCENARIOS}")
+            raise KeyError(f"unknown fixture scenario {scenario!r}; known: {sorted(paths)}")
         return list(paths[scenario])
 
     @staticmethod
@@ -739,8 +823,9 @@ class FixtureSite:
                     '<p><a id="add-to-cart" href="/branch/result.html?item=&amp;size=small">'
                     "Add to cart</a></p>"
                     # A link the form keeps pointing at its state, not a form
-                    # submission: clicking a submit button leaves the next
-                    # observation's capture hanging (an open issue of M31's report).
+                    # submission: M31's flow worked around the stall a submit
+                    # button caused (fixed in M33; the ``form_submit`` pages
+                    # cover it), and its recorded branches depend on the link.
                     "<script>"
                     "const link = document.getElementById('add-to-cart');"
                     "const update = () => { link.href = '/branch/result.html?item=' + "
@@ -820,7 +905,175 @@ class FixtureSite:
                 ),
                 _HTML,
             ),
+            # ── M33's form pages: navigations an input event starts ──
+            "/form_submit/get.html": static(self._form_page("GET"), _HTML),
+            "/form_submit/post.html": static(self._form_page("POST"), _HTML),
+            "/form_submit/enter.html": static(
+                self._page(
+                    "search",
+                    '<form method="GET" action="/form_submit/result.html">'
+                    '<p><label for="query">Search</label> '
+                    '<input id="query" name="query" type="text" size="20"></p></form>',
+                ),
+                _HTML,
+            ),
+            "/form_submit/result.html": self._form_result,
+            # ── M33's metrics rehearsal: three sites ──
+            **self._flywheel_routes(static),
         }
+
+    def _flywheel_routes(
+        self, static: Callable[[bytes, str], Callable[[_Handler, bytes], None]]
+    ) -> dict[str, Callable[[_Handler, bytes], None]]:
+        css = _flywheel_css()
+        head = '<link rel="stylesheet" href="/flywheel_shop/site.css">'
+        logo = (
+            '<img id="logo" class="box" src="/flywheel_shop/logo.png" style="left:1180px;top:20px">'
+        )
+        recommend = (
+            "<script>fetch('/flywheel_shop/recommend.json?session=' + "
+            "Math.floor(performance.timeOrigin)).catch(() => {});</script>"
+        )
+        password = " + '-' + ".join(f"'{part}'" for part in FLYWHEEL_PASSWORD_PARTS)
+        token = " + '_' + ".join(f"'{part}'" for part in FLYWHEEL_TOKEN_PARTS)
+        login = (
+            "<script>"
+            f"const pw = {password}; const token = {token};"
+            "document.getElementById('password').value = pw;"
+            "document.cookie = 'session=' + token + '; path=/';"
+            "fetch('/flywheel_shop/api/me', {headers: {'Authorization': 'Bearer ' + token}})"
+            ".catch(() => {});"
+            "fetch('/flywheel_shop/api/login', {method: 'POST', headers: "
+            "{'Content-Type': 'application/x-www-form-urlencoded'}, "
+            "body: 'user=ann&password=' + encodeURIComponent(pw)}).catch(() => {});"
+            "</script>"
+        )
+
+        def ok_json(handler: _Handler, _body: bytes) -> None:
+            self._send(handler, 200, b'{"ok": true}', _JSON)
+
+        def search(handler: _Handler, _body: bytes) -> None:
+            query = dict(parse_qsl(handler.path.partition("?")[2], keep_blank_values=True))
+            term = escape(query.get("q", ""))
+            page = self._page(
+                "results",
+                head
+                + logo
+                + f'<h1 class="box" style="left:40px;top:20px">Results for {term}</h1>'
+                + _box_link("product", "/flywheel_shop/product.html?id=7", "Blue kettle")
+                + '<form method="POST" action="/flywheel_shop/cart">'
+                '<input type="hidden" name="item" value="7">'
+                + _box_button("quick_add", "Quick add", submit=True)
+                + "</form>",
+            )
+            self._send(handler, 200, page, _HTML)
+
+        def cart(handler: _Handler, body: bytes) -> None:
+            if handler.command != "POST":
+                self._send(handler, 405, b"POST only", "text/plain")
+                return
+            fields = dict(parse_qsl(body.decode(), keep_blank_values=True))
+            page = self._page(
+                "cart",
+                head + logo + f'<h1 class="box" style="left:40px;top:20px">'
+                f"Added item {escape(fields.get('item', '?'))}</h1>",
+            )
+            self._send(handler, 200, page, _HTML)
+
+        def blocked(handler: _Handler, _body: bytes) -> None:
+            page = self._page(
+                "Just a moment...", "<h1>Checking your browser before accessing.</h1>"
+            )
+            handler.send_response_only(403)
+            for name, value in (*FLYWHEEL_CHALLENGE_HEADERS, ("Content-Type", _HTML)):
+                handler.send_header(name, value)
+            handler.send_header("Content-Length", str(len(page)))
+            handler.send_header("Cache-Control", "no-store")
+            handler.end_headers()
+            if handler.command != "HEAD":
+                handler.wfile.write(page)
+
+        return {
+            "/flywheel_shop/site.css": static(css, "text/css"),
+            "/flywheel_shop/logo.png": static(_flywheel_logo(), "image/png"),
+            "/flywheel_shop/start.html": static(
+                self._page(
+                    "kettle shop",
+                    head + logo + '<h1 class="box" style="left:40px;top:20px">Kettle shop</h1>'
+                    '<form method="GET" action="/flywheel_shop/search.html">'
+                    + _box_input("query", "q")
+                    + _box_button("search", "Search", submit=True)
+                    + "</form>",
+                ),
+                _HTML,
+            ),
+            "/flywheel_shop/search.html": search,
+            "/flywheel_shop/product.html": static(
+                self._page(
+                    "blue kettle",
+                    head + logo + '<h1 class="box" style="left:40px;top:20px">Blue kettle</h1>'
+                    '<p class="box" style="left:40px;top:100px">30 EUR</p>' + recommend,
+                ),
+                _HTML,
+            ),
+            "/flywheel_shop/recommend.json": ok_json,
+            "/flywheel_shop/cart": cart,
+            "/flywheel_shop/login.html": static(
+                self._page(
+                    "sign in",
+                    head + logo + '<h1 class="box" style="left:40px;top:20px">Sign in</h1>'
+                    '<input id="user" class="box" value="ann" style="left:40px;top:100px;'
+                    'width:300px;height:32px">'
+                    '<input id="password" type="password" class="box" style="left:40px;'
+                    'top:160px;width:300px;height:32px">' + login,
+                ),
+                _HTML,
+            ),
+            "/flywheel_shop/api/me": ok_json,
+            "/flywheel_shop/api/login": ok_json,
+            "/flywheel_drift/site.css": static(css, "text/css"),
+            "/flywheel_drift/start.html": static(
+                self._page(
+                    "news",
+                    '<link rel="stylesheet" href="/flywheel_drift/site.css">'
+                    '<h1 class="box" style="left:40px;top:20px">News</h1>'
+                    + _box_button("drift", "Read today's story")
+                    + "<script>document.getElementById('drift').onclick = () => {"
+                    "location.href = '/flywheel_drift/next.html?visit=' + "
+                    "Math.floor(performance.timeOrigin); };</script>",
+                ),
+                _HTML,
+            ),
+            "/flywheel_drift/next.html": static(
+                self._page(
+                    "story",
+                    '<link rel="stylesheet" href="/flywheel_drift/site.css">'
+                    '<h1 class="box" style="left:40px;top:20px">Today\'s story</h1>',
+                ),
+                _HTML,
+            ),
+            "/flywheel_blocked/start.html": blocked,
+        }
+
+    def _form_page(self, method: str) -> bytes:
+        return self._page(
+            f"{method.lower()} order form",
+            f'<form method="{method}" action="/form_submit/result.html">'
+            '<p><label for="item">Item</label> '
+            '<input id="item" name="item" type="text" size="20" value="kettle"></p>'
+            '<p><button id="add" type="submit">Add to cart</button></p></form>',
+        )
+
+    def _form_result(self, handler: _Handler, body: bytes) -> None:
+        """Echo the submitted fields — from the query (GET) or the urlencoded body (POST)."""
+        query = handler.path.partition("?")[2] if handler.command == "GET" else body.decode()
+        fields = parse_qsl(query, keep_blank_values=True)
+        received = ", ".join(f"{name}={value}" for name, value in fields) or "(nothing)"
+        page = self._page(
+            "form result",
+            f'<p>Received by {handler.command}: <span id="received">{escape(received)}</span></p>',
+        )
+        self._send(handler, 200, page, _HTML)
 
     def _respond(self, handler: _Handler, body: bytes) -> None:
         if self._route_table is None:
@@ -874,3 +1127,48 @@ class FixtureSite:
         handler.end_headers()
         if handler.command != "HEAD":
             handler.wfile.write(chunk)
+
+
+# ── the flywheel pages' pieces ────────────────────────────────────────
+
+
+def _flywheel_css() -> bytes:
+    """The sites' stylesheet: every control absolutely placed, no caret (deterministic pixels)."""
+    return (
+        b"body{margin:0;font:16px/20px sans-serif;background:#fff;color:#111}\n"
+        b".box{position:absolute;box-sizing:border-box;margin:0}\n"
+        b"input{caret-color:transparent;font:16px/20px sans-serif}\n"
+        b"button{font:16px/20px sans-serif}\n"
+    )
+
+
+def _flywheel_logo() -> bytes:
+    """A 48x48 PNG of deterministic noise: a body worth deduplicating, the same every run."""
+    pixels = b"".join(hashlib.sha256(str(i).encode()).digest() for i in range(216))
+    buffer = io.BytesIO()
+    Image.frombytes("RGB", (48, 48), pixels[: 48 * 48 * 3]).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _style(name: str) -> str:
+    left, top, width, height = FLYWHEEL_BOXES[name]
+    return f"left:{left}px;top:{top}px;width:{width}px;height:{height}px"
+
+
+def _box_input(name: str, field: str) -> str:
+    return f'<input id="{name}" name="{field}" type="text" class="box" style="{_style(name)}">'
+
+
+def _box_button(name: str, label: str, *, submit: bool = False) -> str:
+    kind = "submit" if submit else "button"
+    return f'<button id="{name}" type="{kind}" class="box" style="{_style(name)}">{label}</button>'
+
+
+def _box_link(name: str, href: str, label: str) -> str:
+    return f'<a id="{name}" href="{href}" class="box" style="{_style(name)}">{label}</a>'
+
+
+def flywheel_point(name: str) -> tuple[int, int]:
+    """The centre of a flywheel control (:data:`FLYWHEEL_BOXES`) — where UI-TARS clicks it."""
+    left, top, width, height = FLYWHEEL_BOXES[name]
+    return left + width // 2, top + height // 2

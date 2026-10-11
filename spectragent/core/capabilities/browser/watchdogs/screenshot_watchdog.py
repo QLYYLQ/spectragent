@@ -30,6 +30,7 @@ and a fractional DPR is its own automation tell.)
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from typing import ClassVar, Literal
@@ -57,6 +58,16 @@ logger = logging.getLogger(__name__)
 #: artifact, but not every vision provider accepts one as input, and an
 #: observation that a model cannot be shown is worse than a larger one.
 ScreenshotFormat = Literal["png", "jpeg"]
+
+#: How long an *observation* capture waits for Chrome's reply (§4.14, M33),
+#: far inside ``BrowserStateRequestEvent``'s 30 s. Under pinned's
+#: ``--disable-back-forward-cache`` a capture sent while the main frame swaps
+#: documents can go unanswered; without this bound it held the tab's serial
+#: observation scope — and ``browser_meta`` queued behind it — until the whole
+#: event timed out. A capture that hits it is this attempt's missing fragment,
+#: and the cycle's ``_OBSERVE_MAX_ATTEMPTS`` re-fire absorbs it. The
+#: ``browser.screenshot`` action is not bounded here.
+_SCREENSHOT_COMMAND_TIMEOUT_S = 10.0
 
 
 class ScreenshotWatchdog(BrowserWatchdog):
@@ -122,7 +133,7 @@ class ScreenshotWatchdog(BrowserWatchdog):
         if not (event.fragments & self.provides):
             return None
         try:
-            screenshot = await self._capture()
+            screenshot = await self._capture(timeout=_SCREENSHOT_COMMAND_TIMEOUT_S)
             width, height = self._viewport
             image_width, image_height = image_size(screenshot)
             return BrowserStateSummary(
@@ -165,6 +176,7 @@ class ScreenshotWatchdog(BrowserWatchdog):
         clip: dict[str, float] | None = None,
         format_: str | None = None,
         quality: int | None = None,
+        timeout: float | None = None,
     ) -> bytes:
         """Execute CDP Page.captureScreenshot and return decoded bytes.
 
@@ -179,7 +191,12 @@ class ScreenshotWatchdog(BrowserWatchdog):
         omitting it keeps the default capture's parameters exactly what
         they have always been.
 
+        ``timeout`` bounds the wait for Chrome's reply (the observation path
+        passes ``_SCREENSHOT_COMMAND_TIMEOUT_S``); ``None`` waits as long as
+        the event does. A late reply is dropped by the client.
+
         Raises:
+            TimeoutError: No reply within ``timeout``.
             RuntimeError: The reply carried no image. Chrome answers
                 ``Page.captureScreenshot`` successfully only with bytes, so
                 an empty one is a broken reply, not a blank screen — and
@@ -204,11 +221,16 @@ class ScreenshotWatchdog(BrowserWatchdog):
         if clip:
             params["clip"] = {**clip, "scale": 1}
 
-        result = await self._cdp.send(
-            "Page.captureScreenshot",
-            params,
-            session_id=self._session_id,
-        )
+        reply = self._cdp.send("Page.captureScreenshot", params, session_id=self._session_id)
+        if timeout is None:
+            result = await reply
+        else:
+            try:
+                result = await asyncio.wait_for(reply, timeout)
+            except TimeoutError:
+                raise TimeoutError(
+                    f"Page.captureScreenshot got no reply within {timeout:g}s"
+                ) from None
         b64_data = result.get("data") if result else None
         data = base64.b64decode(b64_data) if b64_data else b""
         if not data:

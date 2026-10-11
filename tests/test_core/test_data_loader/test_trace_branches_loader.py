@@ -15,7 +15,7 @@ import pytest
 from spectragent.core.data_loader._common import BENCHMARK_DATA_ENV, BenchmarkDataError
 from spectragent.core.data_loader.task import TaskLoaderRegistrar, TraceBranchesTaskLoader
 from spectragent.core.data_loader.task.require_eval import RequireEval
-from spectragent.core.data_loader.task.step_selector import EveryKSteps, ExplicitSteps
+from spectragent.core.data_loader.task.step_selector import EveryKSteps, ExplicitSteps, LastStep
 from spectragent.core.trace.models import RunStatus
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.task import BrowserSetup, TaskContext
@@ -227,6 +227,22 @@ class TestCandidates:
         write_source(tmp_path, "run-a", steps=7)
         tasks = loader(tmp_path, step_selector=EveryKSteps(k=3, offset=1))
         assert tasks.task_ids() == ["run-a/s1/b0", "run-a/s4/b0"]
+
+    def test_last_is_each_sources_own_last_candidate(self, tmp_path: Path) -> None:
+        """Sources of different lengths fork once each, at their own last branchable step."""
+        write_source(tmp_path, "run-a", steps=5)
+        write_source(tmp_path, "run-b", steps=[Step(), Step(), Step("terminal")])
+        write_source(tmp_path, "run-c", steps=[Step(), Step(error_phase="observe")])
+        tasks = loader(tmp_path, step_selector=LastStep(), branches_per_step=2)
+        assert tasks.task_ids() == [
+            "run-a/s4/b0",
+            "run-a/s4/b1",
+            "run-b/s1/b0",
+            "run-b/s1/b1",
+            "run-c/s0/b0",
+            "run-c/s0/b1",
+        ]
+        assert dict(tasks.skipped) == {}
 
     def test_a_source_with_no_branchable_step(self, tmp_path: Path) -> None:
         write_source(tmp_path, "run-a", steps=[Step(error_phase="observe")])

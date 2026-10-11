@@ -865,6 +865,11 @@ _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
             "environment[0].capabilities[0].profile",
         }
     ),
+    "same_path_ui_tars_archive.yaml": frozenset(
+        {
+            "environment[0].capabilities[0].profile",
+        }
+    ),
     "ui_tars_student.yaml": frozenset(
         {
             "environment[0].capabilities[0].profile",

@@ -24,10 +24,13 @@ are not one.
 
 Reading side, over the :class:`~spectragent.core.archive.source.ArchiveReader`
 Protocol (no trace import here): :func:`replay_log` (one step),
-:func:`iter_replay_log` (every step, then the trailing commits) and
-:func:`diverged_steps` — "this step diverged" is derived at read time: the
-step's log holds a main-frame document miss. No ``StepRecord`` field
-carries it (M31's ``restoration`` is separate).
+:func:`iter_replay_log` (every step, then the trailing commits),
+:func:`iter_decisions` (the same entries with the folding undone: a
+``summary`` read as the kind it folds, weighted by how many it folds — the
+one place that rule is spelled; :func:`document_miss_total` and the flywheel
+metrics count through it) and :func:`diverged_steps` — "this step diverged"
+is derived at read time: the step's log holds a main-frame document miss. No
+``StepRecord`` field carries it (M31's ``restoration`` is separate).
 
 .. note::
    No ``from __future__ import annotations`` — the browser replay package
@@ -242,6 +245,25 @@ def iter_replay_log(reader: ArchiveReader) -> Iterator[tuple[int | None, ReplayL
                 yield step, line
 
 
+def iter_decisions(reader: ArchiveReader) -> Iterator[tuple[int | None, ReplayLogEntry, int]]:
+    """``(step, entry, weight)`` for every decision of the run, in :func:`iter_replay_log` order.
+
+    An entry written in full weighs 1. A ``summary`` stands for the entries
+    the log folded past ``log_repeat_limit``: it comes back as the kind it
+    folds (``folded_kind``), weighing ``count`` — so a polling page that
+    missed a thousand times weighs a thousand, not the three written in
+    full. A summary's ``candidates`` are empty (the log drops them when it
+    folds).
+    """
+    for step, entry in iter_replay_log(reader):
+        if entry.kind != "summary":
+            yield step, entry, 1
+        elif entry.folded_kind is None:  # a summary that does not say what it folds
+            yield step, entry, entry.count or 0
+        else:
+            yield step, entry.model_copy(update={"kind": entry.folded_kind}), entry.count or 0
+
+
 def diverged_steps(reader: ArchiveReader) -> list[int]:
     """The steps whose replay log holds a main-frame document miss, in order.
 
@@ -268,9 +290,4 @@ def document_miss_total(reader: ArchiveReader) -> int:
     (a live run). The training export's ``max_document_misses`` filter reads
     it (arch §4.15).
     """
-    total = 0
-    for _step, entry in iter_replay_log(reader):
-        if not entry.diverged:
-            continue
-        total += (entry.count or 0) if entry.kind == "summary" else 1
-    return total
+    return sum(weight for _step, entry, weight in iter_decisions(reader) if entry.diverged)

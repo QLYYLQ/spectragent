@@ -226,6 +226,57 @@ class ArchiveRecord(BaseModel):
         return self.archiver_id.partition(".")[0]
 
 
+#: What a committed file is (:class:`CommittedFile`): the run's own files
+#: (``manifest``, ``config``, ``result``), what the manifest lists (``step``,
+#: ``fragment`` — an observation's JSON or its recorded failure —,
+#: ``artifact``, ``llm_call``, ``extra_index``, ``output_schema``), and what an
+#: extra index lists (``extra``).
+CommittedKind = Literal[
+    "manifest",
+    "config",
+    "result",
+    "step",
+    "fragment",
+    "artifact",
+    "llm_call",
+    "extra_index",
+    "output_schema",
+    "extra",
+]
+
+
+class CommittedFile(BaseModel):
+    """One listing of a file a run committed, as ``RunTrace.committed_files`` hands it back.
+
+    A file is what a run consists of only because something lists it: the
+    run names its own three files, the manifest lists its records, a
+    committed extra index lists its extra files. A content-addressed extra
+    file several commits reference is listed by each of them. The bytes are
+    ``RunTrace.read_committed(path)``, through the checks of the file's own
+    accessor.
+
+    Attributes:
+        path: Relative to the run directory, POSIX — the shape the WAL writes.
+        kind: What the file is (:data:`CommittedKind`).
+        step: The step whose commit lists it; ``None`` for the run's own files,
+            a trailing commit's and the reply schemas.
+        fragment: The fully-qualified fragment key of a ``fragment`` or
+            ``artifact``.
+        extra: An ``extra`` file's index entry (size, sha256, producer meta).
+        archive: An ``extra`` file's environment-evidence record, when its
+            ``meta`` marks it one (``meta["archive"]``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    kind: CommittedKind
+    step: int | None = None
+    fragment: str | None = None
+    extra: ExtraFileRecord | None = None
+    archive: ArchiveRecord | None = None
+
+
 class OutputFormatRef(BaseModel):
     """The reply model a structured call asked for, by content address."""
 

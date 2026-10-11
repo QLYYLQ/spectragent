@@ -125,6 +125,7 @@ from spectragent.core.capabilities.browser.input import (
     MouseTrajectoryProtocol,
     TypingRhythmProtocol,
 )
+from spectragent.core.capabilities.browser.navigation import MainFrameNavigation, NavigationFeed
 from spectragent.core.capabilities.browser.profiles import (
     BrowserProfileConfig,
     resolve_profile,
@@ -199,6 +200,14 @@ _ARCHIVE_SCOPE_ID = "__archive__"
 # recovers that case. Exhausting the attempts raises — never serves an
 # empty fragment.
 _OBSERVE_MAX_ATTEMPTS = 2
+
+# How long one capture attempt waits for the focused tab's in-flight
+# main-frame navigation to commit before capturing anyway (§4.14, M33). A
+# click on a form's submit button returns before the navigation it starts,
+# and a screenshot sent between that request and its commit is refused or
+# never answered under pinned's ``--disable-back-forward-cache``. Nothing in
+# flight means no wait at all; the bound is per attempt.
+_NAVIGATION_SETTLE_TIMEOUT_S = 10.0
 
 
 # ── Cache entry ───────────────────────────────────────────────────────
@@ -496,6 +505,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     _js_scopes: dict[str, EventScope]
     _bridges: dict[str, CDPEventBridge]
     _main_frame_ids: dict[str, str]
+    #: Each tab's main-frame navigation state and the feed keeping it current,
+    #: by tab CDP session (§4.14, M33). Only tabs whose main frame id is known.
+    _navigation_feeds: dict[str, NavigationFeed]
     _selector_maps: dict[str, DOMSelectorMap]
     _target_to_session: dict[str, str]
     _session_to_target: dict[str, str]
@@ -738,6 +750,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._js_scopes = {}
         self._bridges = {}
         self._main_frame_ids = {}
+        self._navigation_feeds = {}
         self._selector_maps = {}
         self._target_to_session = {}
         self._session_to_target = {}
@@ -1549,6 +1562,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             except Exception as exc:
                 logger.debug("Bridge close failed for %s: %s", sid, exc)
         self._bridges.clear()
+        for feed in self._navigation_feeds.values():
+            feed.close()
+        self._navigation_feeds.clear()
 
         # Watchdogs own bridges too (PopupsWatchdog, CrashWatchdog). Those
         # live outside ``self._bridges``, so closing only the page-lifecycle
@@ -1799,6 +1815,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         ``cache.error``. Inlining it would make the retry ``for/else`` and
         the failure bookkeeping share a block, which is how the second
         failure path gets forgotten.
+
+        Each attempt first waits, up to ``_NAVIGATION_SETTLE_TIMEOUT_S``, for
+        the tab's in-flight main-frame navigation to end
+        (:class:`~spectragent.core.capabilities.browser.navigation.MainFrameNavigation`,
+        §4.14 M33): a click that submits a form returns before its
+        navigation, and a capture sent between the request and the commit is
+        lost. At the bound it captures anyway; with nothing in flight it does
+        not wait at all.
         """
         scope = self._scopes.get(sid)
         if scope is None:
@@ -1806,8 +1830,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         wanted = self.provided_fragments
         cache = self._cycle_cache.get(sid)
+        feed = self._navigation_feeds.get(sid)
         outcome: _StateEventOutcome | None = None
         for attempt in range(1, _OBSERVE_MAX_ATTEMPTS + 1):
+            # Never capture between a main-frame navigation's request and its
+            # commit (§4.14, M33); nothing in flight returns without a wait.
+            if feed is not None and not await feed.navigation.wait_settled(
+                _NAVIGATION_SETTLE_TIMEOUT_S
+            ):
+                logger.warning(
+                    "observe cycle (sid=%s): attempt %d/%d: the main frame's navigation "
+                    "did not end within %gs; capturing anyway",
+                    sid,
+                    attempt,
+                    _OBSERVE_MAX_ATTEMPTS,
+                    _NAVIGATION_SETTLE_TIMEOUT_S,
+                )
             if cache is not None:
                 cache.raw.clear()  # a re-fired attempt's capture replaces the last one's
             outcome = await self._fire_state_event(sid, scope, wanted)
@@ -2045,6 +2083,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 bridge.close()
             except Exception as exc:
                 logger.debug("Bridge close failed for %s: %s", session_id, exc)
+        feed = self._navigation_feeds.pop(session_id, None)
+        if feed is not None:
+            feed.close()
 
         # Same for the bridges the tab's own watchdogs opened.
         self._detach_watchdogs(self._watchdogs.get(target_id, []))
@@ -2161,6 +2202,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             )
         if main_frame_id is not None:
             self._main_frame_ids[cdp_session_id] = main_frame_id
+            # Follow the main frame's navigations on this connection, so an
+            # observation never captures between a navigation's request and
+            # its commit (§4.14, M33). Unknown main frame: nothing to follow.
+            self._navigation_feeds[cdp_session_id] = NavigationFeed(
+                self._cdp, cdp_session_id, MainFrameNavigation(main_frame_id)
+            )
 
         # 5. Two independent processing domains for this tab.  DOM and
         # action watchdogs use the observation scope.  A shared JS executor
@@ -2240,6 +2287,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 bridge.close()
             except Exception as exc:
                 logger.debug("Attach rollback: bridge close failed for %s: %s", cdp_session_id, exc)
+        feed = self._navigation_feeds.pop(cdp_session_id, None)
+        if feed is not None:
+            feed.close()
 
         for wd in self._watchdogs.pop(target_id, []):
             try:

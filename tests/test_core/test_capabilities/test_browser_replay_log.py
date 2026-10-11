@@ -32,6 +32,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayLogEntry,
     diverged_steps,
     document_miss_total,
+    iter_decisions,
     iter_replay_log,
     replay_log,
     short_key,
@@ -372,6 +373,53 @@ class TestReading:
         wal.finalize(RunStatus.COMPLETED)
         with pytest.raises(TraceSchemaError, match=r"replay\.jsonl.*line 2|line 2.*replay\.jsonl"):
             replay_log(open_archive(wal.run_dir), 1)
+
+
+class TestDecisions:
+    """``iter_decisions``: the log with its folding undone — the one place the rule is spelled."""
+
+    async def test_a_summary_reads_as_the_kind_it_folds_weighing_its_count(
+        self, tmp_path: Path
+    ) -> None:
+        log = ReplayLog(repeat_limit=1)
+        run = await _committed(
+            tmp_path,
+            {1: [_entry("hit"), _entry(), _entry(), _entry(), _entry()], None: [_entry()]},
+            log,
+        )
+        reader = open_archive(run)
+        written = [(step, entry.kind) for step, entry in iter_replay_log(reader)]
+        assert written == [(1, "hit"), (1, "miss"), (1, "summary"), (None, "miss")]
+
+        decisions = list(iter_decisions(reader))
+
+        assert [(step, entry.kind, weight) for step, entry, weight in decisions] == [
+            (1, "hit", 1),
+            (1, "miss", 1),
+            (1, "miss", 3),  # the summary of the three folded misses
+            (None, "miss", 1),
+        ]
+        assert sum(w for _s, e, w in decisions if e.kind == "miss") == 5, "every miss appended"
+
+    async def test_the_document_miss_total_is_counted_through_it(self, tmp_path: Path) -> None:
+        document = _entry(
+            resource_type="Document",
+            frame="main",
+            request_class="document",
+            answer="failed",
+            status=None,
+            diverged=True,
+        )
+        run = await _committed(
+            tmp_path, {1: [document] * 4, 2: [_entry()]}, ReplayLog(repeat_limit=2)
+        )
+        reader = open_archive(run)
+        diverged = [(e.kind, w) for _s, e, w in iter_decisions(reader) if e.diverged]
+        assert diverged == [("miss", 1), ("miss", 1), ("miss", 2)]
+        assert document_miss_total(reader) == 4
+
+    async def test_a_live_run_has_no_decisions(self, tmp_path: Path) -> None:
+        assert list(iter_decisions(open_archive(await _committed(tmp_path, {1: []})))) == []
 
 
 def test_the_scripted_recorder_is_untouched_by_the_replay_session() -> None:

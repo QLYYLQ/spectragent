@@ -28,7 +28,11 @@ import pytest
 from pydantic import BaseModel
 
 from spectragent.core.trace import fsio
-from spectragent.core.trace.encoding import encode_output_format, sha256_hex
+from spectragent.core.trace.encoding import (
+    encode_output_format,
+    output_format_path,
+    sha256_hex,
+)
 from spectragent.core.trace.reader import RunTrace
 from tests._helpers.fragment_samples import SAMPLES
 from tests._helpers.trace_builder import (
@@ -112,6 +116,10 @@ def views(trace: RunTrace) -> dict[str, Any]:
         "archive_run_file": {
             capability: _dump(trace.archive_run_file(capability)) for capability in CAPABILITIES
         },
+        "committed_files": [_dump(file) for file in trace.committed_files],
+        "read_committed": {
+            file.path: trace.read_committed(file.path) for file in trace.committed_files
+        },
     }
 
 
@@ -120,9 +128,13 @@ def assert_not_visible(trace: RunTrace, *, paths: list[str], schemas: list[str])
     for path in paths:
         with pytest.raises(KeyError):
             trace.read_extra(path)
+        with pytest.raises(KeyError):
+            trace.read_committed(path)
     for sha in schemas:
         with pytest.raises(KeyError):
             trace.output_schema(sha)
+        with pytest.raises(KeyError):
+            trace.read_committed(output_format_path(sha))
 
 
 @pytest.fixture()
@@ -239,6 +251,9 @@ class TestHandPlantedOrphans:
             paths=["env/steps/002/x.y/name", "env/steps/000/orphan.bin"],
             schemas=[planted_sha],
         )
+        for rel in planted:
+            with pytest.raises(KeyError):
+                trace.read_committed(rel)
 
 
 @pytest.fixture()

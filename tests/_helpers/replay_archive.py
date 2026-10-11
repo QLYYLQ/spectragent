@@ -20,7 +20,7 @@ canonicaliser the loader uses.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -33,9 +33,10 @@ from spectragent.core.capabilities.browser.replay import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord
 from spectragent.core.capabilities.browser.replay.canonical import request_keys
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
-from spectragent.core.trace.encoding import encode_archive_file
-from spectragent.core.trace.models import RunStatus
+from spectragent.core.trace.encoding import EncodedFragment, encode_archive_file
+from spectragent.core.trace.models import RunStatus, TraceConfig
 from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas.step_record import StepRecord
 from tests._helpers.archive_recorder import ScriptedRecorder, deliver, event, open_session, paused
 from tests._helpers.trace_builder import agent_result, new_wal, step_record
 
@@ -58,6 +59,7 @@ class RecordingScript:
         t0_ms: int = RECORDED_T0_MS,
         launch_flags: list[str] | None = None,
         replayability: Any = None,
+        config: TraceConfig | None = None,
         **archiver_knobs: Any,
     ) -> None:
         knobs: dict[str, Any] = {
@@ -72,7 +74,11 @@ class RecordingScript:
         self.session: NetworkSession = session
         self.recorder: ScriptedRecorder = recorder
         self.page: RecorderTarget = recorder.add_target(PAGE_SESSION, "PAGE")
-        self.wal: WALWriter = new_wal(base, run_id)
+        if config is None:
+            self.wal: WALWriter = new_wal(base, run_id)
+        else:  # a run whose configuration a test reads (the flywheel metrics)
+            self.wal = WALWriter(base, run_id)
+            self.wal.init_run(config)
         self._fingerprint = BrowserFingerprint() if fingerprint else None
         #: The recording's tier (``pinned``, seed 7, unless given) and launch flags.
         self.replayability = replayability or PinnedReplayability(random_seed=7)
@@ -355,10 +361,20 @@ class RecordingScript:
                 encoded.append(encode_archive_file(item, **where))
         return encoded
 
-    async def commit(self, step: int) -> list[ArchiveFile]:
-        """Collect and commit as step *step*; the batch that went in."""
+    async def commit(
+        self,
+        step: int,
+        record: StepRecord | None = None,
+        fragments: Sequence[EncodedFragment] = (),
+    ) -> list[ArchiveFile]:
+        """Collect and commit as step *step* (with *record* and *fragments*, when given); the batch."""
         files = await self._batch()
-        self.wal.commit_step(step, step_record(step), extra_files=self._encoded(files, step=step))
+        self.wal.commit_step(
+            step,
+            record if record is not None else step_record(step),
+            fragments=list(fragments),
+            extra_files=self._encoded(files, step=step),
+        )
         return files
 
     async def commit_trailing(self) -> list[ArchiveFile]:
@@ -367,9 +383,9 @@ class RecordingScript:
         self._trailing += 1
         return files
 
-    def finish(self) -> Path:
+    def finish(self, status: RunStatus = RunStatus.COMPLETED) -> Path:
         self.wal.write_result(agent_result())
-        self.wal.finalize(RunStatus.COMPLETED)
+        self.wal.finalize(status)
         return self.run_dir
 
 

@@ -10,9 +10,9 @@ import pytest
 from spectragent.core.archive.privacy import RedactionLedger
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.trace.models import TaskSetupRecord
+from spectragent.core.trace.sources import TaskIdentity
 from spectragent.export.benchmarks import BenchmarkLoaders
 from spectragent.export.errors import ExportConfigError, ExportEmptyError
-from spectragent.export.filters import TaskIdentity
 from spectragent.export.settings import BenchmarkRef, Decontamination, SplitSettings
 from spectragent.export.split import Decontaminator, split_key, split_of
 from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export, write_benchmark

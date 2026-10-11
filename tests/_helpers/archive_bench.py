@@ -8,10 +8,16 @@
   the fixture's access log saw must have an index line in the archive (a
   record whose last line is ``pending`` counts as an explicit ``incomplete``).
 - :func:`dedup_bytes` — what a recording's evidence weighs with and without
-  the run's two deduplications (WARC revisit records, content addressing).
+  the run's two deduplications (WARC revisit records, content addressing):
+  the in-memory adapter over the one accounting rule
+  (``spectragent/flywheel/metrics.py::DedupBytes``) and the browser's revisit
+  half (``archive_stats.revisit_saving``), which the flywheel metrics apply
+  to committed traces.
 - :class:`ArchiveOverheadReport` — the machine-readable overhead artefact
   (p50 / p95 per-step overhead, bytes per step before and after
-  deduplication, the vision self-capture cost) M33 reads.
+  deduplication, the vision self-capture cost): M29's regression bound. The
+  flywheel report does not read it — it measures overhead from traces
+  against a control group (arch §4.16).
 """
 
 from __future__ import annotations
@@ -32,7 +38,10 @@ from pydantic import BaseModel, Field
 from spectragent.core.archive import ArchiveBatch, ArchiveFile
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import BrowserArchiverBase
+from spectragent.core.capabilities.browser.archive_stats import revisit_saving
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
+from spectragent.core.capabilities.browser.replay.archive_index import IndexLine
+from spectragent.flywheel.metrics import DedupBytes
 from spectragent.schemas.action import Action
 from tests._helpers.fixture_site import FixtureSite
 
@@ -209,40 +218,19 @@ def _network_index_lines(files: Iterable[ArchiveFile]) -> list[dict[str, Any]]:
     return lines
 
 
-@dataclass(frozen=True)
-class DedupBytes:
-    """Archive bytes before and after the run's two deduplications.
-
-    - **Revisit records** (``browser.network``): a payload already written
-      earlier in the run is written as a WARC ``revisit`` record instead of a
-      full response record. What a revisit replaced is counted as the stored
-      length of the response record it points at: the same payload and the
-      same compression, so the two records differ only in a few header bytes
-      (URI, date, record id). A revisit record of a tiny payload outweighs the
-      record it replaces, so this saving can be negative.
-    - **Content addressing** (the WAL, §5.2): a ``content_addressed`` file whose
-      bytes the run already stored is written once; every later copy is saved.
-
-    ``before == after + saved_by_revisit + saved_by_content_addressing``.
-    """
-
-    #: Bytes with neither deduplication: every full response record, every copy.
-    before: int
-    #: Bytes the run stores.
-    after: int
-    saved_by_revisit: int
-    saved_by_content_addressing: int
-
-
 def dedup_bytes(files: Iterable[ArchiveFile]) -> DedupBytes:
     """Account the bytes of *files* — everything a run collected — before and after dedup.
+
+    Listed = every file's bytes; stored once = each content-addressed payload
+    once (by digest), every other file as it is; the revisit saving from the
+    ``browser.network`` index lines (``archive_stats.revisit_saving``).
 
     Raises:
         ValueError: a revisit points at a response record that is not among
             *files* (the recording is incomplete, so nothing can be accounted).
     """
     items = list(files)
-    emitted = sum(len(item.data) for item in items)
+    listed = sum(len(item.data) for item in items)
     stored: set[str] = set()
     repeated = 0
     for item in items:
@@ -252,30 +240,9 @@ def dedup_bytes(files: Iterable[ArchiveFile]) -> DedupBytes:
         if digest in stored:
             repeated += len(item.data)
         stored.add(digest)
-    responses = [
-        line
-        for line in _network_index_lines(items)
-        if line.get("kind") == "exchange" and line.get("response_record_id")
-    ]
-    full_length = {
-        line["response_record_id"]: line["warc"]["response"]["length"]
-        for line in responses
-        if not line.get("revisit_of")
-    }
-    saved_by_revisit = 0
-    for line in responses:
-        first = line.get("revisit_of")
-        if not first:
-            continue
-        if first not in full_length:
-            raise ValueError(f"revisit of {first!r}, a response record this recording lacks")
-        saved_by_revisit += full_length[first] - line["warc"]["response"]["length"]
-    after = emitted - repeated
-    return DedupBytes(
-        before=after + saved_by_revisit + repeated,
-        after=after,
-        saved_by_revisit=saved_by_revisit,
-        saved_by_content_addressing=repeated,
+    lines = [IndexLine.model_validate(line).root for line in _network_index_lines(items)]
+    return DedupBytes.account(
+        listed=listed, distinct=listed - repeated, saved_by_revisit=revisit_saving(lines)
     )
 
 
@@ -356,15 +323,6 @@ class ArchiveOverheadReport(BaseModel):
     self_capture_ms_p50: float = Field(ge=0)
     self_capture_ms_p95: float = Field(ge=0)
     scenarios: list[str]
-
-
-def percentile(values: Sequence[float], q: float) -> float:
-    """The *q*-th percentile (0–100), nearest-rank on a sorted copy."""
-    ordered = sorted(values)
-    if not ordered:
-        return 0.0
-    rank = max(0, min(len(ordered) - 1, round(q / 100 * (len(ordered) - 1))))
-    return float(ordered[rank])
 
 
 def median(values: Sequence[float]) -> float:

@@ -2154,10 +2154,10 @@ class TaskContext(BaseModel):
 
 **分叉任务：`trace_branches` 加载器**（`core/data_loader/task/trace_branches.py`，`benchmark_name: trace_branches`）把已录制的 run 展开成分叉任务。它读源 trace 只经 `RunTrace`，只读已提交的部分。
 
-- **旋钮**：`data_dir`（sources 的根目录，默认 `traces`）；`sources: list[str]`（相对根的 glob，展开后按路径排序；必须相对根、不含 `..`，构造时检查；一个匹配到的路径不是目录或没有 `manifest.json` 就不是 run，忽略）；`step_selector` 受体（`StepSelectorRegistrar`，`selector_id`：`explicit{steps}` / `every_k{k, offset}` / `all`，`core/data_loader/task/step_selector/`）；`branches_per_step`（≥ 1）；`require_status`（`completed` 默认 / `error` / `any`，读 `TraceManifest.status`）；`require_eval`（`RequireEval{evaluator_id, label: 1, slug: null}`，pydantic dataclass，在 `core/data_loader/task/require_eval.py`：至少一份该评测器的 `verdict_source == "graded"` 的判定，其 `predicted_label == label`，给了 `slug` 时只看那一份；经 `RunTrace.evals()` 读，§5.5，不读 `result.json`）；`require_archive`（默认 `["browser.network"]`，`[]` 不要求任何归档：源 run 绑定了这些归档器、且它们的 capability 有已提交的 run 记录即环境指纹）；`on_unbranchable: raise | skip`（默认 `raise`）；`subset` 只是标签。`sources` 与 `require_archive` 在 YAML 里的默认写作 `null`，意思就是上面两个默认值：conscribe 读签名生成配置，签名里写不了非空的列表默认值（列表是共享的可变默认，`tuple[str, ...]` 被生成成 pyright 拒绝的 `tuple[str, Ellipsis]`）。
+- **旋钮**：`data_dir`（sources 的根目录，默认 `traces`）；`sources: list[str]`（相对根的 glob，展开后按路径排序；必须相对根、不含 `..`，构造时检查；一个匹配到的路径不是目录或没有 `manifest.json` 就不是 run，忽略）；`step_selector` 受体（`StepSelectorRegistrar`，`selector_id`：`explicit{steps}` / `every_k{k, offset}` / `all` / `last`，`core/data_loader/task/step_selector/`）；`branches_per_step`（≥ 1）；`require_status`（`completed` 默认 / `error` / `any`，读 `TraceManifest.status`）；`require_eval`（`RequireEval{evaluator_id, label: 1, slug: null}`，pydantic dataclass，在 `core/data_loader/task/require_eval.py`：至少一份该评测器的 `verdict_source == "graded"` 的判定，其 `predicted_label == label`，给了 `slug` 时只看那一份；经 `RunTrace.evals()` 读，§5.5，不读 `result.json`）；`require_archive`（默认 `["browser.network"]`，`[]` 不要求任何归档：源 run 绑定了这些归档器、且它们的 capability 有已提交的 run 记录即环境指纹）；`on_unbranchable: raise | skip`（默认 `raise`）；`subset` 只是标签。`sources` 与 `require_archive` 在 YAML 里的默认写作 `null`，意思就是上面两个默认值：conscribe 读签名生成配置，签名里写不了非空的列表默认值（列表是共享的可变默认，`tuple[str, ...]` 被生成成 pyright 拒绝的 `tuple[str, Ellipsis]`）。
 - **筛选与前提**：`require_status` / `require_eval` 是筛选，不符的源跳过（记 INFO，也记在 `loader.skipped`，原因以 `filtered:` 开头；筛掉的源从不触发抛错）。前提不满足的源按 `on_unbranchable` 抛错或跳过，原因都记在 `loader.skipped`（源路径 → 原因）：读不回来的 trace（manifest、配置、步记录或 `evals/` 坏了）；format 1 的 trace；源 run 本身是分叉 run（`config.branch` 不为空）或回放 run（`task_setup` 里有 `replay_archive`）；`require_archive` 不满足；环境 setup context 拿不到（见下）；源 run 的 `run_id` 与另一个通过筛选的源重复（共享这个 `run_id` 的每个源都不可分叉——它们的任务 id 会撞）。`raise` 一次列出全部不可分叉的源（一个 `BenchmarkDataError`），这次扫描不发布任何任务；`skip` 记 WARNING。
 - **环境 setup context**：取源 `TraceConfig.task_setup.context`（M28 起记录）；没有这份记录、或它的脱敏台账不空（值被换成了 `<redacted>`，照它重建的环境不是源环境）时，按源 run 的 `(benchmark, subset, task_id)` 用源 benchmark 的 TaskLoader 重新解析（一次扫描里每个 `(benchmark, subset)` 只建一个加载器）；都不行就是不可分叉。分叉任务的 env 部分 = 这份 context，加上 `replay_archive = 源 run 目录的绝对路径`。
-- **选步**：候选是已提交的、`origin == "policy"` 的步 t，要求 0..t 每一步都已提交、第 t 步的观测已记录（`error_phase != "observe"`）；`step_selector` 在候选里选，候选之外的步（如 `explicit` 写了超出某个源长度的步）跳过并记原因，键是 `<源路径>#s<t>`（没提交、前缀有缺口、是恢复或终止步、观测没记录）。选步策略是纯函数：`all` 返回全部候选；`every_k` 按**步号**数（`offset`、`offset + k`……里是候选的那些），不按候选里的位置，所以一个源缺了第 4 步时 `k: 2` 仍然选 0、2、6；`explicit` 原样返回写了的每一步（至少一步，构造时检查——生成的配置不带 `min_length`），由加载器判断哪些是候选。一个源一个候选都没有时记在 `loader.skipped`，不抛错。
+- **选步**：候选是已提交的、`origin == "policy"` 的步 t，要求 0..t 每一步都已提交、第 t 步的观测已记录（`error_phase != "observe"`）；`step_selector` 在候选里选，候选之外的步（如 `explicit` 写了超出某个源长度的步）跳过并记原因，键是 `<源路径>#s<t>`（没提交、前缀有缺口、是恢复或终止步、观测没记录）。选步策略是纯函数：`all` 返回全部候选；`every_k` 按**步号**数（`offset`、`offset + k`……里是候选的那些），不按候选里的位置，所以一个源缺了第 4 步时 `k: 2` 仍然选 0、2、6；`explicit` 原样返回写了的每一步（至少一步，构造时检查——生成的配置不带 `min_length`），由加载器判断哪些是候选；`last`（M33）只返回最后一个候选——每个源 run 恰好一步，长短不一的源也一样（`explicit` 写不出"每个源的最后一步"），度量闸门的原路径回放段用它（§4.16）。一个源一个候选都没有时记在 `loader.skipped`，不抛错。
 - **展开**：每个选中的 t 展开 `branches_per_step` 个任务，任务 id `<source_run_id>/s<t>/b<i>`，`branch_group_id = <source_run_id>/s<t>`；`TaskDefinition.task_text` 是源 run 的任务文本，`env_type` 是源 run 的，`difficulty` / `domain` / `tags` 取自源 `TraceConfig.extra`（结果照样按它们切片），`setup` 在 env 类型有对应 setup 变体时照 env 部分写一份（只是描述；跑的始终是 `get_task_context` 的 env 部分）；`get_task_context` 给出 env（上面那份）、loop（`checkpoint`）与 branch（`BranchProvenance`），每次给一份副本。
 - **惰性加载**：构造时不读盘，第一次 `task_ids()` / `__getitem__` / `get_task_context` 时才扫描源——组装配置（每个任务都会重组一次）因此不做 I/O。一个源都没匹配上时任务列表为空并记 WARNING，点名根目录与 glob。
 - **受体写法**：`TaskLoaderBase` 在 `__post_init__` 里加载、而受体在构造之后才注入，所以这个加载器不是 dataclass：手写 `__init__`（接受继承来的 `subset` / `data_dir` 与上面的旋钮），`step_selector` 是类级注解的单实例受体加 Python 侧默认（`all`），与 `ArchiveNetworkSource.miss_policy` 同一写法。
@@ -2567,6 +2567,23 @@ M18 发现 `browser_meta` 的 URL 比同一 cycle 的 DOM 和截图早约 0.25 s
 - `_capture_once` 比较本次尝试的戳：已知的有两个以上、且 loaderId 不同 → 记日志，在原有的 `_OBSERVE_MAX_ATTEMPTS` 预算之内重发；预算用完仍不一致就抛错，点名每个 watchdog 的戳——与"缺 fragment 就抛错、从不交出空 fragment"同一条规则。少于两个戳时不比较（不带戳的假 summary 照样通过）。
 - 归档一侧（`dom_raw` 的自采）的戳只记录，不参与这个判断。
 
+#### 观测不与动作发起的导航赛跑（M33 修复，与归档无关）
+
+M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚本化的模型；探针在本地的 `tmp/flywheel/m33_design/`）：点击表单的提交按钮（GET 或 POST）之后，下一次观测的 `BrowserStateRequestEvent` 30 s 超时（"2 handler(s) still pending; completed: DOMWatchdog"——截图与排在它后面的 `browser_meta`），这一步以 `error_phase="observe"` 结束。两件事凑在一起：
+
+- 点击不等它发起的导航：动作在 `Input.dispatchMouseEvent` 返回后就结束，观测约 5 ms 后开始，`Page.captureScreenshot` 发在 `Page.frameRequestedNavigation` / `Page.frameStartedNavigating` 与提交（`Page.frameNavigated`）之间；
+- pinned 的 `--disable-back-forward-cache` 下，表单提交的跨文档导航替换文档时，Chrome 对这一窗口里的 `Page.captureScreenshot` 要么报 `Not attached to an active page`（裸 CDP 探针），要么一直不回应（af 的 run：没有回应，直到事件超时）。
+
+对照：`off` 档位 3/3 通过；只加 `--disable-back-forward-cache`、不开 recorder 也不 pinned，GET 与 POST 都失败；pinned 里只去掉这一个开关 4/4 通过；去掉其余开关（逐个或成组）或 recorder 除 `Page.enable` 之外的全部命令，仍然失败（去掉 `--js-flags` 的 4 次里有 1 次碰巧通过——这是一场赛跑）；链接点击在每种设置下都通过；在观测开始前等 0.5 s，GET 与 POST 都通过。recorder、shim、归档器都不相关。
+
+修法在观测这一层（`BrowserCapability` 的观测 cycle 与 `ScreenshotWatchdog`），不在 pinned——那个开关是回放档位的确定性契约（与指纹一起，§4.14 `replayability`），赛跑本身与它无关，它只是让赛跑必输：
+
+- **跟踪**（`core/capabilities/browser/navigation.py`）：`MainFrameNavigation` 是每个 tab 一份的纯状态，不碰 CDP——主 frame 的请求（`requested`）或跨文档的开始（`started`）置起在途，提交（`committed`）或停止加载（`stopped`）清掉；子 frame 与同文档类型（`sameDocument` / `historySameDocument`）不算，不知道主 frame id 时什么都不算。`NavigationFeed` 在控制连接上按该 tab 的 session 把 `Page.frameRequestedNavigation`（只认 `disposition: currentTab`：开新 tab、新窗口或下载不替换这一页）、`Page.frameStartedNavigating`、`Page.frameNavigated`、`Page.frameStoppedLoading` 喂给它，回调在接收循环里按线上的顺序执行。`_attach_tab` 拿到主 frame id 之后建它（`Page.enable` 已经发过），`close_tab`、attach 的回滚与 `teardown` 拆掉。
+- **等待**：`_capture_once` 每次尝试之前 `wait_settled(_NAVIGATION_SETTLE_TIMEOUT_S)`（10 s，模块常量，与 `_OBSERVE_MAX_ATTEMPTS` 同一写法）；到上限仍在途就记一条警告、照常采集（下一条兜底）；上限按尝试算。没有在途导航时立即返回、不让出事件循环：没有导航的步与链接点击（fixture 上实测：链接的提交早于下一次观测）的时序不变；任何档位上观测时仍在途的跨文档导航都会被等——`off` 档位的表单提交同样等到提交（实测约 15 ms），真实站点上应答慢的链接也一样，看到的是新文档而不是旧的。
+- 实测（裸 CDP，Chrome 155，带 pinned 的这个开关）各种交互在该 tab 的 session 上发什么：表单提交（GET / POST）、链接、`location.href`——请求 → 跨文档的开始 → `frameNavigated` → `frameStoppedLoading`，点击最后一个回复比请求早约 1 ms 到；文本框里回车——请求早于按键的最后一个回复，动作返回时导航已经在途；204 与下载——请求 → 开始 → `frameStoppedLoading`，没有提交；锚点链接（含 `href="#"`）、`pushState`——没有请求，只有 `navigatedWithinDocument`；`mailto:`——请求 → 开始 → `frameStoppedLoading`；连不上的主机——提交的是出错页（`chrome-error://chromewebdata/`），之后 Chrome 自己重载一次（开始 → 停止加载）；`javascript:` 链接、被 `preventDefault()` 拦下的提交、`target=_blank`（链接或表单）、`<a download>`——这个 session 上没有请求。
+- **命令上限**：观测截图的 `Page.captureScreenshot` 有自己的上限（`screenshot_watchdog._SCREENSHOT_COMMAND_TIMEOUT_S`，10 s，远小于事件的 30 s；`browser.screenshot` 动作不受限）：Chrome 不回应的那一次算这次尝试缺 fragment，由原有的 `_OBSERVE_MAX_ATTEMPTS` 重发吸收，不再吃掉整个事件的超时，晚到的回复由客户端丢弃。它兜住跟踪覆盖不到的：检查之后才发起的导航（页面的定时器）。实测：把等待拿掉，表单提交之后那一步 10.1 s、第二次尝试成功（修之前 30 s 后以 `observe` 失败）。
+- **回归**：`test_browser_form_submit_live.py`（真实 Chrome，fixture 的 `form_submit` 页，`replay_driver.record_config` 的形状：pinned + 三个归档器、BrowserUse `dom_vision`、按元素 id 点击的脚本化模型）——GET 与 POST 表单的点击提交、文本框里回车提交（`browser.send_keys`），提交之后那一步 5 s 之内完成（实测约 0.1 s）、URL 是结果页、loaderId 换了、DOM 里是回显的字段、没有 `observe` 错误；`off` 档位、不开归档的同样流程照旧通过。不用 Chrome 的部分在 `test_browser_navigation_settle.py`。
+
 #### 回放：网络来源与 miss 策略（M30）
 
 两根 browser 内部的策略轴，都在 `core/capabilities/browser/replay/`，与 `replayability` 同一种受体形状（策略即开关，单实例受体在生成的 schema 里必填）：
@@ -2746,7 +2763,7 @@ setup 里，`cooperation_problems`（配置能否协作）之后、`backend.open
   - L2 模糊命中可能送错资源（`fuzzy` 与得分照记）；`exhausted` 重复最后一条是有意的，日志里看得见。
   - 步归因是"收集取走它的那一步"：页面加载完之后才发出的异步请求（`fetch`、XHR、迟到的 beacon）可能落在下一步的 `replay.jsonl` 里——与录制时 `index.jsonl` 的归因同一个模型（fixture 实测：金丝雀页面在第 0 步导航，它的 `fetch` 在第 1 步的日志里）。
   - 回放日志导出成 HAR 推迟（还没有按 HAR 打分的评测器）。
-  - S2b（10 个真实 `online_mind2web` 任务上的度量）的配置与脚本在本地的 `tmp/flywheel/s2b/`，等用户授权（路由、N、token 上限），没有跑过。
+  - S2b（10 个真实 `online_mind2web` 任务上的度量）是 M33 度量链只跑录制、原路径回放与报告的那一种（§4.16）；它的链规格与命令在本地的 `tmp/flywheel/M33_live_plan.md`，等用户授权（路由、N、token 上限），没有跑过。M30 写的 `tmp/flywheel/s2b/` 脚本已被它取代。
 - 本节的 Chrome 行为都是 153 的实测，归档器的部分是 155 的实测（本机 Chrome 在 M29 期间升到了 155，153 时写下的金丝雀全部照样通过）；`requires_chrome` 的回归测试是版本金丝雀。
 
 ### 4.15 训练导出（M32）
@@ -2912,6 +2929,99 @@ round-trip 在渲染里做（它要 agent 本步的状态），其余的在格�
 #### 代码位置
 
 `spectragent/export/`：`_registrar.py`（`Exporter`、`ExporterRegistrar`、`ExporterBase`）、`settings.py`、`openai_messages.py`、`translate/`（`_registrar.py`、`identity.py`、`index_to_coordinate.py`）、`canonical.py`、`filters.py`、`split.py`、`benchmarks.py`、`render.py`、`validate.py`、`runner.py`、`cli.py`、`errors.py`；`schemas/sample.py`；`schemas/observation/geometry.py`（`to_grid`、`quantum`）；`core/loops/errors.py`（`UnrepresentableActionError`）；`core/loops/_loop_fragments.py`（`loop_fragment_builders`、`pinned_step_info`）；`core/loops/restore/source.py`（`recorded_observation`、`recorded_step_info`：与分叉共用的读法）；`core/actions/params.py`（`point_params`）；`core/runtime.py`（`seed_messages`）；`core/trace/sources.py`、`core/trace/secret_patterns.py`；browser：`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`、`replay/replay_log.py::document_miss_total`。
+
+### 4.16 度量闸门（M33）
+
+度量是离线读已提交数据的消费者，地位与 evaluator、训练导出相同：只经 `RunTrace` 的访问器读 trace（只读已提交的部分），只读数据集目录里的文件；不 setup 任何环境、不调任何 LLM、不碰任何运行中的状态，产物是一份报告。它算出 PRD §9 的每一项度量与 PRD §10 / §11 交给 M33 的每一节，每一节以一条带证据的建议收尾。包是 `spectragent/flywheel/`，与 `evaluator/`、`export/` 同级：`metrics.py`（度量）、`report.py`（报告模型、建议规则、Markdown）、`chain.py`（链）、`cli.py`（`spectragent-flywheel`）。**不是注册表**：v1 只有一份报告；browser 证据的格式知识在 browser 的包里，度量只组织调用（与 `index_points.py` 同一先例）。第二条数据线（Docker、Android）出现时，"每个 capability 贡献哪些度量"再成为一根轴（§6 与 AGENTS.md §2.2 同时加行）。
+
+#### 链（`spectragent-flywheel run --spec <chain.yaml>`）
+
+链是现有入口的顺序调用，不是新的运行路径：每一段在进程内调用该 CLI 的 `main(argv)`（`spectragent.core.benchmark_runner.main`、`spectragent.export.cli.main`），最后算报告。链规格是一份普通 YAML（pydantic `ChainSpec`，`extra="forbid"`）——它不是 conscribe 的运行根，所以不放在 `configs/*.yaml` / `configs/flywheel/*.yaml` 这一层（那里每个文件都要能组装并 prepare，`test_shipped_config_integration.py`）：
+
+```yaml
+name: m33-live
+root: runs/m33-live                  # 一切产物都在它下面
+evidence: live                       # live | rehearsal：报告里每条建议的证据基础
+tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # 交给 record / control 段的 CLI 参数
+record:    {config: <录制 YAML>, timeout: 600, evaluate: false}   # evaluate: false → --no-eval
+control:   {config: <同档位、archive: [] 的录制 YAML>}              # 可选：归档开销的对照组
+same_path: {config: configs/flywheel/same_path_ui_tars_archive.yaml}
+branch:    {config: <分叉 YAML>}
+export:    {config: <导出 YAML>, repeat: 2}                           # 2：导出确定性；1：不测
+report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练写 value；live 只写环境变量名
+```
+
+- **布局**（链的约定，报告只认它，`metrics.ChainLayout`）：`<root>/traces/{record,control,same_path,branch}/`、`<root>/datasets/{first,second}/`、`<root>/report/{report.json,report.md}`、`<root>/configs/<段>.yaml`（每段实际用的配置；导出两份：`export_first.yaml` / `export_second.yaml`）、`<root>/evals/<段>/`（`evaluate: true` 的段的 `--evals-dir`；判定也照常写进每个 trace 的 `evals/`）、`<root>/chain.json`（每段的 argv、退出码、产生的 run 目录与起止时刻；`--stages` 再跑时与已有的段合并；只是来历记录，报告不依赖它）。
+- **路径从哪里算**：规格里的相对路径（`root`、每段的 `config`）相对工作目录，与每个 af CLI 读路径的方式一样（阶段 YAML 自己的相对路径，例如 `matcher.site_rules: configs/replay_rules`，也相对工作目录）；`root` 解析成绝对路径后，链写进阶段 YAML 的路径都是绝对的。
+- **链只改路径**：每段的 YAML 原样读入，链只写这几个字段再落到 `<root>/configs/<段>.yaml`：唯一的 `trace_writer` 的 `trace_dir`（`<root>/traces/<段>`）；`same_path` / `branch` 唯一的 `trace_branches` 加载器的 `data_dir`（`<root>/traces/record`）；导出段唯一的导出器的 `sources_root`（`<root>/traces`）、`sources`（`["record/*", "branch/*"]`）与 `output_dir`（`<root>/datasets/first`，第二次 `second`）。缺这些块（或多于一个）在任何一段开跑之前报错、点名段与缺的块。其余一切——agent、档位、归档器、选步、分支数、`verify`、评测器——都写在段的 YAML 里；对照组的 YAML 自己写 `archive: []`。
+- **段的成败**：`spectragent-bench` 退出码 0 或 1（个别任务失败是要度量的数据）且这一段写出了至少一个新的 run 目录，算跑完；`SystemExit`、异常、一个新 run 目录都没有，是这一段失败——链停下（`ChainStageError` 点名这一段），之前的产物留着。导出段退出码非 0 就失败（导出什么也没写）；报告段抛出的异常（缺陷、报告目录写不了——坏 run 从不让它抛，见下）同样是这一段失败（`ChainStageError` 点名 `report`，`chain.json` 记下）。选了导出段而 `<root>/datasets/<first|second>` 已经存在，是在任何一段开跑之前的 `ChainConfigError`（导出从不覆盖，要重导先删掉；不让前面花钱的段为一次必然被拒的导出白跑）。`--stages` 只跑列出的段（按规格的顺序；未知的段名、规格里没配的段在任何一段开跑之前报 `ChainConfigError`），已经跑完的段可以不重跑；重跑一个运行段会在已有的 run 旁边再加 run（记 WARNING）。
+- **规格**：`ChainSpec{name, root, evidence, tasks{benchmark, subset, task_ids, limit}, record, control?, same_path?, branch?, export?, report{planted}}`，每段 `StageSpec{config, timeout, evaluate}`（`same_path` / `branch` 写 `evaluate: true` 被拒：`trace_branches` 没有评测加载器），导出段 `ExportStageSpec{config, repeat: 1|2}`，植入值 `PlantedSecret{label, value | env}`（恰好一个）。CLI：`spectragent-flywheel run --spec X [--stages a,b]`、`report --spec X [--out D]`、`report --root R --evidence live|rehearsal [--name N] [--out D]`（没有规格就没有植入值，只扫凭证形状）；退出码 0 完成、1 某段失败、2 规格或参数不对。测试的接缝是 `run_chain(spec, bench=..., export=...)`（替换两个进程内的 `main`）。
+- **原路径回放是一个分叉段**：`configs/flywheel/same_path_ui_tars_archive.yaml`——`branch` loop，选步 `last`（每个源 run 最后一个可分叉的策略步，§4.10），`continue_steps: 0`，`verify: warn`（发散了照样走完，每一步都有校验结果），`branches_per_step: 2`（回放确定性的重复），`require_status: any`，`on_unbranchable: skip`。它取代 M30 `tests/_helpers/replay_driver.py`"把录下的模型输出喂回同一个 agent"作为度量手段：恢复器本来就逐步重放录下的动作、逐步校验观测（§4.14 "恢复"），只有最后一步要 teacher 再决定一次（每个分支一次 LLM 调用）。S2b 就是只跑 `record`、`same_path` 与报告的这条链。
+- `spectragent-bench` 不读 `.env`，链也不读：跑之前在 shell 里导出密钥（`set -a; . ./.env; set +a`）。
+- **链的导出 YAML** 写 `filters.require_eval: null`（链默认不评测，没有判定可筛）与 `decontamination: {against: []}`（源 run 本来就是被测 benchmark 的任务，默认的去污染会把它们全排除，§4.15 "切分与去污染"）；`max_document_misses` 与 `exclude_restoration_diverged` 照常——被它们筛掉的分叉正是要计数的产出损失。
+
+#### 度量（PRD §9，`metrics.py`）
+
+每个数都带分母（`Ratio{numerator, denominator, value, reason}`）；分母为 0 时值是 `null` 加原因，从不是 0——"没测到"不能变成"测到了 0"（`evaluator/summary.py` 的同一条规则）；一组空值的 `percentile` 直接报错，不返回 0。读不回来的 trace 跳过并按角色记原因（`core/trace/sources.py::unreadable_reason`，导出用的同一个函数：只写相对 run 目录的文件名与错误类），不让一个坏 trace 拖垮整份报告；某个 run 的证据读不回来（环境证据的坏行、WARC 记录对不上，提交了的截图缺失或为空）只在读它的那几项里跳过并记原因（该项的 `skipped`，键是 run 相对角色目录的路径：例如截图读不回来的 run 只离开原路径保真的严格版与回放确定性，恢复器的判定照常计入）。
+
+| 度量 | 读什么 | 定义 |
+|---|---|---|
+| 归档开销 | `record` 与 `control` 的 `StepRecord`；`record` 的 env/ extra 索引与 `index.jsonl` | **延迟**：策略步、从第 1 步起（第 0 步含环境 setup），每步环境侧时间 = `duration_ms − (llm_latency_ms 或 0)`（`duration_ms` 为 `None` 的步不计）；两组各自的 p50 / p95（最近秩的 `percentile`），开销 = 开 − 关。两组的档位（`TraceConfig.resolved` 里 capability 的 `replayability`）不同、或任一组为空时为 `null`。live 的两组走的不是同一条路径，比的是分布。**字节**：每个录制 run 的 env/ 去重前后（`RunTrace.committed_files` 里带 `archive` 的条目）——去重后 = 每个不同路径各计一次的 `size`；去重前 = 每一步（与收尾）的 extra 索引列出的每个 env 文件各计一次（内容寻址的文件被每个引用它的步各计一次），再加 revisit 记录替掉的完整记录长度（browser 的 `revisit_saving`）；按步数平均。与 M29 `ArchiveOverheadReport` 同一账法：`before == after + saved_by_revisit + saved_by_content_addressing` |
+| body 完整率 | `record` 的 `index.jsonl`（`iter_index_lines`） | 每个 `record_id` 的最终状态（最后一行；`streamed_later` 看有没有它的 `kind: body` 行）：有 body（`ok`、补取到 body 的 `streamed_later`）、不需要 body（`redirect`、`websocket`）、明确没有 body（`too_large`、`incomplete`；最后一行是 `pending` 的按 `incomplete` 读，§4.14）。完整率 = 有 body 或状态明确的记录 / 全部记录；另报有 body 率（分母去掉不需要 body 的）与按状态的分布（browser 的 `body_completeness`）。"服务器发了、归档里没有"只有 fixture 的访问日志能判：那是演练测试的断言，不是报告的度量 |
+| 原路径回放保真（按站点） | `same_path` 的 `StepRecord.restoration`；源 run（`TraceConfig.branch.source_trace`，相对 `<root>/traces/record`）的截图 | 被校验的每一步（恢复步与检查点步）：恢复器判定 `ok` 的占比（URL、元素签名多重集、截图 dHash ≤ 阈值、无文档 miss，§4.14 "恢复"）；严格版：URL 相等且截图 sha256 与源 run 同一步相同的占比；每个 run 第一个不通过的步与原因；全部通过的 run 占比 |
+| 恢复校验率 | `branch` 的 `StepRecord.restoration` | 通过的校验 / 全部校验；不通过的按 `RestorationCheck.reasons` 计（一条多个原因各计一次）；重定位失败按 `not_found` / `ambiguous` 与 `RetargetMethod` 计（PRD §10 "元素重定位失败"） |
+| 分叉结果覆盖 | `branch` 的回放日志（`iter_decisions`）、`TraceConfig.branch.checkpoint_step`、各步执行的动作 | 检查点步及之后（策略步、终止步、收尾）一个主 frame 文档 miss（回放自己的 `diverged`）都没有的分叉占比；同一范围里其余的 miss（子 frame 文档、beacon、子资源；折叠的按它代表的条数计）按动作类型（miss 所在步执行的动作名；终止步记为 `terminal`、收尾的记为 `trailing`——页面加载完之后才发出的请求落在取走它的那次收集，§4.14 "步归因"）、`resourceType`、host、原因与请求类别分布。检查点之前的 miss 属于恢复，由恢复校验率的 `document_miss` 体现，不算这一项 |
+| 回放确定性 | `same_path` 与 `branch` 的终止步、检查点步的截图 | 同一输入 = 同一源 run、同一检查点、策略步执行的动作逐个相同（名字与参数的规范 JSON）；组内两两比较终止截图（`origin == "terminal"`）的 sha256，报可比的对数与相同的对数（没有终止步的 run 不比、计数）；另报同一检查点所有分支的检查点步截图（恢复出的状态，与 teacher 无关）是否相同 |
+| 导出确定性 | `datasets/first`、`datasets/second` | 两棵目录树的摘要（相对路径与每个文件的 sha256，按路径排序）相同；`repeat: 1` 时为 `null` |
+| 隐私 | `<root>/traces` 与 `<root>/datasets` 下的每个文件（gzip 解开，`core/trace/secret_patterns.py::readable_text`；按目录树走，不按 manifest——没被索引的文件泄漏了也是泄漏） | 每个植入的凭证出现的次数（必须是 0）与所在的文件数；`SECRET_PATTERNS` 每个形状的命中数。植入值来自链规格：演练写字面量，live 只写环境变量名、值从进程环境读；报告只写标签与次数，从不写值。"没有泄漏"要每个植入值都搜过：有一个没搜（环境变量没设、`report --root` 没有规格也就没有植入值），建议是 `insufficient`、没有结论；搜到的植入值或凭证形状照样是"泄漏"的结论 |
+
+#### 各节与建议（PRD §10、§11，`report.py`）
+
+- **站点**：每个站点（任务 `start_url` 的主机，`core/trace/sources.py::task_identity(config).site`——导出 `split.by: site` 与 `exclude_sites` 用的同一个键；分叉 run 用它的源任务）的任务数、录制的结局、原路径保真、恢复校验率、分叉覆盖、miss 数。**剔除名单**：被拦截（下一条）、或原路径保真低于 `EXCLUDE_FIDELITY`（0.8）、或录制的环境在第 0 步就失败（观测或动作失败——循环以 `env_status: failed` 结束的那两个阶段——或一步都没提交）的站点；模型调用失败（`error_phase: llm`：429、PRD H28 的 connect 卡死、被拒的 schema）是路由的失败，从不剔除站点，按站点单独计数（`record_model_failures`）；输出成 `ExportFilters.exclude_sites` 的形状（主机名，后缀匹配）并附 YAML 片段。链不自动套用（导出在报告之前）：人把它放进导出配置再导一次。
+- **anti-bot / Cloudflare**：录制里文档请求（`resourceType: Document`，主 frame 与子 frame 都算——验证码 iframe 也是拦截）的应答带拦截特征（browser 的 `challenge_documents`：状态 403 / 429 / 503，且有 `cf-mitigated: challenge` 头、或 `server: cloudflare` 加 `cf-ray`）的站点、run 与步；建议：剔除。只认应答头——不带这些头的拦截页面认不出来（写明的残余）。
+- **重复分叉率**：同一 `branch_group_id` 里检查点步执行的动作（规范 JSON）与排在前面的分支相同的分叉占比（与导出的 `duplicate_of` 同一规则），并对照数据集 manifest 的 `duplicates`。
+- **POST 分叉的 miss**：分叉 run 检查点及之后方法为 POST 的 miss（文档、子资源分开），有 POST miss 的分叉占比。
+- **存储增长与压缩评估的输入**：按角色、按类别的字节（`observations:<fragment>` 的 json、`artifacts:<fragment>`（截图）、`messages`、`steps`（步记录与 extra 索引）、`env:<归档器>`、`env:blobs`（内容寻址）、`env:run`（capability 的 run 记录）、`run`（manifest / config / result）），每个 run、每步的平均；文件是 `RunTrace.committed_files` 列出的那些（run 自己的三个文件、manifest 与 extra 索引列出的；不按目录树走，路径的形状与"留在 run 目录里"由 RunTrace 检查，§5.5），每个路径计一次，字节经 `read_committed` 读，类别按条目的 `kind` 与 `archive` 定（`metrics.storage_category`）；还没压缩的字节用 gzip（level 6）实测压缩比——按文件开头的字节认已经压缩的（gzip、PNG、JPEG、GIF、WebP：截图、WARC、`dom_raw`），只报大小；数据集目录按文件树的字节。
+- **保留期与容量（Q7）**：每个角色每个 run 的平均字节、数据集每个样本的字节；每个任务的字节 = 一次录制 + 其余每个角色"每次录制有几个 run × 每个 run 的字节" + 数据集每个任务的字节；按 `PROJECTION_TASKS`（10、20、300：S2b、live 链、整个 `All` 子集）投影。
+- **导出产出**：每个切分的样本数、按原因的丢弃与跳过（数据集 manifest），`labels.step_status == action_failed` 的样本占比（M32 交给 M33 决定的去留）。
+- **待决的决定**（PRD M33 的业务逻辑与 §11）：Q1（`strict` 之外的 miss 策略，例如 `live_fallback`）看分叉覆盖、子资源 miss 的分布与 POST miss（`Q1_KEEP_STRICT` 0.9：零文档 miss 的分叉占比不低于它就留 `strict`）；Q4（录制时扩大覆盖：预取或探索）看分叉检查点之后的文档 miss 里 GET 到未录 URL（`no_match`）的占比（`Q4_EXPAND` 0.5；没有文档 miss 时结论是"不扩大"）；站点规则要不要自动生成看所有回放 run（`same_path` 与 `branch`）的近邻 miss（browser 的 `site_rule_candidates`：最佳候选——匹配器排第一的那个——同 host、同 path、同方法、规范化查询参数不同的 `no_match`，按 host 与不同的参数名计数；某个 host 达到 `SITE_RULE_MIN_MISSES` 2 次就建议生成 `ignore_query` 规则供人审）；Q7 看上一条的容量数。这几个决定的输入（分叉的文档 miss、近邻 miss）单列在报告的 `decision_inputs` 里。
+
+**建议槽**：每个度量、每一节、每个决定一个 `Recommendation{status: supported | partial | insufficient, verdict, rule, evidence: list[EvidenceRef{pointer, value, n}], basis}`。`basis` 是链规格的 `evidence`；`rehearsal` 的证据最多是 `partial`（"fixture 只校准度量本身，live run 之后再定"）；没有数据是 `insufficient`、`verdict` 为空——从不给默认结论；`rule` 写出所用的规则与阈值（`report.py` 里具名的常量），`evidence` 引用报告里的度量（JSON 指针）与它们的分母。
+
+#### 报告
+
+- `report.json`：格式 `af-flywheel-report-1`（pydantic `FlywheelReport{format, chain{name, evidence}, inputs, metrics, sections, decision_inputs, recommendations{metrics, sections}, decisions{q1_miss_policy, q4_coverage, site_rules, q7_retention}}`），键排序、缩进 2，**没有墙钟字段、绝对路径或主机信息**（run 写成相对链根的 `traces/<角色>/<run>`），同样的输入算两次逐字节相同；`inputs` 按角色记 run 数、跳过的 trace 与原因、以模型调用失败结束的 run（`model_failures`：路由的失败，不是站点的证据；它们照样计入各项度量，live 计划写了怎么处理），以及 trace 里实际运行的组件（agent、loop、恢复器、cleaner、serializer、backend、网络来源、模型路由——`metrics.components(trace)`，读脱敏后的 `TraceConfig.resolved`，没标 trace-safe 的自由字符串读作 `<omitted>`；PRD §12 第 8 条"验证要点名配置"），数据集记在不在与格式。每条证据的 `pointer` 都能在 `report.json` 里解析到它的 `value`（测试钉住）。
+- `report.md`：同一个模型渲染，一节对应 §9 的一行或 §10 / §11 的一项，每节末尾是建议、证据与基础（`rehearsal` 的每条都写明"部分"）。
+- `spectragent-flywheel report --spec <chain.yaml>`（或 `--root <dir> --evidence live|rehearsal`）只读、可重复；`run` 的最后一段就是它。
+
+#### 共用而不是复制
+
+- `restoration_rate` / `RestorationRate`、`components` 从 `tests/_helpers/branch_driver.py` 挪进 `flywheel/metrics.py`（M31 的 live 测试改从这里 import，`branch_driver` 里不留同名的函数）；
+- 去重的账法（`DedupBytes`）与 `percentile` 从 `tests/_helpers/archive_bench.py` 挪进 `flywheel/metrics.py`，revisit 的那一半是 browser 知识（`archive_stats.revisit_saving`）；M29 的基准与它的 schema 测试改用这两处；
+- `tests/_helpers/secret_scan.py` 的 gzip 感知读法挪进 `core/trace/secret_patterns.py`（`readable_text(path)` / `iter_readable(root)`，只 import 标准库），secret guard 与 M29 的隐私测试改从这里 import，测试帮手删掉；
+- `TaskIdentity` / `task_identity` 从 `export/filters.py` 挪进 `core/trace/sources.py`（只读 `TraceConfig`；导出与度量共用同一个"站点"与"任务"的定义），导出改从这里 import；读不回来的 run 的措辞 `unreadable_reason` 一起挪过去（报告与数据集 manifest 写同一句）。
+- 去重的账法是 `DedupBytes.account(listed, distinct, saved_by_revisit)` 一处：trace 一侧（`metrics.archive_bytes(run)`：`RunTrace.committed_files` 里每个提交列出的每个归档文件各计一次 = 去重前，每个不同路径一次 = 去重后）与 M29 基准的内存适配（`archive_bench.dedup_bytes(files)`）都经它；`percentile` 保持 M29 的最近秩定义，空输入改成报错。
+
+#### browser 一侧的读法
+
+browser 证据的格式知识留在 browser 的包里：纯函数，只经 `ArchiveReader`（§4.14 "回放的数据通路"）或它读出来的行读，不 import `core.trace` 与 `spectragent.flywheel`——与 `replay_log.py` 同一条边界（`test_archive_boundaries.py` 的第 5 条规则）。`replay/archive_index.py::iter_index_lines(reader)`（`(step, 行)`：每一步、再是收尾的每一行 `ExchangeLine | PendingLine | BodyLine`；与 `load_archive` 共用同一个按提交读行的函数）；`replay/replay_log.py::iter_decisions(reader)`（`(step, 决定, 条数)`：写全的条数为 1，`summary` 读成它折叠的那种、条数为 `count`；`document_miss_total` 改成经它计数，折叠的规则只有一份）；新的 `core/capabilities/browser/archive_stats.py`：`body_completeness(lines)`（每条记录的最终状态读它的最后一行，`body` 行在内——与回放加载同一读法）、`revisit_saving(lines)`（revisit 指向的完整记录长度减自身长度，可以为负；指向缺失的记录报错，同 M29）、`challenge_documents(reader)`（应答头在 WARC 记录里，所以经 `load_archive` 读，带出所在的步）、`site_rule_candidates(decisions)`。
+
+#### 演练（fixture，零花费）
+
+`tests/_helpers/flywheel_rehearsal.py`——一条命令 `uv run python -m tests._helpers.flywheel_rehearsal --out <dir>`（`run_rehearsal`；除了链根，还写一份 `rehearsal.json`：各段、各模型的路由、外联审计），e2e 测试（`tests/test_flywheel/test_rehearsal_live.py`）在一个新的解释器里跑同一条命令再读它写下的东西（全量测试跑到后面时，进程里积累的状态让一次模型调用的 TCP connect 偶发地永远完不成——链之外的一个 fd 复用缺陷，PRD H28；新解释器也就是用户跑的样子）：起 M29 的 fixture 站点与每个运行段一个脚本化的模型（UI-TARS 的坐标回复，按任务文本里的标记与请求里 assistant 轮的个数——即步号——路由），把发布的 UI-TARS 录制 / 原路径回放 / 分叉 / 导出配置改成 fixture 的那份（模型地址与键、fixture 的路由开关、任务的 `data_dir`、仓库文件的绝对路径；与 M30–M32 的驱动同一种改法），加上对照组（录制配置 + `archive: []`），写出链规格（`evidence: rehearsal`，植入值写字面量），在进程内跑整条链。四个任务分在三个站点上（fixture 的 `FLYWHEEL_SCENARIOS`，每个站点一个映射主机，控件都绝对定位）：`shop.example.test` 上确定性的四步流程（输入框、GET 表单提交、商品链接、读价格；商品页的脚本请求 `recommend.json?session=<timeOrigin>`——每次回放都是一个子资源近邻 miss）与一个登录页（运行时拼出凭证，经 `Authorization` 头、urlencoded POST 的 `password`、密码框的值与 `document.cookie` 发出，值从不出现在任何应答的字节里）；`drift.example.test` 上点击后同步跳到 `next.html?visit=<timeOrigin>`（pinned 不固定 time origin，回放必然是文档 miss，而且停在 Chrome 的错误页上——错误页写着那个 URL，所以这一组的回放截图两次不同）；`blocked.example.test` 的 403 带 Cloudflare 的三个头。分叉段在商品流程的结果页（第 2 步）分三叉：一个与录制做同样的事（覆盖）、一个提交结果页上录制没用过的 POST "quick add" 表单（必然 miss）、一个与第一个重复。导出 YAML 加上指向 fixture 任务数据的 `eval_loader` / `task_loader`（泄漏扫描经它们读参考答案）。e2e 测试断言每个度量的值与它的解释，报告算两次逐字节相同，以及演练期间没有非 loopback 的外联：Python 侧审计每一次 `socket.connect` 的对端；Chrome 侧录制用 hermetic 的解析规则、回放用隔离，归档里出现的主机只有 fixture 的。整条链在本机约 40 s。
+
+#### 已知限制
+
+- live 的对照组与录制不走同一条路径，归档开销比的是分布；对照组要再花一次录制的 token（live 计划里是可选项）。
+- 原路径回放每个分支有一次 teacher 调用（最后一步），不是零花费。
+- 拦截只按应答头识别；隐私只认植入的值与凭证的形状（同 §4.15 "隐私"的残余）。
+- 度量只认 browser 的证据格式；第二条数据线见本节开头。
+- 一次回放停在错误页上时，Chrome 的错误页写着没送到的 URL：URL 每次不同的发散站点，回放确定性按截图比必然"不同"——报告照实计数（演练里的发散站点就是这样）。
+- 存储的字节是 trace 落盘的样子：每次模型调用的消息文件内联了它之前的每一张截图（UI-TARS 的 memory 保留全部截图），所以 `messages` 随步数平方增长——这是 Q7 与压缩评估的主要输入，演练的 fixture 页面太小，看不出真实比例。
+
+#### 代码位置
+
+`spectragent/flywheel/`：`metrics.py`、`report.py`、`chain.py`、`cli.py`（`pyproject` 的 `[project.scripts]`：`spectragent-flywheel`）；`core/data_loader/task/step_selector/last.py`；`core/trace/sources.py`（`task_identity`、`unreadable_reason`）、`core/trace/secret_patterns.py`（`readable_text`、`iter_readable`）、`core/trace/reader.py`（`RunTrace.committed_files` / `read_committed`：存储与归档字节的账只读它们，§5.5）；browser：`archive_stats.py`、`replay/archive_index.py::iter_index_lines`、`replay/replay_log.py::iter_decisions`；发布的配置 `configs/flywheel/same_path_ui_tars_archive.yaml`；测试 `tests/test_flywheel/`（`tests/_helpers/flywheel_traces.py` 用真实的 WAL 写出答案已知的链根）；演练 `tests/_helpers/flywheel_rehearsal.py`；live 计划与它的配置在本地的 `tmp/flywheel/M33_live_plan.md`、`tmp/flywheel/m33_live/`。
 
 ---
 
@@ -3598,6 +3708,11 @@ class RunTrace:
     def archive_run_file(self, capability_id: str) -> ArchiveRecord | None: ...
     def archive_lines(self, path: str, model: type[M]) -> list[M]: ...   # M30：逐行 JSON 的归档文件，读成 model
 
+    # ── 一个 run 由哪些文件组成（M33：存储与归档字节的账）──────────
+    @cached_property
+    def committed_files(self) -> list[CommittedFile]: ...   # 每被列出一次一条，按提交顺序
+    def read_committed(self, path: str) -> bytes: ...       # 经该文件自己那个访问器的检查
+
     # ── 后置产物（不在 manifest 里）──────────────────────────────
     def evals(self) -> dict[str, EvalResult]: ...           # M31：evals/<verdict_slug>.json，按 slug 排序；不缓存
 ```
@@ -3625,6 +3740,8 @@ class RunTrace:
 - `archive_run_file(capability_id)`：该 capability 已提交的 run 记录里 `run_version` 最高的那一版，跨步索引和 trailing 索引找；没有 → `None`。字节用 `read_extra(record.path)` 读。
 - `archive_lines(path, model)`（M30）：一个已提交的、逐行 JSON 的归档文件（`index.jsonl`、`replay.jsonl`……），每个非空行用 `model.model_validate` 读回，按文件顺序返回；字节经 `read_extra` 读（同样的 size / sha256 校验，没提交 → `KeyError`），一行不是 JSON 或校验不过 → `TraceSchemaError`，点名文件与行号。它是通用的：行的类型由调用方给（browser 的 `ReplayLogEntry` 与网络索引行的模型都在 browser 包里，trace 层不认识它们），"读回来的必须是写进去的那个类型"对 capability 的证据也成立。`RunTrace` 由此结构化地满足 `core/archive` 的 `ArchiveReader`（§4.14 "回放的数据通路"）。
 - `evals()`（M31）：这个 run 的 `evals/` 目录里每一份判定，`verdict_slug`（文件名去掉 `.json`）→ `EvalResult`，按 slug 排序；只看 `*.json`（原子写中断留下的 `tmp….tmp` 不算）。evals 是后置产物（`EvaluationRunner` 在 run 之后原子写入，§5.3），不在 manifest 里，所以这是唯一按目录列文件的访问器：没有 `evals/` → `{}`；目录与每个文件都必须在 run 目录之内（解析符号链接之后），否则 `TraceSchemaError`；一份不是 JSON 或不能按 `EvalResult` 校验的文件 → 点名它的 `TraceSchemaError`。不缓存：同一个 `RunTrace` 在评测写入之后再读，看得见新的判定。`trace_branches` 的 `require_eval` 经它筛选源 run（§4.10），从不读 `result.json`。
+- `committed_files`（M33）：这个 run 提交了的每个文件，每被列出一次算一条（`CommittedFile{path, kind, step, fragment, extra, archive}`），按提交顺序：run 自己的三个文件（`manifest.json`、`config.json`，写了的话还有 `result.json`）；按 manifest 顺序每一步的步记录、每个 fragment 的文件（或记在它位置上的失败）与 artifact、每次 LLM 调用、extra 索引与它列出的每个文件；每个 trailing 提交的调用、索引与文件；最后是请求的回复 schema。`kind` 说文件是什么（`manifest` / `config` / `result` / `step` / `fragment` / `artifact` / `llm_call` / `extra_index` / `output_schema` / `extra`），`step` 是列出它的那次提交（run 自己的文件、trailing 提交与回复 schema 为 `None`），extra 文件带它的索引条目，是归档文件的再带 `ArchiveRecord`（与 `iter_archive` 同一个读法）。被几次提交引用的内容寻址文件，每次提交各列一次——怎么计数是调用方的规则（度量的存储每个路径计一次；归档字节的"去重前"每次列出计一次，§4.16）。每个路径列出时就过 `_listed` 的同一套检查（写侧的形状、解析符号链接之后仍在 run 目录之内，违反时点名列出它的文件），manifest 与已提交的索引没列的文件不会出现。消费者因此不必自己走 manifest 的字段、不必按名字探测 `result.json`、也不必再写一遍包含检查。
+- `read_committed(path)`（M33）：`committed_files` 列出的一个文件的字节，经它自己那个访问器的检查：extra 文件就是 `read_extra`（size / sha256）；回复 schema 的字节要与它的地址相符；artifact 不能为空；每个文件都要在磁盘上、在 run 目录之内。没被列出 → `KeyError`。
 - 任何 `ArchiveRecord` 的字节都用 `read_extra(record.path)` 读，同一套 size / sha256 校验。这四个访问器全部只从每步和 trailing 的 extra 索引解析（索引里 `meta` 带 `"archive"` 键的记录才是归档文件），不探测路径、不 glob，所以孤立的 `env/` 文件对它们不可见；它们和 `extra_files` 一样拒绝 format 1 的 trace。
 
 **读回来的必须是写进去的那个类型。** Writer 拿到的是 `StepRecord` / `AgentResult`，reader 就必须还原成同一个 model，而不是 `dict[str, Any]` —— 否则字段名只能靠翻 JSON 文件去猜，猜错（`rec["step_index"]`，实际是 `rec.step`）能通过全部静态检查、到运行时才炸。这也是 Evaluator 唯一的输入契约。
@@ -3639,7 +3756,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 | 情况 | 表现 | 含义 |
 |---|---|---|
-| 不存在：`result.json` 缺失；或所问的 step、fragment、调用、extra 文件、归档文件不在 manifest 里 | 返回 `None`（`result`、`step`、`observation_fragment`、`screenshot`、`archive_run_file`）或 `[]`（`llm_messages`、`extra_files`、`archive_files`）；`read_extra` / `output_schema` / `blob` 抛 `KeyError` | 没有发生：run 死在写 `result.json` 之前，或者那一步没有提交 |
+| 不存在：`result.json` 缺失；或所问的 step、fragment、调用、extra 文件、归档文件不在 manifest 里 | 返回 `None`（`result`、`step`、`observation_fragment`、`screenshot`、`archive_run_file`）或 `[]`（`llm_messages`、`extra_files`、`archive_files`）；`read_extra` / `output_schema` / `blob` / `read_committed` 抛 `KeyError` | 没有发生：run 死在写 `result.json` 之前，或者那一步没有提交 |
 | 存在但不可读 | 抛 `TraceSchemaError`，点名文件（以及 model、key 或版本） | trace 本身不可读，重跑评测也没用，只能重跑任务 |
 | 评测器自己失败 | `EvaluationError` | 与 trace 无关（judge 429、prompt 缺失等） |
 
@@ -3717,7 +3834,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `ExporterRegistrar` | `exporter_id` (flat) | 训练导出的格式（v1 `openai_messages`；以后 `llamafactory` / `ms_swift` / `trl`），`spectragent/export/_registrar.py`；`ExporterBase` 持导出任务字段与 `translator` 受体，运行根的可选顶层层（与 `evaluator` 同一先例），进 `_collect_registrars()`（§4.15） | M32 |
 | `ActionTranslatorRegistrar` | `translator_id` (flat) | 训练导出时把 teacher 的动作空间换成学生的（`identity` / `index_to_coordinate`），`spectragent/export/translate/_registrar.py`；`ExporterBase.__wiring__["translator"]` 受体，进 `_collect_registrars()`（§4.15） | M32 |
 | `TaskLoaderRegistrar` | `benchmark_name` (flat) | 任务数据加载 | ✅ |
-| `StepSelectorRegistrar` | `selector_id` (flat) | `trace_branches` 加载器在源 run 的已提交策略步里选分叉点的策略：`explicit` / `every_k` / `all`，`core/data_loader/task/step_selector/`；`TraceBranchesTaskLoader.__wiring__["step_selector"]` 受体，进 `_collect_registrars()`（§4.10） | M31 |
+| `StepSelectorRegistrar` | `selector_id` (flat) | `trace_branches` 加载器在源 run 的已提交策略步里选分叉点的策略：`explicit` / `every_k` / `all` / `last`（M33：每个源 run 最后一个候选，原路径回放段用，§4.16），`core/data_loader/task/step_selector/`；`TraceBranchesTaskLoader.__wiring__["step_selector"]` 受体，进 `_collect_registrars()`（§4.10） | M31；`last` M33 |
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
 | `ActionRegistrar` | `action_id` (flat, dotted key `source.id`) | 每个 Action 独立注册；键含 source 前缀避免跨 capability 撞名（`browser.click` vs `desktop.click`） | ✅ |
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
@@ -3933,6 +4050,7 @@ environment:
 | **新增 teacher 的 thought 读法** | teacher agent 实现可选 slot `parse_react_thought(llm_output) -> (text, source_field) \| None`（`@staticmethod`，只读回复，§4.1） | `browser_use` / `ui_tars` / `skyvern`（M32） |
 | **新增导出格式** | 继承 `ExporterBase`（`spectragent/export/`），设 `__registry_key__`，实现 `format(rendered, images)`；只有自己旋钮的导出器写出完整的 `__init__` 签名（任务字段在基类签名里，conscribe 读子类的 `__init__`） | `llamafactory`、`ms_swift`（`rejected_messages` 做 DPO）、`trl` |
 | **新增动作翻译器** | 继承 `ActionTranslatorBase`（`spectragent/export/translate/`），实现 `translate(sample, trace) -> Translation`：只做与学生无关的换算，capability 专属的知识放在 capability 的包里由它调用；输出过 `Params.model_validate` | 以后的 `bbox_to_point`、desktop 的 a11y 节点 → 坐标 |
+| **新增度量 / 报告节（M33）** | 在 `spectragent/flywheel/metrics.py` 加一个只读 `RunTrace`（与数据集目录）的计算、在 `report.py` 加它的节模型与建议规则（阈值写成具名常量、进 `rule`）；分母为 0 时是 `null` 加原因；capability 证据的格式知识放进该 capability 的包（纯函数，只经 `ArchiveReader` 读），度量只组织调用（§4.16） | 每条数据线的 miss 成本；第二条数据线出现时每个 capability 的度量贡献成为一根轴 |
 | **新增 thought 来源（`relabel`）** | 今天是 `thought_source: Literal["teacher", "none"]`；`relabel`（固定动作、采样 K 个 thought、保留一致的）有了实现时成为新注册表（§6 与 AGENTS.md §2.2 同时加行） | OpenCUA、arXiv 2504.10127 的做法 |
 | **新增 Mouse Trajectory / Typing Rhythm 策略** | 继承 `MouseTrajectoryBase` / `TypingRhythmBase`，设 `__registry_key__`，实现 Protocol 全部成员（含 `click_hold_ms` / `aim_offset_px`），knobs 写成 `__init__` 关键字参数 | 新的运动模型；已训练模型的新导出格式属于 `learned` 的 backend，不是新策略（§4.13） |
 | **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `scripts/generate_all.py::_collect_registrars` 注册，否则字段退化成 `Literal[<keys>]`，策略的旋钮全部无法从 YAML 到达（AGENTS.md §3.4）。注册表还是空的时候不能成为 Composer 层（`composer.py` 对没有实现的已收集层直接抛错，`generate_all` 跳过它，fingerprint 测试随之失败）：先创建、先写文档，在注册第一个实现的那次改动里再收集 | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里。`ArchiverRegistrar`：M28 创建，M29 随首批归档器收集 |
@@ -4013,7 +4131,9 @@ environment:
 
 **分叉相关的 import 方向**（M31）：`core/loops/branch.py` 与 `core/loops/restore/*` 经 `core.trace.reader.RunTrace` 读源 trace（`SourceRun` 是唯一的入口，只读已提交的部分），反方向不成立——`core/trace/*` 不 import `core.loops`；capability 一侧的 `RestorationSupport` 实现（browser 的 `restoration.py`）只读传进来的观测，不 import `core.trace` / `core.loops`；`core/environments/*` 只认 `RestorationSupport` Protocol 与 `schemas/restoration.py` 的类型。
 
-**导出相关的 import 方向**（M32，`tests/test_export/test_export_boundaries.py` 用 AST 守着）：`spectragent/` 下 `export/` 之外没有任何模块 import `spectragent.export`（`scripts/generate_all.py` 的收集、以及它生成的 `generated/_composed.py` 引用导出旋钮类型除外）；`export/*` 经 `core.trace.reader.RunTrace` 读源 trace，经注册表与 Protocol 拿到导出器与翻译器（`runner.py` 不 import 具体的导出器或翻译器类）；`schemas/sample.py` 不 import `spectragent.core`；browser 一侧的导出知识（`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`）只读交进来的 fragment、文档与配置，不 import `core.trace` / `spectragent.export`；新模型里没有 `price` / `cost` / `usd` / `dollar` 字段。
+**导出相关的 import 方向**（M32，`tests/test_export/test_export_boundaries.py` 用 AST 守着）：`spectragent/` 下 `export/` 之外没有任何模块 import `spectragent.export`（`scripts/generate_all.py` 的收集、以及它生成的 `generated/_composed.py` 引用导出旋钮类型除外）；`export/*` 经 `core.trace.reader.RunTrace` 读源 trace，经注册表与 Protocol 拿到导出器与翻译器（`runner.py` 不 import 具体的导出器或翻译器类）；`schemas/sample.py` 不 import `spectragent.core`；browser 一侧的导出知识（`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`）只读交进来的 fragment、文档与配置，不 import `core.trace` / `spectragent.export`；新模型里没有 `price` / `cost` / `usd` / `dollar` 字段。导出的叶子规则有且只有一个例外：度量闸门的链（`spectragent/flywheel/chain.py`）把 `spectragent-export` 当作一段来调，只 import `spectragent.export.cli`（测试按模块名钉住）。
+
+**度量相关的 import 方向**（M33，`tests/test_flywheel/test_flywheel_boundaries.py` 用 AST 守着）：`spectragent/` 下 `flywheel/` 之外没有任何模块 import `spectragent.flywheel`；`flywheel/*` 经 `core.trace.reader.RunTrace` 读 trace、经 `core/trace/sources.py` 找 run 与任务身份，从 `spectragent.export` 只有 `chain.py` 的那一个例外（`metrics.py` / `report.py` 读数据集只读文件，不 import 导出）；browser 一侧的度量知识（`archive_stats.py`、`replay_log.iter_decisions`、`archive_index.iter_index_lines`）只经 `ArchiveReader` 读，不 import `core.trace` / `spectragent.flywheel`；报告与链的模型里没有 `price` / `cost` / `usd` / `dollar` 字段。
 
 外部核心依赖：
 - `conscribe` — 注册 + 配置生成
@@ -4106,7 +4226,7 @@ scope（§4.14）。
 | **P1** | EvaluatorRegistrar + RunTrace lazy loader |
 | **P2** | DockerCapability 实现（actions + terminal/filesystem resolver） |
 | **P2** | CodeActLoop 实现 + DockerCapability 集成 |
-| **P2** | 数据飞轮（browser）：离线回放（M30）；状态分叉——`BranchLoop` + `RestorerRegistrar`（`prefix_replay`）+ `RestorationSupport`（browser 重定位与校验）+ `trace_branches` 加载器与 `StepSelectorRegistrar` + `terminal_observation`（M31）；训练导出——`ExporterRegistrar`（`openai_messages`）+ `ActionTranslatorRegistrar`（`identity` / `index_to_coordinate`）+ `CanonicalStepSample` + 学生渲染（ReAct 可选 slot `format_react_output` / `parse_react_thought`）+ 校验器 + `spectragent-export` + `skyvern_hit_test` cleaner（M32） |
+| **P2** | 数据飞轮（browser）：离线回放（M30）；状态分叉——`BranchLoop` + `RestorerRegistrar`（`prefix_replay`）+ `RestorationSupport`（browser 重定位与校验）+ `trace_branches` 加载器与 `StepSelectorRegistrar` + `terminal_observation`（M31）；训练导出——`ExporterRegistrar`（`openai_messages`）+ `ActionTranslatorRegistrar`（`identity` / `index_to_coordinate`）+ `CanonicalStepSample` + 学生渲染（ReAct 可选 slot `format_react_output` / `parse_react_thought`）+ 校验器 + `spectragent-export` + `skyvern_hit_test` cleaner（M32）；度量闸门——`spectragent/flywheel/`（度量、报告、链）+ `spectragent-flywheel` + 选步 `last` 与原路径回放配置 + 表单提交的观测修复（M33） |
 | **P3** | FunctionCallingLoop + ToolSandboxCapability |
 | **P3** | PlanExecuteLoop |
 | **P3** | GPUProfilingCapability（Docker + bare-metal harness split 架构） |

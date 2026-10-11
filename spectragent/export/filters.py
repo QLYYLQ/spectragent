@@ -30,13 +30,12 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from spectragent.core.capabilities.browser.replay.replay_log import document_miss_total
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import RunStatus, TraceConfig
 from spectragent.core.trace.reader import RunTrace
-from spectragent.core.trace.sources import match_runs
+from spectragent.core.trace.sources import match_runs, task_identity, unreadable_reason
 from spectragent.export.settings import ExportFilters
 
 logger = logging.getLogger(__name__)
@@ -67,57 +66,6 @@ class Source:
     @property
     def is_branch(self) -> bool:
         return self.config.branch is not None
-
-
-@dataclass(frozen=True)
-class TaskIdentity:
-    """The task a run was recorded on — a branch run's is its source task's."""
-
-    benchmark: str
-    subset: str
-    task_id: str
-    task: str
-    start_url: str | None
-
-    @property
-    def key(self) -> str:
-        """``<benchmark>/<subset>/<task_id>`` — the ``split.by: task`` key."""
-        return f"{self.benchmark}/{self.subset}/{self.task_id}"
-
-    @property
-    def site(self) -> str | None:
-        """The start URL's host — the ``split.by: site`` key — or ``None`` without one."""
-        if not self.start_url:
-            return None
-        host = urlsplit(self.start_url).hostname
-        return host.lower() if host else None
-
-
-def task_identity(config: TraceConfig) -> TaskIdentity:
-    """The task *config*'s run was recorded on; for a branch run, its source task.
-
-    The start URL is the recorded task setup's (M28: value-level redaction
-    leaves the host alone); a branch run's own setup context is its source
-    task's, re-resolved.
-    """
-    setup = config.task_setup
-    start_url = setup.context.get("start_url") if setup is not None else None
-    branch = config.branch
-    if branch is not None:
-        return TaskIdentity(
-            benchmark=branch.source_benchmark,
-            subset=branch.source_subset,
-            task_id=branch.source_task_id,
-            task=config.task,
-            start_url=start_url if isinstance(start_url, str) else None,
-        )
-    return TaskIdentity(
-        benchmark=config.benchmark,
-        subset=config.subset,
-        task_id=config.task_id,
-        task=config.task,
-        start_url=start_url if isinstance(start_url, str) else None,
-    )
 
 
 def open_sources(root: Path, patterns: Sequence[str]) -> tuple[list[Source], dict[str, str]]:
@@ -168,24 +116,6 @@ def open_sources(root: Path, patterns: Sequence[str]) -> tuple[list[Source], dic
             continue
         sources.append(source)
     return sources, skipped
-
-
-def unreadable_reason(directory: Path, exc: TraceSchemaError) -> str:
-    """Why the run in *directory* is skipped, worded without the reader's message.
-
-    ``TraceSchemaError`` names files by absolute path (and may quote the bytes
-    that did not parse); the dataset manifest holds no absolute path and is
-    the same whichever root the sources sit under (arch §4.15 "数据集
-    manifest"). So the reason names the file relative to the run directory and
-    the error class — callers log the message itself.
-    """
-    where = ""
-    path = exc.path
-    if path is not None and path.is_relative_to(directory):
-        file = path.relative_to(directory).as_posix()
-        if file != ".":
-            where = f": {file} does not read back"
-    return f"not a readable trace{where} ({type(exc).__name__})"
 
 
 def filtered_out(
@@ -247,9 +177,6 @@ def filtered_out(
 
 __all__ = [
     "Source",
-    "TaskIdentity",
     "filtered_out",
     "open_sources",
-    "task_identity",
-    "unreadable_reason",
 ]

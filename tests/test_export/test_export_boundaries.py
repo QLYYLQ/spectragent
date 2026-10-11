@@ -3,7 +3,10 @@
 1. Nothing under ``spectragent/`` outside ``export/`` imports
    ``spectragent.export`` — the export is a leaf consumer — except the
    registrar collection in ``scripts/generate_all.py`` and what it generates
-   (``generated/_composed.py`` imports the exporter's knob types).
+   (``generated/_composed.py`` imports the exporter's knob types), and the
+   metrics chain (``flywheel/chain.py``, M33), which runs
+   ``spectragent-export``'s ``main`` in-process — its CLI module and nothing
+   else of the export.
 2. ``export/runner.py`` reaches exporters and translators only through the
    registrars and Protocols: it imports no concrete exporter or translator.
 3. ``schemas/sample.py`` imports nothing from ``spectragent.core``.
@@ -32,6 +35,9 @@ EXPORT = "spectragent.export"
 COLLECTOR = "spectragent.scripts.generate_all"
 #: Its build output, which imports the knob types it typed the config with.
 GENERATED = "spectragent.generated"
+#: The metrics chain: it may import the export's CLI module, by exact name, and nothing else of it.
+CHAIN = "spectragent.flywheel.chain"
+CHAIN_MAY_IMPORT = frozenset({"spectragent.export.cli", "spectragent.export.cli.main"})
 #: Concrete strategies the runner must not name.
 CONCRETE = (
     "spectragent.export.openai_messages",
@@ -57,7 +63,12 @@ def _within(name: str, prefix: str) -> bool:
 
 def test_nothing_outside_the_export_imports_it() -> None:
     offenders = {
-        module_name(path): sorted(name for name in _imports(path) if _within(name, EXPORT))
+        module_name(path): sorted(
+            name
+            for name in _imports(path)
+            if _within(name, EXPORT)
+            and not (module_name(path) == CHAIN and name in CHAIN_MAY_IMPORT)
+        )
         for path in PACKAGE.rglob("*.py")
         if not _within(module_name(path), EXPORT)
         and module_name(path) != COLLECTOR
@@ -65,6 +76,10 @@ def test_nothing_outside_the_export_imports_it() -> None:
     }
     assert {module: names for module, names in offenders.items() if names} == {}
     assert any(_within(name, EXPORT) for name in _imports(PACKAGE / "scripts/generate_all.py"))
+    chain = _imports(PACKAGE / "flywheel/chain.py")
+    assert {name for name in chain if _within(name, EXPORT)} == CHAIN_MAY_IMPORT, (
+        "the chain no longer imports the export's CLI — drop the exception with it"
+    )
 
 
 def test_the_runner_names_no_concrete_strategy() -> None:

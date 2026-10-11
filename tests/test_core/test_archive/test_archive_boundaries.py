@@ -24,6 +24,11 @@ tree and shown failing on planted sources:
    interface stays ``TraceFile``.
 4. No field of the new archive and negotiation models is about money:
    tokens, never prices (2026-09-19).
+5. The browser's offline evidence readers (§4.16 "browser 一侧的读法":
+   ``replay/archive_index.py``, ``replay/replay_log.py``,
+   ``archive_stats.py``) read through ``ArchiveReader`` only: they import
+   nothing from ``core.trace`` and nothing from ``spectragent.flywheel``,
+   the metrics that call them.
 
 Imports are read statically, every one of them — module level, inside a
 function, under ``if TYPE_CHECKING:`` — because a type-only import is still
@@ -181,6 +186,20 @@ def trace_layer_violations(source: str, module: str, *, is_package: bool = False
     ]
 
 
+#: What the browser's evidence readers must never import (rule 5).
+READERS_MUST_NOT_IMPORT = ("spectragent.core.trace", "spectragent.flywheel")
+
+
+def evidence_reader_violations(source: str, module: str, *, is_package: bool = False) -> list[str]:
+    """Rule 5 for one browser evidence reader."""
+    imported = imported_modules(source, module, is_package=is_package)
+    return [
+        f"imports {name}"
+        for name in sorted(imported)
+        if any(_within(name, forbidden) for forbidden in READERS_MUST_NOT_IMPORT)
+    ]
+
+
 def money_fields(source: str) -> list[str]:
     """``Class.attribute`` for every class attribute or ``__init__`` parameter about money.
 
@@ -241,6 +260,11 @@ def _concrete_archiver_modules() -> frozenset[str]:
 
 
 CONSUMER_SIDE = _modules(CORE / "runtime.py", CORE / "negotiation", CORE / "environments")
+BROWSER_EVIDENCE_READERS = _modules(
+    CORE / "capabilities" / "browser" / "replay" / "archive_index.py",
+    CORE / "capabilities" / "browser" / "replay" / "replay_log.py",
+    CORE / "capabilities" / "browser" / "archive_stats.py",
+)
 
 
 class TestTheTreeKeepsTheLayering:
@@ -331,6 +355,20 @@ class TestTheTreeKeepsTheLayering:
             f"and types only the ledger it records; the WAL's interface stays TraceFile."
         )
 
+    def test_the_browser_evidence_readers_read_through_the_archive_reader(self) -> None:
+        assert all(path.is_file() for path in BROWSER_EVIDENCE_READERS)
+        offenders = [
+            line
+            for path in BROWSER_EVIDENCE_READERS
+            for line in _check(path, evidence_reader_violations)
+        ]
+        assert not offenders, (
+            f"{offenders}. The browser's evidence formats are read through ArchiveReader by "
+            f"pure functions the replay and the flywheel metrics share; importing the trace "
+            f"layer or the metrics would tie the format knowledge to one consumer "
+            f"(architecture §4.16)."
+        )
+
     def test_the_new_models_record_tokens_never_money(self) -> None:
         scanned = _modules(
             CORE / "archive", CORE / "negotiation" / "archive.py", CORE / "trace" / "models.py"
@@ -407,6 +445,18 @@ class TestTheRulesHaveTeeth:
             assert consumer_side_violations(
                 source, "spectragent.core.runtime", archiver_modules=frozenset({archiver})
             ), source
+
+    def test_rule_five_catches_the_trace_layer_and_the_metrics(self) -> None:
+        module = "spectragent.core.capabilities.browser.archive_stats"
+        for source in (
+            "from spectragent.core.trace.reader import RunTrace\n",
+            "import spectragent.core.trace.models\n",
+            "from spectragent.flywheel.metrics import Run\n",
+        ):
+            assert evidence_reader_violations(source, module), source
+        assert not evidence_reader_violations(
+            "from spectragent.core.archive.source import ArchiveReader\n", module
+        )
 
     def test_rule_one_lets_the_protocols_and_a_docstring_through(self) -> None:
         source = (

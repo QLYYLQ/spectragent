@@ -3,9 +3,10 @@
 A receptor of the ``trace_branches`` task loader
 (``TraceBranchesTaskLoader.__wiring__["step_selector"]``,
 ``docs/architecture_design.md`` §4.10), so it is configured nested in the
-loader's block and arrives constructed. Three strategies: ``all`` (every
-candidate — the default), ``every_k`` (every k-th step from an offset) and
-``explicit`` (the steps named).
+loader's block and arrives constructed. Four strategies: ``all`` (every
+candidate — the default), ``every_k`` (every k-th step from an offset),
+``explicit`` (the steps named) and ``last`` (each source's last candidate —
+the metrics chain's same-path replay, M33).
 
 The loader hands a selector the source run's **candidates** — committed
 policy steps whose prefix is committed and whose observation was recorded —
@@ -80,11 +81,13 @@ def default_step_selector() -> StepSelector:
 from spectragent.core.data_loader.task.step_selector.all_steps import AllSteps  # noqa: E402
 from spectragent.core.data_loader.task.step_selector.every_k import EveryKSteps  # noqa: E402
 from spectragent.core.data_loader.task.step_selector.explicit import ExplicitSteps  # noqa: E402
+from spectragent.core.data_loader.task.step_selector.last import LastStep  # noqa: E402
 
 __all__ = [
     "AllSteps",
     "EveryKSteps",
     "ExplicitSteps",
+    "LastStep",
     "StepSelector",
     "StepSelectorBase",
     "StepSelectorRegistrar",

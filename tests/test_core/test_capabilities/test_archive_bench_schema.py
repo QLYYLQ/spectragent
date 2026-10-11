@@ -17,11 +17,11 @@ import pytest
 from pydantic import ValidationError
 
 from spectragent.core.archive import ArchiveFile, ArchiveProvenance
+from spectragent.flywheel.metrics import percentile
 from tests._helpers.archive_bench import (
     ArchiveOverheadReport,
     LiveRecording,
     dedup_bytes,
-    percentile,
     write_report,
 )
 from tests._helpers.fixture_site import LoggedRequest
@@ -82,7 +82,8 @@ def test_a_self_capture_is_a_duration_not_a_difference() -> None:
 def test_percentile_nearest_rank() -> None:
     assert percentile([5.0, 1.0, 3.0], 50) == 3.0
     assert percentile([1.0, 2.0, 3.0, 4.0], 95) == 4.0
-    assert percentile([], 50) == 0.0
+    with pytest.raises(ValueError, match="no values"):
+        percentile([], 50)  # nothing measured is not a measured 0
 
 
 # ── the dedup accounting ──────────────────────────────────────────────
@@ -103,6 +104,8 @@ def _exchange(record: str, response: str, length: int, revisit_of: str | None = 
     return {
         "kind": "exchange",
         "record_id": record,
+        "url": f"http://shop.example.test/{record}",
+        "body_status": "ok",
         "response_record_id": response,
         "revisit_of": revisit_of,
         "warc": {
@@ -124,8 +127,14 @@ def test_dedup_accounts_revisits_and_content_addressing() -> None:
         _index(
             _exchange("r1", "a", 600),  # a payload written in full
             _exchange("r2", "b", 420),  # a tiny one
-            {"kind": "exchange", "record_id": "r3", "response_record_id": None},  # too_large
-            {"kind": "pending", "record_id": "r4"},
+            {
+                "kind": "exchange",
+                "record_id": "r3",
+                "url": "http://shop.example.test/r3",
+                "body_status": "streamed_later",
+                "response_record_id": None,
+            },
+            {"kind": "pending", "record_id": "r4", "url": "http://shop.example.test/r4"},
         ),
         body,
         dom,
@@ -136,7 +145,7 @@ def test_dedup_accounts_revisits_and_content_addressing() -> None:
             _exchange("r5", "c", 520, revisit_of="a"),  # saves 80
             _exchange("r6", "d", 510, revisit_of="b"),  # costs 90
             _exchange("r7", "e", 700),  # new
-            {"kind": "body", "record_id": "r3"},
+            {"kind": "body", "record_id": "r3", "body_status": "ok"},
         ),
         _file("body-1.bin", b"x" * 1000, content_addressed=True),  # the same body again
         _file("dom-2.json.gz", b"e" * 60, archiver="browser.dom_raw", content_addressed=True),

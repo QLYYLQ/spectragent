@@ -1,6 +1,6 @@
 # All4One Agent Framework — 开发执行依赖图
 
-> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 32 个开发模块（M01–M32）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
+> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 33 个开发模块（M01–M33）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
 
 ---
 
@@ -78,6 +78,7 @@ flowchart TB
         M30["M30<br/>离线回放"]
         M31["M31<br/>状态分叉<br/>（检查点恢复 + BranchLoop）"]
         M32["M32<br/>训练导出<br/>（canonical 样本 + 翻译 + 学生渲染）"]
+        M33(["M33<br/>度量闸门<br/>（报告 + 链 + fixture 演练）"])
     end
 
     subgraph P2_DOCKER ["P2 · Docker + SWE 生态"]
@@ -151,6 +152,10 @@ flowchart TB
     M30 -->|文档 miss 过滤| M32
     M31 -->|分叉样本| M32
 
+    %% → M33 度量闸门：恢复校验、原路径回放与分叉覆盖（M31，经它也读到 M29 的归档与 M30 的回放日志）、导出确定性与产出（M32）
+    M31 --> M33
+    M32 --> M33
+
     %% P0 → P1 迁移
     M01 --> M12
     M03 --> M12
@@ -205,7 +210,7 @@ flowchart TB
 
     class M01,M02,M03,M04,M05,M06,M07,M08,M09 p0
     class M10,M11,M12,M13,M14,M15,M16,M17,M27,M28,M29 p1
-    class M18 milestone
+    class M18,M33 milestone
     class M19,M20,M21,M30,M31,M32 p2
     class M22,M23,M24,M25,M26 p3
 
@@ -1346,7 +1351,7 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 
 ### M31: 状态分叉（检查点恢复 + BranchLoop + 分叉任务）
 
-**优先级**: P2 | **前置依赖**: M09（ReactLoop 的一步）、M15（任务加载器与任务上下文）、M16（`require_eval` 读评测结果）、M27（类型化的 trace 读侧、自包含的 `selector_map`）、M30（离线回放：分叉在源 run 的归档上恢复检查点） | **被依赖方**: M32（分叉样本，边已补）、M33（恢复校验率、分叉覆盖）——M33 的条目合入时补边
+**优先级**: P2 | **前置依赖**: M09（ReactLoop 的一步）、M15（任务加载器与任务上下文）、M16（`require_eval` 读评测结果）、M27（类型化的 trace 读侧、自包含的 `selector_map`）、M30（离线回放：分叉在源 run 的归档上恢复检查点） | **被依赖方**: M32（分叉样本，边已补）、M33（恢复校验率、分叉覆盖、原路径回放，边已补）
 
 #### 业务实现
 
@@ -1385,7 +1390,7 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 
 ### M32: 训练导出（canonical 样本 → 翻译 → 学生渲染 → 导出器 → 校验）
 
-**优先级**: P2 | **前置依赖**: M16（评测结果：`require_eval`、判定标签、泄漏扫描用的评测加载器）、M27（类型化的 trace 读侧、自包含的 `selector_map`、`llm_messages`）、M29（`occlusion: check` 的 `browser.dom_raw` 证据）、M30（`max_document_misses` 读回放日志）、M31（分叉样本、`exclude_restoration_diverged`、`RunTrace.evals()`） | **被依赖方**: M33（导出确定性、丢弃原因分布）——M33 的条目合入时补边
+**优先级**: P2 | **前置依赖**: M16（评测结果：`require_eval`、判定标签、泄漏扫描用的评测加载器）、M27（类型化的 trace 读侧、自包含的 `selector_map`、`llm_messages`）、M29（`occlusion: check` 的 `browser.dom_raw` 证据）、M30（`max_document_misses` 读回放日志）、M31（分叉样本、`exclude_restoration_diverged`、`RunTrace.evals()`） | **被依赖方**: M33（导出确定性、丢弃原因分布，边已补）
 
 #### 业务实现
 
@@ -1431,6 +1436,46 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 **落地（2026-10-11，待验收）**：导出包 `spectragent/export/`——`_registrar.py`（`Exporter` / `ExporterRegistrar` / `ExporterBase`、`ImageStore`、`ExportRecord`）、`settings.py`、`openai_messages.py`、`translate/`、`canonical.py`、`filters.py`、`split.py`、`benchmarks.py`（`BenchmarkLoaders`：去污染与泄漏扫描读导出文档自己的 `eval_loader` / `task_loader` 块）、`render.py`（`StudentRenderer`、`RenderedSample`）、`validate.py`、`runner.py`（`ExportRunner`、`ExportRunner.from_run`）、`cli.py`（`spectragent-export`）、`errors.py`；`schemas/sample.py`。框架一侧：`core/trace/{sources,secret_patterns}.py`、`core/loops/_loop_fragments.py`（`loop_fragment_builders`、`pinned_step_info`）、`core/loops/restore/source.py`（`recorded_observation`、`recorded_step_info`，分叉与导出共用）、`core/runtime.py::seed_messages`、`core/actions/params.py::point_params`、`core/capabilities/base.py`（`CaptureCheck`）与 `core/environments/_registrar.py::compare_capture`、`core/negotiation/observation.py`（`provider=`）；browser 一侧 `index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`、`replay/replay_log.py::document_miss_total`。发布的配置 `configs/flywheel/{ui_tars_student,export_sft}.yaml`；测试 `tests/test_export/`（真实 Chrome 验收 `test_export_live.py`：identity 导出与 `llm_messages` 逐条相同、只差记录形态之外的预期差异；BrowserUse + `browser.dom_raw` 与 `skyvern_hit_test` 两条 `index_to_coordinate` 导出）。与本条目文字的差异见 PRD 修订记录 G21 起。
 
 **使用的 skill**：`af-add-a-receptor`、`af-add-an-action`、`af-add-a-loop`、`af-add-an-observation-fragment`、`af-regenerate-and-verify`、`af-trace-and-hooks`。
+
+---
+
+### M33: 度量闸门（报告 + 链 + fixture 演练；live run 只准备不跑）
+
+**优先级**: P2（闸门） | **前置依赖**: M31（原路径回放与分叉、恢复校验；经它读 M29 的归档与 M30 的回放日志）、M32（导出确定性与产出） | **被依赖方**: 无
+
+#### 业务实现
+
+PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一个只读已提交 trace 与数据集目录的离线消费者算出，写成 `report.json` + `report.md`，每一节以一条带证据的建议收尾：包 `spectragent/flywheel/`（`metrics.py`、`report.py`、`chain.py`、`cli.py`，`spectragent-flywheel run | report`），地位与 `evaluator/`、`export/` 相同，不是注册表。一条薄的链把现有入口串起来：录制（`spectragent-bench`）→ 原路径回放（`branch` loop 在每个源 run 的最后一步，新的选步 `last`，`configs/flywheel/same_path_ui_tars_archive.yaml`）→ 分叉（`trace_branches`）→ 导出（`spectragent-export`，两次）→ 报告。在 M29 的 fixture 站点上用脚本化的模型零花费地跑完整条链（含发散的站点、POST 分叉、被拦截的页面）；live run 的配置、命令、token 估算与核对清单写进本地的 `tmp/flywheel/M33_live_plan.md`，等用户授权，不跑。live 之前先修两处会扭曲真实站点度量的缺陷：表单提交之后下一次观测卡 30 s（`BrowserCapability` 的观测 cycle 与 `ScreenshotWatchdog`），以及 `tests/_helpers/replay_driver.py` 的脚本化模型连接超时。设计以 `architecture_design.md` §4.10（`last`）、§4.14（"观测不与动作发起的导航赛跑"）、新增的 §4.16（度量闸门全部）、§6、§9、§10、§12 为准；决定文件 `tmp/flywheel/M33_decisions.md`，PRD 修订记录 H1 起。
+
+#### 业务逻辑
+
+**表单提交的卡顿（先修）**：根因实测（Chrome 155）——点击不等它发起的导航，观测在点击返回约 5 ms 后就发 `Page.captureScreenshot`；pinned 的 `--disable-back-forward-cache` 下，表单提交的跨文档导航在提交之前，Chrome 对这一窗口里的截图请求要么报错、要么根本不回应，事件 30 s 超时。修在观测这一层：观测之前等主 frame 在途的跨文档导航提交（有上限，没有在途导航时零等待），截图命令自带远小于事件超时的上限，一次不回应由原有的重发预算吸收。不改 pinned（那个开关是回放档位的确定性契约）。真实 Chrome 回归：fixture 上 GET 与 POST 表单的点击提交、输入框里回车提交，下一次观测及时完成、看到的是提交之后的文档。
+
+**度量**（定义在 §4.16）：归档开销（`record` 对 `control`——同档位、`archive: []` 的对照组——的每步环境侧时间 p50 / p95，env/ 去重前后的每步字节）；body 完整率（`index.jsonl` 每条记录的最终状态）；原路径回放保真（按站点：恢复器的判定与严格版的 URL + 截图哈希）；恢复校验率（按原因、重定位失败按种类）；分叉结果覆盖（检查点及之后零文档 miss 的分叉占比，子资源 miss 按动作类型、resourceType、host 分布）；回放确定性（同一输入的终止截图哈希、同一检查点恢复出的截图哈希）；导出确定性（两次导出的目录树摘要）；隐私（植入的凭证在 traces 与数据集里出现 0 次，外加凭证形状的命中）。分母为 0 时值是 `null` 与原因，从不是 0。
+
+**各节**（PRD §10 / §11）：按站点的统计与剔除名单（`ExportFilters.exclude_sites` 的形状，人放进导出配置）；anti-bot / Cloudflare 拦截；重复分叉率；POST 分叉的 miss；存储增长与压缩评估的输入；保留期与容量（Q7）；导出产出（含 `action_failed` 的去留）；PRD M33 的三个决定（Q1 `strict` 之外的 miss 策略、Q4 录制时扩大覆盖、站点规则自动生成）。建议槽 `{status, verdict, rule, evidence, basis}`：演练的证据最多是"部分"，没数据是"不足"，从不给默认结论。
+
+**链**：`ChainSpec`（YAML，不是 conscribe 的运行根）列出各段的 af 配置；链只改路径字段（`trace_writer.trace_dir`、`trace_branches.data_dir`、导出器的 `sources_root` / `sources` / `output_dir`）并把实际用的配置落到 `<root>/configs/`，在进程内调用各 CLI 的 `main(argv)`；个别任务失败是要度量的数据，段本身失败才停。`spectragent-bench` 不读 `.env`，跑 live 之前在 shell 里导出密钥。
+
+**共用而不是复制**：M31 留在测试里的 `restoration_rate` / `components` 挪进 `flywheel/metrics.py`；M29 基准的去重账法与 `percentile` 挪进同一处（revisit 的一半是 browser 知识）；`tests/_helpers/secret_scan.py` 的 gzip 感知读法挪进 `core/trace/secret_patterns.py`；`TaskIdentity` / `task_identity` 从 `export/filters.py` 挪进 `core/trace/sources.py`。browser 证据的读法（`archive_index.iter_index_lines`、`replay_log.iter_decisions`、新的 `archive_stats.py`）在 browser 的包里，度量只组织调用。
+
+#### 验收
+
+- 表单提交的卡顿修好，有真实 Chrome 的回归测试（fixture，pinned + 归档：GET / POST 点击提交与回车提交）；`replay_driver` 的脚本化模型超时提高到 60 s（M32 的同一个值）。
+- 度量组件只从 trace（与数据集目录）算出 §9 的每一项与 M33 负责的每一节；单测用真实 WAL 写出的、答案已知的 trace（没有任何运行中的状态），覆盖"没测到不变成 0"、未提交的步不可见、折叠的回放日志按条数计。
+- 一条命令在 fixture 站点上用脚本化的模型跑完整条链并产出演练报告；报告的数都有解释（确定性的流程原路径保真 100%，发散的站点有预期的文档 miss，POST 分叉的 miss、被拦截的站点进剔除名单，两次导出逐字节相同，植入的凭证 0 次）；报告算两次逐字节相同；演练期间没有非 loopback 的外联。
+- live 计划（S2b 与 M33 的 live 链：配置、命令、N、路由选项（不写密钥）、按阶段的 token / 调用估算、核对清单）写在 `tmp/flywheel/M33_live_plan.md`，没有跑任何 live 的东西。
+- PRD M33 的验收"报告覆盖 §9 的每一项，并对每个开放决定给出一条带证据的建议"：覆盖这一半在 fixture 数据上通过；证据这一半在 live run 之前如实是"部分"，报告对每个决定都这样写。
+- 文档：architecture §4.10、§4.14、§4.16、§6、§9、§10、§12；`AGENTS.md` §0.3、§2.2（`StepSelectorRegistrar` 多 `last`）、§2.7；本条目与 DAG 边；`configs/README.md`（原路径回放配置与链）；PRD 修订记录。
+- `CONVENTIONS.md` 的闸门全绿；`uv run spectragent-gen` 之后 `tests/test_generated` 全绿。
+
+#### 设计思考
+
+度量是 trace 的又一个消费者：同一份已提交的数据，评测器算成功率，导出算样本，度量算这条数据线本身能不能用——三者都不碰运行中的状态，所以报告可以在任何一台没有浏览器的机器上重算。链不是新的运行路径，只是把文档里本来就写着的几条命令按顺序跑、把路径接上；原路径回放复用 M31 的恢复器而不是再造一个"喂回录下的回复"的驱动——恢复器本来就逐步重放、逐步校验。建议是规则加证据而不是结论：阈值写在报告里，演练的数只能校准度量本身，真正的决定要等 live 的证据。
+
+**落地（2026-10-11，待验收）**：表单提交的修复在 `core/capabilities/browser/navigation.py`（`MainFrameNavigation`、`NavigationFeed`）、`capability.py`（`_capture_once` 每次尝试前等待，上限 10 s）与 `watchdogs/screenshot_watchdog.py`（观测路径的截图命令上限 10 s），真实 Chrome 回归 `tests/test_core/test_capabilities/test_browser_form_submit_live.py`；`replay_driver` 的脚本化模型超时 60 s。度量包 `spectragent/flywheel/`——`metrics.py`（`ChainLayout`、`open_role` / `open_chain`、八项度量与七节，`RestorationRate` / `components` / `DedupBytes` / `percentile` 从测试帮手挪进来）、`report.py`（`FlywheelReport`、建议规则与具名阈值、`report.json` / `report.md`）、`chain.py`（`ChainSpec`、`run_chain`）、`cli.py`（`spectragent-flywheel run | report`）；框架一侧 `core/trace/sources.py`（`task_identity`、`unreadable_reason` 从导出挪来）、`core/trace/secret_patterns.py`（`readable_text`、`iter_readable`）、`core/trace/reader.py`（`RunTrace.committed_files` / `read_committed`：存储与归档字节只读它们）、选步 `core/data_loader/task/step_selector/last.py`；browser 一侧 `archive_stats.py`、`replay/archive_index.py::iter_index_lines`、`replay/replay_log.py::iter_decisions`。发布的配置 `configs/flywheel/same_path_ui_tars_archive.yaml`。测试 `tests/test_flywheel/`（`tests/_helpers/flywheel_traces.py` 用真实 WAL 写出答案已知的链根；真实 Chrome 演练 `test_rehearsal_live.py`：fixture 的三个站点、四个任务、整条链约 40 s，原路径保真 shop 1.0 / drift 0.5，分叉 2/3 零文档 miss，POST 分叉一个文档 miss，剔除 blocked 与 drift，两次导出逐字节相同，植入的凭证 0 次，没有非 loopback 的外联）。一条命令：`uv run python -m tests._helpers.flywheel_rehearsal --out <dir>`。live 计划与配置在本地的 `tmp/flywheel/M33_live_plan.md`、`tmp/flywheel/m33_live/`，没跑。与本条目文字的差异见 PRD 修订记录 H17 起。
+
+**使用的 skill**：`af-trace-and-hooks`、`af-add-a-capability`、`af-regenerate-and-verify`。
 
 ---
 
@@ -1487,3 +1532,4 @@ M01 ✅ 已完成（conscribe v0.6.1）
 | M30 | 中 | 真实站点上的回放保真度未知（anti-bot、轮询、时间相关的 URL 与 body），Fetch 之外的外联只能靠隔离挡住，Chrome 行为随版本变化 | fixture 上的 `requires_chrome` 回归当版本金丝雀；隔离默认 `required`；S2b 在用户授权后度量 10 个真实任务，结果交给 M33 |
 | M31 | 中 | 真实站点上恢复会因异步加载、时间相关内容与 A/B 实验发散；元素重定位在重复、动态的列表上可能歧义；agent 代码一改，旧检查点就复现不了 | pinned 档位 + 离线回放；逐步校验与 `strict`，原因按枚举分类、M33 按站点统计；重放对照录下的调用自我校验，不符在任何动作之前报 `IncompatibleCheckpointError` |
 | M32 | 中 | 产出率：UI-TARS 学生写不出 teacher 的很多动作（`extract_content`、`navigate`、离屏目标、多动作步、带 `clear` 的输入）；量化损失；遮挡证据不全；训练与服务的配置漂移；teacher 的 thought 引用学生看不到的 index；凭证形状之外的秘密 | 丢弃按原因计数交给 M33，`configs/README.md` 建议与学生匹配的录制配置（纯视觉、`max_actions_per_step: 1`）；标签用量化后的点并报告误差分布；没有遮挡证据就报错；manifest 记学生配置摘要、采集检查点名差异；thought 的 index 记号默认丢掉；凭证扫描 fail closed，残余写明 |
+| M33 | 中 | 真实站点的度量要活站点与 LLM 花费，须用户授权；fixture 上的数只校准度量本身；原路径回放每个分支要一次 teacher 调用；live 的对照组与录制走的不是同一条路径（只能比分布）；拦截只按应答头识别 | 演练在 fixture 上零花费地跑完整条链并逐个解释度量；live 计划写明 N、路由、按阶段的 token 估算与核对清单，等授权；报告对演练的证据一律标"部分"，没数据标"不足"、从不给默认结论 |

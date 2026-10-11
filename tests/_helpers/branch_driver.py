@@ -21,9 +21,9 @@ LLM spend, building on M30's ``replay_driver``:
   (:func:`run_branch_task`), so the task context — setup, ``replay_archive``,
   ``checkpoint``, provenance — is the loader's, as in a sweep.
 
-:func:`restoration_rate` is PRD §9's 恢复校验率: the share of restoration
-checks (one per restored step, plus the checkpoint step's) that passed, with
-the failed ones counted by reason.
+PRD §9's 恢复校验率 and the "name what ran" components the live test reports
+are the flywheel metrics' (``spectragent/flywheel/metrics.py``:
+``restoration_rate``, ``components``), not a copy here.
 """
 
 from __future__ import annotations
@@ -31,9 +31,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections import Counter
-from collections.abc import Iterable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -182,39 +179,6 @@ def require_ran(outcome: TaskOutcome) -> RunTrace:
 # ── what a branch trace says ─────────────────────────────────────────
 
 
-@dataclass
-class RestorationRate:
-    """PRD §9 恢复校验率 over a set of branch runs."""
-
-    ok: int = 0
-    total: int = 0
-    #: Failed checks by reason (a check with several reasons counts for each).
-    by_reason: Counter[str] = field(default_factory=Counter)
-
-    @property
-    def rate(self) -> float:
-        return self.ok / self.total if self.total else 0.0
-
-    def summary(self) -> str:
-        reasons = ", ".join(f"{reason}={n}" for reason, n in sorted(self.by_reason.items()))
-        return f"{self.ok}/{self.total} checks passed ({self.rate:.0%}){'; ' + reasons if reasons else ''}"
-
-
-def restoration_rate(trace_dirs: Iterable[Path]) -> RestorationRate:
-    """Every restoration check the branch runs recorded, and how many passed."""
-    rate = RestorationRate()
-    for trace_dir in trace_dirs:
-        for record in RunTrace(trace_dir).step_records:
-            check = record.restoration
-            if check is None:
-                continue
-            rate.total += 1
-            if check.verdict == "ok":
-                rate.ok += 1
-            rate.by_reason.update(check.reasons)
-    return rate
-
-
 def page_text(trace: RunTrace, step: int) -> str:
     """The serialized DOM a step observed (what the agent read)."""
     dom = trace.observation_fragment(step, "browser.dom")
@@ -231,22 +195,3 @@ def storage_names(trace: RunTrace) -> set[str]:
         for origin in document.get("local") or []:
             names.update(str(key) for key in (origin.get("items") or {}))
     return names
-
-
-def components(trace: RunTrace) -> dict[str, Any]:
-    """The components the trace says ran: agent, loop, cleaner, serializer, backend, model route."""
-    resolved = trace.config.resolved
-    agent = (resolved.get("agent") or [{}])[0]
-    capability = ((resolved.get("environment") or [{}])[0].get("capabilities") or [{}])[0]
-    llm = agent.get("llm") or {}
-    return {
-        "agent": trace.config.agent_id,
-        "loop": trace.config.loop_id,
-        "restorer": (agent.get("agent_loop") or {}).get("restorer", {}).get("restorer_id"),
-        "cleaner": (capability.get("dom_cleaner") or {}).get("cleaner_type"),
-        "serializer": (capability.get("dom_serializer") or {}).get("serializer_type"),
-        "backend": (capability.get("backend") or {}).get("provider_id"),
-        "network_source": (capability.get("network_source") or {}).get("source_id"),
-        "route": f"{llm.get('model_type')}/{(llm.get('provider') or {}).get('name')} "
-        f"model={trace.config.llm_model} base_url={llm.get('base_url')}",
-    }

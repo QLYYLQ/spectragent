@@ -413,6 +413,7 @@ accessors — what comes back is the type that was written:
 | `blob(sha256)` | bytes of a committed content-addressed archive file (`read_extra(archive_blob_path(sha256))`) | `KeyError` |
 | `archive_run_file(capability_id)` | the `ArchiveRecord` of the highest committed run-record version; bytes via `read_extra(record.path)` | `None` |
 | `evals()` (M31) | `verdict_slug` → `EvalResult` for every `evals/<slug>.json`, sorted by slug; not cached (a verdict written later is seen); `evals/` or a file in it resolving outside the run → `TraceSchemaError`, as is a file that does not read as an `EvalResult` | `{}` |
+| `committed_files` / `read_committed(path)` (M33) | every listing of a committed file in commit order — the run's own three files, what the manifest lists, what each committed extra index lists (a shared blob once per commit that lists it) — as `CommittedFile` (`kind`, `step`, `fragment`, the index entry, the `ArchiveRecord` when it is evidence), each path checked as it is listed; the bytes through that file's own accessor's checks. What consumers that account for a whole run (M33's storage and archive bytes) read instead of walking the manifest's fields themselves | `KeyError` (`read_committed`) |
 
 "Not there" and "not readable" never collapse. Anything the manifest lists that cannot
 be read — corrupt JSON, bytes that are not UTF-8, an empty file, a schema mismatch, a

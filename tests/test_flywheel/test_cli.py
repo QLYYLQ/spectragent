@@ -1,0 +1,120 @@
+"""``spectragent-flywheel``: the report subcommand on a chain root, ``run`` and its exit codes."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+from spectragent.flywheel import chain as chain_module
+from spectragent.flywheel.cli import main
+from spectragent.flywheel.metrics import ChainLayout
+from tests.test_flywheel.test_chain import RUN_YAML, Recorder, commit_one_run
+
+
+def test_report_from_a_root(
+    layout: ChainLayout, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "out"
+    assert (
+        main(
+            [
+                "report",
+                "--root",
+                str(layout.root),
+                "--evidence",
+                "live",
+                "--name",
+                "n",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    document = json.loads((out / "report.json").read_text())
+    assert document["chain"] == {"name": "n", "evidence": "live"}
+    assert document["metrics"]["privacy"]["planted"] == [], "no spec: nothing planted to search for"
+    assert (out / "report.md").is_file()
+    assert str(out / "report.json") in capsys.readouterr().out
+
+
+def test_report_from_a_spec_reads_its_root_evidence_and_planted(
+    layout: ChainLayout, tmp_path: Path
+) -> None:
+    spec = tmp_path / "chain.yaml"
+    spec.write_text(
+        yaml.safe_dump(
+            {
+                "name": "known",
+                "root": str(layout.root),
+                "evidence": "rehearsal",
+                "record": {"config": "unused.yaml"},
+                "report": {"planted": [{"label": "teacher api key", "env": "FLYWHEEL_CLI_UNSET"}]},
+            }
+        )
+    )
+    out = tmp_path / "out"
+    assert main(["report", "--spec", str(spec), "--out", str(out)]) == 0
+    document = json.loads((out / "report.json").read_text())
+    (planted,) = document["metrics"]["privacy"]["planted"]
+    assert (planted["label"], planted["source"], planted["occurrences"]) == (
+        "teacher api key",
+        "env:FLYWHEEL_CLI_UNSET",
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["report", "--root", "x"],  # no evidence
+        ["report", "--spec", "x.yaml", "--evidence", "live"],  # evidence comes from the spec
+        ["report"],
+        ["run"],
+    ],
+)
+def test_wrong_arguments_exit_2(argv: list[str], tmp_path: Path) -> None:
+    spec = tmp_path / "x.yaml"
+    spec.write_text("name: x\n")
+    argv = [str(spec) if item == "x.yaml" else item for item in argv]
+    with pytest.raises(SystemExit) as raised:
+        main(argv)
+    assert raised.value.code == 2
+
+
+def test_a_spec_that_does_not_validate_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    spec = tmp_path / "chain.yaml"
+    spec.write_text("name: x\nroot: r\nevidence: live\nrecord: {config: a.yaml}\nsurprise: 1\n")
+    assert main(["run", "--spec", str(spec)]) == 2
+    assert "surprise" in capsys.readouterr().err
+
+
+def test_run_and_a_failing_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = tmp_path / "record.yaml"
+    config.write_text(yaml.safe_dump(RUN_YAML))
+    spec = tmp_path / "chain.yaml"
+    spec.write_text(
+        yaml.safe_dump(
+            {
+                "name": "c",
+                "root": str(tmp_path / "root"),
+                "evidence": "rehearsal",
+                "record": {"config": str(config)},
+            }
+        )
+    )
+    monkeypatch.setattr(chain_module, "_bench_entry", lambda: Recorder(commit_one_run))
+    assert main(["run", "--spec", str(spec), "--stages", "record,report"]) == 0
+    assert (tmp_path / "root" / "report" / "report.json").is_file()
+
+    def no_run(_raw: dict[str, Any], _argv: list[str]) -> int:
+        return 0
+
+    monkeypatch.setattr(chain_module, "_bench_entry", lambda: Recorder(no_run))
+    assert main(["run", "--spec", str(spec), "--stages", "record"]) == 1

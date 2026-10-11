@@ -14,22 +14,25 @@ from spectragent.core.data_loader.task.step_selector import (
     AllSteps,
     EveryKSteps,
     ExplicitSteps,
+    LastStep,
     StepSelector,
     StepSelectorRegistrar,
     default_step_selector,
 )
 
 
-def test_the_three_shipped_selectors_are_registered() -> None:
+def test_the_four_shipped_selectors_are_registered() -> None:
     shipped = {
         key
         for key, cls in StepSelectorRegistrar.get_all().items()
         if cls.__module__.startswith("spectragent.")
     }
-    assert shipped == {"all", "every_k", "explicit"}
+    assert shipped == {"all", "every_k", "explicit", "last"}
 
 
-@pytest.mark.parametrize("selector", [AllSteps(), EveryKSteps(), ExplicitSteps(steps=[1])])
+@pytest.mark.parametrize(
+    "selector", [AllSteps(), EveryKSteps(), ExplicitSteps(steps=[1]), LastStep()]
+)
 def test_each_is_a_step_selector(selector: StepSelector) -> None:
     assert isinstance(selector, StepSelector)
     assert StepSelectorRegistrar.get(selector.selector_id) is type(selector)
@@ -69,6 +72,26 @@ class TestExplicit:
     def test_at_least_one_step(self) -> None:
         with pytest.raises(ValueError, match="at least one step"):
             ExplicitSteps(steps=[])
+
+
+class TestLast:
+    """Each source's last candidate — what the metrics chain's same-path replay forks at (M33)."""
+
+    def test_the_latest_candidate_only(self) -> None:
+        assert LastStep().select([0, 1, 2, 5]) == [5]
+
+    def test_unordered_candidates(self) -> None:
+        assert LastStep().select([3, 0, 7, 1]) == [7]
+
+    def test_no_candidates(self) -> None:
+        assert LastStep().select([]) == []
+
+    def test_its_yaml_block_has_no_knobs(self) -> None:
+        from spectragent.generated._composed import LastStep_SelectorConfig
+
+        assert LastStep_SelectorConfig.model_validate({}).model_dump() == {"selector_id": "last"}
+        with pytest.raises(ValidationError):
+            LastStep_SelectorConfig.model_validate({"steps": [1]})
 
 
 class TestYamlSurface:

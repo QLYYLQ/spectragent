@@ -451,6 +451,103 @@ class TestArchiveLines:
             trace.archive_lines(path, _IndexLine)
 
 
+class TestCommittedFiles:
+    """What a run consists of: every listing in commit order, read through each file's own checks."""
+
+    def test_every_listing_in_commit_order(self, trace, reference):
+        listed = [(file.kind, file.step, file.fragment) for file in trace.committed_files]
+        step0 = [
+            ("step", 0, None),
+            ("fragment", 0, "browser.dom"),
+            ("fragment", 0, "browser.screenshot"),
+            ("artifact", 0, "browser.screenshot"),
+            ("fragment", 0, "browser.browser_meta"),  # the failure recorded in its place
+            ("fragment", 0, "loop.task"),
+            ("llm_call", 0, None),
+            ("llm_call", 0, None),
+            ("extra_index", 0, None),
+            ("extra", 0, None),
+            ("extra", 0, None),
+        ]
+        step1 = [
+            ("step", 1, None),
+            ("fragment", 1, "browser.screenshot"),
+            ("artifact", 1, "browser.screenshot"),
+            ("fragment", 1, "loop.task"),
+            ("llm_call", 1, None),
+            ("extra_index", 1, None),
+            ("extra", 1, None),
+            ("extra", 1, None),
+        ]
+        trailing = [("llm_call", None, None), ("extra_index", None, None), ("extra", None, None)]
+        own = [("manifest", None, None), ("config", None, None), ("result", None, None)]
+        assert listed == own + step0 + step1 + trailing + [("output_schema", None, None)]
+        extras = [(file.step, file.path) for file in trace.committed_files if file.kind == "extra"]
+        assert extras == [
+            *((0, item.rel_path) for item in reference.extras[0]),
+            *((1, item.rel_path) for item in reference.extras[1]),
+            *((None, item.rel_path) for item in reference.extras[-1]),
+        ], "the shared blob once per commit that lists it"
+
+    def test_each_file_reads_back_as_the_bytes_on_disk(self, trace, reference):
+        for file in trace.committed_files:
+            assert trace.read_committed(file.path) == (reference.run_dir / file.path).read_bytes()
+        assert trace.read_committed(reference.shared_blob.rel_path) == reference.shared_blob.data
+
+    def test_a_run_that_wrote_no_result_lists_none(self, tmp_path):
+        wal = new_wal(tmp_path, "run-incomplete")
+        wal.commit_step(0, step_record(0))
+        trace = RunTrace(wal.run_dir)
+        assert [file.kind for file in trace.committed_files] == ["manifest", "config", "step"]
+        with pytest.raises(KeyError):
+            trace.read_committed("result.json")
+
+    def test_an_unlisted_path_is_a_key_error(self, trace, reference):
+        (reference.run_dir / "observations" / "orphan.json").write_bytes(b"{}")
+        for path in ("observations/orphan.json", "steps/009.json", "env/steps/009/never"):
+            with pytest.raises(KeyError):
+                trace.read_committed(path)
+
+    def test_evidence_carries_its_archive_record(self, archived):
+        trace = RunTrace(archived.run_dir)
+        extras = [file for file in trace.committed_files if file.kind == "extra"]
+        plain = [file for file in extras if file.archive is None]
+        assert archived.plain_extra is not None
+        assert [file.path for file in plain] == [archived.plain_extra.rel_path]
+        shared = [file for file in extras if file.path == archived.shared_blob.rel_path]
+        assert [file.step for file in shared] == [0, 1]
+        assert all(file.archive and file.archive.content_addressed for file in shared)
+        records = [file.archive for file in extras if file.archive is not None]
+        assert [record.run_version for record in records if record.scope == "run"] == [0, 1]
+        assert all(file.extra is not None and file.extra.path == file.path for file in extras)
+
+    @pytest.mark.parametrize(
+        ("damage", "path_of", "message"),
+        [
+            ("rewrite", lambda r: r.extras[0][0].rel_path, "does not match its index entry"),
+            ("empty", lambda r: "observations/000_browser.screenshot.png", "empty artifact"),
+            (
+                "rewrite",
+                lambda r: f"messages/output_formats/{r.schema_sha}.json",
+                "content-addressed",
+            ),
+            ("delete", lambda r: "steps/001.json", "missing on disk"),
+        ],
+        ids=["extra", "artifact", "output_schema", "step"],
+    )
+    def test_damage_is_refused_by_the_file_s_own_check(
+        self, trace, reference, damage, path_of, message
+    ):
+        path = path_of(reference)
+        target = reference.run_dir / path
+        if damage == "delete":
+            target.unlink()
+        else:
+            target.write_bytes(b"" if damage == "empty" else b'{"changed": true}')
+        with pytest.raises(TraceSchemaError, match=message):
+            trace.read_committed(path)
+
+
 class TestTheReaderGivesBackWhatTheWriterWasHanded:
     """The round-trip: models in, the same models out.
 

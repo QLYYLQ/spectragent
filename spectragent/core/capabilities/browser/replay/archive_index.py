@@ -38,6 +38,11 @@ the file and line); a line whose WARC record is missing or is not what the
 line says is :class:`ReplayArchiveError`, naming the source run, the file and
 the record. Either fails setup before Chrome starts.
 
+:func:`iter_index_lines` is the same line-by-line read, handed out as
+``(step, line)`` — the read the replay loads with and the offline readers of
+the archive (``archive_stats.py``, the flywheel metrics, §4.16) share, so a
+line means one thing to both.
+
 .. note::
    No ``from __future__ import annotations`` — the browser replay package
    rule.
@@ -46,7 +51,7 @@ the record. Either fails setup before Chrome starts.
 import hashlib
 import io
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
@@ -165,6 +170,10 @@ class BodyLine(_Line):
     body_status: str
     payload_sha256: str | None = None
     payload_length: int | None = None
+
+
+#: One line of ``index.jsonl``, as :func:`iter_index_lines` hands it out.
+IndexEntry = ExchangeLine | PendingLine | BodyLine
 
 
 class IndexLine(
@@ -517,33 +526,25 @@ def load_archive(reader: ArchiveReader, rules: SiteRules | None = None) -> Recor
     }
 
     exchanges: dict[str, _Raw] = {}
-    last_line: dict[str, ExchangeLine | PendingLine | BodyLine] = {}
+    last_line: dict[str, IndexEntry] = {}
     pending_lines: dict[str, tuple[PendingLine, int]] = {}
     body_lines: dict[str, BodyLine] = {}
-    position = 0
-    network_files = 0
-    for commit in commits:
-        index = commit.files.get(INDEX_NAME)
-        if index is None:
-            continue
-        network_files += 1
-        for item in reader.archive_lines(index.path, IndexLine):
-            line = item.root
-            position += 1
-            last_line[line.record_id] = line
-            if isinstance(line, ExchangeLine):
-                if line.record_id in exchanges:
-                    raise ReplayArchiveError(
-                        "an exchange is recorded twice",
-                        run_id=run_id,
-                        file=index.path,
-                        record_id=line.record_id,
-                    )
-                exchanges[line.record_id] = _Raw(line, commit, position)
-            elif isinstance(line, PendingLine):
-                pending_lines.setdefault(line.record_id, (line, position))
-            else:
-                body_lines[line.record_id] = line
+    network_files = sum(1 for commit in commits if INDEX_NAME in commit.files)
+    for position, (commit, line) in enumerate(_commit_lines(reader, commits), start=1):
+        last_line[line.record_id] = line
+        if isinstance(line, ExchangeLine):
+            if line.record_id in exchanges:
+                raise ReplayArchiveError(
+                    "an exchange is recorded twice",
+                    run_id=run_id,
+                    file=commit.files[INDEX_NAME].path,
+                    record_id=line.record_id,
+                )
+            exchanges[line.record_id] = _Raw(line, commit, position)
+        elif isinstance(line, PendingLine):
+            pending_lines.setdefault(line.record_id, (line, position))
+        else:
+            body_lines[line.record_id] = line
 
     # Every response record by id, for revisits (which may point at an earlier step).
     responses: dict[str, WarcPayload] = {}
@@ -640,6 +641,32 @@ def _fingerprint(reader: ArchiveReader, run_id: str) -> tuple[dict[str, Any] | N
             "the environment fingerprint is not a JSON object", run_id=run_id, file=entry.path
         )
     return document, entry.sha256
+
+
+def iter_index_lines(reader: ArchiveReader) -> Iterator[tuple[int | None, IndexEntry]]:
+    """``(step, line)`` for every ``index.jsonl`` line of the run's ``browser.network`` archive.
+
+    Commit by commit — the steps' in step order, then the trailing commits'
+    under ``None`` — and within a file in line order: the order
+    :func:`load_archive` reads them in. Only what the run committed
+    (``ArchiveReader``); a line that does not parse is the reader's schema
+    error, naming the file and the line.
+    """
+    commits = _commits(reader.iter_archive(NETWORK_ARCHIVER, include_trailing=True))
+    for commit, line in _commit_lines(reader, commits):
+        yield commit.step, line
+
+
+def _commit_lines(
+    reader: ArchiveReader, commits: Iterable[_Commit]
+) -> Iterator[tuple[_Commit, IndexEntry]]:
+    """Every ``index.jsonl`` line of *commits*, with the commit that took it, in order."""
+    for commit in commits:
+        index = commit.files.get(INDEX_NAME)
+        if index is None:
+            continue
+        for item in reader.archive_lines(index.path, IndexLine):
+            yield commit, item.root
 
 
 def _commits(entries: Iterable[tuple[int | None, ArchiveEntry]]) -> list[_Commit]:

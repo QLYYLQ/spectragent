@@ -98,6 +98,10 @@ def record_config(
                     "base_url": llm.base_url,
                     "api_key": "scripted",
                     "max_retries": 0,
+                    # A connect to the loopback model has timed out (openai's 5 s
+                    # default) under the full suite's load; the run, not the
+                    # transport, is under test. Replays and branches inherit it.
+                    "timeout": 60,
                     "provider": {"name": "direct"},
                 },
                 "memory": {"memory_id": "simple", "max_messages": 200},

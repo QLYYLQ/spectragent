@@ -58,10 +58,14 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.redaction import OMITTED
-from spectragent.core.trace.secret_patterns import SECRET_PATTERNS
+from spectragent.core.trace.secret_patterns import (
+    GZIP_MAGIC,
+    SECRET_PATTERNS,
+    iter_readable,
+    readable_text,
+)
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
-from tests._helpers.secret_scan import GZIP_MAGIC, all_text, readable
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 
@@ -275,13 +279,13 @@ async def redacted_run(tmp_path, composer) -> Path:
 
 class TestTraceCarriesNoCredentials:
     def test_no_planted_secret_appears_anywhere(self, redacted_run):
-        for path, text in all_text(redacted_run):
+        for path, text in iter_readable(redacted_run):
             for secret in SECRETS:
                 assert secret not in text, f"{path.relative_to(redacted_run)} leaked {secret[:12]}…"
 
     def test_no_secret_shaped_string_appears_anywhere(self, redacted_run):
         """The half that protects fields that do not exist yet."""
-        for path, text in all_text(redacted_run):
+        for path, text in iter_readable(redacted_run):
             for label, pattern in SECRET_PATTERNS:
                 match = pattern.search(text)
                 assert match is None, (
@@ -303,7 +307,7 @@ class TestTraceCarriesNoCredentials:
     def test_the_scan_reaches_env_and_reads_through_gzip(self, redacted_run):
         """The scan above covered environment evidence — and decoded the gzipped file."""
         evidence = redacted_run / "env/steps/000" / EVIDENCE_KEY
-        scanned = dict(all_text(redacted_run))
+        scanned = dict(iter_readable(redacted_run))
         assert scanned[evidence / "evidence.txt"] == EVIDENCE_TEXT.decode()
         assert scanned[evidence / "evidence.txt.gz"] == EVIDENCE_TEXT.decode()
         assert (evidence / "evidence.txt.gz").read_bytes()[:2] == GZIP_MAGIC
@@ -349,7 +353,7 @@ class TestGuardCanActuallyDetectALeak:
 
     async def test_record_secrets_puts_them_back(self, tmp_path, composer):
         run_dir = await _run_and_scan(tmp_path, composer, record_secrets=True)
-        blob = "\n".join(text for _, text in all_text(run_dir))
+        blob = "\n".join(text for _, text in iter_readable(run_dir))
         for secret in SECRETS:
             assert secret in blob
         assert any(pattern.search(blob) for _, pattern in SECRET_PATTERNS)
@@ -373,20 +377,20 @@ class TestGuardCanActuallyDetectALeak:
         )
         leak = run_dir / "env/steps/000" / LEAK_KEY
         plain, gzipped = leak / "leak.txt", leak / "leak.txt.gz"
-        assert API_KEY in readable(plain)
-        assert API_KEY in readable(gzipped)
+        assert API_KEY in readable_text(plain)
+        assert API_KEY in readable_text(gzipped)
         assert API_KEY.encode() not in gzipped.read_bytes()
-        assert any(pattern.search(readable(gzipped)) for label, pattern in SECRET_PATTERNS), (
+        assert any(pattern.search(readable_text(gzipped)) for label, pattern in SECRET_PATTERNS), (
             "the shape scan must catch it in the decoded bytes"
         )
         # Nowhere else: the rest of the run is still redacted.
-        leaking = [path for path, text in all_text(run_dir) if API_KEY in text]
+        leaking = [path for path, text in iter_readable(run_dir) if API_KEY in text]
         assert leaking == [plain, gzipped]
 
     def test_a_file_that_only_looks_gzipped_is_scanned_as_it_is(self, tmp_path):
         fake = tmp_path / "evidence.gz"
         fake.write_bytes(b"\x1f\x8b" + API_KEY.encode())
-        assert API_KEY in readable(fake)
+        assert API_KEY in readable_text(fake)
         nested = tmp_path / "nested.bin"
         nested.write_bytes(gzip.compress(gzip.compress(API_KEY.encode())))
-        assert readable(nested) == API_KEY
+        assert readable_text(nested) == API_KEY

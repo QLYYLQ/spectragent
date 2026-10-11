@@ -18,10 +18,18 @@ import pytest
 from websockets.sync.client import connect as ws_connect
 
 from tests._helpers.fixture_site import (
+    FLYWHEEL_BOXES,
+    FLYWHEEL_CHALLENGE_HEADERS,
+    FLYWHEEL_PASSWORD,
+    FLYWHEEL_PASSWORD_PARTS,
+    FLYWHEEL_SCENARIOS,
+    FLYWHEEL_TOKEN,
+    FORM_SCENARIOS,
     LARGE_BODY_BYTES,
     SCENARIOS,
     VIDEO_BYTES,
     FixtureSite,
+    flywheel_point,
 )
 
 
@@ -101,6 +109,110 @@ class TestContent:
             assert ws.recv(timeout=2) == "ping"
 
 
+class TestFormPages:
+    """M33's ``form_submit`` pages: the forms, and a result page echoing both methods."""
+
+    def test_entry_and_expected_paths(self, site: FixtureSite) -> None:
+        assert FORM_SCENARIOS == ("form_submit",)
+        assert site.url("form_submit").endswith("/form_submit/get.html")
+        assert FixtureSite.expected("form_submit") == [
+            "/form_submit/get.html",
+            "/form_submit/result.html",
+        ]
+
+    def test_the_forms(self, site: FixtureSite) -> None:
+        get = _get(site, "/form_submit/get.html").text
+        post = _get(site, "/form_submit/post.html").text
+        enter = _get(site, "/form_submit/enter.html").text
+        for page, method in ((get, "GET"), (post, "POST")):
+            assert f'<form method="{method}" action="/form_submit/result.html">' in page
+            assert 'id="item" name="item" type="text"' in page and 'value="kettle"' in page
+            assert '<button id="add" type="submit">' in page
+        # One text field and no button: Enter submits it (implicit submission).
+        assert enter.count("<input") == 1 and "<button" not in enter
+        assert 'id="query" name="query" type="text"' in enter
+
+    def test_the_result_page_echoes_either_method(self, site: FixtureSite) -> None:
+        got = _get(site, "/form_submit/result.html?query=blue+kettle").text
+        assert '<span id="received">query=blue kettle</span>' in got and "by GET" in got
+        with httpx.Client(trust_env=False) as client:
+            posted = client.post(
+                f"http://127.0.0.1:{site.main_port}/form_submit/result.html",
+                content=b"item=kettle&note=%3Cb%3E",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            ).text
+        assert '<span id="received">item=kettle, note=&lt;b&gt;</span>' in posted
+        assert "by POST" in posted
+        assert [(r.method, r.scenario) for r in site.requests_for("form_submit")] == [
+            ("GET", "form_submit"),
+            ("POST", "form_submit"),
+        ]
+
+
+class TestFlywheelPages:
+    """M33's rehearsal sites: positioned controls, the time-origin URLs, the planted credentials."""
+
+    def test_three_sites_on_their_own_hosts(self) -> None:
+        with FixtureSite(mapped=True) as mapped:
+            assert [mapped.url(s) for s in FLYWHEEL_SCENARIOS] == [
+                "http://shop.example.test/flywheel_shop/start.html",
+                "http://drift.example.test/flywheel_drift/start.html",
+                "http://blocked.example.test/flywheel_blocked/start.html",
+            ]
+            for path in ("/flywheel_drift/start.html", "/flywheel_blocked/start.html"):
+                assert _get(mapped, path).status_code in (200, 403)
+            assert {r.scenario for r in mapped.requests} == {"flywheel_drift", "flywheel_blocked"}
+
+    def test_the_controls_are_where_the_boxes_say(self, site: FixtureSite) -> None:
+        start = _get(site, "/flywheel_shop/start.html").text
+        results = _get(site, "/flywheel_shop/search.html?q=kettle").text
+        for page, name in ((start, "query"), (start, "search"), (results, "product")):
+            left, top, width, height = FLYWHEEL_BOXES[name]
+            assert f'id="{name}"' in page
+            assert f"left:{left}px;top:{top}px;width:{width}px;height:{height}px" in page
+        assert flywheel_point("search") == (410, 116)
+        assert "Results for kettle" in results
+        assert '<form method="POST" action="/flywheel_shop/cart">' in results
+
+    def test_time_origin_urls(self, site: FixtureSite) -> None:
+        product = _get(site, "/flywheel_shop/product.html?id=7").text
+        drift = _get(site, "/flywheel_drift/start.html").text
+        assert "recommend.json?session=' + Math.floor(performance.timeOrigin)" in product
+        assert "next.html?visit=' + Math.floor(performance.timeOrigin)" in drift
+
+    def test_the_blocked_site_answers_a_challenge(self, site: FixtureSite) -> None:
+        response = _get(site, "/flywheel_blocked/start.html")
+        assert response.status_code == 403
+        for name, value in FLYWHEEL_CHALLENGE_HEADERS:
+            assert response.headers.get_list(name) == [value], name
+
+    def test_no_response_holds_a_planted_credential(self, site: FixtureSite) -> None:
+        login = _get(site, "/flywheel_shop/login.html").text
+        assert all(f"'{part}'" in login for part in FLYWHEEL_PASSWORD_PARTS)
+        for path in (
+            "/flywheel_shop/login.html",
+            "/flywheel_shop/api/me",
+            "/flywheel_shop/site.css",
+            "/flywheel_shop/start.html",
+        ):
+            body = _get(site, path).content
+            assert FLYWHEEL_PASSWORD.encode() not in body and FLYWHEEL_TOKEN.encode() not in body
+        with httpx.Client(trust_env=False) as client:
+            reply = client.post(
+                f"http://127.0.0.1:{site.main_port}/flywheel_shop/api/login",
+                content=f"user=ann&password={FLYWHEEL_PASSWORD}".encode(),
+            )
+        assert FLYWHEEL_PASSWORD.encode() not in reply.content
+
+    def test_the_cart_takes_a_post_only(self, site: FixtureSite) -> None:
+        assert _get(site, "/flywheel_shop/cart").status_code == 405
+        with httpx.Client(trust_env=False) as client:
+            added = client.post(
+                f"http://127.0.0.1:{site.main_port}/flywheel_shop/cart", content=b"item=7"
+            )
+        assert "Added item 7" in added.text
+
+
 class TestLogs:
     def test_request_log_records_method_host_headers_and_body_digest(
         self, site: FixtureSite
@@ -172,7 +284,9 @@ class TestHostModes:
                 "--host-resolver-rules="
                 f"MAP shop.example.test 127.0.0.1:{mapped.main_port}, "
                 f"MAP ads.thirdparty.test 127.0.0.1:{mapped.cross_port}, "
-                f"MAP ws.example.test 127.0.0.1:{mapped.ws_port}"
+                f"MAP ws.example.test 127.0.0.1:{mapped.ws_port}, "
+                f"MAP drift.example.test 127.0.0.1:{mapped.main_port}, "
+                f"MAP blocked.example.test 127.0.0.1:{mapped.main_port}"
             )
             # The service-worker page must stay a secure context.
             assert mapped.url("service_worker").startswith("http://localhost:")

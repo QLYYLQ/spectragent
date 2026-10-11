@@ -50,6 +50,8 @@ from spectragent.core.capabilities.browser.replay import PinnedReplayability
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.negotiation import negotiate_archive
+from spectragent.core.trace.secret_patterns import iter_readable
+from spectragent.flywheel.metrics import percentile
 from tests._helpers.archive_bench import (
     DOM_FRAGMENTS,
     VISION_FRAGMENTS,
@@ -57,12 +59,10 @@ from tests._helpers.archive_bench import (
     LiveRecording,
     captured_paths,
     median,
-    percentile,
     served_but_not_captured,
     write_report,
 )
 from tests._helpers.fixture_site import FIXTURE_PASSWORD, SCENARIOS, FixtureSite
-from tests._helpers.secret_scan import all_text
 from tests._helpers.trace_builder import agent_result, step_record
 from tests.test_core.test_capabilities.test_browser_sensitivity import CONTROL_TABLE
 
@@ -475,7 +475,7 @@ def test_privacy_guard(tmp_path: Path) -> None:
     header_names = {name for request in served for name in request.header_names}
     assert {"authorization", "x-api-key", "cookie"} <= header_names
     assert any(r.bare_path == "/json_post/api" and r.body_length > 0 for r in served)
-    scanned = all_text(run_dir)
+    scanned = list(iter_readable(run_dir))
     assert any("/env/" in str(path) for path, _ in scanned), "the trace recorded no env/"
     ledgers = " ".join(text for path, text in scanned if "/env/" in str(path))
     for rule in ("request_header", "field_name", "input_value", "value_hash"):
@@ -488,7 +488,7 @@ def test_privacy_guard(tmp_path: Path) -> None:
 def test_privacy_guard_positive_controls(tmp_path: Path) -> None:
     """The scan can see: raw cookie values when allowed, and a marker the WARC holds."""
     run_dir, _served = _run(_record_trace(tmp_path, allow_session_state=True))
-    scanned = all_text(run_dir)
+    scanned = list(iter_readable(run_dir))
     assert [p for p, text in scanned if _PLANTED["cookie"] in text], (
         "allow_session_state: true keeps raw cookie values — the scan must find one"
     )

@@ -32,9 +32,9 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
+from spectragent.core.trace.sources import TaskIdentity
 from spectragent.export.benchmarks import BenchmarkLoaders, LoaderKind
 from spectragent.export.errors import ExportConfigError
-from spectragent.export.filters import TaskIdentity
 from spectragent.export.settings import BenchmarkRef, Decontamination, SplitSettings
 
 Split = Literal["train", "validation"]

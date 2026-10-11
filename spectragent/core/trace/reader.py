@@ -65,6 +65,8 @@ from spectragent.core.trace.models import (
     TRACE_FORMAT_VERSION,
     ArchiveMeta,
     ArchiveRecord,
+    CommittedFile,
+    CommittedKind,
     ExtraFileIndex,
     ExtraFileRecord,
     FragmentFiles,
@@ -164,11 +166,10 @@ class RunTrace:
         returning ``None`` for both hides the first one from every
         evaluator downstream.
         """
-        path = self._own_file(RESULT_FILE)
-        try:
-            data = path.read_bytes()
-        except FileNotFoundError:
+        data = self._result_data
+        if data is None:
             return None
+        path = self._trace_dir / RESULT_FILE
         value = _load_json(path, data, "an AgentResult")
         try:
             return AgentResult.model_validate(value)
@@ -348,15 +349,92 @@ class RunTrace:
         self._require_indexed("output_schema")
         if sha256 not in self._manifest.output_formats:
             raise KeyError(f"{sha256!r} is not a committed output schema of {self._trace_dir}")
-        path = self._listed(output_format_path(sha256))
-        data = _read_bytes(path)
-        if sha256_hex(data) != sha256:
-            raise TraceSchemaError(
-                f"{path} is content-addressed by {sha256}, but its bytes hash to "
-                f"{sha256_hex(data)}",
-                path=path,
-            )
+        path, data = self._output_schema_bytes(sha256)
         return _parse(path, data, _JSON_OBJECT.validate_python, "JSON object")
+
+    # ── what the run consists of: every committed file ─────────
+
+    @cached_property
+    def committed_files(self) -> list[CommittedFile]:
+        """Every file this run committed, one entry per listing, in commit order.
+
+        The run's own files first (``manifest.json``, ``config.json``, and
+        ``result.json`` when the run wrote one); then, step by step in
+        manifest order, the step record, each fragment's file and artifact,
+        each LLM call, the extra index and every file it lists; then each
+        trailing commit's calls, index and files; then the requested reply
+        schemas. An extra file several commits reference (content-addressed)
+        is listed once per commit that lists it — how to count it is the
+        caller's rule. Nothing the manifest (or a committed index) does not
+        list is here, and every path is checked as it is listed (the WAL's
+        shape, inside the run directory), as every accessor checks before it
+        opens one. Bytes: :meth:`read_committed`.
+
+        Raises:
+            TraceSchemaError: A listed path is malformed or leads outside the
+                run directory, an extra index does not read back, or an
+                archive file's metadata does not parse — naming the file
+                that lists it.
+        """
+        self._require_indexed("committed_files")
+        self._own_file(CONFIG_FILE)
+        files = [
+            CommittedFile(path=MANIFEST_FILE, kind="manifest"),
+            CommittedFile(path=CONFIG_FILE, kind="config"),
+        ]
+        if self._result_data is not None:
+            files.append(CommittedFile(path=RESULT_FILE, kind="result"))
+        for entry in self._manifest.steps:
+            files.append(self._listing(entry.step_file, "step", entry.step))
+            for key, fragment in entry.fragments.items():
+                files.append(self._listing(fragment.file, "fragment", entry.step, key))
+                if fragment.artifact is not None:
+                    files.append(self._listing(fragment.artifact, "artifact", entry.step, key))
+            files += [self._listing(rel, "llm_call", entry.step) for rel in entry.llm_calls]
+            if entry.extra_index is not None:
+                files.append(self._listing(entry.extra_index, "extra_index", entry.step))
+                files += self._extra_listings(entry.extra_index, entry.step)
+        for trailing in self._manifest.trailing:
+            files += [self._listing(rel, "llm_call", None) for rel in trailing.llm_calls]
+            if trailing.extra_index is not None:
+                files.append(self._listing(trailing.extra_index, "extra_index", None))
+                files += self._extra_listings(trailing.extra_index, None)
+        files += [
+            self._listing(output_format_path(sha256), "output_schema", None)
+            for sha256 in self._manifest.output_formats
+        ]
+        return files
+
+    def read_committed(self, path: str) -> bytes:
+        """The bytes of a file :attr:`committed_files` lists, through its own accessor's checks.
+
+        An extra file is :meth:`read_extra` (size and sha256 against its
+        index); a reply schema must hash to its address; an artifact must
+        not be empty; every listed file must be on disk, inside the run
+        directory.
+
+        Raises:
+            KeyError: *path* is not a committed file of this run.
+            TraceSchemaError: The file is missing, empty (an artifact), not
+                the bytes its index or address promises, or outside the run
+                directory.
+        """
+        self._require_indexed("read_committed")
+        found = self._committed_by_path.get(path)
+        if found is None:
+            raise KeyError(f"{path!r} is not a committed file of {self._trace_dir}")
+        if found.kind == "extra":
+            return self.read_extra(path)
+        if found.kind == "result":
+            assert self._result_data is not None, "listed only when the run wrote it"
+            return self._result_data
+        if found.kind in ("manifest", "config"):
+            return _read_bytes(self._own_file(path))
+        if found.kind == "artifact":
+            return self._read_artifact(path)
+        if found.kind == "output_schema":
+            return self._output_schema_bytes(self._schema_addresses[path])[1]
+        return _read_bytes(self._listed(path))
 
     # ── environment evidence (env/): through the extra indexes ─
 
@@ -510,6 +588,65 @@ class RunTrace:
     @cached_property
     def _entries(self) -> dict[int, StepManifestEntry]:
         return {entry.step: entry for entry in reversed(self._manifest.steps)}
+
+    @cached_property
+    def _result_data(self) -> bytes | None:
+        """``result.json``'s bytes, or ``None`` when the run never wrote it (nothing lists it)."""
+        path = self._own_file(RESULT_FILE)
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            return None
+
+    @cached_property
+    def _committed_by_path(self) -> dict[str, CommittedFile]:
+        """Each committed path's first listing."""
+        found: dict[str, CommittedFile] = {}
+        for file in self.committed_files:
+            found.setdefault(file.path, file)
+        return found
+
+    @cached_property
+    def _schema_addresses(self) -> dict[str, str]:
+        """Each committed reply schema's path → its sha256."""
+        return {output_format_path(sha256): sha256 for sha256 in self._manifest.output_formats}
+
+    def _listing(
+        self, rel: str, kind: CommittedKind, step: int | None, fragment: str | None = None
+    ) -> CommittedFile:
+        """One file the manifest lists, its path checked (:meth:`_listed`)."""
+        self._listed(rel)
+        return CommittedFile(path=rel, kind=kind, step=step, fragment=fragment)
+
+    def _extra_listings(self, rel: str, step: int | None) -> list[CommittedFile]:
+        """Every file the extra index *rel* lists, with its archive record when it is evidence."""
+        index = self._trace_dir / rel
+        archives = {record.path: record for record in self._archive_records(rel)}
+        listings: list[CommittedFile] = []
+        for record in self._read_index(rel).files:
+            self._listed(record.path, listed_in=index)
+            listings.append(
+                CommittedFile(
+                    path=record.path,
+                    kind="extra",
+                    step=step,
+                    extra=record,
+                    archive=archives.get(record.path),
+                )
+            )
+        return listings
+
+    def _output_schema_bytes(self, sha256: str) -> tuple[Path, bytes]:
+        """A committed reply schema's file and bytes, which must hash to *sha256*."""
+        path = self._listed(output_format_path(sha256))
+        data = _read_bytes(path)
+        if sha256_hex(data) != sha256:
+            raise TraceSchemaError(
+                f"{path} is content-addressed by {sha256}, but its bytes hash to "
+                f"{sha256_hex(data)}",
+                path=path,
+            )
+        return path, data
 
     @cached_property
     def _extra_indexes(self) -> list[str]:
