@@ -390,8 +390,11 @@ class BenchmarkRunner:
 
         # The link the framework never had: dataset setup → capability.
         # For SWE-bench this is the container image and checkout commit;
-        # for a browser benchmark, the start URL.
-        env_context = self._loader.get_task_context(task_id)
+        # for a browser benchmark, the start URL. The task's context has
+        # three parts with three consumers, and each goes to its own
+        # parameter: ``env`` to the capabilities' setup, ``loop`` to the
+        # Loop (a branch task's checkpoint), ``branch`` to the trace.
+        context = self._loader.get_task_context(task_id)
 
         try:
             result = await runtime.execute(
@@ -400,7 +403,9 @@ class BenchmarkRunner:
                 benchmark=self._benchmark,
                 subset=self._subset,
                 run_id=_safe_run_id(task_id, prefix=self._run_id_prefix),
-                env_context=env_context,
+                env_context=context.env,
+                loop_inputs=context.loop,
+                branch=context.branch,
                 timeout=self._timeout,
                 raise_on_error=False,
                 config=_task_snapshot(task, self._benchmark, self._subset),
@@ -520,7 +525,13 @@ def _resolve_eval_loader(run: ComposedRun, benchmark: str | None, subset: str | 
 
     Falls back to ``EvalLoaderRegistrar.get(benchmark)`` because the eval
     loader carries no secrets and no wiring — the benchmark name is enough
-    to construct it, and requiring it in YAML would be ceremony.
+    to construct it, and requiring it in YAML would be ceremony. Called only
+    when an evaluator is configured: a sweep that scores nothing never asks.
+
+    A benchmark with no registered eval loader stops the sweep before
+    anything runs, naming it — ``trace_branches`` has none in v1 (how a
+    branch result becomes a training signal is open, §4.10), and a sweep
+    must not run for hours to fail at its scoring pass.
     """
     loader = run.optional_single("eval_loader")
     if loader is not None:
@@ -533,7 +544,13 @@ def _resolve_eval_loader(run: ComposedRun, benchmark: str | None, subset: str | 
         )
     from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
 
-    loader_cls = EvalLoaderRegistrar.get(benchmark)
+    loader_cls = EvalLoaderRegistrar.get_or_none(benchmark)
+    if loader_cls is None:
+        raise SystemExit(
+            f"An evaluator is configured, but benchmark {benchmark!r} has no registered "
+            f"eval loader to score against (a 'trace_branches' sweep has none): add an "
+            f"'eval_loader:' block, drop the evaluator, or pass --no-eval."
+        )
     return loader_cls(subset=subset) if subset else loader_cls()
 
 

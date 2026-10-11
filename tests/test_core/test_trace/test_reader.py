@@ -711,3 +711,88 @@ class TestAnOfflineReaderFindsFragmentClasses:
 
         trace.observation_fragment(0, "browser.browser_meta")
         assert len(discovered) == 1
+
+
+class TestEvals:
+    """``evals()`` — the post-run verdicts, the one accessor that lists a directory (§5.5)."""
+
+    def test_no_evals_directory_is_empty(self, trace, reference):
+        (reference.run_dir / "evals").rmdir()
+        assert trace.evals() == {}
+
+    def test_an_empty_evals_directory_is_empty(self, trace, reference):
+        assert (reference.run_dir / "evals").is_dir(), "the WAL creates it at init"
+        assert trace.evals() == {}
+
+    def test_verdicts_come_back_typed_and_sorted_by_slug(self, trace, reference):
+        from spectragent.schemas.eval_result import EvalResult
+        from tests._helpers.trace_builder import eval_result, write_verdict
+
+        write_verdict(reference.run_dir, "online_mind2web-ab12", eval_result(predicted_label=0))
+        write_verdict(reference.run_dir, "exact_match", eval_result(evaluator_id="exact_match"))
+        write_verdict(reference.run_dir, "a-b", eval_result())
+        write_verdict(reference.run_dir, "a", eval_result())
+        verdicts = trace.evals()
+        assert list(verdicts) == ["a", "a-b", "exact_match", "online_mind2web-ab12"]
+        assert all(isinstance(v, EvalResult) for v in verdicts.values())
+        assert verdicts["online_mind2web-ab12"].predicted_label == 0
+
+    def test_not_cached(self, trace, reference):
+        from tests._helpers.trace_builder import eval_result, write_verdict
+
+        assert trace.evals() == {}
+        write_verdict(reference.run_dir, "exact_match", eval_result())
+        assert list(trace.evals()) == ["exact_match"], "a verdict written later is seen"
+
+    def test_only_json_files_count(self, trace, reference):
+        from tests._helpers.trace_builder import eval_result, write_verdict
+
+        write_verdict(reference.run_dir, "exact_match", eval_result())
+        evals_dir = reference.run_dir / "evals"
+        (evals_dir / "tmp0123456789abcdef.tmp").write_bytes(b"{torn")  # an interrupted write
+        (evals_dir / "notes.txt").write_text("hand-written")
+        (evals_dir / "nested.json").mkdir()
+        assert list(trace.evals()) == ["exact_match"]
+
+    @pytest.mark.parametrize(
+        "content",
+        [b"{not json", b'{"task_id": "t"}', "\udc80".encode("utf-8", "surrogatepass")],
+        ids=["not_json", "not_an_eval_result", "not_utf8"],
+    )
+    def test_a_corrupt_verdict_names_its_file(self, trace, reference, content):
+        evals_dir = reference.run_dir / "evals"
+        evals_dir.mkdir(exist_ok=True)  # the WAL creates it at init
+        (evals_dir / "exact_match.json").write_bytes(content)
+        with pytest.raises(TraceSchemaError, match="exact_match.json") as info:
+            trace.evals()
+        assert info.value.path == evals_dir / "exact_match.json"
+
+    def test_a_verdict_symlinked_out_of_the_run_is_refused(self, trace, reference, tmp_path):
+        from tests._helpers.trace_builder import eval_result, write_verdict
+
+        outside = write_verdict(tmp_path / "elsewhere", "exact_match", eval_result())
+        evals_dir = reference.run_dir / "evals"
+        evals_dir.mkdir(exist_ok=True)  # the WAL creates it at init
+        (evals_dir / "exact_match.json").symlink_to(outside)
+        with pytest.raises(TraceSchemaError, match="outside the run directory"):
+            trace.evals()
+
+    def test_an_evals_directory_symlinked_out_of_the_run_is_refused(
+        self, trace, reference, tmp_path
+    ):
+        from tests._helpers.trace_builder import eval_result, write_verdict
+
+        write_verdict(tmp_path / "elsewhere", "exact_match", eval_result())
+        (reference.run_dir / "evals").rmdir()  # the WAL's own, still empty
+        (reference.run_dir / "evals").symlink_to(tmp_path / "elsewhere" / "evals")
+        with pytest.raises(TraceSchemaError, match="outside the run directory"):
+            trace.evals()
+
+    def test_the_manifest_does_not_list_them(self, trace, reference):
+        """Written after the run, verdicts are not in the manifest — and need not be."""
+        from tests._helpers.trace_builder import eval_result, write_verdict
+
+        write_verdict(reference.run_dir, "exact_match", eval_result())
+        manifest = (reference.run_dir / "manifest.json").read_text()
+        assert "evals" not in manifest
+        assert list(trace.evals()) == ["exact_match"]

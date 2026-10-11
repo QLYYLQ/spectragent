@@ -24,7 +24,7 @@ from pydantic import Field
 from spectragent.core.archive._registrar import ArchiverBase
 from spectragent.core.archive.protocols import ArchivingCapability
 from spectragent.core.archive.types import ArchiveBatch, ArchiveContractError
-from spectragent.core.capabilities.base import BaseCapability
+from spectragent.core.capabilities.base import BaseCapability, RestorationSupport
 from spectragent.core.environments.base import Environment
 from spectragent.core.environments.errors import (
     ArchiveCollectionError,
@@ -38,6 +38,7 @@ from spectragent.schemas.observation.dynamic_model import (
     build_observation_model_from_result,
 )
 from spectragent.schemas.observation.failure import FragmentFailure
+from spectragent.schemas.restoration import RestorationEvidence, Retarget
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +358,41 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                     type(exc).__name__,
                     exc,
                 )
+
+    # ── Checkpoint restoration: routed like ``act``, read-only ──
+
+    async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget:
+        """Route a recorded action's retarget to the capability that owns it.
+
+        The same prefix routing as :meth:`act` (``browser.click`` →
+        ``browser``). A capability implementing
+        :class:`~spectragent.core.capabilities.base.RestorationSupport`
+        answers; for anything else — a capability without the protocol, a
+        bare name, a prefix no capability owns — the action runs as
+        recorded (``method="identity"``, a deep copy): a replay reproduces
+        the source run's execution, including the actions ``guarded_act``
+        refused there, which it then refuses again. Nothing is executed and
+        nothing is cached.
+        """
+        prefix, sep, _rest = action.name.partition(".")
+        cap = self._by_capability_id().get(prefix) if sep else None
+        if isinstance(cap, RestorationSupport):
+            return await cap.retarget(action, recorded, restored)
+        return Retarget(action=action.model_copy(deep=True), method="identity")
+
+    async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]:
+        """Each restoring capability's measurement, in capability order.
+
+        Fans out to every capability implementing ``RestorationSupport``,
+        one at a time; each answers with its own ``capability_id``. No
+        implementer means nothing to check: an empty list. Thresholds and
+        verdicts are the restorer's (``docs/architecture_design.md`` §4.3).
+        """
+        evidence: list[RestorationEvidence] = []
+        for cap in self.capabilities.values():
+            if isinstance(cap, RestorationSupport):
+                evidence.append(await cap.verify_restoration(recorded, restored))
+        return evidence
 
     # ── Archive: routing the binding, collecting the evidence ─
 

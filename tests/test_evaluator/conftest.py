@@ -77,6 +77,7 @@ def write_trace(
     model_id: str = "test-model",
     end_to_end_ms: int = 1234,
     total_tokens: int = 90,
+    origins: list[str] | None = None,
 ) -> Path:
     """Write one complete trace and return its directory.
 
@@ -85,6 +86,10 @@ def write_trace(
     the real ``WALWriter.commit_step`` — so the artifact, its JSON and the
     manifest's fragment index are exactly what production writes, and
     ``RunTrace.screenshots`` finds them the way it does on a real run.
+
+    ``origins`` gives each step's ``StepRecord.origin`` (default: every step
+    ``policy``). A ``terminal`` step carries no reply and no action, as the
+    loop writes it; ``AgentMetrics.steps`` counts the ``policy`` ones.
     """
     wal = WALWriter(base_dir, run_id)
     wal.init_run(
@@ -101,6 +106,8 @@ def write_trace(
     )
 
     frames = screenshots or []
+    step_origins = origins or ["policy"] * steps
+    assert len(step_origins) == steps, "one origin per step"
     for step in range(steps):
         fragments: list[EncodedFragment] = []
         if step < len(frames):
@@ -109,16 +116,25 @@ def write_trace(
             assert encoded is not None
             fragments.append(encoded)
 
+        origin = step_origins[step]
+        terminal = origin == "terminal"
         record = StepRecord(
             step=step,
             observation_summary=f"page {step}",
-            llm_output=f"thinking about step {step}",
-            actions=[Action(name="browser.click", params={"index": step})],
-            action_results=[ActionResult(success=True)],
+            llm_output="" if terminal else f"thinking about step {step}",
+            actions=[] if terminal else [Action(name="browser.click", params={"index": step})],
+            action_results=[] if terminal else [ActionResult(success=True)],
             timestamp=float(step),
-            token_usage=TokenUsage(prompt_tokens=30, completion_tokens=15, total_tokens=45),
+            token_usage=(
+                None
+                if terminal
+                else TokenUsage(prompt_tokens=30, completion_tokens=15, total_tokens=45)
+            ),
+            origin=origin,  # type: ignore[arg-type]
         )
         wal.commit_step(step, record, fragments=fragments)
+
+    policy = [i for i, origin in enumerate(step_origins) if origin == "policy"]
 
     wal.write_result(
         AgentResult(
@@ -130,11 +146,11 @@ def write_trace(
             agent_reported_success=agent_reported_success,
             answer=answer,
             model_id=model_id,
-            action_history=[f"browser.click({{'index': {i}}})" for i in range(steps)],
+            action_history=[f"browser.click({{'index': {i}}})" for i in policy],
             metrics=AgentMetrics(
                 end_to_end_ms=end_to_end_ms,
-                steps=steps,
-                llm_calls=steps,
+                steps=len(policy),
+                llm_calls=len(policy),
                 usage=AgentUsage(
                     total_prompt_tokens=60,
                     total_completion_tokens=30,

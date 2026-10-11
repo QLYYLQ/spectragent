@@ -38,6 +38,8 @@ from pydantic import (
     field_validator,
 )
 
+from spectragent.schemas.restoration import BranchProvenance
+
 # ── Setup variants ────────────────────────────────────────────────────
 
 
@@ -337,6 +339,31 @@ class TaskDefinition(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class TaskContext(BaseModel):
+    """What one task hands to three different consumers, kept apart.
+
+    Returned by ``TaskLoader.get_task_context(task_id)`` and split by the
+    caller (``BenchmarkRunner.run_task``) across ``AgentRuntime.execute``
+    (``docs/architecture_design.md`` §4.2, §4.10):
+
+    - ``env`` → ``execute(env_context=...)``: the environment setup context
+      (``start_url``, ``replay_archive`` …), routed to the capabilities by
+      their ``setup()`` signatures and recorded as ``TraceConfig.task_setup``;
+    - ``loop`` → ``execute(loop_inputs=...)``: the inputs the run's Loop
+      declares in ``__loop_inputs__`` (``checkpoint`` for ``BranchLoop``),
+      checked at ``prepare()``;
+    - ``branch`` → ``execute(branch=...)``: where a branch task came from,
+      recorded as ``TraceConfig.branch`` and read by nothing else.
+
+    None of them leaks into another: the environment never sees a
+    checkpoint, the Loop never sees the setup context.
+    """
+
+    env: dict[str, Any] = Field(default_factory=dict)
+    loop: dict[str, Any] = Field(default_factory=dict)
+    branch: BranchProvenance | None = None
+
+
 __all__ = [
     "SetupBase",
     "BrowserSetup",
@@ -349,4 +376,5 @@ __all__ = [
     "ScoringRubric",
     "TaskReference",
     "TaskDefinition",
+    "TaskContext",
 ]

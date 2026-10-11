@@ -264,7 +264,7 @@ class BrowserUseAgent(AgentBase):
     # constrained the generated config to a provider without any runtime
     # effect.
     __wiring__: ClassVar[dict[str, Any]] = {
-        "agent_loop": ("agent_loop", ["react"]),
+        "agent_loop": ("agent_loop", ["react", "branch"]),
         # ``screenshot`` is required in every mode because the evaluators
         # read it out of the trace, not because the model always sees it.
         "observation": (

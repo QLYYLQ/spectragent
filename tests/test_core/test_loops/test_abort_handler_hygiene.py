@@ -42,7 +42,10 @@ import spectragent.core.loops as loops_pkg
 _EXEMPT = "RunAbort-exempt:"
 
 _PACKAGE_DIR = Path(loops_pkg.__file__).parent
-_MODULES = sorted(p for p in _PACKAGE_DIR.glob("*.py") if p.name != "__init__.py")
+# Recursive: a Loop's helpers live in subpackages too (``restore/``, whose
+# restorers execute recorded actions through ``act_fn``), and a blanket
+# handler there swallows a veto exactly as one in ``react.py`` would.
+_MODULES = sorted(p for p in _PACKAGE_DIR.rglob("*.py") if p.name != "__init__.py")
 
 
 def _is_bare_exception(node: ast.expr | None) -> bool:
@@ -137,7 +140,7 @@ def _offenders(path: Path) -> list[str]:
     return bad
 
 
-@pytest.mark.parametrize("path", _MODULES, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _MODULES, ids=lambda p: p.relative_to(_PACKAGE_DIR).as_posix())
 def test_blanket_handlers_let_run_abort_through(path: Path) -> None:
     offenders = _offenders(path)
     assert not offenders, (
@@ -246,3 +249,13 @@ def test_the_rule_has_something_to_check() -> None:
         for _scope, node in _functions_with_tries(module):
             blanket += sum(1 for h in node.handlers if _is_bare_exception(h.type))
     assert blanket >= 3, f"expected ReactLoop's three phase handlers, found {blanket}"
+
+
+@pytest.mark.parametrize("module", ["restore/prefix_replay.py", "branch.py", "_registrar.py"])
+def test_the_scan_reaches_every_module_that_handles_a_veto(module: str) -> None:
+    """The restorer and ``BranchLoop`` catch around ``act_fn`` and the environment.
+
+    A scan that stopped at the package's top level would let a blanket
+    handler in ``restore/`` swallow a veto unseen.
+    """
+    assert _PACKAGE_DIR / module in _MODULES

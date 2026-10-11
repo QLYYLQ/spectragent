@@ -19,7 +19,7 @@ from spectragent.core.data_loader._common import (
     resolve_task_id,
 )
 from spectragent.core.data_loader.task.base import BaseTaskLoader
-from spectragent.schemas.task import TaskDefinition, setup_class_for_env
+from spectragent.schemas.task import TaskContext, TaskDefinition, setup_class_for_env
 
 TaskLoaderRegistrar = create_registrar(
     "task_loader",
@@ -84,17 +84,19 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
     def task_ids(self) -> list[str]:
         return list(self._tasks.keys())
 
-    def get_task_context(self, task_id: str) -> dict[str, Any]:
-        """Return task-specific runtime context.
+    def get_task_context(self, task_id: str) -> TaskContext:
+        """Return what this task hands to the run — here, its environment part only.
 
-        Delegates to the task's own setup variant, so each domain carries
-        its own context forward: a browser task surfaces ``start_url``, a
-        docker task surfaces its image / checkout commit / test node-ids.
+        The ``env`` part delegates to the task's own setup variant, so each
+        domain carries its own context forward: a browser task surfaces
+        ``start_url``, a docker task surfaces its image / checkout commit /
+        test node-ids. A dataset task has no loop inputs and no branch
+        provenance. An unknown ``task_id`` yields an empty ``TaskContext()``.
         """
         task = self._tasks.get(task_id)
         if task is None:
-            return {}
-        return task.setup.to_context()
+            return TaskContext()
+        return TaskContext(env=task.setup.to_context())
 
     # ── Data loading ─────────────────────────────────────────────────
 

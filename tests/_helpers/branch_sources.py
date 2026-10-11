@@ -1,0 +1,150 @@
+"""Recorded runs for the ``trace_branches`` loader, written by the real ``WALWriter``.
+
+Every source a loader test reads is committed the way production commits it —
+``init_run`` / ``commit_step`` / ``finalize`` — so a source is exactly as
+readable as a recorded run is, and an uncommitted step is invisible for the
+same reason it is in production (``tests/_helpers/trace_builder.py``'s rule:
+nothing here spells a path or a JSON shape).
+
+:func:`write_source` commits a run whose shape each loader rule reads: the
+manifest status, the configuration (task, identity, the setup context, the
+negotiation with its archive binding, a branch provenance), the step records
+(origin, error phase), the environment fingerprint, and verdicts in ``evals/``.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from spectragent.core.archive.privacy import RedactionEntry, RedactionLedger
+from spectragent.core.trace.models import (
+    RunStatus,
+    TaskSetupRecord,
+    TraceConfig,
+    TraceNegotiation,
+)
+from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.eval_result import EvalResult
+from spectragent.schemas.restoration import BranchProvenance
+from spectragent.schemas.step_record import StepRecord
+from tests._helpers.trace_builder import archive_file, write_verdict
+
+#: The setup context every source records unless told otherwise.
+START_URL = "https://shop.test/"
+TASK_TEXT = "put the blue kettle in the cart"
+
+
+@dataclass(frozen=True)
+class Step:
+    """One committed step's record, as far as the loader reads it."""
+
+    origin: str = "policy"
+    error_phase: str = ""
+
+
+def setup_record(
+    context: dict[str, Any] | None = None, *, redacted: bool = False
+) -> TaskSetupRecord:
+    """A recorded setup context; *redacted* adds one ledger entry (a value was replaced)."""
+    entries = (
+        [RedactionEntry(location="/token", field="token", rule="field_name")] if redacted else []
+    )
+    return TaskSetupRecord(
+        context=dict(context if context is not None else {"start_url": START_URL}),
+        redactions=RedactionLedger(entries=entries),
+    )
+
+
+_DEFAULT = object()
+
+
+def write_source(
+    root: Path,
+    run_id: str,
+    *,
+    steps: Sequence[Step] | int = 3,
+    status: RunStatus = RunStatus.COMPLETED,
+    task_setup: Any = _DEFAULT,
+    archivers: Sequence[str] = ("browser.network",),
+    fingerprint: bool = True,
+    branch: BranchProvenance | None = None,
+    benchmark: str = "online_mind2web",
+    subset: str = "Hard",
+    task_id: str = "task-001",
+    env_type: str = "browser",
+    extra: dict[str, Any] | None = None,
+    verdicts: dict[str, EvalResult] | None = None,
+    format_version: int | None = None,
+    uncommitted: Sequence[int] = (),
+) -> Path:
+    """Commit one recorded run under ``root/<run_id>`` and return its directory.
+
+    ``steps`` is a count of ordinary policy steps or one :class:`Step` per
+    step; ``task_setup`` defaults to an unredacted ``{"start_url": ...}``
+    (pass ``None`` for a run that recorded none); ``archivers`` are bound to
+    the ``browser`` capability, whose environment fingerprint (a run record)
+    is committed with step 0 unless ``fingerprint`` is false;
+    ``format_version`` rewrites the manifest's version afterwards (``1``: a
+    format-1 trace); the steps in ``uncommitted`` are left out (a gap — the
+    WAL commits a later step whatever came before it).
+    """
+    specs = [Step() for _ in range(steps)] if isinstance(steps, int) else list(steps)
+    wal = WALWriter(root, run_id)
+    wal.init_run(
+        TraceConfig(
+            agent_id="ui_tars",
+            loop_id="react",
+            env_type=env_type,
+            llm_model="gpt-4o",
+            benchmark=benchmark,
+            subset=subset,
+            task=TASK_TEXT,
+            task_id=task_id,
+            extra=extra if extra is not None else {"difficulty": "hard", "tags": ["cart"]},
+            negotiation=TraceNegotiation(
+                active_fragments=["browser.screenshot"],
+                active_actions=["browser.click"],
+                active_archivers=sorted(archivers),
+                archive_bindings={key: key.partition(".")[0] for key in archivers},
+            ),
+            env_evidence_recorded=bool(archivers),
+            task_setup=setup_record() if task_setup is _DEFAULT else task_setup,
+            branch=branch,
+        )
+    )
+    for index, spec in enumerate(specs):
+        if index in uncommitted:
+            continue
+        extras = []
+        if index == 0 and fingerprint and archivers:
+            extras.append(
+                archive_file("browser", "fingerprint.json", b"{}", scope="run", run_version=0)
+            )
+        wal.commit_step(
+            index,
+            StepRecord(
+                step=index,
+                observation_summary=f"page {index}",
+                llm_output=f"click({index})",
+                actions=[Action(name="browser.click", params={"index": index})],
+                action_results=[ActionResult(success=True)],
+                origin=spec.origin,  # type: ignore[arg-type]
+                error_phase=spec.error_phase,
+            ),
+            extra_files=extras,
+        )
+    if status is not RunStatus.RUNNING:
+        wal.finalize(status)
+    for slug, verdict in (verdicts or {}).items():
+        write_verdict(wal.run_dir, slug, verdict)
+    if format_version is not None:
+        manifest = wal.run_dir / "manifest.json"
+        document = json.loads(manifest.read_text())
+        document["format_version"] = format_version
+        manifest.write_text(json.dumps(document))
+    return wal.run_dir

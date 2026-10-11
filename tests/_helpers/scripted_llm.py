@@ -7,7 +7,11 @@ LLM's ``base_url`` at :attr:`ScriptedLLMServer.base_url` and every
 repeated once the script runs out, so a loop that asks again gets a
 well-formed answer rather than a hang). Requests are kept for assertions.
 
-The recorder of M29 uses it with UI-TARS replies; M32 reuses it.
+A reply is the text itself, or a callable ``(request_body) -> str`` that
+writes it from the request — M31's branch runs pick an element index out of
+the prompt's DOM, which a fresh browser numbers anew every launch.
+
+The recorder of M29 uses it with UI-TARS replies; M31 and M32 reuse it.
 """
 
 from __future__ import annotations
@@ -15,9 +19,12 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+#: One scripted reply: the text, or what writes it from the request body.
+Reply = str | Callable[[dict[str, Any]], str]
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -50,12 +57,15 @@ class _Server(ThreadingHTTPServer):
 class ScriptedLLMServer:
     """The endpoint; a context manager."""
 
-    def __init__(self, replies: Sequence[str], *, model: str = "scripted-fixture") -> None:
+    def __init__(self, replies: Sequence[Reply], *, model: str = "scripted-fixture") -> None:
         if not replies:
             raise ValueError("a scripted LLM needs at least one reply")
         self.replies = list(replies)
         self.model = model
         self.requests: list[dict[str, Any]] = []
+        #: What a callable reply raised (the request then gets an empty reply,
+        #: which the agent cannot parse): a test asserts this is empty.
+        self.errors: list[str] = []
         self._lock = threading.Lock()
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
@@ -85,7 +95,12 @@ class ScriptedLLMServer:
         with self._lock:
             self.requests.append(body)
             index = min(len(self.requests) - 1, len(self.replies) - 1)
-            content = self.replies[index]
+            reply = self.replies[index]
+            try:
+                content = reply(body) if callable(reply) else reply
+            except Exception as exc:  # a scripted reply that cannot answer this request
+                self.errors.append(f"request {len(self.requests)}: {type(exc).__name__}: {exc}")
+                content = ""
         return {
             "id": f"chatcmpl-scripted-{len(self.requests)}",
             "object": "chat.completion",

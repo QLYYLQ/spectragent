@@ -179,6 +179,47 @@ past `drain_timeout_s`; an exchange in flight at a collection gets a `pending` l
 and its `exchange` line, exactly once, in the next; what settles while a collection drains
 lands in exactly one batch.
 
+### If a recorded run can be resumed in your capability — `RestorationSupport` (optional)
+
+A branch run (M31, `docs/architecture_design.md` §4.1 `BranchLoop`) re-executes a recorded
+prefix in a freshly started environment. If a recorded action of yours names something new
+in every environment — the browser's element index is a `backendNodeId`, a tab id a fresh
+CDP `targetId` — or if you can tell whether a restored world looks like the recorded one,
+implement the optional protocol `RestorationSupport` (`core/capabilities/base.py`, §4.9):
+
+```python
+async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget: ...
+async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence: ...
+```
+
+- **Computes, never acts.** `retarget` returns the action to execute (or a `failure`,
+  `not_found` / `ambiguous`, with a `detail`); the restorer executes it through
+  `guarded_act`. `verify_restoration` *measures* (`url_match`, `signature_*`,
+  `screenshot_distance`, `document_misses` — each `None` when not measured); thresholds and
+  `strict | warn` are the restorer's (`core/loops/restore/checks.py::judge`).
+- **Reads the two observations handed to it** — whole `NegotiatedObservation`s; read
+  your own fragments by local name and check their type (a failed capture is a
+  `FragmentFailure`, a fragment this run did not negotiate is absent). No step numbers, no
+  `core.trace` import (§10): the recorded side reaches you already rebuilt by your
+  fragments' own `from_trace`. The one exception is a count no observation can carry (the
+  browser's replay-log document misses): report it as the increase since the previous
+  call. That makes `verify_restoration` order-dependent, so restorers call it exactly once
+  per restored observation; test that a second call reads 0.
+- **Put the logic in pure functions of its own module** and keep the capability methods
+  one-line delegations (the browser: `core/capabilities/browser/restoration.py` —
+  `retarget_action`, `measure`, `element_signature`, `dhash`). A knob it needs is an
+  `Annotated` constructor parameter (`retarget_tolerance_px`), regenerated like any other.
+  State it needs between measurements (the browser's last-seen replay-log
+  `diverged_total`) is reset in `setup` / `teardown`.
+- **Not implementing it is a complete answer.** `EnvironmentBase.retarget` routes by
+  action prefix like `act` and falls back to identity; `verify_restoration` fans out to
+  implementers only (no implementer: nothing to check). `CapabilityBase` has no default.
+- **Tests it owes**: an `isinstance(capability, RestorationSupport)` check; every retarget
+  family and both failures, with the recorded side read back through the trace encoding
+  (the browser: `test_browser_restoration.py` — a decoded selector-map entry must sign like
+  its live node); one fixture per measured reason, judged by `judge`; and, if you can run
+  the real thing, a live branch (`test_browser_branch_live.py`).
+
 ---
 
 ## Step 1 — the two contract surfaces, and the hole between them

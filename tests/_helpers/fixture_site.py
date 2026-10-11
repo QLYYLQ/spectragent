@@ -84,6 +84,17 @@ SCENARIOS: tuple[str, ...] = (
 #: (``MAP *`` covers IP literals, S2a Q2) cuts them, and a replay that let a
 #: request through would reach the fixture.
 REPLAY_SCENARIOS: tuple[str, ...] = ("clock", "canary", "strict", "egress")
+#: M31's branch pages, kept apart for the same reason: a small shop flow whose
+#: every step is an *index* action — a link (``open-form``), a text input
+#: (``item``), a radio button (``size-large``), a link the page keeps pointing
+#: at the form's state (``add-to-cart``) — so a branch restores it by
+#: re-finding elements, never by coordinates. The result page's
+#: ``mark`` button sets a session cookie and a ``localStorage`` entry from JS
+#: (no request); the ``check`` page renders both on load — what a branch that
+#: inherited another branch's browser state would show.
+BRANCH_SCENARIOS: tuple[str, ...] = ("branch",)
+#: The cookie and the ``localStorage`` key the ``mark`` button sets.
+BRANCH_MARK = "branch_mark"
 #: Hosts the replay-only pages ask for and no fixture server answers: a
 #: hermetic recording (:meth:`FixtureSite.chrome_args` ``hermetic=True``)
 #: records each as a request that failed, so a replay has nothing to serve.
@@ -126,7 +137,8 @@ class LoggedRequest:
     @property
     def scenario(self) -> str | None:
         head = self.bare_path.strip("/").split("/", 1)[0]
-        return head if head in SCENARIOS or head in REPLAY_SCENARIOS else None
+        known = head in SCENARIOS or head in REPLAY_SCENARIOS or head in BRANCH_SCENARIOS
+        return head if known else None
 
 
 def _large_js() -> bytes:
@@ -327,10 +339,9 @@ class FixtureSite:
             "service_worker": "/service_worker/page.html",
             "popup": "/popup/opener.html",
         }.get(scenario, f"/{scenario}/page.html")
-        if scenario not in SCENARIOS and scenario not in REPLAY_SCENARIOS:
-            raise KeyError(
-                f"unknown fixture scenario {scenario!r}; known: {SCENARIOS + REPLAY_SCENARIOS}"
-            )
+        known = SCENARIOS + REPLAY_SCENARIOS + BRANCH_SCENARIOS
+        if scenario not in known:
+            raise KeyError(f"unknown fixture scenario {scenario!r}; known: {known}")
         origin = {"service_worker": self.sw_origin, "egress": self.ip_origin}.get(
             scenario, self.main_origin
         )
@@ -689,6 +700,76 @@ class FixtureSite:
             ),
             "/egress/ip.js": static(
                 b"document.getElementById('ip').textContent = 'served by IP literal';\n", _JS
+            ),
+            # ── M31's branch pages: every step an index action ──
+            "/branch/page.html": static(
+                self._page(
+                    "kettle shop",
+                    "<h1>Kettle shop</h1><p>Put a kettle in the cart.</p>"
+                    '<p><a id="open-form" href="/branch/form.html">Open the order form</a></p>'
+                    '<p><button id="help" type="button">Help</button></p>',
+                ),
+                _HTML,
+            ),
+            "/branch/form.html": static(
+                self._page(
+                    "order form",
+                    '<p><label for="item">Item</label> '
+                    '<input id="item" name="item" type="text" size="20"></p>'
+                    "<p>Size: "
+                    '<label><input id="size-small" type="radio" name="size" value="small" '
+                    "checked> Small</label> "
+                    '<label><input id="size-large" type="radio" name="size" value="large">'
+                    " Large</label></p>"
+                    '<p><a id="add-to-cart" href="/branch/result.html?item=&amp;size=small">'
+                    "Add to cart</a></p>"
+                    # A link the form keeps pointing at its state, not a form
+                    # submission: clicking a submit button leaves the next
+                    # observation's capture hanging (an open issue of M31's report).
+                    "<script>"
+                    "const link = document.getElementById('add-to-cart');"
+                    "const update = () => { link.href = '/branch/result.html?item=' + "
+                    "encodeURIComponent(document.getElementById('item').value) + '&size=' + "
+                    "document.querySelector('input[name=size]:checked').value; };"
+                    "document.getElementById('item').addEventListener('input', update);"
+                    "for (const radio of document.querySelectorAll('input[name=size]')) "
+                    "radio.addEventListener('change', update);"
+                    "</script>",
+                ),
+                _HTML,
+            ),
+            "/branch/result.html": static(
+                self._page(
+                    "cart",
+                    '<p>In the cart: <span id="cart">nothing</span></p>'
+                    '<p><button id="mark" type="button">Remember me</button></p>'
+                    '<p><a id="check" href="/branch/check.html">Check the saved state</a></p>'
+                    "<script>"
+                    "const q = new URLSearchParams(location.search);"
+                    "document.getElementById('cart').textContent = "
+                    "(q.get('size') || '?') + ' ' + (q.get('item') || '?');"
+                    "document.getElementById('mark').onclick = () => {"
+                    f"document.cookie = '{BRANCH_MARK}=remembered; path=/';"
+                    f"localStorage.setItem('{BRANCH_MARK}', 'remembered');"
+                    "document.getElementById('mark').textContent = 'Remembered';"
+                    "};"
+                    "</script>",
+                ),
+                _HTML,
+            ),
+            "/branch/check.html": static(
+                self._page(
+                    "saved state",
+                    '<p id="cookie">cookie: ?</p><p id="storage">storage: ?</p>'
+                    '<p><a id="home" href="/branch/page.html">Back to the shop</a></p>'
+                    "<script>"
+                    "document.getElementById('cookie').textContent = "
+                    "'cookie: ' + (document.cookie || '(none)');"
+                    "document.getElementById('storage').textContent = "
+                    f"'storage: ' + (localStorage.getItem('{BRANCH_MARK}') || '(none)');"
+                    "</script>",
+                ),
+                _HTML,
             ),
         }
 

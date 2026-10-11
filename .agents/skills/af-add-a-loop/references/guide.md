@@ -3,11 +3,13 @@
 > Source line numbers are historical navigation hints in this mid-refactor repository.
 > Locate the named symbol with `rg` and read the current implementation before editing.
 
-`ReactLoop` is the only Loop that exists. `CodeActLoop` (M20, P2), `FunctionCallingLoop`
-(M22, P3) and `PlanExecuteLoop` (M24, P3) are designed and unbuilt — target registry keys
-and slots are in `docs/architecture_design.md:231-249`. You are loop author #2. Several
-things in `react.py` are shaped the way they are *because* there is only one sample; this
-skill says which, so you know which lifts are yours.
+`ReactLoop` is the only execution strategy that exists. `BranchLoop` (`branch`, M31) is a
+`ReactLoop` *subclass* — a branch run's steps are ReAct steps, so it adds a restore phase,
+not a new phase vocabulary (§7). `CodeActLoop` (M20, P2), `FunctionCallingLoop` (M22, P3)
+and `PlanExecuteLoop` (M24, P3) are designed and unbuilt — target registry keys and slots
+are in `docs/architecture_design.md` §4.1. You are the author of the second *strategy*.
+Several things in `react.py` are shaped the way they are *because* there is only one
+sample; this skill says which, so you know which lifts are yours.
 
 ## 1. The split: the Agent is passive, the Loop drives
 
@@ -143,9 +145,11 @@ live: an agent's own safety guard fired, the run came back as an ordinary
 ### 3.2 The rule is global and mechanically enforced
 
 **No Loop may swallow `RunAbort`.**
-`tests/test_core/test_loops/test_abort_handler_hygiene.py` AST-scans every module in
-`spectragent/core/loops/` and fails on any `try` with a blanket `except Exception` that
-does not carry one of the two accepted shapes. It constrains the *source*, not call sites,
+`tests/test_core/test_loops/test_abort_handler_hygiene.py` AST-scans every module under
+`spectragent/core/loops/` — recursively since M31, so the restorer package
+(`core/loops/restore/`) is covered, and a meta test pins that `restore/prefix_replay.py` and
+`branch.py` are in the scanned set — and fails on any `try` with a blanket
+`except Exception` that does not carry one of the two accepted shapes. It constrains the *source*, not call sites,
 so your loop inherits the rule on the day you create the file — and the test survives being
 refactored into a base-class helper later. `:248` guards against the rule going vacuous.
 
@@ -379,3 +383,69 @@ parse_retries_per_step: Annotated[
 - The Action seam AGENTS.md §2.5 names: negotiation matches *names*, not parameter
   contracts. A loop that emits actions must produce the params `descriptor().params`
   declares — put a test on it.
+
+## 7. What M31 added: loop inputs, one run and one step, terminal observation, restore
+
+`docs/architecture_design.md` §4.1 ("Loop 输入", "一个 run 与一步", "终止观测",
+"`BranchLoop`") is the design; this is where each piece lives and what a new Loop inherits.
+
+- **Per-task Loop inputs** (`AgentLoopBase.__loop_inputs__: Mapping[str, LoopInput]`,
+  `core/loops/_registrar.py`). Declare what a task must hand your Loop
+  (`{"checkpoint": LoopInput(Checkpoint)}` on `BranchLoop`); `check_loop_inputs` refuses
+  unknown, missing and mistyped keys in one `IncompatibleLoopInputError`, at
+  `AgentRuntime.prepare(loop_inputs=…)` (right after slot validation, before negotiation)
+  and again in `weave()`. The checked inputs reach `_execute` as the read-only
+  `ctx["loop_inputs"]` — never as attributes on `self`. They come from
+  `TaskLoader.get_task_context(id).loop` through `BenchmarkRunner` (§4.10). The old
+  untyped `**kwargs` channel of `prepare` / `execute` is gone: a misspelled keyword is a
+  `TypeError`. A Loop that declares nothing (`react`) refuses every input, so a checkpoint
+  handed to the wrong loop fails at `prepare()` instead of running from scratch.
+- **One run, one step.** `LoopRun` (`core/loops/run.py`) is the per-run state every Loop
+  keeps (deps from `ctx`, records, action history, model calls, last answer, parse-error
+  streak, the token ledger); build it with `LoopRun.from_ctx` and subclass it for more
+  (`branch.py::BranchRun`). `ReactLoop._run_step(run, step_idx, *, observation=None,
+  restoration=None)` is one ReAct step, returning a terminal `AgentResult` or `None`:
+  given `observation` it does not observe again (the restorer's verified obs_t is the
+  step's cycle, §4); given `restoration` every record the step builds carries it. ReAct's
+  memory protocol is three `ReactLoop` methods — `_cap_actions`, `_remember_rejected`,
+  `_remember_reply` — the only copies, used by the live step and by `BranchLoop`'s replay
+  alike. Do not add module-level private helpers to `react.py` (the layering handoff,
+  `HANDOFF_261010_react_loop_layering.md`): Loop-generic code goes on `AgentLoopBase` or
+  in a `core/loops/` module, trace/accounting code in the trace layer.
+- **Steps are counted by origin.** `StepRecord.origin` is `policy` / `restored` /
+  `terminal`; `AgentMetrics.steps` and the `max_steps` budget count `policy` only, and only
+  policy actions enter `AgentResult.action_history`.
+- **Terminal observation** (`terminal_observation`, default off on `ReactLoop`, on for
+  `BranchLoop`): after done / `max_steps` / the parse-error streak — never after an abort,
+  a failed action, a divergence or a veto — one more observe recorded as an
+  `origin="terminal"` record. `AgentLoopBase._observe_terminal(env, negotiated_obs, *,
+  step)` observes and builds the record (any Loop can use it; an ordinary failure becomes
+  an `error_phase="observe"` record, a `RunAbort` propagates); surrendering it and ranking
+  a recording failure against the outcome stay the Loop's (`ReactLoop._with_terminal`).
+  The terminal result is built before, and its `end_to_end_ms` excludes the observation.
+- **The restore phase** (`BranchLoop`): rebuild the context from the source trace by
+  replaying every recorded model call through the agent's parser and the three memory
+  methods, checking each call's context against the recording; then `async for` the
+  restorer (`self.restorer`, a receptor — `RestorerRegistrar`, `core/loops/restore/`),
+  which yields one `RestoredStep` per restored step and finally the verified obs_t; then
+  `_run_step(run, t, observation=obs_t, restoration=check_t)` and `continue_steps` more.
+  A restorer gets a narrow `RestorationContext` (env, `act_fn`, the negotiated
+  observation, the source accessor, *t*) — no model, no memory, no recorder — so it can
+  restore only the environment. Vetoes in replay and restore record an
+  `origin="restored"` step with `error_phase="replay"` / `"restore"` and propagate;
+  a strict divergence ends the run with `RestorationDivergedError`, without a terminal
+  observation. Under `strict` a restorer raises at the first failed check — the
+  observation's, a retarget's or an action's outcome — before the step's next action runs,
+  and it calls `env.verify_restoration` exactly once per restored observation.
+- **A Loop subclass with a receptor** — `BranchLoop` is a `@dataclass` subclass of
+  `ReactLoop` whose `restorer` is annotated only on a plain mixin (the `AgentReceptors`
+  shape) with an in-Python default; see the af-add-a-receptor skill §6 for why, and for
+  the PEP 563 trap an inherited `react.py` string annotation sets for `branch.py`.
+- **Test seams this adds**: loop inputs refused at `prepare()` before negotiation and
+  before any trace directory exists (`test_loop_inputs_channel.py`); the terminal
+  observation's firing and non-firing paths (`test_react_terminal_observation.py`); a
+  restorer's call order, one cycle per observe and its narrow context
+  (`test_restore_prefix_replay.py`); a branch's context identity with its source for every
+  browser agent (`test_branch_context_identity.py`); and, in a real Chrome, 100% prefix
+  verification, identical terminal screenshots and branch isolation
+  (`test_core/test_capabilities/test_browser_branch_live.py`).

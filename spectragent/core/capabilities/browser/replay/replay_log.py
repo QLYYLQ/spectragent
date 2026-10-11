@@ -143,10 +143,13 @@ class ReplayLog:
         self._folded: dict[_FoldKey, tuple[ReplayLogEntry, int]] = {}
         #: Failures of the server's own code since the last drain.
         self._errors: list[str] = []
+        self._diverged_total = 0
 
     def append(self, entry: ReplayLogEntry) -> None:
         if entry.kind == "summary":
             raise ValueError("summaries are made by the log, not appended to it")
+        if entry.diverged:
+            self._diverged_total += 1
         key = _fold_key(entry)
         seen = self._seen.get(key, 0) + 1
         self._seen[key] = seen
@@ -155,6 +158,20 @@ class ReplayLog:
             return
         _, folded = self._folded.get(key, (entry, 0))
         self._folded[key] = (entry, folded + 1)
+
+    @property
+    def diverged_total(self) -> int:
+        """Every ``diverged`` entry ever appended — folded or not.
+
+        A monotonic count of the run's main-frame document misses: each
+        appended entry with ``diverged`` adds one, including one past the
+        repeat limit that only a ``summary`` will show, and :meth:`drain`
+        leaves it alone (``browser.network`` drains the log at every
+        collection). It is what a checkpoint restoration reads to ask "did
+        the replay leave the recording since I last looked?" — the
+        capability keeps the total it last saw (§4.14 "恢复：重定位与校验").
+        """
+        return self._diverged_total
 
     def fail(self, message: str) -> None:
         """The server could not decide a request: the next :meth:`drain` raises (never silent)."""

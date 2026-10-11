@@ -35,6 +35,7 @@ from spectragent.core.loops._loop_fragments import (
 )
 from spectragent.core.loops._registrar import AgentLoopBase
 from spectragent.core.loops.errors import ParseError, RunAbort, carry_outcome
+from spectragent.core.loops.run import LoopRun
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult, AgentUsage
@@ -44,6 +45,7 @@ from spectragent.schemas.observation.fragments import (
     StepInfoObs,
     TaskObs,
 )
+from spectragent.schemas.restoration import RestorationCheck
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 
 logger = logging.getLogger(__name__)
@@ -228,6 +230,8 @@ class ReactLoop(AgentLoopBase):
     - ``parse_retries_per_step``: extra re-asks inside one step, on the
       observation that step already took
     - ``today_override``: pins ``StepInfoObs.today`` for replay
+    - ``terminal_observation``: observe once more after the run ended and
+      record it as an ``origin="terminal"`` step
     """
 
     __registry_key__ = "react"
@@ -274,6 +278,21 @@ class ReactLoop(AgentLoopBase):
             ),
         ),
     ] = None
+    terminal_observation: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "After the run ends (done, max_steps, or the last tolerated "
+                "parse error), observe the environment once more and record "
+                "it as an origin='terminal' step: no LLM call, no action, "
+                "env-source fragments only. Never on an infrastructure "
+                "failure, a failed action or a veto. The run's result is "
+                "decided before it and does not change (its end_to_end_ms "
+                "excludes it)."
+            ),
+        ),
+    ] = False
 
     # -- AgentLoopBase._execute() implementation ----------------
 
@@ -289,520 +308,574 @@ class ReactLoop(AgentLoopBase):
 
         Runtime deps arrive in *ctx* (captured by ``weave`` into the
         ``agent.run`` closure): env, llm, memory, act_fn,
-        negotiated_obs, active_descriptors, task_id.
+        negotiated_obs, active_descriptors, task_id. The run's state lives
+        in one :class:`~spectragent.core.loops.run.LoopRun` per call, never
+        on the Loop.
 
         Returns:
             AgentResult with execution trace and metrics.
         """
-        env = ctx["env"]
-        llm = ctx["llm"]
-        memory = ctx["memory"]
-        act_fn = ctx["act_fn"]
-        negotiated_obs = ctx.get("negotiated_obs")
-        task_id: str = ctx.get("task_id", "unknown")
-        # The framework's step sink. Absent only in narrow unit tests that
-        # weave a loop by hand; the run is otherwise identical, just
-        # unrecorded.
-        recorder: Any = ctx.get("step_recorder")
-        model_id = _model_name(llm)
-
-        start_time = time.monotonic()
-        step_records: list[StepRecord] = []
-        action_history: list[str] = []
         # Reported as ``usage=None`` unless some provider actually reported
         # numbers: an all-zero AgentUsage masquerades as "measured, cost
         # nothing" and destroys the schema's own unmeasured sentinel.
-        tally = _UsageTally()
-        llm_calls = 0
-        parse_error_streak = 0
-        prev_step_record: StepRecord | None = None
-        # Best answer seen so far. Carried onto *every* termination path,
-        # including max_steps — an agent that produced the deliverable and
-        # then ran out of steps must not have it thrown away.
-        last_answer = ""
-
+        run = LoopRun.from_ctx(
+            agent, task, ctx, model_id=_model_name(ctx["llm"]), usage=_UsageTally()
+        )
         for step_idx in range(self.max_steps):
-            # 1. Observe — env fills env-source fragments; loop fills
-            #    loop-source fragments (task / step_info / history /
-            #    action_result) immediately after.
+            result = await self._run_step(run, step_idx)
+            if result is not None:
+                return result
+
+        # Max steps reached. The best answer seen so far is carried onto
+        # *every* termination path — an agent that produced the deliverable
+        # and then ran out of steps must not have it thrown away.
+        return await self._with_terminal(
+            run,
+            self._build_result(
+                run,
+                agent_done="max_steps",
+                env_status="success",
+                answer=run.last_answer,
+            ),
+        )
+
+    async def _run_step(
+        self,
+        run: LoopRun,
+        step_idx: int,
+        *,
+        observation: Any = None,
+        restoration: RestorationCheck | None = None,
+    ) -> AgentResult | None:
+        """One ReAct step: observe, prompt, think (with in-step re-asks), parse, act, record.
+
+        Returns the run's terminal ``AgentResult`` when the run ends on this
+        step, ``None`` when it goes on. A ``RunAbort`` propagates, after the
+        step it interrupted has been recorded.
+
+        Args:
+            run: The run's dependencies and books.
+            step_idx: The step's number in the trace.
+            observation: The env-source observation to decide on, already
+                taken. ``env.observe`` is then not called — a branch run's
+                first policy step decides on the observation its restorer
+                verified, and observing again would open a new cycle on a
+                world nobody verified. Loop-source fragments are populated
+                either way.
+            restoration: The check that observation passed (a branch run's
+                checkpoint step); set on every record this step builds.
+        """
+        # 1. Observe — env fills env-source fragments; loop fills
+        #    loop-source fragments (task / step_info / history /
+        #    action_result) immediately after.
+        try:
+            if observation is None:
+                observation = await run.env.observe(run.negotiated_obs)
+            loop_sourced = getattr(run.negotiated_obs, "loop_sourced", frozenset())
+            if loop_sourced:
+                observation = populate_loop_fragments(
+                    observation,
+                    loop_sourced=loop_sourced,
+                    builders=self._loop_fragment_builders(run, step_idx),
+                )
+        except RunAbort as exc:
+            await self._note_abort(
+                run,
+                phase="observe",
+                exc=exc,
+                observation=None,
+                step_idx=step_idx,
+                restoration=restoration,
+            )
+            raise
+        except Exception as exc:
+            return await self._abort(
+                run,
+                phase="observe",
+                exc=exc,
+                observation=None,
+                step_idx=step_idx,
+                restoration=restoration,
+            )
+
+        observation_summary = summarize_observation(observation)
+
+        # 2. Agent builds new step messages (pure builder — returns
+        #    only what the agent wants appended this step). Loop owns
+        #    the memory write and assembles the full LLM context.
+        #
+        #    Only ``RunAbort`` is caught here. An ordinary exception out
+        #    of the agent's own builder is a bug in the agent, not an
+        #    infrastructure failure, and it propagates exactly as it
+        #    always has — there is deliberately no blanket handler. But
+        #    ``build_react_prompt`` is an agent method, so it is woven
+        #    by the AOP proxy like any other (``runtime.py`` wraps the
+        #    agent with ``role="agent"``), and a guard can veto from
+        #    here. When it does, the observation it fired on is the
+        #    evidence, so the step is recorded before the veto flies.
+        agent = run.agent
+        memory = run.memory
+        try:
+            new_msgs = agent.build_react_prompt(observation)
+        except RunAbort as exc:
+            await self._note_abort(
+                run,
+                phase="prompt",
+                exc=exc,
+                observation=observation,
+                observation_summary=observation_summary,
+                step_idx=step_idx,
+                restoration=restoration,
+            )
+            raise
+        memory.add_messages(new_msgs)
+        context = memory.get_context_messages()
+
+        # 3-5. Think: LLM call + parse, re-asked in place.
+        #
+        #    ``output_format=None`` yields a
+        #    ``ChatInvokeCompletion[str]``; a non-None model yields a
+        #    ``ChatInvokeCompletion[T]`` already validated by the
+        #    provider.
+        #
+        #    A ParseError inside this while-loop is answered by
+        #    re-asking the *same* observation up to
+        #    ``parse_retries_per_step`` times. ``env.observe`` is not
+        #    called again and ``build_react_prompt`` is not rebuilt:
+        #    one step of the ReAct loop is one look at the world, and
+        #    a badly formatted reply is not a reason to look again.
+        #    The cycle boundary is announced by ``Environment.observe``
+        #    (``BaseCapability.begin_observation``), so an extra
+        #    ``env.observe`` here would open a new cycle, re-capture,
+        #    and hand the model a fresh screenshot mid-question — a
+        #    different world from the one its unparseable reply was
+        #    about.
+        output_model = (
+            agent.get_react_output_model() if hasattr(agent, "get_react_output_model") else None
+        )
+        retries_left = self.parse_retries_per_step
+        # Accumulated over every attempt this step makes, so the
+        # StepRecord reports what the *step* cost, not its last call.
+        step_token_usage: TokenUsage | None = None
+        parse_failure: ParseError | None = None
+        actions: list[Action] = []
+        output_text = ""
+
+        while True:
             try:
-                observation = await env.observe(negotiated_obs)
-                loop_sourced = getattr(negotiated_obs, "loop_sourced", frozenset())
-                if loop_sourced:
-                    observation = populate_loop_fragments(
-                        observation,
-                        loop_sourced=loop_sourced,
-                        builders=self._loop_fragment_builders(
-                            task=task,
-                            step_idx=step_idx,
-                            step_records=step_records,
-                            prev_step_record=prev_step_record,
-                        ),
-                    )
+                completion = await run.llm.ainvoke(context, output_format=output_model)
+            except StructuredOutputValidationError as exc:
+                # The call succeeded; the *reply* did not fit the
+                # schema. That is the one provider error the model can
+                # fix, so it rejoins the ordinary path with the text
+                # the model wrote and is refused a second time by the
+                # agent's own parser — which knows this run's verbs and
+                # answers with one located line, where the provider can
+                # only report a schema mismatch. Aborting here instead
+                # ended an episode over a single mistyped parameter.
+                #
+                # The call stays visible to the hooks even though it
+                # raised: ``around_ainvoke`` on TraceWriter and
+                # MetricsCollector sees what ``after`` cannot, so the
+                # exchange reaches the WAL and the tokens below are
+                # counted once on both sides rather than only here.
+                completion = ChatInvokeCompletion(
+                    completion=exc.raw_output,
+                    usage=exc.usage,
+                    stop_reason="structured_output_validation_error",
+                )
             except RunAbort as exc:
                 await self._note_abort(
-                    phase="observe",
+                    run,
+                    phase="llm",
                     exc=exc,
-                    recorder=recorder,
-                    observation=None,
-                    step_idx=step_idx,
-                    step_records=step_records,
-                )
-                raise
-            except Exception as exc:
-                return await self._abort(
-                    phase="observe",
-                    exc=exc,
-                    recorder=recorder,
-                    observation=None,
-                    step_idx=step_idx,
-                    step_records=step_records,
-                    action_history=action_history,
-                    task_id=task_id,
-                    task=task,
-                    start_time=start_time,
-                    usage=tally.snapshot(),
-                    llm_calls=llm_calls,
-                    model_id=model_id,
-                    answer=last_answer,
-                )
-
-            observation_summary = summarize_observation(observation)
-
-            # 2. Agent builds new step messages (pure builder — returns
-            #    only what the agent wants appended this step). Loop owns
-            #    the memory write and assembles the full LLM context.
-            #
-            #    Only ``RunAbort`` is caught here. An ordinary exception out
-            #    of the agent's own builder is a bug in the agent, not an
-            #    infrastructure failure, and it propagates exactly as it
-            #    always has — there is deliberately no blanket handler. But
-            #    ``build_react_prompt`` is an agent method, so it is woven
-            #    by the AOP proxy like any other (``runtime.py`` wraps the
-            #    agent with ``role="agent"``), and a guard can veto from
-            #    here. When it does, the observation it fired on is the
-            #    evidence, so the step is recorded before the veto flies.
-            try:
-                new_msgs = agent.build_react_prompt(observation)
-            except RunAbort as exc:
-                await self._note_abort(
-                    phase="prompt",
-                    exc=exc,
-                    recorder=recorder,
                     observation=observation,
                     observation_summary=observation_summary,
                     step_idx=step_idx,
-                    step_records=step_records,
+                    restoration=restoration,
                 )
                 raise
-            memory.add_messages(new_msgs)
-            context = memory.get_context_messages()
-
-            # 3-5. Think: LLM call + parse, re-asked in place.
-            #
-            #    ``output_format=None`` yields a
-            #    ``ChatInvokeCompletion[str]``; a non-None model yields a
-            #    ``ChatInvokeCompletion[T]`` already validated by the
-            #    provider.
-            #
-            #    A ParseError inside this while-loop is answered by
-            #    re-asking the *same* observation up to
-            #    ``parse_retries_per_step`` times. ``env.observe`` is not
-            #    called again and ``build_react_prompt`` is not rebuilt:
-            #    one step of the ReAct loop is one look at the world, and
-            #    a badly formatted reply is not a reason to look again.
-            #    The cycle boundary is announced by ``Environment.observe``
-            #    (``BaseCapability.begin_observation``), so an extra
-            #    ``env.observe`` here would open a new cycle, re-capture,
-            #    and hand the model a fresh screenshot mid-question — a
-            #    different world from the one its unparseable reply was
-            #    about.
-            output_model = (
-                agent.get_react_output_model() if hasattr(agent, "get_react_output_model") else None
-            )
-            retries_left = self.parse_retries_per_step
-            # Accumulated over every attempt this step makes, so the
-            # StepRecord reports what the *step* cost, not its last call.
-            step_token_usage: TokenUsage | None = None
-            parse_failure: ParseError | None = None
-            actions: list[Action] = []
-            output_text = ""
-
-            while True:
-                try:
-                    completion = await llm.ainvoke(context, output_format=output_model)
-                except StructuredOutputValidationError as exc:
-                    # The call succeeded; the *reply* did not fit the
-                    # schema. That is the one provider error the model can
-                    # fix, so it rejoins the ordinary path with the text
-                    # the model wrote and is refused a second time by the
-                    # agent's own parser — which knows this run's verbs and
-                    # answers with one located line, where the provider can
-                    # only report a schema mismatch. Aborting here instead
-                    # ended an episode over a single mistyped parameter.
-                    #
-                    # The call stays visible to the hooks even though it
-                    # raised: ``around_ainvoke`` on TraceWriter and
-                    # MetricsCollector sees what ``after`` cannot, so the
-                    # exchange reaches the WAL and the tokens below are
-                    # counted once on both sides rather than only here.
-                    completion = ChatInvokeCompletion(
-                        completion=exc.raw_output,
-                        usage=exc.usage,
-                        stop_reason="structured_output_validation_error",
-                    )
-                except RunAbort as exc:
-                    await self._note_abort(
-                        phase="llm",
-                        exc=exc,
-                        recorder=recorder,
-                        observation=observation,
-                        observation_summary=observation_summary,
-                        step_idx=step_idx,
-                        step_records=step_records,
-                    )
-                    raise
-                except ModelOutputTruncatedError as exc:
-                    # Our ceiling, not the model's mistake — so this must
-                    # not get what a ParseError gets. Re-asking cannot help
-                    # (the budget is unchanged and the history is now
-                    # longer, so the retry truncates sooner) and each
-                    # attempt costs a maximum-length completion. Ending here
-                    # also keeps the trace honest: routed through the parse
-                    # path, a run died reporting "Parse failed 3 consecutive
-                    # times", which on an evaluation platform charges our
-                    # configuration to the model under test.
-                    #
-                    # The call was billed, and this is the one abort path
-                    # that knows what it cost, so its usage joins the totals
-                    # before the result is built.
-                    llm_calls += 1
-                    tally.add(exc.usage, model=model_id)
-                    step_token_usage = _merge_token_usage(
-                        step_token_usage, TokenUsage.from_llm_usage(exc.usage)
-                    )
-                    return await self._abort(
-                        phase="llm",
-                        exc=exc,
-                        recorder=recorder,
-                        observation=observation,
-                        observation_summary=observation_summary,
-                        step_idx=step_idx,
-                        step_records=step_records,
-                        action_history=action_history,
-                        task_id=task_id,
-                        task=task,
-                        start_time=start_time,
-                        usage=tally.snapshot(),
-                        llm_calls=llm_calls,
-                        model_id=model_id,
-                        answer=last_answer,
-                        env_status="success",
-                        token_usage=step_token_usage,
-                    )
-                except Exception as exc:
-                    # The environment is fine; the model call is not. A 429
-                    # should not be indistinguishable from a dead browser.
-                    return await self._abort(
-                        phase="llm",
-                        exc=exc,
-                        recorder=recorder,
-                        observation=observation,
-                        observation_summary=observation_summary,
-                        step_idx=step_idx,
-                        step_records=step_records,
-                        action_history=action_history,
-                        task_id=task_id,
-                        task=task,
-                        start_time=start_time,
-                        usage=tally.snapshot(),
-                        llm_calls=llm_calls,
-                        model_id=model_id,
-                        answer=last_answer,
-                        env_status="success",
-                    )
-
-                llm_calls += 1
-                # Duck-typed: a provider that reports nothing yields None,
-                # and None must stay None all the way to ``metrics.usage``.
-                call_usage = getattr(completion, "usage", None)
-                tally.add(call_usage, model=model_id)
+            except ModelOutputTruncatedError as exc:
+                # Our ceiling, not the model's mistake — so this must
+                # not get what a ParseError gets. Re-asking cannot help
+                # (the budget is unchanged and the history is now
+                # longer, so the retry truncates sooner) and each
+                # attempt costs a maximum-length completion. Ending here
+                # also keeps the trace honest: routed through the parse
+                # path, a run died reporting "Parse failed 3 consecutive
+                # times", which on an evaluation platform charges our
+                # configuration to the model under test.
+                #
+                # The call was billed, and this is the one abort path
+                # that knows what it cost, so its usage joins the totals
+                # before the result is built.
+                run.llm_calls += 1
+                run.usage.add(exc.usage, model=run.model_id)
                 step_token_usage = _merge_token_usage(
-                    step_token_usage, TokenUsage.from_llm_usage(call_usage)
+                    step_token_usage, TokenUsage.from_llm_usage(exc.usage)
                 )
-
-                raw_output = completion.completion
-                output_text = _serialize_llm_output(raw_output)
-
-                # Agent parses LLM output (domain knowledge). ParseError is
-                # a framework-level control signal — it does NOT go through
-                # action dispatch. The error detail is fed back so the LLM
-                # can self-correct, in this step if retries remain and on
-                # the next one otherwise.
-                try:
-                    actions = agent.parse_react_output(raw_output)
-                except RunAbort as exc:
-                    # First, so the veto cannot be read as a parse failure
-                    # even if a guard ever subclasses both. A parser is an
-                    # agent method and therefore woven: an agent that
-                    # inspects the model's own reply and refuses to go on
-                    # vetoes from exactly here, and the reply it refused is
-                    # the evidence — hence ``llm_output``/``token_usage``
-                    # on the record, which no other abort path has.
-                    await self._note_abort(
-                        phase="parse",
-                        exc=exc,
-                        recorder=recorder,
-                        observation=observation,
-                        observation_summary=observation_summary,
-                        step_idx=step_idx,
-                        step_records=step_records,
-                        llm_output=output_text,
-                        token_usage=step_token_usage,
-                    )
-                    raise
-                except ParseError as exc:
-                    parse_failure = exc
-                    # The failed attempt and the reason it failed both land
-                    # in memory. The in-step retry and the next step read
-                    # exactly the same two messages — the only difference
-                    # between them is whether a new observation follows.
-                    memory.add_message(AssistantMessage(content=output_text))
-                    memory.add_message(UserMessage(content=_parse_feedback(exc)))
-                    if retries_left <= 0:
-                        break
-                    retries_left -= 1
-                    logger.info(
-                        "ReactLoop: step %d re-asking after parse error (%d retr%s left): %s",
-                        step_idx,
-                        retries_left,
-                        "y" if retries_left == 1 else "ies",
-                        exc.detail,
-                    )
-                    context = memory.get_context_messages()
-                    continue
-
-                parse_failure = None
-                break
-
-            if parse_failure is not None:
-                # Every in-step retry is spent. Only now does the failure
-                # cost a step — and only now does it count towards the
-                # cross-step streak, which stays "consecutive *steps* that
-                # could not be parsed", not consecutive LLM calls.
-                parse_error_streak += 1
-                logger.warning(
-                    "ReactLoop: parse error (%d/%d): %s",
-                    parse_error_streak,
-                    self.max_consecutive_parse_errors,
-                    parse_failure.detail,
-                )
-
-                # Record a no-op step for tracing.
-                record = StepRecord(
-                    step=step_idx,
+                return await self._abort(
+                    run,
+                    phase="llm",
+                    exc=exc,
+                    observation=observation,
                     observation_summary=observation_summary,
-                    llm_output=output_text,
-                    actions=[],
-                    action_results=[],
-                    timestamp=time.time(),
-                    token_usage=step_token_usage,
-                )
-                step_records.append(record)
-                prev_step_record = record
-
-                if parse_error_streak < self.max_consecutive_parse_errors:
-                    await self._surrender(recorder, record, observation)
-                    continue
-                # The run ends on this step, in failure: recording it must
-                # not be what decides how the run ended (``_end_failing``).
-                return await self._end_failing(
-                    recorder,
-                    record,
-                    observation,
-                    error=(
-                        f"Parse failed {parse_error_streak} "
-                        f"consecutive times: {parse_failure.detail}"
-                    ),
-                    task_id=task_id,
-                    task=task,
-                    start_time=start_time,
-                    step_records=step_records,
-                    action_history=action_history,
-                    usage=tally.snapshot(),
-                    llm_calls=llm_calls,
-                    model_id=model_id,
-                    agent_done="error",
+                    step_idx=step_idx,
                     env_status="success",
-                    answer=last_answer,
+                    token_usage=step_token_usage,
+                    restoration=restoration,
+                )
+            except Exception as exc:
+                # The environment is fine; the model call is not. A 429
+                # should not be indistinguishable from a dead browser.
+                return await self._abort(
+                    run,
+                    phase="llm",
+                    exc=exc,
+                    observation=observation,
+                    observation_summary=observation_summary,
+                    step_idx=step_idx,
+                    env_status="success",
+                    restoration=restoration,
                 )
 
-            # Successful parse resets the streak.
-            parse_error_streak = 0
+            run.llm_calls += 1
+            # Duck-typed: a provider that reports nothing yields None,
+            # and None must stay None all the way to ``metrics.usage``.
+            call_usage = getattr(completion, "usage", None)
+            run.usage.add(call_usage, model=run.model_id)
+            step_token_usage = _merge_token_usage(
+                step_token_usage, TokenUsage.from_llm_usage(call_usage)
+            )
 
-            # 6. Enforce max_actions_per_step. Silent truncation makes the
-            #    model re-issue steps it believes already ran, so the drop
-            #    is logged, marked on the record, and fed back to the LLM.
-            truncated = 0
-            if len(actions) > self.max_actions_per_step:
-                truncated = len(actions) - self.max_actions_per_step
-                dropped = [a.name for a in actions[self.max_actions_per_step :]]
-                actions = actions[: self.max_actions_per_step]
-                logger.warning(
-                    "ReactLoop: step %d emitted %d actions, max_actions_per_step=%d — discarded %s",
+            raw_output = completion.completion
+            output_text = _serialize_llm_output(raw_output)
+
+            # Agent parses LLM output (domain knowledge). ParseError is
+            # a framework-level control signal — it does NOT go through
+            # action dispatch. The error detail is fed back so the LLM
+            # can self-correct, in this step if retries remain and on
+            # the next one otherwise.
+            try:
+                actions = agent.parse_react_output(raw_output)
+            except RunAbort as exc:
+                # First, so the veto cannot be read as a parse failure
+                # even if a guard ever subclasses both. A parser is an
+                # agent method and therefore woven: an agent that
+                # inspects the model's own reply and refuses to go on
+                # vetoes from exactly here, and the reply it refused is
+                # the evidence — hence ``llm_output``/``token_usage``
+                # on the record, which no other abort path has.
+                await self._note_abort(
+                    run,
+                    phase="parse",
+                    exc=exc,
+                    observation=observation,
+                    observation_summary=observation_summary,
+                    step_idx=step_idx,
+                    llm_output=output_text,
+                    token_usage=step_token_usage,
+                    restoration=restoration,
+                )
+                raise
+            except ParseError as exc:
+                parse_failure = exc
+                # The failed attempt and the reason it failed both land
+                # in memory. The in-step retry and the next step read
+                # exactly the same two messages — the only difference
+                # between them is whether a new observation follows.
+                self._remember_rejected(memory, output_text, exc)
+                if retries_left <= 0:
+                    break
+                retries_left -= 1
+                logger.info(
+                    "ReactLoop: step %d re-asking after parse error (%d retr%s left): %s",
                     step_idx,
-                    truncated + self.max_actions_per_step,
-                    self.max_actions_per_step,
-                    dropped,
+                    retries_left,
+                    "y" if retries_left == 1 else "ies",
+                    exc.detail,
                 )
+                context = memory.get_context_messages()
+                continue
 
-            # 7. Store assistant response in memory. ``output_text`` is the
-            #    reply that *parsed* — on a step that took retries, the
-            #    rejected attempts are already in memory, each followed by
-            #    the error that rejected it.
-            memory.add_message(AssistantMessage(content=output_text))
+            parse_failure = None
+            break
 
-            if truncated:
-                memory.add_message(
-                    UserMessage(
-                        content=(
-                            f"[SYSTEM] Only the first {self.max_actions_per_step} "
-                            f"action(s) of your response were executed. "
-                            f"{truncated} action(s) were discarded and did NOT "
-                            f"run: {', '.join(dropped)}. Re-issue them if still "
-                            f"needed."
-                        )
-                    )
-                )
+        if parse_failure is not None:
+            # Every in-step retry is spent. Only now does the failure
+            # cost a step — and only now does it count towards the
+            # cross-step streak, which stays "consecutive *steps* that
+            # could not be parsed", not consecutive LLM calls.
+            run.parse_error_streak += 1
+            logger.warning(
+                "ReactLoop: parse error (%d/%d): %s",
+                run.parse_error_streak,
+                self.max_consecutive_parse_errors,
+                parse_failure.detail,
+            )
 
-            # 8. Execute actions via guarded_act
-            step_results: list[ActionResult] = []
-            last_done_result: ActionResult | None = None
-            act_error: Exception | None = None
-            for action in actions:
-                try:
-                    result = await act_fn(action)
-                except Exception as exc:  # noqa: PERF203 — per-action attribution
-                    act_error = exc
-                    break
-                step_results.append(result)
-                action_history.append(f"{action.name}({action.params})")
-                if result.extracted_content:
-                    last_answer = result.extracted_content
-                if result.is_done:
-                    last_done_result = result
-                    break
-
-            # Build step record
+            # Record a no-op step for tracing.
             record = StepRecord(
                 step=step_idx,
                 observation_summary=observation_summary,
                 llm_output=output_text,
-                actions=actions,
-                action_results=step_results,
+                actions=[],
+                action_results=[],
                 timestamp=time.time(),
                 token_usage=step_token_usage,
-                truncated_actions=truncated,
-                error_phase="act" if act_error is not None else "",
-                error=str(act_error) if act_error is not None else None,
+                restoration=restoration,
             )
-            step_records.append(record)
-            prev_step_record = record
-            if act_error is None:
-                await self._surrender(recorder, record, observation)
-            elif isinstance(act_error, RunAbort):
-                # Not an action failure — a veto. Something woven onto
-                # ``act`` (a safety guard watching for a risk-control
-                # response, say) has decided the run must not continue, and
-                # turning that into an ordinary ``agent_done="error"``
-                # result is exactly how the veto used to get lost: the
-                # caller could not tell it from a click that happened to
-                # raise, and a benchmark driver went on to the next task.
-                #
-                # Logged first, so the veto is on record whatever becomes of
-                # the hand-over below. Then the step is surrendered — the
-                # evidence the guard fired on is the most valuable thing in
-                # the trace — and only then does the exception leave the
-                # Loop, so AgentRuntime closes the run out (``on_run_end`` +
-                # ``on_run_error``) and re-raises to whoever started it.
-                # ``_surrender_vetoed`` keeps the veto the outcome even if
-                # that hand-over fails or is cut off by the run's timeout.
-                #
-                # This is the second of the two abort shapes: the record is
-                # already written, with the actions and results ``_note_abort``
-                # has no way to know about, so this phase does not call it.
-                # See :meth:`_note_abort` for when to use which.
-                logger.warning(
-                    "ReactLoop: run aborted during act at step %d: %s",
-                    step_idx,
-                    act_error,
-                )
-                await self._surrender_vetoed(recorder, record, observation, act_error)
-                raise act_error
-            else:
-                # ``exc_info=act_error`` explicitly: the ``except`` handler
-                # that captured it exited several statements ago, so
-                # ``logger.exception`` here would read an already-popped
-                # ``sys.exc_info()`` and print ``NoneType: None`` — no
-                # stack at all for the one branch whose whole purpose is
-                # per-action attribution.
-                logger.error(
-                    "ReactLoop: action execution failed at step %d: %s: %s",
-                    step_idx,
-                    type(act_error).__name__,
-                    act_error,
-                    exc_info=act_error,
-                )
-                # The run ends on this step, in failure (``_end_failing``).
-                return await self._end_failing(
-                    recorder,
-                    record,
-                    observation,
-                    error=f"Action execution failed at step {step_idx}: {act_error}",
-                    task_id=task_id,
-                    task=task,
-                    start_time=start_time,
-                    step_records=step_records,
-                    action_history=action_history,
-                    usage=tally.snapshot(),
-                    llm_calls=llm_calls,
-                    model_id=model_id,
-                    agent_done="error",
-                    env_status="failed",
-                    answer=last_answer,
-                )
+            run.step_records.append(record)
+            run.prev_step_record = record
 
-            # 9. Check termination
-            if last_done_result is not None:
-                return self._build_result(
-                    task_id=task_id,
-                    task=task,
-                    start_time=start_time,
-                    step_records=step_records,
-                    action_history=action_history,
-                    usage=tally.snapshot(),
-                    llm_calls=llm_calls,
-                    model_id=model_id,
+            if run.parse_error_streak < self.max_consecutive_parse_errors:
+                await self._surrender(run.recorder, record, observation)
+                return None
+            # The run ends on this step, in failure: recording it must
+            # not be what decides how the run ended (``_end_failing``).
+            ending = await self._end_failing(
+                run,
+                record,
+                observation,
+                error=(
+                    f"Parse failed {run.parse_error_streak} "
+                    f"consecutive times: {parse_failure.detail}"
+                ),
+                agent_done="error",
+                env_status="success",
+                answer=run.last_answer,
+            )
+            return await self._with_terminal(run, ending)
+
+        # Successful parse resets the streak.
+        run.parse_error_streak = 0
+
+        # 6. Enforce max_actions_per_step. Silent truncation makes the
+        #    model re-issue steps it believes already ran, so the drop
+        #    is logged, marked on the record, and fed back to the LLM.
+        actions, dropped = self._cap_actions(actions, step_idx)
+
+        # 7. Store assistant response in memory. ``output_text`` is the
+        #    reply that *parsed* — on a step that took retries, the
+        #    rejected attempts are already in memory, each followed by
+        #    the error that rejected it.
+        self._remember_reply(memory, output_text, dropped)
+
+        # 8. Execute actions via guarded_act
+        step_results: list[ActionResult] = []
+        last_done_result: ActionResult | None = None
+        act_error: Exception | None = None
+        for action in actions:
+            try:
+                result = await run.act_fn(action)
+            except Exception as exc:  # noqa: PERF203 — per-action attribution
+                act_error = exc
+                break
+            step_results.append(result)
+            run.action_history.append(f"{action.name}({action.params})")
+            if result.extracted_content:
+                run.last_answer = result.extracted_content
+            if result.is_done:
+                last_done_result = result
+                break
+
+        # Build step record
+        record = StepRecord(
+            step=step_idx,
+            observation_summary=observation_summary,
+            llm_output=output_text,
+            actions=actions,
+            action_results=step_results,
+            timestamp=time.time(),
+            token_usage=step_token_usage,
+            truncated_actions=len(dropped),
+            error_phase="act" if act_error is not None else "",
+            error=str(act_error) if act_error is not None else None,
+            restoration=restoration,
+        )
+        run.step_records.append(record)
+        run.prev_step_record = record
+        if act_error is None:
+            await self._surrender(run.recorder, record, observation)
+        elif isinstance(act_error, RunAbort):
+            # Not an action failure — a veto. Something woven onto
+            # ``act`` (a safety guard watching for a risk-control
+            # response, say) has decided the run must not continue, and
+            # turning that into an ordinary ``agent_done="error"``
+            # result is exactly how the veto used to get lost: the
+            # caller could not tell it from a click that happened to
+            # raise, and a benchmark driver went on to the next task.
+            #
+            # Logged first, so the veto is on record whatever becomes of
+            # the hand-over below. Then the step is surrendered — the
+            # evidence the guard fired on is the most valuable thing in
+            # the trace — and only then does the exception leave the
+            # Loop, so AgentRuntime closes the run out (``on_run_end`` +
+            # ``on_run_error``) and re-raises to whoever started it.
+            # ``_surrender_vetoed`` keeps the veto the outcome even if
+            # that hand-over fails or is cut off by the run's timeout.
+            #
+            # This is the second of the two abort shapes: the record is
+            # already written, with the actions and results ``_note_abort``
+            # has no way to know about, so this phase does not call it.
+            # See :meth:`_note_abort` for when to use which.
+            logger.warning(
+                "ReactLoop: run aborted during act at step %d: %s",
+                step_idx,
+                act_error,
+            )
+            await self._surrender_vetoed(run.recorder, record, observation, act_error)
+            raise act_error
+        else:
+            # ``exc_info=act_error`` explicitly: the ``except`` handler
+            # that captured it exited several statements ago, so
+            # ``logger.exception`` here would read an already-popped
+            # ``sys.exc_info()`` and print ``NoneType: None`` — no
+            # stack at all for the one branch whose whole purpose is
+            # per-action attribution.
+            logger.error(
+                "ReactLoop: action execution failed at step %d: %s: %s",
+                step_idx,
+                type(act_error).__name__,
+                act_error,
+                exc_info=act_error,
+            )
+            # The run ends on this step, in failure (``_end_failing``).
+            return await self._end_failing(
+                run,
+                record,
+                observation,
+                error=f"Action execution failed at step {step_idx}: {act_error}",
+                agent_done="error",
+                env_status="failed",
+                answer=run.last_answer,
+            )
+
+        # 9. Check termination
+        if last_done_result is not None:
+            return await self._with_terminal(
+                run,
+                self._build_result(
+                    run,
                     agent_done="done",
                     env_status="success",
                     answer=last_done_result.extracted_content or "",
                     agent_reported_success=last_done_result.success,
-                )
+                ),
+            )
+        return None
 
-        # Max steps reached
-        return self._build_result(
-            task_id=task_id,
-            task=task,
-            start_time=start_time,
-            step_records=step_records,
-            action_history=action_history,
-            usage=tally.snapshot(),
-            llm_calls=llm_calls,
-            model_id=model_id,
-            agent_done="max_steps",
-            env_status="success",
-            answer=last_answer,
+    # -- ReAct's memory protocol ---------------------------------
+    #
+    # The live step and a branch run's replay of a recorded step write
+    # memory through these and nothing else, so the two can never disagree
+    # about what a rejected reply, an accepted one or a truncation looks
+    # like to the model.
+
+    def _cap_actions(self, actions: list[Action], step_idx: int) -> tuple[list[Action], list[str]]:
+        """Keep the first ``max_actions_per_step`` actions; name the ones dropped.
+
+        Returns:
+            The actions that will run, and the names of the ones that will
+            not (empty when nothing was cut).
+        """
+        if len(actions) <= self.max_actions_per_step:
+            return actions, []
+        dropped = [a.name for a in actions[self.max_actions_per_step :]]
+        logger.warning(
+            "ReactLoop: step %d emitted %d actions, max_actions_per_step=%d — discarded %s",
+            step_idx,
+            len(actions),
+            self.max_actions_per_step,
+            dropped,
         )
+        return actions[: self.max_actions_per_step], dropped
+
+    def _remember_rejected(self, memory: Any, output_text: str, exc: ParseError) -> None:
+        """A reply the parser refused: the reply as the assistant turn, then why it was refused."""
+        memory.add_message(AssistantMessage(content=output_text))
+        memory.add_message(UserMessage(content=_parse_feedback(exc)))
+
+    def _remember_reply(self, memory: Any, output_text: str, dropped: list[str]) -> None:
+        """A reply that parsed: the assistant turn, then a notice of any actions cut from it."""
+        memory.add_message(AssistantMessage(content=output_text))
+        if dropped:
+            memory.add_message(
+                UserMessage(
+                    content=(
+                        f"[SYSTEM] Only the first {self.max_actions_per_step} "
+                        f"action(s) of your response were executed. "
+                        f"{len(dropped)} action(s) were discarded and did NOT "
+                        f"run: {', '.join(dropped)}. Re-issue them if still "
+                        f"needed."
+                    )
+                )
+            )
+
+    # -- the terminal observation --------------------------------
+
+    async def _with_terminal(self, run: LoopRun, result: AgentResult) -> AgentResult:
+        """Record the terminal observation after an ending, when configured; *result* stands.
+
+        A no-op unless ``terminal_observation`` is on. Called on the endings
+        that leave the world in a state worth recording — done,
+        ``max_steps``, the last tolerated parse error (and a branch run's
+        budget end) — never on an infrastructure failure, a failed action
+        or a veto. The record is numbered after the last record of the run.
+
+        *result* was decided first and is what the run ends with, with two
+        exceptions that keep the framework's precedence (§4.2, §4.6): a guard
+        that vetoes the terminal observe outranks it — the terminal record
+        is handed over as the vetoed step and the veto raised; and a failure
+        to record the terminal step is appended to a failing result's
+        ``error`` (a successful one only logs it). A cancellation of either
+        await carries *result* (``carry_outcome``).
+        """
+        if not self.terminal_observation:
+            return result
+        step = run.step_records[-1].step + 1 if run.step_records else 0
+        outcome = result.error or f"agent_done={result.agent_done}"
+        try:
+            record, observation = await self._observe_terminal(
+                run.env, run.negotiated_obs, step=step
+            )
+        except RunAbort as veto:
+            logger.warning(
+                "ReactLoop: run aborted during the terminal observation (step %d): %s",
+                step,
+                veto,
+            )
+            vetoed = StepRecord(
+                step=step,
+                origin="terminal",
+                timestamp=time.time(),
+                error_phase="observe",
+                error=str(veto),
+            )
+            run.step_records.append(vetoed)
+            await self._surrender_vetoed(run.recorder, vetoed, None, veto)
+            raise
+        except asyncio.CancelledError as cancelled:
+            logger.warning(
+                "ReactLoop: the terminal observation (step %d) was cut off by a cancellation; "
+                "the run had already ended (%s), and the cancellation carries that outcome",
+                step,
+                outcome,
+            )
+            carry_outcome(cancelled, result)
+            raise
+        run.step_records.append(record)
+        try:
+            unrecorded = await self._surrender_failing(run.recorder, record, observation)
+        except asyncio.CancelledError as cancelled:
+            _log_cut_off(record, outcome)
+            carry_outcome(cancelled, result)
+            raise
+        if unrecorded is not None and result.error:
+            return result.model_copy(
+                update={"error": f"{result.error}{_unrecorded_suffix(unrecorded)}"}
+            )
+        return result
 
     # -- private helpers -----------------------------------------
 
@@ -903,7 +976,7 @@ class ReactLoop(AgentLoopBase):
 
     async def _end_failing(
         self,
-        recorder: Any,
+        run: LoopRun,
         record: StepRecord,
         observation: Any,
         *,
@@ -922,25 +995,25 @@ class ReactLoop(AgentLoopBase):
         or a refused action to a slow model.
         """
         try:
-            unrecorded = await self._surrender_failing(recorder, record, observation)
+            unrecorded = await self._surrender_failing(run.recorder, record, observation)
         except asyncio.CancelledError as cancelled:
             _log_cut_off(record, error)
-            carry_outcome(cancelled, self._build_result(error=error, **result))
+            carry_outcome(cancelled, self._build_result(run, error=error, **result))
             raise
-        return self._build_result(error=f"{error}{_unrecorded_suffix(unrecorded)}", **result)
+        return self._build_result(run, error=f"{error}{_unrecorded_suffix(unrecorded)}", **result)
 
     async def _note_abort(
         self,
+        run: LoopRun,
         *,
         phase: str,
         exc: RunAbort,
-        recorder: Any,
         observation: Any,
         step_idx: int,
-        step_records: list[StepRecord],
         observation_summary: str = "",
         llm_output: str = "",
         token_usage: TokenUsage | None = None,
+        restoration: RestorationCheck | None = None,
     ) -> None:
         """Record the step a ``RunAbort`` interrupted, then let it fly.
 
@@ -954,7 +1027,7 @@ class ReactLoop(AgentLoopBase):
         the veto with it (:meth:`_surrender_vetoed`): the veto is what the
         caller has to see.
 
-        **This is one of two abort shapes in ``_execute``, not the only
+        **This is one of two abort shapes in ``_run_step``, not the only
         one.** Used by the phases that handle their exception where it is
         raised: observe, prompt, llm, parse. The act phase does *not* come
         through here — its per-action ``except`` captures the exception so
@@ -983,30 +1056,23 @@ class ReactLoop(AgentLoopBase):
             token_usage=token_usage,
             error_phase=phase,
             error=str(exc),
+            restoration=restoration,
         )
-        step_records.append(record)
-        await self._surrender_vetoed(recorder, record, observation, exc)
+        run.step_records.append(record)
+        await self._surrender_vetoed(run.recorder, record, observation, exc)
 
     async def _abort(
         self,
+        run: LoopRun,
         *,
         phase: str,
         exc: Exception,
-        recorder: Any,
         observation: Any,
         step_idx: int,
-        step_records: list[StepRecord],
-        action_history: list[str],
-        task_id: str,
-        task: str,
-        start_time: float,
-        usage: AgentUsage | None,
-        llm_calls: int,
-        model_id: str,
-        answer: str,
         observation_summary: str = "",
         env_status: str = "failed",
         token_usage: TokenUsage | None = None,
+        restoration: RestorationCheck | None = None,
     ) -> AgentResult:
         """Terminate on an infrastructure failure, with the step recorded.
 
@@ -1029,24 +1095,17 @@ class ReactLoop(AgentLoopBase):
             error_phase=phase,
             error=str(exc),
             token_usage=token_usage,
+            restoration=restoration,
         )
-        step_records.append(record)
+        run.step_records.append(record)
         return await self._end_failing(
-            recorder,
+            run,
             record,
             observation,
             error=f"{phase} failed at step {step_idx}: {type(exc).__name__}: {exc}",
-            task_id=task_id,
-            task=task,
-            start_time=start_time,
-            step_records=step_records,
-            action_history=action_history,
-            usage=usage,
-            llm_calls=llm_calls,
-            model_id=model_id,
             agent_done="error",
             env_status=env_status,
-            answer=answer,
+            answer=run.last_answer,
         )
 
     def _today_iso(self) -> str:
@@ -1057,20 +1116,16 @@ class ReactLoop(AgentLoopBase):
         """
         return self.today_override or date.today().isoformat()
 
-    def _loop_fragment_builders(
-        self,
-        *,
-        task: str,
-        step_idx: int,
-        step_records: list[StepRecord],
-        prev_step_record: StepRecord | None,
-    ) -> dict[str, Any]:
+    def _loop_fragment_builders(self, run: LoopRun, step_idx: int) -> dict[str, Any]:
         """Builders for every loop-source fragment ReactLoop owns.
 
         ``populate_loop_fragments`` only invokes the builders whose keys
         are in the agent's negotiated ``loop_sourced`` set, so unused
         builders incur zero cost.
         """
+        task = run.task
+        step_records = run.step_records
+        prev_step_record = run.prev_step_record
         return {
             "loop.task": lambda: TaskObs(user_request=task),
             "loop.step_info": lambda: StepInfoObs(
@@ -1084,43 +1139,37 @@ class ReactLoop(AgentLoopBase):
 
     def _build_result(
         self,
+        run: LoopRun,
         *,
-        task_id: str,
-        task: str,
-        start_time: float,
-        step_records: list[StepRecord],
-        action_history: list[str],
-        usage: AgentUsage | None,
         agent_done: str,
         env_status: str,
-        llm_calls: int = 0,
-        model_id: str = "",
         answer: str = "",
         agent_reported_success: bool | None = None,
         error: str | None = None,
     ) -> AgentResult:
-        """Build AgentResult from step records and metrics.
+        """Build AgentResult from the run's books.
 
-        *usage* is ``None`` when no provider reported token counts —
-        that is the schema's "not measured" sentinel and must not be
-        replaced by a zero-filled object.
+        Usage is ``None`` when no provider reported token counts — that is
+        the schema's "not measured" sentinel and must not be replaced by a
+        zero-filled object. ``steps`` counts the run's policy steps only
+        (:attr:`~spectragent.core.loops.run.LoopRun.policy_steps`).
         """
-        elapsed_ms = int((time.monotonic() - start_time) * 1000)
+        elapsed_ms = int((time.monotonic() - run.start_time) * 1000)
         return AgentResult(
-            task_id=task_id,
-            task=task,
+            task_id=run.task_id,
+            task=run.task,
             timestamp=datetime.now(UTC),
             env_status=EnvironmentStatus(env_status),
             agent_done=AgentDoneStatus(agent_done),
             agent_reported_success=agent_reported_success,
             answer=answer,
             error=error,
-            model_id=model_id,
-            action_history=action_history,
+            model_id=run.model_id,
+            action_history=run.action_history,
             metrics=AgentMetrics(
                 end_to_end_ms=elapsed_ms,
-                steps=len(step_records),
-                llm_calls=llm_calls,
-                usage=usage,
+                steps=run.policy_steps,
+                llm_calls=run.llm_calls,
+                usage=run.usage.snapshot(),
             ),
         )

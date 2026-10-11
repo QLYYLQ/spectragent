@@ -2,7 +2,7 @@
 
 import asyncio
 
-from spectragent.core.action_guard import build_guarded_act
+from spectragent.core.action_guard import build_guarded_act, resolve_action_name
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 
 _DESCRIPTORS = [
@@ -53,3 +53,43 @@ class TestGuardedAct:
     def test_empty_filter_returns_empty(self) -> None:
         filtered, _ = build_guarded_act(_mock_act, _DESCRIPTORS, action_filter=[])
         assert len(filtered) == 0
+
+
+class TestResolveActionName:
+    """The qualification rule ``guarded_act`` applies — its one copy."""
+
+    _ACTIVE = frozenset({"browser.click", "browser.done"})
+    _BINDINGS = {"click": "browser.click", "done": "browser.done", "scroll": "browser.scroll"}
+
+    def test_an_active_name_is_itself(self) -> None:
+        assert resolve_action_name("browser.click", self._ACTIVE, self._BINDINGS) == (
+            "browser.click"
+        )
+
+    def test_a_short_name_resolves_through_its_binding(self) -> None:
+        assert resolve_action_name("click", self._ACTIVE, self._BINDINGS) == "browser.click"
+
+    def test_a_binding_whose_target_is_not_active_is_refused(self) -> None:
+        """An ablation that dropped ``browser.scroll`` revokes ``scroll`` too."""
+        assert resolve_action_name("scroll", self._ACTIVE, self._BINDINGS) is None
+
+    def test_an_unknown_name_is_refused(self) -> None:
+        assert resolve_action_name("hover", self._ACTIVE, self._BINDINGS) is None
+
+    def test_without_bindings_only_full_names_pass(self) -> None:
+        assert resolve_action_name("click", self._ACTIVE) is None
+        assert resolve_action_name("browser.done", self._ACTIVE) == "browser.done"
+
+    async def test_the_guard_applies_it(self) -> None:
+        descriptors = [
+            ActionDescriptor(name="browser.click", description="Click"),
+            ActionDescriptor(name="browser.scroll", description="Scroll"),
+        ]
+        _, guard = build_guarded_act(
+            _mock_act, descriptors, ["browser.click"], bindings=self._BINDINGS
+        )
+        resolved, refused = Action(name="click"), Action(name="scroll")
+        assert (await guard(resolved)).success
+        assert not (await guard(refused)).success
+        # Resolved in place; a refused action keeps the name the agent wrote.
+        assert (resolved.name, refused.name) == ("browser.click", "scroll")

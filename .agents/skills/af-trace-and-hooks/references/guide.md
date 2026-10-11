@@ -373,7 +373,9 @@ the same way at every retry.
 `RunTrace` (`core/trace/reader.py:104`) resolves **every** file through the manifest —
 the commit point is also the reader's only directory. No accessor probes a file name or
 globs a directory, so whatever the manifest does not list is invisible to all of them
-alike. It used to be otherwise: `step()` went through the manifest while the
+alike. The one exception is `evals()` (M31): verdicts are written *after* the run, by
+`EvaluationRunner`, and never enter the manifest, so it lists `evals/*.json` — with the
+same containment rule as every listed path. It used to be otherwise: `step()` went through the manifest while the
 observation, message and screenshot reads probed and globbed, so a frame written for a
 step that never committed was in the trace for one accessor and not another. Do not add
 an accessor that stats a path; `tests/test_core/test_trace/test_crash_window.py` holds
@@ -410,6 +412,7 @@ accessors — what comes back is the type that was written:
 | `iter_archive(archiver_id, *, include_trailing=False)` | `(step, ArchiveRecord)` in step order, then `(None, record)` per trailing batch when asked | nothing yielded |
 | `blob(sha256)` | bytes of a committed content-addressed archive file (`read_extra(archive_blob_path(sha256))`) | `KeyError` |
 | `archive_run_file(capability_id)` | the `ArchiveRecord` of the highest committed run-record version; bytes via `read_extra(record.path)` | `None` |
+| `evals()` (M31) | `verdict_slug` → `EvalResult` for every `evals/<slug>.json`, sorted by slug; not cached (a verdict written later is seen); `evals/` or a file in it resolving outside the run → `TraceSchemaError`, as is a file that does not read as an `EvalResult` | `{}` |
 
 "Not there" and "not readable" never collapse. Anything the manifest lists that cannot
 be read — corrupt JSON, bytes that are not UTF-8, an empty file, a schema mismatch, a
@@ -434,6 +437,18 @@ shape changed refuse a format-1 trace with `TraceSchemaError` (`_require_indexed
 the step records stay readable. No shim (AGENTS.md §0.4): re-scoring an old trace with
 an image judge means re-running the task. A newer version than the build reads is
 refused when `RunTrace` is constructed.
+
+**Steps have an origin (M31).** `StepRecord.origin` is `policy` (a step the run's own
+agent decided — every step of every older trace reads back as `policy`, which is right for
+them), `restored` (a branch run's prefix: a copy of the source run's step, with the live
+observation the restorer re-reached and its `restoration` check) or `terminal` (the
+observation after the run ended: no model call, no action). Both new fields are defaulted,
+so neither `AgentResult.schema_version` nor `format_version` moved (§4.4's BACKWARD rule).
+A reader that means "what the agent did" filters on `origin == "policy"` —
+`AgentMetrics.steps` already counts only those, and `TraceView.action_history` keeps the
+restored actions apart (`restored_action_history`, each labelled `[restored]`) while
+`screenshots` keeps every frame, the terminal one included. Neither field reaches a prompt
+(`HistoryObs` renders actions, results and replies only).
 
 On-disk layout, every file name and every record model: `docs/architecture_design.md`
 §5.3.
@@ -562,9 +577,10 @@ Three layers now (`models.py:437-524`):
   this trace carry environment evidence, and which privacy markers did its archivers
   declare).
 
-Plus one per-task fact: `task_setup` (`TaskSetupRecord`) — the environment setup context
+Plus two per-task facts: `task_setup` (`TaskSetupRecord`) — the environment setup context
 `execute()` handed to `setup_environment` (`start_url` …), value-level redacted with its
-ledger. A branch task (M31) re-creates its source environment from it.
+ledger; a branch task (M31) re-creates its source environment from it, never from a
+redacted one — and `branch` (`BranchProvenance`, M31): where a branch run came from.
 
 `AgentRuntime` passes both explicitly (`runtime.py:586-609`) because it is the only
 component holding both, and it dispatches `on_run_start` *after* `prepare()` so the
@@ -577,8 +593,9 @@ configuration ended up recorded nowhere in the first place.
 
 `configuration_digest` (`models.py:526`) covers identity + benchmark/subset + resolved
 config + negotiation, and deliberately **not** `task` / `task_id` / `extra` /
-`task_setup` (per task) nor `secrets_recorded` / `env_evidence_*` (provenance), so two
-tasks of one sweep share a hash — including two that differ only in `start_url`.
+`task_setup` / `branch` (per task) nor `secrets_recorded` / `env_evidence_*` (provenance),
+so two tasks of one sweep share a hash — including two that differ only in `start_url`, or
+two branches of one sweep (`test_run_configuration.py::TestBranchProvenance`).
 Archive settings move the hash through the two existing roads and nothing else: the
 binding through `negotiation`, the archivers' knobs through `resolved` (once YAML can
 set them, M29). The two `TraceNegotiation` fields M28 added also mean a trace written
@@ -624,6 +641,17 @@ M28 applied the recipe three times, and each is a worked example:
   `env_context` it routes to `setup_environment` (`None` when there is none), accepted by
   name and redacted in `TraceWriter.on_run_start` (§6). It can carry user text — a start
   URL with a token — so the secret guard plants one.
+
+M31 applied it once more:
+
+- **`branch`** (`BranchProvenance`: source run id, the source trace relative to the
+  sources root, source benchmark / subset / task id, checkpoint step, branch index and
+  group) — per task (the task id is `<source_run_id>/s<t>/b<i>`), so not in the digest;
+  the sweep-level knobs (`continue_steps`, the teacher's sampling, the restorer's
+  `verify`) move the hash through `resolved` as usual. It arrives as the third part of
+  `TaskLoader.get_task_context(id)` (`TaskContext{env, loop, branch}`), is passed as
+  `execute(branch=…)` and on to `on_run_start(branch=…)`, and is recorded as given. Not
+  named "provenance": that word is the `secrets_recorded` / `env_evidence_*` layer.
 
 ## 6. Secrets: deny by default, at field level
 

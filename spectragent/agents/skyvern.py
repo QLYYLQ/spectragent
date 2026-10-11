@@ -49,7 +49,7 @@ class SkyvernAgent(AgentBase):
     # No ``capability`` entry — it was read by nothing at runtime and
     # only pinned the generated config to one provider.
     __wiring__: ClassVar[dict[str, Any]] = {
-        "agent_loop": ("agent_loop", ["react"]),
+        "agent_loop": ("agent_loop", ["react", "branch"]),
         # DOM is required, screenshot is optional (Skyvern is mostly
         # element-tree based but can use vision when available).
         "observation": (

@@ -511,7 +511,7 @@ class UITarsAgent(AgentBase):
     # both the prompt and the parser's reach when a capability does not
     # offer them.
     __wiring__: ClassVar[dict[str, Any]] = {
-        "agent_loop": ("agent_loop", ["react"]),
+        "agent_loop": ("agent_loop", ["react", "branch"]),
         "observation": (
             "observation",
             ["screenshot", "task"],

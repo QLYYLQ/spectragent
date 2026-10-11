@@ -67,10 +67,12 @@ def _collect_registrars() -> dict[str, type]:
     )
     from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
     from spectragent.core.data_loader.task._registrar import TaskLoaderRegistrar
+    from spectragent.core.data_loader.task.step_selector import StepSelectorRegistrar
     from spectragent.core.environments._registrar import EnvironmentRegistrar
     from spectragent.core.hooks._registrar import HookRegistrar
     from spectragent.core.llm._registrar import LLMRegistrar
     from spectragent.core.loops._registrar import AgentLoopRegistrar
+    from spectragent.core.loops.restore import RestorerRegistrar
     from spectragent.evaluator._registrar import EvaluatorRegistrar
 
     return {
@@ -101,11 +103,21 @@ def _collect_registrars() -> dict[str, type]:
         "archiver": ArchiverRegistrar,
         "action": ActionRegistrar,
         "capability": CapabilityRegistrar,
+        # How a branch run restores its checkpoint (§4.1 ``BranchLoop``): a
+        # receptor of the ``branch`` loop, collected before ``agent_loop``
+        # so the loop's block nests the restorer union with every knob
+        # (verify, screenshot_max_distance, pace) typed.
+        "restorer": RestorerRegistrar,
         "agent_loop": AgentLoopRegistrar,
         "llm": LLMRegistrar,
         "memory": MemoryRegistrar,
         "environment": EnvironmentRegistrar,
         "hook": HookRegistrar,
+        # Where a branch sweep forks (§4.10 ``trace_branches``): a receptor of
+        # that task loader, collected before ``task_loader`` so the loader's
+        # block nests the selector union (``explicit`` steps, ``every_k``'s k
+        # and offset) typed.
+        "step_selector": StepSelectorRegistrar,
         "task_loader": TaskLoaderRegistrar,
         "eval_loader": EvalLoaderRegistrar,
         # Scoring. An optional layer — a config that only runs an agent

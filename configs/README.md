@@ -14,6 +14,7 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `ui_tars_local.yaml` | UITarsAgent + ReactLoop + LocalChrome backend |
 | `flywheel/record_ui_tars_pinned.yaml` | A **recording** run (data flywheel): UITarsAgent, `replayability: pinned`, the three browser archivers on the trace hook — see [Recording environment evidence](#recording-environment-evidence) |
 | `flywheel/replay_ui_tars_archive.yaml` | Its **offline replay**: the same agent and tier with `network_source: archive` (isolated, strict misses) and `base_time: from_archive`; the recorded run arrives as `--replay-archive DIR` — see [Replaying a recorded run](#replaying-a-recorded-run) |
+| `flywheel/branch_ui_tars_archive.yaml` | **Branching** recorded runs (data flywheel, M31): `agent_loop: branch` (the `prefix_replay` restorer) over the replay browser block, tasks from `task_loader: trace_branches` — see [Branching a recorded run](#branching-a-recorded-run) |
 
 ## Quick start
 
@@ -294,6 +295,71 @@ the task context, so the replay's trace records the source run by absolute path
   `diverged_steps` over `spectragent.core.archive.source.open_archive(run_dir)`.
 - Not replayed (v1): WebSocket traffic and a nested dedicated worker's script (both are
   logged as misses); bodies over `max_fulfill_body_bytes`.
+
+## Branching a recorded run
+
+A branch task puts a recorded run back where it stood before step *t* and lets the agent
+decide that step again (`docs/architecture_design.md` §4.1 `BranchLoop`, §4.10
+`trace_branches`). `flywheel/branch_ui_tars_archive.yaml` branches runs recorded with
+`flywheel/record_ui_tars_pinned.yaml`; point its `task_loader.data_dir` at the directory
+the recordings are in and run the sweep:
+
+```bash
+uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
+uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --list   # the task ids only
+```
+
+```yaml
+agent_loop:
+  loop_id: branch
+  max_steps: 30
+  max_actions_per_step: 1           # must be the source run's (checked before any action)
+  continue_steps: 0                 # 0: decide step t only; N: N more ReAct steps after it
+  terminal_observation: true        # default: one more observation after the run ends
+  restorer:
+    restorer_id: prefix_replay
+    verify: strict                  # warn: record a failed check and go on
+    screenshot_max_distance: 5      # largest Hamming distance of the 64-bit screenshot dHashes
+    pace: none                      # recorded_llm_latency: wait as long as the source waited
+
+task_loader:
+  - benchmark_name: trace_branches
+    data_dir: traces/recorded       # the sources root (default: traces)
+    # sources: ["*"]                # globs relative to data_dir, sorted
+    step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps: [2, 5]}
+    branches_per_step: 1            # b0, b1, ... per selected step
+    require_status: completed       # error | any (reads the manifest status)
+    # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
+    # require_archive: [browser.network]   (default; [] requires none)
+    on_unbranchable: raise          # skip: leave such a source out, with its reason
+```
+
+- **The tasks.** Every committed policy step of every selected source run whose prefix is
+  committed and whose observation was recorded is a candidate; the `step_selector` picks
+  among them. A task id is `<source_run_id>/s<t>/b<i>`; its context carries the source's
+  setup context (`start_url` …), `replay_archive` (the source run directory, absolute) and
+  the `checkpoint` — nothing on the command line. `require_status` / `require_eval` filter
+  sources; a source that cannot be branched (format 1, itself a branch or a replay run, no
+  `browser.network` archive or environment fingerprint, no unredacted setup context and no
+  source benchmark to re-resolve it from, a run id another source shares) stops the sweep
+  before anything runs, or is left out with `on_unbranchable: skip`. The sources are read
+  through the trace reader only — what their manifests committed — never `result.json`.
+- **Before any setup**, the branch loop opens the source and refuses a mismatch naming both
+  sides: another agent, a different closed-set agent knob (`prompt_template`,
+  `coordinate_space` …) or memory strategy, a different observation or action negotiation,
+  a source loop other than `react`, a source that is itself a branch. The teacher's model
+  and sampling may differ from the source's.
+- **The run.** The context up to step *t* is rebuilt from the source trace — the teacher
+  sees exactly what the source agent saw — and every recorded model call is replayed through
+  the agent's parser and checked against the recording. The browser replays the source's
+  archive; `prefix_replay` re-executes the recorded actions (element indexes re-found by
+  position and signature within `retarget_tolerance_px`, tab ids by tab order and URL) and
+  verifies every step: URL, interactive-element signatures, screenshot hash distance, main
+  -frame document misses, action outcomes. The restored steps are recorded as
+  `origin: restored` with their check; step *t* and the `continue_steps` after it are the
+  teacher's (`origin: policy`); the terminal observation is `origin: terminal`.
+- **No scoring yet**: `trace_branches` has no eval loader, so a configured evaluator is
+  refused before the sweep starts — pass `--no-eval`.
 
 ## Benchmark data
 

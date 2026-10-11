@@ -9,7 +9,7 @@ from spectragent.core.data_loader.task._registrar import (
     TaskLoaderRegistrar,
 )
 from spectragent.core.data_loader.task.base import BaseTaskLoader
-from spectragent.schemas.task import BrowserSetup, TaskDefinition
+from spectragent.schemas.task import BrowserSetup, TaskContext, TaskDefinition
 
 # ── Hand-rolled in-memory loader for tests ─────────────────────────────
 
@@ -157,18 +157,18 @@ class TestGetTaskContext:
             ]
         )
         ctx = loader.get_task_context("t1")
-        assert ctx == {"start_url": "https://example.com"}
+        assert ctx == TaskContext(env={"start_url": "https://example.com"})
 
     def test_browser_task_without_start_url_returns_empty(self) -> None:
         loader = _InMemoryLoader()
         loader._seed([{"task_id": "t1"}])
         ctx = loader.get_task_context("t1")
-        assert ctx == {}
+        assert ctx == TaskContext()
 
     def test_unknown_task_id_returns_empty(self) -> None:
         loader = _InMemoryLoader()
         ctx = loader.get_task_context("nonexistent")
-        assert ctx == {}
+        assert ctx == TaskContext()
 
 
 class TestQueryInterface:

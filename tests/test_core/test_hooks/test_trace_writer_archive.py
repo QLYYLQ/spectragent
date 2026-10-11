@@ -45,6 +45,7 @@ from spectragent.core.trace.models import RunStatus, TraceManifest
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
+from spectragent.schemas.task import TaskContext
 from tests._helpers.archive_fakes import (
     BLOBS_KEY,
     CAPABILITY_ID,
@@ -1544,8 +1545,8 @@ class _SweepLoader:
     def __getitem__(self, task_id: str) -> Any:
         return self._Task(task_id)
 
-    def get_task_context(self, task_id: str) -> dict[str, Any]:
-        return {}
+    def get_task_context(self, task_id: str) -> TaskContext:
+        return TaskContext()
 
 
 class TestThroughTheRuntime:

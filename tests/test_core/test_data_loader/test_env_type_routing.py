@@ -140,7 +140,7 @@ class TestDockerRouting:
     def test_get_task_context_carries_the_container_facts(self) -> None:
         loader = _DockerLoader()
         loader.seed([SWEBENCH_RECORD])
-        ctx = loader.get_task_context("django__django-11333")
+        ctx = loader.get_task_context("django__django-11333").env
         assert ctx["repo"] == "django/django"
         assert ctx["base_commit"] == "55b68de643b5c2d5f0a8ea7587ab3b2966021ccc"
         assert ctx["fail_to_pass"] == ["test_a (tests.X)", "test_b (tests.X)"]
@@ -166,7 +166,7 @@ class TestVMRouting:
     def test_get_task_context_carries_the_vm_facts(self) -> None:
         loader = _VMLoader()
         loader.seed([OSWORLD_RECORD])
-        ctx = loader.get_task_context("94d95f96-9699-4208-98ba-3c3119edf9c2")
+        ctx = loader.get_task_context("94d95f96-9699-4208-98ba-3c3119edf9c2").env
         assert ctx["snapshot"] == "chrome"
         assert ctx["related_apps"] == ["chrome"]
         assert ctx["config"][0]["type"] == "launch"
@@ -179,7 +179,7 @@ class TestBrowserRoutingUnchanged:
         task = loader["t1"]
         assert isinstance(task.setup, BrowserSetup)
         assert task.setup.start_url == "https://example.com"
-        assert loader.get_task_context("t1")["start_url"] == "https://example.com"
+        assert loader.get_task_context("t1").env["start_url"] == "https://example.com"
 
 
 class TestSetupTypeDerivation:

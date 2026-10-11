@@ -17,7 +17,7 @@ from spectragent.core.data_loader.task.lexbench_browser import (
 from spectragent.core.data_loader.task.online_mind2web import (
     OnlineMind2WebTaskLoader,
 )
-from spectragent.schemas.task import BrowserSetup, TaskDefinition
+from spectragent.schemas.task import BrowserSetup, TaskContext, TaskDefinition
 
 
 def _build_stub(cls: type[TaskLoaderBase], raws: list[dict]) -> TaskLoaderBase:
@@ -77,7 +77,11 @@ class TestOnlineMind2WebNormalization:
                 }
             ],
         )
-        assert loader.get_task_context("m2w_001") == {"start_url": "https://example.com"}
+        context = loader.get_task_context("m2w_001")
+        assert context.env == {"start_url": "https://example.com"}
+        # A dataset task feeds the environment only.
+        assert context.loop == {}
+        assert context.branch is None
 
 
 # ── LexBench-Browser ───────────────────────────────────────────────────
@@ -162,4 +166,4 @@ class TestBrowseCompNormalization:
             ],
         )
         # BrowseComp has no start_url so context is empty
-        assert loader.get_task_context("bc_001") == {}
+        assert loader.get_task_context("bc_001") == TaskContext()

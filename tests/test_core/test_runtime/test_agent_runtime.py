@@ -129,6 +129,9 @@ class _MockLoopBase:
     def _validate_slots(self, agent):
         pass
 
+    def check_loop_inputs(self, inputs):
+        pass
+
     def weave(self, agent, **deps):
         self.ctx = deps
         loop = self

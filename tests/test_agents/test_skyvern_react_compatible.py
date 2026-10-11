@@ -114,7 +114,7 @@ class TestSlotConformance:
 class TestWiring:
     def test_agent_loop_wiring(self) -> None:
         wiring = SkyvernAgent.__wiring__
-        assert wiring["agent_loop"] == ("agent_loop", ["react"])
+        assert wiring["agent_loop"] == ("agent_loop", ["react", "branch"])
 
     def test_no_capability_entry(self) -> None:
         """Naming a capability constrained codegen and nothing else."""

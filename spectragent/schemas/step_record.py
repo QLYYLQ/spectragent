@@ -1,10 +1,11 @@
 """Step record data contracts — per-step execution trace."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.restoration import RestorationCheck
 
 
 class TokenUsage(BaseModel):
@@ -79,3 +80,17 @@ class StepRecord(BaseModel):
     # LLM call the step made, including calls that raised (a refused
     # structured reply costs real seconds and the loop retries past it).
     llm_latency_ms: int | None = None
+    # Where the step came from. ``policy``: the run's own agent decided it
+    # (every step of every trace written before this field existed reads
+    # back as ``policy``, which is right for them). ``restored``: a branch
+    # run's re-executed prefix — a copy of the source run's step, verified
+    # by ``restoration``. ``terminal``: the observation taken after the run
+    # ended (no LLM call, no action). Only ``policy`` steps count towards
+    # ``AgentMetrics.steps`` and ``max_steps``.
+    origin: Literal["policy", "restored", "terminal"] = "policy"
+    # The restorer's check of this step: on a restored step its own, on a
+    # branch's checkpoint step (the first policy step) the check of the
+    # restored observation it decided on. ``None`` everywhere else.
+    # Neither field is rendered into a prompt: agents render a history
+    # item's actions, results and reply only.
+    restoration: RestorationCheck | None = None

@@ -47,6 +47,7 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TaskSetupRecord, TraceConfig, TraceNegotiation
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.restoration import BranchProvenance
 from tests._helpers.archive_fakes import (
     BLOBS_KEY,
     CAPABILITY_ID,
@@ -76,6 +77,10 @@ class _Cap(CapabilityBase):
 
     async def execute_action(self, action, **kw):
         return ActionResult(success=True, is_done=True, extracted_content="42")
+
+    async def setup(self, *, negotiation=None, start_url=None):
+        # Declared so a task context can carry a start URL here.
+        await super().setup(negotiation=negotiation)
 
     async def resolve_fragment(self, fragment_key, **kwargs):
         if fragment_key == "browser.browser_meta":
@@ -151,7 +156,14 @@ class _Memory:
 
 
 async def _run(
-    tmp_path, composer, *, mutate=None, task_id="runcfg--0001", record_secrets=False
+    tmp_path,
+    composer,
+    *,
+    mutate=None,
+    task_id="runcfg--0001",
+    record_secrets=False,
+    branch=None,
+    env_context=None,
 ) -> Path:
     raw = copy.deepcopy(yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8")))
     if mutate is not None:
@@ -174,6 +186,8 @@ async def _run(
         benchmark="runcfg",
         subset="all",
         timeout=10,
+        branch=branch,
+        env_context=env_context,
     )
     assert writer.run_dir is not None
     return writer.run_dir
@@ -401,6 +415,195 @@ class TestStepTimings:
         assert rendered_plain == rendered_stamped
         assert "1234" not in rendered_stamped
         assert "999" not in rendered_stamped
+
+    @pytest.mark.parametrize("agent_id", ["browser_use", "skyvern", "ui_tars"])
+    def test_origin_and_restoration_do_not_reach_the_prompt(self, agent_id):
+        """A restored step is a copy of the source's step, and must read the same.
+
+        ``origin`` and ``restoration`` ride on the same ``StepRecord`` that
+        ``HistoryObs`` carries into the prompt. A branch run's policy step
+        sees restored steps in ``loop.history``; if a renderer showed either
+        field, the branch's context would differ from the source run's at
+        the very step the branch exists to re-decide. Checked for every
+        agent that can run a branch: through its history renderer, or — for
+        an agent that never negotiates ``loop.history`` — by its declaration.
+        """
+        from spectragent.agents._registrar import AgentRegistrar
+        from spectragent.schemas.observation.fragments import HistoryObs
+        from spectragent.schemas.restoration import (
+            RestorationCheck,
+            RestorationEvidence,
+            RestoredAction,
+        )
+        from spectragent.schemas.step_record import StepRecord
+
+        agent_cls = AgentRegistrar.get(agent_id)
+        _, required, optional = agent_cls.__wiring__["observation"]
+        demands = {key.rsplit(".", 1)[-1] for key in (*required, *optional)}
+        if "history" not in demands:
+            # Never negotiated, so ``HistoryObs`` never reaches this agent.
+            assert not hasattr(agent_cls, "_render_history")
+            return
+
+        plain = StepRecord(
+            step=0,
+            llm_output="thinking",
+            actions=[Action(name="browser.click", params={"index": 1})],
+            action_results=[ActionResult(success=True, extracted_content="ok")],
+        )
+        restored = plain.model_copy(deep=True)
+        restored.origin = "restored"
+        restored.restoration = RestorationCheck(
+            step=0,
+            verdict="warn",
+            reason="screenshot_distance",
+            reasons=["screenshot_distance"],
+            evidence=[
+                RestorationEvidence(
+                    capability_id="browser",
+                    url_match=True,
+                    recorded_url="https://restored-marker.example/",
+                    screenshot_distance=4321,
+                )
+            ],
+            actions=[
+                RestoredAction(
+                    recorded=Action(name="browser.click", params={"index": 1}),
+                    executed=Action(name="browser.click", params={"index": 8765}),
+                    method="geometry_signature",
+                    detail="marker-detail",
+                    recorded_success=True,
+                    live_success=True,
+                )
+            ],
+        )
+
+        agent = agent_cls()
+        rendered_plain = agent._render_history(HistoryObs(items=[plain]))
+        rendered_restored = agent._render_history(HistoryObs(items=[restored]))
+        assert rendered_plain == rendered_restored
+        for marker in ("restored", "8765", "4321", "marker-detail", "screenshot_distance"):
+            assert marker not in rendered_restored
+
+
+class TestBranchProvenance:
+    """``TraceConfig.branch``: recorded typed, per task, out of the digest (§5.3)."""
+
+    @staticmethod
+    def _provenance(index: int, step: int = 1) -> BranchProvenance:
+        return BranchProvenance(
+            source_run_id="src-run",
+            source_trace="2026/src-run",
+            source_benchmark="online_mind2web",
+            source_subset="All",
+            source_task_id="t-9",
+            checkpoint_step=step,
+            branch_index=index,
+            branch_group_id=f"src-run/s{step}",
+        )
+
+    async def test_branches_share_a_hash(self, tmp_path, composer):
+        """Two tasks of one branch sweep: different branch, task id and setup."""
+        a = RunTrace(
+            await _run(
+                tmp_path,
+                composer,
+                task_id="src-run-s1-b0",
+                branch=self._provenance(0),
+                env_context={"start_url": "https://a.example/"},
+            )
+        )
+        b = RunTrace(
+            await _run(
+                tmp_path,
+                composer,
+                task_id="src-run-s2-b1",
+                branch=self._provenance(1, step=2),
+                env_context={"start_url": "https://b.example/"},
+            )
+        )
+        assert a.config.branch != b.config.branch
+        assert a.config.task_setup != b.config.task_setup
+        assert a.manifest.config_hash == b.manifest.config_hash
+
+    @pytest.mark.parametrize(
+        ("label", "mutate"),
+        [
+            ("temperature", lambda raw: raw["agent"][0]["llm"].update(temperature=0.9)),
+            ("max_steps", lambda raw: raw["agent"][0]["agent_loop"].update(max_steps=5)),
+        ],
+    )
+    async def test_sweep_knobs_move_it(self, tmp_path, composer, label, mutate):
+        """Sweep-level knobs still reach the digest, through ``resolved``."""
+        a = RunTrace(
+            await _run(tmp_path, composer, task_id=f"k-{label}-a", branch=self._provenance(0))
+        )
+        b = RunTrace(
+            await _run(
+                tmp_path,
+                composer,
+                mutate=mutate,
+                task_id=f"k-{label}-b",
+                branch=self._provenance(0),
+            )
+        )
+        assert a.config.branch == b.config.branch
+        assert a.manifest.config_hash != b.manifest.config_hash
+
+    async def test_continue_steps_moves_it(self, tmp_path, composer):
+        """A branch sweep's own knob, through the branch loop's resolved block."""
+
+        def branch_loop(continue_steps):
+            def mutate(raw):
+                raw["agent"][0]["agent_loop"] = {
+                    "loop_id": "branch",
+                    "continue_steps": continue_steps,
+                    "restorer": {"restorer_id": "prefix_replay"},
+                }
+
+            return mutate
+
+        a = RunTrace(
+            await _run(
+                tmp_path,
+                composer,
+                mutate=branch_loop(0),
+                task_id="cs-a",
+                branch=self._provenance(0),
+            )
+        )
+        b = RunTrace(
+            await _run(
+                tmp_path,
+                composer,
+                mutate=branch_loop(2),
+                task_id="cs-b",
+                branch=self._provenance(0),
+            )
+        )
+        loop = a.config.resolved["agent"][0]["agent_loop"]
+        assert (loop["loop_id"], loop["restorer"]["restorer_id"]) == ("branch", "prefix_replay")
+        assert a.manifest.config_hash != b.manifest.config_hash
+
+    def test_the_branch_is_not_configuration(self):
+        base = TraceConfig(agent_id="a", resolved={"x": 1})
+        branched = TraceConfig(agent_id="a", resolved={"x": 1}, branch=self._provenance(3))
+        assert base.configuration_digest() == branched.configuration_digest()
+        assert base.configuration_digest(resolved={"x": 1}) == branched.configuration_digest(
+            resolved={"x": 1}
+        )
+
+    async def test_round_trip(self, tmp_path, composer):
+        provenance = self._provenance(2)
+        trace = RunTrace(await _run(tmp_path, composer, task_id="rt", branch=provenance))
+        assert isinstance(trace.config.branch, BranchProvenance)
+        assert trace.config.branch == provenance
+
+    async def test_none_off_branch(self, tmp_path, composer):
+        trace = RunTrace(await _run(tmp_path, composer, task_id="plain"))
+        assert trace.config.branch is None
+        # And a snapshot written before the field existed reads back without it.
+        assert TraceConfig.model_validate({"agent_id": "a"}).branch is None
 
 
 # ── The archive axis, environment evidence and the task's setup context ──

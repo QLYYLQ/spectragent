@@ -28,6 +28,17 @@ from spectragent.schemas.eval_summary import (
 )
 from spectragent.schemas.login import LoginSnapshot
 from spectragent.schemas.prompt import PromptRef, PromptSnapshot, TemplatePrompt, TextPrompt
+from spectragent.schemas.restoration import (
+    REASON_ORDER,
+    BranchProvenance,
+    Checkpoint,
+    RestorationCheck,
+    RestorationEvidence,
+    RestorationReason,
+    RestoredAction,
+    Retarget,
+    RetargetMethod,
+)
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 from spectragent.schemas.task import (
     BrowserSetup,
@@ -35,6 +46,7 @@ from spectragent.schemas.task import (
     ScoringItem,
     ScoringRubric,
     SetupBase,
+    TaskContext,
     TaskDefinition,
     TaskReference,
     TaskSetup,
@@ -53,10 +65,21 @@ __all__ = [
     # Step record
     "StepRecord",
     "TokenUsage",
+    # Restoration (branch runs)
+    "REASON_ORDER",
+    "BranchProvenance",
+    "Checkpoint",
+    "RestorationCheck",
+    "RestorationEvidence",
+    "RestorationReason",
+    "RestoredAction",
+    "Retarget",
+    "RetargetMethod",
     # Login
     "LoginSnapshot",
     # Task
     "TaskDefinition",
+    "TaskContext",
     "TaskSetup",
     "SetupBase",
     "BrowserSetup",

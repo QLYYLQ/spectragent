@@ -186,6 +186,9 @@ class _SlowLoop:
     def _validate_slots(self, agent):
         pass
 
+    def check_loop_inputs(self, inputs):
+        pass
+
     def weave(self, agent, **deps):
         async def run(task, **kw):
             await asyncio.sleep(100)

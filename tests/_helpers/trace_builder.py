@@ -23,6 +23,7 @@ archive file. Archive files go through :func:`archive_file` →
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,11 +47,13 @@ from spectragent.core.trace.encoding import (
     encode_output_format,
     sha256_hex,
 )
+from spectragent.core.trace.fsio import atomic_write
 from spectragent.core.trace.models import RunStatus, TraceConfig
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
+from spectragent.schemas.eval_result import AgentResultRef, EvalDetails, EvalResult
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.step_record import StepRecord, TokenUsage
@@ -164,6 +167,31 @@ def agent_result(**overrides: Any) -> AgentResult:
     }
     fields.update(overrides)
     return AgentResult(**fields)
+
+
+def eval_result(**overrides: Any) -> EvalResult:
+    """A verdict with every required field filled; *overrides* replace any of them."""
+    now = datetime.now(UTC)
+    fields: dict[str, Any] = {
+        "task_id": "task-001",
+        "evaluator_id": "exact_match",
+        "benchmark": "test",
+        "run_id": "run-test",
+        "timestamp": now,
+        "agent_result_ref": AgentResultRef(task_id="task-001", timestamp=now, result_dir="."),
+        "predicted_label": 1,
+        "evaluation_details": EvalDetails(),
+    }
+    fields.update(overrides)
+    return EvalResult(**fields)
+
+
+def write_verdict(run_dir: Path, slug: str, verdict: EvalResult) -> Path:
+    """Write *verdict* the way ``EvaluationRunner._persist`` does: ``evals/<slug>.json``, atomically."""
+    path = run_dir / "evals" / f"{slug}.json"
+    payload = json.dumps(verdict.model_dump(mode="json"), ensure_ascii=False, indent=2)
+    atomic_write(path, payload.encode("utf-8"))
+    return path
 
 
 def new_wal(base: Path, run_id: str = "run-test") -> WALWriter:

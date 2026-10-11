@@ -12,6 +12,10 @@ from spectragent.core.data_loader.task.lexbench_browser import (
     LexBenchBrowserTaskLoader,  # noqa: F401
 )
 from spectragent.core.data_loader.task.online_mind2web import OnlineMind2WebTaskLoader  # noqa: F401
+from spectragent.core.data_loader.task.require_eval import RequireEval
+from spectragent.core.data_loader.task.trace_branches import (  # noqa: F401
+    TraceBranchesTaskLoader,
+)
 
 __all__ = [
     "BaseTaskLoader",
@@ -20,4 +24,6 @@ __all__ = [
     "BrowseCompTaskLoader",
     "LexBenchBrowserTaskLoader",
     "OnlineMind2WebTaskLoader",
+    "RequireEval",
+    "TraceBranchesTaskLoader",
 ]

@@ -17,7 +17,10 @@ See docs/execution_dag.md M03 for the registrar design.
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Annotated, Any, ClassVar
 
 from conscribe import create_registrar
@@ -25,7 +28,10 @@ from pydantic import Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.loops.base import AgentLoop
-from spectragent.core.loops.validation import IncompatibleError
+from spectragent.core.loops.errors import RunAbort
+from spectragent.core.loops.validation import IncompatibleError, IncompatibleLoopInputError
+from spectragent.schemas.observation.dynamic_model import summarize_observation
+from spectragent.schemas.step_record import StepRecord
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +40,26 @@ AgentLoopRegistrar = create_registrar(
     AgentLoop,
     discriminator_field="loop_id",
 )
+
+
+@dataclass(frozen=True)
+class LoopInput:
+    """One per-task input a Loop accepts (``AgentLoopBase.__loop_inputs__``).
+
+    A task loader supplies loop inputs as ``TaskContext.loop``; the runtime
+    checks them against the Loop's declaration at ``prepare()`` and hands
+    them to ``_execute`` as ``ctx["loop_inputs"]``
+    (``docs/architecture_design.md`` §4.1 "Loop 输入").
+
+    Attributes:
+        type: The value's type, checked with ``isinstance`` at ``prepare()``.
+        required: Whether every task must supply it.
+        description: What it is, for a reader of the Loop's declaration.
+    """
+
+    type: type
+    required: bool = True
+    description: str = ""
 
 
 @dataclass
@@ -47,6 +73,9 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 
     Optionally:
     - ``__requires_env__``: whether this loop needs an Environment (default True)
+    - ``__loop_inputs__``: the per-task inputs it accepts, name ->
+      :class:`LoopInput` (default: none). A plain ``dict`` in a subclass
+      body is frozen into a read-only mapping when the class is created.
 
     ``weave()`` hands runtime deps to ``_execute`` as the ``ctx``
     parameter. Nothing is stored on the loop instance, so the same loop
@@ -73,6 +102,7 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     __optional_slots__: ClassVar[set[str]] = set()
     __required_message_protocols__: ClassVar[frozenset[MessageProtocol]] = frozenset()
     __requires_env__: ClassVar[bool] = True
+    __loop_inputs__: ClassVar[Mapping[str, LoopInput]] = MappingProxyType({})
 
     id: Annotated[
         str | None,
@@ -87,6 +117,19 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
+        declared = cls.__dict__.get("__loop_inputs__")
+        if declared is None:
+            return
+        # Checked and frozen where it is written: a set of names or a bare
+        # type where a ``LoopInput`` belongs fails at import, and no task
+        # can mutate the declaration every instance of the class shares.
+        if not isinstance(declared, Mapping) or not all(
+            isinstance(key, str) and isinstance(spec, LoopInput) for key, spec in declared.items()
+        ):
+            raise TypeError(
+                f"{cls!r}: __loop_inputs__ must map input names to LoopInput, got {declared!r}"
+            )
+        cls.__loop_inputs__ = MappingProxyType(dict(declared))
 
     @property
     def loop_id(self) -> str:
@@ -111,20 +154,60 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
                 missing_slots=missing,
             )
 
+    # ── loop inputs (shared by all loops) ────────────────────
+
+    def check_loop_inputs(self, inputs: Mapping[str, Any]) -> None:
+        """Check a task's loop inputs against ``__loop_inputs__``.
+
+        Unknown keys, missing required keys and values of the wrong type are
+        reported together, in one error naming this Loop and every key.
+
+        Raises:
+            IncompatibleLoopInputError: when anything does not fit.
+        """
+        declared = type(self).__loop_inputs__
+        unknown = [key for key in inputs if key not in declared]
+        missing = [key for key, spec in declared.items() if spec.required and key not in inputs]
+        mistyped = {
+            key: (declared[key].type.__name__, type(value).__name__)
+            for key, value in inputs.items()
+            if key in declared and not isinstance(value, declared[key].type)
+        }
+        if unknown or missing or mistyped:
+            raise IncompatibleLoopInputError(
+                self.__registry_key__,
+                unknown=unknown,
+                missing=missing,
+                mistyped=mistyped,
+                accepted=declared,
+            )
+
     # ── weave: bind deps + patch agent.run ───────────────────
 
     def weave(self, agent: Any, **deps: Any) -> Any:
-        """Validate slots, capture deps in a closure, patch ``agent.run``.
+        """Validate slots and loop inputs, capture deps in a closure, patch ``agent.run``.
 
         **Stateless on purpose**: *deps* live only in the ``run`` closure
         built here. Weaving the same loop instance onto a second agent
         cannot retroactively rewrite the first agent's env/llm/memory.
 
+        ``deps["loop_inputs"]`` (absent means none) is checked against
+        ``__loop_inputs__`` — the same check ``AgentRuntime.prepare()``
+        runs before negotiation, repeated here because ``weave`` is public —
+        and reaches ``_execute`` as a read-only ``ctx["loop_inputs"]``.
+
         Returns the same *agent* instance (instance-level patch).
+
+        Raises:
+            IncompatibleError: the agent lacks a required slot.
+            IncompatibleLoopInputError: the loop inputs do not fit.
         """
         self._validate_slots(agent)
+        loop_inputs = MappingProxyType(dict(deps.get("loop_inputs") or {}))
+        self.check_loop_inputs(loop_inputs)
 
         ctx = dict(deps)
+        ctx["loop_inputs"] = loop_inputs
         loop = self
 
         async def run(task: str, **kw: Any) -> Any:
@@ -132,6 +215,62 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 
         agent.run = run  # instance-level monkey-patch
         return agent
+
+    # ── terminal observation (any loop may use it) ───────────
+
+    async def _observe_terminal(
+        self,
+        env: Any,
+        negotiated_obs: Any,
+        *,
+        step: int,
+    ) -> tuple[StepRecord, Any]:
+        """Look at the world once more after the run ended; build that step's record.
+
+        For a Loop that records the state its run ended in (``ReactLoop``'s
+        ``terminal_observation``): one ``env.observe`` — env-source
+        fragments only, since no agent will read this observation — and an
+        ``origin="terminal"`` record numbered *step*, with no model call and
+        no action. It surrenders nothing: handing the record over, and what
+        a failure to do so means for an outcome already decided, is the
+        calling Loop's (``docs/architecture_design.md`` §4.1 "终止观测").
+
+        Not fatal: an ordinary exception from ``observe`` becomes a record
+        with ``error_phase="observe"`` and no observation, and the run's
+        outcome stands. A ``RunAbort`` propagates — a guard's veto outranks
+        the outcome — for the caller to record and re-raise.
+
+        Returns:
+            The terminal record and the observation (``None`` when the
+            observe failed).
+        """
+        try:
+            observation = await env.observe(negotiated_obs)
+        except RunAbort:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Loop %r: the terminal observation (step %d) failed: %s: %s",
+                self.loop_id,
+                step,
+                type(exc).__name__,
+                exc,
+            )
+            record = StepRecord(
+                step=step,
+                origin="terminal",
+                timestamp=time.time(),
+                error_phase="observe",
+                error=str(exc),
+            )
+            return record, None
+        record = StepRecord(
+            step=step,
+            origin="terminal",
+            observation_summary=summarize_observation(observation),
+            timestamp=time.time(),
+        )
+        return record, observation
 
     # ── subclass hook ────────────────────────────────────────
 

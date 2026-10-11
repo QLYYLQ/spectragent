@@ -67,8 +67,13 @@ class StepRecorder:
         return list(self._records)
 
     @property
-    def step_count(self) -> int:
-        return len(self._records)
+    def policy_step_count(self) -> int:
+        """Surrendered steps the run's own agent decided — what ``AgentMetrics.steps`` counts.
+
+        A branch run's restored steps and a terminal observation are records
+        of the run, not decisions of its agent (``StepRecord.origin``).
+        """
+        return sum(1 for record in self._records if record.origin == "policy")
 
     @property
     def last_observation(self) -> Any:

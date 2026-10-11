@@ -26,6 +26,7 @@ from spectragent.core.archive.privacy import RedactionLedger
 from spectragent.core.llm.messages import BaseMessage, ToolCall
 from spectragent.core.llm.views import ChatInvokeUsage
 from spectragent.schemas._types import UTCDatetime
+from spectragent.schemas.restoration import BranchProvenance
 
 #: The on-disk layout this build writes and the newest it reads.
 #:
@@ -463,8 +464,9 @@ class TraceConfig(BaseModel):
     environment evidence under ``env/`` — the state of the world the agent
     acted in, privacy-marked on its own terms.
 
-    One per-task fact sits beside the layers: :attr:`task_setup`, the
-    environment setup context the task started from, redacted by value.
+    Two per-task facts sit beside the layers: :attr:`task_setup`, the
+    environment setup context the task started from, redacted by value; and
+    :attr:`branch`, where a branch run came from.
 
     Component identity appears twice by design and the two are not
     equals. The top-level :attr:`agent_id` / :attr:`loop_id` /
@@ -522,6 +524,17 @@ class TraceConfig(BaseModel):
     #: digest: two tasks differing only in ``start_url`` share a
     #: ``config_hash``.
     task_setup: TaskSetupRecord | None = None
+    #: Where a branch run came from — the source run, its trace (relative to
+    #: the sources root), the checkpoint step and the branch's index and
+    #: group — or ``None`` for every run that is not a branch. Resolved by
+    #: ``AgentRuntime`` from the task context and recorded as given. Per
+    #: task (the task id is ``<source_run_id>/s<t>/b<i>``), so not part of
+    #: the digest: every task of one branch sweep shares a ``config_hash``,
+    #: and only sweep-level knobs (``continue_steps``, the teacher's
+    #: sampling, the restorer's ``verify``) move it, through ``resolved``.
+    #: Not called "provenance": that word names the ``secrets_recorded`` /
+    #: ``env_evidence_*`` layer above.
+    branch: BranchProvenance | None = None
 
     def configuration_digest(self, *, resolved: dict[str, Any] | None = None) -> str:
         """Stable hash of *how this run was configured*.
@@ -537,8 +550,8 @@ class TraceConfig(BaseModel):
         result — the archive binding (``active_archivers`` /
         ``archive_bindings``) moves it through the latter, with no special
         case. Excluded: ``task`` / ``task_id`` (which task, not which
-        configuration), ``extra`` and ``task_setup`` (per-task data) and the
-        provenance fields ``env_evidence_recorded`` /
+        configuration), ``extra``, ``task_setup`` and ``branch`` (per-task
+        data) and the provenance fields ``env_evidence_recorded`` /
         ``env_evidence_privacy``.
 
         Args:

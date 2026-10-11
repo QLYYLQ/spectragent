@@ -1,6 +1,6 @@
 # All4One Agent Framework — 开发执行依赖图
 
-> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 29 个开发模块及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
+> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 31 个开发模块（M01–M31）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
 
 ---
 
@@ -76,6 +76,7 @@ flowchart TB
     %% ════════════════════════════════════════
     subgraph P2_FLYWHEEL ["P2 · 数据飞轮（browser）"]
         M30["M30<br/>离线回放"]
+        M31["M31<br/>状态分叉<br/>（检查点恢复 + BranchLoop）"]
     end
 
     subgraph P2_DOCKER ["P2 · Docker + SWE 生态"]
@@ -129,13 +130,20 @@ flowchart TB
     M08 --> M28
     M11 --> M28
     M27 --> M28
-    %% M27 → M31 / M32：这两个模块的条目合入时补边
+    %% M27 → M32：M32 的条目合入时补边
     M13 --> M29
     M28 --> M29
     M29 --> M30
     %% M18 只做了抽样验证；用户 2026-10-09 裁决：browser 的数据飞轮线在 M29 之后直接开始 M30（见 M18、M30 条目）
     M18 -.->|抽样豁免| M30
-    %% M29 → M32、M30 → M31 / M32：这两个模块的条目合入时补边（M32 的遮挡判断读 browser.dom_raw，样本过滤读回放日志）
+    %% M29 → M32、M30 → M32：M32 的条目合入时补边（M32 的遮挡判断读 browser.dom_raw，样本过滤读回放日志）
+
+    %% → M31 状态分叉：ReactLoop 的一步、任务加载器、评测结果（require_eval）、trace 读侧、离线回放
+    M09 --> M31
+    M15 --> M31
+    M16 --> M31
+    M27 --> M31
+    M30 --> M31
 
     %% P0 → P1 迁移
     M01 --> M12
@@ -192,7 +200,7 @@ flowchart TB
     class M01,M02,M03,M04,M05,M06,M07,M08,M09 p0
     class M10,M11,M12,M13,M14,M15,M16,M17,M27,M28,M29 p1
     class M18 milestone
-    class M19,M20,M21,M30 p2
+    class M19,M20,M21,M30,M31 p2
     class M22,M23,M24,M25,M26 p3
 
     style P0_FOUNDATION fill:none,stroke:#E83135,stroke-width:2px,stroke-dasharray:5 5
@@ -534,7 +542,7 @@ AgentRuntime 的设计类比是 Spring 的 `ApplicationContext` — 它不执行
 
 ### M09: ReactLoop 实现
 
-**优先级**: P0 | **前置依赖**: M03, M04 | **被依赖方**: M14
+**优先级**: P0 | **前置依赖**: M03, M04 | **被依赖方**: M14, M31
 
 #### 业务实现
 
@@ -728,7 +736,7 @@ Browser 特有的 CDP、tab/frame 和输入实现留在 capability 内；Runtime
 
 ### M15: DataLoader 泛化
 
-**优先级**: P1 | **前置依赖**: M05 | **被依赖方**: M18, M23
+**优先级**: P1 | **前置依赖**: M05 | **被依赖方**: M18, M23, M31
 
 #### 业务实现
 
@@ -759,7 +767,7 @@ DataLoader 的泛化是独立工作流，与核心框架改造的依赖较弱。
 
 ### M16: Evaluator 体系
 
-**优先级**: P1 | **前置依赖**: M01, M10 | **被依赖方**: M18
+**优先级**: P1 | **前置依赖**: M01, M10 | **被依赖方**: M18, M31（`require_eval` 读评测结果）
 
 #### 业务实现
 
@@ -1281,7 +1289,7 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 
 ### M30: 离线回放（网络来源、匹配、miss 策略、隔离、一致性）
 
-**优先级**: P2 | **前置依赖**: M29（录制档位、归档器、recorder 连接）；M18 只做了抽样验证——用户 2026-10-09 裁决：这条只涉及 browser 的数据飞轮线在 M29 之后直接开始 M30，抽样的 M18 对它算数（M18 本身不算通过，见 M18 条目） | **被依赖方**: M31（分叉在归档上恢复检查点）、M32（按回放日志的文档 miss 过滤样本）——两个条目合入时补边
+**优先级**: P2 | **前置依赖**: M29（录制档位、归档器、recorder 连接）；M18 只做了抽样验证——用户 2026-10-09 裁决：这条只涉及 browser 的数据飞轮线在 M29 之后直接开始 M30，抽样的 M18 对它算数（M18 本身不算通过，见 M18 条目） | **被依赖方**: M31（分叉在归档上恢复检查点，边已补）、M32（按回放日志的文档 miss 过滤样本）——M32 的条目合入时补边
 
 #### 业务实现
 
@@ -1327,6 +1335,45 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 回放放在 capability 里而不是做成代理 provider：Request 阶段 fulfill 让页面保留真实的 https origin、secure context 与 Secure cookie，不涉及 CA 与 HSTS，body 原字节返回（SRI 照样通过），frameId 与 resourceType 在同一条 CDP 通道里，逐步归因因此可行（WARC-Bench 的回放器是同类做法）。可是 S2a 证明 Fetch 本身不是隔离（preconnect 与 WebSocket 不经过它），所以隔离是必需的，并且由网络来源推出——provider 只静态声明它支持（`__capabilities__`），旁边没有第二个开关。回放从不放请求到线上：录制与回放之间唯一允许的差异是档位的 T0 与路由开关，其余都由一致性检查在启动浏览器之前点名。capability 不知道 WAL：它拿到的是 `ArchiveReader`，读的是已提交的证据；匹配键在加载时重算，所以改站点规则不需要重录。
 
 **使用的 skill**：`af-add-a-receptor`、`af-add-a-capability`、`af-regenerate-and-verify`、`af-trace-and-hooks`。
+
+---
+
+### M31: 状态分叉（检查点恢复 + BranchLoop + 分叉任务）
+
+**优先级**: P2 | **前置依赖**: M09（ReactLoop 的一步）、M15（任务加载器与任务上下文）、M16（`require_eval` 读评测结果）、M27（类型化的 trace 读侧、自包含的 `selector_map`）、M30（离线回放：分叉在源 run 的归档上恢复检查点） | **被依赖方**: M32（分叉样本）、M33（恢复校验率、分叉覆盖）——两个条目合入时补边
+
+#### 业务实现
+
+把一个已录制的 run 恢复到第 t 步之前的状态，在那里让 teacher 做一个（或几个）新的决定：`BranchLoop`（`ReactLoop` 子类，`loop_id: branch`）+ 恢复器轴 `RestorerRegistrar`（`restorer_id`，v1 `prefix_replay`）+ capability 侧的可选协议 `RestorationSupport`（browser 实现：元素重定位与恢复校验）+ `trace_branches` 任务加载器与选步轴 `StepSelectorRegistrar`（`selector_id`：`explicit` / `every_k` / `all`）+ 通用的 `ReactLoop.terminal_observation`。框架改动：任务上下文拆成 `TaskContext{env, loop, branch}` 与有类型的 Loop 输入通道（`__loop_inputs__`）；`StepRecord.origin` / `restoration`；`TraceConfig.branch`；`RunTrace.evals()`；`TraceView` 认得步的来源。设计以 `architecture_design.md` §4.1（Loop 输入、`LoopRun` 与 `_run_step`、终止观测、`BranchLoop` 与恢复器）、§4.2、§4.3（恢复的路由）、§4.9（`RestorationSupport`）、§4.10（`TaskContext`、`trace_branches`）、§4.11（`TraceView`）、§4.14（"恢复：重定位与校验"）、§5.3（步的来源、`TraceConfig.branch`）、§5.5（`evals()`）、§6、§9、§10、§12、§13.4 为准；PRD 的修订记录 F1–F18 记下了合入时对 PRD §5.5–§5.8、§6.7 与本模块原文的更正。
+
+#### 业务逻辑
+
+**ReactLoop 先拆（行为不变）**：一个 run 的状态 `LoopRun`（`core/loops/run.py`）、一步 `ReactLoop._run_step(run, step_idx, *, observation=None, restoration=None)`、ReAct 的 memory 协议方法 `_cap_actions` / `_remember_rejected` / `_remember_reply`（在线的步与重放只用这一份）；`terminal_observation: bool = False`（done、`max_steps`、连续解析失败到上限、分叉预算用尽时再观测一次，记 `origin="terminal"`；从不在中止、动作失败与否决路径上；observe 失败记下、不致命）；`AgentMetrics.steps` 只数策略步。原有的 `test_react_*.py` 一字不改地通过；`react.py` 现有的私有工具不搬（交接记录），也不再添。
+
+**Loop 输入**：`AgentLoopBase.__loop_inputs__`（`LoopInput(type, required)`）与 `check_loop_inputs`，`prepare()` / `weave()` 对多的、缺的、类型不对的键抛 `IncompatibleLoopInputError`；`AgentRuntime.prepare(loop_inputs=)`、`execute(loop_inputs=, branch=)`，删掉原先把任意关键字转给 `weave` 的 `**kwargs`；weave 的 deps 多 `negotiated_actions` 与只读的 `loop_inputs`；`get_task_context` 返回 `TaskContext`，`BenchmarkRunner` 把三部分分别交给 `execute`（M30 的 `replay_archive` 照旧在 env 部分）。
+
+**BranchLoop**：受体 `restorer`（只在普通 mixin 上注解），旋钮 `continue_steps: int = 0`、`terminal_observation = True`，输入 `checkpoint`。装配期（`weave`，任何 setup 之前）对照源 trace：同一个 agent（`agent_id`、记录下来的闭集旋钮、memory 策略）、相同的观测与动作协商、源 loop 是 `react`、源 run 不是分叉 run、检查点步已提交且是策略步——不符抛 `IncompatibleCheckpointError`。运行期：种子 system 消息与源 run 相同；**从源 trace 重建上下文**（录下的观测 → `build_react_prompt`；每次录下的 LLM 调用依次经 `parse_react_output` 与上面三个 memory 方法），并逐条校验——每次调用之前的上下文与录下的 `messages` 相同、每步的动作 / 截断 / 回复与源 StepRecord 相同；然后经恢复器恢复环境（恢复出的步记 `origin="restored"`，内容抄自源 run、带校验结果、观测是恢复出的 live 观测）；第 t 步在经校验的 obs_t 上走一个 ReAct 步（`loop.step_info` 的 `max_steps` / `today` 取自源 run），再走至多 `continue_steps` 个，最后终止观测。
+
+**恢复器 `prefix_replay`**：对每个 k < t observe → `verify_restoration` → 每个录下的动作 `retarget` → `act_fn` → 比较成败；最后校验 obs_t。旋钮 `verify: strict | warn`、`screenshot_max_distance`（默认 5）、`pace: none | recorded_llm_latency`。逐步交回 `RestoredStep`，`strict` 下发散抛 `RestorationDivergedError`（Loop 记一条 `origin="restored"`、`error_phase="restore"` 的记录，`agent_done=error`、`env_status=failed`）。`RestorationCheck.reason` 是固定顺序的枚举：`document_miss`、`url_mismatch`、`retarget_not_found`、`retarget_ambiguous`、`action_failed`、`signature_mismatch`、`screenshot_distance`。恢复器的包在 `core/loops/restore/`，`RunAbort` 卫生检查改成递归扫描 `core/loops/`。
+
+**Browser**：`retarget`——带 index 的动作先几何（`bounds` 在 `retarget_tolerance_px` 之内）再签名（tag、id / name / aria-label / role、文本哈希），唯一匹配改写 index，否则 `not_found` / `ambiguous`；`switch_tab` 按 tab 顺序与 URL；坐标与导航恒等。`verify_restoration`——URL、可交互元素签名多重集、截图 dHash（Pillow）距离、自上次校验以来的主 frame 文档 miss（回放日志的单调计数）。
+
+**分叉任务**：`trace_branches` 加载器（手写 `__init__`、惰性加载）只经 `RunTrace` 读已提交的部分，按 `sources` glob（排序）、`require_status`、`require_eval`（经 `RunTrace.evals()`）、`require_archive` 筛选，在已提交的策略步里经 `step_selector` 选步，每步展开 `branches_per_step` 个任务：id `<source_run_id>/s<t>/b<i>`，env 部分是源 run 的 `task_setup`（缺失或被脱敏时经源 benchmark 的加载器重解析）加 `replay_archive = 源 run 目录`，loop 部分是 `checkpoint`，branch 部分是 `BranchProvenance`（不进配置摘要）。v1 没有 `trace_branches` 的评测数据加载器。三个 browser agent 的 `__wiring__["agent_loop"]` 允许 `branch`。
+
+#### 验收
+
+- **离线（无 Chrome）**：三个 browser agent（browser_use、skyvern、ui_tars），源 run 含步内解析重问、被 schema 拒绝的回复与截断提示，各自在每个检查点上：策略步收到的上下文与源 run 第 t 步第 0 次调用的 `messages` 逐条相同（确定性的假环境）；换一个每次启动 id 都不同的假环境时，除第 t 步那一轮之外逐条相同（历史来自录下的数据，第 t 步的 prompt 来自经校验的 live obs_t）；Skyvern 的 `_action_history` 重建。`continue_steps: 0` 与 `2` 都跑通；`strict` 与 `warn`；每个 `RestorationCheck.reason` 各有自己的用例；同一个 agent 的不符在 setup 之前抛错；多的 / 缺的 Loop 输入抛错；终止观测的触发与不触发路径；`AgentMetrics.steps` 只数策略步；`TraceView` 与 `online_mind2web` 在带终止观测的 trace 与分叉 trace 上；同一次 sweep 的两个分叉任务共享 `config_hash`、sweep 级旋钮改变它；加载器的筛选、选步、任务 id 与任务上下文。
+- **真实 Chrome**（`requires_chrome`，M29 的 fixture 站点、pinned 录制与 M30 的归档、脚本化的 teacher，不花 LLM 费用）：确定性的多步流程（含 index 动作）恢复时 100% 的步通过校验；同一归档、同一种子、同一 LLM 输出的两个分叉终止截图哈希相同；隔离——分叉 b0 的策略动作设了一个 cookie 与一个 localStorage 条目，同一检查点的 b1 两者都没有，且独立通过校验；算出 PRD §9 的恢复校验率，报告点名实际运行的 agent、cleaner、serializer、backend 与模型路由。
+- **文档**：architecture 上面列出的各节；`AGENTS.md` §2.2、§2.3、§2.7；本条目与 DAG 边；`configs/README.md` 与发布的 `configs/flywheel/branch_*.yaml`；`af-add-a-loop`、`af-trace-and-hooks`、`af-add-a-receptor`、`af-add-a-capability` 四份 guide；PRD 修订记录。
+- `CONVENTIONS.md` 的闸门全绿；`uv run spectragent-gen` 之后 `tests/test_generated` 全绿。
+
+**落地（2026-10-11，待验收）**：Loop 一半在 `core/loops/{_registrar,run,react,branch,validation}.py` 与 `core/loops/restore/{_registrar,context,source,checks,prefix_replay}.py`，通道在 `core/runtime.py`、`core/benchmark_runner.py`、`schemas/{task,restoration,step_record}.py`、`core/trace/models.py`、`core/hooks/trace_writer.py`，`RestorationSupport` 与路由在 `core/capabilities/base.py`、`core/environments/_registrar.py`；browser 的重定位与校验在 `core/capabilities/browser/restoration.py`（`capability.py` 只委托，旋钮 `retarget_tolerance_px`；`replay/replay_log.py` 的 `diverged_total`）；`RunTrace.evals()` 在 `core/trace/reader.py`；选步轴 `core/data_loader/task/step_selector/`，加载器 `core/data_loader/task/{trace_branches,require_eval}.py`；`TraceView` 在 `evaluator/trace_view.py`。发布的分叉配置 `configs/flywheel/branch_ui_tars_archive.yaml`；fixture 的 `branch` 页面（每一步都是 index 动作：链接、输入框、单选框、链接）与真实 Chrome 验收 `tests/test_core/test_capabilities/test_browser_branch_live.py`（3 个分叉、15/15 次恢复校验通过）。与本条目文字的差异见 PRD 修订记录 F19 起。
+
+#### 设计思考
+
+分叉 = 恢复 + 一个策略步 + 可配置的继续步数；"单步分叉"只是 `continue_steps: 0`。恢复的方式是策略（Loop 的受体），元素重定位与恢复校验是 capability 的知识（`RestorationSupport`），teacher 是被测对象（wired 的 LLM），三者分别挂在 Loop、capability、agent 的 LLM 上。上下文从源 trace 重建而不是从恢复出的页面重建：恢复出的页面元素 id、tab id 与截图都是新的，只有录下的数据能让第 t 步的历史与源 run 逐条相同；重放每一步都对照录下的调用自我校验，所以装配期比不了的开放旋钮（`max_actions_per_step` 在源 trace 里是 `"<omitted>"`）也在任何动作执行之前被兜住。恢复器只恢复环境、逐步交回，以后的快照恢复是同一个接口下的另一个策略。
+
+**使用的 skill**：`af-add-a-loop`、`af-add-a-receptor`、`af-trace-and-hooks`、`af-add-a-capability`、`af-regenerate-and-verify`。
 
 ---
 
@@ -1381,3 +1428,4 @@ M01 ✅ 已完成（conscribe v0.6.1）
 | M09 | 中 | ReactLoop 从 BaseReactAgent.run() 提取，需保持行为一致 | diff-based 验证：相同输入产生相同 LLM prompt |
 | M13 | 中 | BrowserSession adapter 的 observe() 拆分可能丢失状态 | adapter 内部保持 BrowserSession 完整调用，仅分拆返回值 |
 | M30 | 中 | 真实站点上的回放保真度未知（anti-bot、轮询、时间相关的 URL 与 body），Fetch 之外的外联只能靠隔离挡住，Chrome 行为随版本变化 | fixture 上的 `requires_chrome` 回归当版本金丝雀；隔离默认 `required`；S2b 在用户授权后度量 10 个真实任务，结果交给 M33 |
+| M31 | 中 | 真实站点上恢复会因异步加载、时间相关内容与 A/B 实验发散；元素重定位在重复、动态的列表上可能歧义；agent 代码一改，旧检查点就复现不了 | pinned 档位 + 离线回放；逐步校验与 `strict`，原因按枚举分类、M33 按站点统计；重放对照录下的调用自我校验，不符在任何动作之前报 `IncompatibleCheckpointError` |

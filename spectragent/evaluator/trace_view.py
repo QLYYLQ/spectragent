@@ -11,6 +11,12 @@ one file, not four graders.
 
 Everything is derived from files on disk. Nothing here touches a live
 environment, an agent instance, or a network.
+
+A trace's steps have three origins (``StepRecord.origin``,
+``docs/architecture_design.md`` §4.11): ``policy`` steps are what this run's
+agent decided, ``restored`` steps are a branch run's re-execution of its
+source's prefix, and a ``terminal`` step is the look at the world after the
+run ended. The trajectory accessors keep them apart.
 """
 
 from __future__ import annotations
@@ -127,19 +133,39 @@ class TraceView:
 
     @cached_property
     def action_history(self) -> list[str]:
-        """Flat ``name(params)`` strings, one per executed action.
+        """Flat ``name(params)`` strings of the run's own agent, one per action.
 
-        Rebuilt from the WAL step records when they carry structured
-        ``actions``, because those are written per step and survive a
-        crash; ``result.json``'s pre-flattened list only exists if the run
-        finished. Falls back to it when the steps are empty.
+        Policy steps only: a branch run's restored prefix replays its source
+        run's actions, which this run's agent did not decide
+        (:attr:`restored_action_history` lists them apart). Rebuilt from the
+        WAL step records when they carry structured ``actions``, because
+        those are written per step and survive a crash; ``result.json``'s
+        pre-flattened list only exists if the run finished. Falls back to it
+        when the policy steps carry none.
         """
         history: list[str] = []
         for record in self._trace.step_records:
-            history.extend(f"{a.name}({a.params})" for a in record.actions)
+            if record.origin == "policy":
+                history.extend(f"{a.name}({a.params})" for a in record.actions)
         if history:
             return history
         return list(self._result.action_history)
+
+    @cached_property
+    def restored_action_history(self) -> list[str]:
+        """A branch run's restored prefix, each action labelled ``[restored]``.
+
+        The source run's actions as the restored steps recorded them, in
+        step order. Empty for every trace that is not a branch, so a judge
+        that prepends it to :attr:`action_history` sends exactly what it
+        sent before for those.
+        """
+        return [
+            f"[restored] {a.name}({a.params})"
+            for record in self._trace.step_records
+            if record.origin == "restored"
+            for a in record.actions
+        ]
 
     @cached_property
     def screenshots(self) -> list[Path]:
@@ -154,11 +180,16 @@ class TraceView:
         that never committed is not one of them. An image judge that finds
         this list empty must say so rather than silently switching to a
         text-only prompt.
+
+        Every origin is included: a branch run's restored steps and a
+        terminal observation (``ReactLoop.terminal_observation``) — whose
+        frame is the state after the last action — are frames of this run.
         """
         return list(self._trace.screenshots)
 
     @cached_property
     def step_count(self) -> int:
+        """Policy steps, as ``AgentMetrics.steps`` counts them."""
         return self._result.metrics.steps
 
     # ── Metrics ─────────────────────────────────────────────────────

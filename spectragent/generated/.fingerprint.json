@@ -1,10 +1,10 @@
 {
   "action": "db75da7f57f94282",
-  "agent": "e83dbf01da321117",
-  "agent_loop": "a88da70d8ee003a9",
+  "agent": "9860cc765e1d9b55",
+  "agent_loop": "efd96d0b28458a5e",
   "archiver": "da1740b33c4eb009",
   "browser_provider": "fc67fe2b7509148b",
-  "capability": "2cb7e046e812be58",
+  "capability": "79ce7c1c9ce1274b",
   "dom_cleaner": "d3759408cccf7556",
   "dom_serializer": "8ca4a1c44062ce75",
   "environment": "5df4d4cfd6d5f7b8",
@@ -17,6 +17,8 @@
   "mouse_trajectory": "f72a02c1629d0121",
   "network_source": "575d28cea9f32036",
   "replayability": "eda74154c90f2665",
-  "task_loader": "6a5e9d23ee352d17",
+  "restorer": "b273a35aaaec451f",
+  "step_selector": "9ea011eb9793231e",
+  "task_loader": "5df4a5539a699dbc",
   "typing_rhythm": "832866739feb6eb2"
 }

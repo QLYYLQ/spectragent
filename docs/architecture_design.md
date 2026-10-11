@@ -186,10 +186,9 @@ AgentLoopRegistrar = create_registrar("agent_loop", AgentLoop, discriminator_fie
 class AgentLoop(Protocol):
     """执行策略契约 — 定义 agent 的编排流程"""
     loop_id: str
-    ctx: dict[str, Any]   # weave 后绑定的 runtime deps
 
     def weave(self, agent: Any, **deps: Any) -> Any: ...
-    async def _execute(self, agent: Any, task: str, **kwargs: Any) -> Any: ...
+    async def _execute(self, agent: Any, task: str, *, ctx: dict[str, Any], **kwargs: Any) -> Any: ...
 
 
 class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
@@ -197,19 +196,26 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 
     __required_slots__: ClassVar[set[str]] = set()
     __optional_slots__: ClassVar[set[str]] = set()
+    __loop_inputs__: ClassVar[Mapping[str, LoopInput]] = {}   # 每个任务交给 Loop 的输入（M31，见下文）
 
     def _validate_slots(self, agent: Any) -> None:
         """callable(getattr(agent, slot)) — 缺 slot 即 raise IncompatibleError"""
 
+    def check_loop_inputs(self, inputs: Mapping[str, Any]) -> None:
+        """键与类型对照 __loop_inputs__ — 多的、缺的、类型不对的一次报全：IncompatibleLoopInputError"""
+
     def weave(self, agent: Any, **deps: Any) -> Any:
         self._validate_slots(agent)
-        self.ctx = deps
+        self.check_loop_inputs(deps.get("loop_inputs", {}))
+        ctx = dict(deps)               # 只活在闭包里：loop 实例上什么都不存（没有 loop.ctx）
         loop = self
         async def run(task: str, **kw: Any):
-            return await loop._execute(agent, task, **kw)
+            return await loop._execute(agent, task, ctx=ctx, **kw)
         agent.run = run                # instance-level monkey-patch
         return agent
 ```
+
+**weave 是无状态的。** deps 只活在 `agent.run` 闭包里，同一个 loop 实例可以织到 N 个 agent 上，第 N 次 weave 不会改写第 1 个 agent 的环境；loop 实例上没有 `ctx` 属性（`test_shipped_config_integration.py` 断言它不存在）。`ctx` 的内容由 `AgentRuntime.prepare()` 决定（§4.2）：`env`、`llm`、`memory`、`act_fn`、`negotiated_obs`、`negotiated_actions`（M31）、`active_descriptors`、`step_recorder`、`task_id`、`loop_inputs`（M31：只读映射，Loop 不声明输入时为空）。
 
 具体 Loop 子类示例：
 
@@ -219,13 +225,14 @@ class ReactLoop(AgentLoopBase):
     __required_slots__ = {"build_react_prompt", "parse_react_output"}
     __optional_slots__ = {"get_react_output_model", "prepare"}
 
-    async def _execute(self, agent, task, **_):
-        # 通过 self.ctx 拿到 weave 时绑定的 deps
-        env = self.ctx["env"]
-        llm = self.ctx["llm"]
-        memory = self.ctx["memory"]
-        act_fn = self.ctx["act_fn"]
-        # ... observe → build_prompt → LLM → parse → act 循环 ...
+    async def _execute(self, agent, task, *, ctx, **_):
+        # deps 每次调用经 ctx 传入，不存在 self 上
+        run = LoopRun.from_ctx(agent, task, ctx, ...)   # 一个 run 的依赖与账本（core/loops/run.py）
+        for step_idx in range(self.max_steps):
+            result = await self._run_step(run, step_idx)   # observe → build_prompt → LLM → parse → act
+            if result is not None:
+                return result
+        ...
 ```
 
 #### Loop 实现现状与规划
@@ -236,7 +243,12 @@ AgentLoop (Protocol)
 ├── ReactLoop (__registry_key__ = "react")  ← ✅ 已实现
 │     ├── slots: {build_react_prompt, parse_react_output}
 │     │           opt: {get_react_output_model, prepare}
-│     └── 循环：observe → build_react_prompt → LLM → parse_react_output → act
+│     ├── 循环：observe → build_react_prompt → LLM → parse_react_output → act
+│     │
+│     └── BranchLoop (__registry_key__ = "branch")  ← M31（P2，数据飞轮）
+│           ├── slots：继承 ReactLoop，不另立 Protocol
+│           ├── loop 输入：checkpoint（源 trace + 检查点步 t）
+│           └── 恢复 0..t-1 → 第 t 步策略步 → continue_steps 个 ReAct 步 → 终止观测
 │
 ├── CodeActLoop (__registry_key__ = "codeact")  ← P2 待实现 (M20)
 │     └── slots: {build_code_prompt, parse_code_output}
@@ -312,33 +324,27 @@ class ReactLoop(AgentLoopBase):
     __required_slots__ = {"build_react_prompt", "parse_react_output"}
     __optional_slots__ = {"get_react_output_model", "prepare"}
 
-    async def _execute(self, agent, task, **_):
-        # weave() 已经把所有 deps 绑到 self.ctx
-        env = self.ctx["env"]
-        llm = self.ctx["llm"]
-        memory = self.ctx["memory"]
-        act_fn = self.ctx["act_fn"]                # guarded_act，见 4.5 节
-        negotiated_obs = self.ctx.get("negotiated_obs")
-        active_descriptors = self.ctx.get("active_descriptors", [])
-        session_id = self.ctx.get("session_id")
-
-        # 可选 prepare slot — agent 自己 seed system prompt
-        if callable(getattr(agent, "prepare", None)):
-            agent.prepare(task=task, action_descriptors=active_descriptors)
+    async def _execute(self, agent, task, *, ctx, **_):
+        # weave() 把 deps 放进 agent.run 的闭包，每次调用经 ctx 传进来
+        env = ctx["env"]
+        llm = ctx["llm"]
+        memory = ctx["memory"]                     # agent.prepare 的种子消息已由 AgentRuntime.execute 写入
+        act_fn = ctx["act_fn"]                     # guarded_act，见 4.5 节
+        negotiated_obs = ctx["negotiated_obs"]
 
         for step in range(self.max_steps):
             # AOP hooks 在方法调用时自动触发 — Loop 完全不知道有 hook 存在
-            obs = await env.observe(negotiated_obs, session_id)
-            messages = agent.build_react_prompt(obs)
-            completion = await llm.ainvoke(messages)
+            obs = await env.observe(negotiated_obs)
+            memory.add_messages(agent.build_react_prompt(obs))
+            completion = await llm.ainvoke(memory.get_context_messages())
             actions = agent.parse_react_output(completion.completion)
             for action in actions:
-                result = await act_fn(action, session_id=session_id)
+                result = await act_fn(action)
                 if result.is_done:
                     return ...
 ```
 
-**Loop 反向"安装"到 agent**：调用方拿到的不是 `loop.run(agent, ...)`，而是 `agent.run(task)`——`AgentLoopBase.weave(agent, **deps)` 在执行前把 `agent.run` monkey-patch 成一个调 `loop._execute(agent, task)` 的闭包，并把 deps 绑到 `loop.ctx`。这样从外部看 agent 是一个自包含的可执行单元（`await agent.run(task)`），而 Loop 只是它内部的"编排策略"——这与"Loop 本质就是在调度 agent 的 method"的语义最贴近。
+**Loop 反向"安装"到 agent**：调用方拿到的不是 `loop.run(agent, ...)`，而是 `agent.run(task)`——`AgentLoopBase.weave(agent, **deps)` 在执行前把 `agent.run` monkey-patch 成一个调 `loop._execute(agent, task, ctx=...)` 的闭包，deps 只在这个闭包里。这样从外部看 agent 是一个自包含的可执行单元（`await agent.run(task)`），而 Loop 只是它内部的"编排策略"——这与"Loop 本质就是在调度 agent 的 method"的语义最贴近。
 
 **关键设计：AOP 透明织入**。AgentRuntime 通过 Weaver 将 hook 拦截器织入 agent/env/llm 和作为 loop 角色的 StepRecorder 方法调用中。Loop 收到的是包装后的依赖，照常调用其方法；代理按 hook 的声明触发 handler。Loop 代码中零 hook 感知，零 emit 调用。
 
@@ -354,6 +360,98 @@ class ReactLoop(AgentLoopBase):
 | `agent.build_react_prompt` | around | prompt 构建时 | 可选：prompt 审计（同步方法，`proceed()` 直接返回值而非 awaitable） |
 
 > **与 emitter.dispatch() 的权衡**：AOP 方案让 Loop 代码完全干净（零横切逻辑），但只能拦截实际存在的方法调用。如果某些 Loop（如 PlanExecuteLoop）需要发出不对应任何方法调用的语义事件（如 `plan_generated`），可以将其建模为 agent Protocol 方法（如 `agent.parse_plan()`），AOP 自然覆盖。
+
+#### Loop 输入：`__loop_inputs__`（M31）
+
+有的 Loop 每个任务都要一份只属于它的输入——`BranchLoop` 要知道从哪个源 run 的第几步分叉。它不是环境 setup context（environment 按 `setup()` 签名路由那一份，谁都不接受的键在 setup 之前报错，§4.3），也不是 agent 的领域知识，所以有一条自己的、有类型的通道：
+
+```python
+@dataclass(frozen=True)
+class LoopInput:                     # core/loops/_registrar.py
+    type: type                       # 值的类型，prepare 时检查
+    required: bool = True
+    description: str = ""
+
+class BranchLoop(ReactLoop):
+    __loop_inputs__ = {"checkpoint": LoopInput(Checkpoint, description="源 run 目录 + 检查点步")}
+```
+
+- **声明**：`AgentLoopBase.__loop_inputs__: ClassVar[Mapping[str, LoopInput]]`，默认空——`ReactLoop` 不接受任何输入。
+- **校验**：`AgentLoopBase.check_loop_inputs(inputs)` 把多出来的键、缺的必需键、类型不对的值一次报全，抛 `IncompatibleLoopInputError`（`core/loops/validation.py`，点名 loop 与每个键）。`AgentRuntime.prepare()` 在 slot 校验之后立刻调它（早于协商与织入），`weave()` 再调一次（weave 是公开方法，直接调用的人得到同样的错误）——与 slot 校验的形状相同。于是交给 `react` 一个检查点会在装配期响亮失败，而不是从头跑一遍。
+- **送达**：校验过的输入以只读映射放进 weave 的 deps（`ctx["loop_inputs"]`）。Loop 实例上不存任何东西。
+- **来源**：`TaskLoader.get_task_context(id)` 返回 `TaskContext{env, loop, branch}`（§4.10），`BenchmarkRunner` 把 `loop` 部分作为 `AgentRuntime.execute(loop_inputs=...)` 送进来。`prepare()` / `execute()` 原先那个把任意关键字原样转给 `weave` 的 `**kwargs` 通道已删除，由这条有类型的通道取代：拼错的关键字现在是 `TypeError`，不是 `ctx` 里一个没人读的键。
+
+#### 一个 run 与一步：`LoopRun`、`ReactLoop._run_step`（M31）
+
+`BranchLoop` 的策略步与继续步就是普通的 ReAct 步，所以 `ReactLoop._execute` 拆成三样（行为不变，原有的 `test_react_*.py` 一字不改地通过）：
+
+- **`LoopRun`**（`core/loops/run.py`，与 Loop 无关的一个 run 的状态）：从 `ctx` 取出的依赖（env、llm、memory、act_fn、negotiated_obs、task_id、step_recorder、model_id）与每个 Loop 都记的账：开始时刻、`step_records`、`action_history`、`llm_calls`、上一步的记录、目前最好的答案、连续解析失败的步数，以及 token 账本 `usage`。账本对象本身仍是 `react.py` 的 `_UsageTally`——它和 `_merge_token_usage`、`_parse_feedback`、`_build_result` 等现有私有工具的归属另有交接记录（`HANDOFF_261010_react_loop_layering.md`），M31 不搬它们，也不再往 `react.py` 加模块级私有工具。
+- **`ReactLoop._run_step(run, step_idx, *, observation=None, restoration=None)`**：一个 ReAct 步（observe → 填 loop 来源 fragment → `build_react_prompt` → LLM 与步内重问 → 解析 → 截断 → act → 交出 StepRecord）。返回终止的 `AgentResult`，或 `None` 表示继续；`RunAbort` 照原样上抛。给了 `observation` 就不再 observe（分叉的策略步用恢复器已经校验过的那次观测，再 observe 会开一个新 cycle）；给了 `restoration`，这一步写出的每条记录都带上它（§5.3）。
+- **ReAct 自己的 memory 协议是 `ReactLoop` 的方法**，在线的步与 `BranchLoop` 的重放只用这一份：`_cap_actions(actions, step_idx)`（按 `max_actions_per_step` 截断，返回保留的动作和被丢弃的动作名）、`_remember_rejected(memory, output_text, exc)`（被拒的回复作为 assistant 轮，再加 `_parse_feedback` 的 user 轮）、`_remember_reply(memory, output_text, dropped)`（解析成功的回复作为 assistant 轮，有动作被丢弃时再加截断提示）。
+
+**步数只数策略步。** `AgentMetrics.steps` 数 `origin == "policy"` 的记录（§5.3），`max_steps` 也只数策略步；恢复出来的步与终止观测不占步数，也不进 `AgentResult.action_history`。
+
+#### 终止观测：`terminal_observation`（M31）
+
+`ReactLoop.terminal_observation: bool = False`：run 结束之后再看一次世界，记成一条 `origin="terminal"` 的 StepRecord（不调 LLM、没有动作，步号接在最后一条记录之后）。这个开关是通用的：`online_mind2web` 按截图打分，最后一个动作之后的那张截图它同样用得上。
+
+- **何时**：done、`max_steps` 用尽、连续解析失败到上限，以及 `BranchLoop` 的步数预算用尽。**从不**在基础设施失败（`_abort`）、动作失败、恢复发散和任何 `RunAbort` 路径上。
+- **结果在前**：终止的 `AgentResult` 在决定结局时就建好，终止观测不改它的 `agent_done`、`env_status`、`answer` 与 `end_to_end_ms`（后者不含这次观测）；唯一的例外见下一条——交出终止记录失败时，失败的结局在 `error` 后附上原因。
+- **不致命**：observe 抛普通异常时记一条带 `error_phase="observe"` 的终止记录，run 的结局不变。guard 在这次 observe 上否决：先把这条终止记录作为被否决的一步交出，再上抛否决（否决优先于已经定下的结局，§4.2）。交出终止记录失败不顶替结局（与"记录失败不顶替 run 已经定下的结局"同一条规则，§4.6）：失败的结局在 `error` 后面附上原因，成功的结局只记日志；交出被取消切断时取消带着结局离开（`carry_outcome`）。
+- **分层**：observe 并建出终止记录是 `AgentLoopBase._observe_terminal(env, negotiated_obs, *, step)`（任何 Loop 可用，自己不交出记录）；交出与结局优先级用的是 `ReactLoop` 现有的交出方法。终止观测只有 env 来源的 fragment——没有 agent 看它，loop 来源的 fragment 不填。
+
+#### `BranchLoop`：从检查点分叉（M31）
+
+分叉 = 把环境恢复到源 run 第 t 步之前的状态 + 一个策略步 + 可配置的继续步数。恢复的方式是策略（Loop 的 `restorer` 受体，§4.1 下文与 §6），元素重定位与恢复校验是 capability 的知识（§4.9 `RestorationSupport`），teacher 是被测对象（wired 的 LLM，采样参数在 LLM 配置里，可以与源 run 不同）。
+
+```python
+@dataclass
+class BranchLoop(_BranchLoopReceptors, ReactLoop):      # restorer 只在普通 mixin 上注解（AgentReceptors 写法）
+    __registry_key__ = "branch"
+    __wiring__ = {"restorer": ("restorer", ["prefix_replay"])}
+    __loop_inputs__ = {"checkpoint": LoopInput(Checkpoint)}
+    continue_steps: int = 0              # ge=0；策略步之后再走几个 ReAct 步
+    terminal_observation: bool = True    # 覆盖 ReactLoop 的默认
+```
+
+**装配期（`weave`，在 `prepare()` 里、任何 setup 之前）**：打开检查点的源 trace，对照当前装配，不符就抛 `IncompatibleCheckpointError`，点名源 run 以及两边的值：
+
+- 源 trace 是 format 2、第 t 步已提交且 `origin == "policy"`、它的观测已记录（`error_phase != "observe"`）、0..t 每一步都已提交；源 run 的 `loop_id` 是 `react`（重放用的是 ReAct 的 memory 协议）；源 run 自己不是分叉 run（`TraceConfig.branch` 为空——分叉 run 的前缀没有 LLM 调用可重放，要分叉就从它的源 run 分叉）。
+- 同一个 agent（PRD §11 Q9 的默认：teacher 必须是源 run 的 agent 类）：`agent_id` 相同；源 `resolved` 里这个 agent 条目上记下来的每个闭集标量旋钮（`observation_mode`、`coordinate_space`、`prompt_template`……，`"<omitted>"` 的不比）与当前 agent 实例的同名属性相同；memory 的 `memory_id` 与它记下来的闭集旋钮相同；`TraceConfig.negotiation` 的观测与动作两部分（激活与必需的 fragment、激活的动作、两张绑定表）与本次协商相同——归档那两个字段不比，分叉记录什么证据是它自己的选择（裁决 D3）。
+- 开放类型的旋钮（`max_actions_per_step`、窗口大小、温度）在源 trace 里是 `"<omitted>"`（§5.6），装配期比不了；它们由运行期的重放逐条校验兜住（下一条），在任何动作执行之前。
+
+**运行期（`_execute`）**：
+
+1. **种子消息**：runtime 已写入的 `agent.prepare` 种子消息（三个 browser agent 都只有一条 system 消息），必须与源 run 第 0 步第 0 次调用的 prompt 开头逐条相同，否则 `IncompatibleCheckpointError`（system prompt 里有任务、动作表与 `max_actions_per_step`）。比较的是 trace 记录的形状（`core/loops/restore/source.py::recorded_form`：活的消息走记录器同一条路——JSON 快照、再按记录的消息类型读回），所以两边逐条相同当且仅当记录器会为两边写下同样的内容。
+2. **重建上下文（Option A，PRD 修订 F1）**：上下文从**源 trace** 重建，不从恢复出的观测重建——恢复出的页面里元素 index 是新的 backendNodeId、tab id 是新的 CDP targetId、截图是重拍的，从它们重建的 prompt 不可能与源 run 一致。对每个 k < t：读回录下的观测 obs_k（env 与 loop 来源的 fragment 都读，经 `from_trace` 还原成类型，组装成本次协商的 `NegotiatedObservation`），调 `build_react_prompt`，写进 memory；再按开始顺序重放第 k 步的**每一次**录下的 LLM 调用：取出 live 时交给解析器的那个回复（文本调用是录下的文本；结构化调用用 agent 的 `get_react_output_model()` 把录下的 JSON 还原成实例；被 schema 拒绝的调用是 `failure.raw_output`），经 `parse_react_output` 解析——`ParseError` 走 `_remember_rejected`，成功走 `_cap_actions` + `_remember_reply`。重放自己校验自己：每次调用之前，memory 的上下文必须与这次录下的调用的 `messages` 逐条相同；第 k 步最后一次调用之后，解析出的动作（按 `guarded_act` 的那条规则命名——`core/action_guard.py` 的 `resolve_action_name`，用本 run 守卫的动作名集合与绑定表：守卫解析得了的补全前缀，它拒绝的保持 agent 写的名字，源记录里留下的正是守卫给的名字；本 run 的守卫能代表源 run 的，因为 weave 已证明两边协商相同、种子检查已证明带着动作表的种子 prompt 相同）、被丢弃的个数、写进 memory 的回复文本必须等于源 StepRecord 的 `actions`、`truncated_actions`、`llm_output`，解析失败的步必须在源 run 里也是解析失败的步。任何一条不符都是 `IncompatibleCheckpointError`（这个 agent 复现不了这个检查点），发生在恢复环境之前。重放经过 agent 的 slot，所以 Skyvern 的 `_action_history`、browser_use / UI-TARS 的坐标网格这类 agent 自己的状态一并重建；连续解析失败的步数也由重放得出。
+3. **恢复环境**：`async for restored in self.restorer.restore(RestorationContext(...))`——每个 k < t 交回一条 `RestoredStep(step=k, check, observation)`，Loop 把它记成 `origin="restored"` 的 StepRecord：内容是源 run 第 k 步记录的副本（动作、结果、回复、观测摘要照抄，所以策略步看到的 `loop.history` / `loop.action_result` 与源 run 第 t 步看到的相同），`restoration` 是这一步的校验结果，`token_usage` 置空，`duration_ms` / `llm_latency_ms` 由 TraceWriter 照常盖章，`timestamp` 是现在；交给 `record_step` 的是**恢复出的** live 观测（只有 env 来源的 fragment）。最后一条 `step == t`：经校验的 live obs_t 与它的校验结果。
+4. **策略步**：`_run_step(run, t, observation=obs_t, restoration=<obs_t 的校验结果>)`——就是一个 ReAct 步。`loop.step_info` 的 `max_steps` 与 `today` 取自源 run 在第 t 步录下的 `loop.step_info`（设了 `today_override` 时 today 用它），所以 agent 看到的"第几步 / 共几步"与源 run 相同。
+5. **继续步**：再走至多 `continue_steps` 个 ReAct 步（`continue_steps: 0` 就是单步分叉——是一个配置值，不是写死的逻辑）。策略步总数不超过 `max_steps`；预算用尽是 `agent_done=max_steps`。
+6. **终止观测**（默认开）。
+
+**失败语义**：重放与恢复里 agent 与环境的方法都是织过的，guard 照样能否决：否决发生在重放或恢复时，记一条 `origin="restored"`、`error_phase` 为 `"replay"` / `"restore"` 的记录，然后上抛。恢复器在 `verify: strict` 下发现发散，抛 `RestorationDivergedError(check, observation)`：Loop 记一条 `origin="restored"`、`error_phase="restore"`、`restoration=<发散的那次校验>` 的记录，以 `agent_done=error`、`env_status=failed`、`error` 点名 `RestorationDivergedError` 结束（不做终止观测）；恢复时环境的普通异常同样以 `error_phase="restore"` 结束。`verify: warn` 只把失败写进那一步的 `restoration`，照常继续。
+
+**隔离**：N 个分叉就是 N 个任务，每个任务新组一套 stack、新起一个浏览器（pinned 档位每 run 新建 profile），各自恢复——第 t_1 个分叉做过的事影响不到第 t_2 个。这是 Zero Global State 的直接结果。
+
+**恢复器**（`RestorerRegistrar`，`restorer_id`，`core/loops/restore/`）：
+
+```python
+class Restorer(Protocol):
+    restorer_id: str
+    def restore(self, ctx: RestorationContext) -> AsyncGenerator[RestoredStep, None]: ...   # 异步生成器：Loop 拿到第 t 步（或交出恢复步失败）时要能关掉它
+
+@dataclass(frozen=True)
+class RestorationContext:            # 窄的：没有 LLM、没有 memory、没有 recorder
+    env: Any                         # 织过的 environment：observe / retarget / verify_restoration
+    act_fn: Callable[[Action], Awaitable[ActionResult]]   # guarded_act
+    negotiated_obs: Any
+    source: SourceRun                # 源 trace 的类型化读取：record(k)、observation(k)、calls(k)、step_info(k)
+    checkpoint_step: int             # t
+```
+
+恢复器只恢复**环境**，从不碰 memory——所以以后的 `capability_checkpoint`（Docker 的 snapshot/restore、Android 模拟器快照，经新增的 `RestorableCapability` 协议接入）是同一个接口下的另一个策略。逐条交回而不是最后一次性返回，是为了每恢复一步就提交一步：恢复到一半超时或崩溃，trace 里也已经有前面的步。
+
+`prefix_replay`（v1）对每个 k < t：`env.observe(negotiated_obs)` → `env.verify_restoration(recorded_obs_k, live_obs_k)`（`strict` 下这一步已经不通过就不再执行动作）→ 对第 k 步录下的、源 run 执行过的每个动作（名字是 `guarded_act` 留下的：全限定，被它拒绝的是 agent 写的原名）：`env.retarget(action, recorded_obs_k, live_obs_k)` → `act_fn(重定位后的动作)` → 比较动作成败与录下的结果（`strict` 下一个动作的成败与录下的不同、或执行抛错，就是发散：这一步余下的动作不再执行）；最后再 observe 一次并校验 obs_t。旋钮：`verify: strict | warn`（默认 `strict`）、`screenshot_max_distance`（截图感知哈希的汉明距离上限，默认 5，64 位 dHash）、`pace: none | recorded_llm_latency`（后者在执行第 k 步动作之前等待第 k 步录下的模型等待时间，让异步加载有与源 run 相同的时间落定；默认 `none`）。每一步的观测次数与源 run 相同（一步一个 cycle，§4.4）。校验结果的原因按固定顺序判定，见 §5.3 `RestorationCheck`；重定位失败在 `warn` 下照录下的动作原样执行，在 `strict` 下就是发散。
 
 ### 4.2 AgentRuntime（通用编排）
 
@@ -372,8 +470,8 @@ class AgentRuntime:
         return cls(run)
 
     # ── prepare(): 装配阶段 ─────────────────────────────────────────
-    def prepare(self, *, session_id=None, task_id="unknown",
-                action_filter=None, **kwargs) -> Any:
+    def prepare(self, *, task_id="unknown", action_filter=None,
+                loop_inputs=None) -> Any:          # 没有 **kwargs：Loop 的每任务输入走有类型的 loop_inputs
         run = self._run
         agent, loop, env, llm, memory = (
             run.agent, run.loop, run.env, run.llm, run.memory
@@ -381,6 +479,8 @@ class AgentRuntime:
 
         # 1. Slot 校验：loop.__required_slots__ ⊆ agent 的 callable 方法
         loop._validate_slots(agent)
+        # 1b. Loop 输入校验（M31，§4.1）：多的 / 缺的 / 类型不对 → IncompatibleLoopInputError
+        loop.check_loop_inputs(loop_inputs or {})
 
         # 2. Observation 三方协商（见 §4.4）
         negotiated_obs = negotiate_observation(agent, loop, env)
@@ -422,10 +522,12 @@ class AgentRuntime:
             wrapped_agent,
             env=wrapped_env, llm=wrapped_llm, memory=memory,
             act_fn=act_fn, negotiated_obs=negotiated_obs,
+            negotiated_actions=negotiated_actions,     # M31：BranchLoop 对照源 run 的协商、补全动作前缀
             active_descriptors=active_descriptors,
             step_recorder=wrapped_recorder,
-            session_id=session_id, task_id=task_id, **kwargs,
-        )
+            task_id=task_id,
+            loop_inputs=MappingProxyType(dict(loop_inputs or {})),
+        )                                              # BranchLoop.weave 在这里做检查点的装配期校验
 
         # 7. 拦截点审计 —— 必须在 weave 之后：agent.run 到这一步才存在
         weaver.audit_intercepts()
@@ -436,9 +538,11 @@ class AgentRuntime:
         return wrapped_agent
 
     # ── execute(task): 一站式驱动 ───────────────────────────────────
-    async def execute(self, task, *, timeout=300, config=None,
-                      env_context=None, raise_on_error=True, **kwargs):
-        prepared_agent = self.prepare(**kwargs)
+    async def execute(self, task, *, timeout=300, task_id="unknown", benchmark="", subset="",
+                      run_id=None, env_context=None, loop_inputs=None, branch=None,
+                      action_filter=None, config=None, raise_on_error=True):   # 没有 **kwargs
+        prepared_agent = self.prepare(task_id=task_id, action_filter=action_filter,
+                                      loop_inputs=loop_inputs)
 
         # 在 env setup 之前打开 trace：setup 失败也要落进 trace
         await self._dispatch_lifecycle("on_run_start",
@@ -447,7 +551,8 @@ class AgentRuntime:
             archive_negotiation=self._negotiated_archive,      # 没有归档消费者时为 None
             env_evidence_recorded=self._negotiated_archive is not None,
             env_evidence_privacy=self._env_evidence_privacy,   # 有序、去重的隐私标记
-            task_setup=env_context)                            # 交给 setup_environment 的那份；没有时为 None
+            task_setup=env_context,                            # 交给 setup_environment 的那份；没有时为 None
+            branch=branch)                                     # M31：分叉来源（BranchProvenance），非分叉 run 为 None
 
         self._finish_started = False
         try:
@@ -537,6 +642,8 @@ class AgentRuntime:
 - runtime 只认 `ArchiveConsumer` Protocol（`core/archive/protocols.py`），从不认识 `TraceWriter`。
 
 协商结果留在 runtime 上：`negotiated_archive` 与 `negotiated_observation` / `negotiated_actions` 并列，`prepare()` 之后可读，没有归档消费者时为 `None`。它连同 `env_evidence_recorded`、`env_evidence_privacy`、`task_setup` 一起按名字传给 `on_run_start`：runtime 是唯一同时握有这些事实的组件，由它解析，hook 只按名字接收、不自己推导（记录到哪些 `TraceConfig` 字段见 §5.3）。
+
+**任务上下文的三部分各走各的路（M31）。** 一个任务的 `TaskContext{env, loop, branch}`（§4.10）由调用方（`BenchmarkRunner.run_task`）拆开交给 `execute`：`env` → `env_context`（→ `setup_environment`，按 capability `setup()` 签名路由，§4.3；原样记进 `task_setup`）；`loop` → `loop_inputs`（→ `prepare()` 校验后进 weave 的 `ctx["loop_inputs"]`，§4.1）；`branch` → `branch`（一个 `BranchProvenance`，按名字传给 `on_run_start`，记成 `TraceConfig.branch`，§5.3；runtime 不解读它）。三者之间不互相渗透：环境拿不到检查点，Loop 拿不到 setup context，trace 只记来源。
 
 **每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `running`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
 
@@ -654,6 +761,10 @@ class Environment(Protocol):
     def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None: ...
     async def collect_archive(self) -> ArchiveBatch: ...
 
+    # 检查点恢复（M31）— 只有恢复器调用；没实现 RestorationSupport 的 capability 得到恒等 / 不校验的默认
+    async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget: ...
+    async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]: ...
+
     # 生命周期 — setup 的 context 按 capability 路由，不广播（capability 自己内部调 backend.open/close）；
     # teardown 在 setup 半途失败、或根本没有 setup 之后调用也必须安全
     async def setup(self, context: Mapping[str, Any] | None = None, *,
@@ -666,7 +777,7 @@ class Environment(Protocol):
 
 **三条 provides 轴在 Protocol 上一样声明。** `provided_actions` 过去只在 `EnvironmentBase` 上，`negotiate_action` 却一直从环境上读它：结构化实现 `Environment` 的人照着 Protocol 写，类型检查通过，到协商时才失败。M28 把它补进 Protocol，第三条轴从第一天起就三样一起声明（`provided_archivers`、`bind_archivers`、`collect_archive`），不再复制那个不对称。代价写明：`Environment` 是 `@runtime_checkable`，多了这几个成员，一个没有归档面的结构化环境（测试里的 `SurfacelessEnv`）`isinstance(env, Environment)` 就变成 `False`。代码里没有任何地方做这个判断——runtime 只在有归档消费者时才碰这三个成员——以后也不要靠它分辨环境，否则不归档的 run 对 env 零调用这条保证就破了。
 
-**setup 的任务上下文按名字路由。** `Environment.setup(context, *, negotiation)` 不广播 context：`EnvironmentBase.route_setup_context`（`environments/_registrar.py`）读每个 capability 的 `setup()` **签名**，扁平的键（`{"start_url": ...}`，`TaskSetup.to_context()` 发出的形状）只交给签名里点名了它的 capability；挂在 capability 实例 id 或 `capability_id` 下的映射（`{"browser": {...}}`）只属于那一个 capability；谁都不点名的键在 setup 之前抛 `ValueError`，列出各 capability 声明的键。`**kwargs` 什么都不声明，所以什么都收不到——它不再是绕过检查的出口（`test_capability_isolation.py` 禁止 capability 的 `setup` 带它）；`negotiation` 是框架保留的参数，不是任务上下文的键。所以 capability 的 setup 一律写成 `async def setup(self, *, negotiation=None, <它接受的任务上下文键>=None)`，加一个任务上下文的键就是给 `setup()` 加一个具名参数，契约不会与实现漂移。实现了的先例是 browser 的 `start_url`；M30 加 `replay_archive`（回放的源 run 目录，§4.14）。任务上下文的词表在 §4.10；M31 会把它拆成 env / loop / provenance 三部分，env 那一部分仍走这条路由。
+**setup 的任务上下文按名字路由。** `Environment.setup(context, *, negotiation)` 不广播 context：`EnvironmentBase.route_setup_context`（`environments/_registrar.py`）读每个 capability 的 `setup()` **签名**，扁平的键（`{"start_url": ...}`，`TaskSetup.to_context()` 发出的形状）只交给签名里点名了它的 capability；挂在 capability 实例 id 或 `capability_id` 下的映射（`{"browser": {...}}`）只属于那一个 capability；谁都不点名的键在 setup 之前抛 `ValueError`，列出各 capability 声明的键。`**kwargs` 什么都不声明，所以什么都收不到——它不再是绕过检查的出口（`test_capability_isolation.py` 禁止 capability 的 `setup` 带它）；`negotiation` 是框架保留的参数，不是任务上下文的键。所以 capability 的 setup 一律写成 `async def setup(self, *, negotiation=None, <它接受的任务上下文键>=None)`，加一个任务上下文的键就是给 `setup()` 加一个具名参数，契约不会与实现漂移。实现了的先例是 browser 的 `start_url`；M30 加 `replay_archive`（回放的源 run 目录，§4.14）。任务上下文的词表在 §4.10；M31 把它拆成 `TaskContext{env, loop, branch}` 三部分，只有 env 那一部分走这条路由（loop 部分是 Loop 的输入，§4.1；branch 部分只进 trace，§5.3）。
 
 **Environment 通过 `__wiring__` 注入 capabilities**：
 
@@ -798,6 +909,12 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - `collect_archive()`：什么都没绑定时直接返回 `ArchiveBatch()`，一个 capability 也不碰。否则每个绑定了的 capability 一个任务**并发**收集；每个任务都跑完才裁决结果，不留孤儿任务。一个 capability 抛 `Exception`、交回的不是 `ArchiveBatch`，或交回的文件里有 `capability_id` 不是它自己的（后两条记成点名该 capability 的 `ArchiveContractError`，最后一条还点名那些 `archiver_id`），都算它失败；有任何失败就抛 `ArchiveCollectionError(env_type, failures)`——`failures` 是 capability id → 异常，消息按 capability 顺序点名每一个，`__cause__` 是按 capability 顺序的第一个失败；健康 capability 交回的批次随之丢弃（run 反正要失败，§4.6）。没有失败时按 capability 顺序把各批次合并成一个 `ArchiveBatch`。`CancelledError` 原样传播——包括某个 capability 自己抛出它的情形：`gather` 这时会让兄弟任务接着跑，所以先取消还没结束的任务、等它们收场，再原样重抛，同样不留孤儿任务。
 - 收集不带任何参数：environment 从不把步号（也不把 cycle）交给 capability。"第 t 步的提交取走的就归第 t 步"是记录器那一侧的规则（§4.6）。
 
+**检查点恢复的路由（M31）**（`core/environments/_registrar.py`）：恢复器（§4.1 `BranchLoop`）经 environment 调用两个只读的方法，capability 侧的协议是 §4.9 的 `RestorationSupport`：
+
+- `retarget(action, recorded, restored) -> Retarget`：与 `act()` 同一套前缀路由（`action.name` 的第一段经 `_by_capability_id()` 找 capability）。路由到的 capability 实现了 `RestorationSupport` 就交给它；没实现、前缀不带点、或前缀找不到 capability 时返回恒等的 `Retarget(action=<原动作的副本>, method="identity")`——重放要复现源 run 的执行，连同它被 `guarded_act` 拒绝的那些动作：原样交给 `act_fn`，由它再拒绝一次，成败比较照样成立。`retarget` 从不执行动作，也不改环境。
+- `verify_restoration(recorded, restored) -> list[RestorationEvidence]`：按 capability 顺序扇出到每个实现了 `RestorationSupport` 的 capability，各交回一份证据（带自己的 `capability_id`）；没有任何实现者时是空列表，即"没有可校验的"。`recorded` 与 `restored` 都是本次协商的整个 `NegotiatedObservation`，capability 按自己 fragment 的本地名读它要的那几个（协商保证本地名不撞）。
+- 两者都只量、不判：阈值与 `strict | warn` 是恢复器的策略（§4.1），capability 只报告测到了什么，没测的字段为 `None`。environment 不缓存、不记录任何东西。
+
 **Observation cycle 由 env 宣告，不由 capability 推断**：`Environment.observe` 持有单调递增的 cycle 计数器，每次 observe 自增一次，并在任何 fragment 解析之前调用每个参与 capability 的 `begin_observation(cycle)`。这正是 capability 敢批量抓取的前提——browser 一次 `BrowserStateRequestEvent` 同时拿到 DOM + screenshot + tab list，然后在本 cycle 内把每个 key 服务任意多次，因为下一个 cycle 会被**告知**而不是被**猜到**。此前这条规则只以"我是否已经服务过这个 key"的形式活在 `BrowserCapability` 内部：那是用推断代替调用方本来就握有的信息，并且对任何读同一 fragment 两次的调用方都是错的。同一步内重复读同一个 fragment 是**同一次** observation，不是下一次。
 
 **全限定 dotted key**：每个 action 的 `__registry_key__` 是 `"<source>.<id>"`（如 `browser.click`），所以无论 single-cap 还是 composite env，`action.name` 都已经带前缀，`act()` 只做路由不做改写——单 cap 场景也透明工作。Composite 场景（如 GAIA）的 `browser.click` / `tool_sandbox.call_tool` 通过同一段路由分发到对应 capability。
@@ -808,7 +925,7 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - **裁决**：协商期收窄。`negotiate_action` / `negotiate_observation` 在声明空间里跑集合运算，再把每个声明 key 绑定到本次 environment 里唯一提供它的全限定 key。绑定表（short → 全限定）只在协商期算一次，挂在协商结果上（`action_bindings` / `fragment_bindings`）；下游一律读表，不得自己再推一遍。
 - **消歧靠拒绝**：一个 relative key 若被本 environment 里两个 capability 同时提供（`browser.screenshot` vs `desktop.screenshot`），抛错并把两个候选全限定名都报出来。按 wiring 列表顺序挑一个、或让 agent 声明 capability 亲和度，都被明确否掉：前者是静默降级，后者把 F10 刚拆掉的耦合又装回去。
 - **逃生舱**：在 wiring 里直接写全限定 key 即钉死 provider（含消歧场景），这也是上面那条报错给出的修法。
-- **收窄发生在唯一一处**：`build_guarded_act`。它本来就包住了每一个 action，所以 agent 吐出的 relative name 在进 `env.act` 之前就已经变回全限定名；此后整条链路（路由 / descriptor / WAL）只见全限定键。
+- **收窄发生在唯一一处**：`build_guarded_act`。它本来就包住了每一个 action，所以 agent 吐出的 relative name 在进 `env.act` 之前就已经变回全限定名；此后整条链路（路由 / descriptor / WAL）只见全限定键。规则本身只有一份：同模块的 `resolve_action_name(name, active_names, bindings)`，守卫对经手的每个动作应用它；需要知道守卫把一个动作叫成了什么的调用方（`BranchLoop` 重放时拿重新解析出的动作与录下的比较，§4.1）也问它，不自己再推一遍。
 
 **Agent 声明 capability 需求**（通过 `__wiring__`，替代 `required_capabilities` property）：
 
@@ -1376,7 +1493,7 @@ active_descriptors, act_fn = build_guarded_act(
 # active_descriptors 用于 prompt 构建，act_fn 是 guarded 的执行闭包
 ```
 
-`build_guarded_act` 的闭包在每次调用时校验 `action.name` 是否在 active set 里，不在就直接返回 `ActionResult(success=False, error=...)`。
+`build_guarded_act` 的闭包在每次调用时用 `resolve_action_name` 给 `action.name` 定名：在 active set 里就是它自己；短名经绑定表解析到仍在 active set 里的全限定名，就地改写；其余直接返回 `ActionResult(success=False, error=...)`，名字保持 agent 写的样子。
 
 **结果：prompt 说有什么 action，实际就能用什么 action。配置错误在 `AgentRuntime._negotiate_actions` 阶段就会 raise `IncompatibleActionError`，而不是等到 LLM 第一次输出之后才暴露。**
 
@@ -1449,7 +1566,7 @@ class RuntimeHook(Protocol):
                            agent_id, loop_id, env_type, llm_model,  # 值：runtime 解析好的 run 配置
                            resolved_config, observation_negotiation, action_negotiation,
                            archive_negotiation, env_evidence_recorded, env_evidence_privacy,
-                           task_setup, **kwargs) -> None: ...       # payload 会长，**kwargs 是签名的一部分
+                           task_setup, branch, **kwargs) -> None: ...   # payload 会长，**kwargs 是签名的一部分
     async def on_run_end(self, *, result: AgentResult, env) -> None: ...         # 每条终止路径，含外部取消
     async def on_run_error(self, *, error, partial_steps, env) -> None: ...     # 超时 / 异常 / 取消，紧跟 on_run_end
 ```
@@ -1716,6 +1833,22 @@ class ArchiveContractError(ValueError): ...   # 收集到的批次违反契约�
 
 `ArchiveFile.__post_init__` 在构造时校验，违反就抛 `ValueError` / `TypeError`：`archiver_id` 非空，不含 `/` 或 `\`，不是 `.` / `..`；`scope == "step"` 要求带点的 `<capability>.<id>` 键；`scope == "run"` 允许裸 capability id，要求 `content_addressed is False` 且 `media_type == "application/json"`；`name` 是单个路径段（非空，不含 `/` 或 `\`，不是 `.` / `..`）；`archiver_id` 与 `name` 都必须能编码成 UTF-8，且编码后不超过 255 字节（`MAX_SEGMENT_BYTES`，ext4 等文件系统的 `NAME_MAX`：trace 在按字符计长度的 APFS 上写成，拷到按字节计的文件系统上也得放得下）；`media_type` 是 `type/subtype`（`/` 两侧都非空）且能编码成 UTF-8；`data` 是 `bytes`；`meta` 是 `ArchiveProvenance`；`content_addressed` 是 `bool`；`scope` 只能是那两个字面量。`ArchiveProvenance` 同样在构造时校验：`captured_at` 是有限的数（不是 `bool`），`cycle` 是 `int` 或 `None`，`ids` 是 str → str 的映射、每个键和值都能编码成 UTF-8，复制一份后只读暴露。规则写在 `core/archive/types.py` 的 `segment_problem` / `text_problem` 里。所有这些字符串最后都进 trace 的 JSON 索引或路径：孤立的代理字符（宽松解码留下的 `"\udc80"`）没有 UTF-8 编码，超长的名字会让文件系统报 `ENAMETOOLONG`，两者都会让带着它的提交失败，而且每次重试都以同样方式失败——所以在 capability 那里就拒绝。`archiver_id` 与 `name` 都是单段，所以 `env/` 下不会出现"一个路径既是文件又是目录"，也就不会在 WAL 里半途失败；拼出来的完整路径仍由消费者按 `encoding.check_relative_path` 再查一遍，上面的段规则也再查一遍（frozen dataclass 仍可能被绕过构造校验伪造出来）。
 
+**检查点恢复面（M31）也是单独的、可选的 Protocol**（`core/capabilities/base.py`；PRD 里叫 `ActionRetargeting`，因为它同时管校验，改叫 `RestorationSupport`）：
+
+```python
+@runtime_checkable
+class RestorationSupport(Protocol):
+    # 录下的动作在恢复出的环境里该怎么执行。只算不做：不执行、不改环境、不缓存
+    async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget: ...
+    # 恢复出的观测与录下的观测差多少。只量不判：阈值与 strict / warn 是恢复器的事
+    async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence: ...
+```
+
+- 类型在 `spectragent/schemas/restoration.py`：`Retarget{action: Action | None, method: "identity" | "geometry_signature" | "tab_order_url", failure: "not_found" | "ambiguous" | None, detail}`（`action is None` 当且仅当 `failure` 不为空）；`RestorationEvidence{capability_id, url_match, recorded_url, restored_url, signature_match, signature_missing, signature_extra, screenshot_distance, document_misses}`，每个量都可以是 `None`（这个 capability 不测它，或这一次测不了——例如本 run 没有激活截图）。
+- 为什么需要：browser 的元素 index 就是 Chrome 的 `backendNodeId`（`dom/models.py` 的 `element_handle`），新启动的浏览器里同一个元素的 index 不同，录下的 `click(index)` 不能原样重放；`switch_tab` 的 `target_id` 是每个浏览器新生成的 CDP targetId。坐标动作与导航动作不需要（pinned 回放下布局确定，截图哈希兜底）。
+- 不进 `BaseCapability`，`CapabilityBase` 也不给默认实现：默认（恒等、不校验）在 environment 那一侧（§4.3 "检查点恢复的路由"），不实现的 capability 什么都不用写。
+- capability 不知道 WAL、不知道步号：它拿到的是两个观测对象，读的是 fragment（browser 读 `browser.dom` 的自包含 `selector_map`、`browser.browser_meta`、`browser.screenshot`），不 import `core.trace`（§10）。唯一不从两个观测里读的是观测装不下的计数（browser 回放服务的主 frame 文档 miss）：capability 记着上一次读到的总数，报自上一次 `verify_restoration` 以来的增量——所以这个调用不是幂等的，恢复器对每个恢复出的观测恰好调用一次、按顺序（`prefix_replay` 正是如此）。Browser 的实现见 §4.14 "恢复：重定位与校验"。
+
 #### 4.9.x Capability ↔ Backend 生命周期
 
 **设计决策**：`backend` 是 capability 的执行层配置——回答"这个 capability 通过什么 backend 提供 transport 端点"。Browser 选 `local_chrome` / `lexmount` / `skyvern` 等；Docker 选 `local_docker` / `ssh_docker`；Desktop VM 选不同的 VNC 后端。Backend 通过与 `agent.llm` / `env.capabilities` 完全同构的 IoC 路径注入。
@@ -1940,12 +2073,12 @@ BaseTaskLoader (Protocol)           BaseEvalLoader (Protocol)
     ├── env_type: str                   ├── task_ids() → list[str]
     ├── task_ids() → list[str]          └── __getitem__(id) → EvalReference
     ├── __getitem__(id) → TaskDefinition
-    └── get_task_context(id) → dict     ← 新增：task 特定上下文（如 per-task tools）
+    └── get_task_context(id) → TaskContext{env, loop, branch}   ← 任务特定上下文（M31 拆成三部分）
 ```
 
 **去掉 "Browser" 前缀**，支持所有环境类型的 benchmark。
 
-**任务上下文的词表**。`get_task_context(id)` 返回的键交给 `AgentRuntime.execute(env_context=...)` → `setup_environment`，按 capability `setup()` 签名里的名字路由（§4.3）；谁都不接受的键在 setup 之前报错。现有的键：
+**任务上下文的词表**。`get_task_context(id).env` 的键交给 `AgentRuntime.execute(env_context=...)` → `setup_environment`，按 capability `setup()` 签名里的名字路由（§4.3）；谁都不接受的键在 setup 之前报错。现有的键：
 
 | 键 | 谁接受 | 含义 |
 |---|---|---|
@@ -1955,7 +2088,32 @@ BaseTaskLoader (Protocol)           BaseEvalLoader (Protocol)
 | `replay_archive` | browser（M30） | 回放的**源 run 目录**（一个 trace 目录，含 `manifest.json`）。`network_source` 拦截（`archive`）时必须给、不拦截（`live`）时不许给，都在 setup 报错、点名双方。capability 经 `core/archive` 的 `open_archive` 打开它，只读已提交的部分（§4.14 "回放"）；`spectragent-run --replay-archive DIR`——CLI 先按工作目录把它解析成绝对路径再放进任务上下文，记进 `task_setup` 的因此是绝对路径（下面一段：分叉靠这份记录，可能在别的工作目录里跑）；自己组 `env_context` 的调用方同样给绝对路径 |
 | `task_tools` | tool_sandbox（设计中，M23） | 每个 task 的工具定义（§13.5） |
 
-整个 context 按值级规则脱敏后记进 `TraceConfig.task_setup`（§5.6），所以 `replay_archive` 是路径字符串，不是打开的对象——分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。M31 把任务上下文拆成 env / loop / provenance 三部分，上面的键都属于 env 部分，路由不变。
+整个 context 按值级规则脱敏后记进 `TraceConfig.task_setup`（§5.6），所以 `replay_archive` 是路径字符串，不是打开的对象——分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。上面的键都属于 `TaskContext.env`，路由不变（下一段）。
+
+**`TaskContext`：一个任务交给三个不同的消费者的三样东西（M31）**（`spectragent/schemas/task.py`）：
+
+```python
+class TaskContext(BaseModel):
+    env: dict[str, Any] = {}                # → execute(env_context=...)：上表的键，按 setup() 签名路由
+    loop: dict[str, Any] = {}               # → execute(loop_inputs=...)：Loop 声明的输入（__loop_inputs__，§4.1）
+    branch: BranchProvenance | None = None  # → execute(branch=...)：分叉来源，只进 trace（TraceConfig.branch，§5.3）
+```
+
+- `TaskLoaderBase.get_task_context(id)` 返回 `TaskContext(env=task.setup.to_context())`，任务不存在时返回空的 `TaskContext()`；`BaseTaskLoader` Protocol 的返回类型同步改成 `TaskContext`，不留返回 dict 的旧形状。
+- `BenchmarkRunner.run_task` 把三部分分别交给 `AgentRuntime.execute`（§4.2）。`spectragent-run` 只组 env 部分（`--start-url`、`--replay-archive`），照旧。
+- loop 部分的词表：`checkpoint`（`Checkpoint{trace_dir: 源 run 目录的绝对路径, step: t}`）→ `BranchLoop`。交给不声明它的 Loop 在 `prepare()` 报 `IncompatibleLoopInputError`。
+- branch 部分：`BranchProvenance{source_run_id, source_trace（源 run 目录相对 sources 根的 POSIX 路径）, source_benchmark, source_subset, source_task_id, checkpoint_step, branch_index, branch_group_id}`（`spectragent/schemas/restoration.py`），按任务变化，不进配置摘要。
+
+**分叉任务：`trace_branches` 加载器**（`core/data_loader/task/trace_branches.py`，`benchmark_name: trace_branches`）把已录制的 run 展开成分叉任务。它读源 trace 只经 `RunTrace`，只读已提交的部分。
+
+- **旋钮**：`data_dir`（sources 的根目录，默认 `traces`）；`sources: list[str]`（相对根的 glob，展开后按路径排序；必须相对根、不含 `..`，构造时检查；一个匹配到的路径不是目录或没有 `manifest.json` 就不是 run，忽略）；`step_selector` 受体（`StepSelectorRegistrar`，`selector_id`：`explicit{steps}` / `every_k{k, offset}` / `all`，`core/data_loader/task/step_selector/`）；`branches_per_step`（≥ 1）；`require_status`（`completed` 默认 / `error` / `any`，读 `TraceManifest.status`）；`require_eval`（`RequireEval{evaluator_id, label: 1, slug: null}`，pydantic dataclass，在 `core/data_loader/task/require_eval.py`：至少一份该评测器的 `verdict_source == "graded"` 的判定，其 `predicted_label == label`，给了 `slug` 时只看那一份；经 `RunTrace.evals()` 读，§5.5，不读 `result.json`）；`require_archive`（默认 `["browser.network"]`，`[]` 不要求任何归档：源 run 绑定了这些归档器、且它们的 capability 有已提交的 run 记录即环境指纹）；`on_unbranchable: raise | skip`（默认 `raise`）；`subset` 只是标签。`sources` 与 `require_archive` 在 YAML 里的默认写作 `null`，意思就是上面两个默认值：conscribe 读签名生成配置，签名里写不了非空的列表默认值（列表是共享的可变默认，`tuple[str, ...]` 被生成成 pyright 拒绝的 `tuple[str, Ellipsis]`）。
+- **筛选与前提**：`require_status` / `require_eval` 是筛选，不符的源跳过（记 INFO，也记在 `loader.skipped`，原因以 `filtered:` 开头；筛掉的源从不触发抛错）。前提不满足的源按 `on_unbranchable` 抛错或跳过，原因都记在 `loader.skipped`（源路径 → 原因）：读不回来的 trace（manifest、配置、步记录或 `evals/` 坏了）；format 1 的 trace；源 run 本身是分叉 run（`config.branch` 不为空）或回放 run（`task_setup` 里有 `replay_archive`）；`require_archive` 不满足；环境 setup context 拿不到（见下）；源 run 的 `run_id` 与另一个通过筛选的源重复（共享这个 `run_id` 的每个源都不可分叉——它们的任务 id 会撞）。`raise` 一次列出全部不可分叉的源（一个 `BenchmarkDataError`），这次扫描不发布任何任务；`skip` 记 WARNING。
+- **环境 setup context**：取源 `TraceConfig.task_setup.context`（M28 起记录）；没有这份记录、或它的脱敏台账不空（值被换成了 `<redacted>`，照它重建的环境不是源环境）时，按源 run 的 `(benchmark, subset, task_id)` 用源 benchmark 的 TaskLoader 重新解析（一次扫描里每个 `(benchmark, subset)` 只建一个加载器）；都不行就是不可分叉。分叉任务的 env 部分 = 这份 context，加上 `replay_archive = 源 run 目录的绝对路径`。
+- **选步**：候选是已提交的、`origin == "policy"` 的步 t，要求 0..t 每一步都已提交、第 t 步的观测已记录（`error_phase != "observe"`）；`step_selector` 在候选里选，候选之外的步（如 `explicit` 写了超出某个源长度的步）跳过并记原因，键是 `<源路径>#s<t>`（没提交、前缀有缺口、是恢复或终止步、观测没记录）。选步策略是纯函数：`all` 返回全部候选；`every_k` 按**步号**数（`offset`、`offset + k`……里是候选的那些），不按候选里的位置，所以一个源缺了第 4 步时 `k: 2` 仍然选 0、2、6；`explicit` 原样返回写了的每一步（至少一步，构造时检查——生成的配置不带 `min_length`），由加载器判断哪些是候选。一个源一个候选都没有时记在 `loader.skipped`，不抛错。
+- **展开**：每个选中的 t 展开 `branches_per_step` 个任务，任务 id `<source_run_id>/s<t>/b<i>`，`branch_group_id = <source_run_id>/s<t>`；`TaskDefinition.task_text` 是源 run 的任务文本，`env_type` 是源 run 的，`difficulty` / `domain` / `tags` 取自源 `TraceConfig.extra`（结果照样按它们切片），`setup` 在 env 类型有对应 setup 变体时照 env 部分写一份（只是描述；跑的始终是 `get_task_context` 的 env 部分）；`get_task_context` 给出 env（上面那份）、loop（`checkpoint`）与 branch（`BranchProvenance`），每次给一份副本。
+- **惰性加载**：构造时不读盘，第一次 `task_ids()` / `__getitem__` / `get_task_context` 时才扫描源——组装配置（每个任务都会重组一次）因此不做 I/O。一个源都没匹配上时任务列表为空并记 WARNING，点名根目录与 glob。
+- **受体写法**：`TaskLoaderBase` 在 `__post_init__` 里加载、而受体在构造之后才注入，所以这个加载器不是 dataclass：手写 `__init__`（接受继承来的 `subset` / `data_dir` 与上面的旋钮），`step_selector` 是类级注解的单实例受体加 Python 侧默认（`all`），与 `ArchiveNetworkSource.miss_policy` 同一写法。
+- **v1 没有 `trace_branches` 的评测数据加载器**：`spectragent-bench` 跑分叉 sweep 时不解析评测加载器（没配置评测器、或给了 `--no-eval`，就从不查 `EvalLoaderRegistrar`）；配置了评测器而没有 `eval_loader:` 块时就在开跑前报错，点名这个 benchmark——这是通用规则，不是 `trace_branches` 的特例：任何没注册评测加载器的 benchmark 都一样（分叉结果怎么变成训练信号是 PRD §11 Q2，M32 之前定）。
 
 ### 4.11 Evaluator 抽象
 
@@ -1978,6 +2136,13 @@ Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可
 | `tool_trace` | 工具调用序列匹配 | ToolBench, BFCL |
 | `visual_diff` | 截图对比 | OSWorld |
 | `multi_criteria` | 多维度打分 | WebArena |
+
+**评测器经 `TraceView` 读 trace，`TraceView` 认得步的来源（M31）**（`evaluator/trace_view.py`）。一个 trace 的步有三种来源（`StepRecord.origin`，§5.3）：
+
+- `action_history` 只含 `origin == "policy"` 的步的动作——这个 run 的 agent 自己做的决定；恢复出来的步（分叉 run 的前缀）是重放源 run 的动作，不混进来。
+- `restored_action_history` 单列恢复出来的动作，每条带 `[restored]` 标签；非分叉 trace 为空。`online_mind2web` 的最终判定按顺序给出两者（先带标签的恢复前缀，再是策略动作），于是非分叉 trace 的 prompt 与以前逐字节相同。
+- `screenshots` 仍是每个已提交步的截图，所以恢复出来的步的截图与终止观测的截图（`origin == "terminal"`）都在里面——终止观测的那张正是最后一个动作之后的状态。
+- `step_count` 读 `AgentMetrics.steps`，只数策略步。
 
 ### 4.12 DOM Pipeline 抽象
 
@@ -2484,6 +2649,29 @@ setup 里，`cooperation_problems`（配置能否协作）之后、`backend.open
 | Chrome 按送出的 `Date` 重算 cookie 过期；没有 `Date` 时用真实时钟；JS 时钟固定在录制时刻时页面 JS 设的绝对过期 cookie 会被丢掉；没有 `Last-Modified` 时 `document.lastModified` 是真实时钟 | `shift_dates: none \| all`，从不只移一部分；缺 `Date` 时补一个 |
 | `fulfillRequest` 原样送字节，不处理 `Content-Encoding`，也不按 `Content-Length` / `Transfer-Encoding` 分帧 | 归档存解码后的 body；去 CE / TE、重算 CL 只是给 JS 看的头部卫生 |
 
+#### 恢复：重定位与校验（M31）
+
+`BrowserCapability` 实现 §4.9 的 `RestorationSupport`，两个方法都只委托给 `core/capabilities/browser/restoration.py` 里的纯函数（不在 `capability.py` 里加模块级私有工具）。它们只读传进来的两个观测里本 capability 的 fragment（`browser.dom` 的自包含 `selector_map`、`browser.browser_meta`、`browser.screenshot`，M27 的 `DOMObs.from_trace` 把录下的那一份还原成 `DOMState` / `DOMElementNode`），外加回放服务自己的发散计数；不 import `core.trace`，不知道步号。
+
+**重定位**（`retarget`）：
+
+| 录下的动作 | 方式 |
+|---|---|
+| 带元素 index 的动作：`browser.click`、`browser.type`、`browser.select_dropdown`，以及带了 `index` 的 `browser.scroll` / `browser.extract_content` | 几何再签名（`method="geometry_signature"`），见下 |
+| `browser.switch_tab`（`target_id` 是每个浏览器新生成的 CDP targetId） | 按 tab 顺序与 URL（`method="tab_order_url"`）：在录下观测的 `browser_meta.tabs` 里找到这个 `target_id` 的位置，恢复出的 `tabs` 同一位置的 tab URL 相同就换成它的 id；`target_id` 为空（"最近打开的 tab"）原样 |
+| 坐标动作、导航（`navigate` / `go_back` / `go_forward`）、`send_keys`、`wait`、`done`，以及不带 `index` 的 `scroll` / `extract_content` | 恒等（`method="identity"`）：pinned 回放下布局确定，截图哈希兜底 |
+
+几何再签名：(1) 取录下观测 `selector_map[index]` 的条目——它的 `bounds`（页面坐标的 border box，已计入 iframe 偏移）、`tag_name`、`attributes` 与子树文本；(2) 在恢复出的 `selector_map` 里找 `bounds` 的四个量都在 `retarget_tolerance_px`（`BrowserCapability` 的旋钮，默认 2.0 CSS px）之内的候选；(3) 用签名确认：`tag_name`，`id` / `name` / `aria-label` / `role`（属性，或 AX role）各自相等，子树文本规范化（空白折叠）后的 sha256 相等；(4) 恰好一个候选时把 `params["index"]` 改写成它的 handle（可以在别的 OOPIF 命名空间里），其余参数不动；(5) 没有候选是 `failure="not_found"`，多于一个是 `failure="ambiguous"`，`detail` 写候选数。录下的条目缺 `bounds`、本 run 没有激活 `browser.dom`（或这一次的 `browser.dom` 采集失败），或者录下的 `selector_map` 里根本没有这个 index（源 run 的这个动作当时就找不到目标），都是 `not_found`（`detail` 说明原因）。子树文本只读到条目根以下 64 层（`TEXT_DEPTH_LIMIT`）：trace 的编码大约在第 100 层截断条目的子树，活的节点没有截断，两边读到同样的层数，同一个元素的签名才相同；实测的页面最深约 40 层。
+
+**校验**（`verify_restoration`）交回一份 `RestorationEvidence`：
+
+- `url_match`：两边 `browser_meta.url` 逐字相等（任一边没有 `browser_meta` 时为 `None`）；
+- `signature_match` / `signature_missing` / `signature_extra`：两边 `selector_map` 每个条目的签名（同上：tag、四个标识属性、文本哈希；不含 index 与 `bounds`）组成的多重集是否相等，以及录下有而恢复出没有、恢复出多出来的个数（没有 `browser.dom` 时为 `None`）；
+- `screenshot_distance`：两张截图的 64 位 dHash（Pillow：转灰度、Lanczos 缩到 9×8、相邻像素比较）的汉明距离（任一边没有截图字节、或字节解不开时为 `None`，后者记 WARNING）；
+- `document_misses`：自上一次 `verify_restoration` 以来回放服务记下的主 frame 文档 miss 数（`ReplayLog` 的单调计数 `diverged_total`，带 `diverged` 的条目——折叠进 `summary` 的也算——每条加一；回放日志照常被 `browser.network` 逐步取走，不影响这个计数）。capability 记着上一次读到的总数，建回放服务时与 teardown 时归零。`network_source` 是 `live` 时为 `None`。
+
+阈值不在这里：`screenshot_max_distance` 与 `strict | warn` 是恢复器的旋钮（§4.1）。
+
 #### 已知限制
 
 - 嵌套的 dedicated worker 脚本绕过 Fetch（见上）。
@@ -2924,6 +3112,55 @@ class TraceConfig(BaseModel):
 
 **`evals/` 也是原子写。** `EvaluationRunner` 写 `evals/<verdict_slug>.json`，以及可选的平铺副本和 summary，都走 `fsio.atomic_write`：半写的 verdict 文件会被下一个读者当成损坏的评测。权限与普通写入相同（§5.2），共享的 `--evals-dir` 对其他用户照常可读，重新打分也不改动已有文件的权限。evals 是后置产物，不进 manifest。
 
+**步的来源与恢复校验（M31）**（`spectragent/schemas/step_record.py`、`spectragent/schemas/restoration.py`）。`StepRecord` 多两个带默认值的字段，按 §4.4 的演进规则属于 BACKWARD ✓：
+
+```python
+class StepRecord(BaseModel):
+    ...                                                       # 原有字段不变
+    origin: Literal["policy", "restored", "terminal"] = "policy"
+    restoration: RestorationCheck | None = None
+
+RestorationReason = Literal["document_miss", "url_mismatch", "retarget_not_found",
+                            "retarget_ambiguous", "action_failed", "signature_mismatch",
+                            "screenshot_distance"]                # 也是判定 reason 的先后顺序
+
+class RestoredAction(BaseModel):          # 恢复时一个录下的动作的去向
+    recorded: Action                      # 源 StepRecord 里的那个（`guarded_act` 留下的名字，§4.1）
+    executed: Action | None               # 实际交给 act_fn 的；strict 下重定位失败时为 None（没执行）
+    method: RetargetMethod                # identity | geometry_signature | tab_order_url
+    failure: Literal["not_found", "ambiguous"] | None = None
+    detail: str = ""
+    recorded_success: bool | None         # 源结果的 success；源没有结果时 None
+    live_success: bool | None = None
+    live_error: str | None = None
+
+class RestorationCheck(BaseModel):
+    step: int
+    verdict: Literal["ok", "warn", "diverged"]    # warn / diverged：verify 是 warn / strict 时的失败
+    reason: RestorationReason | None = None       # reasons 的第一个
+    reasons: list[RestorationReason] = []         # 每个不通过的检查，按上面的顺序
+    evidence: list[RestorationEvidence] = []      # 每个实现了 RestorationSupport 的 capability 一份（§4.9）
+    actions: list[RestoredAction] = []            # 这一步录下的动作；第 t 步（策略步的起点）为空
+```
+
+- `origin`：`policy` 是 Loop 自己的 agent 决定的一步（包括所有旧 trace 的每一步——读回来就是 `policy`，这对它们是对的）；`restored` 是分叉 run 恢复出来的前缀步（内容抄自源 run 的那一步，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
+- `restoration`：恢复出来的第 k 步带它自己的校验；分叉的策略步（第 t 步）带 obs_t 的校验——这一步是在那个被校验过的状态上做的决定；`strict` 下发散的那一条（`origin="restored"`、`error_phase="restore"`）带不通过的那次校验。原因的判定：capability 证据里 `document_misses > 0` → `document_miss`；`url_match is False` → `url_mismatch`；重定位 `not_found` / `ambiguous` → `retarget_*`；动作成败与录下的不同、或执行抛错 → `action_failed`；`signature_match is False` → `signature_mismatch`；`screenshot_distance > screenshot_max_distance` → `screenshot_distance`。值为 `None` 的量不参与判定。
+- `AgentResult.schema_version` **不升**（仍是 `2.1`）：`StepRecord` 不在 `result.json` 里，§5.5 的"只认当前版本"守的是 `AgentResult` 自己的形状；升版会让 M29 / M30 录下的、正要拿来分叉的每一个 trace 都读不出 `result`。`manifest.format_version` 也不升：只多了带默认值的字段。
+- 这两个字段都不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_the_stamp_does_not_reach_the_prompt` 同样钉住 `origin` / `restoration`）。
+
+**`TraceConfig.branch`：分叉来源（M31）**。按 §5.4 "记录一个新的 run 级事实" 的步骤：
+
+```python
+class TraceConfig(BaseModel):
+    ...
+    branch: BranchProvenance | None = None     # None：不是分叉 run
+```
+
+- 由 `TaskContext.branch` 而来，`AgentRuntime.execute(branch=...)` 按名字传给 `on_run_start`，`TraceWriter` 按名字接收、原样记录，不推导（§4.2）。
+- **不进 `configuration_digest`**：它是按任务变化的事实——任务 id 本身就是 `<source_run_id>/s<t>/b<i>`——同一次分叉 sweep 的所有任务共享一个 `config_hash`；sweep 级的旋钮（`continue_steps`、teacher 的温度、恢复器的 `verify`）照常经 `resolved` 改变它。字段名不用 "provenance"：那个词已经是 `secrets_recorded` / `env_evidence_*` 那一层的名字。
+- `source_trace` 是源 run 目录相对 sources 根的路径，加上 `source_run_id`，下游（M32 的样本渲染）才找得到源 trace 去拼第 t 步之前的历史；源 benchmark / subset / task_id 让分叉结果能连回源任务的参考答案。
+- 分叉 trace 的每一步都完整记录观测（§13.4 不变）：恢复步交给 `record_step` 的是恢复出的 live 观测，终止步是最后那次观测；PRD 草案里省掉恢复步观测的 `record_observations` 旋钮不做。
+
 ### 5.4 TraceWriter 作为 Hook 实现
 
 TraceWriter 不是 AgentRuntime 的核心组件，而是一个 Hook，通过 AOP Weaver 透明织入 + YAML 配置参数化：
@@ -2956,7 +3193,7 @@ class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂�
 
     async def on_run_start(self, *, env=None, run_id=None, resolved_config=None,
                            archive_negotiation=None, env_evidence_recorded=False,
-                           env_evidence_privacy=(), task_setup=None, **kwargs):
+                           env_evidence_privacy=(), task_setup=None, branch=None, **kwargs):
         if self.archive:
             ...  # 三种情况在建 trace 之前拒绝（RuntimeError，点名 AgentRuntime.prepare）：
                  # archive_negotiation 为 None；它的 active_archivers 与 archive 的键不一致；env 为 None
@@ -2964,7 +3201,7 @@ class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂�
         self._wal = WALWriter(Path(self.trace_dir), run_id or str(uuid.uuid4())[:8])
         self._wal.init_run(trace_config, config_hash=...)   # 摘要取自未脱敏的配置（§5.3）
         # trace_config.negotiation = TraceNegotiation.from_results(obs, action, archive=archive_negotiation)
-        # trace_config.env_evidence_recorded / env_evidence_privacy / task_setup：按名字接收，不推导
+        # trace_config.env_evidence_recorded / env_evidence_privacy / task_setup / branch：按名字接收，不推导
 
     # ── AOP 拦截 handler ──────────────────────────────────
     async def around_ainvoke(self, *, proceed, args, kwargs, **ctx):
@@ -3139,6 +3376,9 @@ class RunTrace:
     def blob(self, sha256: str) -> bytes: ...
     def archive_run_file(self, capability_id: str) -> ArchiveRecord | None: ...
     def archive_lines(self, path: str, model: type[M]) -> list[M]: ...   # M30：逐行 JSON 的归档文件，读成 model
+
+    # ── 后置产物（不在 manifest 里）──────────────────────────────
+    def evals(self) -> dict[str, EvalResult]: ...           # M31：evals/<verdict_slug>.json，按 slug 排序；不缓存
 ```
 
 `exact_match` judge 只读 `result.json`（几 KB），`visual_judge` 才会加载所有 screenshot。
@@ -3163,6 +3403,7 @@ class RunTrace:
 - `blob(sha256)`：一个已提交的内容寻址归档文件的字节，即 `read_extra(archive_blob_path(sha256))`：没有任何已提交的索引把它列为归档文件（`meta` 带 `"archive"`）→ `KeyError`——别的生产者放在同一地址上、不带归档元数据的 extra 文件不是归档文件；字节与索引不符 → `TraceSchemaError`。
 - `archive_run_file(capability_id)`：该 capability 已提交的 run 记录里 `run_version` 最高的那一版，跨步索引和 trailing 索引找；没有 → `None`。字节用 `read_extra(record.path)` 读。
 - `archive_lines(path, model)`（M30）：一个已提交的、逐行 JSON 的归档文件（`index.jsonl`、`replay.jsonl`……），每个非空行用 `model.model_validate` 读回，按文件顺序返回；字节经 `read_extra` 读（同样的 size / sha256 校验，没提交 → `KeyError`），一行不是 JSON 或校验不过 → `TraceSchemaError`，点名文件与行号。它是通用的：行的类型由调用方给（browser 的 `ReplayLogEntry` 与网络索引行的模型都在 browser 包里，trace 层不认识它们），"读回来的必须是写进去的那个类型"对 capability 的证据也成立。`RunTrace` 由此结构化地满足 `core/archive` 的 `ArchiveReader`（§4.14 "回放的数据通路"）。
+- `evals()`（M31）：这个 run 的 `evals/` 目录里每一份判定，`verdict_slug`（文件名去掉 `.json`）→ `EvalResult`，按 slug 排序；只看 `*.json`（原子写中断留下的 `tmp….tmp` 不算）。evals 是后置产物（`EvaluationRunner` 在 run 之后原子写入，§5.3），不在 manifest 里，所以这是唯一按目录列文件的访问器：没有 `evals/` → `{}`；目录与每个文件都必须在 run 目录之内（解析符号链接之后），否则 `TraceSchemaError`；一份不是 JSON 或不能按 `EvalResult` 校验的文件 → 点名它的 `TraceSchemaError`。不缓存：同一个 `RunTrace` 在评测写入之后再读，看得见新的判定。`trace_branches` 的 `require_eval` 经它筛选源 run（§4.10），从不读 `result.json`。
 - 任何 `ArchiveRecord` 的字节都用 `read_extra(record.path)` 读，同一套 size / sha256 校验。这四个访问器全部只从每步和 trailing 的 extra 索引解析（索引里 `meta` 带 `"archive"` 键的记录才是归档文件），不探测路径、不 glob，所以孤立的 `env/` 文件对它们不可见；它们和 `extra_files` 一样拒绝 format 1 的 trace。
 
 **读回来的必须是写进去的那个类型。** Writer 拿到的是 `StepRecord` / `AgentResult`，reader 就必须还原成同一个 model，而不是 `dict[str, Any]` —— 否则字段名只能靠翻 JSON 文件去猜，猜错（`rec["step_index"]`，实际是 `rec.step`）能通过全部静态检查、到运行时才炸。这也是 Evaluator 唯一的输入契约。
@@ -3241,16 +3482,18 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | 注册表 | 判别方式 | 说明 | 状态 |
 |--------|---------|------|------|
 | `AgentRegistrar` | `agent_id` (flat) | Agent 实现（领域知识），通过 `__wiring__` 限定可配置的 Loop / Capability 范围；实际兼容性在装配期校验 | ✅ |
-| `AgentLoopRegistrar` | `loop_id` (flat) | Loop 实现（执行策略）；通过 `__required_slots__` 声明所需 agent 方法 | ✅（仅 ReactLoop；CodeAct/FunctionCalling/PlanExecute 待 P2/P3） |
+| `AgentLoopRegistrar` | `loop_id` (flat) | Loop 实现（执行策略）；通过 `__required_slots__` 声明所需 agent 方法，通过 `__loop_inputs__` 声明每任务的输入（M31） | ✅ ReactLoop；M31：`branch`（`BranchLoop`，ReactLoop 子类，§4.1）；CodeAct/FunctionCalling/PlanExecute 待 P2/P3 |
 | `LLMRegistrar` | `model_type.provider` (nested) | LLM provider 实现 | ✅ |
 | `EnvironmentRegistrar` | `env_type` (flat) | 环境实现，通过 `__wiring__["capabilities"]` 注入 Capabilities，按前缀路由 action | ✅（仅 BrowserEnvironment；CompositeEnvironment 待） |
 | `CapabilityRegistrar` | `capability_id` (flat) | 能力 = ActionGroup + Resolver 合体；持 backend wired field | ✅（仅 BrowserCapability；docker / tool_sandbox / desktop_vm / android / gpu_profiling 待） |
 | `BrowserProviderRegistrar` | `provider_id` (flat) | Browser capability 的 backend：`local_chrome` / `lexmount` / `skyvern` / `browser_use` / `airtop` / `agentbay` / `hyperbrowser`。文件位于 `core/capabilities/browser/backends/` | ✅ |
 | `DockerProviderRegistrar` | `provider_id` (flat) | Docker capability 的 backend（`local_docker` / `ssh_docker` ...） | P2 占位待实现 |
 | `MemoryRegistrar` | `memory_id` (flat) | 记忆策略 | ✅（3 种；协议兼容性在 `prepare()` 校验，SummaryMemory 待实现） |
+| `RestorerRegistrar` | `restorer_id` (flat) | 检查点恢复策略：把环境恢复到源 run 第 t 步之前的状态（`prefix_replay`；快照恢复 `capability_checkpoint` 是已知的下一个），`core/loops/restore/`；`BranchLoop.__wiring__["restorer"]` 受体，进 `_collect_registrars()`（§4.1） | M31 |
 | `HookRegistrar` | `hook_id` (flat) | Lifecycle hooks (AOP) | ✅（trace_writer / metrics；live_monitor 待 P3） |
 | `EvaluatorRegistrar` | `evaluator_id` (flat) | 评测策略 | 🚧 partial |
 | `TaskLoaderRegistrar` | `benchmark_name` (flat) | 任务数据加载 | ✅ |
+| `StepSelectorRegistrar` | `selector_id` (flat) | `trace_branches` 加载器在源 run 的已提交策略步里选分叉点的策略：`explicit` / `every_k` / `all`，`core/data_loader/task/step_selector/`；`TraceBranchesTaskLoader.__wiring__["step_selector"]` 受体，进 `_collect_registrars()`（§4.10） | M31 |
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
 | `ActionRegistrar` | `action_id` (flat, dotted key `source.id`) | 每个 Action 独立注册；键含 source 前缀避免跨 capability 撞名（`browser.click` vs `desktop.click`） | ✅ |
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
@@ -3459,6 +3702,9 @@ environment:
 | **新增 Archiver（环境证据归档器）** | 继承所属 capability 的 archiver 基类（框架基类 `ArchiverBase`；browser 是 `BrowserArchiverBase`：声明 `needs`、实现 `open(ctx)` 返回运行期会话，§4.14），`__registry_key__ = "<capability>.<id>"`，旋钮写成 `Annotated` 构造参数（模块里不用 `from __future__ import annotations`），按需声明 `privacy_markers`；把键加进该 capability 的 `__wiring__["archiver"]`；capability 实现 `bind_archivers` / `collect_archive`（§4.9 归档契约）；把 capability 接入 `tests/_helpers/archive_contract.py` | `browser.network`、`browser.storage`、`browser.dom_raw`（M29）；以后的 `browser.rrweb`、`docker.fs_diff`、`android.ui_dump` |
 | **新增回放档位** | 继承 `ReplayabilityBase`，实现 `ReplayabilityProtocol` 全部成员（`replayable`、`launch_args`、`device_scale_factor`、`plan`），旋钮写成 `__init__` 关键字参数；启动开关只从自己的设置生成，经 `LAUNCH_ARGS` 进浏览器（§4.14） | 以后的 `realistic` |
 | **新增网络来源 / miss 策略** | 继承 `NetworkSourceBase` / `MissPolicyBase`，设 `__registry_key__`，实现 Protocol 全部成员；网络来源是不是在拦截（`intercepts`）、要不要隔离是策略自己的属性，旁边不加布尔；带受体的策略不是 dataclass、手写 `__init__`（§4.14 "回放"） | 以后的 `har`（从 HAR 回放）、`lenient`（miss 时放宽到 L2 再试） |
+| **新增恢复器（检查点恢复策略）** | 继承 `RestorerBase`（`core/loops/restore/`），设 `__registry_key__`，实现 `restore(ctx) -> AsyncGenerator[RestoredStep, None]`（写成 `async def` + `yield`）：只恢复环境、不碰 memory，k < t 每步交回一条，最后一条是经校验的第 t 步观测；每个恢复出的观测恰好调一次 `env.verify_restoration`（capability 的计数类证据是自上一次调用以来的增量，§4.9）；`strict` 下第一个不通过的校验（观测、重定位或动作成败）就抛 `RestorationDivergedError`，不再执行后面的动作；不吞 `RunAbort`（`test_abort_handler_hygiene.py` 递归扫描 `core/loops/`） | 以后的 `capability_checkpoint`（Docker snapshot、Android 模拟器快照，经新增的 `RestorableCapability` 协议） |
+| **新增分叉选步策略** | 继承 `StepSelectorBase`（`core/data_loader/task/step_selector/`），实现 `select(candidates) -> list[int]` | 按评测器给的关键帧选步 |
+| **新增 Loop 输入** | 在 Loop 的 `__loop_inputs__` 里声明 `LoopInput(type, required)`；由任务加载器在 `TaskContext.loop` 里给出（§4.1、§4.10） | `checkpoint`（`BranchLoop`） |
 | **新增 Mouse Trajectory / Typing Rhythm 策略** | 继承 `MouseTrajectoryBase` / `TypingRhythmBase`，设 `__registry_key__`，实现 Protocol 全部成员（含 `click_hold_ms` / `aim_offset_px`），knobs 写成 `__init__` 关键字参数 | 新的运动模型；已训练模型的新导出格式属于 `learned` 的 backend，不是新策略（§4.13） |
 | **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `scripts/generate_all.py::_collect_registrars` 注册，否则字段退化成 `Literal[<keys>]`，策略的旋钮全部无法从 YAML 到达（AGENTS.md §3.4）。注册表还是空的时候不能成为 Composer 层（`composer.py` 对没有实现的已收集层直接抛错，`generate_all` 跳过它，fingerprint 测试随之失败）：先创建、先写文档，在注册第一个实现的那次改动里再收集 | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里。`ArchiverRegistrar`：M28 创建，M29 随首批归档器收集 |
 | **配置字段扩展** | 给注册类添加 `Annotated[type, Field(...)]` | 自动出现在生成的 `_composed.py` config schema 中 |
@@ -3535,6 +3781,8 @@ environment:
 - `core/trace/*` 从 `core.archive` 只 import `core.archive.privacy`（`TaskSetupRecord` 里的台账类型）；归档文件以鸭子类型跨进 trace 层，WAL 的接口仍然只有 `TraceFile`；
 - browser 的归档器、回放档位与离线回放（`core/capabilities/browser/archive/`、`replay/`、`recorder.py`）只从框架 import `core.archive`（类型、`ArchiverBase`、`privacy`、回放读侧的 `ArchiveReader` / `open_archive`），不 import `core.trace` / `core.hooks`——capability 不知道 WAL；`core.hooks.trace_writer` 也不 import 任何具体归档器，归档器配置经注册表进入它的生成配置；
 - 新的归档与协商模型里没有 `price` / `cost` / `usd` / `dollar` 字段：只记 token，不记钱（2026-09-19）。
+
+**分叉相关的 import 方向**（M31）：`core/loops/branch.py` 与 `core/loops/restore/*` 经 `core.trace.reader.RunTrace` 读源 trace（`SourceRun` 是唯一的入口，只读已提交的部分），反方向不成立——`core/trace/*` 不 import `core.loops`；capability 一侧的 `RestorationSupport` 实现（browser 的 `restoration.py`）只读传进来的观测，不 import `core.trace` / `core.loops`；`core/environments/*` 只认 `RestorationSupport` Protocol 与 `schemas/restoration.py` 的类型。
 
 外部核心依赖：
 - `conscribe` — 注册 + 配置生成
@@ -3627,6 +3875,7 @@ scope（§4.14）。
 | **P1** | EvaluatorRegistrar + RunTrace lazy loader |
 | **P2** | DockerCapability 实现（actions + terminal/filesystem resolver） |
 | **P2** | CodeActLoop 实现 + DockerCapability 集成 |
+| **P2** | 数据飞轮（browser）：离线回放（M30）；状态分叉——`BranchLoop` + `RestorerRegistrar`（`prefix_replay`）+ `RestorationSupport`（browser 重定位与校验）+ `trace_branches` 加载器与 `StepSelectorRegistrar` + `terminal_observation`（M31） |
 | **P3** | FunctionCallingLoop + ToolSandboxCapability |
 | **P3** | PlanExecuteLoop |
 | **P3** | GPUProfilingCapability（Docker + bare-metal harness split 架构） |
@@ -3651,7 +3900,7 @@ Agent 通过 `__wiring__` 选择并注入 Memory 策略，配置校验覆盖可�
 
 ### 13.4 Observation 完整序列化（已决定）
 
-完整序列化每步的 NegotiatedObservation。理由：存储不值钱，API 和时间值钱。完整 trajectory 数据可直接用于下游 RL 训练。TraceWriter Hook 序列化时利用 ObservationRegistrar 的 discriminated union 能力。
+完整序列化每步的 NegotiatedObservation。理由：存储不值钱，API 和时间值钱。完整 trajectory 数据可直接用于下游 RL 训练。TraceWriter Hook 序列化时利用 ObservationRegistrar 的 discriminated union 能力。分叉 run（M31）同样如此：恢复出来的前缀步与终止观测都完整记录（§5.3），PRD 草案里为省存储而跳过恢复步观测的旋钮不做——体积不是不记 agent 所处环境的理由。
 
 ### 13.5 ToolBench 动态 tool 定义来源（已决定）
 

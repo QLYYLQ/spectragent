@@ -12,9 +12,40 @@ See docs/architecture_design.md §4.5 "guarded_act()" for the design.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Set as AbstractSet
 from typing import Any
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+
+
+def resolve_action_name(
+    name: str,
+    active_names: AbstractSet[str],
+    bindings: Mapping[str, str] | None = None,
+) -> str | None:
+    """The fully-qualified name ``guarded_act`` executes an action called *name* as.
+
+    The one copy of the rule (``guarded_act`` applies it to every action it
+    is handed): an active name is itself; a short name resolves through
+    *bindings* only when its target is active — an ablation
+    (``action_filter``) that dropped the target revokes the alias too;
+    anything else is refused (``None``), and ``guarded_act`` leaves the
+    refused action's name as the agent wrote it. A caller that has to know
+    what the guard did to an action — ``BranchLoop``'s replay comparing a
+    re-parsed step with the recorded one — asks this function rather than
+    working the rule out again.
+
+    Args:
+        name: The action name as the agent emitted it.
+        active_names: The names the guard executes — its filtered
+            descriptors' names.
+        bindings: ``ActionNegotiationResult.action_bindings`` (short name →
+            fully-qualified key); ``None`` accepts fully-qualified names only.
+    """
+    if name in active_names:
+        return name
+    full = (bindings or {}).get(name)
+    return full if full is not None and full in active_names else None
 
 
 async def _reject_action(action: Action, active_names: frozenset[str]) -> ActionResult:
@@ -37,7 +68,8 @@ def build_guarded_act(
     """Build a guarded action executor with optional filtering.
 
     This is the **only** place a capability-relative action name becomes a
-    fully-qualified one. Everything past this closure — ``env.act``
+    fully-qualified one (by :func:`resolve_action_name`, the rule's one
+    copy). Everything past this closure — ``env.act``
     prefix routing, ``ActionDescriptor.name``, the trace — sees the full
     key and nothing else, so the collision-free routing the prefix exists
     for is untouched by agents that speak short names.
@@ -69,21 +101,16 @@ def build_guarded_act(
         filtered = list(descriptors)
 
     active_names = frozenset(d.name for d in filtered)
-    # An ablation can narrow the descriptors after negotiation, so a
-    # binding whose target did not survive it is dropped here rather than
-    # resolving to an action the run no longer executes.
-    resolvable = {
-        short: full
-        for short, full in (bindings or {}).items()
-        if full in active_names and short not in active_names
-    }
+    bound = dict(bindings or {})
 
     async def guarded_act(action: Action, **kwargs: Any) -> ActionResult:
-        name = action.name
-        if name not in active_names:
-            full = resolvable.get(name)
-            if full is None:
-                return await _reject_action(action, active_names)
+        # An ablation can narrow the descriptors after negotiation, so a
+        # binding whose target did not survive it does not resolve to an
+        # action the run no longer executes (``resolve_action_name``).
+        full = resolve_action_name(action.name, active_names, bound)
+        if full is None:
+            return await _reject_action(action, active_names)
+        if full != action.name:
             # Resolve in place, not onto a copy: the caller keeps this
             # object and is the one that writes it into ``StepRecord``
             # and ``AgentResult.action_history``. A copy would leave the

@@ -126,7 +126,7 @@ class TestWiring:
 
     def test_agent_loop_wiring(self) -> None:
         wiring = UITarsAgent.__wiring__
-        assert wiring["agent_loop"] == ("agent_loop", ["react"])
+        assert wiring["agent_loop"] == ("agent_loop", ["react", "branch"])
 
     def test_no_key_names_a_capability(self) -> None:
         """The whole point: nothing in the wiring says ``browser``."""

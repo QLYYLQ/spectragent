@@ -26,6 +26,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.evaluator import ExactMatchEvaluator
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.eval_reference import EvalReference
+from spectragent.schemas.task import TaskContext
 from tests._helpers.assembly import make_env, make_run
 
 _ANSWERS = {"t-1": "42", "t-2": "sixty"}
@@ -148,7 +149,7 @@ class _TaskLoader:
         return _Task(task_id)
 
     def get_task_context(self, task_id):
-        return {}
+        return TaskContext()
 
 
 class _EvalLoader:

@@ -390,6 +390,31 @@ unchanged. `HookBase` and hooks without receptors (`metrics`) stay dataclasses;
 `HookBase` is `@dataclass(eq=False)` so a hand-written subclass does not inherit an
 "all instances are equal" `__eq__`.
 
+**A dataclass Loop subclass with a receptor (M31's `BranchLoop`).** `ReactLoop` is a
+dataclass, and `BranchLoop(_BranchLoopReceptors, ReactLoop)` stays one: `restorer: Restorer`
+is annotated only on the plain mixin `_BranchLoopReceptors`, never a field, so it never
+becomes a parameter of the synthesised `__init__` (Rule 3 holds), and `__post_init__`
+assigns `default_restorer()` over the descriptor for a hand-built loop. The audit's probe
+showed why not the other shape: a hand-written `__init__(**kwargs)` on a `ReactLoop`
+subclass composes *nothing* — `ConfigComposer._init_param_names` drops `**kwargs`, so every
+inherited knob went missing from the call. The trap the dataclass shape sets instead:
+`react.py` uses PEP 563, so the `Annotated[...]` strings `BranchLoop` inherits are resolved
+**in `branch.py`'s globals** (the synthesised `__init__` belongs to the subclass), so
+`branch.py` must import `Annotated` and pydantic's `Field` under exactly those names —
+otherwise conscribe silently drops the inherited knobs
+(`tests/test_generated/test_no_dropped_annotated_fields.py` is the guard). `branch.py` takes
+`from __future__ import annotations` itself for the stub reason in §7.
+
+**A task loader with a receptor (M31's `trace_branches`).** `TaskLoaderBase` loads in
+`__post_init__` — before the Composer injects anything — so a loader that needs its
+receptor while loading cannot be a dataclass: `TraceBranchesTaskLoader` hand-writes a
+keyword `__init__` that takes the inherited `subset` / `data_dir` as `Annotated` parameters
+of its own plus its knobs, never calls the dataclass `__init__`/`__post_init__`, sets
+`_tasks` itself, assigns `default_step_selector()` over the annotation-only
+`step_selector`, and scans lazily (first `task_ids()` / `get_task_context()`), by which time
+the Composer has injected the configured selector. Same shape as
+`ArchiveNetworkSource.miss_policy`.
+
 ## 7. Gotchas worth the thirty seconds
 
 - **Regenerate after *any* `__wiring__` or `Annotated` change** — including a change to
@@ -442,6 +467,19 @@ unchanged. `HookBase` and hooks without receptors (`metrics`) stay dataclasses;
   (`replay/matcher.py::MatcherConfig`), which codegen imports like any other type.
   Do not move the receptor onto `__init__` to dodge the stub: a single-instance
   receptor typed as a Protocol there is generated as `Any`.
+- **Three more conscribe 1.3 behaviours, measured on M31's loader** (each cost a
+  regeneration to find):
+  (1) the stub types a **same-module sibling** it references as `Any` (`RequireEval = Any`),
+  and because a `.pyi` next to a module wins for the type checker, every importer then sees
+  `Any` — so a knob type for a receptor-carrying class lives in a module of its own
+  (`core/data_loader/task/require_eval.py`), which the stub and `_composed.py` import;
+  (2) a `tuple[str, ...]` parameter is generated as `tuple[str, Ellipsis]`, which pyright
+  rejects in `_composed.py` — and a list default in a signature is a shared mutable default —
+  so a list knob with a non-empty default is `list[str] | None = None`, `None` meaning the
+  documented default (`sources`, `require_archive`);
+  (3) `Field(min_length=…)` on a top-level knob is dropped from the generated config (it
+  survives inside an imported pydantic dataclass such as `MatcherConfig`), so enforce such a
+  bound where the strategy is constructed (`ExplicitSteps.__post_init__`).
 - **An optional *list* receptor omitted is not the same as empty.** `trace_writer.archive`
   (`__wiring__ = {"archive": "archiver"}`, `Annotated[list[ArchiverBase] | None, ...]`
   on the hand-written `__init__`, `archive: list[ArchiverBase]` on the

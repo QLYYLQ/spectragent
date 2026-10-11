@@ -33,8 +33,14 @@ from spectragent.core.composer import (
     ConfigComposer,
     DuplicateInstanceIdError,
 )
+from spectragent.core.loops.validation import IncompatibleLoopInputError
 from spectragent.core.negotiation import IncompatibleActionError
 from spectragent.core.runtime import AgentRuntime
+from spectragent.core.trace.models import RunStatus, TraceConfig, TraceNegotiation
+from spectragent.core.trace.redaction import redact_config
+from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas.restoration import Checkpoint
+from spectragent.schemas.step_record import StepRecord
 from spectragent.scripts.generate_all import _collect_registrars
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
@@ -106,8 +112,10 @@ class TestShippedConfigs:
         self,
         composer: ConfigComposer,
         config_path: Path,
+        tmp_path: Path,
     ) -> None:
-        run = composer.compose(yaml.safe_load(config_path.read_text()))
+        root = yaml.safe_load(config_path.read_text())
+        run = composer.compose(copy.deepcopy(root))
 
         # 1. env.capabilities is a real dict of live capability instances,
         #    injected by the Composer — no setattr workaround anywhere.
@@ -125,10 +133,25 @@ class TestShippedConfigs:
         assert env.has_capability("browser")
         assert "browser.click" in env.provided_actions
 
-        # 2. The full assembly chain runs.
+        # 2. The full assembly chain runs. A loop that declares required
+        #    inputs (``branch``: a checkpoint) refuses a bare prepare by name,
+        #    and prepares against a recorded run of this very configuration.
         agent_id = run.ids("agent")[0]
         runtime = AgentRuntime.for_agent(run, agent_id)
-        prepared = runtime.prepare()
+        loop = run.instance("agent", agent_id).agent_loop
+        required = sorted(k for k, spec in loop.__loop_inputs__.items() if spec.required)
+        if required:
+            with pytest.raises(IncompatibleLoopInputError) as refused:
+                runtime.prepare()
+            assert all(key in str(refused.value) for key in required), str(refused.value)
+            assert required == ["checkpoint"], "only the checkpoint input has a shipped source"
+            source = _recorded_run_of(composer, root, agent_id, tmp_path)
+            runtime = AgentRuntime.for_agent(composer.compose(copy.deepcopy(root)), agent_id)
+            prepared = runtime.prepare(
+                loop_inputs={"checkpoint": Checkpoint(trace_dir=str(source), step=0)}
+            )
+        else:
+            prepared = runtime.prepare()
         assert callable(prepared.run)
 
         # 3. No stray instance was setattr'd from a declaration-only
@@ -142,6 +165,48 @@ class TestShippedConfigs:
         assert agent.agent_loop is not None
         assert agent.llm is not None
         assert agent.memory is not None
+
+
+def _recorded_run_of(
+    composer: ConfigComposer, root: dict[str, Any], agent_id: str, base: Path
+) -> Path:
+    """A committed one-step run of *root*'s configuration with a ``react`` loop.
+
+    What a branch config's checkpoint points at: the source run recorded with
+    the same agent and environment — so its ``resolved`` and ``negotiation``
+    come from composing and preparing that react variant here, through the
+    same redaction ``TraceWriter`` applies — never a hand-written one.
+    """
+    from spectragent.generated._composed import ReactAgent_LoopConfig
+
+    react_root = copy.deepcopy(root)
+    for entry in react_root["agent"]:
+        branch_loop = entry["agent_loop"]
+        entry["agent_loop"] = {
+            key: value
+            for key, value in branch_loop.items()
+            if key in ReactAgent_LoopConfig.model_fields
+        } | {"loop_id": "react"}
+    run = composer.compose(react_root)
+    runtime = AgentRuntime.for_agent(run, agent_id)
+    runtime.prepare()
+    wal = WALWriter(base, "recorded-source")
+    wal.init_run(
+        TraceConfig(
+            agent_id=run.instance("agent", agent_id).agent_id,
+            loop_id="react",
+            env_type=run.instances("environment")[0].env_type,
+            resolved=redact_config(run.top_level_cfg),
+            negotiation=TraceNegotiation.from_results(
+                runtime.negotiated_observation,
+                runtime.negotiated_actions,
+                runtime.negotiated_archive,
+            ),
+        )
+    )
+    wal.commit_step(0, StepRecord(step=0, observation_summary="the recorded page"))
+    wal.finalize(RunStatus.COMPLETED)
+    return wal.run_dir.resolve()
 
 
 class TestProviderSubConfig:
@@ -772,6 +837,11 @@ _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
             "hook[0].trace_dir",
         }
     ),
+    "branch_ui_tars_archive.yaml": frozenset(
+        {
+            "environment[0].capabilities[0].profile",
+        }
+    ),
 }
 
 
@@ -836,6 +906,15 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                         lambda run, i=i, aid=aid, c=child: getattr(agent_of(run, i, aid), c),
                     )
                 )
+        # A branch loop's own receptor: the restorer and its knobs.
+        if "restorer" in (entry.get("agent_loop") or {}):
+            blocks.append(
+                _Block(
+                    f"agent[{i}].agent_loop.restorer",
+                    lambda r, i=i: r["agent"][i]["agent_loop"]["restorer"],
+                    lambda run, i=i, aid=aid: agent_of(run, i, aid).agent_loop.restorer,
+                )
+            )
 
     for j, entry in enumerate(root.get("environment", [])):
         eid = entry.get("id")
@@ -891,6 +970,24 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                             ),
                         )
                     )
+
+    # The task loader (``trace_branches``) and its step selector receptor.
+    for t, loader_entry in enumerate(root.get("task_loader", [])):
+        blocks.append(
+            _Block(
+                f"task_loader[{t}]",
+                lambda r, t=t: r["task_loader"][t],
+                lambda run, t=t: run.instances("task_loader")[t],
+            )
+        )
+        if "step_selector" in loader_entry:
+            blocks.append(
+                _Block(
+                    f"task_loader[{t}].step_selector",
+                    lambda r, t=t: r["task_loader"][t]["step_selector"],
+                    lambda run, t=t: run.instances("task_loader")[t].step_selector,
+                )
+            )
 
     for h, hook_entry in enumerate(root.get("hook", [])):
         blocks.append(

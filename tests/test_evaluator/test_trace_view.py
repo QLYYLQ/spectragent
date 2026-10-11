@@ -18,7 +18,7 @@ from spectragent.evaluator import EvaluationRunner, ExactMatchEvaluator
 from spectragent.evaluator.errors import TraceIncompleteError
 from spectragent.evaluator.trace_view import TraceView
 from spectragent.schemas.eval_reference import EvalReference
-from tests.test_evaluator.conftest import write_trace
+from tests.test_evaluator.conftest import png_bytes, write_trace
 
 
 class _Loader:
@@ -143,3 +143,59 @@ class TestUnreadableIsNotUnfinished:
         unscored = next(r for r in report.results if r.task_id == "t-old")
         reason = unscored.evaluation_details.benchmark_details["evaluation_error"]
         assert "predates AgentResult schema" in reason
+
+
+class TestOrigins:
+    """A branch trace's restored prefix and a terminal frame, kept apart (§4.11)."""
+
+    def _branch_trace(self, traces_dir: Path) -> TraceView:
+        frames = [png_bytes((10 * i, 20, 30)) for i in range(4)]
+        return TraceView(
+            RunTrace(
+                write_trace(
+                    traces_dir,
+                    run_id="branch",
+                    steps=4,
+                    screenshots=frames,
+                    origins=["restored", "restored", "policy", "terminal"],
+                )
+            )
+        )
+
+    def test_action_history_is_the_runs_own_agent(self, traces_dir):
+        view = self._branch_trace(traces_dir)
+        assert view.action_history == ["browser.click({'index': 2})"]
+
+    def test_restored_actions_are_listed_apart_and_labelled(self, traces_dir):
+        view = self._branch_trace(traces_dir)
+        assert view.restored_action_history == [
+            "[restored] browser.click({'index': 0})",
+            "[restored] browser.click({'index': 1})",
+        ]
+
+    def test_screenshots_include_every_origin(self, traces_dir):
+        view = self._branch_trace(traces_dir)
+        assert [path.name for path in view.screenshots] == [
+            f"{step:03d}_browser.screenshot.png" for step in range(4)
+        ]
+
+    def test_step_count_is_policy_steps(self, traces_dir):
+        assert self._branch_trace(traces_dir).step_count == 1
+
+    def test_a_plain_trace_has_no_restored_history(self, traces_dir):
+        view = TraceView(RunTrace(write_trace(traces_dir, steps=2)))
+        assert view.restored_action_history == []
+        assert view.action_history == [
+            "browser.click({'index': 0})",
+            "browser.click({'index': 1})",
+        ]
+
+    def test_a_terminal_step_adds_no_action(self, traces_dir):
+        view = TraceView(
+            RunTrace(write_trace(traces_dir, steps=3, origins=["policy", "policy", "terminal"]))
+        )
+        assert view.action_history == [
+            "browser.click({'index': 0})",
+            "browser.click({'index': 1})",
+        ]
+        assert view.step_count == 2

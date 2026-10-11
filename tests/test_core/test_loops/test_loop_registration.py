@@ -54,3 +54,24 @@ class TestLoopRegistration:
 
         assert SlotLoop.__required_slots__ == {"build_react_prompt", "parse_react_output"}
         AgentLoopRegistrar.unregister("test_slot")
+
+
+class TestShippedLoops:
+    """The loops and restorers the package ships are registered under their keys."""
+
+    def test_react_and_branch(self) -> None:
+        from spectragent.core.loops import BranchLoop, ReactLoop
+
+        assert AgentLoopRegistrar.get("react") is ReactLoop
+        assert AgentLoopRegistrar.get("branch") is BranchLoop
+        assert issubclass(BranchLoop, ReactLoop)
+
+    def test_prefix_replay_restorer(self) -> None:
+        from spectragent.core.loops.restore import (
+            PrefixReplayRestorer,
+            Restorer,
+            RestorerRegistrar,
+        )
+
+        assert RestorerRegistrar.get("prefix_replay") is PrefixReplayRestorer
+        assert isinstance(PrefixReplayRestorer(), Restorer)

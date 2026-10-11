@@ -160,7 +160,9 @@ environment that offers it.
 
 `build_guarded_act` is **the only place a relative name becomes qualified**
 (`action_guard.py:39-43`). Its closure (`:81-94`) rejects anything outside
-`active_names`, resolves a short name through `resolvable`, and rewrites
+`active_names`, resolves a short name with `resolve_action_name` (the rule's one copy: a
+caller that must know what the guard did to an action — `BranchLoop`'s replay check —
+calls it too, never re-derives it), and rewrites
 `action.name` **in place** — not onto a copy, because the caller writes that object
 into the `StepRecord`, and a copy would leave the trace naming a provider-less verb
 (`:87-93`).

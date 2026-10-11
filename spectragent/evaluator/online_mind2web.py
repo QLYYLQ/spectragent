@@ -139,7 +139,10 @@ class OnlineMind2WebEvaluator(LLMJudgeEvaluator):
         response, user_snapshot, system_snapshot = await self._final_judgement(
             task=task,
             key_points=key_points,
-            action_history=view.action_history,
+            # A branch run's restored prefix first, labelled, then what its
+            # own agent did; for any other trace the first list is empty and
+            # the prompt is what it always was.
+            action_history=view.restored_action_history + view.action_history,
             images=kept_images,
             thoughts=kept_thoughts,
             tally=tally,

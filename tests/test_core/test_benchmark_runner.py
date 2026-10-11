@@ -4,14 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from spectragent.core.benchmark_runner import BenchmarkRunner, _safe_run_id
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops._registrar import AgentLoopRegistrar, LoopInput
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.restoration import BranchProvenance, Checkpoint
+from spectragent.schemas.task import TaskContext
 from tests._helpers.assembly import make_env, make_run
 
 
@@ -132,7 +137,7 @@ class _Loader:
         return self._tasks[task_id]
 
     def get_task_context(self, task_id):
-        return {"start_url": f"https://example.com/{task_id}"}
+        return TaskContext(env={"start_url": f"https://example.com/{task_id}"})
 
 
 def _make_factory(tmp_path, envs: list[_Env], writers: list[TraceWriter]):
@@ -452,3 +457,229 @@ class TestGuardVeto:
         assert trace.result is not None
         assert "RunAbort" in (getattr(trace.result, "error", "") or "")
         assert "risk-control page detected" in (getattr(trace.result, "error", "") or "")
+
+
+# ── The task context's three parts (M31) ──────────────────────────────
+
+
+class _CheckpointedLoop(ReactLoop):
+    """A ReAct loop that declares one loop input and reports what it was handed."""
+
+    __registry_key__ = "test_bench_runner_checkpointed"
+    __loop_inputs__ = {"checkpoint": LoopInput(Checkpoint)}
+
+    async def _execute(self, agent, task, *, ctx, **kwargs):
+        _LOOP_INPUTS_SEEN.append(dict(ctx["loop_inputs"]))
+        return await super()._execute(agent, task, ctx=ctx, **kwargs)
+
+
+_LOOP_INPUTS_SEEN: list[dict[str, Any]] = []
+
+
+def teardown_module():
+    AgentLoopRegistrar.unregister("test_bench_runner_checkpointed")
+
+
+class _BranchLoader(_Loader):
+    """Hands every task all three parts, as the ``trace_branches`` loader does."""
+
+    def __init__(self, source: str):
+        super().__init__()
+        self._source = source
+
+    def get_task_context(self, task_id):
+        return TaskContext(
+            env={"start_url": f"https://example.com/{task_id}"},
+            loop={"checkpoint": Checkpoint(trace_dir=self._source, step=1)},
+            branch=BranchProvenance(
+                source_run_id="src",
+                source_trace="src",
+                checkpoint_step=1,
+                branch_index=int(task_id.rsplit("-", 1)[-1]),
+                branch_group_id="src/s1",
+            ),
+        )
+
+
+class TestTaskContextRouting:
+    async def test_three_parts_land_in_three_places(self, tmp_path):
+        _LOOP_INPUTS_SEEN.clear()
+        source = str(tmp_path / "source-run")
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+
+        def compose():
+            env = make_env(_Env, {"bench_runner_cap": _Cap()})
+            writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
+            envs.append(env)
+            writers.append(writer)
+            return make_run(
+                agent=_Agent(),
+                loop=_CheckpointedLoop(max_steps=2),
+                env=env,
+                llm=_LLM(),
+                memory=_Memory(),
+                hooks=[writer],
+            )
+
+        summary = await BenchmarkRunner(
+            loader=_BranchLoader(source), compose=compose, timeout=10
+        ).run()
+        assert summary.completed == 2
+
+        # env -> the capabilities' setup, and nothing else rides along.
+        assert envs[0].setup_kwargs["context"] == {"start_url": "https://example.com/t-1"}
+        # loop -> the Loop's ctx["loop_inputs"].
+        assert [seen["checkpoint"].trace_dir for seen in _LOOP_INPUTS_SEEN] == [source, source]
+        # branch -> the trace, and only the trace.
+        for outcome, index in zip(summary.outcomes, (1, 2), strict=True):
+            assert outcome.trace_dir is not None
+            config = RunTrace(outcome.trace_dir).config
+            assert config.branch is not None
+            assert config.branch.branch_index == index
+            assert config.task_setup is not None
+            assert "checkpoint" not in config.task_setup.context
+
+    async def test_a_plain_task_hands_the_loop_nothing(self, tmp_path):
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+        summary = await BenchmarkRunner(
+            loader=_Loader(), compose=_make_factory(tmp_path, envs, writers), timeout=10
+        ).run()
+        assert summary.completed == 2
+        for outcome in summary.outcomes:
+            assert outcome.trace_dir is not None
+            assert RunTrace(outcome.trace_dir).config.branch is None
+
+
+# ── A trace_branches sweep (M31) ──────────────────────────────────────
+
+
+def _branch_sweep_config(tmp_path, **extra: Any) -> Any:
+    """A ``spectragent-bench`` config whose tasks come from ``trace_branches``."""
+    import yaml
+
+    config = {
+        "task_loader": [
+            {
+                "benchmark_name": "trace_branches",
+                "data_dir": str(tmp_path / "recorded"),
+                "step_selector": {"selector_id": "explicit", "steps": [1]},
+            }
+        ],
+        **extra,
+    }
+    path = tmp_path / "branch.yaml"
+    path.write_text(yaml.safe_dump(config))
+    return path
+
+
+class TestTraceBranchesSweep:
+    """No eval loader exists for branch tasks in v1; the CLI says so before running anything."""
+
+    def test_an_evaluator_with_no_eval_loader_is_refused_by_name(self, tmp_path, monkeypatch):
+        from spectragent.core.benchmark_runner import main
+        from tests._helpers.branch_sources import write_source
+
+        write_source(tmp_path / "recorded", "run-a", steps=2)
+        path = _branch_sweep_config(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
+        executed: list[str] = []
+        monkeypatch.setattr(
+            BenchmarkRunner, "run_task", lambda self, task_id: executed.append(task_id)
+        )
+        try:
+            main(["--config", str(path)])
+        except SystemExit as exc:
+            message = str(exc.code)
+        else:  # pragma: no cover — the assertion below explains
+            message = ""
+        assert "'trace_branches' has no registered eval loader" in message
+        assert "--no-eval" in message and executed == []
+
+    def test_a_sweep_without_an_evaluator_never_asks_for_one(self, tmp_path, monkeypatch, capsys):
+        from spectragent.core.benchmark_runner import main
+        from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
+        from tests._helpers.branch_sources import write_source
+
+        def no_lookup(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("a sweep that scores nothing resolved an eval loader")
+
+        monkeypatch.setattr(EvalLoaderRegistrar, "get", no_lookup)
+        monkeypatch.setattr(EvalLoaderRegistrar, "get_or_none", no_lookup)
+        write_source(tmp_path / "recorded", "run-a", steps=2)
+
+        assert main(["--config", str(_branch_sweep_config(tmp_path)), "--list"]) == 0
+        assert capsys.readouterr().out.split() == ["run-a/s1/b0"]
+        # --no-eval keeps a configured evaluator from asking, too.
+        with_judge = _branch_sweep_config(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
+        assert main(["--config", str(with_judge), "--list", "--no-eval"]) == 0
+
+    def test_the_registry_answers_for_every_other_benchmark(self, monkeypatch):
+        from spectragent.core.benchmark_runner import _resolve_eval_loader
+        from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
+
+        class _NoBlock:
+            def optional_single(self, layer):
+                return None
+
+        class _Reference:
+            def __init__(self, subset: str = "All") -> None:
+                self.subset = subset
+
+        with pytest.raises(SystemExit, match="'no_such_bench' has no registered eval loader"):
+            _resolve_eval_loader(_NoBlock(), "no_such_bench", None)  # type: ignore[arg-type]
+        monkeypatch.setattr(EvalLoaderRegistrar, "get_or_none", lambda key: _Reference)
+        built = _resolve_eval_loader(_NoBlock(), "online_mind2web", "Hard")  # type: ignore[arg-type]
+        assert isinstance(built, _Reference) and built.subset == "Hard"
+
+    async def test_each_branch_task_runs_from_its_context(self, tmp_path):
+        """Loader → runner → runtime → BranchLoop: the env part reaches setup, the
+        checkpoint reaches the Loop, the provenance reaches the trace."""
+        from spectragent.core.data_loader.task import TraceBranchesTaskLoader
+        from spectragent.core.data_loader.task.step_selector import ExplicitSteps
+        from spectragent.core.loops import BranchLoop
+        from tests._helpers.branch_fakes import BranchFakeAgent, build_run, make_cap, record_source
+
+        source = await record_source(
+            tmp_path, ["click 100", "click 101", "done ok"], env_context={}
+        )
+        loader = TraceBranchesTaskLoader(data_dir=str(source.parent), require_archive=[])
+        loader.step_selector = ExplicitSteps(steps=[1])
+        caps: list[Any] = []
+
+        def compose():
+            cap = make_cap(id_offset=500)  # a relaunched world: every element id is new
+            caps.append(cap)
+            run, _writer, _llm = build_run(
+                tmp_path / "branches",
+                loop=BranchLoop(max_steps=10, today_override="2001-02-03"),
+                replies=["done branched"],
+                agent=BranchFakeAgent(),
+                cap=cap,
+            )
+            return run
+
+        summary = await BenchmarkRunner(loader=loader, compose=compose, timeout=30).run()
+        assert summary.completed == 1 and summary.failed == 0, summary.format_table()
+        (outcome,) = summary.outcomes
+        assert outcome.task_id == "src/s1/b0"
+        assert caps[0].replay_archive == str(source), "the env part reached setup"
+        assert caps[0].log == [
+            "branchfake.click({'index': 500})",
+            "branchfake.done({'answer': 'branched'})",
+        ]
+
+        assert outcome.trace_dir is not None
+        trace = RunTrace(outcome.trace_dir)
+        assert trace.config.branch == loader.get_task_context("src/s1/b0").branch
+        assert trace.config.benchmark == "trace_branches"
+        assert trace.config.task_id == "src/s1/b0"
+        assert [record.origin for record in trace.step_records] == [
+            "restored",
+            "policy",
+            "terminal",
+        ]
+        assert all(
+            record.restoration is not None and record.restoration.verdict == "ok"
+            for record in trace.step_records[:2]
+        )

@@ -98,6 +98,7 @@ class RuntimeHook(Protocol):
         env_evidence_recorded: bool,
         env_evidence_privacy: list[str],
         task_setup: Mapping[str, Any] | None,
+        branch: Any,
         **kwargs: Any,
     ) -> None:
         """Called when AgentRuntime.execute() begins, before env setup.
@@ -141,6 +142,11 @@ class RuntimeHook(Protocol):
           ``setup_environment`` for this task (``start_url`` …), exactly as
           given — unredacted; a hook that persists it must redact it — or
           ``None`` when there is none.
+        - ``branch``: where a branch task came from — a
+          :class:`~spectragent.schemas.restoration.BranchProvenance` naming
+          the source run, its trace and the checkpoint step — or ``None``
+          for every run that is not a branch. Per task, like ``task_setup``;
+          the runtime passes it through without reading it.
 
         *env* is the **raw** environment, never its AOP proxy. A recorder
         that pulls environment evidence (``Environment.collect_archive``)

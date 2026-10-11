@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.restoration import RestorationEvidence, Retarget
 
 
 @runtime_checkable
@@ -178,4 +179,52 @@ class BaseCapability(Protocol):
     @property
     def is_alive(self) -> bool:
         """Whether this capability is still operational."""
+        ...
+
+
+@runtime_checkable
+class RestorationSupport(Protocol):
+    """Optional: how a recorded run is resumed in this capability's world.
+
+    A branch run (``BranchLoop``, ``docs/architecture_design.md`` §4.1)
+    re-executes a recorded prefix in a freshly started environment. Some
+    recorded actions name things that are new in every environment — the
+    browser's element index is Chrome's ``backendNodeId``, a tab id is a
+    fresh CDP targetId — and only the capability that issued them knows how
+    to find the same thing again, or how to tell whether the restored world
+    looks like the recorded one. A capability that knows implements this;
+    one that does not writes nothing: ``EnvironmentBase.retarget`` /
+    ``verify_restoration`` supply the identity / "nothing to check"
+    defaults (§4.3 "检查点恢复的路由"). It is not part of
+    :class:`BaseCapability` and ``CapabilityBase`` gives no default.
+
+    Both methods read the two observations they are handed — each a whole
+    ``NegotiatedObservation`` of this run; the capability reads its own
+    fragments by their local names — and never execute anything, change the
+    environment, or know a step number. ``retarget`` reads nothing else.
+    ``verify_restoration`` may also report a count no observation carries,
+    as the increase since its previous call (the browser's replay-log
+    document misses: the capability keeps the total it last reported). Such
+    a measure makes the call order-dependent, not idempotent: a restorer
+    calls it exactly once per restored observation, in order.
+    """
+
+    async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget:
+        """How the recorded *action* should run against the *restored* observation.
+
+        Computes, never acts: the restorer executes the returned action
+        through ``guarded_act``. A ``Retarget`` with a ``failure`` says no
+        single target was found (``not_found`` / ``ambiguous``); what that
+        costs is the restorer's policy.
+        """
+        ...
+
+    async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence:
+        """How far the *restored* observation is from the *recorded* one.
+
+        Measures, never judges: thresholds and ``strict | warn`` are the
+        restorer's. A measure this capability does not take, or could not
+        take this time, is ``None``. A count since the previous call (see
+        the class docstring) is reported once: called again, it reads 0.
+        """
         ...

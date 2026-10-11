@@ -150,6 +150,7 @@ from spectragent.core.capabilities.browser.replay.consistency import (
     version_warnings,
 )
 from spectragent.core.capabilities.browser.replay.server import ReplayContext, ReplayServer
+from spectragent.core.capabilities.browser.restoration import measure, retarget_action
 
 # Importing the package registers every watchdog under agent_cdp's
 # ``WatchdogRegistrar``. This module then looks them up by key — it never
@@ -175,6 +176,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 )
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.provider_session import ProviderSession
+from spectragent.schemas.restoration import RestorationEvidence, Retarget
 
 logger = logging.getLogger(__name__)
 
@@ -472,6 +474,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     dom_max_serialized_chars: int | None
     dom_interactive_only: bool
     dom_viewport_only: bool
+    retarget_tolerance_px: float
 
     # ── internal state, never config (assigned in __init__) ──────────
     # Declared here as type-only annotations so both pyright and the
@@ -516,6 +519,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     #: The archive side of the current recording, between setup and teardown,
     #: when archivers were bound at setup (§4.14).
     _archive: BrowserArchiveRun | None
+    #: The replay log's ``diverged_total`` at the last ``verify_restoration``
+    #: — what makes each measurement count only the misses since the previous one.
+    _diverged_seen: int
 
     # ── Init machinery ────────────────────────────────────────────────
 
@@ -651,6 +657,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = False,
+        retarget_tolerance_px: Annotated[
+            float,
+            PydanticField(
+                ge=0,
+                description=(
+                    "Checkpoint restoration (branch runs): how far, in CSS "
+                    "pixels of page coordinates, each of the four bounds "
+                    "values (x, y, width, height) of a restored element may "
+                    "lie from the recorded element's for the restored one to "
+                    "be a candidate when a recorded element index is "
+                    "re-found. Candidates are then confirmed by the element "
+                    "signature (tag, id, name, aria-label, role, text hash). "
+                    "Read only by a restorer; an ordinary run never uses it."
+                ),
+            ),
+        ] = 2.0,
         actions: Annotated[
             list[ActionBase] | None,
             PydanticField(
@@ -679,6 +701,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.dom_max_serialized_chars = dom_max_serialized_chars
         self.dom_interactive_only = dom_interactive_only
         self.dom_viewport_only = dom_viewport_only
+        self.retarget_tolerance_px = retarget_tolerance_px
 
         # In-Python default for the wired trajectory receptor. YAML must
         # name one (a single-instance receptor is required in the
@@ -726,6 +749,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._replay_server = None
         self._archivers = []
         self._archive = None
+        self._diverged_seen = 0
 
         self.actions = actions
 
@@ -1028,6 +1052,46 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     def _fresh_profile(self) -> bool:
         """Whether the browser started from a fresh profile (§5.6's ``logged_in``)."""
         return persistent_profile(self.resolved_backend()) is None
+
+    # ── Checkpoint restoration (RestorationSupport, §4.9 / §4.14) ─────
+
+    async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget:
+        """How a recorded ``browser.*`` action runs in this restored browser.
+
+        Element indexes are re-found by geometry and signature, tab ids by
+        tab order and URL; everything else runs as recorded
+        (:func:`~spectragent.core.capabilities.browser.restoration.retarget_action`).
+        Computes only — the restorer executes the answer through ``guarded_act``.
+        """
+        return retarget_action(action, recorded, restored, tolerance_px=self.retarget_tolerance_px)
+
+    async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationEvidence:
+        """How far the restored observation is from the recorded one.
+
+        URL, the interactive-element signature multiset and the screenshot
+        hash distance are read from the two observations
+        (:func:`~spectragent.core.capabilities.browser.restoration.measure`);
+        ``document_misses`` is this run's replay server's count of main-frame
+        document misses since the previous call (``None`` when the network is
+        live) — reported once, so a restorer measures each restored
+        observation exactly once (the ``RestorationSupport`` contract).
+        Thresholds are the restorer's.
+        """
+        return measure(
+            recorded,
+            restored,
+            capability_id=self.capability_id,
+            document_misses=self._document_misses_since_last_check(),
+        )
+
+    def _document_misses_since_last_check(self) -> int | None:
+        """Main-frame document misses since the last call; ``None`` when nothing intercepts."""
+        server = self._replay_server
+        if server is None:
+            return None
+        total = server.log.diverged_total
+        misses, self._diverged_seen = total - self._diverged_seen, total
+        return misses
 
     # ── CapabilityBase contract ──────────────────────────────────────
 
@@ -1342,6 +1406,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             ]:
                 server.warn(warning)
             self._replay_server = server
+            self._diverged_seen = 0
         if self._archive is not None and channel is not None:
             # The bound archivers' run-time sessions — participants before the
             # first target is prepared.
@@ -1443,6 +1508,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # The replay server after the recorder (which failed every request
         # still held — never continued it): stop answering, drop its state.
         server, self._replay_server = self._replay_server, None
+        self._diverged_seen = 0
         if server is not None:
             server.close()
         # The archive sessions next (their scope closes with the scope group).

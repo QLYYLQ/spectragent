@@ -179,6 +179,35 @@ class TestTheRepeatLimit:
         ]
         assert ReplayLogEntry.model_validate(drained[3]) == document
 
+    def test_diverged_total_counts_folded_entries(self) -> None:
+        """Every appended divergence counts — the folded ones too — and drain() never resets it."""
+        log = ReplayLog(repeat_limit=1)
+        document = _entry(
+            resource_type="Document",
+            frame="main",
+            request_class="document",
+            answer="failed",
+            status=None,
+            diverged=True,
+        )
+        assert log.diverged_total == 0
+        for _ in range(3):
+            log.append(document)
+        log.append(_entry())
+        log.append(_entry())
+        drained = log.drain()
+        assert [(line["kind"], line.get("diverged")) for line in drained] == [
+            ("miss", True),
+            ("miss", False),
+            ("summary", True),
+            ("summary", False),
+        ], "two of the three divergences were folded into a summary"
+        assert log.diverged_total == 3, "folded divergences count; ordinary misses do not"
+        log.append(document)
+        assert log.diverged_total == 4
+        log.drain()
+        assert log.diverged_total == 4, "drain() leaves the count alone"
+
     def test_each_collection_is_its_own_window(self) -> None:
         log = ReplayLog(repeat_limit=1)
         log.append(_entry())

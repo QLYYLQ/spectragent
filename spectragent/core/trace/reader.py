@@ -51,6 +51,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from spectragent.core.trace.encoding import (
     ARCHIVE_META_KEY,
     CONFIG_FILE,
+    EVALS_DIR,
     MANIFEST_FILE,
     RESULT_FILE,
     archive_blob_path,
@@ -73,6 +74,7 @@ from spectragent.core.trace.models import (
     TraceManifest,
 )
 from spectragent.schemas.agent_result import AgentResult
+from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.observation._registrar import (
     FragmentBase,
     ObservationRegistrar,
@@ -470,6 +472,38 @@ class RunTrace:
                 if latest is None or _run_version(record) > _run_version(latest):
                     latest = record
         return latest
+
+    # ── after the run: not in the manifest ────────────────────
+
+    def evals(self) -> dict[str, EvalResult]:
+        """Every verdict in this run's ``evals/``: ``verdict_slug`` → :class:`EvalResult`, by slug.
+
+        Verdicts are written after the run, each atomically, by
+        ``EvaluationRunner`` (``evals/<verdict_slug>.json``) and are not in the
+        manifest, so this is the one accessor that lists a directory. Only
+        ``*.json`` files count (an interrupted atomic write leaves a
+        ``tmp….tmp``); the slug is the file name without ``.json``. No
+        ``evals/`` → ``{}``. Not cached: a verdict written after this
+        ``RunTrace`` was opened is seen by the next call.
+
+        Raises:
+            TraceSchemaError: ``evals/`` or a file in it resolves outside the
+                run directory (symlinks resolved — a trace only reads its own
+                files), or a file does not read as an ``EvalResult`` (naming it).
+        """
+        directory = self._trace_dir / EVALS_DIR
+        self._require_inside(directory, EVALS_DIR, listed_in=self._trace_dir)
+        if not directory.is_dir():
+            return {}
+        verdicts: dict[str, EvalResult] = {}
+        for path in directory.iterdir():
+            if path.suffix != ".json":
+                continue
+            self._require_inside(path, f"{EVALS_DIR}/{path.name}", listed_in=directory)
+            if not path.is_file():
+                continue
+            verdicts[path.stem] = _read_model(path, EvalResult)
+        return dict(sorted(verdicts.items()))
 
     # ── internals ─────────────────────────────────────────────
 

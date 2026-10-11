@@ -17,6 +17,7 @@ from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 if TYPE_CHECKING:
     from spectragent.core.archive._registrar import ArchiverBase
     from spectragent.core.archive.types import ArchiveBatch
+    from spectragent.schemas.restoration import RestorationEvidence, Retarget
 
 
 @runtime_checkable
@@ -186,6 +187,30 @@ class Environment(Protocol):
         capability acts in is that capability's own state; broadcasting
         one scalar to every capability would mean the environment picking
         a tenancy dimension on behalf of domains it knows nothing about.
+        """
+        ...
+
+    # ── Checkpoint restoration (only a restorer calls these) ──
+
+    async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget:
+        """How a recorded *action* should run in the restored environment.
+
+        Routed by the action's prefix exactly like :meth:`act`, to a
+        capability implementing ``RestorationSupport``
+        (``core/capabilities/base.py``). An action no such capability owns —
+        a capability without the protocol, a bare name, an unknown prefix —
+        runs as recorded: ``Retarget(action=<a copy>, method="identity")``,
+        so ``guarded_act`` refuses it again exactly as it did in the source
+        run. Never executes anything.
+        """
+        ...
+
+    async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]:
+        """What each ``RestorationSupport`` capability measured, in capability order.
+
+        *recorded* and *restored* are whole observations of this run. Empty
+        when no capability implements the protocol: there is nothing to
+        check. Measures only; the restorer judges.
         """
         ...
 
