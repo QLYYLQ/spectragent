@@ -1223,11 +1223,11 @@ TraceWriter 只在 `around` 里记录调用，因为 `CancelledError` 是 `BaseE
 
 #### 设计思考
 
-归档是继 observation 和 action 之后的第三条对称轴：provides 写全限定键，绑定在协商期完成，下游只读绑定表（`archive_bindings`）。唯一的不对称是 requires 的来源：它来自 trace hook 实例的 `archive` 列表，永远全限定，而不是某个类的 `__wiring__`——记录什么是每次 run 的选择（用户裁决 D3），既不是 agent 的领域知识，也不是记录器类的固有属性。
+归档是继 observation 和 action 之后的第三条对称轴：provides 写全限定键，绑定在协商期完成，下游只读绑定表（`archive_bindings`）。唯一的不对称在 requires 的来源：它来自 trace hook 实例的 `archive` 列表，永远全限定，不来自任何类的 `__wiring__`。记录什么由每次 run 自己选（用户裁决 D3），不属于 agent 的领域知识，也不是记录器类的固有属性。
 
 capability 被拉取时产出证据，但不知道 WAL、步号和 `env/` 布局；"第 t 步的提交取走的就归第 t 步"是记录器一侧的规则。这让 capability 侧的契约（交出并忘掉、不带参数、原子交接）可以被一个与 capability 无关的 harness 检查，M29 只需要把 BrowserCapability 接进去。
 
-采集失败即 run 失败（fail closed）：归档是显式要求的，一份静默不完整的归档会毒化之后的回放和分叉，而且没有人会发现。run 记录按版本提交，因为 WAL 已提交的路径不可变，而环境指纹在 run 中途可能变化（M29 会在变化时再发）。
+采集失败即 run 失败（fail closed）：归档是显式要求的，一份不完整的归档如果静默落盘，之后在它上面做的回放和分叉都会出错，而且没有人会发现。run 记录按版本提交，因为 WAL 已提交的路径不可变，而环境指纹在 run 中途可能变化（M29 会在变化时再发）。
 
 **M28/M29 边界**：一个还没有实现的注册表不能成为 Composer 层——`composer.py` 对没有实现的已收集层直接抛错；不收集它，TraceWriter 上一个连向它的 wired slot 又会让每个 `trace_writer` 都组装失败（四份发布配置都声明了 `trace_writer`）；`generate_all` 跳过空层，fingerprint 测试随之失败。所以 M28 落地归档轴除 YAML 面以外的全部：TraceWriter 把 `archive` 当普通构造参数接收（`__config_annotated_only__` 把它挡在生成的配置之外），既没有 `__wiring__["archive"]`，也没有 `Annotated` 类型，`archiver` 不进 `_collect_registrars()`——给它一个没有 wiring 的 `Annotated` 类型会生成 `archive: Any`，把原始 dict 交给 hook。M28 仍然运行 `uv run spectragent-gen`（TraceWriter 的构造函数变了），并保持 `tests/test_generated` 全绿。YAML 面随首批 browser 归档器进 M29，见 M29 条目。
 
@@ -1292,7 +1292,13 @@ Browser 的环境证据与回放档位：一条独立于 agent 的 recorder 连�
 
 #### 设计思考
 
-recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事件循环，这正是 D2 "capability 用专门独立的 scope 采集"的落点；DOMWatchdog 不知道归档的存在，它只是把原始采集交给一个默认什么都不做的 sink。双客户端只有在 fail closed 时才安全（S1：还连着却不再应答的 recorder 会让整个浏览器的新 target 卡死；M29 复测，socket 真正关闭时 Chrome 会放开），所以存活是推送的、丢失即失败、teardown 先清理、只用 capability 自己拥有的浏览器——这也是 v1 只支持 `local_chrome` 的原因，云 provider 的录制可用性并入 lite SDK 审计。archive scope 是 browser 级的，因为弹窗的流量在控制连接接管它之前就到了；tab 因此仍然只有两个 scope，PRD 原来的 `TabScopes` 重构没有了动机，到下一个真正 per-tab 的 scope 再泛化。`index.jsonl` 只写原始请求事实、不写匹配键，匹配键由 M30 在加载时用唯一的规范化实现计算——录制时写下的键会随规则变化而过期。capability 分不出哪一次收集是最后一次，所以"在途条目"用同一条规则处理每一次收集：等有界的时间，没定下来的写一行 `pending`，定下来时证据恰好交出一次。
+recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事件循环，D2 "capability 用专门独立的 scope 采集"落在这里；DOMWatchdog 不知道归档的存在，只把原始采集交给一个默认什么都不做的 sink。
+
+双客户端只有在 fail closed 时才安全（S1：还连着却不再应答的 recorder 会让整个浏览器的新 target 卡死；M29 复测，socket 真正关闭时 Chrome 会放开），所以存活是推送的、丢失即失败、teardown 先清理、只用 capability 自己拥有的浏览器——这也是 v1 只支持 `local_chrome` 的原因，云 provider 的录制可用性并入 lite SDK 审计。
+
+archive scope 是 browser 级的，因为弹窗的流量在控制连接接管它之前就到了；tab 因此仍然只有两个 scope，PRD 原来的 `TabScopes` 重构没有了动机，到下一个真正 per-tab 的 scope 再泛化。
+
+`index.jsonl` 只写原始请求事实、不写匹配键，匹配键由 M30 在加载时用唯一的规范化实现计算——录制时写下的键会随规则变化而过期。capability 分不出哪一次收集是最后一次，所以"在途条目"用同一条规则处理每一次收集：等有界的时间，没定下来的写一行 `pending`，定下来时证据恰好交出一次。
 
 **使用的 skill**：`af-add-a-receptor`、`af-add-a-capability`、`af-regenerate-and-verify`、`af-add-an-observation-fragment`、`af-trace-and-hooks`。
 
@@ -1343,7 +1349,7 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 
 #### 设计思考
 
-回放放在 capability 里而不是做成代理 provider：Request 阶段 fulfill 让页面保留真实的 https origin、secure context 与 Secure cookie，不涉及 CA 与 HSTS，body 原字节返回（SRI 照样通过），frameId 与 resourceType 在同一条 CDP 通道里，逐步归因因此可行（WARC-Bench 的回放器是同类做法）。可是 S2a 证明 Fetch 本身不是隔离（preconnect 与 WebSocket 不经过它），所以隔离是必需的，并且由网络来源推出——provider 只静态声明它支持（`__capabilities__`），旁边没有第二个开关。回放从不放请求到线上：录制与回放之间唯一允许的差异是档位的 T0 与路由开关，其余都由一致性检查在启动浏览器之前点名。capability 不知道 WAL：它拿到的是 `ArchiveReader`，读的是已提交的证据；匹配键在加载时重算，所以改站点规则不需要重录。
+回放放在 capability 里而不是做成代理 provider：Request 阶段 fulfill 让页面保留真实的 https origin、secure context 与 Secure cookie，不涉及 CA 与 HSTS，body 原字节返回（SRI 照样通过），frameId 与 resourceType 在同一条 CDP 通道里，逐步归因因此可行（WARC-Bench 的回放器是同类做法）。可是 S2a 证明 Fetch 本身不是隔离（preconnect 与 WebSocket 不经过它），所以隔离是必需的，并且由网络来源推出：provider 只静态声明它支持（`__capabilities__`），旁边没有第二个开关。回放从不放请求到线上。录制与回放之间唯一允许的差异是档位的 T0 与路由开关，其余都由一致性检查在启动浏览器之前点名。capability 不知道 WAL：它拿到的是 `ArchiveReader`，读的是已提交的证据；匹配键在加载时重算，所以改站点规则不需要重录。
 
 **使用的 skill**：`af-add-a-receptor`、`af-add-a-capability`、`af-regenerate-and-verify`、`af-trace-and-hooks`。
 
@@ -1431,7 +1437,7 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 
 #### 设计思考
 
-学生就是一个 af agent：训练格式与服务格式一致，训练完的学生直接接回 af、用同一份 YAML 评测；新的学生格式就是新的 Agent 类。翻译只做与学生无关的换算（index → CSS px 的点），"学生写不写得出来"由学生自己的格式器判定，两处的不可译走同一个策略。导出不另立根——运行根的层本来都是可选的——也不另立 slot 机制：两个新 slot 是 ReAct 的可选 slot，谁用谁校验，与 runtime 用 `prepare` 是同一个安排。遮挡的证据按"谁录的就用谁的"排优先级，没有证据就响亮失败，而不是假装检查过。
+学生就是一个 af agent：训练格式与服务格式一致，训练完的学生直接接回 af、用同一份 YAML 评测；新的学生格式就是新的 Agent 类。翻译只做与学生无关的换算（index → CSS px 的点），"学生写不写得出来"由学生自己的格式器判定，两处的不可译走同一个策略。导出不另立根（运行根的层本来都是可选的），也不另立 slot 机制：两个新 slot 是 ReAct 的可选 slot，谁用谁校验，与 runtime 用 `prepare` 是同一个安排。遮挡的证据按"谁录的就用谁的"排优先级；没有证据就直接报错，不把没检查过的当成检查过。
 
 **落地（2026-10-11，待验收）**：导出包 `spectragent/export/`——`_registrar.py`（`Exporter` / `ExporterRegistrar` / `ExporterBase`、`ImageStore`、`ExportRecord`）、`settings.py`、`openai_messages.py`、`translate/`、`canonical.py`、`filters.py`、`split.py`、`benchmarks.py`（`BenchmarkLoaders`：去污染与泄漏扫描读导出文档自己的 `eval_loader` / `task_loader` 块）、`render.py`（`StudentRenderer`、`RenderedSample`）、`validate.py`、`runner.py`（`ExportRunner`、`ExportRunner.from_run`）、`cli.py`（`spectragent-export`）、`errors.py`；`schemas/sample.py`。框架一侧：`core/trace/{sources,secret_patterns}.py`、`core/loops/_loop_fragments.py`（`loop_fragment_builders`、`pinned_step_info`）、`core/loops/restore/source.py`（`recorded_observation`、`recorded_step_info`，分叉与导出共用）、`core/runtime.py::seed_messages`、`core/actions/params.py::point_params`、`core/capabilities/base.py`（`CaptureCheck`）与 `core/environments/_registrar.py::compare_capture`、`core/negotiation/observation.py`（`provider=`）；browser 一侧 `index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`、`replay/replay_log.py::document_miss_total`。发布的配置 `configs/flywheel/{ui_tars_student,export_sft}.yaml`；测试 `tests/test_export/`（真实 Chrome 验收 `test_export_live.py`：identity 导出与 `llm_messages` 逐条相同、只差记录形态之外的预期差异；BrowserUse + `browser.dom_raw` 与 `skyvern_hit_test` 两条 `index_to_coordinate` 导出）。与本条目文字的差异见 PRD 修订记录 G21 起。
 
@@ -1457,7 +1463,7 @@ PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一�
 
 **链**：`ChainSpec`（YAML，不是 conscribe 的运行根）列出各段的 af 配置；链只改路径字段（`trace_writer.trace_dir`、`trace_branches.data_dir`、导出器的 `sources_root` / `sources` / `output_dir`）并把实际用的配置落到 `<root>/configs/`，在进程内调用各 CLI 的 `main(argv)`；个别任务失败是要度量的数据，段本身失败才停。`spectragent-bench` 不读 `.env`，跑 live 之前在 shell 里导出密钥。
 
-**共用而不是复制**：M31 留在测试里的 `restoration_rate` / `components` 挪进 `flywheel/metrics.py`；M29 基准的去重账法与 `percentile` 挪进同一处（revisit 的一半是 browser 知识）；`tests/_helpers/secret_scan.py` 的 gzip 感知读法挪进 `core/trace/secret_patterns.py`；`TaskIdentity` / `task_identity` 从 `export/filters.py` 挪进 `core/trace/sources.py`。browser 证据的读法（`archive_index.iter_index_lines`、`replay_log.iter_decisions`、新的 `archive_stats.py`）在 browser 的包里，度量只组织调用。
+**代码的归属**：M31 留在测试里的 `restoration_rate` / `components` 挪进 `flywheel/metrics.py`；M29 基准的去重账法与 `percentile` 挪进同一处（revisit 的一半是 browser 知识）；`tests/_helpers/secret_scan.py` 的 gzip 感知读法挪进 `core/trace/secret_patterns.py`；`TaskIdentity` / `task_identity` 从 `export/filters.py` 挪进 `core/trace/sources.py`。browser 证据的读法（`archive_index.iter_index_lines`、`replay_log.iter_decisions`、新的 `archive_stats.py`）在 browser 的包里，度量只组织调用。
 
 #### 验收
 
@@ -1471,7 +1477,7 @@ PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一�
 
 #### 设计思考
 
-度量是 trace 的又一个消费者：同一份已提交的数据，评测器算成功率，导出算样本，度量算这条数据线本身能不能用——三者都不碰运行中的状态，所以报告可以在任何一台没有浏览器的机器上重算。链不是新的运行路径，只是把文档里本来就写着的几条命令按顺序跑、把路径接上；原路径回放复用 M31 的恢复器而不是再造一个"喂回录下的回复"的驱动——恢复器本来就逐步重放、逐步校验。建议是规则加证据而不是结论：阈值写在报告里，演练的数只能校准度量本身，真正的决定要等 live 的证据。
+度量是 trace 的又一个消费者：同一份已提交的数据，评测器算成功率，导出算样本，度量算这条数据线本身能不能用。三者都不碰运行中的状态，所以报告可以在任何一台没有浏览器的机器上重算。链只是把文档里本来就写着的几条命令按顺序跑、把路径接上，没有新增运行路径；原路径回放复用 M31 的恢复器，它本来就逐步重放、逐步校验，不必再造一个"喂回录下的回复"的驱动。建议写成规则加证据，不下结论：阈值写在报告里，演练的数只能校准度量本身，决定要等 live 的证据。
 
 **落地（2026-10-11，待验收）**：表单提交的修复在 `core/capabilities/browser/navigation.py`（`MainFrameNavigation`、`NavigationFeed`）、`capability.py`（`_capture_once` 每次尝试前等待，上限 10 s）与 `watchdogs/screenshot_watchdog.py`（观测路径的截图命令上限 10 s），真实 Chrome 回归 `tests/test_core/test_capabilities/test_browser_form_submit_live.py`；`replay_driver` 的脚本化模型超时 60 s。度量包 `spectragent/flywheel/`——`metrics.py`（`ChainLayout`、`open_role` / `open_chain`、八项度量与七节，`RestorationRate` / `components` / `DedupBytes` / `percentile` 从测试帮手挪进来）、`report.py`（`FlywheelReport`、建议规则与具名阈值、`report.json` / `report.md`）、`chain.py`（`ChainSpec`、`run_chain`）、`cli.py`（`spectragent-flywheel run | report`）；框架一侧 `core/trace/sources.py`（`task_identity`、`unreadable_reason` 从导出挪来）、`core/trace/secret_patterns.py`（`readable_text`、`iter_readable`）、`core/trace/reader.py`（`RunTrace.committed_files` / `read_committed`：存储与归档字节只读它们）、选步 `core/data_loader/task/step_selector/last.py`；browser 一侧 `archive_stats.py`、`replay/archive_index.py::iter_index_lines`、`replay/replay_log.py::iter_decisions`。发布的配置 `configs/flywheel/same_path_ui_tars_archive.yaml`。测试 `tests/test_flywheel/`（`tests/_helpers/flywheel_traces.py` 用真实 WAL 写出答案已知的链根；真实 Chrome 演练 `test_rehearsal_live.py`：fixture 的三个站点、四个任务、整条链约 40 s，原路径保真 shop 1.0 / drift 0.5，分叉 2/3 零文档 miss，POST 分叉一个文档 miss，剔除 blocked 与 drift，两次导出逐字节相同，植入的凭证 0 次，没有非 loopback 的外联）。一条命令：`uv run python -m tests._helpers.flywheel_rehearsal --out <dir>`。live 计划与配置在本地的 `tmp/flywheel/M33_live_plan.md`、`tmp/flywheel/m33_live/`，没跑。与本条目文字的差异见 PRD 修订记录 H17 起。
 

@@ -1,6 +1,6 @@
 ---
 name: af-project-history
-description: Resume durable or unfinished AF/All4One work from project decisions, heavy handoffs, JEV research, experiment results, and roadmap history. Use when continuing earlier work or revisiting browser-input, anti-bot, LLM-routing, decision-model, operations, or visual-system context. Never substitute it for current architecture or code inspection.
+description: Resume durable or unfinished AF/All4One work from project decisions, heavy handoffs, JEV research, experiment results, and roadmap history. Use when continuing earlier work or revisiting browser-input, anti-bot, LLM-routing, data-flywheel, decision-model, operations, or visual-system context. Never substitute it for current architecture or code inspection.
 ---
 
 # AF project history
@@ -32,8 +32,8 @@ compromise or silently refresh the historical claim.
   [llm-and-runtime-findings.md](references/llm-and-runtime-findings.md)
 - Local execution conventions, ignored visual assets, and migration exclusions:
   [operations-and-exclusions.md](references/operations-and-exclusions.md)
-- The active unfinished handoff pair and older handoff routing:
-  [unfinished-work.md](references/unfinished-work.md)
+- The data-flywheel line's open decisions and follow-ups, the active unfinished handoff
+  pair, and older handoff routing: [unfinished-work.md](references/unfinished-work.md)
 - The dated Jev/System One feasibility study and unresolved registrar/attribution choice:
   [jev-system-one-study.md](references/jev-system-one-study.md)
 - Human–code-agent development rationale and the deferred configuration explainer:

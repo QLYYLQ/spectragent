@@ -4,8 +4,8 @@
 > Locate the named symbol with `rg` and read the current implementation before editing.
 
 `ReactLoop` is the only execution strategy that exists. `BranchLoop` (`branch`, M31) is a
-`ReactLoop` *subclass* — a branch run's steps are ReAct steps, so it adds a restore phase,
-not a new phase vocabulary (§7). `CodeActLoop` (M20, P2), `FunctionCallingLoop` (M22, P3)
+`ReactLoop` *subclass*: a branch run's steps are ReAct steps, so it adds a restore phase
+and no new phase vocabulary (§7). `CodeActLoop` (M20, P2), `FunctionCallingLoop` (M22, P3)
 and `PlanExecuteLoop` (M24, P3) are designed and unbuilt — target registry keys and slots
 are in `docs/architecture_design.md` §4.1. You are the author of the second *strategy*.
 Several things in `react.py` are shaped the way they are *because* there is only one
@@ -39,7 +39,8 @@ agent.run = run
 **Stateless on purpose.** Deps live only in that closure, so one Loop instance drives N
 agents concurrently and the Nth weave cannot rewrite the 1st agent's env. Everything your
 `_execute` needs arrives in `ctx`: `env`, `llm`, `memory`, `act_fn`, `negotiated_obs`,
-`active_descriptors`, `step_recorder`, `task_id` (`core/runtime.py:419-430`). Keep it that
+`negotiated_actions`, `active_descriptors`, `step_recorder`, `task_id`, and the read-only
+`loop_inputs` (§7) (`core/runtime.py:419-430`). Keep it that
 way: do not store per-run dependencies or mutable run state on `self`. Reading immutable
 config fields and calling stateless helper methods on `self` is fine.
 
@@ -147,12 +148,12 @@ live: an agent's own safety guard fired, the run came back as an ordinary
 
 **No Loop may swallow `RunAbort`.**
 `tests/test_core/test_loops/test_abort_handler_hygiene.py` AST-scans every module under
-`spectragent/core/loops/` — recursively since M31, so the restorer package
-(`core/loops/restore/`) is covered, and a meta test pins that `restore/prefix_replay.py` and
-`branch.py` are in the scanned set — and fails on any `try` with a blanket
-`except Exception` that does not carry one of the two accepted shapes. It constrains the *source*, not call sites,
-so your loop inherits the rule on the day you create the file — and the test survives being
-refactored into a base-class helper later. `:248` guards against the rule going vacuous.
+`spectragent/core/loops/` and fails on any `try` with a blanket `except Exception` that
+does not carry one of the two accepted shapes. The scan is recursive since M31, so the
+restorer package (`core/loops/restore/`) is covered, and a meta test pins that
+`restore/prefix_replay.py` and `branch.py` are in the scanned set. It constrains the
+*source*, not call sites, so your loop inherits the rule on the day you create the file —
+and the test survives being refactored into a base-class helper later. `:248` guards against the rule going vacuous.
 
 Third answer, allowed and deliberately ugly: `# RunAbort-exempt: <reason>` on the `except`
 line, for a handler that genuinely cannot be vetoing anything (teardown, logging).
@@ -174,38 +175,41 @@ not call `_note_abort` here** — the record is already written and you would do
 
 **The step a failing run ends on can fail to record, and that must not replace the
 outcome.** The sink is woven: `TraceWriter`'s blocking `after` advice on `record_step`
-raises when the step's archive collection fails or the disk is full — and a page broken
+raises when the step's archive collection fails or the disk is full, and a page broken
 enough for a guard to veto is exactly when capture breaks too. If that error leaves the
 Loop instead of the veto, `AgentRuntime.execute`'s `isinstance(exc, RunAbort)` sees an
 ordinary exception, `raise_on_error=False` swallows it, and the sweep starts its next
 task; an `_abort` result likewise names the recorder's error instead of the root cause.
-So every surrender on a step after which the run is over *because it failed* — both
-abort shapes, `_abort`, a failed action, the last tolerated parse error — goes through
+
+So every surrender on a step after which the run is over *because it failed* (both
+abort shapes, `_abort`, a failed action, the last tolerated parse error) goes through
 `ReactLoop._surrender_failing`, which logs the recording failure and returns it: the
 veto is re-raised with it attached as a note (`_note_unrecorded`), the error result
 appends "recording this step failed too: …" (`_unrecorded_suffix`). A `RunAbort` the sink
-raises itself still propagates. On every other step — the run would go on, or succeed —
-a recording failure still ends the run (fail closed). Nothing is lost by not raising it:
-the recorder already knows (TraceWriter keeps the step's calls owed, commits them as
+raises itself still propagates. On every other step, where the run would go on or
+succeed, a recording failure still ends the run (fail closed). Nothing is lost by not
+raising it: the recorder already knows (TraceWriter keeps the step's calls owed, commits them as
 trailing at close-out and closes the trace out as `error`, as far as the disk lets it).
 When the disk is still full at the close-out, that second failure is the runtime's to
 rank, not the Loop's: `AgentRuntime.execute` logs it and adds it to the veto as one more
 note (§3.4). A new Loop owes the same split.
 
 **A cancellation that cuts that hand-over off must carry the outcome.** The hand-over
-can take a while — `TraceWriter` pulls the environment's evidence there, of the very
-page the guard refused — and the run's own timeout can land in it. The Loop must not
+can take a while (`TraceWriter` pulls the environment's evidence there, of the very
+page the guard refused), and the run's own timeout can land in it. The Loop must not
 swallow the cancellation (it may be Ctrl-C, or a caller's own `asyncio.timeout`), but
 re-raising it bare loses the outcome: `asyncio.wait_for` turns it into `TimeoutError`,
 and `AgentRuntime.execute` returns an ordinary timeout result whatever `raise_on_error`
-says — the sweep starts its next task against the site the guard refused, and nothing
-says a guard said stop. So `_surrender_vetoed` and `_end_failing` catch
+says. The sweep then starts its next task against the site the guard refused, and
+nothing says a guard said stop.
+
+So `_surrender_vetoed` and `_end_failing` catch
 `asyncio.CancelledError`, call `carry_outcome(cancelled, outcome)`
 (`core/loops/errors.py`: a `RunEnded` holding the veto or the terminal result goes to the
 head of the cancellation's `__context__` chain) and re-raise the same object; the
 runtime reads it back only for its own timeout (§3.4). The inline shape gets the veto
-for free — awaiting inside `except RunAbort` makes it the cancellation's context — but
-the capture-and-re-raise shape does not: there the veto is only a local, so carry it
+for free, because awaiting inside `except RunAbort` makes it the cancellation's context.
+The capture-and-re-raise shape does not: there the veto is only a local, so carry it
 explicitly. A terminal result has to be carried explicitly in every shape: `_end_failing`
 builds it in the handler, without the "recording failed" suffix, and the runtime appends
 what cut it off. And log the veto *before* the hand-over (the act phase does), so it is
@@ -248,19 +252,19 @@ except Exception as failure:
 ```
 
 `raise_on_error=False` means "a failed task must not stop the sweep". A veto is the
-opposite instruction, so it propagates either way — after the trace is closed out, and
-even when that close-out fails (a disk that stays full makes `TraceWriter.on_run_end`
-raise): like a cancellation, a veto outranks a close-out that fails under it, and the
-failure becomes one more note on it. Every other failure keeps `if raise_on_error: raise`,
+opposite instruction, so it propagates either way. It does so after the trace is closed
+out, and even when that close-out fails (a disk that stays full makes
+`TraceWriter.on_run_end` raise): like a cancellation, a veto outranks a close-out that
+fails under it, and the failure becomes one more note on it. Every other failure keeps `if raise_on_error: raise`,
 and a close-out failure there propagates as it is.
 
 The run's own timeout is the other way a veto used to get lost, and it is not an outside
 cancellation. `except TimeoutError` first asks `_outcome_under(timed_out)`: `wait_for`
 raises its `TimeoutError` *from* the cancellation it delivered into the Loop, and when
 that cancellation carries an outcome (`carried_outcome`, §3.3) the run had already
-ended. A carried veto is closed out as vetoed — `agent_done="error"`, an `error` that
+ended. A carried veto is closed out as vetoed (`agent_done="error"`, an `error` that
 names the veto and says the timeout expired while the vetoed step was being recorded,
-the timeout as a note on the `RunAbort` — and re-raised whatever `raise_on_error` says;
+the timeout as a note on the `RunAbort`) and re-raised whatever `raise_on_error` says;
 a carried terminal result is closed out and returned with the same remark appended to
 its `error`. Only a run cut off while still under way gets `agent_done="timeout"`. An
 outside cancellation never reads the chain: it is re-raised unchanged, as before.
@@ -364,7 +368,7 @@ parse_retries_per_step: Annotated[
   end-to-end version with a real archive collection is
   `test_trace_writer_archive.py::TestThroughTheRuntime::test_a_veto_at_a_step_whose_collection_fails_is_still_a_veto`,
   and the one where the close-out fails too (a disk that stays full) is
-  `::test_a_veto_survives_a_disk_that_stays_full_through_the_close_out` — that half is the
+  `::test_a_veto_survives_a_disk_that_stays_full_through_the_close_out`. That half is the
   runtime's (`test_run_lifecycle.py::TestTheCloseOutRunsOnce::test_a_vetoed_run`), so a new
   Loop inherits it by raising `RunAbort` and nothing else.
 - Every phase a third time, with a sink a cancellation cuts off on the step the run ends
@@ -396,7 +400,7 @@ parse_retries_per_step: Annotated[
   unknown, missing and mistyped keys in one `IncompatibleLoopInputError`, at
   `AgentRuntime.prepare(loop_inputs=…)` (right after slot validation, before negotiation)
   and again in `weave()`. The checked inputs reach `_execute` as the read-only
-  `ctx["loop_inputs"]` — never as attributes on `self`. They come from
+  `ctx["loop_inputs"]`, never as attributes on `self`. They come from
   `TaskLoader.get_task_context(id).loop` through `BenchmarkRunner` (§4.10). The old
   untyped `**kwargs` channel of `prepare` / `execute` is gone: a misspelled keyword is a
   `TypeError`. A Loop that declares nothing (`react`) refuses every input, so a checkpoint
@@ -408,17 +412,17 @@ parse_retries_per_step: Annotated[
   restoration=None)` is one ReAct step, returning a terminal `AgentResult` or `None`:
   given `observation` it does not observe again (the restorer's verified obs_t is the
   step's cycle, §4); given `restoration` every record the step builds carries it. ReAct's
-  memory protocol is three `ReactLoop` methods — `_cap_actions`, `_remember_rejected`,
-  `_remember_reply` — the only copies, used by the live step and by `BranchLoop`'s replay
-  alike. Do not add module-level private helpers to `react.py` (the layering handoff,
-  `HANDOFF_261010_react_loop_layering.md`): Loop-generic code goes on `AgentLoopBase` or
+  memory protocol is three `ReactLoop` methods (`_cap_actions`, `_remember_rejected`,
+  `_remember_reply`). They are the only copies, used by the live step and by
+  `BranchLoop`'s replay alike. Do not add module-level private helpers to `react.py`
+  (the layering handoff, `HANDOFF_261010_react_loop_layering.md`): Loop-generic code goes on `AgentLoopBase` or
   in a `core/loops/` module, trace/accounting code in the trace layer.
 - **Steps are counted by origin.** `StepRecord.origin` is `policy` / `restored` /
   `terminal`; `AgentMetrics.steps` and the `max_steps` budget count `policy` only, and only
   policy actions enter `AgentResult.action_history`.
 - **Terminal observation** (`terminal_observation`, default off on `ReactLoop`, on for
-  `BranchLoop`): after done / `max_steps` / the parse-error streak — never after an abort,
-  a failed action, a divergence or a veto — one more observe recorded as an
+  `BranchLoop`): after done / `max_steps` / the parse-error streak (never after an abort,
+  a failed action, a divergence or a veto), one more observe, recorded as an
   `origin="terminal"` record. `AgentLoopBase._observe_terminal(env, negotiated_obs, *,
   step)` observes and builds the record (any Loop can use it; an ordinary failure becomes
   an `error_phase="observe"` record, a `RunAbort` propagates); surrendering it and ranking
@@ -427,18 +431,18 @@ parse_retries_per_step: Annotated[
 - **The restore phase** (`BranchLoop`): rebuild the context from the source trace by
   replaying every recorded model call through the agent's parser and the three memory
   methods, checking each call's context against the recording; then `async for` the
-  restorer (`self.restorer`, a receptor — `RestorerRegistrar`, `core/loops/restore/`),
+  restorer (`self.restorer`, a receptor: `RestorerRegistrar`, `core/loops/restore/`),
   which yields one `RestoredStep` per restored step and finally the verified obs_t; then
   `_run_step(run, t, observation=obs_t, restoration=check_t)` and `continue_steps` more.
   A restorer gets a narrow `RestorationContext` (env, `act_fn`, the negotiated
-  observation, the source accessor, *t*) — no model, no memory, no recorder — so it can
+  observation, the source accessor, *t*) with no model, memory or recorder, so it can
   restore only the environment. Vetoes in replay and restore record an
   `origin="restored"` step with `error_phase="replay"` / `"restore"` and propagate;
   a strict divergence ends the run with `RestorationDivergedError`, without a terminal
-  observation. Under `strict` a restorer raises at the first failed check — the
-  observation's, a retarget's or an action's outcome — before the step's next action runs,
+  observation. Under `strict` a restorer raises at the first failed check (the
+  observation's, a retarget's or an action's outcome) before the step's next action runs,
   and it calls `env.verify_restoration` exactly once per restored observation.
-- **A Loop subclass with a receptor** — `BranchLoop` is a `@dataclass` subclass of
+- **A Loop subclass with a receptor.** `BranchLoop` is a `@dataclass` subclass of
   `ReactLoop` whose `restorer` is annotated only on a plain mixin (the `AgentReceptors`
   shape) with an in-Python default; see the af-add-a-receptor skill §6 for why, and for
   the PEP 563 trap an inherited `react.py` string annotation sets for `branch.py`.
@@ -471,9 +475,9 @@ parse_retries_per_step: Annotated[
   hands it the live run's values, `BranchLoop` the budget its source recorded at the
   checkpoint (`pinned_step_info(recorded, today_override=...)`: the recorded `max_steps` and
   `today`, `today_override` winning), and the export's student renderer the values each
-  recorded step was shown. A Loop that needs different values passes different arguments —
-  never a second copy of the construction.
-- **The memory protocol has a third user.** The export writes each earlier assistant turn of a
-  student context through `ReactLoop._remember_reply(memory, text, [])` — the same method the
-  live step and `BranchLoop`'s replay use — and seeds each context segment with
+  recorded step was shown. A Loop that needs different values passes different arguments
+  and never writes a second copy of the construction.
+- **The memory protocol has a third user.** The export writes each earlier assistant turn
+  of a student context through `ReactLoop._remember_reply(memory, text, [])`, the same
+  method the live step and `BranchLoop`'s replay use, and seeds each context segment with
   `AgentRuntime.seed_messages`, never by calling the agent's `prepare` itself.

@@ -5,6 +5,68 @@ not merely retrospective history. None outranks `docs/architecture_design.md`. B
 implementing an item, compare its dated baseline with current code, tests, and later
 commits; mark it complete only after verifying the resulting behavior.
 
+## Data flywheel line (2026-10-10 to 2026-10-12)
+
+Done: eight commits on `main` after `661c924`, `422b006` to `1ad8e47`, covering typed
+trace read-back, the archive axis, browser archivers and the recorder connection, offline
+replay, branching from recorded checkpoints, SFT export through the student agent, the
+metrics chain with the form-submit observation fix, and LLM providers closing the client
+each request builds. Architecture §4.14–§4.16 and `docs/execution_dag.md` M27–M33 describe
+the result; the `af-data-flywheel` skill is the working guide. Every module was accepted on
+fixtures with scripted models; nothing has run against a live site or a paid model. The
+local orchestration record (`tmp/flywheel/`: decisions, acceptance reports, the live plan)
+and the local PRD (`docs/data_flywheel_prd.md` and its revision log) hold the evidence when
+present.
+
+Open user decisions, each surfaced and none taken:
+
+- Password values on the observation path: the BrowserUse DOM observation carries a
+  password input's `value` into `serialized_dom` and the trace; only the archive's raw DOM
+  is redacted. The recommendation was to mask it. A student that negotiates the DOM would
+  inherit the leak; the v1 student sees screenshots only.
+- Dropping `--disable-site-isolation-trials`: `pinned` no longer passes it, because the
+  recorder captured out-of-process frames without it and the switch changes their
+  observation. It still needs sign-off.
+- Hashing Web Storage values by default: they are kept as recorded except under
+  credential-named keys, and `browser.storage` declares session state either way.
+- Renaming the `off` replayability tier: YAML 1.1 reads a bare `off` as `false`, so every
+  block has to quote it.
+- Failed-teacher branches: a branch whose teacher call failed counts as a branch with no
+  document miss, which inflates the rate the strict-miss-policy decision reads. The report
+  lists such runs (`model_failures`); excluding them would change the metric's definition.
+- The live run: S2b (record and same-path replay of 10 live `online_mind2web` tasks) and
+  the full live chain are prepared in `tmp/flywheel/M33_live_plan.md` and
+  `tmp/flywheel/m33_live/`, and need the user's route, task count and token ceiling. Until
+  they run, the metrics report's recommendations rest on fixture evidence and stay
+  `partial`.
+
+The `react.py` layering handoff (`HANDOFF_261010_react_loop_layering.md`, local) is still
+open. `_UsageTally`, `_merge_token_usage` and most other private helpers in `react.py`
+belong to the trace/metrics hook layer or to `AgentLoopBase`; the user's uncommitted TODO
+line in `react.py` asks the same question and stays out of commits. M31 placed its new
+code by layer and moved nothing, and who owns token accounting (the hook layer, or a
+base-Loop helper around the LLM call) awaits the user. The handoff records two accounting
+defects, both unfixed: with the `metrics` hook on, a provider that reports no usage turns
+the result's `usage=None` into an all-zero `AgentUsage`, which the eval summary then counts
+as a measured zero; and after an in-step parse retry, a step that ends on a later failed or
+vetoed call records `token_usage=None` although its earlier calls were billed.
+
+Follow-ups of the LLM client fix (`1ad8e47`, architecture §4.7; local report
+`tmp/flywheel/H28_fix.md`):
+
+- Reusing connections needs an LLM lifecycle, such as a run-owned `aclose()` on the model
+  (architecture §14.3), which is a protocol change for the user. Until then every request
+  builds and closes its own client, and `ChatGoogle` on Vertex without explicit credentials
+  reloads ADC per request. `ChatOllama` and `ChatMistral` still leave their clients to the
+  garbage collector.
+- Providers whose `get_client()` ignores an injected `http_client` (deepseek, cerebras,
+  vercel, openrouter, `anthropic.aws`) leave the client they built open whenever one is
+  injected, because the close rule keys on the field. YAML cannot set the field, so nothing
+  in the repository reaches this path.
+- The six cloud lite browser backends cache one SDK client per backend instance and close
+  only their sessions, never the client. The lite SDKs define no finalizer that schedules
+  work on the event loop, so this leaks until collection without the stale-close hang.
+
 ## Current heavy handoff pair
 
 ### `HANDOFF_260918_port_residue.md`

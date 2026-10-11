@@ -102,7 +102,7 @@ Three methods carry a fragment to the trace and back, all on `FragmentBase`
   sidecar and **refuses** an artifact rather than dropping it: bytes there mean
   the class overrode `trace_binary` without overriding `from_trace`, and the
   sidecar alone would read back as a fragment with its payload silently missing.
-  So override them together — `ScreenshotObs.from_trace` (`observations.py:606`)
+  So override them together: `ScreenshotObs.from_trace` (`observations.py:606`)
   puts the bytes back into `image_bytes`. A fragment whose JSON shape is its own
   (a `field_serializer` encoding a graph) owns the decoder for that shape too:
   `DOMObs.from_trace` (`observations.py:465`) gives back a `DOMState` and
@@ -110,11 +110,11 @@ Three methods carry a fragment to the trace and back, all on `FragmentBase`
   the dataclass annotations, as the encoder does; a traced field annotated with a shape
   it has no rule for (it knows scalars, `Any`, dataclasses, `X | None`, scalar unions,
   `Literal`, `list`, `tuple`, `set` / `frozenset`, `dict`) is a `TypeError` naming the
-  annotation when the plan is built — teach `_GraphDecoder` the shape first. Report every
-  failure as a `ValueError` (pydantic's `ValidationError` is one); the reader
-  turns it into a `TraceSchemaError` naming the file. Whatever your encoding
-  still loses, write it in the class docstring — `DOMObs`'s lists four losses —
-  and do not invent it back on read.
+  annotation when the plan is built, so teach `_GraphDecoder` the shape first. Report
+  every failure as a `ValueError` (pydantic's `ValidationError` is one); the reader
+  turns it into a `TraceSchemaError` naming the file. Write whatever your encoding
+  still loses in the class docstring (`DOMObs`'s lists four losses), and do not
+  invent it back on read.
 
 Plus `summary() -> str` — one line for `StepRecord.observation_summary`. Empty
 means "skip me". This is what makes a trace skimmable without loading megabytes
@@ -229,7 +229,7 @@ files after `fragment_id`, explicitly not after the negotiated local name:
 
 Binary artifacts land beside the sidecar as `observations/{step:03d}_{key}{suffix}`
 (`artifact_path`, `encoding.py:87`). The sidecar is the fragment's own JSON and
-nothing else — no pointer to the artifact. The manifest's per-step fragment index
+nothing else; it holds no pointer to the artifact. The manifest's per-step fragment index
 (`FragmentFiles.artifact`) is the only pointer, and `from_trace` is handed the
 bytes.
 
@@ -462,10 +462,10 @@ empty `DOMObs`, or a defaulted `url=""`, is the framework inventing data — the
 exact failure `failure.py` exists to refuse. From your resolver: **raise**. Do
 not return `None`, do not return an empty fragment. Zero bytes count as empty:
 `ScreenshotWatchdog._capture` raises when `Page.captureScreenshot` returns no image
-data, where it used to hand over `b""` — which the trace committed as a 0-byte
-artifact its reader then refused, failing every screenshot of the run. The environment decides what
-your failure costs by consulting what the run declared required; softening it in
-the capability removes that decision from the only place that can make it.
+data. It used to hand over `b""`, which the trace committed as a 0-byte artifact
+that its reader then refused, failing every screenshot of the run. The environment
+decides what your failure costs by consulting what the run declared required;
+softening it in the capability removes that decision from the only place that can make it.
 (`_expect_failure` in the contract suite, `capability_contract.py:254`, fails a
 harness whose `resolve_fragment` returns after `break_capture()`.)
 
@@ -656,7 +656,7 @@ Checklist for a new cost knob:
       `field_serializer` → decode it in `from_trace`. Add the class to `SAMPLES`
       in `tests/_helpers/fragment_samples.py` so
       `tests/test_schemas/test_observation/test_fragment_from_trace.py` round-trips
-      it (encode → decode → encode is unchanged) —
+      it (encode → decode → encode is unchanged);
       `test_every_shipped_fragment_class_has_a_sample` fails until you do.
 - [ ] Did **not** declare `captured_at` or `fragment_id` — inherited both.
 - [ ] Produced by a Resolver that declares it (`provides` for a watchdog) and

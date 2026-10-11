@@ -2,7 +2,7 @@
 
 End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 
-需要直接启动三种 browser agent、切换本地/云浏览器或跑数据集时，先看 [Browser agent 运行手册](../docs/browser_agent_runbook.md)。
+需要直接启动三种 browser agent、切换本地/云浏览器或跑数据集时，先看 [Browser agent 运行手册](../docs/browser_agent_runbook.md)。录制、离线回放、分叉、导出训练数据和度量报告的操作步骤见 [数据飞轮运行手册](../docs/data_flywheel_runbook.md)。
 
 ## Layout
 

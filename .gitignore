@@ -44,7 +44,7 @@ CLAUDE.md
 /spectragent/generated/*
 # ...except the fingerprint. The generated config is the surface users write
 # YAML against, so a `__wiring__` change is a user-visible API change — and by
-# the same argument that keeps the three golden docs tracked below, it cannot be reviewed
+# the same argument that keeps the golden docs tracked below, it cannot be reviewed
 # alongside the change that causes it while it lives outside the repository.
 # Tracking ``_composed.py`` itself would put a 68k derived file in the path of
 # every parallel branch; the 575-byte fingerprint carries the same signal as a
@@ -60,6 +60,7 @@ CLAUDE.md
 /docs/*
 !/docs/architecture_design.md
 !/docs/browser_agent_runbook.md
+!/docs/data_flywheel_runbook.md
 !/docs/execution_dag.md
 
 # Local-only data sets

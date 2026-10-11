@@ -120,21 +120,22 @@ is sufficient.
 A capability that declares `__wiring__["archiver"]` (environment evidence,
 `docs/architecture_design.md` §4.9) has a second shared contract, in
 `tests/_helpers/archive_contract.py`, run by
-`tests/test_core/test_archive/test_archive_contract.py`. Same deal: one factory in that
-module's own `HARNESS_FACTORIES`, the whole suite inherited. An
+`tests/test_core/test_archive/test_archive_contract.py`. It works the same way: one
+factory in that module's own `HARNESS_FACTORIES`, and the whole suite is inherited. An
 `ArchiveHarness(capability, archivers, produce, break_collect, change_run_record=None)`
 hands it the capability (set up as far as capturing goes, no real browser/container), the
 archivers to bind (two or more, so evidence leaking from one into another shows),
-`produce(step)` (make the capability capture what one step of activity would — `step` is
+`produce(step)` (make the capability capture what one step of activity would; `step` is
 bookkeeping and must never reach the capability), `break_collect()` (make every
-`collect_archive` from then on fail — required, like `break_capture`) and, optionally,
+`collect_archive` from then on fail; required, like `break_capture`) and, optionally,
 `change_run_record()` (make the next collection carry a changed run record, so the
-crash-window clause puts a new version into the step that never commits). The clauses
-are capability-agnostic. Capability side: collect takes no argument at all; an unbound
-capability archives nothing; every key routes by prefix and an empty bind clears; collect
-hands over and forgets; every step file belongs to a bound archiver and a batch holds at
-most one JSON run record; step files carry their provenance (`captured_at` inside the
-produce → collect window); a broken collection raises instead of returning an empty
+crash-window clause puts a new version into the step that never commits).
+
+The clauses are capability-agnostic. Capability side: collect takes no argument at all; an
+unbound capability archives nothing; every key routes by prefix and an empty bind clears;
+collect hands over and forgets; every step file belongs to a bound archiver and a batch
+holds at most one JSON run record; step files carry their provenance (`captured_at` inside
+the produce → collect window); a broken collection raises instead of returning an empty
 batch. Through the trace hook (driven directly, negotiated and bound as `prepare()` does,
 so no agent or loop has to fit your capability): steps commit and read back byte-for-byte
 through `RunTrace.archive_files` / `blob` / `archive_run_file`, each blob once; the crash
@@ -142,25 +143,28 @@ window hides uncommitted evidence, which then lands as trailing evidence, never 
 crashed step; the tail lands at run end; a failed collection fails the trace closed; an
 empty archive costs nothing; beside a second archiving capability in the same environment,
 each capability's run records are counted, numbered and deduplicated as its own (a record
-byte-equal to the other's is still committed). A completeness guard fails when a shipped capability that
-declares archivers (or whose default instance has non-empty `provided_archivers`) has no
-factory. `TestTheArchiveContractHasTeeth` runs eight one-rule-wrong capabilities, each
-failing exactly its capability clause and no other, and runs the trace clauses against a
-correct structural capability whose names are nothing like the fake's — the portability
-proof a `browser` factory relies on. M28 runs it against the fake `contract_archive`
-capability; M29 opts `BrowserCapability` in under fake CDP. Not in the harness, because no
-capability-agnostic harness can produce them: the timing rules of §4.9 — never blocking,
-the hand-over atomic with respect to your producers, an in-flight item handed over exactly
-once (or marked incomplete by the last collection). Your capability's own tests pin those.
+byte-equal to the other's is still committed).
+
+A completeness guard fails when a shipped capability that declares archivers (or whose
+default instance has non-empty `provided_archivers`) has no factory.
+`TestTheArchiveContractHasTeeth` runs eight one-rule-wrong capabilities, each failing
+exactly its capability clause and no other, and runs the trace clauses against a correct
+structural capability whose names are nothing like the fake's. A `browser` factory relies
+on that as its portability proof. M28 runs it against the fake `contract_archive`
+capability; M29 opts `BrowserCapability` in under fake CDP. The harness leaves out the
+timing rules of §4.9, because no capability-agnostic harness can produce them: never
+blocking, the hand-over atomic with respect to your producers, an in-flight item handed
+over exactly once (or marked incomplete by the last collection). Your capability's own
+tests pin those.
 
 **The worked case: `browser`** (`browser_archive_harness` in `archive_contract.py`, driving
 `tests/_helpers/browser_archive.py`). Four things it had to get right, which any
 capability with real resources will meet too:
 
 - **Setup is lazy and opens every channel.** The factory is synchronous and the clauses
-  are async, so the capability sets up on the first `produce()` — with *every* harness
+  are async, so the capability sets up on the first `produce()`, with *every* harness
   archiver bound for that moment (the channels a capability opens are decided at setup,
-  §4.14), then the clause's own binding is restored. Binding again after setup only
+  §4.14); then the clause's own binding is restored. Binding again after setup only
   changes who receives and who is collected.
 - **`close`.** `ArchiveHarness(close=...)` releases what `produce` acquired; the test
   fixture awaits `harness.aclose()` after every clause. Without it each clause leaks a
@@ -169,7 +173,7 @@ capability with real resources will meet too:
   forget" means a second collection with nothing produced in between is *empty*; an
   archiver that snapshots state at collection time (`browser.storage`) must therefore
   emit on change, not every time.
-- **`break_collect` is the real failure** — the recorder connection drops
+- **`break_collect` is the real failure.** The recorder connection drops
   (`FakeClient.lose`), and `collect_archive` raises the same `RecorderLostError` every
   other entry point does.
 
@@ -183,8 +187,8 @@ lands in exactly one batch.
 
 A branch run (M31, `docs/architecture_design.md` §4.1 `BranchLoop`) re-executes a recorded
 prefix in a freshly started environment. If a recorded action of yours names something new
-in every environment — the browser's element index is a `backendNodeId`, a tab id a fresh
-CDP `targetId` — or if you can tell whether a restored world looks like the recorded one,
+in every environment (the browser's element index is a `backendNodeId`, a tab id a fresh
+CDP `targetId`), or if you can tell whether a restored world looks like the recorded one,
 implement the optional protocol `RestorationSupport` (`core/capabilities/base.py`, §4.9):
 
 ```python
@@ -195,9 +199,9 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationE
 - **Computes, never acts.** `retarget` returns the action to execute (or a `failure`,
   `not_found` / `ambiguous`, with a `detail`); the restorer executes it through
   `guarded_act`. `verify_restoration` *measures* (`url_match`, `signature_*`,
-  `screenshot_distance`, `document_misses` — each `None` when not measured); thresholds and
+  `screenshot_distance`, `document_misses`; each `None` when not measured); thresholds and
   `strict | warn` are the restorer's (`core/loops/restore/checks.py::judge`).
-- **Reads the two observations handed to it** — whole `NegotiatedObservation`s; read
+- **Reads the two observations handed to it**, whole `NegotiatedObservation`s. Read
   your own fragments by local name and check their type (a failed capture is a
   `FragmentFailure`, a fragment this run did not negotiate is absent). No step numbers, no
   `core.trace` import (§10): the recorded side reaches you already rebuilt by your
@@ -206,8 +210,8 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationE
   call. That makes `verify_restoration` order-dependent, so restorers call it exactly once
   per restored observation; test that a second call reads 0.
 - **Put the logic in pure functions of its own module** and keep the capability methods
-  one-line delegations (the browser: `core/capabilities/browser/restoration.py` —
-  `retarget_action`, `measure`, `element_signature`, `dhash`). A knob it needs is an
+  one-line delegations (the browser: `retarget_action`, `measure`, `element_signature`,
+  `dhash` in `core/capabilities/browser/restoration.py`). A knob it needs is an
   `Annotated` constructor parameter (`retarget_tolerance_px`), regenerated like any other.
   State it needs between measurements (the browser's last-seen replay-log
   `diverged_total`) is reset in `setup` / `teardown`.
@@ -216,9 +220,9 @@ async def verify_restoration(self, recorded: Any, restored: Any) -> RestorationE
   implementers only (no implementer: nothing to check). `CapabilityBase` has no default.
 - **Tests it owes**: an `isinstance(capability, RestorationSupport)` check; every retarget
   family and both failures, with the recorded side read back through the trace encoding
-  (the browser: `test_browser_restoration.py` — a decoded selector-map entry must sign like
-  its live node); one fixture per measured reason, judged by `judge`; and, if you can run
-  the real thing, a live branch (`test_browser_branch_live.py`).
+  (the browser: `test_browser_restoration.py`, where a decoded selector-map entry must sign
+  like its live node); one fixture per measured reason, judged by `judge`; and, if you
+  can run the real thing, a live branch (`test_browser_branch_live.py`).
 
 ---
 
@@ -260,14 +264,14 @@ add its twin:
 | `__wiring__` declares | relative (`dom`) | relative (`click`) | no requires side: the trace hook's `archive` list, always fully qualified |
 
 The archive axis is the one deliberate exception to "declare it on `BaseCapability`": it
-is optional — a capability that records nothing should implement nothing — and adding
+is optional (a capability that records nothing should implement nothing), and adding
 members to a `@runtime_checkable` Protocol changes `isinstance` for every structural
 implementer (see the note below). `CapabilityBase` satisfies `ArchivingCapability` with
 inert defaults: `provided_archivers` derived from `__wiring__["archiver"]`
 (`_wiring_keys_for(type(self), "archiver")`), `bind_archivers([])` a no-op and a
 non-empty bind raising `NotImplementedError` naming the class, `collect_archive()`
 returning an empty `ArchiveBatch`. On the **Environment** Protocol all three axes are
-declared alike — `provided_actions` included, which M28 added after negotiation had been
+declared alike, `provided_actions` included: M28 added it after negotiation had been
 reading it from an undeclared member.
 
 **Rule:** when you touch `base.py`, run `uv run pyright spectragent/core/capabilities
@@ -502,13 +506,14 @@ reach them.
 **Provider capabilities decide what a capability may hand a backend** (§4.9.x). A
 provider class declares `__capabilities__: ClassVar[set[str]]` from
 `backends/capabilities.py`; the capability reads the set, never a `provider_id`. Two
-exist because of the browser recorder (M29), declared by `local_chrome` alone:
-`NETWORK_CAPTURE` — the provider launches a browser the capability owns, so a second
-CDP client holding `waitForDebuggerOnStart` cannot wedge someone else's browser, and it
+exist because of the browser recorder (M29), and only `local_chrome` declares them.
+`NETWORK_CAPTURE` means the provider launches a browser the capability owns, so a second
+CDP client holding `waitForDebuggerOnStart` cannot wedge someone else's browser; it also
 says whether that browser starts from a fresh profile (`NetworkCaptureProvider.
 persistent_profile()`; a provider declaring the constant without it is refused, never
-taken as fresh) — and `LAUNCH_ARGS` — `open(*, launch_args=...)` reaches the command line
+taken as fresh). `LAUNCH_ARGS` means `open(*, launch_args=...)` reaches the command line
 (the `LaunchArgsProvider` Protocol adds `launch_arg_conflicts()`).
+
 Every rule that combines a configured party with a provider lives in **one** function
 (`browser/cooperation.py`): it reports every problem at once, each line naming both
 parties, and the parts decidable at binding time run in `bind_archivers` (i.e. in
@@ -516,13 +521,13 @@ parties, and the parts decidable at binding time run in `bind_archivers` (i.e. i
 before it launches anything. A test proves "nothing launched" with a backend that counts
 `open()` calls.
 
-**A second connection is a lifecycle, not a helper.** The browser's recorder
+**A second connection needs a lifecycle of its own.** The browser's recorder
 (`browser/recorder.py`, §4.14) is the pattern for any capability that needs a channel
-beside the agent's: built in setup before the first tab, its consumers (the
-`ArchiveWatchdog`) attached *before* it attaches anything — or the events it emits while
-opening have nobody to count them — liveness pushed by a close callback (a lost
-connection fails every later observation, action and collection with one named error),
-and torn down first, in a fixed, idempotent order that is safe on a half-built instance.
+beside the agent's. It is built in setup before the first tab. Its consumers (the
+`ArchiveWatchdog`) are attached *before* it attaches anything, or the events it emits
+while opening have nobody to count them. A close callback pushes its liveness (a lost
+connection fails every later observation, action and collection with one named error).
+It is torn down first, in a fixed, idempotent order that is safe on a half-built instance.
 
 ---
 
@@ -632,11 +637,14 @@ Your knobs reach YAML through conscribe codegen, and **nothing about that is aut
    skipped (`:118`), so an empty new registrar silently produces nothing.
 5. **Provides entries are optional fields you must not fill.** `__wiring__["observation"]`
    and `__wiring__["archiver"]` have no slot on the capability, so conscribe emits them as
-   `observation: Optional[Literal[...]] = None` / `archiver: Optional[Literal[...]] =
-   None` on its config. A YAML that populates either is refused by the Composer with
-   `UnresolvedWiringError` ("negotiation-only entry") — there is nothing to receive the
+   optional fields that default to `None`: `observation: Optional[Literal[...]]`, and
+   `archiver` as a `Literal` of the provided keys in a per-class schema or, in
+   `_composed.py`, where the `archiver` layer is collected (M29), as an optional union of
+   the archiver configs. A YAML that populates either is refused by the Composer with
+   `UnresolvedWiringError` ("negotiation-only entry"), because nothing would receive the
    value. Archivers are chosen on the trace hook (`hook[].archive`, from M29), never on the
-   capability; `tests/test_core/test_composer/test_archive_provides.py` pins it.
+   capability; `tests/test_core/test_composer/test_archive_provides.py` and
+   `test_archive_yaml_surface.py::test_a_capability_level_archiver_block` pin it.
 
 ### The fingerprint staleness trap
 
@@ -677,9 +685,9 @@ Before you call a capability done:
 - [ ] `__invalidated_by_foreign_actions__` left at `False` unless a surface is genuinely shared
 - [ ] Both axes declared: `provided_fragments` **and** `provided_actions`
 - [ ] If you declare `__wiring__["archiver"]`: override **both** `bind_archivers` and `collect_archive` (the `CapabilityBase` default refuses a non-empty bind), and add an `ArchiveHarness` factory to `tests/_helpers/archive_contract.py`
-- [ ] `bind_archivers` replaces the whole binding (an empty list unbinds) and acquires nothing — it may run on a dry run, before setup; `setup()` reads the binding to decide whether to build its capture channel
+- [ ] `bind_archivers` replaces the whole binding (an empty list unbinds) and acquires nothing, since it may run on a dry run, before setup; `setup()` reads the binding to decide whether to build its capture channel
 - [ ] `collect_archive` takes no step or cycle, hands over everything since the last collect and forgets it, raises when it cannot collect (never a fake-complete empty batch), is safe on a half-built instance, swaps its buffer atomically with respect to its producers, and carries an in-flight item into a later batch exactly once
-- [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES` — derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
+- [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
 - [ ] Backend registrar pinned in `_collect_registrars()` if you added one
 - [ ] `uv run spectragent-gen`, then `uv run pytest tests/test_generated/`

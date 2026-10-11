@@ -205,20 +205,20 @@ importing, so an optional extra or an unimported module cannot hide one.
 > Do step 3 when you do step 1.
 
 **The one exception: a registrar with no implementation yet.** An empty registry cannot
-be a Composer layer, three ways at once: `ConfigComposer` raises for a collected layer
-with no registered class ("register at least one subclass or omit this layer",
+be a Composer layer, for three separate reasons: `ConfigComposer` raises for a collected
+layer with no registered class ("register at least one subclass or omit this layer",
 `core/composer.py`); `generate_all` skips an empty layer, so the fingerprint test reports
 it as collected but never fingerprinted; and an owner whose wired slot points at an
-uncollected registry fails to compose (`UnresolvedWiringError`) — for every config that
+uncollected registry fails to compose (`UnresolvedWiringError`) for every config that
 names the owner, whether or not it uses the slot. So create and document the registrar
-(step 1 and step 12) now, and do steps 3, 4, 5 and 9 — collect, the `__wiring__` entry,
-the class-level annotation, regenerate — **in the change that registers its first
+(step 1 and step 12) now, and do steps 3, 4, 5 and 9 (collect, the `__wiring__` entry,
+the class-level annotation, regenerate) **in the change that registers its first
 implementation**. Until then the owner takes the strategy list as a **plain, non-`Annotated`
 constructor parameter**: `__config_annotated_only__` keeps it out of the generated
 config, so a YAML block naming it fails validation instead of being dropped. Do not give
 it an `Annotated` type before the wiring entry exists: conscribe then generates
-`archive: Any` and hands the owner raw dicts — the name-not-instance defect of §0 in a
-new costume.
+`archive: Any` and hands the owner raw dicts, which is the name-not-instance defect of §0
+again.
 
 Worked case: `ArchiverRegistrar` (`core/archive/_registrar.py`). M28 created it with only
 test fakes registered; `TraceWriter(archive=[...])` is a plain parameter there. M29 adds
@@ -318,21 +318,23 @@ the roots cannot silently stop matching.
 parameter of a dataclass-synthesised `__init__`, and no receptor parameter of any
 `__init__` may default to a conscribe `WiredField`. Two pure functions do the work:
 `dataclass_synthesised_init(cls)` (the class in the MRO that defines `__init__` is a
-dataclass and that `__init__` has no source file — `co_filename == "<string>"`) and
+dataclass and that `__init__` has no source file: `co_filename == "<string>"`) and
 `receptor_trap(cls) -> list[str]` (the offending receptor names). This is the precise
 form of "a class carrying a receptor must not be a `@dataclass`" (§6): the three shipped
 agents and the three LLM-judge evaluators *are* dataclasses with receptors and are
 correct, because their receptors are annotation-only on a plain mixin
 (`AgentReceptors`, `LLMJudgeReceptors`) and never become `__init__` parameters. A
 non-vacuity check pins that both kinds of owner are really visited (`BrowserCapability`,
-and at least one dataclass owner). Positive controls use unregistered plain classes only —
-never subclass a registrar base in a test (§7): a `@dataclass` with
+and at least one dataclass owner).
+
+Positive controls use unregistered plain classes only; never subclass a registrar base in
+a test (§7). A `@dataclass` with
 `__wiring__ = {"archive": ("archiver", [...])}` and a field `archive: list | None = None`
 is caught; the same with a hand-written `__init__` is clean; an AgentReceptors-shaped
 dataclass is clean; a hand-written `__init__(self, archive=<a WiredField>)` is caught; a
-`@dataclass` that hand-writes its `__init__` is not "synthesised". And one control
-reproduces the trap itself with conscribe's own code: `inject_wired_descriptors(cls)` (what
-the registrar metaclass runs at class creation) and then `dataclass(cls)` — the field's
+`@dataclass` that hand-writes its `__init__` is not "synthesised". One more control
+reproduces the trap itself with conscribe's own code, `inject_wired_descriptors(cls)` (what
+the registrar metaclass runs at class creation) and then `dataclass(cls)`: the field's
 `None` default comes out a `WiredField`, and `receptor_trap` flags it.
 
 There is a real **positive control** at `:510` that plants both historical shapes in
@@ -375,18 +377,18 @@ capability it genuinely was not, and the axis stayed a name for another round be
 of it. **If your owner is a dataclass and a receptor misbehaves, that is the first
 thing to check.**
 
-**The precise statement, and it covers every layer — hooks included.** The trap is a
+**The precise statement covers every layer, hooks included.** The trap is a
 receptor that is a *parameter of a dataclass-synthesised `__init__`* (a dataclass field):
 conscribe's `inject_wired_descriptors` reads the signature before `@dataclass` adds that
-parameter, installs a `WiredField`, and the field's default — and with it the receptor's
-optionality — is gone. A dataclass owner whose receptors are annotation-only on a plain,
-non-dataclass mixin (`agents/_registrar.py::AgentReceptors`, the evaluators'
+parameter, installs a `WiredField`, and the field's default is gone, taking the
+receptor's optionality with it. A dataclass owner whose receptors are annotation-only on
+a plain, non-dataclass mixin (`agents/_registrar.py::AgentReceptors`, the evaluators'
 `LLMJudgeReceptors`) is the legitimate combination: the receptor never becomes a field,
 the Composer setattr-injects it, and those receptors are required anyway. Rule 3 (§5)
 checks exactly this. Hooks were the layer the trap reached next: `TraceWriter` gains a
-list receptor (`archive`), so M28 dropped its `@dataclass` and hand-wrote `__init__` —
-`trace_dir` / `record_secrets` stay named `Annotated` parameters, the generated config is
-unchanged. `HookBase` and hooks without receptors (`metrics`) stay dataclasses;
+list receptor (`archive`), so M28 dropped its `@dataclass` and hand-wrote `__init__`;
+`trace_dir` / `record_secrets` stay named `Annotated` parameters and the generated config
+is unchanged. `HookBase` and hooks without receptors (`metrics`) stay dataclasses;
 `HookBase` is `@dataclass(eq=False)` so a hand-written subclass does not inherit an
 "all instances are equal" `__eq__`.
 
@@ -395,18 +397,19 @@ dataclass, and `BranchLoop(_BranchLoopReceptors, ReactLoop)` stays one: `restore
 is annotated only on the plain mixin `_BranchLoopReceptors`, never a field, so it never
 becomes a parameter of the synthesised `__init__` (Rule 3 holds), and `__post_init__`
 assigns `default_restorer()` over the descriptor for a hand-built loop. The audit's probe
-showed why not the other shape: a hand-written `__init__(**kwargs)` on a `ReactLoop`
-subclass composes *nothing* — `ConfigComposer._init_param_names` drops `**kwargs`, so every
-inherited knob went missing from the call. The trap the dataclass shape sets instead:
-`react.py` uses PEP 563, so the `Annotated[...]` strings `BranchLoop` inherits are resolved
-**in `branch.py`'s globals** (the synthesised `__init__` belongs to the subclass), so
-`branch.py` must import `Annotated` and pydantic's `Field` under exactly those names —
-otherwise conscribe silently drops the inherited knobs
+showed what is wrong with the other shape: a hand-written `__init__(**kwargs)` on a
+`ReactLoop` subclass composes *nothing*, because `core/composer.py::_init_param_names`
+drops `**kwargs`, so every inherited knob went missing from the call. The dataclass shape
+sets a different trap. `react.py` uses PEP 563, so the `Annotated[...]` strings
+`BranchLoop` inherits are resolved **in `branch.py`'s globals** (the synthesised
+`__init__` belongs to the subclass), and `branch.py` must import `Annotated` and
+pydantic's `Field` under exactly those names; otherwise conscribe silently drops the
+inherited knobs
 (`tests/test_generated/test_no_dropped_annotated_fields.py` is the guard). `branch.py` takes
 `from __future__ import annotations` itself for the stub reason in §7.
 
 **A task loader with a receptor (M31's `trace_branches`).** `TaskLoaderBase` loads in
-`__post_init__` — before the Composer injects anything — so a loader that needs its
+`__post_init__`, before the Composer injects anything, so a loader that needs its
 receptor while loading cannot be a dataclass: `TraceBranchesTaskLoader` hand-writes a
 keyword `__init__` that takes the inherited `subset` / `data_dir` as `Annotated` parameters
 of its own plus its knobs, never calls the dataclass `__init__`/`__post_init__`, sets
@@ -446,20 +449,20 @@ the Composer has injected the configured selector. Same shape as
   Prefer a key that is a plain word in YAML when you name a new strategy.
 - **A required single-instance receptor ripples through every hand-written block.**
   Adding `replayability` made it mandatory in the generated schema, so the same change
-  edited every capability block that writes one by hand — the set
-  `rg -l typing_rhythm configs tests .agents` finds (shipped configs, `configs/README.md`,
-  the test configs, this guide's example) — and the shipped-config gate
+  edited every capability block that writes one by hand (the set
+  `rg -l typing_rhythm configs tests .agents` finds: shipped configs, `configs/README.md`,
+  the test configs, this guide's example), and the shipped-config gate
   (`test_shipped_config_integration.py`) proves each new value arrives. `network_source`
   (M30) rippled the same way (`rg -l replayability_id` is the index now), and every
   hand-built `ConfigComposer(registrars={...})` map in the tests had to gain the new
   layer too, or the capability's slot fails to compose (`UnresolvedWiringError`).
 - **A strategy can carry its own receptor** (`ArchiveNetworkSource.miss_policy`, nested in
   the capability's `network_source` block: capability → `network_source` →
-  `miss_policy`). Same rules — not a dataclass, hand-written `__init__`, annotation-only
+  `miss_policy`). Same rules: not a dataclass, hand-written `__init__`, annotation-only
   slot plus a `default_*()` factory. Two conscribe 1.3 traps measured on it:
   (1) conscribe writes a `.pyi` stub next to every class with an injected receptor and
-  renders evaluated `Annotated[..., Field(...)]` parameters as `FieldInfo(...)` reprs —
-  an invalid stub, i.e. new pyright errors — so such a module takes
+  renders evaluated `Annotated[..., Field(...)]` parameters as `FieldInfo(...)` reprs,
+  an invalid stub that shows up as new pyright errors, so such a module takes
   `from __future__ import annotations` (as `capability.py` does) and the strings are
   copied verbatim; (2) a nested knob typed as your own pydantic `BaseModel` generates
   an unimportable `_composed.py` (codegen assumes every `BaseModel` is a submodel it
@@ -471,10 +474,10 @@ the Composer has injected the configured selector. Same shape as
   regeneration to find):
   (1) the stub types a **same-module sibling** it references as `Any` (`RequireEval = Any`),
   and because a `.pyi` next to a module wins for the type checker, every importer then sees
-  `Any` — so a knob type for a receptor-carrying class lives in a module of its own
+  `Any`, so a knob type for a receptor-carrying class lives in a module of its own
   (`core/data_loader/task/require_eval.py`), which the stub and `_composed.py` import;
   (2) a `tuple[str, ...]` parameter is generated as `tuple[str, Ellipsis]`, which pyright
-  rejects in `_composed.py` — and a list default in a signature is a shared mutable default —
+  rejects in `_composed.py`, and a list default in a signature is a shared mutable default,
   so a list knob with a non-empty default is `list[str] | None = None`, `None` meaning the
   documented default (`sources`, `require_archive`);
   (3) `Field(min_length=…)` on a top-level knob is dropped from the generated config (it
@@ -485,7 +488,7 @@ the Composer has injected the configured selector. Same shape as
   on the hand-written `__init__`, `archive: list[ArchiverBase]` on the
   `_TraceWriterReceptors` mixin): written inline, the list is used; `archive: []` records
   nothing; **omitted**, `_resolve_deferred` adopts *every* instance of a top-level
-  `archiver:` section — and with no such section, nothing. A config that means "record
+  `archiver:` section, and with no such section, nothing. A config that means "record
   nothing" while a top-level section exists must say `[]`. Pinned in
   `tests/test_core/test_composer/test_archive_yaml_surface.py`, which also shows the
   receptor's other half: an `archiver:` block on the *capability* (a provides

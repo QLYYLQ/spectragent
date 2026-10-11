@@ -81,8 +81,8 @@ Adding a provider owes the test suite four things:
    family's `_request_client()` (or the SDK's own `async with`), never a bare
    `self.get_client().…`. An unclosed openai / anthropic / groq / google-genai client
    is collected later and its `__del__`'s late `aclose()` unregisters a reused
-   descriptor from the event loop — the next model call's connect never completes
-   (PRD H28, `architecture_design.md` §4.7). The `_Case` row above is re-run as
+   descriptor from the event loop, so the next model call's connect never completes
+   (`architecture_design.md` §4.7). The `_Case` row above is re-run as
    `test_a_request_closes_the_client_it_built` (stub clients from
    `tests/_helpers/llm_clients.py`); a provider with no client of its own goes in
    `_NO_REQUEST_CLIENT` with its reason. `test_request_clients.py` runs the real SDKs.
@@ -125,8 +125,8 @@ who turned the knob down. Before blaming the route on a gemini-3.x schema failur
 the budget above 1000 and reproduce once. (OpenAI's own path does catch the clean case:
 `finish_reason == "length"` raises `ModelOutputTruncatedError` at `openai_base.py:319`
 and `:405`.) A provider that detects truncation passes what the reply had generated as
-`partial_output` — every shipped raise site does, Anthropic including the serialised
-`tool_use` input — because the Loop aborts the step on this error and the trace's
+`partial_output` (every shipped raise site does, and Anthropic's includes the serialised
+`tool_use` input), because the Loop aborts the step on this error and the trace's
 failure record is the only place that text survives.
 
 ## 4. Schema dialects
@@ -222,11 +222,11 @@ so both hooks also intercept `around` (defect F17):
   `ModelOutputTruncatedError` — a 429 or a dead socket carries no usage and no reply,
   and staying invisible is the honest answer for a call that never happened.
 
-The failure is recorded as a `CallFailure` — `{error, detail}`, plus `raw_output`,
+The failure is recorded as a `CallFailure`: `{error, detail}`, plus `raw_output`,
 `partial_output`, `stop_reason` and `usage` only when the exception carries them
-(`_failure`, `core/trace/encoding.py:331`) — never a fabricated `ChatInvokeCompletion`.
-A completion-shaped object with an error inside reads as something the model wrote.
-`raw_output` appears only when the provider had text to hand over.
+(`_failure`, `core/trace/encoding.py:331`). It is never a fabricated
+`ChatInvokeCompletion`; a completion-shaped object with an error inside reads as
+something the model wrote. `raw_output` appears only when the provider had text to hand over.
 
 ## 6. Fences
 

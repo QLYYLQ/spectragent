@@ -51,12 +51,12 @@ some component should expose a method it currently keeps in a local variable.
    synthesised anything, so a receptor that is a dataclass field looks unreceived and
    gets a `WiredField` over its default (af-add-a-receptor §6). Hand-write `__init__`
    with named `Annotated` params for the knobs, and give the receptor a class-level
-   annotation somewhere in the MRO (`archive: list[ArchiverBase]` — `list[...]` for a
+   annotation somewhere in the MRO (`archive: list[ArchiverBase]`; use `list[...]` for a
    list receptor, because the Composer reads the *class* annotation, not the signature,
    to choose list / dict / single injection; put it on a mixin when the class body uses
    the name for something else). `TraceWriter` is the worked case (M28 dropped its
    `@dataclass`). `HookBase` itself is `@dataclass(eq=False)`: a hook is a stateful
-   object compared by identity — without it a hand-written subclass inherits a
+   object compared by identity, and without it a hand-written subclass inherits a
    field-less `__eq__` under which every two instances are "equal". Compare hooks with
    `is`.
 2. Declare `__intercepts__`. `__init_subclass__` (`_registrar.py:122`) raises
@@ -103,19 +103,20 @@ run needed. That is F17 (`HANDOFF_260916_findings.md:67`, fixed in `cf45ee2`).
 
 The second is cancellation. `CancelledError` is a `BaseException`: neither `after` nor
 an `except Exception` ever sees it, so a call a timeout or a Ctrl-C cut off took its
-prompt with it — the one exchange that says what the agent was doing when the run died.
+prompt with it, and that prompt is the one exchange that says what the agent was doing
+when the run died.
 
 The fix is `around`, with no fourth advice type (`docs/architecture_design.md` §4.6).
 The two hooks use it differently:
 
 - `TraceWriter.around_ainvoke` (`core/hooks/trace_writer.py:579`) is the **only** place
   an LLM call is recorded; `TraceWriter` has no `after_ainvoke`. It registers the call
-  *before* `proceed()` (`_register_call`, `:725` — the prompt from `args[0]`, the
+  *before* `proceed()` (`_register_call`, `:725`: the prompt from `args[0]`, the
   requested reply model from `kwargs["output_format"]`, the start time) and settles it
   exactly once: `completed` on return, `failed` on any `Exception`, `cancelled` on a
   `BaseException`. It always re-raises. One advice owns the call from start to end, so
-  nothing has to correlate an `after` with an in-flight record — which would break the
-  day a Loop issues calls concurrently. The prompt is a JSON snapshot taken at
+  nothing has to correlate an `after` with an in-flight record, a correlation that would
+  break the day a Loop issues calls concurrently. The prompt is a JSON snapshot taken at
   registration (`PendingLLMCall`, `core/trace/encoding.py:444`): a memory that mutates a
   message object afterwards cannot rewrite what the record says the model was asked.
 - `MetricsCollector.around_ainvoke` (`core/hooks/metrics_collector.py:126`) counts
@@ -125,8 +126,8 @@ The two hooks use it differently:
   (`around`'s innermost link *is* the before/after chain, `proxy.py:471`
   `_apply_around_chain`), so nothing is double-counted.
 
-A registered call whose step never commits — the run timed out, was cancelled or crashed
-between the call and `record_step` — is committed at run end as a *trailing* call
+A registered call whose step never commits (the run timed out, was cancelled or crashed
+between the call and `record_step`) is committed at run end as a *trailing* call
 (`_flush_trailing`, `trace_writer.py:984`; §3). That needs the runtime's half too:
 `AgentRuntime.execute` dispatches `on_run_end` / `on_run_error` on **every** termination
 path, and catches `asyncio.CancelledError` to close a cancelled run out with an
@@ -136,28 +137,31 @@ lifecycle callback at all: no `result.json`, a manifest stuck at `running`, and 
 in-flight prompt lost however the hook recorded it.
 
 "Unchanged" holds even when the close-out itself fails. A blocking hook that raises
-while a cancelled run is being closed out — `TraceWriter.on_run_end` on a full disk — is
+while a cancelled run is being closed out (`TraceWriter.on_run_end` on a full disk) is
 logged, and the `CancelledError` is still what the caller sees. Letting the hook's
 `OSError` win turned Ctrl-C into an ordinary task failure: a sweep's `except Exception`
 recorded it and started the next task, and a caller's `asyncio.timeout` saw `OSError`
 instead of `TimeoutError`. A hook whose close-out *awaits* can be cancelled inside it,
 and then the same rule is the hook's own: `TraceWriter` holds a cancellation of its
 close-out collection, finishes the close-out, logs a flush or `result.json` failure that
-happened under it, and re-raises the cancellation — in `on_run_end` and `on_run_error`
-alike. A guard's veto has the same precedence, kept by the runtime alone: a close-out
+happened under it, and re-raises the cancellation, in `on_run_end` and `on_run_error`
+alike.
+
+A guard's veto has the same precedence, kept by the runtime alone: a close-out
 that fails under a `RunAbort` (the vetoed step's calls cannot be flushed because the disk
 stayed full) is logged and attached to the veto as a note, and the `RunAbort` is what
 `execute` raises, `raise_on_error=False` or not, so the sweep still stops. The run's own
-timeout is not an outside cancellation and does not outrank the veto either: when it
-expires while the Loop is still recording the vetoed step — `TraceWriter` collecting the
-refused page's evidence, the first thing on the veto's way out that can take long — the
+timeout is not an outside cancellation and does not outrank the veto either. When it
+expires while the Loop is still recording the vetoed step (`TraceWriter` collecting the
+refused page's evidence, the first thing on the veto's way out that can take long), the
 cancellation carries the veto (`loops.errors.RunEnded`), and `execute` closes the run
 out as vetoed and raises the `RunAbort` with the timeout as a note; a terminal result
 the Loop had built (a dead browser) is returned instead of a timeout result. For a hook
-nothing changes — the step is simply not committed, its calls land as trailing and the
-close-out collection takes the evidence the cut-off one never did — but it is why
-`after_record_step` must never swallow a `CancelledError` (af-add-a-loop §3.3). On every
-other path a close-out failure propagates as it is,
+nothing changes: the step is simply not committed, its calls land as trailing and the
+close-out collection takes the evidence the cut-off one never did. It is still the
+reason `after_record_step` must never swallow a `CancelledError` (af-add-a-loop §3.3).
+
+On every other path a close-out failure propagates as it is,
 and the run is closed out **once**: the success path's `_finish` sits in the `try`'s
 `else`, so a hook raising in `on_run_end` is not mistaken for the run failing and
 dispatched a second `on_run_end`. When you write a blocking hook, its `on_run_end`
@@ -181,7 +185,7 @@ Not a stand-in `ChatInvokeCompletion`. Whoever reads the trace must be able to t
 reply the model wrote from one the framework invented, and a completion-shaped object
 with an error inside it reads as the former. `raw_output` appears for a schema mismatch
 (the provider handed over text) and not for a dead socket (it did not).
-`partial_output` is deliberately not `raw_output` — that name means "as the validator
+`partial_output` is deliberately not `raw_output`: that name means "as the validator
 saw it", and nothing validated a truncated reply. Every truncation raise site passes it
 (`openai_base`, `anthropic_base` with serialised `tool_use` input, `google`), because the
 Loop aborts the step on truncation and this record is the only place the text survives.
@@ -191,8 +195,8 @@ you record a failure: say it failed, say what came back, invent nothing.
 
 The reply schema a structured call asked for lands once per run, content-addressed, at
 `messages/output_formats/<sha256>.json`, and every call references it
-(`OutputFormatRef`). It is the *requested* schema — the reply model's
-`model_json_schema()` — not what the provider compiled and sent, so it is no evidence the
+(`OutputFormatRef`). It is the *requested* schema (the reply model's
+`model_json_schema()`), not what the provider compiled and sent, so it is no evidence the
 schema was honoured. A class whose schema cannot be generated is recorded as
 `output_format: null` with a warning; the trace is never what fails a call.
 
@@ -218,10 +222,10 @@ timing fields as readable only after the commit point.
 One commit per step: `WALWriter.commit_step(step, record, *, fragments, llm_calls,
 extra_files)` (`core/trace/wal.py:191`), in this order (`wal.py:7-16`):
 
-0. validate everything before writing a byte — path rules, content addresses, a step
+0. validate everything before writing a byte: path rules, content addresses, a step
    not already committed (`_Plan`, `wal.py:347`);
-1. every content file — fragment JSON and artifacts, one record per LLM call, output
-   schemas this run has not committed yet, extra files — through `fsio.write_durable`
+1. every content file (fragment JSON and artifacts, one record per LLM call, output
+   schemas this run has not committed yet, extra files) through `fsio.write_durable`
    (`core/trace/fsio.py:104`): temp file → write and flush → `fsync(file)` →
    `os.replace`, and **no** directory `fsync`;
 2. `steps/NNN.json`, plus `steps/NNN.extra.json` when the step carries extra files;
@@ -233,12 +237,12 @@ extra_files)` (`core/trace/wal.py:191`), in this order (`wal.py:7-16`):
 The per-file data `fsync` stays; only the directory `fsync` is batched. Renaming a file
 whose bytes never reached the disk lets a power loss leave the manifest listing an empty
 file, and then the commit point lies. One directory `fsync` covers every entry written
-under that directory, so batching costs no guarantee — and saves an `fsync` per file on
+under that directory, so batching costs no guarantee and saves an `fsync` per file on
 a step that carries hundreds of evidence files. Atomic is still not durable without it.
 
 The flush before the data `fsync` is just as load-bearing, and harder to see.
 `os.fdopen` buffers up to `st_blksize` (4 KiB on APFS and ext4), so an `fsync` issued
-before the flush — or ahead of the write — covers an empty file for everything smaller
+before the flush (or ahead of the write) covers an empty file for everything smaller
 than that, which is most of a trace: step records, the early manifests, call records,
 verdicts. Their bytes reach the kernel at `close()`, after the `fsync`. The count and the
 order of `fsync` calls are identical either way, so a test that counts cannot tell;
@@ -249,12 +253,12 @@ Directory `fsync` errors are **not** swallowed (`fsio.py:29-36`): skipped only o
 Windows; only `EINVAL` / `ENOTSUP` / `EOPNOTSUPP` from the `fsync` itself are tolerated
 ("this filesystem cannot"); everything else raises, `os.open` failing with `EMFILE` /
 `EACCES` / `ENOENT` included. The old helper returned silently on all of them.
-`TraceWriter` is blocking, so such an error ends the run — a manifest claiming a commit
-it is not sure of is worse. `F_FULLFSYNC` is deliberately off; `wal.py:34-37` has the
-measurement.
+`TraceWriter` is blocking, so such an error ends the run; a manifest claiming a commit
+it is not sure of would be worse. `F_FULLFSYNC` is deliberately off; `wal.py:34-37` has
+the measurement.
 
-A failure anywhere before the manifest rename raises with the manifest untouched — on
-disk and in the writer's memory — so what was written is an orphan and the same commit
+A failure anywhere before the manifest rename raises with the manifest untouched (on
+disk and in the writer's memory), so what was written is an orphan and the same commit
 can be retried. Crash recovery reads the manifest and ignores orphans: a complete,
 parseable `steps/007.json` for a step the manifest never listed **did not happen**.
 
@@ -262,8 +266,8 @@ parseable `steps/007.json` for a step the manifest never listed **did not happen
 entry in its parent, durable only once the parent is `fsync`-ed. The writer remembers
 which directories `init_run` or a *successful* commit made durable (`_durable_dirs`,
 updated after the manifest rewrite like everything else it remembers), and `fsync`-s the
-parent of every other directory a commit writes under. "Created by this call" — what
-`write_durable` reports — is not enough: a failed attempt already created `env/` and
+parent of every other directory a commit writes under. "Created by this call", which is
+what `write_durable` reports, is not enough: a failed attempt already created `env/` and
 `env/steps/000/`, the retry finds them present, and the manifest would then commit files
 under names a power loss can still take back. M28's run end, flushing evidence with
 `commit_trailing` after a step commit failed, is the same case.
@@ -272,7 +276,7 @@ under names a power loss can still take back. M28's run end, flushing evidence w
 through `write_durable` (which creates the run directory, and `traces/` on a sweep's first
 run), the WAL's subdirectories, one directory `fsync` each for the run directory and the
 parent of every directory created on the way, and only then the first manifest. A run
-exists once its manifest does — `discover_traces` looks for nothing else — so a failure
+exists once its manifest does (`discover_traces` looks for nothing else), so a failure
 before it leaves no run, and a run that exists has its config. The `fsync` of `traces/`
 looks redundant next to the manifest's own `fsync` of the run directory, and is not: no
 later commit `fsync`-s a directory outside the run, so this is the only place the run's
@@ -282,7 +286,7 @@ every failure before the manifest.
 Files get the permissions a plain write would: the temp file is created with
 `os.open(..., 0o666)`, which the kernel masks with the umask, and a file being replaced
 keeps its mode (set before a byte is written). `tempfile.mkstemp` forced `0o600`, so every
-trace file and verdict came out owner-only — a shared `--evals-dir` was unreadable to a
+trace file and verdict came out owner-only: a shared `--evals-dir` was unreadable to a
 teammate or a dashboard, and a re-score reset a mode set on purpose. Whether a trace is
 private is the umask's (or the directory's) decision; reading the umask would race other
 threads, because `os.umask` can only set it.
@@ -291,29 +295,30 @@ threads, because `os.umask` can only set it.
 every byte that goes in it (`fragment_path`, `call_path`, `encode_fragment`,
 `encode_llm_call`, …); `TraceWriter`, `RunTrace` and the test fixtures
 (`tests/_helpers/trace_builder.py`) all go through it, because hand-written fixtures are
-how test traces drifted from what production writes. The WAL checks the paths
-(`_Plan`, `wal.py:347-520`): POSIX relative with no empty, `.` or `..` segment
-(`encoding.check_relative_path`, which the reader applies too) — on every channel, the
-names `encoding.py` decides included. A fragment file is named by its key, a
+how test traces drifted from what production writes.
+
+The WAL checks the paths (`_Plan`, `wal.py:347-520`): POSIX relative with no empty, `.`
+or `..` segment (`encoding.check_relative_path`, which the reader applies too), on every
+channel, the names `encoding.py` decides included. A fragment file is named by its key, a
 `FragmentFailure`'s `fragment_id` is free text, and "under `observations/`" is a prefix
 test that `observations/000_x/../../../escaped.json` passes, so that check is not
 redundant with the directory rule. An extra file may not take a name the WAL owns
 (`manifest.json`, `config.json`, `result.json`, anything under
-`steps/`, `observations/`, `messages/`, `evals/`) — judged by the first segment, so
+`steps/`, `observations/`, `messages/`, `evals/`), judged by the first segment, so
 `result.json/evidence.txt` cannot turn the result into a directory the close-out then
 fails to write; a path is a file or a directory of the run, never both (`env/a` with
 `env/a/b`, in one commit or across two, and no file on a WAL directory such as
 `messages/output_formats`), or the commit would die half-way with `NotADirectoryError`;
 a committed path is immutable; a content-addressed path names its data's full sha256
-(whole, or sharded `ab/cdef…`) and is written once per run however many commits list it
-— deduplication skips the write, never that check. All case- and
-normalization-insensitively, through one key (`encoding.fold_path`, Unicode canonical
-caseless matching) — macOS's APFS stores `A.txt`/`a.txt`, and `café` precomposed and
-decomposed, as one file.
+(whole, or sharded `ab/cdef…`) and is written once per run however many commits list it,
+since deduplication skips the write, never that check. All of these compare paths case-
+and normalization-insensitively, through one key (`encoding.fold_path`, Unicode canonical
+caseless matching), because macOS's APFS stores `A.txt`/`a.txt`, and `café` precomposed
+and decomposed, as one file.
 
 Two things that are files but not steps: `commit_trailing(*, llm_calls, extra_files)`
 (`wal.py:259`) commits the calls of a step the Loop never surrendered (timeout,
-cancellation, crash) — and whatever a producer flushes at run end — by the same
+cancellation, crash), and whatever a producer flushes at run end, by the same
 protocol, *without* a step record and without advancing `last_step_completed`:
 claiming a step would put an action-less phantom in the manifest. Each call appends one
 `manifest.trailing` entry. And `finalize` (`wal.py:303`) sets the terminal status; a
@@ -348,35 +353,39 @@ env/                                   # only when archivers were bound and some
 Every archive file's `ExtraFileRecord.meta["archive"]` is an `ArchiveMeta`
 (`archiver_id`, `name`, `media_type`, `scope`, `captured_at`, `cycle`, `ids`,
 `run_version`). A blob shared by ten steps is one file listed in ten indexes. A run
-record is never rewritten — a committed path is immutable — so a changed re-emission
+record is never rewritten (a committed path is immutable), so a changed re-emission
 becomes the next version and an identical one is dropped. Versions keep **capture order**,
 not commit order: collections are numbered, and an owed batch committed at close-out
-after a later collection's record already landed does not commit its own, older record —
-as the next version it would read back as the latest fingerprint. The close-out gives **every
-owed thing its own `commit_trailing`**, in order: the calls still registered; each batch a
-failed step commit left behind (two steps' batches can share a file name, so each needs
-its own `env/trailing/KK/` — `KK` = the entry's position in `manifest.trailing`, the same
-number as `steps/trailing_KK.extra.json`); the tail collected at run end. A commit that
-fails costs only what it carried: that stays owed for the next flush while the rest still
-lands — so a batch no retry can write never takes the unfinished step's calls or the tail
-down with it — and the first failure is raised once everything was tried. The manifest
-then says `error`, as it does whenever a collection failed — at close-out or at any step —
-whatever the result reports. The WAL knows none of this; archive files are ordinary
-`TraceFile`s. Every batch, the tail included, is checked before the WAL sees it: bound
-archivers only (content-addressed bodies too), single-segment `archiver_id` and `name` of
-at most 255 bytes of UTF-8, every indexed string UTF-8-encodable, paths unique under
-`fold_path`, `check_relative_path` — so what becomes owed is never a batch that would fail
-the same way at every retry.
+after a later collection's record already landed does not commit its own, older record,
+because as the next version it would read back as the latest fingerprint.
+
+The close-out gives **every owed thing its own `commit_trailing`**, in order: the calls
+still registered; each batch a failed step commit left behind (two steps' batches can
+share a file name, so each needs its own `env/trailing/KK/`, where `KK` is the entry's
+position in `manifest.trailing`, the same number as `steps/trailing_KK.extra.json`); the
+tail collected at run end. A commit that fails costs only what it carried: that stays
+owed for the next flush while the rest still lands, so a batch no retry can write never
+takes the unfinished step's calls or the tail down with it. The first failure is raised
+once everything was tried. The manifest then says `error`, as it does whenever a
+collection failed (at close-out or at any step), whatever the result reports. The WAL
+knows none of this; archive files are ordinary `TraceFile`s.
+
+Every batch, the tail included, is checked before the WAL sees it: bound archivers only
+(content-addressed bodies too), single-segment `archiver_id` and `name` of at most 255
+bytes of UTF-8, every indexed string UTF-8-encodable, paths unique under `fold_path`,
+`check_relative_path`. What becomes owed is therefore never a batch that would fail the
+same way at every retry.
 
 ### The read side
 
-`RunTrace` (`core/trace/reader.py:104`) resolves **every** file through the manifest —
+`RunTrace` (`core/trace/reader.py:104`) resolves **every** file through the manifest;
 the commit point is also the reader's only directory. No accessor probes a file name or
 globs a directory, so whatever the manifest does not list is invisible to all of them
 alike. The one exception is `evals()` (M31): verdicts are written *after* the run, by
-`EvaluationRunner`, and never enter the manifest, so it lists `evals/*.json` — with the
-same containment rule as every listed path. It used to be otherwise: `step()` went through the manifest while the
-observation, message and screenshot reads probed and globbed, so a frame written for a
+`EvaluationRunner`, and never enter the manifest, so it lists `evals/*.json`, with the
+same containment rule as every listed path. It used to be otherwise: `step()` went
+through the manifest while the observation, message and screenshot reads probed and
+globbed, so a frame written for a
 step that never committed was in the trace for one accessor and not another. Do not add
 an accessor that stats a path; `tests/test_core/test_trace/test_crash_window.py` holds
 every accessor to this, for a crash before the rename and for hand-planted orphans.
@@ -388,15 +397,15 @@ base64-encoded the file into its request. Every listed path now goes through `_l
 (`reader.py:550`) before anything opens it: the WAL's own rule
 (`encoding.check_relative_path`), then containment once symlinks are resolved
 (`(trace_dir / rel).resolve()` inside `trace_dir.resolve()`). The three names a run
-gives itself — `manifest.json`, `config.json`, `result.json` — must not lead out either.
+gives itself (`manifest.json`, `config.json`, `result.json`) must not lead out either.
 A violation is a `TraceSchemaError` whose `.path` is the file that *listed* the path;
 the file it points at is never opened. `ExtraFileRecord.path` is checked when the index
 is read, because `extra_files` hands those paths to callers. A symlink that stays inside
 the run reads normally. `test_reader_errors.py::TestAPathTheTraceListsStaysInsideIt` has
-a row per accessor — add one when you add an accessor.
+a row per accessor; add one when you add an accessor.
 
 **No SQLite.** Trace schemas are heterogeneous and evolve; querying is lazy, typed
-accessors — what comes back is the type that was written:
+accessors, and what comes back is the type that was written:
 
 | Accessor | Returns | Not there |
 |---|---|---|
@@ -412,6 +421,7 @@ accessors — what comes back is the type that was written:
 | `iter_archive(archiver_id, *, include_trailing=False)` | `(step, ArchiveRecord)` in step order, then `(None, record)` per trailing batch when asked | nothing yielded |
 | `blob(sha256)` | bytes of a committed content-addressed archive file (`read_extra(archive_blob_path(sha256))`) | `KeyError` |
 | `archive_run_file(capability_id)` | the `ArchiveRecord` of the highest committed run-record version; bytes via `read_extra(record.path)` | `None` |
+| `archive_lines(path, model)` (M30) | each non-blank line of a committed line-delimited archive file (`index.jsonl`, `replay.jsonl`) validated as the caller's `model`, in file order; bytes via `read_extra`; a line that is not JSON or does not validate → `TraceSchemaError` naming the file and line. With the accessors above it is how `RunTrace` satisfies `core/archive/source.py`'s `ArchiveReader`, the replay's read side | `KeyError` |
 | `evals()` (M31) | `verdict_slug` → `EvalResult` for every `evals/<slug>.json`, sorted by slug; not cached (a verdict written later is seen); `evals/` or a file in it resolving outside the run → `TraceSchemaError`, as is a file that does not read as an `EvalResult` | `{}` |
 | `committed_files` / `read_committed(path)` (M33) | every listing of a committed file in commit order — the run's own three files, what the manifest lists, what each committed extra index lists (a shared blob once per commit that lists it) — as `CommittedFile` (`kind`, `step`, `fragment`, the index entry, the `ArchiveRecord` when it is evidence), each path checked as it is listed; the bytes through that file's own accessor's checks. What consumers that account for a whole run (M33's storage and archive bytes) read instead of walking the manifest's fields themselves | `KeyError` (`read_committed`) |
 
@@ -420,32 +430,32 @@ be read — corrupt JSON, bytes that are not UTF-8, an empty file, a schema mism
 listed file missing on disk, bytes that disagree with their index — raises
 `TraceSchemaError` naming the file (`.path`), through one helper (`_parse` /
 `_read_model`, `reader.py:710-725`). It parses with `json.loads` after a strict UTF-8
-decode and validates in pydantic's Python mode — never `validate_json`, whose parser
+decode and validates in pydantic's Python mode, never `validate_json`: that parser
 refuses nesting past 200 levels while pydantic-core's serializer, the writer, emits up
-to ~254: a DOM page about a hundred elements deep, or a deep structured reply, committed
-fine and could never be read back. `result.json` is the one file allowed to be absent,
-because nothing lists it: `None` means the run died before writing it, while a file that
-exists and does not parse raises — "written by an older schema" and "never finished" are
-different facts. Other `OSError`s (permissions, I/O) propagate; they say nothing about
-the trace. An evaluation process may never have imported the module that registers a
+to ~254, so a DOM page about a hundred elements deep, or a deep structured reply,
+committed fine and could never be read back. `result.json` is the one file allowed to be
+absent, because nothing lists it: `None` means the run died before writing it, while a
+file that exists and does not parse raises, because "written by an older schema" and
+"never finished" are different facts. Other `OSError`s (permissions, I/O) propagate;
+they say nothing about the trace. An evaluation process may never have imported the module that registers a
 fragment class, so a registry miss runs `discover` over `spectragent.schemas` and
 `spectragent.core.capabilities` once before giving up (`_fragment_class`, `:635`).
 
 **The trace has a format version.** `TraceManifest.format_version` is 2 since the
 per-step index; a manifest without the field reads as 1. The accessors whose on-disk
 shape changed refuse a format-1 trace with `TraceSchemaError` (`_require_indexed`,
-`reader.py:532`) — its fragment failures carry no marker — while `config`, `result` and
-the step records stay readable. No shim (AGENTS.md §0.4): re-scoring an old trace with
-an image judge means re-running the task. A newer version than the build reads is
+`reader.py:532`), since its fragment failures carry no marker, while `config`, `result`
+and the step records stay readable. No shim (AGENTS.md §0.4): re-scoring an old trace
+with an image judge means re-running the task. A newer version than the build reads is
 refused when `RunTrace` is constructed.
 
 **Steps have an origin (M31).** `StepRecord.origin` is `policy` (a step the run's own
-agent decided — every step of every older trace reads back as `policy`, which is right for
+agent decided; every step of every older trace reads back as `policy`, which is right for
 them), `restored` (a branch run's prefix: a copy of the source run's step, with the live
 observation the restorer re-reached and its `restoration` check) or `terminal` (the
 observation after the run ended: no model call, no action). Both new fields are defaulted,
 so neither `AgentResult.schema_version` nor `format_version` moved (§4.4's BACKWARD rule).
-A reader that means "what the agent did" filters on `origin == "policy"` —
+A reader that means "what the agent did" filters on `origin == "policy"`.
 `AgentMetrics.steps` already counts only those, and `TraceView.action_history` keeps the
 restored actions apart (`restored_action_history`, each labelled `[restored]`) while
 `screenshots` keeps every frame, the terminal one included. Neither field reaches a prompt
@@ -499,9 +509,9 @@ Two corollaries worth knowing before you argue the other way:
 
 ### The second category: environment evidence (ruling D2)
 
-On 2026-10-09 the user added one category beside agent behaviour (ruling D2 in the
-data-flywheel PRD, now `docs/architecture_design.md` §5.1): **environment evidence** —
-the state and resources of the world the agent acted in: response bodies, storage
+On 2026-10-09 the user added one category beside agent behaviour (user ruling D2,
+recorded in `docs/architecture_design.md` §5.1): **environment evidence**, meaning the
+state and resources of the world the agent acted in: response bodies, storage
 snapshots, raw DOM captures, the environment fingerprint. It passes the test above on
 its own terms: had the agent chosen differently these values would differ, and they are
 the world the decision was made in, not the framework's execution of it. Three
@@ -517,7 +527,7 @@ execution detail:
 
 The 2026-09-16 line still holds in full: an archive stores resources and state, **not
 the CDP event sequence** that delivered them, and **input ticks are still not
-recorded**. "It is environment evidence" is not an argument for a mouse trajectory —
+recorded**. "It is environment evidence" is not an argument for a mouse trajectory:
 the trajectory is how the framework executed a decision, not the world the decision was
 made in. Producing evidence is the capability's job and only on pull
 (`collect_archive`); persisting it is the trace hook's, and the capability never learns
@@ -530,7 +540,7 @@ invent a compromise.
 
 `docs/architecture_design.md` §4.14 is the authority; this is the reader's map. Every
 file is read back through `RunTrace.archive_files(step, key)` / `blob(sha)` /
-`archive_run_file("browser")` — never by globbing `env/`.
+`archive_run_file("browser")`, never by globbing `env/`.
 
 | Archiver | Step files | What is in them |
 |---|---|---|
@@ -538,6 +548,7 @@ file is read back through `RunTrace.archive_files(step, key)` / `blob(sha)` /
 | | `index.jsonl` | One JSON object per line, three kinds. `exchange` — exactly once per request hop, when it settles: WARC offsets, method, url, status, resource type, frame / loader / session / target, initiator (no stack), timing, the raw request facts (headers, POST sha256 / length / content type), `payload_sha256`, `revisit_of`, `content_range`, `body_status` ∈ `ok` / `redirect` / `too_large` / `streamed_later` / `websocket` / `incomplete`, and a `redaction` ledger (policy `af-privacy-1+browser-1`). `pending` — still in flight at this collection, status only (also one per collection for a written `streamed_later` record whose body is still streaming, `waiting_for: streamed_body`); a record whose **last** line is `pending` was incomplete at run end. `body` — a `streamed_later` body refetched, pointing back at its `record_id`, with the blob's sha256. **No match key** — replay derives keys from the raw facts. |
 | | `websocket.jsonl` | Frames: `record_id` of the handshake, direction, opcode, wall time, payload (text) or `payload_base64`. |
 | | `body-<sha>.bin` (content-addressed) | A refetched large body. |
+| | `replay.jsonl` (a replay run only, M30) | Written instead of the four files above: one `ReplayLogEntry` per serving decision of the step (`hit`, `exhausted`, `synthetic`, `miss`, and `summary` for folded repeats), with the matched `record_id` and level, or the miss's class, reason, answer and nearest candidates; a main-frame document miss is `diverged`. Read it with `archive_lines` or the browser's `replay_log` / `iter_replay_log` / `diverged_steps` (architecture §4.14, "回放日志"). |
 | `browser.storage` | `storage.json` | Cookies (values `sha256:<hex>` unless `allow_session_state`), local storage per origin, session storage per tab and origin (values kept, credential-named keys redacted — so the archiver always declares `contains_session_state`), its ledger, and what it could not read: `unreadable_tabs`, `unreadable_origins`, `unread_frames` (out-of-process iframes, not read in v1). **Written only when the state changed**: a step's state is the latest `storage.json` at or before it. |
 | `browser.dom_raw` | `dom-<cycle>-<tab>.json.gz` (content-addressed) | Gzip canonical JSON per committed cycle: the redacted `TargetCapture`, DPR, viewport, cleaner key (`self_capture` for a vision run), source, tab, url / loader id, ledger. Cycle and capture time are in the record's provenance, not the bytes, so an unchanged document is stored once. `archive/dom_raw.capture_from_document` turns it back into a `TargetCapture` for an offline re-clean. |
 | (capability) | `env/run.browser.json` (run record) | The environment fingerprint, versioned on change. |
@@ -558,7 +569,7 @@ N6 at `HANDOFF_260916_next.md`).
 Three layers now (`models.py:437-524`):
 
 - **Identity** — `(benchmark, subset, task_id)` is the key an Evaluator joins ground
-  truth by. Resolved from the live objects by `AgentRuntime._component_id`
+  truth by. Resolved from the live objects by `core/runtime.py::_component_id`
   (`runtime.py:62`), and it is the **authority**: it exists even for a run assembled
   without the Composer, where `resolved` is `{}`.
 - **Configuration** — `resolved` is `ComposedRun.top_level_cfg`, the composed, validated
@@ -578,10 +589,10 @@ Three layers now (`models.py:437-524`):
   this trace carry environment evidence, and which privacy markers did its archivers
   declare).
 
-Plus two per-task facts: `task_setup` (`TaskSetupRecord`) — the environment setup context
-`execute()` handed to `setup_environment` (`start_url` …), value-level redacted with its
-ledger; a branch task (M31) re-creates its source environment from it, never from a
-redacted one — and `branch` (`BranchProvenance`, M31): where a branch run came from.
+Plus two per-task facts. `task_setup` (`TaskSetupRecord`) is the environment setup
+context `execute()` handed to `setup_environment` (`start_url` …), value-level redacted
+with its ledger; a branch task (M31) re-creates its source environment from it, never
+from a redacted one. `branch` (`BranchProvenance`, M31) says where a branch run came from.
 
 `AgentRuntime` passes both explicitly (`runtime.py:586-609`) because it is the only
 component holding both, and it dispatches `on_run_start` *after* `prepare()` so the
@@ -717,8 +728,8 @@ tokens, `scheme://user:pass@`, `?token=`, devtools websocket URLs. The shapes li
 production code, `spectragent/core/trace/secret_patterns.py` (`SECRET_PATTERNS`,
 `find_secrets(text)`; it imports only `re`), because they have a second reader: the
 training export scans every text byte it is about to write with them and fails closed
-on a hit (M32, `spectragent/export/validate.py::check_credentials`) — one list, never a
-copy in a test.
+on a hit (M32, `spectragent/export/validate.py::check_credentials`). There is one list,
+and no copy of it in a test.
 
 Both halves are load-bearing: `TestGuardCanActuallyDetectALeak` (`:401`) re-runs with
 `record_secrets=True` and requires the same strings to **appear**, so the guard cannot
@@ -731,14 +742,13 @@ point of the polarity.
 
 **The guard reads `env/` too.** Environment evidence is free-form bytes no field
 declaration covers, and archivers may gzip it. So the scan decompresses a file whose
-first bytes are `1f 8b` or whose name ends in `.gz` before decoding it — repeatedly, for
-a gzip inside a gzip (falling back to the raw bytes when decompression fails), and the
-guard's run binds an archiving fake
-capability (`secret_guard_archive`) so `env/` exists in the redacted fixture: its
-archiver `secret_guard_archive.evidence` writes benign plain and `.gz` files. The
-positive control binds `secret_guard_archive.leak`, which plants `API_KEY` in one plain
-and one `.gz` file, and asserts the key is found in **each** file — so the gzip path is
-proven, not assumed. The framework never redacts evidence itself (browser header
+first bytes are `1f 8b` or whose name ends in `.gz` before decoding it, repeatedly for
+a gzip inside a gzip (falling back to the raw bytes when decompression fails). The
+guard's run binds an archiving fake capability (`secret_guard_archive`) so `env/` exists
+in the redacted fixture: its archiver `secret_guard_archive.evidence` writes benign plain
+and `.gz` files. The positive control binds `secret_guard_archive.leak`, which plants
+`API_KEY` in one plain and one `.gz` file, and asserts the key is found in **each** file,
+which proves the gzip path. The framework never redacts evidence itself (browser header
 stripping and form masking are the capability's, M29), so this guard is the
 framework's only check on `env/`.
 
@@ -746,7 +756,7 @@ framework's only check on `env/`.
 data with no field declarations, so deny-by-default would omit every value and leave a
 branch task nothing to rebuild its environment from. It goes through
 `core/archive/privacy.py::redact_value` instead: a mapping key that is credential-shaped
-(`is_credential_name` — the field-name pattern
+(`is_credential_name`: the field-name pattern
 `password|passwd|pwd|otp|token|secret|card|cvv` as a substring, or a trailing `key` /
 `apikey` / `sig` / `signature` / `auth` / `credential` segment) has its value replaced by
 `<redacted>` (a `null` stays `null`); a string that is an absolute URL (`scheme://…`) has
@@ -754,17 +764,19 @@ its userinfo replaced whole and the non-empty value of every credential-named qu
 `#k=v` fragment parameter replaced, every other byte preserved. Each replacement is a
 `RedactionEntry(location=<JSON pointer>, field, rule)` in the record's `RedactionLedger`
 (`policy` = `PRIVACY_POLICY`). `record_secrets` disables it exactly as it disables config
-redaction. The guard routes
+redaction.
+
+The guard routes
 `START_URL = "https://shop.example/landing?ref=guard&token=Zk3Lm9QpRt7Vx2BnQ8"` through
 `env_context`: absent from the redacted run, whose ledger holds `{location:
 "/start_url", rule: "url_query", field: "token"}`, and present with
 `record_secrets=True`. `<redacted>` is deliberately not `"<omitted>"` (replaced by a
 rule vs. set and withheld) and matches none of `SECRET_PATTERNS`. The residual, stated
 in `docs/architecture_design.md` §5.6: a secret under a name neither rule recognises is
-recorded as is. Changing a rule means bumping `PRIVACY_POLICY` — a test pins a digest of
-the rule sources: both name patterns, the placeholder, the URL pattern and the source of
-every rule function, the URL rules included, so even a cosmetic edit to those functions
-trips it (re-pin the current policy's row then, and say so).
+recorded as is. Changing a rule means bumping `PRIVACY_POLICY`. A test pins a digest of
+the rule sources (both name patterns, the placeholder, the URL pattern and the source of
+every rule function, the URL rules included), so even a cosmetic edit to those functions
+trips it; re-pin the current policy's row then, and say so.
 
 ### Four traps
 
@@ -815,9 +827,9 @@ evaluators, months apart, on a machine with no browser installed.
   reader could tell.
 - **Read fragments typed.** `RunTrace.observation_fragment(step, key)` (`reader.py:198`)
   takes the qualified key and hands back the fragment's own class, rebuilt by
-  `FragmentBase.from_trace` — a `DOMObs` whose `element_tree` is a `DOMState` and whose
+  `FragmentBase.from_trace` (a `DOMObs` whose `element_tree` is a `DOMState` and whose
   `selector_map` holds `DOMElementNode`s with their bounds, a `ScreenshotObs` with its
-  `image_bytes` — or the `FragmentFailure` recorded in its place when the capture
+  `image_bytes`), or the `FragmentFailure` recorded in its place when the capture
   failed. Test the type (`isinstance(frag, DOMObs)`): a failure is not `None`, and is
   never an empty fragment of the class the key names. Do not write a second decoder for
   a fragment's JSON; if `from_trace` loses something you need, that is the fragment's
@@ -825,13 +837,13 @@ evaluators, months apart, on a machine with no browser installed.
 - **Screenshots come from the manifest's fragment index**, not a glob.
   `RunTrace.screenshot(step)` (`reader.py:236`) is one step's bytes;
   `RunTrace.screenshots` (`:251`) is every committed step's frame as a `Path`, in step
-  order — any capability's `screenshot` fragment, whatever image suffix the header gave
+  order: any capability's `screenshot` fragment, whatever image suffix the header gave
   it, because a run configured for JPEG writes `.jpg` and a judge that silently found no
   frames would score the run text-only. A frame written for a step that never committed
   is not a frame of the run, and neither is a capture that came back empty: the
   resolver raises on one (it becomes a `FragmentFailure`), and a `ScreenshotObs` still
-  holding `b""` writes no artifact, so the step has no frame — rather than a 0-byte file
-  the reader would call damage, failing `screenshots` for the whole run.
+  holding `b""` writes no artifact, so the step has no frame. A 0-byte file instead
+  would read as damage and fail `screenshots` for the whole run.
 - **Every LLM call of a step is there**, in start order: `RunTrace.llm_messages(step)`
   (`reader.py:271`) returns parse retries, refused structured replies (`raw_output`),
   truncations (`partial_output`) and calls cut off by a cancellation (prompt only) as
@@ -847,9 +859,9 @@ evaluators, months apart, on a machine with no browser installed.
   fact.
 - Verdicts land in each trace's own `evals/` (`evaluator/runner.py:290-313`), named by
   evaluator slug, so a new judge never requires re-running the agent. They are written
-  with `fsio.atomic_write` like every other trace file: a re-score that dies half way
-  leaves the previous verdict whole, never a torn one the next pass reads as corrupt —
-  and with a plain write's permissions, so a results directory another user reads stays
+  with `fsio.atomic_write` like every other trace file, so a re-score that dies half way
+  leaves the previous verdict whole, never a torn one the next pass reads as corrupt.
+  They get a plain write's permissions, so a results directory another user reads stays
   readable.
 - Fail loudly on an unusable trace. `TraceIncompleteError` with the directory named beats
   a zero score — see `online_mind2web.py:104-125` for the pattern (no task text, no
@@ -865,7 +877,7 @@ misses, and never copies an `env/` file into a dataset (a test compares content 
 A run recorded with `record_secrets: true` is never a source. It shares the recorded
 step readers with branching rather than decoding a step itself
 (`core/loops/restore/source.py::recorded_observation` / `recorded_step_info`), and its
-output carries no wall clock, absolute path or machine name — two exports of one input
+output carries no wall clock, absolute path or machine name, so two exports of one input
 are byte-identical.
 
 ## File map
@@ -895,7 +907,7 @@ are byte-identical.
 | `tests/_helpers/trace_builder.py` | builds traces through the real encoder and `WALWriter` — use it, do not hand-write sidecars (`archive_file(...)`, `build_archive_trace(base)` for `env/`) |
 | `tests/_helpers/archive_fakes.py` | the fake archiving capability (`contract_archive`), fake archivers, `ArchiveConsumerHook`, `CollectSpy` (the raw env as the trace hook sees it, every batch kept), `make_archive_run(...)` — unique `contract_archive*` keys, because registries are global |
 | `tests/_helpers/archive_contract.py` | the shared archive contract harness: the capability-side clauses (no step, unbound archives nothing, prefix routing and clearing, hand over and forget, bound archivers only, provenance, a broken collection raises) and, through `TraceWriter` driven directly, commit → read back → crash window → tail → fail-closed collection → zero-cost empty archive → run records kept per capability beside a second archiving capability; a capability opts in with a factory in its `HARNESS_FACTORIES` |
-| `tests/test_core/test_archive/test_archive_boundaries.py` | the layering of §10 on source text: runtime / negotiation / environments never name `TraceWriter` or a concrete archiver module, `core/archive` imports none of its dependents, `core/trace` imports only `core.archive.privacy`; no money field in the new models |
+| `tests/test_core/test_archive/test_archive_boundaries.py` | the layering of §10 on source text: runtime / negotiation / environments never name `TraceWriter` or a concrete archiver module, `core/archive` imports none of its dependents (one exception by exact module name: `core/archive/source.py`, the replay opener, imports `core.trace.reader`), `core/trace` imports only `core.archive.privacy`; no money field in the new models; the browser's evidence readers import neither `core.trace` nor `spectragent.flywheel` |
 | `tests/test_core/test_runtime/test_archive_binding_errors.py` | every archive binding error raised by `prepare()` naming the parties, and by `execute()` before `on_run_start` and before setup |
 | `tests/test_core/test_trace/test_crash_window.py` | every accessor ignores what the manifest does not list |
 | `tests/test_core/test_trace/test_reader_errors.py` | every reader input × every corruption → `TraceSchemaError` naming the file; every listed path × every way out of the run directory |
