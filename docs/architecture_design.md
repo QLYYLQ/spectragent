@@ -223,7 +223,8 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 class ReactLoop(AgentLoopBase):
     __registry_key__ = "react"
     __required_slots__ = {"build_react_prompt", "parse_react_output"}
-    __optional_slots__ = {"get_react_output_model", "prepare"}
+    __optional_slots__ = {"get_react_output_model", "prepare",
+                          "format_react_output", "parse_react_thought"}   # 后两个：训练导出（M32，见下）
 
     async def _execute(self, agent, task, *, ctx, **_):
         # deps 每次调用经 ctx 传入，不存在 self 上
@@ -235,6 +236,23 @@ class ReactLoop(AgentLoopBase):
         ...
 ```
 
+#### 可选 slot：Loop 声明，谁用谁校验（M32）
+
+`__optional_slots__` 列的是"有就用"的 agent 方法，用的人不一定是 Loop 自己。`prepare()` 的 slot 校验只查 `__required_slots__`；可选 slot 由**用它的那一方**在用之前校验：
+
+| 可选 slot | 谁调用 | 何时校验 |
+|---|---|---|
+| `get_react_output_model()` | `ReactLoop` 自己（每次 LLM 调用的 `output_format`） | 不校验：没有就是文本调用 |
+| `prepare(task, action_descriptors, max_actions_per_step=...)` | `AgentRuntime`（种子消息，§4.2 `seed_messages`） | 不校验：没有就没有种子消息 |
+| `format_react_output(actions, *, thought=None) -> str` | 训练导出器（学生一侧，§4.15） | 只在导出组装学生时 |
+| `parse_react_thought(llm_output) -> tuple[str, str] \| None` | 训练导出器（teacher 一侧，`thought_source: teacher`） | 只在导出读 teacher 的 thought 时 |
+
+后两个都是 ReAct 的 slot，所以写在 `ReactLoop.__optional_slots__` 里（`BranchLoop` 继承）；不另立 `__inverse_slots__` 之类的新机制，也没有导出专用的错误类型。
+
+- **`format_react_output`** 是 `parse_react_output` 的逆：把一步的（已翻译、全限定名的）动作和可选的 thought 写成本 agent 的回复文本，正是这个 agent 在服务时会被要求写出的那种。它读本步的 agent 状态，所以调用顺序固定：`prepare` → 本步的 `build_react_prompt(obs)` → `format_react_output` → `parse_react_output`（UI-TARS 的点要用本步截图的网格换算）。确定性：同样的输入同样的文本。动作名或某个参数这个格式写不出来时抛 `UnrepresentableActionError(action_name, params, detail)`（`core/loops/errors.py`，`ParseError` 的对偶），绝不静默丢掉；导出器把它当成 `untranslatable` 的原因 `unrepresentable`（§4.15）。round-trip 的定义（§4.15 "round-trip"）对每个实现都成立，`tests/test_agents/test_format_react_output_round_trip.py` 对每个定义了它的已注册 agent 类逐一检查。v1 只有 `ui_tars` 实现它。
+- **`parse_react_thought`** 从一次录下的回复里读出 thought 及其来源字段，读不到返回 `None`。它是纯函数（只读传进来的回复，不读实例状态，所以写成 `@staticmethod`），导出器按源 trace 的 `agent_id` 从 `AgentRegistrar` 取 teacher 的类直接调用，不构造实例。`browser_use`：`thinking` > `next_goal` > `memory`（第一个非空的，记下是哪个字段；flash 模板只教 `memory`）；`ui_tars`：原生的 `Thought:`（到第一个 Action 行为止）；`skyvern`：每个动作的 `reasoning` 按顺序以换行连接。
+- **校验**：导出器组装学生之后先照常 `loop._validate_slots(agent)`（`prepare()` 已做），再查 `callable(getattr(agent, "format_react_output", None))`；`thought_source: teacher` 时对 teacher 的类查 `parse_react_thought`。缺了抛已有的 `IncompatibleError(agent_name, loop_id, missing_slots, needed_for=...)`——`needed_for` 是 M32 加的措辞参数：默认（运行装配）写 "required by loop 'react'"，导出写 "needed for training export (optional slots of loop 'react')"，不让一个可选 slot 的缺失读起来像 Loop 的必需 slot。
+
 #### Loop 实现现状与规划
 
 ```
@@ -242,7 +260,8 @@ AgentLoop (Protocol)
 │
 ├── ReactLoop (__registry_key__ = "react")  ← ✅ 已实现
 │     ├── slots: {build_react_prompt, parse_react_output}
-│     │           opt: {get_react_output_model, prepare}
+│     │           opt: {get_react_output_model, prepare,
+│     │                 format_react_output, parse_react_thought}   ← 后两个只有训练导出用（M32）
 │     ├── 循环：observe → build_react_prompt → LLM → parse_react_output → act
 │     │
 │     └── BranchLoop (__registry_key__ = "branch")  ← M31（P2，数据飞轮）
@@ -322,7 +341,8 @@ class SimpleSWEAgent(SWEAgent):
 class ReactLoop(AgentLoopBase):
     __registry_key__ = "react"
     __required_slots__ = {"build_react_prompt", "parse_react_output"}
-    __optional_slots__ = {"get_react_output_model", "prepare"}
+    __optional_slots__ = {"get_react_output_model", "prepare",
+                          "format_react_output", "parse_react_thought"}
 
     async def _execute(self, agent, task, *, ctx, **_):
         # weave() 把 deps 放进 agent.run 的闭包，每次调用经 ctx 传进来
@@ -387,7 +407,8 @@ class BranchLoop(ReactLoop):
 
 - **`LoopRun`**（`core/loops/run.py`，与 Loop 无关的一个 run 的状态）：从 `ctx` 取出的依赖（env、llm、memory、act_fn、negotiated_obs、task_id、step_recorder、model_id）与每个 Loop 都记的账：开始时刻、`step_records`、`action_history`、`llm_calls`、上一步的记录、目前最好的答案、连续解析失败的步数，以及 token 账本 `usage`。账本对象本身仍是 `react.py` 的 `_UsageTally`——它和 `_merge_token_usage`、`_parse_feedback`、`_build_result` 等现有私有工具的归属另有交接记录（`HANDOFF_261010_react_loop_layering.md`），M31 不搬它们，也不再往 `react.py` 加模块级私有工具。
 - **`ReactLoop._run_step(run, step_idx, *, observation=None, restoration=None)`**：一个 ReAct 步（observe → 填 loop 来源 fragment → `build_react_prompt` → LLM 与步内重问 → 解析 → 截断 → act → 交出 StepRecord）。返回终止的 `AgentResult`，或 `None` 表示继续；`RunAbort` 照原样上抛。给了 `observation` 就不再 observe（分叉的策略步用恢复器已经校验过的那次观测，再 observe 会开一个新 cycle）；给了 `restoration`，这一步写出的每条记录都带上它（§5.3）。
-- **ReAct 自己的 memory 协议是 `ReactLoop` 的方法**，在线的步与 `BranchLoop` 的重放只用这一份：`_cap_actions(actions, step_idx)`（按 `max_actions_per_step` 截断，返回保留的动作和被丢弃的动作名）、`_remember_rejected(memory, output_text, exc)`（被拒的回复作为 assistant 轮，再加 `_parse_feedback` 的 user 轮）、`_remember_reply(memory, output_text, dropped)`（解析成功的回复作为 assistant 轮，有动作被丢弃时再加截断提示）。
+- **ReAct 自己的 memory 协议是 `ReactLoop` 的方法**，在线的步与 `BranchLoop` 的重放只用这一份：`_cap_actions(actions, step_idx)`（按 `max_actions_per_step` 截断，返回保留的动作和被丢弃的动作名）、`_remember_rejected(memory, output_text, exc)`（被拒的回复作为 assistant 轮，再加 `_parse_feedback` 的 user 轮）、`_remember_reply(memory, output_text, dropped)`（解析成功的回复作为 assistant 轮，有动作被丢弃时再加截断提示）。训练导出的学生渲染（§4.15）写较早的 assistant 轮也走 `_remember_reply`（`dropped` 恒为空），是这份协议的第三个使用者，不是第二份拷贝。
+- **loop 来源 fragment 的 builder 是显式入参的纯函数**（M32）：`core/loops/_loop_fragments.py::loop_fragment_builders(*, task, step, max_steps, today, history, prev_step)`，返回四个 `loop.*` 的 builder 交给 `populate_loop_fragments`。`ReactLoop._loop_fragment_builders(run, step_idx)` 只是把本 run 的值（`self.max_steps`、`self._today_iso()`）交给它；`BranchLoop` 交源 run 第 t 步录下的 `max_steps` / `today`（`today_override` 仍优先），不再整个覆写 step_info 的 builder；导出器交源 trace 录下的（§4.15 "学生渲染"）。三处只有一份构造逻辑——它本来就该在与 Loop 无关的 `_loop_fragments.py` 里（`HANDOFF_261010_react_loop_layering.md` 3.6 的 B 类），`today_override` / `max_steps` 两个旋钮不动。
 
 **步数只数策略步。** `AgentMetrics.steps` 数 `origin == "policy"` 的记录（§5.3），`max_steps` 也只数策略步；恢复出来的步与终止观测不占步数，也不进 `AgentResult.action_history`。
 
@@ -543,6 +564,8 @@ class AgentRuntime:
                       action_filter=None, config=None, raise_on_error=True):   # 没有 **kwargs
         prepared_agent = self.prepare(task_id=task_id, action_filter=action_filter,
                                       loop_inputs=loop_inputs)
+        memory.clear(); self._recorder.clear()                 # 一个 ComposedRun 可以跑多个任务
+        memory.add_messages(self.seed_messages(task))          # M32：种子消息是公开方法，见下
 
         # 在 env setup 之前打开 trace：setup 失败也要落进 trace
         await self._dispatch_lifecycle("on_run_start",
@@ -632,6 +655,8 @@ class AgentRuntime:
 
 **为什么两段式**：`prepare()` 是纯装配（slot 校验 → 协商 → AOP 织入 → loop weave），返回值就是一个 self-contained 的 agent —— 测试和需要细粒度控制的调用方可以直接 `await prepared_agent.run(task)`，跳过 timeout/lifecycle 包装。`execute()` 只是 prepare + 围绕 `agent.run` 加 timeout 和 lifecycle hook。两段都是独立的、零全局状态的 run 上下文，并行多个 run 互不干扰。
 
+**种子消息是 runtime 的公开方法（M32）。** `seed_messages(task) -> list[BaseMessage]`：在 `prepare()` 之后调用，调 prepared agent 的可选 slot `prepare(task=, action_descriptors=<本次收窄、守卫过的 descriptors>, **<Loop 的执行上限>)`（`_loop_policy_for` 只把 agent 签名里有的参数交过去），agent 没有 `prepare` 时返回 `[]`；不写 memory、不碰环境。`execute()` 清空 memory 后把它的结果写进去——行为不变，只是从内联代码抽成方法。抽它是因为第二个调用方：训练导出的学生渲染（§4.15）需要与 live run **完全同一套**的装配（同样的协商、同样带 `fragments=` 收窄的 descriptors、同样的绑定表、同样的种子），而它只调 `prepare()` 与 `seed_messages()`——从不调 `execute()`、`setup_environment()`，也不调 LLM。`prepare()` 本来就不 setup 环境、不碰 LLM（`spectragent-run --dry-run` 靠的也是这一点）；导出侧的哨兵测试（LLM 与 capability 的 setup 一调就抛）把它钉成契约。
+
 **归档：先校验，最后绑定。** 归档轴（§4.5）的协商与绑定分在 `prepare()` 的两头：
 
 - `negotiate_archive` 紧跟 `negotiate_memory`，在任何织入之前运行，所以绑定错误（`IncompatibleArchiveError`）和另外几条协商一样在装配期暴露——`spectragent-run --dry-run` 也调 `prepare()`，干跑就能发现；
@@ -719,6 +744,8 @@ class ConfigComposer:
 **注入方式**：init param → 进 `__init__` 的 kwargs；class_hints-only → 通过 `setattr(instance, name, value)` 注入（conscribe `WiredField` descriptor 接受这次写入并把值放到 instance dict，遮蔽自身）。
 
 **与 AgentRuntime 的边界**：`AgentRuntime` 只接收 `ComposedRun`，**不**直接看 conscribe schema、**不**自己解析 YAML。`ConfigComposer` 是唯一懂 conscribe 内部约定（receptor 检测、dict/list 形态、wiring 解析）的层。增删 wiring grammar、调整 discover 路径、加新 layer 都只动 Composer。
+
+**只有一个根，每一层都是可选的（M32 实测）。** 生成的 `ComposedConfig` 每个收集的层都是 `list[<layer union>] = []`，没有必需层：只写 `evaluator:` 的 YAML 能组装；只写一个顶层层、且该层带单实例受体（`task_loader: [{benchmark_name: trace_branches, step_selector: {...}}]`）也能组装，受体照样是类型化的嵌套联合，拼错的键被拒（`tmp/flywheel/m32_design/probe_root.py`）。所以训练导出不另立根：`exporter` 与 `action_translator` 是这个根的两个可选顶层层（与 `evaluator` 同一先例，§4.15），一份只有 `exporter:` 的 YAML 照样由 `ConfigComposer(registrars=_collect_registrars())` 组装；学生的运行配置是另一份普通的运行 YAML，由导出器再组装一次。
 
 ### 4.3 Environment 抽象
 
@@ -914,6 +941,8 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 - `retarget(action, recorded, restored) -> Retarget`：与 `act()` 同一套前缀路由（`action.name` 的第一段经 `_by_capability_id()` 找 capability）。路由到的 capability 实现了 `RestorationSupport` 就交给它；没实现、前缀不带点、或前缀找不到 capability 时返回恒等的 `Retarget(action=<原动作的副本>, method="identity")`——重放要复现源 run 的执行，连同它被 `guarded_act` 拒绝的那些动作：原样交给 `act_fn`，由它再拒绝一次，成败比较照样成立。`retarget` 从不执行动作，也不改环境。
 - `verify_restoration(recorded, restored) -> list[RestorationEvidence]`：按 capability 顺序扇出到每个实现了 `RestorationSupport` 的 capability，各交回一份证据（带自己的 `capability_id`）；没有任何实现者时是空列表，即"没有可校验的"。`recorded` 与 `restored` 都是本次协商的整个 `NegotiatedObservation`，capability 按自己 fragment 的本地名读它要的那几个（协商保证本地名不撞）。
 - 两者都只量、不判：阈值与 `strict | warn` 是恢复器的策略（§4.1），capability 只报告测到了什么，没测的字段为 `None`。environment 不缓存、不记录任何东西。
+
+**录下的采集与本配置是否一致（M32）**（`core/environments/_registrar.py`）：训练导出用学生的运行配置组装一个从不 setup 的环境，再问它"你按现在的配置采，会不会采出源 trace 录下的那种观测"：`compare_capture(recorded: Mapping[str, FragmentBase]) -> CaptureComparison`（`recorded` 是一步录下的 env 来源 fragment，键全限定）。按每个键的前缀经 `_by_capability_id()` 分给 capability，交给实现了 §4.9 `CaptureCheck` 的那些，按 capability 顺序合并它们的 `mismatches` 与 `unchecked`；没实现的 capability、找不到 capability 的键都不贡献（"没有可比的"）。只读配置与传进来的 fragment：不 setup、不连浏览器、不缓存。
 
 **Observation cycle 由 env 宣告，不由 capability 推断**：`Environment.observe` 持有单调递增的 cycle 计数器，每次 observe 自增一次，并在任何 fragment 解析之前调用每个参与 capability 的 `begin_observation(cycle)`。这正是 capability 敢批量抓取的前提——browser 一次 `BrowserStateRequestEvent` 同时拿到 DOM + screenshot + tab list，然后在本 cycle 内把每个 key 服务任意多次，因为下一个 cycle 会被**告知**而不是被**猜到**。此前这条规则只以"我是否已经服务过这个 key"的形式活在 `BrowserCapability` 内部：那是用推断代替调用方本来就握有的信息，并且对任何读同一 fragment 两次的调用方都是错的。同一步内重复读同一个 fragment 是**同一次** observation，不是下一次。
 
@@ -1849,6 +1878,25 @@ class RestorationSupport(Protocol):
 - 不进 `BaseCapability`，`CapabilityBase` 也不给默认实现：默认（恒等、不校验）在 environment 那一侧（§4.3 "检查点恢复的路由"），不实现的 capability 什么都不用写。
 - capability 不知道 WAL、不知道步号：它拿到的是两个观测对象，读的是 fragment（browser 读 `browser.dom` 的自包含 `selector_map`、`browser.browser_meta`、`browser.screenshot`），不 import `core.trace`（§10）。唯一不从两个观测里读的是观测装不下的计数（browser 回放服务的主 frame 文档 miss）：capability 记着上一次读到的总数，报自上一次 `verify_restoration` 以来的增量——所以这个调用不是幂等的，恢复器对每个恢复出的观测恰好调用一次、按顺序（`prefix_replay` 正是如此）。Browser 的实现见 §4.14 "恢复：重定位与校验"。
 
+**采集一致性检查（M32）也是单独的、可选的 Protocol**（`core/capabilities/base.py`）：
+
+```python
+@dataclass(frozen=True)
+class CaptureComparison:              # core/capabilities/base.py
+    mismatches: tuple[str, ...] = ()  # 每条点名 fragment、设置项与两边的值
+    unchecked: tuple[str, ...] = ()   # 配置期比不了的设置项与原因（不是差异）
+
+@runtime_checkable
+class CaptureCheck(Protocol):
+    # 本 capability 按当前配置采集，会不会采出 recorded 里属于它的那些 fragment？
+    # 只读配置与传进来的 fragment：不 setup、不连 backend、不缓存
+    def compare_capture(self, recorded: Mapping[str, FragmentBase]) -> CaptureComparison: ...
+```
+
+- 为什么需要：训练导出用学生的运行配置渲染样本（§4.15），图像却来自源 trace。学生配置的截图管线与录制时不同（格式、viewport、DPR、图像尺寸），训练图像就与学生服务时看到的不同，而导出本身看不出来——只有 capability 知道它的配置会采出什么。
+- Browser（`core/capabilities/browser/capture_check.py`，`capability.py` 只委托）：对 `browser.screenshot` 比较 `viewport_width/height`（配置 vs 录下的）、`screenshot_format`（配置 vs 录下字节的 `image_media_type`）、DPR（`replayability` 的 `device_scale_factor` vs 录下的 `image_width / viewport_width`）以及由它推出的图像尺寸（viewport × DPR）。`off` 档位用宿主机的 DPR，配置期不可知：DPR 与图像尺寸进 `unchecked`，不算差异。其余 fragment 不比较。
+- 与 `RestorationSupport` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认；路由与"没人实现就没有可比的"在 environment 一侧（§4.3）。
+
 #### 4.9.x Capability ↔ Backend 生命周期
 
 **设计决策**：`backend` 是 capability 的执行层配置——回答"这个 capability 通过什么 backend 提供 transport 端点"。Browser 选 `local_chrome` / `lexmount` / `skyvern` 等；Docker 选 `local_docker` / `ssh_docker`；Desktop VM 选不同的 VNC 后端。Backend 通过与 `agent.llm` / `env.capabilities` 完全同构的 IoC 路径注入。
@@ -2154,7 +2202,9 @@ DOMWatchdog (browser.dom 唯一 resolver)
                        → DOM.describeNode 关联 backendNodeId / session
     └── DOMCleanerProtocol.clean(capture) → DOMState
           ├── browser_use: simplify→optimize→paint-order→bounds→index
-          └── skyvern: 属性裁剪→frame/shadow 组装→索引
+          ├── skyvern: 属性裁剪→frame/shadow 组装→索引
+          └── skyvern_hit_test（M32）: skyvern 的全部 + 页内逐元素命中测试
+                       → 记 hit_test；covered_elements: drop 时不给全被盖住的元素编号
     └── DOMBudgetPass → DOMSerializerProtocol → str + selector_map
 
 Serialization (可插拔策略)
@@ -2172,7 +2222,14 @@ same-process 与 OOP root）都在所属 CDP session 的 isolated world 执行�
 BrowserUse snapshot。两种策略最终都交出同形的 `DOMState`，由同一个预算、serializer、
 selector map 和 trace 路径消费。
 
-**原始采集交给 cycle 缓存，不交给归档（M29）。** `cleaner.capture()` 交回的 `TargetCapture`
+**`skyvern_hit_test`：带命中测试的 Skyvern 变体（M32，用户 2026-10-09 裁决）。** 单独可选的 cleaner（`DOMCleanerRegistrar` 键 `skyvern_hit_test`，`SkyvernHitTestCleaner(SkyvernCleaner)`，`dom/cleaning/skyvern_hit_test.py`；加进 `BrowserCapability.__wiring__["dom_cleaner"]` 的允许键）。它针对的是 M18 的缺陷——Skyvern 把被吸顶导航盖住的链接也编了号——而 Skyvern 的 JS 路径没有任何 paint order（`snapshot={}`），归档也补不出来。
+
+- **采集**：与 `skyvern` 完全相同的页内提取（`EXTRACTION_SCRIPT` 一字不改），之后在同一个远程对象上多调一次 `Runtime.callFunctionOn`（`HIT_TEST_FUNCTION`，`dom/js/skyvern_extraction.py` 里另一个常量）：对每个可交互的 ref，取元素可见矩形（`getBoundingClientRect` ∩ 本 frame 视口）的中心做 `elementFromPoint`（元素在 shadow root 里时用那个 root 的 `elementFromPoint`）；中心被盖住时按固定顺序试可见矩形内 5×5 的内点网格（各边内缩 2 CSS px，行优先），第一个命中的就是可见点。"命中"= 最上层元素是它本身、它的后代（沿 parentNode / ShadowRoot.host 上溯），或一个 `control` 指向它的 `<label>`。结果放在 `TargetCapture.raw_dom["skyvern_hit_tests"]`（按 ref），点以元素自身矩形左上角为原点的偏移给出——页内脚本不知道自己的 frame 在顶层视口里的位置。`capture_skyvern(source, *, hit_test=False)`：`skyvern` 不传它，CDP 调用序列不变。
+- **清洗**：先跑 `SkyvernCleaner.clean`（不改它的任何代码），再后处理：每个有结果的已索引元素记 `DOMElementNode.hit_test = HitTest(center_topmost: bool, visible_point: tuple[float, float] | None)`——`visible_point` 是顶层视口的 CSS px（元素 `bounds` 的左上角 + 页内给的偏移 − 顶层文档滚动；`bounds` 已含 iframe 偏移），中心命中时就是中心。完全不在视口里的元素没有命中测试（`hit_test=None`，照常编号——离屏不是被盖住）。`covered_elements: Literal["drop", "keep"] = "drop"`：`drop` 时中心与网格都没命中（`center_topmost=False` 且 `visible_point=None`）的元素从 `selector_map` 里拿掉、`element_index` 置空，agent 看不到它的编号（这是开这个变体的目的，agent 可见）；`keep` 照常编号，命中测试照样记下。
+- **进 trace**：`hit_test` 是 `DOMElementNode` 的新字段，元数据 `TRACE_OMIT_NONE`（`dom/models.py` 的第三种字段策略：值为 `None` 时编码器不写这个键，解码时缺键读成默认值）——所以 `skyvern` 与 `browser_use` 的 `DOMObs` JSON 逐字节不变，`skyvern_hit_test` 的自包含 `selector_map` 条目带着它进 trace，训练导出的遮挡判断（§4.15）直接读。
+- **已知限制**：命中测试只在元素自己的文档里做——父文档里的内容盖住整个 iframe 时测不出来；进程外 iframe 同理。每个在视口里的可交互元素一次到二十六次 `elementFromPoint`；实测（headless Chrome，fixture 的 `sticky` 页，8 个可交互元素，`test_browser_skyvern_hit_test_live.py::test_what_the_hit_test_costs_per_observation`）一次 DOM 观测的中位耗时 `skyvern` 51.3 ms、`skyvern_hit_test` 50.0 ms——差异在噪声内；元素多、被盖住的多的页面上网格探测才显出代价。
+
+`cleaner.capture()` 交回的 `TargetCapture`
 （BrowserUse：`DOM.getDocument` + `DOMSnapshot` + AX；Skyvern：页内 JS 的原始输出加
 `DOM.describeNode` 的节点身份）连同 DPR，经 `WatchdogContext.raw_capture_sink(capture, dpr)`
 交出去——与 `selector_map_setter` 同一种 capability 借给 watchdog 的回调。DOMWatchdog 不知道
@@ -2691,6 +2748,170 @@ setup 里，`cooperation_problems`（配置能否协作）之后、`backend.open
   - 回放日志导出成 HAR 推迟（还没有按 HAR 打分的评测器）。
   - S2b（10 个真实 `online_mind2web` 任务上的度量）的配置与脚本在本地的 `tmp/flywheel/s2b/`，等用户授权（路由、N、token 上限），没有跑过。
 - 本节的 Chrome 行为都是 153 的实测，归档器的部分是 155 的实测（本机 Chrome 在 M29 期间升到了 155，153 时写下的金丝雀全部照样通过）；`requires_chrome` 的回归测试是版本金丝雀。
+
+### 4.15 训练导出（M32）
+
+导出是离线读 `RunTrace` 的消费者，地位与 evaluator 相同：不 setup 任何环境、不调任何 LLM、不写源 trace，产物是一个数据集目录。**学生就是一个普通的 af agent**：样本由学生 agent 自己的 `prepare` / `build_react_prompt` / memory 策略渲染、目标轮由它的 `format_react_output` 写出，所以训练格式就是服务格式，训练完的学生接回 af、用同一份运行 YAML 评测。新的学生格式 = 新的 Agent 类（PRD §11 Q3：v1 的学生是 `ui_tars` + `coordinate_space: normalized_1000`，`configs/flywheel/ui_tars_student.yaml`）。
+
+#### 配置：运行根的两个可选层
+
+导出不另立根（§4.2.1 实测）：`ExporterRegistrar`（`exporter_id`，`spectragent/export/_registrar.py`）与 `ActionTranslatorRegistrar`（`translator_id`，`spectragent/export/translate/_registrar.py`）进 `_collect_registrars()`，是运行根的两个可选顶层层。导出用的 YAML 有一个 `exporter:` 块（`configs/flywheel/export_sft.yaml`），可选地再有运行根自己的 `eval_loader:` / `task_loader:` 块——去污染与泄漏扫描经它们读基准数据（见"基准数据"）：
+
+```yaml
+exporter:
+  - exporter_id: openai_messages
+    sample: per_step                 # v1 唯一值
+    image_store: files               # v1 唯一值：图片按 sha256 存成文件
+    sources_root: traces             # sources 的根（null：工作目录下的 traces）
+    sources: ["recorded/*"]          # 相对根的 glob，按路径排序（null：["*"]）
+    filters:
+      require_status: completed      # error | any（读 manifest 的 status）
+      require_eval: {evaluator_id: online_mind2web, label: 1, slug: null}
+      exclude_restoration_diverged: true
+      max_document_misses: 0         # null：不按回放日志过滤
+      exclude_sites: []              # 主机名，后缀匹配（M33 的报告喂它）
+    split: {by: site, validation_fraction: 0.1, salt: af-split-1}   # by: site | task
+    decontamination: {against: null, match: either}                # 见"切分与去污染"
+    translator:
+      translator_id: index_to_coordinate
+      occlusion: check               # "off" 要加引号（YAML 1.1 的布尔）
+      occlusion_unknown: raise       # untranslatable：没证据的步按 untranslatable 处理
+      untranslatable: drop_step      # truncate | keep_as_text | fail
+    student_run_config: configs/flywheel/ui_tars_student.yaml
+    thought_source: teacher          # none；relabel 是以后的扩展点
+    thought_index_refs: drop         # keep
+    length: {max_tokens: 65536}      # image_tokens: qwen_vl（默认）| fixed（配 fixed_image_tokens）；null：不检查长度
+    output_dir: datasets/sft_v1
+# 可选：基准数据从这里读（旋钮俱全）；没配的 benchmark 用它注册的加载器的默认值
+# eval_loader:
+#   - {benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web}
+# task_loader:
+#   - {benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web}
+```
+
+`length` 与学生要一致：学生每轮都留截图（`memory: simple`），样本长度随段增长——发布的学生 30 步的整段在 1280×720 上光图像就约 36k token（`qwen_vl`），所以发布的预算是 65536；训练器的上下文更短时要换步数更少的学生，否则导出按名字失败（`test_validate.py` 用发布的两份配置渲染一整段核对）。
+
+- **`ExporterBase`**（不是 dataclass，手写关键字 `__init__`，与 `trace_branches` 同一写法）：上面每个任务字段都是 `__init__` 的 `Annotated` 参数——`sources_root: str | None`、`sources: list[str] | None`、`filters: ExportFilters | None`、`split: SplitSettings | None`、`decontamination: Decontamination | None`、`student_run_config: str`（必填）、`thought_source: Literal["teacher", "none"]`、`thought_index_refs: Literal["drop", "keep"]`、`length: LengthBudget | None`、`output_dir: str`（必填），以及 v1 所有导出器共有的 `sample: Literal["per_step"]`、`image_store: Literal["files"]`。列表默认写 `None`、表示文档写明的默认值（conscribe 1.3：非空列表默认是共享可变默认、`tuple[str, ...]` 生成不了）。嵌套旋钮是 pydantic dataclass，各在 `spectragent/export/settings.py`（`ExportFilters`、`SplitSettings`、`Decontamination`、`BenchmarkRef`、`LengthBudget`）——带受体的类的存根把同模块兄弟类型写成 `Any`，`BaseModel` 会被代码生成当成它自己生成的子模型（af-add-a-receptor §7）；`require_eval` 复用 `core/data_loader/task/require_eval.py::RequireEval`（M31 的同一个类型、同一个语义）。`translator` 是单实例受体：`__wiring__ = {"translator": "action_translator"}`、类级注解、Python 默认 `default_translator()`（`identity`）。自己没有旋钮的导出器不写 `__init__`（conscribe 读到的就是基类的签名）；有自己旋钮的导出器要写出完整签名。`af-regenerate-and-verify` 的检查 1 证明任务字段与 `translator: Union[...]` 都在生成的每键配置上（`tests/test_export/test_registrar.py`）。
+- **`Exporter` Protocol**（`_registrar.py`）：`exporter_id`、只读的 `translator`、上面的任务字段、`root()`（sources 根的绝对路径）与 `format(rendered: RenderedSample, images: ImageStore) -> ExportRecord`。`ImageStore.put(data, media_type) -> <数据集里的相对路径>`、`ExportRecord{sample_id, record, images}` 也在 `_registrar.py`，`RenderedSample` 在 `render.py`（它不 import `_registrar`）。Protocol 里的 `translator` 写成只读 property：生成的存根把受体类型写成 `ActionTranslatorBase`，可变属性在 Protocol 里是不变型的。
+- **翻译器旋钮**：`ActionTranslatorBase.untranslatable: Literal["drop_step", "truncate", "keep_as_text", "fail"] = "drop_step"`；`index_to_coordinate` 另有 `occlusion: Literal["off", "check"] = "check"`、`occlusion_unknown: Literal["raise", "untranslatable"] = "raise"`。翻译器没有受体，旋钮是手写 `__init__` 的关键字参数。
+- **CLI**：`spectragent-export --config <yaml>`（`spectragent/export/cli.py`，`pyproject` 的 `[project.scripts]`）：用 `ConfigComposer(registrars=_collect_registrars())` 组装，`ExportRunner.from_run(run, ...)` 取恰好一个 `exporter` 实例（否则 `ExportConfigError`）与文档里的加载器（`BenchmarkLoaders.from_run`），跑它，打印每个切分的样本数与按原因的丢弃数；失败非零退出。`/datasets/` 在 `.gitignore` 里。
+
+#### 流水线（`ExportRunner`，`spectragent/export/runner.py`）
+
+不注册（与 `EvaluationRunner` 对应），同步执行——没有 LLM，没有环境：
+
+1. **源**：`sources_root` 下按 `sources` glob 匹配的 run 目录（`core/trace/sources.py::match_runs`——从 `trace_branches` 挪过来的那一份，加载器改用它），按相对路径排序；只经 `RunTrace` 读已提交的部分。源级检查与筛选（见下）。
+2. **canonical 化**：每个可导出的步 → 一个 `CanonicalStepSample`（`schemas/sample.py`）。
+3. **翻译**：`exporter.translator.translate(sample, trace)`——与学生无关的动作空间换算。
+4. **学生渲染**：组装学生、只装配；按段重建上下文；目标轮来自 `format_react_output`；逐轮 round-trip。
+5. **格式化**：`exporter.format(rendered, images)` → 每个样本一条记录。
+6. **校验**：图片个数、坐标范围、泄漏扫描、凭证扫描、长度。
+7. **切分、重复标记、数据集 manifest**，然后落盘。
+
+整个产物先写进 `<output_dir>.partial/`，所有校验通过才原子改名成 `output_dir`；任何一步失败（含校验）都删掉 `.partial`、不留半个数据集（fail closed）。导出出零个样本是 `ExportEmptyError`，列出每个筛选与丢弃原因的计数。
+
+#### 源级检查与筛选
+
+- **不可导出的源**（跳过，原因记进 manifest 的 `sources.skipped`）：读不回来（`TraceSchemaError`；原因只写相对 run 目录的文件与错误类，如 `not a readable trace: manifest.json does not read back (TraceSchemaError)`——读取器的消息带绝对路径、可能引用读不出的字节，只进日志，manifest 因此与 sources 根在哪无关）、format 1、`TraceConfig.secrets_recorded`（带原样凭证的 trace 不进数据集）、没有记录协商（`TraceConfig.negotiation is None`，手工组装的 run）、与另一个源共用 `run_id`（共用者全部跳过，同 `trace_branches`）。
+- **筛选**（`filters`，原因记进 `sources.filtered`）：`require_status`（manifest 的 status，默认 `completed`）；`require_eval`（`RequireEval.satisfied_by(RunTrace.evals())`；**分叉 run 用它的源 run 的判定**——分叉 run 在 v1 没有评测加载器；源 run 按 `TraceConfig.branch.source_run_id` 在本次匹配到的源里找，找不到就筛掉，原因 `branch source not among the sources`）；`exclude_restoration_diverged`（默认 `true`：任何一条 `StepRecord.restoration` 没通过——`verdict` 不是 `ok`——的 run 整个排除：`warn` 下发散后照常走完的分叉，它的策略步决策时的状态不是源 run 的前缀，上下文因此是错的，这是只有这个筛选挡得住的一类；`diverged` 是 `strict` 中止的分叉，它在策略步之前就以 `error` 结束，本来就过不了 `require_status`、也没有可导出的步）；`max_document_misses`（回放日志里的主 frame 文档 miss 总数——与 `ReplayLog.diverged_total` 同一个计数规则，折叠进 `summary` 的也算——超过就排除；读侧是 browser 的 `replay/replay_log.py::document_miss_total(reader)`；没有回放日志的 run 是 0）；`exclude_sites`（站点键命中列表：主机名相等或以 `.` + 条目结尾）。分叉 run 的源 run 不在本次可读的源里时，不论有没有 `require_eval` 都筛掉（`branch source '<id>' not among the sources`）：它的上下文就是源 run 的前缀。读筛选要用的文件读不回来（`TraceSchemaError`）算跳过，不算筛掉（原因的写法同上）。
+
+#### 可导出的步与 `CanonicalStepSample`
+
+**可导出的步**：`origin == "policy"`、`error_phase` 为空、至少执行了一个动作（`zip(actions, action_results)` 的那些——解析失败的步与零动作的步在 `StepRecord` 上分不开，M31 的未决问题，两者都不导出）。分叉 run 只有它的策略步可导出（检查点步 t 与其后的继续步）；恢复步、终止步从不是样本。不可导出的步不产生样本，并在轨迹里结束当前段（"学生渲染"）。
+
+`CanonicalStepSample`（`spectragent/schemas/sample.py`，领域中立：不出现 URL、DOM、bbox 这类字段名，`test_shared_module_is_domain_neutral.py` 覆盖到它；不 import `spectragent.core`）：
+
+- **身份与来源**：`sample_id`（`<run_id>/s<step>`）、`run_id`、`source_trace`（相对 `sources_root` 的 POSIX 路径）、`step`、`benchmark` / `subset` / `task_id`、teacher 的 `agent_id` / `loop_id` / `llm_model`、`config_hash`。
+- **任务**：`task`（学生拿到的指令，`TraceConfig.task`）。参考答案与评测提示**不在样本里**：泄漏扫描按需从源 benchmark 的评测加载器取，从不进样本、从不渲染。
+- **观测引用**：`observations: list[FragmentRef]`（每个录下的 env 来源 fragment：全限定键、manifest 里的文件路径、产物的 sha256、`failed`）；`image: ImageRef | None`（满足 `ScreenshotGeometry` 的那个 fragment：sha256、媒体类型、`image_*`、`viewport_*`）。
+- **历史引用**：`history_steps: list[int]`（同一轨迹里在它之前的可导出步；分叉 run 的是源 run 的 0..t-1 加分叉自己在它之前的策略步）。
+- **目标**：`teacher_actions`（执行过的动作，全限定名；参数投影到该动作 `Params` 声明的字段，未声明的键丢掉并在 `dropped_params` 里点名——例如 Skyvern 写进每个动作参数的 `reasoning`）；`thought: ThoughtRecord(text, source_field) | None`（`thought_source: teacher` 时经 teacher 的 `parse_react_thought`，§4.1）；翻译之后的 `actions`、`untranslatable: Untranslatable(reason, detail) | None` 与 `translation: list[TranslationRecord(translator_id, action_index, payload)]`（翻译器的来源记录，内容由翻译器定，对样本是不透明的 JSON）。
+- **标签**：`labels.step_status`（`ok`：每个执行的动作都成功；否则 `action_failed`——照样导出、标出）、`labels.loss_weight`（目标轮 1.0）、`labels.verdicts`（该 run 的每份 `graded` 判定：`verdict_slug`、`evaluator_id`、`predicted_label`，分叉 run 用源 run 的）。
+- **脱敏台账**：`redactions`——源 `TraceConfig.task_setup` 台账的条目照抄（策略版本、位置、字段、规则），让读者知道源 run 的哪些输入被换过。
+- **分叉元数据**：`branch: BranchSampleMeta | None`——`branch_group_id`（`<source_run_id>/s<t>`）、`source_run_id`、`checkpoint_step`、`branch_index`、终止观测的引用（`terminal_step`、`terminal_image_sha256`，没有终止步时为 `None`）、`duplicate_of`。
+
+`UntranslatableReason = Literal["no_counterpart", "target_offscreen", "exceeds_action_budget", "occluded", "occlusion_unknown", "unrepresentable"]` 也在 `schemas/sample.py`。
+
+#### 翻译器（`ActionTranslatorRegistrar`）
+
+```python
+class ActionTranslator(Protocol):
+    translator_id: str
+    untranslatable: Literal["drop_step", "truncate", "keep_as_text", "fail"]
+    def translate(self, sample: CanonicalStepSample, trace: RunTrace) -> Translation: ...
+    # Translation{actions: list[Action] | None, untranslatable: Untranslatable | None, records: list[TranslationRecord]}
+```
+
+翻译只做与学生无关的换算；"学生写不写得出来"在渲染时由学生自己判定（下面），两处的不可译原因走同一个 `untranslatable` 策略（翻译器只报告原因，策略由渲染执行）。翻译后的每个动作都过一遍它的 `Params.model_validate`（只留设了的参数；过不了是 `InvalidTranslationError`——翻译器或数据的缺陷，不是不可译）；没注册的动作名是 `no_counterpart`；一步里任一动作不可译，整步不可译。
+
+- **`identity`**：原样交出 `teacher_actions`。UI-TARS 录下的 run 本来就是坐标动作。
+- **`index_to_coordinate`**：带元素 index 的动作——参数上带 `RequiresFragment("browser.dom")` 且这一次给了值的那些（`core/actions/params.py::param_fragments`）——换成坐标动作：`browser.click` → `browser.click_coordinate`、`browser.type` → `browser.type_coordinate`（`text`、`clear` 照搬），其余带了 index 的（`select_dropdown`、带 `index` 的 `scroll` / `extract_content`）是 `no_counterpart`；不带 index 的动作原样。index 在录下的 `selector_map` 里找不到（源 run 的这个动作当时就找不到目标）也是 `no_counterpart`。换算的 browser 知识在 `core/capabilities/browser/index_points.py`（纯函数，读交进来的 fragment 与文档，不 import `core.trace`），翻译器只组织调用：
+  - **几何**：录下的条目（M27 起自包含）的 `bounds` 是顶层文档的页面坐标（CSS px，已计入 iframe 偏移，与 DPR 无关）；减去 `DOMState.scroll_info` 的滚动得到视口坐标；与视口求交——条目在重链接的 `element_tree.dom_tree` 里找得到时，再与每一层 frame 宿主的 `bounds` 求交（找不到——被深度截断——就只裁视口，来源记录里写 `frame_clip: "unknown"`）；交集为空是 `target_offscreen`（live 的 index 点击会先滚动到可见，录下的截图上表达不了）；否则取可见部分的中心，四舍五入成整数 CSS px（坐标动作的参数是 `int`）。变换过的 iframe 只按平移处理（已知限制）。
+  - **遮挡**（`occlusion: check`，只对换算出的点）：证据按优先级——(a) 这一步的 `selector_map` 条目带 `hit_test`（`skyvern_hit_test` 录的）：中心命中用中心，否则用 `visible_point`，两者都没有就是 `occluded`；(b) 这一步的 `browser.dom_raw` 文档（`RunTrace.archive_files(step, "browser.dom_raw")`，`archive/dom_raw.py::read_dom_document` 解开；按文档戳挑与本步同一个文档的那份）里的 DOMSnapshot：在目标所在的主文档里，包含该点（快照 `bounds` 是设备像素，除以文档里记的 DPR）且 paint order 最大的布局节点必须是目标或它的后代（`pointer-events: none` 与 `visibility: hidden` 的节点不算——点击穿过它们；并列的 paint order 算目标的）——v1 只判主文档里的目标，frame 里的目标这一条证据不适用；(c) `browser_use` 清洗过、trace 里带 `paint_order` 的 `dom_tree`：同一个查询，只在目标所在文档的、留下来的节点里做（BrowserUse cleaner 已经把整个被盖住的元素去掉了，所以这一条只抓得到部分遮挡）。(b)(c) 判定被盖住时，在可见部分里按 5×5 内点网格（内缩 2 px、行优先）找第一个不被盖住的点；找不到是 `occluded`。三条证据都没有：`occlusion_unknown: raise`（默认）抛 `OcclusionEvidenceMissingError`，点名样本与 index，并提示"绑定 `browser.dom_raw` 或用 cleaner `skyvern_hit_test` 录制"；`untranslatable` 时按不可译原因 `occlusion_unknown` 处理。`occlusion: "off"` 不查。
+  - **来源记录**：元素引用（`element_index`、`backend_node_id`、`target_id`）、页面 bbox、视口里的可见矩形、点的来源（`center` / `hit_test` / `grid`）、遮挡判定（`clear` / `occluded` / `unknown`）与所用证据（`hit_test` / `dom_raw` / `paint_order` / `none`）。
+
+#### 学生渲染（`spectragent/export/render.py`）
+
+- **组装**：`ConfigComposer` 组装 `student_run_config`（一份普通运行 YAML，不带 hook）；它必须恰好有一个 agent，`AgentRuntime.for_agent(run, <它>).prepare()`——同一套协商、带 `fragments=` 收窄的 descriptors、绑定表与 weave（§4.2）；学生的 Loop 必须是 `ReactLoop`（含子类），学生配置不得带 hook（学生只装配、从不运行），否则 `ExportConfigError`。然后查导出用的可选 slot（§4.1）：学生没有 `format_react_output`、或 `thought_source: teacher` 而某个源的 teacher 类没有 `parse_react_thought`，抛 `IncompatibleError(..., needed_for="needed for training export ...")`。种子消息只经 `runtime.seed_messages(task)`。从不调 `execute()`、`setup_environment()` 或 LLM。
+- **片段与采集检查**：学生协商出的 env 来源 fragment 必须 ⊆ 源 run 录下的（`TraceConfig.negotiation.env_sourced_fragments`），否则 `IncompatibleFragmentError`（`provider=` 措辞参数写成源 run，点名缺的 fragment——比如学生要 DOM 而源 run 是纯视觉；从原始归档重渲染是以后的事）。每个取样的步把录下的 env 来源 fragment 交给学生环境的 `compare_capture`（§4.3、§4.9）：有 `mismatches` 抛 `StudentCaptureMismatchError(source, mismatches)`，`unchecked` 记进 manifest。
+- **一个轨迹、若干段**：轨迹是一个源 run（分叉 run：源 run 的 0..t-1 加分叉自己的策略步）。段从一个可渲染的步开始：学生的 memory（学生自己的策略实例）清空、写入 `seed_messages(task)`。段内每一步 k：观测 = 学生协商出的 `NegotiatedObservation`，env 来源 fragment 取 `RunTrace.observation_fragment(k, key)`，loop 来源 fragment 由 `loop_fragment_builders(...)`（§4.1）建——`loop.step_info` 的 `step` 是 k+1，`max_steps` / `today` 取源 run 第 k 步录下的 `loop.step_info`（学生 Loop 的 `today_override` 优先；源 run 没录 step_info 时 `today` 取源 manifest 的 `created_at` 的 UTC 日期、`max_steps` 取学生 Loop 的，manifest 记下用了哪个来源），`loop.history` 是这一段里之前的步（源 `StepRecord` 的副本，`actions` 换成翻译后的；`keep_as_text` 的步换成它记成文本的那些动作），`loop.action_result` 取这一段里的上一步（段首没有上一步）；env 来源 fragment 经 `core/loops/restore/source.py::recorded_observation` 读（与 `BranchLoop` 的 `SourceRun.observation` 同一个读法），录下的 step_info 经 `recorded_step_info` 读、按 `_loop_fragments.py::pinned_step_info` 钉住（与 `BranchLoop` 同一条规则）；`build_react_prompt(obs)` 写进 memory；k 是样本时此刻的 `memory.get_context_messages()` 就是它的上下文；然后 `format_react_output(<k 的翻译后动作>, thought=<k 的 thought>)`、立即 `parse_react_output` 那段文本（round-trip，也让 agent 自己的状态——Skyvern 的动作历史——与服务时一样前进），文本经 `ReactLoop._remember_reply(memory, text, [])` 写进 memory。较早的 assistant 轮 weight 0，目标轮 weight 1。
+- **缺学生要的 fragment 的步**：某一步没录下学生要的 env 来源 fragment，或在学生必需（`required_fragments`）的 fragment 上录下的是采集失败（teacher 那边它是可选的）——这一步不渲染、结束当前段，manifest 记 `steps.skipped.fragment_unavailable`。
+- **学生写不写得出来**：动作名经 `resolve_action_name(name, <学生守卫过的动作名>, <学生的 action_bindings>)` 解析不出来 → `no_counterpart`；一步的动作数超过学生 Loop 的 `max_actions_per_step` → `exceeds_action_budget`；`format_react_output` 抛 `UnrepresentableActionError` → `unrepresentable`。
+- **thought**：`thought_source: none` 时目标轮与历史轮都没有 thought。`thought_index_refs: drop`（默认）且学生协商出的 fragment 不含源 run 的 index 参数所依赖的 fragment（`param_fragments` 给出的那些，browser 上就是 `browser.dom`）时，含 `[123]` 这类 index 记号的 thought 被丢掉（样本保留、只是没有 thought），manifest 计数。
+- **不可译的步**（翻译器给的或渲染时判的）按翻译器的 `untranslatable`：`drop_step`——这一步不是样本，当前段结束，下一个可渲染的步开新段（重新播种的上下文，同一个任务）；`truncate`——这条轨迹在这一步结束；`keep_as_text`——这一步不是样本，但它的观测轮照常进上下文，assistant 轮写成 `[not expressible: <reason>] <动作的 JSON>`（键排序），段不断；`fail`——抛 `UntranslatableActionError(sample_id, reason, detail)`。每个原因的丢弃数进 manifest（M33 的输入）。不可导出的步（上面）总是结束当前段。
+- **identity 导出的期望**：对 UI-TARS 录下的 run 用 `identity` 与同一份学生配置导出，第 k 个样本的上下文与源 run 第 k 步第 0 次调用的 `messages` 在 trace 的记录形态下（`core/loops/restore/source.py::recorded_form`）逐条相同，assistant 轮按解析结果相同；预期的差异只有：源 run 的解析重问轮与截断提示（学生上下文里从不写它们）、跳过或丢弃的步造成的分段、以及 assistant 轮的书写形式（学生的规范写法 vs 模型原文）。
+
+#### round-trip（PRD 原文的 `parse(format(a)) == a` 做不到，按下面的定义）
+
+实测：`normalized_1000` 在 1280 px 宽的视口上有 280/1280（22%）个 x 值回不到自己（误差至多 1 px）；agent 解析出的是相对名，trace 里是全限定名；有些参数没有写法。对一个目标（翻译后、全限定名）动作 a，round-trip 成立当且仅当：
+
+1. **名字**：`resolve_action_name(parse(format(a)).name, <学生守卫过的动作名>, <学生的绑定表>) == a.name`；
+2. **不动点**：`format(parse(format(a))) == format(a)`（文本相等，thought 在内）；
+3. **点**：每个点参数 `|parse(format(a)) − a| ≤ 学生网格的 quantum`（`PointGrid.quantum`，见下；网格是 `point_grid(<学生 agent 的 coordinate_space，没有时 screenshot_pixels>, sample.image)`）。哪些参数是点由 `core/actions/params.py::point_params` 认：动作 `Params` 里成对的整型 `<name>_x` / `<name>_y`（`coordinate_x/y`、`start_x/y`、`end_x/y`）；
+4. **其余参数**：a 设了非 `None` 值的每个参数都原样回来；a 没设的参数由学生自己填（例如 UI-TARS 的 `finished` 总写 `success=True`，执行时与 `None` 等价）。写不出来的参数在 `format` 里就抛 `UnrepresentableActionError`，从不静默丢掉（UI-TARS：`type` 的 `clear`、`scroll` 的 `amount` / `index`、`wait` 的 `seconds`、`done` 的 `success=False`、含空白的 `send_keys` 组合键）。
+
+**训练标签是量化后的点**（目标轮文本里写的网格点；它在服务时执行成 `parse(format(a))` 的那个视口点）。每个点的量化误差（像素，按值分桶）进 manifest。`PointGrid.to_grid(vx, vy) -> tuple[int, int]`（`schemas/observation/geometry.py`：`round(v × grid / viewport)`，夹到 `[0, width] × [0, height]`）是 `to_viewport` 的逆；`PointGrid.quantum: int` 是一次 `to_grid` → `to_viewport` 在任一轴上可能带来的最大视口误差：网格不比视口粗（`viewport / grid ≤ 1`）时为 0，否则 `floor(viewport / grid / 2 + 1/2)`（1280 px 上的 `normalized_1000` 是 1；整数 DPR 与 1.5 的 `screenshot_pixels`、1000 px 视口是 0）。round-trip 对上下文里每一个 `format_react_output` 的结果都检查（目标轮与历史轮），失败是 `RoundTripError`——那是格式器的缺陷，不是不可译。
+
+#### 格式化：`openai_messages`
+
+- 每个样本一条记录（`<split>.jsonl`）：`{"id": <sample_id>, "messages": [...]}`；消息经 `core/llm/serializers/openai_format.py::OpenAIMessageSerializer` 序列化，assistant 消息带 `weight`（较早的轮 0，目标轮 1）。图片部分的 data URL 换成相对路径 `images/<sha256><后缀>`，同一张图在整个数据集里只存一份（`image_store: files`）。OpenAI 的自助微调在收缩，这只是交换格式；以后的 `llamafactory`（`<image>` 个数 = 图片个数）、`ms_swift`（`loss_scale`、`rejected_messages` 做 DPO）、`trl` 是新的导出器。
+- 同序的 `<split>.samples.jsonl`：每行 `{"sample": <CanonicalStepSample>, "render": {split, segment, context_steps, step_info, target, target_actions, quantization_px, thought, thought_dropped, images}}`——`target_actions` 是目标轮文本执行出的动作（量化后的点：训练标签），`duplicate_of` 在样本的 `branch` 里；是与格式无关的那一半。
+- **数据集 manifest**（`manifest.json`）：数据集格式版本 `af-sft-1`、导出器与翻译器的配置、学生配置的摘要（学生 `top_level_cfg` 的规范 JSON 的 sha256）与学生的 agent / loop / `coordinate_space`、每个源（相对路径、`run_id`、`config_hash`、样本数）、`sources.skipped` / `sources.filtered`（带原因）、按原因的丢弃与跳过、量化误差分布、thought 的来源字段计数与丢弃数、`step_info` 的来源计数、采集检查的 `unchecked`、切分（每个切分的样本数、每个切分键分到哪里）、去污染与泄漏扫描的结果、重复数。键名：`format`、`exporter`、`translator`、`student{config_sha256, agent_id, loop_id, coordinate_space}`、`sources{exported, skipped, filtered}`、`steps{untranslatable, skipped}`、`samples`、`quantization_px`、`thoughts{source, fields, dropped_index_refs}`、`step_info`、`capture{unchecked}`、`split{by, validation_fraction, salt, samples, keys}`、`decontamination{configured, against, match, excluded}`、`leak_scan{checked, unchecked}`、`duplicates`。**不含任何墙钟字段、绝对路径或主机信息**：路径类的旋钮（`sources_root`、`student_run_config`、`output_dir`）不进 manifest，学生配置只记摘要，跳过原因不带读取器消息（见"源级检查与筛选"）。
+- **环境证据从不导出**：`env/` 只为遮挡证据与文档 miss 计数被读；输出目录里没有任何文件来自 `env/`（测试按内容哈希核对）。
+
+#### 校验（`spectragent/export/validate.py`）
+
+round-trip 在渲染里做（它要 agent 本步的状态），其余的在格式化之后、落盘之前，任何一条失败都让整个导出失败：
+
+- **图片个数**：每条记录的图片部分数 = 渲染出的上下文里的图片数，每个引用的文件都在 `images/` 里。
+- **坐标**：每个点参数在本步截图的视口内（`[0, viewport)`），学生网格点在网格内，执行点在图像内。
+- **泄漏扫描**：源 benchmark（分叉 run 用源 benchmark）的评测加载器给出这个任务的 `expected_answer`——导出文档为它配的 `eval_loader`（按文档顺序，第一个有这个任务的），没配时是它注册的评测加载器按源 run 的 `subset` 默认构造（"基准数据"）；规范化（casefold、空白折叠）后长度 ≥ 8 时，它不得出现在导出流水线自己放进 prompt 的文本里——种子（system）消息与任务文本——否则 `ReferenceLeakError` 点名样本与字段。观测本身（页面上本来就有答案）是世界，不算泄漏。既没配、也没注册评测加载器的 benchmark 记为 `leak_scan.unchecked`；加载器读不出来、或没有这个任务的参考，是错误。
+- **凭证扫描**：`core/trace/secret_patterns.py::SECRET_PATTERNS`（从 `test_secret_guard.py` 挪过来，secret guard 测试与这里共用一份）扫描要写出的每一个文本字节（记录、样本、manifest），命中即 `CredentialLeakError`（点名文件、样本与模式标签），fail closed。它认的是凭证的形状，不是 PII（残余见"隐私"）。
+- **长度**：`length` 给了时用可插拔的 `LengthEstimator` Protocol 估算每条记录的长度，v1 的 `ApproxTokenEstimator`：文本字符数 / `chars_per_token`（默认 4），每张图按 `image_tokens`——`qwen_vl`（`ceil(w/28) × ceil(h/28) + 2`，按图像像素）或 `fixed`（`fixed_image_tokens`）；不依赖 tokenizer、不联网。超过 `max_tokens` 抛 `SampleTooLongError` 点名样本，从不截断。新的估算器（真 tokenizer）有第二个实现时再成注册表。
+
+#### 切分与去污染
+
+- **按站点或任务切分，从不按步**：`split.by: site` 的键是源任务 `start_url` 的主机名（`TraceConfig.task_setup.context["start_url"]`，M28 记下的、值级脱敏过的 URL，主机名不受脱敏影响），`task` 的键是 `<benchmark>/<subset>/<task_id>`；分叉 run 用它的源任务（`TraceConfig.branch` 里的 `source_*`），所以同一个 `branch_group_id`、同一个源任务的样本总在同一个切分里。切分 = `sha256(salt + "\0" + key)` 的前 8 字节作为 [0, 1) 的数小于 `validation_fraction` 进 `validation`，否则 `train`。算不出键的 run（没有 `start_url`）跳过，原因 `no split key`。
+- **去污染**：`decontamination.against` 列出学生将来评测用的 benchmark（`BenchmarkRef{benchmark, subset}`）；`null`（默认）表示源被评测时所在的 benchmark——`filters.require_eval` 选中的源各自的 benchmark（分叉 run 用源任务的 `source_benchmark`；判定记的 `benchmark` 就是它那个 run 的），每个取加载器的默认 subset。不是 `require_eval.evaluator_id`：评测器的 id 是判分器的键、不是 benchmark 的键（`exact_match` 能给任何 benchmark 判分）。`require_eval` 也没设（或它选中的源都没写 benchmark）时不去污染、CLI 打 WARNING、manifest 记 `decontamination.configured: false`；`[]` 表示明确不去污染。`match`：`task_id`（样本的源任务 id 在该 benchmark 评测加载器的任务里）、`site_instruction`（源任务的 start_url 主机 + 规范化指令与该 benchmark 任务加载器里某个任务相同）、`either`（默认）。命中的源整个排除，原因 `decontaminated`。加载器读不出来、没注册也没配是 `ExportConfigError`（去污染从不静默地什么都没查）。
+- **基准数据**（去污染与泄漏扫描共用，`spectragent/export/benchmarks.py::BenchmarkLoaders`）：导出文档自己的 `eval_loader:` / `task_loader:` 块（运行根的层，组装时旋钮俱全——`data_dir`、`subset`），按 `benchmark_name` 对上 benchmark、按文档顺序；文档没给某个 benchmark 配加载器时，才用它注册的加载器按默认值构造（`spectragent-bench` 解析评测加载器的同一条规则：配置优先，其次注册表）；配了的 benchmark 只经配的那些读，从不在配好的实例旁边再默认构造一个——那一个会无视文档配的旋钮（af-add-a-receptor §0 的那类缺陷）。去污染的引用写了 `subset` 时只读该 subset 的已配加载器（配了这个 benchmark 却没有这个 subset 是 `ExportConfigError`，两处设置不一致不猜），`subset: null` 读这个 benchmark 的全部已配加载器（没配时是注册加载器的默认 subset）——所以为泄漏扫描另配了训练 subset 的评测加载器时，`against` 里要写明评测的 subset。泄漏扫描在源 benchmark 的全部已配评测加载器里找这个任务。默认值的后果写明：源 run 就是评测 benchmark 的任务时，默认会把它们全排除（导出因此 `ExportEmptyError`），要训练就写一个不相交的评测集或 `against: []`。
+
+#### 分叉样本（PRD §11 Q2 的默认：中立记录）
+
+每个分叉 run 导出它的策略步，上下文的历史来自它的源 run（按 `source_run_id` 在本次的源里找到，同样的翻译、同样的段规则），第 t 步的观测是分叉 run 自己录下的（经恢复校验的 live obs_t）。元数据带 `branch_group_id`、终止观测的引用。同一个 `branch_group_id` 里检查点步的目标动作（翻译后的名字与参数，不比 thought）完全相同的样本，排序在后的标 `duplicate_of = <排在前的 sample_id>`——标出，不删。怎么把分叉结果变成训练信号（judge 选正样本、DPO 对、world model）不在导出器里，v1 只交中立记录。
+
+#### 隐私
+
+- `env/` 从不导出；样本里没有原始 DOM，学生没协商 DOM 时 DOM 文本也进不了 prompt。
+- `secrets_recorded` 的源不导出；凭证扫描 fail closed。
+- **残余，写明**：凭证扫描认形状——teacher 键入一个不像凭证的密码（`type` 动作的 `text`）会原样成为训练目标；协商 DOM 的学生会把 BrowserUse 观测里密码框的 `value` 带进 prompt（§4.14 已知限制，待用户裁决）。v1 的学生是纯视觉的 UI-TARS。
+
+#### 确定性
+
+同样的输入导出两次，输出目录逐字节相同（整棵树的哈希）：源按相对路径排序、步按序号、图片按 sha256 命名、JSON 键排序且分隔符固定、`today` 取自 trace、没有墙钟字段、路径都是相对的、切分是盐 + 键的哈希。测试用不同的文件系统创建顺序建两遍源。
+
+#### 代码位置
+
+`spectragent/export/`：`_registrar.py`（`Exporter`、`ExporterRegistrar`、`ExporterBase`）、`settings.py`、`openai_messages.py`、`translate/`（`_registrar.py`、`identity.py`、`index_to_coordinate.py`）、`canonical.py`、`filters.py`、`split.py`、`benchmarks.py`、`render.py`、`validate.py`、`runner.py`、`cli.py`、`errors.py`；`schemas/sample.py`；`schemas/observation/geometry.py`（`to_grid`、`quantum`）；`core/loops/errors.py`（`UnrepresentableActionError`）；`core/loops/_loop_fragments.py`（`loop_fragment_builders`、`pinned_step_info`）；`core/loops/restore/source.py`（`recorded_observation`、`recorded_step_info`：与分叉共用的读法）；`core/actions/params.py`（`point_params`）；`core/runtime.py`（`seed_messages`）；`core/trace/sources.py`、`core/trace/secret_patterns.py`；browser：`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`、`replay/replay_log.py::document_miss_total`。
 
 ---
 
@@ -3459,8 +3680,9 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | 本 run 有没有环境证据、声明了哪些隐私标记 | `TraceConfig.env_evidence_recorded`；`env_evidence_privacy` = 所绑定归档器 `privacy_markers` 的有序并集。它只陈述归档器的声明，不证明字节里没有秘密 | 框架（M28） |
 | 共享规则与脱敏台账 | `core/archive/privacy.py`：`PRIVACY_POLICY`（规则版本，`"af-privacy-1"`）、字段名模式 `password\|passwd\|pwd\|otp\|token\|secret\|card\|cvv`（子串匹配，有意宽）、凭证参数名模式（`key` / `apikey` / `sig` / `signature` / `auth` / `credential` 作尾段）、URL 规则、`RedactionLedger`、标记常量 `MARKER_REDACTED` / `MARKER_SESSION_STATE`。规则一改，`PRIVACY_POLICY` 必须升版本（测试用规则源码的摘要钉住：两个名字模式、占位符、URL 模式和每个规则函数的源码，URL 规则在内） | 框架（M28）；M29、M30 复用 |
 | 环境 setup context（`TraceConfig.task_setup`） | 值级脱敏：凭证形状的映射键，其值（整棵子树）换成 `<redacted>`；URL（以 `scheme://` 开头的字符串）的 userinfo 整段换掉；名字是凭证形状的 query / fragment 参数，值换掉；其余字节原样。`null` 与空参数值没有可换的东西，原样保留、不记台账（`null` 要与"设置过"区分开）。台账一起记录。`record_secrets` 打开时与 `resolved` 一样原样记录，台账为空 | 框架（M28） |
-| secret guard | 扫描整个 trace 目录（含 `env/`），gzip 文件（魔数 `1f 8b` 或 `.gz` 后缀）先解压再扫；正向对照：假归档器把凭证写进 `env/`（明文与 `.gz` 各一份），必须被发现 | 框架（M28） |
-| 归档本身 | 永不导出；导出物只含截图、动作和 thought | 导出（M32 遵守） |
+| secret guard | 扫描整个 trace 目录（含 `env/`），gzip 文件（魔数 `1f 8b` 或 `.gz` 后缀）先解压再扫；正向对照：假归档器把凭证写进 `env/`（明文与 `.gz` 各一份），必须被发现。凭证形状的正则 `SECRET_PATTERNS` 在 `core/trace/secret_patterns.py`（M32 从测试模块挪进生产代码），guard 测试与训练导出的凭证扫描 import 同一份 | 框架（M28；M32 挪位置） |
+| 归档本身 | 永不导出；导出物只含截图、动作、thought 与引用（§4.15） | 导出（M32 遵守） |
+| 训练导出的产物（`output_dir`） | `secrets_recorded` 的源不导出；写出的每个文本字节过 `SECRET_PATTERNS`，命中则整个导出失败、不留输出（fail closed）；源 `task_setup` 的台账抄进样本的 `redactions`；残余：形状之外的秘密（键入的密码）与协商 DOM 的学生，见 §4.15 "隐私" | 导出（M32） |
 | 请求头 `Cookie` / `Authorization` / `Proxy-Authorization`（以及 `browser.network` 的 `strip_request_headers` 追加的，大小写不敏感） | 采集时在每一个来源剥离（含 ExtraInfo 与 `associatedCookies`），从不落盘；台账只记名字 | browser（M29，§4.14） |
 | 响应头 `Set-Cookie` | 保留（回放的 cookie jar 需要）；`browser.network` 声明 `contains_session_state`，capability 的 run 记录（指纹）同样标出 | browser（M29） |
 | 会话态（`logged_in`） | 定义为"浏览器不是从新建的 profile 启动的"（provider 的 `persistent_profile()` 点名旋钮或环境变量；这是 `NETWORK_CAPTURE` 的承诺之一，答不出的 provider 被拒）；此时每个绑定的归档器都要写 `allow_session_state: true`，否则报错点名 provider 旋钮与归档器；`pinned` 一律拒绝非新建的 profile | browser（M29） |
@@ -3492,6 +3714,8 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `RestorerRegistrar` | `restorer_id` (flat) | 检查点恢复策略：把环境恢复到源 run 第 t 步之前的状态（`prefix_replay`；快照恢复 `capability_checkpoint` 是已知的下一个），`core/loops/restore/`；`BranchLoop.__wiring__["restorer"]` 受体，进 `_collect_registrars()`（§4.1） | M31 |
 | `HookRegistrar` | `hook_id` (flat) | Lifecycle hooks (AOP) | ✅（trace_writer / metrics；live_monitor 待 P3） |
 | `EvaluatorRegistrar` | `evaluator_id` (flat) | 评测策略 | 🚧 partial |
+| `ExporterRegistrar` | `exporter_id` (flat) | 训练导出的格式（v1 `openai_messages`；以后 `llamafactory` / `ms_swift` / `trl`），`spectragent/export/_registrar.py`；`ExporterBase` 持导出任务字段与 `translator` 受体，运行根的可选顶层层（与 `evaluator` 同一先例），进 `_collect_registrars()`（§4.15） | M32 |
+| `ActionTranslatorRegistrar` | `translator_id` (flat) | 训练导出时把 teacher 的动作空间换成学生的（`identity` / `index_to_coordinate`），`spectragent/export/translate/_registrar.py`；`ExporterBase.__wiring__["translator"]` 受体，进 `_collect_registrars()`（§4.15） | M32 |
 | `TaskLoaderRegistrar` | `benchmark_name` (flat) | 任务数据加载 | ✅ |
 | `StepSelectorRegistrar` | `selector_id` (flat) | `trace_branches` 加载器在源 run 的已提交策略步里选分叉点的策略：`explicit` / `every_k` / `all`，`core/data_loader/task/step_selector/`；`TraceBranchesTaskLoader.__wiring__["step_selector"]` 受体，进 `_collect_registrars()`（§4.10） | M31 |
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
@@ -3502,7 +3726,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `NetworkSourceRegistrar` | `source_id` (flat) | Browser 的网络来源（`live` 默认 / `archive` 从已录制 run 的归档离线回放），`core/capabilities/browser/replay/network_source.py`；`BrowserCapability.__wiring__["network_source"]` 受体，策略即开关——隔离由来源推出，provider 上没有并列的布尔；YAML 每个 capability 块必填（§4.14 "回放"） | ✅ M30（browser 内部） |
 | `MissPolicyRegistrar` | `miss_policy_id` (flat) | 回放 miss 的应答策略（v1 只有 `strict`），`core/capabilities/browser/replay/miss_policy.py`；`ArchiveNetworkSource.__wiring__["miss_policy"]` 受体（嵌套在 `network_source` 里），`archive` 块里必填（§4.14 "回放"） | ✅ M30（browser 内部） |
 | `NegotiationResultRegistrar` | `result_type` (flat) | 协商结果类型；内置 `observation` / `action` / `archive` 自动注册，自定义协商协议注册自己的结果类型并作为 `target_class` 传给 `negotiate()` | ✅ |
-| `DOMCleanerRegistrar` | `cleaner_type` (flat) | DOM 清洗策略 | ✅（browser 内部） |
+| `DOMCleanerRegistrar` | `cleaner_type` (flat) | DOM 清洗策略：`browser_use` / `skyvern` / `skyvern_hit_test`（M32：skyvern 加页内命中测试，§4.12） | ✅（browser 内部） |
 | `DOMSerializerRegistrar` | `serializer_type` (flat) | DOM 序列化策略 | ✅（browser 内部） |
 | `MouseTrajectoryRegistrar` | `trajectory_type` (flat) | 光标轨迹策略（`instant` / `windmouse` / `bezier` / `learned`）；同时是鼠标侧唯一的拟人化开关，见 §4.13 | ✅（browser 内部） |
 | `TypingRhythmRegistrar` | `rhythm_type` (flat) | 键入节奏策略（`instant` / `human`）；键盘侧的同一形状，独立于轨迹轴，见 §4.13 | ✅（browser 内部） |
@@ -3705,6 +3929,11 @@ environment:
 | **新增恢复器（检查点恢复策略）** | 继承 `RestorerBase`（`core/loops/restore/`），设 `__registry_key__`，实现 `restore(ctx) -> AsyncGenerator[RestoredStep, None]`（写成 `async def` + `yield`）：只恢复环境、不碰 memory，k < t 每步交回一条，最后一条是经校验的第 t 步观测；每个恢复出的观测恰好调一次 `env.verify_restoration`（capability 的计数类证据是自上一次调用以来的增量，§4.9）；`strict` 下第一个不通过的校验（观测、重定位或动作成败）就抛 `RestorationDivergedError`，不再执行后面的动作；不吞 `RunAbort`（`test_abort_handler_hygiene.py` 递归扫描 `core/loops/`） | 以后的 `capability_checkpoint`（Docker snapshot、Android 模拟器快照，经新增的 `RestorableCapability` 协议） |
 | **新增分叉选步策略** | 继承 `StepSelectorBase`（`core/data_loader/task/step_selector/`），实现 `select(candidates) -> list[int]` | 按评测器给的关键帧选步 |
 | **新增 Loop 输入** | 在 Loop 的 `__loop_inputs__` 里声明 `LoopInput(type, required)`；由任务加载器在 `TaskContext.loop` 里给出（§4.1、§4.10） | `checkpoint`（`BranchLoop`） |
+| **新增学生格式（训练导出）** | 一个新的 Agent 类（或已有 agent）实现 ReAct 的可选 slot `format_react_output(actions, *, thought=None)`：`parse_react_output` 的逆，写不出来的动作或参数抛 `UnrepresentableActionError`，满足 §4.15 的 round-trip；`tests/test_agents/test_format_react_output_round_trip.py` 自动覆盖每个定义了它的已注册 agent；学生的运行 YAML 就是服务时的那份 | v1 `ui_tars`；以后 Qwen3-VL 原生工具调用格式、OpenCUA |
+| **新增 teacher 的 thought 读法** | teacher agent 实现可选 slot `parse_react_thought(llm_output) -> (text, source_field) \| None`（`@staticmethod`，只读回复，§4.1） | `browser_use` / `ui_tars` / `skyvern`（M32） |
+| **新增导出格式** | 继承 `ExporterBase`（`spectragent/export/`），设 `__registry_key__`，实现 `format(rendered, images)`；只有自己旋钮的导出器写出完整的 `__init__` 签名（任务字段在基类签名里，conscribe 读子类的 `__init__`） | `llamafactory`、`ms_swift`（`rejected_messages` 做 DPO）、`trl` |
+| **新增动作翻译器** | 继承 `ActionTranslatorBase`（`spectragent/export/translate/`），实现 `translate(sample, trace) -> Translation`：只做与学生无关的换算，capability 专属的知识放在 capability 的包里由它调用；输出过 `Params.model_validate` | 以后的 `bbox_to_point`、desktop 的 a11y 节点 → 坐标 |
+| **新增 thought 来源（`relabel`）** | 今天是 `thought_source: Literal["teacher", "none"]`；`relabel`（固定动作、采样 K 个 thought、保留一致的）有了实现时成为新注册表（§6 与 AGENTS.md §2.2 同时加行） | OpenCUA、arXiv 2504.10127 的做法 |
 | **新增 Mouse Trajectory / Typing Rhythm 策略** | 继承 `MouseTrajectoryBase` / `TypingRhythmBase`，设 `__registry_key__`，实现 Protocol 全部成员（含 `click_hold_ms` / `aim_offset_px`），knobs 写成 `__init__` 关键字参数 | 新的运动模型；已训练模型的新导出格式属于 `learned` 的 backend，不是新策略（§4.13） |
 | **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `scripts/generate_all.py::_collect_registrars` 注册，否则字段退化成 `Literal[<keys>]`，策略的旋钮全部无法从 YAML 到达（AGENTS.md §3.4）。注册表还是空的时候不能成为 Composer 层（`composer.py` 对没有实现的已收集层直接抛错，`generate_all` 跳过它，fingerprint 测试随之失败）：先创建、先写文档，在注册第一个实现的那次改动里再收集 | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里。`ArchiverRegistrar`：M28 创建，M29 随首批归档器收集 |
 | **配置字段扩展** | 给注册类添加 `Annotated[type, Field(...)]` | 自动出现在生成的 `_composed.py` config schema 中 |
@@ -3783,6 +4012,8 @@ environment:
 - 新的归档与协商模型里没有 `price` / `cost` / `usd` / `dollar` 字段：只记 token，不记钱（2026-09-19）。
 
 **分叉相关的 import 方向**（M31）：`core/loops/branch.py` 与 `core/loops/restore/*` 经 `core.trace.reader.RunTrace` 读源 trace（`SourceRun` 是唯一的入口，只读已提交的部分），反方向不成立——`core/trace/*` 不 import `core.loops`；capability 一侧的 `RestorationSupport` 实现（browser 的 `restoration.py`）只读传进来的观测，不 import `core.trace` / `core.loops`；`core/environments/*` 只认 `RestorationSupport` Protocol 与 `schemas/restoration.py` 的类型。
+
+**导出相关的 import 方向**（M32，`tests/test_export/test_export_boundaries.py` 用 AST 守着）：`spectragent/` 下 `export/` 之外没有任何模块 import `spectragent.export`（`scripts/generate_all.py` 的收集、以及它生成的 `generated/_composed.py` 引用导出旋钮类型除外）；`export/*` 经 `core.trace.reader.RunTrace` 读源 trace，经注册表与 Protocol 拿到导出器与翻译器（`runner.py` 不 import 具体的导出器或翻译器类）；`schemas/sample.py` 不 import `spectragent.core`；browser 一侧的导出知识（`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`）只读交进来的 fragment、文档与配置，不 import `core.trace` / `spectragent.export`；新模型里没有 `price` / `cost` / `usd` / `dollar` 字段。
 
 外部核心依赖：
 - `conscribe` — 注册 + 配置生成
@@ -3875,7 +4106,7 @@ scope（§4.14）。
 | **P1** | EvaluatorRegistrar + RunTrace lazy loader |
 | **P2** | DockerCapability 实现（actions + terminal/filesystem resolver） |
 | **P2** | CodeActLoop 实现 + DockerCapability 集成 |
-| **P2** | 数据飞轮（browser）：离线回放（M30）；状态分叉——`BranchLoop` + `RestorerRegistrar`（`prefix_replay`）+ `RestorationSupport`（browser 重定位与校验）+ `trace_branches` 加载器与 `StepSelectorRegistrar` + `terminal_observation`（M31） |
+| **P2** | 数据飞轮（browser）：离线回放（M30）；状态分叉——`BranchLoop` + `RestorerRegistrar`（`prefix_replay`）+ `RestorationSupport`（browser 重定位与校验）+ `trace_branches` 加载器与 `StepSelectorRegistrar` + `terminal_observation`（M31）；训练导出——`ExporterRegistrar`（`openai_messages`）+ `ActionTranslatorRegistrar`（`identity` / `index_to_coordinate`）+ `CanonicalStepSample` + 学生渲染（ReAct 可选 slot `format_react_output` / `parse_react_thought`）+ 校验器 + `spectragent-export` + `skyvern_hit_test` cleaner（M32） |
 | **P3** | FunctionCallingLoop + ToolSandboxCapability |
 | **P3** | PlanExecuteLoop |
 | **P3** | GPUProfilingCapability（Docker + bare-metal harness split 架构） |

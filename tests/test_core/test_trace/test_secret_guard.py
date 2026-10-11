@@ -58,6 +58,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.redaction import OMITTED
+from spectragent.core.trace.secret_patterns import SECRET_PATTERNS
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 from tests._helpers.secret_scan import GZIP_MAGIC, all_text, readable
@@ -76,19 +77,6 @@ PROFILE_DIR = "/home/researcher/.config/chrome-profile-7a3f9c2b"
 START_URL = "https://shop.example/landing?ref=guard&token=Zk3Lm9QpRt7Vx2BnQ8"
 
 SECRETS = (API_KEY, GATEWAY_URL, PROXY_URL, PROFILE_DIR, START_URL)
-
-#: Shapes, not names. A blocklist of key *names* lags the next backend;
-#: these catch a credential that reaches disk through a field nobody
-#: thought to mark, whatever it is called.
-SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("openai-style api key", re.compile(r"\bsk-[A-Za-z0-9_-]{16,}")),
-    ("anthropic-style api key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}")),
-    ("bearer token", re.compile(r"\bBearer\s+[A-Za-z0-9._-]{16,}")),
-    ("url with credentials", re.compile(r"\b[a-z]+://[^\s/:@\"]+:[^\s/@\"]+@")),
-    ("url carrying a token", re.compile(r"[?&](access_token|token|key)=[A-Za-z0-9._-]{8,}")),
-    ("websocket devtools token", re.compile(r"\bwss?://[^\s\"]*devtools/browser/[A-Za-z0-9-]{8,}")),
-)
-
 
 # ── a run that needs no browser ────────────────────────────────────
 

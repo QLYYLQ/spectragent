@@ -31,14 +31,16 @@ from spectragent.core.archive.privacy import (
     redact_url,
     redact_value,
 )
+from spectragent.core.trace.secret_patterns import SECRET_PATTERNS
 
-#: The two URL shapes of ``SECRET_PATTERNS`` in
-#: ``tests/test_core/test_trace/test_secret_guard.py``, copied verbatim: a
-#: redacted URL must never look like a credential to the guard, or every
-#: redacted trace would fail it.
-_GUARD_URL_PATTERNS = (
-    re.compile(r"\b[a-z]+://[^\s/:@\"]+:[^\s/@\"]+@"),
-    re.compile(r"[?&](access_token|token|key)=[A-Za-z0-9._-]{8,}"),
+#: The two URL shapes of ``SECRET_PATTERNS``
+#: (``spectragent/core/trace/secret_patterns.py``, which the secret guard test
+#: and the export's credential validator share): a redacted URL must never
+#: look like a credential to the guard, or every redacted trace would fail it.
+_GUARD_URL_PATTERNS = tuple(
+    pattern
+    for label, pattern in SECRET_PATTERNS
+    if label in ("url with credentials", "url carrying a token")
 )
 
 

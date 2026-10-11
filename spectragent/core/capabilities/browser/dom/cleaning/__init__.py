@@ -1,8 +1,10 @@
 """DOM cleaning strategy registry.
 
-Two strategies registered via conscribe:
+Three strategies registered via conscribe:
 - ``browser_use``: 5-stage pipeline (simplify → optimize → paint-order → bounds → index)
 - ``skyvern``:     original page-side JS extraction + server-side trim
+- ``skyvern_hit_test``: ``skyvern`` plus an in-page hit test per indexed element
+  (``covered_elements: drop | keep``; arch §4.12)
 """
 
 from __future__ import annotations

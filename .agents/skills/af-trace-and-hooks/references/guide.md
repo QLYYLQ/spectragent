@@ -626,7 +626,8 @@ by `test_run_configuration.py::TestConfigHash` (`:264`).
    `RuntimeHook` Protocol (`core/hooks/base.py:77`).
 4. Accept it **by name** in `TraceWriter.on_run_start`. Do not derive it there.
 5. Extend `tests/test_core/test_trace/test_run_configuration.py`. If it can carry
-   user-supplied text, extend `SECRET_PATTERNS` in `test_secret_guard.py` too.
+   user-supplied text in a new credential shape, extend `SECRET_PATTERNS`
+   (`spectragent/core/trace/secret_patterns.py`) too.
 
 M28 applied the recipe three times, and each is a worked example:
 
@@ -710,14 +711,19 @@ set in YAML, per run — not a global or an env var.
 config, validates against the real composed schema, drives a real `AgentRuntime` with a
 real `TraceWriter`, then reads every byte under the trace directory by `rglob`
 (`:318`) — walking the filesystem, not the manifest, because a leak in a file nothing
-indexes is still a leak. It asserts on *shapes*, not names (`SECRET_PATTERNS`, `:83`):
-sk-style keys, bearer tokens, `scheme://user:pass@`, `?token=`, devtools websocket URLs.
+indexes is still a leak. It asserts on *shapes*, not names: sk-style keys, bearer
+tokens, `scheme://user:pass@`, `?token=`, devtools websocket URLs. The shapes live in
+production code, `spectragent/core/trace/secret_patterns.py` (`SECRET_PATTERNS`,
+`find_secrets(text)`; it imports only `re`), because they have a second reader: the
+training export scans every text byte it is about to write with them and fails closed
+on a hit (M32, `spectragent/export/validate.py::check_credentials`) — one list, never a
+copy in a test.
 
 Both halves are load-bearing: `TestGuardCanActuallyDetectALeak` (`:401`) re-runs with
 `record_secrets=True` and requires the same strings to **appear**, so the guard cannot
 pass because the run wrote nothing.
 
-Add a pattern here whenever a new credential *shape* becomes possible. You do not need to
+Add a pattern there whenever a new credential *shape* becomes possible. You do not need to
 do anything for a new secret-carrying backend: its `api_key` / `session_url` / `proxy_*`
 are open-typed strings and record as `"<omitted>"` the day the class lands. That is the
 point of the polarity.
@@ -849,6 +855,17 @@ evaluators, months apart, on a machine with no browser installed.
   screenshots for an image judge). The reader already fails loudly on its side: a
   `TraceSchemaError` is a damaged trace, or a format-1 trace read through a format-2
   accessor, and re-running the evaluation will never change it.
+
+**The training export is the other offline consumer** (M32, `spectragent/export/`,
+arch §4.15): the same rules, a different product. It reads source runs only through
+`RunTrace` (committed steps, `observation_fragment`, `llm_messages`, `evals()`), opens
+`env/` only for occlusion evidence (`browser.dom_raw`) and the replay log's document
+misses, and never copies an `env/` file into a dataset (a test compares content hashes).
+A run recorded with `record_secrets: true` is never a source. It shares the recorded
+step readers with branching rather than decoding a step itself
+(`core/loops/restore/source.py::recorded_observation` / `recorded_step_info`), and its
+output carries no wall clock, absolute path or machine name — two exports of one input
+are byte-identical.
 
 ## File map
 

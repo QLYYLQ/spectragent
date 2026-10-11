@@ -50,7 +50,7 @@ async def test_slow_frame_discovery_spends_only_the_frame_deadline(monkeypatch) 
             assert method == "Page.getFrameTree" and session_id == "tab"
             return {"frameTree": {"frame": {"id": "root"}}}
 
-    async def fake_frame(_source, _session_id, _entry, *, oop_by_id, depth, deadline):
+    async def fake_frame(_source, _session_id, _entry, *, oop_by_id, depth, deadline, hit_test):
         return TargetCapture(raw_dom={"skyvern_tree": {"tagName": "html"}}, snapshot={}, ax_tree={})
 
     monkeypatch.setattr(skyvern_capture, "_capture_frame_entry", fake_frame)
@@ -78,10 +78,10 @@ async def test_slow_frame_owner_lookup_spends_only_the_frame_deadline(monkeypatc
             assert method == "DOM.getFrameOwner" and session_id == "tab"
             await asyncio.Event().wait()
 
-    async def fake_frame(_source, _session_id, _entry, *, oop_by_id, depth, deadline):
+    async def fake_frame(_source, _session_id, _entry, *, oop_by_id, depth, deadline, hit_test):
         return TargetCapture(raw_dom={"skyvern_tree": {"tagName": "html"}}, snapshot={}, ax_tree={})
 
-    async def fake_oop(_source, frame, *, depth, deadline):
+    async def fake_oop(_source, frame, *, depth, deadline, hit_test):
         return TargetCapture(
             raw_dom={"skyvern_tree": {"tagName": "html"}},
             snapshot={},

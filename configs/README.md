@@ -15,6 +15,8 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `flywheel/record_ui_tars_pinned.yaml` | A **recording** run (data flywheel): UITarsAgent, `replayability: pinned`, the three browser archivers on the trace hook — see [Recording environment evidence](#recording-environment-evidence) |
 | `flywheel/replay_ui_tars_archive.yaml` | Its **offline replay**: the same agent and tier with `network_source: archive` (isolated, strict misses) and `base_time: from_archive`; the recorded run arrives as `--replay-archive DIR` — see [Replaying a recorded run](#replaying-a-recorded-run) |
 | `flywheel/branch_ui_tars_archive.yaml` | **Branching** recorded runs (data flywheel, M31): `agent_loop: branch` (the `prefix_replay` restorer) over the replay browser block, tasks from `task_loader: trace_branches` — see [Branching a recorded run](#branching-a-recorded-run) |
+| `flywheel/export_sft.yaml` | **Exporting** recorded runs as a training dataset (data flywheel, M32): one `exporter:` block, no agent, no environment — see [Exporting training data](#exporting-training-data) |
+| `flywheel/ui_tars_student.yaml` | The export's **student**: UITarsAgent with `coordinate_space: normalized_1000`, the recording's screenshot pipeline, no hooks; assembled by the export, never run by it |
 
 ## Quick start
 
@@ -144,6 +146,25 @@ The requester is named because the fix is not obvious without it: `observation_m
 Screenshots are captured and recorded in **every** mode: `online_mind2web` and `lexbench_browser` score runs from the screenshots in the trace. The mode decides what the model sees, not what the run records.
 
 For a vision run, prefer `profile: standard` over `vision_only`: negotiation already skips DOM extraction, and `vision_only` additionally drops the SecurityWatchdog, so domain allow/deny lists silently stop applying.
+
+## DOM cleaners
+
+`capability.dom_cleaner` picks how the page becomes the element tree a DOM agent reads (`docs/architecture_design.md` §4.12). Three are registered:
+
+| `cleaner_type` | what it does | knobs |
+|---|---|---|
+| `browser_use` (default) | CDP `DOM.getDocument` + `DOMSnapshot` + accessibility tree; paint-order occlusion drops elements another element fully covers | `descendants_occlude`, `max_occlusion_nodes`, `include_shadow_dom`, `enable_compound_components` |
+| `skyvern` | a page-side JS extraction, frames and shadow roots included; no paint order, so a link a sticky header covers is still indexed | `max_text_length`, `include_purgeable` |
+| `skyvern_hit_test` | `skyvern`, then the page itself is asked per indexed element whether a click at its centre (or at one of a 5x5 grid of points inside it) reaches it; the answer is recorded on the element as `hit_test` | the two above, plus `covered_elements: drop \| keep` |
+
+```yaml
+dom_cleaner:
+  cleaner_type: skyvern_hit_test
+  covered_elements: drop     # drop (default): an element no probe reached gets no index
+                             # keep: indexed as with skyvern; the hit test is still recorded
+```
+
+`drop` changes what the agent sees — that is the point of choosing it: an agent can no longer click a link hidden under a sticky header (the defect `skyvern` has). An element outside the viewport has no hit test and keeps its index; off-screen is not covered. The `skyvern` cleaner itself is unchanged, byte for byte. The recorded `hit_test` is also what lets the training export check that a point it teaches is not covered (`docs/architecture_design.md` §4.15).
 
 ## Vision agents
 
@@ -360,6 +381,95 @@ task_loader:
   teacher's (`origin: policy`); the terminal observation is `origin: terminal`.
 - **No scoring yet**: `trace_branches` has no eval loader, so a configured evaluator is
   refused before the sweep starts — pass `--no-eval`.
+
+## Exporting training data
+
+`spectragent-export` turns recorded runs into a dataset a student model is trained on
+(`docs/architecture_design.md` §4.15). The student is an ordinary agent: its run YAML
+(`student_run_config`) is composed and assembled — never run, no browser, no model call —
+and every sample is rendered by its own `prepare` / `build_react_prompt` / memory and
+written by its `format_react_output`, so the training format is the format it is served
+in. Point its `llm` at the trained model and run the same YAML to evaluate it.
+
+```bash
+uv run spectragent-export --config configs/flywheel/export_sft.yaml
+```
+
+```yaml
+exporter:
+  - exporter_id: openai_messages     # {"id", "messages"} records; assistant turns carry weight
+    sources_root: traces             # null: traces in the working directory
+    sources: ["recorded/*"]          # globs, sorted by path; branch runs included
+    filters:
+      require_status: completed      # error | any
+      require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
+      exclude_restoration_diverged: true
+      max_document_misses: 0         # replay-log main-frame document misses; null: no limit
+      exclude_sites: []              # host names, suffix-matched
+    split: { by: site, validation_fraction: 0.1, salt: af-split-1 }   # site | task, never step
+    decontamination: { against: null, match: either }   # null: the evaluated benchmarks; []: none
+    translator:
+      translator_id: index_to_coordinate   # identity: the teacher's actions as recorded
+      occlusion: check               # "off" (quoted) skips the check
+      occlusion_unknown: raise       # untranslatable: drop a step with no occlusion evidence
+      untranslatable: drop_step      # truncate | keep_as_text | fail
+    student_run_config: configs/flywheel/ui_tars_student.yaml
+    thought_source: teacher          # none
+    thought_index_refs: drop         # keep
+    length: { max_tokens: 65536 }    # image_tokens: qwen_vl (default) | fixed + fixed_image_tokens
+    output_dir: datasets/sft_v1      # refused if it exists
+# optional: where decontamination and the leak scan read benchmark data (knobs and all)
+eval_loader:
+  - { benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web }
+task_loader:
+  - { benchmark_name: online_mind2web, subset: All, data_dir: ~/agent-data/browser/online_mind2web }
+```
+
+- **What becomes a sample.** Every policy step that ran at least one action, of every
+  source that is readable, format 2, not recorded with `record_secrets`, and passes the
+  filters (left-out sources are listed with their reasons in the manifest). A branch run
+  contributes its policy steps, with its source run's prefix as context and its source
+  run's verdicts as labels; branches of one checkpoint whose targets are identical are
+  flagged `duplicate_of`, not removed.
+- **Translation.** `index_to_coordinate` turns a click or type on an element index into the
+  coordinate action at a visible point of the element on the recorded screenshot; with
+  `occlusion: check` it needs evidence that the point is not covered — record with the
+  `skyvern_hit_test` cleaner or bind `browser.dom_raw` (a BrowserUse run's paint order
+  catches partial cover only). A step the student cannot take or write is handled by
+  `untranslatable` (counted by reason in the manifest).
+- **The output**: `<output_dir>/{train,validation}.jsonl`, the same samples with their
+  provenance in `*.samples.jsonl`, `images/<sha256><suffix>` (each image once) and
+  `manifest.json` (no clock, no absolute path — a source that does not read back is named
+  by its run-relative file; the reader's message is in the log). Everything is checked first — images,
+  coordinates, reference-answer leaks into the prompt, credential-shaped strings, length —
+  and written to `<output_dir>.partial`, renamed only when every check passed. The same
+  input exports to the same bytes.
+- **Record for the student you train.** The student renders from what was recorded: a
+  vision student needs the screenshot, at the student's viewport, format and DPR (the
+  export refuses a mismatch). Recording with a vision agent and `max_actions_per_step: 1`
+  (`flywheel/record_ui_tars_pinned.yaml`) loses nothing; a DOM teacher's index actions need
+  occlusion evidence (above), and a step with more actions than the student's
+  `max_actions_per_step` is `exceeds_action_budget`.
+- **Decontamination default.** `against: null` checks against the benchmarks the sources
+  were evaluated on — the benchmark of each source `require_eval` selected (a branch run's
+  source task's), never the evaluator's id (`exact_match` grades any benchmark) — so runs
+  recorded on that benchmark's own tasks are all excluded and the export fails with
+  `ExportEmptyError` saying so. Name a disjoint evaluation set, or write `against: []`.
+  Without `require_eval`, nothing is checked (a warning, and `configured: false` in the
+  manifest).
+- **Benchmark data.** Decontamination and the reference-leak scan read benchmarks through
+  the `eval_loader:` / `task_loader:` blocks of the export YAML itself (matched by
+  `benchmark_name`, every knob — `data_dir`, `subset` — as configured); a benchmark with no
+  block there is read by its registered loader's defaults
+  (`$SPECTRAGENT_BENCHMARK_DATA`, see [Benchmark data](#benchmark-data)), never beside a
+  configured one. A decontamination reference that names a `subset` reads only the blocks
+  of that subset; without one it reads every block of the benchmark — so when you add a
+  block for the subset you recorded on (for the leak scan), name the evaluation subset in
+  `against`.
+- **Length.** The student keeps every turn's screenshot, so a sample grows with its segment:
+  the last step of a full 30-step segment at 1280x720 is ~36k image tokens before text.
+  `max_tokens: 65536` holds that; for a shorter trainer context use a student with fewer
+  `max_steps` — a longer record fails the export by name, it is never truncated.
 
 ## Benchmark data
 

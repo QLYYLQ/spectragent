@@ -24,7 +24,12 @@ from pydantic import Field
 from spectragent.core.archive._registrar import ArchiverBase
 from spectragent.core.archive.protocols import ArchivingCapability
 from spectragent.core.archive.types import ArchiveBatch, ArchiveContractError
-from spectragent.core.capabilities.base import BaseCapability, RestorationSupport
+from spectragent.core.capabilities.base import (
+    BaseCapability,
+    CaptureCheck,
+    CaptureComparison,
+    RestorationSupport,
+)
 from spectragent.core.environments.base import Environment
 from spectragent.core.environments.errors import (
     ArchiveCollectionError,
@@ -393,6 +398,38 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
             if isinstance(cap, RestorationSupport):
                 evidence.append(await cap.verify_restoration(recorded, restored))
         return evidence
+
+    # ── Recorded capture vs this configuration (training export) ─
+
+    def compare_capture(self, recorded: Mapping[str, Any]) -> CaptureComparison:
+        """Whether this environment, as configured, would capture *recorded*.
+
+        *recorded* is one step's recorded env-source fragments, keyed fully
+        qualified. Each key goes to the capability its prefix names (the
+        routing :meth:`act` uses); every capability implementing
+        :class:`~spectragent.core.capabilities.base.CaptureCheck` compares
+        its own group, in capability order, and the mismatches and unchecked
+        settings are concatenated in that order. A capability without the
+        protocol, or a key no capability owns, contributes nothing — there
+        is nothing to compare. Reads configuration and the fragments only:
+        no setup, no backend, no cache (``docs/architecture_design.md`` §4.3).
+        """
+        routing = self._by_capability_id()
+        groups: dict[str, dict[str, Any]] = {}
+        for key, fragment in recorded.items():
+            prefix, sep, _rest = key.partition(".")
+            if sep and prefix in routing:
+                groups.setdefault(prefix, {})[key] = fragment
+        mismatches: list[str] = []
+        unchecked: list[str] = []
+        for cap in self.capabilities.values():
+            group = groups.get(cap.capability_id)
+            if group is None or not isinstance(cap, CaptureCheck):
+                continue
+            comparison = cap.compare_capture(group)
+            mismatches.extend(comparison.mismatches)
+            unchecked.extend(comparison.unchecked)
+        return CaptureComparison(mismatches=tuple(mismatches), unchecked=tuple(unchecked))
 
     # ── Archive: routing the binding, collecting the evidence ─
 

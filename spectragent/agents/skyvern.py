@@ -302,6 +302,38 @@ class SkyvernAgent(AgentBase):
     def get_react_output_model(self) -> type[BaseModel] | None:
         return SkyvernOutput
 
+    # ── Training-export slot (optional ReAct slot, arch §4.1) ──
+
+    @staticmethod
+    def parse_react_thought(llm_output: Any) -> tuple[str, str] | None:
+        """The thought of a recorded reply and the field it came from, or ``None``.
+
+        Skyvern reasons per action: every non-empty ``reasoning`` of the
+        reply's ``actions``, stripped, in order, joined by newlines. Pure:
+        reads the reply only (the JSON text a run records, or the parsed
+        ``SkyvernOutput``), so the training export calls it on the class.
+        """
+        if isinstance(llm_output, BaseModel):
+            data: Any = llm_output.model_dump()
+        elif isinstance(llm_output, dict):
+            data = llm_output
+        else:
+            try:
+                data = json.loads(llm_output if isinstance(llm_output, str) else str(llm_output))
+            except json.JSONDecodeError:
+                return None
+        items = data.get("actions") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return None
+        reasons = [
+            item["reasoning"].strip()
+            for item in items
+            if isinstance(item, dict)
+            and isinstance(item.get("reasoning"), str)
+            and item["reasoning"].strip()
+        ]
+        return ("\n".join(reasons), "reasoning") if reasons else None
+
     # ── private helpers ────────────────────────────────────────
 
     @staticmethod

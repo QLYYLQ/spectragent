@@ -20,6 +20,13 @@ can be related. :func:`point_grid` builds one step's mapping, and
 :meth:`PointGrid.to_viewport` converts, with a single rule for a point off
 the grid. An agent converts once, when it parses a reply, so the guard, the
 action and the params recorded in the trace only ever see viewport units.
+
+The other direction, :meth:`PointGrid.to_grid`, is what an agent uses to
+*write* a point it is given in viewport units — the training export renders
+a recorded action as the reply a student model should have written (arch
+§4.15). It is not an exact inverse when the grid is coarser than the
+viewport: :attr:`PointGrid.quantum` bounds what one ``to_grid`` →
+``to_viewport`` round trip can move a point.
 """
 
 from __future__ import annotations
@@ -95,6 +102,45 @@ class PointGrid:
             max(0, min(vx, self.viewport_width - 1)),
             max(0, min(vy, self.viewport_height - 1)),
         )
+
+    def to_grid(self, x: float, y: float) -> tuple[int, int]:
+        """A viewport point, as the grid point that writes it.
+
+        Scaled by ``grid / viewport`` and rounded, clamped onto
+        ``[0, width] x [0, height]`` (the grid's far edge is a valid point to
+        write, unlike the viewport's). The inverse of :meth:`to_viewport` up
+        to :attr:`quantum`: ``to_viewport(*to_grid(x, y))`` is within
+        ``quantum`` of ``(x, y)`` on each axis for every integer point of the
+        viewport, and ``to_grid`` of that point is the same grid point again,
+        so the written form is a fixed point.
+        """
+        gx = round(x * self.width / self.viewport_width)
+        gy = round(y * self.height / self.viewport_height)
+        return (max(0, min(gx, self.width)), max(0, min(gy, self.height)))
+
+    @property
+    def quantum(self) -> int:
+        """The most one ``to_grid`` → ``to_viewport`` trip can move a viewport point.
+
+        In viewport units, the larger of the two axes'. An axis whose grid is
+        at least as fine as the viewport (``viewport <= grid``) loses nothing:
+        0. A coarser one rounds twice, each time by at most half a step, so
+        the error is at most ``floor(viewport / grid / 2 + 1/2)``: 1 for a
+        0-1000 grid over a 1280, 1366 or 1920 pixel wide viewport, where
+        280, 366 and 920 of the viewport's x values do not come back as
+        themselves.
+        """
+        return max(
+            _axis_quantum(self.viewport_width, self.width),
+            _axis_quantum(self.viewport_height, self.height),
+        )
+
+
+def _axis_quantum(viewport: int, grid: int) -> int:
+    """``floor(viewport / grid / 2 + 1/2)`` in integers, or 0 when the grid is no coarser."""
+    if viewport <= grid:
+        return 0
+    return (viewport + grid) // (2 * grid)
 
 
 def point_grid(space: CoordinateSpace, screenshot: ScreenshotGeometry) -> PointGrid | None:

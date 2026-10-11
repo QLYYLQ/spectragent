@@ -19,9 +19,13 @@ from pathlib import Path
 import pytest
 
 import spectragent.schemas.observation as shared_pkg
+import spectragent.schemas.sample as sample_module
 
 SHARED_DIR = Path(shared_pkg.__file__).parent
-SHARED_MODULES = sorted(SHARED_DIR.glob("*.py"))
+#: The canonical training sample (arch §4.15) is read by every domain's
+#: exporter the same way, so it is held to the same rules.
+SAMPLE_MODULE = Path(sample_module.__file__)
+SHARED_MODULES = sorted(SHARED_DIR.glob("*.py")) + [SAMPLE_MODULE]
 
 # Field names of ``DOMElementNode`` / ``DOMState`` that only mean
 # something to a serializer: the back-references, the private payload,
@@ -79,3 +83,46 @@ def test_browser_fragments_are_registered_from_the_browser_package() -> None:
     for key in ("browser.dom", "browser.screenshot", "browser.browser_meta"):
         cls = ObservationRegistrar.get(key)
         assert cls.__module__ == "spectragent.core.capabilities.browser.observations"
+
+
+def _imports(module: Path) -> list[str]:
+    tree = ast.parse(module.read_text(), filename=str(module))
+    imported: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported += [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.append(node.module)
+    return imported
+
+
+def test_the_sample_imports_nothing_from_core() -> None:
+    """``schemas/sample.py`` sits below ``core``: the trace and the export import it."""
+    offenders = [name for name in _imports(SAMPLE_MODULE) if name.startswith("spectragent.core")]
+    assert not offenders, f"schemas/sample.py imports {offenders}"
+
+
+#: Words a sample field must not be named after: a page, an element, a box
+#: on one, or money. Domain detail belongs in a translator's opaque payload,
+#: and an export carries tokens, never prices (arch §4.15, §10).
+_FORBIDDEN_FIELD_WORDS = {"url", "dom", "bbox", "bounds", "html", "xpath", "price", "cost", "usd"}
+
+
+def test_no_sample_field_names_a_page_an_element_or_money() -> None:
+    from pydantic import BaseModel
+
+    models = [
+        value
+        for value in vars(sample_module).values()
+        if isinstance(value, type)
+        and issubclass(value, BaseModel)
+        and value.__module__ == sample_module.__name__
+    ]
+    assert len(models) >= 10
+    leaked = sorted(
+        f"{model.__name__}.{name}"
+        for model in models
+        for name in model.model_fields
+        if set(name.lower().split("_")) & _FORBIDDEN_FIELD_WORDS
+    )
+    assert not leaked, f"sample fields named after a domain or money: {leaked}"

@@ -121,3 +121,86 @@ class TestOffTheGrid:
     def test_a_normalized_answer_past_1000_clamps_too(self) -> None:
         grid = _grid("normalized_1000", (2560, 1440), (1280, 720))
         assert grid.to_viewport(1500, 300) == (1279, 216)
+
+
+#: (viewport width, viewport height) pairs the 0-1000 grid is enumerated over.
+_NORMALIZED_VIEWPORTS = [(1280, 720), (1366, 768), (1920, 1080), (1000, 1000), (800, 600)]
+
+
+def _axis_trips(grid: PointGrid, axis: int) -> list[tuple[int, int, int]]:
+    """``(v, g, v')`` for every integer viewport value *v* on *axis*: ``g = to_grid``, back."""
+    extent = (grid.viewport_width, grid.viewport_height)[axis]
+    trips = []
+    for v in range(extent):
+        point = (v, 0) if axis == 0 else (0, v)
+        g = grid.to_grid(*point)[axis]
+        back = grid.to_viewport(*((g, 0) if axis == 0 else (0, g)))[axis]
+        trips.append((v, g, back))
+    return trips
+
+
+class TestToGrid:
+    """The writing direction (arch §4.15 "round-trip"): exact enumeration, not sampling."""
+
+    def test_the_grid_point_of_a_viewport_point(self) -> None:
+        grid = _grid("normalized_1000", (2560, 1440), (1280, 720))
+        assert grid.to_grid(640, 360) == (500, 500)
+        assert grid.to_grid(1279, 719) == (999, 999)
+        dpr2 = _grid("screenshot_pixels", (2560, 1440), (1280, 720))
+        assert dpr2.to_grid(100, 50) == (200, 100)
+
+    def test_off_the_viewport_clamps_onto_the_grid_far_edge_included(self) -> None:
+        grid = _grid("normalized_1000", (1280, 720), (1280, 720))
+        assert grid.to_grid(-5, 2000) == (0, 1000)
+        assert grid.to_grid(1280, 720) == (1000, 1000)
+
+    def test_quantum_values(self) -> None:
+        expected = {1280: 1, 1366: 1, 1920: 1, 1000: 0, 800: 0}
+        for width, height in _NORMALIZED_VIEWPORTS:
+            grid = _grid("normalized_1000", (0, 0), (width, height))
+            assert grid.quantum == expected[width], width
+        for dpr in (1, 1.5, 2):
+            image = (round(1280 * dpr), round(720 * dpr))
+            assert _grid("screenshot_pixels", image, (1280, 720)).quantum == 0
+
+    def test_quantum_bounds_every_point(self) -> None:
+        """Every integer viewport value on both axes: error <= quantum, and tight."""
+        grids = [_grid("normalized_1000", (0, 0), size) for size in _NORMALIZED_VIEWPORTS]
+        for dpr in (1, 1.5, 2):
+            for width, height in ((1280, 720), (1366, 768), (1920, 1080)):
+                image = (round(width * dpr), round(height * dpr))
+                grids.append(_grid("screenshot_pixels", image, (width, height)))
+        for grid in grids:
+            worst = 0
+            for axis in (0, 1):
+                for v, _g, back in _axis_trips(grid, axis):
+                    worst = max(worst, abs(back - v))
+            assert worst <= grid.quantum, grid
+            assert worst == grid.quantum, f"quantum is not tight for {grid}"
+
+    def test_normalized_1000_at_1280_loses_280_x_values(self) -> None:
+        """The measured loss behind ruling 2: 22% of x values do not come back."""
+        lost = {
+            width: sum(
+                1
+                for v, _g, back in _axis_trips(_grid("normalized_1000", (0, 0), (width, height)), 0)
+                if back != v
+            )
+            for width, height in _NORMALIZED_VIEWPORTS
+        }
+        assert lost == {1280: 280, 1366: 366, 1920: 920, 1000: 0, 800: 0}
+
+    def test_the_written_point_is_a_fixed_point(self) -> None:
+        """``to_grid(to_viewport(g)) == g`` for every g ``to_grid`` can produce."""
+        grids = [_grid("normalized_1000", (0, 0), size) for size in _NORMALIZED_VIEWPORTS]
+        grids += [
+            _grid("screenshot_pixels", (round(1280 * dpr), round(720 * dpr)), (1280, 720))
+            for dpr in (1, 1.5, 2)
+        ]
+        for grid in grids:
+            for axis in (0, 1):
+                image = {g for _v, g, _back in _axis_trips(grid, axis)}
+                for g in image:
+                    point = (g, 0) if axis == 0 else (0, g)
+                    viewport_point = grid.to_viewport(*point)
+                    assert grid.to_grid(*viewport_point)[axis] == g, (grid, axis, g)

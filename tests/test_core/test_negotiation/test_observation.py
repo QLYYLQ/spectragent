@@ -242,6 +242,31 @@ class TestCompleteMissingSet:
         assert len(seen) == 1
 
 
+class TestProviderWording:
+    """``provider=`` (M32): the same error, naming who lacks the fragments."""
+
+    def test_assembly_wording_is_unchanged(self) -> None:
+        error = IncompatibleFragmentError({"browser.dom"}, {"browser.screenshot"})
+        assert error.provider == "environment"
+        assert str(error) == (
+            "Required observation fragments not provided by environment. "
+            "Missing: ['browser.dom']. Environment provides: ['browser.screenshot']."
+        )
+
+    def test_the_export_names_the_source_run(self) -> None:
+        error = IncompatibleFragmentError(
+            {"browser.dom"},
+            {"browser.screenshot"},
+            {"browser.dom": ["ui_tars(student)"]},
+            provider="source run 'run-1' (recorded)",
+        )
+        assert str(error) == (
+            "Required observation fragments not provided by source run 'run-1' (recorded). "
+            "Missing: ['browser.dom']. Requested by: browser.dom ← ui_tars(student). "
+            "Source run 'run-1' (recorded) provides: ['browser.screenshot']."
+        )
+
+
 class TestLocalNameCollision:
     """§5.2.3 — a name clash is a config error, not a step-0 crash.
 

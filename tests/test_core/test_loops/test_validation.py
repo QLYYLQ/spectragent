@@ -106,3 +106,39 @@ class TestValidateCompatibilityWrapper:
 
         with pytest.raises(IncompatibleError):
             validate_compatibility(BadAgent(), _SlotLoop())
+
+
+class TestWording:
+    """Who needs the slots is part of the message (arch §4.1 "可选 slot", M32)."""
+
+    def test_assembly_wording_is_unchanged(self) -> None:
+        class BadAgent:
+            agent_name = "bad"
+
+        with pytest.raises(IncompatibleError) as exc_info:
+            _SlotLoop()._validate_slots(BadAgent())
+        assert str(exc_info.value) == (
+            "Agent 'bad' is missing slots required by loop 'test_slot_validation': "
+            "build_react_prompt, parse_react_output"
+        )
+        assert exc_info.value.needed_for == "required by loop 'test_slot_validation'"
+
+
+def test_export_wording() -> None:
+    """An optional slot the export needs never reads like a Loop's required one."""
+    error = IncompatibleError(
+        "ui_tars",
+        "react",
+        ["format_react_output"],
+        needed_for="needed for training export (optional slots of loop 'react')",
+    )
+    assert str(error) == (
+        "Agent 'ui_tars' is missing slots needed for training export "
+        "(optional slots of loop 'react'): format_react_output"
+    )
+    assert "required by" not in str(error)
+    assert (error.agent_name, error.loop_id, error.missing_slots) == (
+        "ui_tars",
+        "react",
+        ["format_react_output"],
+    )

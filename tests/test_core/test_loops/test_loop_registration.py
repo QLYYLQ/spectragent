@@ -66,6 +66,20 @@ class TestShippedLoops:
         assert AgentLoopRegistrar.get("branch") is BranchLoop
         assert issubclass(BranchLoop, ReactLoop)
 
+    def test_react_slot_sets(self) -> None:
+        """The ReAct slots, pinned (arch §4.1): the last two are the training export's."""
+        from spectragent.core.loops import BranchLoop, ReactLoop
+
+        assert ReactLoop.__required_slots__ == {"build_react_prompt", "parse_react_output"}
+        assert ReactLoop.__optional_slots__ == {
+            "get_react_output_model",
+            "prepare",
+            "format_react_output",
+            "parse_react_thought",
+        }
+        assert BranchLoop.__required_slots__ == ReactLoop.__required_slots__
+        assert BranchLoop.__optional_slots__ == ReactLoop.__optional_slots__
+
     def test_prefix_replay_restorer(self) -> None:
         from spectragent.core.loops.restore import (
             PrefixReplayRestorer,

@@ -63,6 +63,7 @@ from pydantic import Field
 
 from spectragent.core.action_guard import resolve_action_name
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
+from spectragent.core.loops._loop_fragments import loop_fragment_builders, pinned_step_info
 from spectragent.core.loops._registrar import LoopInput
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.react import (
@@ -700,14 +701,19 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         """ReAct's builders, with ``loop.step_info`` pinned to the source's.
 
         The policy step is told the step budget and the date the source
-        was told at the checkpoint (``today_override`` still wins), so the
-        decision is made on the prompt the source made it on.
+        was told at the checkpoint (``today_override`` still wins,
+        ``pinned_step_info``), so the decision is made on the prompt the
+        source made it on.
         """
-        builders = super()._loop_fragment_builders(run, step_idx)
         pinned = run.step_info if isinstance(run, BranchRun) else None
-        if pinned is not None:
-            today = self.today_override or pinned.today
-            builders["loop.step_info"] = lambda: StepInfoObs(
-                step=step_idx + 1, max_steps=pinned.max_steps, today=today
-            )
-        return builders
+        if pinned is None:
+            return super()._loop_fragment_builders(run, step_idx)
+        max_steps, today = pinned_step_info(pinned, today_override=self.today_override)
+        return loop_fragment_builders(
+            task=run.task,
+            step=step_idx,
+            max_steps=max_steps,
+            today=today,
+            history=run.step_records,
+            prev_step=run.prev_step_record,
+        )

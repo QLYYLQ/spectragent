@@ -1,0 +1,41 @@
+# The training export's student (data flywheel, M32; PRD §11 Q3): UI-TARS writing
+# points on a 0-1000 grid over the screenshot. `spectragent-export` composes this
+# file and only assembles it — prepare(), never execute(): no environment is set
+# up, no model is called, so it carries no hooks. Samples are rendered by this
+# agent's own prepare / build_react_prompt / memory and written by its
+# format_react_output, so the dataset is in the format the trained model is
+# served in: point `llm` at the trained model and run this same file to evaluate
+# it. The capability block's screenshot pipeline (viewport, format, the pinned
+# DPR) is record_ui_tars_pinned.yaml's — the export refuses a source whose
+# recorded screenshots this configuration would not capture. See
+# configs/README.md "Exporting training data" and docs/architecture_design.md §4.15.
+agent:
+  - agent_id: ui_tars
+    id: student
+    prompt_template: computer_use
+    coordinate_space: normalized_1000
+    agent_loop:
+      loop_id: react
+      max_steps: 30
+      max_actions_per_step: 1
+    llm:
+      model_type: openai
+      model: ui-tars-student
+      provider: { name: direct }
+    memory: { memory_id: simple, max_messages: 200 }
+
+environment:
+  - env_type: browser
+    id: browser_env
+    capabilities:
+      - capability_id: browser
+        profile: standard
+        mouse_trajectory: { trajectory_type: instant }
+        typing_rhythm: { rhythm_type: instant }
+        replayability: { replayability_id: pinned, random_seed: 7 }
+        network_source: { source_id: live }
+        dom_cleaner: { cleaner_type: browser_use }
+        dom_serializer: { serializer_type: text }
+        backend:
+          provider_id: local_chrome
+          headless: true

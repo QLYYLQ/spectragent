@@ -50,7 +50,7 @@ from __future__ import annotations
 import ast
 import base64
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -66,7 +66,7 @@ from spectragent.core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
-from spectragent.core.loops.errors import ParseError
+from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.observation.geometry import (
     CoordinateSpace,
@@ -115,6 +115,11 @@ class _Verb:
             the model's grid. :meth:`UITarsAgent._action_for` converts each
             pair into viewport units before the action exists, so nothing
             downstream ever sees the model's grid.
+        write: The inverse of :attr:`to_params`: the call text for the
+            action's params, its points already on the model's grid
+            (:meth:`UITarsAgent.format_react_output` converts them). Raises
+            :class:`_Unwritable` for a value the call syntax cannot carry;
+            a param outside :attr:`fills` never reaches it.
     """
 
     action: str
@@ -122,6 +127,7 @@ class _Verb:
     fills: tuple[str, ...]
     to_params: Callable[[Mapping[str, Any]], dict[str, Any]]
     accepts: tuple[str, ...]
+    write: Callable[[Mapping[str, Any]], str]
     points: tuple[tuple[str, str], ...] = ()
 
 
@@ -343,6 +349,103 @@ def _finished_params(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     return {"success": True, "extracted_content": str(kwargs.get("content", ""))}
 
 
+# ── Writing a call: the inverse of the readers above ─────────
+
+
+class _Unwritable(ValueError):
+    """A param value the verb's call syntax cannot carry (see ``_Verb.write``)."""
+
+    def __init__(self, params: tuple[str, ...], detail: str) -> None:
+        self.params = params
+        self.detail = detail
+        super().__init__(detail)
+
+
+def _quoted(text: str) -> str:
+    """*text* as a single-quoted literal that :func:`_read_call` reads back as *text*.
+
+    Backslashes and quotes are escaped, and so is every character that is
+    not printable — newlines and carriage returns above all, which would
+    otherwise end the action line (or start a new ``Action:`` one).
+    """
+    out: list[str] = []
+    for ch in text:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == "'":
+            out.append("\\'")
+        elif not ch.isprintable():
+            out.append(repr(ch)[1:-1])
+        else:
+            out.append(ch)
+    return "'" + "".join(out) + "'"
+
+
+def _required(params: Mapping[str, Any], key: str) -> Any:
+    value = params.get(key)
+    if value is None:
+        raise _Unwritable((key,), f"{key} has no value to write")
+    return value
+
+
+def _point_text(params: Mapping[str, Any], x_key: str, y_key: str) -> str:
+    return _quoted(f"({_required(params, x_key)}, {_required(params, y_key)})")
+
+
+def _write_click(params: Mapping[str, Any]) -> str:
+    return f"click(point={_point_text(params, 'coordinate_x', 'coordinate_y')})"
+
+
+def _write_type(params: Mapping[str, Any]) -> str:
+    text = _quoted(str(_required(params, "text")))
+    return f"type(content={text}, point={_point_text(params, 'coordinate_x', 'coordinate_y')})"
+
+
+def _write_scroll(params: Mapping[str, Any]) -> str:
+    direction = _required(params, "direction")
+    if direction not in _DIRECTIONS:
+        raise _Unwritable(("direction",), f"direction={direction!r} is not one of {_DIRECTIONS}")
+    return f"scroll(direction={_quoted(direction)})"
+
+
+def _write_hotkey(params: Mapping[str, Any]) -> str:
+    keys = str(_required(params, "keys"))
+    # ``_hotkey_params`` reads whitespace as a chord separator and strips the
+    # ends, so a key name with whitespace in it would come back as another
+    # chord (or another key): refused, not rewritten.
+    if not keys or any(ch.isspace() for ch in keys):
+        raise _Unwritable(
+            ("keys",),
+            f"keys={keys!r} is empty or holds whitespace, which hotkey() reads as a chord",
+        )
+    return f"hotkey(key={_quoted(keys)})"
+
+
+def _write_drag(params: Mapping[str, Any]) -> str:
+    start = _point_text(params, "start_x", "start_y")
+    end = _point_text(params, "end_x", "end_y")
+    return f"drag(start_point={start}, end_point={end})"
+
+
+def _write_wait(params: Mapping[str, Any]) -> str:
+    return "wait()"
+
+
+def _write_finished(params: Mapping[str, Any]) -> str:
+    # ``finished`` always reads back as ``success=True`` (``_finished_params``);
+    # a success the action leaves unset executes the same way, a failure has
+    # no spelling.
+    if params.get("success") is False:
+        raise _Unwritable(("success",), "finished() has no way to say success=False")
+    content = params.get("extracted_content")
+    # No content and empty content read back alike (``''``), so both are
+    # written as ``finished()`` — one text per reading, which is what keeps
+    # the written form a fixed point.
+    if not content:
+        return "finished()"
+    return f"finished(content={_quoted(str(content))})"
+
+
 #: Every verb UI-TARS may emit. A verb absent from this table is a parse
 #: error, not a silently manufactured action name. The mobile-only verbs
 #: (``long_press``, ``open_app``, ``press_home``, ``press_back``) have no
@@ -355,6 +458,7 @@ _VERB_TABLE: dict[str, _Verb] = {
         fills=("coordinate_x", "coordinate_y"),
         to_params=_click_params,
         accepts=_POINT_ARGUMENTS["point"],
+        write=_write_click,
         points=(("coordinate_x", "coordinate_y"),),
     ),
     "type": _Verb(
@@ -363,6 +467,7 @@ _VERB_TABLE: dict[str, _Verb] = {
         fills=("coordinate_x", "coordinate_y", "text"),
         to_params=_type_params,
         accepts=("content", *_POINT_ARGUMENTS["point"]),
+        write=_write_type,
         points=(("coordinate_x", "coordinate_y"),),
     ),
     "scroll": _Verb(
@@ -371,6 +476,7 @@ _VERB_TABLE: dict[str, _Verb] = {
         fills=("direction",),
         to_params=_scroll_params,
         accepts=("direction",),
+        write=_write_scroll,
     ),
     "hotkey": _Verb(
         action="send_keys",
@@ -378,6 +484,7 @@ _VERB_TABLE: dict[str, _Verb] = {
         fills=("keys",),
         to_params=_hotkey_params,
         accepts=("key", "keys"),
+        write=_write_hotkey,
     ),
     "drag": _Verb(
         action="drag",
@@ -385,6 +492,7 @@ _VERB_TABLE: dict[str, _Verb] = {
         fills=("start_x", "start_y", "end_x", "end_y"),
         to_params=_drag_params,
         accepts=(*_POINT_ARGUMENTS["start_point"], *_POINT_ARGUMENTS["end_point"]),
+        write=_write_drag,
         points=(("start_x", "start_y"), ("end_x", "end_y")),
     ),
     "wait": _Verb(
@@ -393,6 +501,7 @@ _VERB_TABLE: dict[str, _Verb] = {
         fills=(),
         to_params=_wait_params,
         accepts=(),
+        write=_write_wait,
     ),
     "finished": _Verb(
         action="done",
@@ -400,6 +509,7 @@ _VERB_TABLE: dict[str, _Verb] = {
         fills=("extracted_content", "success"),
         to_params=_finished_params,
         accepts=("content",),
+        write=_write_finished,
     ),
 }
 
@@ -711,12 +821,139 @@ class UITarsAgent(AgentBase):
         # UI-TARS speaks a native text protocol, not structured output.
         return None
 
+    # ── Training-export slots (optional ReAct slots, arch §4.1) ──
+
+    def format_react_output(self, actions: Sequence[Action], *, thought: str | None = None) -> str:
+        """The reply this agent writes for *actions* — the inverse of :meth:`parse_react_output`.
+
+        One ``Action:`` line per action, in order, each written as its verb's
+        call (``_Verb.write``); before them, unless the template is
+        ``grounding`` (which teaches no thought) or *thought* is ``None`` or
+        blank, one ``Thought:`` line holding *thought* with every run of
+        whitespace collapsed to a space — one line, so nothing in a thought
+        can start an action line.
+
+        Reads the step's state, so the order is fixed: ``prepare``, then this
+        step's :meth:`build_react_prompt`, then this. Points are written on
+        the grid of the screenshot that step showed (``PointGrid.to_grid``),
+        so a point comes back from :meth:`parse_react_output` within the
+        grid's ``quantum`` of where it was, and the written text is a fixed
+        point of format → parse → format.
+
+        Raises:
+            UnrepresentableActionError: an action the call syntax cannot
+                write, naming what — a verb UI-TARS has no word for or this
+                run did not negotiate, a qualified name the run binds the
+                verb to a different capability for, a point with no
+                measurable screenshot behind it or outside the viewport, or a
+                param value the verb cannot carry (``type``'s ``clear``,
+                ``scroll``'s ``amount`` / ``index``, ``wait``'s ``seconds``,
+                ``success=False``, a key chord with whitespace in it). Never
+                silently dropped: a reply that executes differently from the
+                action it was written for is a wrong training label.
+            ValueError: *actions* is empty; no reply carries no action.
+        """
+        if not actions:
+            raise ValueError("format_react_output needs at least one action")
+        lines: list[str] = []
+        if thought is not None and self.prompt_template != "grounding":
+            collapsed = " ".join(thought.split())
+            if collapsed:
+                lines.append(f"Thought: {collapsed}")
+        lines.extend(f"Action: {self._call_text(action)}" for action in actions)
+        return "\n".join(lines)
+
+    @staticmethod
+    def parse_react_thought(llm_output: Any) -> tuple[str, str] | None:
+        """The thought of a recorded reply and the field it came from, or ``None``.
+
+        UI-TARS's native ``Thought:`` — the text after the label (a line
+        start, with the same markdown dressing an action label may carry) up
+        to the first ``Action:`` line, stripped. Pure: reads the reply only,
+        so the training export calls it on the class (arch §4.1).
+        """
+        text = llm_output if isinstance(llm_output, str) else str(llm_output)
+        label = _THOUGHT_LABEL.search(text)
+        if label is None:
+            return None
+        action = _ACTION_LABEL.search(text, label.end())
+        body = text[label.end() : action.start() if action is not None else len(text)].strip()
+        return (body, "Thought") if body else None
+
     # ── private helpers ────────────────────────────────────────
 
     def _example_call(self) -> str:
         """A call the model could legally write this run, for error hints."""
         verb = next(iter(self._verbs.values()), None)
         return verb.signature if verb is not None else ""
+
+    def _call_text(self, action: Action) -> str:
+        """*action* as the call :meth:`_action_for` reads back into it."""
+        local = _local_id(action.name)
+        verb_name = _ACTION_TO_VERB.get(local)
+        if verb_name is None:
+            raise UnrepresentableActionError(action.name, (), "UI-TARS has no verb for it")
+        verb = self._verbs.get(verb_name)
+        if verb is None:
+            offered = ", ".join(self._verbs) or "none"
+            raise UnrepresentableActionError(
+                action.name, (), f"this run did not negotiate {local}; it offers: {offered}"
+            )
+        bound = next(
+            (
+                d.name
+                for d in self._action_descriptors
+                if "." in d.name and _local_id(d.name) == local
+            ),
+            None,
+        )
+        if bound is not None and "." in action.name and action.name != bound:
+            raise UnrepresentableActionError(
+                action.name, (), f"{verb_name}() runs as {bound} in this run"
+            )
+        params = dict(action.params)
+        extra = [
+            key for key, value in params.items() if value is not None and key not in verb.fills
+        ]
+        if extra:
+            raise UnrepresentableActionError(
+                action.name, extra, f"{verb.signature} has no argument that carries it"
+            )
+        if verb.points:
+            self._points_to_grid(action.name, verb, params)
+        try:
+            return verb.write(params)
+        except _Unwritable as exc:
+            raise UnrepresentableActionError(action.name, exc.params, exc.detail) from exc
+
+    def _points_to_grid(self, action_name: str, verb: _Verb, params: dict[str, Any]) -> None:
+        """Rewrite *verb*'s point params from viewport units onto this step's grid, in place."""
+        grid = self._grid
+        if grid is None:
+            raise UnrepresentableActionError(
+                action_name,
+                [key for pair in verb.points for key in pair],
+                "this step showed no screenshot of known size, so no point can be written",
+            )
+        for x_key, y_key in verb.points:
+            x, y = params.get(x_key), params.get(y_key)
+            if (
+                not isinstance(x, (int, float))
+                or not isinstance(y, (int, float))
+                or isinstance(x, bool)
+                or isinstance(y, bool)
+            ):
+                raise UnrepresentableActionError(
+                    action_name, (x_key, y_key), f"({x!r}, {y!r}) is not a point"
+                )
+            if not (0 <= x < grid.viewport_width and 0 <= y < grid.viewport_height):
+                raise UnrepresentableActionError(
+                    action_name,
+                    (x_key, y_key),
+                    f"({x}, {y}) is outside the {grid.viewport_width}x{grid.viewport_height} "
+                    f"viewport the screenshot depicts",
+                )
+            params[x_key], params[y_key] = grid.to_grid(x, y)
 
     def _action_for(self, call: _Call) -> Action:
         """Translate one call through the negotiated verbs and the step's grid."""
@@ -852,6 +1089,12 @@ _ACTION_LABEL = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _ACTION_WORD = re.compile(r"\baction\s*:", re.IGNORECASE)
+
+#: The start of a ``Thought:`` line, dressed like :data:`_ACTION_LABEL` may be.
+_THOUGHT_LABEL = re.compile(
+    r"^[ \t>*_-]*thought[ \t*_]*:[ \t*_]*",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 #: A call's head: a (possibly dotted) name and its opening parenthesis.
 _CALL_HEAD = re.compile(r"[A-Za-z_][\w.]*[ \t]*\(")

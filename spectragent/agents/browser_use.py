@@ -244,6 +244,13 @@ def _local_id(name: str) -> str:
     return name.rsplit(".", 1)[-1]
 
 
+#: The reasoning fields a reply's thought is read from, in precedence order
+#: (``BrowserUseAgent.parse_react_thought``): the model's own reasoning block
+#: first, then the step's goal, then the running memory — the only reasoning
+#: field every template teaches (``_output_models.REASONING_FIELDS``).
+_THOUGHT_FIELDS: tuple[str, ...] = ("thinking", "next_goal", "memory")
+
+
 @dataclass
 class BrowserUseAgent(AgentBase):
     """Browser-use style agent with multi-action, flash mode and three surfaces."""
@@ -615,6 +622,37 @@ class BrowserUseAgent(AgentBase):
                 "action set, which does not exist yet."
             )
         return self._per_run_output_model
+
+    # ── Training-export slot (optional ReAct slot, arch §4.1) ──
+
+    @staticmethod
+    def parse_react_thought(llm_output: Any) -> tuple[str, str] | None:
+        """The thought of a recorded reply and the field it came from, or ``None``.
+
+        The first non-empty of :data:`_THOUGHT_FIELDS` — ``thinking``, then
+        ``next_goal``, then ``memory`` — stripped. Which ones a reply can
+        carry is its template's (``_output_models.REASONING_FIELDS``): a flash
+        template teaches only ``memory``, so a flash teacher's thought is its
+        memory line, and the returned field name says so. Pure: reads the
+        reply only (the JSON text a run records, or the parsed model), so the
+        training export calls it on the class.
+        """
+        if isinstance(llm_output, BaseModel):
+            data: Any = llm_output.model_dump()
+        elif isinstance(llm_output, Mapping):
+            data = llm_output
+        else:
+            try:
+                data = json.loads(llm_output if isinstance(llm_output, str) else str(llm_output))
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(data, Mapping):
+            return None
+        for name in _THOUGHT_FIELDS:
+            value = data.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip(), name
+        return None
 
     # ── private helpers ────────────────────────────────────────
 

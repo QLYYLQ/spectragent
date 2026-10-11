@@ -52,8 +52,8 @@ receptor with an in-Python default (``all``), the ``ArchiveNetworkSource
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
-from pathlib import Path, PurePosixPath
+from collections.abc import Mapping
+from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -72,6 +72,7 @@ from spectragent.core.data_loader.task.step_selector import (  # noqa: F401 — 
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import RunStatus, TraceConfig
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.sources import match_runs, source_pattern_problem
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.step_record import StepRecord
 from spectragent.schemas.task import TaskContext, TaskDefinition, setup_class_for_env
@@ -196,7 +197,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
         self.data_dir = data_dir
         self.sources = tuple(sources) if sources is not None else DEFAULT_SOURCES
         for pattern in self.sources:
-            problem = _pattern_problem(pattern)
+            problem = source_pattern_problem(pattern)
             if problem is not None:
                 raise ValueError(f"trace_branches: source glob {pattern!r} {problem}")
         if branches_per_step < 1:
@@ -300,7 +301,7 @@ class _Scan:
     def run(self) -> None:
         loader = self.loader
         root = loader.root()
-        matched = _matches(root, loader.sources)
+        matched = match_runs(root, loader.sources)
         if not matched:
             logger.warning(
                 "trace_branches: no recorded run under %s matches %s; no branch tasks",
@@ -509,29 +510,6 @@ class _Scan:
                 branch_group_id=f"{run_id}/s{step}",
             ),
         )
-
-
-def _pattern_problem(pattern: str) -> str | None:
-    if not pattern:
-        return "is empty"
-    path = PurePosixPath(pattern)
-    if path.is_absolute() or pattern.startswith("~"):
-        return "must be relative to the sources root (data_dir names the root)"
-    if ".." in path.parts:
-        return "must stay inside the sources root (no '..')"
-    return None
-
-
-def _matches(root: Path, patterns: Sequence[str]) -> list[tuple[str, Path]]:
-    """``(relative POSIX path, directory)`` of every run directory a glob matches, by path."""
-    found: dict[str, Path] = {}
-    for pattern in patterns:
-        for match in root.glob(pattern):
-            if match.is_dir() and (match / "manifest.json").is_file():
-                found.setdefault(match.relative_to(root).as_posix(), match)
-            else:
-                logger.debug("trace_branches: %s is not a recorded run; ignored", match)
-    return sorted(found.items())
 
 
 def _candidates(by_step: Mapping[int, StepRecord]) -> list[int]:

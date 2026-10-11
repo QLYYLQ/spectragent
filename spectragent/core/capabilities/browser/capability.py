@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -53,6 +53,7 @@ from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
 from spectragent.core.archive import ArchiveBatch, ArchiverBase
 from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities._registrar import CapabilityBase
+from spectragent.core.capabilities.base import CaptureComparison
 from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — registration
     ClickAction,
     ClickCoordinateAction,
@@ -82,6 +83,7 @@ from spectragent.core.capabilities.browser.archive import (  # noqa: F401 — re
 )
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
 from spectragent.core.capabilities.browser.backends.capabilities import LAUNCH_ARGS
+from spectragent.core.capabilities.browser.capture_check import compare_capture
 from spectragent.core.capabilities.browser.cdp_client import CDPClient, transport_options
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
@@ -102,6 +104,9 @@ from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (  # 
 )
 from spectragent.core.capabilities.browser.dom.cleaning.skyvern import (  # noqa: F401 — registration
     SkyvernCleaner,
+)
+from spectragent.core.capabilities.browser.dom.cleaning.skyvern_hit_test import (  # noqa: F401 — registration
+    SkyvernHitTestCleaner,
 )
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, TargetCapture
 from spectragent.core.capabilities.browser.dom.serializers import (
@@ -409,7 +414,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # be a name on ``BrowserProfileConfig``, which meant ``DOMWatchdog``
         # looked the class up and default-constructed it — the generated
         # ``BrowserUseDom_CleanerConfig`` existed and nothing could reach it.
-        "dom_cleaner": ("dom_cleaner", ["browser_use", "skyvern"]),
+        # ``skyvern_hit_test`` (M32): Skyvern plus an in-page hit test per
+        # indexed element, recorded as ``hit_test``; ``covered_elements``.
+        "dom_cleaner": ("dom_cleaner", ["browser_use", "skyvern", "skyvern_hit_test"]),
         # ``dom_serializer`` is the third instance of that identical
         # defect and closes it: the serializer decides what the *prompt*
         # says the page is, and ``TextSerializer.max_text_length`` /
@@ -1092,6 +1099,24 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         total = server.log.diverged_total
         misses, self._diverged_seen = total - self._diverged_seen, total
         return misses
+
+    # ── Recorded capture vs this configuration (CaptureCheck, §4.9) ──
+
+    def compare_capture(self, recorded: Mapping[str, Any]) -> CaptureComparison:
+        """Whether this configuration's screenshot pipeline captures what *recorded* holds.
+
+        Viewport, format, device scale factor and image size of
+        ``browser.screenshot``
+        (:func:`~spectragent.core.capabilities.browser.capture_check.compare_capture`).
+        Reads configuration only — never the browser, which the training
+        export that asks never starts.
+        """
+        return compare_capture(
+            recorded,
+            viewport=(self.viewport_width, self.viewport_height),
+            screenshot_format=self.screenshot_format,
+            device_scale_factor=self.replayability.device_scale_factor,
+        )
 
     # ── CapabilityBase contract ──────────────────────────────────────
 

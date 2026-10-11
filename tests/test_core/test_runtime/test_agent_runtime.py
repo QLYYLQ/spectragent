@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC
+from typing import Any
 
 import pytest
 
@@ -268,6 +269,61 @@ class TestPrepare:
         assert memory.messages == [] or all(
             getattr(m, "role", None) != "system" for m in memory.messages
         )
+
+
+class TestSeedMessages:
+    """``seed_messages(task)``: the seeding ``execute`` does, as a method of its own (§4.2)."""
+
+    def _seeding_run(self, memory: MockMemory, calls: list[dict]) -> Any:
+        from spectragent.core.llm.messages import SystemMessage
+
+        class SeedingAgent(SimpleAgent):
+            def prepare(self, task, action_descriptors, max_actions_per_step):
+                calls.append(
+                    {
+                        "task": task,
+                        "names": sorted(d.name for d in action_descriptors),
+                        "max_actions_per_step": max_actions_per_step,
+                    }
+                )
+                return [SystemMessage(content=f"seed for {task}")]
+
+        return make_run(
+            agent=SeedingAgent(),
+            loop=ReactLoop(max_actions_per_step=3),
+            env=_make_env(),
+            llm=MockLLM(),
+            memory=memory,
+        )
+
+    def test_returns_the_agent_seed_without_writing_memory(self) -> None:
+        memory, calls = MockMemory(), []
+        runtime = AgentRuntime.for_agent(self._seeding_run(memory, calls), AGENT_ID)
+        runtime.prepare()
+        seeds = runtime.seed_messages("the task")
+        assert [m.text for m in seeds] == ["seed for the task"]
+        assert calls == [
+            {"task": "the task", "names": ["rt_simple_cap.done"], "max_actions_per_step": 3}
+        ]
+        assert memory.messages == []  # the caller owns the write
+
+    def test_is_exactly_what_execute_writes(self) -> None:
+        memory, calls = MockMemory(), []
+        runtime = AgentRuntime.for_agent(self._seeding_run(memory, calls), AGENT_ID)
+        asyncio.run(runtime.execute("the task", task_id="t-seed"))
+        executed_seed = memory.messages[0]
+        assert runtime.seed_messages("the task") == [executed_seed]
+        assert calls[0] == calls[1]
+
+    def test_an_agent_without_prepare_seeds_nothing(self) -> None:
+        runtime = AgentRuntime.for_agent(_mk(SimpleAgent(), ReactLoop(), _make_env()), AGENT_ID)
+        runtime.prepare()
+        assert runtime.seed_messages("x") == []
+
+    def test_needs_prepare_first(self) -> None:
+        runtime = AgentRuntime.for_agent(_mk(SimpleAgent(), ReactLoop(), _make_env()), AGENT_ID)
+        with pytest.raises(RuntimeError, match="prepare"):
+            runtime.seed_messages("x")
 
 
 class TestTimeout:

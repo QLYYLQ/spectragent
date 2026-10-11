@@ -10,11 +10,17 @@ the source.
 
 The import direction is one way: ``core/loops`` reads ``core/trace``;
 ``core/trace`` never imports ``core/loops``.
+
+Two of its readers are plain functions — :func:`recorded_observation` (a
+step's recorded fragments as a ``NegotiatedObservation``) and
+:func:`recorded_step_info` — because the training export's student renderer
+reads a recorded step the same way (arch §4.15), with its own errors;
+:func:`recorded_form` is how its identity check compares contexts too.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -32,6 +38,7 @@ from spectragent.core.trace.models import (
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.observation._registrar import fragment_field_name
 from spectragent.schemas.observation.dynamic_model import build_observation_model_from_result
+from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.restoration import Checkpoint
 from spectragent.schemas.step_record import StepRecord
@@ -71,6 +78,50 @@ def first_difference(live: Sequence[Any], recorded: Sequence[Any]) -> str:
 def _excerpt(message: Any) -> str:
     text = str(message.get("content", ""))
     return repr(text[:80] + ("…" if len(text) > 80 else ""))
+
+
+def recorded_observation(
+    trace: RunTrace, step: int, negotiated: Any, *, keys: Iterable[str] | None = None
+) -> tuple[Any | None, list[str]]:
+    """*step*'s recorded fragments as *negotiated*'s ``NegotiatedObservation``, or what is missing.
+
+    Reads every fragment of *keys* (default: every fragment the negotiation
+    activates) back typed (``FragmentBase.from_trace``); a capture that
+    failed comes back as its ``FragmentFailure``, a loop-source fragment the
+    step did not record as ``None``. An env-source fragment the step did not
+    record — or recorded as a failure where *negotiated* requires it — cannot
+    fill its slot: the result is then ``(None, <those keys, sorted>)`` and the
+    caller decides whether that is fatal (a branch's checkpoint) and how to
+    word it (the training export). Otherwise ``(observation, [])``.
+
+    Raises:
+        TraceSchemaError: A file the manifest lists does not read back.
+    """
+    env_sourced = frozenset(negotiated.env_sourced)
+    required = frozenset(negotiated.required_fragments)
+    wanted = sorted(negotiated.active_fragments if keys is None else keys)
+    values: dict[str, Any] = {}
+    unavailable: list[str] = []
+    for key in wanted:
+        fragment = trace.observation_fragment(step, key)
+        if key in env_sourced and (
+            fragment is None or (key in required and isinstance(fragment, FragmentFailure))
+        ):
+            unavailable.append(key)
+        values[fragment_field_name(key)] = fragment
+    if unavailable:
+        return None, unavailable
+    return build_observation_model_from_result(negotiated)(**values), []
+
+
+def recorded_step_info(trace: RunTrace, step: int) -> StepInfoObs | None:
+    """The ``loop.step_info`` fragment *step* recorded, or ``None``.
+
+    Raises:
+        TraceSchemaError: The fragment's file does not read back.
+    """
+    fragment = trace.observation_fragment(step, STEP_INFO_KEY)
+    return fragment if isinstance(fragment, StepInfoObs) else None
 
 
 class SourceRun:
@@ -154,7 +205,7 @@ class SourceRun:
         """The observation *step* recorded, as this run's ``NegotiatedObservation``.
 
         Every fragment the negotiation activates — env-source and loop-source
-        alike — is read back typed (``FragmentBase.from_trace``); a capture
+        alike — is read back typed (:func:`recorded_observation`); a capture
         that failed comes back as its ``FragmentFailure``. A loop-source
         fragment the step did not record is ``None``.
 
@@ -163,18 +214,10 @@ class SourceRun:
                 negotiation activates was not recorded at *step*, or a file
                 does not read back.
         """
-        model = build_observation_model_from_result(negotiated)
-        env_sourced = frozenset(negotiated.env_sourced)
-        values: dict[str, Any] = {}
-        missing: list[str] = []
-        for key in sorted(negotiated.active_fragments):
-            fragment = self._read(
-                lambda key=key: self._trace.observation_fragment(step, key),
-                f"fragment {key!r} of step {step}",
-            )
-            if fragment is None and key in env_sourced:
-                missing.append(key)
-            values[fragment_field_name(key)] = fragment
+        observation, missing = self._read(
+            lambda: recorded_observation(self._trace, step, negotiated),
+            f"the observation of step {step}",
+        )
         if missing:
             raise IncompatibleCheckpointError(
                 self.name,
@@ -182,15 +225,14 @@ class SourceRun:
                     f"step {step} recorded no {', '.join(missing)} — the observation cannot be rebuilt"
                 ],
             )
-        return model(**values)
+        return observation
 
     def step_info(self, step: int) -> StepInfoObs | None:
         """The ``loop.step_info`` fragment *step* recorded, or ``None``."""
-        fragment = self._read(
-            lambda: self._trace.observation_fragment(step, STEP_INFO_KEY),
+        return self._read(
+            lambda: recorded_step_info(self._trace, step),
             f"fragment {STEP_INFO_KEY!r} of step {step}",
         )
-        return fragment if isinstance(fragment, StepInfoObs) else None
 
     # ── internals ────────────────────────────────────────────
 

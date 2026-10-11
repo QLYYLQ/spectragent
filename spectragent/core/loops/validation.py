@@ -16,20 +16,37 @@ from typing import Any
 
 
 class IncompatibleError(Exception):
-    """Raised when an Agent is missing slots required by a Loop."""
+    """Raised when an Agent is missing slots a Loop's user needs.
+
+    At run assembly that is the Loop itself (``__required_slots__``). An
+    optional slot is checked by whoever calls it, right before it does
+    (arch §4.1 "可选 slot"): the training export needs the ReAct optional
+    slots ``format_react_output`` / ``parse_react_thought``, and says so with
+    *needed_for*, so a missing optional slot never reads like a Loop's
+    required one.
+
+    Attributes:
+        agent_name: The agent missing the slots.
+        loop_id: The Loop the slots belong to.
+        missing_slots: The slot names, in the order given.
+        needed_for: The phrase naming who needs them — by default
+            ``required by loop '<loop_id>'``.
+    """
 
     def __init__(
         self,
         agent_name: str,
         loop_id: str,
         missing_slots: list[str],
+        *,
+        needed_for: str | None = None,
     ) -> None:
         self.agent_name = agent_name
         self.loop_id = loop_id
         self.missing_slots = missing_slots
+        self.needed_for = needed_for or f"required by loop '{loop_id}'"
         super().__init__(
-            f"Agent '{agent_name}' is missing slots required by "
-            f"loop '{loop_id}': {', '.join(missing_slots)}"
+            f"Agent '{agent_name}' is missing slots {self.needed_for}: {', '.join(missing_slots)}"
         )
 
 

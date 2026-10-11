@@ -18,6 +18,8 @@ everything else is derived from it:
   second thing to drift.
 - :func:`action_fragments` / :func:`param_fragments` — which observation
   fragments a param cannot exist without.
+- :func:`point_params` — which params are a point in the capability's
+  viewport units.
 
 **Fragment dependencies are capability knowledge.** ``index`` addresses
 the selector map, which only exists when ``browser.dom`` was negotiated;
@@ -49,6 +51,7 @@ __all__ = [
     "RequiresFragment",
     "action_fragments",
     "param_fragments",
+    "point_params",
     "params_prose",
     "params_schema",
     "params_view",
@@ -89,6 +92,29 @@ def param_fragments(params: type[BaseModel]) -> dict[str, frozenset[str]]:
         if keys:
             found[name] = keys
     return found
+
+
+def point_params(params: type[BaseModel]) -> list[tuple[str, str]]:
+    """``(x, y)`` param-name pairs that are a point, in declaration order.
+
+    The point actions' convention: a point is an ``int`` pair named
+    ``<name>_x`` / ``<name>_y`` in the capability's viewport units
+    (``coordinate_x`` / ``coordinate_y``, ``start_x`` / ``start_y`` …). Read by
+    whoever has to treat a point as one value — the training export checks a
+    written point against the student grid's quantum rather than for equality
+    (arch §4.15 "round-trip").
+    """
+    fields = params.model_fields
+
+    def is_int(name: str) -> bool:
+        field = fields.get(name)
+        return field is not None and field.annotation is int
+
+    return [
+        (name, name[:-2] + "_y")
+        for name in fields
+        if name.endswith("_x") and is_int(name) and is_int(name[:-2] + "_y")
+    ]
 
 
 def action_fragments(params: type[BaseModel]) -> frozenset[str]:

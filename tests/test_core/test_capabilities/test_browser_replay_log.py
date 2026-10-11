@@ -31,6 +31,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayLog,
     ReplayLogEntry,
     diverged_steps,
+    document_miss_total,
     iter_replay_log,
     replay_log,
     short_key,
@@ -271,14 +272,16 @@ class TestTheReplaySession:
 # ── reading it back ───────────────────────────────────────────────────
 
 
-async def _committed(base: Path, steps: dict[int | None, list[ReplayLogEntry]]) -> Path:
+async def _committed(
+    base: Path, steps: dict[int | None, list[ReplayLogEntry]], log: ReplayLog | None = None
+) -> Path:
     """A run whose ``browser.network`` replay session committed these logs (``None``: trailing).
 
     Each batch is what the real :class:`ReplayLogSession` collects, committed
     with ``encode_archive_file`` like ``TraceWriter`` does.
     """
     wal = new_wal(base, "run-replay")
-    log = ReplayLog(repeat_limit=100)
+    log = log if log is not None else ReplayLog(repeat_limit=100)
     session, _ = open_session(NetworkArchiver(require_replayable=False), replay_log=log)
     for step, entries in steps.items():
         for entry in entries:
@@ -322,6 +325,36 @@ class TestReading:
         assert replay_log(reader, 3) == [] and replay_log(reader, 9) == []
         assert [step for step, _ in iter_replay_log(reader)] == [1, 2, 2, None]
         assert diverged_steps(reader) == [2], "a trailing divergence belongs to no step"
+
+    async def test_the_document_miss_total_is_the_live_counter(self, tmp_path: Path) -> None:
+        """Read back, the run's document misses equal ``diverged_total`` — folded ones and the
+        close-out's included (the export's ``max_document_misses`` reads it, arch §4.15)."""
+        document = _entry(
+            resource_type="Document",
+            frame="main",
+            request_class="document",
+            answer="failed",
+            status=None,
+            diverged=True,
+        )
+        log = ReplayLog(repeat_limit=1)
+        run = await _committed(
+            tmp_path,
+            {
+                1: [_entry("hit"), document, document, document, _entry(), _entry()],
+                2: [_entry()],
+                None: [_entry(frame="main", diverged=True)],
+            },
+            log,
+        )
+        reader = open_archive(run)
+        kinds = [(entry.kind, entry.diverged) for _step, entry in iter_replay_log(reader)]
+        assert ("summary", True) in kinds, "the fixture folds divergences into a summary"
+        assert log.diverged_total == 4
+        assert document_miss_total(reader) == log.diverged_total
+
+    async def test_a_live_run_has_no_document_misses(self, tmp_path: Path) -> None:
+        assert document_miss_total(open_archive(await _committed(tmp_path, {1: []}))) == 0
 
     def test_a_line_that_is_not_an_entry_names_the_file_and_line(self, tmp_path: Path) -> None:
         wal = new_wal(tmp_path, "run-bad")

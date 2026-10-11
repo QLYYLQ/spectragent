@@ -17,14 +17,24 @@ from spectragent.core.capabilities.browser.dom.capture import (
     FrameTarget,
 )
 from spectragent.core.capabilities.browser.dom.cleaning import DOMCaptureSource
-from spectragent.core.capabilities.browser.dom.js.skyvern_extraction import EXTRACTION_SCRIPT
+from spectragent.core.capabilities.browser.dom.js.skyvern_extraction import (
+    EXTRACTION_SCRIPT,
+    HIT_TEST_FUNCTION,
+)
 from spectragent.core.capabilities.browser.dom.models import TargetCapture
 
 logger = logging.getLogger(__name__)
 
 
-async def capture_skyvern(source: DOMCaptureSource) -> TargetCapture:
-    """Build JS trees for the tab, its documents and attached frame targets."""
+async def capture_skyvern(source: DOMCaptureSource, *, hit_test: bool = False) -> TargetCapture:
+    """Build JS trees for the tab, its documents and attached frame targets.
+
+    With *hit_test* (the ``skyvern_hit_test`` cleaner), each document's
+    extraction is followed by one more call on the same remote object —
+    ``HIT_TEST_FUNCTION`` — whose results land in
+    ``raw_dom["skyvern_hit_tests"]`` keyed by ref. Without it the CDP calls
+    are exactly the ``skyvern`` cleaner's.
+    """
     if source.session_id is None:
         raise RuntimeError("Skyvern DOM extraction requires a tab CDP session")
     return await _capture_target(
@@ -33,6 +43,7 @@ async def capture_skyvern(source: DOMCaptureSource) -> TargetCapture:
         frame=None,
         depth=0,
         deadline=asyncio.get_running_loop().time() + source.frame_timeout_s,
+        hit_test=hit_test,
     )
 
 
@@ -43,6 +54,7 @@ async def _capture_target(
     frame: FrameTarget | None,
     depth: int,
     deadline: float,
+    hit_test: bool = False,
 ) -> TargetCapture:
     oop: list[FrameTarget] = []
     if source.frames is not None:
@@ -65,6 +77,7 @@ async def _capture_target(
         oop_by_id=oop_by_id,
         depth=depth,
         deadline=deadline,
+        hit_test=hit_test,
     )
     capture.target_id = frame.target_id if frame is not None else None
     capture.namespace = frame.namespace if frame is not None else 0
@@ -77,7 +90,9 @@ async def _capture_target(
     # parent renderer. The target attachment itself is authoritative.
     for child in oop:
         if not _contains_frame(capture, child.target_id) and depth < MAX_FRAME_DEPTH:
-            nested = await _capture_oop(source, child, depth=depth + 1, deadline=deadline)
+            nested = await _capture_oop(
+                source, child, depth=depth + 1, deadline=deadline, hit_test=hit_test
+            )
             if nested is not None:
                 capture.frames[child.target_id] = nested
                 await _record_owner(source, capture, session_id, child.target_id, deadline)
@@ -118,6 +133,7 @@ async def _capture_frame_entry(
     oop_by_id: dict[str, FrameTarget],
     depth: int,
     deadline: float,
+    hit_test: bool = False,
 ) -> TargetCapture:
     frame_id = (entry.get("frame") or {}).get("id")
     if not isinstance(frame_id, str):
@@ -132,7 +148,9 @@ async def _capture_frame_entry(
     if not isinstance(context_id, int):
         raise RuntimeError(f"No JS execution context for frame {frame_id}")
 
-    capture = await _capture_document(source, session_id, context_id=context_id, frame_id=frame_id)
+    capture = await _capture_document(
+        source, session_id, context_id=context_id, frame_id=frame_id, hit_test=hit_test
+    )
     if depth >= MAX_FRAME_DEPTH:
         return capture
 
@@ -142,7 +160,11 @@ async def _capture_frame_entry(
             continue
         if child_id in oop_by_id:
             child = await _capture_oop(
-                source, oop_by_id.pop(child_id), depth=depth + 1, deadline=deadline
+                source,
+                oop_by_id.pop(child_id),
+                depth=depth + 1,
+                deadline=deadline,
+                hit_test=hit_test,
             )
         else:
             try:
@@ -154,6 +176,7 @@ async def _capture_frame_entry(
                         oop_by_id=oop_by_id,
                         depth=depth + 1,
                         deadline=deadline,
+                        hit_test=hit_test,
                     ),
                     timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
                 )
@@ -167,11 +190,23 @@ async def _capture_frame_entry(
 
 
 async def _capture_oop(
-    source: DOMCaptureSource, frame: FrameTarget, *, depth: int, deadline: float
+    source: DOMCaptureSource,
+    frame: FrameTarget,
+    *,
+    depth: int,
+    deadline: float,
+    hit_test: bool = False,
 ) -> TargetCapture | None:
     try:
         return await asyncio.wait_for(
-            _capture_target(source, frame.session_id, frame=frame, depth=depth, deadline=deadline),
+            _capture_target(
+                source,
+                frame.session_id,
+                frame=frame,
+                depth=depth,
+                deadline=deadline,
+                hit_test=hit_test,
+            ),
             timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
         )
     except (TimeoutError, RuntimeError) as exc:
@@ -185,6 +220,7 @@ async def _capture_document(
     *,
     context_id: int | None,
     frame_id: str | None,
+    hit_test: bool = False,
 ) -> TargetCapture:
     group = f"all4one-dom-{uuid4().hex}"
     params: dict[str, Any] = {
@@ -213,6 +249,25 @@ async def _capture_document(
         data = ((data_reply or {}).get("result") or {}).get("value")
         if not isinstance(data, dict) or not isinstance(data.get("tree"), dict):
             raise RuntimeError("JS DOM extraction returned no element tree")
+
+        hit_tests: dict[int, Any] | None = None
+        if hit_test:
+            # Right after the tree is read, on the same object: the refs are
+            # the elements the tree names, and the page has had no time to move.
+            hit_reply = await source.run_js(
+                "Runtime.callFunctionOn",
+                {
+                    "objectId": remote_id,
+                    "functionDeclaration": HIT_TEST_FUNCTION,
+                    "returnByValue": True,
+                    "objectGroup": group,
+                },
+                session_id,
+            )
+            results = ((hit_reply or {}).get("result") or {}).get("value")
+            if not isinstance(results, dict):
+                raise RuntimeError("JS hit test returned no results")
+            hit_tests = {int(ref): value for ref, value in results.items() if str(ref).isdigit()}
 
         refs_reply = await source.run_js(
             "Runtime.callFunctionOn",
@@ -254,13 +309,16 @@ async def _capture_document(
         resolved = await asyncio.gather(
             *(describe(index, object_id) for index, object_id in remote_refs.items())
         )
+        raw_dom: dict[str, Any] = {
+            "skyvern_tree": data["tree"],
+            "skyvern_scroll": data.get("scroll") or {},
+            "skyvern_nodes": dict(resolved),
+            "skyvern_frame_id": frame_id,
+        }
+        if hit_tests is not None:
+            raw_dom["skyvern_hit_tests"] = hit_tests
         return TargetCapture(
-            raw_dom={
-                "skyvern_tree": data["tree"],
-                "skyvern_scroll": data.get("scroll") or {},
-                "skyvern_nodes": dict(resolved),
-                "skyvern_frame_id": frame_id,
-            },
+            raw_dom=raw_dom,
             snapshot={},
             ax_tree={},
             session_id=session_id,

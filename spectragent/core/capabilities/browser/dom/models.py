@@ -48,17 +48,28 @@ from typing import Any, Final
 # field carries the decision with it — a name list in another module
 # would silently start recording the full document instead.
 #
-# Two rules, in order:
+# Three rules, in order:
 #   1. a field whose name starts with ``_`` is private and never traced;
-#   2. otherwise, ``metadata[TRACE_KEY] == "skip"`` excludes it.
+#   2. otherwise, ``metadata[TRACE_KEY] == "skip"`` excludes it;
+#   3. ``metadata[TRACE_KEY] == "omit_none"`` (``TRACE_OMIT_NONE``) writes
+#      the field only when it holds a value: ``None`` leaves the key out,
+#      and a reader that finds no key reads the default. A field only one
+#      strategy ever fills (``hit_test``, the ``skyvern_hit_test`` cleaner's)
+#      thereby leaves every other strategy's trace JSON byte-identical.
 
 TRACE_KEY: Final = "trace"
 TRACE_SKIP: Final[Mapping[str, str]] = MappingProxyType({TRACE_KEY: "skip"})
+TRACE_OMIT_NONE: Final[Mapping[str, str]] = MappingProxyType({TRACE_KEY: "omit_none"})
 
 
 def is_traced(spec: Field[Any]) -> bool:
     """Whether ``spec`` belongs in the JSON that lands in the run trace."""
     return not spec.name.startswith("_") and spec.metadata.get(TRACE_KEY) != "skip"
+
+
+def omitted_when_none(spec: Field[Any]) -> bool:
+    """Whether a ``None`` in ``spec`` is left out of the trace JSON (rule 3)."""
+    return spec.metadata.get(TRACE_KEY) == "omit_none"
 
 
 def traced_fields(obj: Any) -> tuple[Field[Any], ...]:
@@ -118,6 +129,24 @@ class DOMRect:
             and self.x + self.width >= other.x + other.width
             and self.y + self.height >= other.y + other.height
         )
+
+
+@dataclass(frozen=True, slots=True)
+class HitTest:
+    """An in-page hit test of one indexed element (``skyvern_hit_test``, arch §4.12).
+
+    Attributes:
+        center_topmost: ``document.elementFromPoint`` at the centre of the
+            element's visible rect returned the element, a descendant, or a
+            ``<label>`` whose control it is — a click there reaches it.
+        visible_point: A point a click reaches the element at, in CSS px of
+            the top-level viewport: the centre when ``center_topmost``, else
+            the first of a 5x5 grid inside the visible rect that hit, or
+            ``None`` when none did — the element is fully covered.
+    """
+
+    center_topmost: bool
+    visible_point: tuple[float, float] | None = None
 
 
 @dataclass(slots=True)
@@ -222,6 +251,11 @@ class DOMElementNode:
 
     # Paint
     paint_order: int | None = None
+    # Whether a click at the element's centre reaches it — recorded only by
+    # the ``skyvern_hit_test`` cleaner; ``None`` (and absent from the trace
+    # JSON, ``TRACE_OMIT_NONE``) everywhere else, and for an element that
+    # was outside the viewport.
+    hit_test: HitTest | None = field(default=None, metadata=TRACE_OMIT_NONE)
 
     # Tree nav
     #

@@ -1,6 +1,6 @@
 # All4One Agent Framework — 开发执行依赖图
 
-> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 31 个开发模块（M01–M31）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
+> 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 32 个开发模块（M01–M32）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
 
 ---
 
@@ -77,6 +77,7 @@ flowchart TB
     subgraph P2_FLYWHEEL ["P2 · 数据飞轮（browser）"]
         M30["M30<br/>离线回放"]
         M31["M31<br/>状态分叉<br/>（检查点恢复 + BranchLoop）"]
+        M32["M32<br/>训练导出<br/>（canonical 样本 + 翻译 + 学生渲染）"]
     end
 
     subgraph P2_DOCKER ["P2 · Docker + SWE 生态"]
@@ -130,13 +131,11 @@ flowchart TB
     M08 --> M28
     M11 --> M28
     M27 --> M28
-    %% M27 → M32：M32 的条目合入时补边
     M13 --> M29
     M28 --> M29
     M29 --> M30
     %% M18 只做了抽样验证；用户 2026-10-09 裁决：browser 的数据飞轮线在 M29 之后直接开始 M30（见 M18、M30 条目）
     M18 -.->|抽样豁免| M30
-    %% M29 → M32、M30 → M32：M32 的条目合入时补边（M32 的遮挡判断读 browser.dom_raw，样本过滤读回放日志）
 
     %% → M31 状态分叉：ReactLoop 的一步、任务加载器、评测结果（require_eval）、trace 读侧、离线回放
     M09 --> M31
@@ -144,6 +143,13 @@ flowchart TB
     M16 --> M31
     M27 --> M31
     M30 --> M31
+
+    %% → M32 训练导出：评测结果（require_eval）、trace 读侧、dom_raw（遮挡证据）、回放日志（文档 miss 过滤）、分叉 run（分叉样本）
+    M16 --> M32
+    M27 --> M32
+    M29 -->|遮挡证据 dom_raw| M32
+    M30 -->|文档 miss 过滤| M32
+    M31 -->|分叉样本| M32
 
     %% P0 → P1 迁移
     M01 --> M12
@@ -200,7 +206,7 @@ flowchart TB
     class M01,M02,M03,M04,M05,M06,M07,M08,M09 p0
     class M10,M11,M12,M13,M14,M15,M16,M17,M27,M28,M29 p1
     class M18 milestone
-    class M19,M20,M21,M30,M31 p2
+    class M19,M20,M21,M30,M31,M32 p2
     class M22,M23,M24,M25,M26 p3
 
     style P0_FOUNDATION fill:none,stroke:#E83135,stroke-width:2px,stroke-dasharray:5 5
@@ -333,7 +339,7 @@ Resolver 模式使 Capability 内部通过 IoC 方式激活 fragment 提供者�
 
 | Loop | 要求 Agent 实现的 slots |
 |------|------------------------|
-| ReactLoop | `build_react_prompt()`, `parse_react_output()`；`get_react_output_model()` 可选 |
+| ReactLoop | `build_react_prompt()`, `parse_react_output()`；可选：`get_react_output_model()`（Loop 自己用）、`prepare()`（runtime 的种子消息）、`format_react_output()` 与 `parse_react_thought()`（M32：只有训练导出校验与调用——前者是学生一侧、`parse_react_output` 的逆，后者是 teacher 一侧的 thought；缺了时导出抛 `IncompatibleError`，措辞是 "needed for training export"） |
 | CodeActLoop（规划） | `build_code_prompt()`, `parse_code_output()` |
 | FunctionCallingLoop（规划） | `build_funccall_prompt()`, `get_tool_schemas()` |
 | PlanExecuteLoop（规划） | `build_plan_prompt()`, `build_exec_prompt()`, `parse_plan()` |
@@ -767,7 +773,7 @@ DataLoader 的泛化是独立工作流，与核心框架改造的依赖较弱。
 
 ### M16: Evaluator 体系
 
-**优先级**: P1 | **前置依赖**: M01, M10 | **被依赖方**: M18, M31（`require_eval` 读评测结果）
+**优先级**: P1 | **前置依赖**: M01, M10 | **被依赖方**: M18, M31（`require_eval` 读评测结果）、M32（`require_eval`、样本的判定标签、泄漏扫描用的评测加载器）
 
 #### 业务实现
 
@@ -1226,7 +1232,7 @@ capability 被拉取时产出证据，但不知道 WAL、步号和 `env/` 布局
 
 ### M29: Browser 归档器 + 可回放录制档位
 
-**优先级**: P1 | **前置依赖**: M13, M28 | **被依赖方**: M30（离线回放，边已补）、M32（遮挡判断用 `browser.dom_raw` 的 paint order）——M32 的条目合入时补边
+**优先级**: P1 | **前置依赖**: M13, M28 | **被依赖方**: M30（离线回放，边已补）、M32（遮挡判断用 `browser.dom_raw` 的 paint order，边已补）
 
 #### 业务实现
 
@@ -1289,7 +1295,7 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 
 ### M30: 离线回放（网络来源、匹配、miss 策略、隔离、一致性）
 
-**优先级**: P2 | **前置依赖**: M29（录制档位、归档器、recorder 连接）；M18 只做了抽样验证——用户 2026-10-09 裁决：这条只涉及 browser 的数据飞轮线在 M29 之后直接开始 M30，抽样的 M18 对它算数（M18 本身不算通过，见 M18 条目） | **被依赖方**: M31（分叉在归档上恢复检查点，边已补）、M32（按回放日志的文档 miss 过滤样本）——M32 的条目合入时补边
+**优先级**: P2 | **前置依赖**: M29（录制档位、归档器、recorder 连接）；M18 只做了抽样验证——用户 2026-10-09 裁决：这条只涉及 browser 的数据飞轮线在 M29 之后直接开始 M30，抽样的 M18 对它算数（M18 本身不算通过，见 M18 条目） | **被依赖方**: M31（分叉在归档上恢复检查点，边已补）、M32（按回放日志的文档 miss 过滤样本，边已补）
 
 #### 业务实现
 
@@ -1340,7 +1346,7 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 
 ### M31: 状态分叉（检查点恢复 + BranchLoop + 分叉任务）
 
-**优先级**: P2 | **前置依赖**: M09（ReactLoop 的一步）、M15（任务加载器与任务上下文）、M16（`require_eval` 读评测结果）、M27（类型化的 trace 读侧、自包含的 `selector_map`）、M30（离线回放：分叉在源 run 的归档上恢复检查点） | **被依赖方**: M32（分叉样本）、M33（恢复校验率、分叉覆盖）——两个条目合入时补边
+**优先级**: P2 | **前置依赖**: M09（ReactLoop 的一步）、M15（任务加载器与任务上下文）、M16（`require_eval` 读评测结果）、M27（类型化的 trace 读侧、自包含的 `selector_map`）、M30（离线回放：分叉在源 run 的归档上恢复检查点） | **被依赖方**: M32（分叉样本，边已补）、M33（恢复校验率、分叉覆盖）——M33 的条目合入时补边
 
 #### 业务实现
 
@@ -1374,6 +1380,57 @@ recorder 连接加上 browser 级 archive scope，同时隔离了传输层与事
 分叉 = 恢复 + 一个策略步 + 可配置的继续步数；"单步分叉"只是 `continue_steps: 0`。恢复的方式是策略（Loop 的受体），元素重定位与恢复校验是 capability 的知识（`RestorationSupport`），teacher 是被测对象（wired 的 LLM），三者分别挂在 Loop、capability、agent 的 LLM 上。上下文从源 trace 重建而不是从恢复出的页面重建：恢复出的页面元素 id、tab id 与截图都是新的，只有录下的数据能让第 t 步的历史与源 run 逐条相同；重放每一步都对照录下的调用自我校验，所以装配期比不了的开放旋钮（`max_actions_per_step` 在源 trace 里是 `"<omitted>"`）也在任何动作执行之前被兜住。恢复器只恢复环境、逐步交回，以后的快照恢复是同一个接口下的另一个策略。
 
 **使用的 skill**：`af-add-a-loop`、`af-add-a-receptor`、`af-trace-and-hooks`、`af-add-a-capability`、`af-regenerate-and-verify`。
+
+---
+
+### M32: 训练导出（canonical 样本 → 翻译 → 学生渲染 → 导出器 → 校验）
+
+**优先级**: P2 | **前置依赖**: M16（评测结果：`require_eval`、判定标签、泄漏扫描用的评测加载器）、M27（类型化的 trace 读侧、自包含的 `selector_map`、`llm_messages`）、M29（`occlusion: check` 的 `browser.dom_raw` 证据）、M30（`max_document_misses` 读回放日志）、M31（分叉样本、`exclude_restoration_diverged`、`RunTrace.evals()`） | **被依赖方**: M33（导出确定性、丢弃原因分布）——M33 的条目合入时补边
+
+#### 业务实现
+
+把已录制的 run（含分叉 run）离线导出成学生 agent 的训练数据：`CanonicalStepSample`（`schemas/sample.py`，领域中立）；`ActionTranslatorRegistrar`（`translator_id`：`identity` / `index_to_coordinate`，含三种遮挡证据）；ReAct 的两个可选 slot `format_react_output`（学生一侧，v1 只有 `ui_tars`）与 `parse_react_thought`（teacher 一侧，`browser_use` / `ui_tars` / `skyvern`），只由导出器校验；学生渲染（`ConfigComposer` + `AgentRuntime.prepare()` + `seed_messages()`，从不 setup、从不调 LLM）；`ExporterRegistrar`（`exporter_id`：`openai_messages`），`ExporterBase` 持任务字段与 `translator` 受体，是运行根的可选顶层层；校验器；`ExportRunner` 与 `spectragent-export` CLI；新的 Skyvern cleaner 变体 `skyvern_hit_test`（用户 2026-10-09 裁决）。设计以 `architecture_design.md` §4.1（可选 slot、`loop_fragment_builders`）、§4.2（`seed_messages`）、§4.2.1（一个根、可选层）、§4.3 与 §4.9（`CaptureCheck`）、§4.12（`skyvern_hit_test`）、§4.15（训练导出全部）、§5.6、§6、§9、§10、§12 为准；决定文件 `tmp/flywheel/M32_decisions.md`，PRD 修订记录 G1 起。
+
+#### 业务逻辑
+
+**流水线**：源（`core/trace/sources.py::match_runs`，从 `trace_branches` 挪来的同一份）→ 源级检查与筛选（`require_status`、`require_eval`——分叉 run 用源 run 的判定、`exclude_restoration_diverged`、`max_document_misses`、`exclude_sites`、去污染）→ canonical 化（可导出的步：策略步、没有 `error_phase`、至少执行了一个动作）→ 翻译 → 学生渲染 → `exporter.format` → 校验 → 切分、重复标记、manifest → 原子落盘（`<output_dir>.partial/` 全部通过才改名）。
+
+**round-trip**（PRD 的 `parse(format(a)) == a` 做不到：`normalized_1000` 在 1280 px 上 22% 的 x 回不来）：名字按学生的守卫规则解析后相等 + 不动点 `format(parse(format(a))) == format(a)` + 每个点误差 ≤ `PointGrid.quantum` + 其余设了值的参数原样回来；写不出来的参数抛 `UnrepresentableActionError` → 不可译原因 `unrepresentable`。训练标签是量化后的点，量化误差分布进 manifest。
+
+**学生上下文**：较早的 assistant 轮是 `format_react_output(第 k 步翻译后的动作, thought_k)`、weight 0，目标轮 weight 1；memory 用学生自己的策略；`today` / `max_steps` 取源 run 录下的 `loop.step_info`；学生的 env 来源 fragment 必须 ⊆ 源 run 录下的（`IncompatibleFragmentError`）；学生配置的截图管线与录下的不同就报错（`CaptureCheck`）。不可译（`no_counterpart`、`target_offscreen`、`exceeds_action_budget`、`occluded`、`occlusion_unknown`、`unrepresentable`）按 `untranslatable: drop_step`（分段）`| truncate | keep_as_text | fail` 处理，按原因计数。
+
+**遮挡**（`occlusion: check`）：证据依次是 `skyvern_hit_test` 记下的命中测试、`browser.dom_raw` 的 DOMSnapshot paint order、trace 里 BrowserUse 清洗留下的 `paint_order`；都没有就报错点名缺的证据，除非 `occlusion_unknown: untranslatable`。
+
+**校验**：图片个数、坐标范围、round-trip、泄漏扫描（源 benchmark 的评测参考不得出现在种子消息与任务文本里）、凭证扫描（`SECRET_PATTERNS` 挪到 `core/trace/secret_patterns.py`，secret guard 与导出共用）、可插拔的长度估算（v1 文本字符 / 4 + 按模型的图像 token 公式，超长报错、从不截断）。
+
+**切分**：按站点（源任务 `start_url` 的主机）或任务，从不按步；同一个 `branch_group_id` 与它的源任务在同一个切分里；去污染默认对着 `require_eval` 选中的源被评测时所在的 benchmark（源任务的 benchmark，不是评测器的 id）的任务；去污染与泄漏扫描的基准数据经导出文档自己的 `eval_loader` / `task_loader` 块读（旋钮俱全），没配的 benchmark 才用注册加载器的默认值。**分叉样本**：只导出策略步，历史来自源 run，带终止观测引用与 `branch_group_id`，组内重复的标 `duplicate_of`、不删。
+
+**`skyvern_hit_test`**：同样的页内提取（`EXTRACTION_SCRIPT` 不改）之后逐个可交互元素做 `elementFromPoint` 命中测试，记 `hit_test{center_topmost, visible_point}`；`covered_elements: drop`（默认）不给整个被盖住的元素编号；`skyvern` 逐字节不变（`DOMElementNode.hit_test` 的 `TRACE_OMIT_NONE` 让别的 cleaner 的 trace 不多一个键）。
+
+**框架与 browser 的小改动**：`IncompatibleError` 加 `needed_for` 措辞参数、`IncompatibleFragmentError` 加 `provider` 措辞参数；`PointGrid.to_grid` 与 `quantum`；`UnrepresentableActionError`（`core/loops/errors.py`）；`loop_fragment_builders` 挪进 `_loop_fragments.py`；`AgentRuntime.seed_messages`；`CaptureCheck` 协议与 environment 的 `compare_capture` 路由；browser 的 `index_points.py`、`capture_check.py`、`replay_log.document_miss_total`；`.gitignore` 加 `/datasets/`。
+
+#### 验收
+
+全部不花 LLM 费用（录制用脚本化的模型，`tests/_helpers/scripted_llm.py`）：
+
+- 同样的输入导出两次（源以不同的文件系统顺序创建）→ 输出目录整棵树的哈希相同。
+- 每个实现了 `format_react_output` 的已注册 agent 都通过通用的 round-trip 测试（v1：`ui_tars`；动作由协商出的 descriptor 的参数合成，可选参数逐个设上）；`PointGrid` 的逆与 quantum（含 1280 px 上 280/1280 的实测损失）。
+- 翻译器的几何：DPR 1 与 2、滚动、iframe 偏移、每种遮挡证据、离屏、每种不可译策略；中间一步被丢弃之后的历史。
+- **真实 Chrome**：在 M29 的 fixture 站点上新录一个 UI-TARS run（真实的 runtime 与 TraceWriter），用 `identity` 导出，渲染出的上下文与 `RunTrace.llm_messages(k)` 只差列出的预期差异（解析重问轮等）。
+- **真实 Chrome**：分别用 BrowserUse 与 `skyvern_hit_test` 录 fixture run（吸顶头部盖住链接的页面），`index_to_coordinate` 导出，遮挡检查被走到；`skyvern_hit_test` 的 live 测试（`drop` 不编号、`keep` 编号且记下命中测试）与 `skyvern` 逐字节不变的证明。
+- 隐私：植入的凭证（CDP 请求头、代理、Cookie、POST 密码、DOM 密码值）在 `output_dir` 下出现 0 次；植入的秘密进入渲染出的 prompt 时凭证校验 fail closed；输出里没有任何文件来自 `env/`。
+- 分叉样本：在 WAL 建的分叉 trace 上（只有策略步、元数据、重复标出）。
+- 学生渲染零 LLM 调用、零 capability setup（哨兵）；缺 slot / 缺 fragment / 截图管线不同各自点名报错。
+- 文档：architecture 上面列出的各节；`AGENTS.md` §2.2、§2.3、§2.7；本条目与 DAG 边；`configs/README.md`（导出、学生配置、cleaner 列表、与学生匹配的录制配置建议）；`af-trace-and-hooks`、`af-add-a-loop` 两份 guide 里 `SECRET_PATTERNS` 与可选 slot 的说法；PRD 修订记录。
+- `CONVENTIONS.md` 的闸门全绿；`uv run spectragent-gen` 之后 `tests/test_generated` 全绿。
+
+#### 设计思考
+
+学生就是一个 af agent：训练格式与服务格式一致，训练完的学生直接接回 af、用同一份 YAML 评测；新的学生格式就是新的 Agent 类。翻译只做与学生无关的换算（index → CSS px 的点），"学生写不写得出来"由学生自己的格式器判定，两处的不可译走同一个策略。导出不另立根——运行根的层本来都是可选的——也不另立 slot 机制：两个新 slot 是 ReAct 的可选 slot，谁用谁校验，与 runtime 用 `prepare` 是同一个安排。遮挡的证据按"谁录的就用谁的"排优先级，没有证据就响亮失败，而不是假装检查过。
+
+**落地（2026-10-11，待验收）**：导出包 `spectragent/export/`——`_registrar.py`（`Exporter` / `ExporterRegistrar` / `ExporterBase`、`ImageStore`、`ExportRecord`）、`settings.py`、`openai_messages.py`、`translate/`、`canonical.py`、`filters.py`、`split.py`、`benchmarks.py`（`BenchmarkLoaders`：去污染与泄漏扫描读导出文档自己的 `eval_loader` / `task_loader` 块）、`render.py`（`StudentRenderer`、`RenderedSample`）、`validate.py`、`runner.py`（`ExportRunner`、`ExportRunner.from_run`）、`cli.py`（`spectragent-export`）、`errors.py`；`schemas/sample.py`。框架一侧：`core/trace/{sources,secret_patterns}.py`、`core/loops/_loop_fragments.py`（`loop_fragment_builders`、`pinned_step_info`）、`core/loops/restore/source.py`（`recorded_observation`、`recorded_step_info`，分叉与导出共用）、`core/runtime.py::seed_messages`、`core/actions/params.py::point_params`、`core/capabilities/base.py`（`CaptureCheck`）与 `core/environments/_registrar.py::compare_capture`、`core/negotiation/observation.py`（`provider=`）；browser 一侧 `index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`、`replay/replay_log.py::document_miss_total`。发布的配置 `configs/flywheel/{ui_tars_student,export_sft}.yaml`；测试 `tests/test_export/`（真实 Chrome 验收 `test_export_live.py`：identity 导出与 `llm_messages` 逐条相同、只差记录形态之外的预期差异；BrowserUse + `browser.dom_raw` 与 `skyvern_hit_test` 两条 `index_to_coordinate` 导出）。与本条目文字的差异见 PRD 修订记录 G21 起。
+
+**使用的 skill**：`af-add-a-receptor`、`af-add-an-action`、`af-add-a-loop`、`af-add-an-observation-fragment`、`af-regenerate-and-verify`、`af-trace-and-hooks`。
 
 ---
 
@@ -1429,3 +1486,4 @@ M01 ✅ 已完成（conscribe v0.6.1）
 | M13 | 中 | BrowserSession adapter 的 observe() 拆分可能丢失状态 | adapter 内部保持 BrowserSession 完整调用，仅分拆返回值 |
 | M30 | 中 | 真实站点上的回放保真度未知（anti-bot、轮询、时间相关的 URL 与 body），Fetch 之外的外联只能靠隔离挡住，Chrome 行为随版本变化 | fixture 上的 `requires_chrome` 回归当版本金丝雀；隔离默认 `required`；S2b 在用户授权后度量 10 个真实任务，结果交给 M33 |
 | M31 | 中 | 真实站点上恢复会因异步加载、时间相关内容与 A/B 实验发散；元素重定位在重复、动态的列表上可能歧义；agent 代码一改，旧检查点就复现不了 | pinned 档位 + 离线回放；逐步校验与 `strict`，原因按枚举分类、M33 按站点统计；重放对照录下的调用自我校验，不符在任何动作之前报 `IncompatibleCheckpointError` |
+| M32 | 中 | 产出率：UI-TARS 学生写不出 teacher 的很多动作（`extract_content`、`navigate`、离屏目标、多动作步、带 `clear` 的输入）；量化损失；遮挡证据不全；训练与服务的配置漂移；teacher 的 thought 引用学生看不到的 index；凭证形状之外的秘密 | 丢弃按原因计数交给 M33，`configs/README.md` 建议与学生匹配的录制配置（纯视觉、`max_actions_per_step: 1`）；标签用量化后的点并报告误差分布；没有遮挡证据就报错；manifest 记学生配置摘要、采集检查点名差异；thought 的 index 记号默认丢掉；凭证扫描 fail closed，残余写明 |

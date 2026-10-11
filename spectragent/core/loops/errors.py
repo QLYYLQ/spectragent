@@ -17,11 +17,18 @@ step its run ended on was cut off by a cancellation hands the outcome it
 had already reached to ``AgentRuntime.execute`` without swallowing the
 cancellation (:func:`carry_outcome`, :func:`carried_outcome`).
 
+``UnrepresentableActionError`` is ``ParseError``'s dual: raised by the
+optional ``Agent.format_react_output`` slot when an action, or one of its
+parameters, has no written form in the agent's reply format. The training
+export (arch §4.15) treats it as the untranslatable reason
+``unrepresentable``; it never reaches a Loop.
+
 See docs/execution_dag.md M09 "ReactLoop" for the control flow.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,6 +53,32 @@ class ParseError(Exception):
         self.detail = detail
         self.raw_output = raw_output
         super().__init__(detail)
+
+
+class UnrepresentableActionError(Exception):
+    """An action the agent's reply format cannot write — the dual of :class:`ParseError`.
+
+    Raised by ``Agent.format_react_output`` (an optional ReAct slot, arch
+    §4.1) instead of silently dropping what it cannot write: a verb the
+    format has no word for (or that this run did not negotiate), or a
+    parameter set to a value the format cannot carry — UI-TARS has no way to
+    say ``type(clear=False)`` or ``scroll(amount=300)``. A formatter that
+    dropped such a parameter would teach a student a reply that executes
+    differently from the action it was trained on.
+
+    Attributes:
+        action_name: The action as it was handed in (fully qualified).
+        params: The parameters that cannot be written, in the action's order;
+            empty when the action itself has no written form.
+        detail: Human-readable explanation.
+    """
+
+    def __init__(self, action_name: str, params: Sequence[str], detail: str) -> None:
+        self.action_name = action_name
+        self.params = tuple(params)
+        self.detail = detail
+        what = f"{action_name}({', '.join(self.params)})" if self.params else action_name
+        super().__init__(f"cannot write {what}: {detail}")
 
 
 class RunAbort(Exception):

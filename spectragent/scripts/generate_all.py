@@ -74,6 +74,8 @@ def _collect_registrars() -> dict[str, type]:
     from spectragent.core.loops._registrar import AgentLoopRegistrar
     from spectragent.core.loops.restore import RestorerRegistrar
     from spectragent.evaluator._registrar import EvaluatorRegistrar
+    from spectragent.export._registrar import ExporterRegistrar
+    from spectragent.export.translate._registrar import ActionTranslatorRegistrar
 
     return {
         # Leaves of the wiring DAG first — not load-bearing but keeps
@@ -125,6 +127,16 @@ def _collect_registrars() -> dict[str, type]:
         # its thresholds are chosen in YAML like everything else instead
         # of living in a per-benchmark script outside the package.
         "evaluator": EvaluatorRegistrar,
+        # Training export (§4.15): how a teacher's actions become a student's.
+        # An optional top-level layer, and the exporter's ``translator``
+        # receptor — collected before the exporter so its block nests the
+        # translator union with every knob (occlusion, untranslatable) typed.
+        "action_translator": ActionTranslatorRegistrar,
+        # The export job itself (§4.15): sources, filters, split, the student's
+        # run config and the record format. An optional top-level layer — an
+        # export YAML has only this block — whose ``translator`` receptor nests
+        # the union collected just above.
+        "exporter": ExporterRegistrar,
         "agent": AgentRegistrar,
     }
 

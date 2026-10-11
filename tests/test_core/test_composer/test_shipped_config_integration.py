@@ -116,6 +116,9 @@ class TestShippedConfigs:
     ) -> None:
         root = yaml.safe_load(config_path.read_text())
         run = composer.compose(copy.deepcopy(root))
+        if "exporter" in root:
+            _check_export_config(composer, run, root)
+            return
 
         # 1. env.capabilities is a real dict of live capability instances,
         #    injected by the Composer — no setattr workaround anywhere.
@@ -165,6 +168,26 @@ class TestShippedConfigs:
         assert agent.agent_loop is not None
         assert agent.llm is not None
         assert agent.memory is not None
+
+
+def _check_export_config(composer: ConfigComposer, run: Any, root: dict[str, Any]) -> None:
+    """An export-only config (§4.15) has nothing to prepare: no agent, no environment.
+
+    It composes to exactly one exporter whose knobs arrive (the walk below
+    checks every scalar), and the student run configuration it names
+    composes to exactly one agent — that file is itself a shipped config and
+    goes through the full prepare gate on its own.
+    """
+    assert not run.instances("agent") and not run.instances("environment"), (
+        "an export config holds the exporter block only"
+    )
+    exporter = run.single("exporter")
+    assert exporter.translator is run.single("action_translator")
+    student_path = CONFIG_DIR.parent / exporter.student_run_config
+    assert student_path.is_file(), f"student_run_config {exporter.student_run_config} is missing"
+    student = composer.compose(yaml.safe_load(student_path.read_text()))
+    assert len(student.ids("agent")) == 1
+    assert not student.hooks, "a student configuration is assembled, never run: no hooks"
 
 
 def _recorded_run_of(
@@ -842,6 +865,22 @@ _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
             "environment[0].capabilities[0].profile",
         }
     ),
+    "ui_tars_student.yaml": frozenset(
+        {
+            "environment[0].capabilities[0].profile",
+        }
+    ),
+    # The one-member Literals (the only v1 value), the split salt and the two
+    # nulls that spell out a documented default.
+    "export_sft.yaml": frozenset(
+        {
+            "exporter[0].sample",
+            "exporter[0].image_store",
+            "exporter[0].split.salt",
+            "exporter[0].filters.require_eval.slug",
+            "exporter[0].decontamination.against",
+        }
+    ),
 }
 
 
@@ -856,6 +895,15 @@ class _Block:
 
 def _scalar_items(block: Mapping[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in block.items() if not isinstance(v, dict | list)}
+
+
+def _scalar_lists(block: Mapping[str, Any]) -> dict[str, list[Any]]:
+    """Non-empty lists of plain values (``sources: ["recorded/*"]``): one knob each."""
+    return {
+        k: v
+        for k, v in block.items()
+        if isinstance(v, list) and v and not any(isinstance(item, dict | list) for item in v)
+    }
 
 
 def _leaf_paths(node: Any, prefix: str = "") -> Iterator[str]:
@@ -989,6 +1037,35 @@ def _tracked_blocks(root: dict[str, Any]) -> list[_Block]:
                 )
             )
 
+    # The training export (§4.15): the exporter, its translator receptor and
+    # its nested settings (pydantic dataclasses, one level deeper for
+    # ``filters.require_eval``).
+    for x, exporter_entry in enumerate(root.get("exporter", [])):
+        blocks.append(
+            _Block(
+                f"exporter[{x}]",
+                lambda r, x=x: r["exporter"][x],
+                lambda run, x=x: run.instances("exporter")[x],
+            )
+        )
+        for child in ("translator", "filters", "split", "decontamination", "length"):
+            if isinstance(exporter_entry.get(child), dict):
+                blocks.append(
+                    _Block(
+                        f"exporter[{x}].{child}",
+                        lambda r, x=x, c=child: r["exporter"][x][c],
+                        lambda run, x=x, c=child: getattr(run.instances("exporter")[x], c),
+                    )
+                )
+        if isinstance((exporter_entry.get("filters") or {}).get("require_eval"), dict):
+            blocks.append(
+                _Block(
+                    f"exporter[{x}].filters.require_eval",
+                    lambda r, x=x: r["exporter"][x]["filters"]["require_eval"],
+                    lambda run, x=x: run.instances("exporter")[x].filters.require_eval,
+                )
+            )
+
     for h, hook_entry in enumerate(root.get("hook", [])):
         blocks.append(
             _Block(
@@ -1063,6 +1140,10 @@ def _perturb(value: Any, obj: Any = None, key: str = "") -> Any:
     if isinstance(value, int):
         return value + 7
     if isinstance(value, float):
+        # A fraction stays a fraction (``validation_fraction`` is bounded to
+        # [0, 1]); any other float moves by 7.
+        if 0.0 <= value <= 1.0:
+            return 1.0 - value if value != 0.5 else 0.25
         return value + 7.0
     if isinstance(value, str) and obj is not None:
         return _literal_alternative(obj, key, value)
@@ -1083,6 +1164,11 @@ class TestShippedValuesReachTheObjectsThatReadThem:
 
         for block in _tracked_blocks(root):
             obj = block.live(run)
+            for key, values in _scalar_lists(block.raw(root)).items():
+                assert list(getattr(obj, key)) == values, (
+                    f"{config_path.name}: {block.path}.{key} is {values!r} in the YAML but "
+                    f"{type(obj).__name__}.{key} is {getattr(obj, key)!r}"
+                )
             for key, value in _scalar_items(block.raw(root)).items():
                 assert hasattr(obj, key), (
                     f"{config_path.name}: {block.path}.{key} is accepted by the "
@@ -1103,8 +1189,14 @@ class TestShippedValuesReachTheObjectsThatReadThem:
             f"{block.path}.{key}"
             for block in _tracked_blocks(root)
             for key in _scalar_items(block.raw(root))
+        } | {
+            f"{block.path}.{key}[{index}]"
+            for block in _tracked_blocks(root)
+            for key, values in _scalar_lists(block.raw(root)).items()
+            for index in range(len(values))
         }
-        assert set(_leaf_paths(root)) - covered == _UNTRACKED_SCALARS
+        leaves = set(_leaf_paths(root))
+        assert leaves - covered == _UNTRACKED_SCALARS & leaves
 
     @pytest.mark.parametrize("config_path", SHIPPED_CONFIGS, ids=lambda p: p.name)
     def test_every_knob_is_falsifiable(

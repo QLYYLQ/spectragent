@@ -95,6 +95,16 @@ REPLAY_SCENARIOS: tuple[str, ...] = ("clock", "canary", "strict", "egress")
 BRANCH_SCENARIOS: tuple[str, ...] = ("branch",)
 #: The cookie and the ``localStorage`` key the ``mark`` button sets.
 BRANCH_MARK = "branch_mark"
+#: M32's occlusion page, kept apart for the same reason: a sticky header
+#: (``nav``, 100 CSS px tall) over links the page has scrolled underneath it
+#: (``window.scrollTo(0, 500)`` on load, 1280x720 viewport) — ``covered``
+#: lies wholly under the header, ``partial`` has its centre under it and its
+#: lower part visible, ``clear`` is uncovered, ``agree`` is a checkbox its own
+#: label's text covers (a click there still reaches it), ``below`` is past
+#: the bottom of the viewport, and a same-process iframe holds ``inside``.
+HIT_TEST_SCENARIOS: tuple[str, ...] = ("sticky",)
+#: The scroll offset the ``sticky`` page sets on load, in CSS px.
+STICKY_SCROLL_Y = 500
 #: Hosts the replay-only pages ask for and no fixture server answers: a
 #: hermetic recording (:meth:`FixtureSite.chrome_args` ``hermetic=True``)
 #: records each as a request that failed, so a replay has nothing to serve.
@@ -137,7 +147,12 @@ class LoggedRequest:
     @property
     def scenario(self) -> str | None:
         head = self.bare_path.strip("/").split("/", 1)[0]
-        known = head in SCENARIOS or head in REPLAY_SCENARIOS or head in BRANCH_SCENARIOS
+        known = (
+            head in SCENARIOS
+            or head in REPLAY_SCENARIOS
+            or head in BRANCH_SCENARIOS
+            or head in HIT_TEST_SCENARIOS
+        )
         return head if known else None
 
 
@@ -339,7 +354,7 @@ class FixtureSite:
             "service_worker": "/service_worker/page.html",
             "popup": "/popup/opener.html",
         }.get(scenario, f"/{scenario}/page.html")
-        known = SCENARIOS + REPLAY_SCENARIOS + BRANCH_SCENARIOS
+        known = SCENARIOS + REPLAY_SCENARIOS + BRANCH_SCENARIOS + HIT_TEST_SCENARIOS
         if scenario not in known:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {known}")
         origin = {"service_worker": self.sw_origin, "egress": self.ip_origin}.get(
@@ -768,6 +783,40 @@ class FixtureSite:
                     "document.getElementById('storage').textContent = "
                     f"'storage: ' + (localStorage.getItem('{BRANCH_MARK}') || '(none)');"
                     "</script>",
+                ),
+                _HTML,
+            ),
+            # ── M32's occlusion page: a sticky header over scrolled links ──
+            # Page geometry (CSS px; viewport = page - (0, STICKY_SCROLL_Y)):
+            # nav 0..100 (sticky, z-index 10), covered (20,530) 240x40,
+            # partial (300,540) 240x100, clear (580,700) 240x40, agree's label
+            # (20,800) 240x30, below (20,1800), iframe (860,600) 300x120.
+            "/sticky/page.html": static(
+                self._page(
+                    "sticky header",
+                    "<style>body{margin:0;height:2400px;font:16px/20px sans-serif}"
+                    "#nav{position:sticky;top:0;height:100px;background:#223;z-index:10}"
+                    "#nav a{color:#fff}"
+                    ".spot{position:absolute;width:240px;display:block}</style>"
+                    '<header id="nav"><a id="home" href="#home">Home</a></header>'
+                    '<a id="covered" class="spot" href="#covered" '
+                    'style="left:20px;top:530px;height:40px">Covered link</a>'
+                    '<a id="partial" class="spot" href="#partial" '
+                    'style="left:300px;top:540px;height:100px">Partial link</a>'
+                    '<a id="clear" class="spot" href="#clear" '
+                    'style="left:580px;top:700px;height:40px">Clear link</a>'
+                    '<label id="agree-label" for="agree" class="spot" '
+                    'style="left:20px;top:800px;height:30px">'
+                    '<input id="agree" type="checkbox" '
+                    'style="position:absolute;left:0;top:0;margin:0;width:20px;height:20px">'
+                    '<span style="position:absolute;left:0;top:0;width:240px;height:30px;'
+                    'background:#eef">I agree</span></label>'
+                    '<a id="below" class="spot" href="#below" '
+                    'style="left:20px;top:1800px;height:40px">Below the fold</a>'
+                    '<iframe id="frame" class="spot" '
+                    'style="left:860px;top:600px;width:300px;height:120px;border:0" '
+                    'srcdoc=\'<button id="inside" type="button">Inside</button>\'></iframe>'
+                    f"<script>window.scrollTo(0, {STICKY_SCROLL_Y});</script>",
                 ),
                 _HTML,
             ),

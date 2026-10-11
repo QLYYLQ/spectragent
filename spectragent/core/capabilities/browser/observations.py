@@ -34,6 +34,7 @@ from spectragent.core.capabilities.browser.dom.budget import DOMBudgetReport
 from spectragent.core.capabilities.browser.dom.models import (
     DOMElementNode,
     DOMState,
+    omitted_when_none,
     traced_fields,
 )
 from spectragent.schemas.observation._registrar import FragmentBase
@@ -123,6 +124,7 @@ def _node_to_json(node: DOMElementNode, visited: set[int], depth: int) -> dict[s
     return {
         spec.name: _to_json(getattr(node, spec.name), visited, depth + 1)
         for spec in traced_fields(node)
+        if not (omitted_when_none(spec) and getattr(node, spec.name) is None)
     }
 
 
@@ -149,6 +151,7 @@ def _to_json(value: Any, visited: set[int], depth: int = 0) -> Any:
             return {
                 spec.name: _to_json(getattr(value, spec.name), visited, depth + 1)
                 for spec in traced_fields(value)
+                if not (omitted_when_none(spec) and getattr(value, spec.name) is None)
             }
         finally:
             visited.discard(vid)

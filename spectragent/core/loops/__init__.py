@@ -17,6 +17,7 @@ from spectragent.core.loops.errors import (
     ParseError,
     RunAbort,
     RunEnded,
+    UnrepresentableActionError,
     carried_outcome,
     carry_outcome,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "ParseError",
     "RunAbort",
     "RunEnded",
+    "UnrepresentableActionError",
     "carry_outcome",
     "carried_outcome",
     "validate_compatibility",

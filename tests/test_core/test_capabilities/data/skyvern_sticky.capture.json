@@ -1,0 +1,766 @@
+{
+  "ax_tree": {},
+  "frames": {
+    "14605002D308EF176884C68E866EDE09": {
+      "ax_tree": {},
+      "frames": {},
+      "js_click_listener_ids": null,
+      "loader_id": null,
+      "namespace": 0,
+      "raw_dom": {
+        "skyvern_frame_id": "14605002D308EF176884C68E866EDE09",
+        "skyvern_nodes": {
+          "0": {
+            "attributes": [
+              "id",
+              "inside",
+              "type",
+              "button"
+            ],
+            "backendNodeId": 11,
+            "childNodeCount": 1,
+            "localName": "button",
+            "nodeId": 0,
+            "nodeName": "BUTTON",
+            "nodeType": 1,
+            "nodeValue": ""
+          }
+        },
+        "skyvern_scroll": {
+          "height": 120,
+          "viewportHeight": 120,
+          "viewportWidth": 300,
+          "width": 300,
+          "x": 0,
+          "y": 0
+        },
+        "skyvern_tree": {
+          "attributes": {},
+          "children": [
+            {
+              "attributes": {},
+              "children": [
+                {
+                  "attributes": {
+                    "id": "inside",
+                    "type": "button"
+                  },
+                  "children": [
+                    {
+                      "nodeType": 3,
+                      "tagName": "#text",
+                      "text": "Inside"
+                    }
+                  ],
+                  "clientRect": {
+                    "height": 17,
+                    "width": 48,
+                    "x": 2,
+                    "y": 2
+                  },
+                  "contentOffset": {
+                    "x": 8,
+                    "y": 3
+                  },
+                  "interactive": true,
+                  "rect": {
+                    "height": 21,
+                    "width": 51.578125,
+                    "x": 8,
+                    "y": 10
+                  },
+                  "ref": 0,
+                  "scrollRects": {
+                    "height": 17,
+                    "width": 48,
+                    "x": 0,
+                    "y": 0
+                  },
+                  "shadowRoots": [],
+                  "tagName": "button",
+                  "text": "Inside"
+                }
+              ],
+              "clientRect": {
+                "height": 23,
+                "width": 284,
+                "x": 0,
+                "y": 0
+              },
+              "contentOffset": {
+                "x": 0,
+                "y": 0
+              },
+              "interactive": false,
+              "rect": {
+                "height": 23,
+                "width": 284,
+                "x": 8,
+                "y": 8
+              },
+              "ref": null,
+              "scrollRects": {
+                "height": 23,
+                "width": 284,
+                "x": 0,
+                "y": 0
+              },
+              "shadowRoots": [],
+              "tagName": "body",
+              "text": ""
+            }
+          ],
+          "clientRect": {
+            "height": 120,
+            "width": 300,
+            "x": 0,
+            "y": 0
+          },
+          "contentOffset": {
+            "x": 0,
+            "y": 0
+          },
+          "interactive": false,
+          "rect": {
+            "height": 39,
+            "width": 300,
+            "x": 0,
+            "y": 0
+          },
+          "ref": null,
+          "scrollRects": {
+            "height": 120,
+            "width": 300,
+            "x": 0,
+            "y": 0
+          },
+          "shadowRoots": [],
+          "tagName": "html",
+          "text": ""
+        }
+      },
+      "session_id": "A3B8525E4C17AA86BA28DE751B74D75C",
+      "snapshot": {},
+      "target_id": null,
+      "url": null
+    }
+  },
+  "js_click_listener_ids": null,
+  "loader_id": "8A53992F5151A23CCE423C0A18EBC37E",
+  "namespace": 0,
+  "raw_dom": {
+    "skyvern_frame_id": "4CDF56A72E8219A9503C654CC3A9247F",
+    "skyvern_frame_owners": {
+      "14605002D308EF176884C68E866EDE09": 10
+    },
+    "skyvern_nodes": {
+      "0": {
+        "attributes": [
+          "id",
+          "home",
+          "href",
+          "#home"
+        ],
+        "backendNodeId": 4,
+        "childNodeCount": 1,
+        "localName": "a",
+        "nodeId": 0,
+        "nodeName": "A",
+        "nodeType": 1,
+        "nodeValue": ""
+      },
+      "1": {
+        "attributes": [
+          "id",
+          "covered",
+          "class",
+          "spot",
+          "href",
+          "#covered",
+          "style",
+          "left:20px;top:530px;height:40px"
+        ],
+        "backendNodeId": 5,
+        "childNodeCount": 1,
+        "localName": "a",
+        "nodeId": 0,
+        "nodeName": "A",
+        "nodeType": 1,
+        "nodeValue": ""
+      },
+      "2": {
+        "attributes": [
+          "id",
+          "partial",
+          "class",
+          "spot",
+          "href",
+          "#partial",
+          "style",
+          "left:300px;top:540px;height:100px"
+        ],
+        "backendNodeId": 6,
+        "childNodeCount": 1,
+        "localName": "a",
+        "nodeId": 0,
+        "nodeName": "A",
+        "nodeType": 1,
+        "nodeValue": ""
+      },
+      "3": {
+        "attributes": [
+          "id",
+          "clear",
+          "class",
+          "spot",
+          "href",
+          "#clear",
+          "style",
+          "left:580px;top:700px;height:40px"
+        ],
+        "backendNodeId": 7,
+        "childNodeCount": 1,
+        "localName": "a",
+        "nodeId": 0,
+        "nodeName": "A",
+        "nodeType": 1,
+        "nodeValue": ""
+      },
+      "4": {
+        "attributes": [
+          "id",
+          "agree",
+          "type",
+          "checkbox",
+          "style",
+          "position:absolute;left:0;top:0;margin:0;width:20px;height:20px"
+        ],
+        "backendNodeId": 8,
+        "childNodeCount": 0,
+        "localName": "input",
+        "nodeId": 0,
+        "nodeName": "INPUT",
+        "nodeType": 1,
+        "nodeValue": ""
+      },
+      "5": {
+        "attributes": [
+          "id",
+          "below",
+          "class",
+          "spot",
+          "href",
+          "#below",
+          "style",
+          "left:20px;top:1800px;height:40px"
+        ],
+        "backendNodeId": 9,
+        "childNodeCount": 1,
+        "localName": "a",
+        "nodeId": 0,
+        "nodeName": "A",
+        "nodeType": 1,
+        "nodeValue": ""
+      },
+      "6": {
+        "attributes": [
+          "id",
+          "frame",
+          "class",
+          "spot",
+          "style",
+          "left:860px;top:600px;width:300px;height:120px;border:0",
+          "srcdoc",
+          "<button id=\"inside\" type=\"button\">Inside</button>"
+        ],
+        "backendNodeId": 10,
+        "childNodeCount": 0,
+        "contentDocument": {
+          "backendNodeId": 3,
+          "baseURL": "http://127.0.0.1:51229/sticky/page.html",
+          "childNodeCount": 1,
+          "compatibilityMode": "NoQuirksMode",
+          "documentURL": "about:srcdoc",
+          "localName": "",
+          "nodeId": 0,
+          "nodeName": "#document",
+          "nodeType": 9,
+          "nodeValue": "",
+          "xmlVersion": ""
+        },
+        "frameId": "14605002D308EF176884C68E866EDE09",
+        "localName": "iframe",
+        "nodeId": 0,
+        "nodeName": "IFRAME",
+        "nodeType": 1,
+        "nodeValue": ""
+      }
+    },
+    "skyvern_scroll": {
+      "height": 2400,
+      "viewportHeight": 720,
+      "viewportWidth": 1280,
+      "width": 1265,
+      "x": 0,
+      "y": 500
+    },
+    "skyvern_tree": {
+      "attributes": {},
+      "children": [
+        {
+          "attributes": {},
+          "children": [
+            {
+              "attributes": {
+                "id": "nav"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "href": "#home",
+                    "id": "home"
+                  },
+                  "children": [
+                    {
+                      "nodeType": 3,
+                      "tagName": "#text",
+                      "text": "Home"
+                    }
+                  ],
+                  "clientRect": {
+                    "height": 0,
+                    "width": 0,
+                    "x": 0,
+                    "y": 0
+                  },
+                  "contentOffset": {
+                    "x": 0,
+                    "y": 0
+                  },
+                  "interactive": true,
+                  "rect": {
+                    "height": 22,
+                    "width": 43.46875,
+                    "x": 0,
+                    "y": -1
+                  },
+                  "ref": 0,
+                  "scrollRects": {
+                    "height": 0,
+                    "width": 0,
+                    "x": 0,
+                    "y": 0
+                  },
+                  "shadowRoots": [],
+                  "tagName": "a",
+                  "text": "Home"
+                }
+              ],
+              "clientRect": {
+                "height": 100,
+                "width": 1265,
+                "x": 0,
+                "y": 0
+              },
+              "contentOffset": {
+                "x": 0,
+                "y": 0
+              },
+              "interactive": false,
+              "rect": {
+                "height": 100,
+                "width": 1265,
+                "x": 0,
+                "y": 0
+              },
+              "ref": null,
+              "scrollRects": {
+                "height": 100,
+                "width": 1265,
+                "x": 0,
+                "y": 0
+              },
+              "shadowRoots": [],
+              "tagName": "header",
+              "text": ""
+            },
+            {
+              "attributes": {
+                "class": "spot",
+                "href": "#covered",
+                "id": "covered",
+                "style": "left:20px;top:530px;height:40px"
+              },
+              "children": [
+                {
+                  "nodeType": 3,
+                  "tagName": "#text",
+                  "text": "Covered link"
+                }
+              ],
+              "clientRect": {
+                "height": 40,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "contentOffset": {
+                "x": 0,
+                "y": 0
+              },
+              "interactive": true,
+              "rect": {
+                "height": 40,
+                "width": 240,
+                "x": 20,
+                "y": 30
+              },
+              "ref": 1,
+              "scrollRects": {
+                "height": 40,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "shadowRoots": [],
+              "tagName": "a",
+              "text": "Covered link"
+            },
+            {
+              "attributes": {
+                "class": "spot",
+                "href": "#partial",
+                "id": "partial",
+                "style": "left:300px;top:540px;height:100px"
+              },
+              "children": [
+                {
+                  "nodeType": 3,
+                  "tagName": "#text",
+                  "text": "Partial link"
+                }
+              ],
+              "clientRect": {
+                "height": 100,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "contentOffset": {
+                "x": 0,
+                "y": 0
+              },
+              "interactive": true,
+              "rect": {
+                "height": 100,
+                "width": 240,
+                "x": 300,
+                "y": 40
+              },
+              "ref": 2,
+              "scrollRects": {
+                "height": 100,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "shadowRoots": [],
+              "tagName": "a",
+              "text": "Partial link"
+            },
+            {
+              "attributes": {
+                "class": "spot",
+                "href": "#clear",
+                "id": "clear",
+                "style": "left:580px;top:700px;height:40px"
+              },
+              "children": [
+                {
+                  "nodeType": 3,
+                  "tagName": "#text",
+                  "text": "Clear link"
+                }
+              ],
+              "clientRect": {
+                "height": 40,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "contentOffset": {
+                "x": 0,
+                "y": 0
+              },
+              "interactive": true,
+              "rect": {
+                "height": 40,
+                "width": 240,
+                "x": 580,
+                "y": 200
+              },
+              "ref": 3,
+              "scrollRects": {
+                "height": 40,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "shadowRoots": [],
+              "tagName": "a",
+              "text": "Clear link"
+            },
+            {
+              "attributes": {
+                "class": "spot",
+                "for": "agree",
+                "id": "agree-label",
+                "style": "left:20px;top:800px;height:30px"
+              },
+              "children": [
+                {
+                  "attributes": {
+                    "id": "agree",
+                    "style": "position:absolute;left:0;top:0;margin:0;width:20px;height:20px",
+                    "type": "checkbox",
+                    "value": "on"
+                  },
+                  "children": [],
+                  "clientRect": {
+                    "height": 20,
+                    "width": 20,
+                    "x": 0,
+                    "y": 0
+                  },
+                  "contentOffset": {
+                    "x": 0,
+                    "y": 0
+                  },
+                  "interactive": true,
+                  "rect": {
+                    "height": 20,
+                    "width": 20,
+                    "x": 20,
+                    "y": 300
+                  },
+                  "ref": 4,
+                  "scrollRects": {
+                    "height": 20,
+                    "width": 20,
+                    "x": 0,
+                    "y": 0
+                  },
+                  "shadowRoots": [],
+                  "tagName": "input",
+                  "text": ""
+                },
+                {
+                  "attributes": {
+                    "style": "position:absolute;left:0;top:0;width:240px;height:30px;background:#eef"
+                  },
+                  "children": [
+                    {
+                      "nodeType": 3,
+                      "tagName": "#text",
+                      "text": "I agree"
+                    }
+                  ],
+                  "clientRect": {
+                    "height": 30,
+                    "width": 240,
+                    "x": 0,
+                    "y": 0
+                  },
+                  "contentOffset": {
+                    "x": 0,
+                    "y": 0
+                  },
+                  "interactive": false,
+                  "rect": {
+                    "height": 30,
+                    "width": 240,
+                    "x": 20,
+                    "y": 300
+                  },
+                  "ref": null,
+                  "scrollRects": {
+                    "height": 30,
+                    "width": 240,
+                    "x": 0,
+                    "y": 0
+                  },
+                  "shadowRoots": [],
+                  "tagName": "span",
+                  "text": "I agree"
+                }
+              ],
+              "clientRect": {
+                "height": 30,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "contentOffset": {
+                "x": 0,
+                "y": 0
+              },
+              "interactive": false,
+              "rect": {
+                "height": 30,
+                "width": 240,
+                "x": 20,
+                "y": 300
+              },
+              "ref": null,
+              "scrollRects": {
+                "height": 30,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "shadowRoots": [],
+              "tagName": "label",
+              "text": ""
+            },
+            {
+              "attributes": {
+                "class": "spot",
+                "href": "#below",
+                "id": "below",
+                "style": "left:20px;top:1800px;height:40px"
+              },
+              "children": [
+                {
+                  "nodeType": 3,
+                  "tagName": "#text",
+                  "text": "Below the fold"
+                }
+              ],
+              "clientRect": {
+                "height": 40,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "contentOffset": {
+                "x": 0,
+                "y": 0
+              },
+              "interactive": true,
+              "rect": {
+                "height": 40,
+                "width": 240,
+                "x": 20,
+                "y": 1300
+              },
+              "ref": 5,
+              "scrollRects": {
+                "height": 40,
+                "width": 240,
+                "x": 0,
+                "y": 0
+              },
+              "shadowRoots": [],
+              "tagName": "a",
+              "text": "Below the fold"
+            },
+            {
+              "attributes": {
+                "class": "spot",
+                "id": "frame",
+                "srcdoc": "<button id=\"inside\" type=\"button\">Inside</button>",
+                "style": "left:860px;top:600px;width:300px;height:120px;border:0"
+              },
+              "children": [],
+              "clientRect": {
+                "height": 120,
+                "width": 300,
+                "x": 0,
+                "y": 0
+              },
+              "contentOffset": {
+                "x": 0,
+                "y": 0
+              },
+              "interactive": true,
+              "rect": {
+                "height": 120,
+                "width": 300,
+                "x": 860,
+                "y": 100
+              },
+              "ref": 6,
+              "scrollRects": {
+                "height": 120,
+                "width": 300,
+                "x": 0,
+                "y": 0
+              },
+              "shadowRoots": [],
+              "tagName": "iframe",
+              "text": ""
+            }
+          ],
+          "clientRect": {
+            "height": 2400,
+            "width": 1265,
+            "x": 0,
+            "y": 0
+          },
+          "contentOffset": {
+            "x": 0,
+            "y": 0
+          },
+          "interactive": false,
+          "rect": {
+            "height": 2400,
+            "width": 1265,
+            "x": 0,
+            "y": -500
+          },
+          "ref": null,
+          "scrollRects": {
+            "height": 2400,
+            "width": 1265,
+            "x": 0,
+            "y": 0
+          },
+          "shadowRoots": [],
+          "tagName": "body",
+          "text": ""
+        }
+      ],
+      "clientRect": {
+        "height": 720,
+        "width": 1265,
+        "x": 0,
+        "y": 0
+      },
+      "contentOffset": {
+        "x": 0,
+        "y": 0
+      },
+      "interactive": false,
+      "rect": {
+        "height": 2400,
+        "width": 1265,
+        "x": 0,
+        "y": -500
+      },
+      "ref": null,
+      "scrollRects": {
+        "height": 2400,
+        "width": 1265,
+        "x": 0,
+        "y": 500
+      },
+      "shadowRoots": [],
+      "tagName": "html",
+      "text": ""
+    }
+  },
+  "session_id": "A3B8525E4C17AA86BA28DE751B74D75C",
+  "snapshot": {},
+  "target_id": null,
+  "url": "http://127.0.0.1:51229/sticky/page.html"
+}

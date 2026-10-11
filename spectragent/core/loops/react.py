@@ -30,7 +30,7 @@ from spectragent.core.llm.exceptions import (
 from spectragent.core.llm.messages import AssistantMessage, UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops._loop_fragments import (
-    last_action_result_obs,
+    loop_fragment_builders,
     populate_loop_fragments,
 )
 from spectragent.core.loops._registrar import AgentLoopBase
@@ -40,11 +40,6 @@ from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult, AgentUsage
 from spectragent.schemas.observation.dynamic_model import summarize_observation
-from spectragent.schemas.observation.fragments import (
-    HistoryObs,
-    StepInfoObs,
-    TaskObs,
-)
 from spectragent.schemas.restoration import RestorationCheck
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 
@@ -221,6 +216,9 @@ class ReactLoop(AgentLoopBase):
 
     Requires agents to have ``build_react_prompt`` and ``parse_react_output``
     callable slots. Optionally uses ``get_react_output_model`` and ``prepare``.
+    ``format_react_output`` (the inverse of ``parse_react_output``) and
+    ``parse_react_thought`` are ReAct slots too, but the training export calls
+    them, not this Loop, and checks them before it does (arch §4.1 "可选 slot").
 
     Configuration fields (conscribe config-annotated):
     - ``max_steps``: maximum number of steps before termination
@@ -236,7 +234,12 @@ class ReactLoop(AgentLoopBase):
 
     __registry_key__ = "react"
     __required_slots__ = {"build_react_prompt", "parse_react_output"}
-    __optional_slots__ = {"get_react_output_model", "prepare"}
+    __optional_slots__ = {
+        "get_react_output_model",
+        "prepare",
+        "format_react_output",
+        "parse_react_thought",
+    }
     __required_message_protocols__: ClassVar[frozenset[MessageProtocol]] = frozenset(
         {"user_assistant"}
     )
@@ -1117,25 +1120,20 @@ class ReactLoop(AgentLoopBase):
         return self.today_override or date.today().isoformat()
 
     def _loop_fragment_builders(self, run: LoopRun, step_idx: int) -> dict[str, Any]:
-        """Builders for every loop-source fragment ReactLoop owns.
+        """Builders for every loop-source fragment, from this run's values.
 
-        ``populate_loop_fragments`` only invokes the builders whose keys
-        are in the agent's negotiated ``loop_sourced`` set, so unused
-        builders incur zero cost.
+        The construction itself is ``_loop_fragments.loop_fragment_builders``
+        (shared with ``BranchLoop`` and the training export); this Loop hands
+        it ``max_steps`` and today's date (``today_override`` first).
         """
-        task = run.task
-        step_records = run.step_records
-        prev_step_record = run.prev_step_record
-        return {
-            "loop.task": lambda: TaskObs(user_request=task),
-            "loop.step_info": lambda: StepInfoObs(
-                step=step_idx + 1,
-                max_steps=self.max_steps,
-                today=self._today_iso(),
-            ),
-            "loop.history": lambda: HistoryObs(items=list(step_records)),
-            "loop.action_result": lambda: last_action_result_obs(prev_step_record),
-        }
+        return loop_fragment_builders(
+            task=run.task,
+            step=step_idx,
+            max_steps=self.max_steps,
+            today=self._today_iso(),
+            history=run.step_records,
+            prev_step=run.prev_step_record,
+        )
 
     def _build_result(
         self,

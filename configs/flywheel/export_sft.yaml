@@ -1,0 +1,52 @@
+# Export recorded runs as an SFT dataset for the UI-TARS student (data flywheel,
+# M32):
+#
+#   uv run spectragent-export --config configs/flywheel/export_sft.yaml
+#
+# An export-only document: one `exporter:` block (plus, optionally, the
+# `eval_loader:` / `task_loader:` blocks decontamination and the leak scan read
+# benchmark data through), no agent, no environment — it reads traces, renders
+# each exportable step with the student's own run configuration
+# (student_run_config; assembled, never run) and writes
+# <output_dir>/{train,validation}.jsonl, *.samples.jsonl, images/ and
+# manifest.json — first into <output_dir>.partial, renamed only when every
+# check passed. See configs/README.md "Exporting training data" and
+# docs/architecture_design.md §4.15.
+exporter:
+  - exporter_id: openai_messages
+    sample: per_step                 # the only v1 value
+    image_store: files               # the only v1 value: images/<sha256><suffix>, stored once
+    sources_root: traces             # null: traces in the working directory
+    sources: ["recorded/*"]          # globs under sources_root, sorted by path (null: ["*"])
+    filters:
+      require_status: completed      # error | any (the run manifest's status)
+      require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
+      exclude_restoration_diverged: true
+      max_document_misses: 0         # null: no replay-log filter
+      exclude_sites: []              # host names, suffix-matched
+    split: { by: site, validation_fraction: 0.1, salt: af-split-1 }   # by: site | task
+    # against: null means "the benchmarks the sources were evaluated on": the
+    # benchmark of each run filters.require_eval selected (a branch run's source
+    # task's), never the evaluator's id — so runs recorded on online_mind2web
+    # tasks are left out by default (the export then fails with ExportEmptyError
+    # saying so). To train on them, name a disjoint evaluation set here, or write
+    # `against: []` to decontaminate nothing. Benchmark data is read through
+    # eval_loader / task_loader blocks added to this file (benchmark_name,
+    # data_dir, subset); a benchmark without one uses its registered loader's
+    # defaults ($SPECTRAGENT_BENCHMARK_DATA).
+    decontamination: { against: null, match: either }
+    translator:
+      translator_id: index_to_coordinate
+      occlusion: check               # "off" must be quoted (a bare off is a YAML boolean)
+      occlusion_unknown: raise       # untranslatable: a step with no evidence is dropped instead
+      untranslatable: drop_step      # truncate | keep_as_text | fail
+    student_run_config: configs/flywheel/ui_tars_student.yaml
+    thought_source: teacher          # none
+    thought_index_refs: drop         # keep
+    # The student keeps every turn's screenshot (memory: simple), so a sample's
+    # length grows with its segment: the last step of a full 30-step segment at
+    # 1280x720 carries ~36k image tokens (qwen_vl) before any text. The budget
+    # holds that with room for the thoughts; a trainer with a shorter context
+    # needs a student with fewer max_steps, or the export fails by name.
+    length: { max_tokens: 65536 }    # image_tokens: qwen_vl (default) | fixed + fixed_image_tokens
+    output_dir: datasets/sft_v1

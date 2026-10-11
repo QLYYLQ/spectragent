@@ -20,7 +20,8 @@ the Loop holds no agent state and never stores deps on itself.
 # spectragent/core/loops/react.py:233-239
 __registry_key__ = "react"
 __required_slots__ = {"build_react_prompt", "parse_react_output"}
-__optional_slots__ = {"get_react_output_model", "prepare"}
+__optional_slots__ = {"get_react_output_model", "prepare",
+                      "format_react_output", "parse_react_thought"}  # the last two: §8
 __required_message_protocols__ = frozenset({"user_assistant"})
 __requires_env__ = True
 ```
@@ -449,3 +450,30 @@ parse_retries_per_step: Annotated[
   browser agent (`test_branch_context_identity.py`); and, in a real Chrome, 100% prefix
   verification, identical terminal screenshots and branch isolation
   (`test_core/test_capabilities/test_browser_branch_live.py`).
+
+## 8. What M32 added: optional slots consumed by others, one builder for loop fragments
+
+`docs/architecture_design.md` §4.1 ("可选 slot", "一个 run 与一步") and §4.15 are the design.
+
+- **An optional slot is validated by whoever calls it, right before calling it.**
+  `__optional_slots__` lists agent methods used *if present*, and the user need not be the
+  Loop: `prepare` is called by `AgentRuntime.seed_messages(task)`; `ReactLoop` also lists
+  `format_react_output` (the inverse of `parse_react_output`, the student side) and
+  `parse_react_thought` (the teacher side), which only the training export calls.
+  `prepare()` never checks an optional slot; the export checks after assembling the
+  student and raises the existing `IncompatibleError` with `needed_for=` (the phrase is
+  `export/errors.py::needed_for_export`), so a missing optional slot never reads like a
+  Loop's required one. Do not invent an `__inverse_slots__` mechanism; a new ReAct-family
+  Loop inherits the set.
+- **Loop-source fragments have one builder.** `core/loops/_loop_fragments.py::
+  loop_fragment_builders(*, task, step, max_steps, today, history, prev_step)` returns the
+  four `loop.*` builders `populate_loop_fragments` calls; `ReactLoop._loop_fragment_builders`
+  hands it the live run's values, `BranchLoop` the budget its source recorded at the
+  checkpoint (`pinned_step_info(recorded, today_override=...)`: the recorded `max_steps` and
+  `today`, `today_override` winning), and the export's student renderer the values each
+  recorded step was shown. A Loop that needs different values passes different arguments —
+  never a second copy of the construction.
+- **The memory protocol has a third user.** The export writes each earlier assistant turn of a
+  student context through `ReactLoop._remember_reply(memory, text, [])` — the same method the
+  live step and `BranchLoop`'s replay use — and seeds each context segment with
+  `AgentRuntime.seed_messages`, never by calling the agent's `prepare` itself.

@@ -13,9 +13,12 @@ See docs/architecture_design.md §4.6 and docs/execution_dag.md M06.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
 
 
@@ -226,5 +229,47 @@ class RestorationSupport(Protocol):
         restorer's. A measure this capability does not take, or could not
         take this time, is ``None``. A count since the previous call (see
         the class docstring) is reported once: called again, it reads 0.
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class CaptureComparison:
+    """How a recorded capture compares with what this configuration would capture.
+
+    Attributes:
+        mismatches: One line per difference: the fragment, the setting and
+            both values. Any mismatch means the recorded observation is not
+            what this configuration would show an agent.
+        unchecked: Settings that cannot be compared from configuration alone,
+            each with the reason — not differences.
+    """
+
+    mismatches: tuple[str, ...] = ()
+    unchecked: tuple[str, ...] = ()
+
+
+@runtime_checkable
+class CaptureCheck(Protocol):
+    """Optional: would this capability, configured as it is, capture what was recorded?
+
+    The training export renders samples with a student's run configuration
+    from observations another configuration recorded (arch §4.15). A
+    screenshot pipeline that differs — format, viewport, device scale factor,
+    image size — trains the student on images it will never see when it
+    serves, and only the capability knows what its configuration captures.
+    A capability that can tell implements this; one that cannot writes
+    nothing: ``EnvironmentBase.compare_capture`` routes by key prefix and a
+    capability without the protocol contributes nothing (§4.3). Not part of
+    :class:`BaseCapability`; ``CapabilityBase`` gives no default.
+    """
+
+    def compare_capture(self, recorded: Mapping[str, FragmentBase]) -> CaptureComparison:
+        """Compare this capability's fragments in *recorded* with its configuration.
+
+        *recorded* holds one step's recorded env-source fragments, keyed
+        fully qualified; the capability reads the keys under its own prefix.
+        Reads configuration and the fragments only: no setup, no backend, no
+        cache.
         """
         ...

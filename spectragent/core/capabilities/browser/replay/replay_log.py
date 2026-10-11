@@ -255,3 +255,22 @@ def diverged_steps(reader: ArchiveReader) -> list[int]:
             if step is not None and entry.diverged and entry.kind in ("miss", "summary")
         }
     )
+
+
+def document_miss_total(reader: ArchiveReader) -> int:
+    """The run's main-frame document misses: what :attr:`ReplayLog.diverged_total` counted.
+
+    The same rule, read back: every ``diverged`` entry counts once, and a
+    ``summary`` of folded ``diverged`` entries counts every entry it folds
+    (``count``) — so a polling page that missed its document a thousand
+    times counts a thousand, not the three written in full. The trailing
+    (close-out) collections count too. ``0`` for a run with no replay log
+    (a live run). The training export's ``max_document_misses`` filter reads
+    it (arch §4.15).
+    """
+    total = 0
+    for _step, entry in iter_replay_log(reader):
+        if not entry.diverged:
+            continue
+        total += (entry.count or 0) if entry.kind == "summary" else 1
+    return total

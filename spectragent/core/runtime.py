@@ -144,6 +144,9 @@ class AgentRuntime:
         self._env_evidence_privacy: list[str] = []
         self._active_descriptors: list[Any] = []
         self._memory: Any = None
+        # The woven agent :meth:`prepare` returned — whose optional ``prepare``
+        # slot :meth:`seed_messages` calls.
+        self._prepared_agent: Any = None
         self._recorder = StepRecorder()
         self._env_needs_teardown = False
         # Set the moment :meth:`_finish` starts closing out the current
@@ -464,6 +467,7 @@ class AgentRuntime:
         # :attr:`active_descriptors`.
         self._active_descriptors = active_descriptors
         self._memory = memory
+        self._prepared_agent = wrapped_agent
 
         # Step 6: Bind the archivers — the last statement, so no later
         # assembly check can fail after a capability's state changed. On
@@ -477,6 +481,33 @@ class AgentRuntime:
             env.bind_archivers(archivers)
 
         return wrapped_agent
+
+    def seed_messages(self, task: str) -> list[Any]:
+        """The run's seed messages for *task*, after :meth:`prepare` (arch §4.2).
+
+        Calls the prepared agent's optional ``prepare`` slot with the
+        negotiated, guarded descriptors this assembly advertises and the
+        Loop's execution limits its signature names (:meth:`_loop_policy_for`);
+        ``[]`` when the agent has no ``prepare``. Writes no memory, touches no
+        environment: :meth:`execute` clears the memory and writes these, and
+        the training export's student renderer seeds each context segment
+        with them — the same assembly as a live run, without running one.
+
+        Raises:
+            RuntimeError: :meth:`prepare` has not run.
+        """
+        agent = self._prepared_agent
+        if agent is None:
+            raise RuntimeError("AgentRuntime.seed_messages() needs prepare() first")
+        agent_prepare = getattr(agent, "prepare", None)
+        if not callable(agent_prepare):
+            return []
+        seeds: Any = agent_prepare(
+            task=task,
+            action_descriptors=self._active_descriptors,
+            **self._loop_policy_for(agent_prepare),
+        )
+        return list(seeds or [])
 
     # -- execute: convenience one-shot -------------------------
 
@@ -585,18 +616,11 @@ class AgentRuntime:
             memory.clear()
         self._recorder.clear()
 
-        # Agent.prepare is a pure builder: it produces seed messages for
-        # the run (typically the system prompt) and AgentRuntime owns the
-        # memory write. Skipped if the agent doesn't define ``prepare``.
-        agent_prepare = getattr(prepared_agent, "prepare", None)
-        if callable(agent_prepare):
-            seed_messages = agent_prepare(
-                task=task,
-                action_descriptors=self._active_descriptors,
-                **self._loop_policy_for(agent_prepare),
-            )
-            if seed_messages and memory is not None:
-                memory.add_messages(seed_messages)
+        # The seed messages (typically the system prompt) come from the
+        # agent's ``prepare`` slot; AgentRuntime owns the memory write.
+        seed_messages = self.seed_messages(task)
+        if seed_messages and memory is not None:
+            memory.add_messages(seed_messages)
 
         # Hook lifecycle — run_start. Deliberately *before* env setup: a
         # setup failure must still land in a trace, and that needs the

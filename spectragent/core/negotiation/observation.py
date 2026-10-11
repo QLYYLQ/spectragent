@@ -58,6 +58,8 @@ class IncompatibleFragmentError(Exception):
         missing: set[str],
         provided: set[str],
         requested_by: Mapping[str, Sequence[str]] | None = None,
+        *,
+        provider: str = "environment",
     ) -> None:
         requested_by = {
             key: tuple(sources) for key, sources in sorted((requested_by or {}).items())
@@ -66,14 +68,17 @@ class IncompatibleFragmentError(Exception):
             f"{key} ← {' and '.join(sources)}" for key, sources in requested_by.items()
         )
         super().__init__(
-            f"Required observation fragments not provided by environment. "
+            f"Required observation fragments not provided by {provider}. "
             f"Missing: {sorted(missing)}. "
             + (f"Requested by: {attribution}. " if attribution else "")
-            + f"Environment provides: {sorted(provided)}."
+            + f"{provider[:1].upper()}{provider[1:]} provides: {sorted(provided)}."
         )
         self.missing = missing
         self.provided = provided
         self.requested_by = requested_by
+        #: Who failed to provide (M32): ``environment`` at run assembly; the
+        #: training export names the source run whose recording lacks them.
+        self.provider = provider
 
 
 class AmbiguousFragmentError(AmbiguousKeyError):

@@ -64,6 +64,8 @@ CLAUDE.md
 
 # Local-only data sets
 /benchmarks/
+# Training datasets written by `spectragent-export` (and their `.partial` staging dirs).
+/datasets/
 # Benchmark data is fetched, not tracked, and no longer ships in the wheel.
 # Loaders find it via `data_dir:` or $SPECTRAGENT_BENCHMARK_DATA — see
 # configs/README.md.

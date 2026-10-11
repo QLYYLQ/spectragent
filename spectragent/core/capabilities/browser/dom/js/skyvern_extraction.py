@@ -118,3 +118,71 @@ EXTRACTION_SCRIPT = r"""
   };
 })()
 """
+
+#: The ``skyvern_hit_test`` cleaner's in-page hit test (arch §4.12), called with
+#: ``Runtime.callFunctionOn`` on the object ``EXTRACTION_SCRIPT`` returned, in
+#: the same JS world, right after the tree is read — so ``this.refs`` are the
+#: very elements the tree's ``ref`` numbers name.
+#:
+#: For each ref whose box (``getBoundingClientRect``) meets this frame's
+#: viewport, ``elementFromPoint`` at the centre of the visible part (the
+#: element's shadow root's own ``elementFromPoint`` when it lives in one);
+#: when the centre is covered, a 5x5 grid inside the visible part, each edge
+#: inset 2 CSS px, row by row. A point *hits* when the topmost element there
+#: is the element, one of its descendants (walking ``parentNode`` and
+#: ``ShadowRoot.host`` up), or a ``<label>`` whose ``control`` it is — a click
+#: there reaches it. The result, by value, maps each ref to
+#: ``{center_topmost, offset}``: ``offset`` is the hit point relative to the
+#: element's own box (the page script cannot know where its frame sits in the
+#: top-level viewport; the cleaner adds that), or ``null`` when nothing hit.
+#: A ref outside the viewport is absent: off-screen is not covered.
+HIT_TEST_FUNCTION = r"""
+function() {
+  const refs = this.refs || [];
+  const root = document.documentElement;
+  const vw = (root && root.clientWidth) || window.innerWidth;
+  const vh = (root && root.clientHeight) || window.innerHeight;
+  const GRID = 5, INSET = 2;
+  const out = {};
+
+  function reaches(el, top) {
+    for (let node = top; node; node = node.parentNode || node.host || null) {
+      if (node === el) return true;
+      if (node instanceof HTMLLabelElement && node.control === el) return true;
+    }
+    return false;
+  }
+
+  function topAt(el, x, y) {
+    const scope = el.getRootNode();
+    const finder = scope instanceof ShadowRoot && scope.elementFromPoint ? scope : document;
+    return finder.elementFromPoint(x, y);
+  }
+
+  refs.forEach((el, ref) => {
+    if (!(el instanceof Element) || !el.isConnected) return;
+    const box = el.getBoundingClientRect();
+    const x1 = Math.max(box.left, 0), y1 = Math.max(box.top, 0);
+    const x2 = Math.min(box.right, vw), y2 = Math.min(box.bottom, vh);
+    if (x2 <= x1 || y2 <= y1) return;
+    const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+    if (reaches(el, topAt(el, cx, cy))) {
+      out[ref] = {center_topmost: true, offset: [cx - box.left, cy - box.top]};
+      return;
+    }
+    const ix = Math.min(INSET, (x2 - x1) / 2), iy = Math.min(INSET, (y2 - y1) / 2);
+    const sx = (x2 - x1 - 2 * ix) / (GRID - 1), sy = (y2 - y1 - 2 * iy) / (GRID - 1);
+    for (let row = 0; row < GRID; row++) {
+      for (let column = 0; column < GRID; column++) {
+        const px = x1 + ix + column * sx, py = y1 + iy + row * sy;
+        if (reaches(el, topAt(el, px, py))) {
+          out[ref] = {center_topmost: false, offset: [px - box.left, py - box.top]};
+          return;
+        }
+      }
+    }
+    out[ref] = {center_topmost: false, offset: null};
+  });
+  return out;
+}
+"""
