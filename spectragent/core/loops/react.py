@@ -96,6 +96,7 @@ def _parse_feedback(exc: ParseError) -> str:
     )
 
 
+# TODO 这里的class为什么是react specific的？按理来说这些内容每个agent loop都有，而且差不多的
 @dataclass
 class _UsageTally:
     """The run's token totals, holding "not measured" apart from "measured zero".
