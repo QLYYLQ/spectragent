@@ -183,7 +183,7 @@ def test_identity_export_matches_recorded_inputs(composer: ConfigComposer, tmp_p
     out = tmp_path / "dataset"
     report = run_export(composer, exporter_entry(traces, out))
     assert sum(report.samples.values()) == 3
-    assert report.manifest["capture"]["unchecked"] == []
+    assert report.manifest.capture.unchecked == []
     ids = [
         line["id"]
         for path in sorted(out.glob("*.jsonl"))
@@ -319,7 +319,7 @@ def test_skyvern_hit_test_run_exports_with_hit_test_occlusion(
     _check_partial_below_the_header(found[0])
     assert found[1]["evidence"] == "hit_test" and found[1]["point_source"] == "center"
     # No raw DOM was bound: without the hit test the check would have had no evidence.
-    assert json.dumps(report.manifest["translator"]) == json.dumps(
+    assert json.dumps(report.manifest.translator) == json.dumps(
         {
             "occlusion": "check",
             "occlusion_unknown": "raise",

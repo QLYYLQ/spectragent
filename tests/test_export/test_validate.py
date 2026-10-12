@@ -137,7 +137,11 @@ class TestReferenceLeaks:
             tmp_path, "online_mind2web", [{"task_id": "t-1", "expected_answer": ANSWER}]
         )
         scanner = self._scan(item, tmp_path, monkeypatch)
-        assert (scanner.checked, scanner.unchecked) == (1, {})
+        assert (scanner.compared, scanner.no_eval_loader, scanner.no_reference_answer) == (
+            1,
+            {},
+            {},
+        )
 
         seeded = SystemMessage(
             content=f"{item.context[0].text}\nHint: the  trader joe's on hollywood BLVD opens at 8 am"
@@ -162,19 +166,30 @@ class TestReferenceLeaks:
         page = UserMessage(content=f"the page says: {ANSWER}")
         self._scan(replace(item, context=(*item.context, page)), tmp_path, monkeypatch)
 
-    def test_a_short_answer_is_not_scanned_for(
-        self, item: RenderedSample, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("answer", ["Yes", None])
+    def test_a_short_or_missing_answer_is_not_scanned_for_nor_counted_as_compared(
+        self,
+        item: RenderedSample,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        answer: str | None,
     ) -> None:
-        write_benchmark(tmp_path, "online_mind2web", [{"task_id": "t-1", "expected_answer": "Yes"}])
+        """Nothing was compared, so nothing is counted as compared."""
+        write_benchmark(
+            tmp_path, "online_mind2web", [{"task_id": "t-1", "expected_answer": answer}]
+        )
         told = item.sample.model_copy(update={"task": "Is it open? Yes"})
-        assert self._scan(replace(item, sample=told), tmp_path, monkeypatch).checked == 1
+        scanner = self._scan(replace(item, sample=told), tmp_path, monkeypatch)
+        assert scanner.compared == 0
+        assert scanner.no_reference_answer == {"online_mind2web": 1}
+        assert scanner.no_eval_loader == {}
 
     def test_no_eval_loader_is_unchecked_a_missing_reference_is_an_error(
         self, item: RenderedSample, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         scanner = ReferenceScanner(BenchmarkLoaders())
         scanner.check(item, benchmark="no_such_benchmark", subset="", task_id="t-1")
-        assert (scanner.checked, scanner.unchecked) == (0, {"no_such_benchmark": 1})
+        assert (scanner.compared, scanner.no_eval_loader) == (0, {"no_such_benchmark": 1})
         write_benchmark(
             tmp_path, "online_mind2web", [{"task_id": "other", "expected_answer": ANSWER}]
         )
@@ -200,7 +215,7 @@ class TestReferenceLeaks:
         loader = OnlineMind2WebEvalLoader(subset="Hard", data_dir=str(directory))
         scanner = ReferenceScanner(BenchmarkLoaders(eval_loaders=[loader]))
         scanner.check(item, benchmark="online_mind2web", subset="test", task_id="t-1")
-        assert (scanner.checked, scanner.unchecked) == (1, {})
+        assert (scanner.compared, scanner.no_eval_loader) == (1, {})
         told = item.sample.model_copy(update={"task": f"Answer: {ANSWER}"})
         with pytest.raises(ReferenceLeakError):
             scanner.check(

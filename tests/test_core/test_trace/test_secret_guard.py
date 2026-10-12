@@ -312,7 +312,7 @@ class TestTraceCarriesNoCredentials:
         assert scanned[evidence / "evidence.txt.gz"] == EVIDENCE_TEXT.decode()
         assert (evidence / "evidence.txt.gz").read_bytes()[:2] == GZIP_MAGIC
         config = RunTrace(redacted_run).config
-        assert config.env_evidence_recorded is True
+        assert config.negotiation is not None and config.negotiation.active_archivers
 
     def test_the_setup_context_is_redacted_by_value(self, redacted_run):
         """The token is replaced, the rest of the URL survives, the ledger says where."""

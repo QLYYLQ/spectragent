@@ -45,13 +45,13 @@ ENTRY: dict[str, Any] = {
     "sources": ["recorded/*"],
     "filters": {
         "require_status": "completed",
-        "require_eval": {"evaluator_id": "online_mind2web", "label": 1, "slug": None},
+        "require_eval": None,
         "exclude_restoration_diverged": True,
         "max_document_misses": 0,
         "exclude_sites": [],
     },
     "split": {"by": "site", "validation_fraction": 0.1, "salt": "af-split-1"},
-    "decontamination": {"against": None, "match": "either"},
+    "decontamination": {"against": [], "match": "either"},
     "translator": {
         "translator_id": "index_to_coordinate",
         "occlusion": "check",
@@ -117,9 +117,7 @@ def test_an_exporter_only_yaml_composes_and_every_knob_arrives(composer: ConfigC
     assert exporter.translator is run.single("action_translator")
     assert isinstance(exporter.translator, IndexToCoordinateTranslator)
     assert exporter.sources == ("recorded/*",)
-    assert exporter.filters == ExportFilters(
-        require_eval=RequireEval(evaluator_id="online_mind2web", label=1)
-    )
+    assert exporter.filters == ExportFilters()
     assert exporter.split == SplitSettings()
     assert exporter.decontamination == Decontamination()
     assert exporter.length == LengthBudget(max_tokens=32768)
@@ -128,6 +126,14 @@ def test_an_exporter_only_yaml_composes_and_every_knob_arrives(composer: ConfigC
         "datasets/sft_v1",
     )
     assert exporter.root() == (Path.cwd() / "traces").resolve()
+
+
+def test_a_verdict_filter_still_arrives_when_written(composer: ConfigComposer) -> None:
+    """The evaluator is dormant, not deleted: ``require_eval`` is optional, null by default."""
+    entry = copy.deepcopy(ENTRY)
+    entry["filters"]["require_eval"] = {"evaluator_id": "online_mind2web", "label": 1, "slug": None}
+    exporter = _compose(composer, entry).single("exporter")
+    assert exporter.filters.require_eval == RequireEval(evaluator_id="online_mind2web", label=1)
 
 
 def test_nulls_are_the_documented_defaults(composer: ConfigComposer) -> None:
@@ -142,7 +148,7 @@ def test_nulls_are_the_documented_defaults(composer: ConfigComposer) -> None:
     assert exporter.root() == (Path.cwd() / "traces").resolve()
     assert exporter.filters == ExportFilters() and exporter.filters.max_document_misses == 0
     assert exporter.split == SplitSettings(by="site", validation_fraction=0.1, salt="af-split-1")
-    assert exporter.decontamination.against is None
+    assert exporter.decontamination.against == ()
     assert (exporter.thought_source, exporter.thought_index_refs) == ("teacher", "drop")
     assert exporter.length is None
 
@@ -155,6 +161,7 @@ def test_nulls_are_the_documented_defaults(composer: ConfigComposer) -> None:
         (("split", "by"), "step"),
         (("thought_source",), "relabel"),
         (("decontamination", "against"), [{"benchmark": "x", "subst": "y"}]),
+        (("decontamination", "against"), None),  # [] means none; null is no list
         (("length", "image_tokens"), "fixed"),  # fixed needs fixed_image_tokens
         (("filters", "max_document_misses"), -1),
         (("split", "validation_fraction"), 1.5),

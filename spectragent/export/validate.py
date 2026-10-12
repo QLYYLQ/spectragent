@@ -13,7 +13,8 @@ fails the whole export — nothing reaches ``output_dir``:
   loader, read through the export document's loaders, ``benchmarks.py``;
   normalised, at least 8 characters) never appears in text the export itself
   puts into a prompt: the seed (system) messages and the task text. The page
-  showing the answer is the world, not a leak;
+  showing the answer is the world, not a leak. Only a sample whose answer
+  was actually looked for counts as compared;
 - **credentials** — no credential-shaped string
   (``core/trace/secret_patterns.py``) in any text byte to be written;
 - **length** — a pluggable :class:`LengthEstimator`; over ``max_tokens`` is
@@ -159,26 +160,35 @@ class ReferenceScanner:
     The loaders are the export document's (``benchmarks.py``): the eval
     loaders it configures for the benchmark, searched in document order for
     the task, else the benchmark's registered eval loader built with its
-    defaults and the source run's subset. A benchmark with neither is
-    ``unchecked`` (counted in the manifest); a loader that cannot load, or
-    has no reference for the task, fails the export.
+    defaults and the source run's subset. A loader that cannot load, or has
+    no reference for the task, fails the export.
+
+    Counted for the manifest, apart — a sample nothing was compared for is
+    never counted as compared:
 
     Attributes:
-        checked: Samples whose reference was read and scanned for.
-        unchecked: Benchmark → samples with no eval loader to read from.
+        compared: Samples whose reference answer was looked for in the
+            prompt's own text.
+        no_eval_loader: Benchmark → samples whose benchmark has no eval
+            loader to read a reference from.
+        no_reference_answer: Benchmark → samples whose reference carries no
+            answer to look for: none, or one shorter than
+            :data:`MIN_LEAK_CHARS` after normalisation.
     """
 
     def __init__(self, loaders: BenchmarkLoaders) -> None:
         self._loaders = loaders
-        self.checked = 0
-        self.unchecked: dict[str, int] = {}
+        self.compared = 0
+        self.no_eval_loader: dict[str, int] = {}
+        self.no_reference_answer: dict[str, int] = {}
 
     def check(self, rendered: RenderedSample, *, benchmark: str, subset: str, task_id: str) -> None:
         """Raise :class:`ReferenceLeakError` when the reference answer is in a prompt's own text."""
         sample_id = rendered.sample.sample_id
+        label = benchmark or "-"
         loaders = self._eval_loaders(benchmark, subset, sample_id)
         if not loaders:
-            self.unchecked[benchmark or "-"] = self.unchecked.get(benchmark or "-", 0) + 1
+            self.no_eval_loader[label] = self.no_eval_loader.get(label, 0) + 1
             return
         reference = next(
             (found for loader in loaders if (found := loader.get(task_id)) is not None), None
@@ -191,10 +201,11 @@ class ReferenceScanner:
                 f"the {benchmark} eval loader (subset {', '.join(subsets)}) has no reference "
                 f"for task {task_id!r}",
             )
-        self.checked += 1
         answer = normalized_text(reference.expected_answer or "")
         if len(answer) < MIN_LEAK_CHARS:
+            self.no_reference_answer[label] = self.no_reference_answer.get(label, 0) + 1
             return
+        self.compared += 1
         seed = " ".join(
             message.text for message in rendered.context if isinstance(message, SystemMessage)
         )

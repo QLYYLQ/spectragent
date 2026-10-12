@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from spectragent.core.archive.privacy import RedactionLedger
 from spectragent.core.composer import ConfigComposer
@@ -15,11 +16,9 @@ from spectragent.export.benchmarks import BenchmarkLoaders
 from spectragent.export.errors import ExportConfigError, ExportEmptyError
 from spectragent.export.settings import BenchmarkRef, Decontamination, SplitSettings
 from spectragent.export.split import Decontaminator, split_key, split_of
+from spectragent.schemas.dataset import BenchmarkEntry, DecontaminationLedger, LeakScanLedger
 from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export, write_benchmark
 from tests._helpers.export_traces import click_at, ui_tars_step, write_ui_tars_run
-from tests._helpers.trace_builder import eval_result
-
-PASSED = {"judge": eval_result(evaluator_id="online_mind2web", predicted_label=1)}
 
 
 def _identity(**fields: str) -> TaskIdentity:
@@ -72,7 +71,7 @@ class TestTheSplit:
             composer,
             exporter_entry(sources, out, split={"by": "site", "validation_fraction": 0.5}),
         )
-        keys = report.manifest["split"]["keys"]
+        keys = report.manifest.split.keys
         assert sorted(keys) == [f"site{i}.example.test" for i in range(4)]
         assert set(keys.values()) == {"train", "validation"}, "the fixture exercises both"
         seen: dict[str, set[str]] = {}
@@ -88,31 +87,24 @@ class TestTheSplit:
 
 
 class TestDecontamination:
-    def test_the_default_is_the_evaluated_benchmarks(self) -> None:
+    def test_only_the_listed_benchmarks_are_checked(self) -> None:
         loaders = BenchmarkLoaders()
-        decon = Decontaminator.configure(
-            Decontamination(), evaluated=["b2", "b1", "b2", ""], loaders=loaders
+        default = Decontaminator.configure(Decontamination(), loaders=loaders)
+        assert not default.decontaminated and default.against == ()
+        listed = Decontaminator.configure(
+            Decontamination(against=(BenchmarkRef(benchmark="b1"),)), loaders=loaders
         )
-        assert decon.configured
-        assert decon.against == (BenchmarkRef(benchmark="b1"), BenchmarkRef(benchmark="b2"))
-        unconfigured = Decontaminator.configure(Decontamination(), evaluated=None, loaders=loaders)
-        assert not unconfigured.configured and unconfigured.against == ()
-        nothing_named = Decontaminator.configure(Decontamination(), evaluated=[""], loaders=loaders)
-        assert not nothing_named.configured
-        explicit_none = Decontaminator.configure(
-            Decontamination(against=()), evaluated=["b1"], loaders=loaders
-        )
-        assert explicit_none.configured and explicit_none.against == ()
+        assert listed.decontaminated and listed.against == (BenchmarkRef(benchmark="b1"),)
 
-    def test_decontamination_default_follows_require_eval(
+    def test_null_is_not_a_benchmark_list(self) -> None:
+        """Nothing is inferred from an evaluator: ``[]`` (the default) says "none"."""
+        with pytest.raises(ValidationError):
+            Decontamination(against=None)  # type: ignore[arg-type]
+
+    def test_a_listed_benchmark_leaves_its_tasks_out(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``against: null`` is the benchmark the sources were evaluated on — not the evaluator.
-
-        The grader here is ``exact_match``, a registered evaluator that is no
-        benchmark's loader key: the default must not look ``exact_match`` up
-        as a benchmark, it checks the sources' own benchmark.
-        """
+        """By task id or by site and instruction — no verdict, no evaluator involved."""
         data = tmp_path / "data"
         monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(data))
         write_benchmark(
@@ -126,9 +118,9 @@ class TestDecontamination:
                     "start_url": "https://shop.example.test/x",
                 },
             ],
-            subset="All",  # the loader's default subset: what `against: null` loads
+            subset="All",  # the loader's default subset: what a reference without one loads
         )
-        write_benchmark(  # the subset the sources were recorded (and graded) on
+        write_benchmark(  # the subset the sources were recorded on
             data,
             "online_mind2web",
             [
@@ -139,53 +131,50 @@ class TestDecontamination:
         )
         sources = tmp_path / "sources"
         steps = [ui_tars_step(click_at(1, 1))]
-        graded = {"judge": eval_result(evaluator_id="exact_match", predicted_label=1)}
         for run_id, task_id, task in (
             ("eval-task", "t-eval", "Buy a kettle"),
             ("same-site-and-instruction", "t-new", "find the blue kettle"),
             ("train-task", "t-train", "Put the blue kettle in the cart"),
         ):
             write_ui_tars_run(
-                sources,
-                run_id,
-                steps,
-                benchmark="online_mind2web",
-                task_id=task_id,
-                task=task,
-                verdicts=graded,
+                sources, run_id, steps, benchmark="online_mind2web", task_id=task_id, task=task
             )
         entry = exporter_entry(
             sources,
             tmp_path / "out",
-            filters={
-                "require_eval": {"evaluator_id": "exact_match"},
-                "max_document_misses": None,
-            },
-            decontamination={"against": None, "match": "either"},
+            decontamination={"against": [{"benchmark": "online_mind2web"}], "match": "either"},
         )
         report = run_export(composer, entry)
-        filtered = report.manifest["sources"]["filtered"]
-        assert filtered == {
+        assert report.manifest.sources.filtered == {
             "eval-task": "decontaminated: task 't-eval' is an evaluation task of online_mind2web",
             "same-site-and-instruction": (
                 "decontaminated: site shop.example.test and instruction match an evaluation "
                 "task of online_mind2web"
             ),
         }
-        assert [s["path"] for s in report.manifest["sources"]["exported"]] == ["train-task"]
-        assert report.manifest["decontamination"] == {
-            "configured": True,
-            "against": [{"benchmark": "online_mind2web", "subset": None}],
-            "match": "either",
-            "excluded": 2,
-        }
-        assert report.manifest["leak_scan"] == {"checked": 1, "unchecked": {}}
+        assert [s.path for s in report.manifest.sources.exported] == ["train-task"]
+        assert report.manifest.decontamination == DecontaminationLedger(
+            decontaminated=True,
+            against=[BenchmarkEntry(benchmark="online_mind2web", subset=None)],
+            match="either",
+            excluded=2,
+        )
+        assert report.manifest.leak_scan == LeakScanLedger(
+            compared=1, no_eval_loader={}, no_reference_answer={}
+        )
 
         only_ids = run_export(
             composer,
-            {**entry, "decontamination": {"match": "task_id"}, "output_dir": str(tmp_path / "o2")},
+            {
+                **entry,
+                "decontamination": {
+                    "against": [{"benchmark": "online_mind2web"}],
+                    "match": "task_id",
+                },
+                "output_dir": str(tmp_path / "o2"),
+            },
         )
-        assert list(only_ids.manifest["sources"]["filtered"]) == ["eval-task"]
+        assert list(only_ids.manifest.sources.filtered) == ["eval-task"]
 
     def test_the_documents_loaders_are_the_ones_read(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -235,12 +224,14 @@ class TestDecontamination:
         against = {"against": [{"benchmark": "online_mind2web", "subset": "Hard"}]}
         entry = exporter_entry(sources, tmp_path / "out", decontamination=against)
         report = run_export(composer, entry, **loaders)
-        assert report.manifest["sources"]["filtered"] == {
+        assert report.manifest.sources.filtered == {
             "eval-task": (
                 "decontaminated: task 't-eval' is an evaluation task of online_mind2web/Hard"
             )
         }
-        assert report.manifest["leak_scan"] == {"checked": 1, "unchecked": {}}
+        assert report.manifest.leak_scan == LeakScanLedger(
+            compared=1, no_eval_loader={}, no_reference_answer={}
+        )
 
         only_all = {"eval_loader": loaders["eval_loader"][1:], "task_loader": []}
         entry = exporter_entry(sources, tmp_path / "o2", decontamination=against)
@@ -250,7 +241,7 @@ class TestDecontamination:
     def test_recording_on_the_eval_benchmark_itself_empties_the_export(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The documented fail-safe of the default: explained, not silent."""
+        """Listing the benchmark the runs were recorded on leaves them all out: explained."""
         data = tmp_path / "data"
         monkeypatch.setenv("SPECTRAGENT_BENCHMARK_DATA", str(data))
         write_benchmark(
@@ -263,32 +254,29 @@ class TestDecontamination:
             [ui_tars_step(click_at(1, 1))],
             benchmark="online_mind2web",
             task_id="t-1",
-            verdicts=PASSED,
         )
         entry = exporter_entry(
             sources,
             tmp_path / "out",
-            filters={
-                "require_eval": {"evaluator_id": "online_mind2web"},
-                "max_document_misses": None,
-            },
-            decontamination={"against": None},
+            decontamination={"against": [{"benchmark": "online_mind2web"}]},
         )
         with pytest.raises(ExportEmptyError) as excinfo:
             run_export(composer, entry)
         assert excinfo.value.counts == {"sources decontaminated": 1}
         assert not (tmp_path / "out").exists() and not (tmp_path / "out.partial").exists()
 
-    def test_unconfigured_is_warned_and_recorded(
+    def test_the_default_decontaminates_nothing_and_says_so(
         self, composer: ConfigComposer, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         sources = tmp_path / "sources"
         write_ui_tars_run(sources, "run", [ui_tars_step(click_at(1, 1))])
-        entry = exporter_entry(sources, tmp_path / "out", decontamination={"against": None})
-        with caplog.at_level(logging.WARNING, logger="spectragent.export.runner"):
+        entry = exporter_entry(sources, tmp_path / "out", decontamination=None)
+        with caplog.at_level(logging.INFO, logger="spectragent.export.runner"):
             report = run_export(composer, entry)
-        assert "decontamination is not configured" in caplog.text
-        assert report.manifest["decontamination"]["configured"] is False
+        assert "decontamination.against lists no benchmark" in caplog.text
+        assert report.manifest.decontamination == DecontaminationLedger(
+            decontaminated=False, against=[], match="either", excluded=0
+        )
 
     def test_a_benchmark_that_cannot_load_fails_the_export(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

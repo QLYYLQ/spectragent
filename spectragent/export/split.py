@@ -11,23 +11,19 @@ split, whatever else is exported.
 
 **Decontamination.** A source whose task is one of the student's future
 evaluation tasks is left out (``decontaminated``). ``against`` lists those
-benchmarks; ``null`` means the benchmarks the sources were evaluated on — the
-benchmarks of the sources ``filters.require_eval`` selected (a branch run's
-source task's; a verdict records its run's benchmark), never the evaluator's
-id, which names a grader, not a benchmark (``exact_match`` grades any). Without
-``require_eval`` nothing is decontaminated — the manifest then says
-``configured: false`` and the runner warns. ``match``: ``task_id`` (the same
-benchmark, a task id of its eval loader), ``site_instruction`` (the same
-start-URL host and normalised instruction as a task of its task loader) or
-``either``. Benchmark data is read through ``benchmarks.py`` — the export
-document's own loaders first; a benchmark whose loaders cannot load fails the
-export: decontamination that silently checked nothing is worse than none.
+benchmarks explicitly — nothing is inferred from the evaluator or from
+verdicts; the default, ``[]``, decontaminates nothing, and the manifest says
+``decontaminated: false``. ``match``: ``task_id`` (the same benchmark, a task
+id of its eval loader), ``site_instruction`` (the same start-URL host and
+normalised instruction as a task of its task loader) or ``either``. Benchmark
+data is read through ``benchmarks.py`` — the export document's own loaders
+first; a benchmark whose loaders cannot load fails the export:
+decontamination that silently checked nothing is worse than none.
 """
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -70,44 +66,30 @@ class Decontaminator:
     """Which sources an evaluation benchmark rules out (module docstring).
 
     Attributes:
-        against: The benchmarks checked, after the ``null`` default resolved.
-        configured: Whether anything is checked at all.
+        against: The benchmarks checked — exactly the configured list.
         match: How a source's task is matched.
         loaders: Where the benchmarks' tasks are read (``benchmarks.py``).
     """
 
     against: tuple[BenchmarkRef, ...]
-    configured: bool
     match: Literal["task_id", "site_instruction", "either"]
     loaders: BenchmarkLoaders
     _tasks: dict[tuple[str, str | None], _BenchmarkTasks] = field(default_factory=dict)
 
     @classmethod
-    def configure(
-        cls,
-        settings: Decontamination,
-        *,
-        evaluated: Sequence[str] | None,
-        loaders: BenchmarkLoaders,
-    ) -> Decontaminator:
-        """The checks *settings* name, ``null`` resolved to the *evaluated* benchmarks.
+    def configure(cls, settings: Decontamination, *, loaders: BenchmarkLoaders) -> Decontaminator:
+        """The checks *settings* name.
 
         Args:
             settings: The ``decontamination`` knobs.
-            evaluated: The benchmarks the sources were evaluated on — those of
-                the sources ``filters.require_eval`` selected — or ``None``
-                without ``require_eval``.
             loaders: Where the benchmarks' tasks are read.
         """
-        if settings.against is not None:
-            against = tuple(settings.against)
-            return cls(against=against, configured=True, match=settings.match, loaders=loaders)
-        resolved = tuple(
-            BenchmarkRef(benchmark=name) for name in sorted(set(evaluated or ())) if name
-        )
-        return cls(
-            against=resolved, configured=bool(resolved), match=settings.match, loaders=loaders
-        )
+        return cls(against=tuple(settings.against), match=settings.match, loaders=loaders)
+
+    @property
+    def decontaminated(self) -> bool:
+        """Whether any benchmark is checked: ``against`` names at least one."""
+        return bool(self.against)
 
     def reason(self, identity: TaskIdentity) -> str | None:
         """Why *identity*'s task is an evaluation task, or ``None``.
@@ -134,14 +116,6 @@ class Decontaminator:
                     f"evaluation task of {label}"
                 )
         return None
-
-    def summary(self) -> dict[str, Any]:
-        """What the dataset manifest records about the check."""
-        return {
-            "configured": self.configured,
-            "against": [{"benchmark": ref.benchmark, "subset": ref.subset} for ref in self.against],
-            "match": self.match,
-        }
 
     def _load(self, ref: BenchmarkRef) -> _BenchmarkTasks:
         key = (ref.benchmark, ref.subset)

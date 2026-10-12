@@ -27,6 +27,7 @@ from spectragent.flywheel.chain import (
     run_chain,
     selected_stages,
 )
+from tests._helpers.flywheel_traces import dataset_manifest
 from tests._helpers.trace_builder import new_wal
 
 RUN_YAML: dict[str, Any] = {
@@ -108,7 +109,7 @@ def commit_one_run(raw: dict[str, Any], argv: list[str]) -> int:
 def publish_dataset(raw: dict[str, Any], _argv: list[str]) -> int:
     output = Path(raw["exporter"][0]["output_dir"])
     output.mkdir(parents=True)
-    (output / "manifest.json").write_text('{"format": "af-sft-1", "samples": 0}\n')
+    (output / "manifest.json").write_text(dataset_manifest(samples=0).model_dump_json() + "\n")
     return 0
 
 

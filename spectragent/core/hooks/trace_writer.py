@@ -202,9 +202,10 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 description=(
                     "Record the resolved configuration verbatim, including "
                     "api keys, CDP URLs carrying a token, session tokens and "
-                    "proxy credentials. Off by default: only fields explicitly "
-                    "marked trace-safe are recorded, everything else lands as "
-                    '``"<omitted>"``. Turn it on for a local debugging run '
+                    "proxy credentials. Off by default: closed-set values and "
+                    "numbers are recorded as they are, a free-form string only "
+                    "when its field is marked trace-safe, every other one lands "
+                    'as ``"<omitted>"``. Turn it on for a local debugging run '
                     "whose trace directory will not be shared — the trace "
                     "records that you did (``config.secrets_recorded``)."
                 ),
@@ -311,8 +312,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         observation_negotiation: Any = None,
         action_negotiation: Any = None,
         archive_negotiation: Any = None,
-        env_evidence_recorded: bool = False,
-        env_evidence_privacy: Sequence[str] = (),
+        env_evidence_privacy: Sequence[str] | None = None,
         task_setup: Mapping[str, Any] | None = None,
         branch: BranchProvenance | None = None,
         **kwargs: Any,
@@ -363,9 +363,9 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 The negotiation results, recorded as
                 :class:`~spectragent.core.trace.models.TraceNegotiation`.
                 ``archive_negotiation`` is ``None`` when no hook archives.
-            env_evidence_recorded / env_evidence_privacy: Whether the run
-                bound archivers and the privacy markers they declared —
-                provenance, recorded as given (sorted).
+            env_evidence_privacy: The privacy markers the bound archivers
+                declared — provenance, recorded as given (sorted) — or
+                ``None`` when the run bound none (then not written).
             task_setup: The environment setup context this task was started
                 with, recorded as a
                 :class:`~spectragent.core.trace.models.TaskSetupRecord` —
@@ -408,9 +408,9 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
 
         # Two views of the same object, and they are not interchangeable.
         # ``resolved_full`` never reaches disk: it exists so the digest
-        # can cover ``max_steps``, ``temperature`` and every other
-        # unmarked knob a sweep varies, which the recorded view collapses
-        # into one ``"<omitted>"``. See ``configuration_digest``.
+        # can cover the model name, a ``user_agent`` and every other
+        # unmarked free-form string a sweep varies, which the recorded view
+        # collapses into one ``"<omitted>"``. See ``configuration_digest``.
         resolved_full = redact_config(resolved_config, record_secrets=True)
         recorded = resolved_full if self.record_secrets else redact_config(resolved_config)
 
@@ -431,8 +431,9 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 archive=archive_negotiation,
             ),
             secrets_recorded=bool(self.record_secrets),
-            env_evidence_recorded=bool(env_evidence_recorded),
-            env_evidence_privacy=sorted(set(env_evidence_privacy)),
+            env_evidence_privacy=(
+                sorted(set(env_evidence_privacy)) if env_evidence_privacy is not None else None
+            ),
             task_setup=_task_setup_record(task_setup, record_secrets=self.record_secrets),
             branch=branch,
         )

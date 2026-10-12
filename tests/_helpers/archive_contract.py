@@ -698,7 +698,7 @@ async def assert_empty_archive_costs_nothing(harness: ArchiveHarness, trace_root
     assert not (run_dir / ENV_DIR).exists(), "an empty archive wrote env/"
     trace = RunTrace(run_dir)
     assert trace.step_count == 2
-    assert trace.config.env_evidence_recorded is False
+    assert trace.config.env_evidence_privacy is None
     for key in harness.keys:
         assert list(trace.iter_archive(key, include_trailing=True)) == []
     assert trace.archive_run_file(harness.capability_id) is None
@@ -733,7 +733,6 @@ async def assert_run_records_stay_per_capability(harness: ArchiveHarness, trace_
         task="archive contract: two archiving capabilities",
         config={},
         archive_negotiation=negotiation,
-        env_evidence_recorded=True,
     )
     run_dir = writer.run_dir
     assert run_dir is not None
@@ -902,7 +901,6 @@ class _Recording:
             task="archive contract",
             config={},
             archive_negotiation=self.negotiation,
-            env_evidence_recorded=True,
             env_evidence_privacy=sorted(
                 {
                     marker

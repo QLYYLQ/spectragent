@@ -14,6 +14,7 @@ import hashlib
 from pathlib import Path
 
 from spectragent.core.composer import ConfigComposer
+from spectragent.schemas.dataset import DatasetManifest
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export
 from tests._helpers.export_traces import (
@@ -74,11 +75,13 @@ def _lines(out: Path) -> list[dict]:
     return [line for path in sorted(out.glob("*.samples.jsonl")) for line in read_jsonl(path)]
 
 
-def _export(composer: ConfigComposer, tmp_path: Path, **overrides: object) -> tuple[Path, dict]:
+def _export(
+    composer: ConfigComposer, tmp_path: Path, **overrides: object
+) -> tuple[Path, DatasetManifest]:
     _sources(tmp_path / "src")
     out = tmp_path / "out"
     report = run_export(composer, exporter_entry(tmp_path / "src", out, **overrides))
-    return out, dict(report.manifest)
+    return out, report.manifest
 
 
 def test_only_policy_steps(composer: ConfigComposer, tmp_path: Path) -> None:
@@ -137,7 +140,7 @@ def test_duplicates_flagged_not_removed(composer: ConfigComposer, tmp_path: Path
     assert samples["src-s1-b2/s1"]["branch"]["duplicate_of"] is None  # another decision
     # Continuation steps are not compared: only the checkpoint step is the group's question.
     assert samples["src-s1-b1/s2"]["branch"]["duplicate_of"] is None
-    assert manifest["duplicates"] == 1
+    assert manifest.duplicates == 1
     assert len(samples) == 8, "flagged, never removed"
 
 
@@ -149,7 +152,7 @@ def test_group_in_one_split(composer: ConfigComposer, tmp_path: Path) -> None:
         )
         splits = {line["render"]["split"] for line in _lines(out)}
         assert len(splits) == 1, "source run and its branches share the source task's split"
-        assert list(manifest["split"]["keys"]) == ["export_test/test/task-001"]
+        assert list(manifest.split.keys) == ["export_test/test/task-001"]
 
 
 def test_require_eval_reads_source_run(composer: ConfigComposer, tmp_path: Path) -> None:
@@ -178,9 +181,9 @@ def test_require_eval_reads_source_run(composer: ConfigComposer, tmp_path: Path)
         filters={"require_eval": {"evaluator_id": "online_mind2web"}, "max_document_misses": None},
     )
     report = run_export(composer, entry)
-    exported = [s["path"] for s in report.manifest["sources"]["exported"]]
+    exported = [s.path for s in report.manifest.sources.exported]
     assert exported == ["src", "src-s1-b0", "src-s1-b1", "src-s1-b2"]
-    assert report.manifest["sources"]["filtered"] == {
+    assert report.manifest.sources.filtered == {
         "bad": (
             "it has no graded verdict from 'online_mind2web' with predicted_label 1 (require_eval)"
         ),
@@ -220,12 +223,12 @@ def test_a_warned_restoration_leaves_the_branch_out(
         branch=_provenance(3),
     )
     default = run_export(composer, exporter_entry(tmp_path / "src", tmp_path / "out"))
-    assert default.manifest["sources"]["filtered"] == {
+    assert default.manifest.sources.filtered == {
         "src-s1-b3": (
             "restoration diverged at step(s) 0 (warn: url_mismatch) (exclude_restoration_diverged)"
         )
     }
-    assert "src-s1-b3" not in {s["path"] for s in default.manifest["sources"]["exported"]}
+    assert "src-s1-b3" not in {s.path for s in default.manifest.sources.exported}
 
     switched_off = exporter_entry(
         tmp_path / "src",
@@ -233,6 +236,6 @@ def test_a_warned_restoration_leaves_the_branch_out(
         filters={"exclude_restoration_diverged": False, "max_document_misses": None},
     )
     kept = run_export(composer, switched_off)
-    exported = {s["path"]: s["samples"] for s in kept.manifest["sources"]["exported"]}
+    exported = {s.path: s.samples for s in kept.manifest.sources.exported}
     assert exported["src-s1-b3"] == 1
-    assert kept.manifest["sources"]["filtered"] == {}
+    assert kept.manifest.sources.filtered == {}

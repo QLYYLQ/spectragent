@@ -138,7 +138,7 @@ def test_record_config_produces_full_env(tmp_path: Path, monkeypatch: pytest.Mon
     # fields carry it.
     assert trace.config.llm_model == "scripted-fixture"
     assert (trace.config.agent_id, trace.config.loop_id) == ("ui_tars", "react")
-    assert trace.config.env_evidence_recorded is True
+    assert trace.config.env_evidence_privacy is not None  # archivers were bound
     print(
         "\nrecorded run:",
         json.dumps(

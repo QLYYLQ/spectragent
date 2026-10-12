@@ -95,8 +95,7 @@ class RuntimeHook(Protocol):
         observation_negotiation: Any,
         action_negotiation: Any,
         archive_negotiation: Any,
-        env_evidence_recorded: bool,
-        env_evidence_privacy: list[str],
+        env_evidence_privacy: list[str] | None,
         task_setup: Mapping[str, Any] | None,
         branch: Any,
         **kwargs: Any,
@@ -132,16 +131,16 @@ class RuntimeHook(Protocol):
           bound to in this environment.
         - ``archive_negotiation``: the archive negotiation result — the
           archivers bound for this run and the capability each binds to —
-          or ``None`` when no hook declared a non-empty ``archive``.
-        - ``env_evidence_recorded``: whether archivers were bound, i.e.
-          whether the run may record environment evidence.
+          or ``None`` when no hook declared a non-empty ``archive``, i.e.
+          when the run records no environment evidence.
         - ``env_evidence_privacy``: the sorted union of the bound
           archivers' declared privacy markers (a declaration, not a
-          guarantee).
+          guarantee), or ``None`` when no archiver was bound.
         - ``task_setup``: the environment setup context ``execute()`` hands
-          ``setup_environment`` for this task (``start_url`` …), exactly as
-          given — unredacted; a hook that persists it must redact it — or
-          ``None`` when there is none.
+          ``setup_environment`` for this task (``start_url`` …), as given
+          with a relative ``replay_archive`` made absolute — unredacted; a
+          hook that persists it must redact it — or ``None`` when there is
+          none.
         - ``branch``: where a branch task came from — a
           :class:`~spectragent.schemas.restoration.BranchProvenance` naming
           the source run, its trace and the checkpoint step — or ``None``

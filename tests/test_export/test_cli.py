@@ -128,4 +128,8 @@ def test_the_documents_loader_blocks_are_read(
     assert manifest["sources"]["filtered"] == {
         "eval-task": "decontaminated: task 't-eval' is an evaluation task of online_mind2web/Hard"
     }
-    assert manifest["leak_scan"] == {"checked": 1, "unchecked": {}}
+    assert manifest["leak_scan"] == {
+        "compared": 1,
+        "no_eval_loader": {},
+        "no_reference_answer": {},
+    }

@@ -46,7 +46,7 @@ from typing import Any
 
 from PIL import Image
 
-from spectragent.core.archive.privacy import RedactionLedger
+from spectragent.core.archive.privacy import MARKER_SESSION_STATE, RedactionLedger
 from spectragent.core.capabilities.browser.archive import NetworkArchiver
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.replay.replay_log import (
@@ -58,6 +58,19 @@ from spectragent.core.trace.encoding import EncodedFragment, encode_archive_file
 from spectragent.core.trace.models import RunStatus, TaskSetupRecord, TraceConfig, TraceNegotiation
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.dataset import (
+    DATASET_FORMAT,
+    CaptureLedger,
+    DatasetManifest,
+    DecontaminationLedger,
+    ExportedSource,
+    LeakScanLedger,
+    SourceLedger,
+    SplitLedger,
+    StepLedger,
+    StudentSummary,
+    ThoughtLedger,
+)
 from spectragent.schemas.restoration import (
     BranchProvenance,
     RestorationCheck,
@@ -236,7 +249,7 @@ def config(
             active_archivers=["browser.network"] if archived else [],
             archive_bindings={"browser.network": "browser"} if archived else {},
         ),
-        env_evidence_recorded=archived,
+        env_evidence_privacy=[MARKER_SESSION_STATE] if archived else None,
         task_setup=TaskSetupRecord(
             context={"start_url": f"http://{site}/"}, redactions=RedactionLedger()
         ),
@@ -330,6 +343,54 @@ def provenance(source: str, checkpoint: int, index: int, task_id: str) -> Branch
     )
 
 
+def dataset_manifest(
+    *,
+    samples: int,
+    duplicates: int = 0,
+    exported: Sequence[str] = (),
+    filtered: dict[str, str] | None = None,
+    untranslatable: dict[str, int] | None = None,
+) -> DatasetManifest:
+    """A dataset manifest in this build's format — what an export of *exported* would write."""
+    return DatasetManifest(
+        format=DATASET_FORMAT,
+        exporter={"exporter_id": "openai_messages", "sample": "per_step", "image_store": "files"},
+        translator={"translator_id": "identity", "untranslatable": "drop_step"},
+        student=StudentSummary(
+            config_sha256="0" * 64,
+            agent_id="ui_tars",
+            loop_id="react",
+            coordinate_space="normalized_1000",
+        ),
+        sources=SourceLedger(
+            exported=[
+                ExportedSource(path=path, run_id=path.rpartition("/")[2], config_hash="", samples=1)
+                for path in exported
+            ],
+            skipped={},
+            filtered=dict(filtered or {}),
+        ),
+        steps=StepLedger(untranslatable=dict(untranslatable or {}), skipped={}),
+        samples=samples,
+        quantization_px={},
+        thoughts=ThoughtLedger(source="teacher", fields={}, dropped_index_refs=0),
+        step_info={},
+        capture=CaptureLedger(unchecked=[]),
+        split=SplitLedger(
+            by="site",
+            validation_fraction=0.1,
+            salt="af-split-1",
+            samples={"train": samples} if samples else {},
+            keys={},
+        ),
+        decontamination=DecontaminationLedger(
+            decontaminated=False, against=[], match="either", excluded=0
+        ),
+        leak_scan=LeakScanLedger(compared=0, no_eval_loader={}, no_reference_answer={}),
+        duplicates=duplicates,
+    )
+
+
 def write_dataset(directory: Path, *, samples: Sequence[str], duplicates: int) -> Path:
     """A published dataset's files: ``manifest.json`` and one split's samples (as an export writes)."""
     directory.mkdir(parents=True)
@@ -342,19 +403,14 @@ def write_dataset(directory: Path, *, samples: Sequence[str], duplicates: int) -
     ]
     (directory / "train.samples.jsonl").write_text("\n".join(lines) + "\n")
     (directory / "train.jsonl").write_text("\n".join('{"messages":[]}' for _ in samples) + "\n")
-    manifest = {
-        "format": "af-sft-1",
-        "samples": len(samples),
-        "split": {"samples": {"train": len(samples)}},
-        "steps": {"untranslatable": {"no_coordinate": 1}, "skipped": {}},
-        "sources": {
-            "exported": [{"path": "record/rec-shop"}, {"path": "branch/br-b0"}],
-            "skipped": {},
-            "filtered": {"branch/br-b1": "1 main-frame document miss(es) in replay"},
-        },
-        "duplicates": duplicates,
-    }
-    (directory / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    manifest = dataset_manifest(
+        samples=len(samples),
+        duplicates=duplicates,
+        exported=["record/rec-shop", "branch/br-b0"],
+        filtered={"branch/br-b1": "1 main-frame document miss(es) in replay"},
+        untranslatable={"no_coordinate": 1},
+    )
+    (directory / "manifest.json").write_text(manifest.model_dump_json(indent=2) + "\n")
     return directory
 
 

@@ -23,6 +23,7 @@ from spectragent.flywheel.report import (
     report_json,
     write_report,
 )
+from spectragent.schemas.dataset import DATASET_FORMAT
 from tests.test_flywheel.conftest import empty_layout
 
 #: PRD §9's rows, §10 / §11's items M33 owns, PRD M33's decisions.
@@ -135,7 +136,7 @@ def test_the_inputs_name_what_ran(report: FlywheelReport) -> None:
     }
     (entry,) = roles["record"].components
     assert entry.runs == 3 and entry.components["agent"] == "ui_tars"
-    assert report.inputs.datasets["first"].format == "af-sft-1"
+    assert report.inputs.datasets["first"].format == DATASET_FORMAT
 
 
 def test_report_recomputes_byte_identical(layout: ChainLayout, tmp_path: Path) -> None:

@@ -17,8 +17,9 @@ from spectragent.export.errors import (
     ExportValidationError,
     StudentCaptureMismatchError,
 )
-from spectragent.export.runner import DATASET_FORMAT, ExportRunner
+from spectragent.export.runner import ExportRunner
 from spectragent.schemas.action import Action
+from spectragent.schemas.dataset import DATASET_FORMAT, DatasetManifest, StepLedger
 from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export, tree_hash
 from tests._helpers.export_traces import (
     ExportStep,
@@ -85,16 +86,17 @@ class TestDeterminism:
         text = (out / "manifest.json").read_text()
         assert str(tmp_path) not in text and os.uname().nodename not in text
         assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", text), "no timestamp"
-        manifest = json.loads(text)
+        # Read back through the model every reader of a dataset uses.
+        manifest = DatasetManifest.model_validate(json.loads(text))
         assert manifest == report.manifest
-        assert manifest["format"] == DATASET_FORMAT
-        assert manifest["student"]["agent_id"] == "ui_tars"
-        assert manifest["student"]["coordinate_space"] == "normalized_1000"
-        assert manifest["quantization_px"] == {"0": 3, "1": 1}
-        assert manifest["steps"] == {"skipped": {"not_exportable": 1}, "untranslatable": {}}
-        assert manifest["step_info"] == {"recorded": 5}
-        assert manifest["thoughts"]["fields"] == {"Thought": 5}
-        assert [(s["path"], s["samples"]) for s in manifest["sources"]["exported"]] == [
+        assert manifest.format == DATASET_FORMAT
+        assert manifest.student.agent_id == "ui_tars"
+        assert manifest.student.coordinate_space == "normalized_1000"
+        assert manifest.quantization_px == {"0": 3, "1": 1}
+        assert manifest.steps == StepLedger(skipped={"not_exportable": 1}, untranslatable={})
+        assert manifest.step_info == {"recorded": 5}
+        assert manifest.thoughts.fields == {"Thought": 5}
+        assert [(s.path, s.samples) for s in manifest.sources.exported] == [
             ("run-a", 2),
             ("run-b", 1),
             ("run-c", 2),
@@ -136,7 +138,7 @@ class TestDeterminism:
             )
             reports.append(run_export(composer, entry))
         first, second = reports
-        assert first.manifest["sources"]["skipped"] == {
+        assert first.manifest.sources.skipped == {
             "run-broken": "not a readable trace: manifest.json does not read back "
             "(TraceSchemaError)",
             "run-evals": "not a readable trace: evals/judge.json does not read back "
@@ -222,7 +224,7 @@ def test_the_runner_reaches_strategies_only_through_the_exporter(
     )
     exporter.translator = IndexToCoordinateTranslator(occlusion="off")
     report = ExportRunner(exporter, composer=composer, benchmarks=BenchmarkLoaders()).run()
-    assert report.manifest["translator"] == {
+    assert report.manifest.translator == {
         "occlusion": "off",
         "occlusion_unknown": "raise",
         "translator_id": "index_to_coordinate",

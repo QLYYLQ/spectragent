@@ -28,6 +28,9 @@ See docs/architecture_design.md §4.10 and docs/execution_dag.md M15.
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Any, ClassVar, Final, Literal
 
 from pydantic import (
@@ -364,6 +367,47 @@ class TaskContext(BaseModel):
     branch: BranchProvenance | None = None
 
 
+#: The environment setup context key naming the recorded run a replay reads —
+#: a run directory (``docs/architecture_design.md`` §4.10, §4.14).
+REPLAY_ARCHIVE_KEY: Final = "replay_archive"
+
+
+def resolve_env_context_paths(env: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """*env* with its ``replay_archive`` made absolute against the current directory.
+
+    ``replay_archive`` is the one setup context key that names a filesystem
+    path. A relative one is relative to the directory the process was
+    launched from (nothing in af changes the working directory, so that is
+    the current one), with ``~`` expanded first as for every other path
+    knob. ``AgentRuntime.execute`` resolves it here for every caller alike —
+    the CLI, a task loader, a Python caller — before the context is recorded
+    as ``TraceConfig.task_setup`` and before setup opens it
+    (``docs/architecture_design.md`` §4.10). A capability-scoped block
+    (``{"browser": {...}}``) is resolved the same way.
+
+    Returns:
+        A new mapping (*env* is never mutated), or ``None`` for ``None``. A
+        value that is not a non-empty path is left as it is, for setup to
+        refuse by name.
+    """
+    if env is None:
+        return None
+    resolved: dict[str, Any] = {}
+    for key, value in env.items():
+        if key == REPLAY_ARCHIVE_KEY:
+            value = _absolute_path(value)
+        elif isinstance(value, Mapping) and REPLAY_ARCHIVE_KEY in value:
+            value = {**value, REPLAY_ARCHIVE_KEY: _absolute_path(value[REPLAY_ARCHIVE_KEY])}
+        resolved[key] = value
+    return resolved
+
+
+def _absolute_path(value: Any) -> Any:
+    if isinstance(value, str | os.PathLike) and os.fspath(value):
+        return str(Path(value).expanduser().resolve())
+    return value
+
+
 __all__ = [
     "SetupBase",
     "BrowserSetup",
@@ -377,4 +421,6 @@ __all__ = [
     "TaskReference",
     "TaskDefinition",
     "TaskContext",
+    "REPLAY_ARCHIVE_KEY",
+    "resolve_env_context_paths",
 ]

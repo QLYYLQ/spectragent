@@ -2,12 +2,14 @@
 
 The rules under test, restated:
 
-* deny by default — an unmarked, open-typed field records as
-  ``"<omitted>"``, never as itself and never as a missing key;
+* deny by default — an unmarked free-form string, a list of values or an
+  undeclared field records as ``"<omitted>"``, never as itself and never as
+  a missing key;
 * ``null`` still means "not configured", so it survives verbatim;
-* a closed-set annotation (``Literal``, ``Enum``, ``bool``) records
-  verbatim without a mark, because its value set is written in the source;
-* ``trace_safe`` opts an open-typed field in — *and survives conscribe*,
+* an annotation that is safe by type records verbatim without a mark: a
+  closed set (``Literal``, ``Enum``, ``bool``), because its value set is
+  written in the source, and a number (``int``, ``float``), by ruling;
+* ``trace_safe`` opts a string field in — *and survives conscribe*,
   which is the part that is easy to get wrong and impossible to notice.
 """
 
@@ -24,6 +26,7 @@ from spectragent.core.trace.redaction import (
     OMITTED,
     TraceSafe,
     is_closed_set,
+    is_safe_by_type,
     is_trace_safe,
     redact_config,
     trace_safe,
@@ -47,8 +50,10 @@ class _Cfg(BaseModel):
     env_type: Literal["browser"] = "browser"
     mode: _Mode = _Mode.FAST
     headless: bool = True
-    # Open types: a number and two strings.
+    # Numbers (safe by type) and an open string.
     max_steps: int = 30
+    temperature: float | None = 0.2
+    limit: Annotated[int, Field(ge=0)] | Literal["unlimited"] = "unlimited"
     model: str = "gpt-4o"
     marked_model: Annotated[str, trace_safe("model identity is public", default="gpt-4o")] = (
         "gpt-4o"
@@ -77,6 +82,33 @@ class TestClosedSetRule:
         assert is_closed_set(annotation) is False
 
 
+class TestSafeByTypeRule:
+    @pytest.mark.parametrize(
+        "annotation",
+        [
+            int,
+            float,
+            int | None,
+            float | None,
+            Annotated[int, Field(ge=0)],
+            int | Literal["unlimited"],
+            Literal["a", "b"],
+            bool,
+            _Mode,
+            type(None),
+        ],
+    )
+    def test_safe(self, annotation):
+        assert is_safe_by_type(annotation) is True
+
+    @pytest.mark.parametrize(
+        "annotation", [str, str | None, int | str, list[int], dict[str, int], tuple[int, int], None]
+    )
+    def test_not_safe(self, annotation):
+        """A string can carry anything, and so can a container of numbers."""
+        assert is_safe_by_type(annotation) is False
+
+
 class TestDenyByDefault:
     @pytest.fixture()
     def dumped(self) -> dict[str, Any]:
@@ -94,10 +126,12 @@ class TestDenyByDefault:
     def test_open_string_is_withheld(self, dumped):
         assert dumped["model"] == OMITTED
 
-    def test_open_number_is_withheld(self, dumped):
-        """A number is not a closed set. Marking it is one line; guessing
-        it is safe is the door a numeric credential walks through."""
-        assert dumped["max_steps"] == OMITTED
+    def test_numbers_are_recorded_raw(self, dumped):
+        """A count, a limit or a sampling knob — what a reader compares runs by."""
+        assert dumped["max_steps"] == 30
+        assert dumped["temperature"] == 0.2
+        assert dumped["limit"] == "unlimited"
+        assert redact_config(_Cfg(limit=7))["limit"] == 7
 
     def test_withheld_field_is_present_not_dropped(self, dumped):
         """'This field was set' is itself reproducibility information."""

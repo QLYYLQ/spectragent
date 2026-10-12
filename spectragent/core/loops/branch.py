@@ -108,6 +108,11 @@ NEGOTIATION_FIELDS = (
     "active_actions",
     "action_bindings",
 )
+#: The source loop's settings a branch must share, picked one by one. The two
+#: loop blocks differ by design (``loop_id``, ``max_steps``,
+#: ``terminal_observation``); how many actions one reply may carry does not —
+#: it is in the seeded prompt and decides what the replay drops.
+COMPARED_LOOP_SETTINGS = ("max_actions_per_step",)
 
 
 @dataclass(kw_only=True)
@@ -280,6 +285,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     mismatches.update(
                         self._setting_mismatches("memory", memory_entry, deps.get("memory"))
                     )
+                mismatches.update(self._loop_mismatches(entries[0].get("agent_loop")))
         mismatches.update(self._negotiation_mismatches(config.negotiation, deps))
         if problems or mismatches:
             raise IncompatibleCheckpointError(source.name, problems, mismatches=mismatches)
@@ -290,12 +296,15 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
     ) -> dict[str, tuple[Any, Any]]:
         """Recorded scalar settings *owner* does not share.
 
-        Only what the trace records: a value written as ``"<omitted>"``
-        (open-typed — ``max_steps``, a temperature) cannot be compared here,
-        and nested blocks (the loop, the model) are another component's. A
-        name *owner* does not have is not compared. The ``<omitted>`` ones a
-        prompt depends on are caught at run time instead: the seeded system
-        prompt and every replayed context must match the source's.
+        Closed-set values and numbers are recorded raw, so they are compared
+        here — ``coordinate_space``, a memory's ``max_messages``. A value
+        written as ``"<omitted>"`` (a free-form string nobody marked
+        trace-safe) cannot be, and nested blocks (the loop, the model) are
+        another component's: of the loop's settings, the curated ones are
+        compared by :meth:`_loop_mismatches`. A name *owner* does not have is
+        not compared. The ``<omitted>`` ones a prompt depends on are caught
+        at run time instead: the seeded system prompt and every replayed
+        context must match the source's.
         """
         found: dict[str, tuple[Any, Any]] = {}
         for key, value in recorded.items():
@@ -310,6 +319,26 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                 current = current.value
             if current != value:
                 found[f"{prefix}.{key}"] = (value, current)
+        return found
+
+    def _loop_mismatches(self, recorded: Any) -> dict[str, tuple[Any, Any]]:
+        """The :data:`COMPARED_LOOP_SETTINGS` this loop does not share with the source's loop.
+
+        *recorded* is the source agent entry's ``agent_loop`` block. A setting
+        it does not record as a value (absent, ``null``, or ``"<omitted>"`` in
+        a trace written before numbers were recorded raw) is left to the
+        seed check at run time.
+        """
+        found: dict[str, tuple[Any, Any]] = {}
+        if not isinstance(recorded, dict):
+            return found
+        for name in COMPARED_LOOP_SETTINGS:
+            value = recorded.get(name)
+            if value is None or value == OMITTED:
+                continue
+            current = getattr(self, name)
+            if current != value:
+                found[f"agent_loop.{name}"] = (value, current)
         return found
 
     @staticmethod
@@ -384,10 +413,11 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         """The seeded messages must open the source's first recorded prompt.
 
         The runtime has already written ``agent.prepare``'s seed — the
-        system prompt carries the task, the action table and
-        ``max_actions_per_step``, none of which the trace records as a
-        setting. A seed that differs means this run's agent would not have
-        decided the source's steps the way the source did.
+        system prompt carries the task and the action table, which the trace
+        does not record as settings (``max_actions_per_step``, which it also
+        carries, ``weave`` has compared already). A seed that differs means
+        this run's agent would not have decided the source's steps the way
+        the source did.
         """
         seed = recorded_form(run.memory.get_context_messages())
         calls = run.source.calls(0)

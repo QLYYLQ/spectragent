@@ -150,7 +150,6 @@ class Bench:
             task="t",
             config={},
             archive_negotiation=self.negotiation,
-            env_evidence_recorded=True,
         )
         assert self.writer.run_dir is not None
         return self.writer.run_dir
@@ -192,7 +191,6 @@ class TwoCapabilities:
             task="t",
             config={},
             archive_negotiation=self.negotiation,
-            env_evidence_recorded=True,
         )
         assert self.writer.run_dir is not None
         return self.writer.run_dir
@@ -258,9 +256,7 @@ async def _scripted_start(tmp_path: Path, env: ScriptedEnv) -> tuple[TraceWriter
     writer = TraceWriter(
         trace_dir=str(tmp_path / "traces"), archive=[FakeStepArchiver(), FakeBlobArchiver()]
     )
-    await writer.on_run_start(
-        env=env, task="t", config={}, archive_negotiation=BOTH_BOUND, env_evidence_recorded=True
-    )
+    await writer.on_run_start(env=env, task="t", config={}, archive_negotiation=BOTH_BOUND)
     assert writer.run_dir is not None
     return writer, writer.run_dir
 
@@ -455,7 +451,6 @@ class TestEvidenceRidesTheStepCommit:
         bench = Bench(tmp_path)
         await bench.start()
         config = bench.trace().config
-        assert config.env_evidence_recorded is True
         assert config.negotiation is not None
         assert config.negotiation.active_archivers == [BLOBS_KEY, STEPS_KEY]
         assert config.negotiation.archive_bindings == {
@@ -759,7 +754,6 @@ async def _second_run(bench: Bench) -> RunTrace:
         config={},
         run_id="second",
         archive_negotiation=bench.negotiation,
-        env_evidence_recorded=True,
     )
     await bench.step(0)
     await bench.writer.on_run_end(result=_done())
@@ -1583,7 +1577,7 @@ class TestThroughTheRuntime:
         # Three step pulls and one close-out pull; nothing was left for the tail.
         assert cap.collect_calls == 4
         assert trace.manifest.trailing == []
-        assert trace.config.env_evidence_recorded is True
+        assert trace.config.env_evidence_privacy is not None
 
     @pytest.mark.parametrize("failing_step", [0, 1])
     async def test_a_failed_collection_fails_the_run_and_raises(self, tmp_path, failing_step):
@@ -1881,7 +1875,7 @@ class TestThroughTheRuntime:
         assert not (writer.run_dir / "env").exists()
         trace = RunTrace(writer.run_dir)
         assert trace.step_count == 2
-        assert trace.config.env_evidence_recorded is False
+        assert trace.config.env_evidence_privacy is None
         assert trace.config.negotiation is not None
         assert trace.config.negotiation.active_archivers == []
 

@@ -295,9 +295,10 @@ uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
     --start-url URL --task "the recorded task" --replay-archive traces/<recorded-run>
 ```
 
-A relative `--replay-archive` is resolved against the working directory before it enters
-the task context, so the replay's trace records the source run by absolute path
-(`task_setup`) — what a fork of the replay rebuilds its environment from.
+A relative `--replay-archive` is relative to the launch directory: `AgentRuntime.execute`
+resolves it before the context is recorded (`task_setup`) and handed to setup, for the CLI
+and a Python caller building `env_context` alike, so the replay's trace records the source
+run by absolute path.
 
 - **Before Chrome starts**, setup opens the source run (only what its manifest committed)
   and compares its environment fingerprint with this configuration: the tier and its
@@ -335,7 +336,7 @@ uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml -
 agent_loop:
   loop_id: branch
   max_steps: 30
-  max_actions_per_step: 1           # must be the source run's (checked before any action)
+  max_actions_per_step: 1           # must be the source run's (checked at assembly)
   continue_steps: 0                 # 0: decide step t only; N: N more ReAct steps after it
   terminal_observation: true        # default: one more observation after the run ends
   restorer:
@@ -367,10 +368,11 @@ task_loader:
   before anything runs, or is left out with `on_unbranchable: skip`. The sources are read
   through the trace reader only — what their manifests committed — never `result.json`.
 - **Before any setup**, the branch loop opens the source and refuses a mismatch naming both
-  sides: another agent, a different closed-set agent knob (`prompt_template`,
-  `coordinate_space` …) or memory strategy, a different observation or action negotiation,
-  a source loop other than `react`, a source that is itself a branch. The teacher's model
-  and sampling may differ from the source's.
+  sides: another agent, a different closed-set or numeric agent knob (`prompt_template`,
+  `coordinate_space` …), a different memory strategy or memory knob (`max_messages` …), a
+  different `max_actions_per_step`, a different observation or action negotiation, a source
+  loop other than `react`, a source that is itself a branch. The teacher's model and
+  sampling may differ from the source's, and so may the loop's `max_steps`.
 - **The run.** The context up to step *t* is rebuilt from the source trace — the teacher
   sees exactly what the source agent saw — and every recorded model call is replayed through
   the agent's parser and checked against the recording. The browser replays the source's
@@ -403,12 +405,12 @@ exporter:
     sources: ["recorded/*"]          # globs, sorted by path; branch runs included
     filters:
       require_status: completed      # error | any
-      require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
+      require_eval: null             # optional: { evaluator_id, label: 1, slug: null }
       exclude_restoration_diverged: true
       max_document_misses: 0         # replay-log main-frame document misses; null: no limit
       exclude_sites: []              # host names, suffix-matched
     split: { by: site, validation_fraction: 0.1, salt: af-split-1 }   # site | task, never step
-    decontamination: { against: null, match: either }   # null: the evaluated benchmarks; []: none
+    decontamination: { against: [], match: either }   # the benchmarks you evaluate on; []: none
     translator:
       translator_id: index_to_coordinate   # identity: the teacher's actions as recorded
       occlusion: check               # "off" (quoted) skips the check
@@ -428,9 +430,11 @@ task_loader:
 
 - **What becomes a sample.** Every policy step that ran at least one action, of every
   source that is readable, format 2, not recorded with `record_secrets`, and passes the
-  filters (left-out sources are listed with their reasons in the manifest). A branch run
-  contributes its policy steps, with its source run's prefix as context and its source
-  run's verdicts as labels; branches of one checkpoint whose targets are identical are
+  filters (left-out sources are listed with their reasons in the manifest). No verdict is
+  needed: `require_eval` is an optional filter, `null` by default, so a run the teacher
+  failed is exported too and labelled `labels.step_status`. A branch run contributes its
+  policy steps, with its source run's prefix as context and its source run's verdicts (if
+  any) as labels; branches of one checkpoint whose targets are identical are
   flagged `duplicate_of`, not removed.
 - **Translation.** `index_to_coordinate` turns a click or type on an element index into the
   coordinate action at a visible point of the element on the recorded screenshot; with
@@ -451,13 +455,12 @@ task_loader:
   (`flywheel/record_ui_tars_pinned.yaml`) loses nothing; a DOM teacher's index actions need
   occlusion evidence (above), and a step with more actions than the student's
   `max_actions_per_step` is `exceeds_action_budget`.
-- **Decontamination default.** `against: null` checks against the benchmarks the sources
-  were evaluated on — the benchmark of each source `require_eval` selected (a branch run's
-  source task's), never the evaluator's id (`exact_match` grades any benchmark) — so runs
-  recorded on that benchmark's own tasks are all excluded and the export fails with
-  `ExportEmptyError` saying so. Name a disjoint evaluation set, or write `against: []`.
-  Without `require_eval`, nothing is checked (a warning, and `configured: false` in the
-  manifest).
+- **Decontamination** checks only the benchmarks `against` lists; nothing is inferred from
+  verdicts. The default `[]` checks nothing, and the manifest says `decontaminated: false`.
+  Listing the benchmark the runs were recorded on excludes them all (`ExportEmptyError`
+  saying so): list a disjoint evaluation set. The manifest's leak-scan counts say how many
+  samples were actually compared (`compared`) and why the rest were not
+  (`no_eval_loader`, `no_reference_answer`).
 - **Benchmark data.** Decontamination and the reference-leak scan read benchmarks through
   the `eval_loader:` / `task_loader:` blocks of the export YAML itself (matched by
   `benchmark_name`, every knob — `data_dir`, `subset` — as configured); a benchmark with no
@@ -515,8 +518,9 @@ uv run spectragent-flywheel report --root runs/m33-live --evidence live --out /t
   data); anything else stops the chain naming the stage. An export never overwrites
   `datasets/first|second`: with the export selected and either one present, the chain
   refuses before any stage runs (exit 2) — remove them to export again.
-- **The export YAML** of a chain sets `filters.require_eval: null` (the chain does not evaluate)
-  and `decontamination: {against: []}` (the sources are the benchmark's own tasks).
+- **The export YAML** of a chain uses `filters.require_eval: null` (the chain does not evaluate)
+  and `decontamination: {against: []}` (the sources are the benchmark's own tasks) — the
+  defaults, as in the shipped `export_sft.yaml`.
 - **After the report**: `sections.sites.yaml` is the exclusion list in `filters.exclude_sites`
   shape; put it into the export YAML and export again by hand.
 - **A rehearsal** on the fixture site with scripted models (no spend) runs the whole chain:

@@ -1193,7 +1193,7 @@ TraceWriter 只在 `around` 里记录调用，因为 `CancelledError` 是 `BaseE
 
 **协商与绑定**：
 - `negotiate_archive(consumers, env)` → `ArchiveNegotiationResult`（注册为 `archive`：`active_archivers`、`archive_bindings`）；`IncompatibleArchiveError` 一次报全，点名请求方、键、环境与它提供的归档器。
-- `AgentRuntime.prepare()`：`negotiate_memory` 之后立即校验；拦截点审计之后、作为 `prepare()` 的最后一步在原始 env 上 `bind_archivers`；没有归档消费者时对 env 零调用。`on_run_start` 多传 `archive_negotiation`、`env_evidence_recorded`、`env_evidence_privacy`、`task_setup`。
+- `AgentRuntime.prepare()`：`negotiate_memory` 之后立即校验；拦截点审计之后、作为 `prepare()` 的最后一步在原始 env 上 `bind_archivers`；没有归档消费者时对 env 零调用。`on_run_start` 多传 `archive_negotiation`、`env_evidence_recorded`、`env_evidence_privacy`、`task_setup`（`env_evidence_recorded` 后来删掉：它与归档绑定是否为空重复，用户 2026-10-13 的裁决）。
 
 **TraceWriter**（`core/hooks/trace_writer.py`）：
 - 去掉 `@dataclass`，手写 `__init__`：`trace_dir`、`record_secrets` 仍是 `Annotated` 参数（生成的配置不变），`archive: list[ArchiverBase] | None = None` 是普通参数；`HookBase` 改为 `@dataclass(eq=False)`。
@@ -1202,7 +1202,7 @@ TraceWriter 只在 `around` 里记录调用，因为 `CancelledError` 是 `BaseE
 - `AgentRuntime.execute`：否决和取消一样优先于在它底下失败的收尾——记录失败一直持续到收尾（磁盘一直满着，`TraceWriter` 冲刷不了被否决那一步的调用）时，收尾的错误只记日志、作为 note 附在否决上，重抛的仍是 `RunAbort`；其他异常路径上收尾失败照原样上抛。run 自己的超时也顶替不了已经定下的结局：`except TimeoutError` 先看切断 Loop 的那次取消带没带结局（`carried_outcome`），带着否决就照否决收尾并重抛 `RunAbort`（超时是它上面的 note），带着终止结果就照它收尾并返回（`error` 仍点名根因）；外部取消照旧优先。
 
 **Trace**（`core/trace/`）：
-- `encoding.py`：`archive_step_path` / `archive_trailing_path` / `archive_blob_path` / `archive_run_path`、`encode_archive_file`；`models.py`：`ArchiveMeta`、`ArchiveRecord`、`TaskSetupRecord`，`TraceConfig.env_evidence_recorded` / `env_evidence_privacy` / `task_setup`，`TraceNegotiation.active_archivers` / `archive_bindings`。WAL 的接口不变（仍只有 `TraceFile`）；它的路径比较改用 `encoding.fold_path`——不区分大小写、也不区分 Unicode 规范化形式（APFS 两者都不区分），原先只做 `casefold`。
+- `encoding.py`：`archive_step_path` / `archive_trailing_path` / `archive_blob_path` / `archive_run_path`、`encode_archive_file`；`models.py`：`ArchiveMeta`、`ArchiveRecord`、`TaskSetupRecord`，`TraceConfig.env_evidence_recorded`（后来删掉，同上）/ `env_evidence_privacy` / `task_setup`，`TraceNegotiation.active_archivers` / `archive_bindings`。WAL 的接口不变（仍只有 `TraceFile`）；它的路径比较改用 `encoding.fold_path`——不区分大小写、也不区分 Unicode 规范化形式（APFS 两者都不区分），原先只做 `casefold`。
 - `RunTrace.archive_files(step, archiver_id)`、`iter_archive(archiver_id, *, include_trailing=False)`、`blob(sha256)`、`archive_run_file(capability_id)`，全部经 M27 的 extra 索引解析，不探测路径。
 
 **测试与守卫**：
@@ -1415,7 +1415,7 @@ archive scope 是 browser 级的，因为弹窗的流量在控制连接接管它
 
 **校验**：图片个数、坐标范围、round-trip、泄漏扫描（源 benchmark 的评测参考不得出现在种子消息与任务文本里）、凭证扫描（`SECRET_PATTERNS` 挪到 `core/trace/secret_patterns.py`，secret guard 与导出共用）、可插拔的长度估算（v1 文本字符 / 4 + 按模型的图像 token 公式，超长报错、从不截断）。
 
-**切分**：按站点（源任务 `start_url` 的主机）或任务，从不按步；同一个 `branch_group_id` 与它的源任务在同一个切分里；去污染默认对着 `require_eval` 选中的源被评测时所在的 benchmark（源任务的 benchmark，不是评测器的 id）的任务；去污染与泄漏扫描的基准数据经导出文档自己的 `eval_loader` / `task_loader` 块读（旋钮俱全），没配的 benchmark 才用注册加载器的默认值。**分叉样本**：只导出策略步，历史来自源 run，带终止观测引用与 `branch_group_id`，组内重复的标 `duplicate_of`、不删。
+**切分**：按站点（源任务 `start_url` 的主机）或任务，从不按步；同一个 `branch_group_id` 与它的源任务在同一个切分里；去污染只对着导出配置明确列出的 benchmark（默认 `[]`：不去污染，manifest 记 `decontaminated: false`；用户 2026-10-13 的裁决，原先从 `require_eval` 推断）；去污染与泄漏扫描的基准数据经导出文档自己的 `eval_loader` / `task_loader` 块读（旋钮俱全），没配的 benchmark 才用注册加载器的默认值。**分叉样本**：只导出策略步，历史来自源 run，带终止观测引用与 `branch_group_id`，组内重复的标 `duplicate_of`、不删。
 
 **`skyvern_hit_test`**：同样的页内提取（`EXTRACTION_SCRIPT` 不改）之后逐个可交互元素做 `elementFromPoint` 命中测试，记 `hit_test{center_topmost, visible_point}`；`covered_elements: drop`（默认）不给整个被盖住的元素编号；`skyvern` 逐字节不变（`DOMElementNode.hit_test` 的 `TRACE_OMIT_NONE` 让别的 cleaner 的 trace 不多一个键）。
 

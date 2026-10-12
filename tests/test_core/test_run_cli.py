@@ -1,4 +1,4 @@
-"""``spectragent-run``'s task-context flags (M30: ``--replay-archive``)."""
+"""``spectragent-run``'s task-context flags (``--start-url``, ``--replay-archive``)."""
 
 from __future__ import annotations
 
@@ -16,21 +16,13 @@ def test_task_context_carries_only_what_was_given() -> None:
     assert run_cli.task_context(replay_archive="/runs/src") == {"replay_archive": "/runs/src"}
 
 
-def test_a_relative_replay_archive_is_resolved(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The context is recorded (``task_setup``) and a fork rebuilds the environment from it.
+def test_a_relative_replay_archive_is_passed_as_given() -> None:
+    """``AgentRuntime.execute`` resolves it, for the CLI and every other caller alike.
 
-    So the run directory it names must not depend on the CLI's working directory.
+    ``tests/test_core/test_runtime/test_env_context_paths.py`` pins that the
+    trace and setup both see the absolute directory.
     """
-    source = tmp_path / "runs" / "src"
-    source.mkdir(parents=True)
-    monkeypatch.chdir(tmp_path)
-    context = run_cli.task_context(replay_archive="runs/src")
-    assert context is not None
-    assert context == {"replay_archive": str(source.resolve())}
-    monkeypatch.chdir(source)
-    assert Path(context["replay_archive"]).is_dir()
+    assert run_cli.task_context(replay_archive="runs/src") == {"replay_archive": "runs/src"}
 
 
 def test_replay_archive_flag_reaches_env_context(monkeypatch: pytest.MonkeyPatch) -> None:

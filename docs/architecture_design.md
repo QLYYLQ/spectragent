@@ -438,8 +438,8 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):      # restorer 只在普通 
 **装配期（`weave`，在 `prepare()` 里、任何 setup 之前）**：打开检查点的源 trace，对照当前装配，不符就抛 `IncompatibleCheckpointError`，点名源 run 以及两边的值：
 
 - 源 trace 是 format 2、第 t 步已提交且 `origin == "policy"`、它的观测已记录（`error_phase != "observe"`）、0..t 每一步都已提交；源 run 的 `loop_id` 是 `react`（重放用的是 ReAct 的 memory 协议）；源 run 自己不是分叉 run（`TraceConfig.branch` 为空：分叉 run 的前缀没有 LLM 调用可重放，要分叉就从它的源 run 分叉）。
-- 同一个 agent（默认 teacher 必须是源 run 的 agent 类）：`agent_id` 相同；源 `resolved` 里这个 agent 条目上记下来的每个闭集标量旋钮（`observation_mode`、`coordinate_space`、`prompt_template`……，`"<omitted>"` 的不比）与当前 agent 实例的同名属性相同；memory 的 `memory_id` 与它记下来的闭集旋钮相同；`TraceConfig.negotiation` 的观测与动作两部分（激活与必需的 fragment、激活的动作、两张绑定表）与本次协商相同；归档那两个字段不比，分叉记录什么证据是它自己的选择（裁决 D3）。
-- 开放类型的旋钮（`max_actions_per_step`、窗口大小、温度）在源 trace 里是 `"<omitted>"`（§5.6），装配期比不了；它们由运行期的重放逐条校验兜住（下一条），在任何动作执行之前。
+- 同一个 agent（默认 teacher 必须是源 run 的 agent 类）：`agent_id` 相同；源 `resolved` 里这个 agent 条目上记下来的每个标量旋钮（闭集值与数字原样记录，§5.6：`observation_mode`、`coordinate_space`、`prompt_template`、Skyvern 的 `action_history_window`……；`"<omitted>"` 的不比）与当前 agent 实例的同名属性相同；memory 的 `memory_id` 与它记下来的标量旋钮（`max_messages`、`window_size`……）相同；loop 那一块只比挑出来的一项：`agent_loop.max_actions_per_step` 与本分叉 Loop 的相同（它写在种子 prompt 里，也决定重放丢掉几个动作；两边 loop 的其余设置本来就不同：`loop_id`、`max_steps`、`terminal_observation`）；`TraceConfig.negotiation` 的观测与动作两部分（激活与必需的 fragment、激活的动作、两张绑定表）与本次协商相同；归档那两个字段不比，分叉记录什么证据是它自己的选择（裁决 D3）。
+- 自由字符串的旋钮（没标 trace-safe 的，如 BrowserUse 设过的 `extend_system_message`）在源 trace 里是 `"<omitted>"`（§5.6），装配期比不了；数字原样记录之前写下的源 trace 里 `max_actions_per_step` 也是 `"<omitted>"`。它们由运行期的种子与重放逐条校验兜住（下一条），在任何动作执行之前。llm 那一块从来不比：teacher 的模型与采样可以与源 run 不同。
 
 **运行期（`_execute`）**：
 
@@ -520,7 +520,9 @@ class AgentRuntime:
         else:
             negotiated_archive, archivers = None, []                 # 对 env 零调用
         self._negotiated_archive = negotiated_archive
-        self._env_evidence_privacy = sorted({m for a in archivers for m in a.privacy_markers})
+        self._env_evidence_privacy = (                               # 没绑定归档器时为 None
+            sorted({m for a in archivers for m in a.privacy_markers}) if negotiated_archive else None
+        )
 
         # 4. AOP 织入 — Weaver 包装四个角色：agent / env / llm，以及 StepRecorder（role="loop"）
         weaver = Weaver(self._hooks)
@@ -567,13 +569,15 @@ class AgentRuntime:
         memory.clear(); self._recorder.clear()                 # 一个 ComposedRun 可以跑多个任务
         memory.add_messages(self.seed_messages(task))          # M32：种子消息是公开方法，见下
 
+        # 相对的 replay_archive 按启动目录解析成绝对路径（§4.10），再记录、再交给 setup
+        env_context = resolve_env_context_paths(env_context)
+
         # 在 env setup 之前打开 trace：setup 失败也要落进 trace
         await self._dispatch_lifecycle("on_run_start",
             agent=self._run.agent, env=self._run.env,          # env：原始环境，不是 AOP 代理
             task=task, config=config or {}, ...,
             archive_negotiation=self._negotiated_archive,      # 没有归档消费者时为 None
-            env_evidence_recorded=self._negotiated_archive is not None,
-            env_evidence_privacy=self._env_evidence_privacy,   # 有序、去重的隐私标记
+            env_evidence_privacy=self._env_evidence_privacy,   # 有序、去重的隐私标记；没绑定归档器时为 None
             task_setup=env_context,                            # 交给 setup_environment 的那份；没有时为 None
             branch=branch)                                     # M31：分叉来源（BranchProvenance），非分叉 run 为 None
 
@@ -666,9 +670,9 @@ class AgentRuntime:
 - 没有任何 hook 声明非空的 `archive` 时，runtime 对 environment 不做任何归档调用，所以没有这些方法的 environment（测试里的 stub）照常工作；
 - runtime 只认 `ArchiveConsumer` Protocol（`core/archive/protocols.py`），从不认识 `TraceWriter`。
 
-协商结果留在 runtime 上：`negotiated_archive` 与 `negotiated_observation` / `negotiated_actions` 并列，`prepare()` 之后可读，没有归档消费者时为 `None`。它连同 `env_evidence_recorded`、`env_evidence_privacy`、`task_setup` 一起按名字传给 `on_run_start`：runtime 是唯一同时握有这些事实的组件，由它解析，hook 只按名字接收、不自己推导（记录到哪些 `TraceConfig` 字段见 §5.3）。
+协商结果留在 runtime 上：`negotiated_archive` 与 `negotiated_observation` / `negotiated_actions` 并列，`prepare()` 之后可读，没有归档消费者时为 `None`。它连同 `env_evidence_privacy`（没绑定归档器时为 `None`）、`task_setup` 一起按名字传给 `on_run_start`：runtime 是唯一同时握有这些事实的组件，由它解析，hook 只按名字接收、不自己推导（记录到哪些 `TraceConfig` 字段见 §5.3）。"有没有绑定归档器"就是 `archive_negotiation` 本身，没有另外一个布尔量。
 
-**任务上下文的三部分各走各的路（M31）。** 一个任务的 `TaskContext{env, loop, branch}`（§4.10）由调用方（`BenchmarkRunner.run_task`）拆开交给 `execute`：`env` → `env_context`（→ `setup_environment`，按 capability `setup()` 签名路由，§4.3；原样记进 `task_setup`）；`loop` → `loop_inputs`（→ `prepare()` 校验后进 weave 的 `ctx["loop_inputs"]`，§4.1）；`branch` → `branch`（一个 `BranchProvenance`，按名字传给 `on_run_start`，记成 `TraceConfig.branch`，§5.3；runtime 不解读它）。三者之间不互相渗透：环境拿不到检查点，Loop 拿不到 setup context，trace 只记来源。
+**任务上下文的三部分各走各的路（M31）。** 一个任务的 `TaskContext{env, loop, branch}`（§4.10）由调用方（`BenchmarkRunner.run_task`）拆开交给 `execute`：`env` → `env_context`（→ `setup_environment`，按 capability `setup()` 签名路由，§4.3；相对的 `replay_archive` 先解析成绝对路径，§4.10，然后原样记进 `task_setup`）；`loop` → `loop_inputs`（→ `prepare()` 校验后进 weave 的 `ctx["loop_inputs"]`，§4.1）；`branch` → `branch`（一个 `BranchProvenance`，按名字传给 `on_run_start`，记成 `TraceConfig.branch`，§5.3；runtime 不解读它）。三者之间不互相渗透：环境拿不到检查点，Loop 拿不到 setup context，trace 只记来源。
 
 **每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `running`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
 
@@ -1594,7 +1598,7 @@ class RuntimeHook(Protocol):
                            task, task_id, benchmark, subset, run_id, config,
                            agent_id, loop_id, env_type, llm_model,  # 值：runtime 解析好的 run 配置
                            resolved_config, observation_negotiation, action_negotiation,
-                           archive_negotiation, env_evidence_recorded, env_evidence_privacy,
+                           archive_negotiation, env_evidence_privacy,
                            task_setup, branch, **kwargs) -> None: ...   # payload 会长，**kwargs 是签名的一部分
     async def on_run_end(self, *, result: AgentResult, env) -> None: ...         # 每条终止路径，含外部取消
     async def on_run_error(self, *, error, partial_steps, env) -> None: ...     # 超时 / 异常 / 取消，紧跟 on_run_end
@@ -2147,7 +2151,7 @@ BaseTaskLoader (Protocol)           BaseEvalLoader (Protocol)
 | `start_url` | browser | 任务的落地页，agent 第一次观测之前打开（`TaskSetup.to_context()`；`spectragent-run --start-url`） |
 | `login_required`、`login_type`、`credentials_ref`、`risk_control`、`risk_control_types` | browser | `BrowserSetup` 的其余词表；接受、记 WARNING、还不处理 |
 | `cdp_url` | browser | 显式 CDP 端点（per-run override；与需要 recorder 连接的配置互斥，§4.14） |
-| `replay_archive` | browser（M30） | 回放的**源 run 目录**（一个 trace 目录，含 `manifest.json`）。`network_source` 拦截（`archive`）时必须给、不拦截（`live`）时不许给，都在 setup 报错、点名双方。capability 经 `core/archive` 的 `open_archive` 打开它，只读已提交的部分（§4.14 "回放"）；`spectragent-run --replay-archive DIR`——CLI 先按工作目录把它解析成绝对路径再放进任务上下文，记进 `task_setup` 的因此是绝对路径（下面一段：分叉靠这份记录，可能在别的工作目录里跑）；自己组 `env_context` 的调用方同样给绝对路径 |
+| `replay_archive` | browser（M30） | 回放的**源 run 目录**（一个 trace 目录，含 `manifest.json`）。`network_source` 拦截（`archive`）时必须给、不拦截（`live`）时不许给，都在 setup 报错、点名双方。capability 经 `core/archive` 的 `open_archive` 打开它，只读已提交的部分（§4.14 "回放"）；`spectragent-run --replay-archive DIR`。相对路径可以写，意思是相对启动目录（af 从不切换工作目录，所以就是当前目录；`~` 先展开）：`AgentRuntime.execute` 在记进 `task_setup`、交给 setup 之前把它解析成绝对路径（`schemas/task.py::resolve_env_context_paths`），对每个调用方都一样：CLI、任务加载器、自己组 `env_context` 的 Python 调用方；按 capability id 挂的那一块（`{"browser": {...}}`）里的也一样。trace 因此记下 setup 打开的那个目录（用户 2026-10-13 的裁决） |
 | `task_tools` | tool_sandbox（设计中，M23） | 每个 task 的工具定义（§13.5） |
 
 整个 context 按值级规则脱敏后记进 `TraceConfig.task_setup`（§5.6），所以 `replay_archive` 是路径字符串，不是打开的对象；分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。上面的键都属于 `TaskContext.env`，路由不变（下一段）。
@@ -2190,7 +2194,7 @@ class BaseEvaluator(Protocol):
 
 Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可以访问任意深度的运行数据。
 
-**现状：休眠，与数据飞轮解耦（用户 2026-10-13 的裁决）。** 评测器不删除，也不改进。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`），度量报告从不读判定；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
+**现状：休眠，与数据飞轮解耦（用户 2026-10-13 的裁决）。** 评测器不删除，也不改进。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`，发布的 `export_sft.yaml` 也写 `null`），度量报告从不读判定；去污染只认导出配置里明确列出的 benchmark（默认 `[]`：不去污染，数据集 manifest 记 `decontaminated: false`），不再从判定推断（§4.15 "切分与去污染"）；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。剩下的一处依赖在数据一侧、不在判分器：导出的参考答案泄漏扫描读 benchmark 的评测数据加载器（§4.15 "校验"）。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
 
 | evaluator_id | 评测方式 | 适用 benchmark |
 |-------------|---------|---------------|
@@ -2801,12 +2805,12 @@ exporter:
     sources: ["recorded/*"]          # 相对根的 glob，按路径排序（null：["*"]）
     filters:
       require_status: completed      # error | any（读 manifest 的 status）
-      require_eval: {evaluator_id: online_mind2web, label: 1, slug: null}
+      require_eval: null             # 可选：{evaluator_id, label: 1, slug: null}，只留判分通过的 run
       exclude_restoration_diverged: true
       max_document_misses: 0         # null：不按回放日志过滤
       exclude_sites: []              # 主机名，后缀匹配（M33 的报告喂它）
     split: {by: site, validation_fraction: 0.1, salt: af-split-1}   # by: site | task
-    decontamination: {against: null, match: either}                # 见"切分与去污染"
+    decontamination: {against: [], match: either}                  # 见"切分与去污染"；[]（默认）：不去污染
     translator:
       translator_id: index_to_coordinate
       occlusion: check               # "off" 要加引号（YAML 1.1 的布尔）
@@ -2848,7 +2852,7 @@ exporter:
 #### 源级检查与筛选
 
 - **不可导出的源**（跳过，原因记进 manifest 的 `sources.skipped`）：读不回来（`TraceSchemaError`；原因只写相对 run 目录的文件与错误类，如 `not a readable trace: manifest.json does not read back (TraceSchemaError)`；读取器的消息带绝对路径、可能引用读不出的字节，只进日志，manifest 因此与 sources 根在哪无关）、format 1、`TraceConfig.secrets_recorded`（带原样凭证的 trace 不进数据集）、没有记录协商（`TraceConfig.negotiation is None`，手工组装的 run）、与另一个源共用 `run_id`（共用者全部跳过，同 `trace_branches`）。
-- **筛选**（`filters`，原因记进 `sources.filtered`）：`require_status`（manifest 的 status，默认 `completed`）；`require_eval`（`RequireEval.satisfied_by(RunTrace.evals())`；**分叉 run 用它的源 run 的判定**，因为分叉 run 在 v1 没有评测加载器；源 run 按 `TraceConfig.branch.source_run_id` 在本次匹配到的源里找，找不到就筛掉，原因 `branch source not among the sources`）；`exclude_restoration_diverged`（默认 `true`：任何一条 `StepRecord.restoration` 没通过（`verdict` 不是 `ok`）的 run 整个排除：`warn` 下发散后照常走完的分叉，它的策略步决策时的状态不是源 run 的前缀，上下文因此是错的，这是只有这个筛选挡得住的一类；`diverged` 是 `strict` 中止的分叉，它在策略步之前就以 `error` 结束，本来就过不了 `require_status`、也没有可导出的步）；`max_document_misses`（回放日志里的主 frame 文档 miss 总数超过它就排除，计数规则与 `ReplayLog.diverged_total` 相同，折叠进 `summary` 的也算；读侧是 browser 的 `replay/replay_log.py::document_miss_total(reader)`；没有回放日志的 run 是 0）；`exclude_sites`（站点键命中列表：主机名相等或以 `.` + 条目结尾）。分叉 run 的源 run 不在本次可读的源里时，不论有没有 `require_eval` 都筛掉（`branch source '<id>' not among the sources`）：它的上下文就是源 run 的前缀。读筛选要用的文件读不回来（`TraceSchemaError`）算跳过，不算筛掉（原因的写法同上）。
+- **筛选**（`filters`，原因记进 `sources.filtered`）：`require_status`（manifest 的 status，默认 `completed`）；`require_eval`（可选，默认 `null`、发布的配置也是 `null`：不按判定筛，teacher 失败的轨迹一样导出，每个样本照样带 `labels.step_status` 与判定标签，训练时可以再筛；设了时是 `RequireEval.satisfied_by(RunTrace.evals())`，**分叉 run 用它的源 run 的判定**，因为分叉 run 在 v1 没有评测加载器；源 run 按 `TraceConfig.branch.source_run_id` 在本次匹配到的源里找，找不到就筛掉，原因 `branch source not among the sources`）；`exclude_restoration_diverged`（默认 `true`：任何一条 `StepRecord.restoration` 没通过（`verdict` 不是 `ok`）的 run 整个排除：`warn` 下发散后照常走完的分叉，它的策略步决策时的状态不是源 run 的前缀，上下文因此是错的，这是只有这个筛选挡得住的一类；`diverged` 是 `strict` 中止的分叉，它在策略步之前就以 `error` 结束，本来就过不了 `require_status`、也没有可导出的步）；`max_document_misses`（回放日志里的主 frame 文档 miss 总数超过它就排除，计数规则与 `ReplayLog.diverged_total` 相同，折叠进 `summary` 的也算；读侧是 browser 的 `replay/replay_log.py::document_miss_total(reader)`；没有回放日志的 run 是 0）；`exclude_sites`（站点键命中列表：主机名相等或以 `.` + 条目结尾）。分叉 run 的源 run 不在本次可读的源里时，不论有没有 `require_eval` 都筛掉（`branch source '<id>' not among the sources`）：它的上下文就是源 run 的前缀。读筛选要用的文件读不回来（`TraceSchemaError`）算跳过，不算筛掉（原因的写法同上）。
 
 #### 可导出的步与 `CanonicalStepSample`
 
@@ -2911,7 +2915,7 @@ class ActionTranslator(Protocol):
 
 - 每个样本一条记录（`<split>.jsonl`）：`{"id": <sample_id>, "messages": [...]}`；消息经 `core/llm/serializers/openai_format.py::OpenAIMessageSerializer` 序列化，assistant 消息带 `weight`（较早的轮 0，目标轮 1）。图片部分的 data URL 换成相对路径 `images/<sha256><后缀>`，同一张图在整个数据集里只存一份（`image_store: files`）。OpenAI 的自助微调在收缩，这只是交换格式；以后的 `llamafactory`（`<image>` 个数 = 图片个数）、`ms_swift`（`loss_scale`、`rejected_messages` 做 DPO）、`trl` 是新的导出器。
 - 同序的 `<split>.samples.jsonl`：每行 `{"sample": <CanonicalStepSample>, "render": {split, segment, context_steps, step_info, target, target_actions, quantization_px, thought, thought_dropped, images}}`。`target_actions` 是目标轮文本执行出的动作（量化后的点：训练标签），`duplicate_of` 在样本的 `branch` 里；这个文件是与格式无关的那一半。
-- **数据集 manifest**（`manifest.json`）：数据集格式版本 `af-sft-1`、导出器与翻译器的配置、学生配置的摘要（学生 `top_level_cfg` 的规范 JSON 的 sha256）与学生的 agent / loop / `coordinate_space`、每个源（相对路径、`run_id`、`config_hash`、样本数）、`sources.skipped` / `sources.filtered`（带原因）、按原因的丢弃与跳过、量化误差分布、thought 的来源字段计数与丢弃数、`step_info` 的来源计数、采集检查的 `unchecked`、切分（每个切分的样本数、每个切分键分到哪里）、去污染与泄漏扫描的结果、重复数。键名：`format`、`exporter`、`translator`、`student{config_sha256, agent_id, loop_id, coordinate_space}`、`sources{exported, skipped, filtered}`、`steps{untranslatable, skipped}`、`samples`、`quantization_px`、`thoughts{source, fields, dropped_index_refs}`、`step_info`、`capture{unchecked}`、`split{by, validation_fraction, salt, samples, keys}`、`decontamination{configured, against, match, excluded}`、`leak_scan{checked, unchecked}`、`duplicates`。**不含任何墙钟字段、绝对路径或主机信息**：路径类的旋钮（`sources_root`、`student_run_config`、`output_dir`）不进 manifest，学生配置只记摘要，跳过原因不带读取器消息（见"源级检查与筛选"）。
+- **数据集 manifest**（`manifest.json`）：写与读经同一个类型化模型 `spectragent/schemas/dataset.py::DatasetManifest`（导出器写、度量报告读；改了名或类型的键在读的时候点名失败，不会读成 0）。数据集格式版本 `af-sft-2`（2：去污染只认明确的列表、泄漏扫描只数比过的样本）、导出器与翻译器的配置、学生配置的摘要（学生 `top_level_cfg` 的规范 JSON 的 sha256）与学生的 agent / loop / `coordinate_space`、每个源（相对路径、`run_id`、`config_hash`、样本数）、`sources.skipped` / `sources.filtered`（带原因）、按原因的丢弃与跳过、量化误差分布、thought 的来源字段计数与丢弃数、`step_info` 的来源计数、采集检查的 `unchecked`、切分（每个切分的样本数、每个切分键分到哪里）、去污染与泄漏扫描的结果、重复数。键名：`format`、`exporter`、`translator`、`student{config_sha256, agent_id, loop_id, coordinate_space}`、`sources{exported, skipped, filtered}`、`steps{untranslatable, skipped}`、`samples`、`quantization_px`、`thoughts{source, fields, dropped_index_refs}`、`step_info`、`capture{unchecked}`、`split{by, validation_fraction, salt, samples, keys}`、`decontamination{decontaminated, against, match, excluded}`、`leak_scan{compared, no_eval_loader, no_reference_answer}`、`duplicates`。**不含任何墙钟字段、绝对路径或主机信息**：路径类的旋钮（`sources_root`、`student_run_config`、`output_dir`）不进 manifest，学生配置只记摘要，跳过原因不带读取器消息（见"源级检查与筛选"）。
 - **环境证据从不导出**：`env/` 只为遮挡证据与文档 miss 计数被读；输出目录里没有任何文件来自 `env/`（测试按内容哈希核对）。
 
 #### 校验（`spectragent/export/validate.py`）
@@ -2920,15 +2924,15 @@ round-trip 在渲染里做（它要 agent 本步的状态），其余的在格�
 
 - **图片个数**：每条记录的图片部分数 = 渲染出的上下文里的图片数，每个引用的文件都在 `images/` 里。
 - **坐标**：每个点参数在本步截图的视口内（`[0, viewport)`），学生网格点在网格内，执行点在图像内。
-- **泄漏扫描**：源 benchmark（分叉 run 用源 benchmark）的评测加载器给出这个任务的 `expected_answer`：来自导出文档为它配的 `eval_loader`（按文档顺序，第一个有这个任务的），没配时来自它注册的评测加载器按源 run 的 `subset` 默认构造的实例（"基准数据"）；规范化（casefold、空白折叠）后长度 ≥ 8 时，它不得出现在导出流水线自己放进 prompt 的文本里（种子 system 消息与任务文本），否则 `ReferenceLeakError` 点名样本与字段。观测本身（页面上本来就有答案）是世界，不算泄漏。既没配、也没注册评测加载器的 benchmark 记为 `leak_scan.unchecked`；加载器读不出来、或没有这个任务的参考，是错误。
+- **泄漏扫描**：源 benchmark（分叉 run 用源 benchmark）的评测加载器给出这个任务的 `expected_answer`：来自导出文档为它配的 `eval_loader`（按文档顺序，第一个有这个任务的），没配时来自它注册的评测加载器按源 run 的 `subset` 默认构造的实例（"基准数据"）；规范化（casefold、空白折叠）后长度 ≥ 8 时，它不得出现在导出流水线自己放进 prompt 的文本里（种子 system 消息与任务文本），否则 `ReferenceLeakError` 点名样本与字段。观测本身（页面上本来就有答案）是世界，不算泄漏。manifest 只把真的比过的样本记成 `leak_scan.compared`（"没比"不能读成"查过"）；没比的按原因分开记：既没配、也没注册评测加载器的 benchmark 记 `leak_scan.no_eval_loader`，参考里没有答案、或答案不到 8 个字符的记 `leak_scan.no_reference_answer`（online_mind2web 的 300 条记录都没有 `expected_answer`，所以它的样本全在这里）；加载器读不出来、或没有这个任务的参考，是错误。
 - **凭证扫描**：`core/trace/secret_patterns.py::SECRET_PATTERNS`（从 `test_secret_guard.py` 挪过来，secret guard 测试与这里共用一份）扫描要写出的每一个文本字节（记录、样本、manifest），命中即 `CredentialLeakError`（点名文件、样本与模式标签），fail closed。它认的是凭证的形状，不是 PII（残余见"隐私"）。
 - **长度**：`length` 给了时用可插拔的 `LengthEstimator` Protocol 估算每条记录的长度，v1 的 `ApproxTokenEstimator`：文本字符数 / `chars_per_token`（默认 4），每张图按 `image_tokens` 取 `qwen_vl`（`ceil(w/28) × ceil(h/28) + 2`，按图像像素）或 `fixed`（`fixed_image_tokens`）；不依赖 tokenizer、不联网。超过 `max_tokens` 抛 `SampleTooLongError` 点名样本，从不截断。新的估算器（真 tokenizer）有第二个实现时再成注册表。
 
 #### 切分与去污染
 
 - **按站点或任务切分，从不按步**：`split.by: site` 的键是源任务 `start_url` 的主机名（`TraceConfig.task_setup.context["start_url"]`，M28 记下的、值级脱敏过的 URL，主机名不受脱敏影响），`task` 的键是 `<benchmark>/<subset>/<task_id>`；分叉 run 用它的源任务（`TraceConfig.branch` 里的 `source_*`），所以同一个 `branch_group_id`、同一个源任务的样本总在同一个切分里。切分 = `sha256(salt + "\0" + key)` 的前 8 字节作为 [0, 1) 的数小于 `validation_fraction` 进 `validation`，否则 `train`。算不出键的 run（没有 `start_url`）跳过，原因 `no split key`。
-- **去污染**：`decontamination.against` 列出学生将来评测用的 benchmark（`BenchmarkRef{benchmark, subset}`）；`null`（默认）表示源被评测时所在的 benchmark，即 `filters.require_eval` 选中的源各自的 benchmark（分叉 run 用源任务的 `source_benchmark`；判定记的 `benchmark` 就是它那个 run 的），每个取加载器的默认 subset。不是 `require_eval.evaluator_id`：评测器的 id 是判分器的键、不是 benchmark 的键（`exact_match` 能给任何 benchmark 判分）。`require_eval` 也没设（或它选中的源都没写 benchmark）时不去污染、CLI 打 WARNING、manifest 记 `decontamination.configured: false`；`[]` 表示明确不去污染。`match`：`task_id`（样本的源任务 id 在该 benchmark 评测加载器的任务里）、`site_instruction`（源任务的 start_url 主机 + 规范化指令与该 benchmark 任务加载器里某个任务相同）、`either`（默认）。命中的源整个排除，原因 `decontaminated`。加载器读不出来、没注册也没配是 `ExportConfigError`（去污染从不静默地什么都没查）。
-- **基准数据**（去污染与泄漏扫描共用，`spectragent/export/benchmarks.py::BenchmarkLoaders`）：导出文档自己的 `eval_loader:` / `task_loader:` 块（运行根的层，组装时旋钮俱全，如 `data_dir`、`subset`），按 `benchmark_name` 对上 benchmark、按文档顺序；文档没给某个 benchmark 配加载器时，才用它注册的加载器按默认值构造（`spectragent-bench` 解析评测加载器的同一条规则：配置优先，其次注册表）；配了的 benchmark 只经配的那些读，从不在配好的实例旁边再默认构造一个，那一个会无视文档配的旋钮（af-add-a-receptor §0 的那类缺陷）。去污染的引用写了 `subset` 时只读该 subset 的已配加载器（配了这个 benchmark 却没有这个 subset 是 `ExportConfigError`，两处设置不一致不猜），`subset: null` 读这个 benchmark 的全部已配加载器（没配时是注册加载器的默认 subset）。所以为泄漏扫描另配了训练 subset 的评测加载器时，`against` 里要写明评测的 subset。泄漏扫描在源 benchmark 的全部已配评测加载器里找这个任务。默认值的后果写明：源 run 就是评测 benchmark 的任务时，默认会把它们全排除（导出因此 `ExportEmptyError`），要训练就写一个不相交的评测集或 `against: []`。
+- **去污染**：`decontamination.against` 列出学生将来评测用的 benchmark（`BenchmarkRef{benchmark, subset}`），只认这份明确的列表，从不从评测器或判定推断（用户 2026-10-13 的裁决）。默认 `[]`：不去污染，CLI 记一条 INFO，manifest 记 `decontamination.decontaminated: false`；`null` 不是列表，组装时就报错。`match`：`task_id`（样本的源任务 id 在该 benchmark 评测加载器的任务里）、`site_instruction`（源任务的 start_url 主机 + 规范化指令与该 benchmark 任务加载器里某个任务相同）、`either`（默认）。命中的源整个排除，原因 `decontaminated`。加载器读不出来、没注册也没配是 `ExportConfigError`（去污染从不静默地什么都没查）。
+- **基准数据**（去污染与泄漏扫描共用，`spectragent/export/benchmarks.py::BenchmarkLoaders`）：导出文档自己的 `eval_loader:` / `task_loader:` 块（运行根的层，组装时旋钮俱全，如 `data_dir`、`subset`），按 `benchmark_name` 对上 benchmark、按文档顺序；文档没给某个 benchmark 配加载器时，才用它注册的加载器按默认值构造（`spectragent-bench` 解析评测加载器的同一条规则：配置优先，其次注册表）；配了的 benchmark 只经配的那些读，从不在配好的实例旁边再默认构造一个，那一个会无视文档配的旋钮（af-add-a-receptor §0 的那类缺陷）。去污染的引用写了 `subset` 时只读该 subset 的已配加载器（配了这个 benchmark 却没有这个 subset 是 `ExportConfigError`，两处设置不一致不猜），`subset: null` 读这个 benchmark 的全部已配加载器（没配时是注册加载器的默认 subset）。所以为泄漏扫描另配了训练 subset 的评测加载器时，`against` 里要写明评测的 subset。泄漏扫描在源 benchmark 的全部已配评测加载器里找这个任务。列表的后果写明：把录制所用的 benchmark 本身列进 `against`，会把这些源 run 全排除（导出因此 `ExportEmptyError`）；要训练就列一个不相交的评测集，或者不列。
 
 #### 分叉样本（默认：中立记录）
 
@@ -2946,7 +2950,7 @@ round-trip 在渲染里做（它要 agent 本步的状态），其余的在格�
 
 #### 代码位置
 
-`spectragent/export/`：`_registrar.py`（`Exporter`、`ExporterRegistrar`、`ExporterBase`）、`settings.py`、`openai_messages.py`、`translate/`（`_registrar.py`、`identity.py`、`index_to_coordinate.py`）、`canonical.py`、`filters.py`、`split.py`、`benchmarks.py`、`render.py`、`validate.py`、`runner.py`、`cli.py`、`errors.py`；`schemas/sample.py`；`schemas/observation/geometry.py`（`to_grid`、`quantum`）；`core/loops/errors.py`（`UnrepresentableActionError`）；`core/loops/_loop_fragments.py`（`loop_fragment_builders`、`pinned_step_info`）；`core/loops/restore/source.py`（`recorded_observation`、`recorded_step_info`：与分叉共用的读法）；`core/actions/params.py`（`point_params`）；`core/runtime.py`（`seed_messages`）；`core/trace/sources.py`、`core/trace/secret_patterns.py`；browser：`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`、`replay/replay_log.py::document_miss_total`。
+`spectragent/export/`：`_registrar.py`（`Exporter`、`ExporterRegistrar`、`ExporterBase`）、`settings.py`、`openai_messages.py`、`translate/`（`_registrar.py`、`identity.py`、`index_to_coordinate.py`）、`canonical.py`、`filters.py`、`split.py`、`benchmarks.py`、`render.py`、`validate.py`、`runner.py`、`cli.py`、`errors.py`；`schemas/sample.py`；`schemas/dataset.py`（`DatasetManifest`，与度量共用）；`schemas/observation/geometry.py`（`to_grid`、`quantum`）；`core/loops/errors.py`（`UnrepresentableActionError`）；`core/loops/_loop_fragments.py`（`loop_fragment_builders`、`pinned_step_info`）；`core/loops/restore/source.py`（`recorded_observation`、`recorded_step_info`：与分叉共用的读法）；`core/actions/params.py`（`point_params`）；`core/runtime.py`（`seed_messages`）；`core/trace/sources.py`、`core/trace/secret_patterns.py`；browser：`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`、`replay/replay_log.py::document_miss_total`。
 
 ### 4.16 度量闸门（M33）
 
@@ -2976,7 +2980,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - **规格**：`ChainSpec{name, root, evidence, tasks{benchmark, subset, task_ids, limit}, record, control?, same_path?, branch?, export?, report{planted}}`，每段 `StageSpec{config, timeout, evaluate}`（`same_path` / `branch` 写 `evaluate: true` 被拒：`trace_branches` 没有评测加载器），导出段 `ExportStageSpec{config, repeat: 1|2}`，植入值 `PlantedSecret{label, value | env}`（恰好一个）。CLI：`spectragent-flywheel run --spec X [--stages a,b]`、`report --spec X [--out D]`、`report --root R --evidence live|rehearsal [--name N] [--out D]`（没有规格就没有植入值，只扫凭证形状）；退出码 0 完成、1 某段失败、2 规格或参数不对。测试的接缝是 `run_chain(spec, bench=..., export=...)`（替换两个进程内的 `main`）。
 - **原路径回放是一个分叉段**：`configs/flywheel/same_path_ui_tars_archive.yaml`：`branch` loop，选步 `last`（每个源 run 最后一个可分叉的策略步，§4.10），`continue_steps: 0`，`verify: warn`（发散了照样走完，每一步都有校验结果），`branches_per_step: 2`（回放确定性的重复），`require_status: any`，`on_unbranchable: skip`。它取代 M30 `tests/_helpers/replay_driver.py`"把录下的模型输出喂回同一个 agent"作为度量手段：恢复器本来就逐步重放录下的动作、逐步校验观测（§4.14 "恢复"），只有最后一步要 teacher 再决定一次（每个分支一次 LLM 调用）。S2b 就是只跑 `record`、`same_path` 与报告的这条链。
 - `spectragent-bench` 不读 `.env`，链也不读：跑之前在 shell 里导出密钥（`set -a; . ./.env; set +a`）。
-- **链的导出 YAML** 写 `filters.require_eval: null`（链默认不评测，没有判定可筛）与 `decontamination: {against: []}`（源 run 本来就是被测 benchmark 的任务，默认的去污染会把它们全排除，§4.15 "切分与去污染"）；`max_document_misses` 与 `exclude_restoration_diverged` 照常，被它们筛掉的分叉正是要计数的产出损失。
+- **链的导出 YAML** 用 `filters.require_eval: null`（链默认不评测，没有判定可筛）与 `decontamination: {against: []}`（源 run 本来就是被测 benchmark 的任务）：这两个现在就是导出的默认值，也是发布的 `export_sft.yaml` 的写法；`max_document_misses` 与 `exclude_restoration_diverged` 照常，被它们筛掉的分叉正是要计数的产出损失。
 
 #### 度量（`metrics.py`）
 
@@ -3001,7 +3005,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - **POST 分叉的 miss**：分叉 run 检查点及之后方法为 POST 的 miss（文档、子资源分开），有 POST miss 的分叉占比。
 - **存储增长与压缩评估的输入**：按角色、按类别的字节（`observations:<fragment>` 的 json、`artifacts:<fragment>`（截图）、`messages`、`steps`（步记录与 extra 索引）、`env:<归档器>`、`env:blobs`（内容寻址）、`env:run`（capability 的 run 记录）、`run`（manifest / config / result）），每个 run、每步的平均；文件是 `RunTrace.committed_files` 列出的那些（run 自己的三个文件、manifest 与 extra 索引列出的；不按目录树走，路径的形状与"留在 run 目录里"由 RunTrace 检查，§5.5），每个路径计一次，字节经 `read_committed` 读，类别按条目的 `kind` 与 `archive` 定（`metrics.storage_category`）；还没压缩的字节用 gzip（level 6）实测压缩比；按文件开头的字节认出已经压缩的（gzip、PNG、JPEG、GIF、WebP：截图、WARC、`dom_raw`），只报大小；数据集目录按文件树的字节。
 - **保留期与容量（Q7）**：每个角色每个 run 的平均字节、数据集每个样本的字节；每个任务的字节 = 一次录制 + 其余每个角色"每次录制有几个 run × 每个 run 的字节" + 数据集每个任务的字节；按 `PROJECTION_TASKS`（10、20、300：S2b、live 链、整个 `All` 子集）投影。
-- **导出产出**：每个切分的样本数、按原因的丢弃与跳过（数据集 manifest），`labels.step_status == action_failed` 的样本占比（M32 交给 M33 决定的去留）。
+- **导出产出**：每个切分的样本数、按原因的丢弃与跳过（数据集 manifest，经导出写它用的同一个 `DatasetManifest` 读；读不回来是点名文件的 `DatasetManifestError`，不读成 0），`labels.step_status == action_failed` 的样本占比（M32 交给 M33 决定的去留）。
 - **待决的决定**：Q1（`strict` 之外的 miss 处理；"miss 时转去真实网络"不是 miss 策略，而是一个新的网络来源，§4.14）看分叉覆盖、子资源 miss 的分布与 POST miss（`Q1_KEEP_STRICT` 0.9：零文档 miss 的分叉占比不低于它就留 `strict`）；Q4（录制时扩大覆盖：预取或探索）看分叉检查点之后的文档 miss 里 GET 到未录 URL（`no_match`）的占比（`Q4_EXPAND` 0.5；没有文档 miss 时结论是"不扩大"）；站点规则要不要自动生成看所有回放 run（`same_path` 与 `branch`）的近邻 miss（browser 的 `site_rule_candidates`：最佳候选（匹配器排第一的那个）同 host、同 path、同方法、规范化查询参数不同的 `no_match`，按 host 与不同的参数名计数；某个 host 达到 `SITE_RULE_MIN_MISSES` 2 次就建议生成 `ignore_query` 规则供人审）；Q7 看上一条的容量数。这几个决定的输入（分叉的文档 miss、近邻 miss）单列在报告的 `decision_inputs` 里。
 
 **建议槽**：每个度量、每一节、每个决定一个 `Recommendation{status: supported | partial | insufficient, verdict, rule, evidence: list[EvidenceRef{pointer, value, n}], basis}`。`basis` 是链规格的 `evidence`；`rehearsal` 的证据最多是 `partial`（"fixture 只校准度量本身，live run 之后再定"）；没有数据是 `insufficient`、`verdict` 为空，从不给默认结论；`rule` 写出所用的规则与阈值（`report.py` 里具名的常量），`evidence` 引用报告里的度量（JSON 指针）与它们的分母。
@@ -3018,6 +3022,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - 去重的账法（`DedupBytes`）与 `percentile` 从 `tests/_helpers/archive_bench.py` 挪进 `flywheel/metrics.py`，revisit 的那一半是 browser 知识（`archive_stats.revisit_saving`）；M29 的基准与它的 schema 测试改用这两处；
 - `tests/_helpers/secret_scan.py` 的 gzip 感知读法挪进 `core/trace/secret_patterns.py`（`readable_text(path)` / `iter_readable(root)`，只 import 标准库），secret guard 与 M29 的隐私测试改从这里 import，测试帮手删掉；
 - `TaskIdentity` / `task_identity` 从 `export/filters.py` 挪进 `core/trace/sources.py`（只读 `TraceConfig`；导出与度量共用同一个"站点"与"任务"的定义），导出改从这里 import；读不回来的 run 的措辞 `unreadable_reason` 一起挪过去（报告与数据集 manifest 写同一句）。
+- 数据集 manifest 的形状是 `schemas/dataset.py::DatasetManifest` 一处：导出器经它写，度量经它读（`metrics.read_dataset_manifest`），没有哪一边用 `.get(...)` 猜键。
 - 去重的账法是 `DedupBytes.account(listed, distinct, saved_by_revisit)` 一处：trace 一侧（`metrics.archive_bytes(run)`：`RunTrace.committed_files` 里每个提交列出的每个归档文件各计一次 = 去重前，每个不同路径一次 = 去重后）与 M29 基准的内存适配（`archive_bench.dedup_bytes(files)`）都经它；`percentile` 保持 M29 的最近秩定义，空输入改成报错。
 
 #### browser 一侧的读法
@@ -3055,7 +3060,7 @@ browser 证据的格式知识留在 browser 的包里：纯函数，只经 `Arch
 
 - **显式开启**：只有绑定了非空 `archive`（§4.5）的 run 才有，默认没有；
 - **单独放在 `env/` 子树**（§5.3），读侧有自己的访问器（§5.5）；
-- **单独标记隐私**：`TraceConfig.env_evidence_recorded` / `env_evidence_privacy`，加上 capability 自己的 run 记录（§5.6）。
+- **单独标记隐私**：`TraceConfig.env_evidence_privacy`（绑定了归档器才写；绑定了哪些看 `negotiation.active_archivers`），加上 capability 自己的 run 记录（§5.6）。
 
 2026-09-16 那条裁决的另一半照旧成立：不记 CDP 事件流，不记输入 tick。归档存的是资源和状态，不是把它们送过来的协议事件序列，也不是框架执行一次点击的轨迹。
 
@@ -3450,14 +3455,16 @@ class TaskSetupRecord(BaseModel):      # 交给 setup_environment 的环境 setu
 
 class TraceConfig(BaseModel):
     ...                                                     # identity / resolved / negotiation / secrets_recorded 不变
-    env_evidence_recorded: bool = False                     # 本 run 是否绑定了归档器（trace 可能带 env/ 证据）
-    env_evidence_privacy: list[str] = Field(default_factory=list)  # 所绑定归档器 privacy_markers 的有序并集
-    task_setup: TaskSetupRecord | None = None               # None：execute() 没有收到 env_context
+    extra: dict[str, Any] = Field(default_factory=dict, exclude_if=<空>)          # 调用方给的任务上下文
+    env_evidence_privacy: list[str] | None = Field(None, exclude_if=<None>)    # 所绑定归档器 privacy_markers 的有序并集；没绑定归档器时为 None
+    task_setup: TaskSetupRecord | None = Field(None, exclude_if=<None>)        # None：execute() 没有收到 env_context
 ```
 
-`TraceNegotiation.from_results(observation=None, action=None, archive=None)` 多收一个归档结果，三个都为 `None` 时才返回 `None`；绑定表原样记录（值都是 registry key，不是用户起的实例 id），排序的理由与另外两条轴相同。`task_setup` 回答的是"这个任务的环境是怎么起的"：分叉任务（M31）要靠它在没有源 benchmark 数据的情况下重建环境，所以从 M28 起就记录；它是按任务变化的数据，脱敏规则见 §5.6。`env_evidence_*` 是 provenance，和 `secrets_recorded` 一样回答"这个目录能不能直接分享"。
+**按任务、按功能的字段，有值才写（用户 2026-10-13 的裁决）。** `branch` 只在分叉 run 里写，`task_setup` 只在任务带着 setup context 起的时候写，`env_evidence_privacy` 只在绑定了归档器时写（绑定了、但归档器什么标记都没声明时写 `[]`），`extra` 只在调用方给了时写。普通 run 的 `config.json` 里因此没有 `"branch": null` 这类占位。读侧不用改：缺的键读回来就是字段的默认值，也不升 `format_version`。原先的 `env_evidence_recorded` 删掉了：它与 `negotiation.active_archivers` 是否为空重复，也没有读者。
 
-**摘要（`config_hash`）不为归档开任何特例。** 归档设置经两条现成的路进入 `configuration_digest`：`negotiation`（`active_archivers` / `archive_bindings`）和 `resolved`（M29 起归档器的旋钮在 trace hook 的配置里）。`task_setup` 按任务变化，`env_evidence_*` 是 provenance，都不进摘要，所以同一次 sweep 里只差 `start_url` 的两个任务共享一个 `config_hash`。代价写明：`TraceNegotiation` 多了两个字段，M28 之后写的 trace 与同一配置在 M28 之前写的 trace 摘要不同；读者比较的是同一个框架版本写下的 manifest。
+`TraceNegotiation.from_results(observation=None, action=None, archive=None)` 多收一个归档结果，三个都为 `None` 时才返回 `None`；绑定表原样记录（值都是 registry key，不是用户起的实例 id），排序的理由与另外两条轴相同。`task_setup` 回答的是"这个任务的环境是怎么起的"：分叉任务（M31）要靠它在没有源 benchmark 数据的情况下重建环境，所以从 M28 起就记录；它是按任务变化的数据，脱敏规则见 §5.6；其中相对的 `replay_archive` 在记录之前已经解析成绝对路径（§4.10）。`env_evidence_privacy` 是 provenance，和 `secrets_recorded` 一样回答"这个目录能不能直接分享"。
+
+**摘要（`config_hash`）不为归档开任何特例。** 归档设置经两条现成的路进入 `configuration_digest`：`negotiation`（`active_archivers` / `archive_bindings`）和 `resolved`（M29 起归档器的旋钮在 trace hook 的配置里）。`task_setup` 按任务变化，`env_evidence_privacy` 是 provenance，都不进摘要，所以同一次 sweep 里只差 `start_url` 的两个任务共享一个 `config_hash`。代价写明：`TraceNegotiation` 多了两个字段，M28 之后写的 trace 与同一配置在 M28 之前写的 trace 摘要不同；读者比较的是同一个框架版本写下的 manifest。
 
 **`evals/` 也是原子写。** `EvaluationRunner` 写 `evals/<verdict_slug>.json`，以及可选的平铺副本和 summary，都走 `fsio.atomic_write`：半写的 verdict 文件会被下一个读者当成损坏的评测。权限与普通写入相同（§5.2），共享的 `--evals-dir` 对其他用户照常可读，重新打分也不改动已有文件的权限。evals 是后置产物，不进 manifest。
 
@@ -3502,11 +3509,11 @@ class RestorationCheck(BaseModel):
 ```python
 class TraceConfig(BaseModel):
     ...
-    branch: BranchProvenance | None = None     # None：不是分叉 run
+    branch: BranchProvenance | None = Field(None, exclude_if=<None>)   # None（不写）：不是分叉 run
 ```
 
 - 由 `TaskContext.branch` 而来，`AgentRuntime.execute(branch=...)` 按名字传给 `on_run_start`，`TraceWriter` 按名字接收、原样记录，不推导（§4.2）。
-- **不进 `configuration_digest`**：它是按任务变化的事实（任务 id 本身就是 `<source_run_id>/s<t>/b<i>`），同一次分叉 sweep 的所有任务共享一个 `config_hash`；sweep 级的旋钮（`continue_steps`、teacher 的温度、恢复器的 `verify`）照常经 `resolved` 改变它。字段名不用 "provenance"：那个词已经是 `secrets_recorded` / `env_evidence_*` 那一层的名字。
+- **不进 `configuration_digest`**：它是按任务变化的事实（任务 id 本身就是 `<source_run_id>/s<t>/b<i>`），同一次分叉 sweep 的所有任务共享一个 `config_hash`；sweep 级的旋钮（`continue_steps`、teacher 的温度、恢复器的 `verify`）照常经 `resolved` 改变它。字段名不用 "provenance"：那个词已经是 `secrets_recorded` / `env_evidence_privacy` 那一层的名字。
 - `source_trace` 是源 run 目录相对 sources 根的路径，加上 `source_run_id`，下游（M32 的样本渲染）才找得到源 trace 去拼第 t 步之前的历史；源 benchmark / subset / task_id 让分叉结果能连回源任务的参考答案。
 - 分叉 trace 的每一步都完整记录观测（§13.4 不变）：恢复步交给 `record_step` 的是恢复出的 live 观测，终止步是最后那次观测；不提供省掉恢复步观测的 `record_observations` 旋钮。
 
@@ -3541,8 +3548,8 @@ class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂�
         return True                            # 确认落盘后才继续
 
     async def on_run_start(self, *, env=None, run_id=None, resolved_config=None,
-                           archive_negotiation=None, env_evidence_recorded=False,
-                           env_evidence_privacy=(), task_setup=None, branch=None, **kwargs):
+                           archive_negotiation=None, env_evidence_privacy=None,
+                           task_setup=None, branch=None, **kwargs):
         if self.archive:
             ...  # 三种情况在建 trace 之前拒绝（RuntimeError，点名 AgentRuntime.prepare）：
                  # archive_negotiation 为 None；它的 active_archivers 与 archive 的键不一致；env 为 None
@@ -3550,7 +3557,7 @@ class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂�
         self._wal = WALWriter(Path(self.trace_dir), run_id or str(uuid.uuid4())[:8])
         self._wal.init_run(trace_config, config_hash=...)   # 摘要取自未脱敏的配置（§5.3）
         # trace_config.negotiation = TraceNegotiation.from_results(obs, action, archive=archive_negotiation)
-        # trace_config.env_evidence_recorded / env_evidence_privacy / task_setup / branch：按名字接收，不推导
+        # trace_config.env_evidence_privacy / task_setup / branch：按名字接收，不推导；没有值的不写进 config.json
 
     # ── AOP 拦截 handler ──────────────────────────────────
     async def around_ainvoke(self, *, proceed, args, kwargs, **ctx):
@@ -3757,7 +3764,7 @@ class RunTrace:
 - `blob(sha256)`：一个已提交的内容寻址归档文件的字节，即 `read_extra(archive_blob_path(sha256))`：没有任何已提交的索引把它列为归档文件（`meta` 带 `"archive"`）→ `KeyError`（别的生产者放在同一地址上、不带归档元数据的 extra 文件不是归档文件）；字节与索引不符 → `TraceSchemaError`。
 - `archive_run_file(capability_id)`：该 capability 已提交的 run 记录里 `run_version` 最高的那一版，跨步索引和 trailing 索引找；没有 → `None`。字节用 `read_extra(record.path)` 读。
 - `archive_lines(path, model)`（M30）：一个已提交的、逐行 JSON 的归档文件（`index.jsonl`、`replay.jsonl`……），每个非空行用 `model.model_validate` 读回，按文件顺序返回；字节经 `read_extra` 读（同样的 size / sha256 校验，没提交 → `KeyError`），一行不是 JSON 或校验不过 → `TraceSchemaError`，点名文件与行号。它是通用的：行的类型由调用方给（browser 的 `ReplayLogEntry` 与网络索引行的模型都在 browser 包里，trace 层不认识它们），"读回来的必须是写进去的那个类型"对 capability 的证据也成立。`RunTrace` 由此结构化地满足 `core/archive` 的 `ArchiveReader`（§4.14 "回放的数据通路"）。
-- `evals()`（M31）：这个 run 的 `evals/` 目录里每一份判定，`verdict_slug`（文件名去掉 `.json`）→ `EvalResult`，按 slug 排序；只看 `*.json`（原子写中断留下的 `tmp….tmp` 不算）。evals 是后置产物（`EvaluationRunner` 在 run 之后原子写入，§5.3），不在 manifest 里，所以这是唯一按目录列文件的访问器：没有 `evals/` → `{}`；目录与每个文件都必须在 run 目录之内（解析符号链接之后），否则 `TraceSchemaError`；一份不是 JSON 或不能按 `EvalResult` 校验的文件 → 点名它的 `TraceSchemaError`。不缓存：同一个 `RunTrace` 在评测写入之后再读，看得见新的判定。`trace_branches` 的 `require_eval` 经它筛选源 run（§4.10），从不读 `result.json`。
+- `evals()`（M31）：这个 run 的 `evals/` 目录里每一份判定，`verdict_slug`（文件名去掉 `.json`）→ `EvalResult`，按 slug 排序；目录按排序后的顺序遍历，所以几份都坏时点名的是哪一份不取决于文件系统列目录的顺序；只看 `*.json`（原子写中断留下的 `tmp….tmp` 不算）。evals 是后置产物（`EvaluationRunner` 在 run 之后原子写入，§5.3），不在 manifest 里，所以这是唯一按目录列文件的访问器：没有 `evals/` → `{}`；目录与每个文件都必须在 run 目录之内（解析符号链接之后），否则 `TraceSchemaError`；一份不是 JSON 或不能按 `EvalResult` 校验的文件 → 点名它的 `TraceSchemaError`。不缓存：同一个 `RunTrace` 在评测写入之后再读，看得见新的判定。`trace_branches` 的 `require_eval` 经它筛选源 run（§4.10），从不读 `result.json`。
 - `committed_files`（M33）：这个 run 提交了的每个文件，每被列出一次算一条（`CommittedFile{path, kind, step, fragment, extra, archive}`），按提交顺序：run 自己的三个文件（`manifest.json`、`config.json`，写了的话还有 `result.json`）；按 manifest 顺序每一步的步记录、每个 fragment 的文件（或记在它位置上的失败）与 artifact、每次 LLM 调用、extra 索引与它列出的每个文件；每个 trailing 提交的调用、索引与文件；最后是请求的回复 schema。`kind` 说文件是什么（`manifest` / `config` / `result` / `step` / `fragment` / `artifact` / `llm_call` / `extra_index` / `output_schema` / `extra`），`step` 是列出它的那次提交（run 自己的文件、trailing 提交与回复 schema 为 `None`），extra 文件带它的索引条目，是归档文件的再带 `ArchiveRecord`（与 `iter_archive` 同一个读法）。被几次提交引用的内容寻址文件，每次提交各列一次；怎么计数是调用方的规则（度量的存储每个路径计一次；归档字节的"去重前"每次列出计一次，§4.16）。每个路径列出时就过 `_listed` 的同一套检查（写侧的形状、解析符号链接之后仍在 run 目录之内，违反时点名列出它的文件），manifest 与已提交的索引没列的文件不会出现。消费者因此不必自己走 manifest 的字段、不必按名字探测 `result.json`、也不必再写一遍包含检查。
 - `read_committed(path)`（M33）：`committed_files` 列出的一个文件的字节，经它自己那个访问器的检查：extra 文件就是 `read_extra`（size / sha256）；回复 schema 的字节要与它的地址相符；artifact 不能为空；每个文件都要在磁盘上、在 run 目录之内。没被列出 → `KeyError`。
 - 任何 `ArchiveRecord` 的字节都用 `read_extra(record.path)` 读，同一套 size / sha256 校验。这四个访问器全部只从每步和 trailing 的 extra 索引解析（索引里 `meta` 带 `"archive"` 键的记录才是归档文件），不探测路径、不 glob，所以孤立的 `env/` 文件对它们不可见；它们和 `extra_files` 一样拒绝 format 1 的 trace。
@@ -3812,8 +3819,9 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 | 对象 | 默认处理 | 归属 |
 |---|---|---|
-| 本 run 有没有环境证据、声明了哪些隐私标记 | `TraceConfig.env_evidence_recorded`；`env_evidence_privacy` = 所绑定归档器 `privacy_markers` 的有序并集。它只陈述归档器的声明，不证明字节里没有秘密 | 框架（M28） |
+| 本 run 有没有环境证据、声明了哪些隐私标记 | 有没有：`TraceConfig.negotiation.active_archivers` 非空；`env_evidence_privacy` = 所绑定归档器 `privacy_markers` 的有序并集，绑定了归档器才写进 `config.json`。它只陈述归档器的声明，不证明字节里没有秘密 | 框架（M28） |
 | 共享规则与脱敏台账 | `core/archive/privacy.py`：`PRIVACY_POLICY`（规则版本，`"af-privacy-1"`）、字段名模式 `password\|passwd\|pwd\|otp\|token\|secret\|card\|cvv`（子串匹配，有意宽）、凭证参数名模式（`key` / `apikey` / `sig` / `signature` / `auth` / `credential` 作尾段）、URL 规则、`RedactionLedger`、标记常量 `MARKER_REDACTED` / `MARKER_SESSION_STATE`。规则一改，`PRIVACY_POLICY` 必须升版本（测试用规则源码的摘要钉住：两个名字模式、占位符、URL 模式和每个规则函数的源码，URL 规则在内） | 框架（M28）；M29、M30 复用 |
+| 组装后的配置（`TraceConfig.resolved`） | 字段级、默认不记（`core/trace/redaction.py`）：闭集值（`Literal`、`Enum`、`bool`、`None`）与数字（`int`、`float` 及只由它们和闭集组成的 union，用户 2026-10-13 的裁决）原样记录；自由字符串只有字段标了 `trace_safe` 才原样记录，否则写 `"<omitted>"`；列表等容器里的值同样写 `"<omitted>"`。数字原样记录，读者才看得到 teacher 的采样（温度、`max_actions_per_step`），分叉才能在装配期比较 agent 与 memory 的数字旋钮（§4.1）。`config_hash` 取自脱敏之前的配置（§5.3），所以没记下来的字符串照样区分两次 run。`record_secrets` 打开时全部原样记录 | 框架 |
 | 环境 setup context（`TraceConfig.task_setup`） | 值级脱敏：凭证形状的映射键，其值（整棵子树）换成 `<redacted>`；URL（以 `scheme://` 开头的字符串）的 userinfo 整段换掉；名字是凭证形状的 query / fragment 参数，值换掉；其余字节原样。`null` 与空参数值没有可换的东西，原样保留、不记台账（`null` 要与"设置过"区分开）。台账一起记录。`record_secrets` 打开时与 `resolved` 一样原样记录，台账为空 | 框架（M28） |
 | secret guard | 扫描整个 trace 目录（含 `env/`），gzip 文件（魔数 `1f 8b` 或 `.gz` 后缀）先解压再扫；正向对照：假归档器把凭证写进 `env/`（明文与 `.gz` 各一份），必须被发现。凭证形状的正则 `SECRET_PATTERNS` 在 `core/trace/secret_patterns.py`（M32 从测试模块挪进生产代码），guard 测试与训练导出的凭证扫描 import 同一份 | 框架（M28；M32 挪位置） |
 | 归档本身 | 永不导出；导出物只含截图、动作、thought 与引用（§4.15） | 导出（M32 遵守） |

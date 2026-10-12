@@ -32,20 +32,25 @@ Two things make a field safe:
    argument, the reason. Where the mark has to physically live to survive
    conscribe's config generation is explained there — the obvious
    spellings do not.
-2. A **closed-set annotation** — ``Literal[...]``, an ``Enum`` subclass,
-   ``bool``, ``None``. This is not a heuristic: the value can only be one
-   of the alternatives the source code enumerates, so it cannot carry a
-   credential. It is what makes every conscribe discriminator
-   (``agent_id``, ``loop_id``, ``env_type``, ``provider_id``,
-   ``trajectory_type``) and every mode switch (``observation_mode``,
-   ``screenshot_format``, ``coordinate_space``) readable in a trace
-   without anybody having to remember to mark them.
+2. An annotation that is **safe by type** (:func:`is_safe_by_type`):
+   a closed set — ``Literal[...]``, an ``Enum`` subclass, ``bool``,
+   ``None`` — or a number, ``int`` / ``float``. A closed-set value can
+   only be one of the alternatives the source code enumerates, so it
+   cannot carry a credential; it is what makes every conscribe
+   discriminator (``agent_id``, ``loop_id``, ``env_type``,
+   ``provider_id``, ``trajectory_type``) and every mode switch
+   (``observation_mode``, ``screenshot_format``, ``coordinate_space``)
+   readable in a trace without anybody having to remember to mark them.
+   A number is a count, a limit, a size or a sampling knob
+   (``max_steps``, ``max_actions_per_step``, ``temperature``,
+   ``viewport_width``), so numbers are recorded raw as well — the user's
+   ruling, which is what lets a reader see the teacher's sampling and
+   lets a branch compare the numeric agent and memory knobs before
+   anything starts (``docs/architecture_design.md`` §4.1, §5.6).
 
-Numbers and free-form strings are *not* closed sets and stay omitted
-until marked. ``max_steps`` and ``screenshot_quality`` are worth
-recording and each needs one :func:`trace_safe` on its declaration.
-Until somebody adds those marks a reader cannot *see* them — but a run
-is still told apart by them, because
+Free-form strings are open and stay omitted until marked. A reader
+cannot *see* an unmarked one — but a run is still told apart by it,
+because
 :meth:`~spectragent.core.trace.models.TraceConfig.configuration_digest`
 is computed before redaction. Marking a field improves what a trace
 says, never whether two traces compare equal.
@@ -162,8 +167,9 @@ def is_closed_set(annotation: Any) -> bool:
     would not.
 
     ``str``, ``int``, ``float`` and every container cannot — they are
-    open. ``Optional[X]`` is closed exactly when ``X`` is, since ``None``
-    is itself a closed set of one.
+    open (numbers are safe for another reason, :func:`is_safe_by_type`).
+    ``Optional[X]`` is closed exactly when ``X`` is, since ``None`` is
+    itself a closed set of one.
     """
     if annotation is None:
         # An untyped field. Nothing is known about what it can hold.
@@ -178,6 +184,26 @@ def is_closed_set(annotation: Any) -> bool:
     if annotation is bool or annotation is types.NoneType:
         return True
     return isinstance(annotation, type) and issubclass(annotation, enum.Enum)
+
+
+def is_safe_by_type(annotation: Any) -> bool:
+    """May a value of this annotation be recorded without a mark?
+
+    A closed set (:func:`is_closed_set`) or a number — ``int``, ``float``
+    and their subclasses (module docstring). A union is safe exactly when
+    each alternative is, so ``int | None`` and ``int | Literal["unlimited"]``
+    are and ``int | str`` is not. Strings and every container are not.
+    """
+    if annotation is None:
+        return False
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return is_safe_by_type(get_args(annotation)[0])
+    if origin in _UNION_ORIGINS:
+        return all(is_safe_by_type(arg) for arg in get_args(annotation))
+    if isinstance(annotation, type) and issubclass(annotation, int | float):
+        return True
+    return is_closed_set(annotation)
 
 
 def redact_config(config: Any, *, record_secrets: bool = False) -> dict[str, Any]:
@@ -243,7 +269,7 @@ def _redact_field(value: Any, field_info: FieldInfo, *, record_secrets: bool) ->
     structure = _redact_structure(value, record_secrets=record_secrets)
     if structure is not _NOT_STRUCTURE:
         return structure
-    if is_trace_safe(field_info) or is_closed_set(field_info.annotation):
+    if is_trace_safe(field_info) or is_safe_by_type(field_info.annotation):
         return _jsonable(value)
     return OMITTED
 
@@ -305,6 +331,7 @@ __all__ = [
     "TRACE_SAFE_EXTRA",
     "TraceSafe",
     "is_closed_set",
+    "is_safe_by_type",
     "is_trace_safe",
     "redact_config",
     "trace_safe",

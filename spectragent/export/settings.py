@@ -113,15 +113,14 @@ class BenchmarkRef:
 class Decontamination:
     """Which sources an evaluation benchmark rules out (``decontamination``)."""
 
-    against: tuple[BenchmarkRef, ...] | None = Field(
-        default=None,
+    against: tuple[BenchmarkRef, ...] = Field(
+        default=(),
         description=(
             "Benchmarks the student will be evaluated on, read through the export "
             "document's eval_loader / task_loader blocks (by benchmark_name; else each "
-            "benchmark's registered loader with its defaults). None: the benchmarks the "
-            "sources were evaluated on — those of the sources filters.require_eval selected "
-            "(a branch run's source task's); without require_eval nothing is decontaminated "
-            "and the manifest says configured: false. []: none."
+            "benchmark's registered loader with its defaults). Only the benchmarks listed "
+            "here are checked. Default []: nothing is decontaminated, and the dataset "
+            "manifest says decontaminated: false."
         ),
     )
     match: DecontaminationMatch = Field(

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.runtime import AgentRuntime
+from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 from spectragent.scripts.generate_all import _collect_registrars
 
 
@@ -22,14 +23,14 @@ def task_context(
     """The task context the flags name, routed to capabilities by key (§4.10); ``None`` if empty.
 
     ``replay_archive`` is the source run directory an ``archive`` network
-    source replays (M30), resolved here against the working directory: the
-    context is recorded in the trace (``task_setup``), and a fork rebuilds the
-    environment from that record wherever it runs.
+    source replays, passed as given: ``AgentRuntime.execute`` resolves a
+    relative one against the working directory before the context is
+    recorded in the trace (``task_setup``) and handed to setup, for every
+    caller alike.
     """
-    archive = str(Path(replay_archive).resolve()) if replay_archive else None
     context = {
         key: value
-        for key, value in (("start_url", start_url), ("replay_archive", archive))
+        for key, value in (("start_url", start_url), (REPLAY_ARCHIVE_KEY, replay_archive))
         if value
     }
     return context or None

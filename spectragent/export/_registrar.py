@@ -239,9 +239,9 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
             Field(
                 description=(
                     "Which evaluation benchmarks rule sources out (against, match), read "
-                    "through the document's eval_loader / task_loader blocks. Null: against "
-                    "the benchmarks the sources filters.require_eval selected were evaluated "
-                    "on, matched by task id or by site and instruction."
+                    "through the document's eval_loader / task_loader blocks. Only the "
+                    "benchmarks against lists are checked. Null: the defaults (against: [], "
+                    "nothing decontaminated; match: either)."
                 ),
             ),
         ] = None,

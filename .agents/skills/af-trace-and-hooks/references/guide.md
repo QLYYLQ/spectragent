@@ -427,7 +427,7 @@ accessors, and what comes back is the type that was written:
 | `blob(sha256)` | bytes of a committed content-addressed archive file (`read_extra(archive_blob_path(sha256))`) | `KeyError` |
 | `archive_run_file(capability_id)` | the `ArchiveRecord` of the highest committed run-record version; bytes via `read_extra(record.path)` | `None` |
 | `archive_lines(path, model)` (M30) | each non-blank line of a committed line-delimited archive file (`index.jsonl`, `replay.jsonl`) validated as the caller's `model`, in file order; bytes via `read_extra`; a line that is not JSON or does not validate → `TraceSchemaError` naming the file and line. With the accessors above it is how `RunTrace` satisfies `core/archive/source.py`'s `ArchiveReader`, the replay's read side | `KeyError` |
-| `evals()` (M31) | `verdict_slug` → `EvalResult` for every `evals/<slug>.json`, sorted by slug; not cached (a verdict written later is seen); `evals/` or a file in it resolving outside the run → `TraceSchemaError`, as is a file that does not read as an `EvalResult` | `{}` |
+| `evals()` (M31) | `verdict_slug` → `EvalResult` for every `evals/<slug>.json`, sorted by slug and walked in sorted order (which bad file is named first does not depend on the file system's listing order); not cached (a verdict written later is seen); `evals/` or a file in it resolving outside the run → `TraceSchemaError`, as is a file that does not read as an `EvalResult` | `{}` |
 | `committed_files` / `read_committed(path)` (M33) | every listing of a committed file in commit order — the run's own three files, what the manifest lists, what each committed extra index lists (a shared blob once per commit that lists it) — as `CommittedFile` (`kind`, `step`, `fragment`, the index entry, the `ArchiveRecord` when it is evidence), each path checked as it is listed; the bytes through that file's own accessor's checks. What consumers that account for a whole run (M33's storage and archive bytes) read instead of walking the manifest's fields themselves | `KeyError` (`read_committed`) |
 
 "Not there" and "not readable" never collapse. Anything the manifest lists that cannot
@@ -527,8 +527,9 @@ execution detail:
   any; the default is none, and a run without it has no `env/` directory at all;
 - **its own subtree** — `env/`, read through its own accessors (§3), never mixed into
   steps, observations or messages;
-- **its own privacy marking** — `TraceConfig.env_evidence_recorded` /
-  `env_evidence_privacy`, plus the capability's run record (§5, §6).
+- **its own privacy marking** — `TraceConfig.env_evidence_privacy` (written only when
+  archivers were bound; *which* were bound is `negotiation.active_archivers`), plus the
+  capability's run record (§5, §6).
 
 The 2026-09-16 line still holds in full: an archive stores resources and state, **not
 the CDP event sequence** that delivered them, and **input ticks are still not
@@ -590,14 +591,21 @@ Three layers now (`models.py:437-524`):
   Everything fully qualified, everything sorted (the upstream results are `frozenset`s
   and iteration order varies between processes).
 - **Provenance** — `secrets_recorded`, the one field a reader must check before sharing
-  the directory, and beside it `env_evidence_recorded` / `env_evidence_privacy` (does
-  this trace carry environment evidence, and which privacy markers did its archivers
-  declare).
+  the directory, and beside it `env_evidence_privacy` (which privacy markers the bound
+  archivers declared; whether any were bound is `negotiation.active_archivers`, and the
+  old `env_evidence_recorded` boolean that duplicated it is gone).
 
 Plus two per-task facts. `task_setup` (`TaskSetupRecord`) is the environment setup
-context `execute()` handed to `setup_environment` (`start_url` …), value-level redacted
-with its ledger; a branch task (M31) re-creates its source environment from it, never
-from a redacted one. `branch` (`BranchProvenance`, M31) says where a branch run came from.
+context `execute()` handed to `setup_environment` (`start_url` …, a relative
+`replay_archive` already made absolute), value-level redacted with its ledger; a branch
+task (M31) re-creates its source environment from it, never from a redacted one.
+`branch` (`BranchProvenance`, M31) says where a branch run came from.
+
+**A per-task or per-feature field is written only when it has a value** (user ruling,
+2026-10-13): `Field(exclude_if=...)` keeps `branch`, `task_setup` and
+`env_evidence_privacy` out of `config.json` when they are `None`, and `extra` when it is
+empty, so a plain run carries no `"branch": null` placeholders. An absent key reads back
+as the default; no reader changes and no format bump.
 
 `AgentRuntime` passes both explicitly (`runtime.py:586-609`) because it is the only
 component holding both, and it dispatches `on_run_start` *after* `prepare()` so the
@@ -610,7 +618,7 @@ configuration ended up recorded nowhere in the first place.
 
 `configuration_digest` (`models.py:526`) covers identity + benchmark/subset + resolved
 config + negotiation, and deliberately **not** `task` / `task_id` / `extra` /
-`task_setup` / `branch` (per task) nor `secrets_recorded` / `env_evidence_*` (provenance),
+`task_setup` / `branch` (per task) nor `secrets_recorded` / `env_evidence_privacy` (provenance),
 so two tasks of one sweep share a hash — including two that differ only in `start_url`, or
 two branches of one sweep (`test_run_configuration.py::TestBranchProvenance`).
 Archive settings move the hash through the two existing roads and nothing else: the
@@ -624,9 +632,11 @@ It hashes the **unredacted** view. `TraceWriter` builds both (`trace_writer.py:3
 exists only to be hashed, and `recorded`, which does. `WALWriter.init_run` takes it as a
 keyword-only `config_hash` (`wal.py:128`) because only the caller still has the
 unredacted object. The earlier version hashed the post-redaction dict, where every
-unmarked value is the same `"<omitted>"` string — so `max_steps`, `temperature`,
+unmarked value was the same `"<omitted>"` string — so `max_steps`, `temperature`,
 `viewport_*` and `dom_max_elements` all collapsed and the digest merged the arms of every
-sweep a researcher actually runs, silently, while looking like it worked.
+sweep a researcher actually runs, silently, while looking like it worked. Numbers are
+recorded raw now (§6), but an unmarked free-form string — the model name, a
+`user_agent` — still collapses, which is why the digest stays on the unredacted view.
 
 The payload stamps `resolved_fidelity` (`models.py:598`), so **a reader cannot recompute
 the manifest's `config_hash` and should not try.** Readers compare two manifests. Pinned
@@ -635,7 +645,8 @@ by `test_run_configuration.py::TestConfigHash` (`:264`).
 ### Recipe: record a new run-scoped fact
 
 1. Add the field to `TraceConfig` with a docstring saying what question it answers that
-   identity cannot.
+   identity cannot. A per-task or per-feature field gets `exclude_if` so it is written
+   only when it has a value.
 2. Decide whether it joins `configuration_digest`'s payload (`models.py:586`): yes if two
    runs differing in it are different *configurations*; no if it is per-task.
 3. Resolve it in `AgentRuntime` — the only component holding the whole run — and add it
@@ -652,9 +663,10 @@ M28 applied the recipe three times, and each is a worked example:
   joins the digest (through `negotiation`); resolved in `AgentRuntime.prepare()`, passed
   as `archive_negotiation=`; `TraceNegotiation.from_results(observation, action,
   archive)` returns `None` only when all three are `None`.
-- **`env_evidence_recorded` / `env_evidence_privacy`** — provenance, so not in the digest;
-  resolved in the runtime (`negotiated_archive is not None`; the sorted union of the
-  bound archivers' `privacy_markers`), accepted by name.
+- **`env_evidence_privacy`** — provenance, so not in the digest; resolved in the runtime
+  (the sorted union of the bound archivers' `privacy_markers`, `None` when none were
+  bound), accepted by name. A sibling boolean `env_evidence_recorded` was deleted
+  later: it only restated whether `archive_negotiation` was `None`.
 - **`task_setup`** — per task, so not in the digest; resolved in `execute()` as the
   `env_context` it routes to `setup_environment` (`None` when there is none), accepted by
   name and redacted in `TraceWriter.on_run_start` (§6). It can carry user text — a start
@@ -669,7 +681,7 @@ M31 applied it once more:
   `verify`) move the hash through `resolved` as usual. It arrives as the third part of
   `TaskLoader.get_task_context(id)` (`TaskContext{env, loop, branch}`), is passed as
   `execute(branch=…)` and on to `on_run_start(branch=…)`, and is recorded as given. Not
-  named "provenance": that word is the `secrets_recorded` / `env_evidence_*` layer.
+  named "provenance": that word is the `secrets_recorded` / `env_evidence_privacy` layer.
 
 ## 6. Secrets: deny by default, at field level
 
@@ -696,19 +708,25 @@ Two things make a field safe (`_redact_field`, `redaction.py:234`):
 1. **An explicit mark** — `trace_safe("<why this cannot be a credential>", ...)`
    (`redaction.py:102`) in place of the field's `Field(...)`. Example in the wild:
    `TraceWriter.trace_dir` (`trace_writer.py:165-176`).
-2. **A closed-set annotation** — `Literal[...]`, an `Enum` subclass, `bool`, `None`
-   (`is_closed_set`, `redaction.py:159`). This is a *proof*, not a heuristic: the value
-   can only be one of the alternatives the source enumerates, so recording it leaks
-   nothing that reading the source would not. It is what makes every conscribe
-   discriminator and every mode switch (`observation_mode`, `screenshot_format`,
-   `trajectory_type`, `coordinate_space`) readable without anybody marking anything.
-   Numbers and free strings are open sets and stay withheld — which is why `max_steps`,
-   `temperature` and `screenshot_quality` currently read as `"<omitted>"`. Deleting the
-   `is_closed_set` clause at `redaction.py:246` restores the strict reading in one line.
+2. **An annotation that is safe by type** (`is_safe_by_type`): a closed set —
+   `Literal[...]`, an `Enum` subclass, `bool`, `None` (`is_closed_set`) — or a number,
+   `int` / `float` (and any union made only of those and closed sets, such as
+   `int | None` or `int | Literal["unlimited"]`). A closed set is a *proof*, not a
+   heuristic: the value can only be one of the alternatives the source enumerates, so
+   recording it leaks nothing that reading the source would not; it is what makes every
+   conscribe discriminator and every mode switch (`observation_mode`,
+   `screenshot_format`, `trajectory_type`, `coordinate_space`) readable without anybody
+   marking anything. Numbers are recorded raw by the user's ruling of 2026-10-13: a
+   count, a limit, a size or a sampling knob (`max_steps`, `max_actions_per_step`,
+   `temperature`, `viewport_width`) is what a reader compares runs by, and it lets a
+   branch compare the numeric agent and memory knobs at assembly. Free strings stay
+   withheld (the model name, `extend_system_message`), and so does a container of
+   values (a list of strings, a tuple of numbers).
 
 Marking a field now only changes what a trace **says**, never whether two traces compare
-equal — the digest is taken before redaction (§5). Nothing is blocked on a mass-marking
-pass, and there is a reason not to do one yet: the recipe asks `core/loops/`,
+equal — the digest is taken before redaction (§5). With numbers raw, the marks left to
+add are for free strings, and nothing is blocked on a mass-marking pass. There is a
+reason not to do one yet: the recipe asks `core/loops/`,
 `core/capabilities/`, `core/llm/providers/` and `agents/` to import
 `spectragent.core.trace.redaction` *in their field declarations*, which drags `wal` and
 `reader` into their import graphs and inverts the rule `models.py:375` states in the same
@@ -905,7 +923,7 @@ are byte-identical.
 | `core/trace/fsio.py` | `write_durable`, `fsync_dir` and its errno policy, `atomic_write`, plain-write permissions |
 | `core/trace/wal.py` | the commit protocol, path rules (file-or-directory included), content-addressed dedup, durable-directory tracking, `commit_trailing` |
 | `core/trace/models.py` | `TraceManifest` and its per-step index, `RecordedLLMCall`, `CallFailure`, `TraceConfig`, `TraceNegotiation`, `ArchiveMeta` / `ArchiveRecord`, `TaskSetupRecord`, the digest |
-| `core/trace/redaction.py` | `trace_safe`, `is_closed_set`, `redact_config` |
+| `core/trace/redaction.py` | `trace_safe`, `is_safe_by_type`, `is_closed_set`, `redact_config` |
 | `core/trace/reader.py` | `RunTrace` — typed accessors resolved through the manifest (the archive ones through the extra indexes), `_listed` (containment), `_read_model` (`json.loads`), the format gate |
 | `core/trace/errors.py` | `TraceSchemaError` — every way a committed trace is unreadable |
 | `evaluator/base.py`, `evaluator/trace_view.py` | the read side |

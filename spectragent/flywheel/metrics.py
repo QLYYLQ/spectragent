@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
 
 from spectragent.core.capabilities.browser.archive_stats import (
     BodyCompleteness,
@@ -62,6 +62,7 @@ from spectragent.core.trace.models import CommittedFile, RunStatus, TraceConfig
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.secret_patterns import find_secrets, iter_readable
 from spectragent.core.trace.sources import match_runs, task_identity, unreadable_reason
+from spectragent.schemas.dataset import DATASET_FORMAT, DatasetManifest
 from spectragent.schemas.restoration import RestorationCheck
 from spectragent.schemas.step_record import StepRecord
 
@@ -1394,7 +1395,7 @@ class DuplicateBranches(_Model):
 
 
 def duplicate_branches(
-    branch: RoleRuns, dataset_manifest: Mapping[str, Any] | None
+    branch: RoleRuns, dataset_manifest: DatasetManifest | None
 ) -> DuplicateBranches:
     """PRD §10 重复分叉率 (arch §4.16): the export's ``duplicate_of`` rule, on executed actions.
 
@@ -1421,13 +1422,12 @@ def duplicate_branches(
             if target in seen:
                 duplicates += 1
             seen.add(target)
-    flagged = dataset_manifest.get("duplicates") if dataset_manifest is not None else None
     return DuplicateBranches(
         branches=branches,
         groups=len(groups),
         duplicates=duplicates,
         rate=ratio(duplicates, branches, empty="no branch run"),
-        dataset_duplicates=flagged if isinstance(flagged, int) else None,
+        dataset_duplicates=dataset_manifest.duplicates if dataset_manifest is not None else None,
     )
 
 
@@ -1682,16 +1682,37 @@ class ExportYield(_Model):
     action_failed: Ratio
 
 
-def read_dataset_manifest(layout: ChainLayout, name: str = "first") -> dict[str, Any] | None:
-    """An export's ``manifest.json`` as JSON (the first by default), or ``None`` when it has none."""
+class DatasetManifestError(ValueError):
+    """A published dataset's ``manifest.json`` does not read back as this build's format.
+
+    Raised rather than read as empty counts: a renamed key must not turn into
+    a measured zero. The message names the file relative to the chain root.
+    """
+
+
+def read_dataset_manifest(layout: ChainLayout, name: str = "first") -> DatasetManifest | None:
+    """An export's ``manifest.json`` (the first by default), or ``None`` when it has none.
+
+    Read through the model the export writes it with
+    (``schemas/dataset.py::DatasetManifest``).
+
+    Raises:
+        DatasetManifestError: The file exists but does not read back as the
+            dataset format this build writes.
+    """
     path = layout.dataset(name) / "manifest.json"
     if not path.is_file():
         return None
-    value = json.loads(path.read_text(encoding="utf-8"))
-    return value if isinstance(value, dict) else None
+    try:
+        return DatasetManifest.model_validate_json(path.read_bytes())
+    except ValidationError as exc:
+        raise DatasetManifestError(
+            f"datasets/{name}/manifest.json does not read back as dataset format "
+            f"{DATASET_FORMAT!r}: {exc}"
+        ) from exc
 
 
-def export_yield(layout: ChainLayout, manifest: Mapping[str, Any] | None) -> ExportYield:
+def export_yield(layout: ChainLayout, manifest: DatasetManifest | None) -> ExportYield:
     """PRD §10 导出产出 (arch §4.16), read from the published files of ``datasets/first``.
 
     ``action_failed``: samples whose ``labels.step_status`` is
@@ -1709,23 +1730,15 @@ def export_yield(layout: ChainLayout, manifest: Mapping[str, Any] | None) -> Exp
             sample = json.loads(line).get("sample") or {}
             total += 1
             failed += int((sample.get("labels") or {}).get("step_status") == "action_failed")
-    split = manifest.get("split") or {}
-    steps = manifest.get("steps") or {}
-    sources = manifest.get("sources") or {}
-    duplicates = manifest.get("duplicates")
     return ExportYield(
         present=True,
-        samples={str(k): int(v) for k, v in sorted((split.get("samples") or {}).items())},
-        untranslatable={
-            str(k): int(v) for k, v in sorted((steps.get("untranslatable") or {}).items())
-        },
-        steps_skipped={str(k): int(v) for k, v in sorted((steps.get("skipped") or {}).items())},
-        sources_exported=len(sources.get("exported") or []),
-        sources_skipped={str(k): str(v) for k, v in sorted((sources.get("skipped") or {}).items())},
-        sources_filtered={
-            str(k): str(v) for k, v in sorted((sources.get("filtered") or {}).items())
-        },
-        duplicates=duplicates if isinstance(duplicates, int) else None,
+        samples=dict(sorted(manifest.split.samples.items())),
+        untranslatable=dict(sorted(manifest.steps.untranslatable.items())),
+        steps_skipped=dict(sorted(manifest.steps.skipped.items())),
+        sources_exported=len(manifest.sources.exported),
+        sources_skipped=dict(sorted(manifest.sources.skipped.items())),
+        sources_filtered=dict(sorted(manifest.sources.filtered.items())),
+        duplicates=manifest.duplicates,
         action_failed=ratio(failed, total, empty="the export holds no sample"),
     )
 
@@ -1806,6 +1819,7 @@ __all__ = [
     "ChainLayout",
     "ChainRuns",
     "ChallengeHit",
+    "DatasetManifestError",
     "DedupBytes",
     "Determinism",
     "DuplicateBranches",

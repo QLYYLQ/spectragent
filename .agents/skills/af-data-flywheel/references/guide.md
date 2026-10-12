@@ -53,7 +53,8 @@ export package is frozen: `spectragent/export/`, `spectragent-export`,
 features and no new design decisions, only the adaptations a cross-cutting change needs to
 keep their tests green (architecture §4.15). The evaluator is dormant, neither deleted nor
 improved, and no stage needs a verdict: every verdict filter is optional and off by
-default (architecture §4.11).
+default (the shipped export too), and decontamination checks only an explicit benchmark
+list, empty by default (architecture §4.11).
 
 ### The layering rule
 
@@ -190,10 +191,11 @@ uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
     --start-url URL --task "the recorded task" --replay-archive traces/<recorded-run>
 ```
 
-- The source run arrives per task as `replay_archive`, a run directory. `spectragent-run`
-  makes it absolute before it enters the task context, so the replay's own `task_setup`
-  names the source by absolute path; a caller that builds `env_context` itself must do the
-  same. The `archive` source without it is a `BrowserCooperationError` row at setup
+- The source run arrives per task as `replay_archive`, a run directory. A relative one is
+  relative to the launch directory: `AgentRuntime.execute` makes it absolute
+  (`schemas/task.py::resolve_env_context_paths`) before it is recorded as `task_setup` and
+  handed to setup, for every caller — `spectragent-run`, a task loader, a Python caller
+  building `env_context` itself. The `archive` source without it is a `BrowserCooperationError` row at setup
   (`network_source: archive ↔ task context: no replay_archive`), and so is `live` with it.
   A path that is not a committed run directory (not a directory, or no `manifest.json`)
   raises `ArchiveOpenError` from `open_archive`, also before Chrome starts.
@@ -232,11 +234,11 @@ uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
 
 ```yaml
 agent:
-  - agent_id: ui_tars                  # the source run's agent and closed-set knobs
+  - agent_id: ui_tars                  # the source run's agent, closed-set and numeric knobs
     agent_loop:
       loop_id: branch
       max_steps: 30
-      max_actions_per_step: 1          # must equal the source's; checked before any action
+      max_actions_per_step: 1          # must equal the source's; checked at assembly
       continue_steps: 0                # ReAct steps after the policy step
       terminal_observation: true       # the branch default
       restorer:
@@ -273,10 +275,14 @@ uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   recoverable setup context, or shares its `run_id`) stops the sweep with every reason at
   once, or is left out under `on_unbranchable: skip`.
 - Before any setup, `BranchLoop.weave` raises `IncompatibleCheckpointError`, naming both
-  values, for another agent, a different closed-set knob or memory strategy, a different
-  observation or action negotiation, a source loop other than `react`, or a source that is
-  itself a branch. Open knobs such as `max_actions_per_step` are recorded as `"<omitted>"`, so
-  the replay of the recorded calls catches them, still before any action runs.
+  values, for another agent, a different closed-set or numeric agent knob, a different
+  memory strategy or memory knob (`max_messages`, `window_size`), a different
+  `agent_loop.max_actions_per_step` (the one loop setting compared; `max_steps` and the
+  rest are the branch's own), a different observation or action negotiation, a source loop
+  other than `react`, or a source that is itself a branch. Numbers are recorded raw, so
+  they are compared here; a free-form string nobody marked trace-safe is recorded as
+  `"<omitted>"`, and the seed check and the replay of the recorded calls catch it, still
+  before any action runs. The `llm` block is never compared.
 - `trace_branches` has no eval loader: pass `--no-eval`. A configured evaluator is refused
   before the sweep starts.
 - Write branch runs outside the sources glob; the shipped file sets the trace writer's
@@ -296,12 +302,12 @@ exporter:
     sources: ["recorded/*"]            # null: ["*"]; branch runs included
     filters:
       require_status: completed
-      require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
+      require_eval: null               # optional: {evaluator_id, label: 1, slug: null}
       exclude_restoration_diverged: true
       max_document_misses: 0           # null: no replay-log filter
       exclude_sites: []
     split: { by: site, validation_fraction: 0.1, salt: af-split-1 }
-    decontamination: { against: null, match: either }   # against: [{benchmark, subset}, ...]
+    decontamination: { against: [], match: either }     # against: [{benchmark, subset}, ...]
     translator:
       translator_id: index_to_coordinate
       occlusion: check                 # "off", quoted
@@ -329,14 +335,13 @@ split and the drops by reason, and exits non-zero on any failure.
 - A branch run takes its source run's verdicts and context prefix, so the source run must be
   among the matched sources, or the branch is filtered out. Branches of one checkpoint with
   identical targets are flagged `duplicate_of`, not removed.
-- `decontamination.against: null` means the benchmarks the sources were evaluated on (the
-  benchmark of each source `require_eval` selected). Runs recorded on that benchmark's own
-  tasks are then all excluded and the export fails with `ExportEmptyError`. To train on them,
-  name a disjoint evaluation set or write `against: []`. Without `require_eval` nothing is
-  checked (a warning, and `configured: false` in the manifest).
-- An explicit `against` lists `{benchmark, subset}` refs. For sources evaluated on
-  `online_mind2web`, as in the shipped export, `null` resolves to
-  `against: [{benchmark: online_mind2web, subset: null}]`. Each ref is read
+- The evaluator is dormant and the export does not need it: `filters.require_eval`
+  defaults to `null` (the shipped export too), so a run the teacher failed is exported as
+  well, labelled by `labels.step_status` and any verdicts.
+- `decontamination.against` is an explicit list of `{benchmark, subset}` refs and nothing is
+  inferred from verdicts. The default `[]` decontaminates nothing (the manifest says
+  `decontaminated: false`); `null` is refused at composition. Listing the benchmark the
+  sources were recorded on excludes them all (`ExportEmptyError`). Each ref is read
   through this document's `eval_loader:` / `task_loader:` blocks with that
   `benchmark_name`, else through that benchmark's registered loader with its defaults;
   `subset: null` takes every loader the document configures for the benchmark, or the
@@ -387,8 +392,9 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `data_dir`, and the exporter's `sources_root`, `sources` and `output_dir`. A stage YAML
   missing one of those blocks, or holding two, is refused before anything runs. Everything
   else (agent, tier, archivers, selector, `verify`) is the stage YAML's own.
-- A chain's export YAML sets `filters.require_eval: null` (the chain does not evaluate) and
-  `decontamination: {against: []}` (the sources are the benchmark's own tasks).
+- A chain's export YAML uses `filters.require_eval: null` (the chain does not evaluate) and
+  `decontamination: {against: []}` (the sources are the benchmark's own tasks) — both the
+  defaults, and what the shipped `export_sft.yaml` writes.
 - A run stage succeeds when the bench exits 0 or 1 and wrote at least one new run; a failed
   task is data. `same_path` and `branch` refuse `evaluate: true`. With the export selected,
   an existing `datasets/first` or `datasets/second` is a `ChainConfigError` before any paid
@@ -681,7 +687,10 @@ any of them with the user before starting.
 
 - Exporters differ only in record format. Implement `format`, store images through
   `ImageStore.put(data, media_type)`, and leave sources, filters, rendering, validation,
-  split and the manifest to `ExportRunner`.
+  split and the manifest to `ExportRunner`. The manifest's shape is
+  `schemas/dataset.py::DatasetManifest`, which the metrics read it back through; a new key
+  goes into that model (and `DATASET_FORMAT` moves when a reader must tell the shapes
+  apart).
 - `format(rendered, images)` returns `ExportRecord(sample_id, record, images)`. `record` is
   the JSON object the runner writes, with sorted keys, as one line of `<split>.jsonl`.
   `images` lists, in order of appearance, the path `images.put(data, media_type)` returned
@@ -856,11 +865,11 @@ value on an existing one.
 | A collection raises about dropped or failed events | The archive channel counts emitted against handled events, and `ArchiveChannel.errors` counts sessions that raised in `admit_event` or `on_event`. The step stays uncommitted |
 | Many `no_match` misses on near-identical URLs of one host | The candidates in `replay.jsonl` (`iter_replay_log`) and the report's site-rule candidates. Add `ignore_query` or `ignore_body_paths` to `configs/replay_rules/<domain>.yaml` |
 | A main-frame document miss (`diverged`) | The page asked for a document the recording never fetched, such as a time-stamped URL. A restored step shows `document_miss` |
-| `IncompatibleCheckpointError` | The branch's agent, closed-set knobs, memory, negotiation, seed messages or replayed calls differ from the source's; the error names both values. Fix the branch YAML |
+| `IncompatibleCheckpointError` | The branch's agent, closed-set or numeric knobs, memory, `max_actions_per_step`, negotiation, seed messages or replayed calls differ from the source's; the error names both values. Fix the branch YAML |
 | `RestorationDivergedError` | `verify: strict` met a failed check; read `StepRecord.restoration.reasons`. `verify: warn` records every step's check for diagnosis |
 | A branch sweep refuses its sources, or lists no tasks | The reasons in `loader.skipped` (`spectragent-bench --list`); `on_unbranchable: skip`. Branch and replay runs are never sources |
 | The bench refuses before starting: no eval loader for `trace_branches` | Pass `--no-eval` |
-| `ExportEmptyError` | The counts in the message; most often `decontamination.against: null` excluding every source recorded on the evaluated benchmark (§2.4) |
+| `ExportEmptyError` | The counts in the message; most often a `require_eval` over runs nobody evaluated, or `decontamination.against` listing the benchmark the sources were recorded on (§2.4) |
 | `ExportConfigError` | More than one exporter block, a student YAML with hooks, several agents or a non-ReAct loop, or decontamination data that cannot be read |
 | `IncompatibleError ... needed for training export` | The student lacks `format_react_output`, or the teacher lacks `parse_react_thought` under `thought_source: teacher` |
 | `IncompatibleFragmentError` naming the source run | The student negotiates a fragment the source never recorded, such as a DOM student over a vision recording |

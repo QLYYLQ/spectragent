@@ -486,6 +486,16 @@ class TaskSetupRecord(BaseModel):
     redactions: RedactionLedger
 
 
+def _absent(value: Any) -> bool:
+    """``exclude_if`` of an optional per-task or per-feature field: not written when unset."""
+    return value is None
+
+
+def _empty(value: Any) -> bool:
+    """``exclude_if`` of a per-task mapping: not written when it holds nothing."""
+    return not value
+
+
 class TraceConfig(BaseModel):
     """Frozen configuration snapshot for a run.
 
@@ -506,18 +516,28 @@ class TraceConfig(BaseModel):
     cross-run comparison used to depend on an external harness keeping
     its own notes.
 
-    **Provenance** (:attr:`secrets_recorded`, :attr:`env_evidence_recorded`,
-    :attr:`env_evidence_privacy`) says how much of the above is real and
-    what else the directory holds. A trace recorded with ``record_secrets``
-    on contains credentials verbatim and must not be shared; one without
-    it contains ``"<omitted>"`` wherever a field was set but not marked
-    trace-safe. A trace whose run bound archivers may also carry
-    environment evidence under ``env/`` — the state of the world the agent
-    acted in, privacy-marked on its own terms.
+    **Provenance** (:attr:`secrets_recorded`, :attr:`env_evidence_privacy`)
+    says how much of the above is real and what else the directory holds.
+    A trace recorded with ``record_secrets`` on contains credentials
+    verbatim and must not be shared; one without it contains
+    ``"<omitted>"`` wherever a free-form string was set but not marked
+    trace-safe. A trace whose run bound archivers
+    (``negotiation.active_archivers``) may also carry environment evidence
+    under ``env/`` — the state of the world the agent acted in,
+    privacy-marked on its own terms.
 
     Two per-task facts sit beside the layers: :attr:`task_setup`, the
     environment setup context the task started from, redacted by value; and
     :attr:`branch`, where a branch run came from.
+
+    **A per-task or per-feature field is written only when it has a
+    value** (``docs/architecture_design.md`` §5.3): ``branch`` only in a
+    branch run, ``task_setup`` only when the task was started with a setup
+    context, ``env_evidence_privacy`` only when archivers were bound,
+    ``extra`` only when the caller passed some. A placeholder such as
+    ``"branch": null`` in every other run's ``config.json`` would be one
+    more thing to explain. An absent key reads back as the field's
+    default, so a reader needs no change.
 
     Component identity appears twice by design and the two are not
     equals. The top-level :attr:`agent_id` / :attr:`loop_id` /
@@ -546,8 +566,8 @@ class TraceConfig(BaseModel):
     #: the task's difficulty/domain/tags here — the axes you slice results
     #: by. **Not** a config surface and not redacted: whoever passes it
     #: chose every key in it. Real configuration belongs in
-    #: :attr:`resolved`, which is.
-    extra: dict[str, Any] = Field(default_factory=dict)
+    #: :attr:`resolved`, which is. Not written when empty.
+    extra: dict[str, Any] = Field(default_factory=dict, exclude_if=_empty)
     #: The composed, validated configuration — defaults filled in, wired
     #: receptors inlined — passed through field-level redaction.
     #: ``"<omitted>"`` means "set, withheld"; ``null`` means "never
@@ -560,32 +580,30 @@ class TraceConfig(BaseModel):
     #: True when this trace was written with redaction disabled. It is
     #: the one field a reader must check before sharing the directory.
     secrets_recorded: bool = False
-    #: Did this run bind archivers — may the directory carry environment
-    #: evidence under ``env/``? Answers the second question a reader asks
-    #: before sharing a trace. Provenance, so not part of the digest.
-    env_evidence_recorded: bool = False
     #: The sorted union of the bound archivers' declared
-    #: ``privacy_markers`` (``core/archive/privacy.py``). What the
-    #: archivers *declared*, not proof the bytes are clean — the framework
-    #: never reads evidence. Provenance, so not part of the digest.
-    env_evidence_privacy: list[str] = Field(default_factory=list)
+    #: ``privacy_markers`` (``core/archive/privacy.py``) — possibly empty —
+    #: or ``None`` (not written) when the run bound no archiver. Whether
+    #: archivers were bound at all is ``negotiation.active_archivers``.
+    #: What the archivers *declared*, not proof the bytes are clean — the
+    #: framework never reads evidence. Provenance, so not part of the digest.
+    env_evidence_privacy: list[str] | None = Field(default=None, exclude_if=_absent)
     #: How this task's environment was started — the setup context
     #: ``execute()`` routed to ``setup_environment``, redacted by value —
-    #: or ``None`` when it received none. Per task, so not part of the
-    #: digest: two tasks differing only in ``start_url`` share a
-    #: ``config_hash``.
-    task_setup: TaskSetupRecord | None = None
+    #: or ``None`` (not written) when it received none. Per task, so not
+    #: part of the digest: two tasks differing only in ``start_url`` share
+    #: a ``config_hash``.
+    task_setup: TaskSetupRecord | None = Field(default=None, exclude_if=_absent)
     #: Where a branch run came from — the source run, its trace (relative to
     #: the sources root), the checkpoint step and the branch's index and
-    #: group — or ``None`` for every run that is not a branch. Resolved by
-    #: ``AgentRuntime`` from the task context and recorded as given. Per
-    #: task (the task id is ``<source_run_id>/s<t>/b<i>``), so not part of
-    #: the digest: every task of one branch sweep shares a ``config_hash``,
-    #: and only sweep-level knobs (``continue_steps``, the teacher's
-    #: sampling, the restorer's ``verify``) move it, through ``resolved``.
-    #: Not called "provenance": that word names the ``secrets_recorded`` /
-    #: ``env_evidence_*`` layer above.
-    branch: BranchProvenance | None = None
+    #: group — or ``None`` (not written) for every run that is not a branch.
+    #: Resolved by ``AgentRuntime`` from the task context and recorded as
+    #: given. Per task (the task id is ``<source_run_id>/s<t>/b<i>``), so not
+    #: part of the digest: every task of one branch sweep shares a
+    #: ``config_hash``, and only sweep-level knobs (``continue_steps``, the
+    #: teacher's sampling, the restorer's ``verify``) move it, through
+    #: ``resolved``. Not called "provenance": that word names the
+    #: ``secrets_recorded`` / ``env_evidence_privacy`` layer above.
+    branch: BranchProvenance | None = Field(default=None, exclude_if=_absent)
 
     def configuration_digest(self, *, resolved: dict[str, Any] | None = None) -> str:
         """Stable hash of *how this run was configured*.
@@ -602,7 +620,7 @@ class TraceConfig(BaseModel):
         ``archive_bindings``) moves it through the latter, with no special
         case. Excluded: ``task`` / ``task_id`` (which task, not which
         configuration), ``extra``, ``task_setup`` and ``branch`` (per-task
-        data) and the provenance fields ``env_evidence_recorded`` /
+        data) and the provenance fields ``secrets_recorded`` /
         ``env_evidence_privacy``.
 
         Args:
@@ -613,14 +631,13 @@ class TraceConfig(BaseModel):
 
                 Omitting it falls back to :attr:`self.resolved`, the
                 *recorded* view, and that view cannot carry a sweep: it
-                replaces every unmarked value with the same
-                ``"<omitted>"`` string, so ``max_steps: 10`` and
-                ``max_steps: 100`` — and every ``temperature``,
-                ``viewport_width``, ``dom_max_elements`` — collapse into
-                one hash. A digest that merges the arms of a sweep is
-                worse than no digest, so the two fidelities are kept
-                distinguishable: the payload records which one it used,
-                and a reader-side digest therefore never equals the
+                replaces every unmarked free-form string with the same
+                ``"<omitted>"``, so two runs differing only in the model
+                name, a ``user_agent`` or an ``extend_system_message``
+                collapse into one hash. A digest that merges the arms of
+                a sweep is worse than no digest, so the two fidelities are
+                kept distinguishable: the payload records which one it
+                used, and a reader-side digest therefore never equals the
                 writer's, even by accident.
 
         The consequence worth stating: a reader of a finished trace

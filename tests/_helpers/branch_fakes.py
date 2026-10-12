@@ -8,9 +8,9 @@ Everything a ``BranchLoop`` test needs without a browser or a model:
   the same element has a fresh id), and which implements
   ``RestorationSupport`` by position (``retarget``) and URL (``verify``);
 - :class:`BranchFakeAgent` — a ReAct agent with a text (or structured) reply
-  syntax, a closed-set knob (``style``) and agent state rebuilt only by
-  replaying its parser (``parsed_log``, Skyvern's ``_action_history`` in
-  miniature);
+  syntax, a closed-set knob (``style``), a numeric knob its prompt never
+  shows (``patience``) and agent state rebuilt only by replaying its parser
+  (``parsed_log``, Skyvern's ``_action_history`` in miniature);
 - :class:`ScriptedLLM` — replies from a script; a reply may be text, a dict
   for the structured model, or an exception to raise;
 - :func:`record_source` / :func:`run_branch` — a source run through the real
@@ -200,9 +200,14 @@ class BranchFakeAgent:
         "action": ("action", ["click", "done"]),
     }
 
-    def __init__(self, *, style: str = "plain", structured: bool = False) -> None:
+    def __init__(
+        self, *, style: str = "plain", structured: bool = False, patience: int = 3
+    ) -> None:
         self.style = style
         self.structured = structured
+        #: A numeric knob nothing renders: only the assembly check can see a
+        #: branch configured differently.
+        self.patience = patience
         self.parsed_log: list[str] = []
         self.prompts = 0
 
@@ -295,12 +300,22 @@ class ScriptedLLM:
 
 class _MemoryEntry(BaseModel):
     memory_id: Literal["simple", "sliding_window"]
+    max_messages: int | None = None
+    window_size: int | None = None
+
+
+class _LoopEntry(BaseModel):
+    loop_id: str
+    max_steps: int
+    max_actions_per_step: int
 
 
 class _AgentEntry(BaseModel):
     agent_id: Literal["branchfake_agent", "other_agent"] = FAKE_AGENT_ID
     style: Literal["plain", "fancy"] = "plain"
     structured: bool = False
+    patience: int = 3
+    agent_loop: _LoopEntry
     memory: _MemoryEntry
 
 
@@ -344,12 +359,13 @@ def build_run(
     """
     writer = TraceWriter(trace_dir=str(trace_root))
     llm = ScriptedLLM(replies)
+    memory_strategy = memory_of(memory, window=window)
     run = make_run(
         agent=agent,
         loop=loop,
         env=make_env(env_cls, {CAP_ID: cap}),
         llm=llm,
-        memory=memory_of(memory, window=window),
+        memory=memory_strategy,
         hooks=[writer],
     )
     config = FakeConfig(
@@ -358,7 +374,17 @@ def build_run(
                 agent_id=config_agent_id,  # type: ignore[arg-type]
                 style=agent.style,  # type: ignore[arg-type]
                 structured=agent.structured,
-                memory=_MemoryEntry(memory_id=memory),  # type: ignore[arg-type]
+                patience=agent.patience,
+                agent_loop=_LoopEntry(
+                    loop_id=loop.loop_id,
+                    max_steps=loop.max_steps,
+                    max_actions_per_step=loop.max_actions_per_step,
+                ),
+                memory=_MemoryEntry(
+                    memory_id=memory,  # type: ignore[arg-type]
+                    max_messages=getattr(memory_strategy, "max_messages", None),
+                    window_size=getattr(memory_strategy, "window_size", None),
+                ),
             )
         ]
     )

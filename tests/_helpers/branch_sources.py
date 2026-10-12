@@ -112,7 +112,7 @@ def write_source(
                 active_archivers=sorted(archivers),
                 archive_bindings={key: key.partition(".")[0] for key in archivers},
             ),
-            env_evidence_recorded=bool(archivers),
+            env_evidence_privacy=[] if archivers else None,
             task_setup=setup_record() if task_setup is _DEFAULT else task_setup,
             branch=branch,
         )

@@ -864,6 +864,24 @@ class TestEvals:
             trace.evals()
         assert info.value.path == evals_dir / "exact_match.json"
 
+    def test_the_first_bad_verdict_named_does_not_depend_on_listing_order(
+        self, trace, reference, monkeypatch
+    ):
+        """The directory is walked sorted, whatever order the file system lists it in."""
+        evals_dir = reference.run_dir / "evals"
+        for name in ("b_judge.json", "a_judge.json"):
+            (evals_dir / name).write_bytes(b"{not json")
+        listed = Path.iterdir
+
+        def backwards(self: Path):
+            entries = list(listed(self))
+            return iter(sorted(entries, reverse=True)) if self == evals_dir else iter(entries)
+
+        monkeypatch.setattr(Path, "iterdir", backwards)
+        with pytest.raises(TraceSchemaError) as info:
+            trace.evals()
+        assert info.value.path == evals_dir / "a_judge.json"
+
     def test_a_verdict_symlinked_out_of_the_run_is_refused(self, trace, reference, tmp_path):
         from tests._helpers.trace_builder import eval_result, write_verdict
 

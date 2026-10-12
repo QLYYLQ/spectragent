@@ -44,6 +44,7 @@ from spectragent.core.negotiation import (
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
+from spectragent.schemas.task import resolve_env_context_paths
 
 if TYPE_CHECKING:
     from spectragent.schemas.restoration import BranchProvenance
@@ -139,9 +140,9 @@ class AgentRuntime:
         self._negotiated_actions: Any = None
         # The archive axis: ``None`` unless some hook asked to archive
         # (see :meth:`prepare`), plus the privacy markers its archivers
-        # declare — both handed to ``on_run_start`` by name.
+        # declare (``None`` with it) — both handed to ``on_run_start`` by name.
         self._negotiated_archive: Any = None
-        self._env_evidence_privacy: list[str] = []
+        self._env_evidence_privacy: list[str] | None = None
         self._active_descriptors: list[Any] = []
         self._memory: Any = None
         # The woven agent :meth:`prepare` returned — whose optional ``prepare``
@@ -398,8 +399,10 @@ class AgentRuntime:
         else:
             negotiated_archive, archivers = None, []
         self._negotiated_archive = negotiated_archive
-        self._env_evidence_privacy = sorted(
-            {marker for archiver in archivers for marker in archiver.privacy_markers}
+        self._env_evidence_privacy = (
+            sorted({marker for archiver in archivers for marker in archiver.privacy_markers})
+            if negotiated_archive is not None
+            else None
         )
 
         # Step 3: AOP weaving (must happen before guarded_act so
@@ -588,7 +591,10 @@ class AgentRuntime:
             env_context: Task context handed to ``Environment.setup``
                 — typically ``TaskLoader.get_task_context(task_id).env``.
                 The environment routes each key to the capabilities whose
-                ``setup()`` declares it; a key nobody declares raises.
+                ``setup()`` declares it; a key nobody declares raises. A
+                relative ``replay_archive`` is resolved against the current
+                directory first (``resolve_env_context_paths``), so the
+                trace's ``task_setup`` records the directory setup opens.
             loop_inputs: The task's inputs to the Loop
                 (``TaskContext.loop``), checked by :meth:`prepare` against
                 the Loop's ``__loop_inputs__``.
@@ -621,6 +627,12 @@ class AgentRuntime:
         seed_messages = self.seed_messages(task)
         if seed_messages and memory is not None:
             memory.add_messages(seed_messages)
+
+        # A relative ``replay_archive`` is relative to the launch directory,
+        # whoever passed it — the CLI, a task loader, a Python caller. Made
+        # absolute once, here, so the trace records the directory setup
+        # opens (§4.10).
+        env_context = resolve_env_context_paths(env_context)
 
         # Hook lifecycle — run_start. Deliberately *before* env setup: a
         # setup failure must still land in a trace, and that needs the
@@ -661,8 +673,9 @@ class AgentRuntime:
             observation_negotiation=self._negotiated_obs,
             action_negotiation=self._negotiated_actions,
             archive_negotiation=self._negotiated_archive,
-            env_evidence_recorded=self._negotiated_archive is not None,
-            env_evidence_privacy=list(self._env_evidence_privacy),
+            env_evidence_privacy=(
+                list(self._env_evidence_privacy) if self._env_evidence_privacy is not None else None
+            ),
             task_setup=env_context,
             branch=branch,
         )

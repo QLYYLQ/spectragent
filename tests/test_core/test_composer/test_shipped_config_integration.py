@@ -875,15 +875,14 @@ _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
             "environment[0].capabilities[0].profile",
         }
     ),
-    # The one-member Literals (the only v1 value), the split salt and the two
-    # nulls that spell out a documented default.
+    # The one-member Literals (the only v1 value), the split salt and the null
+    # that spells out a documented default (no verdict filter).
     "export_sft.yaml": frozenset(
         {
             "exporter[0].sample",
             "exporter[0].image_store",
             "exporter[0].split.salt",
-            "exporter[0].filters.require_eval.slug",
-            "exporter[0].decontamination.against",
+            "exporter[0].filters.require_eval",
         }
     ),
 }

@@ -22,7 +22,7 @@ the privacy measure reports labels and counts.
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -74,6 +74,7 @@ from spectragent.flywheel.metrics import (
     sites,
     storage,
 )
+from spectragent.schemas.dataset import DatasetManifest
 
 #: ``report.json``'s format.
 REPORT_FORMAT = "af-flywheel-report-1"
@@ -862,7 +863,7 @@ def _site_rules_decision(inputs: DecisionInputs, basis: Evidence) -> Recommendat
 # ── building ──────────────────────────────────────────────────────────
 
 
-def _inputs(chain: ChainRuns, manifest: Mapping[str, Any] | None) -> Inputs:
+def _inputs(chain: ChainRuns, manifest: DatasetManifest | None) -> Inputs:
     roles: dict[str, RoleInputs] = {}
     for role in ROLES:
         runs = chain.role(role)
@@ -885,9 +886,8 @@ def _inputs(chain: ChainRuns, manifest: Mapping[str, Any] | None) -> Inputs:
     for name in DATASETS:
         present = chain.layout.dataset(name).is_dir()
         found = manifest if name == "first" else read_dataset_manifest(chain.layout, name)
-        fmt = found.get("format") if found is not None else None
         datasets[name] = DatasetInputs(
-            present=present, format=fmt if isinstance(fmt, str) else None
+            present=present, format=found.format if found is not None else None
         )
     return Inputs(roles=roles, datasets=datasets)
 
@@ -909,7 +909,7 @@ def build_report(
     fidelity = same_path_fidelity(chain)
     blocked = anti_bot(chain.role("record"))
     stored = storage(chain)
-    samples = manifest.get("samples") if manifest is not None else None
+    samples = manifest.samples if manifest is not None else None
     metrics = Metrics(
         archive_overhead=archive_overhead(chain.role("record"), chain.role("control")),
         body_completeness=body_completeness_metric(chain.role("record")),
@@ -928,9 +928,7 @@ def build_report(
         duplicate_branches=duplicate_branches(chain.role("branch"), manifest),
         post_branch_misses=post_branch_misses(chain.role("branch")),
         storage=stored,
-        retention=retention(
-            chain, stored, samples if isinstance(samples, int) else None, PROJECTION_TASKS
-        ),
+        retention=retention(chain, stored, samples, PROJECTION_TASKS),
         export_yield=export_yield(layout, manifest),
     )
     inputs = DecisionInputs(

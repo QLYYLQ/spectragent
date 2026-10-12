@@ -7,7 +7,9 @@ each rule is exercised on both sides of its named threshold, and on no data
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,6 +19,7 @@ from spectragent.flywheel.metrics import (
     BranchDocumentMisses,
     ChainLayout,
     ChainRuns,
+    DatasetManifestError,
     MissDistribution,
     Planted,
     PlantedCount,
@@ -37,7 +40,7 @@ from spectragent.flywheel.metrics import (
     storage,
 )
 from spectragent.flywheel.report import FlywheelReport, build_report, render_markdown
-from tests._helpers.flywheel_traces import Step, click, write_plain
+from tests._helpers.flywheel_traces import Step, click, dataset_manifest, write_plain
 from tests.test_flywheel.conftest import empty_layout
 
 
@@ -195,6 +198,28 @@ class TestExportYield:
     def test_no_export_is_null(self, tmp_path: Path) -> None:
         found = export_yield(empty_layout(tmp_path), None)
         assert (found.present, found.action_failed.value) == (False, None)
+
+    @pytest.mark.parametrize(
+        "damage",
+        [
+            lambda m: m["split"].update(counts=m["split"].pop("samples")),  # a renamed key
+            lambda m: m.update(format="af-sft-1"),  # an older format
+            lambda m: m.pop("leak_scan"),  # a missing section
+        ],
+        ids=["renamed", "older", "missing"],
+    )
+    def test_a_manifest_this_build_does_not_write_is_refused_by_name(
+        self, tmp_path: Path, damage: Any
+    ) -> None:
+        """Read through the export's own model: never a silent zero."""
+        layout = empty_layout(tmp_path)
+        directory = layout.dataset("first")
+        directory.mkdir(parents=True)
+        manifest = json.loads(dataset_manifest(samples=3).model_dump_json())
+        damage(manifest)
+        (directory / "manifest.json").write_text(json.dumps(manifest))
+        with pytest.raises(DatasetManifestError, match="datasets/first/manifest.json"):
+            read_dataset_manifest(layout)
 
 
 class TestDecisionInputs:

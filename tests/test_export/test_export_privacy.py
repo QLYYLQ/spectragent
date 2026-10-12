@@ -167,5 +167,5 @@ def test_a_run_recorded_with_its_secrets_is_never_a_source(
         tmp_path / "src", "raw", [ui_tars_step(click_at(10, 10))], secrets_recorded=True
     )
     report = run_export(composer, exporter_entry(tmp_path / "src", tmp_path / "out"))
-    assert list(report.manifest["sources"]["skipped"]) == ["raw"]
-    assert [s["path"] for s in report.manifest["sources"]["exported"]] == ["ok"]
+    assert list(report.manifest.sources.skipped) == ["raw"]
+    assert [s.path for s in report.manifest.sources.exported] == ["ok"]

@@ -15,15 +15,16 @@ Evaluator would:
   binding included;
 * ``config_hash`` hashes the *configuration*, so two tasks of one sweep
   share a hash and a changed knob breaks it;
-* the environment-evidence provenance (``env_evidence_*``) and the task's
-  setup context (``task_setup``, redacted by value) are recorded beside it,
-  and move the hash not at all.
+* the environment-evidence provenance (``env_evidence_privacy``) and the
+  task's setup context (``task_setup``, redacted by value) are recorded beside
+  it — each only when it has a value — and move the hash not at all.
 """
 
 from __future__ import annotations
 
 import copy
 import dataclasses
+import json
 from pathlib import Path
 from typing import Any
 
@@ -297,25 +298,45 @@ class TestConfigHash:
         assert a.manifest.config_hash != b.manifest.config_hash
 
     @pytest.mark.parametrize(
-        ("label", "mutate"),
+        ("label", "mutate", "read"),
         [
-            ("max_steps", lambda raw: raw["agent"][0]["agent_loop"].update(max_steps=7)),
-            ("temperature", lambda raw: raw["agent"][0]["llm"].update(temperature=0.7)),
-            ("model", lambda raw: raw["agent"][0]["llm"].update(model="gpt-4o-mini")),
+            (
+                "max_steps",
+                lambda raw: raw["agent"][0]["agent_loop"].update(max_steps=7),
+                lambda resolved: resolved["agent"][0]["agent_loop"]["max_steps"],
+            ),
+            (
+                "temperature",
+                lambda raw: raw["agent"][0]["llm"].update(temperature=0.7),
+                lambda resolved: resolved["agent"][0]["llm"]["temperature"],
+            ),
         ],
     )
-    async def test_a_changed_unmarked_knob_breaks_the_hash(self, tmp_path, composer, label, mutate):
-        """The sweep case, and the one that was broken.
-
-        ``max_steps`` / ``temperature`` / ``model`` are open-typed and
-        unmarked, so the *recorded* config shows ``"<omitted>"`` for each
-        — identical bytes in both runs. A digest taken over that view
-        merges the arms of every sweep a researcher actually runs, and it
-        does so silently. The digest is therefore taken over the
-        unredacted config, before redaction.
-        """
+    async def test_a_changed_number_is_recorded_and_breaks_the_hash(
+        self, tmp_path, composer, label, mutate, read
+    ):
+        """Numbers are recorded raw: a reader sees what a sweep varied."""
         a = RunTrace(await _run(tmp_path, composer, task_id=f"t-{label}-a"))
         b = RunTrace(await _run(tmp_path, composer, mutate=mutate, task_id=f"t-{label}-b"))
+        assert read(a.config.resolved) != read(b.config.resolved)
+        assert read(b.config.resolved) in (7, 0.7)
+        assert a.manifest.config_hash != b.manifest.config_hash
+
+    async def test_a_changed_unmarked_string_breaks_the_hash(self, tmp_path, composer):
+        """The sweep case for what stays withheld.
+
+        ``model`` is a free-form string nobody marked, so the *recorded*
+        config shows ``"<omitted>"`` — identical bytes in both runs. A
+        digest taken over that view would merge the arms of the sweep, and
+        silently. The digest is therefore taken over the unredacted config,
+        before redaction.
+        """
+
+        def mutate(raw):
+            raw["agent"][0]["llm"].update(model="gpt-4o-mini")
+
+        a = RunTrace(await _run(tmp_path, composer, task_id="t-model-a"))
+        b = RunTrace(await _run(tmp_path, composer, mutate=mutate, task_id="t-model-b"))
         # The recorded views really are indistinguishable...
         assert a.config.resolved == b.config.resolved
         # ...and the hash still tells the two runs apart.
@@ -688,23 +709,66 @@ class TestArchiveNegotiationIsRecorded:
         assert list(neg.archive_bindings) == [BLOBS_KEY, STEPS_KEY]
 
 
+def _config_json(trace: RunTrace) -> dict[str, Any]:
+    """``config.json`` as written — to see which keys are on disk."""
+    return json.loads((trace.trace_dir / "config.json").read_text(encoding="utf-8"))
+
+
 class TestEnvEvidenceProvenance:
     async def test_recorded_when_archivers_are_bound(self, tmp_path):
         trace = await _archive_run(tmp_path, archive=(FakeStepArchiver(), FakeBlobArchiver()))
-        assert trace.config.env_evidence_recorded is True
+        assert trace.config.negotiation is not None
+        assert trace.config.negotiation.active_archivers == [BLOBS_KEY, STEPS_KEY]
         assert trace.config.env_evidence_privacy == [MARKER_REDACTED]
+
+    async def test_bound_archivers_that_declare_nothing_record_an_empty_list(self, tmp_path):
+        trace = await _archive_run(
+            tmp_path, archive=(FakeStepArchiver(redact=False), FakeBlobArchiver())
+        )
+        assert trace.config.env_evidence_privacy == []
+        assert _config_json(trace)["env_evidence_privacy"] == []
 
     async def test_absent_when_nothing_archives(self, tmp_path):
         trace = await _archive_run(tmp_path)
-        assert trace.config.env_evidence_recorded is False
-        assert trace.config.env_evidence_privacy == []
+        assert trace.config.env_evidence_privacy is None
+        assert "env_evidence_privacy" not in _config_json(trace)
 
     def test_defaults_read_back_from_an_older_snapshot(self):
-        """Additive, defaulted fields: a snapshot without them still validates."""
+        """Defaulted fields: a snapshot without them still validates."""
         cfg = TraceConfig.model_validate({"agent_id": "a"})
-        assert cfg.env_evidence_recorded is False
-        assert cfg.env_evidence_privacy == []
+        assert cfg.env_evidence_privacy is None
         assert cfg.task_setup is None
+
+
+class TestPerTaskFieldsAppearOnlyWithAValue:
+    """``config.json`` carries no placeholder for a feature the run did not use."""
+
+    async def test_a_plain_run_writes_none_of_them(self, tmp_path):
+        trace = await _archive_run(tmp_path)
+        on_disk = _config_json(trace)
+        for key in ("branch", "task_setup", "env_evidence_privacy", "extra"):
+            assert key not in on_disk, key
+        # Deleted: whether archivers were bound is the archive binding itself.
+        assert "env_evidence_recorded" not in on_disk
+        # An absent key reads back as the field's default.
+        config = trace.config
+        assert (config.branch, config.task_setup, config.env_evidence_privacy) == (None,) * 3
+        assert config.extra == {}
+
+    async def test_each_appears_with_its_value(self, tmp_path):
+        trace = await _archive_run(
+            tmp_path,
+            archive=(FakeStepArchiver(),),
+            env_context={"start_url": "https://a.example/"},
+        )
+        on_disk = _config_json(trace)
+        assert on_disk["task_setup"]["context"] == {"start_url": "https://a.example/"}
+        assert on_disk["env_evidence_privacy"] == [MARKER_REDACTED]
+        assert "branch" not in on_disk
+
+    def test_extra_appears_when_the_caller_passes_some(self):
+        assert "extra" in json.loads(TraceConfig(extra={"domain": "travel"}).model_dump_json())
+        assert "extra" not in json.loads(TraceConfig().model_dump_json())
 
 
 class TestTheDigestAndTheArchiveAxis:
@@ -730,7 +794,6 @@ class TestTheDigestAndTheArchiveAxis:
         base = TraceConfig(agent_id="a")
         varied = TraceConfig(
             agent_id="a",
-            env_evidence_recorded=True,
             env_evidence_privacy=[MARKER_REDACTED],
             task_setup=TaskSetupRecord(
                 context={"start_url": "https://x.example/"}, redactions=RedactionLedger()

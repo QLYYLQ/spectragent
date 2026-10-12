@@ -76,12 +76,15 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import match_runs, source_pattern_problem
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.step_record import StepRecord
-from spectragent.schemas.task import TaskContext, TaskDefinition, setup_class_for_env
+from spectragent.schemas.task import (
+    REPLAY_ARCHIVE_KEY,
+    TaskContext,
+    TaskDefinition,
+    setup_class_for_env,
+)
 
 logger = logging.getLogger(__name__)
 
-#: The environment-context key naming the run whose archive a browser replays (§4.10).
-REPLAY_ARCHIVE_KEY = "replay_archive"
 #: The Loop-input key ``BranchLoop`` declares.
 CHECKPOINT_KEY = "checkpoint"
 #: The trace format with the per-step index the branch path reads.

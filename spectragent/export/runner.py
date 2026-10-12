@@ -7,10 +7,9 @@ and its ``translator`` receptor, never a concrete class:
 
 1. **sources** — the runs ``sources`` matches under ``sources_root``, by
    relative path, read through ``RunTrace`` (``filters.open_sources``), then
-   the filters, then decontamination (``against: null`` resolved from the
-   benchmarks of the sources the filters selected; benchmark data read through
-   the document's loaders, ``benchmarks.py``) and the split key (``filters``,
-   ``split``);
+   the filters, then decontamination (the benchmarks ``against`` lists;
+   benchmark data read through the document's loaders, ``benchmarks.py``) and
+   the split key (``filters``, ``split``);
 2. **canonical samples** — ``canonical.canonicalise`` per kept run (a branch
    run labelled by its source run's verdicts);
 3. **translation** — ``exporter.translator.translate`` per sample;
@@ -18,7 +17,9 @@ and its ``translator`` receptor, never a concrete class:
 5. **format** — ``exporter.format`` per rendered sample, images stored once;
 6. **validation** — ``validate``: images, coordinates, reference leaks,
    length, then credentials over every text byte about to be written;
-7. **split, duplicates, manifest**, then the write.
+7. **split, duplicates, manifest** (``schemas/dataset.py::DatasetManifest``,
+   the model every reader of the dataset reads it back through), then the
+   write.
 
 Everything is written to ``<output_dir>.partial`` and renamed to
 ``output_dir`` only when every check passed; any failure removes the
@@ -59,13 +60,25 @@ from spectragent.export.validate import (
     check_images,
     check_length,
 )
+from spectragent.schemas.dataset import (
+    DATASET_FORMAT,
+    BenchmarkEntry,
+    CaptureLedger,
+    DatasetManifest,
+    DecontaminationLedger,
+    ExportedSource,
+    LeakScanLedger,
+    SourceLedger,
+    SplitLedger,
+    StepLedger,
+    StudentSummary,
+    ThoughtLedger,
+)
 from spectragent.schemas.observation.image import image_suffix
 from spectragent.schemas.sample import CanonicalStepSample
 
 logger = logging.getLogger(__name__)
 
-#: The dataset format this runner writes (``manifest.json``'s ``format``).
-DATASET_FORMAT = "af-sft-1"
 #: Where a dataset is assembled before the rename that publishes it.
 PARTIAL_SUFFIX = ".partial"
 #: Suffixes by media type, for image bytes whose header names no known type.
@@ -115,7 +128,7 @@ class ExportReport:
     output_dir: Path
     samples: Mapping[str, int]
     drops: Mapping[str, int]
-    manifest: Mapping[str, Any]
+    manifest: DatasetManifest
 
 
 @dataclass(frozen=True)
@@ -237,23 +250,11 @@ class ExportRunner:
                 continue
             selected.append((source, task_identity(source.config)))
 
-        # ``against: null`` is the benchmarks the selected sources were evaluated
-        # on — require_eval graded each on its own (source) task's benchmark.
-        decontaminator = Decontaminator.configure(
-            exporter.decontamination,
-            evaluated=(
-                [identity.benchmark for _source, identity in selected]
-                if exporter.filters.require_eval is not None
-                else None
-            ),
-            loaders=self.benchmarks,
-        )
-        if not decontaminator.configured:
-            logger.warning(
-                "decontamination is not configured (decontamination.against is null and no "
-                "benchmark was evaluated: no filters.require_eval, or no source it selected "
-                "names a benchmark): sources are not checked against any evaluation benchmark; "
-                "set decontamination.against: [] to say so explicitly"
+        decontaminator = Decontaminator.configure(exporter.decontamination, loaders=self.benchmarks)
+        if not decontaminator.decontaminated:
+            logger.info(
+                "decontamination.against lists no benchmark: sources are not checked against "
+                "any evaluation benchmark (the manifest says decontaminated: false)"
             )
         kept: list[_Kept] = []
         for source, identity in selected:
@@ -332,7 +333,7 @@ class ExportRunner:
         selection: _Selection,
         renderer: StudentRenderer,
         rendered: Sequence[RenderedSample],
-    ) -> tuple[dict[str, Any], dict[str, int]]:
+    ) -> tuple[DatasetManifest, dict[str, int]]:
         exporter = self.exporter
         kept_by_rel = {kept.source.rel: kept for kept in selection.kept}
         store = FileImageStore(root)
@@ -366,19 +367,22 @@ class ExportRunner:
             per_source[item.source] += 1
 
         samples = {split: len(lines) for split, lines in sorted(records.items())}
-        # Through JSON once, so the report's manifest is exactly the one written.
-        manifest = json.loads(
-            canonical_json(
-                self._manifest(selection, renderer, rendered, samples, per_source, scanner)
-            )
+        written = canonical_json(
+            self._manifest(selection, renderer, rendered, samples, per_source, scanner).model_dump(
+                mode="json"
+            ),
+            indent=2,
         )
+        # Read back from the bytes written, so the report's manifest is exactly the
+        # one on disk — through the model every reader uses.
+        manifest = DatasetManifest.model_validate_json(written)
         files: dict[str, bytes] = {}
         for split, lines in records.items():
             files[f"{split}.jsonl"] = ("\n".join(lines) + "\n").encode("utf-8")
             files[f"{split}.samples.jsonl"] = ("\n".join(sample_lines[split]) + "\n").encode(
                 "utf-8"
             )
-        files["manifest.json"] = (canonical_json(manifest, indent=2) + "\n").encode("utf-8")
+        files["manifest.json"] = (written + "\n").encode("utf-8")
         check_credentials(files)
         for name in sorted(files):
             (root / name).write_bytes(files[name])
@@ -392,64 +396,75 @@ class ExportRunner:
         samples: Mapping[str, int],
         per_source: Mapping[str, int],
         scanner: ReferenceScanner,
-    ) -> dict[str, Any]:
+    ) -> DatasetManifest:
         exporter = self.exporter
         stats = renderer.stats
-        decontaminated = sum(
-            1 for reason in selection.filtered.values() if reason.startswith("decontaminated")
-        )
-        return {
-            "format": DATASET_FORMAT,
-            "exporter": exporter_settings(exporter),
-            "translator": translator_settings(exporter.translator),
-            "student": {
-                "config_sha256": renderer.config_sha256,
-                "agent_id": renderer.agent_id,
-                "loop_id": renderer.loop_id,
-                "coordinate_space": renderer.coordinate_space,
-            },
-            "sources": {
-                "exported": [
-                    {
-                        "path": kept.source.rel,
-                        "run_id": kept.source.run_id,
-                        "config_hash": kept.source.trace.manifest.config_hash,
-                        "samples": per_source.get(kept.source.rel, 0),
-                    }
+        decontaminator = selection.decontaminator
+        return DatasetManifest(
+            format=DATASET_FORMAT,
+            exporter=exporter_settings(exporter),
+            translator=translator_settings(exporter.translator),
+            student=StudentSummary(
+                config_sha256=renderer.config_sha256,
+                agent_id=renderer.agent_id,
+                loop_id=renderer.loop_id,
+                coordinate_space=renderer.coordinate_space,
+            ),
+            sources=SourceLedger(
+                exported=[
+                    ExportedSource(
+                        path=kept.source.rel,
+                        run_id=kept.source.run_id,
+                        config_hash=kept.source.trace.manifest.config_hash,
+                        samples=per_source.get(kept.source.rel, 0),
+                    )
                     for kept in selection.kept
                 ],
-                "skipped": dict(sorted(selection.skipped.items())),
-                "filtered": dict(sorted(selection.filtered.items())),
-            },
-            "steps": {
-                "untranslatable": dict(sorted(stats.untranslatable.items())),
-                "skipped": dict(sorted(stats.skipped.items())),
-            },
-            "samples": sum(samples.values()),
-            "quantization_px": {str(error): n for error, n in sorted(stats.quantization.items())},
-            "thoughts": {
-                "source": exporter.thought_source,
-                "fields": dict(sorted(stats.thought_fields.items())),
-                "dropped_index_refs": stats.thoughts_dropped,
-            },
-            "step_info": dict(sorted(stats.step_info.items())),
-            "capture": {"unchecked": sorted(stats.capture_unchecked)},
-            "split": {
-                "by": exporter.split.by,
-                "validation_fraction": exporter.split.validation_fraction,
-                "salt": exporter.split.salt,
-                "samples": dict(samples),
-                "keys": {kept.key: kept.split for kept in sorted(selection.kept, key=_by_key)},
-            },
-            "decontamination": {**selection.decontaminator.summary(), "excluded": decontaminated},
-            "leak_scan": {
-                "checked": scanner.checked,
-                "unchecked": dict(sorted(scanner.unchecked.items())),
-            },
-            "duplicates": sum(
+                skipped=dict(sorted(selection.skipped.items())),
+                filtered=dict(sorted(selection.filtered.items())),
+            ),
+            steps=StepLedger(
+                untranslatable=dict(sorted(stats.untranslatable.items())),
+                skipped=dict(sorted(stats.skipped.items())),
+            ),
+            samples=sum(samples.values()),
+            quantization_px={str(error): n for error, n in sorted(stats.quantization.items())},
+            thoughts=ThoughtLedger(
+                source=exporter.thought_source,
+                fields=dict(sorted(stats.thought_fields.items())),
+                dropped_index_refs=stats.thoughts_dropped,
+            ),
+            step_info=dict(sorted(stats.step_info.items())),
+            capture=CaptureLedger(unchecked=sorted(stats.capture_unchecked)),
+            split=SplitLedger(
+                by=exporter.split.by,
+                validation_fraction=exporter.split.validation_fraction,
+                salt=exporter.split.salt,
+                samples=dict(samples),
+                keys={kept.key: kept.split for kept in sorted(selection.kept, key=_by_key)},
+            ),
+            decontamination=DecontaminationLedger(
+                decontaminated=decontaminator.decontaminated,
+                against=[
+                    BenchmarkEntry(benchmark=ref.benchmark, subset=ref.subset)
+                    for ref in decontaminator.against
+                ],
+                match=decontaminator.match,
+                excluded=sum(
+                    1
+                    for reason in selection.filtered.values()
+                    if reason.startswith("decontaminated")
+                ),
+            ),
+            leak_scan=LeakScanLedger(
+                compared=scanner.compared,
+                no_eval_loader=dict(sorted(scanner.no_eval_loader.items())),
+                no_reference_answer=dict(sorted(scanner.no_reference_answer.items())),
+            ),
+            duplicates=sum(
                 1 for item in rendered if item.sample.branch and item.sample.branch.duplicate_of
             ),
-        }
+        )
 
 
 def exporter_settings(exporter: Exporter) -> dict[str, Any]:
@@ -544,7 +559,6 @@ def _by_key(kept: _Kept) -> str:
 
 
 __all__ = [
-    "DATASET_FORMAT",
     "PARTIAL_SUFFIX",
     "ExportReport",
     "ExportRunner",

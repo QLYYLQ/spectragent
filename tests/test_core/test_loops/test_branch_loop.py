@@ -12,6 +12,7 @@ is refused before anything is set up.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -26,6 +27,7 @@ from spectragent.core.loops.validation import (
     IncompatibleLoopInputError,
 )
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.redaction import OMITTED
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.restoration import BranchProvenance
 from tests._helpers.branch_fakes import (
@@ -399,7 +401,17 @@ class _NarrowAgent(BranchFakeAgent):
 class TestCheckpointCompatibility:
     @pytest.mark.parametrize(
         "case",
-        ["agent_id", "knob", "memory", "negotiation", "source_loop", "branch_source", "step"],
+        [
+            "agent_id",
+            "knob",
+            "numeric_knob",
+            "memory",
+            "max_actions_per_step",
+            "negotiation",
+            "source_loop",
+            "branch_source",
+            "step",
+        ],
     )
     async def test_mismatch_raises_before_setup(self, tmp_path: Path, case: str) -> None:
         source_loop: ReactLoop | None = _OtherReact(max_steps=10) if case == "source_loop" else None
@@ -412,8 +424,13 @@ class TestCheckpointCompatibility:
             kwargs.update(agent=agent, config_agent_id="other_agent")
         elif case == "knob":
             kwargs.update(agent=BranchFakeAgent(style="fancy"))
+        elif case == "numeric_knob":
+            # Recorded raw, and nothing renders it: only this check can see it.
+            kwargs.update(agent=BranchFakeAgent(patience=7))
         elif case == "memory":
             kwargs.update(memory="sliding_window")
+        elif case == "max_actions_per_step":
+            kwargs.update(loop=BranchLoop(max_actions_per_step=2))
         elif case == "negotiation":
             kwargs.update(agent=_NarrowAgent())
         elif case == "branch_source":
@@ -444,7 +461,9 @@ class TestCheckpointCompatibility:
         expected = {
             "agent_id": "agent_id",
             "knob": "agent.style",
+            "numeric_knob": "agent.patience",
             "memory": "memory.memory_id",
+            "max_actions_per_step": "agent_loop.max_actions_per_step",
             "negotiation": "negotiation.active_fragments",
             "source_loop": "test_branch_other_react",
             "branch_source": "itself a branch run",
@@ -453,8 +472,34 @@ class TestCheckpointCompatibility:
         assert expected in message
         assert caught.value.source in message
 
-    async def test_seeded_system_message(self, tmp_path: Path, source: Path) -> None:
-        """``max_actions_per_step`` is open-typed (``<omitted>``); the seed catches it."""
+    async def test_a_numeric_memory_knob_is_compared(self, tmp_path: Path) -> None:
+        source = await record_source(tmp_path, SOURCE_REPLIES, memory="sliding_window", window=3)
+        cap = make_cap()
+        with pytest.raises(IncompatibleCheckpointError) as caught:
+            await run_branch(
+                tmp_path, source, 2, ["click 102"], cap=cap, memory="sliding_window", window=5
+            )
+        assert caught.value.mismatches["memory.window_size"] == (3, 5)
+        assert cap.setups == 0
+
+    async def test_the_loops_other_settings_may_differ(self, tmp_path: Path, source: Path) -> None:
+        """Only the curated loop settings are compared: ``max_steps`` is the branch's own."""
+        out = await run_branch(tmp_path, source, 1, ["done ok"], loop=BranchLoop(max_steps=50))
+        assert out.result is not None and out.result.agent_done == "done"
+
+    async def test_the_seed_catches_a_setting_the_source_did_not_record(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        """A source written before numbers were recorded raw shows ``<omitted>``.
+
+        The assembly check cannot compare that, so the seeded prompt — which
+        carries ``max_actions_per_step`` — catches the difference at run time,
+        still before any action.
+        """
+        config_file = source / "config.json"
+        config = json.loads(config_file.read_text(encoding="utf-8"))
+        config["resolved"]["agent"][0]["agent_loop"]["max_actions_per_step"] = OMITTED
+        config_file.write_text(json.dumps(config), encoding="utf-8")
         cap = make_cap()
         with pytest.raises(IncompatibleCheckpointError, match="seeded prompt"):
             await run_branch(

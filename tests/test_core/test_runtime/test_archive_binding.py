@@ -80,8 +80,7 @@ class TestNoConsumerMeansNoArchiveCall:
         assert runtime.negotiated_archive is None
         assert hook.run_start is not None
         assert hook.run_start["archive_negotiation"] is None
-        assert hook.run_start["env_evidence_recorded"] is False
-        assert hook.run_start["env_evidence_privacy"] == []
+        assert hook.run_start["env_evidence_privacy"] is None
 
     async def test_the_archiving_capability_is_never_touched(self) -> None:
         cap = FakeArchivingCapability()
@@ -192,16 +191,16 @@ class TestOnRunStartReceivesTheArchiveFacts:
         started = hook.run_start
         assert started is not None
         assert started["archive_negotiation"] is runtime.negotiated_archive
-        assert started["env_evidence_recorded"] is True
+        assert "env_evidence_recorded" not in started
         assert started["env_evidence_privacy"] == [MARKER_REDACTED]
-        assert started["task_setup"] is context
+        assert started["task_setup"] == context
 
     async def test_the_privacy_markers_follow_the_archivers_knobs(self) -> None:
         hook = ArchiveConsumerHook([FakeStepArchiver(redact=False), FakeBlobArchiver()])
         await _runtime(hook).execute("t", timeout=10)
         assert hook.run_start is not None
+        # Archivers were bound and declare nothing: an empty list, not None.
         assert hook.run_start["env_evidence_privacy"] == []
-        assert hook.run_start["env_evidence_recorded"] is True
 
     async def test_the_privacy_markers_are_the_sorted_union_of_every_archivers(self) -> None:
         """Two archivers sharing a marker: each marker once, in sorted order."""

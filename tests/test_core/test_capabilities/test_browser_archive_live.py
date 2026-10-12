@@ -415,7 +415,6 @@ async def _record_trace(
                 task="privacy guard",
                 config={},
                 archive_negotiation=negotiation,
-                env_evidence_recorded=True,
             )
             sid = cap.default_session_id
             if plant:
