@@ -3,11 +3,12 @@
 §4.14 "回放": the isolation switches derive from the source and reach only a
 provider declaring ``NETWORK_ISOLATION``; ``none_acknowledged`` launches
 without them and says so in the replay fingerprint; a replay without the
-network archiver is refused naming both; ``base_time: from_archive`` pins the
-recording's T0; and once set up, the capability's replay server answers the
-recorder's paused requests from the source run, logs the decision into the
-step's ``replay.jsonl`` and the fingerprint carries the replay block. The real
-Chrome counterpart is ``test_browser_replay_live.py``.
+replay-log archiver is refused naming both; ``base_time: from_archive`` pins
+the recording's T0; and once set up, the capability's replay server answers
+the recorder's paused requests from the source run, ``browser.replay_log``
+writes the decision into the step's ``replay.jsonl`` and the fingerprint
+carries the replay block. The real Chrome counterpart is
+``test_browser_replay_live.py``.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities.browser import BrowserCapability
-from spectragent.core.capabilities.browser.archive import NetworkArchiver, StorageArchiver
+from spectragent.core.capabilities.browser.archive import ReplayLogArchiver, StorageArchiver
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
     NETWORK_ISOLATION_ARGS,
 )
@@ -59,12 +60,18 @@ def _replaying(
     archivers: tuple[Any, ...] = (),
     tier: Any = None,
 ) -> tuple[BrowserCapability, FakeBrowser]:
+    """A replaying capability holding *archivers* as its binding, unchecked.
+
+    Bypassing ``bind_archivers`` leaves the refusals to setup, which is what
+    these tests exercise (``test_browser_replay_cooperation.py`` covers the
+    binding-time ones).
+    """
     browser = FakeBrowser()
     cap = BrowserCapability()
     cap.backend = backend  # type: ignore[assignment]
     cap.replayability = tier if tier is not None else PinnedReplayability(random_seed=7)
-    cap.bind_archivers(list(archivers or (NetworkArchiver(drain_timeout_s=0.1),)))
     cap.network_source = source if source is not None else ArchiveNetworkSource()
+    cap._archivers = list(archivers or (ReplayLogArchiver(),))
     cap._inject_cdp_factory(browser.client)
     return cap, browser
 
@@ -96,14 +103,14 @@ class TestIsolation:
         finally:
             await cap.teardown()
 
-    async def test_replay_without_the_network_archiver_raises(self, source_run: Path) -> None:
+    async def test_replay_without_the_replay_log_archiver_raises(self, source_run: Path) -> None:
         backend = IsolatingBrowser()
         cap, browser = _replaying(backend, archivers=(StorageArchiver(),))
         with pytest.raises(BrowserCooperationError) as info:
             await cap.setup(replay_archive=str(source_run))
         (problem,) = info.value.problems
         assert problem.startswith("network_source: archive ↔ bound archivers ['browser.storage']")
-        assert "browser.network" in problem
+        assert "bind browser.replay_log" in problem
         assert backend.open_calls == [] and browser.clients == []
 
 
@@ -140,10 +147,13 @@ class TestServing:
 
             batch = await cap.collect_archive()
             files = {(f.archiver_id, f.name): f for f in batch.files}
-            log = files[("browser.network", "replay.jsonl")]
+            log = files[("browser.replay_log", "replay.jsonl")]
             (entry,) = [json.loads(line) for line in log.data.splitlines()]
             assert entry["kind"] == "hit" and entry["run_id"] == "run-src"
-            assert ("browser.network", "index.jsonl") not in files, "a replay records no WARC"
+            assert set(files) == {
+                ("browser.replay_log", "replay.jsonl"),
+                ("browser", "fingerprint.json"),
+            }, "a replay records its log, no traffic of its own"
             block = json.loads(files[("browser", "fingerprint.json")].data)["network_source"]
             assert block["source_run_id"] == "run-src" and block["isolation"] == "required"
             assert block["source_fingerprint_sha256"]

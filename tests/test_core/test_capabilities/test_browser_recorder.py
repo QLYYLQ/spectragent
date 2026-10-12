@@ -667,7 +667,7 @@ class TestServingParticipant:
 
     async def test_a_serving_participant_beside_an_archiver_still_never_continues(self) -> None:
         """Whoever owns the stage, the Request pause is the server's to settle."""
-        archiver = _Participant("archiver")  # a replay-mode network session: no patterns
+        archiver = _Participant("archiver")  # a replay-log session: no patterns
         server = _Server("server", patterns=REQUEST_STAGE)  # answers nothing
         _browser, recorder, client, sid = await self._ready([archiver, server])
         _pause(client, sid, "q1", status=None)

@@ -79,6 +79,7 @@ from spectragent.core.capabilities.browser.archive import (  # noqa: F401 — re
     DomRawArchiver,
     NetworkArchiver,
     ParkedRaw,
+    ReplayLogArchiver,
     StorageArchiver,
 )
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
@@ -458,7 +459,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # hook's ``archive`` list, bound here by ``bind_archivers``. Keep in
         # sync with the classes in ``browser/archive/`` (imported above, so
         # the keys resolve when conscribe reads this entry).
-        "archiver": ("archiver", ["browser.dom_raw", "browser.network", "browser.storage"]),
+        "archiver": (
+            "archiver",
+            ["browser.dom_raw", "browser.network", "browser.replay_log", "browser.storage"],
+        ),
         # ``browser_provider`` is the existing conscribe registrar for
         # the underlying browser backend (local_chrome, lexmount,
         # browseruse_lite, ...). Mode 1 (auto-discovery) allows any
@@ -1008,12 +1012,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         Acquires nothing (a dry run binds too). The rows of the cooperation
         check decidable now — provider ownership, ``require_replayable`` vs
-        the tier, session state, the profile's watchdogs — are raised here,
-        from ``prepare()``; setup checks everything again. Bound before setup
-        (the runtime's order), the archivers decide which capture channels
-        setup opens; bound again after setup, only who receives events and
-        who is collected changes. An archiver bound after a setup that opened
-        no archive channel could capture nothing, so that is refused.
+        the tier, session state, the profile's watchdogs, which archivers fit
+        the network source (a replay's log, live traffic) and its isolation —
+        are raised here, from ``prepare()``; setup checks everything again.
+        Bound before setup (the runtime's order), the archivers decide which
+        capture channels setup opens; bound again after setup, only who
+        receives events and who is collected changes. An archiver bound after
+        a setup that opened no archive channel could capture nothing, so that
+        is refused.
         """
         bound = list(archivers)
         foreign = sorted(

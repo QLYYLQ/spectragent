@@ -129,7 +129,7 @@ network_source:
   miss_policy: { miss_policy_id: strict }
 ```
 
-`trace_writer.archive` 里必须有 `browser.network`，回放时它记回放日志，不写 WARC。
+`trace_writer.archive` 里用 `browser.replay_log` 代替 `browser.network`，其余归档器不变。`browser.replay_log` 记回放日志，回放没有它就被拒；`browser.network` 只录线上流量，回放没有自己的线上流量（送出的每个字节都已经在源归档里），所以它在 `archive` 来源下被拒，报错点名 `browser.replay_log`。反过来，`live` 来源绑定 `browser.replay_log` 也被拒，因为没有回放可记。这几条都在 `prepare()` 里报，`--dry-run` 也一样。
 
 - 启动 Chrome 之前，setup 打开源 run（只读已提交的部分），拿它的环境指纹比较本次配置：档位和参数（`base_time` 除外）、shim、viewport、启动开关摘要。有一项不符就拒绝运行，每条点名两边的值。启动开关摘要只覆盖 provider（`local_chrome`）拼出的启动参数，调试端口和 profile 目录换成占位符，网络路由开关两边都去掉，可执行文件路径和 Chrome 版本都不在里面。`headless: true` 会加上 `--headless=new`，所以只改 `headless` 也会不符；要看着浏览器回放，录制和回放都得写 `headless: false`，也就是重新录制。Chrome 版本不同、档位没固定 UA 而浏览器 UA 不同、脱敏策略不同只警告，写进回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
 - `isolation: required`（默认）给 `local_chrome` 加 `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost` 和 `--no-proxy-server`，并拒绝会绕过它们的旋钮：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的路由开关、不是 `about:blank` 的 `startup_url`。写 `isolation: none_acknowledged` 时只靠 Fetch 拦截，preconnect 和 WebSocket 会连到真实网络。
@@ -137,7 +137,7 @@ network_source:
 - 匹配默认用 `levels: [exact, normalized]`，模糊一级（`fuzzy`）要显式打开；规范化会去掉 `utm_*`、`fbclid` 这类易变参数。每条录下的记录按录制顺序只送一次，用完之后重复最后一条，并在日志里记 `exhausted`。站点规则放在 `configs/replay_rules/<domain>.yaml`，写法见[它的 README](../configs/replay_rules/README.md)。
 - `strict` 处理归档里没有的请求：主 frame 的文档 `Fetch.failRequest` 并标 `diverged`；子 frame 的文档同样失败；beacon、ping、CSP 报告、内置的分析类主机、`extra_benign_hosts` 和站点规则 `synthesize_204` 命中的回 204；其余子资源回 404。回放编出来的应答都带 `x-replay-miss: 1` 头。归档里没有的 CORS 预检合成 204。
 
-回放 run 的 `env/` 里没有 WARC，每步一个 `env/steps/NNN/browser.network/replay.jsonl`；`env/run.browser.json` 多一个 `network_source` 块（`source_run_id`、`source_fingerprint_sha256`、`site_rules_sha256`、matcher、`miss_policy_id`、`shift_dates`、`isolation`、`warnings`）。回放 run 不能再当回放或分叉的源，要回放就用原来的录制。读回放日志：
+回放 run 的 `env/` 里没有 WARC，每步一个 `env/steps/NNN/browser.replay_log/replay.jsonl`；`env/run.browser.json` 多一个 `network_source` 块（`source_run_id`、`source_fingerprint_sha256`、`site_rules_sha256`、matcher、`miss_policy_id`、`shift_dates`、`isolation`、`warnings`）。回放 run 不能再当回放或分叉的源，要回放就用原来的录制。读回放日志：
 
 ```python
 from spectragent.core.archive.source import open_archive
@@ -212,7 +212,7 @@ agent_loop:
 
 `verify: strict` 下第一个不通过的检查就结束 run：记一条 `error_phase: restore` 的恢复步，结果是 `agent_done=error`、`env_status=failed`，`error` 点名 `RestorationDivergedError`。`warn` 只把检查结果写进那一步，继续往下走。每个分叉是独立的任务，重新组装、启动新的浏览器和新的 profile，分叉之间不共享状态。一个分叉的策略步数是 `1 + continue_steps`（不超过 `max_steps`），每个策略步至少调用一次模型；`AgentMetrics.steps` 只数策略步。
 
-分叉 run 写到 `traces/branches/<source_run_id>-s<t>-b<i>_<8 位随机串>/`，`config.json` 的 `branch` 记着源 run、检查点和分支编号。读校验结果：
+分叉 run 写到 `traces/branches/<source_run_id>-s<t>-b<i>_<8 位随机串>/`，`config.json` 的 `branch` 记着源 run、检查点和分支编号。分叉与原路径回放配置的 `trace_writer.archive` 和回放配置一样用 `browser.replay_log`，每个分叉 run 的回放日志在它自己的 `env/steps/NNN/browser.replay_log/replay.jsonl`。读校验结果：
 
 ```python
 for record in RunTrace(Path("traces/branches/<run>")).step_records:
@@ -402,7 +402,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 校验错误 `environment.0.capabilities.0.replayability`（或 `network_source`）下面写着 `Field required`：capability 块缺必填的受体块，补上 `replayability` 和 `network_source`。`network_source: archive` 块里还要写 `miss_policy: { miss_policy_id: strict }`。
 - `UnresolvedWiringError: environment[0].capabilities[0].archiver: ...`：归档器写进了 capability 块，挪到 `trace_writer.archive`。
 - `IncompatibleArchiveError`：`trace_writer.archive` 里同一个键写了两次、两个 hook 都带了归档列表，或者环境里没有提供这个归档器的 capability。每个归档器只写一次，只写在一个 trace_writer 上；消息点名请求方和环境实际提供的归档器。
-- `BrowserCooperationError: BrowserCapability cannot run this configuration (N problem(s); ...)`：每一行是一个协作问题，点名两边。常见的有：云 provider 没有 `NETWORK_CAPTURE`，换 `local_chrome`；`browser.network require_replayable=true ↔ replayability: off`，录制改用 pinned，或给 `browser.network` 写 `require_replayable: false`；profile 不是新建的，去掉 `user_data_dir` 或 `unset CHROME_USER_DATA_DIR`；pinned 与 provider 的旋钮冲突；`base_time: from_archive` 配了 `live` 来源；`network_source: archive ↔ task context: no replay_archive`，给 `--replay-archive`（只适用于 react 回放配置），或者经 `trace_branches` 任务运行；`live` 来源却给了 `replay_archive`；回放没有绑定 `browser.network`；`isolation: required` 与代理或路由开关冲突。
+- `BrowserCooperationError: BrowserCapability cannot run this configuration (N problem(s); ...)`：每一行是一个协作问题，点名两边。常见的有：云 provider 没有 `NETWORK_CAPTURE`，换 `local_chrome`；`browser.network require_replayable=true ↔ replayability: off`，录制改用 pinned，或给 `browser.network` 写 `require_replayable: false`；profile 不是新建的，去掉 `user_data_dir` 或 `unset CHROME_USER_DATA_DIR`；pinned 与 provider 的旋钮冲突；`base_time: from_archive` 配了 `live` 来源；`network_source: archive ↔ task context: no replay_archive`，给 `--replay-archive`（只适用于 react 回放配置），或者经 `trace_branches` 任务运行；`live` 来源却给了 `replay_archive`；回放没有绑定 `browser.replay_log`，或者绑了 `browser.network`（都是把 `browser.network` 换成 `browser.replay_log`）；`live` 来源绑了 `browser.replay_log`；`isolation: required` 与代理或路由开关冲突。
 - 回放一致性不符：同一个错误里以 `source run '<id>'` 开头的行，例如 `replayability random_seed=7 ↔ this run's random_seed=1`、`viewport 1280x720 ↔ this run's viewport ...`、`launch_flags_sha256=... ↔ this run's planned launch flags ...`、`the source run is itself a replay`、`recorded no browser.network evidence`、`has no environment fingerprint`。让回放配置的档位参数、viewport 和 backend 块与录制一致，回放原始录制而不是回放 run。只警告的差异看回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
 - `ArchiveOpenError: replay archive ... is not a directory`：`--replay-archive` 要指向源 run 目录，也就是含 `manifest.json` 的那个。`ReplayArchiveError` 说明源 run 的索引行读不回来，或者指向的 WARC 记录对不上，消息点名文件和记录 id；源归档已损坏，重新录制。
 - 回放里有 miss：用 `diverged_steps` 找出有主 frame 文档 miss 的步，再看这些步的 `replay.jsonl`。`no_match` 而 `candidates` 里有同 host、同 path、只差查询参数的记录，说明参数是每次访问都会变的值（时间戳、会话 id），给这个站点写 `ignore_query` 规则；文档 URL 本身带每次访问不同的值时，回放必然在那一步发散。`too_large`：body 超过 `max_fulfill_body_bytes`，或录制时就是 `too_large`。`body_unavailable`：录制时 body 没读完。`range_uncovered`：录制没覆盖请求的字节区间。`websocket` 和 `unservable` 见"已知限制"。报告的 `decision_inputs.site_rule_candidates` 汇总了所有回放 run 的近邻 miss。

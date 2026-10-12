@@ -3,9 +3,10 @@
 Every run is committed the way production commits it (``trace_builder.py``'s
 rule — nothing here spells a trace path or a JSON shape): ``WALWriter`` for
 steps and fragments, M29's own ``browser.network`` session for a recording's
-network evidence (``replay_archive.RecordingScript``) and its replay session
-for a replay's log (``ReplayLogSession`` over a real ``ReplayLog``, folding
-included), ``encode_archive_file`` for every archive file. The datasets are
+network evidence (``replay_archive.RecordingScript``) and the
+``browser.replay_log`` session for a replay's log (``ReplayLogSession`` over a
+real ``ReplayLog``, folding included), ``encode_archive_file`` for every
+archive file. The datasets are
 written as the files an export publishes (the metrics read them as files).
 
 :func:`known_chain` writes one chain root whose every measure has a known
@@ -47,7 +48,7 @@ from typing import Any
 from PIL import Image
 
 from spectragent.core.archive.privacy import MARKER_SESSION_STATE, RedactionLedger
-from spectragent.core.capabilities.browser.archive import NetworkArchiver
+from spectragent.core.capabilities.browser.archive import ReplayLogArchiver
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayCandidate,
@@ -231,6 +232,7 @@ def config(
     loop: str = "react",
     branch: BranchProvenance | None = None,
     archived: bool = True,
+    archiver: str = "browser.network",
     resolved: dict[str, Any] | None = None,
 ) -> TraceConfig:
     return TraceConfig(
@@ -246,8 +248,8 @@ def config(
         negotiation=TraceNegotiation(
             active_fragments=["browser.screenshot"],
             active_actions=["browser.click_coordinate", "browser.done"],
-            active_archivers=["browser.network"] if archived else [],
-            archive_bindings={"browser.network": "browser"} if archived else {},
+            active_archivers=[archiver] if archived else [],
+            archive_bindings={archiver: "browser"} if archived else {},
         ),
         env_evidence_privacy=[MARKER_SESSION_STATE] if archived else None,
         task_setup=TaskSetupRecord(
@@ -305,11 +307,15 @@ async def write_replayed(
     trailing: Sequence[ReplayLogEntry] = (),
     repeat_limit: int = 100,
 ) -> Path:
-    """A replayed run (a branch): each step's replay log through the real replay session."""
+    """A replayed run (a branch): each step's replay log through the real replay-log session."""
     wal = WALWriter(directory, run_id)
-    wal.init_run(config(task_id=task_id, site=site, loop="branch", branch=branch))
+    wal.init_run(
+        config(
+            task_id=task_id, site=site, loop="branch", branch=branch, archiver="browser.replay_log"
+        )
+    )
     log = ReplayLog(repeat_limit=repeat_limit)
-    session, _ = open_session(NetworkArchiver(require_replayable=False), replay_log=log)
+    session, _ = open_session(ReplayLogArchiver(), replay_log=log)
     for index, spec in enumerate(steps):
         for entry in spec.replay:
             log.append(entry)

@@ -22,11 +22,14 @@ The rows this module owns:
 - **Network source** (M30) — an intercepting source (``archive``) opens the
   recorder connection too (the ownership rows), needs the task's
   ``replay_archive`` (and a ``live`` source refuses one), needs a bound
-  archiver that records the replay log (the ``replay_log`` need — found by
-  need, never by archiver id: a miss must always be recorded), and with
-  ``isolation: required`` a provider declaring ``NETWORK_ISOLATION`` whose
-  own knobs do not route around the isolation — unless the configuration
-  says ``isolation: none_acknowledged``.
+  archiver that records the replay log (the ``replay_log`` need:
+  ``browser.replay_log`` — a miss must always be recorded), refuses one that
+  records live traffic (the ``fetch_response`` need: ``browser.network`` — a
+  replay has none), and with ``isolation: required`` a provider declaring
+  ``NETWORK_ISOLATION`` whose own knobs do not route around the isolation —
+  unless the configuration says ``isolation: none_acknowledged``. A ``live``
+  source refuses an archiver with the ``replay_log`` need: it replays
+  nothing. Archivers are found by need, never by archiver id.
 
 - **Archivers** — every bound browser archiver opens the recorder connection
   (the ownership rows above), a ``require_replayable`` archiver refuses the
@@ -35,7 +38,7 @@ The rows this module owns:
   ``logged_in``), and a profile that excludes the ``archive`` watchdog leaves
   nothing to drain the archive scope. :func:`binding_problems` is this group
   — plus, when any archiver is bound, the network source's
-  configuration-decidable rows (the replay-log archiver, isolation):
+  configuration-decidable rows (which archivers fit the source, isolation):
   ``bind_archivers`` runs it at ``prepare()``, before it changes the
   binding.
 
@@ -48,6 +51,7 @@ from collections.abc import Sequence
 from typing import Any, Protocol
 
 from spectragent.core.capabilities.browser.archive.base import BrowserArchiverBase
+from spectragent.core.capabilities.browser.archive.replay_log import REPLAY_LOG_ARCHIVER
 from spectragent.core.capabilities.browser.backends.base import (
     LaunchArgsProvider,
     NetworkCaptureProvider,
@@ -68,6 +72,8 @@ from spectragent.core.capabilities.browser.watchdogs.archive_watchdog import Arc
 
 #: The archive need of the archiver that records a replay's decisions.
 REPLAY_LOG_NEED = "replay_log"
+#: The archive need of an archiver that captures live responses (traffic).
+LIVE_TRAFFIC_NEED = "fetch_response"
 
 
 class CooperatingCapability(Protocol):
@@ -252,22 +258,37 @@ def _archiver_rows(
 def _source_rows(
     cap: CooperatingCapability, archivers: Sequence[BrowserArchiverBase], backend: Any
 ) -> list[str]:
-    """An intercepting source's configuration rows: the replay-log archiver, isolation.
+    """The network source's configuration rows: which archivers fit it, and isolation.
 
-    *backend* is ``None`` when the browser is not the capability's own
-    (explicit endpoint, injected client): the ownership rows refuse that.
+    A live source refuses an archiver that records a replay's log; an
+    intercepting one needs exactly such an archiver, refuses one that
+    records live traffic, and asks for isolation. *backend* is ``None`` when
+    the browser is not the capability's own (explicit endpoint, injected
+    client): the ownership rows refuse that.
     """
     source = cap.network_source
-    if not source.intercepts:
-        return []
     name = _source_name(source)
-    problems: list[str] = []
+    if not source.intercepts:
+        return [
+            f"{name} ↔ {_archiver_name(archiver)}: the archiver records a replay's serving "
+            f"decisions, and a live source replays nothing; bind it with network_source: "
+            f"archive, or leave it out of trace_writer.archive"
+            for archiver in archivers
+            if REPLAY_LOG_NEED in archiver.needs
+        ]
+    problems = [
+        f"{name} ↔ {_archiver_name(archiver)}: the archiver records live traffic, and a "
+        f"replay has none (every byte it serves is already in the source run's archive); "
+        f"bind {REPLAY_LOG_ARCHIVER} instead, which records the replay's decisions"
+        for archiver in archivers
+        if LIVE_TRAFFIC_NEED in archiver.needs
+    ]
     if not any(REPLAY_LOG_NEED in archiver.needs for archiver in archivers):
         bound = sorted(archiver.archiver_id for archiver in archivers)
         problems.append(
             f"{name} ↔ bound archivers {bound}: none records the replay log (the "
-            f"{REPLAY_LOG_NEED!r} need: browser.network); a replay must record every miss — "
-            f"bind browser.network on the trace writer"
+            f"{REPLAY_LOG_NEED!r} need: {REPLAY_LOG_ARCHIVER}); a replay must record every "
+            f"miss — bind {REPLAY_LOG_ARCHIVER} on the trace writer"
         )
     if source.isolation != "required" or backend is None:
         return problems
@@ -304,9 +325,9 @@ def binding_problems(
     """The rows binding *archivers* decides — what ``bind_archivers`` refuses at ``prepare()``.
 
     ``cdp_url`` is what is known by then: the capability's ``cdp_url`` knob
-    (setup checks again with the task's). With any archiver bound, an
-    intercepting network source's configuration rows (the replay-log
-    archiver, isolation) are decided here too.
+    (setup checks again with the task's). With any archiver bound, the
+    network source's configuration rows (which archivers fit the source,
+    isolation) are decided here too.
     """
     backend = cap.resolved_backend()
     problems: list[str] = []

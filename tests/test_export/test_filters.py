@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from spectragent.core.capabilities.browser.archive import NetworkArchiver
+from spectragent.core.capabilities.browser.archive import ReplayLogArchiver
 from spectragent.core.capabilities.browser.replay.replay_log import ReplayLog, ReplayLogEntry
 from spectragent.core.data_loader.task.require_eval import RequireEval
 from spectragent.core.trace.encoding import encode_archive_file
@@ -229,7 +229,7 @@ class TestFiltered:
 
     async def test_max_document_misses(self, tmp_path: Path) -> None:
         log = ReplayLog(repeat_limit=1)
-        session, _ = open_session(NetworkArchiver(require_replayable=False), replay_log=log)
+        session, _ = open_session(ReplayLogArchiver(), replay_log=log)
         document = ReplayLogEntry(
             kind="miss",
             captured_at=1.0,

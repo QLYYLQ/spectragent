@@ -2,11 +2,11 @@
 
 The replay server writes every decision it makes — a hit, a repeated
 exhausted record, a synthesised preflight, a miss — into one
-:class:`ReplayLog`; ``browser.network``'s replay-mode session drains it at
-each collection into that step's ``replay.jsonl``. **The step whose
-collection takes an entry is the step it is attributed to** (the capability
-knows no step numbers — the model network evidence already follows), and the
-episode is the run.
+:class:`ReplayLog`; the ``browser.replay_log`` archiver's session
+(``archive/replay_log.py``) drains it at each collection into that step's
+``replay.jsonl``. **The step whose collection takes an entry is the step it
+is attributed to** (the capability knows no step numbers — the model network
+evidence already follows), and the episode is the run.
 
 Writing side: :class:`ReplayLog` hands the archive side plain JSON dicts
 (``drain()``), so ``archive/`` never imports a replay type
@@ -23,7 +23,8 @@ URLs never fold together, and a divergence is never folded into misses that
 are not one.
 
 Reading side, over the :class:`~spectragent.core.archive.source.ArchiveReader`
-Protocol (no trace import here): :func:`replay_log` (one step),
+Protocol (no trace import here), finding the files by the archiver that
+writes them: :func:`replay_log` (one step),
 :func:`iter_replay_log` (every step, then the trailing commits),
 :func:`iter_decisions` (the same entries with the folding undone: a
 ``summary`` read as the kind it folds, weighted by how many it folds — the
@@ -44,8 +45,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.core.archive.source import ArchiveReader
-from spectragent.core.capabilities.browser.archive.network import REPLAY_LOG_NAME
-from spectragent.core.capabilities.browser.replay.archive_index import NETWORK_ARCHIVER
+from spectragent.core.capabilities.browser.archive.replay_log import (
+    REPLAY_LOG_ARCHIVER,
+    REPLAY_LOG_NAME,
+)
 from spectragent.core.capabilities.browser.replay.miss_policy import MissReason, RequestClass
 
 #: What one entry records. ``hit``: served from the archive; ``exhausted``:
@@ -169,7 +172,7 @@ class ReplayLog:
         A monotonic count of the run's main-frame document misses: each
         appended entry with ``diverged`` adds one, including one past the
         repeat limit that only a ``summary`` will show, and :meth:`drain`
-        leaves it alone (``browser.network`` drains the log at every
+        leaves it alone (``browser.replay_log`` drains the log at every
         collection). It is what a checkpoint restoration reads to ask "did
         the replay leave the recording since I last looked?" — the
         capability keeps the total it last saw (§4.14 "恢复：重定位与校验").
@@ -231,7 +234,7 @@ def short_key(key: str | None) -> str | None:
 def replay_log(reader: ArchiveReader, step: int) -> list[ReplayLogEntry]:
     """The replay log *step*'s collection took (``[]`` when it took none)."""
     entries: list[ReplayLogEntry] = []
-    for entry in reader.archive_files(step, NETWORK_ARCHIVER):
+    for entry in reader.archive_files(step, REPLAY_LOG_ARCHIVER):
         if entry.name == REPLAY_LOG_NAME:
             entries.extend(reader.archive_lines(entry.path, ReplayLogEntry))
     return entries
@@ -239,7 +242,7 @@ def replay_log(reader: ArchiveReader, step: int) -> list[ReplayLogEntry]:
 
 def iter_replay_log(reader: ArchiveReader) -> Iterator[tuple[int | None, ReplayLogEntry]]:
     """``(step, entry)`` for every entry of the run, in step order, then the trailing ones (``None``)."""
-    for step, entry in reader.iter_archive(NETWORK_ARCHIVER, include_trailing=True):
+    for step, entry in reader.iter_archive(REPLAY_LOG_ARCHIVER, include_trailing=True):
         if entry.name == REPLAY_LOG_NAME:
             for line in reader.archive_lines(entry.path, ReplayLogEntry):
                 yield step, line

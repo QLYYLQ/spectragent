@@ -165,8 +165,9 @@ environment:
         # every request from a recorded run's archive (the run directory
         # arrives per task: ``spectragent-run --replay-archive DIR``) and never
         # goes to the network; it isolates the browser through this
-        # local_chrome backend and needs ``browser.network`` on the trace hook
-        # (it records the replay log). configs/flywheel/ has the full setup.
+        # local_chrome backend and needs ``browser.replay_log`` on the trace
+        # hook (it records the replay log; ``browser.network`` is refused in a
+        # replay). configs/flywheel/ has the full setup.
         #
         # network_source:
         #   source_id: archive

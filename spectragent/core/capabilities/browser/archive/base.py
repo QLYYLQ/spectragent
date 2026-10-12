@@ -44,14 +44,17 @@ from spectragent.core.capabilities.browser.recorder import (
 
 #: A capture channel an archiver needs opened at setup.
 #:
-#: - ``fetch_response`` — the recorder's Response-stage ``Fetch`` (bodies);
+#: - ``fetch_response`` — the recorder's Response-stage ``Fetch`` (bodies):
+#:   live traffic, so a replaying run (``network_source: archive``) refuses an
+#:   archiver with it;
 #: - ``raw_dom`` — the DOM resolver's raw capture, parked on the observe cycle;
 #: - ``observation_cycle`` — the observation cycles, delivered into the archive
 #:   scope (a self-capture when no DOM fragment was negotiated);
-#: - ``replay_log`` — the replay server's decisions (M30): an archiver with it
-#:   records the replay log when the run replays an archive, and a replay
-#:   refuses to run without one bound (the cooperation check finds it by this
-#:   need, never by archiver id).
+#: - ``replay_log`` — the replay server's decisions (``browser.replay_log`` has
+#:   it): a replay refuses to run without an archiver with it, and a live
+#:   source refuses one, since it replays nothing.
+#:
+#: The cooperation check finds archivers by these needs, never by archiver id.
 ArchiveNeed = Literal["fetch_response", "raw_dom", "observation_cycle", "replay_log"]
 
 
@@ -182,7 +185,7 @@ class BrowserArchiveContext:
     #: Whether the browser started from a fresh profile (§5.6: session state).
     fresh_profile: bool = True
     #: The replay server's log when the run replays an archive (M30), else
-    #: ``None``; an archiver needing ``replay_log`` records it then.
+    #: ``None``; the archiver needing ``replay_log`` records it.
     replay_log: ReplayLogFeed | None = None
 
     def tabs(self) -> list[RecorderTarget]:

@@ -41,14 +41,12 @@ refetched body) and ``websocket.jsonl`` (frames). There is no match key in the
 index: replay (M30) derives keys from the raw request facts with one
 canonicaliser, so a rule change leaves no stale key behind.
 
-**When the run replays an archive** (``network_source: archive``, M30) there
-is no live response to capture — every byte served is already in the source
-archive — and the archiver records the replay instead: :meth:`NetworkArchiver.open`
-hands out a :class:`ReplayLogSession` (no Fetch pattern, no Network event, no
-WARC / ``index.jsonl`` / ``websocket.jsonl``), which writes the replay server's
-decisions since the last collection as that step's ``replay.jsonl``. The
-archiver says so with its ``replay_log`` need; the replay's cooperation check
-looks for that need, never for this archiver's id.
+The archiver always records live traffic. A run that replays an archive
+(``network_source: archive``) has none — every byte it serves is already in
+the source run's archive — so the cooperation check refuses this archiver
+there, by its ``fetch_response`` need, and names the one a replay binds
+instead: ``browser.replay_log`` (``archive/replay_log.py``), which records the
+replay server's decisions.
 
 .. note::
    No ``from __future__ import annotations`` — the archive package rule.
@@ -73,7 +71,6 @@ from spectragent.core.capabilities.browser.archive.base import (
     BrowserArchiveContext,
     BrowserArchiverBase,
     BrowserArchiveSession,
-    ReplayLogFeed,
 )
 from spectragent.core.capabilities.browser.archive.encoding import jsonl
 from spectragent.core.capabilities.browser.archive.network_model import (
@@ -114,8 +111,6 @@ _CONTENT_RANGE = re.compile(r"^\s*(\w+)\s+(?:(\d+)-(\d+)|\*)/(\d+|\*)\s*$")
 WARC_NAME = "exchanges.warc.gz"
 INDEX_NAME = "index.jsonl"
 WEBSOCKET_NAME = "websocket.jsonl"
-#: The replay server's decisions of one step, in a replaying run (M30).
-REPLAY_LOG_NAME = "replay.jsonl"
 
 
 def parse_content_range(value: str | None) -> dict[str, Any] | None:
@@ -156,7 +151,7 @@ class NetworkArchiver(BrowserArchiverBase):
     """Request/response pairs with bodies, as WARC/1.1 plus a step index."""
 
     __registry_key__ = "browser.network"
-    needs: ClassVar[frozenset[ArchiveNeed]] = frozenset({"fetch_response", "replay_log"})
+    needs: ClassVar[frozenset[ArchiveNeed]] = frozenset({"fetch_response"})
 
     def __init__(
         self,
@@ -274,41 +269,9 @@ class NetworkArchiver(BrowserArchiverBase):
     def redaction_facts(self) -> Mapping[str, Any]:
         return {"stripped_request_headers": sorted(stripped_header_set(self.strip_request_headers))}
 
-    def open(self, ctx: BrowserArchiveContext) -> BrowserArchiveSession:
-        """The run's capture — or, when the run replays an archive, its replay log."""
-        if ctx.replay_log is not None:
-            return ReplayLogSession(self, ctx, ctx.replay_log)
+    def open(self, ctx: BrowserArchiveContext) -> "NetworkSession":
+        """The run's capture."""
         return NetworkSession(self, ctx)
-
-
-class ReplayLogSession(BrowserArchiveSession):
-    """A replaying run's ``browser.network``: the replay log, step by step.
-
-    Contributes nothing to a target's preparation and consumes no event (the
-    recorder participant defaults); each collection drains the replay
-    server's log — in one synchronous call — into this step's
-    ``replay.jsonl``. An empty window writes nothing.
-    """
-
-    def __init__(
-        self, archiver: NetworkArchiver, ctx: BrowserArchiveContext, log: ReplayLogFeed
-    ) -> None:
-        super().__init__(archiver, ctx)
-        self._log = log
-
-    async def collect(self) -> list[ArchiveFile]:
-        entries = self._log.drain()
-        if not entries:
-            return []
-        return [
-            ArchiveFile(
-                archiver_id=self.archiver.archiver_id,
-                name=REPLAY_LOG_NAME,
-                media_type="application/x-ndjson",
-                data=jsonl(entries),
-                meta=ArchiveProvenance(captured_at=self.ctx.clock()),
-            )
-        ]
 
 
 @dataclass

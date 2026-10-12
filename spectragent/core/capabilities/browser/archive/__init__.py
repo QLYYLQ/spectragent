@@ -1,10 +1,11 @@
 """Browser archivers — the browser's half of the archive axis (§4.14).
 
-Importing this package registers the three archivers under
-``ArchiverRegistrar`` — ``browser.network``, ``browser.storage`` and
-``browser.dom_raw`` — which ``BrowserCapability.__wiring__["archiver"]``
-declares as provided (conscribe drops a wiring entry whose keys do not
-resolve, so the classes are imported before the capability class exists).
+Importing this package registers the four archivers under
+``ArchiverRegistrar`` — ``browser.network``, ``browser.storage``,
+``browser.dom_raw`` and ``browser.replay_log`` — which
+``BrowserCapability.__wiring__["archiver"]`` declares as provided (conscribe
+drops a wiring entry whose keys do not resolve, so the classes are imported
+before the capability class exists).
 
 See :mod:`.base` for the configured-instance / run-time-session split,
 :mod:`.run` for one recording's archive side, :mod:`.redaction` for the
@@ -30,6 +31,7 @@ from spectragent.core.capabilities.browser.archive.redaction import (
     BROWSER_REDACTION_POLICY,
     redact_post_body,
 )
+from spectragent.core.capabilities.browser.archive.replay_log import ReplayLogArchiver
 from spectragent.core.capabilities.browser.archive.run import BrowserArchiveRun
 from spectragent.core.capabilities.browser.archive.storage import StorageArchiver
 
@@ -47,6 +49,7 @@ __all__ = [
     "RawCapture",
     "RawCaptureStore",
     "RecorderHandle",
+    "ReplayLogArchiver",
     "ReplayLogFeed",
     "StorageArchiver",
     "archive_needs",

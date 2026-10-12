@@ -607,7 +607,7 @@ class TestReasons:
         check = await verdict(capability, recorded, restored)
         assert check.reasons == ["document_miss"]
         assert check.evidence[0].document_misses == 3
-        log.drain()  # browser.network's collection does not reset the count
+        log.drain()  # browser.replay_log's collection does not reset the count
         again = await verdict(capability, recorded, restored)
         assert again.verdict == "ok" and again.evidence[0].document_misses == 0, (
             "only the misses since the previous measurement"

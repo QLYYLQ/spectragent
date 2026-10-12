@@ -1,9 +1,10 @@
-"""The replay log: entries, the repeat limit, ``browser.network``'s replay session, the readers.
+"""The replay log: entries, the repeat limit, the ``browser.replay_log`` archiver, the readers.
 
 §4.14 "回放日志". The step whose collection takes an entry is the step it is
 attributed to; "diverged" is derived at read time from main-frame document
-misses. The live counterpart (entries attributed to step, frame and
-resourceType in a real replay) is ``test_browser_replay_live.py``.
+misses. The readers find the log by the archiver that writes it. The live
+counterpart (entries attributed to step, frame and resourceType in a real
+replay) is ``test_browser_replay_live.py``.
 """
 
 from __future__ import annotations
@@ -18,10 +19,11 @@ from pydantic import ValidationError
 
 from spectragent.core.archive import ArchiveFile, ArchiveProvenance
 from spectragent.core.archive.source import open_archive
-from spectragent.core.capabilities.browser.archive import NetworkArchiver
-from spectragent.core.capabilities.browser.archive.network import (
+from spectragent.core.capabilities.browser.archive import NetworkArchiver, ReplayLogArchiver
+from spectragent.core.capabilities.browser.archive.network import NetworkSession
+from spectragent.core.capabilities.browser.archive.redaction import MARKER_BROWSER_REDACTED
+from spectragent.core.capabilities.browser.archive.replay_log import (
     REPLAY_LOG_NAME,
-    NetworkSession,
     ReplayLogSession,
 )
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
@@ -236,22 +238,35 @@ class TestTheRepeatLimit:
             ReplayLog(repeat_limit=0)
 
 
-# ── browser.network in a replaying run ────────────────────────────────
+# ── browser.replay_log ────────────────────────────────────────────────
 
 
-class TestTheReplaySession:
-    def test_the_archiver_needs_the_replay_log(self) -> None:
-        assert "replay_log" in NetworkArchiver.needs
+class TestTheReplayLogArchiver:
+    def test_it_alone_needs_the_replay_log(self) -> None:
+        """The cooperation check finds the archiver by this need, never by its id."""
+        assert ReplayLogArchiver.needs == frozenset({"replay_log"})
+        assert "replay_log" not in NetworkArchiver.needs
 
-    def test_a_recording_run_still_gets_the_capture(self) -> None:
-        session, _ = open_session(NetworkArchiver(require_replayable=False))
+    def test_its_only_knob_and_its_privacy_marker(self) -> None:
+        archiver = ReplayLogArchiver()
+        assert archiver.archiver_id == "browser.replay_log"
+        assert archiver.allow_session_state is False
+        assert ReplayLogArchiver(allow_session_state=True).allow_session_state is True
+        assert archiver.privacy_markers == frozenset({MARKER_BROWSER_REDACTED})
+        assert archiver.requires_replayable is False
+
+    def test_the_network_archiver_always_records_traffic(self) -> None:
+        """``browser.network`` has one meaning: a replay's log in the context changes nothing."""
+        session, _ = open_session(NetworkArchiver(require_replayable=False), replay_log=ReplayLog())
         assert isinstance(session, NetworkSession)
 
-    async def test_a_replaying_run_records_only_the_replay_log(self) -> None:
+    def test_opening_it_in_a_run_that_replays_nothing_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="does not replay an archive"):
+            open_session(ReplayLogArchiver())
+
+    async def test_a_replaying_run_records_its_log(self) -> None:
         log = ReplayLog()
-        session, _ = open_session(
-            NetworkArchiver(require_replayable=False), replay_log=log, clock=lambda: 42.0
-        )
+        session, _ = open_session(ReplayLogArchiver(), replay_log=log, clock=lambda: 42.0)
         assert isinstance(session, ReplayLogSession)
         target = RecorderTarget(session_id="s", target_id="t", type="page")
         assert session.target_commands(target) == ()
@@ -263,7 +278,7 @@ class TestTheReplaySession:
         log.append(_entry("hit"))
         log.append(_entry())
         (written,) = await session.collect()
-        assert written.archiver_id == "browser.network" and written.name == REPLAY_LOG_NAME
+        assert written.archiver_id == "browser.replay_log" and written.name == REPLAY_LOG_NAME
         assert written.scope == "step" and written.meta.captured_at == 42.0
         lines = [json.loads(line) for line in written.data.splitlines()]
         assert [line["kind"] for line in lines] == ["hit", "miss"]
@@ -276,14 +291,14 @@ class TestTheReplaySession:
 async def _committed(
     base: Path, steps: dict[int | None, list[ReplayLogEntry]], log: ReplayLog | None = None
 ) -> Path:
-    """A run whose ``browser.network`` replay session committed these logs (``None``: trailing).
+    """A run whose ``browser.replay_log`` session committed these logs (``None``: trailing).
 
     Each batch is what the real :class:`ReplayLogSession` collects, committed
     with ``encode_archive_file`` like ``TraceWriter`` does.
     """
     wal = new_wal(base, "run-replay")
     log = log if log is not None else ReplayLog(repeat_limit=100)
-    session, _ = open_session(NetworkArchiver(require_replayable=False), replay_log=log)
+    session, _ = open_session(ReplayLogArchiver(), replay_log=log)
     for step, entries in steps.items():
         for entry in entries:
             log.append(entry)
@@ -357,10 +372,28 @@ class TestReading:
     async def test_a_live_run_has_no_document_misses(self, tmp_path: Path) -> None:
         assert document_miss_total(open_archive(await _committed(tmp_path, {1: []}))) == 0
 
+    def test_the_log_is_read_from_the_archiver_that_writes_it(self, tmp_path: Path) -> None:
+        """A ``replay.jsonl`` under another archiver is not the replay log."""
+        wal = new_wal(tmp_path, "run-other")
+        elsewhere = ArchiveFile(
+            archiver_id="browser.network",
+            name=REPLAY_LOG_NAME,
+            media_type="application/x-ndjson",
+            data=json.dumps(_entry(frame="main", diverged=True).model_dump(mode="json")).encode()
+            + b"\n",
+            meta=ArchiveProvenance(captured_at=1.0),
+        )
+        wal.commit_step(1, step_record(1), extra_files=[encode_archive_file(elsewhere, step=1)])
+        wal.write_result(agent_result())
+        wal.finalize(RunStatus.COMPLETED)
+        reader = open_archive(wal.run_dir)
+        assert replay_log(reader, 1) == [] and list(iter_replay_log(reader)) == []
+        assert document_miss_total(reader) == 0
+
     def test_a_line_that_is_not_an_entry_names_the_file_and_line(self, tmp_path: Path) -> None:
         wal = new_wal(tmp_path, "run-bad")
         bad = ArchiveFile(
-            archiver_id="browser.network",
+            archiver_id="browser.replay_log",
             name=REPLAY_LOG_NAME,
             media_type="application/x-ndjson",
             data=json.dumps(_entry().model_dump(mode="json")).encode()
@@ -423,10 +456,8 @@ class TestDecisions:
 
 
 def test_the_scripted_recorder_is_untouched_by_the_replay_session() -> None:
-    """The replay session sends nothing on the recorder (no collect-time reads)."""
+    """The replay-log session sends nothing on the recorder (no collect-time reads)."""
     recorder = ScriptedRecorder()
-    session, _ = open_session(
-        NetworkArchiver(require_replayable=False), recorder, replay_log=ReplayLog()
-    )
+    session, _ = open_session(ReplayLogArchiver(), recorder, replay_log=ReplayLog())
     assert isinstance(session, ReplayLogSession)
     assert getattr(recorder, "sent", []) == []

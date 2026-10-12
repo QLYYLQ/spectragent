@@ -15,8 +15,10 @@
 #   (isolation: required → local_chrome gets the resolver blackhole and
 #   --no-proxy-server).
 # - base_time: from_archive — the page clock starts at the recording's T0.
-# - browser.network records the replay log (env/steps/NNN/browser.network/
-#   replay.jsonl: hits, misses, divergence) instead of a WARC.
+# - browser.replay_log takes browser.network's place in trace_writer.archive:
+#   it records the replay log (env/steps/NNN/browser.replay_log/replay.jsonl:
+#   hits, misses, divergence). A replay has no live traffic of its own, so
+#   browser.network is refused under network_source: archive.
 # Before Chrome starts, setup checks the source run's environment fingerprint
 # against this file (tier and parameters, shim, viewport, launch flags) and
 # refuses a mismatch naming both sides. docs/architecture_design.md §4.14.
@@ -61,7 +63,7 @@ hook:
   - hook_id: trace_writer
     trace_dir: traces
     archive:
-      - archiver_id: browser.network     # required: it records the replay log
+      - archiver_id: browser.replay_log  # required: it records the replay log
       - archiver_id: browser.storage
       - archiver_id: browser.dom_raw
   - hook_id: metrics

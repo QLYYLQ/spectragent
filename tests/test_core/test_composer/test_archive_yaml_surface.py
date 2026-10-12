@@ -33,6 +33,7 @@ from spectragent.core.archive import ArchiverRegistrar
 from spectragent.core.capabilities.browser.archive import (
     DomRawArchiver,
     NetworkArchiver,
+    ReplayLogArchiver,
     StorageArchiver,
 )
 from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
@@ -130,7 +131,7 @@ class TestWhatIsRefused:
 def test_every_archiver_knob_reaches_the_generated_config() -> None:
     from spectragent.generated import _composed
 
-    for cls in (NetworkArchiver, StorageArchiver, DomRawArchiver):
+    for cls in (NetworkArchiver, StorageArchiver, DomRawArchiver, ReplayLogArchiver):
         knobs = {name for name in inspect.signature(cls.__init__).parameters if name != "self"}
         model = next(
             getattr(_composed, attr)
@@ -145,4 +146,5 @@ def test_every_archiver_knob_reaches_the_generated_config() -> None:
         "browser.network",
         "browser.storage",
         "browser.dom_raw",
+        "browser.replay_log",
     }

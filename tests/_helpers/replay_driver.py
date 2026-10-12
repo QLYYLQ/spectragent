@@ -12,11 +12,13 @@ whose collection takes it — so they run the whole runtime twice, no LLM spend:
   ``replayability: pinned`` and ``browser.network`` + ``browser.storage`` +
   ``browser.dom_raw`` on the trace writer, against the mapped fixture site
   with a hermetic resolver (every unmapped name resolves to nothing).
-- **Replay** (:func:`to_replay_config`): the same file with three changes —
+- **Replay** (:func:`to_replay_config`): the same file with four changes —
   ``network_source: archive`` (isolation required, strict misses),
-  ``base_time: from_archive`` (the recording's clock), and the fixture's
-  routing switches dropped from the backend (the replay's own isolation
-  replaces them). The model answers with the source run's own recorded
+  ``base_time: from_archive`` (the recording's clock), the fixture's routing
+  switches dropped from the backend (the replay's own isolation replaces
+  them), and ``browser.replay_log`` in ``browser.network``'s place on the
+  trace writer (a replay has no live traffic to record; it records its
+  decisions). The model answers with the source run's own recorded
   completions (:func:`recorded_completions`), so the agent acts exactly as
   it did; the source run directory arrives as the task's ``replay_archive``.
 
@@ -154,6 +156,10 @@ def to_replay_config(
 ) -> dict[str, Any]:
     """*raw* replaying its own recording: archive source, the recorded clock, no fixture routes.
 
+    The trace writer records the replay log where the recording recorded its
+    traffic: ``browser.replay_log`` replaces ``browser.network``, the other
+    archivers stay.
+
     The fixture's name mapping is dropped either way, so a mapped name has
     no route to the fixture in a replay; only IP-literal and ``localhost``
     traffic does (the ``egress`` page). ``isolation: none_acknowledged`` —
@@ -182,6 +188,12 @@ def to_replay_config(
         backend["extra_args"].append("--no-proxy-server")
     (writer,) = [hook for hook in replay["hook"] if hook["hook_id"] == "trace_writer"]
     writer["trace_dir"] = str(trace_dir)
+    writer["archive"] = [
+        {"archiver_id": "browser.replay_log"}
+        if entry["archiver_id"] == "browser.network"
+        else entry
+        for entry in writer.get("archive") or []
+    ]
     return replay
 
 

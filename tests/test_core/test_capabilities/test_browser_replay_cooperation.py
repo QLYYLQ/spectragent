@@ -3,12 +3,15 @@
 What an intercepting network source needs of the rest of the configuration:
 the recorder connection on a browser the capability owns, the task's
 ``replay_archive`` (and a ``live`` source refuses one), a bound archiver that
-records the replay log (found by its ``replay_log`` need), and — with
+records the replay log (found by its ``replay_log`` need: ``browser.replay_log``)
+and none that records live traffic (the ``fetch_response`` need:
+``browser.network``, refused naming ``browser.replay_log``), and — with
 ``isolation: required`` — a provider that declares ``NETWORK_ISOLATION`` and
-whose knobs do not route around it. The configuration-decidable rows are
-refused by ``bind_archivers`` at ``prepare()`` when any archiver is bound;
-setup checks everything again, with the source run's consistency, before it
-launches anything.
+whose knobs do not route around it. A ``live`` source refuses the replay-log
+archiver: it replays nothing. The configuration-decidable rows are refused by
+``bind_archivers`` at ``prepare()`` when any archiver is bound; setup checks
+everything again, with the source run's consistency, before it launches
+anything.
 """
 
 from __future__ import annotations
@@ -21,7 +24,11 @@ import pytest
 
 from spectragent.core.archive.source import ArchiveOpenError
 from spectragent.core.capabilities.browser import BrowserCapability
-from spectragent.core.capabilities.browser.archive import NetworkArchiver, StorageArchiver
+from spectragent.core.capabilities.browser.archive import (
+    NetworkArchiver,
+    ReplayLogArchiver,
+    StorageArchiver,
+)
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
     NETWORK_ISOLATION_ARGS,
 )
@@ -69,19 +76,17 @@ def _replaying(
     archivers: tuple[Any, ...] | None = None,
     tier: Any = None,
 ) -> BrowserCapability:
-    """A replaying capability; *archivers* are bound before the source is set.
+    """A replaying capability holding *archivers* as its binding, unchecked.
 
-    Binding first keeps ``bind_archivers``' own refusal (the same rows, at
+    Bypassing ``bind_archivers`` keeps its own refusal (the same rows, at
     ``prepare()``) from pre-empting the setup-time row under test;
     :class:`TestBinding` covers that refusal itself.
     """
     cap = BrowserCapability()
     cap.backend = backend if backend is not None else IsolatingBrowser()  # type: ignore[assignment]
     cap.replayability = tier if tier is not None else PinnedReplayability(random_seed=7)
-    if archivers is None:
-        archivers = (NetworkArchiver(),)
-    cap.bind_archivers(list(archivers))
     cap.network_source = source if source is not None else ArchiveNetworkSource()
+    cap._archivers = list(archivers if archivers is not None else (ReplayLogArchiver(),))
     return cap
 
 
@@ -158,7 +163,13 @@ class TestRows:
     def test_without_any_archiver_setup_still_refuses(self) -> None:
         (problem,) = _problems(_replaying(archivers=()))
         assert problem.startswith("network_source: archive ↔ bound archivers []")
-        assert "browser.network" in problem
+        assert "bind browser.replay_log" in problem
+
+    def test_setup_refuses_the_network_archiver_in_a_replay(self) -> None:
+        problems = _problems(_replaying(archivers=(NetworkArchiver(), ReplayLogArchiver())))
+        (problem,) = problems
+        assert problem.startswith("network_source: archive ↔ archiver browser.network")
+        assert "bind browser.replay_log instead" in problem
 
 
 class TestBinding:
@@ -168,18 +179,47 @@ class TestBinding:
             cap.bind_archivers([StorageArchiver()])
         (problem,) = info.value.problems
         assert problem.startswith("network_source: archive ↔ bound archivers ['browser.storage']")
-        assert "browser.network" in problem
+        assert "the 'replay_log' need: browser.replay_log" in problem
         assert cap.bound_archivers == (), "nothing changed"
-        cap.bind_archivers([NetworkArchiver(), StorageArchiver()])
+        cap.bind_archivers([ReplayLogArchiver(), StorageArchiver()])
         assert [a.archiver_id for a in cap.bound_archivers] == [
-            "browser.network",
+            "browser.replay_log",
             "browser.storage",
         ]
+
+    def test_the_network_archiver_is_refused_naming_the_replay_log(self) -> None:
+        """``browser.network`` always records live traffic; a replay has none."""
+        cap = _replaying(archivers=())
+        with pytest.raises(BrowserCooperationError) as info:
+            cap.bind_archivers([NetworkArchiver(), ReplayLogArchiver()])
+        (problem,) = info.value.problems
+        assert problem.startswith("network_source: archive ↔ archiver browser.network")
+        assert "records live traffic" in problem
+        assert "bind browser.replay_log instead" in problem
+        assert cap.bound_archivers == (), "nothing changed"
+
+        with pytest.raises(BrowserCooperationError) as alone:
+            cap.bind_archivers([NetworkArchiver()])
+        network, missing = alone.value.problems
+        assert network.startswith("network_source: archive ↔ archiver browser.network")
+        assert missing.startswith("network_source: archive ↔ bound archivers ['browser.network']")
+
+    def test_a_live_source_refuses_the_replay_log_archiver(self) -> None:
+        cap = BrowserCapability()
+        cap.backend = IsolatingBrowser()  # type: ignore[assignment]
+        cap.replayability = PINNED
+        with pytest.raises(BrowserCooperationError) as info:
+            cap.bind_archivers([NetworkArchiver(), ReplayLogArchiver()])
+        (problem,) = info.value.problems
+        assert problem.startswith("network_source: live ↔ archiver browser.replay_log")
+        assert "replays nothing" in problem and "network_source: archive" in problem
+        cap.bind_archivers([NetworkArchiver()])
+        assert [a.archiver_id for a in cap.bound_archivers] == ["browser.network"]
 
     def test_binding_refuses_an_unsupported_provider_at_prepare(self) -> None:
         cap = _replaying(OwnedBrowser(), archivers=())
         with pytest.raises(BrowserCooperationError, match="isolation=required"):
-            cap.bind_archivers([NetworkArchiver()])
+            cap.bind_archivers([ReplayLogArchiver()])
 
     def test_binding_nothing_decides_nothing_yet(self) -> None:
         cap = _replaying(OwnedBrowser(), archivers=())

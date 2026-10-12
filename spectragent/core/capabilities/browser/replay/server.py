@@ -28,7 +28,7 @@ pure construction — and owned by the capability from setup to teardown:
   nested dedicated worker's script) are logged as misses with ``answer:
   none`` (``websocket`` / ``unservable``).
 - **The log** — every decision becomes one :class:`~.replay_log.ReplayLogEntry`
-  in the run's :class:`~.replay_log.ReplayLog`, which ``browser.network``
+  in the run's :class:`~.replay_log.ReplayLog`, which ``browser.replay_log``
   drains at each collection.
 
 State is per recorder session where it is per anything: a target's detach

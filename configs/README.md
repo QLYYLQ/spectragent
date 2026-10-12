@@ -284,8 +284,22 @@ network_source:
   answers beacons, pings, reports and analytics hosts (`extra_benign_hosts` adds more)
   with 204, and every other subresource with 404 + `x-replay-miss: 1`.
 - `isolation: required` needs a backend that launches its own browser and declares
-  `NETWORK_ISOLATION` (`local_chrome`); replay also needs `browser.network` bound on the
-  trace hook, which records the replay log (`replay.jsonl`, one per step).
+  `NETWORK_ISOLATION` (`local_chrome`).
+- **The archive list**: a replay binds `browser.replay_log` on the trace hook where a
+  recording binds `browser.network` (the other archivers stay). `browser.replay_log`
+  records the replay log (`replay.jsonl`, one per step); a replay without it is refused.
+  `browser.network` always records live traffic, and a replay has none, so it is refused
+  under `network_source: archive`, naming `browser.replay_log`; a `live` source refuses
+  `browser.replay_log` in turn. All three are refused at `prepare()`.
+
+  ```yaml
+  hook:
+    - hook_id: trace_writer
+      archive:
+        - archiver_id: browser.replay_log   # the replay's decisions
+        - archiver_id: browser.storage
+        - archiver_id: browser.dom_raw
+  ```
 
 `flywheel/replay_ui_tars_archive.yaml` replays a run recorded with
 `flywheel/record_ui_tars_pinned.yaml`:
@@ -312,7 +326,7 @@ run by absolute path.
   were and pairs with it; `all` shifts `Date` / `Expires` / `Last-Modified` and cookie
   expiry together and pairs with `base_time: run_start`.
 - **The replay log**: every decision (hit, exhausted repeat, synthesised CORS preflight,
-  miss) goes into the step's `env/steps/NNN/browser.network/replay.jsonl`; a step whose log
+  miss) goes into the step's `env/steps/NNN/browser.replay_log/replay.jsonl`; a step whose log
   holds a main-frame document miss has diverged from the recording. Read it with
   `spectragent.core.capabilities.browser.replay.replay_log` / `iter_replay_log` /
   `diverged_steps` over `spectragent.core.archive.source.open_archive(run_dir)`.
@@ -381,7 +395,9 @@ task_loader:
   verifies every step: URL, interactive-element signatures, screenshot hash distance, main
   -frame document misses, action outcomes. The restored steps are recorded as
   `origin: restored` with their check; step *t* and the `continue_steps` after it are the
-  teacher's (`origin: policy`); the terminal observation is `origin: terminal`.
+  teacher's (`origin: policy`); the terminal observation is `origin: terminal`. A branch
+  run is a replay, so its trace hook binds `browser.replay_log` in `browser.network`'s
+  place, as in the replay config.
 - **No scoring yet**: `trace_branches` has no eval loader, so a configured evaluator is
   refused before the sweep starts — pass `--no-eval`.
 
