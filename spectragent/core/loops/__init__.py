@@ -27,6 +27,7 @@ from spectragent.core.loops.validation import (
     IncompatibleCheckpointError,
     IncompatibleError,
     IncompatibleLoopInputError,
+    MissingEnvironmentError,
     validate_compatibility,
 )
 
@@ -48,4 +49,5 @@ __all__ = [
     "IncompatibleCheckpointError",
     "IncompatibleError",
     "IncompatibleLoopInputError",
+    "MissingEnvironmentError",
 ]

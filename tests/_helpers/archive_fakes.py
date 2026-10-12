@@ -568,6 +568,16 @@ class SurfacelessEnv:
     def get_action_space(self, **kwargs: Any) -> Any:
         return self._inner.get_action_space(**kwargs)
 
+    def check_setup(
+        self,
+        context: Mapping[str, Any] | None = None,
+        *,
+        negotiation: Any = None,
+        archivers: Any = (),
+    ) -> None:
+        # Every run calls it (``prepare()``'s setup check), archiving or not.
+        self._inner.check_setup(context, negotiation=negotiation, archivers=archivers)
+
     async def observe(self, negotiated: Any) -> Any:
         return await self._inner.observe(negotiated)
 

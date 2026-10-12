@@ -3,8 +3,10 @@
 Slot validation is implemented in ``AgentLoopBase._validate_slots()``.
 This module provides the ``IncompatibleError`` type, the loop-input and
 checkpoint errors a Loop raises at assembly (``IncompatibleLoopInputError``,
-``IncompatibleCheckpointError``), and a thin ``validate_compatibility``
-wrapper for callers that prefer a free-function interface.
+``IncompatibleCheckpointError``), the error for a Loop that needs an
+environment the run lacks (``MissingEnvironmentError``), and a thin
+``validate_compatibility`` wrapper for callers that prefer a free-function
+interface.
 
 See docs/execution_dag.md M03 "兼容性验证".
 """
@@ -90,6 +92,28 @@ class IncompatibleLoopInputError(Exception):
         for key, (expected, actual) in self.mistyped.items():
             parts.append(f"expects {key} to be {expected}, got {actual}")
         super().__init__(f"Loop {loop_id!r} loop inputs: " + "; ".join(parts))
+
+
+class MissingEnvironmentError(Exception):
+    """The Loop needs an environment (``__requires_env__``) and the run has none.
+
+    Raised by ``AgentRuntime.prepare()`` right after the loop inputs are
+    checked, before any negotiation. A Loop declaring
+    ``__requires_env__ = False`` runs env-less instead: the missing
+    environment then provides nothing, and an agent that needs a fragment or
+    an action from one is refused by its negotiation.
+
+    Attributes:
+        loop_id: The Loop that needs the environment.
+    """
+
+    def __init__(self, loop_id: str) -> None:
+        self.loop_id = loop_id
+        super().__init__(
+            f"Loop {loop_id!r} requires an environment (__requires_env__ = True), but this "
+            f"run has none: add an environment block to the configuration, or use a Loop "
+            f"that declares __requires_env__ = False."
+        )
 
 
 class IncompatibleCheckpointError(Exception):

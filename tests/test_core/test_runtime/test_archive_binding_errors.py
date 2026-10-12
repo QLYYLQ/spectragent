@@ -21,7 +21,6 @@ runtime raising them at the right moment.
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,7 +30,7 @@ import pytest
 
 from spectragent.core import runtime as runtime_mod
 from spectragent.core.hooks.trace_writer import TraceWriter
-from spectragent.core.loops import ReactLoop
+from spectragent.core.loops import AgentLoopRegistrar, MissingEnvironmentError, ReactLoop
 from spectragent.core.negotiation import IncompatibleArchiveError
 from spectragent.core.runtime import AgentRuntime
 from tests._helpers.archive_fakes import (
@@ -43,7 +42,6 @@ from tests._helpers.archive_fakes import (
     STEPS_KEY,
     UNPROVIDED_KEY,
     ArchiveConsumerHook,
-    ContractArchiveAgent,
     ContractArchiveEnv,
     ContractArchiveLLM,
     ContractArchiveMemory,
@@ -218,10 +216,39 @@ class TestExecuteRaisesBeforeTheRunStarts:
 # ── no environment ────────────────────────────────────────────────────
 
 
-def _envless_run(trace_root: Path) -> Any:
+class _EnvlessLoop(ReactLoop):
+    """A ReAct loop that runs without an environment (``__requires_env__ = False``)."""
+
+    __registry_key__ = "test_archive_errors_envless_loop"
+    __requires_env__ = False
+
+
+def teardown_module() -> None:
+    # Idempotent: pytest tears a module down once per contiguous run of its
+    # tests, so a selection that interleaves files tears this one down twice.
+    if AgentLoopRegistrar.get_or_none("test_archive_errors_envless_loop") is not None:
+        AgentLoopRegistrar.unregister("test_archive_errors_envless_loop")
+
+
+class _EnvlessAgent:
+    """Asks an environment for nothing: only the task, which the Loop builds."""
+
+    __wiring__ = {"observation": ("observation", ["loop.task"])}
+
+    def build_react_prompt(self, obs: Any) -> list[dict[str, str]]:
+        return [{"role": "user", "content": "go"}]
+
+    def parse_react_output(self, out: Any) -> list[Any]:
+        return []
+
+    def get_react_output_model(self) -> None:
+        return None
+
+
+def _envless_run(trace_root: Path, *, loop: Any = None) -> Any:
     return make_run(
-        agent=ContractArchiveAgent(),
-        loop=ReactLoop(max_steps=2),
+        agent=_EnvlessAgent(),
+        loop=loop if loop is not None else _EnvlessLoop(max_steps=2),
         env=None,
         llm=ContractArchiveLLM(),
         memory=ContractArchiveMemory(),
@@ -232,21 +259,16 @@ def _envless_run(trace_root: Path) -> Any:
 class TestWithoutAnEnvironment:
     """An archive with nothing to bind it to is refused — the archive step's own rule.
 
-    A real env-less run never gets that far: observation and action
-    negotiation read the environment's provides first (see the last test).
-    So the earlier negotiations are stubbed here, and what is pinned is the
-    archive step as ``prepare()`` runs it: the consumer is named, nothing is
-    woven, and the bind at the end of ``prepare()`` therefore never sees an
-    archive without an environment.
+    The run is a real env-less one: its Loop declares ``__requires_env__ =
+    False`` and its agent needs nothing an environment provides, so the
+    observation and action negotiations pass against an environment that
+    provides nothing, and the archive step is reached. What is pinned is that
+    step as ``prepare()`` runs it: the consumer is named, nothing is woven,
+    and the bind at the end of ``prepare()`` therefore never sees an archive
+    without an environment. A Loop that needs an environment is refused
+    before any negotiation (the last test).
     """
 
-    @pytest.fixture()
-    def earlier_negotiations_stubbed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Sentinels: ``prepare`` only stores these before the archive step raises.
-        monkeypatch.setattr(runtime_mod, "negotiate_observation", lambda *a, **k: object())
-        monkeypatch.setattr(runtime_mod, "negotiate_action", lambda *a, **k: object())
-
-    @pytest.mark.usefixtures("earlier_negotiations_stubbed")
     def test_prepare_refuses_it_naming_the_consumer(self, tmp_path: Path, woven: list[str]):
         with pytest.raises(IncompatibleArchiveError) as excinfo:
             AgentRuntime.for_agent(_envless_run(tmp_path), AGENT_ID).prepare()
@@ -256,17 +278,16 @@ class TestWithoutAnEnvironment:
         assert excinfo.value.provided == frozenset()
         assert woven == []
 
-    @pytest.mark.usefixtures("earlier_negotiations_stubbed")
     async def test_execute_raises_it_before_on_run_start(self, tmp_path: Path) -> None:
         runtime = AgentRuntime.for_agent(_envless_run(tmp_path), AGENT_ID)
         with pytest.raises(IncompatibleArchiveError):
             await runtime.execute("t", timeout=10, raise_on_error=False)
         assert not (tmp_path / "traces").exists()
 
-    def test_a_real_env_less_run_fails_before_the_archive_step(
+    def test_a_loop_that_needs_an_environment_is_refused_first(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Why the stubs: observation negotiation needs an environment's provides."""
+        """``ReactLoop`` declares ``__requires_env__``: refused by name, before any negotiation."""
         reached: list[Any] = []
         real = runtime_mod.negotiate_archive
 
@@ -275,7 +296,9 @@ class TestWithoutAnEnvironment:
             return real(*args, **kwargs)
 
         monkeypatch.setattr(runtime_mod, "negotiate_archive", recording)
-        runtime = AgentRuntime.for_agent(_envless_run(tmp_path), AGENT_ID)
-        with contextlib.suppress(Exception):
+        runtime = AgentRuntime.for_agent(
+            _envless_run(tmp_path, loop=ReactLoop(max_steps=2)), AGENT_ID
+        )
+        with pytest.raises(MissingEnvironmentError, match="Loop 'react' requires an environment"):
             runtime.prepare()
-        assert reached == [], "an env-less run reached archive negotiation — update the docs"
+        assert reached == []

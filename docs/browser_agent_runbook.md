@@ -81,7 +81,7 @@ network_source: { source_id: live }
 
 漏写任一项，`--dry-run` 会报该字段 `Field required`，例如 `environment.0.capabilities.0.replayability`。`"off"` 的引号不能省：PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`，校验会报 `Input tag 'False' found using 'replayability_id' does not match any of the expected tags: 'off', 'pinned'`。`"off"` 不 pin 任何东西，`live` 直接用线上网络，两者都不会打开第二条 CDP 连接，任何后端都能用。
 
-`replayability: pinned`、`network_source: archive` 和 trace hook 绑定的归档器用于录制与回放，只支持 `local_chrome`。归档器配云后端在 `--dry-run` 就报错，`pinned` 配云后端要到 setup 时（打开浏览器会话之前）才报。评测和 anti-bot 实验保持 `"off"`，因为 `pinned` 会改变线上站点的行为，它本身也是能被检测到的特征。
+`replayability: pinned`、`network_source: archive` 和 trace hook 绑定的归档器用于录制与回放，只支持 `local_chrome`。归档器或 `pinned` 配云后端，都在 `--dry-run` 就报错（`prepare()` 的 setup 检查；正式运行时同样在打开 trace、打开浏览器会话之前报）。评测和 anti-bot 实验保持 `"off"`，因为 `pinned` 会改变线上站点的行为，它本身也是能被检测到的特征。
 
 连到本机 CDP 端点（`localhost`、`127.0.0.0/8`、`::1`，`local_chrome` 启动的浏览器就在这里）的连接直连、不压缩，不读 `http_proxy` 等代理环境变量，本机开着代理（如 Clash）时 CDP 流量也不经过它。远端端点（云后端）仍按 websockets 的默认读环境代理、协商压缩。
 

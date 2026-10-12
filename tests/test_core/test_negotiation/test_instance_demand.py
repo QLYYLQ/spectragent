@@ -219,6 +219,8 @@ def test_only_the_agent_s_half_is_narrowed() -> None:
         __wiring__: ClassVar[dict[str, Any]] = {
             "observation": ("observation", ["action_result"], []),
         }
+        # A structural Loop says which loop-source fragments it builds.
+        __loop_fragments__ = frozenset({"loop.task", "loop.action_result"})
 
     class _Agent:
         __registry_key__ = "stub_agent"

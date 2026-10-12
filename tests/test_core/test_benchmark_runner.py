@@ -6,13 +6,19 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.benchmark_runner import BenchmarkRunner, _safe_run_id
+from spectragent.core.benchmark_runner import (
+    PREFLIGHT_EXIT_CODE,
+    BenchmarkRunner,
+    PreflightError,
+    _safe_run_id,
+)
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import ReactLoop
 from spectragent.core.loops._registrar import AgentLoopRegistrar, LoopInput
 from spectragent.core.loops.errors import RunAbort
+from spectragent.core.negotiation import IncompatibleActionError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
@@ -341,6 +347,125 @@ class TestBenchmarkRunner:
         assert summary.outcomes[1].ok
         # 297 of 300 tasks must not be lost because task 3 was malformed.
         assert "t-1" in summary.format_table()
+
+
+class _GreedyAgent(_Agent):
+    """Requires an action the capability does not provide: no task of the sweep can run."""
+
+    __wiring__ = {"action": ("action", ["bench_runner_cap.done", "bench_runner_cap.fly"])}
+
+
+class _BogusKeyLoader(_Loader):
+    """Hands the first task a setup key no capability declares."""
+
+    def get_task_context(self, task_id):
+        return TaskContext(env={"start_url": f"https://example.com/{task_id}", "bogus": 1})
+
+
+def _counting_factory(tmp_path, envs, writers, *, agent_cls=_Agent):
+    def compose():
+        env = make_env(_Env, {"bench_runner_cap": _Cap()})
+        writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
+        envs.append(env)
+        writers.append(writer)
+        return make_run(
+            agent=agent_cls(),
+            loop=ReactLoop(max_steps=2),
+            env=env,
+            llm=_LLM(),
+            memory=_Memory(),
+            hooks=[writer],
+        )
+
+    return compose
+
+
+class TestPreflight:
+    """``prepare()`` once, for the first task, before the sweep starts (arch §4.2).
+
+    A configuration that cannot run refuses every task alike, so the sweep
+    fails up front — no task runs, no trace is opened — instead of recording
+    the same refusal once per task.
+    """
+
+    async def test_a_refused_configuration_runs_no_task(self, tmp_path):
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_Loader(),
+            compose=_counting_factory(tmp_path, envs, writers, agent_cls=_GreedyAgent),
+            timeout=10,
+        )
+        with pytest.raises(PreflightError) as info:
+            await runner.run()
+
+        error = info.value
+        assert error.task_id == "t-1"
+        assert isinstance(error.error, IncompatibleActionError)
+        assert error.__cause__ is error.error
+        message = str(error)
+        assert "refused the configuration for task 't-1', so no task was run" in message
+        # Both sides: what the agent requires and what the environment provides.
+        assert "bench_runner_cap.fly" in message and "bench_runner_cap.done" in message
+        assert len(envs) == 1, "only the pre-flight composed a stack"
+        assert envs[0].setup_kwargs == {}, "nothing was set up"
+        assert not (tmp_path / "traces").exists(), "no trace was opened"
+
+    async def test_it_checks_the_first_task_s_context(self, tmp_path):
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_BogusKeyLoader(),
+            compose=_counting_factory(tmp_path, envs, writers),
+            timeout=10,
+        )
+        with pytest.raises(PreflightError, match=r"\['bogus'\] are accepted by none"):
+            await runner.run()
+        assert not (tmp_path / "traces").exists()
+
+    async def test_the_first_task_runs_on_the_pre_flight_stack(self, tmp_path):
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_Loader(), compose=_counting_factory(tmp_path, envs, writers), timeout=10
+        )
+        summary = await runner.run()
+        assert summary.completed == 2
+        assert len(envs) == 2, "one stack per task, the pre-flight's included"
+        assert [o.trace_dir for o in summary.outcomes] == [w.run_dir for w in writers]
+
+    async def test_an_empty_selection_checks_nothing(self, tmp_path):
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_Loader(),
+            compose=_counting_factory(tmp_path, envs, writers, agent_cls=_GreedyAgent),
+            timeout=10,
+        )
+        summary = await runner.run(task_ids=[])
+        assert summary.total == 0 and envs == []
+
+    def test_the_cli_exits_2_and_says_why(self, tmp_path, monkeypatch, capsys):
+        from spectragent.core.benchmark_runner import main
+        from tests._helpers.branch_sources import write_source
+
+        def refuse(self, task_id):
+            raise PreflightError(task_id, ValueError("replayability: pinned ↔ provider"))
+
+        executed: list[str] = []
+        monkeypatch.setattr(BenchmarkRunner, "preflight", refuse)
+        monkeypatch.setattr(
+            BenchmarkRunner, "run_task", lambda self, task_id, **kw: executed.append(task_id)
+        )
+        write_source(tmp_path / "recorded", "run-a", steps=2)
+
+        code = main(["--config", str(_branch_sweep_config(tmp_path)), "--no-eval"])
+
+        assert code == PREFLIGHT_EXIT_CODE == 2
+        assert executed == []
+        err = capsys.readouterr().err
+        assert "spectragent-bench: the pre-flight check refused the configuration" in err
+        assert "replayability: pinned ↔ provider" in err
 
 
 class _VetoingAgent(_Agent):

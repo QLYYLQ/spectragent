@@ -106,6 +106,7 @@ def _archive_rules(
     consumers: Sequence[tuple[str, Sequence[str]]],
     env_label: str | None,
     capabilities: Sequence[tuple[str, frozenset[str]]],
+    non_blocking: Sequence[str] = (),
 ) -> ArchiveNegotiationResult:
     """The routing rules, on plain data.
 
@@ -117,6 +118,8 @@ def _archive_rules(
         capabilities: ``(capability_id, provided archivers)`` per
             capability, in capability order. A capability that does not
             archive provides ``frozenset()``.
+        non_blocking: The labels of the consumers that are not blocking
+            (``blocking=False``).
 
     Raises:
         IncompatibleArchiveError: With every problem found.
@@ -129,6 +132,18 @@ def _archive_rules(
     for label, keys in consumers:
         for key in dict.fromkeys(keys):
             requested_by.setdefault(key, []).append(label)
+
+    # A consumer that does not block: its handlers finish after the commit
+    # point (§4.6 "blocking 的唯一语义 = 并发"), so the evidence it pulls
+    # would reach no trace.
+    for label, keys in consumers:
+        if label in non_blocking:
+            problems.append(
+                f"{label} requests archivers {_sorted_list(keys)} but is not blocking "
+                f"(blocking=False); a non-blocking hook's handlers finish after the step is "
+                f"committed, so the evidence it pulls would reach no trace: an archive "
+                f"consumer must be blocking."
+            )
 
     # A list naming one archiver twice.
     for label, keys in consumers:
@@ -218,7 +233,9 @@ def negotiate_archive(consumers: Sequence[Any], env: Any) -> ArchiveNegotiationR
             archive to bind, the runtime does not negotiate at all.
         TypeError: An ``archive`` item is not an archiver (a raw dict, a
             name): the consumer was handed configuration, not instances.
-        IncompatibleArchiveError: Every binding problem, at once.
+        IncompatibleArchiveError: Every binding problem, at once — a
+            consumer that is not blocking among them (a hook that does not
+            say is taken as blocking, as the weaver takes it).
     """
     unique: list[Any] = []
     seen: set[int] = set()
@@ -233,6 +250,7 @@ def negotiate_archive(consumers: Sequence[Any], env: Any) -> ArchiveNegotiationR
         )
 
     parties: list[tuple[str, tuple[str, ...]]] = []
+    non_blocking: list[str] = []
     for consumer in unique:
         label = demand_label(consumer)
         keys: list[str] = []
@@ -245,6 +263,10 @@ def negotiate_archive(consumers: Sequence[Any], env: Any) -> ArchiveNegotiationR
                 )
             keys.append(item.archiver_id)
         parties.append((label, tuple(keys)))
+        # A hook that does not say is blocking — the weaver's reading too
+        # (``core/aop/proxy.py``).
+        if not bool(getattr(consumer, "blocking", True)):
+            non_blocking.append(label)
 
     env_label: str | None = None
     capabilities: list[tuple[str, frozenset[str]]] = []
@@ -267,4 +289,5 @@ def negotiate_archive(consumers: Sequence[Any], env: Any) -> ArchiveNegotiationR
         consumers=parties,
         env_label=env_label,
         capabilities=capabilities,
+        non_blocking=non_blocking,
     )

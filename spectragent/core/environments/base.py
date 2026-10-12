@@ -236,6 +236,33 @@ class Environment(Protocol):
 
     # ── Lifecycle ─────────────────────────────────────────────
 
+    def check_setup(
+        self,
+        context: Mapping[str, Any] | None = None,
+        *,
+        negotiation: Any = None,
+        archivers: Sequence[ArchiverBase] = (),
+    ) -> None:
+        """Refuse now, acquiring nothing, what :meth:`setup` would refuse for this task.
+
+        ``AgentRuntime.prepare()`` calls it — before the trace is opened and
+        before anything is launched, on a dry run too — with the task's setup
+        context, the observation negotiation result and the archivers it is
+        about to bind. The context is routed exactly as :meth:`setup` routes
+        it (a key no capability's ``setup()`` declares is refused), each
+        archiver goes to the capability its prefix names, and every
+        capability implementing ``SetupCheck``
+        (``core/capabilities/base.py``) checks its own slice.
+
+        Raises:
+            ValueError: A colliding capability set, or a context key no
+                capability accepts.
+            UnroutableArchiverError: An archiver that cannot be bound here.
+            Exception: A capability's own refusal, naming both parties
+                (browser: ``BrowserCooperationError``).
+        """
+        ...
+
     async def setup(
         self,
         context: Mapping[str, Any] | None = None,

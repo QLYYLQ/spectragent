@@ -2,8 +2,9 @@
 
 AgentRuntime is loop-agnostic: it handles slot validation,
 three-party observation negotiation, action negotiation + guarded_act,
-memory and archive negotiation, AOP hook weaving, loop weaving, binding
-the environment's archivers, timeout control, and error handling.
+memory and archive negotiation, the environment's setup check, AOP hook
+weaving, loop weaving, binding the environment's archivers, timeout
+control, and error handling.
 
 ``prepare()`` assembles all dependencies and weaves the Loop into the
 agent instance — after which ``agent.run(task)`` is self-contained.
@@ -35,6 +36,7 @@ from spectragent.core.archive.protocols import ArchiveConsumer
 from spectragent.core.composer import ComposedRun, ComposeError
 from spectragent.core.hooks.base import RuntimeHook
 from spectragent.core.loops.errors import RunAbort, carried_outcome
+from spectragent.core.loops.validation import MissingEnvironmentError
 from spectragent.core.negotiation import (
     negotiate_action,
     negotiate_archive,
@@ -82,6 +84,11 @@ def _component_id(obj: Any, accessor: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+async def _no_environment_act(action: Any, **_kwargs: Any) -> Any:
+    """The action executor of an env-less run: never reached, its guard advertises nothing."""
+    raise RuntimeError(f"this run has no environment to execute {action!r} in")
+
+
 def _outcome_under(timed_out: TimeoutError) -> RunAbort | AgentResult | None:
     """What the run had already ended in when its own timeout cut the Loop off, if anything.
 
@@ -103,14 +110,17 @@ class AgentRuntime:
     """Loop-agnostic orchestration engine.
 
     Responsibilities:
-    1. Validate Agent-Loop slot compatibility
+    1. Validate Agent-Loop slot compatibility (and the Loop's inputs and
+       its need for an environment)
     2. Run three-party observation negotiation
     3. Run action, memory and archive negotiation
-    4. Aggregate action space + build guarded_act
-    5. Weave AOP hooks into agent/env/llm proxies
-    6. Weave Loop execution logic into agent.run
-    7. Bind the environment's archivers (only when a hook archives)
-    8. (execute only) Drive agent.run() with timeout + lifecycle hooks
+    4. Refuse what the environment's setup would refuse for this task
+       (``Environment.check_setup``)
+    5. Aggregate action space + build guarded_act
+    6. Weave AOP hooks into agent/env/llm proxies
+    7. Weave Loop execution logic into agent.run
+    8. Bind the environment's archivers (only when a hook archives)
+    9. (execute only) Drive agent.run() with timeout + lifecycle hooks
 
     An AgentRuntime drives exactly **one** agent instance. Its loop, llm
     and memory come from that agent's own wired receptors, never from a
@@ -326,6 +336,7 @@ class AgentRuntime:
         task_id: str = "unknown",
         action_filter: list[str] | None = None,
         loop_inputs: Mapping[str, Any] | None = None,
+        env_context: Mapping[str, Any] | None = None,
     ) -> Any:
         """Assemble all dependencies and weave Loop into agent.run.
 
@@ -341,6 +352,19 @@ class AgentRuntime:
         unexpected keyword is a ``TypeError`` here, not a ``ctx`` entry
         nobody reads.
 
+        *env_context* is this task's environment setup context
+        (``TaskContext.env``, a relative ``replay_archive`` resolved first):
+        after the negotiations, ``Environment.check_setup`` refuses with it
+        everything setup would refuse — a key no capability accepts, and
+        each capability's own checks (browser: the cooperation rows and a
+        replay's consistency with its source run, §4.14). A configuration
+        that cannot run therefore fails here, before ``on_run_start`` opens
+        a trace and before anything is launched — on a dry run too.
+
+        No environment: a Loop that declares ``__requires_env__`` (the
+        default) is refused by name; an env-less Loop's run negotiates
+        against an environment that provides nothing.
+
         Archiving is validated early and bound last: when a hook declares
         a non-empty ``archive`` (an
         :class:`~spectragent.core.archive.protocols.ArchiveConsumer`),
@@ -352,9 +376,18 @@ class AgentRuntime:
             IncompatibleError: The agent lacks a slot the Loop requires.
             IncompatibleLoopInputError: The loop inputs do not fit what the
                 Loop declares (unknown, missing or mistyped keys).
+            MissingEnvironmentError: The Loop needs an environment and the
+                run has none.
+            IncompatibleFragmentError: A required fragment no provider here
+                serves — the environment, or the Loop for a loop-source
+                fragment it does not build.
             IncompatibleArchiveError: The archivers a hook asks for cannot
                 be bound to this run's environment — raised before
                 anything is woven, and before ``on_run_start``.
+            ValueError: A setup context key no capability accepts (or any
+                key, in a run with no environment).
+            BrowserCooperationError: (and any capability's own refusal)
+                from ``Environment.check_setup``.
         """
         agent = self._agent
         loop = agent.agent_loop
@@ -368,6 +401,11 @@ class AgentRuntime:
         # declare one must fail here, not run the task from scratch.
         inputs = MappingProxyType(dict(loop_inputs or {}))
         loop.check_loop_inputs(inputs)
+        # Step 1c: An environment, when the Loop needs one. A run without
+        # one used to die in observation negotiation with an AttributeError
+        # on ``None``; an env-less Loop's run negotiates against nothing.
+        if env is None and getattr(type(loop), "__requires_env__", True):
+            raise MissingEnvironmentError(_component_id(loop, "loop_id") or type(loop).__name__)
 
         # Step 2: Observation three-party negotiation
         negotiated_obs = negotiate_observation(agent, loop, env)
@@ -405,6 +443,22 @@ class AgentRuntime:
             else None
         )
 
+        # Step 2.9: Everything setup would refuse, refused now — with the
+        # task's setup context, the observation negotiation and the
+        # archivers about to be bound. Decided by configuration and task
+        # data alone, so it fails before ``on_run_start`` opens a trace and
+        # before anything is launched (a dry run sees it too); setup checks
+        # again before it acquires anything. Validation only: nothing is
+        # set up, bound or narrowed.
+        context = resolve_env_context_paths(env_context)
+        if env is not None:
+            env.check_setup(context, negotiation=negotiated_obs, archivers=archivers)
+        elif context:
+            raise ValueError(
+                f"setup key(s) {sorted(context)} were given, but this run has no environment "
+                f"to set up."
+            )
+
         # Step 3: AOP weaving (must happen before guarded_act so
         #          act_fn captures wrapped_env.act, enabling AOP intercepts)
         weaver = Weaver(self._hooks, background=self._background)
@@ -429,13 +483,19 @@ class AgentRuntime:
         # same ``**context`` channel a per-task tool schema rides
         # (architecture_design.md §4.9); the negotiation rules are
         # untouched, and a capability that ignores ``fragments`` behaves
-        # exactly as before.
-        narrowed_descriptors = wrapped_env.get_action_space(
-            active_actions=negotiated_actions.active_actions,
-            fragments=negotiated_obs.active_fragments,
-        )
+        # exactly as before. An env-less run has no action space: the guard
+        # refuses every action, so its executor is never reached.
+        if env is None:
+            narrowed_descriptors: list[Any] = []
+            execute_action: Any = _no_environment_act
+        else:
+            narrowed_descriptors = wrapped_env.get_action_space(
+                active_actions=negotiated_actions.active_actions,
+                fragments=negotiated_obs.active_fragments,
+            )
+            execute_action = wrapped_env.act
         active_descriptors, act_fn = build_guarded_act(
-            wrapped_env.act,
+            execute_action,
             narrowed_descriptors,
             action_filter,
             bindings=negotiated_actions.action_bindings,
@@ -591,10 +651,14 @@ class AgentRuntime:
             env_context: Task context handed to ``Environment.setup``
                 — typically ``TaskLoader.get_task_context(task_id).env``.
                 The environment routes each key to the capabilities whose
-                ``setup()`` declares it; a key nobody declares raises. A
-                relative ``replay_archive`` is resolved against the current
-                directory first (``resolve_env_context_paths``), so the
-                trace's ``task_setup`` records the directory setup opens.
+                ``setup()`` declares it. A relative ``replay_archive`` is
+                resolved against the current directory first
+                (``resolve_env_context_paths``), so ``prepare()`` checks, the
+                trace's ``task_setup`` records and setup opens the same
+                directory. ``prepare()`` checks it before anything else
+                happens (``Environment.check_setup``): a key nobody declares,
+                or a configuration this task cannot run with, raises before
+                the trace is opened, whatever ``raise_on_error`` says.
             loop_inputs: The task's inputs to the Loop
                 (``TaskContext.loop``), checked by :meth:`prepare` against
                 the Loop's ``__loop_inputs__``.
@@ -608,10 +672,17 @@ class AgentRuntime:
                 trace is closed out. Benchmark drivers pass ``False`` to
                 get the failed ``AgentResult`` back and keep going.
         """
+        # A relative ``replay_archive`` is relative to the launch directory,
+        # whoever passed it — the CLI, a task loader, a Python caller. Made
+        # absolute once, here, so ``prepare()`` checks, the trace records and
+        # setup opens the same directory (§4.10).
+        env_context = resolve_env_context_paths(env_context)
+
         prepared_agent = self.prepare(
             task_id=task_id,
             action_filter=action_filter,
             loop_inputs=loop_inputs,
+            env_context=env_context,
         )
 
         # A ComposedRun may drive many tasks. Without this, task 1's whole
@@ -627,12 +698,6 @@ class AgentRuntime:
         seed_messages = self.seed_messages(task)
         if seed_messages and memory is not None:
             memory.add_messages(seed_messages)
-
-        # A relative ``replay_archive`` is relative to the launch directory,
-        # whoever passed it — the CLI, a task loader, a Python caller. Made
-        # absolute once, here, so the trace records the directory setup
-        # opens (§4.10).
-        env_context = resolve_env_context_paths(env_context)
 
         # Hook lifecycle — run_start. Deliberately *before* env setup: a
         # setup failure must still land in a trace, and that needs the

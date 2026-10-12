@@ -87,7 +87,10 @@ isolation is a *consequence*, not a second meaning (`core/hooks/base.py:37-72`).
 **A `blocking=False` handler cannot contribute to the trace.** It finishes after the WAL
 commit point, so whatever it computes lands on no artifact. `trace_writer` and `metrics`
 are both blocking for that reason; `blocking=False` is only for side channels nothing
-downstream reads (the designed one is `live_monitor`).
+downstream reads (the designed one is `live_monitor`). An archive consumer (a hook with a
+non-empty `archive`) that is not blocking is refused at `prepare()` by `negotiate_archive`
+(architecture §4.5), naming the hook; a hook that does not declare `blocking` is taken as
+blocking, as the weaver takes it.
 
 ## 2. `around` — the advice for calls that fail or never finish (defect F17)
 

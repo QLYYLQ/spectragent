@@ -23,10 +23,10 @@ def task_context(
     """The task context the flags name, routed to capabilities by key (§4.10); ``None`` if empty.
 
     ``replay_archive`` is the source run directory an ``archive`` network
-    source replays, passed as given: ``AgentRuntime.execute`` resolves a
-    relative one against the working directory before the context is
-    recorded in the trace (``task_setup``) and handed to setup, for every
-    caller alike.
+    source replays, passed as given: ``AgentRuntime`` resolves a relative
+    one against the working directory before ``prepare()`` checks it, the
+    trace records it (``task_setup``) and setup opens it, for every caller
+    alike.
     """
     context = {
         key: value
@@ -64,16 +64,16 @@ async def _run(
         f"capabilities={capabilities or '-'}"
     )
 
+    context = task_context(start_url=start_url, replay_archive=replay_archive)
     if dry_run:
-        runtime.prepare()
+        # The same assembly a run starts with, setup check included: with
+        # --replay-archive the replay's cooperation rows and its consistency
+        # with the source run are checked too. Nothing is launched.
+        runtime.prepare(env_context=context)
         print("Configuration and agent/environment negotiation succeeded.")
         return 0
 
-    result = await runtime.execute(
-        task=task,
-        timeout=timeout,
-        env_context=task_context(start_url=start_url, replay_archive=replay_archive),
-    )
+    result = await runtime.execute(task=task, timeout=timeout, env_context=context)
     print(f"agent_done={result.agent_done} env_status={result.env_status}")
     if result.answer:
         print(f"answer: {result.answer}")
@@ -101,7 +101,11 @@ def main(argv: list[str] | None = None) -> int:
         "(needs network_source: archive)",
     )
     parser.add_argument("--timeout", type=float, default=300.0, help="Run timeout in seconds")
-    parser.add_argument("--dry-run", action="store_true", help="Compose and negotiate only")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compose, negotiate and check what setup would refuse; launch nothing",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
     if not args.dry_run and not args.task:

@@ -197,6 +197,8 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     __required_slots__: ClassVar[set[str]] = set()
     __optional_slots__: ClassVar[set[str]] = set()
     __loop_inputs__: ClassVar[Mapping[str, LoopInput]] = {}   # 每个任务交给 Loop 的输入（M31，见下文）
+    __requires_env__: ClassVar[bool] = True                   # 没有环境的 run：prepare() 报 MissingEnvironmentError（见下）
+    __loop_fragments__: ClassVar[frozenset[str]] = LOOP_FRAGMENT_KEYS  # 本 Loop 建得出的 loop 来源 fragment（§4.4）
 
     def _validate_slots(self, agent: Any) -> None:
         """callable(getattr(agent, slot)) — 缺 slot 即 raise IncompatibleError"""
@@ -216,6 +218,11 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 ```
 
 **weave 是无状态的。** deps 只活在 `agent.run` 闭包里，同一个 loop 实例可以织到 N 个 agent 上，第 N 次 weave 不会改写第 1 个 agent 的环境；loop 实例上没有 `ctx` 属性（`test_shipped_config_integration.py` 断言它不存在）。`ctx` 的内容由 `AgentRuntime.prepare()` 决定（§4.2）：`env`、`llm`、`memory`、`act_fn`、`negotiated_obs`、`negotiated_actions`（M31）、`active_descriptors`、`step_recorder`、`task_id`、`loop_inputs`（M31：只读映射，Loop 不声明输入时为空）。
+
+**Loop 的两条类级声明，`prepare()` 都查。**
+
+- `__requires_env__`（默认 `True`）：Loop 要不要环境。要而这个 run 没有环境（`AgentRuntime` 的 `env` 是 `None`）时，`prepare()` 在 loop 输入校验之后、任何协商之前抛 `MissingEnvironmentError`（`core/loops/validation.py`，点名这个 Loop）；以前是在观测协商里对 `None` 取 `provided_fragments` 的 `AttributeError`。声明 `False` 的 Loop 可以不带环境跑：缺席的环境什么都不提供，观测、动作协商照常进行，需要环境的 fragment 或动作的 agent 由协商点名拒绝；这样的 run 没有动作空间（`active_descriptors` 为空，守卫拒绝一切动作），给了 setup context 的键也被拒绝（没有可以 setup 的环境）。v1 里没有这样的 Loop：`react` 与 `branch` 都要环境。
+- `__loop_fragments__`（默认是 `core/loops/_loop_fragments.py` 的 `LOOP_FRAGMENT_KEYS`，即共享的 `loop_fragment_builders` 建的四个 `loop.*`，直接从那个函数读出来，两者不会漂移）：本 Loop 在 `env.observe()` 之后填哪些 loop 来源 fragment。Loop 也是 fragment 的提供方：观测协商在 Loop 一侧只提供它声明的这些（§4.4 "协商规则"），agent 要求一个已注册、但这个 Loop 不建的 loop 来源 fragment 时，`prepare()` 抛 `IncompatibleFragmentError`，点名这个 fragment 与这个 Loop（`provider="loop '<loop_id>'"`）。以前协商的 universe 是全部已注册的 `loop.*`，不管选的是哪个 Loop，缺的 builder 要到第 0 步 `populate_loop_fragments` 的 `KeyError` 才暴露，run 被记成环境失败。建别的（或一个都不建）的 Loop 覆盖它；子类里写成普通 `set` 的，类创建时冻结成 `frozenset`，写成字符串的在 import 时报错。不继承 `AgentLoopBase` 的结构化 Loop 不声明就是什么都不建。
 
 具体 Loop 子类示例：
 
@@ -383,7 +390,7 @@ class ReactLoop(AgentLoopBase):
 
 #### Loop 输入：`__loop_inputs__`（M31）
 
-有的 Loop 每个任务都要一份只属于它的输入，例如 `BranchLoop` 要知道从哪个源 run 的第几步分叉。它不是环境 setup context（environment 按 `setup()` 签名路由那一份，谁都不接受的键在 setup 之前报错，§4.3），也不是 agent 的领域知识，所以有一条自己的、有类型的通道：
+有的 Loop 每个任务都要一份只属于它的输入，例如 `BranchLoop` 要知道从哪个源 run 的第几步分叉。它不是环境 setup context（environment 按 `setup()` 签名路由那一份，谁都不接受的键在 `prepare()` 就报错，§4.3），也不是 agent 的领域知识，所以有一条自己的、有类型的通道：
 
 ```python
 @dataclass(frozen=True)
@@ -492,7 +499,8 @@ class AgentRuntime:
 
     # ── prepare(): 装配阶段 ─────────────────────────────────────────
     def prepare(self, *, task_id="unknown", action_filter=None,
-                loop_inputs=None) -> Any:          # 没有 **kwargs：Loop 的每任务输入走有类型的 loop_inputs
+                loop_inputs=None,                  # 没有 **kwargs：Loop 的每任务输入走有类型的 loop_inputs
+                env_context=None) -> Any:          # 本任务的环境 setup context（TaskContext.env），给 3d 的检查
         run = self._run
         agent, loop, env, llm, memory = (
             run.agent, run.loop, run.env, run.llm, run.memory
@@ -502,8 +510,12 @@ class AgentRuntime:
         loop._validate_slots(agent)
         # 1b. Loop 输入校验（M31，§4.1）：多的 / 缺的 / 类型不对 → IncompatibleLoopInputError
         loop.check_loop_inputs(loop_inputs or {})
+        # 1c. Loop 要环境而这个 run 没有（§4.1 "Loop 的两条类级声明"）→ MissingEnvironmentError；
+        #     不要环境的 Loop：缺席的环境什么都不提供，下面的协商照常进行
+        if env is None and type(loop).__requires_env__:
+            raise MissingEnvironmentError(loop.loop_id)
 
-        # 2. Observation 三方协商（见 §4.4）
+        # 2. Observation 三方协商（见 §4.4）：universe = 环境提供的 + 本 Loop 的 __loop_fragments__
         negotiated_obs = negotiate_observation(agent, loop, env)
 
         # 3. Action 两方协商（见 §4.5）
@@ -524,6 +536,14 @@ class AgentRuntime:
             sorted({m for a in archivers for m in a.privacy_markers}) if negotiated_archive else None
         )
 
+        # 3d. setup 会拒绝的，现在就拒绝（§4.3 "setup 之前的检查"）：任务的 setup context（相对的
+        #     replay_archive 先解析成绝对路径）、观测协商结果、将要绑定的归档器；只校验，不获取任何资源
+        context = resolve_env_context_paths(env_context)
+        if env is not None:
+            env.check_setup(context, negotiation=negotiated_obs, archivers=archivers)
+        elif context:
+            raise ValueError(...)                                    # 没有环境，就没有可以 setup 的
+
         # 4. AOP 织入 — Weaver 包装四个角色：agent / env / llm，以及 StepRecorder（role="loop"）
         weaver = Weaver(self._hooks)
         wrapped_agent = weaver.wrap(agent, role="agent")
@@ -532,7 +552,7 @@ class AgentRuntime:
         wrapped_recorder = weaver.wrap(self._recorder, role="loop")  # record_step → 一次提交完整 step
         weaver.raise_for_unclaimed_roles()
 
-        # 5. 收窄 action space + guarded_act
+        # 5. 收窄 action space + guarded_act（不带环境的 run：没有 descriptor，守卫拒绝一切动作）
         narrowed = wrapped_env.get_action_space(
             active_actions=negotiated_actions.active_actions
         )
@@ -564,13 +584,13 @@ class AgentRuntime:
     async def execute(self, task, *, timeout=300, task_id="unknown", benchmark="", subset="",
                       run_id=None, env_context=None, loop_inputs=None, branch=None,
                       action_filter=None, config=None, raise_on_error=True):   # 没有 **kwargs
+        # 相对的 replay_archive 按启动目录解析成绝对路径（§4.10）：prepare() 查的、trace 记的、setup 打开的是同一个目录
+        env_context = resolve_env_context_paths(env_context)
+
         prepared_agent = self.prepare(task_id=task_id, action_filter=action_filter,
-                                      loop_inputs=loop_inputs)
+                                      loop_inputs=loop_inputs, env_context=env_context)
         memory.clear(); self._recorder.clear()                 # 一个 ComposedRun 可以跑多个任务
         memory.add_messages(self.seed_messages(task))          # M32：种子消息是公开方法，见下
-
-        # 相对的 replay_archive 按启动目录解析成绝对路径（§4.10），再记录、再交给 setup
-        env_context = resolve_env_context_paths(env_context)
 
         # 在 env setup 之前打开 trace：setup 失败也要落进 trace
         await self._dispatch_lifecycle("on_run_start",
@@ -657,22 +677,31 @@ class AgentRuntime:
             veto.add_note(...)
 ```
 
-**为什么两段式**：`prepare()` 是纯装配（slot 校验 → 协商 → AOP 织入 → loop weave），返回值就是一个 self-contained 的 agent —— 测试和需要细粒度控制的调用方可以直接 `await prepared_agent.run(task)`，跳过 timeout/lifecycle 包装。`execute()` 只是 prepare + 围绕 `agent.run` 加 timeout 和 lifecycle hook。两段都是独立的、零全局状态的 run 上下文，并行多个 run 互不干扰。
+**为什么两段式**：`prepare()` 是纯装配（slot 校验 → 协商 → setup 之前的检查 → AOP 织入 → loop weave），返回值就是一个 self-contained 的 agent —— 测试和需要细粒度控制的调用方可以直接 `await prepared_agent.run(task)`，跳过 timeout/lifecycle 包装。`execute()` 只是 prepare + 围绕 `agent.run` 加 timeout 和 lifecycle hook。两段都是独立的、零全局状态的 run 上下文，并行多个 run 互不干扰。
 
-**种子消息是 runtime 的公开方法（M32）。** `seed_messages(task) -> list[BaseMessage]`：在 `prepare()` 之后调用，调 prepared agent 的可选 slot `prepare(task=, action_descriptors=<本次收窄、守卫过的 descriptors>, **<Loop 的执行上限>)`（`_loop_policy_for` 只把 agent 签名里有的参数交过去），agent 没有 `prepare` 时返回 `[]`；不写 memory、不碰环境。`execute()` 清空 memory 后把它的结果写进去，行为不变，只是从内联代码抽成了方法。抽出来是因为有第二个调用方：训练导出的学生渲染（§4.15）需要与 live run **完全同一套**的装配（同样的协商、同样带 `fragments=` 收窄的 descriptors、同样的绑定表、同样的种子），而它只调 `prepare()` 与 `seed_messages()`，从不调 `execute()`、`setup_environment()`，也不调 LLM。`prepare()` 本来就不 setup 环境、不碰 LLM（`spectragent-run --dry-run` 靠的也是这一点）；导出侧的哨兵测试（LLM 与 capability 的 setup 一调就抛）把它钉成契约。
+**种子消息是 runtime 的公开方法（M32）。** `seed_messages(task) -> list[BaseMessage]`：在 `prepare()` 之后调用，调 prepared agent 的可选 slot `prepare(task=, action_descriptors=<本次收窄、守卫过的 descriptors>, **<Loop 的执行上限>)`（`_loop_policy_for` 只把 agent 签名里有的参数交过去），agent 没有 `prepare` 时返回 `[]`；不写 memory、不碰环境。`execute()` 清空 memory 后把它的结果写进去，行为不变，只是从内联代码抽成了方法。抽出来是因为有第二个调用方：训练导出的学生渲染（§4.15）需要与 live run **完全同一套**的装配（同样的协商、同样带 `fragments=` 收窄的 descriptors、同样的绑定表、同样的种子），而它只调 `prepare()` 与 `seed_messages()`，从不调 `execute()`、`setup_environment()`，也不调 LLM。`prepare()` 本来就不 setup 环境、不碰 LLM（`spectragent-run --dry-run` 靠的也是这一点）；导出侧的哨兵测试（LLM 与 capability 的 setup 一调就抛）把它钉成契约。学生的装配不带任务上下文（`env_context=None`），setup 之前的检查照样运行：学生的运行配置（"把 `llm` 指向训练好的模型，跑同一个文件来评测"）必须是跑得起来的配置。
+
+**setup 会拒绝的，`prepare()` 就拒绝（用户 2026-10-13 的裁决：两个开关的组合由 `prepare()` 校验，sweep 开跑前先过一次 `prepare()`）。** 能否运行由配置与任务数据决定的问题，都不留到 setup：
+
+- 第 3d 步（上面）把本任务的环境 setup context、观测协商结果与将要绑定的归档器交给 `Environment.check_setup`（§4.3 "setup 之前的检查"）：谁都不接受的 setup 键在这里报 `ValueError`；实现了 `SetupCheck` 的 capability 检查自己的那一份（browser：§4.14 "协作检查一览"的全部行，含回放与源 run 的一致性检查，读的只是源 run 的环境指纹；profile 的 watchdog 解析不了的已协商 fragment）。只校验：不 setup、不绑定、不收窄、不连浏览器；
+- 所以这些错误和其余装配错误一样，在 `on_run_start` 打开 trace 之前、任何东西启动之前从 `prepare()`（`execute()` 里也一样，不看 `raise_on_error`）出去，`spectragent-run --dry-run` 也查得出来（`--start-url` / `--replay-archive` 是它的任务上下文）；
+- setup 照样再查一遍（capability 的 `setup()` 调同一个 `check_setup`，带着那时已绑定的归档器）：直接调 setup 的调用方、`prepare()` 之后才注入控制客户端的测试，仍在启动任何东西之前被拒绝；
+- 需要读盘的只有回放的一致性检查：`load_fingerprint` 只读源 run 的环境指纹（`env/run.browser.json`）并数 `index.jsonl` 文件，从不读索引行或 WARC；setup 才把整个归档加载进来用于服务（§4.14 "一致性检查与回放指纹"）。
+
+**sweep 先过一次 `prepare()`。** `BenchmarkRunner.run`（`core/benchmark_runner.py`）在跑任何任务之前，为第一个选中的任务组装栈并调一次 `prepare(task_id=, loop_inputs=, env_context=)`（`BenchmarkRunner.preflight`）：组装失败、读不到任务上下文、`prepare()` 拒绝，都抛 `PreflightError`（点名任务，原错误作为 `__cause__`、原样写进消息，所以报错仍点名双方），一个任务也不跑、一个 trace 也不打开；`spectragent-bench` 把它印到 stderr，退出码 2（`PREFLIGHT_EXIT_CODE`；0 与 1 是跑过了的 sweep），度量链（§4.16）因此在这一段停下。通过之后第一个任务就跑在 pre-flight 组装的那个栈上，所以每个任务仍然恰好组装一次栈。之后的任务各自 `execute()` 时照样 `prepare()`，只有某个任务自己的数据有问题时才在那个任务上报（记在它的 `TaskOutcome.error`，不打开 trace）。
 
 **归档：先校验，最后绑定。** 归档轴（§4.5）的协商与绑定分在 `prepare()` 的两头：
 
 - `negotiate_archive` 紧跟 `negotiate_memory`，在任何织入之前运行，所以绑定错误（`IncompatibleArchiveError`）和另外几条协商一样在装配期暴露。`spectragent-run --dry-run` 也调 `prepare()`，干跑就能发现；
 - `env.bind_archivers(...)` 是 `prepare()` 的最后一条语句，在拦截点审计之后：capability 的状态一旦改变，后面就不再有会失败的装配检查；
 - 它仍然在 `on_run_start` 和 `setup_environment` 之前，因为 capability 在 setup 时就要决定建不建自己的归档采集通道（browser 的 recorder 连接与 archive scope，M29）。`bind_archivers` 不获取任何资源：干跑也会走到这一步，而干跑从不 setup；
-- capability 可以在自己的 `bind_archivers` 里做能在绑定时知道的协作检查并抛错（browser：归档器与档位、provider 能力、profile，§4.14 "协作检查一览"）。它先查、后改状态，抛错时它什么也没绑定，错误从 `prepare()` 出去，干跑同样能发现；
+- 将要绑定的归档器在第 3d 步就交给了 `check_setup`，所以与归档器有关的协作行（browser：归档器与档位、provider 能力、profile，§4.14 "协作检查一览"）在绑定之前、织入之前就报了；capability 的 `bind_archivers` 仍在绑定前把这些行再查一遍（它是公开方法），先查、后改状态，抛错时它什么也没绑定，错误从 `prepare()` 出去，干跑同样能发现；
 - 没有任何 hook 声明非空的 `archive` 时，runtime 对 environment 不做任何归档调用，所以没有这些方法的 environment（测试里的 stub）照常工作；
 - runtime 只认 `ArchiveConsumer` Protocol（`core/archive/protocols.py`），从不认识 `TraceWriter`。
 
 协商结果留在 runtime 上：`negotiated_archive` 与 `negotiated_observation` / `negotiated_actions` 并列，`prepare()` 之后可读，没有归档消费者时为 `None`。它连同 `env_evidence_privacy`（没绑定归档器时为 `None`）、`task_setup` 一起按名字传给 `on_run_start`：runtime 是唯一同时握有这些事实的组件，由它解析，hook 只按名字接收、不自己推导（记录到哪些 `TraceConfig` 字段见 §5.3）。"有没有绑定归档器"就是 `archive_negotiation` 本身，没有另外一个布尔量。
 
-**任务上下文的三部分各走各的路（M31）。** 一个任务的 `TaskContext{env, loop, branch}`（§4.10）由调用方（`BenchmarkRunner.run_task`）拆开交给 `execute`：`env` → `env_context`（→ `setup_environment`，按 capability `setup()` 签名路由，§4.3；相对的 `replay_archive` 先解析成绝对路径，§4.10，然后原样记进 `task_setup`）；`loop` → `loop_inputs`（→ `prepare()` 校验后进 weave 的 `ctx["loop_inputs"]`，§4.1）；`branch` → `branch`（一个 `BranchProvenance`，按名字传给 `on_run_start`，记成 `TraceConfig.branch`，§5.3；runtime 不解读它）。三者之间不互相渗透：环境拿不到检查点，Loop 拿不到 setup context，trace 只记来源。
+**任务上下文的三部分各走各的路（M31）。** 一个任务的 `TaskContext{env, loop, branch}`（§4.10）由调用方（`BenchmarkRunner.run_task`）拆开交给 `execute`：`env` → `env_context`（相对的 `replay_archive` 先解析成绝对路径，§4.10；→ `prepare()` 的 setup 之前的检查 → 原样记进 `task_setup` → `setup_environment`，按 capability `setup()` 签名路由，§4.3）；`loop` → `loop_inputs`（→ `prepare()` 校验后进 weave 的 `ctx["loop_inputs"]`，§4.1）；`branch` → `branch`（一个 `BranchProvenance`，按名字传给 `on_run_start`，记成 `TraceConfig.branch`，§5.3；runtime 不解读它）。三者之间不互相渗透：环境拿不到检查点，Loop 拿不到 setup context，trace 只记来源。
 
 **每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `running`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
 
@@ -796,6 +825,10 @@ class Environment(Protocol):
     async def retarget(self, action: Action, recorded: Any, restored: Any) -> Retarget: ...
     async def verify_restoration(self, recorded: Any, restored: Any) -> list[RestorationEvidence]: ...
 
+    # setup 之前的检查 — prepare() 调：setup 会拒绝的，现在就拒绝（下文）；不获取任何资源
+    def check_setup(self, context: Mapping[str, Any] | None = None, *,
+                    negotiation: Any = None, archivers: Sequence[ArchiverBase] = ()) -> None: ...
+
     # 生命周期 — setup 的 context 按 capability 路由，不广播（capability 自己内部调 backend.open/close）；
     # teardown 在 setup 半途失败、或根本没有 setup 之后调用也必须安全
     async def setup(self, context: Mapping[str, Any] | None = None, *,
@@ -808,7 +841,16 @@ class Environment(Protocol):
 
 **三条 provides 轴在 Protocol 上一样声明。** `provided_actions` 过去只在 `EnvironmentBase` 上，`negotiate_action` 却一直从环境上读它：结构化实现 `Environment` 的人照着 Protocol 写，类型检查通过，到协商时才失败。M28 把它补进 Protocol，第三条轴从第一天起就三样一起声明（`provided_archivers`、`bind_archivers`、`collect_archive`），不再复制那个不对称。代价写明：`Environment` 是 `@runtime_checkable`，多了这几个成员，一个没有归档面的结构化环境（测试里的 `SurfacelessEnv`）`isinstance(env, Environment)` 就变成 `False`。代码里没有任何地方做这个判断（runtime 只在有归档消费者时才碰这三个成员），以后也不要靠它分辨环境，否则不归档的 run 对 env 零调用这条保证就破了。
 
-**setup 的任务上下文按名字路由。** `Environment.setup(context, *, negotiation)` 不广播 context：`EnvironmentBase.route_setup_context`（`environments/_registrar.py`）读每个 capability 的 `setup()` **签名**，扁平的键（`{"start_url": ...}`，`TaskSetup.to_context()` 发出的形状）只交给签名里点名了它的 capability；挂在 capability 实例 id 或 `capability_id` 下的映射（`{"browser": {...}}`）只属于那一个 capability；谁都不点名的键在 setup 之前抛 `ValueError`，列出各 capability 声明的键。`**kwargs` 什么都不声明，所以什么都收不到，也就不再是绕过检查的出口（`test_capability_isolation.py` 禁止 capability 的 `setup` 带它）；`negotiation` 是框架保留的参数，不是任务上下文的键。所以 capability 的 setup 一律写成 `async def setup(self, *, negotiation=None, <它接受的任务上下文键>=None)`，加一个任务上下文的键就是给 `setup()` 加一个具名参数，契约不会与实现漂移。实现了的先例是 browser 的 `start_url`；M30 加 `replay_archive`（回放的源 run 目录，§4.14）。任务上下文的词表在 §4.10；M31 把它拆成 `TaskContext{env, loop, branch}` 三部分，只有 env 那一部分走这条路由（loop 部分是 Loop 的输入，§4.1；branch 部分只进 trace，§5.3）。
+**setup 的任务上下文按名字路由。** `Environment.setup(context, *, negotiation)` 不广播 context：`EnvironmentBase.route_setup_context`（`environments/_registrar.py`）读每个 capability 的 `setup()` **签名**，扁平的键（`{"start_url": ...}`，`TaskSetup.to_context()` 发出的形状）只交给签名里点名了它的 capability；挂在 capability 实例 id 或 `capability_id` 下的映射（`{"browser": {...}}`）只属于那一个 capability；谁都不点名的键抛 `ValueError`，列出各 capability 声明的键。同一套路由在 `prepare()` 里就跑一遍（`check_setup`，下一段），setup 之前再跑一遍。`**kwargs` 什么都不声明，所以什么都收不到，也就不再是绕过检查的出口（`test_capability_isolation.py` 禁止 capability 的 `setup` 带它）；`negotiation` 是框架保留的参数，不是任务上下文的键。所以 capability 的 setup 一律写成 `async def setup(self, *, negotiation=None, <它接受的任务上下文键>=None)`，加一个任务上下文的键就是给 `setup()` 加一个具名参数，契约不会与实现漂移。实现了的先例是 browser 的 `start_url`；M30 加 `replay_archive`（回放的源 run 目录，§4.14）。任务上下文的词表在 §4.10；M31 把它拆成 `TaskContext{env, loop, branch}` 三部分，只有 env 那一部分走这条路由（loop 部分是 Loop 的输入，§4.1；branch 部分只进 trace，§5.3）。
+
+**setup 之前的检查（`check_setup`）。** 一个配置能不能和这个任务一起跑，由配置与任务数据决定，所以 `AgentRuntime.prepare()` 在协商之后、织入之前就问（§4.2 第 3d 步）：`EnvironmentBase.check_setup(context, *, negotiation, archivers)`（`environments/_registrar.py`）依次
+
+1. 确认 capability 集合能路由（`_by_capability_id()`，两个实例撞同一个 `capability_id` 报错）；
+2. 用 setup 的同一套路由分 context（`route_setup_context`：谁都不接受的键、命名空间里不接受的键都报 `ValueError`）；
+3. 用 `bind_archivers` 的同一套路由分将要绑定的归档器（`_archiver_groups`：前缀对应不到 capability、capability 不归档、不提供这个键，都记一条，一次抛 `UnroutableArchiverError`）；
+4. 按 capability 顺序，把每个实现了可选 Protocol `SetupCheck`（§4.9）的 capability 自己的那一份交给它：`cap.check_setup(<它路由到的 context>, negotiation=<观测协商结果>, archivers=<分给它的归档器>)`。没实现的 capability 只经过前三步的路由检查。
+
+它不改任何状态：不 setup、不绑定、不 `apply_negotiation`。`Environment` Protocol 上有这个方法，每个 run 都调它（与归档面不同：那三个成员只在有归档消费者时才被碰），所以结构化实现 Protocol 的环境也要实现它（测试里的 `SurfacelessEnv` 原样转发）。`setup()` 自己仍按名字路由，capability 的 `setup()` 再跑一遍自己的检查（browser 如此），所以绕过 `prepare()` 直接 setup 的调用方也在启动任何东西之前被拒绝。
 
 **Environment 通过 `__wiring__` 注入 capabilities**：
 
@@ -1104,8 +1146,12 @@ env-sourced ∧ Agent/Loop required ∧ Env 提供  → 激活 resolver，填充
 env-sourced ∧ Agent/Loop optional ∧ Env 提供  → 激活 resolver，填充到 Observation
 env-sourced ∧ Env 提供 ∧ 无人请求             → 不激活 resolver（性能优化，如 UITars 不算 DOM）
 env-sourced ∧ Agent/Loop required ∧ Env 不提供 → IncompatibleFragmentError（运行前指出缺失项和请求方）
-loop-sourced（如 action_result）              → 始终激活，Loop 自行填充
+loop-sourced ∧ 有人请求 ∧ 本 Loop 建得出       → 激活，Loop 在 env.observe() 之后自行填充
+loop-sourced ∧ optional ∧ 本 Loop 建不出       → 不激活
+loop-sourced ∧ required ∧ 本 Loop 建不出       → IncompatibleFragmentError（点名这个 fragment 与这个 Loop）
 ```
+
+"本 Loop 建得出"读的是选中 Loop 的 `__loop_fragments__`（§4.1 "Loop 的两条类级声明"；`AgentLoopBase` 默认是共享 builder 建的四个 `loop.*`）：协商的 universe 是环境提供的 fragment 加上这个 Loop 声明的 loop 来源 fragment，而不是全部已注册的 `loop.*`。一个 required 的声明对不上 universe、却对得上一个已注册而本 Loop 不建的 loop 来源 fragment 时，报错的提供方是 Loop（`IncompatibleFragmentError.provider == "loop '<loop_id>'"`，`provided` 是这个 Loop 建的那些），不是环境。不带环境的 run（§4.1）里环境一侧的 universe 是空的。
 
 错误信息示例：
 ```
@@ -1273,8 +1319,9 @@ def build_observation_model(active_fragments: set[str]) -> type[BaseModel]:
 | 同一个键出现在两个及以上消费者里 | `archiver {key!r} is requested by more than one hook ({req_a}, {req_b}); a run binds each archiver once.` —— 标签按消费者顺序、逗号分隔 |
 | 不止一个消费者声明了非空 `archive` | `more than one hook requests archivers ({req_1}: {keys_1}; {req_2}: {keys_2}); a run binds the archive of at most one hook.` —— 按消费者顺序、`; ` 分隔。v1 只绑定一个消费者：`collect_archive` 取走即遗忘，证据只能交给一个调用方 |
 | 本 run 没有 environment | `{req} requests archivers {keys}, but this run has no environment.` |
+| 消费者不是 blocking 的（`blocking=False`） | `{req} requests archivers {keys} but is not blocking (blocking=False); a non-blocking hook's handlers finish after the step is committed, so the evidence it pulls would reach no trace: an archive consumer must be blocking.` —— 读 `getattr(consumer, "blocking", True)`：没有声明的当作 blocking，与 Weaver 的读法一致（§4.6） |
 
-`{env!r}` 是 `env_type`，所有列表都是有序的 `list` repr。`IncompatibleArchiveError` 带三个与 `IncompatibleFragmentError` 同构的属性：`missing`（前缀对应不到或不被提供的键；没有 environment 时是全部请求的键）、`provided`（环境提供的全部归档器；没有 environment 时为空）、`requested_by`（键 → 请求它的消费者标签，有序）；另有 `problems`：消息里那些行，排序并去重（两个标签相同的消费者可能产生一模一样的一句话，只报一次）。重复键与多消费者这两类问题只出现在消息里，不进 `missing`。最常见的一条长这样：
+`{env!r}` 是 `env_type`，所有列表都是有序的 `list` repr。`IncompatibleArchiveError` 带三个与 `IncompatibleFragmentError` 同构的属性：`missing`（前缀对应不到或不被提供的键；没有 environment 时是全部请求的键）、`provided`（环境提供的全部归档器；没有 environment 时为空）、`requested_by`（键 → 请求它的消费者标签，有序）；另有 `problems`：消息里那些行，排序并去重（两个标签相同的消费者可能产生一模一样的一句话，只报一次）。重复键、多消费者与不是 blocking 的消费者这三类问题只出现在消息里，不进 `missing`。最常见的一条长这样：
 
 ```
 IncompatibleArchiveError: trace_writer requests archiver 'browser.network', but environment 'browser' provides archivers: [] (capability 'browser' declares none).
@@ -1676,7 +1723,7 @@ AOP 方案让 Loop 代码完全干净 — 没有 `emitter` 参数，没有 `disp
 3. **从不驱动环境。** 不调 `act` / `observe`，不调任何会改变环境的方法；`collect_archive` 只交出 capability 已经采到的东西。
 4. **environment 永远拿不到步号。** "第 t 步的提交取走的东西就归第 t 步"：第 t 步动作引发的网络往来、第 t 步开头观测时的原始 DOM 与存储快照，都在第 t 步的 `record_step` 之后被取走，所以归第 t 步。cycle 也不等于步号，capability 只给每条证据带上自己的 `captured_at` / `cycle` / id。
 
-runtime 通过 `ArchiveConsumer` Protocol（`core/archive/protocols.py`）发现记录器：它只有一个属性 `archive: list[ArchiverBase]`，与 YAML 受体同名（M29）。`archive` 非空的 hook 就是本 run 的归档消费者，v1 至多一个（§4.5）；它必须是 blocking 的，因为 `blocking=False` 的 handler 进不了 trace（见上）。
+runtime 通过 `ArchiveConsumer` Protocol（`core/archive/protocols.py`）发现记录器：它只有一个属性 `archive: list[ArchiverBase]`，与 YAML 受体同名（M29）。`archive` 非空的 hook 就是本 run 的归档消费者，v1 至多一个（§4.5）；它必须是 blocking 的，因为 `blocking=False` 的 handler 进不了 trace（见上）：`negotiate_archive` 把不是 blocking 的消费者作为一条问题报出（§4.5 的表），所以它在 `prepare()` 就被拒绝，不会在提交点之后悄悄丢掉证据。
 
 **失败语义：fail closed。** 归档是显式要求的，静默不完整的归档会毒化回放和分叉（"一个写不了 trace 的 TraceWriter 就是一个必须停下的 run"）。所以：
 
@@ -1915,6 +1962,23 @@ class CaptureCheck(Protocol):
 - Browser（`core/capabilities/browser/capture_check.py`，`capability.py` 只委托）：对 `browser.screenshot` 比较 `viewport_width/height`（配置 vs 录下的）、`screenshot_format`（配置 vs 录下字节的 `image_media_type`）、DPR（`replayability` 的 `device_scale_factor` vs 录下的 `image_width / viewport_width`）以及由它推出的图像尺寸（viewport × DPR）。`off` 档位用宿主机的 DPR，配置期不可知：DPR 与图像尺寸进 `unchecked`，不算差异。其余 fragment 不比较。
 - 与 `RestorationSupport` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认；路由与"没人实现就没有可比的"在 environment 一侧（§4.3）。
 
+**setup 之前的检查也是单独的、可选的 Protocol**（`core/capabilities/base.py`）：
+
+```python
+@runtime_checkable
+class SetupCheck(Protocol):
+    # 本 capability 的 setup 会拒绝的，现在就拒绝：读配置、路由给它的 context、观测协商结果、
+    # 将要绑定给它的归档器；不连 backend、不获取资源、不改状态
+    def check_setup(self, context: Mapping[str, Any], *, negotiation: Any = None,
+                    archivers: Sequence[ArchiverBase] = ()) -> None: ...
+```
+
+- 为什么需要：配置与任务数据决定的"能不能跑"，要在 `AgentRuntime.prepare()` 里就报（§4.2 第 3d 步），不能等到 setup——那时 trace 已经打开，run 被记成一次环境失败，sweep 对每个任务都重复同一个错误。只有 capability 知道自己的这些规则。
+- `Environment.check_setup` 负责路由（§4.3 "setup 之前的检查"）：context 按 `setup()` 签名分、归档器按前缀分，capability 只拿到自己的那一份；没实现的 capability 只经过路由检查。
+- capability 的 `setup()` 可以再调一次同一个方法（防御性复查，带着那时已绑定的归档器）：browser 如此。
+- Browser 的实现（`BrowserCapability.check_setup`）：profile 的 watchdog 解析不了的已协商 fragment（profile 当场重新解析），§4.14 "协作检查一览"的全部行（`cdp_url` 取路由来的 context，没有再取旋钮），回放时源 run 与本配置的一致性（只读源 run 的环境指纹）；一次报全，合成一个 `BrowserCooperationError`。`replay_archive` 指向的不是已提交的 run 目录时抛 `ArchiveOpenError`。
+- 与 `RestorationSupport`、`CaptureCheck` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认。
+
 #### 4.9.x Capability ↔ Backend 生命周期
 
 **设计决策**：`backend` 是 capability 的执行层配置——回答"这个 capability 通过什么 backend 提供 transport 端点"。Browser 选 `local_chrome` / `lexmount` / `skyvern` 等；Docker 选 `local_docker` / `ssh_docker`；Desktop VM 选不同的 VNC 后端。Backend 通过与 `agent.llm` / `env.capabilities` 完全同构的 IoC 路径注入。
@@ -1975,7 +2039,7 @@ BrowserCapability.teardown()
 - `backends/base.py` 的约定本来就允许 `open()` 接收 per-session 的显式关键字参数；`launch_args` 是其中一个。capability 只对声明了 `LAUNCH_ARGS` 的 provider 传它；`off` 档位什么都不传，云 provider 的 `open()` 调用与以前完全一样。
 - `local_chrome` 把 `launch_args` 接在 `extra_args` 之后，然后把同一个开关的多次出现合并成一个：所有 `--js-flags` 合成一个（V8 flags 以空格拼接），所有 `--disable-features` / `--enable-features` 各合成一个（逗号拼接、去重）。Chrome 对这几个开关只认最后一次出现，原先 `CHROME_DEFAULT_ARGS` 与 `disable_security` 各带一个 `--disable-features`，后者静默吃掉了前者。合并写在 `backends/chrome_switches.py`（`merge_chrome_switches`），归 Chrome 命令行这一层，不是某个 provider 的私有函数。
 - `ProviderSession.metadata` 记录确切的命令行（`command_line`）与去掉易变值的开关表（`launch_flags`：不含可执行文件与启动 URL，`--user-data-dir` 的路径与 `--remote-debugging-port` 的端口换成占位符）。环境指纹只记后者的摘要，而且去掉网络路由开关之后才算（M30：录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，隔离单独记，§4.14），命令行本身从不进 trace（`proxy_server` 可能带着凭证）。
-- 显式 `cdp_url`、测试注入的控制客户端，都意味着浏览器不是 capability 拥有的：与任何需要 `NETWORK_CAPTURE` 的配置同时出现时 setup 报错，点名双方。
+- 显式 `cdp_url`、测试注入的控制客户端，都意味着浏览器不是 capability 拥有的：与任何需要 `NETWORK_CAPTURE` 的配置同时出现时报错，点名双方：`prepare()` 里（`check_setup`；`cdp_url` 来自配置或任务上下文）就报，setup 再查一遍（`prepare()` 之后才注入的客户端由它报）。
 
 **6 个具体 Capability（全部平级，无层级）**：
 
@@ -2145,14 +2209,14 @@ BaseTaskLoader (Protocol)           BaseEvalLoader (Protocol)
 
 **去掉 "Browser" 前缀**，支持所有环境类型的 benchmark。
 
-**任务上下文的词表**。`get_task_context(id).env` 的键交给 `AgentRuntime.execute(env_context=...)` → `setup_environment`，按 capability `setup()` 签名里的名字路由（§4.3）；谁都不接受的键在 setup 之前报错。现有的键：
+**任务上下文的词表**。`get_task_context(id).env` 的键交给 `AgentRuntime.execute(env_context=...)` → `setup_environment`，按 capability `setup()` 签名里的名字路由（§4.3）；谁都不接受的键在 `prepare()` 就报错（`check_setup`，§4.3），不打开 trace。现有的键：
 
 | 键 | 谁接受 | 含义 |
 |---|---|---|
 | `start_url` | browser | 任务的落地页，agent 第一次观测之前打开（`TaskSetup.to_context()`；`spectragent-run --start-url`） |
 | `login_required`、`login_type`、`credentials_ref`、`risk_control`、`risk_control_types` | browser | `BrowserSetup` 的其余词表；接受、记 WARNING、还不处理 |
 | `cdp_url` | browser | 显式 CDP 端点（per-run override；与需要 recorder 连接的配置互斥，§4.14） |
-| `replay_archive` | browser（M30） | 回放的**源 run 目录**（一个 trace 目录，含 `manifest.json`）。`network_source` 拦截（`archive`）时必须给、不拦截（`live`）时不许给，都在 setup 报错、点名双方。capability 经 `core/archive` 的 `open_archive` 打开它，只读已提交的部分（§4.14 "回放"）；`spectragent-run --replay-archive DIR`。相对路径可以写，意思是相对启动目录（af 从不切换工作目录，所以就是当前目录；`~` 先展开）：`AgentRuntime.execute` 在记进 `task_setup`、交给 setup 之前把它解析成绝对路径（`schemas/task.py::resolve_env_context_paths`），对每个调用方都一样：CLI、任务加载器、自己组 `env_context` 的 Python 调用方；按 capability id 挂的那一块（`{"browser": {...}}`）里的也一样。trace 因此记下 setup 打开的那个目录（用户 2026-10-13 的裁决） |
+| `replay_archive` | browser（M30） | 回放的**源 run 目录**（一个 trace 目录，含 `manifest.json`）。`network_source` 拦截（`archive`）时必须给、不拦截（`live`）时不许给，都在 `prepare()` 报错（`check_setup`）、点名双方。capability 经 `core/archive` 的 `open_archive` 打开它，只读已提交的部分（§4.14 "回放"）；`spectragent-run --replay-archive DIR`。相对路径可以写，意思是相对启动目录（af 从不切换工作目录，所以就是当前目录；`~` 先展开）：`AgentRuntime.execute` 在交给 `prepare()` 检查、记进 `task_setup`、交给 setup 之前把它解析成绝对路径（`schemas/task.py::resolve_env_context_paths`；`prepare()` 自己也解析一遍，直接调它的调用方一样），对每个调用方都一样：CLI、任务加载器、自己组 `env_context` 的 Python 调用方；按 capability id 挂的那一块（`{"browser": {...}}`）里的也一样。trace 因此记下 setup 打开的那个目录（用户 2026-10-13 的裁决） |
 | `task_tools` | tool_sandbox（设计中，M23） | 每个 task 的工具定义（§13.5） |
 
 整个 context 按值级规则脱敏后记进 `TraceConfig.task_setup`（§5.6），所以 `replay_archive` 是路径字符串，不是打开的对象；分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。上面的键都属于 `TaskContext.env`，路由不变（下一段）。
@@ -2167,7 +2231,7 @@ class TaskContext(BaseModel):
 ```
 
 - `TaskLoaderBase.get_task_context(id)` 返回 `TaskContext(env=task.setup.to_context())`，任务不存在时返回空的 `TaskContext()`；`BaseTaskLoader` Protocol 的返回类型同步改成 `TaskContext`，不留返回 dict 的旧形状。
-- `BenchmarkRunner.run_task` 把三部分分别交给 `AgentRuntime.execute`（§4.2）。`spectragent-run` 只组 env 部分（`--start-url`、`--replay-archive`），照旧。
+- `BenchmarkRunner.run_task` 把三部分分别交给 `AgentRuntime.execute`（§4.2）；开跑之前 `BenchmarkRunner.preflight` 用第一个任务的 loop 与 env 部分调一次 `prepare()`（§4.2 "sweep 先过一次 `prepare()`"）。`spectragent-run` 只组 env 部分（`--start-url`、`--replay-archive`），`--dry-run` 也把它交给 `prepare()`。
 - loop 部分的词表：`checkpoint`（`Checkpoint{trace_dir: 源 run 目录的绝对路径, step: t}`）→ `BranchLoop`。交给不声明它的 Loop 在 `prepare()` 报 `IncompatibleLoopInputError`。
 - branch 部分：`BranchProvenance{source_run_id, source_trace（源 run 目录相对 sources 根的 POSIX 路径）, source_benchmark, source_subset, source_task_id, checkpoint_step, branch_index, branch_group_id}`（`spectragent/schemas/restoration.py`），按任务变化，不进配置摘要。
 
@@ -2432,38 +2496,39 @@ recorder 连接的 `CDPClient` 用 `compression=None`（websockets 默认与 Chr
 
 #### 所有权与存活
 
-- **只在自己的浏览器上**：需要 recorder 连接的配置要求 provider 声明 `NETWORK_CAPTURE`（§4.9.x）。显式 `cdp_url`、注入的控制客户端、六个云 lite provider，都在 setup 报错（与绑定有关的那部分在 `bind_archivers` 就报，也就是 `prepare()` 期间），点名双方，一次报全。云 provider 的录制可用性并入 lite SDK 审计，不在 v1。
+- **只在自己的浏览器上**：需要 recorder 连接的配置要求 provider 声明 `NETWORK_CAPTURE`（§4.9.x）。显式 `cdp_url`、注入的控制客户端、六个云 lite provider，都在 `prepare()` 报错（`check_setup`；`bind_archivers` 绑定前再查与绑定有关的那部分，setup 启动前再查全部），点名双方，一次报全。云 provider 的录制可用性并入 lite SDK 审计，不在 v1。
 - **存活是推送的**：`CDPClient` 在接收循环的 `finally` 里调用关闭回调（`add_close_callback`，回调拿到原因；`stop()` 主动关闭不算丢失）。recorder 连接意外断开时，capability 立刻标记自己不存活，用点名 recorder 的 `RecorderLostError` 让控制连接上还在等待的命令失败（`CDPClient.fail_pending`）；`begin_observation`、`execute_action`、`collect_archive` 入口检查并抛同一个错误；进行中的一次采集或一个动作结束时也再查一次——recorder 在途中丢了，这次采集不交出、这个动作不算成功。录制永远不会在没有记录的情况下继续；浏览器是 capability 自己的，teardown 照常杀掉它。
 - **控制连接永不设置 `waitForDebuggerOnStart: true`**（它的 iframe auto-attach 一直是 `false`），所以 recorder 是唯一需要 resume 的一方。
 
 #### setup 与 teardown
 
-setup：协作检查 → `backend.open(launch_args=...)`（只对声明了 `LAUNCH_ARGS` 的 provider）→ 控制连接 → 需要时建好 recorder 连接（还不 attach）：它的客户端、archive scope（`__archive__`，与 `__browser__` 平级，归 recorder 的生命周期）与 `ArchiveChannel`、`replayability` 的本 run 计划、已绑定归档器的运行期会话（`archive/run.py` 的 `BrowserArchiveRun`）→ global scope 与 watchdog（ArchiveWatchdog 按绑定安装）→ `RecorderConnection.open()`：设 browser 级 auto-attach，等已存在的 target 准备完（ready barrier）→ 初始 tab → `start_url`。watchdog 在 `open()` **之前**：ArchiveWatchdog 必须从 recorder 的第一个事件起就消费 archive scope，因为 `open()` 期间已存在 target 的 attach 事件若没人接，收集屏障会把它们算成丢失（M29 实测：fake CDP 下第一次收集就以"dropped 1 of 5"失败）。
+setup：协作检查（`check_setup`，`prepare()` 查过的同一个函数，再查一遍）→ 回放时加载整个源归档（`open_replay`）→ `backend.open(launch_args=...)`（只对声明了 `LAUNCH_ARGS` 的 provider）→ 控制连接 → 需要时建好 recorder 连接（还不 attach）：它的客户端、archive scope（`__archive__`，与 `__browser__` 平级，归 recorder 的生命周期）与 `ArchiveChannel`、`replayability` 的本 run 计划、已绑定归档器的运行期会话（`archive/run.py` 的 `BrowserArchiveRun`）→ global scope 与 watchdog（ArchiveWatchdog 按绑定安装）→ `RecorderConnection.open()`：设 browser 级 auto-attach，等已存在的 target 准备完（ready barrier）→ 初始 tab → `start_url`。watchdog 在 `open()` **之前**：ArchiveWatchdog 必须从 recorder 的第一个事件起就消费 archive scope，因为 `open()` 期间已存在 target 的 attach 事件若没人接，收集屏障会把它们算成丢失（M29 实测：fake CDP 下第一次收集就以"dropped 1 of 5"失败）。
 
 teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{autoAttach:false, waitForDebuggerOnStart:false}` → 继续所有还扣着的请求 → 每个 session `Fetch.disable` → `Target.detachFromTarget` → 停掉 recorder 客户端）→ 关闭归档会话与 archive scope → 原有的 bridge / watchdog / scope / 控制连接 → `backend.close()`。每一步都容错地往下走，第二次调用什么也不做。
 
 #### 协作检查一览
 
-"能配什么"由生成的配置约束，"能否协作"在这里查（2026-09-24 的裁决）。全部由 `browser/cooperation.py` 的一个函数算出、一次报全，每条点名双方；能在绑定时知道的，`bind_archivers`（`prepare()` 的最后一步）就报，setup 在启动浏览器之前把全部再查一遍（`cdp_url` 还可能来自任务上下文）：
+"能配什么"由生成的配置约束，"能否协作"在这里查（2026-09-24 的裁决）。全部由 `browser/cooperation.py` 的一个函数算出、一次报全，每条点名双方。每一行都只取决于配置与任务数据，所以**全部在 `prepare()` 报**（用户 2026-10-13 的裁决）：`BrowserCapability.check_setup`（§4.9 `SetupCheck`，经 `Environment.check_setup`，§4.2 第 3d 步）带着本任务的 setup context（`cdp_url`、`replay_archive`）、观测协商结果与将要绑定的归档器算全部行，加上回放的一致性检查；错误在 `on_run_start` 打开 trace 之前出去，`spectragent-run --dry-run` 也查得出来。之后还有两次防御性复查，调的是同一个函数：`bind_archivers` 在绑定前查与绑定有关的行，setup 在启动浏览器之前把全部再查一遍（拦住绕过 `prepare()` 直接 setup 的调用方，与 `prepare()` 之后才注入控制客户端的测试）：
 
-| 组合 | 最早在哪报 |
+| 组合 | `prepare()` 之后谁再查 |
 |---|---|
-| 任一 browser 归档器 + provider 没有声明 `NETWORK_CAPTURE`（六个云 lite provider） | `bind_archivers` |
-| 任一 browser 归档器（或非 `off` 的档位）+ provider 声明了 `NETWORK_CAPTURE` 却没实现 `persistent_profile()`（说不出 profile 是否新建） | `bind_archivers`（档位：setup） |
-| 任一 browser 归档器 + 显式 `cdp_url` 或注入的控制客户端 | `bind_archivers`（配置里的 `cdp_url`）/ setup |
-| `browser.network`（`require_replayable: true`）+ `replayability: off` | `bind_archivers` |
-| 任一 browser 归档器 + profile 不是新建的 + 该归档器 `allow_session_state: false` | `bind_archivers` |
-| 任一 browser 归档器 + profile 排除了 `archive` watchdog | `bind_archivers` |
+| 任一 browser 归档器 + provider 没有声明 `NETWORK_CAPTURE`（六个云 lite provider） | `bind_archivers`、setup |
+| 任一 browser 归档器（或非 `off` 的档位）+ provider 声明了 `NETWORK_CAPTURE` 却没实现 `persistent_profile()`（说不出 profile 是否新建） | `bind_archivers`（档位：只有 setup）、setup |
+| 任一 browser 归档器 + 显式 `cdp_url`（配置里的或任务上下文里的）或注入的控制客户端 | `bind_archivers`（配置里的 `cdp_url`）、setup |
+| `browser.network`（`require_replayable: true`）+ `replayability: off` | `bind_archivers`、setup |
+| 任一 browser 归档器 + profile 不是新建的 + 该归档器 `allow_session_state: false` | `bind_archivers`、setup |
+| 任一 browser 归档器 + profile 排除了 `archive` watchdog | `bind_archivers`、setup |
 | `replayability: pinned` + provider 缺 `LAUNCH_ARGS` 或 `NETWORK_CAPTURE` / 显式 `cdp_url` / 注入的控制客户端 / provider 报告的旋钮冲突 / profile 不是新建的 | setup |
 | `replayability: pinned` `base_time: from_archive` + `network_source: live`（T0 只能来自正在回放的归档） | setup |
 | `network_source: archive` + 没有 `replay_archive`；`network_source: live` + 给了 `replay_archive` | setup |
-| `network_source: archive` + 没有绑定记录回放日志的归档器（声明 `replay_log` 需求的那个：`browser.replay_log`；按需求判断，不按 `archiver_id` 分支）——miss 必须总有记录 | `bind_archivers`（绑定了别的归档器时）/ setup |
-| `network_source: archive` + 绑定了记录线上流量的归档器（声明 `fetch_response` 需求的那个：`browser.network`）——回放没有自己的线上流量，送出的每个字节都已经在源归档里；报错点名 `browser.replay_log`（用户 2026-10-13 的裁决：`browser.network` 永远是"录流量"） | `bind_archivers` / setup |
-| `network_source: live` + 绑定了记录回放日志的归档器（`replay_log` 需求：`browser.replay_log`）——live 来源什么也不回放 | `bind_archivers` / setup |
+| `network_source: archive` + 没有绑定记录回放日志的归档器（声明 `replay_log` 需求的那个：`browser.replay_log`；按需求判断，不按 `archiver_id` 分支）——miss 必须总有记录 | `bind_archivers`（绑定了别的归档器时）、setup |
+| `network_source: archive` + 绑定了记录线上流量的归档器（声明 `fetch_response` 需求的那个：`browser.network`）——回放没有自己的线上流量，送出的每个字节都已经在源归档里；报错点名 `browser.replay_log`（用户 2026-10-13 的裁决：`browser.network` 永远是"录流量"） | `bind_archivers`、setup |
+| `network_source: live` + 绑定了记录回放日志的归档器（`replay_log` 需求：`browser.replay_log`）——live 来源什么也不回放 | `bind_archivers`、setup |
 | `network_source: archive` + recorder 所有权（provider 缺 `NETWORK_CAPTURE`、显式 `cdp_url`、注入的控制客户端，与上面同一组行） | setup |
-| `network_source: archive` `isolation: required` + provider 没有声明 `NETWORK_ISOLATION`（或缺 `LAUNCH_ARGS`）——除非写了 `isolation: none_acknowledged` | `bind_archivers` / setup |
-| `network_source: archive` `isolation: required` + provider 报告的隔离冲突（`local_chrome`：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的网络路由开关、不是 `about:blank` 的 `startup_url`） | `bind_archivers` / setup |
-| 回放一致性：源 run 的环境指纹与本 run 的配置不一致（下面"一致性检查"） | setup，打开归档之后、启动浏览器之前 |
+| `network_source: archive` `isolation: required` + provider 没有声明 `NETWORK_ISOLATION`（或缺 `LAUNCH_ARGS`）——除非写了 `isolation: none_acknowledged` | `bind_archivers`、setup |
+| `network_source: archive` `isolation: required` + provider 报告的隔离冲突（`local_chrome`：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的网络路由开关、不是 `about:blank` 的 `startup_url`） | `bind_archivers`、setup |
+| 回放一致性：源 run 的环境指纹与本 run 的配置不一致（下面"一致性检查"；`prepare()` 只读源 run 的指纹） | setup，启动浏览器之前（之后才加载整个归档） |
+| 已协商的 browser fragment + 当前 profile 装的 watchdog 解析不了它（profile 在构造之后被改过；当场重新解析） | setup |
 
 #### 逐 target 的准备流水线
 
@@ -2518,7 +2583,7 @@ class ReplayabilityProtocol(Protocol):
 - **`pinned`**：旋钮 `base_time: Literal["run_start", "from_archive"]`、`random_seed: int`（≥ 1：V8 把 0 当作"用系统随机数"）、`timezone`（IANA，构造时校验）、`locale`（语言标签，构造时校验）、`device_scale_factor`、`user_agent: str | None`（None：沿用浏览器自己的 UA，只 pin `Accept-Language`）、`reduced_motion: bool`。第零条规则：录制与回放用完全相同的 shim、开关、种子、UA 与 viewport。`Accept-Language` 写成不带 q 值的列表（`en-US,en`），Chrome 自己加 q 值。
   - 启动开关只由它自己的设置生成：`--js-flags=--random-seed=<seed>`、`--lang=<locale>`、`--force-device-scale-factor=<dpr>`、`--disable-back-forward-cache`、`--disable-features=HttpsUpgrades`（Chrome 153 默认先把可注册域名的 http 导航升级成 https 试探；录制与回放都关），以及 `--disable-background-networking --disable-component-update --disable-field-trial-config`（它们在 `CHROME_DEFAULT_ARGS` 里，`ignore_default_args` 会把它们丢掉，pinned 重新加回）；写了 `user_agent` 时另加 `--user-agent=<ua>`（worker 与网络栈也看到同一个 UA，provider 自己的 `user_agent` 旋钮也因此能被报成冲突）。每个 run 必须是新建的 profile。
   - shim（`replay/shims.py`，Python 字符串常量，移植自 WPR `deterministic.js`，BSD-3，保留 notice）：无参 `Date` 与 `Date.now()` 从 T0 起、每 25 次构造前进 50 ms（**不冻结**，忙等能结束）；带种子的 `Math.random` 与 `crypto.getRandomValues`；`crypto.randomUUID` 是合法的 RFC 4122 v4；拒绝 `ServiceWorkerContainer.prototype.register`（配合 `setBypassServiceWorker`）；防重复注入。时区偏移交给 timezone override（不学 WPR 硬改 `getTimezoneOffset`）；`performance.now` 与定时器不改（WPR 的模型，残余的不确定性写明）。`shim_sha256` 是模板源码的摘要，进指纹。
-  - `base_time: from_archive` 只与回放归档的网络来源一起有效：T0 取自源 run 指纹里的 `replayability.t0_ms`，setup 在 `plan()` 之前解析好，shim 因此在任何 target 准备之前就带着录制时的 T0（M30）；与 `network_source: live` 一起在 setup 报错。
+  - `base_time: from_archive` 只与回放归档的网络来源一起有效：T0 取自源 run 指纹里的 `replayability.t0_ms`，setup 在 `plan()` 之前解析好，shim 因此在任何 target 准备之前就带着录制时的 T0（M30）；与 `network_source: live` 一起在 `prepare()` 报错（`check_setup`）。
   - 协作检查（setup 时，点名双方，一次报全）：provider 没有声明 `LAUNCH_ARGS` 或 `NETWORK_CAPTURE`；显式 `cdp_url`；注入的控制客户端；provider 报告的旋钮冲突（`local_chrome`：`deterministic_rendering=true`、`force_device_scale_factor` 与 pinned 的 DPR 不同、`user_agent` 与 pinned 的不同、`extra_args` 另设了 pinned 拥有的开关）；profile 不是新建的（`persistent_profile()` 非空：`user_data_dir`、非默认的 `profile_directory`、`CHROME_USER_DATA_DIR`、`extra_args` 里的 `--user-data-dir`）；`base_time: from_archive` 而网络来源是 `live`。
   - 已知取舍：pinned 会改变活站点的行为，本身也是 anti-bot 能抓到的特征（用户已接受）；评测 run 与 anti-bot run 保持 `off`。
 
@@ -2551,8 +2616,8 @@ class ReplayabilityProtocol(Protocol):
 - **什么时候定下来**：终结事件（下一跳的 `redirectResponse`、`loadingFinished`、`loadingFailed`、WebSocket 握手应答）到了、body 读完；**或者** body 已在 Response 阶段读完：Chrome 扣着响应直到放行，读到的就是完整的 body，而页面从不读取 body 的 `fetch()` 根本不会有 `loadingFinished`（M29 实测，Chrome 155：GraphQL、弹窗、SW 的 fetch 原本都永远停在 `pending`）。两种等待只值一次收集：这种交换的 `responseReceived`，以及任何交换的原始响应头（`responseReceivedExtraInfo`，`Set-Cookie` 只在这里，Fetch 的 `responseHeaders` 与 `responseReceived` 都不带它，实测）。屏障保证收集之前发出的事件都已处理，所以一次收集的宽限足够；Chrome 不发的，到期照样写出（`raw_response_headers: false`）。从缓存来的响应不等 ExtraInfo（crbug 1340398）。目标 detach 时它还在加载的交换记为失败。
 - **body 是解码后的**：`Fetch.getResponseBody` 返回解码后的字节（实测：`Content-Encoding: gzip`、`Content-Length: 50` 的响应读出 1600 字节明文）；索引的 `original_encoding` 记原来的 CE / TE / CL。Fetch 看到的请求头里有 `Cookie`（Chrome 155），与其他来源一样剥离。`Network.loadNetworkResource` 既不发 Network 事件、也不在 recorder 的 Fetch 上暂停（Chrome 155 实测）；没有 `networkId` 的暂停一律不记、原样放行，是防御性的后备（上面"体积分档"）；`IO.read` / `IO.close` 必须发在打开流的那个 session 上。
 - **WARC 里只放已知的响应**：`ok`、`redirect`、`websocket`（101）有 response（或 revisit）记录；`too_large`、`streamed_later`、`incomplete` 只有 request 记录，状态与响应头写在索引行里，因为空的或不完整的 payload 会骗过不读索引的人。补取到的 body 是内容寻址的 blob（`body-<sha>.bin`），`kind: body` 行在它的 `exchange` 行写出之后才交出。
-- `require_replayable: bool = True`：与 `replayability: off` 一起绑定 → `bind_archivers` 报错（setup 再查一遍），点名归档器与档位。
-- **只录线上流量**：`browser.network` 永远是"录流量"（用户 2026-10-13 的裁决），不随网络来源换意思。回放（`network_source: archive`）没有自己的线上流量，送出的每个字节都已经在源归档里，所以绑定它被协作检查拒绝（按 `fetch_response` 需求，`bind_archivers` 就报），报错点名回放要绑定的 `browser.replay_log`（下面）。
+- `require_replayable: bool = True`：与 `replayability: off` 一起绑定 → `prepare()` 报错（`check_setup`；`bind_archivers` 与 setup 再查一遍），点名归档器与档位。
+- **只录线上流量**：`browser.network` 永远是"录流量"（用户 2026-10-13 的裁决），不随网络来源换意思。回放（`network_source: archive`）没有自己的线上流量，送出的每个字节都已经在源归档里，所以绑定它被协作检查拒绝（按 `fetch_response` 需求，`prepare()` 就报），报错点名回放要绑定的 `browser.replay_log`（下面）。
 - 其他旋钮：`strip_request_headers`（大小写不敏感，追加在默认三个之后）、`max_post_data_size`、`max_streamed_body_bytes`、`allow_session_state`。
 
 #### `browser.storage`
@@ -2571,7 +2636,7 @@ class ReplayabilityProtocol(Protocol):
 
 回放 run 的证据：回放服务的每个决定（下面"回放日志"）。原先由 `browser.network` 在回放时换模式来记，用户 2026-10-13 裁决拆成独立的归档器（`archive/replay_log.py`），每个归档器只有一个意思。
 
-- `needs = {"replay_log"}`：协作检查按这个需求找它，`network_source: archive` 没有它就报错（miss 必须总有记录），`network_source: live` 绑定它也报错（live 来源什么也不回放）；两条都在 `bind_archivers` 报，setup 再查一遍（上面"协作检查一览"）。
+- `needs = {"replay_log"}`：协作检查按这个需求找它，`network_source: archive` 没有它就报错（miss 必须总有记录），`network_source: live` 绑定它也报错（live 来源什么也不回放）；两条都在 `prepare()` 报（`check_setup`），`bind_archivers` 与 setup 再查一遍（上面"协作检查一览"）。
 - context 里带着回放服务的日志（`BrowserArchiveContext.replay_log`，只在回放时有），`open(ctx)` 交出 `ReplayLogSession`：不要 Fetch pattern、不订阅事件、不发命令；每次收集在一条同步调用里把这段时间的日志换出来，写成本步的 `replay.jsonl`（下面"回放日志"），这段时间没有决定就什么也不写。没有回放日志的 context 里 `open` 抛错（协作检查在那之前就拒绝了这种配置）。
 - 不写 WARC / `index.jsonl` / `websocket.jsonl`：命中的记录用 `record_id` 指回源归档。
 - 旋钮只有 `allow_session_state`（每个 browser 归档器都有）。日志的折叠（`log_repeat_limit`）是回放服务的，仍是 `archive` 来源的旋钮。
@@ -2636,7 +2701,7 @@ network_source:
   miss_policy: {miss_policy_id: strict}
 ```
 
-**隔离由来源推出，provider 上没有并列的布尔**（不做 `local_chrome.network_isolation` 这样的开关：`source: live` + 隔离开着会让每个请求莫名失败，`source: archive` + 隔离关着只靠单向检查才能发现）。`isolation: required` 时 capability 把 `chrome_switches.NETWORK_ISOLATION_ARGS`（`--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost` 与 `--no-proxy-server`）接在档位的开关之后经 `LAUNCH_ARGS` 交给声明了 `NETWORK_ISOLATION` 的 provider（§4.9.x；v1 只有 `local_chrome`），provider 的 `isolation_conflicts()` 报出会让隔离失效的旋钮；不支持的 provider 在 setup 报错、点名 provider 与来源，除非写了 `isolation: none_acknowledged`；那时不传隔离开关，只靠 Fetch 拦截（会有 Fetch 看不见的外联，下面"回放实测"）。`--no-proxy-server` 是必需的：macOS 上 Chrome 用系统代理、不读 `http_proxy`，有代理时 resolver 规则只作用于代理主机，一个 localhost 代理就能绕过黑洞。
+**隔离由来源推出，provider 上没有并列的布尔**（不做 `local_chrome.network_isolation` 这样的开关：`source: live` + 隔离开着会让每个请求莫名失败，`source: archive` + 隔离关着只靠单向检查才能发现）。`isolation: required` 时 capability 把 `chrome_switches.NETWORK_ISOLATION_ARGS`（`--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost` 与 `--no-proxy-server`）接在档位的开关之后经 `LAUNCH_ARGS` 交给声明了 `NETWORK_ISOLATION` 的 provider（§4.9.x；v1 只有 `local_chrome`），provider 的 `isolation_conflicts()` 报出会让隔离失效的旋钮；不支持的 provider 在 `prepare()` 报错（`check_setup`）、点名 provider 与来源，除非写了 `isolation: none_acknowledged`；那时不传隔离开关，只靠 Fetch 拦截（会有 Fetch 看不见的外联，下面"回放实测"）。`--no-proxy-server` 是必需的：macOS 上 Chrome 用系统代理、不读 `http_proxy`，有代理时 resolver 规则只作用于代理主机，一个 localhost 代理就能绕过黑洞。
 
 #### 回放的数据通路：`ArchiveReader`
 
@@ -2727,7 +2792,7 @@ class ArchiveReader(Protocol):
 
 #### 一致性检查与回放指纹
 
-setup 里，`cooperation_problems`（配置能否协作）之后、`backend.open` 之前，打开并加载归档，再把 `replay/consistency.py` 的 `consistency_problems(...)` 并进同一个 `BrowserCooperationError`。失败时从不启动 Chrome，每条点名两边的值：
+`check_setup` 里（`prepare()` 时，setup 在 `backend.open` 之前再查一遍；§4.9 `SetupCheck`），`cooperation_problems`（配置能否协作）之后，打开源 run、只读它的环境指纹（`archive_index.py::load_fingerprint`：`env/run.browser.json`、录制的 T0、`browser.network` 提交了几个 `index.jsonl`；不读索引行、不读 WARC，返回的 `RecordedArchive` 索引为空、没有 store，什么也匹配不上、什么也送不出），再把 `replay/consistency.py` 的 `consistency_problems(...)` 并进同一个 `BrowserCooperationError`。整个归档（`load_archive`：索引与每条 WARC 记录的校验）由 setup 在检查通过之后加载，用于服务；索引坏了（`ReplayArchiveError`）仍在 setup、启动 Chrome 之前失败。检查失败时既不打开 trace 也从不启动 Chrome，每条点名两边的值：
 
 - 源 run 没有 `env/run.browser.json`，或没有录 `browser.network`；源 run 自己就是回放（指纹的 `network_source.source_id` 是 `archive`，它绑定的是 `browser.replay_log`、没有 WARC，应当回放原始录制）。
 - 档位不同；档位参数不同（`base_time` 除外，`from_archive` 正是回放要改的那一个）；`shim_sha256` 不同（pinned）；viewport 不同。
@@ -2738,7 +2803,7 @@ setup 里，`cooperation_problems`（配置能否协作）之后、`backend.open
 
 **回放指纹**：回放 run 自己的 `env/run.browser.json` 多一个 `network_source` 块：`source_id: archive`、`source_run_id`、`source_fingerprint_sha256`（源指纹那份已提交记录的 sha256）、`site_rules_sha256`、`matcher`（levels、阈值、规则目录）、`miss_policy_id`、`shift_dates`、`isolation` 与 `warnings`。块的一半是配置实例自报的（`NetworkSourceProtocol.fingerprint()`：`live` 是 `{"source_id": "live"}`，`archive` 是它的旋钮），一半是这次 run 的事实（`ReplayServer.fingerprint()` 加上源 run 与两个摘要、`warnings`）；capability 有服务时交服务的块，否则交来源的块，`BrowserArchiveRun.collect(network_fingerprint=...)` 写进指纹。`warnings` 里还有一致性检查没能比较的说明（`consistency_notes`：一边没有启动开关摘要）。
 
-一致性一侧的函数都在 `replay/consistency.py`：`consistency_problems`（启动前，拒绝）、`consistency_notes`（启动前，说明）、`version_warnings`（启动后，警告）、`replay_t0`（`from_archive` 时 T0 取源指纹的，否则取本 run 的开始）。capability 只组装与转交；本 run 交给 provider 的开关（档位的，加上隔离的）与 provider 据此会记下的开关表，由 `cooperation.py` 的 `launch_args(cap)` / `planned_launch_flags(cap, ...)` 算出，同一份开关既用于启动，也用于启动前的比较。
+一致性一侧的函数都在 `replay/consistency.py`：`consistency_problems`（`prepare()` 与启动前，拒绝）、`consistency_notes`（启动前，说明）、`version_warnings`（启动后，警告）、`replay_t0`（`from_archive` 时 T0 取源指纹的，否则取本 run 的开始）。capability 只组装与转交；本 run 交给 provider 的开关（档位的，加上隔离的）与 provider 据此会记下的开关表，由 `cooperation.py` 的 `launch_args(cap)` / `planned_launch_flags(cap, ...)` 算出，同一份开关既用于启动，也用于启动前的比较。
 
 #### 回放实测（S2a，Chrome 153；探针在本地的 `tmp/flywheel/spikes/s2a/`）
 
@@ -2989,7 +3054,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - **布局**（链的约定，报告只认它，`metrics.ChainLayout`）：`<root>/traces/{record,control,same_path,branch}/`、`<root>/datasets/{first,second}/`、`<root>/report/{report.json,report.md}`、`<root>/configs/<段>.yaml`（每段实际用的配置；导出两份：`export_first.yaml` / `export_second.yaml`）、`<root>/evals/<段>/`（`evaluate: true` 的段的 `--evals-dir`；判定也照常写进每个 trace 的 `evals/`）、`<root>/chain.json`（每段的 argv、退出码、产生的 run 目录与起止时刻；`--stages` 再跑时与已有的段合并；只是来历记录，报告不依赖它）。
 - **路径从哪里算**：规格里的相对路径（`root`、每段的 `config`）相对工作目录，与每个 af CLI 读路径的方式一样（阶段 YAML 自己的相对路径，例如 `matcher.site_rules: configs/replay_rules`，也相对工作目录）；`root` 解析成绝对路径后，链写进阶段 YAML 的路径都是绝对的。
 - **链只改路径**：每段的 YAML 原样读入，链只写这几个字段再落到 `<root>/configs/<段>.yaml`：唯一的 `trace_writer` 的 `trace_dir`（`<root>/traces/<段>`）；`same_path` / `branch` 唯一的 `trace_branches` 加载器的 `data_dir`（`<root>/traces/record`）；导出段唯一的导出器的 `sources_root`（`<root>/traces`）、`sources`（`["record/*", "branch/*"]`）与 `output_dir`（`<root>/datasets/first`，第二次 `second`）。缺这些块（或多于一个）在任何一段开跑之前报错、点名段与缺的块。其余一切（agent、档位、归档器、选步、分支数、`verify`、评测器）都写在段的 YAML 里；对照组的 YAML 自己写 `archive: []`。
-- **段的成败**：`spectragent-bench` 退出码 0 或 1（个别任务失败是要度量的数据）且这一段写出了至少一个新的 run 目录，算跑完；`SystemExit`、异常、一个新 run 目录都没有，是这一段失败：链停下（`ChainStageError` 点名这一段），之前的产物留着。导出段退出码非 0 就失败（导出什么也没写）；报告段抛出的异常（缺陷、报告目录写不了；坏 run 从不让它抛，见下）同样是这一段失败（`ChainStageError` 点名 `report`，`chain.json` 记下）。选了导出段而 `<root>/datasets/<first|second>` 已经存在，是在任何一段开跑之前的 `ChainConfigError`（导出从不覆盖，要重导先删掉；不让前面花钱的段为一次必然被拒的导出白跑）。`--stages` 只跑列出的段（按规格的顺序；未知的段名、规格里没配的段在任何一段开跑之前报 `ChainConfigError`），已经跑完的段可以不重跑；重跑一个运行段会在已有的 run 旁边再加 run（记 WARNING）。
+- **段的成败**：`spectragent-bench` 退出码 0 或 1（个别任务失败是要度量的数据）且这一段写出了至少一个新的 run 目录，算跑完；别的退出码（2：它的 pre-flight 拒绝了这一段的配置，一个任务也没跑，§4.2）、`SystemExit`、异常、一个新 run 目录都没有，是这一段失败：链停下（`ChainStageError` 点名这一段），之前的产物留着。导出段退出码非 0 就失败（导出什么也没写）；报告段抛出的异常（缺陷、报告目录写不了；坏 run 从不让它抛，见下）同样是这一段失败（`ChainStageError` 点名 `report`，`chain.json` 记下）。选了导出段而 `<root>/datasets/<first|second>` 已经存在，是在任何一段开跑之前的 `ChainConfigError`（导出从不覆盖，要重导先删掉；不让前面花钱的段为一次必然被拒的导出白跑）。`--stages` 只跑列出的段（按规格的顺序；未知的段名、规格里没配的段在任何一段开跑之前报 `ChainConfigError`），已经跑完的段可以不重跑；重跑一个运行段会在已有的 run 旁边再加 run（记 WARNING）。
 - **规格**：`ChainSpec{name, root, evidence, tasks{benchmark, subset, task_ids, limit}, record, control?, same_path?, branch?, export?, report{planted}}`，每段 `StageSpec{config, timeout, evaluate}`（`same_path` / `branch` 写 `evaluate: true` 被拒：`trace_branches` 没有评测加载器），导出段 `ExportStageSpec{config, repeat: 1|2}`，植入值 `PlantedSecret{label, value | env}`（恰好一个）。CLI：`spectragent-flywheel run --spec X [--stages a,b]`、`report --spec X [--out D]`、`report --root R --evidence live|rehearsal [--name N] [--out D]`（没有规格就没有植入值，只扫凭证形状）；退出码 0 完成、1 某段失败、2 规格或参数不对。测试的接缝是 `run_chain(spec, bench=..., export=...)`（替换两个进程内的 `main`）。
 - **原路径回放是一个分叉段**：`configs/flywheel/same_path_ui_tars_archive.yaml`：`branch` loop，选步 `last`（每个源 run 最后一个可分叉的策略步，§4.10），`continue_steps: 0`，`verify: warn`（发散了照样走完，每一步都有校验结果），`branches_per_step: 2`（回放确定性的重复），`require_status: any`，`on_unbranchable: skip`。它取代 M30 `tests/_helpers/replay_driver.py`"把录下的模型输出喂回同一个 agent"作为度量手段：恢复器本来就逐步重放录下的动作、逐步校验观测（§4.14 "恢复"），只有最后一步要 teacher 再决定一次（每个分支一次 LLM 调用）。S2b 就是只跑 `record`、`same_path` 与报告的这条链。
 - `spectragent-bench` 不读 `.env`，链也不读：跑之前在 shell 里导出密钥（`set -a; . ./.env; set +a`）。
@@ -4008,7 +4073,7 @@ hook:
 
 评测配置不写 `archive`、也没有顶层 `archiver:` 段，归档关闭；但每个手写的 capability 块都写 `replayability: {replayability_id: "off"}` 与 `network_source: {source_id: live}`（单实例受体必填，与 `mouse_trajectory`、`typing_rhythm` 一样；`off` 加引号，YAML 1.1 把裸的 `off` 读成 `false`）。
 
-**回放 run（M30，§4.14 "回放"；发布的完整配置在 `configs/flywheel/replay_*.yaml`）**。它与录制配置只差网络来源、T0 与 fixture 用的路由开关；源 run 目录是每个任务不同的输入，经任务上下文的 `replay_archive` 送到 setup（`spectragent-run --replay-archive DIR`），不写在配置里：
+**回放 run（M30，§4.14 "回放"；发布的完整配置在 `configs/flywheel/replay_*.yaml`）**。它与录制配置只差网络来源、T0 与 fixture 用的路由开关；源 run 目录是每个任务不同的输入，经任务上下文的 `replay_archive` 送到 `prepare()` 的检查与 setup（`spectragent-run --replay-archive DIR`；不给它，`prepare()` 就拒绝这份配置），不写在配置里：
 
 ```yaml
 capability:
@@ -4241,7 +4306,7 @@ archive scope 不是第三个 per-tab scope，而是 browser 级的一个：reco
 采集的共享 watchdog（ArchiveWatchdog）在这个钩子里把 tab 的观测 scope 跨 scope 连到 archive
 scope（§4.14）。
 
-`BrowserProfileConfig` 是命名预设（`standard` / `skyvern` / `vision_only` / `lightweight`），但只承载两类事实：**安装哪些 watchdog**（`watchdogs_exclude`，反向声明——注册表里没被排除的都装，名字在 setup 时对着注册表校验，写错是硬报错而不是静默 no-op），和**允许花多少次 CDP 往返**（`js_click_listener_detection`、`cross_site_iframe_capture`），外加 SecurityWatchdog 的域名白 / 黑名单。唯一的例外是**按绑定安装**的 watchdog：`BrowserWatchdog.should_install(ctx)`（类方法，默认 True）在建 watchdog 的地方与 profile 一起求值，ArchiveWatchdog 只在绑定了归档器、recorder 连接开着时安装（§4.14）。记不记录是每次 run 的选择（D3），不是 profile 的属性；profile 排除了 `archive` 而 run 又绑定了归档器，`bind_archivers` 报错（`prepare()` 期间；setup 再查一遍）。
+`BrowserProfileConfig` 是命名预设（`standard` / `skyvern` / `vision_only` / `lightweight`），但只承载两类事实：**安装哪些 watchdog**（`watchdogs_exclude`，反向声明——注册表里没被排除的都装，名字在 `prepare()`（`check_setup`）与 setup 时对着注册表校验，写错是硬报错而不是静默 no-op），和**允许花多少次 CDP 往返**（`js_click_listener_detection`、`cross_site_iframe_capture`），外加 SecurityWatchdog 的域名白 / 黑名单。唯一的例外是**按绑定安装**的 watchdog：`BrowserWatchdog.should_install(ctx)`（类方法，默认 True）在建 watchdog 的地方与 profile 一起求值，ArchiveWatchdog 只在绑定了归档器、recorder 连接开着时安装（§4.14）。记不记录是每次 run 的选择（D3），不是 profile 的属性；profile 排除了 `archive` 而 run 又绑定了归档器，`prepare()` 报错（`check_setup`，随后 `bind_archivers` 绑定前再查一遍；setup 再查一遍）。
 
 **策略一律不在 profile 上**：`dom_cleaner`、`dom_serializer`、`mouse_trajectory`、`typing_rhythm`、`replayability`、`network_source` 全部是 `BrowserCapability` 上的 `__wiring__` 受体（§4.12 / §4.13 / §4.14）。profile 曾经用字符串名持有 cleaner 与 serializer，后果是消费者拿着名字去注册表里 `get(name)()` 现造一个默认实例，把 Composer 已经按 YAML 构造好的那个丢掉——策略的 knobs 生成在 config 里却无人可达。profile 也不支持 override 或增量修改：一个预设要么被整体选中，要么另起一个。区分规则是「谁为它买单」——改变一次 capture 花多少次 CDP 往返的，属于 profile；改变产出的 observation 让 prompt 花多少 token 的（`screenshot_quality`、`dom_max_elements`），是 capability 自己的 `Annotated` 标量。
 

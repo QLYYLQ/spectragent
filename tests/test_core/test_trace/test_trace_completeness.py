@@ -29,6 +29,7 @@ from spectragent.core.llm.exceptions import (
 )
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops._loop_fragments import LOOP_FRAGMENT_KEYS
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import RunStatus
@@ -159,6 +160,7 @@ class _SlowLoop:
     __required_slots__: set[str] = set()
     __optional_slots__: set[str] = set()
     __requires_env__ = True
+    __loop_fragments__ = LOOP_FRAGMENT_KEYS
 
     def _validate_slots(self, agent):
         pass
@@ -186,6 +188,7 @@ class _StallAfterLLMLoop:
     __required_slots__: set[str] = set()
     __optional_slots__: set[str] = set()
     __requires_env__ = True
+    __loop_fragments__ = LOOP_FRAGMENT_KEYS
 
     def _validate_slots(self, agent):
         pass

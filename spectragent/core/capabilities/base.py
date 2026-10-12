@@ -13,13 +13,16 @@ See docs/architecture_design.md §4.6 and docs/execution_dag.md M06.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
+
+if TYPE_CHECKING:
+    from spectragent.core.archive._registrar import ArchiverBase
 
 
 @runtime_checkable
@@ -271,5 +274,43 @@ class CaptureCheck(Protocol):
         fully qualified; the capability reads the keys under its own prefix.
         Reads configuration and the fragments only: no setup, no backend, no
         cache.
+        """
+        ...
+
+
+@runtime_checkable
+class SetupCheck(Protocol):
+    """Optional: refuse now, acquiring nothing, what this capability's setup would refuse.
+
+    Whether the configured parts can cooperate — with each other, with the
+    task's setup context, with the run's observation negotiation and with the
+    archivers about to be bound — is decided by configuration and task data
+    alone, so it is refused at ``AgentRuntime.prepare()``: before the trace
+    is opened, before anything is launched, on a dry run too
+    (``docs/architecture_design.md`` §4.2, §4.3). ``Environment.check_setup``
+    routes each capability its slice and calls this. A capability that can
+    tell implements it; one that cannot writes nothing and is checked for
+    context routing only. ``setup()`` may call it again as a defensive
+    re-check, with the archivers bound by then. Not part of
+    :class:`BaseCapability`; ``CapabilityBase`` gives no default.
+    """
+
+    def check_setup(
+        self,
+        context: Mapping[str, Any],
+        *,
+        negotiation: Any = None,
+        archivers: Sequence[ArchiverBase] = (),
+    ) -> None:
+        """Raise, naming both parties of every problem, if setup would refuse this run.
+
+        Args:
+            context: This capability's routed slice of the task's setup
+                context — only keys its ``setup()`` declares.
+            negotiation: The run's observation negotiation result.
+            archivers: The archivers about to be bound to this capability.
+
+        Reads configuration and its arguments only: no backend, no connection,
+        no state written.
         """
         ...

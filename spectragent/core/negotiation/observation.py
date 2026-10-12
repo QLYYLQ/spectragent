@@ -76,8 +76,10 @@ class IncompatibleFragmentError(Exception):
         self.missing = missing
         self.provided = provided
         self.requested_by = requested_by
-        #: Who failed to provide (M32): ``environment`` at run assembly; the
-        #: training export names the source run whose recording lacks them.
+        #: Who failed to provide (M32): ``environment`` at run assembly, or
+        #: the Loop (``loop 'react'``) when it does not build a required
+        #: loop-source fragment; the training export names the source run
+        #: whose recording lacks them.
         self.provider = provider
 
 
@@ -155,17 +157,28 @@ class ObservationNegotiationResult(NegotiationResultBase):
 
 
 def _loop_sourced_keys() -> frozenset[str]:
-    """Fragment keys the Loop fills in, whoever the environment is.
+    """Every registered fragment key a Loop fills in (``__source__ = "loop"``).
 
-    These have no capability behind them, so they are not in
-    ``env_provides`` — but they are still resolvable, which is why they
-    join the environment's keys to form the negotiation universe.
+    These have no capability behind them, so they are never in
+    ``env_provides``. Which of them *this* run can resolve is the selected
+    Loop's declaration (:func:`loop_fragments`).
     """
     return frozenset(
         key
         for key, cls in ObservationRegistrar.get_all().items()
         if getattr(cls, "__source__", "env") == "loop"
     )
+
+
+def loop_fragments(loop: Any) -> frozenset[str]:
+    """The loop-source fragment keys *loop* builds: its class's ``__loop_fragments__``.
+
+    ``AgentLoopBase`` declares the shared builders' four by default
+    (``core/loops/_loop_fragments.py``). An object that declares nothing — a
+    structural Loop outside the base — builds nothing.
+    """
+    cls = loop if isinstance(loop, type) else type(loop)
+    return frozenset(getattr(cls, "__loop_fragments__", frozenset()))
 
 
 def _observation_rules(
@@ -175,13 +188,21 @@ def _observation_rules(
     env_provides: set[str],
     agent_source: str = "",
     loop_source: str = "",
+    loop_provides: frozenset[str] | None = None,
 ) -> ObservationNegotiationResult:
     """Avro-style three-party negotiation semantics.
 
     Agent and Loop declare in capability-relative space unless they pin a
     provider; resolution against this run's fragment universe turns those
     declarations into fully-qualified keys, and everything the result
-    hands downstream is fully qualified.
+    hands downstream is fully qualified. The universe is the environment's
+    keys plus the loop-source keys the Loop builds (*loop_provides*, the
+    selected Loop's ``__loop_fragments__``; ``None`` — a caller of the bare
+    rules that names no Loop — means every registered one).
+
+    A required key that resolves to a registered loop-source fragment the
+    Loop does not build is refused naming the fragment and the Loop — at
+    ``prepare()``, rather than as a missing builder at the first step.
 
     ``agent_source`` / ``loop_source`` are labels, not inputs: they never
     reach :func:`resolve_demand` and cannot change what is negotiated.
@@ -192,7 +213,8 @@ def _observation_rules(
     agent_required, agent_optional = agent
     loop_required, loop_optional = loop
 
-    loop_keys = _loop_sourced_keys()
+    registered = _loop_sourced_keys()
+    loop_keys = registered if loop_provides is None else registered & loop_provides
     demand = resolve_demand(
         required=agent_required | loop_required,
         optional=agent_optional | loop_optional,
@@ -202,13 +224,26 @@ def _observation_rules(
     )
 
     if demand.missing:
+        parties = [(agent_source, agent_required), (loop_source, loop_required)]
+        # Missing because the Loop does not build it — not the environment's.
+        unbuilt = resolve_demand(
+            required=demand.missing,
+            optional=(),
+            universe=registered - loop_keys,
+            separator=FRAGMENT_KEY_SEPARATOR,
+            ambiguity_error=AmbiguousFragmentError,
+        ).bindings
+        if unbuilt:
+            raise IncompatibleFragmentError(
+                missing=set(unbuilt),
+                provided=set(loop_keys),
+                requested_by=requested_by(unbuilt, parties),
+                provider=f"loop {loop_source!r}" if loop_source else "the loop",
+            )
         raise IncompatibleFragmentError(
             missing=set(demand.missing),
             provided=env_provides,
-            requested_by=requested_by(
-                demand.missing,
-                [(agent_source, agent_required), (loop_source, loop_required)],
-            ),
+            requested_by=requested_by(demand.missing, parties),
         )
 
     active = demand.resolved
@@ -264,7 +299,13 @@ def negotiate_observation(
 
     Only the agent's half is narrowed. The Loop's declaration goes in as
     its class wrote it: an agent cannot excuse itself from a fragment the
-    Loop needs to do its job.
+    Loop needs to do its job. The Loop is also a provider: the loop-source
+    fragments it builds (:func:`loop_fragments`) are the only ones on offer
+    besides the environment's.
+
+    *env* is ``None`` in an env-less run (a Loop declaring
+    ``__requires_env__ = False``): it provides nothing, so an agent that
+    requires an environment fragment is refused like any missing one.
     """
     return negotiate(
         ObservationNegotiationResult,
@@ -272,7 +313,8 @@ def negotiate_observation(
         _observation_rules,
         agent=demand_of(agent, "observation"),
         loop=type(loop),
-        env_provides=set(env.provided_fragments),
+        env_provides=set(env.provided_fragments) if env is not None else set(),
         agent_source=demand_label(agent),
         loop_source=demand_label(loop),
+        loop_provides=loop_fragments(loop),
     )

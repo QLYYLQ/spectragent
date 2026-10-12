@@ -25,9 +25,10 @@ naming the stage and the block — before any stage runs. Everything else
 stage YAML's; a control group's YAML says ``archive: []`` itself.
 
 **A stage's outcome.** A run stage that exits 0 or 1 (a task that failed is
-data to measure) and wrote at least one run directory ran; ``SystemExit``,
-an exception or no run directory is :class:`ChainStageError` naming the
-stage — the chain stops, the products so far stay. An export that exits
+data to measure) and wrote at least one run directory ran; another exit code
+(2: its pre-flight refused the stage's configuration and no task ran),
+``SystemExit``, an exception or no run directory is :class:`ChainStageError`
+naming the stage — the chain stops, the products so far stay. An export that exits
 non-zero (it then wrote nothing) is one too. So is an exception out of the
 report stage — a defect or an unwritable report directory, never a damaged
 run (the report skips one with its reason). A selected export whose

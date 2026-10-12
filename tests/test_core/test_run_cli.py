@@ -43,3 +43,15 @@ def test_replay_archive_flag_reaches_env_context(monkeypatch: pytest.MonkeyPatch
     assert run_cli.task_context(
         start_url=seen["start_url"], replay_archive=seen["replay_archive"]
     ) == {"replay_archive": "/runs/src"}
+
+
+def test_a_dry_run_checks_what_setup_would_refuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--dry-run`` prepares with the flags' task context: the setup check sees it too."""
+    from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
+
+    monkeypatch.setattr(run_cli, "load_dotenv", lambda: None)  # never read the repo's .env
+    monkeypatch.setattr(run_cli.logging, "basicConfig", lambda **_kw: None)
+    config = str(Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml")
+    assert run_cli.main(["--config", config, "--dry-run"]) == 0
+    with pytest.raises(BrowserCooperationError, match="network_source: live ↔ replay_archive"):
+        run_cli.main(["--config", config, "--dry-run", "--replay-archive", "/runs/src"])

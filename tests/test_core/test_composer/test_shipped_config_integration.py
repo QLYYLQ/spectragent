@@ -15,6 +15,7 @@ launches a browser: instantiation and negotiation are pure, only
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import inspect
 import random
@@ -27,6 +28,10 @@ import pytest
 import yaml
 
 from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.cooperation import (
+    BrowserCooperationError,
+    planned_launch_flags,
+)
 from spectragent.core.capabilities.browser.input import WindMouseTrajectory
 from spectragent.core.composer import (
     ComposeError,
@@ -38,10 +43,10 @@ from spectragent.core.negotiation import IncompatibleActionError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import RunStatus, TraceConfig, TraceNegotiation
 from spectragent.core.trace.redaction import redact_config
-from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.restoration import Checkpoint
 from spectragent.schemas.step_record import StepRecord
 from spectragent.scripts.generate_all import _collect_registrars
+from tests._helpers.replay_archive import RecordingScript
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 #: Every shipped config, the data-flywheel recording configs included
@@ -136,25 +141,34 @@ class TestShippedConfigs:
         assert env.has_capability("browser")
         assert "browser.click" in env.provided_actions
 
-        # 2. The full assembly chain runs. A loop that declares required
-        #    inputs (``branch``: a checkpoint) refuses a bare prepare by name,
-        #    and prepares against a recorded run of this very configuration.
+        # 2. The full assembly chain runs, the setup check included. A loop
+        #    that declares required inputs (``branch``: a checkpoint) refuses
+        #    a bare prepare by name; a replaying configuration (an ``archive``
+        #    network source) refuses one without the task's replay_archive.
+        #    Both prepare against a recorded run of this very configuration.
         agent_id = run.ids("agent")[0]
         runtime = AgentRuntime.for_agent(run, agent_id)
         loop = run.instance("agent", agent_id).agent_loop
         required = sorted(k for k, spec in loop.__loop_inputs__.items() if spec.required)
+        replays = any(cap.network_source.intercepts for cap in env.capabilities.values())
+        source = (
+            _recorded_run_of(composer, root, agent_id, tmp_path) if required or replays else None
+        )
+        inputs = {"checkpoint": Checkpoint(trace_dir=str(source), step=0)} if required else None
         if required:
             with pytest.raises(IncompatibleLoopInputError) as refused:
                 runtime.prepare()
             assert all(key in str(refused.value) for key in required), str(refused.value)
             assert required == ["checkpoint"], "only the checkpoint input has a shipped source"
-            source = _recorded_run_of(composer, root, agent_id, tmp_path)
-            runtime = AgentRuntime.for_agent(composer.compose(copy.deepcopy(root)), agent_id)
-            prepared = runtime.prepare(
-                loop_inputs={"checkpoint": Checkpoint(trace_dir=str(source), step=0)}
-            )
-        else:
-            prepared = runtime.prepare()
+        if replays:
+            fresh = AgentRuntime.for_agent(composer.compose(copy.deepcopy(root)), agent_id)
+            with pytest.raises(BrowserCooperationError, match="no replay_archive"):
+                fresh.prepare(loop_inputs=inputs)
+        runtime = AgentRuntime.for_agent(composer.compose(copy.deepcopy(root)), agent_id)
+        prepared = runtime.prepare(
+            loop_inputs=inputs,
+            env_context={"replay_archive": str(source)} if replays else None,
+        )
         assert callable(prepared.run)
 
         # 3. No stray instance was setattr'd from a declaration-only
@@ -193,12 +207,19 @@ def _check_export_config(composer: ConfigComposer, run: Any, root: dict[str, Any
 def _recorded_run_of(
     composer: ConfigComposer, root: dict[str, Any], agent_id: str, base: Path
 ) -> Path:
-    """A committed one-step run of *root*'s configuration with a ``react`` loop.
+    """A committed one-step recording of *root*'s configuration, as a recording makes it.
 
-    What a branch config's checkpoint points at: the source run recorded with
-    the same agent and environment — so its ``resolved`` and ``negotiation``
-    come from composing and preparing that react variant here, through the
-    same redaction ``TraceWriter`` applies — never a hand-written one.
+    What a branch config's checkpoint and a replaying config's
+    ``replay_archive`` point at: the source run recorded with the same agent
+    and environment. Its ``resolved`` and ``negotiation`` come from composing
+    and preparing the react variant of *root* on the live network (how a
+    recording runs; a branch compares the agent block and the observation and
+    action negotiation, not the network source or the archive) through the
+    same redaction ``TraceWriter`` applies — never a hand-written one. Its
+    environment evidence — one exchange, and the browser fingerprint with
+    *root*'s tier, viewport and planned launch flags — is committed by
+    ``RecordingScript``, the real archiver session and WAL, so the replay's
+    consistency check reads what a recording writes.
     """
     from spectragent.generated._composed import ReactAgent_LoopConfig
 
@@ -210,26 +231,45 @@ def _recorded_run_of(
             for key, value in branch_loop.items()
             if key in ReactAgent_LoopConfig.model_fields
         } | {"loop_id": "react"}
+    for environment in react_root.get("environment", []):
+        for block in environment.get("capabilities", []):
+            # A recording's own network and clock: ``base_time: from_archive``
+            # is what a replay of it sets.
+            block["network_source"] = {"source_id": "live"}
+            tier = block.get("replayability") or {}
+            block["replayability"] = {k: v for k, v in tier.items() if k != "base_time"}
+    for hook in react_root.get("hook", []):
+        if hook.get("hook_id") == "trace_writer":
+            hook["archive"] = []
     run = composer.compose(react_root)
     runtime = AgentRuntime.for_agent(run, agent_id)
     runtime.prepare()
-    wal = WALWriter(base, "recorded-source")
-    wal.init_run(
-        TraceConfig(
-            agent_id=run.instance("agent", agent_id).agent_id,
-            loop_id="react",
-            env_type=run.instances("environment")[0].env_type,
-            resolved=redact_config(run.top_level_cfg),
-            negotiation=TraceNegotiation.from_results(
-                runtime.negotiated_observation,
-                runtime.negotiated_actions,
-                runtime.negotiated_archive,
-            ),
-        )
+    config = TraceConfig(
+        agent_id=run.instance("agent", agent_id).agent_id,
+        loop_id="react",
+        env_type=run.instances("environment")[0].env_type,
+        resolved=redact_config(run.top_level_cfg),
+        negotiation=TraceNegotiation.from_results(
+            runtime.negotiated_observation,
+            runtime.negotiated_actions,
+            runtime.negotiated_archive,
+        ),
     )
-    wal.commit_step(0, StepRecord(step=0, observation_summary="the recorded page"))
-    wal.finalize(RunStatus.COMPLETED)
-    return wal.run_dir.resolve()
+    (cap,) = composer.compose(copy.deepcopy(root)).instances("capability")
+    script = RecordingScript(
+        base,
+        "recorded-source",
+        config=config,
+        replayability=cap.replayability,
+        launch_flags=planned_launch_flags(cap, cdp_url=None, injected_client=False),
+    )
+
+    async def _record() -> None:
+        await script.exchange("http://shop.test/", body=b"<html>the recorded page</html>")
+        await script.commit(0, StepRecord(step=0, observation_summary="the recorded page"))
+
+    asyncio.run(_record())
+    return script.finish(RunStatus.COMPLETED).resolve()
 
 
 class TestProviderSubConfig:

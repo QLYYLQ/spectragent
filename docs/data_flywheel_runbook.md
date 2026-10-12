@@ -39,7 +39,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
 
   `"off"` 必须加引号：PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`。
 - 归档器只写在 `trace_writer` 的 `archive` 列表里，键要全限定（`browser.network`）。写进 capability 块的 `archiver:` 在组装时被拒。
-- 与归档器绑定有关的问题在 `prepare()` 的最后一步报，`spectragent-run --dry-run` 查得出来。档位、网络来源和回放一致性在 setup 里、启动 Chrome 之前检查，要开跑才会报。
+- 这些组合问题全部在 `prepare()` 报：归档器与档位、provider 与它的旋钮、profile、网络来源，以及回放时与源 run 的一致性（`prepare()` 只读源 run 的环境指纹）。错误在打开 trace、启动 Chrome 之前出现，每条点名两边，`spectragent-run --dry-run` 也查得出来（回放配置要加 `--replay-archive DIR`）。`spectragent-bench` 开跑前先用第一个任务检查一次（pre-flight）：被拒时一个任务也不跑、不建 trace，在 stderr 印出原因，退出码 2。setup 在启动 Chrome 之前再查一遍。
 
 ## 录制
 
@@ -131,7 +131,7 @@ network_source:
 
 `trace_writer.archive` 里用 `browser.replay_log` 代替 `browser.network`，其余归档器不变。`browser.replay_log` 记回放日志，回放没有它就被拒；`browser.network` 只录线上流量，回放没有自己的线上流量（送出的每个字节都已经在源归档里），所以它在 `archive` 来源下被拒，报错点名 `browser.replay_log`。反过来，`live` 来源绑定 `browser.replay_log` 也被拒，因为没有回放可记。这几条都在 `prepare()` 里报，`--dry-run` 也一样。
 
-- 启动 Chrome 之前，setup 打开源 run（只读已提交的部分），拿它的环境指纹比较本次配置：档位和参数（`base_time` 除外）、shim、viewport、启动开关摘要。有一项不符就拒绝运行，每条点名两边的值。启动开关摘要只覆盖 provider（`local_chrome`）拼出的启动参数，调试端口和 profile 目录换成占位符，网络路由开关两边都去掉，可执行文件路径和 Chrome 版本都不在里面。`headless: true` 会加上 `--headless=new`，所以只改 `headless` 也会不符；要看着浏览器回放，录制和回放都得写 `headless: false`，也就是重新录制。Chrome 版本不同、档位没固定 UA 而浏览器 UA 不同、脱敏策略不同只警告，写进回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
+- `prepare()` 打开源 run（只读已提交的部分），拿它的环境指纹比较本次配置（setup 启动 Chrome 之前再比一次）：档位和参数（`base_time` 除外）、shim、viewport、启动开关摘要。有一项不符就拒绝运行，每条点名两边的值。启动开关摘要只覆盖 provider（`local_chrome`）拼出的启动参数，调试端口和 profile 目录换成占位符，网络路由开关两边都去掉，可执行文件路径和 Chrome 版本都不在里面。`headless: true` 会加上 `--headless=new`，所以只改 `headless` 也会不符；要看着浏览器回放，录制和回放都得写 `headless: false`，也就是重新录制。Chrome 版本不同、档位没固定 UA 而浏览器 UA 不同、脱敏策略不同只警告，写进回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
 - `isolation: required`（默认）给 `local_chrome` 加 `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost` 和 `--no-proxy-server`，并拒绝会绕过它们的旋钮：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的路由开关、不是 `about:blank` 的 `startup_url`。写 `isolation: none_acknowledged` 时只靠 Fetch 拦截，preconnect 和 WebSocket 会连到真实网络。
 - `base_time: from_archive` 让页面时钟从录制时的 T0 开始，只能配 `archive` 来源。`shift_dates: none`（默认）原样送出录下的 `Date`、`Expires`、`Last-Modified` 和 cookie 过期时间。
 - 匹配默认用 `levels: [exact, normalized]`，模糊一级（`fuzzy`）要显式打开；规范化会去掉 `utm_*`、`fbclid` 这类易变参数。每条录下的记录按录制顺序只送一次，用完之后重复最后一条，并在日志里记 `exhausted`。站点规则放在 `configs/replay_rules/<domain>.yaml`，写法见[它的 README](../configs/replay_rules/README.md)。
@@ -297,7 +297,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 - `same_path` 和 `branch` 的源是 `<root>/traces/record`，所以 `record` 先跑。重跑一个运行段会在已有的 run 旁边再加 run，并记一条 warning（`already holds runs; this stage adds to them`）。重跑 `record` 之后，`same_path`、`branch`、导出和报告都会把新旧录制一起读进来；想干净地重做，换一个 `root`。
 - 导出从不覆盖：选了 `export` 时，只要 `repeat` 要写的 `datasets/first`（`repeat: 2` 时还有 `datasets/second`）有一个已经存在，链就在任何一段开跑之前报 `ChainConfigError`。要在链里重导，先删掉这些目录，再跑 `--stages export,report`。也可以复制 `<root>/configs/export_first.yaml`（链实际用的导出配置，路径都已写好），改掉 `output_dir` 和要改的筛选，用 `spectragent-export` 导到别处。只想重算报告就用 `spectragent-flywheel report`。
 - 链用的导出 YAML 用 `filters.require_eval: null`（链默认不评测）和 `decontamination: {against: []}`（源本来就是被测 benchmark 的任务）；这两个就是默认值，发布的 `export_sft.yaml` 也这么写。
-- 运行段退出码是 0 或 1、并且写出了新的 run，就算跑完；个别任务失败是要度量的数据。其余情况链停在这一段，报 `ChainStageError`，之前的产物保留。
+- 运行段退出码是 0 或 1、并且写出了新的 run，就算跑完；个别任务失败是要度量的数据。其余情况链停在这一段，报 `ChainStageError`，之前的产物保留；退出码 2 表示这一段的 pre-flight 拒绝了它的配置，一个任务也没跑（原因在 stderr）。
 - `report --root` 没有规格，也就没有植入值，隐私一项的结论是 `insufficient`。
 
 `report.json` 的 `metrics`：
@@ -420,6 +420,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - `IncompatibleLoopInputError: Loop 'branch' loop inputs: requires checkpoint`：用 `spectragent-run` 跑了分叉或原路径回放的配置。它们只能经 `spectragent-bench` 的 `trace_branches` 任务运行，检查配置用 `--list`。
 - 录制中途失败：录制按 fail closed 处理。recorder 连接意外断开时，capability 立刻标记自己不存活，观测、动作和收集都抛 `RecorderLostError`；一次收集失败（例如 archive scope 丢过事件）同样让 run 失败。录制从不在缺少记录的情况下继续：这一步不提交，它的模型调用作为收尾调用落盘，trace 以 `error` 结束。之前提交的步完好，重跑这个任务即可。
 - 导出失败时什么都不写。`ExportEmptyError` 列出每个筛选和丢弃原因的计数，最常见的是写了 `require_eval` 却没评测过、`against` 列了录制所用的 benchmark，或者 `sources` 只列了分叉 run 而没列它们的源 run。`OcclusionEvidenceMissingError` 见"导出 SFT 数据"。`StudentCaptureMismatchError`：学生的截图管线与录制不同。`SampleTooLongError` 点名超长的样本。`CredentialLeakError`、`ReferenceLeakError`：凭证形状或参考答案进了输出。`output_dir ... exists`：换一个目录，或者删掉旧的。
+- `spectragent-bench: the pre-flight check refused the configuration for task ...`（退出码 2）：开跑之前，第一个任务的 `prepare()` 拒绝了配置，一个任务也没跑、没建 trace。冒号后面是原来的错误，点名两边：组合问题（`BrowserCooperationError`）、协商（`IncompatibleFragmentError`、`IncompatibleActionError`、`IncompatibleArchiveError`）、loop 输入、任务上下文里没有谁接受的 setup 键。改配置后重跑；只想看哪里不对可以先 `--dry-run`（`spectragent-run`）。
 - 链：`ChainConfigError` 在任何一段开跑之前报，原因可能是段 YAML 缺 `trace_writer`、`trace_branches` 或 `exporter` 块（或者有两个），`--stages` 写了不存在或规格里没配的段，或者数据集目录已经存在（怎么重导见"度量报告"）。`ChainStageError` 点名失败的段，`chain.json` 记着每段的 argv 和退出码。
 
 ## 已知限制

@@ -35,9 +35,9 @@ uv run spectragent-run --config configs/browser_use_local.yaml \
 1. YAML schema validation against `ConfigComposer.top_level_type`.
 2. `ConfigComposer.compose()` — instantiates every layer, setattr-injects all wired receptors (including `capability.backend`, `agent.llm`, `agent.memory`).
 3. Surface report (`agent`, `loop`, `model`, `environment`, `capabilities` and their backends).
-4. `AgentRuntime.prepare()` — loop slots plus observation/action negotiation.
+4. `AgentRuntime.prepare()` — loop slots plus observation/action negotiation, and the environment's setup check: everything setup would refuse (the browser's cooperation rows, a task-context key no capability accepts), with `--start-url` / `--replay-archive` as the task context. A replaying config needs `--replay-archive DIR` here too, and its consistency with that recorded run is checked from the run's environment fingerprint.
 
-It does **not** start a browser or call the LLM — useful for CI smoke tests.
+It does **not** start a browser or call the LLM — useful for CI smoke tests. `spectragent-bench` makes the same check once for its first task before running any (the pre-flight); a refused config runs no task, opens no trace and exits 2.
 
 ## YAML shape
 
@@ -310,12 +310,14 @@ uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
 ```
 
 A relative `--replay-archive` is relative to the launch directory: `AgentRuntime.execute`
-resolves it before the context is recorded (`task_setup`) and handed to setup, for the CLI
-and a Python caller building `env_context` alike, so the replay's trace records the source
-run by absolute path.
+resolves it before `prepare()` checks it, the context is recorded (`task_setup`) and it is
+handed to setup, for the CLI and a Python caller building `env_context` alike, so the
+replay's trace records the source run by absolute path.
 
-- **Before Chrome starts**, setup opens the source run (only what its manifest committed)
-  and compares its environment fingerprint with this configuration: the tier and its
+- **At `prepare()`** — before the trace is opened, on a `--dry-run` too — the browser's
+  setup check opens the source run (only what its manifest committed; the environment
+  fingerprint alone, no index) and compares that fingerprint with this configuration; setup
+  compares again before Chrome starts, then loads the whole archive to serve it: the tier and its
   parameters (`base_time` aside), the shim, the viewport, the launch flags (without the
   network routing switches on either side). Any mismatch refuses the run, naming both
   sides, together with the configuration's own cooperation problems. A different Chrome

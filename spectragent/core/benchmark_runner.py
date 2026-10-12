@@ -9,12 +9,16 @@ A trace you cannot join back to its ``EvalReference`` cannot be scored by
 anything, which is what made "Record Once, Evaluate Many" false in
 practice.
 
-The runner owns exactly three things:
+The runner owns exactly four things:
 
-1. **Iteration** — which tasks, in which order, with which subset.
-2. **Isolation** — a fresh :class:`ComposedRun` per task by default, so
+1. **Pre-flight** — ``AgentRuntime.prepare()`` once, for the first task,
+   before anything runs: a configuration that cannot run fails the whole
+   sweep up front (:class:`PreflightError`, exit code 2), not once per task
+   after each one opened a trace.
+2. **Iteration** — which tasks, in which order, with which subset.
+3. **Isolation** — a fresh :class:`ComposedRun` per task by default, so
    task N's browser, memory and hook state cannot leak into task N+1.
-3. **Identity** — every run carries ``(benchmark, subset, task_id)`` and
+4. **Identity** — every run carries ``(benchmark, subset, task_id)`` and
    a stable ``run_id`` into the trace.
 
 Everything else — env setup/teardown ordering, lifecycle dispatch,
@@ -53,6 +57,11 @@ logger = logging.getLogger(__name__)
 
 _UNSAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
+#: ``spectragent-bench``'s exit code when the pre-flight check refused the
+#: configuration: no task ran and no trace was opened (0 and 1 are a sweep
+#: that ran, with no failed task / with one).
+PREFLIGHT_EXIT_CODE = 2
+
 
 def _safe_run_id(task_id: str, *, prefix: str = "") -> str:
     """Filesystem-safe, collision-resistant trace directory name.
@@ -77,6 +86,27 @@ def _trace_dir_of(run: ComposedRun) -> Path | None:
         if isinstance(run_dir, Path):
             return run_dir
     return None
+
+
+class PreflightError(RuntimeError):
+    """The sweep's configuration was refused before any task ran (:meth:`BenchmarkRunner.preflight`).
+
+    Chained from the refusal itself, which names both parties
+    (``IncompatibleError``, a negotiation error, ``BrowserCooperationError``
+    …). Nothing was set up and no trace was opened.
+
+    Attributes:
+        task_id: The task the configuration was checked for (the sweep's first).
+        error: The refusal.
+    """
+
+    def __init__(self, task_id: str, error: BaseException) -> None:
+        self.task_id = task_id
+        self.error = error
+        super().__init__(
+            f"the pre-flight check refused the configuration for task {task_id!r}, so no task "
+            f"was run: {type(error).__name__}: {error}"
+        )
 
 
 @dataclass(frozen=True)
@@ -208,10 +238,12 @@ class BenchmarkRunner:
         loader: A ``TaskLoader`` — the source of task ids, task text and
             per-task environment context.
         compose: Zero-arg factory returning a fresh :class:`ComposedRun`.
-            Called once per task. Pass ``lambda: existing_run`` to reuse
-            one stack across tasks; ``AgentRuntime.execute`` clears memory
-            either way, but a fresh compose is the only thing that also
-            resets capability and hook state.
+            Called once per task (the first task's call happens in the
+            pre-flight, whose stack that task then runs on). Pass
+            ``lambda: existing_run`` to reuse one stack across tasks;
+            ``AgentRuntime.execute`` clears memory either way, but a fresh
+            compose is the only thing that also resets capability and hook
+            state.
         agent_id: Which agent instance to drive. Defaults to the run's
             only agent.
         env_id: Which environment to run against. Required only when a
@@ -286,7 +318,15 @@ class BenchmarkRunner:
         task_ids: Sequence[str] | None = None,
         limit: int | None = None,
     ) -> BenchmarkRunSummary:
-        """Run the selected tasks sequentially and summarise."""
+        """Run the selected tasks sequentially and summarise.
+
+        The configuration is checked first, once, for the first selected
+        task (:meth:`preflight`): a configuration that cannot run fails the
+        sweep before any task runs or any trace is opened.
+
+        Raises:
+            PreflightError: The pre-flight check refused the configuration.
+        """
         selected = self.select_task_ids(task_ids=task_ids, limit=limit)
         logger.info(
             "BenchmarkRunner: %s/%s — %d task(s)",
@@ -294,11 +334,15 @@ class BenchmarkRunner:
             self._subset or "-",
             len(selected),
         )
+        # The first task runs on the stack the pre-flight assembled, so the
+        # sweep still composes exactly one stack per task.
+        prepared = self.preflight(selected[0]) if selected else None
         outcomes: list[TaskOutcome] = []
         aborted: str | None = None
         for task_id in selected:
+            run, prepared = prepared, None
             try:
-                outcomes.append(await self.run_task(task_id))
+                outcomes.append(await self.run_task(task_id, run=run))
             except RunAbort as exc:
                 # Stop the sweep, but keep what it produced. The guard said
                 # "stop", not "destroy the evidence": the finished tasks have
@@ -358,12 +402,44 @@ class BenchmarkRunner:
             return None, [f"{type(exc).__name__}: {exc}"]
         return report.summary(), [f"{o.task_id}: {o.error}" for o in report.errors if o.error]
 
-    async def run_task(self, task_id: str) -> TaskOutcome:
+    def preflight(self, task_id: str) -> ComposedRun:
+        """Check the configuration once for *task_id*, before the sweep starts; return its stack.
+
+        Composes the task's stack and runs ``AgentRuntime.prepare()`` on it
+        with the task's loop inputs and environment setup context: slot
+        validation, the Loop's inputs, the negotiations and the
+        environment's setup check (``docs/architecture_design.md`` §4.2) —
+        everything that would refuse every task of the sweep alike. Nothing
+        is set up, no hook is called and no trace is opened. The returned
+        stack is the one this task then runs on (``run_task(run=...)``).
+
+        Raises:
+            PreflightError: Naming the task and the refusal, chained from it
+                — including a stack that cannot be composed and a task
+                context that cannot be read.
+        """
+        try:
+            context = self._loader.get_task_context(task_id)
+            run = self._compose()
+            agent_id = self._agent_id or run.ids("agent")[0]
+            runtime = AgentRuntime.for_agent(run, agent_id, env_id=self._env_id)
+            runtime.prepare(task_id=task_id, loop_inputs=context.loop, env_context=context.env)
+        except Exception as exc:
+            raise PreflightError(task_id, exc) from exc
+        return run
+
+    async def run_task(self, task_id: str, *, run: ComposedRun | None = None) -> TaskOutcome:
         """Run one task end to end. Never raises — a failure is data.
 
         A benchmark sweep that dies on task 3 of 300 has destroyed the
         other 297 runs' worth of compute, so infrastructure failures are
-        captured per task and recorded.
+        captured per task and recorded. A guard's veto (``RunAbort``) is the
+        one exception, re-raised for :meth:`run` to stop the sweep.
+
+        Args:
+            task_id: The task.
+            run: The stack to run it on — the one :meth:`preflight` assembled
+                for the sweep's first task; composed fresh when omitted.
         """
         started = time.monotonic()
         try:
@@ -377,7 +453,7 @@ class BenchmarkRunner:
             )
 
         try:
-            run = self._compose()
+            run = run if run is not None else self._compose()
             agent_id = self._agent_id or run.ids("agent")[0]
             runtime = AgentRuntime.for_agent(run, agent_id, env_id=self._env_id)
         except Exception as exc:
@@ -629,7 +705,13 @@ def main(argv: list[str] | None = None) -> int:
             print(task_id)
         return 0
 
-    summary = asyncio.run(runner.run(task_ids=selected))
+    try:
+        summary = asyncio.run(runner.run(task_ids=selected))
+    except PreflightError as exc:
+        # Nothing ran and no trace exists: exit 2, never 0 or 1 (the codes of
+        # a sweep that ran), so a script or the flywheel chain stops here.
+        print(f"spectragent-bench: {exc}", file=sys.stderr)
+        return PREFLIGHT_EXIT_CODE
     print(summary.format_table())
     return 0 if summary.failed == 0 else 1
 

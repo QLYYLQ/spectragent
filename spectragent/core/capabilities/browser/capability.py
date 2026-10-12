@@ -52,7 +52,7 @@ from pydantic import Field as PydanticField
 from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
 from spectragent.core.archive import ArchiveBatch, ArchiverBase
 from spectragent.core.archive.source import open_archive
-from spectragent.core.capabilities._registrar import CapabilityBase
+from spectragent.core.capabilities._registrar import CapabilityBase, negotiated_fragment_keys
 from spectragent.core.capabilities.base import CaptureComparison
 from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — registration
     ClickAction,
@@ -89,6 +89,7 @@ from spectragent.core.capabilities.browser.cdp_client import CDPClient, transpor
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     binding_problems,
+    browser_archivers,
     cooperation_problems,
     launch_args,
     persistent_profile,
@@ -149,7 +150,10 @@ from spectragent.core.capabilities.browser.replay import (  # noqa: F401 — reg
     default_network_source,
     default_replayability,
 )
-from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
+from spectragent.core.capabilities.browser.replay.archive_index import (
+    RecordedArchive,
+    load_fingerprint,
+)
 from spectragent.core.capabilities.browser.replay.consistency import (
     consistency_notes,
     consistency_problems,
@@ -184,6 +188,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.provider_session import ProviderSession
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
+from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -1010,46 +1015,37 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
         """Replace the binding; refuse, before changing anything, what cannot cooperate.
 
-        Acquires nothing (a dry run binds too). The rows of the cooperation
-        check decidable now — provider ownership, ``require_replayable`` vs
-        the tier, session state, the profile's watchdogs, which archivers fit
-        the network source (a replay's log, live traffic) and its isolation —
-        are raised here, from ``prepare()``; setup checks everything again.
+        Acquires nothing (a dry run binds too). The binding rows of the
+        cooperation check — provider ownership, ``require_replayable`` vs the
+        tier, session state, the profile's watchdogs, which archivers fit the
+        network source (a replay's log, live traffic) and its isolation — are
+        raised here before anything changes. ``prepare()`` has refused them
+        already (:meth:`check_setup`, which runs every row, just before it
+        binds); setup checks everything again.
         Bound before setup (the runtime's order), the archivers decide which
         capture channels setup opens; bound again after setup, only who
         receives events and who is collected changes. An archiver bound after
         a setup that opened no archive channel could capture nothing, so that
         is refused.
         """
-        bound = list(archivers)
-        foreign = sorted(
-            str(getattr(a, "archiver_id", a))
-            for a in bound
-            if not isinstance(a, BrowserArchiverBase)
-        )
-        if foreign:
-            raise TypeError(
-                f"BrowserCapability can only bind browser archivers; got {foreign} "
-                f"(not BrowserArchiverBase)."
-            )
-        browser_archivers = [a for a in bound if isinstance(a, BrowserArchiverBase)]
+        bound = browser_archivers(archivers)
         problems = binding_problems(
             self,
-            browser_archivers,
+            bound,
             cdp_url=self.cdp_url,
             injected_client=self._injected_client is not None,
         )
         if problems:
             raise BrowserCooperationError(problems)
-        if browser_archivers and self._alive and self._archive is None:
+        if bound and self._alive and self._archive is None:
             raise RuntimeError(
                 f"BrowserCapability cannot start archiving "
-                f"{[a.archiver_id for a in browser_archivers]} after setup: no archiver was "
+                f"{[a.archiver_id for a in bound]} after setup: no archiver was "
                 f"bound at setup, so the recorder opened no archive channel. Bind before setup()."
             )
-        self._archivers = browser_archivers
+        self._archivers = bound
         if self._archive is not None:
-            self._archive.bind(browser_archivers)
+            self._archive.bind(bound)
 
     async def collect_archive(self) -> ArchiveBatch:
         """Hand over everything captured since the last collection (§4.14).
@@ -1137,6 +1133,99 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             device_scale_factor=self.replayability.device_scale_factor,
         )
 
+    # ── What setup would refuse, refused at prepare() (SetupCheck, §4.14) ──
+
+    def check_setup(
+        self,
+        context: Mapping[str, Any],
+        *,
+        negotiation: Any = None,
+        archivers: Sequence[ArchiverBase] = (),
+    ) -> None:
+        """Refuse, acquiring nothing, every reason :meth:`setup` would refuse this run.
+
+        ``AgentRuntime.prepare()`` calls this through
+        ``Environment.check_setup`` — before the trace is opened and before
+        anything is launched, on a dry run too — with this capability's
+        slice of the task's setup context, the observation negotiation and
+        the archivers about to be bound. :meth:`setup` calls it again with
+        the archivers bound by then (a defensive re-check of the same
+        function). Every problem is reported at once, each naming both
+        parties:
+
+        - the profile's watchdogs vs the negotiated fragments (a fragment
+          the run negotiated that no installed watchdog resolves);
+        - every row of the cooperation check (``cooperation.py``): the
+          archivers, the ``replayability`` tier and the ``network_source``
+          against the provider, its knobs and its profile, the explicit
+          ``cdp_url`` (the context's, else the knob) and the task's
+          ``replay_archive``;
+        - for a replay, the source run's consistency with this configuration
+          (``replay/consistency.py``), read from its environment fingerprint
+          alone (``load_fingerprint``: no index line, no WARC record).
+
+        Raises:
+            BrowserCooperationError: Every problem found.
+            ArchiveOpenError: ``replay_archive`` names no committed run
+                directory.
+            TypeError: An archiver that is not a browser archiver.
+        """
+        bound = browser_archivers(archivers)
+        cdp_url = context.get("cdp_url") or self.cdp_url
+        replay_archive = context.get(REPLAY_ARCHIVE_KEY)
+        injected = self._injected_client is not None
+        problems = self._unresolvable_fragments(negotiation)
+        problems.extend(
+            cooperation_problems(
+                self,
+                cdp_url=cdp_url,
+                injected_client=injected,
+                replay_archive=replay_archive,
+                archivers=bound,
+            )
+        )
+        if self.network_source.intercepts and replay_archive:
+            problems.extend(
+                consistency_problems(
+                    load_fingerprint(open_archive(replay_archive)),
+                    replayability=self.replayability,
+                    viewport=(self.viewport_width, self.viewport_height),
+                    planned_launch_flags=planned_launch_flags(
+                        self, cdp_url=cdp_url, injected_client=injected
+                    ),
+                )
+            )
+        if problems:
+            raise BrowserCooperationError(problems)
+
+    def _unresolvable_fragments(self, negotiation: Any) -> list[str]:
+        """The profile row: negotiated fragments of this capability no installed watchdog resolves.
+
+        The profile is resolved afresh (it may have been reassigned since
+        construction, and negotiation read the construction-time one); an
+        unknown watchdog name in it raises here, naming the watchdog. Only
+        fragments this capability owns count — a composite environment
+        negotiates fragments other capabilities serve.
+        """
+        negotiated = negotiated_fragment_keys(negotiation)
+        profile = resolve_profile(self.profile)
+        installed = browser_watchdog_classes(
+            exclude=validate_watchdog_names(profile.watchdogs_exclude)
+        )
+        if negotiated is None:
+            return []
+        resolvable = fragments_provided_by(installed.values())
+        ours = fragments_provided_by(browser_watchdog_classes().values())
+        missing = sorted((negotiated & ours) - resolvable)
+        if not missing:
+            return []
+        return [
+            f"profile {self.profile!r} (watchdogs_exclude "
+            f"{sorted(profile.watchdogs_exclude)}) ↔ negotiated fragment(s) {missing}: no "
+            f"installed watchdog ({sorted(installed)}) resolves them; drop the fragment from "
+            f"the agent's __wiring__ or stop excluding the watchdog that provides it"
+        ]
+
     # ── CapabilityBase contract ──────────────────────────────────────
 
     def get_action_descriptors(self, **context: Any) -> list[ActionDescriptor]:
@@ -1191,41 +1280,37 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         ``start_url`` opens the task's landing page before the agent's
         first observe. ``replay_archive`` is the source run directory an
         intercepting ``network_source`` (``archive``, M30) replays: opened
-        through ``core/archive``'s ``open_archive``, loaded and checked
-        against this configuration before anything is launched (§4.14).
+        through ``core/archive``'s ``open_archive`` and loaded whole, to be
+        served, before anything is launched (§4.14).
         The remaining keys are the rest of :class:`BrowserSetup`'s
         vocabulary; they are accepted so a task carrying them routes
         cleanly, and reported at WARNING because this capability does not
         act on them yet.
+
+        Before anything is acquired, :meth:`check_setup` — the check
+        ``prepare()`` ran — runs again with the archivers bound by now: a
+        caller may set up without preparing, and a test may have injected a
+        control client since.
         """
         self.apply_negotiation(negotiation)
 
-        # Re-resolve in case ``profile`` was mutated after construction,
-        # and fail loudly here on an unknown watchdog name rather than
-        # mid-run.
+        # Re-resolve in case ``profile`` was mutated after construction
+        # (``check_setup`` below resolves it the same way and fails loudly on
+        # an unknown watchdog name, rather than mid-run).
         self._resolved_profile = resolve_profile(self.profile)
-        installed = self._watchdog_classes()
 
-        # A fragment the run negotiated but no installed watchdog
-        # resolves would surface as a missing-field ValidationError on
-        # the negotiated observation model, several layers away from the
-        # profile that caused it. Say so now.
-        if self._negotiated_fragments is not None:
-            resolvable = fragments_provided_by(installed.values())
-            # Only fragments this capability owns at all — a composite
-            # environment negotiates fragments other capabilities serve.
-            ours = fragments_provided_by(browser_watchdog_classes().values())
-            missing = sorted((self._negotiated_fragments & ours) - resolvable)
-            if missing:
-                raise RuntimeError(
-                    f"Browser profile {self.profile!r} installs watchdogs "
-                    f"{sorted(installed)} which cannot resolve negotiated "
-                    f"fragment(s) {missing}. Either drop the fragment from "
-                    f"the agent's __wiring__ or stop excluding the watchdog "
-                    f"that provides it "
-                    f"(profile excludes: "
-                    f"{sorted(self.profile_config.watchdogs_exclude)})."
-                )
+        # Resolve CDP URL: per-call override > constructor field.
+        cdp_url = cdp_url or self.cdp_url
+
+        # Can the configured parts cooperate at all — and, for a replay, does
+        # the source run match this configuration? The check ``prepare()``
+        # ran, again, before anything is launched: every problem reported at
+        # once, each naming both parties (§4.14).
+        self.check_setup(
+            {"cdp_url": cdp_url, REPLAY_ARCHIVE_KEY: replay_archive},
+            negotiation=negotiation,
+            archivers=self.bound_archivers,
+        )
 
         unhandled = sorted(
             name
@@ -1246,30 +1331,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 unhandled,
             )
 
-        # Resolve CDP URL: per-call override > constructor field.
-        cdp_url = cdp_url or self.cdp_url
-
-        # Can the configured parts cooperate at all — and, for a replay, does
-        # the source run match this configuration? Checked before anything is
-        # launched, every problem reported at once (§4.14).
         injected = self._injected_client is not None
-        problems = cooperation_problems(
-            self, cdp_url=cdp_url, injected_client=injected, replay_archive=replay_archive
-        )
         planned = planned_launch_flags(self, cdp_url=cdp_url, injected_client=injected)
         recorded: RecordedArchive | None = None
         if self.network_source.intercepts and replay_archive:
+            # The whole archive, to serve: the check read its fingerprint only.
             recorded = self.network_source.open_replay(open_archive(replay_archive))
-            problems.extend(
-                consistency_problems(
-                    recorded,
-                    replayability=self.replayability,
-                    viewport=(self.viewport_width, self.viewport_height),
-                    planned_launch_flags=planned,
-                )
-            )
-        if problems:
-            raise BrowserCooperationError(problems)
         self._recorder_error = None
         # The run's start: T0 of a pinned tier's clock — or the recording's,
         # under base_time: from_archive, resolved before any shim is built.

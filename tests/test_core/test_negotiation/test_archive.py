@@ -213,3 +213,40 @@ class TestProgrammingErrors:
         consumer.archive = [{"archiver_id": STEPS_KEY}]  # type: ignore[list-item]
         with pytest.raises(TypeError, match=f"{_REQ}'s archive holds a dict"):
             negotiate_archive([consumer], make_archive_env())
+
+
+class _NonBlockingConsumer(ArchiveConsumerHook):
+    """A consumer whose handlers would finish after the commit point."""
+
+    __abstract__ = True
+
+    @property
+    def blocking(self) -> bool:
+        return False
+
+
+class TestTheConsumerMustBlock:
+    """Its evidence must land before the step is committed (§4.6, ``blocking``)."""
+
+    def test_a_consumer_that_does_not_block_is_refused(self) -> None:
+        with pytest.raises(IncompatibleArchiveError) as excinfo:
+            negotiate_archive([_NonBlockingConsumer([FakeStepArchiver()])], make_archive_env())
+        assert _problems(excinfo) == [
+            f"{_REQ} requests archivers {[STEPS_KEY]} but is not blocking (blocking=False); a "
+            f"non-blocking hook's handlers finish after the step is committed, so the evidence "
+            f"it pulls would reach no trace: an archive consumer must be blocking."
+        ]
+
+    def test_it_is_reported_with_every_other_problem(self) -> None:
+        consumer = _NonBlockingConsumer([FakeOrphanArchiver()])
+        with pytest.raises(IncompatibleArchiveError) as excinfo:
+            negotiate_archive([consumer], make_archive_env())
+        problems = _problems(excinfo)
+        assert len(problems) == 2
+        assert any("is not blocking" in p for p in problems)
+        assert any(ORPHAN_KEY in p and "has no capability" in p for p in problems)
+
+    def test_a_consumer_that_does_not_say_is_taken_as_blocking(self) -> None:
+        """The weaver's reading too (``core/aop/proxy.py``)."""
+        result = negotiate_archive([_EqualConsumer([FakeStepArchiver()])], make_archive_env())
+        assert result.active_archivers == frozenset({STEPS_KEY})

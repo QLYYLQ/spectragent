@@ -461,6 +461,16 @@ capabilities take the same option name independently). A key **no capability nam
 (`:803-811`). A `**kwargs` catch-all declares nothing, receives nothing, and re-opens the
 silent-typo hole that check exists to close (`base.py:163-171`).
 
+**What your setup would refuse, refuse at `prepare()`.** A rule decidable from
+configuration and task data (an option that cannot work with this provider, a task-context
+value that cannot work with this configuration) belongs in `check_setup` (`SetupCheck`),
+not only in `setup()`: `AgentRuntime.prepare()` calls it through `Environment.check_setup`,
+so the run fails before its trace is opened and before anything is acquired, and
+`spectragent-bench`'s pre-flight stops a whole sweep with it. It reads configuration and its
+arguments only (no backend, no connection, no state written); `setup()` may call it again.
+The environment routes the context exactly as setup does, so a key no `setup()` declares is
+refused there too.
+
 **`teardown` failures are isolated per capability** (`environments/_registrar.py:814-839`).
 Every capability gets its turn even if an earlier one raises; the first error is re-raised
 at the end, the rest logged. Two guarantees, both learned from leaked Chrome processes: it
@@ -516,9 +526,14 @@ taken as fresh). `LAUNCH_ARGS` means `open(*, launch_args=...)` reaches the comm
 
 Every rule that combines a configured party with a provider lives in **one** function
 (`browser/cooperation.py`): it reports every problem at once, each line naming both
-parties, and the parts decidable at binding time run in `bind_archivers` (i.e. in
-`prepare()`, dry runs included) before anything changes; setup runs all of it again
-before it launches anything. A test proves "nothing launched" with a backend that counts
+parties. Every rule is decided by configuration and task data, so all of them run at
+`prepare()`: the capability implements the optional `SetupCheck` protocol
+(`core/capabilities/base.py`, `check_setup(context, *, negotiation, archivers)`), which
+`Environment.check_setup` calls with its routed slice of the task's setup context, the
+observation negotiation and the archivers about to be bound — before the trace is opened,
+dry runs included. `bind_archivers` re-checks the binding rows before anything changes, and
+setup calls `check_setup` again before it launches anything (a defensive re-check of the
+same function). A test proves "nothing launched" with a backend that counts
 `open()` calls.
 
 **A second connection needs a lifecycle of its own.** The browser's recorder
@@ -686,6 +701,7 @@ Before you call a capability done:
 - [ ] Both axes declared: `provided_fragments` **and** `provided_actions`
 - [ ] If you declare `__wiring__["archiver"]`: override **both** `bind_archivers` and `collect_archive` (the `CapabilityBase` default refuses a non-empty bind), and add an `ArchiveHarness` factory to `tests/_helpers/archive_contract.py`
 - [ ] `bind_archivers` replaces the whole binding (an empty list unbinds) and acquires nothing, since it may run on a dry run, before setup; `setup()` reads the binding to decide whether to build its capture channel
+- [ ] Every setup refusal decidable from configuration and task data is in `check_setup` (`SetupCheck`): it changes nothing, reports every problem at once naming both parties, and `setup()` calls it again before acquiring anything
 - [ ] `collect_archive` takes no step or cycle, hands over everything since the last collect and forgets it, raises when it cannot collect (never a fake-complete empty batch), is safe on a half-built instance, swaps its buffer atomically with respect to its producers, and carries an in-flight item into a later batch exactly once
 - [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative

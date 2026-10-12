@@ -225,3 +225,81 @@ class TestReplayArchiveRouting:
         env = _env(browser, docker)
         with pytest.raises(ValueError, match="replay_archive"):
             env.route_setup_context({"replay_archive": "/runs/src"})
+
+
+# ── check_setup: the same routing, at prepare(), acquiring nothing ───
+
+
+@dataclass
+class Checkingish(Browserish):
+    """A :class:`Browserish` with a setup check that records each slice it is handed."""
+
+    __registry_key__ = "f8s_checkingish"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.checks: list[tuple[dict[str, Any], Any, tuple[Any, ...]]] = []
+        self.refusal: Exception | None = None
+
+    def check_setup(self, context, *, negotiation=None, archivers=()) -> None:
+        self.checks.append((dict(context), negotiation, tuple(archivers)))
+        if self.refusal is not None:
+            raise self.refusal
+
+
+class TestCheckSetup:
+    """``Environment.check_setup`` (§4.3): what setup would refuse, refused without setting up."""
+
+    def test_each_checking_capability_gets_its_own_slice(self) -> None:
+        checking, docker = Checkingish(), Dockerish()
+        env = _env(checking, docker)
+
+        env.check_setup(
+            {
+                "start_url": "https://a.example",
+                "image": "swe:latest",
+                "f8s_checkingish": {"timeout": 5},
+            },
+            negotiation={"f8s_dockerish.terminal"},
+        )
+
+        assert checking.checks == [
+            ({"start_url": "https://a.example", "timeout": 5}, {"f8s_dockerish.terminal"}, ())
+        ]
+        assert checking.got == {} and docker.got == {}, "nothing was set up"
+        assert checking._negotiated_fragments is None, "the negotiation was not applied"
+
+    def test_an_unknown_key_is_refused_before_any_capability_checks(self) -> None:
+        checking = Checkingish()
+        env = _env(checking, Dockerish())
+        with pytest.raises(ValueError, match="strat_url"):
+            env.check_setup({"strat_url": "https://a.example"})
+        assert checking.checks == []
+
+    def test_a_capability_s_refusal_propagates(self) -> None:
+        checking = Checkingish()
+        checking.refusal = RuntimeError("tier ↔ provider")
+        with pytest.raises(RuntimeError, match="tier ↔ provider"):
+            _env(checking).check_setup()
+
+    def test_archivers_go_to_the_capability_that_provides_them(self) -> None:
+        from spectragent.core.environments.errors import UnroutableArchiverError
+        from tests._helpers.archive_fakes import (
+            FakeArchivingCapability,
+            FakeOrphanArchiver,
+            FakeStepArchiver,
+        )
+
+        class _Checking(FakeArchivingCapability):
+            __abstract__ = True
+
+            def check_setup(self, context, *, negotiation=None, archivers=()) -> None:
+                self.__dict__["checked"] = tuple(archivers)
+
+        cap, steps = _Checking(), FakeStepArchiver()
+        env = _env(cap, Checkingish())
+        env.check_setup(archivers=[steps])
+        assert cap.__dict__["checked"] == (steps,)
+        assert cap.bind_calls == 0, "checking binds nothing"
+        with pytest.raises(UnroutableArchiverError):
+            env.check_setup(archivers=[FakeOrphanArchiver()])

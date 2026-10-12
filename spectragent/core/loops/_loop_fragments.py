@@ -118,6 +118,15 @@ def loop_fragment_builders(
     }
 
 
+#: The loop-source fragment keys :func:`loop_fragment_builders` builds — read
+#: off the function itself, so the two cannot drift. ``AgentLoopBase`` declares
+#: them as every Loop's default ``__loop_fragments__``: what negotiation may
+#: activate on the Loop's side (``docs/architecture_design.md`` §4.4).
+LOOP_FRAGMENT_KEYS: frozenset[str] = frozenset(
+    loop_fragment_builders(task="", step=0, max_steps=0, today="", history=(), prev_step=None)
+)
+
+
 def pinned_step_info(recorded: StepInfoObs, *, today_override: str | None) -> tuple[int, str]:
     """``(max_steps, today)`` a re-told step is shown: what it recorded, ``today_override`` winning.
 

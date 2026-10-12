@@ -4,8 +4,13 @@ What *may* be configured is constrained by the generated config; whether
 the chosen pieces can **cooperate** is decided here (the 2026-09-24 ruling),
 in one function that reports every problem at once and names both parties
 in each line — the strategy or archiver on one side, the provider or knob on
-the other. ``BrowserCapability.setup`` runs it before it launches anything;
-``bind_archivers`` runs the rows it can already decide at ``prepare()``.
+the other. Every row is decided by configuration and task data alone, so
+all of them are refused at ``prepare()``: ``BrowserCapability.check_setup``
+(called through ``Environment.check_setup`` with the task's setup context
+and the archivers about to be bound) runs :func:`cooperation_problems`, with
+a replay's consistency check beside it. ``bind_archivers`` runs the binding
+rows again when it binds, and ``setup`` runs ``check_setup`` once more
+before it launches anything — defensive re-checks of the same function.
 
 The rows this module owns:
 
@@ -39,12 +44,12 @@ The rows this module owns:
   nothing to drain the archive scope. :func:`binding_problems` is this group
   — plus, when any archiver is bound, the network source's
   configuration-decidable rows (which archivers fit the source, isolation):
-  ``bind_archivers`` runs it at ``prepare()``, before it changes the
-  binding.
+  ``bind_archivers`` runs it before it changes the binding.
 
 Whether a replay's *source run* matches this configuration is the replay
-layer's check (``replay/consistency.py``), run by setup after the archive is
-opened and folded into the same error.
+layer's check (``replay/consistency.py``): ``check_setup`` reads the source
+run's environment fingerprint (``load_fingerprint``, no index) and folds the
+check into the same error.
 """
 
 from collections.abc import Sequence
@@ -125,6 +130,25 @@ def _archiver_name(archiver: BrowserArchiverBase) -> str:
 
 def _source_name(source: Any) -> str:
     return f"network_source: {getattr(source, 'source_id', type(source).__name__)}"
+
+
+def browser_archivers(archivers: Sequence[Any]) -> list[BrowserArchiverBase]:
+    """*archivers* as browser archivers, in order — anything else refused by name.
+
+    Raises:
+        TypeError: An archiver that is not a ``BrowserArchiverBase``.
+    """
+    foreign = sorted(
+        str(getattr(a, "archiver_id", a))
+        for a in archivers
+        if not isinstance(a, BrowserArchiverBase)
+    )
+    if foreign:
+        raise TypeError(
+            f"BrowserCapability can only bind browser archivers; got {foreign} "
+            f"(not BrowserArchiverBase)."
+        )
+    return [a for a in archivers if isinstance(a, BrowserArchiverBase)]
 
 
 def recorder_needs(cap: CooperatingCapability) -> list[str]:
@@ -322,12 +346,13 @@ def binding_problems(
     cdp_url: str | None,
     injected_client: bool,
 ) -> list[str]:
-    """The rows binding *archivers* decides — what ``bind_archivers`` refuses at ``prepare()``.
+    """The rows binding *archivers* decides — what ``bind_archivers`` refuses before it binds.
 
-    ``cdp_url`` is what is known by then: the capability's ``cdp_url`` knob
-    (setup checks again with the task's). With any archiver bound, the
-    network source's configuration rows (which archivers fit the source,
-    isolation) are decided here too.
+    ``cdp_url`` is the endpoint in effect: ``bind_archivers`` passes the
+    capability's ``cdp_url`` knob; :func:`cooperation_problems` (``prepare()``
+    through ``check_setup``, and setup) passes the task context's when it
+    names one. With any archiver bound, the network source's configuration
+    rows (which archivers fit the source, isolation) are decided here too.
     """
     backend = cap.resolved_backend()
     problems: list[str] = []
@@ -353,18 +378,20 @@ def cooperation_problems(
     cdp_url: str | None,
     injected_client: bool,
     replay_archive: str | None = None,
+    archivers: Sequence[BrowserArchiverBase] | None = None,
 ) -> list[str]:
     """Every reason this capability's configuration cannot run, at once.
 
-    ``cdp_url`` is the explicit endpoint in effect (setup's argument or the
-    ``cdp_url`` knob); ``injected_client`` whether a test injected the
+    ``cdp_url`` is the explicit endpoint in effect (the task context's or
+    the ``cdp_url`` knob); ``injected_client`` whether a test injected the
     control client; ``replay_archive`` the task's source run directory, if
-    any. Empty when everything cooperates.
+    any; ``archivers`` the archivers bound — or about to be bound, when
+    ``prepare()`` checks before it binds — and by default the capability's
+    current binding. Empty when everything cooperates.
     """
+    bound = tuple(cap.bound_archivers if archivers is None else archivers)
     backend = None if cdp_url or injected_client else cap.resolved_backend()
-    problems = binding_problems(
-        cap, cap.bound_archivers, cdp_url=cdp_url, injected_client=injected_client
-    )
+    problems = binding_problems(cap, bound, cdp_url=cdp_url, injected_client=injected_client)
     source = cap.network_source
     if source.intercepts:
         problems.extend(
@@ -375,7 +402,7 @@ def cooperation_problems(
                 injected_client=injected_client,
             )
         )
-        if not cap.bound_archivers:
+        if not bound:
             problems.extend(_source_rows(cap, (), backend))
         if not replay_archive:
             problems.append(
@@ -427,7 +454,8 @@ def planned_launch_flags(
     ``None`` when nothing would be launched with known flags: an explicit
     endpoint, an injected client, or a provider that does not take launch
     switches (``LAUNCH_ARGS`` / ``LaunchArgsProvider``). A replay compares
-    these with its source run's at setup (``replay/consistency.py``).
+    these with its source run's in ``check_setup`` (``replay/consistency.py``)
+    and records them in its fingerprint at setup.
     """
     if cdp_url or injected_client:
         return None

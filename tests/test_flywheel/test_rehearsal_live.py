@@ -121,7 +121,10 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     reasons = {
         tuple(f["reasons"]) for f in metrics["same_path_fidelity"]["overall"]["first_failures"]
     }
-    assert reasons == {("document_miss", "screenshot_distance")}
+    # A document miss every time. Whether the screenshot check fails too depends on the
+    # dHash distance between Chrome's error page and the recorded story page: it sits at
+    # the 5-bit threshold and moves with the time-origin digits the error page names.
+    assert reasons and reasons <= {("document_miss",), ("document_miss", "screenshot_distance")}
     chain = open_chain(rehearsal.layout)
     drift_misses = [
         entry.url

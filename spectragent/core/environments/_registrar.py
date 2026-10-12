@@ -29,6 +29,7 @@ from spectragent.core.capabilities.base import (
     CaptureCheck,
     CaptureComparison,
     RestorationSupport,
+    SetupCheck,
 )
 from spectragent.core.environments.base import Environment
 from spectragent.core.environments.errors import (
@@ -433,23 +434,14 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 
     # ── Archive: routing the binding, collecting the evidence ─
 
-    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
-        """Route each archiver to its capability by key prefix, then bind.
+    def _archiver_groups(self, archivers: Sequence[ArchiverBase]) -> dict[str, list[ArchiverBase]]:
+        """Each archiver under the ``capability_id`` its key's prefix names, in the order given.
 
-        Validate first, bind second. Every archiver is checked before any
-        capability is called — its key's leading segment must name a
-        capability here (the same routing :meth:`act` uses), that
-        capability must implement the archiving surface, and it must
-        provide the key — and every problem is reported in one
-        :class:`UnroutableArchiverError`, with nothing bound. Only then
-        does **every** archiving capability receive its group, in the
-        order given: the ones that get none receive an empty list, which
-        clears whatever an earlier call bound.
-
-        Binding acquires nothing. ``AgentRuntime.prepare`` makes this its
-        last statement — on a dry run that never sets up, too — and a
-        capability reads the binding in ``setup()`` to decide whether to
-        build its capture channel.
+        The routing :meth:`bind_archivers` binds by and :meth:`check_setup`
+        checks by: the prefix must name a capability here (the routing
+        :meth:`act` uses), that capability must implement the archiving
+        surface, and it must provide the key. Every problem is collected
+        before anything is returned.
 
         Raises:
             UnroutableArchiverError: Naming every key that cannot be bound
@@ -478,6 +470,31 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
                 groups.setdefault(prefix, []).append(archiver)
         if problems:
             raise UnroutableArchiverError(problems, capability_ids=frozenset(by_cap))
+        return groups
+
+    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
+        """Route each archiver to its capability by key prefix, then bind.
+
+        Validate first, bind second. Every archiver is checked before any
+        capability is called — its key's leading segment must name a
+        capability here (the same routing :meth:`act` uses), that
+        capability must implement the archiving surface, and it must
+        provide the key — and every problem is reported in one
+        :class:`UnroutableArchiverError`, with nothing bound. Only then
+        does **every** archiving capability receive its group, in the
+        order given: the ones that get none receive an empty list, which
+        clears whatever an earlier call bound.
+
+        Binding acquires nothing. ``AgentRuntime.prepare`` makes this its
+        last statement — on a dry run that never sets up, too — and a
+        capability reads the binding in ``setup()`` to decide whether to
+        build its capture channel.
+
+        Raises:
+            UnroutableArchiverError: Naming every key that cannot be bound
+                and why.
+        """
+        groups = self._archiver_groups(archivers)
 
         # Reset first, record as each bind succeeds: should a capability's
         # own bind raise half way, collection only ever reaches the
@@ -797,6 +814,55 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 
     # ── Lifecycle ─────────────────────────────────────────────
 
+    def check_setup(
+        self,
+        context: Mapping[str, Any] | None = None,
+        *,
+        negotiation: Any = None,
+        archivers: Sequence[ArchiverBase] = (),
+    ) -> None:
+        """Refuse now, acquiring nothing, what :meth:`setup` would refuse for this task.
+
+        ``AgentRuntime.prepare()`` calls this with the task's setup context,
+        the observation negotiation result and the archivers it is about to
+        bind (``docs/architecture_design.md`` §4.3 "setup 之前的检查"), so a
+        configuration that cannot run fails before the trace is opened and
+        before anything is launched — on a dry run too. In order, each step
+        raising on its own:
+
+        1. the capability set must route (:meth:`_by_capability_id`);
+        2. every context key must be one some capability's ``setup()``
+           declares (:meth:`route_setup_context`, the routing setup uses);
+        3. every archiver must route to an archiving capability that
+           provides it (:meth:`_archiver_groups`, the routing
+           :meth:`bind_archivers` uses);
+        4. every capability implementing
+           :class:`~spectragent.core.capabilities.base.SetupCheck` checks
+           its own slice — its routed context and its archivers — in
+           capability order. A capability without the protocol is checked
+           for routing only.
+
+        Changes nothing: no capability is set up, bound or narrowed.
+
+        Raises:
+            ValueError: A colliding capability set, or a context key no
+                capability accepts.
+            UnroutableArchiverError: An archiver that cannot be bound here.
+            Exception: A capability's own refusal (browser:
+                ``BrowserCooperationError``, naming both parties of every
+                problem).
+        """
+        self._by_capability_id()
+        routed = self.route_setup_context(context or {})
+        groups = self._archiver_groups(archivers)
+        for inst_id, cap in self.capabilities.items():
+            if isinstance(cap, SetupCheck):
+                cap.check_setup(
+                    routed[inst_id],
+                    negotiation=negotiation,
+                    archivers=groups.get(cap.capability_id, []),
+                )
+
     async def setup(
         self,
         context: Mapping[str, Any] | None = None,
@@ -812,7 +878,9 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         :meth:`route_setup_context` for the routing rules.
         """
         # Before anything is acquired: a capability set that cannot be
-        # routed is a config error, not a runtime surprise.
+        # routed is a config error, not a runtime surprise. ``prepare()``
+        # refused it already (:meth:`check_setup` routes the same way); this
+        # is the same routing again, for a caller that sets up directly.
         self._by_capability_id()
         routed = self.route_setup_context(context or {})
         for inst_id, cap in self.capabilities.items():

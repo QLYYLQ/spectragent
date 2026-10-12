@@ -45,6 +45,23 @@ def _wiring_keys_for(cls: type, registry_name: str) -> frozenset[str]:
     return frozenset()
 
 
+def negotiated_fragment_keys(negotiation: Any) -> frozenset[str] | None:
+    """The env-source fragment keys an observation negotiation activated, or ``None``.
+
+    Accepts an ``ObservationNegotiationResult`` (duck-typed on
+    ``env_sourced`` / ``active_fragments``) or a bare iterable of fragment
+    keys; ``None`` gives ``None`` (no narrowing). One reading for
+    :meth:`CapabilityBase.apply_negotiation` and for a capability's setup
+    check, which reads the negotiation without recording it.
+    """
+    if negotiation is None:
+        return None
+    keys = getattr(negotiation, "env_sourced", None)
+    if keys is None:
+        keys = getattr(negotiation, "active_fragments", negotiation)
+    return frozenset(keys)
+
+
 CapabilityRegistrar = create_registrar(
     "capability",
     BaseCapability,
@@ -157,15 +174,10 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
         fragment keys. ``None`` clears the narrowing.
 
         Kept structural rather than importing the negotiation package so
-        the capability layer stays free of a dependency on it.
+        the capability layer stays free of a dependency on it
+        (:func:`negotiated_fragment_keys`).
         """
-        if negotiation is None:
-            self._negotiated_fragments = None
-            return
-        keys = getattr(negotiation, "env_sourced", None)
-        if keys is None:
-            keys = getattr(negotiation, "active_fragments", negotiation)
-        self._negotiated_fragments = frozenset(keys)
+        self._negotiated_fragments = negotiated_fragment_keys(negotiation)
 
     @property
     def provided_actions(self) -> frozenset[str]:

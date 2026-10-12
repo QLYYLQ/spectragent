@@ -157,15 +157,17 @@ uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
   `watchdogs_exclude` lists `archive` refuses every bound archiver, because nothing would
   drain the archive scope.
 - Each problem names both sides, and each check reports all of its problems in one
-  `BrowserCooperationError`. `bind_archivers` raises what binding decides at the end of
-  `prepare()`, on a `spectragent-run --dry-run` too: the rows about bound archivers and,
-  with any archiver bound, the network source's rows (which archivers fit it, isolation).
-  Setup checks
-  everything again before Chrome starts, the tier's rows and the network source's
-  ownership rows included (architecture §4.14, "协作检查一览").
+  `BrowserCooperationError`. Every row is decided by configuration and task data, so all of
+  them are raised at `prepare()`, before the trace is opened, on a `spectragent-run
+  --dry-run` too: `BrowserCapability.check_setup` (through `Environment.check_setup`, with
+  the task's setup context and the archivers about to be bound) runs the whole check, the
+  tier's rows, the network source's rows and a replay's consistency included.
+  `bind_archivers` re-checks the binding rows before it binds, and setup re-checks
+  everything before Chrome starts (architecture §4.14, "协作检查一览"). `spectragent-bench`
+  runs `prepare()` once for the first task before the sweep (the pre-flight): a refused
+  configuration runs no task, opens no trace and exits 2.
 - `browser.network` has `require_replayable` (default true), so binding it under
-  `replayability: "off"` raises `BrowserCooperationError` from `bind_archivers` at the end
-  of `prepare()`. To archive an evaluation run as it is, write
+  `replayability: "off"` raises `BrowserCooperationError` at `prepare()`. To archive an evaluation run as it is, write
   `- {archiver_id: browser.network, require_replayable: false}` in `trace_writer.archive`.
   That archive was recorded with unpinned randomness and clocks and may not replay.
   `browser.storage` and `browser.dom_raw` have no such knob.
@@ -197,10 +199,11 @@ uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
   relative to the launch directory: `AgentRuntime.execute` makes it absolute
   (`schemas/task.py::resolve_env_context_paths`) before it is recorded as `task_setup` and
   handed to setup, for every caller — `spectragent-run`, a task loader, a Python caller
-  building `env_context` itself. The `archive` source without it is a `BrowserCooperationError` row at setup
+  building `env_context` itself; `prepare()` checks the absolute one. The `archive` source
+  without it is a `BrowserCooperationError` row at `prepare()`
   (`network_source: archive ↔ task context: no replay_archive`), and so is `live` with it.
   A path that is not a committed run directory (not a directory, or no `manifest.json`)
-  raises `ArchiveOpenError` from `open_archive`, also before Chrome starts.
+  raises `ArchiveOpenError` from `open_archive`, also at `prepare()`.
 - A replay opens the recorder connection, so the ownership rules of §2.1 apply: it runs
   only on `local_chrome`, never on a cloud provider or an explicit `cdp_url`.
 - A replay binds `browser.replay_log` where a recording binds `browser.network`; the other
@@ -211,15 +214,16 @@ uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
   by id, and names both sides in each row:
   - an `archive` source without an archiver with the `replay_log` need:
     `network_source: archive ↔ bound archivers [...]: none records the replay log`, raised
-    by `bind_archivers` at `prepare()` when other archivers are bound and by setup when
-    none are;
+    at `prepare()` whether other archivers are bound or none are;
   - an `archive` source with an archiver with the `fetch_response` need (`browser.network`):
     `network_source: archive ↔ archiver browser.network: the archiver records live
     traffic, and a replay has none ...; bind browser.replay_log instead`;
   - a `live` source with `browser.replay_log`: `network_source: live ↔ archiver
     browser.replay_log: ... a live source replays nothing`.
-- Before Chrome starts, setup opens the source through its manifest and compares its
-  fingerprint (`env/run.browser.json`) with this configuration: the tier and its parameters
+- At `prepare()`, `check_setup` opens the source through its manifest and compares its
+  fingerprint (`env/run.browser.json`, read by `archive_index.load_fingerprint`: no index
+  line, no WARC record) with this configuration; setup compares again before Chrome starts,
+  then loads the whole archive to serve it: the tier and its parameters
   except `base_time`, `shim_sha256`, the viewport, and the launch-flag digest with the
   network-routing switches stripped on both sides. A mismatch refuses the run. A different
   Chrome version, an unpinned user agent or a changed redaction policy only warns, in the
@@ -576,9 +580,9 @@ already collected; regenerate all the same.
   first.
 - Isolation is the source's own property. Do not add a provider boolean beside it.
 - Rules about whether a configuration can work go into `browser/cooperation.py`: one
-  function, every problem naming both sides, all reported together, at `bind_archivers` when
-  knowable and again at setup. What must match the source run goes into
-  `replay/consistency.py`.
+  function, every problem naming both sides, all reported together, at `prepare()` (through
+  `check_setup`) and again at `bind_archivers` and setup. What must match the source run
+  goes into `replay/consistency.py`, read against the source's fingerprint only.
 - A source with a receptor of its own (`archive` carries `miss_policy`) is not a dataclass.
   It hand-writes `__init__`, declares the receptor as a class annotation with a `default_*()`
   factory, uses `from __future__ import annotations` for the stub, and types nested knobs as
@@ -873,9 +877,10 @@ value on an existing one.
 | Every browser block fails validation with `Extra inputs are not permitted` on `replayability`, `network_source`, `mouse_trajectory` and the other receptors | A key in `BrowserCapability.__wiring__`, such as a new archiver's, names a class that never registered, and conscribe dropped the capability's whole wiring. Look in the log for `Failed to import module`: `discover()` skips a module whose import raises `ImportError` or `SyntaxError` |
 | Validation says `replayability_id` or `occlusion` is `False` | An unquoted `off` |
 | `Field required` for `step_selector`, `restorer`, `translator`, `miss_policy`, `network_source` or `replayability` | Write the receptor block (§4) |
-| `BrowserCooperationError` at `prepare()` or setup | Architecture §4.14, "协作检查一览"; `browser/cooperation.py` (`binding_problems`, `cooperation_problems`). Each line names both sides |
+| `BrowserCooperationError` at `prepare()` (or setup, for a caller that skipped `prepare()`) | Architecture §4.14, "协作检查一览"; `browser/cooperation.py` (`binding_problems`, `cooperation_problems`), run by `BrowserCapability.check_setup`. Each line names both sides |
+| `spectragent-bench` exits 2: `the pre-flight check refused the configuration for task ...` | The first task's `prepare()` refused the stage YAML before any task ran; the original error follows the colon and names both sides. Check one task with `spectragent-run --dry-run` (`--replay-archive DIR` for a replay) |
 | `BrowserCooperationError` naming `browser.network` or `browser.replay_log` beside the network source | A replay binds `browser.replay_log` in `browser.network`'s place; a live run binds no `browser.replay_log` (§2.2) |
-| A replay refused before Chrome starts, naming the tier, shim, viewport or launch flags | `replay/consistency.py::consistency_problems`. The replay YAML must match the recording's tier, seed, user agent, viewport and provider switches |
+| A replay refused at `prepare()`, naming the tier, shim, viewport or launch flags | `replay/consistency.py::consistency_problems`. The replay YAML must match the recording's tier, seed, user agent, viewport and provider switches |
 | `ArchiveOpenError` | `replay_archive` is not a run directory with a committed manifest |
 | `ReplayArchiveError` | An index line or WARC record of the source does not read back; the source run is damaged |
 | `RecorderLostError` | The recorder connection dropped, and observation, action and collection fail closed. Look at Chrome, not at the archive |

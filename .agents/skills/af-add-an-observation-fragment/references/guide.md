@@ -72,9 +72,14 @@ survive a JSON round trip. It **used to be a `@property`**, which meant
 
 - `"env"` — a Capability resolver produces it. `EnvironmentBase.observe` fills it.
 - `"loop"` — the Loop produces it after `observe()` returns, through
-  `populate_loop_fragments` (`spectragent/core/loops/_loop_fragments.py:27`).
+  `populate_loop_fragments` (`spectragent/core/loops/_loop_fragments.py`).
   Examples: `loop.task`, `loop.step_info`, `loop.history`, `loop.action_result`
-  in `spectragent/schemas/observation/fragments.py`.
+  in `spectragent/schemas/observation/fragments.py`. Registering one is not enough:
+  negotiation offers a loop-source fragment only from a Loop whose `__loop_fragments__`
+  declares it (`AgentLoopBase` defaults to `LOOP_FRAGMENT_KEYS`, the keys
+  `loop_fragment_builders` builds). Add the builder and the declaration on every Loop that
+  builds it; an agent requiring it from a Loop that does not is refused at `prepare()`,
+  naming the fragment and the Loop.
 
 Loop-sourced slots are generated as `Fragment | None` with `default=None` so
 `env.observe()` can construct the model before the Loop fills them

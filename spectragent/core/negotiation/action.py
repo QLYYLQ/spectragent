@@ -162,13 +162,14 @@ def negotiate_action(agent: Any, env: Any) -> ActionNegotiationResult:
     Symmetric to observation: the agent's half comes from
     :func:`~spectragent.core.negotiation._base.demand_of`, so an instance
     narrowing inside its class's declared space is the same mechanism on
-    both axes rather than a special case on one.
+    both axes rather than a special case on one. *env* is ``None`` in an
+    env-less run and provides nothing, as on the observation axis.
     """
     return negotiate(
         ActionNegotiationResult,
         "action",
         _action_rules,
         agent=demand_of(agent, "action"),
-        env_provides=set(env.provided_actions),
+        env_provides=set(env.provided_actions) if env is not None else set(),
         agent_source=demand_label(agent),
     )

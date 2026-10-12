@@ -38,6 +38,10 @@ the file and line); a line whose WARC record is missing or is not what the
 line says is :class:`ReplayArchiveError`, naming the source run, the file and
 the record. Either fails setup before Chrome starts.
 
+:func:`load_fingerprint` reads only the fingerprint (and counts the
+``index.jsonl`` files): the consistency check ``prepare()`` runs needs nothing
+else, so it opens no WARC and parses no index line.
+
 :func:`iter_index_lines` is the same line-by-line read, handed out as
 ``(step, line)`` — the read the replay loads with and the offline readers of
 the archive (``archive_stats.py``, the flywheel metrics, §4.16) share, so a
@@ -612,18 +616,50 @@ def load_archive(reader: ArchiveReader, rules: SiteRules | None = None) -> Recor
             continue
         records.append(record)
 
-    tier = fingerprint.get("replayability") if fingerprint is not None else None
-    t0_ms = tier.get("t0_ms") if isinstance(tier, dict) else None
     return RecordedArchive(
         run_id=run_id,
         fingerprint=fingerprint,
         fingerprint_sha256=fingerprint_sha256,
-        t0_ms=t0_ms if isinstance(t0_ms, int) and not isinstance(t0_ms, bool) else None,
+        t0_ms=_t0_ms(fingerprint),
         index=ArchiveIndex(records, RangeMap(segments)),
         rules=rules,
         network_files=network_files,
         store=PayloadStore(reader, warcs),
     )
+
+
+def load_fingerprint(reader: ArchiveReader) -> RecordedArchive:
+    """*reader*'s environment fingerprint, its T0 and its network file count — no index, no bodies.
+
+    What the consistency check reads of a source run, cheaply: the run
+    record (``archive_run_file("browser")``) and how many ``index.jsonl``
+    files the run committed, never an index line or a WARC record. The
+    result has an empty index and no store, so it matches and serves
+    nothing: ``BrowserCapability.check_setup`` checks a replay against it at
+    ``prepare()`` (§4.14), and setup loads the whole archive with
+    :func:`load_archive` to serve it.
+
+    Raises:
+        ReplayArchiveError: The fingerprint is not a JSON object.
+    """
+    run_id = reader.run_id
+    fingerprint, fingerprint_sha256 = _fingerprint(reader, run_id)
+    commits = _commits(reader.iter_archive(NETWORK_ARCHIVER, include_trailing=True))
+    return RecordedArchive(
+        run_id=run_id,
+        fingerprint=fingerprint,
+        fingerprint_sha256=fingerprint_sha256,
+        t0_ms=_t0_ms(fingerprint),
+        index=ArchiveIndex([]),
+        network_files=sum(1 for commit in commits if INDEX_NAME in commit.files),
+    )
+
+
+def _t0_ms(fingerprint: dict[str, Any] | None) -> int | None:
+    """The recording's T0 (``replayability.t0_ms``), when the fingerprint carries an integer one."""
+    tier = fingerprint.get("replayability") if fingerprint is not None else None
+    t0_ms = tier.get("t0_ms") if isinstance(tier, dict) else None
+    return t0_ms if isinstance(t0_ms, int) and not isinstance(t0_ms, bool) else None
 
 
 def _fingerprint(reader: ArchiveReader, run_id: str) -> tuple[dict[str, Any] | None, str | None]:

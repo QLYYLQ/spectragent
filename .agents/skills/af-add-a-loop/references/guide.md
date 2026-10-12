@@ -64,16 +64,18 @@ Pydantic validation, never at runtime.
 
 ### Where your Loop is picked up
 
-`AgentRuntime.prepare` (`core/runtime.py:315-455`), in order: slot validation (`:346`) →
-observation negotiation (`:349`) → action negotiation (`:357`) → memory-protocol
-negotiation (`:361`, reads your `__required_message_protocols__`) → archive negotiation
-(`:363-380`; validation only, and only when a hook declares a non-empty `archive`) → AOP
-weaving of agent/env/llm/recorder (`:384-393`) → `build_guarded_act` (`:411`) →
-`loop.weave` (`:419`) → intercept audit (`:437`) → `env.bind_archivers` (`:453`, the last
-statement, on the raw environment; again only when a hook archives). Your Loop's
-observation demand goes in **unnarrowed**: an agent may narrow its own half per mode, but
-"cannot excuse itself from a fragment the Loop needs"
-(`core/negotiation/observation.py:245-272`).
+`AgentRuntime.prepare` (`core/runtime.py`), in order: slot validation → loop inputs
+(`__loop_inputs__`) → your `__requires_env__` (no environment and `True`, the default:
+`MissingEnvironmentError`, naming your Loop) → observation negotiation (the Loop side offers
+your `__loop_fragments__`) → action negotiation → memory-protocol negotiation (reads your
+`__required_message_protocols__`) → archive negotiation (validation only, and only when a
+hook declares a non-empty `archive`) → the environment's setup check
+(`Environment.check_setup` with the task's setup context: what setup would refuse, refused
+before the trace is opened) → AOP weaving of agent/env/llm/recorder → `build_guarded_act`
+→ `loop.weave` → intercept audit → `env.bind_archivers` (the last statement, on the raw
+environment; again only when a hook archives). Your Loop's observation demand goes in
+**unnarrowed**: an agent may narrow its own half per mode, but "cannot excuse itself from a
+fragment the Loop needs" (`core/negotiation/observation.py`).
 
 > **Known document drift:** `docs/architecture_design.md` §4.8 still describes memory
 > protocol negotiation as future work, while `AgentRuntime.prepare()` currently calls
@@ -85,6 +87,20 @@ Minimum new Loop: subclass `AgentLoopBase`, set `__registry_key__`, `__required_
 `__requires_env__`, implement `async def _execute(self, agent, task, *, ctx, **kwargs)`
 returning an `AgentResult`. Registration is automatic via the conscribe metaclass
 (`tests/test_core/test_loops/test_loop_registration.py`).
+
+Two class declarations `prepare()` reads, both defaulted on `AgentLoopBase`
+(architecture §4.1 "Loop 的两条类级声明"):
+
+- `__requires_env__ = True`: a run without an environment is refused by name. Declare
+  `False` only if your Loop really runs env-less; the missing environment then provides
+  nothing, so an agent needing an environment fragment or action is refused by
+  negotiation, and the run has no action space.
+- `__loop_fragments__`: the loop-source fragments your Loop fills after `env.observe()`.
+  The default is `LOOP_FRAGMENT_KEYS`, the four `loop_fragment_builders` builds (§8). If
+  your Loop builds others, or none, say so: negotiation offers only these on the Loop's
+  side, so an agent requiring a loop-source fragment your Loop does not build is refused
+  at `prepare()`, naming the fragment and your Loop, instead of failing at step 0 on a
+  missing builder.
 
 ## 2. Where a knob belongs — the worked example
 
@@ -476,7 +492,9 @@ parse_retries_per_step: Annotated[
   checkpoint (`pinned_step_info(recorded, today_override=...)`: the recorded `max_steps` and
   `today`, `today_override` winning), and the export's student renderer the values each
   recorded step was shown. A Loop that needs different values passes different arguments
-  and never writes a second copy of the construction.
+  and never writes a second copy of the construction. `LOOP_FRAGMENT_KEYS` is read off
+  this function, and it is `AgentLoopBase.__loop_fragments__`'s default; a new loop-source
+  fragment goes into the builders and into the declaration of every Loop that builds it.
 - **The memory protocol has a third user.** The export writes each earlier assistant turn
   of a student context through `ReactLoop._remember_reply(memory, text, [])`, the same
   method the live step and `BranchLoop`'s replay use, and seeds each context segment with

@@ -27,6 +27,7 @@ from conscribe import create_registrar
 from pydantic import Field
 
 from spectragent.agents.memory.protocols import MessageProtocol
+from spectragent.core.loops._loop_fragments import LOOP_FRAGMENT_KEYS
 from spectragent.core.loops.base import AgentLoop
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.loops.validation import IncompatibleError, IncompatibleLoopInputError
@@ -72,10 +73,21 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     - ``__optional_slots__``: set of agent method names used if present
 
     Optionally:
-    - ``__requires_env__``: whether this loop needs an Environment (default True)
+    - ``__requires_env__``: whether this loop needs an Environment (default
+      True). ``AgentRuntime.prepare()`` refuses a run without one
+      (``MissingEnvironmentError``); a Loop declaring False runs env-less,
+      and negotiation then treats the missing environment as providing
+      nothing.
     - ``__loop_inputs__``: the per-task inputs it accepts, name ->
       :class:`LoopInput` (default: none). A plain ``dict`` in a subclass
       body is frozen into a read-only mapping when the class is created.
+    - ``__loop_fragments__``: the loop-source fragment keys it fills in
+      after ``env.observe()`` (default: the four the shared
+      ``_loop_fragments.loop_fragment_builders`` builds, which every shipped
+      Loop populates through). Observation negotiation offers only these on
+      the Loop's side, so an agent requiring another loop-source fragment is
+      refused at ``prepare()``, naming the fragment and the Loop. A Loop
+      that builds other loop-source fragments, or none, overrides it.
 
     ``weave()`` hands runtime deps to ``_execute`` as the ``ctx``
     parameter. Nothing is stored on the loop instance, so the same loop
@@ -103,6 +115,7 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     __required_message_protocols__: ClassVar[frozenset[MessageProtocol]] = frozenset()
     __requires_env__: ClassVar[bool] = True
     __loop_inputs__: ClassVar[Mapping[str, LoopInput]] = MappingProxyType({})
+    __loop_fragments__: ClassVar[frozenset[str]] = LOOP_FRAGMENT_KEYS
 
     id: Annotated[
         str | None,
@@ -117,6 +130,15 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
+        fragments = cls.__dict__.get("__loop_fragments__")
+        if fragments is not None:
+            # Frozen where it is written, like the inputs below: a bare string
+            # (iterated character by character) fails at import.
+            if isinstance(fragments, str) or not all(isinstance(key, str) for key in fragments):
+                raise TypeError(
+                    f"{cls!r}: __loop_fragments__ must be a set of fragment keys, got {fragments!r}"
+                )
+            cls.__loop_fragments__ = frozenset(fragments)
         declared = cls.__dict__.get("__loop_inputs__")
         if declared is None:
             return
