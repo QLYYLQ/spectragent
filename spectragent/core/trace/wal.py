@@ -35,6 +35,13 @@ No ``F_FULLFSYNC`` at the commit point on macOS. Measured at ~5.2–5.4 ms
 per call against ~0.06–0.14 ms for ``os.fsync``, it would add ~8.5 s to the
 test suite's ~1,600 manifest commits (~10 % of an ~85 s run), for a
 guarantee that applies only on the platform the WAL is least often run on.
+
+TODO(linux): every cost above was calibrated on macOS APFS only, where
+``os.fsync`` does not flush the device cache; ext4 and xfs, where it does,
+have not been measured. The 1000-file commit budget is an assertion of the
+benchmark test alone (``SPECTRAGENT_WAL_COMMIT_BUDGET_S`` overrides it);
+nothing enforces it at run time, so a slower disk makes a commit slower,
+never failed (``docs/architecture_design.md`` §5.2).
 """
 
 from __future__ import annotations

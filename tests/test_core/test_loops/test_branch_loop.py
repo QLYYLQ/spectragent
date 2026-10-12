@@ -378,7 +378,10 @@ class _OtherReact(ReactLoop):
 def teardown_module() -> None:
     from spectragent.core.loops import AgentLoopRegistrar
 
-    AgentLoopRegistrar.unregister("test_branch_other_react")
+    # Idempotent: pytest tears a module down once per contiguous run of its
+    # tests, so a selection that interleaves files tears this one down twice.
+    if AgentLoopRegistrar.get_or_none("test_branch_other_react") is not None:
+        AgentLoopRegistrar.unregister("test_branch_other_react")
 
 
 class _NarrowAgent(BranchFakeAgent):

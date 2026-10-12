@@ -26,6 +26,11 @@ recorded. What batching saves is only the directory ``fsync``: one per
 directory covers every entry written under it (``docs/architecture_design.md``
 §5.2).
 
+TODO(linux): what these ``fsync`` calls cost was measured on macOS APFS
+only, where ``os.fsync`` does not flush the device cache; ext4 and xfs have
+not been measured. ``SPECTRAGENT_WAL_COMMIT_BUDGET_S`` overrides the one
+budget that depends on it, the 1000-file benchmark test's.
+
 **Directory ``fsync`` errors are not swallowed.** The only tolerated
 failures are the ones that mean "this platform or filesystem cannot
 ``fsync`` a directory": Windows, which cannot open one, and ``EINVAL`` /

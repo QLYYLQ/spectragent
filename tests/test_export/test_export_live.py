@@ -231,7 +231,6 @@ def _record_browser_use(
     script = [branch_driver.click("partial"), branch_driver.click("clear"), driver.done("checked")]
     with FixtureSite(mapped=True) as site, ScriptedLLMServer(script) as llm:
         raw = driver.record_config(site=site, llm=llm, trace_dir=traces)
-        raw["agent"][0]["llm"]["timeout"] = 60  # as in _record_ui_tars
         raw["environment"][0]["capabilities"][0]["dom_cleaner"] = cleaner
         raw["hook"][0]["archive"] = archive
         outcome = asyncio.run(

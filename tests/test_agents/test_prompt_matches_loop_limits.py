@@ -41,6 +41,20 @@ from spectragent.scripts.generate_all import _collect_registrars
 SHIPPED_CONFIG = Path(__file__).resolve().parents[2] / "configs" / "browser_use_local.yaml"
 
 
+def _shipped_config(*, trace_dir: Path | None = None) -> dict[str, Any]:
+    """The shipped YAML, its trace writer pointed at *trace_dir* when one is given.
+
+    The shipped file records under ``./traces``; a test that executes a run
+    must not leave a trace in the working directory.
+    """
+    raw = yaml.safe_load(SHIPPED_CONFIG.read_text())
+    if trace_dir is not None:
+        for hook in raw.get("hook") or []:
+            if hook.get("hook_id") == "trace_writer":
+                hook["trace_dir"] = str(trace_dir)
+    return raw
+
+
 class _RecordingMemory:
     """Captures the seed messages ``AgentRuntime`` writes after prepare."""
 
@@ -67,7 +81,7 @@ def _message_text(message: Any) -> str:
     return text if isinstance(text, str) else str(getattr(message, "content", message))
 
 
-async def test_runtime_carries_the_loops_limit_into_the_prompt() -> None:
+async def test_runtime_carries_the_loops_limit_into_the_prompt(tmp_path: Path) -> None:
     """End-to-end through ``execute()``: real agent, real loop, real runtime.
 
     The loop's limit is set to a value the agent would never pick on its
@@ -76,8 +90,9 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt() -> None:
     ``execute()`` — makes the prompt advertise 1 while the loop permits the
     probe value, and this fails.
     """
+    traces = tmp_path / "traces"
     composer = ConfigComposer(registrars=_collect_registrars())
-    run = composer.compose(yaml.safe_load(SHIPPED_CONFIG.read_text()))
+    run = composer.compose(_shipped_config(trace_dir=traces))
 
     agent_id = run.ids("agent")[0]
     agent = run.instance("agent", agent_id)
@@ -115,6 +130,8 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt() -> None:
 
     result = await runtime.execute("t", task_id="t-1", raise_on_error=False)
     assert result.agent_done.value == "error"
+    # The run's trace went to the test's own directory, not ./traces.
+    assert traces.is_dir() and any(traces.iterdir()), "the trace writer was not redirected"
 
     system_prompt = _message_text(memory.messages[0])
     advertised = {int(n) for n in re.findall(r"maximum of (\d+) actions", system_prompt)}
@@ -127,7 +144,7 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt() -> None:
 def test_agent_renders_whatever_limit_it_is_handed() -> None:
     """The agent half, in isolation: no hidden default of its own."""
     composer = ConfigComposer(registrars=_collect_registrars())
-    run = composer.compose(yaml.safe_load(SHIPPED_CONFIG.read_text()))
+    run = composer.compose(_shipped_config())
 
     agent = run.instance("agent", run.ids("agent")[0])
     # Real descriptors: browser_use compiles them into a closed output

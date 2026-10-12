@@ -11,13 +11,15 @@ The archiver is a recorder participant twice over:
   body, first-in-first-out, dropped on a cross-process navigation). Tiered by
   the declared ``Content-Length``: up to ``max_inline_body_bytes`` read
   inline (bounded by ``body_read_timeout_s`` — at this stage the read
-  includes the download); above it never read inline (one CDP message caps
-  at 100 MiB and dropping the socket would take the recorder down): a ``GET``
-  of a refetch-safe static type is fetched again after the response was
+  includes the download); above it never read inline: a ``GET`` of a
+  refetch-safe static type is fetched again after the response was
   released, with ``Network.loadNetworkResource`` + ``IO.read`` in ≤ 1 MiB
   chunks up to ``max_streamed_body_bytes`` (``streamed_later``; a ``body``
   index line points the record at a content-addressed blob later), anything
-  else is ``too_large``.
+  else is ``too_large``. The tiers are this archiver's policy, not a
+  transport limit: Chrome caps a CDP message it *reads* at 100 MiB, which
+  binds the replay's fulfil, while a reply it sends may reach 256 MiB
+  (``docs/architecture_design.md`` §4.14, "消息上限").
 - **Metadata from the archive scope.** The session declares the ``Network.*``
   events it consumes; the recorder hands each one to
   :meth:`NetworkSession.admit_event` in its receive loop, which holds the
@@ -99,8 +101,10 @@ from spectragent.core.capabilities.browser.recorder import (
 
 logger = logging.getLogger(__name__)
 
-#: One CDP message to or from Chrome tops out at 100 MiB (S2a), about 75 MiB of
-#: base64 body; the inline tier stays well below it.
+#: The inline tier's upper bound: the replay's default fulfil cap, the most a
+#: replay serves of one body by default. Not a message limit: Chrome caps a CDP
+#: message it reads at 100 MiB (that binds the replay's fulfil), and a reply it
+#: sends may reach 256 MiB (``docs/architecture_design.md`` §4.14, "消息上限").
 MAX_INLINE_BODY_CAP = 64 * 1024 * 1024
 #: Chunk size of a streamed refetch (``IO.read``).
 STREAM_CHUNK_BYTES = 1024 * 1024
@@ -166,7 +170,7 @@ class NetworkArchiver(BrowserArchiverBase):
                     "read inline at the Fetch Response stage. Larger ones are released "
                     "unread first; a GET of a static resource is then fetched again and "
                     "streamed (streamed_later), anything else is recorded as too_large. "
-                    "At most 64 MiB: one CDP message caps at 100 MiB of base64."
+                    "At most 64 MiB, the replay's default limit for one body."
                 ),
             ),
         ] = 5_000_000,
@@ -470,8 +474,10 @@ class NetworkSession(BrowserArchiveSession):
             return  # responseErrorReason: no response; the Network events say why
         url = paused.url
         if paused.network_id is None:
-            # Not traffic the inspector knows — the archiver's own refetch, for
-            # one (``loadNetworkResource`` carries no networkId). Released as is.
+            # Not traffic the inspector knows. A defensive fallback: the
+            # archiver's own refetch (``Network.loadNetworkResource``) neither
+            # pauses here nor emits Network events (measured, Chrome 155), but a
+            # Chrome that paused it would hand over no networkId. Released as is.
             return
         target = paused.target
         target_id = target.target_id if target is not None else paused.session_id

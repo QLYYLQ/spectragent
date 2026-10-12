@@ -15,7 +15,7 @@ This repo already has a doc hierarchy with a clear authority order. Slot into it
 |---|---|---|
 | `docs/architecture_design.md` | **Source of truth** for the target design (AGENTS.md §0.1) | Read-only while exploring. If a proposal contradicts it, surface the conflict. After the user explicitly ratifies a changed target, update the authoritative section before writing subordinate ADRs that depend on it. |
 | `docs/design_discussion.md` | The big 难题 — options weighed, one adopted, the others explicitly rejected | Extend the relevant 难题 section when a decision belongs to one. Do not open a competing ADR for it. |
-| `docs/execution_dag.md` | M01–M26 order, priorities, status | Read-only. |
+| `docs/execution_dag.md` | M01–M33 order, priorities, status | Read-only. |
 | `docs/glossary.md` | Ubiquitous language — terms only, zero implementation | **You own this.** Create lazily, on the first resolved term. Format: [GLOSSARY-FORMAT.md](references/glossary-format.md). |
 | `docs/adr/NNNN-slug.md` | Session-scoped decisions too small to be a 难题 | **You own this.** Create lazily, on the first ADR. Format: [ADR-FORMAT.md](references/adr-format.md). |
 

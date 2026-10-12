@@ -45,6 +45,16 @@ commit collects belongs to step *t* (architecture §4.6, "记录器从环境拉�
 reads a source run only through `ArchiveReader`, which `RunTrace` satisfies structurally;
 `core/archive/source.py` is the one module of `core/archive` that imports `core.trace`.
 
+**Current scope (the user's ruling of 2026-10-13).** This phase delivers teacher
+trajectories: record, replay, branch. The student side (how its messages are assembled,
+"the student sees a screenshot and emits coordinates") moves to the next phase, and the
+export package is frozen: `spectragent/export/`, `spectragent-export`,
+`configs/flywheel/export_sft.yaml` and `configs/flywheel/ui_tars_student.yaml` get no new
+features and no new design decisions, only the adaptations a cross-cutting change needs to
+keep their tests green (architecture §4.15). The evaluator is dormant, neither deleted nor
+improved, and no stage needs a verdict: every verdict filter is optional and off by
+default (architecture §4.11).
+
 ### The layering rule
 
 Put each responsibility in the layer that owns it. For every new or moved function or class,
@@ -536,9 +546,12 @@ already collected; regenerate all the same.
 | Owner | `BrowserCapability.__wiring__["network_source"]`, a required single-instance receptor |
 | Tests to copy | `test_browser_replay_receptors.py`, `test_browser_replay_cooperation.py`, `test_browser_replay_consistency.py`, `test_browser_replay_isolation.py`, `test_browser_replay_server.py`, live `test_browser_replay_live.py` |
 
-- An intercepting source never lets a request reach the network. The recorder fails every
-  unanswered Request-stage pause once a participant declares `serves_requests`, and
-  `TestNeverContinue` in `test_browser_replay_server.py` pins the rule.
+- The `archive` source never lets a request reach the network. That is its own rule, not a
+  framework law (architecture §4.14): the recorder fails every unanswered Request-stage
+  pause once a participant declares `serves_requests`, and `TestNeverContinue` in
+  `test_browser_replay_server.py` pins it for `archive`. A source that falls back to the
+  network on a miss would be a new source with a rule of its own; design it with the user
+  first.
 - Isolation is the source's own property. Do not add a provider boolean beside it.
 - Rules about whether a configuration can work go into `browser/cooperation.py`: one
   function, every problem naming both sides, all reported together, at `bind_archivers` when
@@ -566,9 +579,11 @@ already collected; regenerate all the same.
   `x-replay-miss: 1`; a document fails with `Failed`, because a 404 or `BlockedByClient` cuts
   off Chrome's http fallback; a main-frame document miss is `diverged`.
 - WebSocket handshakes and requests that bypass Fetch never reach the policy.
-- A policy that falls back to the live network breaks the rule that a replay never
-  forwards a request to the network (§4). Whether to have one at all is an open decision that the report's Q1 section collects
-  evidence for; raise it with the user before writing one.
+- A miss policy cannot forward a request: the `archive` network source never puts a
+  request on the network, and that is the source's own rule, not a framework law
+  (architecture §4.14). Falling back to the live network on a miss is therefore not a
+  miss policy; it would be a new network source, a new `NetworkSourceRegistrar` key
+  (§3.2), designed with the user before anyone writes it.
 
 ### 3.4 Replayability tier
 
@@ -630,6 +645,9 @@ already collected; regenerate all the same.
   bound at construction (`ExplicitSteps.__post_init__`).
 
 ### 3.7 Action translator
+
+Recipes 3.7 to 3.9 extend the export package, which is frozen (§1, "Current scope"). Raise
+any of them with the user before starting.
 
 | | |
 |---|---|
@@ -761,7 +779,9 @@ value on an existing one.
 - Fail closed. A lost recorder fails observation, action and collection (`RecorderLostError`).
   A collection that fails, or hands over a batch that breaks the contract, leaves its step
   uncommitted, fails the run and closes the trace as `error`; nothing is collected after it.
-  A replay never forwards a request to the network.
+  The `archive` network source never forwards a request to the network. That is the
+  source's own rule, not a framework law: a source that falls back to the network would be
+  a new network source.
 - Privacy defaults: `Cookie`, `Authorization`, `Proxy-Authorization` and the names in
   `strip_request_headers` are stripped at every source. `Set-Cookie` is kept for replay, so
   `browser.network` declares `contains_session_state`. Cookie values are hashed unless

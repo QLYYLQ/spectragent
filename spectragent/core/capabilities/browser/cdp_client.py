@@ -49,10 +49,14 @@ import websockets
 
 logger = logging.getLogger(__name__)
 
-#: The control connection's default incoming-message limit. Chrome's own
-#: limit on one *incoming* CDP message is the same 100 MiB (its DevTools HTTP
-#: server read buffer), so a larger reply is something Chrome would not have
-#: accepted as a request either.
+#: The control connection's default incoming-message limit, af's own setting.
+#: Chrome's limits differ by direction: a message it *reads* is capped at
+#: 100 MiB (its DevTools HTTP server read buffer), a reply it *sends* at
+#: 256 MiB (its send buffer, over which the reply is dropped and the socket
+#: stays open). A reply between the two closes this connection (1009) although
+#: Chrome sent it. No body travels here — the recorder connection carries them,
+#: with no frame limit — and the largest ``DOMSnapshot`` measured is 23 MB
+#: (``docs/architecture_design.md`` §4.14, "消息上限").
 DEFAULT_MAX_FRAME_SIZE = 100 * 1024 * 1024
 
 #: What a close callback receives: the transport error that ended the

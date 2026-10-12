@@ -44,7 +44,9 @@ from tests._helpers.trace_builder import (
 
 #: Default wall-clock budget for committing 1000 small files in one step.
 #: ~0.2 s measured on APFS; Linux ext4/xfs, where ``fsync`` really flushes,
-#: is where the headroom goes. Override for a slow disk.
+#: is where the headroom goes. Override for a slow disk with
+#: ``SPECTRAGENT_WAL_COMMIT_BUDGET_S``.
+#: TODO(linux): calibrated on APFS only; ext4 and xfs have not been measured.
 _DEFAULT_BUDGET_S = 3.0
 
 

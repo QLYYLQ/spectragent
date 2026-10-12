@@ -727,7 +727,9 @@ class TestTheCloseOut:
         assert trace.manifest.status == RunStatus.ERROR
         assert "closing out a cancelled run failed" in caplog.text
         assert "No space left on device" in caplog.text
-        # Not committed, and not dropped either: still owed to a later flush.
+        # Not committed. The writer still holds it, so a second close-out a
+        # driver dispatches commits it; AgentRuntime dispatches none, and under
+        # it the call is dropped (``docs/architecture_design.md`` §5.2).
         assert trace.trailing_calls == []
         monkeypatch.undo()
         await writer.on_run_error(error=asyncio.CancelledError(), partial_steps=[])
@@ -1121,7 +1123,13 @@ class TestFailClosed:
     async def test_a_retried_close_out_commits_the_calls_and_the_tail_it_still_owes(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Nothing a failed close-out could not commit is lost: the next flush commits it all."""
+        """A second close-out commits what the first could not, each thing exactly once.
+
+        Only a driver that dispatches ``on_run_error`` after a failed
+        ``on_run_end`` gets this second attempt; ``AgentRuntime`` does not, so
+        under it the failed item is dropped (``docs/architecture_design.md``
+        §5.2).
+        """
         bench = Bench(tmp_path)
         await bench.start()
         await bench.step(0)
@@ -1197,7 +1205,8 @@ class TestFailClosed:
         assert [
             (step, r.name) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
         ] == [(0, "cycle_001.json"), (None, "cycle_003.json")]
-        # Still owed, and still refused by a later flush — which commits nothing twice.
+        # A second close-out (a driver's; AgentRuntime dispatches none) is refused
+        # the same way and commits nothing twice.
         trailing = len(trace.manifest.trailing)
         with pytest.raises(OSError, match="File name too long"):
             await bench.writer.on_run_error(error=OSError("x"), partial_steps=[])
@@ -1274,11 +1283,15 @@ class TestFailClosed:
     async def test_a_retried_close_out_keeps_the_newer_run_record_the_latest(
         self, tmp_path, monkeypatch
     ) -> None:
-        """The documented retry (§5.2): ``on_run_error`` after a failed ``on_run_end``.
+        """A second close-out keeps the newer run record the latest.
 
+        The second close-out is ``on_run_error`` after a failed ``on_run_end``.
+        ``AgentRuntime`` never dispatches it — under it the batch is dropped,
+        not retried (``docs/architecture_design.md`` §5.2) — but a driver that
+        does must not make a stale fingerprint the latest.
         The close-out cannot write the batch step 1 owes but commits the
-        tail, whose record is newer; the retry then commits the owed batch —
-        without its stale record.
+        tail, whose record is newer; the second attempt then commits the owed
+        batch — without its stale record.
         """
         bench = Bench(tmp_path)
         await bench.start()

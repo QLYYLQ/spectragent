@@ -187,9 +187,13 @@ A new strategy axis must be added to `_collect_registrars()` as well as register
 
 Follow `docs/execution_dag.md` priorities (P0 foundation → P0 abstractions → P0 framework → P1 persistence/migration/generalize → P1 E2E → P2 Docker/SWE → P3 advanced). Do not start a P2/P3 module if its P0/P1 dependencies in the DAG are not in place — the DAG is dependency-ordered, not wish-list-ordered.
 
-### 3.6 Commit and branch names
+### 3.6 Commits, branches and internal codes
 
 Names must explain the resulting code change without requiring a planning document. Do not put module IDs such as `M05` in commit messages, do not use process words such as `handoff` as the substance of a branch name, and do not add `Co-Authored-By` trailers. Leave pre-existing opaque branches unchanged.
+
+Commit linearly on `main`. Branch only for genuinely parallel work; a chain of packages where each builds on the previous one is not parallel work, so its commits land one after another on `main`.
+
+The same rule covers everything people read, not only commit messages. Identifiers, config keys and values, field descriptions, report fields and headings, CLI and error messages, and test names are written in plain words and never use a planning code: PRD question and revision numbers (`Q1`, `C31`, `E20`), module IDs (`M33`), decision and acceptance file labels (`dec29`, `acc30`), handoff and live-plan labels (`HO`, `LP`), defect labels (`H28`) or spike labels (`S1`, `S2a`). A comment may cite a versioned doc by file and section (`docs/architecture_design.md` §4.14), never the local-only PRD. Module IDs stay in `docs/execution_dag.md`.
 
 ### 3.7 Protected local visual assets
 

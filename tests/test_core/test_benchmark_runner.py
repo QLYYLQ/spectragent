@@ -477,7 +477,10 @@ _LOOP_INPUTS_SEEN: list[dict[str, Any]] = []
 
 
 def teardown_module():
-    AgentLoopRegistrar.unregister("test_bench_runner_checkpointed")
+    # Idempotent: pytest tears a module down once per contiguous run of its
+    # tests, so a selection that interleaves files tears this one down twice.
+    if AgentLoopRegistrar.get_or_none("test_bench_runner_checkpointed") is not None:
+        AgentLoopRegistrar.unregister("test_bench_runner_checkpointed")
 
 
 class _BranchLoader(_Loader):

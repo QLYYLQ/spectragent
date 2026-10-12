@@ -230,6 +230,8 @@ uv run spectragent-bench --config configs/flywheel/same_path_ui_tars_archive.yam
 
 ## 导出 SFT 数据
 
+这一期交付的是 teacher 轨迹（录制、回放、分叉）。学生一侧是暂定的，挪到下一期再定；导出代码冻结，不加功能，下面写的是它冻结时的用法（[architecture_design.md](architecture_design.md) §4.15）。
+
 `spectragent-export` 只读已提交的 trace，不起浏览器，也不调模型。学生是一个普通的 af agent：`configs/flywheel/ui_tars_student.yaml`（UITarsAgent，`coordinate_space: normalized_1000`）只被组装，从不运行；每个样本由它自己的 prompt 构建与 memory 渲染，目标轮由它的 `format_react_output` 写出，所以训练格式就是它服务时的格式（设计见 [architecture_design.md](architecture_design.md) §4.15）。
 
 ```bash

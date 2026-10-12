@@ -254,8 +254,11 @@ Windows; only `EINVAL` / `ENOTSUP` / `EOPNOTSUPP` from the `fsync` itself are to
 ("this filesystem cannot"); everything else raises, `os.open` failing with `EMFILE` /
 `EACCES` / `ENOENT` included. The old helper returned silently on all of them.
 `TraceWriter` is blocking, so such an error ends the run; a manifest claiming a commit
-it is not sure of would be worse. `F_FULLFSYNC` is deliberately off; `wal.py:34-37` has
-the measurement.
+it is not sure of would be worse. `F_FULLFSYNC` is deliberately off; the `wal.py` module
+docstring has the measurement. TODO(linux): every `fsync` cost and the 1000-file commit
+budget were calibrated on macOS APFS only; ext4 and xfs have not been measured. The
+budget is asserted by the benchmark test alone and `SPECTRAGENT_WAL_COMMIT_BUDGET_S`
+overrides it; nothing enforces it at run time.
 
 A failure anywhere before the manifest rename raises with the manifest untouched (on
 disk and in the writer's memory), so what was written is an orphan and the same commit
@@ -363,12 +366,14 @@ The close-out gives **every owed thing its own `commit_trailing`**, in order: th
 still registered; each batch a failed step commit left behind (two steps' batches can
 share a file name, so each needs its own `env/trailing/KK/`, where `KK` is the entry's
 position in `manifest.trailing`, the same number as `steps/trailing_KK.extra.json`); the
-tail collected at run end. A commit that fails costs only what it carried: that stays
-owed for the next flush while the rest still lands, so a batch no retry can write never
-takes the unfinished step's calls or the tail down with it. The first failure is raised
-once everything was tried. The manifest then says `error`, as it does whenever a
-collection failed (at close-out or at any step), whatever the result reports. The WAL
-knows none of this; archive files are ordinary `TraceFile`s.
+tail collected at run end. A commit that fails costs only what it carried, and that item
+is dropped, not retried: `AgentRuntime` dispatches no `on_run_error` after `on_run_end`
+raised, and the veto and cancel close-outs do not retry either (a write the disk just
+refused rarely succeeds a few milliseconds later). The rest still lands, so a batch no
+retry can write never takes the unfinished step's calls or the tail down with it. The
+first failure is raised once everything was tried. The manifest then says `error`, as it
+does whenever a collection failed (at close-out or at any step), whatever the result
+reports. The WAL knows none of this; archive files are ordinary `TraceFile`s.
 
 Every batch, the tail included, is checked before the WAL sees it: bound archivers only
 (content-addressed bodies too), single-segment `archiver_id` and `name` of at most 255

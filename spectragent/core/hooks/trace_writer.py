@@ -1035,11 +1035,17 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         failed commit — two steps' batches can carry the same file name, so
         each needs its own ``env/trailing/KK/``); *tail*, the close-out
         collection, which is owed like any other batch from here on. A
-        commit that fails costs only what it carried: that stays owed for a
-        later flush (``on_run_error`` after a failed ``on_run_end``) while
-        everything else is still committed — a batch the filesystem refuses
-        no longer takes the unfinished step's calls down with it. Once
-        everything has been tried, the first failure is raised.
+        commit that fails costs only what it carried, while everything else
+        is still committed — a batch the filesystem refuses no longer takes
+        the unfinished step's calls down with it. Once everything has been
+        tried, the first failure is raised.
+
+        What failed is not retried: ``AgentRuntime`` dispatches no
+        ``on_run_error`` after ``on_run_end`` raised, so under it that item
+        is dropped (``docs/architecture_design.md`` §5.2). It stays in memory
+        only because nothing here clears it; a driver that dispatches
+        ``on_run_error`` after a failed ``on_run_end`` gets one more attempt,
+        which the framework does not promise.
         """
         if self._wal is None:
             return
@@ -1055,7 +1061,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         while index < len(self._pending_archive):
             try:
                 self._commit_trailing([], self._pending_archive[index])
-            except Exception as exc:  # stays owed; the next batch still goes
+            except Exception as exc:  # not retried by AgentRuntime; the next batch still goes
                 failures.append(exc)
                 index += 1
                 continue
