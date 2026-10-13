@@ -168,7 +168,7 @@ task_loader:
   - benchmark_name: trace_branches
     data_dir: traces/recorded          # 源 run 所在的目录
     step_selector: { selector_id: all }
-    branches_per_step: 1
+    branches_per_step: 3               # 每个选中的步分 b0、b1、b2，各自采样
     agent_outcome: any                 # done | max_steps | error | timeout | vetoed：源 run 的 agent 怎么结束
     on_unbranchable: raise             # skip：跳过并记下原因
 ```
@@ -194,6 +194,7 @@ agent_loop:
   max_steps: 30
   max_actions_per_step: 1          # 必须与源 run 相同
   continue_steps: 0                # 0：只决定第 t 步；N：之后再走 N 个 ReAct 步
+  branch_instruction: none         # prefer_different_action：第 t 步多给 teacher 一条固定指令，见下面"teacher 采样"
   restorer:
     restorer_id: prefix_replay
     verify: strict                 # warn：记下不通过的检查，继续
@@ -208,7 +209,7 @@ agent_loop:
 1. 开跑前对照源 trace：`agent_id`、闭集的 agent 旋钮（`prompt_template`、`coordinate_space`……）、memory、观测与动作的协商结果都要相同，源 loop 必须是 `react`，源 run 本身不能是分叉 run。不符就抛 `IncompatibleCheckpointError`，点名两边的值。teacher 的模型和采样参数可以与源 run 不同。
 2. 从源 trace 重建第 t 步之前的上下文，teacher 看到的与源 agent 当时看到的相同。录下的每一次模型回复都过一遍 agent 的解析器，并与记录核对。
 3. 浏览器回放源 run 的归档，`prefix_replay` 逐步重新执行录下的动作（元素 index 按位置和签名重新找到，tab id 按顺序和 URL 映射），并校验每一步。恢复出的步记成 `origin: restored`，带这一步的 `restoration` 检查。第 t 步（检查点）的观测也要校验，结果记在第 t 步的策略步上；strict 下它不通过时 teacher 不会被调用。
-4. 第 t 步和之后的 `continue_steps` 步由 teacher 决定（`origin: policy`），最后再观测一次（`origin: terminal`）。
+4. 配了 `branch_instruction` 时，先把那条指令写进对话；然后第 t 步和之后的 `continue_steps` 步由 teacher 决定（`origin: policy`），最后再观测一次（`origin: terminal`）。
 
 `verify: strict` 下第一个不通过的检查就结束 run：记一条 `error_phase: restore` 的恢复步，结果是 `agent_done=error`、`env_status=failed`，`error` 点名 `RestorationDivergedError`。`warn` 只把检查结果写进那一步，继续往下走。每个分叉是独立的任务，重新组装、启动新的浏览器和新的 profile，分叉之间不共享状态。一个分叉的策略步数是 `1 + continue_steps`（不超过 `max_steps`），每个策略步至少调用一次模型；`AgentMetrics.steps` 只数策略步。
 
@@ -219,6 +220,32 @@ for record in RunTrace(Path("traces/branches/<run>")).step_records:
     check = record.restoration
     print(record.step, record.origin, check and check.verdict, check and check.reasons)
 ```
+
+### teacher 采样
+
+同一个检查点的几个分叉输入完全相同：同一个源、同一个检查点、同一份任务和环境。分支编号只记进 trace，teacher 看不到，所以分叉之间的差别全靠采样。发布的分叉配置因此把 teacher 的 `temperature` 设成 0.8（录制配置没写，用的是 openai 的默认值 0.2），每步分 3 个（`branches_per_step: 3`）。原路径回放配置不变，用录制时的模型和默认温度：分叉不要求 teacher 与源 run 不同。温度原样记在分叉 run 的 `config.json`（`resolved.agent[0].llm.temperature`）。分得够不够散，看度量报告的重复分叉率：同一个检查点上执行了相同动作的分叉占比。
+
+`branch_instruction` 在第 t 步多给 teacher 一条固定指令，取值是一个闭集：
+
+| `branch_instruction` | 第 t 步多出的消息 |
+|---|---|
+| `none`（默认） | 没有 |
+| `prefer_different_action` | 引用源 run 在第 t 步的回复，请 teacher 在另一个动作同样推进任务时选那个动作 |
+
+这条消息在前缀重建并校验、环境恢复之后写进对话，排在第 t 步的观测之前，只写一次；继续步把它当作历史看到。源 run 在第 t 步没有录下动作（回复没解析成，或那次模型调用失败）时不写。取值原样记在 `config.json` 的 `resolved.agent[0].agent_loop.branch_instruction`，指令的原文在第 t 步录下的模型调用里：
+
+```python
+trace = RunTrace(Path("traces/branches/<run>"))
+t = trace.config.branch.checkpoint_step
+for message in trace.llm_messages(t)[0].messages[-3:]:   # 上一步的回复、指令、第 t 步的观测
+    print(message.role, message.text[:300])
+```
+
+要注意的：
+
+- 高温下坐标可能离开配置的网格，与模型有关。实测过一次（DMX 上的 qwen3.8-flash，`coordinate_space: normalized_1000`，温度 0.8；不是发布的 gpt-4o）：两次 UI-TARS 回复里有一次写的是截图像素坐标，不是 0 到 1000 网格上的点，这样的点击会落到别处。换模型或调高温度之后，先抽几个分叉 run，对照第 t 步的截图看回复（`StepRecord.llm_output`）里的点，再放量。
+- 在指令下写出的 thought 可能提到这条指令或源 run 的回复。导出用 `thought_source: teacher` 时会原样带上（导出冻结，学生侧下一期再定）。
+- 每个分支给不同的提示还没有做：等 live 数据显示重复的分叉多了再做。
 
 ### 原路径回放
 
@@ -355,7 +382,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
    set -a; . ./.env; set +a
    ```
 
-   密钥只放在环境变量里，不要写进 YAML 的 `api_key`：链把每段的 YAML 原样复制到 `<root>/configs/`，隐私一项不扫描那个目录。路由写在 `llm` 块（`model_type`、`model`，需要时 `base_url`）；`OPENAI_BASE_URL` 只在 YAML 没写 `base_url` 时生效。`coordinate_space` 要与模型实际输出的坐标网格一致，Qwen-VL 这类在 0 到 1000 网格上回答的模型用 `normalized_1000`。录制、原路径回放、分叉三份 YAML 的 agent 块必须相同，分叉在开跑前核对；teacher 的模型可以换，原路径回放通常用录制时的模型。
+   密钥只放在环境变量里，不要写进 YAML 的 `api_key`：链把每段的 YAML 原样复制到 `<root>/configs/`，隐私一项不扫描那个目录。路由写在 `llm` 块（`model_type`、`model`，需要时 `base_url`）；`OPENAI_BASE_URL` 只在 YAML 没写 `base_url` 时生效。`coordinate_space` 要与模型实际输出的坐标网格一致，Qwen-VL 这类在 0 到 1000 网格上回答的模型用 `normalized_1000`。录制、原路径回放、分叉三份 YAML 的 agent 块必须相同，分叉在开跑前核对；teacher 的模型和采样可以换（发布的分叉配置用温度 0.8），原路径回放通常用录制时的模型和默认温度。
 2. 选任务。先取 10 个，只跑录制、原路径回放和报告，看保真度和花费；再扩到 10 到 20 个任务跑整条链。任务要无需登录、公开、不被 Cloudflare 拦截。online_mind2web 的每个任务有 `task_id`、`task_text`、`start_url`、`difficulty` 和 `metadata.reference_length`，可以离线挑：先挑 `easy`，每个可注册域名只取一个任务，跳过任务文本要求账号的，跳过已知重度反爬的站点。会不会被拦截离线判断不了，被拦截的站点会出现在报告的 anti-bot 一节和剔除名单里，代价是一次录制。提交表单（POST）的任务在回放和分叉里必然 miss。
 3. token 上限。链本身没有上限，所以按段跑，段与段之间查已经花掉的量。每个任务的模型调用数：
 
@@ -363,7 +390,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
    |---|---|
    | `record`、`control` | 策略步数 S，不超过 `max_steps` |
    | `same_path` | `branches_per_step`（发布值 2），都在最后一步 |
-   | `branch` | 选中的步数 × `branches_per_step` × (1 + `continue_steps`) |
+   | `branch` | 选中的步数 × `branches_per_step`（发布值 3）× (1 + `continue_steps`) |
 
    UI-TARS 的 memory 保留每一张截图，第 k 步的调用带 k+1 张截图。单张 1280×720 截图算多少 token 因路由而异：先录一个任务，读它记下的用量，再定上限。按这种算法粗估（没有实测）：gpt-4o 上 10 个 easy 任务的录制加原路径回放约 0.2 到 0.6 M token；20 个任务再加分叉（`every_k` 取 k=2，每步 3 叉）约 0.9 到 2.7 M token；对照组相当于每个任务再录一次。查一段已经花掉的 token（每个 run 的 `result.json` 里有 `metrics.usage`）：
 

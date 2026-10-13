@@ -454,7 +454,11 @@ parse_retries_per_step: Annotated[
   methods, checking each call's context against the recording; then `async for` the
   restorer (`self.restorer`, a receptor: `RestorerRegistrar`, `core/loops/restore/`),
   which yields one `RestoredStep` per restored step and finally the verified obs_t; then
-  `_run_step(run, t, observation=obs_t, restoration=check_t)` and `continue_steps` more.
+  the configured `branch_instruction` (a closed set, `none` by default) is written into
+  memory once, and `_run_step(run, t, observation=obs_t, restoration=check_t)` and
+  `continue_steps` more run. A message the Loop adds at step *t* goes in through memory
+  before `_run_step`, from the Loop's own method: nothing compares step *t*'s context,
+  and ReAct's step is not edited for it.
   A restorer gets a narrow `RestorationContext` (env, `act_fn`, the negotiated
   observation, the source accessor, *t*) with no model, memory or recorder, so it can
   restore only the environment. Vetoes in replay and restore record an

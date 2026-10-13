@@ -430,7 +430,7 @@ class BranchLoop(ReactLoop):
 
 #### `BranchLoop`：从检查点分叉（M31）
 
-分叉 = 把环境恢复到源 run 第 t 步之前的状态 + 一个策略步 + 可配置的继续步数。恢复的方式是策略（Loop 的 `restorer` 受体，§4.1 下文与 §6），元素重定位与恢复校验是 capability 的知识（§4.9 `RestorationSupport`），teacher 是被测对象（wired 的 LLM，采样参数在 LLM 配置里，可以与源 run 不同）。
+分叉 = 把环境恢复到源 run 第 t 步之前的状态 + 一个策略步 + 可配置的继续步数。恢复的方式是策略（Loop 的 `restorer` 受体，§4.1 下文与 §6），元素重定位与恢复校验是 capability 的知识（§4.9 `RestorationSupport`），teacher 是被测对象（wired 的 LLM，采样参数在 LLM 配置里，可以与源 run 不同；第 t 步可以多给一条固定指令，见下文"teacher 采样"）。
 
 ```python
 @dataclass
@@ -440,6 +440,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):      # restorer 只在普通 
     __loop_inputs__ = {"checkpoint": LoopInput(Checkpoint)}
     continue_steps: int = 0              # ge=0；策略步之后再走几个 ReAct 步
     terminal_observation: bool = True    # 覆盖 ReactLoop 的默认
+    branch_instruction: Literal["none", "prefer_different_action"] = "none"   # 第 t 步的固定指令（闭集）
 ```
 
 **装配期（`weave`，在 `prepare()` 里、任何 setup 之前）**：打开检查点的源 trace，对照当前装配，不符就抛 `IncompatibleCheckpointError`，点名源 run 以及两边的值：
@@ -453,13 +454,21 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):      # restorer 只在普通 
 1. **种子消息**：runtime 已写入的 `agent.prepare` 种子消息（三个 browser agent 都只有一条 system 消息），必须与源 run 第 0 步第 0 次调用的 prompt 开头逐条相同，否则 `IncompatibleCheckpointError`（system prompt 里有任务、动作表与 `max_actions_per_step`）。比较的是 trace 记录的形状（`core/loops/restore/source.py::recorded_form`：活的消息走记录器同一条路，先做 JSON 快照，再按记录的消息类型读回），所以两边逐条相同当且仅当记录器会为两边写下同样的内容。
 2. **重建上下文（Option A）**：上下文从**源 trace** 重建，不从恢复出的观测重建，因为恢复出的页面里元素 index 是新的 backendNodeId、tab id 是新的 CDP targetId、截图是重拍的，从它们重建的 prompt 不可能与源 run 一致。对每个 k < t：读回录下的观测 obs_k（env 与 loop 来源的 fragment 都读，经 `from_trace` 还原成类型，组装成本次协商的 `NegotiatedObservation`），调 `build_react_prompt`，写进 memory；再按开始顺序重放第 k 步的**每一次**录下的 LLM 调用：取出 live 时交给解析器的那个回复（文本调用是录下的文本；结构化调用用 agent 的 `get_react_output_model()` 把录下的 JSON 还原成实例；被 schema 拒绝的调用是 `failure.raw_output`），经 `parse_react_output` 解析：`ParseError` 走 `_remember_rejected`，成功走 `_cap_actions` + `_remember_reply`。重放自己校验自己：每次调用之前，memory 的上下文必须与这次录下的调用的 `messages` 逐条相同；第 k 步最后一次调用之后，解析出的动作（按 `guarded_act` 的那条规则命名，即 `core/action_guard.py` 的 `resolve_action_name`，用本 run 守卫的动作名集合与绑定表：守卫解析得了的补全前缀，它拒绝的保持 agent 写的名字，源记录里留下的正是守卫给的名字；本 run 的守卫能代表源 run 的，因为 weave 已证明两边协商相同、种子检查已证明带着动作表的种子 prompt 相同）、被丢弃的个数、写进 memory 的回复文本必须等于源 StepRecord 的 `actions`、`truncated_actions`、`llm_output`，解析失败的步必须在源 run 里也是解析失败的步。任何一条不符都是 `IncompatibleCheckpointError`（这个 agent 复现不了这个检查点），发生在恢复环境之前。重放经过 agent 的 slot，所以 Skyvern 的 `_action_history`、browser_use / UI-TARS 的坐标网格这类 agent 自己的状态一并重建；连续解析失败的步数也由重放得出。
 3. **恢复环境**：`async for restored in self.restorer.restore(RestorationContext(...))`：每个 k < t 交回一条 `RestoredStep(step=k, check, observation)`，Loop 把它记成 `origin="restored"` 的 StepRecord：内容是源 run 第 k 步记录的副本（动作、结果、回复、观测摘要照抄，所以策略步看到的 `loop.history` / `loop.action_result` 与源 run 第 t 步看到的相同），`restoration` 是这一步的校验结果，`token_usage` 置空，`duration_ms` / `llm_latency_ms` 由 TraceWriter 照常盖章，`timestamp` 是现在；交给 `record_step` 的是**恢复出的** live 观测（只有 env 来源的 fragment）。最后一条 `step == t`：经校验的 live obs_t 与它的校验结果。
-4. **策略步**：`_run_step(run, t, observation=obs_t, restoration=<obs_t 的校验结果>)`，即一个 ReAct 步。`loop.step_info` 的 `max_steps` 与 `today` 取自源 run 在第 t 步录下的 `loop.step_info`（设了 `today_override` 时 today 用它），所以 agent 看到的"第几步 / 共几步"与源 run 相同。
+4. **策略步**：先把配置的 `branch_instruction` 写进 memory（`none` 什么都不写，见下文"teacher 采样"），然后 `_run_step(run, t, observation=obs_t, restoration=<obs_t 的校验结果>)`，即一个 ReAct 步。`loop.step_info` 的 `max_steps` 与 `today` 取自源 run 在第 t 步录下的 `loop.step_info`（设了 `today_override` 时 today 用它），所以 agent 看到的"第几步 / 共几步"与源 run 相同。
 5. **继续步**：再走至多 `continue_steps` 个 ReAct 步（`continue_steps: 0` 就是单步分叉，单步由配置值决定，没有写死在逻辑里）。策略步总数不超过 `max_steps`；预算用尽是 `agent_done=max_steps`。
 6. **终止观测**（默认开）。
 
 **失败语义**：重放与恢复里 agent 与环境的方法都是织过的，guard 照样能否决：否决发生在重放或恢复时，记一条 `origin="restored"`、`error_phase` 为 `"replay"` / `"restore"` 的记录，然后上抛。恢复器在 `verify: strict` 下发现发散，抛 `RestorationDivergedError(check, observation)`：Loop 记一条 `origin="restored"`、`error_phase="restore"`、`restoration=<发散的那次校验>` 的记录，以 `agent_done=error`、`env_status=failed`、`error` 点名 `RestorationDivergedError` 结束（不做终止观测）；恢复时环境的普通异常同样以 `error_phase="restore"` 结束。`verify: warn` 只把失败写进那一步的 `restoration`，照常继续。
 
 **隔离**：N 个分叉就是 N 个任务，每个任务新组一套 stack、新起一个浏览器（pinned 档位每 run 新建 profile），各自恢复，第 t_1 个分叉做过的事影响不到第 t_2 个。这是 Zero Global State 的直接结果。
+
+**teacher 采样（用户 2026-10-13 的裁决）**：同一个检查点的 `branches_per_step` 个分叉输入完全相同（同一个源、同一个检查点、同一份任务文本与环境 context；分支序号只进 trace 的 `TraceConfig.branch`，Loop 与模型都看不到），所以它们之间的差别只来自 teacher 的采样。发布的分叉配置因此把 teacher 的温度提到 0.8（录制用的是 openai 的默认 0.2），每步分 3 个（`configs/flywheel/branch_ui_tars_archive.yaml`）；原路径回放那份不变（录制时的模型、默认温度）。温度这类数字原样记进 `config.json`（§5.6）。
+
+- **`branch_instruction`**（闭集，默认 `none`）：第 t 步给 teacher 的一条固定指令。闭集值原样记进 `config.json`（§5.6），指令的原文出现在第 t 步录下的那次模型调用里（TraceWriter 记的就是交给模型的上下文）。`prefer_different_action` 引用源 run 在第 t 步的回复（`StepRecord.llm_output`：agent 自己的写法、自己的坐标网格），请 teacher 在另一个动作同样推进任务时选那个动作。不引用录下的 `Action`：它的参数是 capability 的单位（UI-TARS 把 0–1000 网格上的点换成 CSS px），模型从不写那种单位。文本还写明录下回复里的元素编号属于源 run 的页面（DOM 类 agent 的编号在恢复出的页面上是新的），而且不说"同一个页面"：`verify: warn` 下恢复出的页面可以不同。选项与文本一一对应：`branch.py::BRANCH_INSTRUCTIONS` 是 `none` 之外每个选项的文本，测试把它与字段的 `Literal` 绑在一起。
+- **何时、何处**：前缀重建并逐条校验、环境恢复之后，写进 memory 一次（`BranchLoop._add_branch_instruction`：一条以 `[SYSTEM]` 开头的 user 消息，与截断提示同一种写法），位置在策略步的观测之前，因为文本说的是"接下来给出的页面"。继续步把它当历史看见，不再写第二次。第 t 步的上下文不与任何东西比较，所以它不碰种子与重放的校验，也不需要放松它们。源 run 在第 t 步没有录下动作（回复没解析成，或那次模型调用失败）时没有可引用的动作：不写，记一条 INFO。
+- **隐私**：引用的是源 run 的模型自己写的回复；重建的前缀本来就原样带着更早的每一条回复，所以它不把环境观测或别的新来源放进提示词（§5.6 两道门的第一道）。
+- **不做的**：不规定 teacher 必须与源不同（原路径回放段要用录制时的模型量回放确定性，§4.16）。每个分支一份不同的提示要把分支序号作为 Loop 输入传进来，等 live 数据显示重复的分叉多（度量报告的"重复分叉率"，§4.16）再做。自由文本的指令旋钮不做：它在 `config.json` 里只会是 `"<omitted>"`。
+- **残余，写明**：teacher 在指令下写的 thought 可能提到这条指令或源 run 的回复，`thought_source: teacher` 的导出原样带上它（导出冻结，学生侧怎么用随下一期再定，§4.15）。高温下有的模型会写错坐标网格（运行手册"分叉"一节）。
 
 **恢复器**（`RestorerRegistrar`，`restorer_id`，`core/loops/restore/`）：
 
@@ -3107,7 +3116,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 
 - **站点**：每个站点（任务 `start_url` 的主机，`core/trace/sources.py::task_identity(config).site`，与导出 `split.by: site` 和 `exclude_sites` 用的是同一个键；分叉 run 用它的源任务）的任务数、录制的两本账（`record_status`：trace 的状态 `complete` / `incomplete` / `writing`；`record_outcome`：agent 的 `agent_done`）、原路径保真、恢复校验率、分叉覆盖、miss 数。**剔除名单**：被拦截（下一条）、或原路径保真低于 `EXCLUDE_FIDELITY`（0.8）、或录制的环境在第 0 步就失败（观测或动作失败，即循环以 `env_status: failed` 结束的那两个阶段；或一步都没提交）的站点；模型调用失败（`error_phase: llm`：429、超时、被拒的 schema）是路由的失败，从不剔除站点，按站点单独计数（`record_model_failures`）；输出成 `ExportFilters.exclude_sites` 的形状（主机名，后缀匹配）并附 YAML 片段。链不自动套用（导出在报告之前）：人把它放进导出配置再导一次。
 - **anti-bot / Cloudflare**：录制里文档请求（`resourceType: Document`，主 frame 与子 frame 都算，验证码 iframe 也是拦截）的应答带拦截特征（browser 的 `challenge_documents`：状态 403 / 429 / 503，且有 `cf-mitigated: challenge` 头、或 `server: cloudflare` 加 `cf-ray`）的站点、run 与步；建议：剔除。只认应答头，不带这些头的拦截页面认不出来（写明的残余）。
-- **重复分叉率**：同一 `branch_group_id` 里检查点步执行的动作（规范 JSON）与排在前面的分支相同的分叉占比（与导出的 `duplicate_of` 同一规则），并对照数据集 manifest 的 `duplicates`。
+- **重复分叉率**：同一 `branch_group_id` 里检查点步执行的动作（规范 JSON）与排在前面的分支相同的分叉占比（与导出的 `duplicate_of` 同一规则），并对照数据集 manifest 的 `duplicates`。teacher 的采样够不够分散就看它；它高时再考虑每个分支不同的提示（§4.1 "teacher 采样"）。
 - **POST 分叉的 miss**：分叉 run 检查点及之后方法为 POST 的 miss（文档、子资源分开），有 POST miss 的分叉占比。
 - **存储增长与压缩评估的输入**：按角色、按类别的字节（`observations:<fragment>` 的 json、`artifacts:<fragment>`（截图）、`messages`、`steps`（步记录与 extra 索引）、`env:<归档器>`、`env:blobs`（内容寻址）、`env:run`（capability 的 run 记录）、`run`（manifest / config / result）），每个 run、每步的平均；文件是 `RunTrace.committed_files` 列出的那些（run 自己的三个文件、manifest 与 extra 索引列出的；不按目录树走，路径的形状与"留在 run 目录里"由 RunTrace 检查，§5.5），每个路径计一次，字节经 `read_committed` 读，类别按条目的 `kind` 与 `archive` 定（`metrics.storage_category`）；还没压缩的字节用 gzip（level 6）实测压缩比；按文件开头的字节认出已经压缩的（gzip、PNG、JPEG、GIF、WebP：截图、WARC、`dom_raw`），只报大小；数据集目录按文件树的字节。
 - **保留期与容量（Q7）**：每个角色每个 run 的平均字节、数据集每个样本的字节；每个任务的字节 = 一次录制 + 其余每个角色"每次录制有几个 run × 每个 run 的字节" + 数据集每个任务的字节；按 `PROJECTION_TASKS`（10、20、300：S2b、live 链、整个 `All` 子集）投影。
@@ -3640,7 +3649,7 @@ class TraceConfig(BaseModel):
 ```
 
 - 由 `TaskContext.branch` 而来，`AgentRuntime.execute(branch=...)` 按名字传给 `on_run_start`，`TraceWriter` 按名字接收、原样记录，不推导（§4.2）。
-- **不进 `configuration_digest`**：它是按任务变化的事实（任务 id 本身就是 `<source_run_id>/s<t>/b<i>`），同一次分叉 sweep 的所有任务共享一个 `config_hash`；sweep 级的旋钮（`continue_steps`、teacher 的温度、恢复器的 `verify`）照常经 `resolved` 改变它。字段名不用 "provenance"：那个词已经是 `secrets_recorded` / `env_evidence_privacy` 那一层的名字。
+- **不进 `configuration_digest`**：它是按任务变化的事实（任务 id 本身就是 `<source_run_id>/s<t>/b<i>`），同一次分叉 sweep 的所有任务共享一个 `config_hash`；sweep 级的旋钮（`continue_steps`、`branch_instruction`、teacher 的温度、恢复器的 `verify`）照常经 `resolved` 改变它。字段名不用 "provenance"：那个词已经是 `secrets_recorded` / `env_evidence_privacy` 那一层的名字。
 - `source_trace` 是源 run 目录相对 sources 根的路径，加上 `source_run_id`，下游（M32 的样本渲染）才找得到源 trace 去拼第 t 步之前的历史；源 benchmark / subset / task_id 让分叉结果能连回源任务的参考答案。
 - 分叉 trace 的每一步都完整记录观测（§13.4 不变）：恢复步交给 `record_step` 的是恢复出的 live 观测，终止步是最后那次观测；不提供省掉恢复步观测的 `record_observations` 旋钮。
 
@@ -4204,6 +4213,7 @@ environment:
 | **新增恢复器（检查点恢复策略）** | 继承 `RestorerBase`（`core/loops/restore/`），设 `__registry_key__`，实现 `restore(ctx) -> AsyncGenerator[RestoredStep, None]`（写成 `async def` + `yield`）：只恢复环境、不碰 memory，k < t 每步交回一条，最后一条是经校验的第 t 步观测；每个恢复出的观测恰好调一次 `env.verify_restoration`（capability 的计数类证据是自上一次调用以来的增量，§4.9）；`strict` 下第一个不通过的校验（观测、重定位或动作成败）就抛 `RestorationDivergedError`，不再执行后面的动作；不吞 `RunAbort`（`test_abort_handler_hygiene.py` 递归扫描 `core/loops/`） | 以后的 `capability_checkpoint`（Docker snapshot、Android 模拟器快照，经新增的 `RestorableCapability` 协议） |
 | **新增分叉选步策略** | 继承 `StepSelectorBase`（`core/data_loader/task/step_selector/`），实现 `select(candidates) -> list[int]` | 按评测器给的关键帧选步 |
 | **新增 Loop 输入** | 在 Loop 的 `__loop_inputs__` 里声明 `LoopInput(type, required)`；由任务加载器在 `TaskContext.loop` 里给出（§4.1、§4.10） | `checkpoint`（`BranchLoop`） |
+| **新增分叉指令** | 在 `BranchLoop.branch_instruction` 的 `Literal` 里加一个值，在 `branch.py::BRANCH_INSTRUCTIONS` 里加它的文本（可用 `{recorded_reply}`；测试要求两者一一对应）；文本只在第 t 步写一次，不进任何校验（§4.1 "teacher 采样"） | `prefer_different_action`；每个分支不同的提示要另加一个 Loop 输入（分支序号），不是新选项 |
 | **新增学生格式（训练导出）** | 一个新的 Agent 类（或已有 agent）实现 ReAct 的可选 slot `format_react_output(actions, *, thought=None)`：`parse_react_output` 的逆，写不出来的动作或参数抛 `UnrepresentableActionError`，满足 §4.15 的 round-trip；`tests/test_agents/test_format_react_output_round_trip.py` 自动覆盖每个定义了它的已注册 agent；学生的运行 YAML 就是服务时的那份 | v1 `ui_tars`；以后 Qwen3-VL 原生工具调用格式、OpenCUA |
 | **新增 teacher 的 thought 读法** | teacher agent 实现可选 slot `parse_react_thought(llm_output) -> (text, source_field) \| None`（`@staticmethod`，只读回复，§4.1） | `browser_use` / `ui_tars` / `skyvern`（M32） |
 | **新增导出格式** | 继承 `ExporterBase`（`spectragent/export/`），设 `__registry_key__`，实现 `format(rendered, images)`；只有自己旋钮的导出器写出完整的 `__init__` 签名（任务字段在基类签名里，conscribe 读子类的 `__init__`） | `llamafactory`、`ms_swift`（`rejected_messages` 做 DPO）、`trl` |

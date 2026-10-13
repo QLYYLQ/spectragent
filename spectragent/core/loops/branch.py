@@ -6,7 +6,8 @@ it, and ``continue_steps`` ordinary ReAct steps after. Its Loop input is a
 :class:`~spectragent.schemas.restoration.Checkpoint` (the source run's
 directory and *t*); its ``restorer`` receptor decides how the environment is
 restored (``prefix_replay`` in v1); its teacher is whatever model this run
-wires, sampled however that model is configured.
+wires, sampled however that model is configured, and told at step *t* only
+what the closed ``branch_instruction`` option adds (nothing by default).
 
 **At assembly** (``weave``, inside ``AgentRuntime.prepare()``, before
 ``on_run_start`` and any environment setup) the source trace is opened and
@@ -30,8 +31,10 @@ the source and both values.
    source's record. All of this happens before any action runs;
 3. the restorer restores the environment, handing back one step at a time;
    each restored step is recorded (``origin="restored"``) as it arrives;
-4. the policy step decides on the restored, verified observation of step
-   *t* (``ReactLoop._run_step``); ``continue_steps`` more steps may follow;
+4. the configured ``branch_instruction`` (``none`` by default) is written
+   into memory, once; then the policy step decides on the restored, verified
+   observation of step *t* (``ReactLoop._run_step``), and ``continue_steps``
+   more steps may follow;
 5. at the step budget's end the run ends with ``agent_done=max_steps``, and
    the terminal observation is recorded (``terminal_observation`` is on by
    default here).
@@ -57,12 +60,14 @@ from collections.abc import Mapping
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Annotated, Any, ClassVar
+from types import MappingProxyType
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import Field
 
 from spectragent.core.action_guard import resolve_action_name
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
+from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops._loop_fragments import loop_fragment_builders, pinned_step_info
 from spectragent.core.loops._registrar import LoopInput
 from spectragent.core.loops.errors import ParseError, RunAbort
@@ -114,6 +119,31 @@ NEGOTIATION_FIELDS = (
 #: ``terminal_observation``); how many actions one reply may carry does not —
 #: it is in the seeded prompt and decides what the replay drops.
 COMPARED_LOOP_SETTINGS = ("max_actions_per_step",)
+
+#: The text each ``branch_instruction`` option writes into memory, once, just
+#: before the first policy step's own messages. ``none`` writes nothing and
+#: has no entry; every other value of the field's ``Literal`` has exactly one
+#: (a test holds the two together). ``{recorded_reply}`` is the reply the
+#: source gave at the checkpoint step (its ``StepRecord.llm_output``): the
+#: recorded action in the agent's own syntax and on its own point grid. The
+#: recorded ``Action`` would not do: its params are in the capability's units
+#: (UI-TARS turns a point on its 0-1000 grid into CSS pixels), a grid the
+#: model never writes. A DOM-index agent's element numbers are the recorded
+#: page's, not the restored page's, which the text says. "Reached this step"
+#: rather than "saw this page": under ``verify: warn`` the restored page may
+#: differ from the recorded one.
+BRANCH_INSTRUCTIONS: Mapping[str, str] = MappingProxyType(
+    {
+        "prefer_different_action": (
+            "[SYSTEM] When an earlier run of this task reached this step, it replied:\n"
+            "<recorded_reply>\n{recorded_reply}\n</recorded_reply>\n"
+            "If a different action would also move the task forward, take that action "
+            "instead of the recorded one. The recorded reply was written for the earlier "
+            "run's page: element numbers in it may not match the page shown next. Reply "
+            "in your usual format."
+        ),
+    }
+)
 
 
 @dataclass(kw_only=True)
@@ -173,6 +203,9 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
       *t* only — a configuration value, not a special case);
     - ``terminal_observation``: on by default — a branch's outcome is judged
       on the state its last action left;
+    - ``branch_instruction``: one fixed instruction for the teacher at step
+      *t*, from a closed list (:data:`BRANCH_INSTRUCTIONS`; ``none`` by
+      default);
     - ``restorer``: how the environment is restored (``prefix_replay``).
     """
 
@@ -206,6 +239,24 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             ),
         ),
     ] = True
+    branch_instruction: Annotated[
+        Literal["none", "prefer_different_action"],
+        Field(
+            default="none",
+            description=(
+                "One fixed instruction for the teacher at the checkpoint step, "
+                "written into the conversation once: after the recorded prefix "
+                "was rebuilt and verified and the environment restored, just "
+                "before that step's own observation. 'none' (the default) adds "
+                "nothing. 'prefer_different_action' quotes the reply the source "
+                "run gave at that step and asks for a different action that also "
+                "moves the task forward; a checkpoint step the source recorded no "
+                "action for gets no instruction. The text appears in the step's "
+                "recorded model call and stays in the conversation for any "
+                "continue steps."
+            ),
+        ),
+    ] = "none"
 
     def __post_init__(self) -> None:
         # The default for a hand-built loop; the Composer's injection, which
@@ -394,6 +445,8 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
 
         budget = min(1 + self.continue_steps, self.max_steps)
         for offset in range(budget):
+            if offset == 0:
+                self._add_branch_instruction(run)
             result = await self._run_step(
                 run,
                 t + offset,
@@ -727,7 +780,36 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         run.step_records.append(record)
         return record
 
-    # 4. the policy step's view of the budget
+    # 4. the policy step: the configured instruction, the view of the budget
+
+    def _add_branch_instruction(self, run: BranchRun) -> None:
+        """Write the configured ``branch_instruction`` into memory, once, before step *t*.
+
+        Runs after the prefix was rebuilt and verified and the environment
+        restored, right before the policy step adds its own observation, so
+        the instruction is the last message ahead of that observation and the
+        step's recorded model call carries it. Nothing compares the policy
+        step's context, so this changes no check. ``none`` writes nothing;
+        so does a checkpoint step the source recorded no action for (its
+        reply did not parse, or its model call failed): there is no recorded
+        action to name.
+        """
+        if self.branch_instruction == "none":
+            return
+        template = BRANCH_INSTRUCTIONS[self.branch_instruction]
+        t = run.checkpoint_step
+        record = run.source.record(t)
+        if not record.actions:
+            logger.info(
+                "BranchLoop: %s recorded no action at step %d; branch_instruction %r adds nothing",
+                run.source.name,
+                t,
+                self.branch_instruction,
+            )
+            return
+        run.memory.add_message(
+            UserMessage(content=template.format(recorded_reply=record.llm_output))
+        )
 
     def _loop_fragment_builders(self, run: LoopRun, step_idx: int) -> dict[str, Any]:
         """ReAct's builders, with ``loop.step_info`` pinned to the source's.

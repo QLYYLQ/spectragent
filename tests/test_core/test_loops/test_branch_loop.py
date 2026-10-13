@@ -5,8 +5,9 @@ through the real ``AgentRuntime`` + ``ReactLoop`` + ``TraceWriter``
 (``tests/_helpers/branch_fakes.py``); branches run through the same runtime
 with a scripted teacher. Pinned here: the step budget (``continue_steps`` 0
 and 2), what restored, policy and terminal records hold, strict vs warn
-divergence, vetoes in every phase, statelessness, and every way a checkpoint
-is refused before anything is set up.
+divergence, vetoes in every phase, statelessness, every way a checkpoint is
+refused before anything is set up, and the ``branch_instruction`` the teacher
+is given at step *t*.
 """
 
 from __future__ import annotations
@@ -14,11 +15,13 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, get_args, get_type_hints
 
 import pytest
 
+from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops import BranchLoop, ReactLoop
+from spectragent.core.loops.branch import BRANCH_INSTRUCTIONS
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.loops.restore import PrefixReplayRestorer
 from spectragent.core.loops.restore.source import recorded_form
@@ -216,6 +219,82 @@ class TestRecords:
         out = await run_branch(tmp_path, source, 2, ["click 102"])
         assert recorded_form(out.llm.prompts[0]) == recorded_form(
             RunTrace(source).llm_messages(2)[0].messages
+        )
+
+
+def _instruction(recorded_reply: str) -> str:
+    return BRANCH_INSTRUCTIONS["prefer_different_action"].format(recorded_reply=recorded_reply)
+
+
+def _different_action_loop(**knobs: Any) -> BranchLoop:
+    return BranchLoop(branch_instruction="prefer_different_action", **knobs)
+
+
+class TestBranchInstruction:
+    """One fixed message at step *t*, after the verified prefix, quoting the source's reply."""
+
+    def test_every_option_but_none_has_exactly_one_text(self) -> None:
+        hint = get_type_hints(BranchLoop, include_extras=True)["branch_instruction"]
+        assert set(get_args(get_args(hint)[0])) == {"none", *BRANCH_INSTRUCTIONS}
+        assert BranchLoop().branch_instruction == "none"
+
+    @pytest.mark.parametrize("step", [0, 2])
+    async def test_it_quotes_the_recorded_reply_just_before_the_observation(
+        self, tmp_path: Path, source: Path, step: int
+    ) -> None:
+        out = await run_branch(tmp_path, source, step, ["click 101"], loop=_different_action_loop())
+        recorded = recorded_form(RunTrace(source).llm_messages(step)[0].messages)
+        note = recorded_form([UserMessage(content=_instruction(SOURCE_REPLIES[step]))])
+        # The source's prompt with one more message, between the rebuilt
+        # history (just the seed at step 0) and the step's own observation.
+        expected = recorded[:-1] + note + recorded[-1:]
+        assert recorded_form(out.llm.prompts[0]) == expected
+        # The trace records the call as the teacher received it.
+        assert out.run_dir is not None
+        assert recorded_form(RunTrace(out.run_dir).llm_messages(step)[0].messages) == expected
+        assert out.result is not None and out.result.agent_done.value == "max_steps"
+
+    async def test_it_is_written_once(self, tmp_path: Path, source: Path) -> None:
+        out = await run_branch(
+            tmp_path,
+            source,
+            1,
+            ["click 102", "done ok"],
+            loop=_different_action_loop(continue_steps=1),
+        )
+        note = _instruction(SOURCE_REPLIES[1])
+        first, second = ([m.content for m in prompt] for prompt in out.llm.prompts)
+        assert first.count(note) == 1
+        # The continue step sees it as history, where step t left it.
+        assert second.count(note) == 1
+        assert second.index(note) == first.index(note)
+        assert out.result is not None and out.result.agent_done.value == "done"
+
+    async def test_a_structured_reply_is_quoted_as_written(self, tmp_path: Path) -> None:
+        """A JSON reply's braces are the reply's, not placeholders of the template."""
+        source = await record_source(tmp_path, SOURCE_REPLIES, structured=True)
+        recorded = RunTrace(source).step(2)
+        assert recorded is not None and recorded.llm_output.startswith("{")
+        out = await run_branch(
+            tmp_path,
+            source,
+            2,
+            ["click 101"],
+            agent=BranchFakeAgent(structured=True),
+            loop=_different_action_loop(),
+        )
+        assert out.llm.prompts[0][-2].content == _instruction(recorded.llm_output)
+
+    async def test_a_checkpoint_step_without_a_recorded_action_gets_none(
+        self, tmp_path: Path
+    ) -> None:
+        """The source's step 1 never parsed: there is no recorded action to name."""
+        source = await record_source(tmp_path, ["click 100", "what", "huh", "click 101", "done ok"])
+        failed = RunTrace(source).step(1)
+        assert failed is not None and failed.actions == []
+        out = await run_branch(tmp_path, source, 1, ["click 101"], loop=_different_action_loop())
+        assert recorded_form(out.llm.prompts[0]) == recorded_form(
+            RunTrace(source).llm_messages(1)[0].messages
         )
 
 

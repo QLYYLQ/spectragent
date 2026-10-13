@@ -9,12 +9,14 @@ the real registrars:
   typed, and the restorer is required in a ``branch`` block;
 - the configured restorer and its knobs reach the instance, replacing the
   default a hand-built loop gets;
-- a mistyped ``restorer_id`` / ``loop_id`` and an unknown knob are refused by
-  validation.
+- ``branch_instruction`` reaches the loop and is recorded raw (a closed set);
+- a mistyped ``restorer_id`` / ``loop_id``, an unknown knob and a value outside
+  a closed set are refused by validation.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -25,9 +27,11 @@ from pydantic import ValidationError
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.loops import BranchLoop
 from spectragent.core.loops.restore import PrefixReplayRestorer
+from spectragent.core.trace.redaction import redact_config
 from spectragent.scripts.generate_all import _collect_registrars
 
 CONFIG = Path(__file__).resolve().parents[3] / "configs" / "ui_tars_local.yaml"
+SHIPPED_BRANCH = CONFIG.parent / "flywheel" / "branch_ui_tars_archive.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -83,6 +87,32 @@ class TestNestedUnions:
         loop = _loop(composer, _branch(restorer={"restorer_id": "prefix_replay"}))
         assert (loop.restorer.verify, loop.restorer.screenshot_max_distance) == ("strict", 5)
         assert loop.continue_steps == 0
+        assert loop.branch_instruction == "none"
+
+    def test_the_branch_instruction_reaches_the_loop_and_is_recorded_raw(
+        self, composer: ConfigComposer
+    ) -> None:
+        """A closed set: the trace's ``config.json`` names the option a sweep ran with."""
+        run = composer.compose(
+            _branch(
+                restorer={"restorer_id": "prefix_replay"},
+                branch_instruction="prefer_different_action",
+            )
+        )
+        assert run.single("agent").agent_loop.branch_instruction == "prefer_different_action"
+        recorded = redact_config(run.top_level_cfg)["agent"][0]["agent_loop"]
+        assert recorded["branch_instruction"] == "prefer_different_action"
+
+    def test_the_shipped_branch_config_shows_a_real_option(self, composer: ConfigComposer) -> None:
+        """The commented-out ``branch_instruction`` line names a value the block accepts."""
+        text = SHIPPED_BRANCH.read_text("utf-8")
+        shown = re.search(r"^ *# branch_instruction: (\S+)$", text, re.MULTILINE)
+        assert shown is not None
+        raw = yaml.safe_load(text)
+        assert "branch_instruction" not in raw["agent"][0]["agent_loop"]  # shown, not set
+        raw["agent"][0]["agent_loop"]["branch_instruction"] = shown.group(1)
+        validated = composer.top_level_type.model_validate(raw).model_dump()
+        assert validated["agent"][0]["agent_loop"]["branch_instruction"] == shown.group(1)
 
     def test_react_stays_the_default_shape(self, composer: ConfigComposer) -> None:
         raw = yaml.safe_load(CONFIG.read_text("utf-8"))
@@ -115,6 +145,13 @@ class TestTyposRejected:
             pytest.param(
                 {"restorer": {"restorer_id": "prefix_replay"}, "continue_step": 1},
                 id="loop-knob",
+            ),
+            pytest.param(
+                {
+                    "restorer": {"restorer_id": "prefix_replay"},
+                    "branch_instruction": "prefer_another_action",
+                },
+                id="branch_instruction-value",
             ),
         ],
     )

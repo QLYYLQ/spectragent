@@ -14,7 +14,7 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `ui_tars_local.yaml` | UITarsAgent + ReactLoop + LocalChrome backend |
 | `flywheel/record_ui_tars_pinned.yaml` | A **recording** run (data flywheel): UITarsAgent, `replayability: pinned`, the three browser archivers on the trace hook — see [Recording environment evidence](#recording-environment-evidence) |
 | `flywheel/replay_ui_tars_archive.yaml` | Its **offline replay**: the same agent and tier with `network_source: archive` (isolated, strict misses) and `base_time: from_archive`; the recorded run arrives as `--replay-archive DIR` — see [Replaying a recorded run](#replaying-a-recorded-run) |
-| `flywheel/branch_ui_tars_archive.yaml` | **Branching** recorded runs (data flywheel, M31): `agent_loop: branch` (the `prefix_replay` restorer) over the replay browser block, tasks from `task_loader: trace_branches` — see [Branching a recorded run](#branching-a-recorded-run) |
+| `flywheel/branch_ui_tars_archive.yaml` | **Branching** recorded runs (data flywheel, M31): `agent_loop: branch` (the `prefix_replay` restorer) over the replay browser block, tasks from `task_loader: trace_branches`, the teacher at temperature 0.8 with three branches per step — see [Branching a recorded run](#branching-a-recorded-run) |
 | `flywheel/same_path_ui_tars_archive.yaml` | **Same-path replay** (data flywheel, M33): the branch sweep restoring every recording to its last step (`step_selector: last`, `continue_steps: 0`, `verify: warn`, two tasks per source) — the metrics chain's fidelity measure, see [Measuring the flywheel](#measuring-the-flywheel) |
 | `flywheel/export_sft.yaml` | **Exporting** recorded runs as a training dataset (data flywheel, M32): one `exporter:` block, no agent, no environment — see [Exporting training data](#exporting-training-data) |
 | `flywheel/ui_tars_student.yaml` | The export's **student**: UITarsAgent with `coordinate_space: normalized_1000`, the recording's screenshot pipeline, no hooks; assembled by the export, never run by it |
@@ -355,6 +355,7 @@ agent_loop:
   max_actions_per_step: 1           # must be the source run's (checked at assembly)
   continue_steps: 0                 # 0: decide step t only; N: N more ReAct steps after it
   terminal_observation: true        # default: one more observation after the run ends
+  branch_instruction: none          # prefer_different_action: one fixed message at step t (below)
   restorer:
     restorer_id: prefix_replay
     verify: strict                  # warn: record a failed check and go on
@@ -366,7 +367,7 @@ task_loader:
     data_dir: traces/recorded       # the sources root (default: traces)
     # sources: ["*"]                # globs relative to data_dir, sorted
     step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps: [2, 5]} | last
-    branches_per_step: 1            # b0, b1, ... per selected step
+    branches_per_step: 3            # b0, b1, b2 per selected step (the shipped value)
     agent_outcome: any              # done | max_steps | error | timeout | vetoed (reads result.json)
     # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
     # require_archive: [browser.network]   (default; [] requires none)
@@ -405,6 +406,15 @@ task_loader:
   teacher's (`origin: policy`); the terminal observation is `origin: terminal`. A branch
   run is a replay, so its trace hook binds `browser.replay_log` in `browser.network`'s
   place, as in the replay config.
+- **Teacher sampling.** The branches of one checkpoint get identical inputs, so only the
+  teacher's sampling makes them differ: the shipped file sets the teacher's
+  `temperature: 0.8` (the recording ran at the openai default, 0.2) and
+  `branches_per_step: 3`. `branch_instruction: prefer_different_action` adds one message at
+  step *t* only, after the prefix is rebuilt and the environment restored: it quotes the
+  reply the source gave at that step and asks for a different action that also moves the
+  task forward (none when the source recorded no action there). The option is recorded
+  raw in `config.json`; the text is in step *t*'s recorded model call
+  (`docs/data_flywheel_runbook.md`, "teacher 采样").
 - **No scoring yet**: `trace_branches` has no eval loader, so a configured evaluator is
   refused before the sweep starts — pass `--no-eval`.
 

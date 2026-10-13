@@ -25,6 +25,11 @@
 #   then a terminal observation.
 # - network_source: archive + base_time: from_archive — as in the replay config,
 #   and so is the archive list: browser.replay_log in browser.network's place.
+# - The teacher samples hotter than the recording (temperature 0.8; the openai
+#   default the recording ran with is 0.2) and every selected step gets three
+#   branches: the branches of one step share every input, so sampling is what
+#   makes them differ. agent_loop.branch_instruction (commented out below) can
+#   add one fixed instruction at step t.
 # - The trace writer records the branch runs somewhere else than the sources:
 #   a branch run is never a source (branching a branch is refused).
 agent:
@@ -37,6 +42,10 @@ agent:
       max_steps: 30
       max_actions_per_step: 1
       continue_steps: 0                  # 0: a single-step branch; N: N more ReAct steps
+      # branch_instruction: prefer_different_action
+      #   none (the default): the teacher gets no extra text. prefer_different_action:
+      #   at step t only, one message quotes the reply the source gave at that step
+      #   and asks for a different action that also moves the task forward.
       restorer:
         restorer_id: prefix_replay
         verify: strict                   # warn: record failed checks and go on
@@ -45,6 +54,7 @@ agent:
       model_type: openai
       model: gpt-4o
       provider: { name: direct }
+      temperature: 0.8                   # the recording ran at the openai default, 0.2
     memory: { memory_id: simple, max_messages: 200 }
 
 environment:
@@ -81,7 +91,7 @@ task_loader:
   - benchmark_name: trace_branches
     data_dir: traces/recorded            # placeholder: the directory your recorded runs are in
     step_selector: { selector_id: all }  # every_k {k, offset} | explicit {steps: [...]} | last
-    branches_per_step: 1
+    branches_per_step: 3                 # b0, b1, b2 per selected step, each sampled on its own
     agent_outcome: any                   # done | max_steps | error | timeout | vetoed: how the source's agent ended
                                          # (a checkpoint is always a step the source's trace is closed and complete through)
     on_unbranchable: raise               # skip: leave an unbranchable source out, with its reason
