@@ -23,7 +23,8 @@ The browser archive's acceptance criteria that only a real browser can show:
   (BrowserUse cleaning), passwords in markup, set by script, typed through
   ``browser.type`` or in an unrendered field reach neither the prompt nor any
   file but the typed one's own step record, and the type results carry the
-  sensitive-field marker.
+  sensitive-field marker; ``extract_content`` of the password field returns
+  its HTML with the value withheld.
 - **Sensitivity parity** — the Python rule and the Skyvern page script judge
   the same table of controls the same way in Chrome.
 
@@ -51,7 +52,10 @@ from spectragent.core.capabilities.browser.archive import (
 )
 from spectragent.core.capabilities.browser.archive.dom_raw import DomRawSession
 from spectragent.core.capabilities.browser.dom.js.skyvern_extraction import EXTRACTION_SCRIPT
-from spectragent.core.capabilities.browser.dom.sensitivity import is_sensitive_control
+from spectragent.core.capabilities.browser.dom.sensitivity import (
+    REDACTED_MARKUP,
+    is_sensitive_control,
+)
 from spectragent.core.capabilities.browser.replay import PinnedReplayability
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.hooks.trace_writer import TraceWriter
@@ -594,6 +598,15 @@ async def _record_dom_trace(trace_root: Path) -> tuple[Path, list[str], list[Act
                         "text": _COORD_TYPED_PASSWORD,
                     },
                 ),
+                # One element's HTML goes into the next prompt as the action's result.
+                Action(
+                    name="browser.extract_content",
+                    params={"index": _index_of(before, "pw-markup")},
+                ),
+                Action(
+                    name="browser.extract_content",
+                    params={"index": _index_of(before, "plain-markup")},
+                ),
             ]
             results = [await cap.execute_action(action) for action in actions]
             await asyncio.sleep(0.3)
@@ -619,10 +632,18 @@ async def _record_dom_trace(trace_root: Path) -> tuple[Path, list[str], list[Act
 
 
 def test_privacy_guard_on_the_dom_path(tmp_path: Path) -> None:
-    """BrowserUse cleaning: no password reaches the prompt, the observation or env/."""
+    """BrowserUse cleaning: no password reaches the prompt, the observation or env/.
+
+    Nor an action result: ``extract_content`` of the field whose markup holds
+    the password returns its HTML with the value withheld, and the trace scan
+    below reads that result in the step record.
+    """
     run_dir, prompts, results = _run(_record_dom_trace(tmp_path))
     assert all(r.success for r in results), [r.error for r in results]
-    assert [r.typed_into_sensitive_field for r in results] == [True, False, True]
+    assert [r.typed_into_sensitive_field for r in results] == [True, False, True, None, None]
+    password_html, plain_html = (r.extracted_content or "" for r in results[3:])
+    assert 'id="pw-markup"' in password_html and REDACTED_MARKUP in password_html, password_html
+    assert f'value="{_PLAIN_MARKUP}"' in plain_html, "a plain field's markup is the agent's to see"
     typed = {"typed by index": _TYPED_PASSWORD, "typed at a point": _COORD_TYPED_PASSWORD}
     for prompt in prompts:
         for label, secret in {**_PASSWORDS, **typed}.items():

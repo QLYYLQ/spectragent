@@ -182,10 +182,12 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     ), "the POST branch's document miss keeps it out of the dataset"
 
     privacy = metrics["privacy"]
-    assert [(p["label"], p["occurrences"]) for p in privacy["planted"]] == [
-        (label, 0) for label, _value in PLANTED
-    ]
-    assert privacy["shapes"] == {}
+    assert privacy["model_requests"]["items"] > 0 and privacy["datasets"]["items"] > 0
+    for gate in ("model_requests", "datasets"):
+        assert [(p["label"], p["occurrences"]) for p in privacy[gate]["planted"]] == [
+            (label, 0) for label, _value in PLANTED
+        ], gate
+        assert privacy[gate]["shapes"] == {}, gate
 
     overhead = metrics["archive_overhead"]
     assert overhead["archived"]["tier"] == overhead["control"]["tier"] == "browser:pinned"

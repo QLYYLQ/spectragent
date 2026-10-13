@@ -7,6 +7,11 @@ being asked to state what it wanted and handed the page regardless. The
 param is deleted rather than kept as a promise; the honest version of that
 feature needs an LLM inside the action, which the framework cannot yet
 wire or attribute. See ``docs/actions_that_call_an_llm.md``.
+
+The result goes into the agent's next prompt, so one element's HTML comes back
+with the sensitivity rule applied (``dom/sensitivity.py``): a sensitive
+control's ``value`` attributes and the text inside it are ``<redacted>``,
+escaped as markup. The page text holds no field's value to begin with.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class ExtractContentAction(ActionBase):
-    """Return a scope wholesale: page ``innerText``, or element ``outerHTML``."""
+    """Return a scope wholesale: page ``innerText``, or element ``outerHTML`` (values withheld)."""
 
     __registry_key__ = "browser.extract_content"
 

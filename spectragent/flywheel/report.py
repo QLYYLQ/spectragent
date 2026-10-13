@@ -18,7 +18,7 @@ them; each is written into the rule that uses it, by name and value. The
 per-step archive overhead budget is not defined here but in
 ``core/archive/budget.py``, which the browser's overhead benchmark reads too.
 
-:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-2``:
+:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-3``:
 sorted keys, fixed separators, no wall clock, no absolute path, no host
 information — the same inputs give the same bytes) and ``report.md``,
 rendered from the same model, every measure's skipped runs included.
@@ -68,7 +68,6 @@ from spectragent.flywheel.metrics import (
     body_completeness_metric,
     branch_coverage,
     branch_document_misses,
-    chain_sites,
     components,
     duplicate_branches,
     export_determinism,
@@ -90,7 +89,7 @@ from spectragent.flywheel.metrics import (
 from spectragent.schemas.dataset import DatasetManifest
 
 #: ``report.json``'s format.
-REPORT_FORMAT = "af-flywheel-report-2"
+REPORT_FORMAT = "af-flywheel-report-3"
 REPORT_JSON = "report.json"
 REPORT_MD = "report.md"
 
@@ -276,7 +275,7 @@ class Decisions(_Model):
 class FlywheelReport(_Model):
     """The report (``report.json``)."""
 
-    format: Literal["af-flywheel-report-2"] = REPORT_FORMAT
+    format: Literal["af-flywheel-report-3"] = REPORT_FORMAT
     chain: ChainInfo
     inputs: Inputs
     metrics: Metrics
@@ -588,42 +587,56 @@ def _rec_export(metric: ExportDeterminism, basis: Evidence, *, sites: int) -> Re
     )
 
 
-def _rec_privacy(metric: Privacy, basis: Evidence, *, sites: int) -> Recommendation:
-    evidence = [
-        EvidenceRef(
-            pointer=pointer("metrics", "privacy", "planted", index, "occurrences"),
-            value=item.occurrences,
-            n=metric.files_scanned,
-        )
-        for index, item in enumerate(metric.planted)
-    ]
-    evidence.append(
-        EvidenceRef(
-            pointer=pointer("metrics", "privacy", "shapes"),
-            value=metric.shapes,
-            n=metric.files_scanned,
-        )
+def _rec_privacy(metric: Privacy, basis: Evidence) -> Recommendation:
+    gates = (
+        ("model_requests", "sent to the model", metric.model_requests),
+        ("datasets", "in the datasets", metric.datasets),
     )
-    leaked = [item.label for item in metric.planted if item.occurrences]
-    shapes = sum(metric.shapes.values())
-    unsearched = [item.label for item in metric.planted if item.occurrences is None]
-    verdict = None
-    if leaked or shapes:
-        # A leak found is a conclusion whatever else could not be searched for.
-        verdict = (
-            f"leak: {', '.join(leaked) or 'no planted value'} found, {shapes} credential-shaped "
-            f"string(s): fix before sharing traces or datasets"
+    evidence: list[EvidenceRef] = []
+    found: list[str] = []
+    for key, where, gate in gates:
+        evidence += [
+            EvidenceRef(
+                pointer=pointer("metrics", "privacy", key, "planted", index, "occurrences"),
+                value=item.occurrences,
+                n=gate.items,
+            )
+            for index, item in enumerate(gate.planted)
+        ]
+        evidence.append(
+            EvidenceRef(
+                pointer=pointer("metrics", "privacy", key, "shapes"),
+                value=gate.shapes,
+                n=gate.items,
+            )
         )
+        leaked = [item.label for item in gate.planted if item.occurrences]
+        shapes = sum(gate.shapes.values())
+        if leaked or shapes:
+            found.append(
+                f"{where}: {', '.join(leaked) or 'no planted value'}, {shapes} credential-shaped "
+                "string(s)"
+            )
+    planted = metric.model_requests.planted
+    unsearched = [item.label for item in planted if item.occurrences is None]
+    scanned = metric.model_requests.items + metric.datasets.items
+    verdict = None
+    if found:
+        # A leak found is a conclusion whatever else could not be searched for.
+        verdict = f"leak — {'; '.join(found)}: fix before the next run or export"
         if unsearched:
             verdict += f"; not searched: {', '.join(unsearched)}"
-    elif metric.files_scanned and metric.planted and not unsearched:
+    elif scanned and planted and not unsearched:
         verdict = (
-            f"no planted credential ({len(metric.planted)} searched) and no credential shape "
-            f"under traces/ and datasets/"
+            f"no planted credential ({len(planted)} searched) and no credential shape in what "
+            f"was sent to the model ({metric.model_requests.items} request(s)) or in the "
+            f"datasets ({metric.datasets.items} file(s))"
         )
-    if not metric.files_scanned:
-        no_data = "no file under traces/ or datasets/"
-    elif not metric.planted:
+    if verdict is not None and metric.skipped:
+        verdict += f"; {len(metric.skipped)} run(s) not read (see skipped)"
+    if not scanned:
+        no_data = "no recorded model request and no file under datasets/"
+    elif not planted:
         no_data = (
             "no planted credential to search for (the chain spec plants none, or there is no spec)"
         )
@@ -631,13 +644,16 @@ def _rec_privacy(metric: Privacy, basis: Evidence, *, sites: int) -> Recommendat
         no_data = f"not searched: {', '.join(unsearched)}"
     return _recommend(
         basis,
-        "every planted credential occurs 0 times and no SECRET_PATTERNS shape matches; 'no leak' "
-        "needs every planted credential searched for (one whose environment variable is unset, or "
-        "a report without a spec, leaves the planted measure unevaluated)",
+        "every planted credential occurs 0 times and no SECRET_PATTERNS shape matches at either "
+        "gate: what was sent to the model (the messages of every recorded request, inline image "
+        "data aside) and the exported datasets (every file under datasets/); env/ and the rest "
+        "of a trace stay on this machine and are not searched; 'no leak' needs every planted "
+        "credential searched for (one whose environment variable is unset, or a report without "
+        "a spec, leaves the planted measure unevaluated)",
         evidence,
         verdict,
         has_data=verdict is not None,
-        sites=sites,
+        sites=metric.sites,
         no_data=no_data,
     )
 
@@ -1052,7 +1068,7 @@ def build_report(
         branch_coverage=branch_coverage(chain.role("branch")),
         replay_determinism=replay_determinism(chain),
         export_determinism=export_determinism(layout),
-        privacy=privacy(layout, planted),
+        privacy=privacy(chain, planted),
     )
     sections = Sections(
         sites=sites(
@@ -1081,7 +1097,7 @@ def build_report(
             export_determinism=_rec_export(
                 metrics.export_determinism, evidence, sites=export_sites
             ),
-            privacy=_rec_privacy(metrics.privacy, evidence, sites=chain_sites(chain)),
+            privacy=_rec_privacy(metrics.privacy, evidence),
         ),
         sections=SectionRecommendations(
             sites=_rec_sites(sections.sites, evidence),
@@ -1290,14 +1306,23 @@ def _lines_metric(name: str, metrics: Metrics) -> list[str]:
             f"- identical: {_fmt(m.identical)}" + (f" — {m.reason}" if m.reason else ""),
         ]
     m = metrics.privacy
-    lines = [f"- files scanned: {m.files_scanned}"]
-    lines += [
-        f"- planted `{item.label}` ({item.source}): {_fmt(item.occurrences)} occurrence(s) in "
-        f"{_fmt(item.files)} file(s)" + (f" — {item.reason}" if item.reason else "")
-        for item in m.planted
+    lines = [
+        f"- sent to the model: {m.model_requests.items} recorded request(s) of {m.runs} run(s)",
+        f"- datasets: {m.datasets.items} file(s)",
+        "- not searched: env/ and the rest of each trace (they stay on this machine)",
     ]
-    lines.append(f"- credential shapes: {_fmt(m.shapes)}")
-    return lines
+    for where, gate, unit in (
+        ("sent to the model", m.model_requests, "request"),
+        ("datasets", m.datasets, "file"),
+    ):
+        lines += [
+            f"- {where}, planted `{item.label}` ({item.source}): {_fmt(item.occurrences)} "
+            f"occurrence(s) in {_fmt(item.items)} {unit}(s)"
+            + (f" — {item.reason}" if item.reason else "")
+            for item in gate.planted
+        ]
+        lines.append(f"- {where}, credential shapes: {_fmt(gate.shapes)}")
+    return lines + _skipped_md(m.skipped)
 
 
 def _lines_section(name: str, sections: Sections) -> list[str]:

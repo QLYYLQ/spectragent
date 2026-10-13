@@ -9,15 +9,33 @@ counts every entry it folds.
 
 from __future__ import annotations
 
-import gzip
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from spectragent.core.llm.messages import (
+    AssistantMessage,
+    ContentPartImageParam,
+    ContentPartTextParam,
+    ImageURL,
+    SystemMessage,
+    UserMessage,
+)
+from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.trace.digest import tree_digest
+from spectragent.core.trace.encoding import (
+    EncodedLLMCall,
+    PendingLLMCall,
+    TraceFile,
+    encode_llm_call,
+)
+from spectragent.core.trace.models import RecordedLLMCall, TraceStatus
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.secret_patterns import iter_readable
+from spectragent.core.trace.wal import WALWriter
 from spectragent.flywheel.metrics import (
     NO_RESULT,
     UNREADABLE_RESULT,
@@ -25,6 +43,7 @@ from spectragent.flywheel.metrics import (
     ChainRuns,
     DatasetFormatError,
     Planted,
+    Privacy,
     agent_outcome,
     archive_bytes,
     archive_overhead,
@@ -44,6 +63,7 @@ from spectragent.flywheel.metrics import (
     ratio,
     read_dataset_manifest,
     replay_determinism,
+    request_texts,
     restoration,
     restoration_rate,
     run_tier,
@@ -51,17 +71,21 @@ from spectragent.flywheel.metrics import (
     sites,
 )
 from spectragent.flywheel.report import build_report, report_json
+from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.step_record import StepRecord
 from tests._helpers.flywheel_traces import (
     BIG,
     KnownChain,
     Step,
     check,
     click,
+    config,
     miss,
     provenance,
     write_plain,
     write_replayed,
 )
+from tests._helpers.trace_builder import agent_result, archive_file, prompt, step_record, usage
 from tests.test_flywheel.conftest import empty_layout
 
 
@@ -482,39 +506,198 @@ class TestExportDeterminism:
         assert tree_digest(tmp_path / "a") != first
 
 
+#: A planted credential, and a URL whose page carries a site's own public key — both kept on
+#: disk under ``env/`` and in the step record, where the privacy measure does not search.
+PLANTED_VALUE = "pw-Qx41"
+SITE_KEY_URL = "https://maps.test/js?key=AIzaSyPublicBrowserKey0123"
+
+
+def _call(step: int, call: int, messages: list[Any]) -> EncodedLLMCall:
+    pending = PendingLLMCall(messages)
+    pending.complete(ChatInvokeCompletion(completion="click(1, 1)", usage=usage()))
+    return encode_llm_call(step, call, pending)
+
+
+def _private_evidence(run_dir_step: int) -> list[TraceFile]:
+    """What stays on this machine: the planted value and a key-carrying URL, in env/."""
+    line = json.dumps({"url": SITE_KEY_URL, "post": f"password={PLANTED_VALUE}"}).encode()
+    return [archive_file("browser.network", "index.jsonl", line, step=run_dir_step)]
+
+
+def privacy_chain(root: Path) -> ChainLayout:
+    """Two readable runs that sent the model something, two that do not read back, a dataset.
+
+    - ``record/run-a`` (a.test): step 0 sent the planted value twice in one text part, once more
+      inside an inline image's data URL (not text: left out), and an image by a URL carrying a
+      token; its env/ evidence and its step record (the typed action) hold the planted value and a
+      site's key-carrying URL too.
+    - ``record/run-b`` (b.test): a trailing call (a step the loop never surrendered) whose
+      history holds a bearer token.
+    - ``same_path/damaged``: its one recorded call no longer parses.
+    - ``branch/broken``: a trace whose manifest does not read back.
+    - ``datasets/first/train.jsonl``: the planted value once, an openai-style key once.
+    """
+    layout = ChainLayout(root)
+    wal = WALWriter(layout.traces("record"), "run-a")
+    wal.init_run(config(task_id="a-1", site="a.test", archived=False))
+    typed = StepRecord(
+        step=0,
+        llm_output="Thought: sign in",
+        actions=[Action(name="browser.type", params={"index": 3, "text": PLANTED_VALUE})],
+        action_results=[ActionResult(success=True)],
+    )
+    request = [
+        SystemMessage(content=f"Never open {SITE_KEY_URL.split('?')[0]}"),
+        UserMessage(
+            content=[
+                ContentPartTextParam(text=f"type {PLANTED_VALUE} then {PLANTED_VALUE} again"),
+                ContentPartImageParam(
+                    image_url=ImageURL(url=f"data:image/png;base64,{PLANTED_VALUE}AAAA")
+                ),
+                ContentPartImageParam(
+                    image_url=ImageURL(url="https://img.test/shot.png?token=abcdefgh12345678")
+                ),
+            ]
+        ),
+    ]
+    wal.commit_step(0, typed, llm_calls=[_call(0, 0, request)], extra_files=_private_evidence(0))
+    wal.write_result(agent_result())
+    wal.finalize(TraceStatus.COMPLETE)
+
+    wal = WALWriter(layout.traces("record"), "run-b")
+    wal.init_run(config(task_id="b-1", site="b.test", archived=False))
+    history = [
+        UserMessage(content="what next?"),
+        AssistantMessage(content="Authorization: Bearer abcdefghijklmnopqrstuvwxyz"),
+    ]
+    wal.commit_trailing(llm_calls=[_call(0, 0, history)])
+    wal.finalize(TraceStatus.INCOMPLETE, incomplete_reason="cancelled")
+
+    wal = WALWriter(layout.traces("same_path"), "damaged")
+    wal.init_run(config(task_id="a-1", site="a.test", archived=False))
+    wal.commit_step(0, step_record(0), llm_calls=[_call(0, 0, prompt("go"))])
+    wal.finalize(TraceStatus.COMPLETE)
+    (wal.run_dir / RunTrace(wal.run_dir).manifest.steps[0].llm_calls[0]).write_text("{not json")
+
+    broken = layout.traces("branch") / "broken"
+    broken.mkdir(parents=True)
+    (broken / "manifest.json").write_text("{not json")
+
+    dataset = layout.dataset("first")
+    dataset.mkdir(parents=True)
+    (dataset / "train.jsonl").write_text(
+        json.dumps({"text": f"typed {PLANTED_VALUE}", "key": "sk-abcdefghijklmnopqrstu"}) + "\n"
+    )
+    return layout
+
+
 class TestPrivacy:
-    def test_planted_values_and_shapes_counted_never_written(self, tmp_path: Path) -> None:
-        layout = empty_layout(tmp_path)
-        run = layout.traces("record") / "run"
-        run.mkdir(parents=True)
-        (run / "a.json").write_text('{"x": "pw-Qx41-pw-Qx41"}')
-        (run / "b.warc.gz").write_bytes(gzip.compress(b"Authorization: pw-Qx41"))
-        dataset = layout.dataset("first")
-        dataset.mkdir(parents=True)
-        (dataset / "train.jsonl").write_text('{"key": "sk-abcdefghijklmnopqrstu"}')
+    """The two gates: what was sent to the model, and the datasets (arch §4.16, §5.6)."""
+
+    @pytest.fixture
+    def found(self, tmp_path: Path) -> Privacy:
         planted = [
-            Planted(label="site password", value="pw-Qx41", source="value"),
+            Planted(label="site password", value=PLANTED_VALUE, source="value"),
             Planted(label="token", value="never-written-anywhere", source="value"),
             Planted(label="teacher api key", value=None, source="env:FLYWHEEL_TEST_UNSET"),
         ]
-        found = privacy(layout, planted)
-        assert found.files_scanned == 3
-        assert [(p.label, p.occurrences, p.files) for p in found.planted] == [
-            ("site password", 3, 2),  # two in a.json, one inside the gzip
+        return privacy(open_chain(privacy_chain(tmp_path / "chain")), planted)
+
+    def test_what_was_sent_to_the_model(self, found: Privacy) -> None:
+        gate = found.model_requests
+        assert gate.items == 2, "run-a's call and run-b's trailing call"
+        assert [(p.label, p.occurrences, p.items) for p in gate.planted] == [
+            ("site password", 2, 1),  # the text part; not the inline image's data
             ("token", 0, 0),
             ("teacher api key", None, None),
         ]
-        assert (
-            found.planted[2].reason == "env:FLYWHEEL_TEST_UNSET is not set: nothing to search for"
-        )
-        assert found.shapes == {"openai-style api key": 1}
+        assert gate.planted[2].reason == "env:FLYWHEEL_TEST_UNSET is not set: nothing to search for"
+        assert gate.shapes == {"bearer token": 1, "url carrying a token": 1}
+        assert gate.shape_items == {"bearer token": 1, "url carrying a token": 1}
+
+    def test_the_datasets(self, found: Privacy) -> None:
+        gate = found.datasets
+        assert gate.items == 1
+        assert [(p.label, p.occurrences, p.items) for p in gate.planted] == [
+            ("site password", 1, 1),
+            ("token", 0, 0),
+            ("teacher api key", None, None),
+        ]
+        assert gate.shapes == {"openai-style api key": 1}
+
+    def test_env_and_the_rest_of_a_trace_are_not_searched(
+        self, found: Privacy, tmp_path: Path
+    ) -> None:
+        """The planted value and a site's own key are on disk, in env/ and the step record."""
+        run_a = tmp_path / "chain" / "traces" / "record" / "run-a"
+        holding = {
+            path.relative_to(run_a).parts[0]
+            for path, text in iter_readable(run_a)
+            if PLANTED_VALUE in text or "key=AIza" in text
+        }
+        assert {"env", "steps", "messages"} <= holding
+        # ...and only the model requests' and the dataset's occurrences were counted.
+        counted = [found.model_requests.planted[0], found.datasets.planted[0]]
+        assert [p.occurrences for p in counted] == [2, 1]
+        assert "url carrying a token" not in found.datasets.shapes
+
+    def test_runs_that_do_not_read_back_are_named(self, found: Privacy) -> None:
+        assert (found.runs, found.sites) == (2, 2)
+        assert found.skipped == {
+            "traces/branch/broken": (
+                "not a readable trace: manifest.json does not read back (TraceSchemaError)"
+            ),
+            "traces/same_path/damaged": (
+                "a recorded model call does not read back (TraceSchemaError)"
+            ),
+        }
+
+    def test_values_are_never_written(self, found: Privacy) -> None:
         dumped = found.model_dump_json()
-        assert "pw-Qx41" not in dumped and "sk-abcdef" not in dumped
+        for value in (PLANTED_VALUE, "sk-abcdef", "abcdefghijklmnop", "AIza"):
+            assert value not in dumped
+
+    def test_inline_image_data_is_not_text_but_an_image_url_is(self) -> None:
+        call = RecordedLLMCall.model_validate_json(
+            _call(
+                0,
+                0,
+                [
+                    UserMessage(
+                        content=[
+                            ContentPartTextParam(text="look"),
+                            ContentPartImageParam(
+                                image_url=ImageURL(url="data:image/png;base64,QUJD")
+                            ),
+                            ContentPartImageParam(image_url=ImageURL(url="https://img.test/a.png")),
+                        ]
+                    )
+                ],
+            ).file.data
+        )
+        texts = request_texts(call)
+        assert "look" in texts and "https://img.test/a.png" in texts
+        assert not [text for text in texts if text.startswith("data:")]
 
     def test_the_known_chain_leaks_nothing(self, layout: ChainLayout) -> None:
-        found = privacy(layout, [Planted(label="x", value="planted-xyz-123", source="value")])
-        assert found.files_scanned > 0
-        assert (found.planted[0].occurrences, found.shapes) == (0, {})
+        found = privacy(
+            open_chain(layout), [Planted(label="x", value="planted-xyz-123", source="value")]
+        )
+        assert found.datasets.items > 0
+        for gate in (found.model_requests, found.datasets):
+            assert (gate.planted[0].occurrences, gate.shapes) == (0, {})
+
+    def test_the_recommendation_names_the_gate(self, tmp_path: Path) -> None:
+        layout = privacy_chain(tmp_path / "chain")
+        report = build_report(
+            layout,
+            evidence="live",
+            planted=[Planted(label="site password", value=PLANTED_VALUE, source="value")],
+        )
+        verdict = report.recommendations.metrics.privacy.verdict or ""
+        assert verdict.startswith("leak — sent to the model: site password, 2 credential-shaped")
+        assert "in the datasets: site password, 1 credential-shaped string(s)" in verdict
+        assert verdict.endswith("; 2 run(s) not read (see skipped)")
 
 
 class TestSiteCounts:
@@ -556,7 +739,7 @@ class TestSiteCounts:
             "site_rules": 2,
         }
         recommendation = report.recommendations
-        assert recommendation.metrics.privacy.sites == 3, "every readable run of every role"
+        assert recommendation.metrics.privacy.sites == 3, "every run whose requests were read"
         assert recommendation.sections.export_yield.sites == 1, "the export's sources: shop only"
         assert recommendation.sections.sites.sites == 3
 

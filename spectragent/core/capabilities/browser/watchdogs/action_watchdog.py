@@ -49,7 +49,10 @@ from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 from agent_cdp.events.base import BaseEvent
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMSelectorMap
-from spectragent.core.capabilities.browser.dom.sensitivity import is_sensitive_control
+from spectragent.core.capabilities.browser.dom.sensitivity import (
+    is_sensitive_control,
+    withhold_sensitive_markup,
+)
 from spectragent.core.capabilities.browser.geometry import (
     FrameGeometryError,
     FrameProjection,
@@ -145,6 +148,25 @@ def _focused_field_verdict(reply: Any) -> bool | None:
         str(value.get("tag") or ""),
         {str(k).lower(): str(v) for k, v in attrs.items()} if isinstance(attrs, dict) else {},
     )
+
+
+def _inside_sensitive_control(node: DOMElementNode | None) -> bool:
+    """Whether *node* lies inside a sensitive control, by its ancestors in the observation tree.
+
+    An ``<option>`` of a sensitive ``<select>``, or a node of a control's
+    shadow root: its own markup names no control, yet every value in it is
+    the control's. The tree's parent links cross shadow roots and frame
+    documents the way the BrowserUse cleaner passes its flag down. ``False``
+    for a node the selector map no longer holds (its ancestors are unknown).
+    """
+    ancestor = node.parent if node is not None else None
+    while ancestor is not None:
+        if ancestor.node_type == 1 and is_sensitive_control(
+            ancestor.tag_name, {str(k).lower(): str(v) for k, v in ancestor.attributes.items()}
+        ):
+            return True
+        ancestor = ancestor.parent
+    return False
 
 
 # Key name → (DOM `key`, DOM `code`, virtual key code, optional `char`
@@ -1211,7 +1233,15 @@ class ActionWatchdog(BrowserWatchdog):
     # -----------------------------------------------------------------------
 
     async def _on_extract_content(self, event: ExtractContentEvent) -> str | None:
-        """Extract text content from page or element."""
+        """Extract the page's text, or one element's outer HTML with sensitive values withheld.
+
+        The element's markup goes into the action result, and from there into
+        the next prompt, so the sensitivity rule is applied to it first
+        (``dom/sensitivity.withhold_sensitive_markup``): a password the page
+        wrote into a ``value`` attribute comes back as the placeholder. Whether
+        the element itself lies inside a sensitive control is read off the
+        observation tree it was indexed from.
+        """
         try:
             if event.backend_node_id is not None:
                 result = await self._cdp.send(
@@ -1221,7 +1251,11 @@ class ActionWatchdog(BrowserWatchdog):
                     },
                     session_id=self._element_session(event.session_id),
                 )
-                return result.get("outerHTML", "") if result else ""
+                node = self._resolve_node(event.backend_node_id, event.session_id)
+                return withhold_sensitive_markup(
+                    result.get("outerHTML", "") if result else "",
+                    inside_sensitive=_inside_sensitive_control(node),
+                )
             else:
                 result = await self._cdp.send(
                     "Runtime.evaluate",

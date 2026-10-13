@@ -205,6 +205,9 @@ class SelectDropdownEvent(BaseEvent[None]):
 class ExtractContentEvent(BaseEvent[str | None]):
     """Extract a scope wholesale: page ``innerText``, or element ``outerHTML``.
 
+    The element's markup comes back with sensitive values withheld
+    (``dom/sensitivity.withhold_sensitive_markup``).
+
     No ``goal`` field. One existed and no handler ever read it; see
     ``docs/actions_that_call_an_llm.md`` for what it was meant to be and
     what has to exist first.

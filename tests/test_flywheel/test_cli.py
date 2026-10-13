@@ -39,7 +39,9 @@ def test_report_from_a_root(
     )
     document = json.loads((out / "report.json").read_text())
     assert document["chain"] == {"name": "n", "evidence": "live"}
-    assert document["metrics"]["privacy"]["planted"] == [], "no spec: nothing planted to search for"
+    privacy = document["metrics"]["privacy"]
+    for gate in ("model_requests", "datasets"):
+        assert privacy[gate]["planted"] == [], "no spec: nothing planted to search for"
     assert (out / "report.md").is_file()
     assert str(out / "report.json") in capsys.readouterr().out
 
@@ -62,12 +64,13 @@ def test_report_from_a_spec_reads_its_root_evidence_and_planted(
     out = tmp_path / "out"
     assert main(["report", "--spec", str(spec), "--out", str(out)]) == 0
     document = json.loads((out / "report.json").read_text())
-    (planted,) = document["metrics"]["privacy"]["planted"]
-    assert (planted["label"], planted["source"], planted["occurrences"]) == (
-        "teacher api key",
-        "env:FLYWHEEL_CLI_UNSET",
-        None,
-    )
+    for gate in ("model_requests", "datasets"):
+        (planted,) = document["metrics"]["privacy"][gate]["planted"]
+        assert (planted["label"], planted["source"], planted["occurrences"]) == (
+            "teacher api key",
+            "env:FLYWHEEL_CLI_UNSET",
+            None,
+        )
 
 
 @pytest.mark.parametrize(

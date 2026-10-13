@@ -90,7 +90,7 @@ def recommendations(report: FlywheelReport) -> dict[str, Any]:
 
 def test_every_report_item_is_present(report: FlywheelReport) -> None:
     document = json.loads(report_json(report))
-    assert document["format"] == REPORT_FORMAT == "af-flywheel-report-2"
+    assert document["format"] == REPORT_FORMAT == "af-flywheel-report-3"
     assert set(document["metrics"]) == set(REPORT_METRICS)
     assert set(document["sections"]) == set(REPORT_SECTIONS)
     assert set(document["decisions"]) == set(REPORT_DECISIONS)
@@ -183,10 +183,11 @@ def test_no_planted_value_absolute_path_or_clock_in_the_report(
         assert "/private/" not in text and "/tmp/" not in text, path.name
         assert "2026-" not in text, f"{path.name} holds a date"
     document = json.loads(written[0].read_text())
-    assert [item["label"] for item in document["metrics"]["privacy"]["planted"]] == [
-        "site password",
-        "teacher api key",
-    ]
+    for gate in ("model_requests", "datasets"):
+        assert [item["label"] for item in document["metrics"]["privacy"][gate]["planted"]] == [
+            "site password",
+            "teacher api key",
+        ]
 
 
 #: Planning codes a reader of the report could not resolve (AGENTS.md §3.6): local-plan

@@ -26,6 +26,7 @@ from spectragent.flywheel.metrics import (
     PlantedCount,
     PostBranchMisses,
     Privacy,
+    PrivacyGate,
     SiteRuleCandidates,
     anti_bot,
     branch_document_misses,
@@ -447,7 +448,9 @@ class TestThePrivacyRule:
         live = build_report(layout, evidence="live", planted=planted)
         found = live.recommendations.metrics.privacy
         assert (found.status, found.verdict) == ("insufficient", None)
-        assert live.metrics.privacy.files_scanned > 0 and live.metrics.privacy.shapes == {}
+        privacy = live.metrics.privacy
+        assert privacy.datasets.items > 0
+        assert privacy.model_requests.shapes == privacy.datasets.shapes == {}
         assert "needs every planted credential searched for" in found.rule
         unset = [item.label for item in planted if item.value is None]
         assert found.status_reason == (
@@ -462,31 +465,46 @@ class TestThePrivacyRule:
     ) -> None:
         live = build_report(layout, evidence="live", planted=[SITE_PASSWORD])
         found = live.recommendations.metrics.privacy
+        files = live.metrics.privacy.datasets.items
         assert (found.status, found.sites, found.verdict) == (
             "partial",
             3,
-            "no planted credential (1 searched) and no credential shape under traces/ and "
-            "datasets/",
-        ), "every role's sites count; three are too few for supported"
+            "no planted credential (1 searched) and no credential shape in what was sent to the "
+            f"model (0 request(s)) or in the datasets ({files} file(s)); 1 run(s) not read (see "
+            "skipped)",
+        ), "every read run's site counts; three are too few for supported"
+
+    def test_the_rule_names_the_two_gates_and_what_is_not_searched(
+        self, layout: ChainLayout
+    ) -> None:
+        found = build_report(layout, evidence="live").recommendations.metrics.privacy
+        assert "what was sent to the model" in found.rule and "exported datasets" in found.rule
+        assert "env/ and the rest of a trace stay on this machine and are not searched" in (
+            found.rule
+        )
 
     def test_a_credential_shape_is_a_leak_even_with_a_value_unsearched(self) -> None:
-        privacy = Privacy(
-            files_scanned=3,
-            planted=[
-                PlantedCount(
-                    label="teacher api key",
-                    source="env:OPENAI_API_KEY",
-                    occurrences=None,
-                    files=None,
-                    reason="env:OPENAI_API_KEY is not set: nothing to search for",
-                )
-            ],
-            shapes={"openai-style api key": 1},
-            shape_files={"openai-style api key": 1},
+        unsearched = PlantedCount(
+            label="teacher api key",
+            source="env:OPENAI_API_KEY",
+            occurrences=None,
+            items=None,
+            reason="env:OPENAI_API_KEY is not set: nothing to search for",
         )
-        found = rules._rec_privacy(privacy, "live", sites=10)
+        privacy = Privacy(
+            model_requests=PrivacyGate(
+                items=3,
+                planted=[unsearched],
+                shapes={"openai-style api key": 1},
+                shape_items={"openai-style api key": 1},
+            ),
+            datasets=PrivacyGate(items=2, planted=[unsearched], shapes={}, shape_items={}),
+            runs=10,
+            sites=10,
+        )
+        found = rules._rec_privacy(privacy, "live")
         assert (found.status, found.verdict) == (
             "supported",
-            "leak: no planted value found, 1 credential-shaped string(s): fix before sharing "
-            "traces or datasets; not searched: teacher api key",
+            "leak — sent to the model: no planted value, 1 credential-shaped string(s): fix "
+            "before the next run or export; not searched: teacher api key",
         )

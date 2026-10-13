@@ -11,10 +11,11 @@ fatal. The browser's evidence is read by the browser package's own functions
 (``iter_index_lines``, ``iter_decisions``, ``archive_stats``); this module
 only organises the calls. Datasets are read as the files an export published,
 each through the model the export writes it with (``DatasetManifest``,
-``CanonicalStepSample``). Two measures walk directories on purpose: privacy (a
-leak in a file nothing indexes is still a leak — every file under
-``traces/`` and ``datasets/``) and the dataset digests (an export's output is
-its files).
+``CanonicalStepSample``). Two measures walk the dataset directories on
+purpose, because an export's output is its files: privacy's dataset gate and
+the dataset digests. Privacy's other gate is what was sent to the model, each
+run's recorded requests read through ``RunTrace``; ``env/`` and the rest of a
+trace stay on the machine that recorded them and are not searched (arch §5.6).
 
 **Every number has its denominator.** A ratio over nothing is ``null`` with
 the reason, never ``0`` — "not measured" must not read as "measured zero"
@@ -45,6 +46,7 @@ import gzip
 import hashlib
 import json
 import logging
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -73,7 +75,12 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
 )
 from spectragent.core.trace.digest import TreeDigest, tree_digest
 from spectragent.core.trace.errors import TraceSchemaError
-from spectragent.core.trace.models import CommittedFile, TraceConfig, TraceStatus
+from spectragent.core.trace.models import (
+    CommittedFile,
+    RecordedLLMCall,
+    TraceConfig,
+    TraceStatus,
+)
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.secret_patterns import find_secrets, iter_readable
 from spectragent.core.trace.sources import match_runs, task_identity, unreadable_reason
@@ -1245,63 +1252,170 @@ class Planted:
 
 
 class PlantedCount(_Model):
-    """How often one planted credential appears; ``null`` when its value was not available."""
+    """How often one planted credential appears at a gate; ``null`` when its value was not available."""
 
     label: str
     source: str
     occurrences: int | None
-    files: int | None
+    #: The gate's items holding it at least once: model requests, or dataset files.
+    items: int | None
     reason: str | None = None
 
 
-class Privacy(_Model):
-    """Privacy (隐私): planted credentials and credential shapes under ``traces/`` and ``datasets/``."""
+class PrivacyGate(_Model):
+    """What the privacy measure read at one gate, and what it found there."""
 
-    files_scanned: int
+    #: Items read: recorded model requests, or files of the published datasets.
+    items: int
     planted: list[PlantedCount]
+    #: ``SECRET_PATTERNS`` matches, by label.
     shapes: dict[str, int]
-    shape_files: dict[str, int]
+    #: Items holding at least one match, by label.
+    shape_items: dict[str, int]
 
 
-def privacy(layout: ChainLayout, planted: Sequence[Planted]) -> Privacy:
-    """Privacy (arch §4.16): every file under ``traces/`` and ``datasets/``, gzip peeled.
+class Privacy(_Model):
+    """Privacy (隐私): planted credentials and credential shapes at the two gates.
 
-    Walks the trees, not the manifests (``iter_readable``): a leak in a file
-    nothing indexes is still a leak. Counts each planted value's occurrences
-    and the files holding it, and each ``SECRET_PATTERNS`` shape's hits —
-    labels and counts only, never a value.
+    What was sent to the model (every run's recorded requests) and the
+    exported datasets (every file under ``datasets/``). ``env/`` and the rest
+    of a trace stay on the machine that recorded them (arch §5.6) and are not
+    scanned.
     """
-    occurrences: Counter[str] = Counter()
-    holding: Counter[str] = Counter()
-    shapes: Counter[str] = Counter()
-    shape_files: Counter[str] = Counter()
-    scanned = 0
-    for tree in (layout.traces_dir, layout.datasets_dir):
-        for _path, text in iter_readable(tree):
-            scanned += 1
-            for item in planted:
+
+    model_requests: PrivacyGate
+    datasets: PrivacyGate
+    #: Runs whose recorded requests were read, every role.
+    runs: int
+    #: Distinct sites of those runs.
+    sites: int
+    #: Runs whose requests could not be read, keyed ``traces/<role>/<run>``: the
+    #: trace does not read back, or one of its recorded calls does not.
+    skipped: dict[str, str] = {}
+
+
+#: An image sent inline: a ``data:`` URL with a base64 payload.
+_BASE64_DATA_URL = re.compile(r"data:[^,]*;base64,", re.IGNORECASE)
+
+
+class _GateTally:
+    """Planted values and credential shapes over one gate's items."""
+
+    def __init__(self, planted: Sequence[Planted]) -> None:
+        self._planted = planted
+        self.items = 0
+        self._occurrences: Counter[str] = Counter()
+        self._holding: Counter[str] = Counter()
+        self._shapes: Counter[str] = Counter()
+        self._shape_items: Counter[str] = Counter()
+
+    def add(self, texts: Iterable[str]) -> None:
+        """One item, as the texts it is made of; each is searched on its own."""
+        self.items += 1
+        found: Counter[str] = Counter()
+        shapes: Counter[str] = Counter()
+        for text in texts:
+            for item in self._planted:
                 if item.value:
-                    found = text.count(item.value)
-                    occurrences[item.label] += found
-                    holding[item.label] += int(found > 0)
-            labels = Counter(label for label, _match in find_secrets(text))
-            shapes.update(labels)
-            shape_files.update(set(labels))
-    counts = [
-        PlantedCount(
-            label=item.label,
-            source=item.source,
-            occurrences=occurrences[item.label] if item.value else None,
-            files=holding[item.label] if item.value else None,
-            reason=None if item.value else f"{item.source} is not set: nothing to search for",
+                    found[item.label] += text.count(item.value)
+            shapes.update(label for label, _match in find_secrets(text))
+        self._occurrences.update(found)
+        self._holding.update(label for label, count in found.items() if count)
+        self._shapes.update(shapes)
+        self._shape_items.update(set(shapes))
+
+    def result(self) -> PrivacyGate:
+        return PrivacyGate(
+            items=self.items,
+            planted=[
+                PlantedCount(
+                    label=item.label,
+                    source=item.source,
+                    occurrences=self._occurrences[item.label] if item.value else None,
+                    items=self._holding[item.label] if item.value else None,
+                    reason=None
+                    if item.value
+                    else f"{item.source} is not set: nothing to search for",
+                )
+                for item in self._planted
+            ],
+            shapes=_counts(self._shapes),
+            shape_items=_counts(self._shape_items),
         )
-        for item in planted
-    ]
+
+
+def recorded_requests(run: Run) -> list[RecordedLLMCall]:
+    """Every model call *run* recorded — each committed step's, then the trailing ones.
+
+    Raises:
+        One of :data:`EVIDENCE_ERRORS` or ``OSError``: a recorded call does
+        not read back.
+    """
+    calls = [call for record in run.steps for call in run.trace.llm_messages(record.step)]
+    return calls + list(run.trace.trailing_calls)
+
+
+def request_texts(call: RecordedLLMCall) -> list[str]:
+    """Every text a recorded request sent the model: the strings of its messages.
+
+    An image sent inline (a base64 ``data:`` URL) is left out: it is not text
+    a search can read, and no credential shape can occur in base64's
+    alphabet. An image sent by URL is text like any other.
+    """
+    texts: list[str] = []
+    stack: list[Any] = [message.model_dump(mode="json") for message in call.messages]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str):
+            if not _BASE64_DATA_URL.match(value):
+                texts.append(value)
+        elif isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return texts
+
+
+def privacy(chain: ChainRuns, planted: Sequence[Planted]) -> Privacy:
+    """Privacy (arch §4.16): the two gates — what was sent to the model, and the datasets.
+
+    The model requests are every readable run's recorded calls, every role,
+    read through ``RunTrace`` (:func:`recorded_requests`), and searched in
+    the texts their messages hold (:func:`request_texts`). The datasets are
+    every file under ``datasets/``, gzip peeled (``iter_readable``): an
+    export's output is its files. ``env/`` and the rest of a trace are not
+    searched: they stay on this machine (arch §5.6). Counts each planted
+    value's occurrences and the items holding it, and each
+    ``SECRET_PATTERNS`` shape's hits, per gate — labels and counts only,
+    never a value. A run whose trace or one of whose calls does not read
+    back is skipped whole, with the reason.
+    """
+    requests = _GateTally(planted)
+    datasets = _GateTally(planted)
+    read: list[Run] = []
+    skipped: dict[str, str] = {}
+    for role in ROLES:
+        runs = chain.role(role)
+        skipped.update({f"traces/{role}/{rel}": reason for rel, reason in runs.skipped.items()})
+        for run in runs.runs:
+            try:
+                calls = [request_texts(call) for call in recorded_requests(run)]
+            except (*EVIDENCE_ERRORS, OSError) as exc:
+                skipped[run.pointer] = (
+                    f"a recorded model call does not read back ({type(exc).__name__})"
+                )
+                continue
+            read.append(run)
+            for texts in calls:
+                requests.add(texts)
+    for _path, text in iter_readable(chain.layout.datasets_dir):
+        datasets.add([text])
     return Privacy(
-        files_scanned=scanned,
-        planted=counts,
-        shapes=_counts(shapes),
-        shape_files=_counts(shape_files),
+        model_requests=requests.result(),
+        datasets=datasets.result(),
+        runs=len(read),
+        sites=site_count(read),
+        skipped=dict(sorted(skipped.items())),
     )
 
 
@@ -2041,11 +2155,6 @@ def branch_document_misses(branch: RoleRuns) -> BranchDocumentMisses:
     )
 
 
-def chain_sites(chain: ChainRuns) -> int:
-    """The distinct sites of every readable run of the chain, every role."""
-    return site_count(run for role in chain.roles.values() for run in role.runs)
-
-
 def exported_sites(chain: ChainRuns, manifest: DatasetManifest | None) -> int:
     """The distinct sites of the runs an export exported (its manifest's sources, under ``traces/``).
 
@@ -2103,6 +2212,7 @@ __all__ = [
     "PlantedCount",
     "PostBranchMisses",
     "Privacy",
+    "PrivacyGate",
     "Projection",
     "Ratio",
     "ReplayDeterminism",
@@ -2127,7 +2237,6 @@ __all__ = [
     "branch_coverage",
     "branch_document_misses",
     "canonical_json",
-    "chain_sites",
     "components",
     "dataset_samples",
     "duplicate_branches",
@@ -2145,7 +2254,9 @@ __all__ = [
     "privacy",
     "ratio",
     "read_dataset_manifest",
+    "recorded_requests",
     "replay_determinism",
+    "request_texts",
     "restoration",
     "restoration_rate",
     "retention",

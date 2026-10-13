@@ -36,7 +36,10 @@ Decided by the user on 2026-10-13 (threat model "only me") and implemented: the 
 DOM observation masks sensitive control values with the shared rule (architecture §4.12);
 `storage.json` keeps cookie and Web Storage values as they are, under redaction policy
 `af-privacy-1+browser-2` (§4.14, §5.6); typing records
-`ActionResult.typed_into_sensitive_field`, which export does not use yet.
+`ActionResult.typed_into_sensitive_field`, which export does not use yet;
+`browser.extract_content` of one element masks the same values in the HTML it returns
+(§4.12); the flywheel report's privacy measure checks only the two gates, the recorded model
+requests and the exported datasets, never `env/` (§4.16).
 
 Decided by the user on 2026-10-13 and implemented (the configuration surface): "not
 enabled" is spelled `none`, so the replayability tier `off` is now `none` and the export's

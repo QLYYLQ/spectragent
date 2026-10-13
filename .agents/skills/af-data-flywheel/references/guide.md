@@ -462,8 +462,17 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
   by both the report and the browser's overhead benchmark.
 - The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
-  report format is `af-flywheel-report-2`. Report keys, headings and rule texts never use a
+  report format is `af-flywheel-report-3`. Report keys, headings and rule texts never use a
   planning code (`test_report_schema.py` pins it).
+- The privacy measure checks only the two gates of the threat model "only me" (the user's
+  ruling of 2026-10-13): what was sent to the model (`model_requests`: the text in the
+  messages of every recorded request of every readable run, read through `RunTrace`; inline
+  base64 image data is not text and is skipped) and the exported datasets (`datasets`: every
+  file under `datasets/`, gzip peeled). `env/` and the rest of a trace stay on the recording
+  machine and are not searched, so a site's own public key in its pages is no leak. Each gate
+  counts planted values and `SECRET_PATTERNS` shapes, with the requests or files holding
+  them; a run whose trace or one of whose recorded calls does not read back is skipped whole
+  and named.
 - The chain does not apply the report's site exclusions. `sections.sites.yaml` in
   `report.json` has the `filters.exclude_sites` shape: add it to the export YAML and export
   again by hand.
@@ -871,7 +880,10 @@ value on an existing one.
   redacted by the same rule: the BrowserUse cleaner replaces a sensitive control's value,
   the text below it and an inner node's accessible name with `<redacted>` while it builds
   its tree, at the raw-DOM redaction's positions, so an offline re-clean of `dom_raw`
-  matches the live one. The typing actions judge the focused element before they type and
+  matches the live one. So is an action result that goes into the prompt:
+  `browser.extract_content` of one element returns its outer HTML with the same values
+  withheld (`dom/sensitivity.withhold_sensitive_markup`, placeholder `&lt;redacted&gt;`).
+  The typing actions judge the focused element before they type and
   record `ActionResult.typed_into_sensitive_field` (`null` when they cannot see it); no
   agent renders it, and export does not use it yet. A non-fresh profile needs
   `allow_session_state: true` on every bound archiver. Privacy markers are declarations

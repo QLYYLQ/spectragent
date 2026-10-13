@@ -339,13 +339,13 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 | `branch_coverage` | 分叉之后是否还留在归档里 | 检查点及之后没有主 frame 文档 miss 的分叉占比；其余 miss 按动作、resourceType、host、原因分布 |
 | `replay_determinism` | 同样的输入回放两遍，结局是否一样 | 同一源 run、同一检查点、执行动作相同的分支两两比较终止截图的 sha256，另比较检查点步恢复出的截图 |
 | `export_determinism` | 同样的 run 导出两遍是否逐字节相同 | `datasets/first` 与 `datasets/second` 的目录树摘要；`repeat: 1` 时为 `null` |
-| `privacy` | 凭证有没有落盘 | `<root>/traces` 和 `<root>/datasets` 下每个文件（gzip 先解开）里每个植入值出现的次数，以及凭证形状的命中数；`env/` 也算，`storage.json` 里原样保存的 cookie 与 Web Storage 值会被数到 |
+| `privacy` | 凭证有没有发给模型、写进数据集 | 分两道门计数。`model_requests`：每个 run 录下的每一次模型请求的 messages 里的文字（内联图片的 base64 不算文字）；`datasets`：`<root>/datasets` 下每个文件（gzip 先解开）。每道门报每个植入值出现的次数和含有它的请求数或文件数，以及凭证形状的命中数。`env/` 和 trace 的其余文件（步记录、观测、配置）留在本机，不扫描，所以站点页面里自带的公开 key 不算泄漏。读不回来的 run 列在 `skipped` 里 |
 
 分母为 0 的值是 `null` 加原因，从不写成 0。`sections` 另有：按站点的统计和剔除名单（被 anti-bot 拦截、原路径保真低于 0.8、录制在第 0 步环境就失败的站点；模型调用失败从不让站点进名单），anti-bot 拦截（文档应答 403、429 或 503，且带 `cf-mitigated: challenge` 或 `server: cloudflare` 加 `cf-ray`），重复分叉率，POST 分叉的 miss，按角色和类别的存储字节与 gzip 压缩比，每个任务的字节和 10、20、300 个任务的投影，导出产出。`decisions` 是四个待决问题的建议：`miss_policy`（动了手的分叉里零文档 miss 的占比不低于 0.9 就保留 `strict`），`recording_coverage`（动了手的分叉的文档 miss 里 GET 未录 URL 的占比达到 0.5 就扩大录制时的覆盖），`site_rules`（一个 host 有 2 次以上近邻 miss 就建议生成 `ignore_query` 规则供人审），`retention`（每个任务占多少磁盘，与 `sections.retention` 是同一条建议）。
 
 空分叉是从检查点起一个动作也没执行的分叉：teacher 的模型调用失败、回复没有动作（解析失败和解析出零个动作在记录里看起来一样），或者 teacher 决定之前 run 就结束了（恢复失败、观测失败）。它说明不了 teacher 的选择会走到哪里，所以不计入 `branch_coverage` 的占比和 miss、也不计入 `miss_policy` 与 `recording_coverage` 依据的数，按原因记在 `metrics.branch_coverage.empty`；重复分叉率不比较检查点步没有动作的分叉（`sections.duplicate_branches.not_compared`）。
 
-每条建议是 `{status, verdict, rule, evidence, basis, sites, status_reason}`。`sites` 是证据来自几个不同的站点。只有 live 证据、而且来自至少 10 个站点（`SUPPORTED_MIN_SITES`），建议才是 `supported`；不到 10 个站点最多是 `partial`，原因写 "insufficient sample"；演练最多是 `partial`；没有数据时是 `insufficient`、`verdict` 为空。低于 `supported` 的原因都写在 `status_reason` 里。所以 2 到 3 个任务的 live run 只是冒烟测试：它证明整条链能跑通，不拿来定阈值和上面四个决定。`rule` 写出所用的阈值常量和它的值。阈值是 live 之前定的起点，留在 `spectragent/flywheel/report.py` 里，等一次覆盖足够多站点的 live run 校准；每步归档开销的上限 300 ms 例外，它在 `spectragent/core/archive/budget.py`，归档开销基准用的也是它。`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。报告格式是 `af-flywheel-report-2`。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，也列出各项度量自己的 `skipped`（某项读不到证据而略过的 run）。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
+每条建议是 `{status, verdict, rule, evidence, basis, sites, status_reason}`。`sites` 是证据来自几个不同的站点。只有 live 证据、而且来自至少 10 个站点（`SUPPORTED_MIN_SITES`），建议才是 `supported`；不到 10 个站点最多是 `partial`，原因写 "insufficient sample"；演练最多是 `partial`；没有数据时是 `insufficient`、`verdict` 为空。低于 `supported` 的原因都写在 `status_reason` 里。所以 2 到 3 个任务的 live run 只是冒烟测试：它证明整条链能跑通，不拿来定阈值和上面四个决定。`rule` 写出所用的阈值常量和它的值。阈值是 live 之前定的起点，留在 `spectragent/flywheel/report.py` 里，等一次覆盖足够多站点的 live run 校准；每步归档开销的上限 300 ms 例外，它在 `spectragent/core/archive/budget.py`，归档开销基准用的也是它。`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。报告格式是 `af-flywheel-report-3`。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，也列出各项度量自己的 `skipped`（某项读不到证据而略过的 run）。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
 
 链在报告之前导出，不会套用报告给出的剔除名单。`sections.sites.yaml` 是 `filters.exclude_sites` 形状的片段：把它放进导出 YAML，换一个 `output_dir`，手动再导一次。
 
@@ -361,6 +361,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 | cookie 与 local / session storage 的值 | `storage.json` 原样保存（名字、值、域、路径、过期时间和标志）；会话 token 就在里面，所以 `browser.storage` 声明 `contains_session_state` | 无 |
 | 原始 DOM 里的输入值 | 敏感控件（密码框、一次性验证码、卡号等）的 `value`、它下面 shadow root 里的文本、DOMSnapshot 的输入值、无障碍树的 value，在写盘之前替换 | 无 |
 | DOM 观测（提示词与 `browser.dom` fragment） | BrowserUse 清洗时按同一条规则把敏感控件的 `value` 和它下面的文本（包括键入的值）换成 `<redacted>`；Skyvern 本来就不带 | 无 |
+| `browser.extract_content` 读一个元素返回的 HTML（动作结果，会进下一轮提示词） | 按同一条规则，把敏感控件的 `value` 属性和它里面的文本换成 `&lt;redacted&gt;`，其余原样；不给编号时返回的页面文本本来就不含字段的值 | 无 |
 | 键入的文字 | 原样记在动作参数和 LLM 记录里；动作结果的 `typed_into_sensitive_field` 记下文字是否进了敏感控件（`true` / `false`，看不见时 `null`），提示词里不显示 | 无 |
 | 从非新建 profile 启动的浏览器（登录态） | 绑定了归档器就拒绝；pinned 一律拒绝 | 每个归档器都写 `allow_session_state: true`，只能配 `none` 档位 |
 | 配置和任务 setup context | `config.json` 只记标为 trace-safe 的字段，其余写 `"<omitted>"`；setup context 按值脱敏（凭证形状的键、URL 里的 userinfo 和凭证形状的查询参数） | `trace_writer` 的 `record_secrets: true` 原样记录；这样的 run 永远不会被导出 |
@@ -373,7 +374,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 uv run pytest tests/test_core/test_trace/test_secret_guard.py
 ```
 
-已知的残余：正则认的是凭证的形状，teacher 键入的、不像凭证的密码会原样成为训练目标（键入动作的结果已标出它进了敏感控件，导出还不用这个标记）；WebSocket 帧的内容和 URL（含查询参数）原样记录；`browser.extract_content` 读一个元素时返回它的原始 HTML，页面写进标记的密码 `value` 会跟着进提示词。数据来源请选无需登录的公开站点。
+已知的残余：正则认的是凭证的形状，teacher 键入的、不像凭证的密码会原样成为训练目标（键入动作的结果已标出它进了敏感控件，导出还不用这个标记）；WebSocket 帧的内容和 URL（含查询参数）原样记录；`browser.extract_content` 不给编号时返回的页面文本会列出 `<select>` 的选项文字，被判敏感的下拉框也一样（那是页面写的选项，不是你选了哪一项）。数据来源请选无需登录的公开站点。
 
 ## 在真实站点上跑
 
@@ -385,7 +386,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
    set -a; . ./.env; set +a
    ```
 
-   密钥只放在环境变量里，不要写进 YAML 的 `api_key`：链把每段的 YAML 原样复制到 `<root>/configs/`，隐私一项不扫描那个目录。路由写在 `llm` 块（`model_type`、`model`，需要时 `base_url`）；`OPENAI_BASE_URL` 只在 YAML 没写 `base_url` 时生效。`coordinate_space` 要与模型实际输出的坐标网格一致，Qwen-VL 这类在 0 到 1000 网格上回答的模型用 `normalized_1000`。录制、原路径回放、分叉三份 YAML 的 agent 块必须相同，分叉在开跑前核对；teacher 的模型和采样可以换（发布的分叉配置用温度 0.8），原路径回放通常用录制时的模型和默认温度。
+   密钥只放在环境变量里，不要写进 YAML 的 `api_key`：链把每段的 YAML 原样复制到 `<root>/configs/`，隐私一项只看发给模型的请求和导出的数据集，不扫描那个目录。路由写在 `llm` 块（`model_type`、`model`，需要时 `base_url`）；`OPENAI_BASE_URL` 只在 YAML 没写 `base_url` 时生效。`coordinate_space` 要与模型实际输出的坐标网格一致，Qwen-VL 这类在 0 到 1000 网格上回答的模型用 `normalized_1000`。录制、原路径回放、分叉三份 YAML 的 agent 块必须相同，分叉在开跑前核对；teacher 的模型和采样可以换（发布的分叉配置用温度 0.8），原路径回放通常用录制时的模型和默认温度。
 2. 选任务。先取 10 个，只跑录制、原路径回放和报告，看保真度和花费；再扩到 10 到 20 个任务跑整条链。任务要无需登录、公开、不被 Cloudflare 拦截。online_mind2web 的每个任务有 `task_id`、`task_text`、`start_url`、`difficulty` 和 `metadata.reference_length`，可以离线挑：先挑 `easy`，每个可注册域名只取一个任务，跳过任务文本要求账号的，跳过已知重度反爬的站点。会不会被拦截离线判断不了，被拦截的站点会出现在报告的 anti-bot 一节和剔除名单里，代价是一次录制。提交表单（POST）的任务在回放和分叉里必然 miss。
 3. token 上限。链本身没有上限，所以按段跑，段与段之间查已经花掉的量。每个任务的模型调用数：
 

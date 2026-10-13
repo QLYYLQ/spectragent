@@ -26,6 +26,7 @@ from pydantic import Field as PydanticField
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
+    handler_error,
     handler_field,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
@@ -96,6 +97,12 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
             )
             scope.emit(event)
             await event
+            # The handler answers with an ``error`` when the click that should
+            # focus the field failed (it then types nothing) or the typing after
+            # it did: the text never went in, so the action failed.
+            error = handler_error(event)
+            if error is not None:
+                return ActionResult(success=False, error=error)
             await self.settle()
             return ActionResult(
                 success=True, typed_into_sensitive_field=handler_field(event, "sensitive")

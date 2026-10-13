@@ -28,8 +28,10 @@ class _Call:
 
 
 class _FakeCDP:
-    def __init__(self) -> None:
+    def __init__(self, *, fail: str | None = None) -> None:
         self.calls: list[_Call] = []
+        #: A method whose every call raises, as a dead target's would.
+        self.fail = fail
 
     async def send(
         self,
@@ -39,6 +41,8 @@ class _FakeCDP:
         session_id: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append(_Call(method=method, params=params or {}))
+        if method == self.fail:
+            raise RuntimeError(f"{method} failed")
         return {}
 
 
@@ -78,6 +82,15 @@ class TestTypeAtCoordinate:
             TypeAtCoordinateEvent(coordinate_x=1, coordinate_y=2, text="x", clear=False)
         )
         assert "Input.dispatchKeyEvent" not in {c.method for c in cdp.calls}
+
+    async def test_a_failed_focusing_click_types_nothing_and_says_so(self) -> None:
+        """The reply ``TypeCoordinateAction`` turns into a failed action."""
+        cdp = _FakeCDP(fail="Input.dispatchMouseEvent")
+        result = await _watchdog(cdp)._on_type_at_coordinate(
+            TypeAtCoordinateEvent(coordinate_x=1, coordinate_y=2, text="x")
+        )
+        assert result == {"error": "Input.dispatchMouseEvent failed"}
+        assert not {"Input.insertText", "Input.dispatchKeyEvent"} & {c.method for c in cdp.calls}
 
     async def test_the_click_lands_on_the_requested_pixel(self) -> None:
         cdp = _FakeCDP()

@@ -6,8 +6,8 @@ whatever it is called. One list, three readers: the secret guard test scans
 every byte a redacted run left on disk with it, the training export's
 credential validator scans every text byte it is about to write
 (``spectragent/export/validate.py``), failing closed on a hit, and the
-flywheel metrics' privacy measure counts the hits under a chain's traces and
-datasets (``spectragent/flywheel/metrics.py``).
+flywheel metrics' privacy measure counts the hits at the two gates: what was
+sent to the model and the exported datasets (``spectragent/flywheel/metrics.py``).
 
 They recognise credentials, not personal data in general: a typed password
 that does not look like a key is invisible to them (arch §4.15 "隐私").
@@ -15,9 +15,9 @@ that does not look like a key is invisible to them (arch §4.15 "隐私").
 And one way of reading what they are matched against: :func:`readable_text`
 (a file's bytes as text, gzip peeled first — the network archive's WARC is
 gzip members, raw DOM captures are gzip JSON) and :func:`iter_readable`
-(every file under a directory, by walking it). The secret guard test, the
-browser archive's privacy test and the flywheel metrics' privacy measure
-(arch §4.16) read a tree the same way.
+(every file under a directory, by walking it). The secret guard test and the
+browser archive's privacy test read a trace directory this way, and the
+flywheel metrics' privacy measure its dataset directories (arch §4.16).
 
 Imports only the standard library: the trace layer's leaf, safe for any
 reader to import.
