@@ -15,7 +15,7 @@ from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitEr
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage, SystemMessage
 from spectragent.core.llm.messages import ContentPartTextParam as MsgTextParam
-from spectragent.core.llm.providers.openai_base import OpenAICompatBase
+from spectragent.core.llm.providers.openai_base import OpenAICompatBase, message_reasoning
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
@@ -191,6 +191,7 @@ class ChatVercel(OpenAICompatBase):
             completion=self._validate_structured(
                 output_format, text, usage=usage, wire_text=content
             ),
+            thinking=message_reasoning(response.choices[0].message),
             usage=usage,
             stop_reason=response.choices[0].finish_reason if response.choices else None,
         )

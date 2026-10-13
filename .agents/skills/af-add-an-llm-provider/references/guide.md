@@ -65,7 +65,7 @@ provider via `ChatModelBase.model_family` → `detect_model_family`). Currently 
 `supports_strict_mode`, `supports_json_schema`, `schema_requires_gemini_fix`,
 `schema_rejects_closed_union_branches`.
 
-Adding a provider owes the test suite four things:
+Adding a provider owes the test suite five things:
 
 1. A `_Case` row in `tests/test_core/test_llm/test_provider_validation.py:451-470` —
    19 rows for 15 keys, because a provider with two structured paths owes one per path.
@@ -86,6 +86,10 @@ Adding a provider owes the test suite four things:
    `test_a_request_closes_the_client_it_built` (stub clients from
    `tests/_helpers/llm_clients.py`); a provider with no client of its own goes in
    `_NO_REQUEST_CLIENT` with its reason. `test_request_clients.py` runs the real SDKs.
+5. A reasoning case: a `_Case` row in `tests/test_core/test_llm/test_model_reasoning.py`
+   per return path, answering with the reasoning your response carries, or an entry in
+   `_CARRIES_NONE` saying why it carries none. `test_every_registered_provider_is_covered`
+   there fails without one (§9).
 
 ## 3. Three traps
 
@@ -267,6 +271,44 @@ The last two let a YAML hand-edit a compiled schema.
 5. New config key rejected as "extra inputs are not permitted" → regenerate; see the
    `af-regenerate-and-verify` skill.
 
-Run `uv run pytest tests/test_core/test_llm -q`. Do **not** run `ruff format` here — the
-tree is not format-clean and it produces a large diff across files you did not touch.
-`ruff check` is the enforced gate.
+Run `uv run pytest tests/test_core/test_llm -q`. The tree is format-clean and both
+`ruff check .` and `ruff format --check .` are enforced, so run `uv run ruff format` on the
+files you changed.
+
+## 9. The model's reasoning
+
+The user's ruling (2026-10-14): record the model's hidden reasoning, whatever each provider
+returns, in the call record's existing `thinking` field; do not change the requests sent to
+the model; do not feed the reasoning back; the agent does not read it.
+`docs/architecture_design.md` §4.7 has the per-provider table; the short form:
+
+| provider | `thinking` | `redacted_thinking` |
+|---|---|---|
+| OpenAI-compatible chat completions (`OpenAICompatBase` and subclasses) | the message's `reasoning_content`, else `reasoning` (`message_reasoning` in `openai_base.py`) | — |
+| `openai.azure` Responses API | a `reasoning` item's text, else its summary | `encrypted_content` |
+| Anthropic | `thinking` blocks' text | `redacted_thinking` blocks' `data` |
+| Gemini | the first candidate's parts flagged `thought` | — |
+| Bedrock | `reasoningContent.reasoningText.text` | `redactedContent`, base64 |
+| Ollama | `message.thinking` | — |
+| Mistral | `thinking` content chunks | — |
+| OCI | a generic-format message's `reasoning_content` | — |
+| Browser Use | none: the reply has only `completion` and `usage` | — |
+
+What a new provider owes:
+
+- **Read, never ask.** Fill both fields on every return path from what the response
+  already holds. Add no request parameter to obtain it: no `include_thoughts`, no Anthropic
+  `thinking`, no Ollama `think`, no OpenRouter `include_reasoning`. A reasoning model that
+  only returns its reasoning when asked simply records none. The pinned request bodies in
+  `test_model_reasoning.py` fail if an OpenAI-compatible or Anthropic request changes.
+- **One rule for the text.** Go through `join_reasoning` (`core/llm/views.py`): pieces in
+  response order, one newline apart; blank pieces and non-strings dropped; nothing left is
+  `None`, never `""`. Opaque bytes go in base64.
+- **Keep it out of the reply.** `completion` is what the Loop writes into memory, so it is
+  what reaches the next prompt. Whatever picks the reply text must skip reasoning blocks:
+  `AnthropicCompatBase` reads `_reply_blocks`, and its structured path used to take
+  `content[0]`, which stringified a leading thinking block into the reply and fed it back
+  to the model. `test_reasoning_stays_out_of_the_prompt.py` compares every request of two
+  runs that differ only in whether the replies carried reasoning.
+- **A failed call keeps none.** `StructuredOutputValidationError` and
+  `ModelOutputTruncatedError` produce a `CallFailure`, which has no reasoning field.

@@ -37,13 +37,36 @@ from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 #: What a model on ``reasoning_models`` receives under ``reasoning_effort: auto``.
 _LISTED_MODEL_DEFAULT_EFFORT = "low"
+
+#: Where an OpenAI-compatible reply message carries the model's reasoning, in
+#: the order they are read. Neither is in the OpenAI SDK's message model, which
+#: keeps such undeclared fields on the object: ``reasoning_content`` is the
+#: DeepSeek / Qwen / vLLM name, the one dmxapi.cn returns for ``qwen3.8-flash``;
+#: ``reasoning`` is OpenRouter's, and Groq's, Cerebras' and Vercel's.
+_REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+
+def message_reasoning(message: object) -> str | None:
+    """The reasoning an OpenAI-compatible reply message carried, or ``None``.
+
+    The first of :data:`_REASONING_FIELDS` that holds text, read by
+    attribute: the OpenAI SDK keeps undeclared fields on the message object,
+    Groq's SDK declares ``reasoning``, and a message that has neither reads
+    as ``None``. Only read — the request never asks for it.
+    """
+    for name in _REASONING_FIELDS:
+        text = join_reasoning([getattr(message, name, None)])
+        if text is not None:
+            return text
+    return None
+
 
 #: ``reasoning_effort``'s settings: ``auto`` (the provider's policy) plus every
 #: value the OpenAI SDK accepts on the wire (its ``ReasoningEffort``, which a
@@ -393,6 +416,7 @@ class OpenAICompatBase(ChatModelBase):
                     )
                 return ChatInvokeCompletion(
                     completion=choice.message.content or "",
+                    thinking=message_reasoning(choice.message),
                     usage=self._get_usage(response),
                     stop_reason=choice.finish_reason,
                     tool_calls=OpenAIMessageSerializer.parse_tool_calls(
@@ -494,6 +518,7 @@ class OpenAICompatBase(ChatModelBase):
                 usage=usage,
                 wire_text=choice.message.content,
             ),
+            thinking=message_reasoning(choice.message),
             usage=usage,
             stop_reason=choice.finish_reason,
         )

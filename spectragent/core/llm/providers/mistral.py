@@ -17,7 +17,7 @@ from spectragent.core.llm.messages import BaseMessage, Function, ToolCall
 from spectragent.core.llm.schema.mistral import MistralSchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
@@ -44,6 +44,36 @@ def _parse_raw_tool_calls(choice: dict[str, Any]) -> list[ToolCall]:
             )
         )
     return calls
+
+
+def _thinking(choice: dict[str, Any]) -> str | None:
+    """The reasoning a Mistral reply carried in its ``thinking`` content chunks.
+
+    A reasoning model answers with a list of content chunks: its reasoning
+    in ``{"type": "thinking", "thinking": [<text chunks>]}``, then the reply
+    in ``text`` chunks (``ChatMistral._extract_content_text`` skips the
+    thinking chunk). A thinking chunk's text pieces are concatenated in
+    order, and the chunks joined by
+    :func:`~spectragent.core.llm.views.join_reasoning`.
+    Read only when the response already has them: this provider asks for
+    none.
+    """
+    content = (choice.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return None
+    pieces: list[object] = []
+    for part in content:
+        if not (isinstance(part, dict) and part.get("type") == "thinking"):
+            continue
+        inner = part.get("thinking")
+        if isinstance(inner, list):
+            inner = "".join(
+                chunk["text"]
+                for chunk in inner
+                if isinstance(chunk, dict) and isinstance(chunk.get("text"), str)
+            )
+        pieces.append(inner)
+    return join_reasoning(pieces)
 
 
 @dataclass
@@ -270,11 +300,14 @@ class ChatMistral(ChatModelBase):
             if output_format is None:
                 return ChatInvokeCompletion(
                     completion=content_text,
+                    thinking=_thinking(choices[0]),
                     usage=usage,
                     tool_calls=_parse_raw_tool_calls(choices[0]),
                 )
             parsed = self._validate_structured(output_format, content_text, usage=usage)
-            return ChatInvokeCompletion(completion=parsed, usage=usage)
+            return ChatInvokeCompletion(
+                completion=parsed, thinking=_thinking(choices[0]), usage=usage
+            )
 
         except (ModelRateLimitError, ModelProviderError):
             raise

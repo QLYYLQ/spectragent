@@ -21,7 +21,13 @@ from anthropic import (
     RateLimitError,
     omit,
 )
-from anthropic.types import CacheControlEphemeralParam, Message, ToolParam
+from anthropic.types import (
+    CacheControlEphemeralParam,
+    Message,
+    RedactedThinkingBlock,
+    ThinkingBlock,
+    ToolParam,
+)
 from anthropic.types.text_block import TextBlock
 from anthropic.types.tool_choice_tool_param import ToolChoiceToolParam
 from anthropic.types.tool_use_block import ToolUseBlock
@@ -39,9 +45,37 @@ from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.anthropic_format import AnthropicMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
 
 T = TypeVar("T", bound=BaseModel)
+
+#: The blocks that carry the model's reasoning rather than its reply.
+_REASONING_BLOCKS = (ThinkingBlock, RedactedThinkingBlock)
+
+
+def _reasoning(response: Message) -> tuple[str | None, str | None]:
+    """The reasoning a reply carried: thinking blocks' text, redacted blocks' data.
+
+    Present only when the response already has them; this provider never
+    sends a ``thinking`` parameter to ask for them. Both go through
+    :func:`~spectragent.core.llm.views.join_reasoning`. Signatures are not
+    reasoning and are not kept.
+    """
+    thinking = join_reasoning(b.thinking for b in response.content if isinstance(b, ThinkingBlock))
+    redacted = join_reasoning(
+        b.data for b in response.content if isinstance(b, RedactedThinkingBlock)
+    )
+    return thinking, redacted
+
+
+def _reply_blocks(response: Message) -> list[Any]:
+    """The reply's own blocks: every content block but the reasoning ones.
+
+    Whatever reads the reply reads these, so a thinking block can never be
+    taken for the reply — or stringified into it, which would feed the
+    model's reasoning back to it as its own previous turn.
+    """
+    return [b for b in response.content if not isinstance(b, _REASONING_BLOCKS)]
 
 
 def _generated_text(response: Message) -> str | None:
@@ -356,15 +390,19 @@ class AnthropicCompatBase(ChatModelBase):
                 self._reject_if_truncated(response, usage)
                 # With tools advertised the model may answer with tool_use blocks
                 # and no text at all, so the first block is not necessarily text.
-                text_blocks = [b for b in response.content if isinstance(b, TextBlock)]
+                reply = _reply_blocks(response)
+                text_blocks = [b for b in reply if isinstance(b, TextBlock)]
                 if text_blocks:
                     text = "".join(b.text for b in text_blocks)
-                elif response.content:
-                    text = "" if tools else str(response.content[0])
+                elif reply:
+                    text = "" if tools else str(reply[0])
                 else:
                     text = ""
+                thinking, redacted_thinking = _reasoning(response)
                 return ChatInvokeCompletion(
                     completion=text,
+                    thinking=thinking,
+                    redacted_thinking=redacted_thinking,
                     usage=usage,
                     stop_reason=response.stop_reason,
                     tool_calls=AnthropicMessageSerializer.parse_tool_calls(response.content),
@@ -402,17 +440,21 @@ class AnthropicCompatBase(ChatModelBase):
 
                 usage = self._get_usage(response)
                 self._reject_if_truncated(response, usage)
-                first_content = response.content[0] if response.content else None
+                reply = _reply_blocks(response)
+                first_content = reply[0] if reply else None
                 text = (
                     first_content.text
                     if isinstance(first_content, TextBlock)
                     else str(first_content)
                 )
                 t = strip_code_fence(text)
+                thinking, redacted_thinking = _reasoning(response)
                 return ChatInvokeCompletion(
                     completion=self._validate_structured(
                         output_format, t, usage=usage, wire_text=text
                     ),
+                    thinking=thinking,
+                    redacted_thinking=redacted_thinking,
                     usage=usage,
                     stop_reason=response.stop_reason,
                 )
@@ -454,6 +496,7 @@ class AnthropicCompatBase(ChatModelBase):
 
                 usage = self._get_usage(response)
                 self._reject_if_truncated(response, usage)
+                thinking, redacted_thinking = _reasoning(response)
                 for block in response.content:
                     if hasattr(block, "type") and block.type == "tool_use":
                         # ``input`` is a dict on the normal path and a JSON
@@ -468,6 +511,8 @@ class AnthropicCompatBase(ChatModelBase):
                             completion=self._validate_structured(
                                 output_format, block.input, usage=usage
                             ),
+                            thinking=thinking,
+                            redacted_thinking=redacted_thinking,
                             usage=usage,
                             stop_reason=response.stop_reason,
                         )

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.messages import BaseMessage
-from spectragent.core.llm.providers.openai_base import OpenAICompatBase
+from spectragent.core.llm.providers.openai_base import OpenAICompatBase, message_reasoning
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
@@ -126,6 +126,7 @@ class ChatCerebras(OpenAICompatBase):
             usage = self._get_usage(resp)
             return ChatInvokeCompletion(
                 completion=self._validate_structured(output_format, json_str, usage=usage),
+                thinking=message_reasoning(resp.choices[0].message),
                 usage=usage,
             )
 

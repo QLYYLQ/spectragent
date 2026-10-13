@@ -1,3 +1,4 @@
+import base64
 from collections.abc import Sequence
 from dataclasses import dataclass
 from os import getenv
@@ -19,13 +20,39 @@ _BEDROCK_TOOL_CHOICE: dict[str, dict[str, dict]] = {
     "auto": {"auto": {}},
     "required": {"any": {}},
 }
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
 
 if TYPE_CHECKING:
     from boto3 import client as AwsClient  # type: ignore
     from boto3.session import Session  # type: ignore
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _base64(value: object) -> str | None:
+    """*value* as text: bytes in base64, a string as it is, anything else ``None``."""
+    if isinstance(value, bytes | bytearray):
+        return base64.b64encode(value).decode("ascii")
+    return value if isinstance(value, str) else None
+
+
+def _reasoning(content: list[Any]) -> tuple[str | None, str | None]:
+    """The reasoning a Converse reply carried in its ``reasoningContent`` blocks.
+
+    A block's ``reasoningText.text`` is the readable reasoning; its
+    ``redactedContent`` is the opaque form, bytes that are kept in base64.
+    Present only when the response already has them; this provider adds no
+    reasoning configuration to the request. Both go through
+    :func:`~spectragent.core.llm.views.join_reasoning`.
+    """
+    blocks = [
+        item["reasoningContent"]
+        for item in content
+        if isinstance(item, dict) and isinstance(item.get("reasoningContent"), dict)
+    ]
+    thinking = join_reasoning((block.get("reasoningText") or {}).get("text") for block in blocks)
+    redacted = join_reasoning(_base64(block.get("redactedContent")) for block in blocks)
+    return thinking, redacted
 
 
 @dataclass
@@ -254,10 +281,13 @@ class ChatBedrock(ChatModelBase):
                 message = response["output"]["message"]
                 content = message.get("content", [])
 
+                thinking, redacted_thinking = _reasoning(content)
                 if output_format is None:
                     text_content = [item["text"] for item in content if "text" in item]
                     return ChatInvokeCompletion(
                         completion="\n".join(text_content),
+                        thinking=thinking,
+                        redacted_thinking=redacted_thinking,
                         usage=usage,
                         tool_calls=AWSBedrockMessageSerializer.parse_tool_calls(content),
                     )
@@ -273,6 +303,8 @@ class ChatBedrock(ChatModelBase):
                                 completion=self._validate_structured(
                                     output_format, tool_input, usage=usage
                                 ),
+                                thinking=thinking,
+                                redacted_thinking=redacted_thinking,
                                 usage=usage,
                             )
                     raise ModelProviderError(

@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel, Field
@@ -5,6 +6,20 @@ from pydantic import BaseModel, Field
 from spectragent.core.llm.messages import ToolCall
 
 T = TypeVar("T", bound=BaseModel | str)
+
+
+def join_reasoning(pieces: Iterable[object]) -> str | None:
+    """The reasoning a response carried, as one string, or ``None`` if it carried none.
+
+    Every provider fills :attr:`ChatInvokeCompletion.thinking` and
+    :attr:`ChatInvokeCompletion.redacted_thinking` through here, so one rule
+    holds for all of them: the pieces stay in the order the response gave
+    them, joined by a newline; a piece that is not a string, or holds nothing
+    but whitespace, is dropped; nothing left is ``None``, never an empty
+    string. A kept piece is not trimmed or rewritten.
+    """
+    texts = [piece for piece in pieces if isinstance(piece, str) and piece.strip()]
+    return "\n".join(texts) if texts else None
 
 
 class ChatInvokeUsage(BaseModel):
@@ -39,9 +54,24 @@ class ChatInvokeCompletion(BaseModel, Generic[T]):
     completion: T
     """The completion of the response."""
 
-    # Thinking stuff
     thinking: str | None = None
+    """The model's reasoning, as the provider's response carried it beside the reply.
+
+    Read from whatever the response already holds (an OpenAI-compatible
+    message's ``reasoning_content`` or ``reasoning``, Anthropic's thinking
+    blocks, Gemini's thought parts, ...), through :func:`join_reasoning`.
+    ``None`` when the response carried none. No request is changed to obtain
+    it, and it is a record, not context: the Loop and the agent read only
+    :attr:`completion`, so it never reaches the next prompt
+    (``docs/architecture_design.md`` §4.7).
+    """
+
     redacted_thinking: str | None = None
+    """Reasoning the provider returned only in opaque form, under the same rules.
+
+    Anthropic's ``redacted_thinking`` blocks (their ``data``), Bedrock's
+    redacted reasoning (base64), a Responses API item's ``encrypted_content``.
+    """
 
     usage: ChatInvokeUsage | None
     """The usage of the response."""

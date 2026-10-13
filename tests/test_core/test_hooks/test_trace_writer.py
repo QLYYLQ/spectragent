@@ -669,6 +669,41 @@ class TestEveryCallOfAStep:
         assert call.messages[0].text == "as sent"
 
 
+class TestTheModelsReasoning:
+    """A reply's reasoning goes into its call record (``docs/architecture_design.md`` §5.3)."""
+
+    async def test_it_is_written_to_the_call_record_and_read_back(self, writer):
+        run_dir = await _start(writer)
+        completion = ChatInvokeCompletion(
+            completion="click(3)",
+            thinking="The third element is the search button.",
+            redacted_thinking="EuYBCkQYAiJA-opaque",
+            usage=_usage(),
+            stop_reason="end_turn",
+        )
+        await _call(writer, returns=completion)
+        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+
+        raw = json.loads((run_dir / "messages/000_call_00.json").read_text())
+        assert raw["completion"]["thinking"] == "The third element is the search button."
+        assert raw["completion"]["redacted_thinking"] == "EuYBCkQYAiJA-opaque"
+        (call,) = RunTrace(run_dir).llm_messages(0)
+        assert call.completion is not None
+        assert call.completion.completion == "click(3)"
+        assert call.completion.thinking == "The third element is the search button."
+        assert call.completion.redacted_thinking == "EuYBCkQYAiJA-opaque"
+
+    async def test_a_reply_without_reasoning_records_none(self, writer):
+        run_dir = await _start(writer)
+        await _call(writer, returns=_completion("click(3)"))
+        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+
+        (call,) = RunTrace(run_dir).llm_messages(0)
+        assert call.completion is not None
+        assert call.completion.thinking is None
+        assert call.completion.redacted_thinking is None
+
+
 class TestTheRequestedSchema:
     async def test_written_once_per_run_and_referenced_by_every_call(self, writer):
         run_dir = await _start(writer)

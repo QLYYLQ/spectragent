@@ -69,13 +69,32 @@ def _candidate_text(candidate: types.Candidate) -> str | None:
     return "".join(texts) if texts else None
 
 
+def _thoughts(response: Any) -> str | None:
+    """The thoughts the reply carried: the first candidate's parts flagged ``thought``.
+
+    These are the parts ``response.text`` leaves out. This provider never
+    asks for them (it sets no ``include_thoughts``), so they appear only
+    when the endpoint returns them anyway; a reply without them, or without
+    candidates, has none. Joined by
+    :func:`~spectragent.core.llm.views.join_reasoning`.
+    """
+    candidates = getattr(response, "candidates", None)
+    if not candidates:
+        return None
+    content = getattr(candidates[0], "content", None)
+    parts = getattr(content, "parts", None) or ()
+    return join_reasoning(
+        getattr(part, "text", None) for part in parts if getattr(part, "thought", None) is True
+    )
+
+
 #: ``tool_choice`` spelled the Gemini way (``function_calling_config.mode``).
 _GEMINI_TOOL_MODE: dict[str, types.FunctionCallingConfigMode] = {
     "auto": types.FunctionCallingConfigMode.AUTO,
     "required": types.FunctionCallingConfigMode.ANY,
     "none": types.FunctionCallingConfigMode.NONE,
 }
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -436,6 +455,7 @@ class ChatGoogle(ChatModelBase):
                     self._reject_if_truncated(response, usage)
                     return ChatInvokeCompletion(
                         completion=text,
+                        thinking=_thoughts(response),
                         usage=usage,
                         stop_reason=self._get_stop_reason(response),
                         tool_calls=GoogleMessageSerializer.parse_tool_calls(response),
@@ -481,6 +501,7 @@ class ChatGoogle(ChatModelBase):
                                     completion=self._validate_structured(
                                         output_format, _strip_placeholders(parsed_data), usage=usage
                                     ),
+                                    thinking=_thoughts(response),
                                     usage=usage,
                                     stop_reason=self._get_stop_reason(response),
                                 )
@@ -493,6 +514,7 @@ class ChatGoogle(ChatModelBase):
                         if isinstance(response.parsed, output_format):
                             return ChatInvokeCompletion(
                                 completion=response.parsed,
+                                thinking=_thoughts(response),
                                 usage=usage,
                                 stop_reason=self._get_stop_reason(response),
                             )
@@ -500,6 +522,7 @@ class ChatGoogle(ChatModelBase):
                             completion=self._validate_structured(
                                 output_format, _strip_placeholders(response.parsed), usage=usage
                             ),
+                            thinking=_thoughts(response),
                             usage=usage,
                             stop_reason=self._get_stop_reason(response),
                         )
@@ -535,6 +558,7 @@ class ChatGoogle(ChatModelBase):
                                 completion=self._validate_structured(
                                     output_format, _strip_placeholders(parsed_data), usage=usage
                                 ),
+                                thinking=_thoughts(response),
                                 usage=usage,
                                 stop_reason=self._get_stop_reason(response),
                             )

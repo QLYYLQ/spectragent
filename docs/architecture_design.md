@@ -1803,6 +1803,38 @@ provider 不关它。代价是调用之间不复用连接：OpenAI 系与 Anthro
 与 `ChatMistral`（按实例缓存）也还没关自己的客户端；它们是纯 httpx，没有那种 `__del__`，只泄漏到回收为止，
 不会删别人的注册。
 
+**模型的推理：响应带回什么就记什么，不索取，不回喂。**（用户 2026-10-14 的裁决）响应里本来就带着的推理，provider
+填进 `ChatInvokeCompletion.thinking`；只以不透明形式返回的推理填进 `redacted_thinking`。每条返回路径（文本、
+结构化输出、工具调用）都填，各家读的是：
+
+| provider | `thinking` | `redacted_thinking` |
+|---|---|---|
+| OpenAI 兼容（`OpenAICompatBase` 及其子类的 chat completions 路径） | 回复消息的 `reasoning_content`（DeepSeek、Qwen、vLLM 的字段名，dmxapi.cn 上的 `qwen3.8-flash` 就用它），没有时取 `reasoning`（OpenRouter 的字段名，Groq、Cerebras、Vercel 也用它）。两者都不在 OpenAI SDK 的消息模型里，按 SDK 保留的额外字段读 | — |
+| `openai.azure` 的 Responses API 路径 | `reasoning` 条目的推理文本，没有文本时取它的摘要 | 条目的 `encrypted_content`（只在请求 `include` 它时才有，本 provider 从不请求） |
+| `anthropic.direct` / `anthropic.aws` | `thinking` 块的文本（签名不是推理，不记） | `redacted_thinking` 块的 `data` |
+| `google.default` | 第一个候选里带 `thought` 标记的部分 | — |
+| `bedrock.default` | `reasoningContent.reasoningText.text` | `reasoningContent.redactedContent`（字节，记为 base64） |
+| `ollama.default` | `message.thinking` | — |
+| `mistral.default` | `thinking` 内容块里的文本 | — |
+| `oci.default` | generic 格式回复消息的 `reasoning_content`；Cohere 格式没有这个字段 | — |
+| `browser_use.default` | 无：回复只有 `completion` 和 `usage` | — |
+
+合成规则只有一份（`core/llm/views.py::join_reasoning`）：多段推理按响应里的顺序以换行相连；空的、只有空白的、
+不是字符串的段丢掉；什么都不剩就是 `None`，从不是空字符串；保留的段原样，不修剪。另外三条：
+
+- **不为它改请求。** 没有任何为拿到推理而加的参数：不设 Gemini 的 `include_thoughts`，不发 Anthropic 的 `thinking`、
+  Ollama 的 `think`、OpenRouter 的 `include_reasoning`。推理只在响应本来就带着时出现；`reasoning_effort`、
+  `thinking_budget` 这些既有旋钮照旧，含义不变。`tests/test_core/test_llm/test_model_reasoning.py` 钉住 OpenAI
+  兼容与 Anthropic 各条路径的请求体，与记录推理之前的完全相同。
+- **不回喂，agent 不读。** Loop 只把 `completion` 写进记忆，agent 解析的也只是 `completion`，所以推理进不了下一轮
+  提示。回复本身也不能夹带推理：Anthropic 的回复取第一个不是推理的块（结构化路径原先直接取 `content[0]`，
+  thinking 块在前时整块被字符串化，校验失败后作为模型自己的回复喂回给它）；Gemini 的 `response.text` 本就跳过
+  thought 部分；Mistral 的 thinking 块不进回复文本。`tests/test_core/test_loops/test_reasoning_stays_out_of_the_prompt.py`
+  让两次只差回复里有没有推理的 run（经真实的 OpenAI 兼容 provider、三个已发布的 agent 各一次）比较发给模型的
+  每个请求，逐字节相同。
+- **只记录。** 它随调用记录落盘（§5.3），训练导出不读它（要不要当 teacher 的思路，下一阶段再定）。失败的调用
+  （回复被拒、被截断）没有 `RecordedCompletion`，它的推理不记。
+
 ### 4.8 Memory 抽象
 
 **当前状态**：Memory 走 `MemoryRegistrar`（`memory_id`, flat），AgentBase 通过 `__wiring__["memory"] = "memory"`（Mode 1，自动发现）选择并注入实例。配置校验保证 `memory_id` 和所选策略的子配置有效；Loop 通过 `memory.add_message` / `memory.get_context_messages` 使用该实例。
@@ -3603,8 +3635,8 @@ class OutputFormatRef(BaseModel):
 
 class RecordedCompletion(BaseModel):
     completion: Any                    # 文本回复是 str；结构化回复是它的 JSON 形式，不还原成回复模型
-    thinking: str | None = None
-    redacted_thinking: str | None = None
+    thinking: str | None = None        # 响应带回的模型推理（§4.7）；没有就是 None
+    redacted_thinking: str | None = None   # 只以不透明形式返回的推理（Anthropic 的 data、Bedrock 的 base64……）
     usage: ChatInvokeUsage | None = None
     stop_reason: str | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
@@ -3636,6 +3668,8 @@ class RecordedLLMCall(BaseModel):      # messages/NNN_call_KK.json
 **fragment JSON 就是 fragment 自己的 JSON。** `file` 的内容恰好是 `model_dump(mode="json", exclude=trace_json_exclude())`，不再往里塞 `artifact_file`：二进制文件只由索引的 `artifact` 指向，WAL 的布局信息不混进 fragment 的数据。读侧用 `from_trace(payload, artifact)` 还原（§5.5）。
 
 **每次 LLM 调用一个文件，不论结局。** 一步可能有多次调用（ReactLoop 的 parse 重试、结构化输出校验失败后重问），它们按开始顺序编号、全部提交。`completed` 记 `RecordedCompletion`，`failed` / `cancelled` 记 `CallFailure`（字段语义见 §5.4）。写侧把登记时拿到的 prompt 直接序列化成 JSON，不做 model 校验，hook 永远不会因为 trace 的类型问题让 run 失败；读侧按 `RecordedLLMCall` 校验，不合法就是 `TraceSchemaError`。Loop 没来得及交出的那一步，其调用沿用那一步的编号（`last_step_completed + 1`），由 `commit_trailing` 提交、列在 `manifest.trailing`。驱动冲刷之后若继续跑并提交了这一步，它的调用编号接在已提交的 trailing 调用之后，已提交的文件不会被覆盖。
+
+**调用记录带着模型的推理，前提是响应带回了它。** `RecordedCompletion.thinking` / `redacted_thinking` 就是 provider 填进 `ChatInvokeCompletion` 的那两个字段（来源与合成规则见 §4.7），写侧照录，读侧原样读回；响应没带推理的调用两者都是 `null`。它只是记录：请求从不为了拿到推理而改动，推理也从不回喂给模型，写进记忆、带进下一轮提示的只有 `completion`（§4.7）。失败的调用记 `CallFailure`，没有这两个字段，它的推理不记。
 
 **output schema 记的是请求的那份。** `OutputFormatRef.source = "requested"`：文件内容是回复模型的 `model_json_schema()`，不是 provider 编译后真正发出的 schema（strict 与否、Gemini 的清理、union 分支的展开，各家不同；`dont_force_structured_output` 时根本不发）。它不能当作"schema 被遵守了"的证据。记录 wire 级 schema 是后续工作。
 

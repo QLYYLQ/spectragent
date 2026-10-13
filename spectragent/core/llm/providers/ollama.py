@@ -13,9 +13,18 @@ from spectragent.core.llm.model_families import ModelFamily, detect_model_family
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.ollama_format import OllamaMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _thinking(response: Any) -> str | None:
+    """The reasoning Ollama returned beside the reply (``message.thinking``), or ``None``.
+
+    Read only when the response already has it: this provider sends no
+    ``think`` flag. Through :func:`~spectragent.core.llm.views.join_reasoning`.
+    """
+    return join_reasoning([getattr(getattr(response, "message", None), "thinking", None)])
 
 
 @dataclass
@@ -154,6 +163,7 @@ class ChatOllama(ChatModelBase):
                 )
                 return ChatInvokeCompletion(
                     completion=response.message.content or "",
+                    thinking=_thinking(response),
                     usage=self._get_usage(response),
                     tool_calls=OllamaMessageSerializer.parse_tool_calls(response.message),
                 )
@@ -174,6 +184,7 @@ class ChatOllama(ChatModelBase):
                     completion=self._validate_structured(
                         output_format, response.message.content or "", usage=usage
                     ),
+                    thinking=_thinking(response),
                     usage=usage,
                 )
 

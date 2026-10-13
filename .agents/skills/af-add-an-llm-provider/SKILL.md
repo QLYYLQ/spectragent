@@ -14,5 +14,8 @@ Read [references/guide.md](references/guide.md) by symptom:
 - Schema 400s or dialect work: §4.
 - Structured validation, traces, or metrics: §5–§6.
 - Removed workaround knobs: §7.
+- The model's reasoning (`thinking`): §9.
 
 Validate the actual response against the real closed action union; an HTTP 200 does not prove that a gateway preserved the schema.
+
+A provider fills `ChatInvokeCompletion.thinking` (and `redacted_thinking`) from whatever reasoning its response already carries, on every return path, and never changes the request to obtain it; the reasoning is recorded, never fed back.

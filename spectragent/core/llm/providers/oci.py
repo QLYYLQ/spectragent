@@ -24,7 +24,7 @@ from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, Sys
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.oci_format import OCIRawMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -134,6 +134,20 @@ class ChatOCI(ChatModelBase):
             model=self.name,
         )
 
+    def _extract_reasoning(self, response) -> str | None:
+        """The reasoning a generic-format reply carried (``reasoning_content``), or ``None``.
+
+        Only the generic format's assistant message has the field; a Cohere
+        reply has none. Read only when the response already has it: this
+        provider asks for none.
+        """
+        chat_response = getattr(getattr(response, "data", None), "chat_response", None)
+        choices = getattr(chat_response, "choices", None)
+        if not choices:
+            return None
+        message = getattr(choices[0], "message", None)
+        return join_reasoning([getattr(message, "reasoning_content", None)])
+
     async def _make_request(self, messages: Sequence[BaseMessage]):
         if self._uses_cohere_format():
             message_text = OCIRawMessageSerializer.serialize_messages_for_cohere(messages)
@@ -212,6 +226,7 @@ class ChatOCI(ChatModelBase):
                 response = await self._make_request(messages)
                 return ChatInvokeCompletion(
                     completion=self._extract_content(response),
+                    thinking=self._extract_reasoning(response),
                     usage=self._extract_usage(response),
                 )
             else:
@@ -252,6 +267,7 @@ class ChatOCI(ChatModelBase):
                     completion=self._validate_structured(
                         output_format, text, usage=usage, wire_text=wire_text
                     ),
+                    thinking=self._extract_reasoning(response),
                     usage=usage,
                 )
 

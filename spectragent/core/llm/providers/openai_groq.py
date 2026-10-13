@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.messages import BaseMessage
-from spectragent.core.llm.providers.openai_base import OpenAICompatBase
+from spectragent.core.llm.providers.openai_base import OpenAICompatBase, message_reasoning
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
@@ -116,6 +116,7 @@ class ChatGroq(OpenAICompatBase):
                 usage = self._get_usage(resp) if hasattr(resp, "usage") else None
                 return ChatInvokeCompletion(
                     completion=resp.choices[0].message.content or "",
+                    thinking=message_reasoning(resp.choices[0].message),
                     usage=usage,
                     tool_calls=OpenAIMessageSerializer.parse_tool_calls(
                         getattr(resp.choices[0].message, "tool_calls", None)
@@ -151,7 +152,11 @@ class ChatGroq(OpenAICompatBase):
                     output_format, resp.choices[0].message.content, usage=usage
                 )
                 # No `tool_calls=`: tools are refused on this path above.
-                return ChatInvokeCompletion(completion=parsed, usage=usage)
+                return ChatInvokeCompletion(
+                    completion=parsed,
+                    thinking=message_reasoning(resp.choices[0].message),
+                    usage=usage,
+                )
 
         except ModelProviderError:
             # Includes StructuredOutputValidationError — the one provider

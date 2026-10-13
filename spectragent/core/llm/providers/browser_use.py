@@ -186,6 +186,8 @@ class ChatBrowserUse(ChatModelBase):
         else:
             completion = result["completion"]
 
+        # The endpoint's reply carries no reasoning, only ``completion`` and
+        # ``usage``, so ``thinking`` stays ``None`` (docs/architecture_design.md §4.7).
         return ChatInvokeCompletion(completion=completion, usage=usage)
 
     async def _make_request(self, payload: dict) -> dict:

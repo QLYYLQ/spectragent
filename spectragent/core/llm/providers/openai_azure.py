@@ -20,7 +20,7 @@ from spectragent.core.llm.providers.openai_base import OpenAICompatBase
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_responses import ResponsesAPIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
-from spectragent.core.llm.views import ChatInvokeCompletion
+from spectragent.core.llm.views import ChatInvokeCompletion, join_reasoning
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
@@ -38,6 +38,27 @@ RESPONSES_API_ONLY_MODELS: list[str] = [
 # Accepted spellings for the tri-state `use_responses_api` YAML field.
 _RESPONSES_API_TRUE = frozenset({"true", "1", "yes", "on"})
 _RESPONSES_API_FALSE = frozenset({"false", "0", "no", "off"})
+
+
+def _responses_reasoning(response: Any) -> tuple[str | None, str | None]:
+    """A Responses API reply's reasoning items: their text, and their encrypted form.
+
+    Per ``reasoning`` item, the reasoning text (``content``) when the item
+    carries it, else its summary. ``encrypted_content`` is there only when a
+    request ``include``s it, which this provider never does, so it is
+    normally absent; when present it is the opaque form. Both go through
+    :func:`~spectragent.core.llm.views.join_reasoning`.
+    """
+    texts: list[object] = []
+    encrypted: list[object] = []
+    for item in getattr(response, "output", None) or ():
+        if getattr(item, "type", None) != "reasoning":
+            continue
+        content = [getattr(part, "text", None) for part in getattr(item, "content", None) or ()]
+        summary = [getattr(part, "text", None) for part in getattr(item, "summary", None) or ()]
+        texts.extend(content if join_reasoning(content) is not None else summary)
+        encrypted.append(getattr(item, "encrypted_content", None))
+    return join_reasoning(texts), join_reasoning(encrypted)
 
 
 @dataclass
@@ -156,8 +177,11 @@ class ChatAzureOpenAI(OpenAICompatBase):
             if output_format is None:
                 async with self._request_client() as client:
                     response = await client.responses.create(**model_params)
+                thinking, redacted_thinking = _responses_reasoning(response)
                 return ChatInvokeCompletion(
                     completion=response.output_text or "",
+                    thinking=thinking,
+                    redacted_thinking=redacted_thinking,
                     usage=self._get_usage_from_responses(response),
                     stop_reason=response.status if response.status else None,
                 )
@@ -185,6 +209,7 @@ class ChatAzureOpenAI(OpenAICompatBase):
                         model=self.name,
                     )
                 usage = self._get_usage_from_responses(response)
+                thinking, redacted_thinking = _responses_reasoning(response)
                 return ChatInvokeCompletion(
                     completion=self._validate_structured(
                         output_format,
@@ -192,6 +217,8 @@ class ChatAzureOpenAI(OpenAICompatBase):
                         usage=usage,
                         wire_text=response.output_text,
                     ),
+                    thinking=thinking,
+                    redacted_thinking=redacted_thinking,
                     usage=usage,
                     stop_reason=response.status if response.status else None,
                 )

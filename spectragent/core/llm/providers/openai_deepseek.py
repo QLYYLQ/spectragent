@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.messages import BaseMessage
-from spectragent.core.llm.providers.openai_base import OpenAICompatBase
+from spectragent.core.llm.providers.openai_base import OpenAICompatBase, message_reasoning
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
@@ -112,6 +112,7 @@ class ChatDeepSeek(OpenAICompatBase):
                     )
                 return ChatInvokeCompletion(
                     completion=choice.message.content or "",
+                    thinking=message_reasoning(choice.message),
                     usage=self._get_usage(response),
                     stop_reason=choice.finish_reason,
                     tool_calls=OpenAIMessageSerializer.parse_tool_calls(
@@ -165,6 +166,7 @@ class ChatDeepSeek(OpenAICompatBase):
                 usage = self._get_usage(resp)
                 return ChatInvokeCompletion(
                     completion=self._validate_structured(output_format, raw_args, usage=usage),
+                    thinking=message_reasoning(msg),
                     usage=usage,
                     stop_reason=resp.choices[0].finish_reason,
                 )
