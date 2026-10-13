@@ -489,7 +489,7 @@ class TestFramesUnderATransform:
         result = await watchdog(cdp, selector_map, mouse_trajectory=Straight())._on_type_text(
             TypeTextEvent(backend_node_id=11, session_id="cross", text="hi")
         )
-        assert result == {"typed": True, "length": 2}
+        assert result == {"typed": True, "length": 2, "sensitive": None}
         assert cdp.mouse() == []
 
     async def test_scrolling_an_unmappable_frame_element_does_nothing(
@@ -565,7 +565,7 @@ class TestKeyboardAndDom:
         result = await watchdog(cdp, selector_map)._on_type_text(
             TypeTextEvent(backend_node_id=11, session_id="cross", text="hi")
         )
-        assert result == {"typed": True, "length": 2}
+        assert result == {"typed": True, "length": 2, "sensitive": None}
         keyboard = [
             (c.method, c.session_id) for c in cdp.calls if c.method != "Input.dispatchMouseEvent"
         ]
@@ -578,6 +578,8 @@ class TestKeyboardAndDom:
             ("Input.dispatchKeyEvent", "cross"),
             ("Input.dispatchKeyEvent", "cross"),
             ("Input.dispatchKeyEvent", "cross"),
+            # The field the text goes into is judged where the keystrokes go.
+            ("Runtime.evaluate", "cross"),
             ("Input.insertText", "cross"),
         ]
 

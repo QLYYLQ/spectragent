@@ -113,14 +113,15 @@ async def test_privacy_says_what_the_archivers_keep() -> None:
     with_network = await _measure({"tier": "off"})
     assert with_network["privacy"]["contains_session_state"] is True, "Set-Cookie is kept"
     assert with_network["privacy"]["level"] == "session_state"
-    assert with_network["redaction"]["archivers"]["browser.storage"] == {"cookie_values": "sha256"}
-    assert with_network["redaction"]["policy"] == "af-privacy-1+browser-1"
+    # Storage values are stored as they are: nothing per instance to report.
+    assert with_network["redaction"]["archivers"]["browser.storage"] == {}
+    assert with_network["redaction"]["policy"] == "af-privacy-1+browser-2"
     dom_only = await _measure({"tier": "off"}, archivers=(DomRawArchiver(),))
     assert dom_only["privacy"] == {
         "contains_session_state": False,
         "fresh_profile": True,
         "level": "redacted",
-        "markers": ["redacted:af-privacy-1+browser-1"],
+        "markers": ["redacted:af-privacy-1+browser-2"],
     }
 
 

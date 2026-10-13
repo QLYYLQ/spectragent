@@ -1,10 +1,11 @@
 """The browser's redaction rules for environment evidence (§4.14 privacy, §5.6).
 
 What is withheld before any ``ArchiveFile`` exists: stripped request headers,
-credential-shaped POST fields, sensitive form values in raw DOM captures (the
-attribute, the user-agent shadow text, the DOMSnapshot value tables, the
-accessibility value), and cookie values. Plus the tripwire: the rule sources
-are pinned by digest, so a rule cannot change without
+credential-shaped POST fields, and sensitive form values in raw DOM captures
+(the attribute, the user-agent shadow text, the DOMSnapshot value tables, the
+accessibility value). Cookie values are not among them since ``browser-2``
+(``storage.json`` stores them as they are). Plus the tripwire: the rule
+sources are pinned by digest, so a rule cannot change without
 ``BROWSER_REDACTION_POLICY`` changing with it.
 """
 
@@ -23,7 +24,6 @@ from spectragent.core.capabilities.browser.archive.redaction import (
     BROWSER_REDACTION_POLICY,
     DEFAULT_STRIPPED_REQUEST_HEADERS,
     browser_ledger,
-    hash_cookie_value,
     redact_post_body,
     redact_raw_capture,
     strip_headers,
@@ -149,11 +149,6 @@ class TestPostBodies:
         assert redact_post_body(body, "application/json") == redact_post_body(
             body, "application/json"
         )
-
-
-class TestCookieValues:
-    def test_hash(self) -> None:
-        assert hash_cookie_value("abc") == "sha256:" + hashlib.sha256(b"abc").hexdigest()
 
 
 def _snapshot_with_password() -> dict[str, Any]:
@@ -335,7 +330,7 @@ class TestRawCapture:
 
 
 def test_ledgers_carry_the_browser_policy() -> None:
-    assert f"{PRIVACY_POLICY}+browser-1" == BROWSER_REDACTION_POLICY
+    assert f"{PRIVACY_POLICY}+browser-2" == BROWSER_REDACTION_POLICY
     assert browser_ledger([]).policy == BROWSER_REDACTION_POLICY
 
 
@@ -345,6 +340,8 @@ def test_ledgers_carry_the_browser_policy() -> None:
 #: behaviour (a comment, a docstring) moves it too — re-pin, and say so.
 _KNOWN_BROWSER_POLICIES = {
     "af-privacy-1+browser-1": "93828aa353848cf72dfaddbe903d73b908d9bf51e0ba4e81ff5205e71b4a92d7",
+    # browser-2: cookie values are no longer hashed (storage.json stores them raw).
+    "af-privacy-1+browser-2": "5bf1fca59190d55ecad9b05a04753c0ba8a8c55351c9babc322c7dd27f0c3a17",
 }
 
 
@@ -359,7 +356,6 @@ def _rule_digest() -> str:
         redaction._redact_multipart,
         redaction._redact_json,
         redaction.redact_post_body,
-        redaction.hash_cookie_value,
         redaction._DomRedaction,
         redaction._capture_dict,
         redaction.redact_raw_capture,
@@ -371,7 +367,6 @@ def _rule_digest() -> str:
             ",".join(sorted(sensitivity.FORM_CONTROL_TAGS)),
             ",".join(sorted(sensitivity.SENSITIVE_INPUT_TYPES)),
             ",".join(redaction.DEFAULT_STRIPPED_REQUEST_HEADERS),
-            redaction.VALUE_HASH_PREFIX,
             redaction._DISPOSITION_NAME.pattern,
             redaction._FORM_SHAPE.pattern.decode("latin-1"),
             *(inspect.getsource(function) for function in functions),

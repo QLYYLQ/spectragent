@@ -126,7 +126,7 @@ hook:
 |---|---|
 | `pinned` | `base_time` (`run_start`; `from_archive` is for replays), `random_seed` (1, at least 1), `timezone` (`UTC`), `locale` (`en-US`), `device_scale_factor` (1.0), `user_agent` (null: keep the browser's own and pin only `Accept-Language`), `reduced_motion` (true) |
 | `browser.network` | `max_inline_body_bytes` (5 000 000, at most 64 MiB), `max_streamed_body_bytes` (100 000 000), `body_read_timeout_s` (10), `command_timeout_s` (1), `drain_timeout_s` (2), `max_post_data_size` (65536), `strip_request_headers` (null; added to `Cookie`, `Authorization`, `Proxy-Authorization`), `require_replayable` (true), `allow_session_state` (false) |
-| `browser.storage` | `allow_session_state` (false: cookie values stored as sha256), `command_timeout_s` (1) |
+| `browser.storage` | `allow_session_state` (false: refuse a non-fresh profile; values are stored as they are either way), `command_timeout_s` (1) |
 | `browser.dom_raw` | `allow_session_state` (false), `self_capture_timeout_s` (10) |
 
 Run it like any benchmark config, or record one task:
@@ -823,16 +823,23 @@ value on an existing one.
   The `archive` network source never forwards a request to the network. That is the
   source's own rule, not a framework law: a source that falls back to the network would be
   a new network source.
-- Privacy defaults: `Cookie`, `Authorization`, `Proxy-Authorization` and the names in
+- Privacy defaults (threat model "only me", the user's 2026-10-13 ruling: the trace and
+  `env/` stay on the recording machine; the gates are the prompt sent to a model provider
+  and dataset export): `Cookie`, `Authorization`, `Proxy-Authorization` and the names in
   `strip_request_headers` are stripped at every source. `Set-Cookie` is kept for replay, so
-  `browser.network` declares `contains_session_state`. Cookie values are hashed unless
-  `allow_session_state: true`. Web Storage values are kept except under credential-named
-  keys, so `browser.storage` always declares session state. POST fields and raw-DOM input
-  values are redacted with ledger entries. A non-fresh profile needs
-  `allow_session_state: true` on every bound archiver. The observation path is not
-  redacted: the BrowserUse DOM observation still carries a password field's `value` (an open
-  user decision). Privacy markers are declarations recorded in
-  `TraceConfig.env_evidence_privacy`, not proofs.
+  `browser.network` declares `contains_session_state`. `storage.json` keeps cookie and Web
+  Storage values as they are, so `browser.storage` declares session state too, and its
+  `allow_session_state` means only what it means on every archiver: accept a non-fresh
+  profile. POST fields and raw-DOM input values are redacted with ledger entries
+  (`BROWSER_REDACTION_POLICY` `af-privacy-1+browser-2`). The DOM observation path is
+  redacted by the same rule: the BrowserUse cleaner replaces a sensitive control's value,
+  the text below it and an inner node's accessible name with `<redacted>` while it builds
+  its tree, at the raw-DOM redaction's positions, so an offline re-clean of `dom_raw`
+  matches the live one. The typing actions judge the focused element before they type and
+  record `ActionResult.typed_into_sensitive_field` (`null` when they cannot see it); no
+  agent renders it, and export does not use it yet. A non-fresh profile needs
+  `allow_session_state: true` on every bound archiver. Privacy markers are declarations
+  recorded in `TraceConfig.env_evidence_privacy`, not proofs.
 - Read through the manifest only: the `RunTrace` accessors, `archive_lines` for line-shaped
   evidence, `committed_files` / `read_committed` for byte accounting, and `ArchiveReader`
   from `open_archive` inside a capability. Files the manifest does not list are invisible

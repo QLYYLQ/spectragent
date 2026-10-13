@@ -2340,8 +2340,23 @@ capability 才给它一个真正的实现，把采集放进本 cycle 缓存的�
 规则（`INPUT` 的 type 为 password / file / hidden，`autocomplete` 以 `cc-` 开头或为
 `one-time-code`，id / name / autocomplete 命中 OTP / 验证码一类的提示正则）。Skyvern 页内脚本
 （`dom/js/skyvern_extraction.py`）里的同一条规则不改写、不生成，用测试与它对齐：提示正则的字面量
-逐字相等，并在真实 Chrome 里用同一张控件表比对两边的判定。归档对原始采集的脱敏用 Python 这一份
-（§4.14 隐私）。
+逐字相等，并在真实 Chrome 里用同一张控件表比对两边的判定。Python 这一份有三处用：归档对原始采集的
+脱敏（§4.14 隐私）；BrowserUse 清洗器建树时打码（下一段）；键入动作在敲字之前判定焦点所在的元素，
+判定记进 `ActionResult.typed_into_sensitive_field`（§4.14 隐私、§5.6）。
+
+**观测路径同样打码（用户 2026-10-13 裁决）。** BrowserUse 清洗器在把 CDP 原始数据建成
+`DOMElementNode` 树的同时套用这条规则：敏感控件及它下面每个节点的 `value` 属性、它下面的文本
+（user-agent shadow root 里键入的值、`<textarea>` 的内容、`<select>` 的选项）、控件内部节点的
+无障碍名字，都换成 `<redacted>`；控件自己的无障碍名字（它的标签）保留，空值保持为空。对清洗器读到
+的部分，换的位置与占位符和归档的原始 DOM 脱敏相同，所以离线用 `capture_from_document` 重洗
+`env/` 的原始 DOM，得到的状态与现场相同（测试钉住）。在建树时换、而不是先拷贝采集再脱敏：采集与
+归档共用，不能改；深拷贝一份约 1.9 万个 DOM 节点、0.9 万个无障碍节点的合成采集实测约 170 ms，
+建树时多一次判定几乎不花时间。于是提示词（`serialized_dom`）和 trace 里的 `browser.dom` fragment 都不带敏感值；模型看到
+`value=<redacted>` 只说明页面在标记里写了值（键入的值不在标记里，BrowserUse 的提示词本来就不显示）。
+Skyvern 的页内脚本本来就不把敏感值放进树。判定有意宽（`pin` 命中 `shipping`）：被判敏感的
+`<select>` 的选项与输入框的值 DOM agent 看不到，与 Skyvern 一致。验证：
+`test_browser_dom_masking.py`（合成页面，含离线重洗）与 `test_browser_archive_live.py` 的 DOM
+观测路径隐私测试（真实 Chrome）。
 
 ### 4.13 Input 拟人化层（mouse_trajectory + typing_rhythm）
 
@@ -2632,7 +2647,7 @@ class ReplayabilityProtocol(Protocol):
 
 #### `browser.storage`
 
-在**收集时**读：`Storage.getCookies`，以及每个 tab 每个 origin 的 `DOMStorage.getDOMStorageItems`（local 与 session），走 recorder 连接。记在本步（动作之后的状态），有意不按每个观测 cycle 记：收集点本来就是步的边界，多一次 cycle 级采集只会把同样的状态再记一遍。`storage.json` **只在状态变了时**才写（采集时间不算）：某一步的状态是那一步及之前最近的一份；也因此一次什么都没发生的收集交出空批次（归档契约"交出并忘掉"）。localStorage 每个 origin 读一次（它在 origin 的 tab 之间共享），sessionStorage 按 tab 与 origin 读；frame tree 与 DOM storage 在 recorder 的 session 上不需要 `Page.enable` / `DOMStorage.enable`（实测）；读的时候已经关掉的 tab 记在 `unreadable_tabs` 里，不致命；读失败的 origin 记在 `unreadable_origins`（tab、origin、local / session、原因）；进程外的 iframe 是自己的 target，不在 tab 的 frame tree 里，它的 storage 又按顶层站点分区（这份文档还没有分区键），所以 v1 不读、记在 `unread_frames`。缺什么都写明，不悄悄缺失。cookie 的**值**默认存 sha256（名字、域、路径、过期、标志照记），每个被哈希的值一条台账；`allow_session_state: true` 才存原值。storage 的条目过共享的字段名规则（`core.archive.privacy.redact_value`）；其余的值原样保存，而 token 也会藏在 JSON 字符串的值里（`@@auth0spajs@@::…`、`persist:root`），字段名规则抓不到，所以 `browser.storage` 不论 `allow_session_state` 都声明 `contains_session_state`（是否默认改存哈希，待用户裁决）。
+在**收集时**读：`Storage.getCookies`，以及每个 tab 每个 origin 的 `DOMStorage.getDOMStorageItems`（local 与 session），走 recorder 连接。记在本步（动作之后的状态），有意不按每个观测 cycle 记：收集点本来就是步的边界，多一次 cycle 级采集只会把同样的状态再记一遍。`storage.json` **只在状态变了时**才写（采集时间不算）：某一步的状态是那一步及之前最近的一份；也因此一次什么都没发生的收集交出空批次（归档契约"交出并忘掉"）。localStorage 每个 origin 读一次（它在 origin 的 tab 之间共享），sessionStorage 按 tab 与 origin 读；frame tree 与 DOM storage 在 recorder 的 session 上不需要 `Page.enable` / `DOMStorage.enable`（实测）；读的时候已经关掉的 tab 记在 `unreadable_tabs` 里，不致命；读失败的 origin 记在 `unreadable_origins`（tab、origin、local / session、原因）；进程外的 iframe 是自己的 target，不在 tab 的 frame tree 里，它的 storage 又按顶层站点分区（这份文档还没有分区键），所以 v1 不读、记在 `unread_frames`。缺什么都写明，不悄悄缺失。cookie（名字、值、域、路径、过期、标志）与 local / session storage 的条目都**原样保存**（用户 2026-10-13 裁决，威胁模型"只有我"，§5.6）；会话 token 就在里面，所以 `browser.storage` 声明 `contains_session_state`。文件仍带 browser 台账，条目为空，只说明写它时的规则版本。`allow_session_state` 在它身上与在别的归档器上一样，只表示"接受非新建的 profile"。
 
 #### `browser.dom_raw`
 
@@ -2654,7 +2669,7 @@ class ReplayabilityProtocol(Protocol):
 
 #### 环境指纹（`env/run.browser.json`）
 
-capability 自己的 run 记录（`archiver_id="browser"`，`scope="run"`，`archive/fingerprint.py`），第一次收集时发出，内容变了才再发：Chrome 版本（`Browser.getVersion`）、UA 与 UA metadata、viewport、DPR、时区、语言（pinned 取参数；`off` 在第一个 tab 主 frame 的 isolated world 里经 recorder 的 `Runtime.evaluate` 实测：`Page.createIsolatedWorld`（`af-fingerprint`），页面脚本看不到这次读取、也改不了它读到的值（getter 陷阱、改写的 `JSON.stringify` 都不起作用，M29 实测）；每个文档（loaderId）只测一次，同一文档上的收集只多一条 `Page.getFrameTree`；残余：测量本身仍在页面的渲染进程里执行，主线程忙或对话框开着时这一次会等到 1 s 超时、换下一个 tab）、replayability 档位与参数（T0、种子……）、`shim_sha256`、启动开关摘要（`ProviderSession.metadata["launch_flags"]` 去掉网络路由开关（`chrome_switches.NETWORK_ROUTING_SWITCHES`）之后的 sha256；录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，两边才可比；`command_line` 从不进指纹）与 pinned 自己的开关表（单独存）、网络来源（M30：`network_source` 块，`live` 只有 `{"source_id": "live"}`，回放见下面"回放指纹"）、脱敏策略（`BROWSER_REDACTION_POLICY`，以及每个绑定归档器自报的 `redaction_facts()`：剥离的请求头、cookie 值是哈希还是原值）、隐私标记（`contains_session_state`、`fresh_profile`、`level`：有归档器保留会话态时是 `session_state`，否则 `redacted`）。`navigator.userAgentData` 只在 secure context 里存在（实测：tab 停在纯 http 的页面上时是 `null`），所以 UA metadata 记最近一次测到的，指纹不随页面来回翻。
+capability 自己的 run 记录（`archiver_id="browser"`，`scope="run"`，`archive/fingerprint.py`），第一次收集时发出，内容变了才再发：Chrome 版本（`Browser.getVersion`）、UA 与 UA metadata、viewport、DPR、时区、语言（pinned 取参数；`off` 在第一个 tab 主 frame 的 isolated world 里经 recorder 的 `Runtime.evaluate` 实测：`Page.createIsolatedWorld`（`af-fingerprint`），页面脚本看不到这次读取、也改不了它读到的值（getter 陷阱、改写的 `JSON.stringify` 都不起作用，M29 实测）；每个文档（loaderId）只测一次，同一文档上的收集只多一条 `Page.getFrameTree`；残余：测量本身仍在页面的渲染进程里执行，主线程忙或对话框开着时这一次会等到 1 s 超时、换下一个 tab）、replayability 档位与参数（T0、种子……）、`shim_sha256`、启动开关摘要（`ProviderSession.metadata["launch_flags"]` 去掉网络路由开关（`chrome_switches.NETWORK_ROUTING_SWITCHES`）之后的 sha256；录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，两边才可比；`command_line` 从不进指纹）与 pinned 自己的开关表（单独存）、网络来源（M30：`network_source` 块，`live` 只有 `{"source_id": "live"}`，回放见下面"回放指纹"）、脱敏策略（`BROWSER_REDACTION_POLICY`，以及每个绑定归档器自报的 `redaction_facts()`：剥离的请求头）、隐私标记（`contains_session_state`、`fresh_profile`、`level`：有归档器保留会话态时是 `session_state`，否则 `redacted`）。`navigator.userAgentData` 只在 secure context 里存在（实测：tab 停在纯 http 的页面上时是 `null`），所以 UA metadata 记最近一次测到的，指纹不随页面来回翻。
 
 #### 隐私（§5.6 的 browser 部分）
 
@@ -2662,10 +2677,13 @@ capability 自己的 run 记录（`archiver_id="browser"`，`scope="run"`，`arc
 - 响应头 `Set-Cookie` 保留（回放的 cookie jar 需要）；`browser.network` 因此声明 `contains_session_state`，指纹同样标出。`responseReceivedExtraInfo` 里 `blockedCookies` / `exemptedCookies` 的 cookie 值不记。
 - POST body：urlencoded / multipart / JSON 里名字命中共享字段名规则的值换成 `<redacted>`，写台账（`rule: field_name`）。`redact_post_body(body, content_type)` 从 `archive/redaction.py` 导出，M30 先用它脱敏线上请求再算匹配键，录制与回放用同一个函数。
 - 原始 DOM：敏感控件（`dom/sensitivity.py`）的 `value` 属性（`DOM.getDocument` 与 Skyvern 的 `DOM.describeNode`）、它下面 user-agent shadow root 里的文本（`pierce: true` 会把输入值带出来）、`DOMSnapshot` 的 `inputValue` / `textValue`、AX 的 value，在构造 `ArchiveFile` 之前换掉并记台账（`rule: input_value`）。
-- cookie 值的哈希记 `rule: value_hash`。三个新规则名加进共享台账的 `RedactionRule`；browser 的规则版本是 `BROWSER_REDACTION_POLICY`（`<PRIVACY_POLICY>+browser-1`，写进每个 browser 台账的 `policy`），规则源码由测试按摘要钉住；与 `PRIVACY_POLICY` 一样，改规则就升版本。
+- DOM 观测：BrowserUse 清洗器建树时按同一条规则把同样的位置换成 `<redacted>`（§4.12），提示词与 `browser.dom` fragment 都不带敏感值；Skyvern 的页内脚本本来就不带。
+- `storage.json` 原样保存 cookie 与 local / session storage 的值（用户 2026-10-13 裁决，§5.6）；`browser.storage` 声明 `contains_session_state`，`allow_session_state` 只表示"接受非新建的 profile"。
+- 两个新规则名（`request_header` / `input_value`）加进共享台账的 `RedactionRule`；browser 的规则版本是 `BROWSER_REDACTION_POLICY`（`<PRIVACY_POLICY>+browser-2`，写进每个 browser 台账的 `policy`），规则源码由测试按摘要钉住；与 `PRIVACY_POLICY` 一样，改规则就升版本。`browser-2`（2026-10-13）删掉了 cookie 值的哈希和它的规则名 `value_hash`。
+- **键入标记**：`browser.type` / `browser.type_coordinate` 在敲字之前读焦点所在的元素（穿过开放的 shadow root 与同进程的 iframe），按同一条规则判定，动作结果的 `typed_into_sensitive_field` 记下判定：`true` / `false`；焦点在看不进去的 frame 里（进程外的 iframe、跨源）或读焦点失败时是 `null`（不知道，不是"不敏感"）；封闭的 shadow root 里看到的是宿主，判为 `false`。它进 `steps/NNN.json`；agent 只渲染动作结果的成败与错误，提示词逐字节不变（测试钉住）；导出怎么用它随学生侧一起推迟。键入的文字本身照旧原样留在动作参数与 LLM 记录里（§5.6）。
 - **会话态（`logged_in` 的定义）**：没有任何地方声明 `logged_in`，所以定义为"浏览器不是从新建的 profile 启动的"，即 provider 的 `persistent_profile()`（`NETWORK_CAPTURE` 的承诺之一，§4.9.x）点名了一个旋钮或环境变量。这时只要绑定了归档器，每个归档器都必须写 `allow_session_state: true`，否则报错，点名 provider 的旋钮与归档器（pinned 本来就拒绝非新建的 profile）。v1 的数据来源是无需登录的公开站点。
-- 残余，写明：WebSocket 帧的内容原样记录（没有字段规则可用）；字段名规则只认凭证形状的名字；URL 原样记录（回放按 URL 匹配），query 里的凭证不脱敏。
-- 验证（`test_browser_archive_live.py`）：经 `Network.setExtraHTTPHeaders` 植入 `Authorization` 与 `X-Api-Key`（后者在 `strip_request_headers` 里）、经 `Network.setCookie` 植入 cookie、一个 urlencoded POST 的密码、脚本设置的密码输入值，fixture 收到了每一个，trace 目录里（gzip 解开）一次也不出现，四种台账规则都出现；正向对照：`allow_session_state: true` 时原 cookie 值能找到，WARC 里的标记请求能找到。`Proxy-Authorization` 无法这样植入：Chrome 155 让每个带它的请求以 `net::ERR_INVALID_ARGUMENT` 失败；它的剥离由 fake CDP 测试覆盖（ExtraInfo 与 Fetch 两个来源）。
+- 残余，写明：WebSocket 帧的内容原样记录（没有字段规则可用）；字段名规则只认凭证形状的名字；URL 原样记录（回放按 URL 匹配），query 里的凭证不脱敏；`browser.extract_content` 给了元素编号时返回 `DOM.getOuterHTML` 的原文，页面写进标记的敏感 `value` 会随动作结果进提示词（动作路径，未改）。
+- 验证（`test_browser_archive_live.py`）：经 `Network.setExtraHTTPHeaders` 植入 `Authorization` 与 `X-Api-Key`（后者在 `strip_request_headers` 里）、经 `Network.setCookie` 植入 cookie、一个 urlencoded POST 的密码、脚本设置的密码输入值，fixture 收到了每一个；植入的 cookie 值只出现在 `storage.json`（原值），其余植入值在 trace 目录里（gzip 解开）一次也不出现，三种台账规则都出现；正向对照：WARC 里的标记请求能找到。DOM 观测路径另有一条（`test_privacy_guard_on_the_dom_path`，BrowserUse 清洗，绑定 `browser.dom_raw`，观测像运行期那样提交进 trace）：写进标记的、脚本设置的、`display:none` 的密码，在提示词与 trace 目录里一次也不出现；经 `browser.type` 敲进去的只出现在 `steps/000.json` 的动作参数里，它的结果带 `typed_into_sensitive_field: true`，敲进普通文本框的是 `false`；普通文本框的值照常出现在观测里（正向对照）。`Proxy-Authorization` 无法这样植入：Chrome 155 让每个带它的请求以 `net::ERR_INVALID_ARGUMENT` 失败；它的剥离由 fake CDP 测试覆盖（ExtraInfo 与 Fetch 两个来源）。
 
 #### 同一 cycle 的证据描述同一个文档（M18 修复，与归档无关）
 
@@ -2862,7 +2880,6 @@ class ArchiveReader(Protocol):
 - 时区与语言的 override 是渲染进程级的：同进程的第二个页面（`window.open` 的弹窗）上再设一次，Chrome 回 "already in effect"。值已由第一个 session 设好，记为该 target 的命令失败（`RecorderConnection.failures`），不致命。
 - 长连接的响应（SSE、长轮询）在 Response 阶段被扣到 `body_read_timeout_s`，之后记为 `incomplete` 放行；没有 `Content-Length` 的 body 不论多大都内联读（分档只看声明的长度）。
 - `serialized_dom` 里的元素标记是 Chrome 的 backend node id，两次独立启动同一页面时会因加载时序不同而不同，归档**关着**两边也一样（实测：fixture 的进程外 iframe 元素一半启动是 `[13]`、一半是 `[14]`；开着归档时固定是 `[14]`）。所以"开关归档观测相同"的验收按出现顺序重编号这些标记后比较，其余每个字节（结构、文本、属性、截图）都必须相同。
-- 归档之外、M29 测到但不改的：BrowserUse 的 DOM **观测**把密码输入框标记里的 `value` 属性带进 `serialized_dom`（提示与 trace），把脚本设置的值带进 trace 里观测的快照。归档的原始 DOM 已脱敏，观测这条路径没有（待用户裁决）。
 - **回放的残余**（M30）：
   - `EXCLUDE localhost` 是开着的口子：绕过 Fetch 的流量（preconnect、嵌套 worker 脚本、WebSocket）若指向精确的 `localhost`，仍能连到本机服务；回放的 fixture 页面从不用 localhost，M29 fixture 的 SW 页面在 `http://localhost:P` 上，所以不在零外联的回放流程里。
   - WebSocket 不回放（v1 记为 miss）；嵌套 dedicated worker 的脚本送不出（看得见的记 `unservable`）；超过 `max_fulfill_body_bytes` 的 body 不送（loopback blob 服务器推迟）。
@@ -3031,7 +3048,7 @@ round-trip 在渲染里做（它要 agent 本步的状态），其余的在格�
 
 - `env/` 从不导出；样本里没有原始 DOM，学生没协商 DOM 时 DOM 文本也进不了 prompt。
 - `secrets_recorded` 的源不导出；凭证扫描 fail closed。
-- **残余，写明**：凭证扫描认形状：teacher 键入一个不像凭证的密码（`type` 动作的 `text`）会原样成为训练目标；协商 DOM 的学生会把 BrowserUse 观测里密码框的 `value` 带进 prompt（§4.14 已知限制，待用户裁决）。v1 的学生是纯视觉的 UI-TARS。
+- **残余，写明**：凭证扫描认形状：teacher 键入一个不像凭证的密码（`type` 动作的 `text`）会原样成为训练目标；录制时键入动作的结果记下了 `typed_into_sensitive_field`（§4.14 隐私），导出怎么用它随学生侧一起推迟。BrowserUse 观测里的密码框已按敏感规则打码（§4.12）。v1 的学生是纯视觉的 UI-TARS。
 
 #### 确定性
 
@@ -3084,7 +3101,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 | 分叉结果覆盖 | `branch` 的回放日志（`iter_decisions`）、`TraceConfig.branch.checkpoint_step`、各步执行的动作 | 检查点步及之后（策略步、终止步、收尾）一个主 frame 文档 miss（回放自己的 `diverged`）都没有的分叉占比；同一范围里其余的 miss（子 frame 文档、beacon、子资源；折叠的按它代表的条数计）按动作类型（miss 所在步执行的动作名；终止步记为 `terminal`、收尾的记为 `trailing`——页面加载完之后才发出的请求落在取走它的那次收集，§4.14 "步归因"）、`resourceType`、host、原因与请求类别分布。检查点之前的 miss 属于恢复，由恢复校验率的 `document_miss` 体现，不算这一项 |
 | 回放确定性 | `same_path` 与 `branch` 的终止步、检查点步的截图 | 同一输入 = 同一源 run、同一检查点、策略步执行的动作逐个相同（名字与参数的规范 JSON）；组内两两比较终止截图（`origin == "terminal"`）的 sha256，报可比的对数与相同的对数（没有终止步的 run 不比、计数）；另报同一检查点所有分支的检查点步截图（恢复出的状态，与 teacher 无关）是否相同 |
 | 导出确定性 | `datasets/first`、`datasets/second` | 两棵目录树的摘要（相对路径与每个文件的 sha256，按路径排序）相同；`repeat: 1` 时为 `null` |
-| 隐私 | `<root>/traces` 与 `<root>/datasets` 下的每个文件（gzip 解开，`core/trace/secret_patterns.py::readable_text`；按目录树走，不按 manifest——没被索引的文件泄漏了也是泄漏） | 每个植入的凭证出现的次数（必须是 0）与所在的文件数；`SECRET_PATTERNS` 每个形状的命中数。植入值来自链规格：演练写字面量，live 只写环境变量名、值从进程环境读；报告只写标签与次数，从不写值。"没有泄漏"要每个植入值都搜过：有一个没搜（环境变量没设、`report --root` 没有规格也就没有植入值），建议是 `insufficient`、没有结论；搜到的植入值或凭证形状照样是"泄漏"的结论 |
+| 隐私 | `<root>/traces` 与 `<root>/datasets` 下的每个文件（gzip 解开，`core/trace/secret_patterns.py::readable_text`；按目录树走，不按 manifest——没被索引的文件泄漏了也是泄漏） | 每个植入的凭证出现的次数（必须是 0）与所在的文件数；`SECRET_PATTERNS` 每个形状的命中数。植入值来自链规格：演练写字面量，live 只写环境变量名、值从进程环境读；报告只写标签与次数，从不写值。"没有泄漏"要每个植入值都搜过：有一个没搜（环境变量没设、`report --root` 没有规格也就没有植入值），建议是 `insufficient`、没有结论；搜到的植入值或凭证形状照样是"泄漏"的结论。`env/` 也在扫描范围里：cookie 与 Web Storage 的值按 §5.6 原样存进 `storage.json`，经它们存放的植入值会被数到（演练因此不经 cookie 植入）；这一项要不要只看两道门（发给模型的请求、数据集），由用户定 |
 
 #### 各节与建议（`report.py`）
 
@@ -3120,7 +3137,7 @@ browser 证据的格式知识留在 browser 的包里：纯函数，只经 `Arch
 
 #### 演练（fixture，零花费）
 
-`tests/_helpers/flywheel_rehearsal.py`：一条命令 `uv run python -m tests._helpers.flywheel_rehearsal --out <dir>`（`run_rehearsal`；除了链根，还写一份 `rehearsal.json`：各段、各模型的路由、外联审计），e2e 测试（`tests/test_flywheel/test_rehearsal_live.py`）在测试进程里调同一个 `run_rehearsal`，读它跑出的东西（链根与 `Rehearsal.summary()`）。它有意放在全量测试的进程里，并让登录任务紧挨在漂移任务之前录：provider 把客户端留给垃圾回收的问题（§4.7）修好之前，正是这里一次模型调用的 TCP connect 永远完不成。演练起 M29 的 fixture 站点与每个运行段一个脚本化的模型（UI-TARS 的坐标回复，按任务文本里的标记与步号（请求里 assistant 轮的个数）路由），把发布的 UI-TARS 录制 / 原路径回放 / 分叉 / 导出配置改成 fixture 的那份（模型地址与键、fixture 的路由开关、任务的 `data_dir`、仓库文件的绝对路径；与 M30–M32 的驱动同一种改法），加上对照组（录制配置 + `archive: []`），写出链规格（`evidence: rehearsal`，植入值写字面量），在进程内跑整条链。四个任务分在三个站点上（fixture 的 `FLYWHEEL_SCENARIOS`，每个站点一个映射主机，控件都绝对定位）：`shop.example.test` 上确定性的四步流程（输入框、GET 表单提交、商品链接、读价格；商品页的脚本请求 `recommend.json?session=<timeOrigin>`，每次回放都是一个子资源近邻 miss）与一个登录页（运行时拼出凭证，经 `Authorization` 头、urlencoded POST 的 `password`、密码框的值与 `document.cookie` 发出，值从不出现在任何应答的字节里）；`drift.example.test` 上点击后同步跳到 `next.html?visit=<timeOrigin>`（pinned 不固定 time origin，回放必然是文档 miss，而且停在 Chrome 的错误页上；错误页写着那个 URL，所以这一组的回放截图两次不同）；`blocked.example.test` 的 403 带 Cloudflare 的三个头。分叉段在商品流程的结果页（第 2 步）分三叉：一个与录制做同样的事（覆盖）、一个提交结果页上录制没用过的 POST "quick add" 表单（必然 miss）、一个与第一个重复。导出 YAML 加上指向 fixture 任务数据的 `eval_loader` / `task_loader`（泄漏扫描经它们读参考答案）。e2e 测试断言每个度量的值与它的解释，报告算两次逐字节相同，以及演练期间没有非 loopback 的外联：Python 侧审计每一次 `socket.connect` 的对端；Chrome 侧录制用 hermetic 的解析规则、回放用隔离，归档里出现的主机只有 fixture 的。整条链在本机约 40 s。
+`tests/_helpers/flywheel_rehearsal.py`：一条命令 `uv run python -m tests._helpers.flywheel_rehearsal --out <dir>`（`run_rehearsal`；除了链根，还写一份 `rehearsal.json`：各段、各模型的路由、外联审计），e2e 测试（`tests/test_flywheel/test_rehearsal_live.py`）在测试进程里调同一个 `run_rehearsal`，读它跑出的东西（链根与 `Rehearsal.summary()`）。它有意放在全量测试的进程里，并让登录任务紧挨在漂移任务之前录：provider 把客户端留给垃圾回收的问题（§4.7）修好之前，正是这里一次模型调用的 TCP connect 永远完不成。演练起 M29 的 fixture 站点与每个运行段一个脚本化的模型（UI-TARS 的坐标回复，按任务文本里的标记与步号（请求里 assistant 轮的个数）路由），把发布的 UI-TARS 录制 / 原路径回放 / 分叉 / 导出配置改成 fixture 的那份（模型地址与键、fixture 的路由开关、任务的 `data_dir`、仓库文件的绝对路径；与 M30–M32 的驱动同一种改法），加上对照组（录制配置 + `archive: []`），写出链规格（`evidence: rehearsal`，植入值写字面量），在进程内跑整条链。四个任务分在三个站点上（fixture 的 `FLYWHEEL_SCENARIOS`，每个站点一个映射主机，控件都绝对定位）：`shop.example.test` 上确定性的四步流程（输入框、GET 表单提交、商品链接、读价格；商品页的脚本请求 `recommend.json?session=<timeOrigin>`，每次回放都是一个子资源近邻 miss）与一个登录页（运行时拼出凭证，经 `Authorization` 头、urlencoded POST 的 `password`、密码框的值发出，值从不出现在任何应答的字节里；不经 `document.cookie`：`storage.json` 原样保存 cookie 的值（§5.6），经 cookie 的凭证按设计会出现在 `env/` 里）；`drift.example.test` 上点击后同步跳到 `next.html?visit=<timeOrigin>`（pinned 不固定 time origin，回放必然是文档 miss，而且停在 Chrome 的错误页上；错误页写着那个 URL，所以这一组的回放截图两次不同）；`blocked.example.test` 的 403 带 Cloudflare 的三个头。分叉段在商品流程的结果页（第 2 步）分三叉：一个与录制做同样的事（覆盖）、一个提交结果页上录制没用过的 POST "quick add" 表单（必然 miss）、一个与第一个重复。导出 YAML 加上指向 fixture 任务数据的 `eval_loader` / `task_loader`（泄漏扫描经它们读参考答案）。e2e 测试断言每个度量的值与它的解释，报告算两次逐字节相同，以及演练期间没有非 loopback 的外联：Python 侧审计每一次 `socket.connect` 的对端；Chrome 侧录制用 hermetic 的解析规则、回放用隔离，归档里出现的主机只有 fixture 的。整条链在本机约 40 s。
 
 #### 已知限制
 
@@ -3928,6 +3945,8 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 环境证据的隐私方案（用户裁决 D4，2026-10-09：剥离凭证、表单值脱敏、归档打标、导出前审查）在这里落成框架与 capability 的分工。**框架从不读、也从不改证据的字节**：采集和脱敏是 capability 的事（§4.9），框架不声称替任何证据脱敏。框架这一侧只做三件事：记录本 run 声明了什么；提供共享的规则与台账格式，让每个 capability 用同一套；在产物层面用 secret guard 检查。
 
+**威胁模型"只有我"（用户 2026-10-13 裁决）。** trace 与 `env/` 只在录制它的那台机器、那个账户里。框架守两道门：发给 LLM 服务商的提示词里不带秘密（敏感控件的值不进观测，§4.12）；导出数据集时把住（`env/` 永不导出，凭证扫描 fail closed，§4.15）。由此：`Set-Cookie` 原样保留（回放的 cookie jar 用它）；`storage.json` 存原值；trace 文件的权限跟 umask 走（`0o666 & ~umask`，§5.2），框架不管可见性；`task_setup` 的残余只记 TODO（下面"残余"）；键入动作在敲字时记下文字是否进了敏感控件（`typed_into_sensitive_field`），导出怎么用它随学生侧一起推迟；键入的文字本身仍原样留在动作参数与 LLM 记录里。
+
 | 对象 | 默认处理 | 归属 |
 |---|---|---|
 | 本 run 有没有环境证据、声明了哪些隐私标记 | 有没有：`TraceConfig.negotiation.active_archivers` 非空；`env_evidence_privacy` = 所绑定归档器 `privacy_markers` 的有序并集，绑定了归档器才写进 `config.json`。它只陈述归档器的声明，不证明字节里没有秘密 | 框架（M28） |
@@ -3936,20 +3955,22 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | 环境 setup context（`TraceConfig.task_setup`） | 值级脱敏：凭证形状的映射键，其值（整棵子树）换成 `<redacted>`；URL（以 `scheme://` 开头的字符串）的 userinfo 整段换掉；名字是凭证形状的 query / fragment 参数，值换掉；其余字节原样。`null` 与空参数值没有可换的东西，原样保留、不记台账（`null` 要与"设置过"区分开）。台账一起记录。`record_secrets` 打开时与 `resolved` 一样原样记录，台账为空 | 框架（M28） |
 | secret guard | 扫描整个 trace 目录（含 `env/`），gzip 文件（魔数 `1f 8b` 或 `.gz` 后缀）先解压再扫；正向对照：假归档器把凭证写进 `env/`（明文与 `.gz` 各一份），必须被发现。凭证形状的正则 `SECRET_PATTERNS` 在 `core/trace/secret_patterns.py`（M32 从测试模块挪进生产代码），guard 测试与训练导出的凭证扫描 import 同一份 | 框架（M28；M32 挪位置） |
 | 归档本身 | 永不导出；导出物只含截图、动作、thought 与引用（§4.15） | 导出（M32 遵守） |
-| 训练导出的产物（`output_dir`） | `secrets_recorded` 的源不导出；写出的每个文本字节过 `SECRET_PATTERNS`，命中则整个导出失败、不留输出（fail closed）；源 `task_setup` 的台账抄进样本的 `redactions`；残余：形状之外的秘密（键入的密码）与协商 DOM 的学生，见 §4.15 "隐私" | 导出（M32） |
+| 训练导出的产物（`output_dir`） | `secrets_recorded` 的源不导出；写出的每个文本字节过 `SECRET_PATTERNS`，命中则整个导出失败、不留输出（fail closed）；源 `task_setup` 的台账抄进样本的 `redactions`；残余：形状之外的秘密（键入的密码），见 §4.15 "隐私" | 导出（M32） |
 | 请求头 `Cookie` / `Authorization` / `Proxy-Authorization`（以及 `browser.network` 的 `strip_request_headers` 追加的，大小写不敏感） | 采集时在每一个来源剥离（含 ExtraInfo 与 `associatedCookies`），从不落盘；台账只记名字 | browser（M29，§4.14） |
 | 响应头 `Set-Cookie` | 保留（回放的 cookie jar 需要）；`browser.network` 声明 `contains_session_state`，capability 的 run 记录（指纹）同样标出 | browser（M29） |
 | 会话态（`logged_in`） | 定义为"浏览器不是从新建的 profile 启动的"（provider 的 `persistent_profile()` 点名旋钮或环境变量；这是 `NETWORK_CAPTURE` 的承诺之一，答不出的 provider 被拒）；此时每个绑定的归档器都要写 `allow_session_state: true`，否则报错点名 provider 旋钮与归档器；`pinned` 一律拒绝非新建的 profile | browser（M29） |
-| cookie 的值（`browser.storage`） | 默认存 sha256，每个一条台账（`value_hash`）；`allow_session_state: true` 才存原值；local / session storage 条目过共享字段名规则，其余的值原样保存（JSON 字符串里的 token 抓不到），所以 `browser.storage` 总是声明 `contains_session_state` | browser（M29） |
+| cookie 与 local / session storage 的值（`browser.storage`） | 原样保存（用户 2026-10-13 裁决）；会话 token 就在里面，所以 `browser.storage` 声明 `contains_session_state`；`allow_session_state` 只表示"接受非新建的 profile" | browser（M29；2026-10-13 改存原值） |
 | DOM 原始采集里的输入值 | 敏感控件（`dom/sensitivity.py`：type、autocomplete、OTP 提示，与 Skyvern 页内规则对齐）的 value 属性、UA shadow 里的文本、`DOMSnapshot` 的 inputValue / textValue、AX value 在落盘之前替换（`input_value`） | browser（M29） |
+| DOM 观测里的输入值（提示词与 `browser.dom` fragment） | 同一条规则：BrowserUse 清洗器建树时把敏感控件的 value 属性、它下面的文本、内部节点的无障碍名字换成 `<redacted>`（§4.12）；Skyvern 页内脚本本来就不放进树 | browser（2026-10-13） |
+| 键入的目标 | 键入动作在敲字之前按同一条规则判定焦点所在的元素，结果记进 `ActionResult.typed_into_sensitive_field`（`true` / `false` / 看不见时 `null`），进 `steps/NNN.json`，agent 不渲染它；键入的文字原样留在动作参数里 | browser（2026-10-13）；导出的用法随学生侧推迟 |
 | POST body | 按字段名模式脱敏，写入台账；`redact_post_body` 从 browser 的 `archive/redaction.py` 导出，回放时先用同一个函数脱敏再算匹配键 | browser（M29）；M30 复用 |
-| 台账的规则名 | `RedactionRule` 增加 `request_header` / `input_value` / `value_hash`；browser 的规则版本 `BROWSER_REDACTION_POLICY = "<PRIVACY_POLICY>+browser-1"` 写进 browser 台账的 `policy`，规则源码按摘要钉住。新名字只扩充词表，框架的规则函数不变，`PRIVACY_POLICY` 不升版本 | 框架的台账词表（`core/archive/privacy.py`，M29 扩充）；browser 规则（M29） |
+| 台账的规则名 | `RedactionRule` 增加 `request_header` / `input_value`；browser 的规则版本 `BROWSER_REDACTION_POLICY = "<PRIVACY_POLICY>+browser-2"` 写进 browser 台账的 `policy`，规则源码按摘要钉住（`browser-2` 删掉了 cookie 值的哈希与 `value_hash`）。词表的增删不改框架的规则函数，`PRIVACY_POLICY` 不升版本 | 框架的台账词表（`core/archive/privacy.py`，M29 扩充）；browser 规则（M29） |
 
 **脱敏写成 `<redacted>`，不是 `"<omitted>"`。** 后者是配置脱敏（`core/trace/redaction.py`，deny by default）的"设置了、没记录"；前者是"值被这条规则换掉了"，两者回答不同的问题。`<redacted>` 也不会被 secret guard 的凭证形状误认成凭证。
 
 **台账**（`RedactionLedger`）：`policy`（写下它时的 `PRIVACY_POLICY`）加一串 `RedactionEntry(location, field, rule)`：`location` 是 JSON pointer（`/start_url`），`field` 是被换掉的键或参数名，`rule` 是 `field_name` / `url_userinfo` / `url_query` / `url_fragment` 之一，按遍历顺序。它让读者知道哪里被换过，而不是猜一个空值是不是本来就空。
 
-**残余，写明。** `task_setup` 是没有字段声明的按任务数据，`core/trace/redaction.py` 那种"没标记就不记"在这里会把每个值都吞掉、让分叉任务（M31）无法重建环境，所以它走值级规则。规则只认得凭证形状的名字和 URL 里的凭证位置：一个藏在规则不认识的名字下面的秘密（`{"note": "the password is hunter2"}`）会原样记录；嵌在非凭证 query 参数里、没有百分号编码的 URL 的 userinfo 也一样。还有一条具体的：`BrowserCapability.setup` 接受 `cdp_url`，调用方若经 `env_context` 传一个 devtools URL（`ws://…/devtools/browser/<id>`），它会原样进 `task_setup`。发布的入口都不这么传（`TaskSetup.to_context()` 没有这个键，`spectragent-run` 只传 `start_url`），要覆盖它得新增规则并升 `PRIVACY_POLICY`。`TraceConfig.extra` 仍然不脱敏（调用方自己挑的字段）。v1 的数据来源选的是无需登录的公开站点；登录态采集是单独的决定。
+**残余，写明。** `task_setup` 是没有字段声明的按任务数据，`core/trace/redaction.py` 那种"没标记就不记"在这里会把每个值都吞掉、让分叉任务（M31）无法重建环境，所以它走值级规则。规则只认得凭证形状的名字和 URL 里的凭证位置：一个藏在规则不认识的名字下面的秘密（`{"note": "the password is hunter2"}`，或名字叫 `pass` 的键）会原样记录；嵌在非凭证 query 参数里的 URL 也一样——没有百分号编码时的 userinfo，百分号编码时里面的 `token=`。这些只记 TODO、不改代码（用户 2026-10-13 裁决，威胁模型"只有我"）。还有一条具体的：`BrowserCapability.setup` 接受 `cdp_url`，调用方若经 `env_context` 传一个 devtools URL（`ws://…/devtools/browser/<id>`），它会原样进 `task_setup`。发布的入口都不这么传（`TaskSetup.to_context()` 没有这个键，`spectragent-run` 只传 `start_url`），要覆盖它得新增规则并升 `PRIVACY_POLICY`。`TraceConfig.extra` 仍然不脱敏（调用方自己挑的字段）。v1 的数据来源选的是无需登录的公开站点；登录态采集是单独的决定。
 
 ---
 

@@ -289,7 +289,7 @@ class TestLedger:
         with pytest.raises(ValueError):
             RedactionEntry(location="/a", field="a", rule="guess")  # type: ignore[arg-type]
 
-    @pytest.mark.parametrize("rule", ["request_header", "input_value", "value_hash"])
+    @pytest.mark.parametrize("rule", ["request_header", "input_value"])
     def test_capability_rules_share_the_vocabulary(self, rule: str) -> None:
         """The browser's rules (M29) write the same ledger; the names widen, nothing else.
 
@@ -298,7 +298,7 @@ class TestLedger:
         capability versions its own rules (``BROWSER_REDACTION_POLICY``).
         """
         entry = RedactionEntry(location="/request/headers", field="Cookie", rule=rule)  # type: ignore[arg-type]
-        ledger = RedactionLedger(policy="af-privacy-1+browser-1", entries=[entry])
+        ledger = RedactionLedger(policy="af-privacy-1+browser-2", entries=[entry])
         assert RedactionLedger.model_validate_json(ledger.model_dump_json()) == ledger
 
 

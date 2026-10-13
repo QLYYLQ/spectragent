@@ -34,12 +34,14 @@ secret guard never mistakes a placeholder for a leak.
 
 **The residual, stated:** these rules recognise credential-shaped *names*
 and the credential positions of a URL. A secret under a name neither
-pattern matches (``{"note": "the password is hunter2"}``) is kept as is,
-and so is a credential inside an unencoded URL nested in a non-credential
-query parameter, and a CDP devtools URL under ``cdp_url`` (a key
-``BrowserCapability.setup`` accepts, though no shipped entry point routes
-it through the setup context). Covering any of them is a new rule — and a
-new :data:`PRIVACY_POLICY`.
+pattern matches (``{"note": "the password is hunter2"}``, a key named
+``pass``) is kept as is, and so is a credential inside a URL nested in a
+non-credential query parameter — its userinfo when unencoded, a ``token=``
+parameter when percent-encoded — and a CDP devtools URL under ``cdp_url`` (a
+key ``BrowserCapability.setup`` accepts, though no shipped entry point
+routes it through the setup context). Covering any of them is a new rule —
+and a new :data:`PRIVACY_POLICY`. Recorded as a to-do, not done: the
+user's ruling of 2026-10-13 keeps traces on the machine that recorded them.
 
 .. note::
    No ``from __future__ import annotations`` — the package rule
@@ -86,12 +88,11 @@ MARKER_REDACTED = f"redacted:{PRIVACY_POLICY}"
 MARKER_SESSION_STATE = "contains_session_state"
 
 #: Which rule replaced a value. The first four are this module's own rules;
-#: the last three name capability rules that write into the same ledger
+#: the last two name capability rules that write into the same ledger
 #: format (the browser's, ``core/capabilities/browser/archive/redaction.py``):
 #: ``request_header`` — a request header stripped at capture (only its name is
 #: recorded); ``input_value`` — a sensitive form control's value in a raw DOM
-#: capture; ``value_hash`` — a value stored as its sha256 (cookie values).
-#: Widening the vocabulary changes no rule of this module, so
+#: capture. Changing the vocabulary changes no rule of this module, so
 #: :data:`PRIVACY_POLICY` stays; each capability versions its own rules.
 RedactionRule = Literal[
     "field_name",
@@ -100,7 +101,6 @@ RedactionRule = Literal[
     "url_fragment",
     "request_header",
     "input_value",
-    "value_hash",
 ]
 
 #: ``scheme://`` — the only strings :func:`redact_url` treats as URLs.
@@ -132,7 +132,7 @@ class RedactionLedger(BaseModel):
     Attributes:
         policy: The rule version that was in force — :data:`PRIVACY_POLICY`
             for this module's rules, a capability's own version (which
-            names this one, ``"af-privacy-1+browser-1"``) for a ledger its
+            names this one, ``"af-privacy-1+browser-2"``) for a ledger its
             rules wrote.
         entries: The replacements. Empty means nothing matched — or, where
             the owner says so (``TraceConfig.secrets_recorded``), that

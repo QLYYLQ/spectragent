@@ -127,9 +127,11 @@ FORM_SCENARIOS: tuple[str, ...] = ("form_submit",)
 #:   page, whose script fetches ``recommend.json?session=<performance.timeOrigin>``
 #:   (pinned fixes Date and Math.random, not the time origin: every replay asks
 #:   another URL — a subresource near miss), and ``login.html``, whose script
-#:   assembles credentials at run time and sends them every way a page can
-#:   (an ``Authorization`` header, an urlencoded POST ``password``, a password
-#:   field's value, ``document.cookie``) — no response byte holds them;
+#:   assembles credentials at run time and sends them every way the framework
+#:   promises not to record (an ``Authorization`` header, an urlencoded POST
+#:   ``password``, a password field's value) — no response byte holds them.
+#:   Not through ``document.cookie``: ``storage.json`` stores cookie values as
+#:   they are (architecture §5.6), so a cookie-borne token is on disk by design;
 #: - ``flywheel_drift`` on ``drift.example.test``: a button whose click
 #:   navigates the main frame to ``next.html?visit=<performance.timeOrigin>``,
 #:   synchronously — a replay asks a URL the recording never fetched;
@@ -940,7 +942,6 @@ class FixtureSite:
             "<script>"
             f"const pw = {password}; const token = {token};"
             "document.getElementById('password').value = pw;"
-            "document.cookie = 'session=' + token + '; path=/';"
             "fetch('/flywheel_shop/api/me', {headers: {'Authorization': 'Bearer ' + token}})"
             ".catch(() => {});"
             "fetch('/flywheel_shop/api/login', {method: 'POST', headers: "

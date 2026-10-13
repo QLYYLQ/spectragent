@@ -18,6 +18,7 @@ from spectragent.core.actions.params import RequiresFragment
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
     handler_error,
+    handler_field,
     resolve_index,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
@@ -91,7 +92,9 @@ class TypeAction(SettleableAction, ActionBase):
             if error is not None:
                 return ActionResult(success=False, error=error)
             await self.settle()
-            return ActionResult(success=True)
+            return ActionResult(
+                success=True, typed_into_sensitive_field=handler_field(event, "sensitive")
+            )
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")
         except ValueError as exc:

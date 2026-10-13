@@ -20,15 +20,9 @@ present.
 
 Open user decisions, each surfaced and none taken:
 
-- Password values on the observation path: the BrowserUse DOM observation carries a
-  password input's `value` into `serialized_dom` and the trace; only the archive's raw DOM
-  is redacted. The recommendation was to mask it. A student that negotiates the DOM would
-  inherit the leak; the v1 student sees screenshots only.
 - Dropping `--disable-site-isolation-trials`: `pinned` no longer passes it, because the
   recorder captured out-of-process frames without it and the switch changes their
   observation. It still needs sign-off.
-- Hashing Web Storage values by default: they are kept as recorded except under
-  credential-named keys, and `browser.storage` declares session state either way.
 - Renaming the `off` replayability tier: YAML 1.1 reads a bare `off` as `false`, so every
   block has to quote it.
 - Failed-teacher branches: a branch whose teacher call failed counts as a branch with no
@@ -39,6 +33,12 @@ Open user decisions, each surfaced and none taken:
   `tmp/flywheel/m33_live/`, and need the user's route, task count and token ceiling. Until
   they run, the metrics report's recommendations rest on fixture evidence and stay
   `partial`.
+
+Decided by the user on 2026-10-13 (threat model "only me") and implemented: the BrowserUse
+DOM observation masks sensitive control values with the shared rule (architecture §4.12);
+`storage.json` keeps cookie and Web Storage values as they are, under redaction policy
+`af-privacy-1+browser-2` (§4.14, §5.6); typing records
+`ActionResult.typed_into_sensitive_field`, which export does not use yet.
 
 The `react.py` layering handoff (`HANDOFF_261010_react_loop_layering.md`, local) is still
 open. `_UsageTally`, `_merge_token_usage` and most other private helpers in `react.py`

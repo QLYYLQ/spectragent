@@ -42,6 +42,25 @@ pinned in ``tests/test_core/test_capabilities/test_browser_dom_occlusion.py``.
 Every knob here arrives on the *instance* the capability was configured
 with (``BrowserCapability.__wiring__["dom_cleaner"]``), so the generated
 ``BrowserUseDom_CleanerConfig`` is the config surface for all of them.
+
+Sensitive values are withheld while the tree is built
+-----------------------------------------------------
+
+A form control the shared rule (``dom/sensitivity.py``) calls sensitive — a
+password, one-time-code or payment-card field — never puts its value into
+the tree, so neither the prompt (``serialized_dom``) nor the trace's
+``browser.dom`` fragment carries it. Phase 0 replaces, with ``<redacted>``:
+the ``value`` attribute of the control and of every node below it; the text
+below it (the user-agent shadow root holds what was typed, a ``<textarea>``
+its content, a ``<select>`` its options); and the accessible name of a node
+below it. The control's own accessible name (its label) stays, and an empty
+value stays empty. These are the positions and the placeholder the
+archive's raw-DOM redaction uses (``archive/redaction.redact_raw_capture``)
+for what this cleaner reads, so re-cleaning a recorded ``browser.dom_raw``
+capture offline gives the same state as the live clean. The capture itself
+is never changed: it is shared with the archive, and the replacement happens
+on the nodes being built, which costs one check per form control instead of
+a copy of the capture.
 """
 
 from __future__ import annotations
@@ -51,6 +70,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from spectragent.core.archive.privacy import REDACTED
 from spectragent.core.capabilities.browser.dom.capture import capture_target
 from spectragent.core.capabilities.browser.dom.cleaning import DOMCaptureSource, DOMCleanerBase
 from spectragent.core.capabilities.browser.dom.filters.bounds import propagate_parent_bounds
@@ -77,6 +97,11 @@ from spectragent.core.capabilities.browser.dom.models import (
     ScrollInfo,
     TargetCapture,
     element_handle,
+)
+from spectragent.core.capabilities.browser.dom.sensitivity import (
+    FORM_CONTROL_TAGS,
+    attribute_map,
+    is_sensitive_control,
 )
 
 logger = logging.getLogger(__name__)
@@ -614,12 +639,18 @@ def _content_frame(
     )
 
 
+def _withheld(value: str) -> str:
+    """*value*, found inside a sensitive control, as the tree may carry it: empty stays empty."""
+    return value if value in ("", REDACTED) else REDACTED
+
+
 def _construct_node(
     node: dict[str, Any],
     target: _Target,
     frame: _Frame,
     *,
     include_shadow_dom: bool = True,
+    inside_sensitive: bool = False,
 ) -> DOMElementNode | None:
     """Recursively build DOMElementNode from DOM.getDocument node dict.
 
@@ -629,20 +660,28 @@ def _construct_node(
     (same-process frame) or ``target.capture.frames`` does (out-of-process
     frame, built from that target's own lookups). Shadow roots are built only
     with ``include_shadow_dom``.
+
+    ``inside_sensitive``: *node* lies inside a sensitive control, so its
+    values are withheld (the module docstring); a sensitive control passes
+    it on to everything below it, its user-agent shadow root included.
     """
     ntype = node.get("nodeType", 1)
 
     def build(
-        child: dict[str, Any], child_target: _Target, child_frame: _Frame
+        child: dict[str, Any], child_target: _Target, child_frame: _Frame, sensitive: bool
     ) -> DOMElementNode | None:
         return _construct_node(
-            child, child_target, child_frame, include_shadow_dom=include_shadow_dom
+            child,
+            child_target,
+            child_frame,
+            include_shadow_dom=include_shadow_dom,
+            inside_sensitive=sensitive,
         )
 
     # DOCUMENT_NODE (9): skip wrapper, recurse children, return first result.
     if ntype == 9:
         for child in node.get("children", []):
-            result = build(child, target, frame)
+            result = build(child, target, frame, inside_sensitive)
             if result is not None:
                 return result
         return None
@@ -662,6 +701,8 @@ def _construct_node(
     # TEXT_NODE (3).
     if ntype == 3:
         text_val = node.get("nodeValue", "") or ""
+        if inside_sensitive:
+            text_val = _withheld(text_val)
         text_bounds = frame.to_page(snap.bounds) if snap else None
         # Text visibility: must have snapshot layout data + non-trivial text
         # + bounds not far off-screen. Matches original: `snapshot_node and is_visible`.
@@ -714,6 +755,20 @@ def _construct_node(
         for j in range(0, len(raw_attrs) - 1, 2):
             attrs[raw_attrs[j]] = raw_attrs[j + 1]
 
+    # A sensitive control, or a node inside one: its values are withheld
+    # (the module docstring). The rule reads markup attributes by lower-case
+    # name, the way the archive's raw-DOM redaction hands them over.
+    own_sensitive = (
+        ntype == 1
+        and node_name_upper in FORM_CONTROL_TAGS
+        and is_sensitive_control(node_name_upper, attribute_map(raw_attrs or []))
+    )
+    sensitive = inside_sensitive or own_sensitive
+    if sensitive:
+        for key in list(attrs):
+            if key.lower() == "value":
+                attrs[key] = _withheld(attrs[key])
+
     # Shadow root type.
     shadow_root_type: str | None = node.get("shadowRootType") or None
 
@@ -739,6 +794,10 @@ def _construct_node(
         ax_role = role_str or None
         ax_name = name_str or None
         ax_properties = props_list if props_list else None
+    if sensitive and ax_name and not own_sensitive:
+        # The control's own name is its label; a node inside it is named by
+        # the value it shows.
+        ax_name = _withheld(ax_name)
 
     dom_node = DOMElementNode(
         tag_name=tag,
@@ -797,7 +856,7 @@ def _construct_node(
     if node.get("shadowRoots") and include_shadow_dom:
         dom_node.shadow_roots = []
         for sr in node["shadowRoots"]:
-            sr_node = build(sr, target, inner)
+            sr_node = build(sr, target, inner, sensitive)
             if sr_node is not None:
                 sr_node.parent = dom_node
                 dom_node.shadow_roots.append(sr_node)
@@ -818,6 +877,7 @@ def _construct_node(
                 node["contentDocument"],
                 target,
                 _content_frame(dom_node, bounds, inner, child_frame_id, scroll),
+                sensitive,
             )
         elif child_frame_id is not None and child_frame_id in capture.frames:
             child_target = _Target.of(capture.frames[child_frame_id], target.device_pixel_ratio)
@@ -828,6 +888,7 @@ def _construct_node(
                     child_root,
                     child_target,
                     _content_frame(dom_node, bounds, inner, child_frame_id, scroll),
+                    sensitive,
                 )
         if content is not None:
             content.parent = dom_node
@@ -842,7 +903,7 @@ def _construct_node(
     for child in node.get("children", []):
         if child.get("nodeId", -1) in shadow_nids:
             continue
-        child_node = build(child, target, inner)
+        child_node = build(child, target, inner, sensitive)
         if child_node is not None:
             child_node.parent = dom_node
             dom_node.children.append(child_node)

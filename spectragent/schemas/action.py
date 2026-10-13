@@ -9,12 +9,23 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ActionResult(BaseModel):
-    """Action execution result."""
+    """Action execution result.
+
+    ``typed_into_sensitive_field`` is recorded when an action enters text:
+    whether the field it went into holds a secret (for the browser, the
+    shared sensitivity rule in ``dom/sensitivity.py``: a password,
+    one-time-code or payment-card field, judged on the focused element right
+    before typing). ``None`` when the action entered no text, or when the
+    capability could not see where the text went. It reaches the trace
+    (``steps/NNN.json``) for dataset export to use; no agent renders it into
+    a prompt (docs/architecture_design.md §5.6).
+    """
 
     success: bool
     error: str | None = None
     is_done: bool = False
     extracted_content: str | None = None
+    typed_into_sensitive_field: bool | None = None
 
 
 class ActionDescriptor(BaseModel):

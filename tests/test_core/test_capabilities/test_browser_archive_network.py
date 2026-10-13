@@ -310,7 +310,7 @@ class TestHeadersAndPrivacy:
         stripped = {(e["location"], e["field"]) for e in line["redaction"]["entries"]}
         assert ("/request/headers", "Cookie") in stripped
         assert ("/request/raw_headers", "X-Api-Key") in stripped
-        assert line["redaction"]["policy"] == "af-privacy-1+browser-1"
+        assert line["redaction"]["policy"] == "af-privacy-1+browser-2"
 
     async def test_a_post_body_is_redacted_before_it_is_stored(self) -> None:
         session, recorder = _session()

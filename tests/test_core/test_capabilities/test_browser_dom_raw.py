@@ -227,4 +227,4 @@ def test_declarations() -> None:
     archiver = DomRawArchiver()
     assert archiver.archiver_id == "browser.dom_raw"
     assert archiver.needs == frozenset({"raw_dom", "observation_cycle"})
-    assert archiver.privacy_markers == frozenset({"redacted:af-privacy-1+browser-1"})
+    assert archiver.privacy_markers == frozenset({"redacted:af-privacy-1+browser-2"})

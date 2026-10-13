@@ -1,19 +1,17 @@
 """``browser.storage`` — cookies and Web Storage at the step boundary (§4.14).
 
-Read over the recorder connection at collection time; cookie values stored as
-their digest (with a ledger entry each) unless session state is allowed;
-storage items through the shared value rule; a state written only when it
-changed.
+Read over the recorder connection at collection time; cookie and storage
+values stored as they are (the user's 2026-10-13 ruling, §5.6), with an empty
+ledger naming the policy; a state written only when it changed.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any
 
-from spectragent.core.archive.privacy import REDACTED
 from spectragent.core.capabilities.browser.archive import StorageArchiver
+from spectragent.core.capabilities.browser.archive.redaction import BROWSER_REDACTION_POLICY
 from spectragent.core.capabilities.browser.archive.storage import STORAGE_NAME, StorageSession
 from tests._helpers.archive_recorder import ScriptedRecorder, open_session
 
@@ -89,40 +87,36 @@ def _document(files: list[Any]) -> dict[str, Any]:
     return json.loads(item.data)
 
 
-async def test_cookie_values_are_hashed_with_a_ledger_entry_each() -> None:
+async def test_cookie_values_are_stored_as_they_are() -> None:
     session, _ = _session()
     document = _document(await session.collect())
     (cookie,) = document["cookies"]
-    assert cookie["value"] == "sha256:" + hashlib.sha256(b"planted-cookie-value").hexdigest()
+    assert cookie["value"] == "planted-cookie-value"
     assert {k: cookie[k] for k in ("name", "domain", "path", "httpOnly")} == {
         "name": "sid",
         "domain": "shop.test",
         "path": "/",
         "httpOnly": True,
     }
-    assert {"location": "/cookies/0/value", "field": "sid", "rule": "value_hash"} in document[
-        "redaction"
-    ]["entries"]
-    assert document["redaction"]["policy"] == "af-privacy-1+browser-1"
+    assert document["redaction"] == {"policy": BROWSER_REDACTION_POLICY, "entries": []}
 
 
-async def test_allow_session_state_keeps_raw_values() -> None:
-    session, _ = _session(allow_session_state=True)
-    document = _document(await session.collect())
-    assert document["cookies"][0]["value"] == "planted-cookie-value"
-    assert not [e for e in document["redaction"]["entries"] if e["rule"] == "value_hash"]
+async def test_allow_session_state_does_not_change_what_is_stored() -> None:
+    """The knob only accepts a non-fresh profile (§5.6); the values are the same either way."""
+    plain, _ = _session()
+    allowed, _ = _session(allow_session_state=True)
+    stored = [_document(await s.collect()) for s in (plain, allowed)]
+    for document in stored:
+        del document["captured_at"]
+    assert stored[0] == stored[1]
 
 
-async def test_storage_items_pass_the_shared_value_rule() -> None:
+async def test_storage_items_are_stored_as_they_are() -> None:
     session, _ = _session()
     document = _document(await session.collect())
     (local,) = [entry for entry in document["local"] if entry["origin"] == "http://shop.test"]
-    assert local["items"] == {"cart": "2 items", "auth_token": REDACTED}
-    assert any(
-        e["field"] == "auth_token" and e["rule"] == "field_name"
-        for e in document["redaction"]["entries"]
-    )
-    assert "planted-token" not in json.dumps(document)
+    assert local["items"] == {"cart": "2 items", "auth_token": "planted-token"}
+    assert document["redaction"]["entries"] == []
 
 
 async def test_local_storage_once_per_origin_session_storage_per_tab() -> None:
@@ -171,10 +165,11 @@ def test_declarations() -> None:
     archiver = StorageArchiver()
     assert archiver.archiver_id == "browser.storage"
     assert archiver.needs == frozenset()
-    # Web Storage values are kept whatever the cookie setting (see below).
+    # Cookie and Web Storage values are stored as they are, whatever the knob.
     assert "contains_session_state" in archiver.privacy_markers
     assert "contains_session_state" in StorageArchiver(allow_session_state=True).privacy_markers
-    assert archiver.redaction_facts() == {"cookie_values": "sha256"}
+    # Nothing per instance is withheld, so nothing extra enters the fingerprint.
+    assert archiver.redaction_facts() == {}
 
 
 async def test_a_token_inside_a_json_value_is_kept_so_session_state_is_declared() -> None:

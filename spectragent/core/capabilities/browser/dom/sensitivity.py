@@ -1,13 +1,25 @@
 """Is this form control's value a secret? — the one Python rule (§4.12).
 
-A sensitive control's value never reaches the prompt or the trace. The
-Skyvern page-side script (``dom/js/skyvern_extraction.py``) applies the rule
-inside the page while it builds its tree; this module is the same rule for
-everything that handles raw CDP structures in Python — today the archive's
-raw-DOM redaction (``archive/redaction.py``). The two are kept equal by tests,
-not by generating one from the other: the hint pattern's literal must equal
-the one in the page script character for character, and a table of controls
-is judged by both sides in a real Chrome.
+A sensitive control's value never reaches the prompt, the recorded DOM
+observation or the archive. The Skyvern page-side script
+(``dom/js/skyvern_extraction.py``) applies the rule inside the page while it
+builds its tree; this module is the same rule for everything in Python:
+
+- the BrowserUse cleaner (``dom/cleaning/browser_use.py``), which withholds
+  the values while it builds its tree;
+- the archive's raw-DOM redaction (``archive/redaction.py``);
+- the typing actions, which judge the focused element before they type and
+  record the verdict (``ActionResult.typed_into_sensitive_field``).
+
+The page script and this module are kept equal by tests, not by generating
+one from the other: the hint pattern's literal must equal the one in the
+page script character for character, and a table of controls is judged by
+both sides in a real Chrome.
+
+Outside the rule's reach: the text a typing action enters stays in the
+action's parameters (the step record, the model's own replies), and
+``extract_content`` of one element returns its outer HTML as the page has
+it, a value attribute the page wrote into its markup included.
 
 The rule: a control is an ``INPUT``, ``TEXTAREA`` or ``SELECT`` and
 

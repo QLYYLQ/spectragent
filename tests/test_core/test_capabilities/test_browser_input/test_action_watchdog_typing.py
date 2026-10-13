@@ -66,7 +66,7 @@ class TestTheDefaultIsOneBulkInsert:
         result = await _watchdog(cdp, None)._on_type_text(
             TypeTextEvent(backend_node_id=42, text="hello", clear=False)
         )
-        assert result == {"typed": True, "length": 5}
+        assert result == {"typed": True, "length": 5, "sensitive": None}
         assert _typing_calls(cdp) == ["Input.insertText"]
         insert = next(c for c in cdp.calls if c.method == "Input.insertText")
         assert insert.params == {"text": "hello"}
@@ -88,7 +88,7 @@ class TestTheDefaultIsOneBulkInsert:
         result = await _watchdog(cdp, None)._on_type_at_coordinate(
             TypeAtCoordinateEvent(coordinate_x=10, coordinate_y=20, text="hello", clear=False)
         )
-        assert result == {"typed": True, "length": 5}
+        assert result == {"typed": True, "length": 5, "sensitive": None}
         assert _typing_calls(cdp) == ["Input.insertText"]
 
     async def test_coordinate_clear_uses_the_same_keyboard_gesture(self) -> None:

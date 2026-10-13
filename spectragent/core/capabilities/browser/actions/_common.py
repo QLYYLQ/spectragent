@@ -74,3 +74,17 @@ def handler_error(event: Any) -> str | None:
         if isinstance(value, dict) and value.get("error"):
             return str(value["error"])
     return None
+
+
+def handler_field(event: Any, key: str) -> Any:
+    """The value under *key* in the dict a watchdog handler answered ``event`` with.
+
+    ``None`` when no handler answered with a dict carrying it — the typing
+    handler's ``sensitive`` verdict, for instance, which a run whose handler
+    could not judge the field leaves out or sets to ``None``.
+    """
+    for outcome in event.event_results.values():
+        value = getattr(outcome, "result", None)
+        if isinstance(value, dict) and key in value:
+            return value[key]
+    return None

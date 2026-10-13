@@ -24,7 +24,10 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase
-from spectragent.core.capabilities.browser.actions._common import focused_scope
+from spectragent.core.capabilities.browser.actions._common import (
+    focused_scope,
+    handler_field,
+)
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import (
     TypeAtCoordinateEvent,
@@ -94,7 +97,9 @@ class TypeCoordinateAction(SettleableAction, ActionBase):
             scope.emit(event)
             await event
             await self.settle()
-            return ActionResult(success=True)
+            return ActionResult(
+                success=True, typed_into_sensitive_field=handler_field(event, "sensitive")
+            )
         except KeyError as exc:
             return ActionResult(success=False, error=f"Missing param: {exc}")
         except (TypeError, ValueError) as exc:

@@ -22,27 +22,26 @@ again. ``storage.json`` is written only when the state differs from the last
 one written (its capture time aside), so a reader takes the latest
 ``storage.json`` at or before a step as the state of that step.
 
-Privacy (§5.6): a cookie's *value* is stored as ``sha256:<hex>`` with one
-ledger entry each (rule ``value_hash``) unless ``allow_session_state`` is on;
-name, domain, path, expiry and flags are kept. Storage items go through the
-shared value rule (``core/archive/privacy.redact_value``): a credential-named
-key has its value replaced — tokens commonly live in ``localStorage``. Every
-other value is kept as it is, and a token can hide inside one (a JSON string
-under a key like ``@@auth0spajs@@::…`` or ``persist:root``), so the archiver
-always declares ``contains_session_state``.
+Privacy (§5.6): values are stored as they are — every cookie (name, value,
+domain, path, expiry, flags) and every local / session storage item. The
+user's ruling of 2026-10-13 makes the trace and ``env/`` private to the
+machine that recorded them; the gates are the prompt sent to a model
+provider and dataset export, and ``env/`` is never exported. Session tokens
+are therefore in this file (and in the WARC's ``Set-Cookie`` headers), so
+the archiver always declares ``contains_session_state``. The file still
+carries the browser ledger, empty: it names the policy it was written under.
 
 .. note::
    No ``from __future__ import annotations`` — the archive package rule.
 """
 
 import logging
-from collections.abc import Mapping
 from typing import Annotated, Any, ClassVar
 
 from pydantic import Field
 
 from spectragent.core.archive import ArchiveFile, ArchiveProvenance
-from spectragent.core.archive.privacy import MARKER_SESSION_STATE, RedactionEntry, redact_value
+from spectragent.core.archive.privacy import MARKER_SESSION_STATE
 from spectragent.core.capabilities.browser.archive.base import (
     ArchiveNeed,
     BrowserArchiveContext,
@@ -53,14 +52,13 @@ from spectragent.core.capabilities.browser.archive.encoding import canonical_jso
 from spectragent.core.capabilities.browser.archive.redaction import (
     MARKER_BROWSER_REDACTED,
     browser_ledger,
-    hash_cookie_value,
 )
 
 logger = logging.getLogger(__name__)
 
 STORAGE_NAME = "storage.json"
 
-#: Cookie fields kept as they are (the value is handled on its own).
+#: Cookie fields stored as CDP reports them (the value is always stored, as a string).
 _COOKIE_FIELDS = (
     "name",
     "domain",
@@ -91,9 +89,9 @@ class StorageArchiver(BrowserArchiverBase):
             bool,
             Field(
                 description=(
-                    "Store cookie values as they are (a replayable cookie jar) instead of "
-                    "their sha256, and accept recording a browser that did not start from "
-                    "a fresh profile (logged-in state)."
+                    "Accept recording a browser that did not start from a fresh profile "
+                    "(logged-in pages). Cookie and Web Storage values are stored as they "
+                    "are either way."
                 ),
             ),
         ] = False,
@@ -107,14 +105,9 @@ class StorageArchiver(BrowserArchiverBase):
 
     @property
     def privacy_markers(self) -> frozenset[str]:
-        # Web Storage values are kept (only credential-named keys are
-        # redacted), and a token inside a JSON value — an SDK's cache,
-        # ``persist:root`` — has no credential-shaped name to catch it: the
-        # evidence may carry session state whatever the cookie setting.
+        # Cookie and Web Storage values are stored as they are: the evidence
+        # carries session state.
         return frozenset({MARKER_BROWSER_REDACTED, MARKER_SESSION_STATE})
-
-    def redaction_facts(self) -> Mapping[str, Any]:
-        return {"cookie_values": "raw" if self.allow_session_state else "sha256"}
 
     def open(self, ctx: BrowserArchiveContext) -> "StorageSession":
         return StorageSession(self, ctx)
@@ -147,7 +140,7 @@ class StorageSession(BrowserArchiveSession):
 
     async def collect(self) -> list[ArchiveFile]:
         captured_at = self.ctx.clock()
-        state, entries = await self._read()
+        state = await self._read()
         key = canonical_json(state)
         if key == self._last:
             return []
@@ -155,7 +148,7 @@ class StorageSession(BrowserArchiveSession):
         document = {
             "captured_at": captured_at,
             **state,
-            "redaction": browser_ledger(entries).model_dump(mode="json"),
+            "redaction": browser_ledger([]).model_dump(mode="json"),
         }
         return [
             ArchiveFile(
@@ -167,28 +160,16 @@ class StorageSession(BrowserArchiveSession):
             )
         ]
 
-    async def _read(self) -> tuple[dict[str, Any], list[RedactionEntry]]:
+    async def _read(self) -> dict[str, Any]:
         timeout = self.archiver.command_timeout_s
         send = self.ctx.recorder.send
-        entries: list[RedactionEntry] = []
         reply = await send("Storage.getCookies", {}, None, timeout=timeout)
         cookies: list[dict[str, Any]] = []
-        for index, raw in enumerate((reply or {}).get("cookies") or []):
+        for raw in (reply or {}).get("cookies") or []:
             if not isinstance(raw, dict):
                 continue
             cookie = {field: raw[field] for field in _COOKIE_FIELDS if field in raw}
-            value = str(raw.get("value", ""))
-            if self.archiver.allow_session_state or not value:
-                cookie["value"] = value
-            else:
-                cookie["value"] = hash_cookie_value(value)
-                entries.append(
-                    RedactionEntry(
-                        location=f"/cookies/{index}/value",
-                        field=str(raw.get("name", "")),
-                        rule="value_hash",
-                    )
-                )
+            cookie["value"] = str(raw.get("value", ""))
             cookies.append(cookie)
 
         local: dict[str, dict[str, Any]] = {}
@@ -241,25 +222,14 @@ class StorageSession(BrowserArchiveSession):
             }
         )
 
-        local_out = []
-        for origin in sorted(local):
-            redacted, found = redact_value(local[origin], location=f"/local/{len(local_out)}/items")
-            entries.extend(found)
-            local_out.append({"origin": origin, "items": redacted})
-        session_out = []
-        for index, item in enumerate(session):
-            redacted, found = redact_value(item["items"], location=f"/session/{index}/items")
-            entries.extend(found)
-            session_out.append({**item, "items": redacted})
-        state = {
+        return {
             "cookies": cookies,
-            "local": local_out,
-            "session": session_out,
+            "local": [{"origin": origin, "items": local[origin]} for origin in sorted(local)],
+            "session": session,
             "unreadable_tabs": unreadable,
             "unreadable_origins": failed,
             "unread_frames": [{"target": target, "url": url} for target, url in unread_frames],
         }
-        return state, entries
 
     async def _items(
         self, session_id: str, origin: str, *, local: bool

@@ -56,9 +56,10 @@ class TestTypeAtCoordinate:
             TypeAtCoordinateEvent(coordinate_x=10, coordinate_y=20, text="hi")
         )
 
-        assert result == {"typed": True, "length": 2}
+        # The fake answers nothing for the focused-field read: unknown, not "not sensitive".
+        assert result == {"typed": True, "length": 2, "sensitive": None}
         methods = [c.method for c in cdp.calls]
-        # move + press + release, then select-all/backspace, then insert.
+        # move + press + release, then select-all/backspace, the focus read, then insert.
         assert methods[:3] == ["Input.dispatchMouseEvent"] * 3
         assert methods[-1] == "Input.insertText"
         assert cdp.calls[-1].params == {"text": "hi"}

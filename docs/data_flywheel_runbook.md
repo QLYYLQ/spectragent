@@ -72,7 +72,7 @@ hook:
 | `env/steps/NNN/browser.network/exchanges.warc.gz` | 第 NNN 步的提交收集到的交换，WARC/1.1，body 是解码后的字节；同一 run 里重复的 payload 写成 revisit 记录 |
 | `env/steps/NNN/browser.network/index.jsonl` | 同一步的索引：`kind: exchange`（每个交换恰好一行，带 `body_status`），`kind: body`（之后补取到的大 body），`kind: pending`（收集时还在途） |
 | `env/steps/NNN/browser.network/websocket.jsonl` | WebSocket 帧（方向、opcode、时间、内容），有帧时才有 |
-| `env/steps/NNN/browser.storage/storage.json` | cookie 和每个 origin 的 local / session storage；状态变了才写，某一步的状态是那一步及之前最近的一份 |
+| `env/steps/NNN/browser.storage/storage.json` | cookie 和每个 origin 的 local / session storage，值原样保存；状态变了才写，某一步的状态是那一步及之前最近的一份 |
 | `env/blobs/sha256/<ab>/<rest>` | 内容寻址的文件，run 内只存一份：`browser.dom_raw` 的 `dom-<cycle>-<tab>.json.gz`，补取的大 body `body-<sha>.bin` |
 | `env/run.browser.json`，之后的 `env/run.browser.1.json`…… | 环境指纹：Chrome 版本、UA、viewport、DPR、时区、语言、档位与参数（含 T0 和种子）、shim 摘要、启动开关摘要、网络来源、脱敏策略与隐私标记；内容变了才写新的一版 |
 | `env/trailing/KK/<archiver_id>/<name>` | run 结束时那次收集的证据，不归任何一步 |
@@ -311,7 +311,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 | `branch_coverage` | 分叉之后是否还留在归档里 | 检查点及之后没有主 frame 文档 miss 的分叉占比；其余 miss 按动作、resourceType、host、原因分布 |
 | `replay_determinism` | 同样的输入回放两遍，结局是否一样 | 同一源 run、同一检查点、执行动作相同的分支两两比较终止截图的 sha256，另比较检查点步恢复出的截图 |
 | `export_determinism` | 同样的 run 导出两遍是否逐字节相同 | `datasets/first` 与 `datasets/second` 的目录树摘要；`repeat: 1` 时为 `null` |
-| `privacy` | 凭证有没有落盘 | `<root>/traces` 和 `<root>/datasets` 下每个文件（gzip 先解开）里每个植入值出现的次数，以及凭证形状的命中数 |
+| `privacy` | 凭证有没有落盘 | `<root>/traces` 和 `<root>/datasets` 下每个文件（gzip 先解开）里每个植入值出现的次数，以及凭证形状的命中数；`env/` 也算，`storage.json` 里原样保存的 cookie 与 Web Storage 值会被数到 |
 
 分母为 0 的值是 `null` 加原因，从不写成 0。`sections` 另有：按站点的统计和剔除名单（被 anti-bot 拦截、原路径保真低于 0.8、录制在第 0 步环境就失败的站点；模型调用失败从不让站点进名单），anti-bot 拦截（文档应答 403、429 或 503，且带 `cf-mitigated: challenge` 或 `server: cloudflare` 加 `cf-ray`），重复分叉率，POST 分叉的 miss，按角色和类别的存储字节与 gzip 压缩比，每个任务的字节和 10、20、300 个任务的投影，导出产出。`decisions` 是四个待决问题的建议：`q1_miss_policy`（零文档 miss 的分叉占比不低于 0.9 就保留 `strict`），`q4_coverage`（分叉的文档 miss 里 GET 未录 URL 的占比达到 0.5 就扩大录制时的覆盖），`site_rules`（一个 host 有 2 次以上近邻 miss 就建议生成 `ignore_query` 规则供人审），`q7_retention`（容量）。
 
@@ -321,16 +321,17 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 
 ## 隐私
 
-框架与 browser 各自负责哪一部分，见 [architecture_design.md](architecture_design.md) §5.6 与 §4.14 "隐私"。
+框架与 browser 各自负责哪一部分，见 [architecture_design.md](architecture_design.md) §5.6 与 §4.14 "隐私"。威胁模型是"只有我"：trace 与 `env/` 只在你自己的机器上；框架守两道门，一是发给 LLM 服务商的提示词里不带秘密，二是导出数据集时把住。
 
 | 内容 | 默认 | 开关 |
 |---|---|---|
 | 请求头 `Cookie`、`Authorization`、`Proxy-Authorization` | 在每个来源剥离，从不落盘；台账只记名字 | `browser.network` 的 `strip_request_headers` 追加别的头（大小写不敏感） |
 | POST body（urlencoded、multipart、JSON） | 字段名含 `password`、`passwd`、`pwd`、`otp`、`token`、`secret`、`card`、`cvv` 的值换成 `<redacted>` 并记台账；回放时线上请求先过同一个函数再算匹配键，照样能命中 | 无 |
 | 响应头 `Set-Cookie` | 保留，回放的 cookie jar 要用；`browser.network` 因此声明 `contains_session_state` | 无 |
-| cookie 的值 | `browser.storage` 存 sha256，名字、域、路径、过期时间和标志照记 | `browser.storage` 的 `allow_session_state: true` 存原值 |
-| local / session storage | 字段名命中上面规则的值换掉，其余原样；JSON 字符串里藏的 token 抓不到，所以 `browser.storage` 总是声明 `contains_session_state` | 无 |
-| 原始 DOM 里的输入值 | 敏感控件（密码框、一次性验证码等）的 `value`、它下面 shadow root 里的文本、DOMSnapshot 的输入值、无障碍树的 value，在写盘之前替换 | 无 |
+| cookie 与 local / session storage 的值 | `storage.json` 原样保存（名字、值、域、路径、过期时间和标志）；会话 token 就在里面，所以 `browser.storage` 声明 `contains_session_state` | 无 |
+| 原始 DOM 里的输入值 | 敏感控件（密码框、一次性验证码、卡号等）的 `value`、它下面 shadow root 里的文本、DOMSnapshot 的输入值、无障碍树的 value，在写盘之前替换 | 无 |
+| DOM 观测（提示词与 `browser.dom` fragment） | BrowserUse 清洗时按同一条规则把敏感控件的 `value` 和它下面的文本（包括键入的值）换成 `<redacted>`；Skyvern 本来就不带 | 无 |
+| 键入的文字 | 原样记在动作参数和 LLM 记录里；动作结果的 `typed_into_sensitive_field` 记下文字是否进了敏感控件（`true` / `false`，看不见时 `null`），提示词里不显示 | 无 |
 | 从非新建 profile 启动的浏览器（登录态） | 绑定了归档器就拒绝；pinned 一律拒绝 | 每个归档器都写 `allow_session_state: true`，只能配 `"off"` 档位 |
 | 配置和任务 setup context | `config.json` 只记标为 trace-safe 的字段，其余写 `"<omitted>"`；setup context 按值脱敏（凭证形状的键、URL 里的 userinfo 和凭证形状的查询参数） | `trace_writer` 的 `record_secrets: true` 原样记录；这样的 run 永远不会被导出 |
 | `env/` 归档 | 永不导出，数据集里只有截图、动作、thought 和引用 | 无 |
@@ -342,7 +343,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 uv run pytest tests/test_core/test_trace/test_secret_guard.py
 ```
 
-已知的残余：正则认的是凭证的形状，teacher 键入的、不像凭证的密码会原样成为训练目标；WebSocket 帧的内容和 URL（含查询参数）原样记录；BrowserUse 的 DOM 观测会把密码框的 `value` 带进 `serialized_dom`，归档里的原始 DOM 已脱敏，观测路径没有（v1 的学生是纯视觉的 UI-TARS）。数据来源请选无需登录的公开站点。
+已知的残余：正则认的是凭证的形状，teacher 键入的、不像凭证的密码会原样成为训练目标（键入动作的结果已标出它进了敏感控件，导出还不用这个标记）；WebSocket 帧的内容和 URL（含查询参数）原样记录；`browser.extract_content` 读一个元素时返回它的原始 HTML，页面写进标记的密码 `value` 会跟着进提示词。数据来源请选无需登录的公开站点。
 
 ## 在真实站点上跑
 

@@ -1262,6 +1262,8 @@ Browser 的环境证据与回放档位：一条独立于 agent 的 recorder 连�
 
 **隐私**：`dom/sensitivity.py` 的唯一规则（与 Skyvern 页内规则用测试对齐）；请求头在每个来源剥离（默认三个 + `strip_request_headers`）；POST 字段脱敏并导出 `redact_post_body` 给 M30；原始 DOM 脱敏；cookie 值哈希；`RedactionRule` 增加 `request_header` / `input_value` / `value_hash`，`BROWSER_REDACTION_POLICY`；会话态定义为非新建的 profile，需要每个归档器写 `allow_session_state: true`；secret guard 植入 CDP 设的请求头、经 CDP 设的 cookie、POST 密码、DOM 密码值，0 次出现（含 gzip），带正向对照；代理凭证头（`Proxy-Authorization`）在 Chrome 155 上无法经 `setExtraHTTPHeaders` 植入（请求以 `net::ERR_INVALID_ARGUMENT` 失败），它的剥离由 fake CDP 测试覆盖。
 
+**2026-10-13 隐私裁决（威胁模型"只有我"）之后**：`storage.json` 的 cookie 与 Web Storage 改存原值，cookie 值哈希与 `value_hash` 删除，`BROWSER_REDACTION_POLICY` 升到 `browser-2`，`allow_session_state` 只剩"接受非新建的 profile"；BrowserUse 清洗器建树时按同一条敏感规则打码（提示词与 `browser.dom` fragment），真实 Chrome 的 DOM 观测路径隐私测试补上；键入动作的结果带 `typed_into_sensitive_field`（导出的用法随学生侧推迟）。见 architecture §4.12、§4.14 "隐私"、§5.6。
+
 **M18 修复**：`BrowserStateSummary` 的文档戳、`browser_meta` 最后运行并读 `Page.getFrameTree`（`BrowserMetaObs.loader_id`）、戳不一致在原有重发预算内重发，用完仍不一致就抛错。
 
 **M28/M29 边界**：M29 在加入三个 browser 归档器的同一次改动里落地归档的 YAML 面：

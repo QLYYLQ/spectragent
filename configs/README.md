@@ -238,7 +238,7 @@ hook:
     trace_dir: traces
     archive:                          # [] = record nothing
       - archiver_id: browser.network  # WARC/1.1 + index.jsonl per step
-      - archiver_id: browser.storage  # cookies (values hashed) + local/session storage
+      - archiver_id: browser.storage  # cookies + local/session storage, values as they are
       - archiver_id: browser.dom_raw  # raw DOM of each committed cycle
 ```
 

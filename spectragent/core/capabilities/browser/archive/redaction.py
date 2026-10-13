@@ -29,8 +29,14 @@ here ever exists as trace bytes:
   user-agent shadow root included, which ``pierce: true`` exposes and which
   holds the typed value — the ``DOMSnapshot`` ``inputValue`` / ``textValue``
   and layout text, and the accessibility ``value`` (rule ``input_value``).
-- **Cookie values** (:func:`hash_cookie_value`): stored as their sha256
-  unless an archiver allows session state (rule ``value_hash``).
+  The BrowserUse cleaner withholds the same positions with the same
+  placeholder while it builds its tree, so an offline re-clean of an
+  archived capture matches the live one.
+
+Cookie and Web Storage values are stored as they are (``browser.storage``):
+the user's ruling of 2026-10-13 keeps the trace and ``env/`` on the machine
+that recorded them (§5.6), and ``browser-2`` is the version without the
+cookie-value hash.
 
 The rule version is :data:`BROWSER_REDACTION_POLICY`; every ledger these rules
 write carries it. ``tests/test_core/test_capabilities/test_browser_redaction.py``
@@ -42,7 +48,6 @@ version changing with it.
 """
 
 import copy
-import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping
@@ -64,7 +69,7 @@ from spectragent.core.capabilities.browser.dom.sensitivity import (
 )
 
 #: Version of the browser rules; names the shared rules it builds on.
-BROWSER_REDACTION_POLICY = f"{PRIVACY_POLICY}+browser-1"
+BROWSER_REDACTION_POLICY = f"{PRIVACY_POLICY}+browser-2"
 
 #: Marker every browser archiver declares: its capture applied these rules.
 MARKER_BROWSER_REDACTED = f"redacted:{BROWSER_REDACTION_POLICY}"
@@ -75,9 +80,6 @@ DEFAULT_STRIPPED_REQUEST_HEADERS: tuple[str, ...] = (
     "authorization",
     "proxy-authorization",
 )
-
-#: What a value stored as its digest looks like: ``sha256:<hex>``.
-VALUE_HASH_PREFIX = "sha256:"
 
 _REDACTED_BYTES = REDACTED.encode("utf-8")
 #: ``name="…"`` in a multipart part's Content-Disposition (not ``filename=``).
@@ -280,14 +282,6 @@ def redact_post_body(body: bytes, content_type: str | None) -> tuple[bytes, list
         if _FORM_SHAPE.match(body):
             return _redact_urlencoded(body)
     return body, []
-
-
-# ── cookie values ─────────────────────────────────────────────────────
-
-
-def hash_cookie_value(value: str) -> str:
-    """A cookie value as ``sha256:<hex>`` — comparable, not replayable."""
-    return VALUE_HASH_PREFIX + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 # ── raw DOM captures ──────────────────────────────────────────────────

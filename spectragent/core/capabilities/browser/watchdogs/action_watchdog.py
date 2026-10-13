@@ -49,6 +49,7 @@ from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
 from agent_cdp.events.base import BaseEvent
 
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMSelectorMap
+from spectragent.core.capabilities.browser.dom.sensitivity import is_sensitive_control
 from spectragent.core.capabilities.browser.geometry import (
     FrameGeometryError,
     FrameProjection,
@@ -90,6 +91,61 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The element that receives keystrokes, as the sensitivity rule reads it:
+#: its tag and the four attributes the rule looks at. Follows the focus
+#: through open shadow roots and frames this document can reach; a frame it
+#: cannot look into (another process, another origin) is reported opaque.
+_FOCUSED_FIELD_JS = """(() => {
+  let el = document.activeElement;
+  for (let hops = 0; el && hops < 64; hops += 1) {
+    if (el.shadowRoot && el.shadowRoot.activeElement) {
+      el = el.shadowRoot.activeElement;
+      continue;
+    }
+    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+      let inner = null;
+      try { inner = el.contentDocument; } catch (e) { inner = null; }
+      if (!inner) return {opaque: true};
+      el = inner.activeElement;
+      continue;
+    }
+    break;
+  }
+  if (!el) return null;
+  const attrs = {};
+  for (const name of ['type', 'autocomplete', 'id', 'name']) {
+    const value = el.getAttribute(name);
+    if (value !== null) attrs[name] = value;
+  }
+  return {tag: el.tagName, attrs};
+})()"""
+
+
+def _focused_field_verdict(reply: Any) -> bool | None:
+    """The sensitivity of the focused element a ``_FOCUSED_FIELD_JS`` reply describes.
+
+    ``True`` / ``False`` by the shared rule (``dom/sensitivity.py``); nothing
+    focused is ``False`` (the text goes into no field); ``None`` when the
+    reply cannot tell — the evaluation threw, the reply is malformed, or the
+    focus sits in a frame this session cannot look into.
+    """
+    if not isinstance(reply, dict) or reply.get("exceptionDetails"):
+        return None
+    result = reply.get("result")
+    if not isinstance(result, dict):
+        return None
+    value = result.get("value")
+    if value is None:
+        return False if result.get("subtype") == "null" else None
+    if not isinstance(value, dict) or value.get("opaque"):
+        return None
+    attrs = value.get("attrs")
+    return is_sensitive_control(
+        str(value.get("tag") or ""),
+        {str(k).lower(): str(v) for k, v in attrs.items()} if isinstance(attrs, dict) else {},
+    )
+
 
 # Key name → (DOM `key`, DOM `code`, virtual key code, optional `char`
 # text) for CDP Input.dispatchKeyEvent. The 4th element, when not None,
@@ -702,13 +758,38 @@ class ActionWatchdog(BrowserWatchdog):
         The clear is also keyboard input: ``HumanKeyboard`` sends a complete
         select-all shortcut followed by Backspace, with the configured
         rhythm deciding its timing.
+
+        Right before the text goes in, the focused element is judged by the
+        sensitivity rule; the verdict comes back as ``sensitive`` and the
+        action records it (``ActionResult.typed_into_sensitive_field``).
         """
         sid = self._element_session(session_id)
         if clear:
             await self._keyboard.clear_focused(session_id=sid)
 
+        sensitive = await self._focused_field_is_sensitive(sid)
         await self._keyboard.type_text(text, session_id=sid)
-        return {"typed": True, "length": len(text)}
+        return {"typed": True, "length": len(text), "sensitive": sensitive}
+
+    async def _focused_field_is_sensitive(self, session_id: str | None) -> bool | None:
+        """Whether the element that will receive the text is a sensitive control.
+
+        Read in the session the keystrokes go to: the element's own frame
+        target for an index type, the tab for a coordinate type (Chrome routes
+        it into the focused frame, which the read follows when it can, and
+        reports ``None`` when that frame belongs to another process). A
+        failed read is ``None`` too — unknown, never "not sensitive".
+        """
+        try:
+            reply = await self._cdp.send(
+                "Runtime.evaluate",
+                {"expression": _FOCUSED_FIELD_JS, "returnByValue": True},
+                session_id=session_id,
+            )
+        except Exception as exc:
+            logger.debug("Reading the focused element failed: %s", exc)
+            return None
+        return _focused_field_verdict(reply)
 
     # -----------------------------------------------------------------------
     # Drag

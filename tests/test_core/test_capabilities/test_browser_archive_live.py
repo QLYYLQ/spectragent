@@ -15,9 +15,14 @@ The M29 acceptance criteria that only a real browser can show:
   for M33.
 - **The control connection carries no body** — with a 2 MiB frame limit it
   survives a 6 MB response the archive records.
-- **Privacy** — credentials planted in request headers, a cookie, a POST
-  password and a script-set password value occur zero times under the trace
-  directory (gzip-aware); the positive controls are found.
+- **Privacy** — credentials planted in request headers, a POST password and a
+  script-set password value occur zero times under the trace directory
+  (gzip-aware); a planted cookie is stored as it is in ``storage.json`` and
+  nowhere else; the positive controls are found. On the DOM observation path
+  (BrowserUse cleaning), passwords in markup, set by script, typed through
+  ``browser.type`` or in an unrendered field reach neither the prompt nor any
+  file but the typed one's own step record, and the type results carry the
+  sensitive-field marker.
 - **Sensitivity parity** — the Python rule and the Skyvern page script judge
   the same table of controls the same way in Chrome.
 
@@ -52,6 +57,9 @@ from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.negotiation import negotiate_archive
 from spectragent.core.trace.secret_patterns import iter_readable
 from spectragent.flywheel.metrics import percentile
+from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.observation._registrar import fragment_field_name
+from spectragent.schemas.observation.dynamic_model import build_observation_model
 from tests._helpers.archive_bench import (
     DOM_FRAGMENTS,
     VISION_FRAGMENTS,
@@ -385,20 +393,20 @@ def test_control_connection_never_carries_bodies() -> None:
 _PLANTED = {
     "authorization": "planted-authorization-Hq3",
     "api_key": "planted-api-key-Lw7",
-    "cookie": "planted-cookie-Rt5",
     "dom password": "planted-dom-password-Vn8",
     "post password": "planted-post-password-Kc4",
 }
+#: Stored as it is in ``storage.json`` (the user's 2026-10-13 ruling, §5.6),
+#: and only there: the request ``Cookie`` header carrying it is stripped.
+_COOKIE = "planted-cookie-Rt5"
 _MARKER = "fixture-marker-body"
 
 
-async def _record_trace(
-    trace_root: Path, *, allow_session_state: bool, plant: bool = True
-) -> tuple[Path, list[Any]]:
+async def _record_trace(trace_root: Path) -> tuple[Path, list[Any]]:
     with FixtureSite(mapped=True) as site:
         archivers = [
             NetworkArchiver(require_replayable=False, strip_request_headers=["X-Api-Key"]),
-            StorageArchiver(allow_session_state=allow_session_state),
+            StorageArchiver(),
             DomRawArchiver(),
         ]
         writer = TraceWriter(trace_dir=str(trace_root), archive=list(archivers))
@@ -417,28 +425,27 @@ async def _record_trace(
                 archive_negotiation=negotiation,
             )
             sid = cap.default_session_id
-            if plant:
-                # Extra headers take effect only with Network enabled on the
-                # session. ``Proxy-Authorization`` cannot be planted this way:
-                # Chrome 155 fails every request carrying it as an extra header
-                # (net::ERR_INVALID_ARGUMENT); its stripping is covered by the
-                # fake-CDP tests (``test_browser_archive_network.py``).
-                await cap.cdp.send("Network.enable", {}, session_id=sid)
-                await cap.cdp.send(
-                    "Network.setExtraHTTPHeaders",
-                    {
-                        "headers": {
-                            "Authorization": f"Bearer {_PLANTED['authorization']}",
-                            "X-Api-Key": _PLANTED["api_key"],
-                        }
-                    },
-                    session_id=sid,
-                )
-                await cap.cdp.send(
-                    "Network.setCookie",
-                    {"name": "sid", "value": _PLANTED["cookie"], "url": site.main_origin + "/"},
-                    session_id=sid,
-                )
+            # Extra headers take effect only with Network enabled on the
+            # session. ``Proxy-Authorization`` cannot be planted this way:
+            # Chrome 155 fails every request carrying it as an extra header
+            # (net::ERR_INVALID_ARGUMENT); its stripping is covered by the
+            # fake-CDP tests (``test_browser_archive_network.py``).
+            await cap.cdp.send("Network.enable", {}, session_id=sid)
+            await cap.cdp.send(
+                "Network.setExtraHTTPHeaders",
+                {
+                    "headers": {
+                        "Authorization": f"Bearer {_PLANTED['authorization']}",
+                        "X-Api-Key": _PLANTED["api_key"],
+                    }
+                },
+                session_id=sid,
+            )
+            await cap.cdp.send(
+                "Network.setCookie",
+                {"name": "sid", "value": _COOKIE, "url": site.main_origin + "/"},
+                session_id=sid,
+            )
             # Step 0: a page whose password input holds a value a script set, and
             # an urlencoded POST carrying a password; plus a marker request.
             await rec.step(site.url("redirect"), wait_for=site.expected("redirect"), collect=False)
@@ -469,7 +476,7 @@ async def _record_trace(
 
 
 def test_privacy_guard(tmp_path: Path) -> None:
-    run_dir, served = _run(_record_trace(tmp_path, allow_session_state=False))
+    run_dir, served = _run(_record_trace(tmp_path))
     # The plants were real: the fixture received every one of them.
     header_names = {name for request in served for name in request.header_names}
     assert {"authorization", "x-api-key", "cookie"} <= header_names
@@ -477,24 +484,160 @@ def test_privacy_guard(tmp_path: Path) -> None:
     scanned = list(iter_readable(run_dir))
     assert any("/env/" in str(path) for path, _ in scanned), "the trace recorded no env/"
     ledgers = " ".join(text for path, text in scanned if "/env/" in str(path))
-    for rule in ("request_header", "field_name", "input_value", "value_hash"):
+    for rule in ("request_header", "field_name", "input_value"):
         assert f'"rule":"{rule}"' in ledgers, f"no {rule} redaction was recorded"
     for label, secret in _PLANTED.items():
         hits = [str(path.relative_to(run_dir)) for path, text in scanned if secret in text]
         assert hits == [], f"planted {label} found in {hits}"
-
-
-def test_privacy_guard_positive_controls(tmp_path: Path) -> None:
-    """The scan can see: raw cookie values when allowed, and a marker the WARC holds."""
-    run_dir, _served = _run(_record_trace(tmp_path, allow_session_state=True))
-    scanned = list(iter_readable(run_dir))
-    assert [p for p, text in scanned if _PLANTED["cookie"] in text], (
-        "allow_session_state: true keeps raw cookie values — the scan must find one"
-    )
+    # The cookie value is stored as it is, in storage.json and nowhere else (the
+    # request header that carried it is stripped) — which also shows the scan
+    # sees raw values where they are.
+    cookie_hits = {path.name for path, text in scanned if _COOKIE in text}
+    assert cookie_hits == {"storage.json"}, cookie_hits
+    # And it reads gzip: the marker request is in the WARC.
     warcs = [p for p, text in scanned if p.name.endswith(".warc.gz") or "WARC/1.1" in text]
     assert any(_MARKER in text for p, text in scanned if p in warcs), (
         "the marker request is in the WARC, and the gzip-aware scan finds it"
     )
+
+
+# ── privacy on the DOM observation path ───────────────────────────────
+
+_PASSWORDS = {
+    "markup value": "markup-password-Gx2",
+    "script-set value": "script-password-Jd5",
+    "unrendered field": "hidden-password-Pw9",
+}
+#: Typed through ``browser.type`` (by index) and ``browser.type_coordinate`` (a
+#: vision agent's path): also in the step's action parameters, which keep what
+#: the agent typed (§5.6).
+_TYPED_PASSWORD = "typed-password-Tc7"
+_COORD_TYPED_PASSWORD = "coord-typed-password-Fu8"
+#: A plain field's values: the agent's to see, and proof the scan reads the
+#: observation file.
+_PLAIN_MARKUP = "plain-markup-Ha4"
+_PLAIN_TYPED = "plain-typed-Zs6"
+
+
+def _index_of(fragment: Any, element_id: str) -> int:
+    (index,) = [
+        handle
+        for handle, node in fragment.selector_map.items()
+        if node.attributes.get("id") == element_id
+    ]
+    return index
+
+
+def _center_of(fragment: Any, element_id: str) -> tuple[int, int]:
+    """The element's centre in viewport CSS px (the fixture page does not scroll)."""
+    box = fragment.selector_map[_index_of(fragment, element_id)].bounds
+    return round(box.x + box.width / 2), round(box.y + box.height / 2)
+
+
+async def _record_dom_trace(trace_root: Path) -> tuple[Path, list[str], list[ActionResult]]:
+    """One BrowserUse step that types a password, recorded the way the runtime records it."""
+    fragments = frozenset(DOM_FRAGMENTS)
+    with FixtureSite(mapped=True) as site:
+        archivers = [DomRawArchiver()]
+        writer = TraceWriter(trace_dir=str(trace_root), archive=list(archivers))
+        rec = LiveRecording(site, archivers=archivers, fragments=fragments)
+        async with rec:
+            cap = rec.capability
+            env = BrowserEnvironment(capabilities={"browser": cap})
+            negotiation = negotiate_archive([writer], env)
+            env.bind_archivers(writer.archive)
+            await writer.on_run_start(
+                env=env, task="privacy guard (DOM)", config={}, archive_negotiation=negotiation
+            )
+            await rec.step(site.url("redirect"), wait_for=site.expected("redirect"), collect=False)
+            await cap.cdp.send(
+                "Runtime.evaluate",
+                {
+                    "expression": (
+                        "document.body.insertAdjacentHTML('beforeend', '<form>"
+                        f"<input type=password id=pw-markup value={_PASSWORDS['markup value']}>"
+                        "<input type=password id=pw-script>"
+                        "<input type=password id=pw-typed>"
+                        "<input type=password id=pw-coord>"
+                        "<input type=password id=pw-hidden style=display:none>"
+                        f"<input type=text id=plain-markup value={_PLAIN_MARKUP}>"
+                        "<input type=text id=plain-typed></form>');"
+                        "document.getElementById('pw-script').value = "
+                        f"'{_PASSWORDS['script-set value']}';"
+                        "document.getElementById('pw-hidden').value = "
+                        f"'{_PASSWORDS['unrendered field']}';"
+                    )
+                },
+                session_id=cap.default_session_id,
+            )
+            rec._cycle += 1
+            await cap.begin_observation(rec._cycle)
+            before = await cap.resolve_fragment("browser.dom")
+            actions = [
+                Action(
+                    name="browser.type",
+                    params={"index": _index_of(before, "pw-typed"), "text": _TYPED_PASSWORD},
+                ),
+                Action(
+                    name="browser.type",
+                    params={"index": _index_of(before, "plain-typed"), "text": _PLAIN_TYPED},
+                ),
+                Action(
+                    name="browser.type_coordinate",
+                    params={
+                        "coordinate_x": _center_of(before, "pw-coord")[0],
+                        "coordinate_y": _center_of(before, "pw-coord")[1],
+                        "text": _COORD_TYPED_PASSWORD,
+                    },
+                ),
+            ]
+            results = [await cap.execute_action(action) for action in actions]
+            await asyncio.sleep(0.3)
+            rec._cycle += 1
+            await cap.begin_observation(rec._cycle)
+            observed = {key: await cap.resolve_fragment(key) for key in sorted(fragments)}
+            observation = build_observation_model(fragments)(
+                **{fragment_field_name(key): value for key, value in observed.items()}
+            )
+            record = step_record(0).model_copy(
+                update={"actions": actions, "action_results": results}
+            )
+            await writer.after_record_step(
+                None, args=(record,), kwargs={"observation": observation}
+            )
+            await writer.on_run_end(result=agent_result())
+        assert writer.run_dir is not None
+        prompts = [
+            before.element_tree.serialized_dom,
+            observed["browser.dom"].element_tree.serialized_dom,
+        ]
+        return writer.run_dir, prompts, results
+
+
+def test_privacy_guard_on_the_dom_path(tmp_path: Path) -> None:
+    """BrowserUse cleaning: no password reaches the prompt, the observation or env/."""
+    run_dir, prompts, results = _run(_record_dom_trace(tmp_path))
+    assert all(r.success for r in results), [r.error for r in results]
+    assert [r.typed_into_sensitive_field for r in results] == [True, False, True]
+    typed = {"typed by index": _TYPED_PASSWORD, "typed at a point": _COORD_TYPED_PASSWORD}
+    for prompt in prompts:
+        for label, secret in {**_PASSWORDS, **typed}.items():
+            assert secret not in prompt, f"the {label} password reached the prompt"
+    assert _PLAIN_MARKUP in prompts[-1], "a plain field's value is the agent's to see"
+
+    scanned = list(iter_readable(run_dir))
+    assert any("/observations/" in str(path) for path, _ in scanned), "no observation recorded"
+    assert any("/env/" in str(path) for path, _ in scanned), "no raw DOM archived"
+    for label, secret in _PASSWORDS.items():
+        hits = [str(path.relative_to(run_dir)) for path, text in scanned if secret in text]
+        assert hits == [], f"the {label} password found in {hits}"
+    for label, secret in typed.items():
+        hits = {str(path.relative_to(run_dir)) for path, text in scanned if secret in text}
+        assert hits == {"steps/000.json"}, f"the password {label} found in {hits}"
+    # The scan does read the observation: a plain field's markup and typed
+    # values are there.
+    observed = " ".join(text for path, text in scanned if "/observations/" in str(path))
+    assert _PLAIN_MARKUP in observed and _PLAIN_TYPED in observed
 
 
 # ── the sensitivity rule: Python and the page script agree in Chrome ──
