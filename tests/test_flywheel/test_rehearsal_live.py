@@ -37,16 +37,18 @@ from urllib.parse import urlsplit
 import pytest
 
 from spectragent.core.capabilities.browser.replay.archive_index import BodyLine
-from spectragent.flywheel.chain import ChainSpec, resolve_planted
+from spectragent.flywheel.chain import ChainSpec, build_spec_report
 from spectragent.flywheel.metrics import ChainLayout, open_chain
-from spectragent.flywheel.report import build_report, report_json
+from spectragent.flywheel.report import report_json
 from tests._helpers.flywheel_rehearsal import (
     BRANCH_STEP,
     PLANTED,
+    REHEARSAL_TOKEN_LIMIT,
     SHOP_KETTLE,
     TASKS,
     run_rehearsal,
 )
+from tests._helpers.scripted_llm import REPLY_USAGE
 
 pytestmark = pytest.mark.requires_chrome
 
@@ -219,18 +221,42 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
 def test_report_recomputes_byte_identical(rehearsal: Rehearsed, report: dict) -> None:
     layout = rehearsal.layout
     written = (layout.report_dir / "report.json").read_text()
-    spec = ChainSpec.load(rehearsal.out / "chain.yaml")
-    again = build_report(
-        ChainLayout(layout.root),
-        evidence=spec.evidence,
-        planted=resolve_planted(spec.report.planted),
-        name=spec.name,
-    )
+    again = build_spec_report(ChainSpec.load(rehearsal.out / "chain.yaml"))
     assert report_json(again) == written
     for path in (layout.report_dir / "report.json", layout.report_dir / "report.md"):
         text = path.read_text()
         assert str(layout.root) not in text and str(Path.home()) not in text
         assert all(value not in text for _label, value in PLANTED)
+
+
+def test_the_token_limit_counted_every_scripted_call(rehearsal: Rehearsed, report: dict) -> None:
+    """The real bench, handed what was left of the chain's limit, counted each call it made.
+
+    Every scripted reply reports the same usage (``REPLY_USAGE``), so each stage's tokens are
+    that many times the requests its model answered — read back from the call records, with
+    no metrics hook involved.
+    """
+    record = json.loads(rehearsal.layout.chain_record.read_text())
+    routed = rehearsal.summary["routed"]
+    per_call = REPLY_USAGE["total_tokens"]
+    assert record["token_limit"] == REHEARSAL_TOKEN_LIMIT
+    assert record["stopped_by_token_limit"] is None
+    left = REHEARSAL_TOKEN_LIMIT
+    for stage in ("record", "control", "same_path", "branch"):
+        entry = record["stages"][stage]
+        (argv,) = entry["argv"]
+        assert argv[-2:] == ["--token-limit", str(left)], stage
+        assert entry["token_use"]["tokens"] == per_call * len(routed[stage]), stage
+        assert entry["token_use"]["calls"] == len(routed[stage]), stage
+        assert entry["token_use"]["calls_without_usage"] == [], stage
+        left -= entry["token_use"]["tokens"]
+    assert record["tokens_used"] == REHEARSAL_TOKEN_LIMIT - left
+    use = report["token_use"]
+    assert (use["limit"], use["tokens"], use["limit_reached"]) == (
+        REHEARSAL_TOKEN_LIMIT,
+        record["tokens_used"],
+        False,
+    )
 
 
 def test_no_non_loopback_egress(rehearsal: Rehearsed) -> None:

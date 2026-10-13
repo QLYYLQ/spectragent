@@ -16,7 +16,10 @@ the shell first (``set -a; . ./.env; set +a``).
 Exit codes: 0 done; 1 a stage failed — for ``report``, the report could not be
 computed (a published dataset does not read back as this build's format) or
 written (``--out`` names a directory that cannot be created or written), and
-the message names which; 2 the spec or the arguments are wrong.
+the message names which; 2 the spec or the arguments are wrong; 4 (``run``)
+the chain stopped at its token limit: no later run or export stage started,
+and the report, when selected, was still computed from what exists — the
+same code ``spectragent-bench`` exits with when its sweep reaches its limit.
 """
 
 from __future__ import annotations
@@ -31,17 +34,25 @@ from spectragent.flywheel.chain import (
     ChainConfigError,
     ChainSpec,
     ChainStageError,
-    resolve_planted,
+    build_spec_report,
     run_chain,
 )
 from spectragent.flywheel.metrics import ChainLayout, DatasetFormatError
 from spectragent.flywheel.report import FlywheelReport, build_report, write_report
+
+#: ``spectragent-flywheel run``'s exit code when the chain stopped at its token limit.
+TOKEN_LIMIT_EXIT_CODE = 4
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="spectragent-flywheel",
         description="The data flywheel's metrics gate (docs/architecture_design.md §4.16).",
+        epilog=(
+            "Exit codes: 0 done; 1 a stage failed, or the report could not be computed or "
+            "written; 2 the spec or the arguments are wrong; 4 the chain stopped at its token "
+            "limit (the report, when selected, still computed from what exists)."
+        ),
     )
     parser.add_argument("--log-level", default="INFO")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -80,23 +91,28 @@ def main(argv: list[str] | None = None) -> int:
             )
             result = run_chain(spec, stages=stages, log_level=args.log_level)
             for stage, outcome in result.stages.items():
-                print(f"{stage}: exit {outcome.exit_codes or '-'}, {len(outcome.runs)} run(s)")
+                tokens = (
+                    f", {outcome.token_use.tokens} tokens" if outcome.token_use is not None else ""
+                )
+                print(
+                    f"{stage}: exit {outcome.exit_codes or '-'}, {len(outcome.runs)} run(s){tokens}"
+                )
             if result.report is not None:
                 print(f"report: {result.layout.report_dir}")
+            if result.token_limit_stop is not None:
+                print(
+                    f"spectragent-flywheel: stopped at the token limit: "
+                    f"{result.token_limit_stop.describe()}",
+                    file=sys.stderr,
+                )
+                return TOKEN_LIMIT_EXIT_CODE
             return 0
         if args.spec is not None:
             if args.evidence is not None or args.name is not None:
                 parser.error("--evidence and --name come from the spec; give them only with --root")
             spec = ChainSpec.load(args.spec)
             layout = ChainLayout(spec.root.expanduser().resolve())
-            report = _build(
-                lambda: build_report(
-                    layout,
-                    evidence=spec.evidence,
-                    planted=resolve_planted(spec.report.planted),
-                    name=spec.name,
-                )
-            )
+            report = _build(lambda: build_spec_report(spec))
         else:
             if args.evidence is None:
                 parser.error("--root needs --evidence live|rehearsal")

@@ -40,12 +40,14 @@ from spectragent.core.trace.secret_patterns import iter_readable
 from spectragent.core.trace.wal import WALWriter
 from spectragent.flywheel.metrics import (
     NO_RESULT,
+    ROLES,
     UNREADABLE_RESULT,
     ChainLayout,
     ChainRuns,
     DatasetFormatError,
     Planted,
     Privacy,
+    TokenUse,
     agent_outcome,
     archive_bytes,
     archive_overhead,
@@ -68,13 +70,14 @@ from spectragent.flywheel.metrics import (
     request_texts,
     restoration,
     restoration_rate,
+    role_token_use,
     run_tier,
     same_path_fidelity,
     settle_wait,
     sites,
     storage,
 )
-from spectragent.flywheel.report import build_report, render_markdown, report_json
+from spectragent.flywheel.report import NO_SPEC_LIMIT, build_report, render_markdown, report_json
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.flywheel_traces import (
@@ -827,6 +830,76 @@ class TestPrivacy:
         assert verdict.startswith("leak — sent to the model: site password, 2 credential-shaped")
         assert "in the datasets: site password, 1 credential-shaped string(s)" in verdict
         assert verdict.endswith("; 2 run(s) not read (see skipped)")
+
+
+class TestTokenUse:
+    """Every role's recorded tokens, read from the call records (arch §4.16 "token 上限")."""
+
+    def test_the_tokens_every_role_recorded(self, tmp_path: Path) -> None:
+        chain = open_chain(privacy_chain(tmp_path / "chain"))
+        uses = {role: role_token_use(chain.role(role)) for role in ROLES}
+        # run-a's call and run-b's trailing call each reported 15 tokens.
+        record = uses["record"]
+        assert (record.runs, record.tokens, record.calls, record.calls_without_usage) == (
+            2,
+            30,
+            2,
+            [],
+        )
+        assert (uses["same_path"].runs, uses["same_path"].tokens) == (0, 0)
+        assert uses["same_path"].skipped == {
+            "traces/same_path/damaged": "a recorded model call does not read back (TraceSchemaError)"
+        }
+        assert uses["branch"].skipped == {
+            "traces/branch/broken": (
+                "not a readable trace: manifest.json does not read back (TraceSchemaError)"
+            )
+        }
+        assert uses["control"] == TokenUse(
+            runs=0, tokens=0, calls=0, calls_without_usage=[], skipped={}
+        )
+
+    def test_the_report_counts_them_against_the_spec_s_limit(self, tmp_path: Path) -> None:
+        layout = privacy_chain(tmp_path / "chain")
+        under = build_report(layout, evidence="live", token_limit=31).token_use
+        assert (under.limit, under.tokens, under.limit_reached, under.reason) == (
+            31,
+            30,
+            False,
+            None,
+        )
+        assert "stopped at its token limit" not in render_markdown(
+            build_report(layout, evidence="live", token_limit=31)
+        )
+
+        reached = build_report(layout, evidence="live", token_limit=30)
+        assert reached.token_use.limit_reached is True
+        markdown = render_markdown(reached)
+        assert (
+            "**The chain stopped at its token limit.** Its runs recorded 30 tokens, at or over "
+            "the limit of 30"
+        ) in markdown
+        assert "- limit: 30 tokens (reached); used: 30 tokens" in markdown
+        assert "- record: 30 tokens over 2 call(s) in 2 run(s); 0 call(s) reported no usage" in (
+            markdown
+        )
+        assert (
+            "  - skipped `traces/same_path/damaged`: a recorded model call does not read back"
+        ) in markdown
+
+        unlimited = build_report(layout, evidence="live", token_limit="unlimited")
+        assert (unlimited.token_use.limit, unlimited.token_use.limit_reached) == (
+            "unlimited",
+            False,
+        )
+        assert "- limit: unlimited; used: 30 tokens" in render_markdown(unlimited)
+
+        unknown = build_report(layout, evidence="live").token_use
+        assert (unknown.limit, unknown.limit_reached, unknown.reason) == (
+            None,
+            None,
+            NO_SPEC_LIMIT,
+        )
 
 
 class TestSiteCounts:

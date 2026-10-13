@@ -27,8 +27,11 @@ writes that summary as ``rehearsal.json``). What it does:
   export reads every run (``require_eval: null``) and decontaminates against
   nothing (the sources are the benchmark's own tasks);
 - writes the chain spec (``evidence: rehearsal``, the planted credentials as
-  literals) and runs it with ``spectragent.flywheel.chain.run_chain`` — the
-  real ``spectragent-bench`` and ``spectragent-export`` in this process.
+  literals, a token limit — :data:`REHEARSAL_TOKEN_LIMIT`, far above the
+  scripted models' 15 tokens a call, so the real bench counts every call
+  against what is left and never stops) and runs it with
+  ``spectragent.flywheel.chain.run_chain`` — the real ``spectragent-bench``
+  and ``spectragent-export`` in this process.
 
 Nothing leaves the machine: the recordings resolve every unmapped name to
 nothing (``chrome_args(hermetic=True)``), the replays are isolated, and
@@ -294,6 +297,11 @@ def stage_configs(
     }
 
 
+#: The rehearsal chain's token limit: a concrete number, as a live spec writes one, far above
+#: what the scripted models report (``scripted_llm.REPLY_USAGE``, 15 tokens a call).
+REHEARSAL_TOKEN_LIMIT = 100_000
+
+
 def chain_spec(out: Path, configs: dict[str, Path]) -> ChainSpec:
     """The rehearsal's chain spec (written to ``<out>/chain.yaml`` by :func:`run_rehearsal`)."""
     return ChainSpec.model_validate(
@@ -306,6 +314,7 @@ def chain_spec(out: Path, configs: dict[str, Path]) -> ChainSpec:
                 "subset": "All",
                 "task_ids": [task.task_id for task in TASKS],
             },
+            "token_limit": REHEARSAL_TOKEN_LIMIT,
             **{
                 stage: {"config": configs[stage], "timeout": TASK_TIMEOUT_S} for stage in RUN_STAGES
             },

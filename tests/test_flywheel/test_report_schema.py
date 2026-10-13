@@ -90,14 +90,15 @@ def recommendations(report: FlywheelReport) -> dict[str, Any]:
 
 def test_every_report_item_is_present(report: FlywheelReport) -> None:
     document = json.loads(report_json(report))
-    assert document["format"] == REPORT_FORMAT == "af-flywheel-report-4"
+    assert document["format"] == REPORT_FORMAT == "af-flywheel-report-5"
+    assert set(document["token_use"]["roles"]) == {"record", "control", "same_path", "branch"}
     assert set(document["metrics"]) == set(REPORT_METRICS)
     assert set(document["sections"]) == set(REPORT_SECTIONS)
     assert set(document["decisions"]) == set(REPORT_DECISIONS)
     assert set(document["recommendations"]["metrics"]) == set(REPORT_METRICS)
     assert set(document["recommendations"]["sections"]) == set(REPORT_SECTIONS)
     markdown = render_markdown(report)
-    for heading in MD_HEADINGS:
+    for heading in ("## Token use", *MD_HEADINGS):
         assert heading in markdown, heading
     assert markdown.count("**Recommendation**") == len(REPORT_METRICS) + len(REPORT_SECTIONS) + len(
         REPORT_DECISIONS

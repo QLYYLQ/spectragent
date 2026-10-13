@@ -28,6 +28,17 @@ environment that failed, a model unavailable after the provider's retries,
 a trace that is incomplete or never closed. A guard's veto stops the sweep,
 is shown, and has its own exit code (:data:`VETO_EXIT_CODE`).
 
+**The token limit** (``token_limit``, ``--token-limit``; the user's ruling of
+2026-10-14, ``docs/architecture_design.md`` §4.2). ``unlimited``, the
+default, reads no usage and changes nothing. With a number, each finished
+task's tokens are read from its trace's call records
+(``core/trace/usage.py``; no metrics hook needed) and added to the sweep's
+total; once the total reaches the limit, the task that reached it has
+finished, no task after it starts, and the sweep has its own exit code
+(:data:`TOKEN_LIMIT_EXIT_CODE`). Tasks run one at a time, so a task is never
+cut off by the limit: a sweep overshoots it by at most one task. A call whose
+provider reported no usage adds no tokens and is named in the summary.
+
 Everything else — env setup/teardown ordering, lifecycle dispatch,
 timeout, result construction — belongs to :class:`AgentRuntime` and is
 deliberately *not* duplicated here.
@@ -62,7 +73,14 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.encoding import MANIFEST_FILE
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
-from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
+from spectragent.core.trace.usage import RunUsage, recorded_usage
+from spectragent.schemas._types import (
+    UNLIMITED,
+    AgentDoneStatus,
+    EnvironmentStatus,
+    Unlimited,
+    limit_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +94,10 @@ PREFLIGHT_EXIT_CODE = 2
 #: stopped at the vetoed task, whose trace and the finished tasks' traces stay
 #: (the flywheel chain stops on it, arch §4.16).
 VETO_EXIT_CODE = 3
+#: ``spectragent-bench``'s exit code when the tokens the sweep's traces recorded
+#: reached its ``--token-limit``: the task that reached it finished, no task
+#: after it started (the flywheel chain stops on it, arch §4.16).
+TOKEN_LIMIT_EXIT_CODE = 4
 
 #: ``StepRecord.error_phase`` of a step whose model call failed (``ReactLoop``).
 _MODEL_CALL_PHASE = "llm"
@@ -104,6 +126,11 @@ def _trace_dir_of(run: ComposedRun) -> Path | None:
         if isinstance(run_dir, Path):
             return run_dir
     return None
+
+
+def _writes_a_trace(run: ComposedRun) -> bool:
+    """Whether some hook of *run* writes a trace: the duck type :func:`_trace_dir_of` reads."""
+    return any(hasattr(hook, "run_dir") for hook in run.hooks)
 
 
 class PreflightError(RuntimeError):
@@ -155,6 +182,14 @@ class TaskOutcome:
     #: The model call that ended the run by failing after the provider's own
     #: retries (its error class and message), when that is how the run ended.
     model_unavailable: str | None = None
+    #: The tokens the task's trace recorded (``core/trace/usage.py``), read only
+    #: when the sweep has a token limit. ``None`` without a limit, when no trace
+    #: was written (then no model call was recorded either), or when the trace
+    #: does not read back (``usage_note`` says why).
+    usage: RunUsage | None = None
+    #: Why the task's tokens could not be counted: its trace, or one of its
+    #: recorded calls, does not read back.
+    usage_note: str | None = None
 
     @property
     def agent_done(self) -> str:
@@ -211,6 +246,19 @@ class TaskOutcome:
 
 
 @dataclass(frozen=True)
+class TokenLimitReached:
+    """The sweep's token total reached its limit: the task that reached it finished, none after it started."""
+
+    #: The task whose tokens brought the total to the limit.
+    task_id: str
+    #: The sweep's total then: every finished task's recorded tokens.
+    tokens: int
+    limit: int
+    #: Selected tasks that never started.
+    not_started: int
+
+
+@dataclass(frozen=True)
 class BenchmarkRunSummary:
     """Aggregate of one benchmark sweep: three counters, the failures, the veto.
 
@@ -234,10 +282,40 @@ class BenchmarkRunSummary:
     #: is indistinguishable from a small one — and a reader would compare a
     #: 3-task partial against a 30-task full one.
     aborted: str | None = None
+    #: The sweep's token limit; ``None`` is ``unlimited``: no usage was read,
+    #: and the table is the one a sweep without a limit prints.
+    token_limit: int | None = None
+    #: Set when the sweep stopped because its token total reached the limit.
+    token_limit_reached: TokenLimitReached | None = None
 
     @property
     def was_aborted(self) -> bool:
         return self.aborted is not None
+
+    @property
+    def tokens(self) -> int:
+        """Every task's recorded tokens (only counted with a token limit)."""
+        return sum(o.usage.tokens for o in self.outcomes if o.usage is not None)
+
+    @property
+    def calls(self) -> int:
+        """Every task's recorded model calls (only counted with a token limit)."""
+        return sum(o.usage.calls for o in self.outcomes if o.usage is not None)
+
+    @property
+    def calls_without_usage(self) -> list[str]:
+        """``<task>: step S call K (status)`` for every recorded call whose provider reported no usage."""
+        return [
+            f"{o.task_id}: {call.describe()}"
+            for o in self.outcomes
+            if o.usage is not None
+            for call in o.usage.without_usage
+        ]
+
+    @property
+    def uncounted(self) -> list[str]:
+        """``<task>: <why>`` for every task whose tokens could not be read."""
+        return [f"{o.task_id}: {o.usage_note}" for o in self.outcomes if o.usage_note is not None]
 
     @property
     def total(self) -> int:
@@ -271,6 +349,8 @@ class BenchmarkRunSummary:
         )
         if self.aborted is not None:
             header += " vetoed=1"
+        if self.token_limit_reached is not None:
+            header += " token_limit_reached=1"
         lines = [header]
         for label, counts in (
             ("agent outcome", self.count_by_done()),
@@ -279,6 +359,11 @@ class BenchmarkRunSummary:
         ):
             listed = ", ".join(f"{key}={count}" for key, count in sorted(counts.items()))
             lines.append(f"  {label}: {listed or '-'}")
+        if self.token_limit is not None:
+            lines.append(
+                f"  tokens: {self.tokens} recorded by {self.calls} call(s); "
+                f"limit {self.token_limit}"
+            )
         for outcome in self.outcomes:
             where = outcome.trace_dir.name if outcome.trace_dir else "-"
             # ``infrastructure_error``, not ``error``: the message for a
@@ -292,13 +377,23 @@ class BenchmarkRunSummary:
                 detail = f" infrastructure failure: {failure}"
             else:
                 detail = ""
+            tokens = f", {outcome.usage.tokens} tokens" if outcome.usage is not None else ""
             lines.append(
                 f"  {outcome.task_id}: {outcome.agent_done} "
-                f"({outcome.elapsed_ms} ms, trace={where}){detail}"
+                f"({outcome.elapsed_ms} ms, trace={where}{tokens}){detail}"
             )
+        lines += [f"  no usage reported (not counted): {call}" for call in self.calls_without_usage]
+        lines += [f"  tokens not counted: {task}" for task in self.uncounted]
         if self.aborted is not None:
             lines.append(
                 f"vetoed: a guard stopped the sweep at {self.aborted}; no task after it ran"
+            )
+        reached = self.token_limit_reached
+        if reached is not None:
+            lines.append(
+                f"token limit: the sweep's runs recorded {reached.tokens} tokens, reaching its "
+                f"limit of {reached.limit} after {reached.task_id}; {reached.not_started} task(s) "
+                f"not started"
             )
         if self.eval_summary is not None:
             from spectragent.evaluator.summary import format_summary
@@ -326,9 +421,15 @@ class _TraceLedger(NamedTuple):
     #: The run's ``result.json`` — what a vetoed run's outcome is read from,
     #: since ``execute`` raises the veto instead of returning a result.
     result: Any = None
+    #: The tokens the trace's calls recorded, when they were asked for.
+    usage: RunUsage | None = None
+    #: Why they could not be counted.
+    usage_note: str | None = None
 
 
-def _trace_ledger(trace_dir: Path | None, result: Any) -> _TraceLedger:
+def _trace_ledger(
+    trace_dir: Path | None, result: Any, *, count_tokens: bool = False
+) -> _TraceLedger:
     """The trace's own ledger and the model call a run in error ended on, read back from the trace.
 
     Read once the run is over, from what was committed — the manifest's
@@ -339,6 +440,10 @@ def _trace_ledger(trace_dir: Path | None, result: Any) -> _TraceLedger:
     availability, so it is not counted as one. No trace (none written, or
     its manifest never made it to disk) is the empty ledger; one that does
     not read back is ``unreadable`` with the reason.
+
+    With *count_tokens* (a sweep with a token limit), the tokens the trace's
+    calls recorded too (``core/trace/usage.py``) — or why they could not be
+    counted.
     """
     if trace_dir is None or not (trace_dir / MANIFEST_FILE).exists():
         return _TraceLedger()
@@ -347,12 +452,21 @@ def _trace_ledger(trace_dir: Path | None, result: Any) -> _TraceLedger:
         recorded = result if result is not None else trace.result
         model = _model_call_that_ended(trace, recorded)
     except TraceSchemaError as exc:
-        return _TraceLedger(status="unreadable", note=str(exc))
+        uncounted = f"the trace does not read back: {exc}" if count_tokens else None
+        return _TraceLedger(status="unreadable", note=str(exc), usage_note=uncounted)
+    usage = usage_note = None
+    if count_tokens:
+        try:
+            usage = recorded_usage(trace)
+        except TraceSchemaError as exc:
+            usage_note = f"a recorded model call does not read back: {exc}"
     return _TraceLedger(
         status=trace.manifest.status.value,
         note=trace.manifest.incomplete_reason,
         model_unavailable=model,
         result=recorded,
+        usage=usage,
+        usage_note=usage_note,
     )
 
 
@@ -400,6 +514,11 @@ class BenchmarkRunner:
             truth, and the task loader does not carry it.
         evals_dir: Optional flat output directory for verdicts and the
             summary. Verdicts always also land in each trace's ``evals/``.
+        token_limit: The most tokens the sweep's runs may record: a number
+            of at least 1, or ``"unlimited"`` (the default), which reads no
+            usage at all. With a number, each finished task's tokens are
+            read from its trace and added up; once the total reaches the
+            limit, no further task starts (module docstring).
     """
 
     def __init__(
@@ -416,7 +535,15 @@ class BenchmarkRunner:
         evaluator: Any = None,
         eval_loader: Any = None,
         evals_dir: Path | None = None,
+        token_limit: int | Unlimited = UNLIMITED,
     ) -> None:
+        if token_limit != UNLIMITED and (
+            isinstance(token_limit, bool) or not isinstance(token_limit, int) or token_limit < 1
+        ):
+            raise ValueError(
+                f"token_limit must be a number of at least 1 or 'unlimited', not {token_limit!r}"
+            )
+        self._token_limit = limit_value(token_limit)
         self._loader = loader
         self._compose = compose
         self._agent_id = agent_id
@@ -443,6 +570,11 @@ class BenchmarkRunner:
     def subset(self) -> str:
         return self._subset
 
+    @property
+    def token_limit(self) -> int | None:
+        """The sweep's token limit; ``None`` is ``unlimited``."""
+        return self._token_limit
+
     def select_task_ids(
         self,
         *,
@@ -466,6 +598,11 @@ class BenchmarkRunner:
         task (:meth:`preflight`): a configuration that cannot run fails the
         sweep before any task runs or any trace is opened.
 
+        With a token limit, each finished task's recorded tokens are added
+        to the sweep's total; once it reaches the limit the sweep stops
+        there (``token_limit_reached``). Tasks run one at a time, so the task
+        that reached it ran to its end: the limit never cuts a task off.
+
         Raises:
             PreflightError: The pre-flight check refused the configuration.
         """
@@ -481,6 +618,8 @@ class BenchmarkRunner:
         prepared = self.preflight(selected[0]) if selected else None
         outcomes: list[TaskOutcome] = []
         aborted: str | None = None
+        reached: TokenLimitReached | None = None
+        tokens = 0
         for task_id in selected:
             run, prepared = prepared, None
             outcome = await self.run_task(task_id, run=run)
@@ -499,8 +638,35 @@ class BenchmarkRunner:
                     len(selected),
                 )
                 break
+            if self._token_limit is None:
+                continue
+            tokens += outcome.usage.tokens if outcome.usage is not None else 0
+            logger.info(
+                "BenchmarkRunner: %s recorded %s tokens; the sweep's total is %d of %d",
+                task_id,
+                outcome.usage.tokens if outcome.usage is not None else "uncounted",
+                tokens,
+                self._token_limit,
+            )
+            if tokens >= self._token_limit:
+                reached = TokenLimitReached(
+                    task_id=task_id,
+                    tokens=tokens,
+                    limit=self._token_limit,
+                    not_started=len(selected) - len(outcomes),
+                )
+                logger.warning(
+                    "BenchmarkRunner: the sweep's token total %d reached its limit of %d after "
+                    "%s; %d task(s) not started",
+                    tokens,
+                    self._token_limit,
+                    task_id,
+                    reached.not_started,
+                )
+                break
+        stopped = aborted is not None or reached is not None
         eval_summary, eval_errors = await self._evaluate(
-            outcomes, selected[: len(outcomes)] if aborted else selected
+            outcomes, selected[: len(outcomes)] if stopped else selected
         )
         return BenchmarkRunSummary(
             benchmark=self._benchmark,
@@ -509,6 +675,8 @@ class BenchmarkRunner:
             eval_summary=eval_summary,
             eval_errors=eval_errors,
             aborted=aborted,
+            token_limit=self._token_limit,
+            token_limit_reached=reached,
         )
 
     async def _evaluate(
@@ -555,6 +723,12 @@ class BenchmarkRunner:
         is set up, no hook is called and no trace is opened. The returned
         stack is the one this task then runs on (``run_task(run=...)``).
 
+        A sweep with a token limit also needs a hook that writes a trace:
+        the limit counts what each task's trace recorded, and without one
+        it could count nothing. The check costs no token, and the limit
+        itself never refuses a sweep up front (it is at least 1, so the
+        first task always starts).
+
         Raises:
             PreflightError: Naming the task and the refusal, chained from it
                 — including a stack that cannot be composed and a task
@@ -566,6 +740,12 @@ class BenchmarkRunner:
             agent_id = self._agent_id or run.ids("agent")[0]
             runtime = AgentRuntime.for_agent(run, agent_id, env_id=self._env_id)
             runtime.prepare(task_id=task_id, loop_inputs=context.loop, env_context=context.env)
+            if self._token_limit is not None and not _writes_a_trace(run):
+                raise ValueError(
+                    "a token limit counts the tokens each task's trace records, and this "
+                    "configuration writes no trace (no hook exposes a run directory): add a "
+                    "trace_writer hook, or run without a token limit"
+                )
         except Exception as exc:
             raise PreflightError(task_id, exc) from exc
         return run
@@ -580,6 +760,9 @@ class BenchmarkRunner:
         sweep on it. Once the run is over, the trace's own ledger is read
         back from its manifest (``trace_status``), and so is the model call a
         run in error ended on, when it failed after the provider's retries.
+
+        With a token limit, the tokens the task's trace recorded are read
+        back too (``usage``).
 
         Args:
             task_id: The task.
@@ -655,7 +838,7 @@ class BenchmarkRunner:
             error = f"{type(exc).__name__}: {exc}"
 
         trace_dir = _trace_dir_of(run)
-        ledger = _trace_ledger(trace_dir, result)
+        ledger = _trace_ledger(trace_dir, result, count_tokens=self._token_limit is not None)
         return TaskOutcome(
             task_id=task_id,
             # A veto leaves the run's result only in its trace.
@@ -667,6 +850,8 @@ class BenchmarkRunner:
             trace_status=ledger.status,
             trace_note=ledger.note,
             model_unavailable=ledger.model_unavailable,
+            usage=ledger.usage,
+            usage_note=ledger.usage_note,
         )
 
 
@@ -783,10 +968,32 @@ def _resolve_eval_loader(run: ComposedRun, benchmark: str | None, subset: str | 
     return loader_cls(subset=subset) if subset else loader_cls()
 
 
+def _token_limit_argument(text: str) -> int | Unlimited:
+    """``--token-limit``: a number of at least 1, or ``unlimited``."""
+    if text == UNLIMITED:
+        return UNLIMITED
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is neither a number nor '{UNLIMITED}'"
+        ) from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(
+            f"{value} is below 1: a token limit is a number of at least 1, or '{UNLIMITED}'"
+        )
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="spectragent-bench",
         description="Run a benchmark's tasks through a composed agent stack.",
+        epilog=(
+            "Exit codes: 0 every task ran with no infrastructure failure; 1 some task had one; "
+            "2 the pre-flight check refused the configuration (no task ran); 3 a guard vetoed "
+            "the sweep; 4 the sweep reached its token limit (no task after it started)."
+        ),
     )
     parser.add_argument("--config", required=True, type=Path, help="YAML run config.")
     parser.add_argument("--benchmark", help="Task loader key (if not in the config).")
@@ -820,6 +1027,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Record traces only; skip the scoring pass.",
     )
+    parser.add_argument(
+        "--token-limit",
+        type=_token_limit_argument,
+        default=UNLIMITED,
+        help=(
+            "The most tokens this sweep's runs may record, counted from the model calls each "
+            "task's trace recorded and added up after each task: once the total reaches it, the "
+            "task that reached it has finished, no task after it starts, and the exit code is 4. "
+            "A call whose provider reported no usage adds nothing and is named in the summary. "
+            "A number of at least 1, or 'unlimited' (the default): no limit, and no usage is read."
+        ),
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -850,6 +1069,7 @@ def main(argv: list[str] | None = None) -> int:
         evaluator=evaluator,
         eval_loader=eval_loader,
         evals_dir=args.evals_dir if evaluator is not None else None,
+        token_limit=args.token_limit,
     )
 
     selected = runner.select_task_ids(task_ids=args.task_ids, limit=args.limit)
@@ -871,6 +1091,17 @@ def main(argv: list[str] | None = None) -> int:
         # stops here too instead of feeding the vetoed stage's runs onwards.
         print(f"spectragent-bench: the sweep was vetoed at {summary.aborted}", file=sys.stderr)
         return VETO_EXIT_CODE
+    reached = summary.token_limit_reached
+    if reached is not None:
+        # The budget is spent: its own code, ahead of 1, so a script or the
+        # flywheel chain starts nothing more.
+        print(
+            f"spectragent-bench: the sweep reached its token limit after task {reached.task_id} "
+            f"({reached.tokens} of {reached.limit} tokens); {reached.not_started} task(s) not "
+            f"started",
+            file=sys.stderr,
+        )
+        return TOKEN_LIMIT_EXIT_CODE
     return 0 if summary.failed == 0 else 1
 
 

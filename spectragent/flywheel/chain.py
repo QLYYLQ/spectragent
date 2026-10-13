@@ -40,6 +40,23 @@ would otherwise run for an export certain to refuse.
 ``chain.json`` records each stage's argv, exit code, run directories and
 start and end time — provenance only; the report never reads it.
 
+**The token limit** (``token_limit``; the user's ruling of 2026-10-14).
+``unlimited``, the default, counts nothing: no stage is handed a limit, and
+the stages run and are recorded as they always were. With a number, the
+chain's total is every token the runs under the root recorded
+(``metrics.role_token_use``, counting from each run's call records through
+``core/trace/usage.py``): counted once before the first stage, so a chain
+run stage by stage stays inside one limit, then increased by each run
+stage's new runs (``stages.<stage>.token_use``). Each run stage gets what is
+left (``spectragent-bench --token-limit``), which lets the task that reaches
+it finish and starts no other. When a stage's sweep exits
+``TOKEN_LIMIT_EXIT_CODE``, or the total reaches the limit, no later run or
+export stage starts; the report still runs when selected and states the
+stop itself (it counts from the traces too); ``chain.json`` records
+``stopped_by_token_limit`` and :attr:`ChainResult.token_limit_stop` says the
+same. Runs that had already reached the limit before the chain started stop
+it before any run or export stage (the stop's ``stage`` is ``None``).
+
 **Secrets.** ``spectragent-bench`` reads no ``.env`` and neither does the
 chain: export the keys in the shell first (``set -a; . ./.env; set +a``).
 A planted credential the report searches for is written in the spec as a
@@ -56,13 +73,23 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from spectragent.flywheel.metrics import DATASETS, ChainLayout, Planted
+from spectragent.flywheel.metrics import (
+    DATASETS,
+    ChainLayout,
+    Planted,
+    TokenUse,
+    open_chain,
+    open_role,
+    role_token_use,
+    token_use,
+)
 from spectragent.flywheel.report import FlywheelReport, build_report, write_report
+from spectragent.schemas._types import UNLIMITED, Unlimited, limit_value
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +168,18 @@ class ChainSpec(_Spec):
     root: Path
     evidence: Literal["live", "rehearsal"]
     tasks: TasksSpec = Field(default_factory=TasksSpec)
+    token_limit: Annotated[int, Field(ge=1)] | Unlimited = Field(
+        default=UNLIMITED,
+        description=(
+            "The most tokens the chain's run stages may use together, counted from the model "
+            "calls every run under the root recorded (the provider's total, or prompt plus "
+            "completion; a call that reported no usage adds nothing and is named). Each finished "
+            "task adds its tokens; once the total reaches the limit, the task that reached it "
+            "finishes, no later task or stage starts, and the report is still computed from what "
+            "exists and says the chain stopped at its token limit. A number of at least 1, or "
+            "'unlimited' (the default): no limit, and nothing is counted."
+        ),
+    )
     record: StageSpec
     control: StageSpec | None = None
     same_path: StageSpec | None = None
@@ -276,9 +315,12 @@ class StageOutcome:
     started_at: str = ""
     ended_at: str = ""
     error: str | None = None
+    #: The tokens the stage's new runs recorded — counted for a run stage only when the
+    #: chain has a token limit.
+    token_use: TokenUse | None = None
 
     def record(self) -> dict[str, Any]:
-        return {
+        entry: dict[str, Any] = {
             "argv": self.argv,
             "exit_codes": self.exit_codes,
             "runs": self.runs,
@@ -286,15 +328,104 @@ class StageOutcome:
             "ended_at": self.ended_at,
             "error": self.error,
         }
+        if self.token_use is not None:
+            entry["token_use"] = self.token_use.model_dump(mode="json")
+        return entry
+
+
+@dataclass
+class TokenLimitStop:
+    """The chain stopped at its token limit (``chain.json``'s ``stopped_by_token_limit``)."""
+
+    #: The run stage whose sweep reached the limit; ``None`` when the runs under the root had
+    #: reached it before this run of the chain started.
+    stage: str | None
+    #: Every token the runs under the root recorded, when the chain stopped.
+    tokens_used: int
+    token_limit: int
+    #: The selected run and export stages this run of the chain did not start.
+    stages_not_started: list[str]
+    #: Every recorded call under the root whose provider reported no usage (counted, no tokens).
+    calls_without_usage: list[str]
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "tokens_used": self.tokens_used,
+            "token_limit": self.token_limit,
+            "stages_not_started": self.stages_not_started,
+            "calls_without_usage": self.calls_without_usage,
+        }
+
+    def describe(self) -> str:
+        """One line for a person: where, how many tokens of how many, what did not start."""
+        where = (
+            f"in stage {self.stage!r}"
+            if self.stage is not None
+            else "before this run of the chain started"
+        )
+        not_started = ", ".join(self.stages_not_started) or "none"
+        without = len(self.calls_without_usage)
+        named = " (named in chain.json)" if without else ""
+        return (
+            f"the runs under the chain root recorded {self.tokens_used} tokens, reaching the token "
+            f"limit of {self.token_limit} {where}; stages not started: {not_started}; "
+            f"{without} call(s) reported no usage{named}"
+        )
+
+
+@dataclass
+class _TokenAccount:
+    """The chain's tokens against its numeric limit: what the runs under the root recorded."""
+
+    limit: int
+    used: int
+    calls_without_usage: list[str]
+
+    @classmethod
+    def opened(cls, layout: ChainLayout, limit: int) -> _TokenAccount:
+        """The account of every run already under *layout*'s root (every role)."""
+        chain = open_chain(layout)
+        uses = [role_token_use(runs) for runs in chain.roles.values()]
+        return cls(
+            limit=limit,
+            used=sum(use.tokens for use in uses),
+            calls_without_usage=[call for use in uses for call in use.calls_without_usage],
+        )
+
+    @property
+    def remaining(self) -> int:
+        return self.limit - self.used
+
+    @property
+    def reached(self) -> bool:
+        return self.used >= self.limit
+
+    def add(self, use: TokenUse | None) -> None:
+        if use is not None:
+            self.used += use.tokens
+            self.calls_without_usage += use.calls_without_usage
+
+    def stop(self, stage: str | None) -> TokenLimitStop:
+        return TokenLimitStop(
+            stage=stage,
+            tokens_used=self.used,
+            token_limit=self.limit,
+            stages_not_started=[],
+            calls_without_usage=list(self.calls_without_usage),
+        )
 
 
 @dataclass
 class ChainResult:
-    """What a chain run did: each stage it ran, and the report when it computed one."""
+    """What a chain run did: each stage it ran, the report when it computed one, a token-limit stop."""
 
     layout: ChainLayout
     stages: dict[str, StageOutcome]
     report: FlywheelReport | None = None
+    #: Set when the chain stopped at its token limit (``chain.json``'s
+    #: ``stopped_by_token_limit``).
+    token_limit_stop: TokenLimitStop | None = None
 
 
 #: Runs one CLI in this process: ``argv`` in, exit code out.
@@ -352,7 +483,11 @@ def selected_stages(spec: ChainSpec, stages: Sequence[str] | None) -> list[str]:
 
 
 def _write_record(
-    layout: ChainLayout, spec: ChainSpec, outcomes: Mapping[str, StageOutcome]
+    layout: ChainLayout,
+    spec: ChainSpec,
+    outcomes: Mapping[str, StageOutcome],
+    account: _TokenAccount | None = None,
+    stop: TokenLimitStop | None = None,
 ) -> None:
     previous: dict[str, Any] = {}
     if layout.chain_record.is_file():
@@ -362,7 +497,15 @@ def _write_record(
         except ValueError:
             previous = {}
     merged = {**previous, **{stage: outcome.record() for stage, outcome in outcomes.items()}}
-    document = {"name": spec.name, "evidence": spec.evidence, "stages": merged}
+    document: dict[str, Any] = {
+        "name": spec.name,
+        "evidence": spec.evidence,
+        "token_limit": spec.token_limit,
+        "stages": merged,
+    }
+    if account is not None:
+        document["tokens_used"] = account.used
+        document["stopped_by_token_limit"] = stop.record() if stop is not None else None
     layout.root.mkdir(parents=True, exist_ok=True)
     layout.chain_record.write_text(
         json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -381,7 +524,9 @@ def run_chain(
 
     *bench* / *export* replace the in-process CLIs (a test's seam); by
     default they are ``spectragent-bench``'s and ``spectragent-export``'s
-    ``main``.
+    ``main``. With a numeric ``token_limit``, the chain stops where its runs'
+    tokens reach it (module docstring): no later run or export stage starts,
+    and :attr:`ChainResult.token_limit_stop` says where.
 
     Raises:
         ChainConfigError: Before anything runs — the stage selection, a
@@ -423,11 +568,51 @@ def run_chain(
     outcomes: dict[str, StageOutcome] = {}
     result = ChainResult(layout=layout, stages=outcomes)
     layout.configs_dir.mkdir(parents=True, exist_ok=True)
+    limit = limit_value(spec.token_limit)
+    account = _TokenAccount.opened(layout, limit) if limit is not None else None
+    paid = [stage for stage in selected if stage != "report"]
+    if account is not None and account.reached and paid:
+        # Runs from an earlier run of the chain already used the limit up.
+        result.token_limit_stop = account.stop(None)
+        logger.warning(
+            "chain: the runs under %s already recorded %d tokens, at or over the token limit of "
+            "%d: no run or export stage starts",
+            layout.root,
+            account.used,
+            account.limit,
+        )
     for stage in selected:
+        stop = result.token_limit_stop
+        if stop is not None and stage != "report":
+            stop.stages_not_started.append(stage)
+            _write_record(layout, spec, outcomes, account, stop)
+            continue
         outcome = outcomes[stage] = StageOutcome(stage=stage, started_at=_now())
         try:
             if stage in RUN_STAGES:
-                _run_stage(stage, spec, layout, effective[stage][0], outcome, bench_main, log_level)
+                try:
+                    reached = _run_stage(
+                        stage,
+                        spec,
+                        layout,
+                        effective[stage][0],
+                        outcome,
+                        bench_main,
+                        log_level,
+                        remaining=account.remaining if account is not None else None,
+                    )
+                finally:
+                    if account is not None:
+                        account.add(outcome.token_use)
+                if account is not None and (reached or account.reached):
+                    result.token_limit_stop = account.stop(stage)
+                    logger.warning(
+                        "chain: stage %s brought the runs' tokens to %d of the token limit %d: "
+                        "no later run or export stage starts",
+                        stage,
+                        account.used,
+                        account.limit,
+                    )
             elif stage == "export":
                 _export_stage(effective[stage], outcome, export_main, log_level)
             else:
@@ -437,7 +622,7 @@ def run_chain(
             raise
         finally:
             outcome.ended_at = _now()
-            _write_record(layout, spec, outcomes)
+            _write_record(layout, spec, outcomes, account, result.token_limit_stop)
     return result
 
 
@@ -456,7 +641,17 @@ def _run_stage(
     outcome: StageOutcome,
     entry: Entry,
     log_level: str,
-) -> None:
+    *,
+    remaining: int | None = None,
+) -> bool:
+    """Run one ``spectragent-bench`` stage; whether its sweep stopped at the token limit.
+
+    *remaining* is what is left of the chain's token limit (``None``: the
+    chain has none), handed to the bench as ``--token-limit``; with it, the
+    tokens the stage's new runs recorded are counted into
+    ``outcome.token_use`` — before any failure is raised, so ``chain.json``
+    has them either way.
+    """
     path, raw = config
     _write_yaml(path, raw)
     stage_spec: StageSpec = getattr(spec, stage)
@@ -475,6 +670,8 @@ def _run_stage(
         argv += ["--evals-dir", str(layout.evals(stage))]
     else:
         argv.append("--no-eval")
+    if remaining is not None:
+        argv += ["--token-limit", str(remaining)]
     directory = layout.traces(stage)
     before = _run_dirs(directory)
     if before:
@@ -484,7 +681,9 @@ def _run_stage(
     outcome.exit_codes.append(code)
     new = sorted(_run_dirs(directory) - before)
     outcome.runs = [f"traces/{stage}/{name}" for name in new]
-    from spectragent.core.benchmark_runner import VETO_EXIT_CODE
+    if remaining is not None:
+        outcome.token_use = _new_runs_token_use(layout, stage, new)
+    from spectragent.core.benchmark_runner import TOKEN_LIMIT_EXIT_CODE, VETO_EXIT_CODE
 
     if code == VETO_EXIT_CODE:
         raise ChainStageError(
@@ -492,12 +691,43 @@ def _run_stage(
             f"spectragent-bench exited {code}: a guard vetoed the stage, so the chain stops "
             f"here (the stage's summary and the vetoed run's trace say why)",
         )
-    if code not in (0, 1):
+    reached = remaining is not None and code == TOKEN_LIMIT_EXIT_CODE
+    if code not in (0, 1) and not reached:
         raise ChainStageError(stage, f"spectragent-bench exited {code}")
     if not new:
         raise ChainStageError(
             stage, f"spectragent-bench exited {code} and wrote no run under {directory}"
         )
+    return reached
+
+
+def _new_runs_token_use(layout: ChainLayout, stage: str, names: Sequence[str]) -> TokenUse:
+    """The tokens the runs *names* of *stage* recorded (a run that does not read back is named)."""
+    role = open_role(layout.traces(stage), stage)
+    wanted = set(names)
+    skipped = {
+        f"traces/{stage}/{rel}": reason for rel, reason in role.skipped.items() if rel in wanted
+    }
+    return token_use([run for run in role.runs if run.rel in wanted], skipped)
+
+
+def build_spec_report(spec: ChainSpec) -> FlywheelReport:
+    """The report of *spec*'s chain root: its evidence basis, planted credentials, name and token limit.
+
+    What the chain's report stage and ``spectragent-flywheel report --spec``
+    both compute, so the two give the same bytes.
+
+    Raises:
+        DatasetFormatError: A published dataset does not read back as this
+            build's format (``build_report``).
+    """
+    return build_report(
+        ChainLayout(spec.root.expanduser().resolve()),
+        evidence=spec.evidence,
+        planted=resolve_planted(spec.report.planted),
+        name=spec.name,
+        token_limit=spec.token_limit,
+    )
 
 
 def _report_stage(spec: ChainSpec, layout: ChainLayout) -> FlywheelReport:
@@ -508,12 +738,7 @@ def _report_stage(spec: ChainSpec, layout: ChainLayout) -> FlywheelReport:
     cannot be written) — recorded in ``chain.json`` like any stage's.
     """
     try:
-        report = build_report(
-            layout,
-            evidence=spec.evidence,
-            planted=resolve_planted(spec.report.planted),
-            name=spec.name,
-        )
+        report = build_spec_report(spec)
         write_report(report, layout.report_dir)
     except Exception as exc:
         raise ChainStageError("report", f"{type(exc).__name__}: {exc}") from exc
@@ -553,6 +778,8 @@ __all__ = [
     "StageOutcome",
     "StageSpec",
     "TasksSpec",
+    "TokenLimitStop",
+    "build_spec_report",
     "export_stage_config",
     "resolve_planted",
     "run_chain",

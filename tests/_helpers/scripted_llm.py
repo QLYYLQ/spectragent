@@ -25,6 +25,8 @@ from typing import Any
 
 #: One scripted reply: the text, or what writes it from the request body.
 Reply = str | Callable[[dict[str, Any]], str]
+#: The usage every scripted reply reports: a token limit counts each call as this many tokens.
+REPLY_USAGE: dict[str, int] = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -113,5 +115,5 @@ class ScriptedLLMServer:
                     "finish_reason": "stop",
                 }
             ],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "usage": dict(REPLY_USAGE),
         }

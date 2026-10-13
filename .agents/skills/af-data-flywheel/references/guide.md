@@ -84,7 +84,10 @@ The shipped flywheel code gives each kind of new piece a precedent:
 - A restorer restores the environment. Its `RestorationContext` carries no model, memory or
   recorder, so it cannot do more.
 - Each shared read has one copy: `core/trace/sources.py` (`match_runs`, `task_identity`,
-  `unreadable_reason`) for the loader, the export and the metrics;
+  `unreadable_reason`) for the loader, the export and the metrics; `core/trace/usage.py`
+  (`recorded_calls`, `recorded_usage`) for the calls a run recorded and the tokens they
+  reported, read by the bench's and the chain's token limit, the report's `token_use` and
+  the privacy measure;
   `core/loops/restore/source.py` (`recorded_observation`, `recorded_step_info`) for the branch
   replay and the student renderer; `core/trace/secret_patterns.py` for the secret guard, the
   export's credential scan and the privacy metric.
@@ -415,6 +418,7 @@ name: first-live
 root: traces/chains/first-live        # everything lands under it (traces/ is git-ignored)
 evidence: live                         # live | rehearsal
 tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # record / control only
+token_limit: 2000000                   # every run stage together; unlimited (the default): no limit
 record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # timeout defaults to 300
 control:   {config: <the recording with archive: []>}                  # optional overhead control
 same_path: {config: configs/flywheel/same_path_ui_tars_archive.yaml}
@@ -442,12 +446,34 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
 - A run stage succeeds when the bench exits 0 or 1 and wrote at least one new run; a task
   with an infrastructure failure is data. The bench exits 3 when a guard vetoed the sweep
   (the vetoed task is the summary's last row): the chain stops there and the vetoed stage's
-  runs never feed the next one. `same_path` and `branch` refuse `evaluate: true`. With the export selected,
+  runs never feed the next one. It exits 4 when the sweep reached the token limit the chain
+  handed it (below). `same_path` and `branch` refuse `evaluate: true`. With the export selected,
   an existing `datasets/first` or `datasets/second` is a `ChainConfigError` before any paid
   stage runs.
+- The token limit (the user's ruling of 2026-10-14). `token_limit` is the tokens every run
+  stage may use together, a number of at least 1 or `unlimited` (the default: the chain
+  counts nothing and passes no limit, exactly as before). Tokens are counted from the call
+  records, never from `result.json`'s `metrics.usage`, so no metrics hook is needed:
+  `core/trace/usage.py::recorded_usage` adds every committed step's calls and the trailing
+  ones, a completed call's `completion.usage` and a failed call's `failure.usage`, each by
+  the step record's rule (`TokenUsage.from_llm_usage`: `total_tokens`, else prompt plus
+  completion). A call whose provider reported no usage adds no tokens and is counted and
+  named (`traces/<role>/<run>: step S call K (status)`), never read as zero. Before the first
+  stage the chain counts every run already under the root, so a stage-by-stage run stays
+  inside one limit; each run stage gets what is left as `spectragent-bench --token-limit`,
+  which adds each finished task's tokens and, once its total reaches the limit, lets that
+  task finish, starts no other and exits 4 (`TOKEN_LIMIT_EXIT_CODE`). Then no later run or
+  export stage starts, the report still runs when selected and states the stop
+  (`report.json` `token_use.limit_reached`, the first lines of `report.md`), `chain.json`
+  records `stopped_by_token_limit{stage, tokens_used, token_limit, stages_not_started,
+  calls_without_usage}` and each run stage's `token_use`, and `spectragent-flywheel run`
+  exits 4. A sweep runs one task at a time, so a task is never cut off and a sweep overshoots
+  by at most one task. The bench's pre-flight refuses a limit when no hook writes a trace.
+  The evaluator's judge calls are not in any trace and are not counted.
 - Exit codes: 0 done, 1 a stage failed (`ChainStageError`, recorded in `<root>/chain.json`;
   for `report`, also a published dataset that does not read back or an `--out` that cannot be
-  written, named in the message), 2 a bad spec or argument.
+  written, named in the message), 2 a bad spec or argument, 4 the chain stopped at its token
+  limit (`run`; the report is still computed when selected).
 - Every metric carries its denominator. A zero denominator gives `null` with a reason, never
   0. A measure that skips a run's damaged evidence names it in its `skipped`, and `report.md`
   lists those too. Every measure a recommendation rests on counts the distinct sites its data
@@ -462,11 +488,13 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
   by both the report and the browser's overhead benchmark.
 - The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
-  report format is `af-flywheel-report-4` (`-4` added `archive_overhead.settle_wait`: per
+  report format is `af-flywheel-report-5` (`-4` added `archive_overhead.settle_wait`: per
   role, the p50 / p95 of the settle wait before each observation, the share the cap ended
   and the observations whose page state was unknown, read from the `settle` record on every
-  browser fragment through `settle.py::recorded_settle`). Report keys, headings and rule
-  texts never use a planning code (`test_report_schema.py` pins it).
+  browser fragment through `settle.py::recorded_settle`; `-5` added `token_use`: the limit
+  from the spec, every role's recorded tokens and calls, the calls without usage, and
+  `limit_reached`; `report --root` has no spec, so its `limit` is `null`). Report keys,
+  headings and rule texts never use a planning code (`test_report_schema.py` pins it).
 - The privacy measure checks only the two gates of the threat model "only me" (the user's
   ruling of 2026-10-13): what was sent to the model (`model_requests`: the text in the
   messages of every recorded request of every readable run, read through `RunTrace`; inline
@@ -487,7 +515,8 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   not compare a branch whose checkpoint step ran no action (`not_compared`).
 - The live plan (a first run over 10 tasks, then the full chain) is local,
   `tmp/flywheel/M33_live_plan.md`. It has not run and needs the user's approval of route,
-  task count and token ceiling.
+  task count and token ceiling; the ceiling is the spec's `token_limit`, a concrete number in
+  every live spec (2000000 for the twelve-site run of 2026-10-14).
 
 ## 3. Extension recipes
 
@@ -852,7 +881,8 @@ value on an existing one.
   `occlusion: none`. The old `off` fails validation, bare or quoted (PyYAML is YAML 1.1 and
   reads a bare `off` as `false`). In a site rule `fuzzy: on` is read as `true`, which is what
   that bool key means. A numeric limit is never `null`: no limit is `unlimited`
-  (`max_document_misses`, the capability's `dom_max_*`), and `[]` always means empty.
+  (`max_document_misses`, the capability's `dom_max_*`, the chain's `token_limit`), and `[]`
+  always means empty.
 - `pinned` requires a fresh profile, `local_chrome`, no explicit `cdp_url`, no provider knob
   that contradicts the tier, a `random_seed` of at least 1, and `base_time: from_archive`
   only with the `archive` source. `--disable-back-forward-cache` is part of the tier's
@@ -963,6 +993,8 @@ value on an existing one.
 | `BrowserCooperationError` at `prepare()` (or setup, for a caller that skipped `prepare()`) | Architecture §4.14, "协作检查一览"; `browser/cooperation.py` (`binding_problems`, `cooperation_problems`), run by `BrowserCapability.check_setup`. Each line names both sides |
 | `spectragent-bench` exits 3: `the sweep was vetoed at ...` | A guard (`RunAbort`) stopped the sweep — during setup or the run — at the task named; its row says `vetoed: ...` and its `result.json` says `agent_done: vetoed`. Look at the vetoed run's last steps (a challenge page, a risk-control response), not at the configuration |
 | A summary row says `infrastructure failure: ...` | The environment failed, the model stayed unavailable after the provider's retries, or the run's trace is `incomplete` / never closed (its manifest's `incomplete_reason` says what was lost). The three counters above the rows are the agent's ledger, the environment's and the trace's |
+| `spectragent-bench` exits 4: `the sweep reached its token limit after task ...` | The tokens the sweep's traces recorded reached `--token-limit`: the named task finished, the rest never started. The table's `tokens:` line is the total; `no usage reported (not counted)` names calls without usage, `tokens not counted` a task whose trace does not read back |
+| `spectragent-flywheel` exits 4: `stopped at the token limit ...` | The runs under the chain root reached `token_limit`; read `chain.json`'s `stopped_by_token_limit` (`stage: null`: reached before this invocation). Raise the limit, then run only the stages not started (`--stages`) |
 | `spectragent-bench` exits 2: `the pre-flight check refused the configuration for task ...` | The first task's `prepare()` refused the stage YAML before any task ran; the original error follows the colon and names both sides. Check one task with `spectragent-run --dry-run` (`--replay-archive DIR` for a replay) |
 | `BrowserCooperationError` naming `browser.network` or `browser.replay_log` beside the network source | A replay binds `browser.replay_log` in `browser.network`'s place; a live run binds no `browser.replay_log` (§2.2) |
 | A replay refused at `prepare()`, naming the tier, shim, viewport or launch flags | `replay/consistency.py::consistency_problems`. The replay YAML must match the recording's tier, seed, user agent, viewport and provider switches |
@@ -986,6 +1018,7 @@ value on an existing one.
 | `SampleTooLongError` | `length.max_tokens` against the student's `max_steps` and its screenshot in every turn |
 | `CredentialLeakError`, `ReferenceLeakError` | A credential-shaped string in the output, or the reference answer in seed or task text |
 | `ChainConfigError`, `ChainStageError` | A bad spec (exit 2) or a failed stage (exit 1), named in `<root>/chain.json` |
+| The pre-flight refuses `--token-limit`: `this configuration writes no trace` | No hook exposes a run directory, so no token can be counted: add a `trace_writer` hook or drop the limit |
 | A metric is `null` | Its denominator was zero; the `reason` says why. No data gives `insufficient`, never a default verdict |
 | The observation after a form submit stalls | Navigations in flight are awaited before capture (`navigation.py`). A navigation a page timer starts after that check still costs up to 10 s per attempt |
 | Recorded and replayed screenshots differ, or an agent decided on a half-rendered page | Read the step's `settle` record on its browser fragments: `capped` means the page never went quiet within `settle_max_wait_s` (a carousel, a video, a poll); `unknown` means its state could not be read (`detail`). The wait sees no request still in flight with nothing else changing (architecture §4.14) |

@@ -8,10 +8,13 @@ import pytest
 
 from spectragent.core.benchmark_runner import (
     PREFLIGHT_EXIT_CODE,
+    TOKEN_LIMIT_EXIT_CODE,
     VETO_EXIT_CODE,
     BenchmarkRunner,
+    BenchmarkRunSummary,
     PreflightError,
     TaskOutcome,
+    TokenLimitReached,
     _safe_run_id,
 )
 from spectragent.core.capabilities._registrar import CapabilityBase
@@ -950,3 +953,270 @@ class TestTraceBranchesSweep:
             record.restoration is not None and record.restoration.verdict == "ok"
             for record in trace.step_records[:2]
         )
+
+
+# ── The token limit ──────────────────────────────────────────────────
+
+
+class _ThreeTaskLoader(_Loader):
+    def __init__(self, broken: set[str] | None = None):
+        super().__init__(broken)
+        self._tasks["t-3"] = _Task("t-3", "check out")
+
+
+class _Ticking(_Agent):
+    """Never calls done: every step is one more model call, until ``max_steps``."""
+
+    def parse_react_output(self, out):
+        return []
+
+
+class _NoUsage:
+    completion = "done"
+    usage = None
+
+
+class _SilentLLM:
+    """A provider that reports no usage at all."""
+
+    model = "test-model"
+
+    async def ainvoke(self, messages, **kw):
+        return _NoUsage()
+
+
+def _limited_factory(
+    tmp_path, *, agent_cls: Any = _Agent, llm_cls: Any = _LLM, max_steps=2, trace=True
+):
+    """One stack per task; each ``_LLM`` call reports 10 tokens. Returns the factory and its writers."""
+    writers: list[TraceWriter] = []
+
+    def compose():
+        writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
+        writers.append(writer)
+        return make_run(
+            agent=agent_cls(),
+            loop=ReactLoop(max_steps=max_steps),
+            env=make_env(_Env, {"bench_runner_cap": _Cap()}),
+            llm=llm_cls(),
+            memory=_Memory(),
+            hooks=[writer] if trace else [],
+        )
+
+    return compose, writers
+
+
+class TestTheTokenLimit:
+    """``--token-limit``: count each finished task's recorded tokens, stop once the total reaches it.
+
+    The user's ruling of 2026-10-14 (arch §4.2 "sweep 的 token 上限"): the
+    task that reaches the limit finishes, no task after it starts, and the
+    sweep has its own exit code; ``unlimited`` changes nothing.
+    """
+
+    async def test_the_sweep_stops_after_the_task_that_reaches_it(self, tmp_path):
+        compose, writers = _limited_factory(tmp_path)
+        runner = BenchmarkRunner(
+            loader=_ThreeTaskLoader(), compose=compose, timeout=10, token_limit=15
+        )
+        summary = await runner.run()
+
+        # One model call of 10 tokens a task: 10 < 15 after t-1, 20 >= 15 after t-2.
+        assert [outcome.task_id for outcome in summary.outcomes] == ["t-1", "t-2"]
+        assert [o.usage.tokens for o in summary.outcomes if o.usage is not None] == [10, 10]
+        assert summary.token_limit_reached == TokenLimitReached(
+            task_id="t-2", tokens=20, limit=15, not_started=1
+        )
+        assert len(writers) == 2, "t-3 never started: no stack was composed for it"
+        assert all(outcome.ok for outcome in summary.outcomes)
+        lines = summary.format_table().splitlines()
+        assert lines[0].endswith(" token_limit_reached=1")
+        assert "  tokens: 20 recorded by 2 call(s); limit 15" in lines
+        assert any(
+            line.startswith("  t-2: done (") and line.endswith(", 10 tokens)") for line in lines
+        )
+        assert lines[-1] == (
+            "token limit: the sweep's runs recorded 20 tokens, reaching its limit of 15 after "
+            "t-2; 1 task(s) not started"
+        )
+
+    async def test_the_task_that_crosses_it_runs_to_its_end(self, tmp_path):
+        """The limit is checked between tasks: the task already running is never cut off."""
+        compose, _writers = _limited_factory(tmp_path, agent_cls=_Ticking, max_steps=3)
+        runner = BenchmarkRunner(
+            loader=_ThreeTaskLoader(), compose=compose, timeout=10, token_limit=5
+        )
+        summary = await runner.run()
+
+        (outcome,) = summary.outcomes
+        # Its first call already passed the limit; its other two steps ran all the same.
+        assert (outcome.agent_done, outcome.trace_status) == ("max_steps", "complete")
+        assert outcome.usage is not None and (outcome.usage.calls, outcome.usage.tokens) == (3, 30)
+        assert outcome.trace_dir is not None
+        policy = [r.step for r in RunTrace(outcome.trace_dir).step_records if r.origin == "policy"]
+        assert policy == [0, 1, 2]
+        assert summary.token_limit_reached == TokenLimitReached(
+            task_id="t-1", tokens=30, limit=5, not_started=2
+        )
+
+    async def test_a_limit_never_reached_lets_every_task_run(self, tmp_path):
+        compose, _writers = _limited_factory(tmp_path)
+        summary = await BenchmarkRunner(
+            loader=_ThreeTaskLoader(), compose=compose, timeout=10, token_limit=31
+        ).run()
+        assert summary.total == 3 and summary.token_limit_reached is None
+        assert (summary.tokens, summary.calls) == (30, 3)
+        assert "  tokens: 30 recorded by 3 call(s); limit 31" in summary.format_table()
+
+    async def test_unlimited_reads_no_usage_and_prints_what_it_always_did(
+        self, tmp_path, monkeypatch
+    ):
+        def never(trace):
+            raise AssertionError("a sweep without a token limit read the usage")
+
+        monkeypatch.setattr("spectragent.core.benchmark_runner.recorded_usage", never)
+        default, _ = _limited_factory(tmp_path / "default")
+        unlimited, _ = _limited_factory(tmp_path / "unlimited")
+        runners = [
+            BenchmarkRunner(loader=_ThreeTaskLoader(), compose=default, timeout=10),
+            BenchmarkRunner(
+                loader=_ThreeTaskLoader(), compose=unlimited, timeout=10, token_limit="unlimited"
+            ),
+        ]
+        for runner in runners:
+            summary = await runner.run()
+            assert runner.token_limit is None and summary.token_limit is None
+            assert summary.total == 3 and summary.token_limit_reached is None
+            assert all(o.usage is None and o.usage_note is None for o in summary.outcomes)
+            table = summary.format_table()
+            assert "token" not in table, table
+            assert "tasks=3 completed=3 infrastructure_failures=0" in table.splitlines()[0]
+
+    async def test_calls_without_usage_are_counted_and_named(self, tmp_path):
+        compose, _writers = _limited_factory(tmp_path, llm_cls=_SilentLLM)
+        summary = await BenchmarkRunner(
+            loader=_Loader(), compose=compose, timeout=10, token_limit=15
+        ).run()
+
+        assert summary.total == 2 and summary.token_limit_reached is None
+        assert (summary.tokens, summary.calls) == (0, 2)
+        assert summary.calls_without_usage == [
+            "t-1: step 0 call 0 (completed)",
+            "t-2: step 0 call 0 (completed)",
+        ]
+        table = summary.format_table()
+        assert "  no usage reported (not counted): t-1: step 0 call 0 (completed)" in table
+        assert "  tokens: 0 recorded by 2 call(s); limit 15" in table
+
+    async def test_a_trace_whose_calls_do_not_read_back_is_named_not_zero(
+        self, tmp_path, monkeypatch
+    ):
+        from spectragent.core.trace.errors import TraceSchemaError
+        from spectragent.core.trace.usage import recorded_usage
+
+        read: list[str] = []
+
+        def first_unreadable(trace):
+            read.append(trace.run_id)
+            if len(read) == 1:
+                raise TraceSchemaError("messages/000_call_00.json does not parse")
+            return recorded_usage(trace)
+
+        monkeypatch.setattr("spectragent.core.benchmark_runner.recorded_usage", first_unreadable)
+        compose, _writers = _limited_factory(tmp_path)
+        summary = await BenchmarkRunner(
+            loader=_Loader(), compose=compose, timeout=10, token_limit=15
+        ).run()
+
+        first, second = summary.outcomes
+        assert first.usage is None
+        assert first.usage_note == (
+            "a recorded model call does not read back: messages/000_call_00.json does not parse"
+        )
+        assert second.usage is not None and summary.tokens == 10
+        assert summary.token_limit_reached is None, "the sweep went on past the uncounted task"
+        assert "  tokens not counted: t-1: a recorded model call does not read back" in (
+            summary.format_table()
+        )
+
+    async def test_a_veto_on_the_same_task_is_a_veto(self, tmp_path):
+        envs: list[_Env] = []
+        writers: list[TraceWriter] = []
+        runner = BenchmarkRunner(
+            loader=_Loader(),
+            compose=_vetoing_factory(tmp_path, envs, writers, veto_on_task=0),
+            timeout=10,
+            token_limit=1,
+        )
+        summary = await runner.run()
+        assert summary.was_aborted and summary.token_limit_reached is None
+
+    async def test_the_pre_flight_refuses_a_limit_with_nothing_to_count(self, tmp_path):
+        compose, _writers = _limited_factory(tmp_path, trace=False)
+        runner = BenchmarkRunner(loader=_Loader(), compose=compose, timeout=10, token_limit=15)
+        with pytest.raises(PreflightError, match="this configuration writes no trace"):
+            await runner.run()
+        # Without a limit the same configuration runs: nothing needs counting.
+        compose, _writers = _limited_factory(tmp_path, trace=False)
+        summary = await BenchmarkRunner(loader=_Loader(), compose=compose, timeout=10).run()
+        assert summary.completed == 2
+
+    @pytest.mark.parametrize("limit", [0, -3, True, 2.5, "lots", None])
+    def test_a_limit_is_a_number_of_at_least_one_or_unlimited(self, limit):
+        with pytest.raises(ValueError, match="at least 1 or 'unlimited'"):
+            BenchmarkRunner(loader=_Loader(), compose=lambda: None, token_limit=limit)  # type: ignore[arg-type]
+
+    def test_the_cli_exits_4_and_says_why(self, tmp_path, monkeypatch, capsys):
+        from spectragent.core.benchmark_runner import main
+        from spectragent.core.trace.usage import RunUsage
+        from tests._helpers.branch_sources import write_source
+
+        monkeypatch.setattr(BenchmarkRunner, "preflight", lambda self, task_id: None)
+        started: list[str] = []
+
+        async def ten_tokens(self, task_id, **kw):
+            started.append(task_id)
+            return TaskOutcome(task_id=task_id, usage=RunUsage(tokens=10, calls=1))
+
+        monkeypatch.setattr(BenchmarkRunner, "run_task", ten_tokens)
+        for name in ("run-a", "run-b", "run-c"):
+            write_source(tmp_path / "recorded", name, steps=2)
+        config = str(_branch_sweep_config(tmp_path))
+
+        code = main(["--config", config, "--no-eval", "--token-limit", "15"])
+
+        assert code == TOKEN_LIMIT_EXIT_CODE == 4
+        assert started == ["run-a/s1/b0", "run-b/s1/b0"]
+        captured = capsys.readouterr()
+        assert "token limit: the sweep's runs recorded 20 tokens" in captured.out
+        assert (
+            "spectragent-bench: the sweep reached its token limit after task run-b/s1/b0 "
+            "(20 of 15 tokens); 1 task(s) not started"
+        ) in captured.err
+
+    @pytest.mark.parametrize("value", ["0", "lots", "-1"])
+    def test_the_cli_refuses_a_limit_that_is_not_one(self, tmp_path, value, capsys):
+        from spectragent.core.benchmark_runner import main
+
+        with pytest.raises(SystemExit) as raised:
+            main(["--config", str(tmp_path / "x.yaml"), "--token-limit", value])
+        assert raised.value.code == 2
+        assert "--token-limit" in capsys.readouterr().err
+
+    def test_the_cli_default_is_unlimited(self, tmp_path, monkeypatch):
+        from spectragent.core.benchmark_runner import main
+        from tests._helpers.branch_sources import write_source
+
+        limits: list[int | None] = []
+
+        async def record_limit(self, *, task_ids=None, limit=None):
+            limits.append(self.token_limit)
+            return BenchmarkRunSummary(benchmark="b", subset="")
+
+        monkeypatch.setattr(BenchmarkRunner, "run", record_limit)
+        write_source(tmp_path / "recorded", "run-a", steps=2)
+        config = str(_branch_sweep_config(tmp_path))
+        assert main(["--config", config, "--no-eval"]) == 0
+        assert main(["--config", config, "--no-eval", "--token-limit", "unlimited"]) == 0
+        assert main(["--config", config, "--no-eval", "--token-limit", "7"]) == 0
+        assert limits == [None, None, 7]

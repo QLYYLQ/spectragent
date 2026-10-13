@@ -537,6 +537,7 @@ name: first-live
 root: traces/chains/first-live         # everything lands under it (traces/ is git-ignored)
 evidence: live                         # live | rehearsal: the basis of every recommendation
 tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # record / control flags
+token_limit: 2000000                   # every run stage together; unlimited (the default): no limit
 record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # evaluate: false → --no-eval
 control:   {config: <the recording with archive: []>}                  # optional: the overhead control group
 same_path: {config: configs/flywheel/same_path_ui_tars_archive.yaml}
@@ -558,9 +559,18 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
   `<root>/evals/<stage>/` (a stage with `evaluate: true`), `<root>/chain.json` (argv, exit codes,
   runs and times — provenance only).
 - **Outcomes**: a run stage that exits 0 or 1 and wrote a run directory ran (a failed task is
-  data); anything else stops the chain naming the stage. An export never overwrites
-  `datasets/first|second`: with the export selected and either one present, the chain
-  refuses before any stage runs (exit 2) — remove them to export again.
+  data); anything else stops the chain naming the stage, except 4 below. An export never
+  overwrites `datasets/first|second`: with the export selected and either one present, the
+  chain refuses before any stage runs (exit 2) — remove them to export again.
+- **Token limit**: `token_limit` caps the tokens every run stage uses together, counted from
+  the model calls each run's trace recorded (the provider's `total_tokens`, or prompt plus
+  completion; a call whose provider reported no usage is counted and named, never read as 0).
+  The chain counts the runs already under the root first, hands each run stage what is left
+  (`spectragent-bench --token-limit`), and the sweep adds each finished task. Once the total
+  reaches the limit, the task that reached it finishes, no later task or stage (the export
+  included) starts, the report is still computed from what exists and says why the chain
+  stopped, `chain.json` records `stopped_by_token_limit`, and `spectragent-flywheel run` exits 4.
+  `unlimited` (the default) counts nothing and changes nothing.
 - **The export YAML** of a chain uses `filters.require_eval: null` (the chain does not evaluate)
   and `decontamination: {against: []}` (the sources are the benchmark's own tasks) — the
   defaults, as in the shipped `export_sft.yaml`.

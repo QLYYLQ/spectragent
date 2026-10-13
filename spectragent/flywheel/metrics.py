@@ -30,6 +30,12 @@ or the run ended before the teacher decided) says nothing about where the
 teacher's choices lead. The branch-outcome measures leave it out and count
 it apart.
 
+**Token use.** :func:`token_use` / :func:`role_token_use` add up the tokens
+the runs' model calls recorded (``core/trace/usage.py::recorded_usage``,
+the count ``spectragent-bench``'s token limit uses), naming every call whose
+provider reported no usage: the chain's token limit and the report's
+``token_use`` read them.
+
 **Lifted, not copied** (§4.16 "共用而不是复制"): :class:`RestorationRate` /
 :func:`restoration_rate` and :func:`components` were the branch live test's
 helpers; :class:`DedupBytes` and :func:`percentile` were the archive overhead
@@ -85,6 +91,7 @@ from spectragent.core.trace.models import (
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.secret_patterns import find_secrets, iter_readable
 from spectragent.core.trace.sources import match_runs, task_identity, unreadable_reason
+from spectragent.core.trace.usage import recorded_calls, recorded_usage
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.dataset import DATASET_FORMAT, DatasetManifest
 from spectragent.schemas.restoration import RestorationCheck
@@ -1430,17 +1437,6 @@ class _GateTally:
         )
 
 
-def recorded_requests(run: Run) -> list[RecordedLLMCall]:
-    """Every model call *run* recorded — each committed step's, then the trailing ones.
-
-    Raises:
-        One of :data:`EVIDENCE_ERRORS` or ``OSError``: a recorded call does
-        not read back.
-    """
-    calls = [call for record in run.steps for call in run.trace.llm_messages(record.step)]
-    return calls + list(run.trace.trailing_calls)
-
-
 def request_texts(call: RecordedLLMCall) -> list[str]:
     """Every text a recorded request sent the model: the strings of its messages.
 
@@ -1466,7 +1462,7 @@ def privacy(chain: ChainRuns, planted: Sequence[Planted]) -> Privacy:
     """Privacy (arch §4.16): the two gates — what was sent to the model, and the datasets.
 
     The model requests are every readable run's recorded calls, every role,
-    read through ``RunTrace`` (:func:`recorded_requests`), and searched in
+    read through ``RunTrace`` (``core/trace/usage.py::recorded_calls``), and searched in
     the texts their messages hold (:func:`request_texts`). The datasets are
     every file under ``datasets/``, gzip peeled (``iter_readable``): an
     export's output is its files. ``env/`` and the rest of a trace are not
@@ -1485,7 +1481,7 @@ def privacy(chain: ChainRuns, planted: Sequence[Planted]) -> Privacy:
         skipped.update({f"traces/{role}/{rel}": reason for rel, reason in runs.skipped.items()})
         for run in runs.runs:
             try:
-                calls = [request_texts(call) for call in recorded_requests(run)]
+                calls = [request_texts(call) for call in recorded_calls(run.trace)]
             except (*EVIDENCE_ERRORS, OSError) as exc:
                 skipped[run.pointer] = (
                     f"a recorded model call does not read back ({type(exc).__name__})"
@@ -1502,6 +1498,59 @@ def privacy(chain: ChainRuns, planted: Sequence[Planted]) -> Privacy:
         runs=len(read),
         sites=site_count(read),
         skipped=dict(sorted(skipped.items())),
+    )
+
+
+# ── token use ─────────────────────────────────────────────────────────
+
+
+class TokenUse(_Model):
+    """The tokens some runs' model calls recorded (``core/trace/usage.py``), with every call that reported none.
+
+    ``calls`` counts every recorded call. A call whose provider reported no
+    usage adds no tokens and is named in ``calls_without_usage``
+    (``traces/<role>/<run>: step S call K (status)``), never read as zero
+    without a word. A run whose trace or recorded calls do not read back
+    is left out of the counts and named in ``skipped`` with the reason.
+    """
+
+    runs: int
+    tokens: int
+    calls: int
+    calls_without_usage: list[str]
+    skipped: dict[str, str]
+
+
+def token_use(runs: Iterable[Run], skipped: Mapping[str, str] | None = None) -> TokenUse:
+    """What *runs* recorded (``recorded_usage``); *skipped* (pointer → reason) are already left out."""
+    left_out = dict(skipped or {})
+    counted = tokens = calls = 0
+    without: list[str] = []
+    for run in runs:
+        try:
+            usage = recorded_usage(run.trace)
+        except (*EVIDENCE_ERRORS, OSError) as exc:
+            left_out[run.pointer] = (
+                f"a recorded model call does not read back ({type(exc).__name__})"
+            )
+            continue
+        counted += 1
+        tokens += usage.tokens
+        calls += usage.calls
+        without += [f"{run.pointer}: {call.describe()}" for call in usage.without_usage]
+    return TokenUse(
+        runs=counted,
+        tokens=tokens,
+        calls=calls,
+        calls_without_usage=without,
+        skipped=dict(sorted(left_out.items())),
+    )
+
+
+def role_token_use(role: RoleRuns) -> TokenUse:
+    """What every run of *role* recorded; a run that does not read back is named in ``skipped``."""
+    return token_use(
+        role.runs, {f"traces/{role.role}/{rel}": reason for rel, reason in role.skipped.items()}
     )
 
 
@@ -2318,6 +2367,7 @@ __all__ = [
     "Sites",
     "Storage",
     "StorageCategory",
+    "TokenUse",
     "after_checkpoint",
     "agent_outcome",
     "anti_bot",
@@ -2345,12 +2395,12 @@ __all__ = [
     "privacy",
     "ratio",
     "read_dataset_manifest",
-    "recorded_requests",
     "replay_determinism",
     "request_texts",
     "restoration",
     "restoration_rate",
     "retention",
+    "role_token_use",
     "run_tier",
     "same_path_fidelity",
     "settle_wait",
@@ -2359,4 +2409,5 @@ __all__ = [
     "sites",
     "storage",
     "storage_category",
+    "token_use",
 ]

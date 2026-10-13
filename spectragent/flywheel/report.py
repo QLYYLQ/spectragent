@@ -18,12 +18,19 @@ them; each is written into the rule that uses it, by name and value. The
 per-step archive overhead budget is not defined here but in
 ``core/archive/budget.py``, which the browser's overhead benchmark reads too.
 
-:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-4``:
+:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-5``:
 sorted keys, fixed separators, no wall clock, no absolute path, no host
 information — the same inputs give the same bytes) and ``report.md``,
 rendered from the same model, every measure's skipped runs included.
 Planted credential values never enter either: the privacy measure reports
 labels and counts.
+
+**Token use.** ``token_use`` counts every role's recorded tokens from the
+traces (``metrics.role_token_use``, never ``chain.json``) against the chain
+spec's ``token_limit``, which only a spec gives (``report --root`` has none:
+the limit is ``null``, with the reason). When the runs reached it, the chain
+stopped there — no stage starts once the limit is reached — and ``report.md``
+says so first: everything after covers only the runs and datasets that exist.
 
 .. note::
    No ``from __future__ import annotations``: pydantic models throughout.
@@ -64,6 +71,7 @@ from spectragent.flywheel.metrics import (
     SiteRuleCandidates,
     Sites,
     Storage,
+    TokenUse,
     anti_bot,
     archive_overhead,
     body_completeness_metric,
@@ -82,15 +90,17 @@ from spectragent.flywheel.metrics import (
     replay_determinism,
     restoration,
     retention,
+    role_token_use,
     same_path_fidelity,
     site_rules,
     sites,
     storage,
 )
+from spectragent.schemas._types import UNLIMITED, Unlimited
 from spectragent.schemas.dataset import DatasetManifest
 
 #: ``report.json``'s format.
-REPORT_FORMAT = "af-flywheel-report-4"
+REPORT_FORMAT = "af-flywheel-report-5"
 REPORT_JSON = "report.json"
 REPORT_MD = "report.md"
 
@@ -200,6 +210,24 @@ class ChainInfo(_Model):
     evidence: Evidence
 
 
+class TokenUseReport(_Model):
+    """What the chain's runs used, against its token limit (arch §4.16 "token 上限").
+
+    ``limit`` is the chain spec's ``token_limit`` (a number or
+    ``unlimited``); ``None`` when the report was computed without a spec,
+    ``reason`` then says so. ``tokens`` adds up every role's counted runs.
+    ``limit_reached``: ``tokens`` at or over a numeric limit — the chain
+    stopped there, no stage starting once the limit is reached; ``False``
+    under ``unlimited``; ``None`` when the limit is not known.
+    """
+
+    limit: int | Unlimited | None
+    tokens: int
+    limit_reached: bool | None
+    reason: str | None
+    roles: dict[str, TokenUse]
+
+
 class Metrics(_Model):
     """The metrics (arch §4.16 "度量"), one field per row."""
 
@@ -276,8 +304,9 @@ class Decisions(_Model):
 class FlywheelReport(_Model):
     """The report (``report.json``)."""
 
-    format: Literal["af-flywheel-report-4"] = REPORT_FORMAT
+    format: Literal["af-flywheel-report-5"] = REPORT_FORMAT
     chain: ChainInfo
+    token_use: TokenUseReport
     inputs: Inputs
     metrics: Metrics
     sections: Sections
@@ -1037,17 +1066,35 @@ def _inputs(chain: ChainRuns, manifest: DatasetManifest | None) -> Inputs:
     return Inputs(roles=roles, datasets=datasets)
 
 
+#: ``token_use.reason`` when the report was computed without a chain spec.
+NO_SPEC_LIMIT = "computed without a chain spec, so the token limit is not known"
+
+
+def _token_use(chain: ChainRuns, limit: int | Unlimited | None) -> TokenUseReport:
+    roles = {role: role_token_use(chain.role(role)) for role in ROLES}
+    tokens = sum(use.tokens for use in roles.values())
+    if limit is None:
+        reached, reason = None, NO_SPEC_LIMIT
+    else:
+        reached, reason = (limit != UNLIMITED and tokens >= limit), None
+    return TokenUseReport(
+        limit=limit, tokens=tokens, limit_reached=reached, reason=reason, roles=roles
+    )
+
+
 def build_report(
     layout: ChainLayout,
     *,
     evidence: Evidence,
     planted: Sequence[Planted] = (),
     name: str | None = None,
+    token_limit: int | Unlimited | None = None,
 ) -> FlywheelReport:
     """Compute the report of the chain rooted at *layout* (module docstring).
 
     Reads only the root's committed runs and published datasets; never
-    raises for a damaged run (it is skipped with its reason).
+    raises for a damaged run (it is skipped with its reason). *token_limit*
+    is the chain spec's; ``None`` when there is no spec (``report --root``).
 
     Raises:
         DatasetFormatError: A published dataset does not read back as this
@@ -1122,6 +1169,7 @@ def build_report(
     )
     return FlywheelReport(
         chain=ChainInfo(name=name, evidence=evidence),
+        token_use=_token_use(chain, token_limit),
         inputs=_inputs(chain, manifest),
         metrics=metrics,
         sections=sections,
@@ -1419,6 +1467,35 @@ def _lines_section(name: str, sections: Sections) -> list[str]:
     ]
 
 
+def _token_use_md(use: TokenUseReport) -> list[str]:
+    """The ``Token use`` section: the stop first, when the runs reached the limit."""
+    lines: list[str] = []
+    if use.limit_reached:
+        lines += [
+            f"**The chain stopped at its token limit.** Its runs recorded {use.tokens} tokens, "
+            f"at or over the limit of {use.limit}: no stage starts once the limit is reached, "
+            f"so everything below covers only the runs and datasets that exist.",
+            "",
+        ]
+    if use.limit is None:
+        limit = f"not known ({use.reason})"
+    elif use.limit == UNLIMITED:
+        limit = UNLIMITED
+    else:
+        limit = f"{use.limit} tokens ({'reached' if use.limit_reached else 'not reached'})"
+    lines.append(f"- limit: {limit}; used: {use.tokens} tokens")
+    for role, item in use.roles.items():
+        lines.append(
+            f"- {role}: {item.tokens} tokens over {item.calls} call(s) in {item.runs} run(s); "
+            f"{len(item.calls_without_usage)} call(s) reported no usage"
+        )
+        lines += [
+            f"  - no usage reported (not counted): `{call}`" for call in item.calls_without_usage
+        ]
+        lines += _skipped_md(item.skipped, indent="  ")
+    return lines
+
+
 def render_markdown(report: FlywheelReport) -> str:
     """``report.md``: one section per metric, per section and per decision, each ending in its recommendation."""
     lines = [
@@ -1428,6 +1505,10 @@ def render_markdown(report: FlywheelReport) -> str:
         + (f" ({REHEARSAL_NOTE})" if report.chain.evidence == "rehearsal" else "")
         + f". A recommendation is supported only on live evidence from at least "
         f"{SUPPORTED_MIN_SITES} sites.",
+        "",
+        "## Token use",
+        "",
+        *_token_use_md(report.token_use),
         "",
         "## Inputs",
         "",
@@ -1479,6 +1560,7 @@ __all__ = [
     "COMPRESS_MAX_GZIP_RATIO",
     "EXPAND_COVERAGE_MIN_UNRECORDED_SHARE",
     "INSUFFICIENT_SAMPLE",
+    "NO_SPEC_LIMIT",
     "REHEARSAL_NOTE",
     "REPLAY_MIN_FIDELITY",
     "REPLAY_MIN_IDENTICAL_SHARE",
@@ -1493,6 +1575,7 @@ __all__ = [
     "EvidenceRef",
     "FlywheelReport",
     "Recommendation",
+    "TokenUseReport",
     "build_report",
     "pointer",
     "render_markdown",
