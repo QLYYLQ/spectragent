@@ -24,6 +24,18 @@ class FakeScope:
         self.emitted.append(event)
 
 
+class AnsweringScope(FakeScope):
+    """Answers every emitted event the way the action watchdog's handler would."""
+
+    def __init__(self, answer: dict[str, Any]) -> None:
+        super().__init__()
+        self.answer = answer
+
+    def emit(self, event: Any) -> None:
+        super().emit(event)
+        event.record_result(connection_id="c1", handler_name="ActionWatchdog", result=self.answer)
+
+
 class AwaitableEvent:
     """Wraps a CDP event so the action can ``await event`` without a scope.
 
@@ -73,6 +85,15 @@ class FakeCapability:
         if self._default_session_id is None:
             raise RuntimeError("No active browser session")
         return self._default_session_id
+
+
+def answering_capability(answer: dict[str, Any]) -> FakeCapability:
+    """A capability whose focused tab's handler answers every event with *answer*."""
+    capability = FakeCapability()
+    capability._scopes["sid_main"] = AnsweringScope(answer)
+    capability._selector_maps["sid_main"] = {}
+    capability._default_session_id = "sid_main"
+    return capability
 
 
 @pytest.fixture

@@ -32,7 +32,7 @@ measure  spectragent-flywheel run | report      a chain spec, not a run YAML
 
 | Layer | Owns | Where |
 |---|---|---|
-| Browser capability | Capture (the recorder connection, each bound archiver's run-time session, redaction before a file is built), the replayability tier, replay serving and miss answers, retargeting and restoration checks, the student capture check, and every reader of its own evidence formats | `core/capabilities/browser/`: `recorder.py`, `archive/`, `replay/`, `restoration.py`, `capture_check.py`, `index_points.py`, `archive_stats.py`, `cooperation.py`, `navigation.py` |
+| Browser capability | Capture (the recorder connection, each bound archiver's run-time session, redaction before a file is built), the replayability tier, replay serving and miss answers, retargeting and restoration checks, the student capture check, and every reader of its own evidence formats | `core/capabilities/browser/`: `recorder.py`, `archive/`, `replay/`, `restoration.py`, `capture_check.py`, `index_points.py`, `archive_stats.py`, `cooperation.py`, `navigation.py`, `settle.py` |
 | Archive axis | `ArchiverRegistrar`, the `ArchivingCapability` and `ArchiveConsumer` Protocols, `ArchiveFile` / `ArchiveBatch`, the shared privacy rules and ledger, the replay read side (`ArchiveReader`, `open_archive`) | `core/archive/` |
 | Negotiation and runtime | `negotiate_archive` (right after memory negotiation), `bind_archivers` as the last step of `prepare()` on the raw environment, `seed_messages`, typed Loop inputs, the branch provenance handed to the trace | `core/negotiation/archive.py`, `core/runtime.py` |
 | Trace hook, WAL, reader | The demand side (`trace_writer.archive`), pulling `collect_archive()` at its own commit points, step attribution, the `env/` subtree, run-record versions, failing closed; reading back only through the manifest | `core/hooks/trace_writer.py`, `core/trace/` |
@@ -462,8 +462,11 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
   by both the report and the browser's overhead benchmark.
 - The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
-  report format is `af-flywheel-report-3`. Report keys, headings and rule texts never use a
-  planning code (`test_report_schema.py` pins it).
+  report format is `af-flywheel-report-4` (`-4` added `archive_overhead.settle_wait`: per
+  role, the p50 / p95 of the settle wait before each observation, the share the cap ended
+  and the observations whose page state was unknown, read from the `settle` record on every
+  browser fragment through `settle.py::recorded_settle`). Report keys, headings and rule
+  texts never use a planning code (`test_report_schema.py` pins it).
 - The privacy measure checks only the two gates of the threat model "only me" (the user's
   ruling of 2026-10-13): what was sent to the model (`model_requests`: the text in the
   messages of every recorded request of every readable run, read through `RunTrace`; inline
@@ -856,6 +859,18 @@ value on an existing one.
   determinism contract. The form-submit observation stall was fixed in the observation layer
   (`navigation.py` and the screenshot command bound); do not drop the switch to fix a timing
   bug.
+- Every observation waits for the page to settle before it captures, in recording and in
+  replay alike (`settle.py`, architecture §4.14): the main frame's document loaded
+  (`MainFrameLoad`, fed by the same `NavigationFeed`), then `settle_quiet_ms` (500) of no DOM
+  mutation and no resource finishing, measured in the `af-settle` isolated world from the
+  moment the wait reaches the page; at most `settle_max_wait_s` (5; `0` turns it off), then
+  it captures as it is. The wait belongs to the observation, ahead of the one capture every
+  fragment comes from, so a DOM-only run waits exactly as a vision run; it never takes or
+  compares a screenshot. Each browser fragment carries the capture's `PageSettle`
+  (`BrowserCaptureFragment.settle`; left out of the trace JSON when `None`). Restoration
+  compares the recorded and restored observations as they are: there is no capture taken
+  for verification only. Cost: at least one quiet window per observation, the cap on every
+  step of a page that never goes quiet.
 - Fail closed, two ledgers. A lost recorder fails observation, action and collection
   (`RecorderLostError`). A collection that fails, or hands over a batch that breaks the
   contract, is a hole: its step stays uncommitted, the trace closes `incomplete`, complete
@@ -973,4 +988,5 @@ value on an existing one.
 | `ChainConfigError`, `ChainStageError` | A bad spec (exit 2) or a failed stage (exit 1), named in `<root>/chain.json` |
 | A metric is `null` | Its denominator was zero; the `reason` says why. No data gives `insufficient`, never a default verdict |
 | The observation after a form submit stalls | Navigations in flight are awaited before capture (`navigation.py`). A navigation a page timer starts after that check still costs up to 10 s per attempt |
+| Recorded and replayed screenshots differ, or an agent decided on a half-rendered page | Read the step's `settle` record on its browser fragments: `capped` means the page never went quiet within `settle_max_wait_s` (a carousel, a video, a poll); `unknown` means its state could not be read (`detail`). The wait sees no request still in flight with nothing else changing (architecture §4.14) |
 | A model call waits until its timeout late in a long process | A provider that leaves its SDK client to the garbage collector (architecture §4.7). A provider closes every client it builds before the request returns |

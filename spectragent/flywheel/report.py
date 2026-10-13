@@ -18,7 +18,7 @@ them; each is written into the rule that uses it, by name and value. The
 per-step archive overhead budget is not defined here but in
 ``core/archive/budget.py``, which the browser's overhead benchmark reads too.
 
-:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-3``:
+:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-4``:
 sorted keys, fixed separators, no wall clock, no absolute path, no host
 information — the same inputs give the same bytes) and ``report.md``,
 rendered from the same model, every measure's skipped runs included.
@@ -60,6 +60,7 @@ from spectragent.flywheel.metrics import (
     RestorationRate,
     Retention,
     SamePathFidelity,
+    SettleWait,
     SiteRuleCandidates,
     Sites,
     Storage,
@@ -89,7 +90,7 @@ from spectragent.flywheel.metrics import (
 from spectragent.schemas.dataset import DatasetManifest
 
 #: ``report.json``'s format.
-REPORT_FORMAT = "af-flywheel-report-3"
+REPORT_FORMAT = "af-flywheel-report-4"
 REPORT_JSON = "report.json"
 REPORT_MD = "report.md"
 
@@ -275,7 +276,7 @@ class Decisions(_Model):
 class FlywheelReport(_Model):
     """The report (``report.json``)."""
 
-    format: Literal["af-flywheel-report-3"] = REPORT_FORMAT
+    format: Literal["af-flywheel-report-4"] = REPORT_FORMAT
     chain: ChainInfo
     inputs: Inputs
     metrics: Metrics
@@ -1061,7 +1062,11 @@ def build_report(
     samples = manifest.samples if manifest is not None else None
     export_sites = exported_sites(chain, manifest)
     metrics = Metrics(
-        archive_overhead=archive_overhead(chain.role("record"), chain.role("control")),
+        archive_overhead=archive_overhead(
+            chain.role("record"),
+            chain.role("control"),
+            roles=[chain.role(role) for role in ROLES],
+        ),
         body_completeness=body_completeness_metric(chain.role("record")),
         same_path_fidelity=fidelity,
         restoration=restoration(chain.role("branch")),
@@ -1197,6 +1202,17 @@ def _ratio_md(value: Ratio) -> str:
     return f"{value.value:.3f} ({value.numerator}/{value.denominator})"
 
 
+def _settle_md(wait: SettleWait) -> list[str]:
+    """The settle wait of one role's observations, and the runs it could not read."""
+    return [
+        f"- settle wait before each observation ({wait.role}): p50 {_fmt(wait.p50_ms)} ms, "
+        f"p95 {_fmt(wait.p95_ms)} ms over {wait.observations} observation(s) of {wait.runs} "
+        f"run(s); ended by the cap: {_ratio_md(wait.capped)}; page state unknown: "
+        f"{wait.unknown}; sites: {wait.sites}",
+        *_skipped_md(wait.skipped, indent="  "),
+    ]
+
+
 def _skipped_md(skipped: Mapping[str, str], indent: str = "") -> list[str]:
     """One line per run a measure left out, with why (a measure's ``skipped``)."""
     return [f"{indent}- skipped `{run}`: {reason}" for run, reason in skipped.items()]
@@ -1244,6 +1260,7 @@ def _lines_metric(name: str, metrics: Metrics) -> list[str]:
             f"revisit {m.bytes.total.saved_by_revisit} B, by content addressing "
             f"{m.bytes.total.saved_by_content_addressing} B)",
             *_skipped_md(m.bytes.skipped),
+            *[line for wait in m.settle_wait for line in _settle_md(wait)],
         ]
     if name == "body_completeness":
         m = metrics.body_completeness

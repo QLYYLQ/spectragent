@@ -55,8 +55,9 @@ NAVIGATION_EVENTS = (
     "Page.frameNavigated",
     "Page.frameStoppedLoading",
 )
-#: Every control-connection event a feed listens to: those, and its tab's detach.
-FEED_EVENTS = (*NAVIGATION_EVENTS, "Target.detachedFromTarget")
+#: Every control-connection event a feed listens to: those, the document's lifecycle
+#: (which the tab's scope bridge listens to as well) and its tab's detach.
+FEED_EVENTS = (*NAVIGATION_EVENTS, "Page.lifecycleEvent", "Target.detachedFromTarget")
 
 
 def _finished_without_suspending(coro: Coroutine[Any, Any, Any]) -> Any:

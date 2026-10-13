@@ -9,8 +9,6 @@ verb.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from spectragent.core.capabilities.browser.actions.type_coordinate import (
@@ -21,28 +19,8 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 )
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
-    FakeScope,
+    answering_capability,
 )
-
-
-class _AnsweringScope(FakeScope):
-    """Answers every emitted event the way the action watchdog's handler would."""
-
-    def __init__(self, answer: dict[str, Any]) -> None:
-        super().__init__()
-        self.answer = answer
-
-    def emit(self, event: Any) -> None:
-        super().emit(event)
-        event.record_result(connection_id="c1", handler_name="ActionWatchdog", result=self.answer)
-
-
-def _answering(answer: dict[str, Any]) -> FakeCapability:
-    capability = FakeCapability()
-    capability._scopes["sid_main"] = _AnsweringScope(answer)
-    capability._selector_maps["sid_main"] = {}
-    capability._default_session_id = "sid_main"
-    return capability
 
 
 class TestTypeCoordinate:
@@ -113,7 +91,7 @@ class TestTypeCoordinate:
         success for text it never typed."""
         result = await TypeCoordinateAction(post_delay_ms=0).execute(
             {"coordinate_x": 1, "coordinate_y": 2, "text": "x"},
-            capability=_answering({"error": error}),  # type: ignore[arg-type]
+            capability=answering_capability({"error": error}),  # type: ignore[arg-type]
         )
         assert (result.success, result.error) == (False, error)
         assert result.typed_into_sensitive_field is None
@@ -121,7 +99,7 @@ class TestTypeCoordinate:
     async def test_a_performed_type_succeeds(self) -> None:
         result = await TypeCoordinateAction(post_delay_ms=0).execute(
             {"coordinate_x": 1, "coordinate_y": 2, "text": "x"},
-            capability=_answering({"typed": True, "length": 1, "sensitive": False}),  # type: ignore[arg-type]
+            capability=answering_capability({"typed": True, "length": 1, "sensitive": False}),  # type: ignore[arg-type]
         )
         assert (result.success, result.error) == (True, None)
 

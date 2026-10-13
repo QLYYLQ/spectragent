@@ -57,6 +57,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayLog,
     ReplayLogEntry,
 )
+from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.trace.encoding import EncodedFragment, encode_archive_file, encode_fragment
 from spectragent.core.trace.models import (
     TaskSetupRecord,
@@ -121,9 +122,11 @@ def png(color: int) -> bytes:
     return buffer.getvalue()
 
 
-def screenshot(step: int, color: int) -> EncodedFragment:
+def screenshot(step: int, color: int, settle: PageSettle | None = None) -> EncodedFragment:
+    """The step's screenshot, carrying the capture's settle record when one is given."""
     encoded = encode_fragment(
-        step, ScreenshotObs(image_bytes=png(color), viewport_width=8, viewport_height=8)
+        step,
+        ScreenshotObs(image_bytes=png(color), viewport_width=8, viewport_height=8, settle=settle),
     )
     assert encoded is not None
     return encoded
@@ -216,6 +219,8 @@ class Step:
     restoration: RestorationCheck | None = None
     replay: Sequence[ReplayLogEntry] = ()
     network: Callable[[RecordingScript], Awaitable[Any]] | None = None
+    #: The settle record the step's screenshot carries (needs ``color``).
+    settle: PageSettle | None = None
 
     def record(self, step: int) -> StepRecord:
         return StepRecord(
@@ -232,7 +237,7 @@ class Step:
         )
 
     def fragments(self, step: int) -> list[EncodedFragment]:
-        return [screenshot(step, self.color)] if self.color is not None else []
+        return [screenshot(step, self.color, self.settle)] if self.color is not None else []
 
 
 def config(

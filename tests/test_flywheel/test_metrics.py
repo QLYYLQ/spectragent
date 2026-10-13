@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.llm.messages import (
     AssistantMessage,
     ContentPartImageParam,
@@ -68,9 +69,10 @@ from spectragent.flywheel.metrics import (
     restoration_rate,
     run_tier,
     same_path_fidelity,
+    settle_wait,
     sites,
 )
-from spectragent.flywheel.report import build_report, report_json
+from spectragent.flywheel.report import build_report, render_markdown, report_json
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.flywheel_traces import (
@@ -102,6 +104,69 @@ def damaged_copy(known: KnownChain, tmp_path: Path) -> Path:
     root = tmp_path / "chain"
     shutil.copytree(known.root, root)
     return root
+
+
+class TestSettleWait:
+    """The observation's settle wait, read from the record every browser capture carries."""
+
+    @staticmethod
+    def _role(tmp_path: Path) -> Any:
+        settled = PageSettle(waited_ms=600, outcome="settled")
+        write_plain(
+            tmp_path,
+            "shop",
+            [
+                Step(duration_ms=3000, color=10, settle=settled),
+                Step(
+                    duration_ms=6000,
+                    color=20,
+                    settle=PageSettle(waited_ms=5000, outcome="capped", waiting_for=["dom"]),
+                ),
+                Step(
+                    "terminal",
+                    color=30,
+                    settle=PageSettle(waited_ms=2, outcome="unknown", detail="no world"),
+                ),
+            ],
+            task_id="shop-1",
+            site="shop.test",
+        )
+        write_plain(
+            tmp_path,
+            "news",
+            [Step(color=40, settle=PageSettle(waited_ms=900, outcome="settled")), Step(color=50)],
+            task_id="news-1",
+            site="news.test",
+        )
+        write_plain(tmp_path, "blank", [Step(duration_ms=100)], task_id="b-1", site="b.test")
+        return open_role(tmp_path, "record")
+
+    def test_p50_p95_and_the_caps_share(self, tmp_path: Path) -> None:
+        found = settle_wait(self._role(tmp_path))
+        assert found.model_dump() == {
+            "role": "record",
+            "runs": 3,
+            "observations": 4,  # a step without a record (news's second, blank's) is left out
+            "sites": 2,
+            "p50_ms": 900.0,  # nearest rank of [2, 600, 900, 5000]
+            "p95_ms": 5000.0,
+            "capped": {"numerator": 1, "denominator": 4, "value": 0.25, "reason": None},
+            "unknown": 1,
+            "skipped": {},
+        }
+
+    def test_the_report_shows_it_under_archive_overhead(self, tmp_path: Path) -> None:
+        root = empty_layout(tmp_path).root
+        self._role(root / "traces" / "record")
+        report = build_report(ChainLayout(root), evidence="rehearsal")
+        (record,) = report.metrics.archive_overhead.settle_wait
+        assert (record.role, record.observations) == ("record", 4)
+        assert (
+            "- settle wait before each observation (record): p50 900 ms, p95 5000 ms over "
+            "4 observation(s) of 3 run(s); ended by the cap: 0.250 (1/4)"
+        ) in render_markdown(report)
+        document = json.loads(report_json(report))
+        assert document["metrics"]["archive_overhead"]["settle_wait"][0]["capped"]["numerator"] == 1
 
 
 class TestShapes:
@@ -233,6 +298,25 @@ class TestArchiveOverhead:
         assert total.saved_by_revisit > 0, "style2.css was written as a revisit of style.css"
         assert found.per_step_before == total.before / 5
         assert found.per_step_after == total.after / 5
+
+    def test_it_carries_the_settle_wait_of_each_role_that_ran(
+        self, chain: ChainRuns, tmp_path: Path
+    ) -> None:
+        roles = [chain.role(role) for role in ("record", "control", "same_path", "branch")]
+        missing = open_role(tmp_path / "none", "control")
+        found = archive_overhead(
+            chain.role("record"), chain.role("control"), roles=[*roles, missing]
+        )
+        assert [wait.role for wait in found.settle_wait] == [
+            "record",
+            "control",
+            "same_path",
+            "branch",
+        ], "a role that did not run has no entry"
+        # The known chain was written without the wait: no record, null with the reason.
+        record = found.settle_wait[0]
+        assert (record.observations, record.p50_ms, record.capped.value) == (0, None, None)
+        assert record.capped.reason is not None and "no observation" in record.capped.reason
 
     def test_a_run_without_traffic_has_only_its_fingerprint(self, chain: ChainRuns) -> None:
         (broken,) = [run for run in chain.role("record").runs if run.rel == "rec-broken"]

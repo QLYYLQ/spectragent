@@ -1243,6 +1243,8 @@ class ScreenshotWatchdog(BrowserWatchdog):
 
 # BrowserCapability 从注册表发现 watchdog，按 level 建立 scope 连接；
 # negotiated fragments 决定一次 BrowserStateRequestEvent 激活哪些 resolver。
+# 这一次采集之前先等页面落定（§4.14 "观测之前等页面落定"）：一次采集一个等待，
+# 所有 fragment 共用，记在每个 browser fragment 的 settle 上。
 ```
 
 **新增 observation fragment = 新增一个 Resolver Watchdog。BrowserCapability 不改。**
@@ -2755,10 +2757,29 @@ M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚
 修法在观测这一层（`BrowserCapability` 的观测 cycle 与 `ScreenshotWatchdog`），不在 pinned：那个开关是回放档位的确定性契约（与指纹一起，§4.14 `replayability`），赛跑本身与它无关，它只是让赛跑必输：
 
 - **跟踪**（`core/capabilities/browser/navigation.py`）：`MainFrameNavigation` 是每个 tab 一份的纯状态，不碰 CDP——主 frame 的请求（`requested`）或跨文档的开始（`started`）置起在途，提交（`committed`）或停止加载（`stopped`）清掉；子 frame 与同文档类型（`sameDocument` / `historySameDocument`）不算，不知道主 frame id 时什么都不算。`NavigationFeed` 在控制连接上按该 tab 的 session 把 `Page.frameRequestedNavigation`（只认 `disposition: currentTab`：开新 tab、新窗口或下载不替换这一页）、`Page.frameStartedNavigating`、`Page.frameNavigated`、`Page.frameStoppedLoading` 喂给它，回调在接收循环里按线上的顺序执行。`_attach_tab` 拿到主 frame id 之后建它（`Page.enable` 已经发过），`close_tab`、attach 的回滚与 `teardown` 拆掉；它还听自己 session 的 `Target.detachedFromTarget`（发在 browser session 上、参数里点名这个 session），页面自己关掉的弹窗从不经过 `close_tab`，detach 时它自行解除全部回调并置为已落定，不再有人等它（子 session——iframe、worker——detach 不算）。
-- **等待**：`_capture_once` 每次尝试之前 `wait_settled(_NAVIGATION_SETTLE_TIMEOUT_S)`（10 s，模块常量，与 `_OBSERVE_MAX_ATTEMPTS` 同一写法）；到上限仍在途就记一条警告、照常采集（下一条兜底）；上限按尝试算。没有在途导航时立即返回、不让出事件循环：没有导航的步与链接点击（fixture 上实测：链接的提交早于下一次观测）的时序不变；任何档位上观测时仍在途的跨文档导航都会被等：`none` 档位的表单提交同样等到提交（实测约 15 ms），真实站点上应答慢的链接也一样，看到的是新文档而不是旧的。
+- **等待**：`_capture_once` 每次尝试之前 `wait_settled(_NAVIGATION_SETTLE_TIMEOUT_S)`（10 s，模块常量，与 `_OBSERVE_MAX_ATTEMPTS` 同一写法）；到上限仍在途就记一条警告、照常采集（下一条兜底）；上限按尝试算。没有在途导航时这一步立即返回、不让出事件循环（fixture 上实测：链接的提交早于下一次观测，所以链接点击之后也不在这里等）；任何档位上观测时仍在途的跨文档导航都会被等：`none` 档位的表单提交同样等到提交（实测约 15 ms），真实站点上应答慢的链接也一样，看到的是新文档而不是旧的。这一步之后、采集之前还有页面落定的等待（下一节），它在每个档位、每次观测上都花时间，所以观测的时序不再与这个修复之前相同。
 - 实测（裸 CDP，Chrome 155，带 pinned 的这个开关）各种交互在该 tab 的 session 上发什么：表单提交（GET / POST）、链接、`location.href` 是请求 → 跨文档的开始 → `frameNavigated` → `frameStoppedLoading`，点击最后一个回复比请求早约 1 ms 到；文本框里回车时请求早于按键的最后一个回复，动作返回时导航已经在途；204 与下载是请求 → 开始 → `frameStoppedLoading`，没有提交；锚点链接（含 `href="#"`）、`pushState` 没有请求，只有 `navigatedWithinDocument`；`mailto:` 是请求 → 开始 → `frameStoppedLoading`；连不上的主机提交的是出错页（`chrome-error://chromewebdata/`），之后 Chrome 自己重载一次（开始 → 停止加载）；`javascript:` 链接、被 `preventDefault()` 拦下的提交、`target=_blank`（链接或表单）、`<a download>` 在这个 session 上没有请求。
 - **命令上限**：观测截图的 `Page.captureScreenshot` 有自己的上限（`screenshot_watchdog._SCREENSHOT_COMMAND_TIMEOUT_S`，10 s，远小于事件的 30 s；`browser.screenshot` 动作不受限）：Chrome 不回应的那一次算这次尝试缺 fragment，由原有的 `_OBSERVE_MAX_ATTEMPTS` 重发吸收，不再吃掉整个事件的超时，晚到的回复由客户端丢弃。它兜住跟踪覆盖不到的：检查之后才发起的导航（页面的定时器）。实测：把等待拿掉，表单提交之后那一步 10.1 s、第二次尝试成功（修之前 30 s 后以 `observe` 失败）。观测路径上其余要等 Chrome 回复的命令也都有上限（2026-10-13）：DOM watchdog 的整次采集（cleaner 选的全部命令，进程外 frame 在内）`dom_watchdog._DOM_CAPTURE_TIMEOUT_S` 10 s，超了这次尝试缺 DOM fragment、同样由重发吸收；小的读取——`browser_meta` 的 `Page.getNavigationHistory` 与 `Page.getFrameTree`、截图之后的 `Page.getFrameTree`——`watchdogs/base.py` 的 `OBSERVATION_READ_TIMEOUT_S` 2 s（`observation_read`），超了只少一个文档戳（或 `browser_meta` 的 URL 与标题），不让整个 fragment 失败。一次尝试最坏 10 + 10 + 3 × 2 = 26 s，仍在事件的 30 s 之内，重发还有余地（测试钉住这个不等式）。渲染进程不回应（对话框开着、页面脚本占满主线程、文档正在替换）时，一条命令因此最多花掉一次尝试，而不是整个事件。
-- **回归**：`test_browser_form_submit_live.py`（真实 Chrome，fixture 的 `form_submit` 页，`replay_driver.record_config` 的形状：pinned + 三个归档器、BrowserUse `dom_vision`、按元素 id 点击的脚本化模型）：GET 与 POST 表单的点击提交、文本框里回车提交（`browser.send_keys`），提交之后那一步 5 s 之内完成（实测约 0.1 s）、URL 是结果页、loaderId 换了、DOM 里是回显的字段、没有 `observe` 错误；`none` 档位、不开归档的同样流程照旧通过。不用 Chrome 的部分在 `test_browser_navigation_settle.py`（含弹窗自己关掉时 feed 的解除）与 `test_browser_observation_bounds.py`（各条命令上限，以及卡住的 DOM 采集只花一次尝试）；`test_browser_popup_close_live.py` 在真实 Chrome 里让被接管的弹窗自己 `window.close()`，它的 feed 随 Chrome 的 detach 解除，打开它的 tab 照常跟踪。
+- **回归**：`test_browser_form_submit_live.py`（真实 Chrome，fixture 的 `form_submit` 页，`replay_driver.record_config` 的形状：pinned + 三个归档器、BrowserUse `dom_vision`、按元素 id 点击的脚本化模型）：GET 与 POST 表单的点击提交、文本框里回车提交（`browser.send_keys`），提交之后那一步 5 s 之内完成（这个修复时实测约 0.1 s，那时还没有下一节的落定等待）、URL 是结果页、loaderId 换了、DOM 里是回显的字段、没有 `observe` 错误；`none` 档位、不开归档的同样流程照旧通过。不用 Chrome 的部分在 `test_browser_navigation_settle.py`（含弹窗自己关掉时 feed 的解除）与 `test_browser_observation_bounds.py`（各条命令上限，以及卡住的 DOM 采集只花一次尝试）；`test_browser_popup_close_live.py` 在真实 Chrome 里让被接管的弹窗自己 `window.close()`，它的 feed 随 Chrome 的 detach 解除，打开它的 tab 照常跟踪。
+
+#### 观测之前等页面落定（与归档无关）
+
+2026-10-13 的 live 冒烟（本地的 `traces/chains/live-smoke/`）把录制与回放的截图逐张对比，发现录制时观测在页面还没渲染完就拍了：nvidia 第 2 步是一张白页，megabus 第 0 步只有首图、订票表单还没出来。录制走真实网络、慢；回放从归档送、快，所以同一步回放时拍到的是渲染完的页面，恢复校验的截图距离不通过（原路径保真 48%，30 个分叉里 25 个以 `RestorationDivergedError: screenshot_distance` 拒绝），而 agent 在每一个 browser run 里都对着没渲染完的页面做决定。用户的裁决（2026-10-13）：每次观测之前等页面落定，录制与回放一样；恢复校验比较的就是 agent 看到的观测，没有只为校验而拍的另一张。
+
+- **等待是观测的一部分**：`_capture_once` 每次尝试先等在途的主 frame 导航（上一节），再等页面落定（`core/capabilities/browser/settle.py` 的 `wait_for_settle`），然后才发出那一个采集所有协商 fragment 的 `BrowserStateRequestEvent`。所以只协商 DOM 的观测、只要截图的观测、两样都要的观测等的是同一个等待，每个 fragment 共享它；判断只看页面状态，从不拍图或比图。半渲染的 DOM 同样会让 agent 看错、让恢复校验的元素签名对不上。
+- **落定按顺序判两件事**：(1) **加载**：主 frame 的当前文档收到了 `load` 生命周期事件。`navigation.py` 的 `MainFrameLoad` 是每个 tab 一份的纯状态，由同一个 `NavigationFeed` 在控制连接上按 loaderId 喂给它（`Page.lifecycleEvent`；新的 loaderId 就是新文档；从没听说过的文档不等）。`_attach_tab` 在 feed 建好之后才发 `Page.setLifecycleEventsEnabled`：Chrome 在打开生命周期事件时把当前文档已经到过的事件再报一遍（实测：`commit` … `load`），中途接管的 tab 因此也知道自己加载完没有。(2) **静默窗口**：之后连续 `settle_quiet_ms`（默认 500 ms）没有 DOM 变化（`MutationObserver`：子节点、属性、文本）也没有资源加载完成（`PerformanceObserver` 的 `resource` 条目）。窗口从等待到达页面的那一刻起算，之前发生的不算：动作的后果（点击发出的请求、请求回来之后的渲染）都在动作返回之后才开始。两个观察者装在独立的 isolated world `af-settle` 里（`Page.createIsolatedWorld`，同名的 world 每个文档一个，按名字复用），页面脚本看不到也干扰不了；一条 `Runtime.evaluate`（`awaitPromise`）等页内的 promise 在窗口满足或预算用完时自己结束。一个资源加载完成就是"值得等的网络活动"：图片、字体不改 DOM 也改画面，请求的回应通常随即被渲染；窗口里什么都没发生、只有一个还在途的请求（轮询、流、beacon），不等。
+- **上限**：整个等待最多 `settle_max_wait_s`（默认 5 s），到了就照常采集：轮播、视频、ticker 这类永远不静的页面按当时的样子拍，从不无限等。一个文档的加载在所有观测里加起来最多等一个上限，加载永远结束不了的页面只在第一次付这个上限；静默窗口每次观测都量。`settle_max_wait_s: 0` 关掉整个等待，观测立即采集；`settle_quiet_ms: 0` 只等加载；窗口比上限长的组合在构造时报错，点名两个旋钮（窗口永远量不满，每次观测都会等满上限）。读不到页面状态（不知道主 frame、文档拒绝 isolated world、回复不是探针的）就立即采集；渲染进程忙到不回应探针（页面脚本占满主线程、对话框开着），在上限时采集。等待期间页面换了文档（客户端跳转），在同一个上限之内等新文档。两个旋钮是 `BrowserCapability` 的标量，原样记进 `config.json`（§5.6）；发布的 YAML 不写它们，默认值录制与回放都适用。
+- **记录**：每次采集的等待记成 `PageSettle{waited_ms, outcome: settled | capped | unknown, waiting_for: [load | dom], detail}`（`capped` 时 `waiting_for` 是等待还没看到落定的那几项，`unknown` 时 `detail` 说读不到的原因），同一份放在这次采集的每个 browser fragment 上（`observations.py` 的 `BrowserCaptureFragment.settle`：`browser.dom`、`browser.screenshot`、`browser.browser_meta`）。放在 fragment 上，而不是 `loop.step_info` 或 `StepRecord`：等待是 capability 采集过程的一部分，与 `captured_at` 一样是采集的出处；Loop 不知道浏览器等了多久，`StepRecord` 是所有 capability 共用的；而无论 run 协商了哪个 browser fragment，读者都能在它上面找到。等待关掉时字段是 `None`，trace 的 JSON 里不写这个键，没有等待的 fragment 写出的字节与以前相同。度量报告在归档开销一节按角色给出 p50 / p95 与上限截断的占比（§4.16，`settle.py::recorded_settle` 读它）。
+- **实测**（2026-10-13，本机网络，Chrome 155 headless、桌面 UA、`prefers-reduced-motion: reduce`、每个站点一个新 profile，40 个真实站点；脚本与数据在本地的 `tmp/flywheel/settle/`）：每个站点按时间记下全部 DOM 变化与资源完成、主 frame 的生命周期事件，以及导航之后 0.5–12 s、滚动之后 0.25–6 s 的截图，再按这些时间线模拟各种等待规则。"拍全了"指采集时刻之后的截图与最终截图的 dHash 距离都不超过 5（恢复器的默认阈值）；12 s 内画面从没稳定下来的站点（轮播）不计。窗口 500 ms、上限 5 s：
+
+  | 场景 | 立即采集（这个修复之前） | 加上等待 | 等待 p50 / 平均 / p95 | 上限截断 |
+  |---|---|---|---|---|
+  | `navigate` 之后（观测从 `load` 开始，26 个站点） | 11/26 拍全 | 21/26 | 1.14 / 1.75 / 5.0 s | 2/26 |
+  | 点击引起的导航之后（从新文档提交开始，32 个站点） | 0/32 | 18/32 | 5.0 / 4.34 / 5.0 s | 21/32 |
+  | 滚动之后（同一个文档，38 个站点） | — | 37/38 | 1.20 / 1.98 / 5.0 s | 6/38 |
+
+  取舍的依据，同样的数据：窗口 300 ms 时 navigate 之后只有 17/26 拍全；1000 ms 与 500 ms 同为 21/26，平均多等 1.2 s。上限 3 s 时点击导航之后只有 11/32，8 s 时 21/32、平均多等 1.6 s。再加 Chrome 的 `networkAlmostIdle`（至多两个请求在途 500 ms）作为第三个条件：navigate 之后平均多等约 1 s（1.75 → 2.71 s），拍全的站点数不变（21/26），点击导航之后也不变（18/32），所以不用它；在 40 个站点里，`networkIdle` 有 19 个、`networkAlmostIdle` 有 9 个在导航之后 18 s 之内从没出现。只算 DOM 变化、不算资源完成：navigate 之后 17/26、滚动之后 33/38。在真实的 `BrowserCapability` 上沿录制的路径复跑（pinned）：nvidia 点开搜索之后的观测等了 0.67 s，拍到渲染完的搜索面板（关掉等待时拍到的是还在淡出的 cookie 对话框，第二次点击落在它上面，搜索面板没打开）；megabus 第 0 步等了 1.29 s，订票表单在图里。
+- **回归**：`test_browser_settle.py`（fake CDP：加载跟踪与它的总预算、静默的页面早结束、忙碌的页面在上限结束、不回应的页面、读不到状态立即采集、等待中换了文档、等待先于采集、每个 fragment 同一份记录、只协商 DOM 也等、`0` 关掉、每次尝试各等一次、trace 往返）；`test_browser_settle_live.py`（真实 Chrome，本地页面在 `load` 之后经三个各 300 ms 的请求才渲染主体：截图里有它，只协商 DOM 的观测里也有它；关掉等待的对照组两样都没有；永远不静的页面在上限采集）。fixture 上的录制、回放、分叉、导出与归档测试（`replay_driver.record_config`、`archive_bench.LiveRecording`）把窗口设成 100 ms：fixture 的页面是静态的、从本机送，短窗口不丢它们要验的东西，整套测试也不因此慢下来；默认值由上面两个测试和用发布配置跑的演练（§4.16）覆盖。演练里 drift 站点的每次回放现在把错误页的 URL 请求两次：观测等页面落定时 run 还在，赶上了 Chrome 约 1 s 后对错误页的自动重载（第二次在终止观测的收集里）。
 
 #### 回放：网络来源与 miss 策略（M30）
 
@@ -2924,6 +2945,8 @@ class ArchiveReader(Protocol):
 
 阈值不在这里：`screenshot_max_distance` 与 `strict | warn` 是恢复器的旋钮（§4.1）。
 
+校验比较的就是录下的与恢复出的两个观测本身，也就是 agent 看到的那两个：两边都在采集之前等过页面落定（上面"观测之前等页面落定"，录制与回放用同一个等待），没有只为校验而另拍的截图或另读的 DOM。
+
 #### 已知限制
 
 - 嵌套的 dedicated worker 脚本绕过 Fetch（见上）。
@@ -2941,6 +2964,7 @@ class ArchiveReader(Protocol):
   - 步归因是"收集取走它的那一步"：页面加载完之后才发出的异步请求（`fetch`、XHR、迟到的 beacon）可能落在下一步的 `replay.jsonl` 里，与录制时 `index.jsonl` 的归因是同一个模型（fixture 实测：金丝雀页面在第 0 步导航，它的 `fetch` 在第 1 步的日志里）。
   - 回放日志导出成 HAR 推迟（还没有按 HAR 打分的评测器）。
   - 第一次 live run（10 个真实 `online_mind2web` 任务上的度量）是度量链只跑录制、原路径回放与报告的那一种（§4.16）；它的链规格与命令在本地的 `tmp/flywheel/M33_live_plan.md`，等用户授权（路由、N、token 上限），没有跑过。M30 写的 `tmp/flywheel/s2b/` 脚本已被它取代。
+- **页面落定的残余**（上面"观测之前等页面落定"）：窗口里什么都没发生、只有一个比窗口长的请求在途时（点击之后一次慢的接口调用，页面又没有加载提示）不等它，下一步才看到结果，Chrome 不为同一文档里的变化报网络空闲，而在控制连接上跟踪每个请求会把所有网络事件压到 agent 的连接上（recorder 自己有连接正是为此）；CSS 过渡与动画、canvas / WebGL、进程外 iframe 里的变化不经过主文档的 DOM，不算变化；永远不静的页面每一步都付上限（实测：滚动之后 6/38 的站点等满 5 s）。
 - 本节的 Chrome 行为都是 153 的实测，归档器的部分是 155 的实测（本机 Chrome 在 M29 期间升到了 155，153 时写下的金丝雀全部照样通过）；`requires_chrome` 的回归测试是版本金丝雀。
 
 ### 4.15 训练导出（M32）
@@ -3148,7 +3172,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 
 | 度量 | 读什么 | 定义 |
 |---|---|---|
-| 归档开销 | `record` 与 `control` 的 `StepRecord`；`record` 的 env/ extra 索引与 `index.jsonl` | **延迟**：策略步、从第 1 步起（第 0 步含环境 setup），每步环境侧时间 = `duration_ms − (llm_latency_ms 或 0)`（`duration_ms` 为 `None` 的步不计）；两组各自的 p50 / p95（最近秩的 `percentile`），开销 = 开 − 关。两组的档位（`TraceConfig.resolved` 里 capability 的 `replayability`）不同、或任一组为空时为 `null`。live 的两组走的不是同一条路径，比的是分布。**字节**：每个录制 run 的 env/ 去重前后（`RunTrace.committed_files` 里带 `archive` 的条目）——去重后 = 每个不同路径各计一次的 `size`；去重前 = 每一步（与收尾）的 extra 索引列出的每个 env 文件各计一次（内容寻址的文件被每个引用它的步各计一次），再加 revisit 记录替掉的完整记录长度（browser 的 `revisit_saving`）；按步数平均。与 M29 `ArchiveOverheadReport` 同一账法：`before == after + saved_by_revisit + saved_by_content_addressing` |
+| 归档开销 | `record` 与 `control` 的 `StepRecord`；`record` 的 env/ extra 索引与 `index.jsonl` | **延迟**：策略步、从第 1 步起（第 0 步含环境 setup），每步环境侧时间 = `duration_ms − (llm_latency_ms 或 0)`（`duration_ms` 为 `None` 的步不计）；两组各自的 p50 / p95（最近秩的 `percentile`），开销 = 开 − 关。两组的档位（`TraceConfig.resolved` 里 capability 的 `replayability`）不同、或任一组为空时为 `null`。live 的两组走的不是同一条路径，比的是分布。**字节**：每个录制 run 的 env/ 去重前后（`RunTrace.committed_files` 里带 `archive` 的条目）——去重后 = 每个不同路径各计一次的 `size`；去重前 = 每一步（与收尾）的 extra 索引列出的每个 env 文件各计一次（内容寻址的文件被每个引用它的步各计一次），再加 revisit 记录替掉的完整记录长度（browser 的 `revisit_saving`）；按步数平均。与 M29 `ArchiveOverheadReport` 同一账法：`before == after + saved_by_revisit + saved_by_content_addressing`。**观测前的落定等待**（`settle_wait`，每个跑过的角色一条，按阶段顺序）：环境侧时间里有多少是观测之前等页面落定（§4.14），从每一步每个 browser fragment 都带的 `settle` 记录读（`settle.py::recorded_settle`：读该步记录了的第一个 browser fragment，`browser_meta`、截图、DOM 依次）；恢复步与终止观测也算，它们也是采集。每个角色给 p50 / p95（同一个 `percentile`）、上限截断的占比（分母是带记录的观测，没有记录时为 `null` 并写明原因）、读不到页面状态的次数、站点数与读不回来的 run。只是陈列，不参与规则 |
 | body 完整率 | `record` 的 `index.jsonl`（`iter_index_lines`） | 每个 `record_id` 的最终状态（最后一行；`streamed_later` 看有没有它的 `kind: body` 行）：有 body（`ok`、流完 body 的 `streamed_later`）、不需要 body（`redirect`、`websocket`）、明确没有 body（`too_large`、`incomplete`；最后一行是 `pending` 的按 `incomplete` 读，§4.14）。完整率 = 有 body 或状态明确的记录 / 全部记录；另报有 body 率（分母去掉不需要 body 的）与按状态的分布（browser 的 `body_completeness`）。"服务器发了、归档里没有"只有 fixture 的访问日志能判：那是演练测试的断言，不是报告的度量 |
 | 原路径回放保真（按站点） | `same_path` 的 `StepRecord.restoration`；源 run（`TraceConfig.branch.source_trace`，相对 `<root>/traces/record`）的截图 | 被校验的每一步（恢复步与检查点步）：恢复器判定 `ok` 的占比（URL、元素签名多重集、截图 dHash ≤ 阈值、无文档 miss，§4.14 "恢复"）；严格版：URL 相等且截图 sha256 与源 run 同一步相同的占比；每个 run 第一个不通过的步与原因；全部通过的 run 占比；`errored_runs`：没有干净结束的 run 数（两本账任一：trace 不是 `complete`，或 agent 以 error / timeout / vetoed 结束、没有读得回的 `result.json`） |
 | 恢复校验率 | `branch` 的 `StepRecord.restoration` | 通过的校验 / 全部校验；不通过的按 `RestorationCheck.reasons` 计（一条多个原因各计一次）；重定位失败按 `not_found` / `ambiguous` 与 `RetargetMethod` 计 |
@@ -3174,7 +3198,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 
 #### 报告
 
-- `report.json`：格式 `af-flywheel-report-3`（pydantic `FlywheelReport{format, chain{name, evidence}, inputs, metrics, sections, decision_inputs, recommendations{metrics, sections}, decisions{miss_policy, recording_coverage, site_rules, retention}}`；`-2` 起：建议带 `sites` 与 `status_reason`，决定改用语义名，度量带 `sites`、空分叉与 `skipped`；`-3` 起：隐私一项只看两道门，按门分开计数，带 `runs`、`sites` 与 `skipped`），键排序、缩进 2，**没有墙钟字段、绝对路径或主机信息**（run 写成相对链根的 `traces/<角色>/<run>`），同样的输入算两次逐字节相同；`inputs` 按角色记 run 数、跳过的 trace 与原因、以模型调用失败结束的 run（`model_failures`：路由的失败，不是站点的证据；它们照样计入各项度量，live 计划写了怎么处理），以及 trace 里实际运行的组件（agent、loop、恢复器、cleaner、serializer、backend、网络来源、模型路由；由 `metrics.components(trace)` 读脱敏后的 `TraceConfig.resolved`，没标 trace-safe 的自由字符串读作 `<omitted>`：验证要点名所用的配置），数据集记在不在与格式。每条证据的 `pointer` 都能在 `report.json` 里解析到它的 `value`（测试钉住）。
+- `report.json`：格式 `af-flywheel-report-4`（pydantic `FlywheelReport{format, chain{name, evidence}, inputs, metrics, sections, decision_inputs, recommendations{metrics, sections}, decisions{miss_policy, recording_coverage, site_rules, retention}}`；`-2` 起：建议带 `sites` 与 `status_reason`，决定改用语义名，度量带 `sites`、空分叉与 `skipped`；`-3` 起：隐私一项只看两道门，按门分开计数，带 `runs`、`sites` 与 `skipped`；`-4` 起：归档开销带每个角色观测前的落定等待 `settle_wait`），键排序、缩进 2，**没有墙钟字段、绝对路径或主机信息**（run 写成相对链根的 `traces/<角色>/<run>`），同样的输入算两次逐字节相同；`inputs` 按角色记 run 数、跳过的 trace 与原因、以模型调用失败结束的 run（`model_failures`：路由的失败，不是站点的证据；它们照样计入各项度量，live 计划写了怎么处理），以及 trace 里实际运行的组件（agent、loop、恢复器、cleaner、serializer、backend、网络来源、模型路由；由 `metrics.components(trace)` 读脱敏后的 `TraceConfig.resolved`，没标 trace-safe 的自由字符串读作 `<omitted>`：验证要点名所用的配置），数据集记在不在与格式。每条证据的 `pointer` 都能在 `report.json` 里解析到它的 `value`（测试钉住）。
 - `report.md`：同一个模型渲染，标题是 `Metrics` / `Sections` / `Pending decisions`，每项度量、每一节、每个决定各占一节，各项跳过的 run 与原因逐条列出，每节末尾是建议、证据、站点数、基础，以及低于 `supported` 的原因。报告里的名字、标题与规则文字不用规划编号（AGENTS.md §3.6；`test_report_schema.py` 钉住）。
 - `spectragent-flywheel report --spec <chain.yaml>`（或 `--root <dir> --evidence live|rehearsal`）只读、可重复；`run` 的最后一段就是它。
 

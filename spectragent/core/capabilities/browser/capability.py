@@ -127,7 +127,12 @@ from spectragent.core.capabilities.browser.input import (
     MouseTrajectoryProtocol,
     TypingRhythmProtocol,
 )
-from spectragent.core.capabilities.browser.navigation import MainFrameNavigation, NavigationFeed
+from spectragent.core.capabilities.browser.navigation import (
+    MainFrameLoad,
+    MainFrameNavigation,
+    NavigationFeed,
+)
+from spectragent.core.capabilities.browser.observations import BrowserCaptureFragment
 from spectragent.core.capabilities.browser.profiles import (
     BrowserProfileConfig,
     resolve_profile,
@@ -162,6 +167,12 @@ from spectragent.core.capabilities.browser.replay.consistency import (
 )
 from spectragent.core.capabilities.browser.replay.server import ReplayContext, ReplayServer
 from spectragent.core.capabilities.browser.restoration import measure, retarget_action
+from spectragent.core.capabilities.browser.settle import (
+    DEFAULT_SETTLE_MAX_WAIT_S,
+    DEFAULT_SETTLE_QUIET_MS,
+    PageSettle,
+    wait_for_settle,
+)
 
 # Importing the package registers every watchdog under agent_cdp's
 # ``WatchdogRegistrar``. This module then looks them up by key — it never
@@ -500,6 +511,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     dom_max_serialized_chars: int | Unlimited
     dom_interactive_only: bool
     dom_viewport_only: bool
+    settle_quiet_ms: int
+    settle_max_wait_s: float
     retarget_tolerance_px: float
 
     # ── internal state, never config (assigned in __init__) ──────────
@@ -686,6 +699,38 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = False,
+        settle_quiet_ms: Annotated[
+            int,
+            PydanticField(
+                ge=0,
+                le=10_000,
+                description=(
+                    "Before every observation the capture waits for the page "
+                    "to settle: the document loaded, then no DOM change and no "
+                    "resource finishing loading for this many milliseconds, "
+                    "measured from the moment the wait reaches the page. The "
+                    "same wait serves every browser fragment (DOM, screenshot, "
+                    "metadata), in recording and in replay alike. 0 skips the "
+                    "quiet window and waits for the load only. Default 500."
+                ),
+            ),
+        ] = DEFAULT_SETTLE_QUIET_MS,
+        settle_max_wait_s: Annotated[
+            float,
+            PydanticField(
+                ge=0,
+                le=60,
+                description=(
+                    "The longest the settle wait may take before an "
+                    "observation captures the page anyway, in seconds: a page "
+                    "that never goes quiet (a carousel, a video, a poll) "
+                    "costs this much on each step. 0 turns the wait off: the "
+                    "observation captures at once. Each fragment records how "
+                    "long its capture waited and whether this cap ended the "
+                    "wait. Default 5."
+                ),
+            ),
+        ] = DEFAULT_SETTLE_MAX_WAIT_S,
         retarget_tolerance_px: Annotated[
             float,
             PydanticField(
@@ -731,6 +776,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.dom_max_serialized_chars = dom_max_serialized_chars
         self.dom_interactive_only = dom_interactive_only
         self.dom_viewport_only = dom_viewport_only
+        if settle_max_wait_s > 0 and settle_quiet_ms > settle_max_wait_s * 1000:
+            raise ValueError(
+                f"settle_quiet_ms ({settle_quiet_ms}) is longer than settle_max_wait_s "
+                f"({settle_max_wait_s:g} s): the quiet window could never be observed "
+                "before the cap, so every observation would wait the whole cap. Shorten "
+                "the window, raise the cap, or set settle_max_wait_s: 0 to turn the wait off."
+            )
+        self.settle_quiet_ms = settle_quiet_ms
+        self.settle_max_wait_s = settle_max_wait_s
         self.retarget_tolerance_px = retarget_tolerance_px
 
         # In-Python default for the wired trajectory receptor. YAML must
@@ -1899,6 +1953,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         navigation, and a capture sent between the request and the commit is
         lost. At the bound it captures anyway; with nothing in flight it does
         not wait at all.
+
+        Then it waits for the page to settle (:meth:`_settle`, ``settle.py``,
+        §4.14): the document loaded, then the page quiet for
+        ``settle_quiet_ms`` — at most ``settle_max_wait_s``, after which it
+        captures anyway. The wait is part of the observation: it runs before
+        the one event that captures every negotiated fragment, whichever
+        they are, and every fragment of the served capture records it
+        (``BrowserCaptureFragment.settle``).
         """
         scope = self._scopes.get(sid)
         if scope is None:
@@ -1922,6 +1984,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     _OBSERVE_MAX_ATTEMPTS,
                     _NAVIGATION_SETTLE_TIMEOUT_S,
                 )
+            # The page settles before anything of it is captured (§4.14): the
+            # same wait for every fragment, recorded on each of them.
+            settle = await self._settle(sid, feed)
             if cache is not None:
                 cache.raw.clear()  # a re-fired attempt's capture replaces the last one's
             outcome = await self._fire_state_event(sid, scope, wanted)
@@ -1930,6 +1995,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             self._ensure_recording()
             if wanted <= outcome.fragments.keys():
                 if not documents_disagree(outcome.stamps):
+                    for fragment in outcome.fragments.values():
+                        if isinstance(fragment, BrowserCaptureFragment):
+                            fragment.settle = settle
                     return outcome
                 # The page navigated during the capture: the DOM, the
                 # screenshot and the URL describe different documents. Same
@@ -1972,6 +2040,35 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             f"{_OBSERVE_MAX_ATTEMPTS} attempts. Handlers responded: "
             f"{outcome.handler_count}. Errors: {detail}."
         )
+
+    async def _settle(self, sid: str, feed: NavigationFeed | None) -> PageSettle | None:
+        """Wait for the focused tab's page to settle before a capture (``settle.py``, §4.14).
+
+        ``None`` when the wait is off (``settle_max_wait_s: 0``). Never
+        raises for the page's sake: a page whose state cannot be read is
+        captured at once, and the record says so (``outcome: unknown``). A
+        page the cap ended the wait on is captured as it is.
+        """
+        if self.settle_max_wait_s <= 0 or self._cdp is None:
+            return None
+        settle = await wait_for_settle(
+            self._cdp,
+            session_id=sid,
+            frame_id=self._main_frame_ids.get(sid),
+            navigation=feed.navigation if feed is not None else None,
+            load=feed.load if feed is not None else None,
+            quiet_ms=self.settle_quiet_ms,
+            max_wait_s=self.settle_max_wait_s,
+        )
+        if settle.capped:
+            logger.info(
+                "observe cycle (sid=%s): the page did not settle within %gs (waiting for %s); "
+                "capturing it as it is",
+                sid,
+                self.settle_max_wait_s,
+                ", ".join(settle.waiting_for),
+            )
+        return settle
 
     async def _fire_state_event(
         self, sid: str, scope: EventScope, wanted: frozenset[str]
@@ -2237,21 +2334,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         """Finish an attached CDP session; caller rolls back on any failure."""
         assert self._cdp is not None and self._scope_group is not None
 
-        # 2. Enable Page domain + lifecycle events for this session.
-        # Without these calls, loadEventFired / lifecycleEvent never fire.
-        # We do this before creating watchdogs so a subsequent
-        # Page.navigate's lifecycle is observable.
+        # 2. Enable the Page domain for this session. Without it,
+        # loadEventFired and the navigation events never fire. Lifecycle
+        # events are enabled in step 4b, once the main frame's feed listens.
         try:
             await self._cdp.send("Page.enable", {}, session_id=cdp_session_id)
-            await self._cdp.send(
-                "Page.setLifecycleEventsEnabled",
-                {"enabled": True},
-                session_id=cdp_session_id,
-            )
         except Exception as exc:
             logger.warning(
-                "Page.enable / setLifecycleEventsEnabled failed on %s: %s — "
-                "lifecycle-aware navigation will degrade to fire-and-forget",
+                "Page.enable failed on %s: %s — lifecycle-aware navigation will "
+                "degrade to fire-and-forget",
                 cdp_session_id,
                 exc,
             )
@@ -2278,11 +2369,35 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             )
         if main_frame_id is not None:
             self._main_frame_ids[cdp_session_id] = main_frame_id
-            # Follow the main frame's navigations on this connection, so an
-            # observation never captures between a navigation's request and
-            # its commit (§4.14, M33). Unknown main frame: nothing to follow.
+            # Follow the main frame's navigations and its document's load on
+            # this connection, so an observation never captures between a
+            # navigation's request and its commit, nor before the page settled
+            # (§4.14). Unknown main frame: nothing to follow.
             self._navigation_feeds[cdp_session_id] = NavigationFeed(
-                self._cdp, cdp_session_id, MainFrameNavigation(main_frame_id)
+                self._cdp,
+                cdp_session_id,
+                MainFrameNavigation(main_frame_id),
+                MainFrameLoad(main_frame_id),
+            )
+
+        # 4b. Lifecycle events, now that the feed listens: Chrome reports the
+        # current document's events again when they are enabled, so a tab
+        # adopted mid-load is known to the settle wait. We do this before
+        # creating watchdogs so a subsequent Page.navigate's lifecycle is
+        # observable.
+        try:
+            await self._cdp.send(
+                "Page.setLifecycleEventsEnabled",
+                {"enabled": True},
+                session_id=cdp_session_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Page.setLifecycleEventsEnabled failed on %s: %s — lifecycle-aware "
+                "navigation will degrade to fire-and-forget, and the settle wait will "
+                "not wait for the document's load",
+                cdp_session_id,
+                exc,
             )
 
         # 5. Two independent processing domains for this tab.  DOM and

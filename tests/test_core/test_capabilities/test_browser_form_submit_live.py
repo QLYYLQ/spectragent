@@ -136,7 +136,9 @@ class TestFormSubmission:
             echoed="query=blue kettle",
         )
 
-    def test_off_tier_unchanged(self, site: FixtureSite, tmp_path: Path) -> None:
+    def test_the_none_tier_without_archivers_submits_alike(
+        self, site: FixtureSite, tmp_path: Path
+    ) -> None:
         script = [branch_driver.click("add"), driver.done(ANSWER)]
         outcome = _run(site, tmp_path, script, page="get.html", tier="none")
         _require_submitted(site, outcome, step=1, method="GET", query="item=kettle")

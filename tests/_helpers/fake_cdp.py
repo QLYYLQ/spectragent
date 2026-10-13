@@ -25,6 +25,10 @@ Web Storage, a small document for ``DOM.getDocument`` / ``DOMSnapshot`` /
 the accessibility tree, the fingerprint probe (and its isolated world), and
 ``Network.streamResourceContent`` (nothing buffered: the chunks are events a
 test fires).
+
+And the observation's settle wait (``settle.py``): its isolated world, and its
+in-page probe, which reports the page quiet at once
+(:attr:`FakeBrowser.settle_answer`, changeable per test).
 """
 
 from __future__ import annotations
@@ -35,6 +39,8 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from spectragent.core.capabilities.browser.settle import SETTLE_WORLD
 
 
 @dataclass
@@ -219,6 +225,16 @@ class FakeBrowser:
         self.session_storage: dict[str, dict[str, str]] = {}
         #: ``Page.createIsolatedWorld`` calls answered (the fingerprint probe's world).
         self.isolated_worlds = 0
+        #: Execution contexts of the settle wait's world, and how many probes ran in them.
+        self.settle_contexts: set[int] = set()
+        self.settle_probes = 0
+        #: What the settle probe resolves with: a quiet page, at once.
+        self.settle_answer: dict[str, Any] = {
+            "quiet": True,
+            "waited_ms": 0,
+            "mutations": 0,
+            "resources": 0,
+        }
         #: What the page reports to the fingerprint probe.
         self.timezone = "UTC"
         self.locale = "en-US"
@@ -401,9 +417,16 @@ class FakeBrowser:
             items = store.get(str(storage_id.get("securityOrigin")), {})
             return {"entries": [[key, value] for key, value in items.items()]}
         if method == "Page.createIsolatedWorld":
+            if params.get("worldName") == SETTLE_WORLD:
+                context = 5000 + len(self.settle_contexts) + 1
+                self.settle_contexts.add(context)
+                return {"executionContextId": context}
             self.isolated_worlds += 1
             return {"executionContextId": 1000 + self.isolated_worlds}
         if method == "Runtime.evaluate":
+            if params.get("contextId") in self.settle_contexts:
+                self.settle_probes += 1
+                return {"result": {"type": "object", "value": dict(self.settle_answer)}}
             expression = str(params.get("expression") or "")
             if "devicePixelRatio ||" in expression:
                 return {"result": {"type": "number", "value": self.device_pixel_ratio}}

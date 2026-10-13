@@ -73,6 +73,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayLogEntry,
     iter_decisions,
 )
+from spectragent.core.capabilities.browser.settle import PageSettle, recorded_settle
 from spectragent.core.trace.digest import TreeDigest, tree_digest
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import (
@@ -609,8 +610,37 @@ class ArchiveBytes(_Model):
     skipped: dict[str, str] = {}
 
 
+class SettleWait(_Model):
+    """How long one role's observations waited for the page to settle (arch §4.14).
+
+    Read from the settle record every browser capture carries
+    (``BrowserCaptureFragment.settle``), on every committed step that has
+    one — restored and terminal observations included: each is a capture.
+    The wait is part of the environment-side time the latency groups
+    measure; this says how much of it, and how often the cap ended it.
+    """
+
+    role: str
+    runs: int
+    #: Committed observations whose capture recorded a settle wait.
+    observations: int
+    #: Distinct sites of the runs that contributed one.
+    sites: int
+    p50_ms: float | None
+    p95_ms: float | None
+    #: Observations the cap ended the wait on, over the observations with a record.
+    capped: Ratio
+    #: Observations whose page state could not be read (captured at once).
+    unknown: int
+    skipped: dict[str, str] = {}
+
+
 class ArchiveOverhead(_Model):
-    """Archive overhead (归档开销): archived (``record``) against control, and the bytes."""
+    """Archive overhead (归档开销): archived (``record``) against control, and the bytes.
+
+    ``settle_wait``: the observations' settle wait, one entry per role that
+    ran, in stage order — part of the time the groups measure, shown apart.
+    """
 
     archived: LatencyGroup
     control: LatencyGroup | None
@@ -618,6 +648,58 @@ class ArchiveOverhead(_Model):
     p95_overhead_ms: float | None
     reason: str | None = None
     bytes: ArchiveBytes
+    settle_wait: list[SettleWait] = []
+
+
+def observation_settles(run: Run) -> list[PageSettle]:
+    """The settle record of every committed observation of *run* that has one, in step order.
+
+    Raises:
+        One of :data:`EVIDENCE_ERRORS`: a fragment does not read back.
+    """
+    records: list[PageSettle] = []
+    for entry in run.trace.manifest.steps:
+        recorded = [key for key, files in entry.fragments.items() if not files.failed]
+        record = recorded_settle(
+            lambda key, step=entry.step: run.trace.observation_fragment(step, key), recorded
+        )
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def settle_wait(role: RoleRuns) -> SettleWait:
+    """The settle wait of *role*'s observations (arch §4.14): p50 / p95 and the cap's share."""
+    waits: list[int] = []
+    capped = unknown = 0
+    contributing: list[Run] = []
+    skipped: dict[str, str] = {}
+    for run in role.runs:
+        try:
+            records = observation_settles(run)
+        except EVIDENCE_ERRORS as exc:
+            skipped[run.rel] = f"its observations do not read back ({type(exc).__name__})"
+            continue
+        if records:
+            contributing.append(run)
+        waits.extend(record.waited_ms for record in records)
+        capped += sum(1 for record in records if record.outcome == "capped")
+        unknown += sum(1 for record in records if record.outcome == "unknown")
+    return SettleWait(
+        role=role.role,
+        runs=len(role.runs),
+        observations=len(waits),
+        sites=site_count(contributing),
+        p50_ms=percentile(waits, 50) if waits else None,
+        p95_ms=percentile(waits, 95) if waits else None,
+        capped=ratio(
+            capped,
+            len(waits),
+            empty="no observation recorded a settle wait (the wait off, or recorded before it)",
+        ),
+        unknown=unknown,
+        skipped=dict(sorted(skipped.items())),
+    )
 
 
 def env_times(run: Run) -> list[int]:
@@ -655,13 +737,16 @@ def _latency(role: RoleRuns) -> tuple[LatencyGroup, str | None]:
     return group, problem
 
 
-def archive_overhead(record: RoleRuns, control: RoleRuns) -> ArchiveOverhead:
+def archive_overhead(
+    record: RoleRuns, control: RoleRuns, *, roles: Sequence[RoleRuns] = ()
+) -> ArchiveOverhead:
     """Archive overhead (arch §4.16): latency against the control group, and ``env/`` bytes.
 
     Latency: p50 / p95 of :func:`env_times` in each group, overhead = archived
     minus control; ``null`` with the reason when the control group was not
     run or is empty, a group has no measured step, or the two groups (or the
-    runs within one) are not at one tier.
+    runs within one) are not at one tier. The settle wait (:func:`settle_wait`)
+    of each of *roles* that ran rides along.
     """
     archived, archived_problem = _latency(record)
     reference: LatencyGroup | None = None
@@ -714,6 +799,7 @@ def archive_overhead(record: RoleRuns, control: RoleRuns) -> ArchiveOverhead:
             per_step_after=total.after / steps if steps else None,
             skipped=skipped,
         ),
+        settle_wait=[settle_wait(role) for role in roles if role.present],
     )
 
 
@@ -2222,6 +2308,7 @@ __all__ = [
     "RoleStorage",
     "Run",
     "SamePathFidelity",
+    "SettleWait",
     "SiteExclusion",
     "SiteRuleCandidates",
     "SiteStats",
@@ -2247,6 +2334,7 @@ __all__ = [
     "export_yield",
     "exported_sites",
     "failed_on_model_call",
+    "observation_settles",
     "open_chain",
     "open_role",
     "percentile",
@@ -2262,6 +2350,7 @@ __all__ = [
     "retention",
     "run_tier",
     "same_path_fidelity",
+    "settle_wait",
     "site_count",
     "site_rules",
     "sites",

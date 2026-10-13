@@ -126,15 +126,18 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     # the 5-bit threshold and moves with the time-origin digits the error page names.
     assert reasons and reasons <= {("document_miss",), ("document_miss", "screenshot_distance")}
     chain = open_chain(rehearsal.layout)
-    drift_misses = [
-        entry.url
+    # Each replay misses the one URL its own time origin names. Chrome reloads its error page
+    # once on its own, about a second later: the observation waits for the page to settle, so
+    # the run is still there to ask the same URL again (the terminal observation collects it).
+    drift_misses = {
+        run.rel: {entry.url for _step, entry, _weight in run.decisions if entry.diverged}
         for run in chain.role("same_path").runs
         if run.site == DRIFT
-        for _step, entry, _weight in run.decisions
-        if entry.diverged
-    ]
-    assert len(drift_misses) == 2 and all("next.html?visit=" in url for url in drift_misses)
-    assert drift_misses[0] != drift_misses[1], "each replay has its own time origin"
+    }
+    assert len(drift_misses) == 2 and all(len(urls) == 1 for urls in drift_misses.values())
+    (first,), (second,) = drift_misses.values()
+    assert "next.html?visit=" in first and "next.html?visit=" in second
+    assert first != second, "each replay has its own time origin"
 
     assert metrics["restoration"]["ok"] == metrics["restoration"]["total"] == 3 * (BRANCH_STEP + 1)
 
@@ -199,7 +202,8 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     assert metrics["body_completeness"]["complete"]["value"] == 1.0
 
     candidates = report["decision_inputs"]["site_rule_candidates"]["params"]
-    assert candidates[SHOP] == {"session": 4} and candidates[DRIFT] == {"visit": 2}
+    # The drift site: two replays, each asking its URL twice (the error page's own reload).
+    assert candidates[SHOP] == {"session": 4} and candidates[DRIFT] == {"visit": 4}
     decisions = report["decisions"]
     assert decisions["miss_policy"]["verdict"].startswith("evaluate a fallback for documents")
     assert decisions["recording_coverage"]["verdict"].startswith("do not expand coverage: 0 of 1")

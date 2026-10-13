@@ -39,6 +39,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
 
   这一档原来叫 `off`，现在叫 `none`，不用加引号；写 `off` 会被拒（PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`）。
 - 归档器只写在 `trace_writer` 的 `archive` 列表里，键要全限定（`browser.network`）。写进 capability 块的 `archiver:` 在组装时被拒。
+- 每次观测之前，browser capability 先等页面落定，录制、原路径回放、分叉都一样：主 frame 的文档加载完（`load`），之后连续 `settle_quiet_ms`（默认 500 ms）没有 DOM 变化、也没有资源加载完成；最多等 `settle_max_wait_s`（默认 5 s），到了就按当时的样子采集。只协商 DOM 的观测与要截图的观测等的是同一个等待。两个旋钮写在 capability 块上，发布的 YAML 不写，默认值录制与回放都适用，数字原样记进 `config.json`；`settle_max_wait_s: 0` 关掉等待，窗口比上限长时组装报错。**这是时间开销**：每次观测至少多等一个静默窗口（500 ms）；一直在变的页面（轮播、视频、ticker）每一步都等满上限。40 个真实站点上实测（architecture §4.14）：`navigate` 之后平均多等 1.75 s，滚动之后 1.98 s，点击引起导航之后 4.34 s（多数等满上限）。每个观测 fragment（`browser.dom`、`browser.screenshot`、`browser.browser_meta`）都带这次采集的 `settle` 记录：`waited_ms`、`outcome`（`settled`、`capped`、`unknown`）和 `waiting_for`（被上限截断时还没等到的 `load` 或 `dom`）；度量报告在归档开销一节按角色给出 p50、p95 和被上限截断的占比。
 - 这些组合问题全部在 `prepare()` 报：归档器与档位、provider 与它的旋钮、profile、网络来源，以及回放时与源 run 的一致性（`prepare()` 只读源 run 的环境指纹）。错误在打开 trace、启动 Chrome 之前出现，每条点名两边，`spectragent-run --dry-run` 也查得出来（回放配置要加 `--replay-archive DIR`）。`spectragent-bench` 开跑前先用第一个任务检查一次（pre-flight）：被拒时一个任务也不跑、不建 trace，在 stderr 印出原因，退出码 2。setup 在启动 Chrome 之前再查一遍。
 
 ## 录制
@@ -332,7 +333,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 
 | 键 | 回答的问题 | 怎么算 |
 |---|---|---|
-| `archive_overhead` | 开着归档每步多花多少时间和字节 | `record` 与 `control` 每步环境侧时间（`duration_ms` 减 `llm_latency_ms`，策略步，从第 1 步起）的 p50、p95 之差，没有对照组或两组档位不同时为 `null`；`env/` 去重前后的每步字节 |
+| `archive_overhead` | 开着归档每步多花多少时间和字节 | `record` 与 `control` 每步环境侧时间（`duration_ms` 减 `llm_latency_ms`，策略步，从第 1 步起）的 p50、p95 之差，没有对照组或两组档位不同时为 `null`；`env/` 去重前后的每步字节；`settle_wait`：每个跑过的角色，观测之前等页面落定的 p50、p95、被上限截断的占比和读不到页面状态的次数（从每个观测 fragment 的 `settle` 记录读，环境侧时间里包含这段等待） |
 | `body_completeness` | 录下的交换有没有 body | `index.jsonl` 每条记录的最终状态：有 body，不需要 body（`redirect`、`websocket`），明确没有（`too_large`、`incomplete`） |
 | `same_path_fidelity` | 原样重放时，恢复出的每一步与录制是否一致（按站点） | 恢复器判 `ok` 的步的占比；严格版另要求 URL 不变（量得到时）且截图 sha256 与源 run 同一步相同；每个 run 第一个不通过的步与原因 |
 | `restoration` | 分叉的前缀恢复得对不对 | `branch` 段校验通过的占比；不通过的按原因计数，重定位失败按 `not_found`、`ambiguous` 计 |
@@ -345,7 +346,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 
 空分叉是从检查点起一个动作也没执行的分叉：teacher 的模型调用失败、回复没有动作（解析失败和解析出零个动作在记录里看起来一样），或者 teacher 决定之前 run 就结束了（恢复失败、观测失败）。它说明不了 teacher 的选择会走到哪里，所以不计入 `branch_coverage` 的占比和 miss、也不计入 `miss_policy` 与 `recording_coverage` 依据的数，按原因记在 `metrics.branch_coverage.empty`；重复分叉率不比较检查点步没有动作的分叉（`sections.duplicate_branches.not_compared`）。
 
-每条建议是 `{status, verdict, rule, evidence, basis, sites, status_reason}`。`sites` 是证据来自几个不同的站点。只有 live 证据、而且来自至少 10 个站点（`SUPPORTED_MIN_SITES`），建议才是 `supported`；不到 10 个站点最多是 `partial`，原因写 "insufficient sample"；演练最多是 `partial`；没有数据时是 `insufficient`、`verdict` 为空。低于 `supported` 的原因都写在 `status_reason` 里。所以 2 到 3 个任务的 live run 只是冒烟测试：它证明整条链能跑通，不拿来定阈值和上面四个决定。`rule` 写出所用的阈值常量和它的值。阈值是 live 之前定的起点，留在 `spectragent/flywheel/report.py` 里，等一次覆盖足够多站点的 live run 校准；每步归档开销的上限 300 ms 例外，它在 `spectragent/core/archive/budget.py`，归档开销基准用的也是它。`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。报告格式是 `af-flywheel-report-3`。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，也列出各项度量自己的 `skipped`（某项读不到证据而略过的 run）。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
+每条建议是 `{status, verdict, rule, evidence, basis, sites, status_reason}`。`sites` 是证据来自几个不同的站点。只有 live 证据、而且来自至少 10 个站点（`SUPPORTED_MIN_SITES`），建议才是 `supported`；不到 10 个站点最多是 `partial`，原因写 "insufficient sample"；演练最多是 `partial`；没有数据时是 `insufficient`、`verdict` 为空。低于 `supported` 的原因都写在 `status_reason` 里。所以 2 到 3 个任务的 live run 只是冒烟测试：它证明整条链能跑通，不拿来定阈值和上面四个决定。`rule` 写出所用的阈值常量和它的值。阈值是 live 之前定的起点，留在 `spectragent/flywheel/report.py` 里，等一次覆盖足够多站点的 live run 校准；每步归档开销的上限 300 ms 例外，它在 `spectragent/core/archive/budget.py`，归档开销基准用的也是它。`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。报告格式是 `af-flywheel-report-4`。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，也列出各项度量自己的 `skipped`（某项读不到证据而略过的 run）。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
 
 链在报告之前导出，不会套用报告给出的剔除名单。`sections.sites.yaml` 是 `filters.exclude_sites` 形状的片段：把它放进导出 YAML，换一个 `output_dir`，手动再导一次。
 
@@ -446,7 +447,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
   - `retarget_ambiguous`：候选不止一个，常见于嵌套的相同元素。
   - `action_failed`：动作的成败与录制不同，或者执行时抛错。
   - `signature_mismatch`：两边可交互元素的签名多重集不同。
-  - `screenshot_distance`：恢复出的截图与源 run 同一步录下的截图，dHash 距离超过 `screenshot_max_distance`（实测值在 `restoration.evidence[*].screenshot_distance`）。常见于动画和依赖时钟的内容；异步加载造成的差异可以试 `pace: recorded_llm_latency`。
+  - `screenshot_distance`：恢复出的截图与源 run 同一步录下的截图，dHash 距离超过 `screenshot_max_distance`（实测值在 `restoration.evidence[*].screenshot_distance`）。常见于动画和依赖时钟的内容。观测之前的落定等待（见"前提与限制"）在录制和回放里都等异步加载，比较的就是两边 agent 看到的观测；仍然不同时，看这一步观测 fragment 的 `settle` 记录：有一边 `capped`，说明那边的页面一直没静下来，被上限截断时还在变。还可以试 `pace: recorded_llm_latency`。
 
   每一步的 `restoration.evidence` 记着各项的测量值，`restoration.actions` 记着每个录下动作的重定位方式和结果。值为 `null` 的项不参与判定，所以 UI-TARS 这类纯视觉 run 主要靠截图距离、文档 miss 和动作成败来判。
 - `IncompatibleCheckpointError`：分叉配置与源 run 不匹配，在任何 setup 之前报，点名两边：源 trace 从没关闭，或检查点超出它完整到的那一步（`past the step its trace is complete through`），另一个 agent，不同的 `prompt_template`、`coordinate_space` 等旋钮或数字旋钮（如 memory 的 `max_messages`），不同的 memory 或协商结果，不同的 `max_actions_per_step`（`agent_loop.max_actions_per_step`），源 loop 不是 `react`，源 run 本身是分叉 run；开跑之后、任何动作之前还会查种子 prompt 与源 run 是否相同、录下的回复在这个 agent 上能否复现。分叉配置的 agent 块照抄录制配置（llm 一块可以不同）。
@@ -468,6 +469,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 回放 `none` 档位的录制时，时区、语言、DPR 不比较，HTTPS 升级的试探可能显示为主 frame 文档 miss。
 - 模糊匹配可能送错资源，日志里记着 `level: fuzzy` 和得分；用完的记录重复最后一条（`exhausted`）是有意的。
 - 回放停在 Chrome 的错误页上时，错误页上写着没送到的 URL；URL 每次都变的站点，按截图比较的回放确定性必然不同。
+- 页面落定的等待看不到窗口里只在途、还没完成的请求：点击之后一次慢的接口调用，页面又没有加载提示，不等它，下一步才看到结果。CSS 过渡与动画、canvas、进程外 iframe 里的变化不经过主文档的 DOM，不算变化。
 - 进程外 iframe 的 storage 不读，记在 `storage.json` 的 `unread_frames` 里。
 - anti-bot 只按应答头识别，不带这些头的拦截页面认不出来。度量只认 browser 的证据格式。
 

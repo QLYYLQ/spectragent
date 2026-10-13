@@ -38,6 +38,8 @@ BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
 
 动作引起的主 frame 跨文档导航不需要这个延迟，比如提交表单、在文本框里回车、点链接、设置 `location.href`。观测在每次采集尝试之前先等在途的导航提交或停止加载，每次最多 10 s，到时仍未结束就照常采集并记一条警告；没有在途导航时不等。所以提交表单后，下一次观测看到的是结果页。观测截图另有 10 s 上限：Chrome 不回应时，这次尝试算缺截图，再采一次（每次观测最多尝试两次）。页面定时器在观测开始采集之后才发起的导航不在这个等待之内，只受截图上限约束。
 
+导航等完之后、采集之前，观测还会等页面落定：主 frame 的文档加载完，再连续 `settle_quiet_ms`（默认 500 ms）没有 DOM 变化、也没有资源加载完成，最多 `settle_max_wait_s`（默认 5 s），到了就按当时的样子采集（`0` 关掉）。两个旋钮写在 capability 块上，DOM、截图与元数据共用这一次等待，只看页面状态，不比截图；每个观测 fragment 的 `settle` 记录写着这次等了多久、是不是被上限截断。代价是每次观测至少多等一个静默窗口，一直在变的页面（轮播、视频）每一步等满上限。点击之后页面的变化要等一个比窗口长、期间又什么都不发生的请求时，仍然看不到它，这时再给 `browser.click_coordinate` 配 `post_delay_ms`。设计与实测见 [architecture_design.md](architecture_design.md) §4.14 "观测之前等页面落定"。
+
 `skyvern_agent_local.yaml` 用的 `skyvern` cleaner 不看绘制顺序，被吸顶栏盖住的链接照样有编号。把 `dom_cleaner` 换成 `{ cleaner_type: skyvern_hit_test }` 后，页面会对每个编号元素做点击命中测试，默认（`covered_elements: drop`）所有探测点都点不到的元素不编号；视口外的元素不测，保留编号。见 [configs/README.md](../configs/README.md#dom-cleaners)。
 
 ## 选择浏览器后端

@@ -37,6 +37,7 @@ from spectragent.core.capabilities.browser.dom.models import (
     omitted_when_none,
     traced_fields,
 )
+from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.image import image_suffix
 
@@ -383,7 +384,29 @@ def _relink(root: DOMElementNode) -> None:
             stack.append(child)
 
 
-class DOMObs(FragmentBase):
+class BrowserCaptureFragment(FragmentBase):
+    """What every fragment of one browser capture shares: how the capture waited.
+
+    One capture serves every negotiated browser fragment of an observation
+    cycle, after one settle wait (``settle.py``, §4.14). ``settle`` records
+    that wait — set by the capability on each fragment of the capture it
+    served, the same record on each, so a reader finds it on whichever
+    browser fragment the run negotiated. ``None`` — and then left out of the
+    trace JSON: the wait is turned off (``settle_max_wait_s: 0``), or the
+    fragment was not served by an observation (a test built it).
+    """
+
+    __abstract__ = True
+
+    settle: PageSettle | None = None
+
+    def trace_json_exclude(self) -> set[str]:
+        # Left out of the trace when there is no record, so a fragment that was
+        # never served by a waiting observation writes what it always wrote.
+        return set() if self.settle is not None else {"settle"}
+
+
+class DOMObs(BrowserCaptureFragment):
     """DOM tree observation from browser capability.
 
     **What the trace keeps, and what it cannot.** ``element_tree`` (a
@@ -534,7 +557,7 @@ def _decode_entry(decoder: _GraphDecoder, key: str, value: Any) -> Any:
     return node
 
 
-class ScreenshotObs(FragmentBase):
+class ScreenshotObs(BrowserCaptureFragment):
     """Screenshot of the browser viewport.
 
     Either ``image_path`` (on disk) or ``image_bytes`` (in memory) must be
@@ -603,7 +626,7 @@ class ScreenshotObs(FragmentBase):
         return image_suffix(self.image_bytes) or ".png", self.image_bytes
 
     def trace_json_exclude(self) -> set[str]:
-        return {"image_bytes"}
+        return super().trace_json_exclude() | {"image_bytes"}
 
     @classmethod
     def from_trace(cls, payload: dict[str, Any], artifact: bytes | None) -> Self:
@@ -622,7 +645,7 @@ class ScreenshotObs(FragmentBase):
         return f"{self.viewport_width}x{self.viewport_height}"
 
 
-class BrowserMetaObs(FragmentBase):
+class BrowserMetaObs(BrowserCaptureFragment):
     """Browser metadata: URL, title, tab info."""
 
     __registry_key__ = "browser.browser_meta"

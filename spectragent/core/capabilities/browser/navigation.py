@@ -1,4 +1,4 @@
-"""Main-frame navigation state per tab — what an observation waits for (§4.14, M33).
+"""Main-frame navigation and load state per tab — what an observation waits for (§4.14).
 
 M31 found, and M33 measured (Chrome 155), that clicking a form's submit
 button stalled the next observation for 30 s. The click returns before the
@@ -36,11 +36,19 @@ Chrome 155 with pinned's ``--disable-back-forward-cache``):
 
 A navigation that starts *after* the observation checked (a page timer) is
 not covered here; the observation screenshot's own command bound covers it.
+
+:class:`MainFrameLoad` answers the next question the observation asks once
+nothing is in flight — has the main frame's current document loaded? — from
+the same feed's ``Page.lifecycleEvent``s (enabled per tab with
+``Page.setLifecycleEventsEnabled``; Chrome reports the current document's
+events again when they are enabled, which is how a tab adopted mid-load is
+known). The settle wait reads it (``settle.py``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -117,15 +125,110 @@ class MainFrameNavigation:
         return frame_id is not None and frame_id == self.main_frame_id
 
 
+class MainFrameLoad:
+    """Whether one tab's main-frame document has loaded, from ``Page.lifecycleEvent``.
+
+    Pure state, like :class:`MainFrameNavigation`. Chrome numbers each
+    document by its loader id and reports each lifecycle event once per
+    document; a new loader id (``init`` of a new document, or the ``commit``
+    Chrome reports again for the current one when lifecycle events are
+    enabled) starts a new document that has not loaded. A document is loaded
+    once ``load`` arrives for its loader id. A document this tracker has heard
+    nothing of is not :attr:`loading`: the wait never stalls on what it
+    cannot know.
+
+    Each document is waited on for at most one ``budget_s`` in total, across
+    observations (:meth:`wait_loaded`): a document that has not loaded in that
+    long (a resource that never finishes) is not waited on again.
+    """
+
+    def __init__(
+        self, main_frame_id: str | None, *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self.main_frame_id = main_frame_id
+        self._clock = clock
+        self._loader_id: str | None = None
+        self._loaded = False
+        #: When the current document was first heard of (``clock`` time).
+        self._heard_at = 0.0
+        #: Seconds the current document has been waited on, across observations.
+        self._waited_s = 0.0
+        self._changed = asyncio.Event()
+
+    @property
+    def loader_id(self) -> str | None:
+        """The current document's loader id, ``None`` until one is heard of."""
+        return self._loader_id
+
+    @property
+    def loading(self) -> bool:
+        """The current document is known and has not reached ``load``."""
+        return self._loader_id is not None and not self._loaded
+
+    def lifecycle(self, frame_id: str | None, loader_id: str | None, name: str | None) -> None:
+        """``Page.lifecycleEvent``: *name* reached by the document of *loader_id*."""
+        if frame_id is None or frame_id != self.main_frame_id or not loader_id or not name:
+            return
+        if loader_id != self._loader_id:
+            self._loader_id = loader_id
+            self._loaded = False
+            self._heard_at = self._clock()
+            self._waited_s = 0.0
+        if name == "load":
+            self._loaded = True
+        self._changed.set()
+
+    async def wait_loaded(self, timeout: float, *, budget_s: float) -> bool:
+        """Wait until the current document has loaded; ``False`` if *timeout* ended the wait first.
+
+        Returns ``True`` at once, without suspending, when nothing is
+        loading, or when earlier observations already waited on this document
+        for *budget_s* in total. Otherwise waits at most *timeout* seconds,
+        and at most what is left of the document's budget. A new document in
+        the meantime is waited for in its place, on its own budget.
+        """
+        started = self._clock()
+        try:
+            while True:
+                if not self.loading:
+                    return True
+                if self._waited_s >= budget_s:
+                    # Waited on for a whole budget by earlier observations: a
+                    # document that never finishes loading is not waited on again.
+                    return True
+                now = self._clock()
+                on_this_document = now - max(started, self._heard_at)
+                left = min(timeout - (now - started), budget_s - self._waited_s - on_this_document)
+                if left <= 0:
+                    return False
+                self._changed.clear()
+                try:
+                    await asyncio.wait_for(self._changed.wait(), left)
+                except TimeoutError:
+                    continue
+        finally:
+            if self._loader_id is not None:
+                self._waited_s += self._clock() - max(started, self._heard_at)
+
+    def gone(self) -> None:
+        """The tab is gone: nothing of it is loading any more."""
+        self._loader_id = None
+        self._loaded = False
+        self._changed.set()
+
+
 class NavigationFeed:
-    """One tab session's ``Page`` events on the control connection → its tracker.
+    """One tab session's ``Page`` events on the control connection → its trackers.
 
     The callbacks run in the connection's receive loop, in wire order, so the
-    tracker is current before any reply read after its event. Events of
+    trackers are current before any reply read after their event. Events of
     another session are dropped; an event without a session id is accepted,
     as ``CDPEventBridge`` accepts it. ``Page.enable`` — sent when the tab is
-    attached — is what makes these events fire. :meth:`close` unregisters
-    every callback and is idempotent.
+    attached — is what makes these events fire, and
+    ``Page.setLifecycleEventsEnabled`` the lifecycle ones (the capability
+    enables them only after the feed exists, so the current document's
+    events, which Chrome reports again then, reach :attr:`load`).
+    :meth:`close` unregisters every callback and is idempotent.
 
     The feed also closes itself when its session detaches
     (``Target.detachedFromTarget`` naming it): a popup the page closes on its
@@ -135,9 +238,14 @@ class NavigationFeed:
     """
 
     def __init__(
-        self, cdp: CDPCommandProtocol, session_id: str, navigation: MainFrameNavigation
+        self,
+        cdp: CDPCommandProtocol,
+        session_id: str,
+        navigation: MainFrameNavigation,
+        load: MainFrameLoad | None = None,
     ) -> None:
         self.navigation = navigation
+        self.load = load if load is not None else MainFrameLoad(navigation.main_frame_id)
         self._cdp = cdp
         self._session_id = session_id
         self._callbacks: list[tuple[str, Callable[..., None]]] = []
@@ -146,6 +254,7 @@ class NavigationFeed:
             "Page.frameStartedNavigating": self._on_started,
             "Page.frameNavigated": self._on_navigated,
             "Page.frameStoppedLoading": self._on_stopped,
+            "Page.lifecycleEvent": self._on_lifecycle,
             # Sent on the browser session, naming the detached session in its params.
             "Target.detachedFromTarget": self._on_detached,
         }
@@ -186,8 +295,12 @@ class NavigationFeed:
     def _on_stopped(self, params: Mapping[str, Any]) -> None:
         self.navigation.stopped(params.get("frameId"))
 
+    def _on_lifecycle(self, params: Mapping[str, Any]) -> None:
+        self.load.lifecycle(params.get("frameId"), params.get("loaderId"), params.get("name"))
+
     def _on_detached(self, params: Mapping[str, Any]) -> None:
         if params.get("sessionId") != self._session_id:
             return
         self.close()
         self.navigation.gone()
+        self.load.gone()

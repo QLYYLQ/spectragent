@@ -48,6 +48,11 @@ from tests._helpers.fixture_site import FixtureSite
 
 #: The fragments of a DOM agent and of a vision agent.
 DOM_FRAGMENTS = frozenset({"browser.dom", "browser.screenshot"})
+#: The quiet window these recordings settle with before each observation (the default is
+#: 500 ms). The fixture's pages are static and served from loopback, so a short window loses
+#: nothing these tests check and keeps the suite fast; the default is exercised by
+#: ``test_browser_settle_live.py`` and by the rehearsal, which runs the shipped configs.
+FIXTURE_SETTLE_QUIET_MS = 100
 VISION_FRAGMENTS = frozenset({"browser.screenshot"})
 
 
@@ -88,7 +93,7 @@ class LiveRecording:
     _cycle: int = 0
 
     async def __aenter__(self) -> LiveRecording:
-        cap = BrowserCapability(profile=self.profile)
+        cap = BrowserCapability(profile=self.profile, settle_quiet_ms=FIXTURE_SETTLE_QUIET_MS)
         if self.dom_cleaner is not None:
             cap.dom_cleaner = self.dom_cleaner
         cap.backend = LocalChromeProvider(  # type: ignore[assignment]

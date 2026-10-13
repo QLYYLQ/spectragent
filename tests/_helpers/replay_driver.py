@@ -42,6 +42,7 @@ from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.scripts.generate_all import _collect_registrars
+from tests._helpers.archive_bench import FIXTURE_SETTLE_QUIET_MS
 from tests._helpers.fixture_site import FixtureSite
 from tests._helpers.scripted_llm import ScriptedLLMServer
 
@@ -115,6 +116,10 @@ def record_config(
                         "profile": "standard",
                         "viewport_width": 1280,
                         "viewport_height": 720,
+                        # The fixture's pages are static and served from loopback: a short
+                        # quiet window before each observation is enough (the default, 500 ms,
+                        # is exercised by test_browser_settle_live.py and the rehearsal).
+                        "settle_quiet_ms": FIXTURE_SETTLE_QUIET_MS,
                         "mouse_trajectory": {"trajectory_type": "instant"},
                         "typing_rhythm": {"rhythm_type": "instant"},
                         "replayability": {
