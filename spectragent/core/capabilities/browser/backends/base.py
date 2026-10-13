@@ -1,8 +1,9 @@
 """Browser provider protocol."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.schemas.provider_session import ProviderSession
 
 
@@ -53,10 +54,12 @@ class NetworkCaptureProvider(Protocol):
 class LaunchArgsProvider(Protocol):
     """What a provider declaring ``LAUNCH_ARGS`` promises (§4.9.x).
 
-    ``launch_args`` are Chrome switches some other party owns for this
-    session — today only ``replayability: pinned``. The provider appends
-    them after its own switches and merges the list switches
-    (``chrome_switches.merge_chrome_switches``).
+    ``launch_args`` are Chrome switches, and ``launch_env`` environment
+    variables, some other party owns for this session — today only
+    ``replayability: pinned`` (and a replay's isolation switches). The
+    provider appends the switches after its own and merges the list switches
+    (``chrome_switches.merge_chrome_switches``), and launches the browser
+    with ``launch_env`` added to the environment it inherits.
 
     :meth:`launch_arg_conflicts` lets the capability's cooperation check name
     the provider's side of a contradiction without reading the provider's
@@ -65,16 +68,39 @@ class LaunchArgsProvider(Protocol):
     knob, each naming it (``"deterministic_rendering=true …"``).
     """
 
-    async def open(self, *, launch_args: Sequence[str] = (), **kwargs: Any) -> ProviderSession: ...
+    async def open(
+        self,
+        *,
+        launch_args: Sequence[str] = (),
+        launch_env: Mapping[str, str] | None = None,
+        **kwargs: Any,
+    ) -> ProviderSession: ...
 
     def launch_arg_conflicts(self, launch_args: Sequence[str]) -> list[str]: ...
 
-    def planned_launch_flags(self, launch_args: Sequence[str]) -> list[str]:
-        """The ``metadata["launch_flags"]`` that ``open(launch_args=...)`` would record.
+    def planned_launch_flags(
+        self, launch_args: Sequence[str], launch_env: Mapping[str, str] | None = None
+    ) -> list[str]:
+        """The ``metadata["launch_flags"]`` that ``open(launch_args=..., launch_env=...)`` would record.
 
-        Known before anything is launched, so a replay compares the launch
-        flags of the recording with its own at setup, before Chrome starts
-        (§4.14 "一致性检查"). Built by the same code as ``open()``'s.
+        The environment the launch sets first, ``NAME=value`` as a shell
+        command line writes it, then the switches. Known before anything is
+        launched, so a replay compares the launch flags of the recording with
+        its own at setup, before Chrome starts (§4.14 "一致性检查"). Built by
+        the same code as ``open()``'s.
+        """
+        ...
+
+    def planned_browser_defaults(
+        self, launch_env: Mapping[str, str] | None = None
+    ) -> BrowserDefaults:
+        """The time zone and locale the browser ``open(launch_env=...)`` starts will fall back to.
+
+        Read from the OS before anything is launched
+        (``browser_defaults.expected_browser_defaults``), so a replay refuses a
+        host whose defaults differ from the recording's at ``prepare()``
+        (§4.14 "一致性检查"). A value the provider cannot read before launch is
+        ``None``; the replay then compares Chrome's own answer after launch.
         """
         ...
 

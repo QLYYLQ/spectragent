@@ -16,8 +16,17 @@ It models the session facts the recorder depends on (measured, ``docs/architectu
   ``waitingForDebugger: true`` for those that asked to wait;
 - ``Runtime.runIfWaitingForDebugger`` must arrive on the target's own
   session (a session-less one — PausedTarget mode A — resumes nothing);
-- on a waiting service worker, ``Network.*`` / ``Runtime.*`` do not answer
-  until the target is resumed.
+- a target without a page process (:attr:`FakeTarget.page_process`: a tab
+  its opener cannot reach, a waiting service worker — the default for
+  service workers) answers ``Page.*``, ``Emulation.*``, ``Network.*`` and
+  ``Runtime.*`` only after it is resumed and its first document committed
+  (:meth:`FakeBrowser.commit`, at once unless the target was opened with
+  ``commit_held``), in order, and the resume answers last, after every one
+  of them sent before it.
+
+Every client also has :meth:`FakeClient.post` (write now, wait later), and a
+write can be stalled (:meth:`FakeBrowser.stall_write`: a socket that cannot
+take the frame), so a test can hold a preparation before its resume is written.
 
 For the archivers (M29) it also answers what a collection and a DOM capture
 read: response bodies (:attr:`FakeBrowser.response_bodies`), cookies and
@@ -29,6 +38,10 @@ test fires).
 And the observation's settle wait (``settle.py``): its isolated world, and its
 in-page probe, which reports the page quiet at once
 (:attr:`FakeBrowser.settle_answer`, changeable per test).
+
+And the measurement of the browser's defaults right after launch
+(``backends/browser_defaults.py``): its isolated world and its probe, answered
+with :attr:`FakeBrowser.default_timezone` / :attr:`FakeBrowser.default_locale`.
 """
 
 from __future__ import annotations
@@ -40,7 +53,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from spectragent.core.capabilities.browser.backends.browser_defaults import DEFAULTS_WORLD
 from spectragent.core.capabilities.browser.settle import SETTLE_WORLD
+
+#: What a target without a page process answers only once it runs and commits.
+PAGE_SIDE_DOMAINS = ("Page.", "Emulation.", "Network.", "Runtime.")
+RESUME = "Runtime.runIfWaitingForDebugger"
 
 
 @dataclass
@@ -61,12 +79,51 @@ class FakeTarget:
     sessions: dict[int, str] = field(default_factory=dict)
     #: sessions still waiting for ``Runtime.runIfWaitingForDebugger``.
     waiting: set[str] = field(default_factory=set)
+    #: ``False``: Chrome built it without a page process (module docstring).
+    page_process: bool = True
+    #: Its first document has not committed yet although it runs (:meth:`FakeBrowser.commit`).
+    commit_held: bool = False
+    #: Set once it runs and its first document committed: page-side commands answer.
+    running: asyncio.Event = field(default_factory=asyncio.Event)
 
     def info(self) -> dict[str, Any]:
         info: dict[str, Any] = {"targetId": self.target_id, "type": self.type, "url": self.url}
         if self.opener_id:
             info["openerId"] = self.opener_id
         return info
+
+
+class FakeReply:
+    """A command a :class:`FakeClient` already wrote; its reply is awaited later."""
+
+    def __init__(
+        self,
+        client: FakeClient,
+        future: asyncio.Future[Any],
+        method: str,
+        session_id: str | None,
+    ) -> None:
+        self._client = client
+        self._future = future
+        self.method = method
+        self.session_id = session_id
+
+    async def wait(self, timeout: float | None = None) -> Any:
+        try:
+            if timeout is None:
+                return await self._future
+            return await asyncio.wait_for(self._future, timeout)
+        except TimeoutError:
+            raise TimeoutError(f"CDP {self.method} got no reply within {timeout:g}s") from None
+        finally:
+            self._client._pending.discard(self._future)
+
+    def abandon(self) -> None:
+        self._client._pending.discard(self._future)
+        if not self._future.done():
+            self._future.cancel()
+        elif not self._future.cancelled():
+            self._future.exception()
 
 
 class FakeClient:
@@ -131,22 +188,44 @@ class FakeClient:
         *,
         timeout: float | None = None,
     ) -> Any:
+        reply = await self._write(method, params, session_id, timeout)
+        return await reply.wait(timeout)
+
+    async def post(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> FakeReply:
+        """Write now (in :attr:`sent` when this returns), wait later — ``CDPClient.post``."""
+        return await self._write(method, params, session_id, None)
+
+    async def _write(
+        self,
+        method: str,
+        params: dict[str, Any] | None,
+        session_id: str | None,
+        timeout: float | None,
+    ) -> FakeReply:
         if not self.connected:
             raise RuntimeError("CDPClient not connected")
+        for key in ((method, session_id), (method, None)):
+            stalled = self.browser.write_stalls.get(key)
+            if stalled is not None:
+                await stalled.wait()
+        if not self.connected:
+            raise RuntimeError("CDPClient not connected")
+        for key in ((method, session_id), (method, None)):
+            refused = self.browser.write_failures.get(key)
+            if refused is not None:
+                raise RuntimeError(f"Failed to send CDP message: {refused}")
         self.sent.append(Sent(method, dict(params or {}), session_id, timeout))
         reply: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._pending.add(reply)
         handler = asyncio.ensure_future(self._answer(reply, method, dict(params or {}), session_id))
         self._handlers.add(handler)
         handler.add_done_callback(self._handlers.discard)
-        try:
-            if timeout is None:
-                return await reply
-            return await asyncio.wait_for(reply, timeout)
-        except TimeoutError:
-            raise TimeoutError(f"CDP {method} got no reply within {timeout:g}s") from None
-        finally:
-            self._pending.discard(reply)
+        return FakeReply(self, reply, method, session_id)
 
     async def _answer(
         self,
@@ -209,6 +288,12 @@ class FakeBrowser:
         self.failures: dict[tuple[str, str | None], BaseException] = {}
         #: method → event a reply waits for (optionally per session).
         self.holds: dict[tuple[str, str | None], asyncio.Event] = {}
+        #: method → event the *write* waits for (optionally per session).
+        self.write_stalls: dict[tuple[str, str | None], asyncio.Event] = {}
+        #: method → why its write fails (optionally per session): ``CDPClient``'s ``RuntimeError``.
+        self.write_failures: dict[tuple[str, str | None], str] = {}
+        #: Page-side commands of a target without a page process still unanswered, per session.
+        self._queued: dict[str, int] = {}
         #: Sessions resumed via a session-less runIfWaitingForDebugger (mode A).
         self.sessionless_resumes = 0
         self.loader_id = "loader-1"
@@ -238,6 +323,11 @@ class FakeBrowser:
         #: What the page reports to the fingerprint probe.
         self.timezone = "UTC"
         self.locale = "en-US"
+        #: What a frame no override reaches reads (the browser-defaults measurement).
+        self.default_timezone: str | None = "UTC"
+        self.default_locale: str | None = "en-US"
+        #: Execution contexts of the browser-defaults measurement's world.
+        self.defaults_contexts: set[int] = set()
         self.device_pixel_ratio = 1.0
         #: The value attribute of the document's one password input.
         self.password_value = "planted-secret"
@@ -269,6 +359,19 @@ class FakeBrowser:
         self.holds[(method, session_id)] = event
         return event
 
+    def stall_write(self, method: str, *, session_id: str | None = None) -> asyncio.Event:
+        """The next writes of *method* wait for the returned event (a socket that takes nothing)."""
+        event = asyncio.Event()
+        self.write_stalls[(method, session_id)] = event
+        return event
+
+    def commit(self, target_id: str) -> None:
+        """The target's first document commits: its held page-side replies follow (if it runs)."""
+        target = self.targets[target_id]
+        target.commit_held = False
+        if not target.waiting:
+            target.running.set()
+
     def new_session(self, prefix: str) -> str:
         self._sessions += 1
         return f"{prefix}-{self._sessions}"
@@ -280,13 +383,26 @@ class FakeBrowser:
         *,
         url: str = "",
         parent: tuple[FakeClient, str] | None = None,
+        page_process: bool | None = None,
+        commit_held: bool = False,
     ) -> dict[int, str]:
         """A new target appears; every auto-attaching client gets it, waiting.
 
         ``parent`` attaches it under a session (an OOPIF or worker under its
-        page) instead of at browser level. Returns client id → session.
+        page) instead of at browser level. ``page_process=False`` builds it
+        without a page process (the default for a service worker), and
+        ``commit_held`` keeps its first document from committing until
+        :meth:`commit`. Returns client id → session.
         """
-        target = FakeTarget(target_id, type_, url)
+        target = FakeTarget(
+            target_id,
+            type_,
+            url,
+            page_process=(type_ != "service_worker") if page_process is None else page_process,
+            commit_held=commit_held,
+        )
+        if target.page_process:
+            target.running.set()
         self.targets[target_id] = target
         attached: dict[int, str] = {}
         for client in self.clients:
@@ -330,24 +446,34 @@ class FakeBrowser:
         target = self._target_of(session_id)
         if (
             target is not None
-            and target.type == "service_worker"
-            and session_id in target.waiting
-            and method.startswith(("Network.", "Runtime."))
-            and method != "Runtime.runIfWaitingForDebugger"
+            and session_id is not None
+            and not target.page_process
+            and method.startswith(PAGE_SIDE_DOMAINS)
+            and method != RESUME
         ):
-            while session_id in target.waiting:
-                await asyncio.sleep(0.005)
+            # Answered once the target runs and its first document committed.
+            self._queued[session_id] = self._queued.get(session_id, 0) + 1
+            try:
+                await target.running.wait()
+            finally:
+                self._queued[session_id] -= 1
         for key in ((method, session_id), (method, None)):
             held = self.holds.get(key)
             if held is not None:
                 await held.wait()
 
-        if method == "Runtime.runIfWaitingForDebugger":
+        if method == RESUME:
             if session_id is None:
                 self.sessionless_resumes += 1
                 return {}
             if target is not None:
                 target.waiting.discard(session_id)
+                if not target.waiting and not target.commit_held:
+                    target.running.set()
+                # A target without a page process answers its resume last,
+                # after every page-side command sent before it.
+                while self._queued.get(session_id, 0):
+                    await asyncio.sleep(0.002)
             return {}
         if method == "Target.setAutoAttach":
             client.auto_attach[session_id] = params
@@ -417,6 +543,10 @@ class FakeBrowser:
             items = store.get(str(storage_id.get("securityOrigin")), {})
             return {"entries": [[key, value] for key, value in items.items()]}
         if method == "Page.createIsolatedWorld":
+            if params.get("worldName") == DEFAULTS_WORLD:
+                context = 7000 + len(self.defaults_contexts) + 1
+                self.defaults_contexts.add(context)
+                return {"executionContextId": context}
             if params.get("worldName") == SETTLE_WORLD:
                 context = 5000 + len(self.settle_contexts) + 1
                 self.settle_contexts.add(context)
@@ -424,6 +554,9 @@ class FakeBrowser:
             self.isolated_worlds += 1
             return {"executionContextId": 1000 + self.isolated_worlds}
         if method == "Runtime.evaluate":
+            if params.get("contextId") in self.defaults_contexts:
+                defaults = {"timezone": self.default_timezone, "locale": self.default_locale}
+                return {"result": {"type": "string", "value": json.dumps(defaults)}}
             if params.get("contextId") in self.settle_contexts:
                 self.settle_probes += 1
                 return {"result": {"type": "object", "value": dict(self.settle_answer)}}

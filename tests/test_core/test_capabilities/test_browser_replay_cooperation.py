@@ -29,6 +29,7 @@ from spectragent.core.capabilities.browser.archive import (
     ReplayLogArchiver,
     StorageArchiver,
 )
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
     NETWORK_ISOLATION_ARGS,
 )
@@ -38,6 +39,8 @@ from spectragent.core.capabilities.browser.cooperation import (
     binding_problems,
     cooperation_problems,
     launch_args,
+    launch_env,
+    planned_browser_defaults,
     planned_launch_flags,
     recorder_needs,
 )
@@ -60,7 +63,9 @@ def source_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
         script = RecordingScript(
             tmp_path_factory.mktemp("source"),
             run_id="run-src",
-            launch_flags=[*OwnedBrowser.BASE_FLAGS, *PINNED.launch_args()],
+            launch_flags=OwnedBrowser().planned_launch_flags(
+                PINNED.launch_args(), PINNED.launch_env()
+            ),
         )
         await script.exchange("http://shop.test/", body=b"<html>home</html>")
         await script.commit(1)
@@ -239,9 +244,18 @@ class TestLaunchArgs:
     def test_planned_flags_are_the_providers_for_those_args(self) -> None:
         cap = _replaying()
         planned = planned_launch_flags(cap, cdp_url=None, injected_client=False)
-        assert planned == [*OwnedBrowser.BASE_FLAGS, *launch_args(cap)]
+        # The tier's environment first (as a shell writes it), then the switches.
+        assert planned == ["TZ=UTC", *OwnedBrowser.BASE_FLAGS, *launch_args(cap)]
+        assert launch_env(cap) == {"TZ": "UTC"}
         assert planned_launch_flags(cap, cdp_url="ws://x", injected_client=False) is None
         assert planned_launch_flags(cap, cdp_url=None, injected_client=True) is None
+
+    def test_planned_browser_defaults_are_the_providers_for_that_environment(self) -> None:
+        cap = _replaying()
+        planned = planned_browser_defaults(cap, cdp_url=None, injected_client=False)
+        assert planned == BrowserDefaults(timezone="UTC", locale="en-US")
+        assert planned_browser_defaults(cap, cdp_url="ws://x", injected_client=False) is None
+        assert planned_browser_defaults(cap, cdp_url=None, injected_client=True) is None
 
 
 # ── setup refuses before anything starts ──────────────────────────────

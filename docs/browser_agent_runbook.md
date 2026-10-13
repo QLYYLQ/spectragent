@@ -87,6 +87,8 @@ network_source: { source_id: live }
 
 `replayability: pinned`、`network_source: archive` 和 trace hook 绑定的归档器用于录制与回放，只支持 `local_chrome`。归档器或 `pinned` 配云后端，都在 `--dry-run` 就报错（`prepare()` 的 setup 检查；正式运行时同样在打开 trace、打开浏览器会话之前报）。评测和 anti-bot 实验保持 `none`，因为 `pinned` 会改变线上站点的行为，它本身也是能被检测到的特征。
 
+`pinned` 启动 Chrome 时设环境变量 `TZ=<pinned 的时区>`：一个 iframe 或弹窗在同进程里设时区的那个页面走了之后，读到的仍是这个时区。语言做不到这一点（macOS 上 Chrome 取系统语言），所以录制把浏览器的默认时区与语言记进指纹，回放只在默认值相同的机器上进行：不同就在 `--dry-run` 报错，系统设置在启动前说不出的那一项在浏览器启动之后报，消息点名两边的值。页面自己打开的新 tab（`target=_blank` 链接、`window.open`）从第一个请求起就被录下、pin 住，开 tab 不再多等。
+
 连到本机 CDP 端点（`localhost`、`127.0.0.0/8`、`::1`，`local_chrome` 启动的浏览器就在这里）的连接直连、不压缩，不读 `http_proxy` 等代理环境变量，本机开着代理（如 Clash）时 CDP 流量也不经过它。远端端点（云后端）仍按 websockets 的默认读环境代理、协商压缩。
 
 ## 跑数据集

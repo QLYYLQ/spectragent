@@ -5,8 +5,9 @@ A replayability *tier* is a ``BrowserCapability`` receptor
 strategy is the switch, ``none`` is the default and the no-op, and there is no
 boolean beside it. A tier owns three things and nothing else:
 
-- the Chrome **launch switches** only it may set (:meth:`launch_args`,
-  delivered through a provider declaring ``LAUNCH_ARGS``);
+- the Chrome **launch switches** and **launch environment** only it may set
+  (:meth:`launch_args`, :meth:`launch_env`, delivered together through a
+  provider declaring ``LAUNCH_ARGS``);
 - the **device scale factor** the control connection pins the viewport to
   (:attr:`device_scale_factor`; ``0.0`` keeps the platform's);
 - a per-run :class:`ReplayabilityPlan` (:meth:`plan`): the commands the
@@ -52,6 +53,8 @@ class ReplayabilityPlan(RecorderParticipantBase):
     shim_sha256: str | None = None
     #: The launch switches the tier owns (its :meth:`launch_args`).
     replayability_args: tuple[str, ...] = ()
+    #: The launch environment the tier owns (its :meth:`launch_env`).
+    replayability_env: Mapping[str, str] = field(default_factory=dict)
     frame_commands: tuple[CDPCommand, ...] = ()
     worker_commands: tuple[CDPCommand, ...] = ()
 
@@ -70,6 +73,7 @@ class ReplayabilityPlan(RecorderParticipantBase):
             "t0_ms": self.t0_ms,
             "shim_sha256": self.shim_sha256,
             "replayability_args": list(self.replayability_args),
+            "replayability_env": dict(self.replayability_env),
         }
 
 
@@ -104,6 +108,15 @@ class ReplayabilityProtocol(Protocol):
         """Chrome switches this tier owns; ``()`` for ``none``."""
         ...
 
+    def launch_env(self) -> Mapping[str, str]:
+        """Environment variables this tier sets on the browser process; ``{}`` for ``none``.
+
+        They reach the browser the way the switches do (``LAUNCH_ARGS``) and
+        enter the launch flags the fingerprint digests, so a replay compares
+        them before launch.
+        """
+        ...
+
     def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan:
         """This run's plan. The configured instance keeps no run state."""
         ...
@@ -123,9 +136,9 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
     ``replayability_id``) and takes its knobs as ``__init__`` keyword
     parameters. Only genuinely safe defaults live here: a tier is replayable
     unless it is ``none``, and its clock starts at the run unless it says
-    otherwise. The launch switches, the DPR (``device_scale_factor``, a
-    property or a knob attribute) and the plan have no safe default and must
-    be written by every tier.
+    otherwise. The launch switches and environment, the DPR
+    (``device_scale_factor``, a property or a knob attribute) and the plan
+    have no safe default and must be written by every tier.
     """
 
     __abstract__ = True
@@ -146,6 +159,12 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
     def launch_args(self) -> tuple[str, ...]:
         raise NotImplementedError(
             f"replayability tier {self.replayability_id!r} must say which launch switches it owns"
+        )
+
+    def launch_env(self) -> Mapping[str, str]:
+        raise NotImplementedError(
+            f"replayability tier {self.replayability_id!r} must say which launch environment "
+            f"it owns"
         )
 
     def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan:

@@ -1274,6 +1274,8 @@ Browser 的环境证据与回放档位：一条独立于 agent 的 recorder 连�
 - BrowserCapability 在 fake CDP 下接入 `tests/_helpers/archive_contract.py`；
 - 用 fake CDP 断言什么都没绑定、档位是 `none` 时不开 recorder 连接、不建 archive scope（M28 验收里在 M28 时空成立的那一条）。
 
+**跟进（2026-10-14，按用户的裁决）**：打不到 opener 的 tab（不带 `rel` 的 `target=_blank`、`rel=noopener`、`window.open(..., 'noopener')`）开始时没有页面进程，页面一侧的命令要等它运行、第一个文档提交之后才应答，排着的命令却在第一个脚本之前全部生效；原先的流水线先等回复（逐条 1 s）再 resume，每个这样的 tab 白等 1 s、记 10 条假失败。recorder 改成整批写出、紧接着写 resume、之后才等全部回复（`CDPClient.post`；为 SW 单设的 `DEFERRED_ON_SERVICE_WORKER` 删掉），实测每个 tab 0–1 ms resume、0 条假失败；`create_tab(url)` 先建 `about:blank`、等 recorder 准备好再导航；pinned 启动时设 `TZ`（`ReplayabilityProtocol.launch_env()`，与开关同路进 `launch_flags`），浏览器的默认时区与语言记进指纹（`browser_defaults`），回放在启动前（本机 OS 读得出的）与启动后（Chrome 实测）都拒绝默认值不同的宿主机；打不到 opener 的 tab 第一个请求上的 `Sec-CH-UA` 写成已知限制。真实 Chrome 回归 `tests/test_core/test_capabilities/test_browser_new_tab_live.py` 与 `test_browser_replay_live.py` 的新 tab 回放；设计见 architecture §4.14 "逐 target 的准备流水线"、"一致性检查与回放指纹"、"已知限制"。
+
 **共享的 fixture 站点**（`tests/_helpers/fixture_site.py`，M30、M31、M33 复用）：两个可注册的主机（跨站 OOPIF），也能经 `--host-resolver-rules="MAP <host> 127.0.0.1:<port>"` + `--no-proxy-server` 在非 localhost 的主机名下提供页面；重定向链、POST 表单、JSON POST、GraphQL（单个与批量）、dedicated worker 的 fetch、嵌套 worker、注册 SW 的页面（localhost 是 secure context）、`window.open` 弹窗、超过阈值的大 body、Range 视频（自写的 206）、WebSocket、统计信标；逐请求的访问日志加 TCP accept 日志（完整性与外联的判据）；内容确定（没有光标闪烁、动画、异步字体）。
 
 **依赖与 notice**：`warcio` 进核心依赖；根目录新建 `THIRD_PARTY_NOTICES.md`，列出每个移植来源（WPR `deterministic.js` BSD-3、Playwright `crNetworkManager.ts` Apache-2.0 连同它的 NOTICE、实际移植了的 Lighthouse / pydoll / browser-use 片段），被移植的文件保留上游文件头并加"modified by af"；锁文件测试断言没有 `surt` / `py-wacz`（`wacz`）/ `cdxj-indexer`。

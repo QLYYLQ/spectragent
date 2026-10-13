@@ -27,6 +27,7 @@ from spectragent.core.archive import ArchiveFile
 from spectragent.core.capabilities.browser.archive import NetworkArchiver
 from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFingerprint
 from spectragent.core.capabilities.browser.archive.network import MAX_BODY_BYTES, NetworkSession
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.core.capabilities.browser.replay import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord
@@ -49,6 +50,8 @@ from tests._helpers.trace_builder import agent_result, new_wal, step_record
 
 #: The recording's T0 (epoch milliseconds) the fingerprint carries.
 RECORDED_T0_MS = 1_760_000_000_000
+#: The browser defaults the recording measured: what ``FakeBrowser`` and the fake providers answer.
+RECORDED_DEFAULTS = BrowserDefaults(timezone="UTC", locale="en-US")
 #: The inline body tier of the scripted archiver: anything declared larger is not read inline.
 INLINE_LIMIT = 4096
 PAGE_SESSION = "page-s"
@@ -66,6 +69,7 @@ class RecordingScript:
         t0_ms: int = RECORDED_T0_MS,
         launch_flags: list[str] | None = None,
         replayability: Any = None,
+        browser_defaults: BrowserDefaults | None = RECORDED_DEFAULTS,
         config: TraceConfig | None = None,
         **archiver_knobs: Any,
     ) -> None:
@@ -90,6 +94,8 @@ class RecordingScript:
         #: The recording's tier (``pinned``, seed 7, unless given) and launch flags.
         self.replayability = replayability or PinnedReplayability(random_seed=7)
         self.launch_flags = list(launch_flags) if launch_flags is not None else ["--headless=new"]
+        #: What the recording's browser fell back to (``None``: a recording that measured none).
+        self.browser_defaults = browser_defaults
         self._plan = self.replayability.plan(t0_ms=t0_ms, browser_user_agent="ScriptedChrome/1.0")
         self._n = 0
         self._wall = 1_700_000_000.0
@@ -371,6 +377,7 @@ class RecordingScript:
                 archivers=[self.archiver],
                 fresh_profile=True,
                 clock=lambda: self._wall,
+                browser_defaults=self.browser_defaults,
             )
             if record is not None:
                 files.append(record)

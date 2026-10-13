@@ -19,6 +19,7 @@ import yaml
 from pydantic import ValidationError
 
 from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
     LAUNCH_ARGS,
@@ -152,6 +153,7 @@ class TestNoneIsInert:
         assert tier.replayable is False
         assert tier.needs_archive_clock is False
         assert tier.launch_args() == ()
+        assert tier.launch_env() == {}
         assert tier.device_scale_factor == 0.0
         plan = tier.plan(t0_ms=123, browser_user_agent="UA")
         assert plan.tier == "none"
@@ -164,6 +166,7 @@ class TestNoneIsInert:
             "t0_ms": None,
             "shim_sha256": None,
             "replayability_args": [],
+            "replayability_env": {},
         }
 
 
@@ -188,6 +191,14 @@ class TestPinnedSwitches:
         # makes a provider's own user_agent knob a reportable conflict.
         assert args[-1] == "--user-agent=Pinned/1"
         assert pinned.device_scale_factor == 2.5
+
+    def test_the_launch_environment_pins_the_default_time_zone(self) -> None:
+        """``TZ``: what a frame without an override owner falls back to (§4.14)."""
+        assert PinnedReplayability().launch_env() == {"TZ": "UTC"}
+        assert PinnedReplayability(timezone="Asia/Tokyo").launch_env() == {"TZ": "Asia/Tokyo"}
+        plan = PinnedReplayability(timezone="Asia/Tokyo").plan(t0_ms=1, browser_user_agent="UA")
+        assert plan.fingerprint()["replayability_env"] == {"TZ": "Asia/Tokyo"}
+        assert "TZ" not in " ".join(PinnedReplayability().launch_args()), "never a switch"
 
     def test_base_time_from_archive_needs_an_archive_clock(self) -> None:
         assert PinnedReplayability().needs_archive_clock is False
@@ -382,8 +393,12 @@ class _Provider:
     def launch_arg_conflicts(self, launch_args: Any) -> list[str]:
         return list(self._conflicts)
 
-    def planned_launch_flags(self, launch_args: Any) -> list[str]:
-        return ["--headless=new", *launch_args]
+    def planned_launch_flags(self, launch_args: Any, launch_env: Any = None) -> list[str]:
+        env = [f"{name}={value}" for name, value in sorted((launch_env or {}).items())]
+        return [*env, "--headless=new", *launch_args]
+
+    def planned_browser_defaults(self, launch_env: Any = None) -> BrowserDefaults:
+        return BrowserDefaults(timezone=(launch_env or {}).get("TZ"), locale=None)
 
     def persistent_profile(self) -> str | None:
         return self._profile

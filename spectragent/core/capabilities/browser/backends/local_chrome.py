@@ -24,7 +24,7 @@ import socket
 import sys
 import tempfile
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar
 
@@ -32,6 +32,10 @@ import httpx
 from pydantic import Field
 
 from spectragent.core.capabilities.browser.backends._registrar import BrowserProviderBase
+from spectragent.core.capabilities.browser.backends.browser_defaults import (
+    BrowserDefaults,
+    expected_browser_defaults,
+)
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
     CUSTOM_PROXY,
@@ -206,9 +210,16 @@ def find_chrome() -> str:
     )
 
 
-def _fingerprintable_flags(chrome_args: Sequence[str]) -> list[str]:
-    """``chrome_args`` with every per-launch value replaced by a placeholder."""
-    flags: list[str] = []
+def _fingerprintable_flags(
+    chrome_args: Sequence[str], launch_env: Mapping[str, str] | None = None
+) -> list[str]:
+    """The launch as the fingerprint digests it: ``NAME=value`` per variable set, then the switches.
+
+    The environment comes first and sorted, as a shell command line writes
+    it (``TZ=UTC chrome --flag``); in the switches every per-launch value is
+    replaced by a placeholder.
+    """
+    flags = [f"{name}={value}" for name, value in sorted((launch_env or {}).items())]
     for arg in chrome_args:
         name, value = split_switch(arg)
         placeholder = _VOLATILE_SWITCH_PLACEHOLDERS.get(name)
@@ -557,20 +568,31 @@ class LocalChromeProvider(BrowserProviderBase):
     # Provider interface
     # -------------------------------------------------------------------
 
-    async def open(self, *, launch_args: Sequence[str] = (), **kwargs: Any) -> ProviderSession:
+    async def open(
+        self,
+        *,
+        launch_args: Sequence[str] = (),
+        launch_env: Mapping[str, str] | None = None,
+        **kwargs: Any,
+    ) -> ProviderSession:
         """Launch Chrome subprocess and return CDP URL.
 
         ``launch_args`` are switches another party owns for this session
         (``replayability: pinned``, through ``LAUNCH_ARGS``). They go after
         ``extra_args``, and every ``--js-flags`` / ``--disable-features`` /
         ``--enable-features`` is then merged into one switch, because Chrome
-        keeps only the last occurrence of each.
+        keeps only the last occurrence of each. ``launch_env`` is added to the
+        environment Chrome inherits from this process (``TZ``, the pinned
+        tier's default time zone); without it Chrome inherits it unchanged.
 
         ``metadata["command_line"]`` is the exact argv. It may carry a proxy
         credential, so it never enters a trace; ``metadata["launch_flags"]``
-        is the fingerprintable form — no executable, no startup URL, and the
-        per-launch profile path and port replaced by placeholders.
+        is the fingerprintable form — the variables ``launch_env`` sets as
+        ``NAME=value``, then the switches without executable or startup URL,
+        the per-launch profile path and port replaced by placeholders.
+        ``metadata["launch_env"]`` is ``launch_env`` itself.
         """
+        env = dict(launch_env or {})
         session_id = str(uuid.uuid4())
 
         # Resolve port.
@@ -612,6 +634,7 @@ class LocalChromeProvider(BrowserProviderBase):
             *cmd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            env={**os.environ, **env} if env else None,
         )
 
         # Wait for CDP to become ready.
@@ -639,7 +662,8 @@ class LocalChromeProvider(BrowserProviderBase):
                 "user_data_dir": udd,
                 "headless": self.headless,
                 "command_line": list(cmd),
-                "launch_flags": _fingerprintable_flags(chrome_args),
+                "launch_env": env,
+                "launch_flags": _fingerprintable_flags(chrome_args, env),
             },
         )
 
@@ -683,13 +707,31 @@ class LocalChromeProvider(BrowserProviderBase):
                     break
         return problems
 
-    def planned_launch_flags(self, launch_args: Sequence[str]) -> list[str]:
-        """``metadata["launch_flags"]`` of an ``open(launch_args=...)``, before launching.
+    def planned_launch_flags(
+        self, launch_args: Sequence[str], launch_env: Mapping[str, str] | None = None
+    ) -> list[str]:
+        """``metadata["launch_flags"]`` of an ``open(launch_args=..., launch_env=...)``, before launching.
 
         The same builder as :meth:`open`; the per-launch values (port,
         profile directory) are placeholders in both, so the two are equal.
         """
-        return _fingerprintable_flags(self._chrome_args(0, "<planned>", launch_args))
+        return _fingerprintable_flags(self._chrome_args(0, "<planned>", launch_args), launch_env)
+
+    def planned_browser_defaults(
+        self, launch_env: Mapping[str, str] | None = None
+    ) -> BrowserDefaults:
+        """The time zone and locale the browser :meth:`open` starts will fall back to, read now.
+
+        From the executable that would be launched and the environment it
+        would get (``browser_defaults.expected_browser_defaults``); a fact
+        that cannot be read — the locale off macOS, an executable that cannot
+        be found — is ``None``.
+        """
+        try:
+            executable: str | None = self.executable_path or find_chrome()
+        except FileNotFoundError:
+            executable = None
+        return expected_browser_defaults(executable=executable, launch_env=launch_env or {})
 
     # -------------------------------------------------------------------
     # NetworkIsolatingProvider (NETWORK_ISOLATION)

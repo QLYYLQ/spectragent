@@ -16,6 +16,16 @@ seed, user agent and viewport. This tier is the **only** source of each:
   string too and a provider's own ``user_agent`` is caught as a conflict.
   No ``--disable-site-isolation-trials``: it is not needed for coverage and
   changes how out-of-process iframes are observed (measured, arch §4.14).
+- **The launch environment** (:meth:`PinnedReplayability.launch_env`),
+  handed to the provider with the switches: ``TZ=<timezone>``, the browser
+  process's default time zone. Chrome keeps one owner of the time zone
+  override per page process; a frame the owner left behind falls back to the
+  process default within 0.2–0.3 s, which is the pinned zone only because of
+  ``TZ`` (measured, Chrome 155). The locale has no such mechanism on macOS
+  (``--lang`` and ``LANG`` are ignored there), so a frame without an owner
+  reads the host's: the environment fingerprint records it
+  (``browser_defaults``) and a replay on a host whose default differs is
+  refused.
 - **Overrides on the recorder connection** (the plan's commands): the shim
   (frames: ``Page.enable`` first, then ``Page.addScriptToEvaluateOnNewDocument``;
   workers: ``Runtime.evaluate`` before resume), time zone, locale, user agent
@@ -27,7 +37,10 @@ seed, user agent and viewport. This tier is the **only** source of each:
   clearing an empty cache measured 3.9–9.3 s on Chrome 153 at every setup.
   The user agent is overridden without
   ``userAgentMetadata``, so ``navigator.userAgentData.brands`` is empty and no
-  ``Sec-CH-UA`` header is sent — identically at record and replay.
+  ``Sec-CH-UA`` header is sent — identically at record and replay — except on
+  the first request of a tab that cannot reach its opener, which carries
+  Chrome's default brands even with ``--user-agent`` at launch (the header is
+  computed before the tab is attached; measured, Chrome 155).
 - **The viewport DPR** (the ``device_scale_factor`` knob itself),
   which the control connection applies with ``setDeviceMetricsOverride``.
 
@@ -168,6 +181,10 @@ class PinnedReplayability(ReplayabilityBase):
             args.append(f"--user-agent={self.user_agent}")
         return tuple(args)
 
+    def launch_env(self) -> dict[str, str]:
+        """``TZ``: the zone a frame without an override owner falls back to (module docstring)."""
+        return {"TZ": self.timezone}
+
     def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan:
         shim = render_shim(t0_ms=t0_ms, seed=self.random_seed)
         user_agent: dict[str, Any] = {
@@ -226,6 +243,7 @@ class PinnedReplayability(ReplayabilityBase):
             t0_ms=t0_ms,
             shim_sha256=SHIM_SHA256,
             replayability_args=self.launch_args(),
+            replayability_env=self.launch_env(),
             frame_commands=tuple(frame),
             worker_commands=worker,
         )

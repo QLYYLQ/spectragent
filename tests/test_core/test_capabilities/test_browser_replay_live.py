@@ -20,7 +20,11 @@ with a loopback scripted model — ``tests/_helpers/replay_driver.py``:
 - **the localhost page** — the same routes on exact ``localhost``, the name
   the blackhole once left out (``EXCLUDE localhost``): a recording made
   against a local site, replayed isolated with the fixture still up, and
-  replayed once more without the blackhole (the negative control).
+  replayed once more without the blackhole (the negative control);
+- **a tab the page opened** — a plain ``target=_blank`` link (the tab cannot
+  reach its opener, so it starts without a page process), clicked by
+  coordinates: its document and what its first script reports are served
+  from the archive, and that script reads the recorded T0.
 
 Every replay feeds the agent the source run's own recorded completions, so
 the actions are the recording's step for step. The fixture servers count
@@ -46,6 +50,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from warcio.archiveiterator import ArchiveIterator
@@ -64,6 +69,7 @@ from tests._helpers.fixture_site import (
     FIXTURE_PASSWORD,
     FIXTURE_TOKEN,
     FixtureSite,
+    new_tab_point,
 )
 from tests._helpers.scripted_llm import ScriptedLLMServer
 
@@ -244,6 +250,22 @@ def local(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs:
     return Runs(source, before, replays)
 
 
+@pytest.fixture(scope="module")
+def new_tab(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs:
+    """A ``target=_blank`` tab the page opened: recorded, then replayed from the archive."""
+    base = tmp_path_factory.mktemp("new_tab")
+    start = site.url("new_tab")
+    with ScriptedLLMServer(
+        [driver.click_at(*new_tab_point("replay")), driver.done("visited")]
+    ) as llm:
+        raw = driver.record_config(site=site, llm=llm, trace_dir=base / "record")
+        source = asyncio.run(driver.run_task(raw, task="Open the tab.", start_url=start))
+    source.require_finished(2, "visited")
+    before = tree_digest(source.run_dir)
+    replay = _replay(site, raw, source, base / "replay", start_url=start)
+    return Runs(source, before, {"replay": replay})
+
+
 def _localhost_urls(site: FixtureSite) -> tuple[str, str, str]:
     """The localhost page, its script and its WebSocket — all on exact ``localhost``."""
     return (
@@ -310,6 +332,27 @@ def test_posts_with_credentials_replay_while_the_archive_holds_none(flow: Runs) 
         if entry.method == "POST" and entry.kind == "hit"
     ]
     assert {"/post_form/submit", "/json_post/api"} <= {e.url.split("test", 1)[1] for e in posts}
+
+
+def test_a_tab_the_page_opened_is_replayed_from_the_archive(new_tab: Runs) -> None:
+    """Its document and its first script's report are hits, and that script read the recorded T0.
+
+    The report's URL carries what the script saw (the clock, the seeded
+    randomness, time zone, locale, user agent): an exact hit means the
+    replayed tab's first document saw exactly what the recorded one did.
+    """
+    trace = new_tab.source.trace
+    record = trace.archive_run_file("browser")
+    assert record is not None, "the recording has an environment fingerprint"
+    recorded_t0 = json.loads(trace.read_extra(record.path))["replayability"]["t0_ms"]
+    entries = [entry for _, entry in new_tab.replays["replay"].log()]
+    documents = [e for e in entries if "/new_tab/target.html?how=replay&" in e.url]
+    assert [(e.kind, e.frame) for e in documents] == [("hit", "main")]
+    reports = [e for e in entries if "/new_tab/report?" in e.url]
+    assert [(e.kind, e.level) for e in reports] == [("hit", "exact")]
+    (probe,) = parse_qs(urlsplit(reports[0].url).query)["d"]
+    assert json.loads(probe)["dates"][0] == recorded_t0
+    assert not [e for e in entries if e.kind == "miss" and "/new_tab/" in e.url]
 
 
 def test_two_replays_give_identical_screenshots(flow: Runs) -> None:

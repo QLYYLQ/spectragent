@@ -38,6 +38,7 @@ from spectragent.core.capabilities.browser.archive.base import (
     archive_needs,
 )
 from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFingerprint
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.recorder import ArchiveChannel, ArchiveChannelError
 
 logger = logging.getLogger(__name__)
@@ -134,10 +135,12 @@ class BrowserArchiveRun:
         fresh_profile: bool,
         clock: Callable[[], float],
         network_fingerprint: Mapping[str, Any] | None = None,
+        browser_defaults: BrowserDefaults | None = None,
     ) -> ArchiveBatch:
         """Barrier → each session in binding order → fingerprint → one batch.
 
-        *network_fingerprint* is the network source's block (``None``: live).
+        *network_fingerprint* is the network source's block (``None``: live);
+        *browser_defaults* what the capability measured right after launch.
         """
         ctx = self._ctx
         if ctx is None or not self._sessions:
@@ -163,6 +166,7 @@ class BrowserArchiveRun:
             fresh_profile=fresh_profile,
             clock=clock,
             network_fingerprint=network_fingerprint,
+            browser_defaults=browser_defaults,
         )
         if record is not None:
             files.append(record)

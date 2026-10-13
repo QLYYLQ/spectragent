@@ -83,6 +83,10 @@ from spectragent.core.capabilities.browser.archive import (  # noqa: F401 — re
     StorageArchiver,
 )
 from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
+from spectragent.core.capabilities.browser.backends.browser_defaults import (
+    BrowserDefaults,
+    measure_browser_defaults,
+)
 from spectragent.core.capabilities.browser.backends.capabilities import LAUNCH_ARGS
 from spectragent.core.capabilities.browser.capture_check import compare_capture
 from spectragent.core.capabilities.browser.cdp_client import CDPClient, transport_options
@@ -92,7 +96,9 @@ from spectragent.core.capabilities.browser.cooperation import (
     browser_archivers,
     cooperation_problems,
     launch_args,
+    launch_env,
     persistent_profile,
+    planned_browser_defaults,
     planned_launch_flags,
     recorder_needs,
 )
@@ -160,6 +166,7 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
     load_fingerprint,
 )
 from spectragent.core.capabilities.browser.replay.consistency import (
+    browser_default_problems,
     consistency_notes,
     consistency_problems,
     replay_t0,
@@ -227,6 +234,15 @@ _OBSERVE_MAX_ATTEMPTS = 2
 # never answered under pinned's ``--disable-back-forward-cache``. Nothing in
 # flight means no wait at all; the bound is per attempt.
 _NAVIGATION_SETTLE_TIMEOUT_S = 10.0
+
+# How long each command measuring the browser's defaults right after launch
+# may take (§4.14): the first tab's renderer may still be starting.
+_BROWSER_DEFAULTS_TIMEOUT_S = 5.0
+
+# How long ``create_tab`` waits for the recorder connection to prepare the
+# tab it created before navigating it (§4.14). An ``about:blank`` tab is
+# prepared in tens of milliseconds.
+_NEW_TAB_PREPARED_TIMEOUT_S = 10.0
 
 
 # ── Cache entry ───────────────────────────────────────────────────────
@@ -565,6 +581,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     #: The replay log's ``diverged_total`` at the last ``verify_restoration``
     #: — what makes each measurement count only the misses since the previous one.
     _diverged_seen: int
+    #: The time zone and locale a frame no override reaches falls back to,
+    #: measured right after launch when archivers are bound (§4.14).
+    _browser_defaults: BrowserDefaults | None
 
     # ── Init machinery ────────────────────────────────────────────────
 
@@ -836,6 +855,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._archivers = []
         self._archive = None
         self._diverged_seen = 0
+        self._browser_defaults = None
 
         self.actions = actions
 
@@ -1127,6 +1147,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             network_fingerprint=(
                 server.fingerprint() if server is not None else self.network_source.fingerprint()
             ),
+            browser_defaults=self._browser_defaults,
         )
 
     def _fresh_profile(self) -> bool:
@@ -1223,7 +1244,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
           ``replay_archive``;
         - for a replay, the source run's consistency with this configuration
           (``replay/consistency.py``), read from its environment fingerprint
-          alone (``load_fingerprint``: no index line, no WARC record).
+          alone (``load_fingerprint``: no index line, no WARC record) —
+          including the browser's defaults, the time zone and locale this
+          host's OS says the browser will fall back to
+          (``planned_browser_defaults``), against the recording's.
 
         Raises:
             BrowserCooperationError: Every problem found.
@@ -1255,6 +1279,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     replayability=self.replayability,
                     viewport=(self.viewport_width, self.viewport_height),
                     planned_launch_flags=planned_launch_flags(
+                        self, cdp_url=cdp_url, injected_client=injected
+                    ),
+                    browser_defaults=planned_browser_defaults(
                         self, cdp_url=cdp_url, injected_client=injected
                     ),
                 )
@@ -1402,6 +1429,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         injected = self._injected_client is not None
         planned = planned_launch_flags(self, cdp_url=cdp_url, injected_client=injected)
+        # What this host's OS says the browser will fall back to, read before
+        # launch; compared with Chrome's own answer when archivers measure it.
+        expected_defaults = (
+            planned_browser_defaults(self, cdp_url=cdp_url, injected_client=injected)
+            if self._archivers
+            else None
+        )
         recorded: RecordedArchive | None = None
         if self.network_source.intercepts and replay_archive:
             # The whole archive, to serve: the check read its fingerprint only.
@@ -1422,20 +1456,23 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             backend = self.resolved_backend()
             if cdp_url is None and backend is not None:
                 # ``open()`` gets no framework-level kwargs beyond
-                # ``launch_args``, and that one only when the provider declares
-                # ``LAUNCH_ARGS`` and the configuration has switches for it (the
-                # replayability tier's, then a replay's isolation switches —
-                # ``cooperation.launch_args``). Every cloud provider declares
-                # an explicit keyword-only signature of *its own* options
-                # (skyvern: timeout_minutes/adblock/..., airtop:
-                # profile_name/..., lexmount: browser_mode/...), so passing a
-                # generic ``viewport=`` here was a TypeError for all of them
-                # and a silently-ignored kwarg for LocalChrome. The viewport is
-                # a browser-level concern and is applied per tab via
+                # ``launch_args`` and ``launch_env``, and those only when the
+                # provider declares ``LAUNCH_ARGS`` and the configuration has
+                # switches or an environment for it (the replayability tier's,
+                # then a replay's isolation switches — ``cooperation.launch_args``
+                # / ``launch_env``). Every cloud provider declares an explicit
+                # keyword-only signature of *its own* options (skyvern:
+                # timeout_minutes/adblock/..., airtop: profile_name/...,
+                # lexmount: browser_mode/...), so passing a generic
+                # ``viewport=`` here was a TypeError for all of them and a
+                # silently-ignored kwarg for LocalChrome. The viewport is a
+                # browser-level concern and is applied per tab via
                 # ``Emulation.setDeviceMetricsOverride`` in _attach_tab.
-                switches = launch_args(self)
-                if switches and LAUNCH_ARGS in getattr(type(backend), "__capabilities__", ()):
-                    self._session = await backend.open(launch_args=switches)
+                switches, env = launch_args(self), launch_env(self)
+                if (switches or env) and LAUNCH_ARGS in getattr(
+                    type(backend), "__capabilities__", ()
+                ):
+                    self._session = await backend.open(launch_args=switches, launch_env=env)
                 else:
                     self._session = await backend.open()
                 cdp_url = self._session.cdp_url
@@ -1470,6 +1507,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 notes=consistency_notes(recorded, planned_launch_flags=planned)
                 if recorded is not None
                 else [],
+                expected_defaults=expected_defaults,
             )
 
         # 2. Global scope — browser-level watchdogs. Before the recorder
@@ -1531,6 +1569,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         t0_ms: int,
         recorded: RecordedArchive | None = None,
         notes: Sequence[str] = (),
+        expected_defaults: BrowserDefaults | None = None,
     ) -> None:
         """Build the recorder connection; :meth:`setup` opens it after the watchdogs.
 
@@ -1539,6 +1578,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         ``http_proxy``), no frame limit (a paused upload arrives twice). The
         connection is kept on ``self`` before it opens, so a failure part way
         is still cleaned up by :meth:`teardown`.
+
+        With archivers bound, the browser's defaults are measured here, before
+        the recorder prepares any target (:meth:`_measure_browser_defaults`).
 
         Replaying *recorded* (M30), the network source's server is built here
         — pure construction, before the archive sessions, whose context
@@ -1570,6 +1612,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         )
         self._recorder = recorder
         version = await recorder.browser_version()
+        if self._archivers:
+            self._browser_defaults = await self._measure_browser_defaults(
+                recorder, expected=expected_defaults, recorded=recorded
+            )
         self._replay_plan = self.replayability.plan(
             t0_ms=t0_ms, browser_user_agent=str(version.get("userAgent", ""))
         )
@@ -1606,6 +1652,63 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
                 self._archivers,
             )
+
+    async def _measure_browser_defaults(
+        self,
+        recorder: RecorderConnection,
+        *,
+        expected: BrowserDefaults | None,
+        recorded: RecordedArchive | None,
+    ) -> BrowserDefaults | None:
+        """Chrome's default time zone and locale, asked right after launch (§4.14).
+
+        Read in the first tab before the recorder prepared it, so no override
+        reached it: what a frame no override reaches falls back to. The
+        fingerprint records it. A difference from what the OS said before
+        launch (*expected*) is logged — the check ``prepare()`` ran may then
+        be wrong on this host. Replaying *recorded*, every value is compared
+        with the recording's here, so what the OS could not say before launch
+        is decided too; a difference, or a measurement that failed, refuses
+        the replay before any target is prepared. Recording, a failed
+        measurement is logged and recorded as no defaults, which refuses any
+        replay of this run.
+        """
+        try:
+            measured = await measure_browser_defaults(recorder, timeout=_BROWSER_DEFAULTS_TIMEOUT_S)
+        except Exception as exc:
+            if recorded is not None:
+                raise BrowserCooperationError(
+                    [
+                        f"source run {recorded.run_id!r} recorded browser defaults ↔ this "
+                        f"browser's defaults could not be measured after launch ({exc!r}), so "
+                        f"nothing says the replay falls back to the same time zone and locale"
+                    ]
+                ) from exc
+            logger.warning(
+                "BrowserCapability: the browser's default time zone and locale could not be "
+                "measured (%r); the fingerprint records none, and no replay of this run will "
+                "be accepted",
+                exc,
+            )
+            return None
+        if expected is not None:
+            differ = [
+                f"{name} {expected.value(name)!r} (read before launch) vs {measured.value(name)!r}"
+                for name in BrowserDefaults.NAMES
+                if expected.value(name) is not None and expected.value(name) != measured.value(name)
+            ]
+            if differ:
+                logger.warning(
+                    "BrowserCapability: Chrome falls back to other defaults than this host's OS "
+                    "said before launch (%s); a replay's check before launch cannot be trusted "
+                    "here — docs/architecture_design.md §4.14",
+                    "; ".join(differ),
+                )
+        if recorded is not None:
+            problems = browser_default_problems(recorded, measured)
+            if problems:
+                raise BrowserCooperationError(problems)
+        return measured
 
     def _recorder_participants(self) -> list[RecorderParticipant]:
         """Who contributes to every new target's preparation, in order: plan, server, sessions."""
@@ -1685,6 +1788,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             except Exception as exc:  # pragma: no cover — close() is tolerant itself
                 logger.warning("Recorder close failed: %s", exc)
         self._replay_plan = None
+        self._browser_defaults = None
         # The replay server after the recorder (which failed every request
         # still held — never continued it): stop answering, drop its state.
         server, self._replay_server = self._replay_server, None
@@ -2163,15 +2267,23 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     # ── Tab management ────────────────────────────────────────────────
 
     async def create_tab(self, url: str = "about:blank") -> str:
-        """Create a new tab and return its CDP session_id."""
+        """Open a new tab at *url* and return its CDP session_id.
+
+        The tab is always created at ``about:blank`` and navigated afterwards
+        (§4.14): ``Target.createTarget`` with the URL itself starts the
+        navigation before the recorder connection attaches, so that first
+        request is neither paused, recorded nor pinned (measured, Chrome 155).
+        With a recorder connection the navigation waits until the recorder
+        has prepared the new tab (:meth:`RecorderConnection.wait_prepared`).
+        """
         if self._cdp is None:
             raise RuntimeError("BrowserCapability not set up")
-        result = await self._cdp.send("Target.createTarget", {"url": url})
+        result = await self._cdp.send("Target.createTarget", {"url": "about:blank"})
         target_id = (result or {}).get("targetId", "")
         if not target_id:
             raise RuntimeError("Target.createTarget returned no targetId")
         try:
-            return await self._attach_tab(target_id, url)
+            sid = await self._attach_tab(target_id, "about:blank")
         except BaseException:
             # This method created the target, so a failed attach must close
             # it.  _attach_tab also serves page-owned targets discovered by
@@ -2183,6 +2295,24 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "Failed to close newly created tab %s after attach error: %s", target_id, exc
                 )
             raise
+        if url == "about:blank":
+            return sid
+        recorder = self._recorder
+        if recorder is not None and not await recorder.wait_prepared(
+            target_id, _NEW_TAB_PREPARED_TIMEOUT_S
+        ):
+            logger.warning(
+                "create_tab: the recorder connection did not prepare tab %s within %gs; "
+                "navigating it to %s anyway",
+                target_id,
+                _NEW_TAB_PREPARED_TIMEOUT_S,
+                url,
+            )
+        reply = await self._cdp.send("Page.navigate", {"url": url}, session_id=sid)
+        error = (reply or {}).get("errorText")
+        if error:
+            raise RuntimeError(f"create_tab: navigating the new tab to {url!r} failed: {error}")
+        return sid
 
     async def _page_target_ids(self) -> list[str]:
         """Every open page target id, in ``Target.getTargets`` order."""

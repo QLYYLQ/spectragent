@@ -70,7 +70,9 @@ def source_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
         script = RecordingScript(
             tmp_path_factory.mktemp("source"),
             run_id="run-src",
-            launch_flags=[*OwnedBrowser.BASE_FLAGS, *PINNED.launch_args()],
+            launch_flags=OwnedBrowser().planned_launch_flags(
+                PINNED.launch_args(), PINNED.launch_env()
+            ),
         )
         await script.exchange("http://shop.test/", body=b"<html>home</html>")
         await script.commit(1)
@@ -173,6 +175,30 @@ class TestReplay:
         assert len(problems) == 3
         assert "isolation=required" in problems[0]
         assert "random_seed" in problems[1] and "launch_flags_sha256" in problems[2]
+
+    def test_a_host_whose_browser_falls_back_to_another_locale_is_refused(
+        self, source_run: Path
+    ) -> None:
+        """Strict, with no switch: the OS facts read before launch against the recording's defaults."""
+
+        class _ElsewhereBrowser(IsolatingBrowser):
+            LOCALE = "fr-FR"
+
+        (problem,) = _refused(
+            _replaying(_ElsewhereBrowser()),
+            {"replay_archive": str(source_run)},
+            archivers=[ReplayLogArchiver()],
+        )
+        assert problem.startswith("source run 'run-src' browser default locale='en-US' ↔")
+        assert "locale='fr-FR' (read from this host before launch)" in problem
+
+    def test_a_locale_the_os_cannot_say_is_left_to_after_launch(self, source_run: Path) -> None:
+        class _NoLocaleBeforeLaunch(IsolatingBrowser):
+            LOCALE = None
+
+        _replaying(_NoLocaleBeforeLaunch()).check_setup(
+            {"replay_archive": str(source_run)}, archivers=[ReplayLogArchiver()]
+        )
 
     def test_only_the_fingerprint_is_read(
         self, source_run: Path, monkeypatch: pytest.MonkeyPatch

@@ -62,6 +62,7 @@ from spectragent.core.capabilities.browser.backends.base import (
     NetworkCaptureProvider,
     NetworkIsolatingProvider,
 )
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
     LAUNCH_ARGS,
     NETWORK_CAPTURE,
@@ -218,20 +219,20 @@ def _replayability_problems(replayability: Any, backend: Any, source: Any) -> li
             f"archive only when the run replays one (network_source: archive)"
         )
     launch_args = replayability.launch_args()
-    if backend is None or not launch_args:
+    if backend is None or not (launch_args or replayability.launch_env()):
         return problems
     provider = _provider_name(backend)
     if LAUNCH_ARGS not in getattr(type(backend), "__capabilities__", set()):
         problems.append(
             f"{tier} ↔ {provider}: the provider does not declare LAUNCH_ARGS, so the "
-            f"tier's launch switches cannot reach the browser"
+            f"tier's launch switches and environment cannot reach the browser"
         )
         return problems
     if not isinstance(backend, LaunchArgsProvider):
         problems.append(
             f"{tier} ↔ {provider}: the provider declares LAUNCH_ARGS but does not "
-            f"implement LaunchArgsProvider (open(launch_args=...) / launch_arg_conflicts / "
-            f"planned_launch_flags)"
+            f"implement LaunchArgsProvider (open(launch_args=..., launch_env=...) / "
+            f"launch_arg_conflicts / planned_launch_flags / planned_browser_defaults)"
         )
         return problems
     problems.extend(
@@ -446,6 +447,25 @@ def launch_args(cap: CooperatingCapability) -> tuple[str, ...]:
     return args
 
 
+def launch_env(cap: CooperatingCapability) -> dict[str, str]:
+    """The environment this configuration hands the provider with :func:`launch_args`: the tier's."""
+    return dict(cap.replayability.launch_env())
+
+
+def _launching_provider(
+    cap: CooperatingCapability, *, cdp_url: str | None, injected_client: bool
+) -> LaunchArgsProvider | None:
+    """The provider that will launch this configuration's browser with known switches, if any."""
+    if cdp_url or injected_client:
+        return None
+    backend = cap.resolved_backend()
+    if LAUNCH_ARGS not in getattr(type(backend), "__capabilities__", set()) or not isinstance(
+        backend, LaunchArgsProvider
+    ):
+        return None
+    return backend
+
+
 def planned_launch_flags(
     cap: CooperatingCapability, *, cdp_url: str | None, injected_client: bool
 ) -> list[str] | None:
@@ -457,11 +477,22 @@ def planned_launch_flags(
     these with its source run's in ``check_setup`` (``replay/consistency.py``)
     and records them in its fingerprint at setup.
     """
-    if cdp_url or injected_client:
+    backend = _launching_provider(cap, cdp_url=cdp_url, injected_client=injected_client)
+    if backend is None:
         return None
-    backend = cap.resolved_backend()
-    if LAUNCH_ARGS not in getattr(type(backend), "__capabilities__", set()) or not isinstance(
-        backend, LaunchArgsProvider
-    ):
+    return backend.planned_launch_flags(launch_args(cap), launch_env(cap))
+
+
+def planned_browser_defaults(
+    cap: CooperatingCapability, *, cdp_url: str | None, injected_client: bool
+) -> BrowserDefaults | None:
+    """The time zone and locale this configuration's browser will fall back to, read before launch.
+
+    ``None`` under the same conditions as :func:`planned_launch_flags`. A
+    replay compares them with its source run's in ``check_setup``
+    (``replay/consistency.py``).
+    """
+    backend = _launching_provider(cap, cdp_url=cdp_url, injected_client=injected_client)
+    if backend is None:
         return None
-    return backend.planned_launch_flags(launch_args(cap))
+    return backend.planned_browser_defaults(launch_env(cap))

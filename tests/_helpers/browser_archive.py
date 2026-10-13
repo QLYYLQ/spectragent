@@ -35,6 +35,7 @@ from spectragent.core.capabilities.browser.archive import (
     NetworkArchiver,
     StorageArchiver,
 )
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
     LAUNCH_ARGS,
@@ -52,6 +53,8 @@ class OwnedBrowser:
     provider_id = "fake_local"
     #: The provider's own switches (what ``launch_flags`` records before ``launch_args``).
     BASE_FLAGS: ClassVar[tuple[str, ...]] = ("--headless=new", "--user-data-dir=<user-data-dir>")
+    #: The locale this fake host's OS says Chrome falls back to (``FakeBrowser.default_locale``).
+    LOCALE: ClassVar[str | None] = "en-US"
 
     def __init__(self, *, profile: str | None = None) -> None:
         self.open_calls: list[dict[str, Any]] = []
@@ -60,11 +63,12 @@ class OwnedBrowser:
 
     async def open(self, **kwargs: Any) -> ProviderSession:
         self.open_calls.append(kwargs)
+        flags = self.planned_launch_flags(kwargs.get("launch_args", ()), kwargs.get("launch_env"))
         return ProviderSession(
             session_id="s",
             provider_id=self.provider_id,
             cdp_url="ws://127.0.0.1:9222/devtools/browser/fake",
-            metadata={"launch_flags": self.planned_launch_flags(kwargs.get("launch_args", ()))},
+            metadata={"launch_flags": flags},
         )
 
     async def close(self, session: ProviderSession | None = None) -> None:
@@ -73,8 +77,13 @@ class OwnedBrowser:
     def launch_arg_conflicts(self, launch_args: Any) -> list[str]:
         return []
 
-    def planned_launch_flags(self, launch_args: Any) -> list[str]:
-        return [*self.BASE_FLAGS, *launch_args]
+    def planned_launch_flags(self, launch_args: Any, launch_env: Any = None) -> list[str]:
+        env = [f"{name}={value}" for name, value in sorted((launch_env or {}).items())]
+        return [*env, *self.BASE_FLAGS, *launch_args]
+
+    def planned_browser_defaults(self, launch_env: Any = None) -> BrowserDefaults:
+        """``TZ`` when the launch sets it, else ``UTC``; :attr:`LOCALE` (as ``FakeBrowser`` answers)."""
+        return BrowserDefaults(timezone=(launch_env or {}).get("TZ", "UTC"), locale=self.LOCALE)
 
     def persistent_profile(self) -> str | None:
         return self.profile

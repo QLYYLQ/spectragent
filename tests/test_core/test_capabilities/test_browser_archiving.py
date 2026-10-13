@@ -15,17 +15,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any
 
 import pytest
 
 from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser import capability as capability_module
 from spectragent.core.capabilities.browser.archive import (
     DomRawArchiver,
     NetworkArchiver,
     StorageArchiver,
 )
+from spectragent.core.capabilities.browser.backends.browser_defaults import DEFAULTS_WORLD
 from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
 from spectragent.core.capabilities.browser.profiles import BUILTIN_PROFILES, BrowserProfileConfig
 from spectragent.core.capabilities.browser.recorder import RecorderLostError
@@ -261,6 +264,94 @@ class TestTiming:
 
 
 # ── how the capability wires its archive side ─────────────────────────
+
+
+class TestBrowserDefaults:
+    """What a frame no override reaches falls back to, measured right after launch (§4.14)."""
+
+    @staticmethod
+    def _run_record(batch: Any) -> dict[str, Any]:
+        (record,) = [item for item in batch.files if item.scope == "run"]
+        return json.loads(record.data)
+
+    async def test_measured_before_the_recorder_prepares_anything_and_recorded(self) -> None:
+        browser = FakeBrowser()
+        browser.default_timezone, browser.default_locale = "Asia/Tokyo", "zh-CN"
+        # A fake host whose OS says what this browser falls back to.
+        backend = OwnedBrowser()
+        backend.LOCALE = "zh-CN"  # type: ignore[misc]
+        cap, driver = archiving_capability(
+            archivers=(StorageArchiver(),), browser=browser, backend=backend
+        )
+        await driver.start()
+        try:
+            sent = [(s.method, s.session_id, s.params) for s in browser.recorder.sent]
+            measured_at = next(
+                i
+                for i, (method, _sid, params) in enumerate(sent)
+                if method == "Page.createIsolatedWorld" and params["worldName"] == DEFAULTS_WORLD
+            )
+            auto_attach_at = sent.index(
+                (
+                    "Target.setAutoAttach",
+                    None,
+                    {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True},
+                )
+            )
+            assert measured_at < auto_attach_at, "measured before any override was sent"
+            document = self._run_record(await cap.collect_archive())
+            assert document["browser_defaults"] == {"timezone": "Asia/Tokyo", "locale": "zh-CN"}
+        finally:
+            await cap.teardown()
+
+    async def test_nothing_is_measured_without_an_archiver(self) -> None:
+        browser = FakeBrowser()
+        cap = BrowserCapability()
+        cap.backend = OwnedBrowser()  # type: ignore[assignment]
+        cap.replayability = PinnedReplayability()
+        cap._inject_cdp_factory(browser.client)
+        await cap.setup()
+        try:
+            assert cap._recorder is not None, "shim-only: the recorder runs"
+            assert "Page.createIsolatedWorld" not in browser.recorder.methods()
+            assert cap._browser_defaults is None
+        finally:
+            await cap.teardown()
+
+    async def test_a_default_chrome_contradicts_is_logged_and_chrome_s_is_recorded(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The check before launch read the OS; Chrome's own answer says otherwise."""
+        browser = FakeBrowser()
+        browser.default_locale = "fr-FR"  # the fake host's OS says en-US (OwnedBrowser.LOCALE)
+        cap, driver = archiving_capability(archivers=(StorageArchiver(),), browser=browser)
+        with caplog.at_level(logging.WARNING, logger=capability_module.__name__):
+            await driver.start()
+        try:
+            warned = [
+                r.getMessage() for r in caplog.records if "read before launch" in r.getMessage()
+            ]
+            assert len(warned) == 1 and "'en-US' (read before launch) vs 'fr-FR'" in warned[0]
+            document = self._run_record(await cap.collect_archive())
+            assert document["browser_defaults"]["locale"] == "fr-FR"
+        finally:
+            await cap.teardown()
+
+    async def test_a_failed_measurement_records_no_defaults(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        browser = FakeBrowser()
+        browser.targets.clear()  # no page to measure in (setup then creates the first tab)
+        cap, driver = archiving_capability(archivers=(StorageArchiver(),), browser=browser)
+        with caplog.at_level(logging.WARNING, logger=capability_module.__name__):
+            await driver.start()
+        try:
+            assert any("could not be measured" in r.getMessage() for r in caplog.records)
+            assert cap._browser_defaults is None
+            document = self._run_record(await cap.collect_archive())
+            assert document["browser_defaults"] is None
+        finally:
+            await cap.teardown()
 
 
 class TestWiring:

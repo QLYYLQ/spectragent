@@ -26,6 +26,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
 
   ```bash
   uv run pytest tests/test_core/test_capabilities/test_browser_recorder_live.py \
+    tests/test_core/test_capabilities/test_browser_new_tab_live.py \
     tests/test_core/test_capabilities/test_browser_replay_live.py
   ```
 
@@ -75,12 +76,16 @@ hook:
 | `env/steps/NNN/browser.network/websocket.jsonl` | WebSocket 帧（方向、opcode、时间、内容），有帧时才有 |
 | `env/steps/NNN/browser.storage/storage.json` | cookie 和每个 origin 的 local / session storage，值原样保存；状态变了才写，某一步的状态是那一步及之前最近的一份 |
 | `env/blobs/sha256/<ab>/<rest>` | 内容寻址的文件，run 内只存一份：`browser.dom_raw` 的 `dom-<cycle>-<tab>.json.gz`，边下边收的大 body `body-<sha>.bin` |
-| `env/run.browser.json`，之后的 `env/run.browser.1.json`…… | 环境指纹：Chrome 版本、UA、viewport、DPR、时区、语言、档位与参数（含 T0 和种子）、shim 摘要、启动开关摘要、网络来源、脱敏策略与隐私标记；内容变了才写新的一版 |
+| `env/run.browser.json`，之后的 `env/run.browser.1.json`…… | 环境指纹：Chrome 版本、浏览器的默认时区与语言（`browser_defaults`：没有 override 够得着的 frame 读到的值，启动后实测）、UA、viewport、DPR、时区、语言、档位与参数（含 T0 和种子）、shim 摘要、启动开关摘要（含启动设的 `TZ`）、网络来源、脱敏策略与隐私标记；内容变了才写新的一版 |
 | `env/trailing/KK/<archiver_id>/<name>` | run 结束时那次收集的证据，不归任何一步 |
 
 `body_status` 的取值：`ok`、`redirect`、`too_large`（超过 64 MiB，回放默认能送出的上限，不论类型都不存）、`streamed_later`（声明的长度超过 `max_inline_body_bytes`，默认 5 MB：页面下载的同时边下边收，不扣响应；请求结束时 `kind: body` 行说收没收全）、`websocket`、`incomplete`（超时、请求中断，或 run 结束时没收完）。超过 5 MB 的文档例外，照样在暂停里读完（导航的 body 提交之后才开得了流）。UI-TARS 是纯视觉 agent，不协商 DOM，`browser.dom_raw` 会在每个观测 cycle 自己多采一次 DOM。各归档器的其余旋钮（`body_read_timeout_s`、`drain_timeout_s`、`strip_request_headers`、`self_capture_timeout_s` 等）见生成的 schema，拼错的键在校验时被拒。
 
 pinned 的旋钮：`base_time`（录制用默认的 `run_start`，回放和分叉用 `from_archive`）、`random_seed`、`timezone`（默认 `UTC`）、`locale`（默认 `en-US`）、`device_scale_factor`（默认 1.0）、`user_agent`（默认不固定，只固定 `Accept-Language`）、`reduced_motion`（默认 `true`）。回放会把这些参数、viewport 和 Chrome 启动命令行的摘要（调试端口、profile 目录和网络路由开关除外）与录制逐项比较，所以录制、回放、分叉三份配置的档位参数、`viewport_width` / `viewport_height` 和 backend 块（`headless`、窗口大小、`extra_args`……）都要相同。
+
+pinned 启动的 Chrome 带着环境变量 `TZ=<timezone>`。Chrome 的时区与语言 override 在一个渲染进程里只认最先设它的那个 frame，这个 frame 走了（iframe 被移除、打开弹窗的页面跳到别的站点），同进程的其余 frame 就落回浏览器的默认值；`TZ` 让默认时区就是 pin 的时区。默认语言定不下来（macOS 上 Chrome 取系统语言，`--lang` 和 `LANG` 都不起作用），所以录制把浏览器的默认时区与语言记进指纹，回放在默认值与录制不同的机器上被拒绝：`prepare()` 时比较本机系统设置读得出的（时区；macOS 上还有语言），启动浏览器之后、准备任何 tab 之前再按 Chrome 实测的比较一次。录制和回放在同一台机器上，或者系统语言相同的机器上，就不会碰到这一条。
+
+页面打开的新 tab（`target=_blank` 链接、`window.open`）从第一个请求起就被扣住、录下、pin 住，不论它能不能访问打开它的页面；`create_tab(url)` 打开的 tab 先建成 `about:blank`，recorder 准备好之后再导航。
 
 ## 读回 env/ 里的证据
 
@@ -431,6 +436,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - `IncompatibleArchiveError`：`trace_writer.archive` 里同一个键写了两次、两个 hook 都带了归档列表，或者环境里没有提供这个归档器的 capability。每个归档器只写一次，只写在一个 trace_writer 上；消息点名请求方和环境实际提供的归档器。
 - `BrowserCooperationError: BrowserCapability cannot run this configuration (N problem(s); ...)`：每一行是一个协作问题，点名两边。常见的有：云 provider 没有 `NETWORK_CAPTURE`，换 `local_chrome`；`browser.network require_replayable=true ↔ replayability: none`，录制改用 pinned，或给 `browser.network` 写 `require_replayable: false`；profile 不是新建的，去掉 `user_data_dir`、非默认的 `profile_directory` 或 `extra_args` 里的 `--user-data-dir`；pinned 与 provider 的旋钮冲突；`base_time: from_archive` 配了 `live` 来源；`network_source: archive ↔ task context: no replay_archive`，给 `--replay-archive`（只适用于 react 回放配置），或者经 `trace_branches` 任务运行；`live` 来源却给了 `replay_archive`；回放没有绑定 `browser.replay_log`，或者绑了 `browser.network`（都是把 `browser.network` 换成 `browser.replay_log`）；`live` 来源绑了 `browser.replay_log`；`isolation: required` 与代理或路由开关冲突；以 `start_url '<起始页>' ↔ browser setup` 开头的一行说任务的起始页不是一个完整的 http(s) URL（没有协议头、写成了文字或几个站点），改任务数据或 `--start-url`，或者换一个任务。
 - 回放一致性不符：同一个错误里以 `source run '<id>'` 开头的行，例如 `replayability random_seed=7 ↔ this run's random_seed=1`、`viewport 1280x720 ↔ this run's viewport ...`、`launch_flags_sha256=... ↔ this run's planned launch flags ...`、`the source run is itself a replay`、`recorded no browser.network evidence`、`has no environment fingerprint`。让回放配置的档位参数、viewport 和 backend 块与录制一致，回放原始录制而不是回放 run。只警告的差异看回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
+- `source run '<id>' browser default locale='zh-CN' ↔ this browser's default locale='en-US' (read from this host before launch)`（或 `timezone`，或结尾是 `(measured after launch)`）：这台机器上的浏览器会落回与录制不同的默认语言或时区。`read from this host before launch` 在 `prepare()` 就报，`measured after launch` 是启动浏览器之后、准备任何 tab 之前报的（系统设置在启动前说不出的那一项，比如 macOS 以外的语言），这时 trace 已经打开，记为环境失败。在默认语言（macOS 的系统语言）与录制相同的机器上回放；pinned 的时区由 `TZ` 定，档位参数相同就相同。`recorded no browser defaults`：源 run 是这一规则之前录的，没有记默认值，重新录制。
 - `ArchiveOpenError: replay archive ... is not a directory`：`--replay-archive` 要指向源 run 目录，也就是含 `manifest.json` 的那个。`ReplayArchiveError` 说明源 run 的索引行读不回来，或者指向的 WARC 记录对不上，消息点名文件和记录 id；源归档已损坏，重新录制。
 - 回放里有 miss：用 `diverged_steps` 找出有主 frame 文档 miss 的步，再看这些步的 `replay.jsonl`。`no_match` 而 `candidates` 里有同 host、同 path、只差查询参数的记录，说明参数是每次访问都会变的值（时间戳、会话 id），给这个站点写 `ignore_query` 规则；文档 URL 本身带每次访问不同的值时，回放必然在那一步发散。`too_large`：body 超过 `max_fulfill_body_bytes`，或录制时就是 `too_large`。`body_unavailable`：录制时 body 没读完。`range_uncovered`：录制没覆盖请求的字节区间。`websocket` 和 `unservable` 见"已知限制"。报告的 `decision_inputs.site_rule_candidates` 汇总了所有回放 run 的近邻 miss。
 - 恢复发散：`strict` 下 run 以 `RestorationDivergedError` 结束，`warn` 下那一步的 `restoration.verdict` 是 `warn`。`reasons` 列出这一步所有不通过的检查，按下面的顺序排列，第一个同时记在 `reason`：
@@ -462,7 +468,9 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 页面定时器发起的导航：观测开始前会等主 frame 在途的跨文档导航提交（最多 10 s），但检查之后才由定时器发起的导航跟踪不到。截图命令有 10 s 的上限，那一次采集失败后重发，这一步因此多花约 10 s。DOM 采集同样有 10 s 的上限，读文档戳的小命令 2 s：渲染进程不回应时，一次观测尝试最多花掉这些时间，不会卡满整个 30 s。
 - 归档开着时，内联读的 body（5 MB 以内、没声明长度的，以及文档）会把响应扣到下载完成，页面拿不到渐进加载的 HTML。更大的 body 边下边收，不扣；但页面不读的 body（`fetch()` 之后从不读，或停住的视频）流不完，记成 `incomplete`。SSE 和长轮询被扣到 `body_read_timeout_s`，之后记为 `incomplete`。
 - pinned 不固定 `performance.now` 和定时器。没有 `Last-Modified` 头时 `document.lastModified` 读真实时钟，不带参数的 `Intl.DateTimeFormat().format()` 也读真实时钟。`base_time: from_archive` 下，页面 JS 设的绝对过期时间的 cookie 可能被 Chrome 丢掉。
-- 回放 `none` 档位的录制时，时区、语言、DPR 不比较，HTTPS 升级的试探可能显示为主 frame 文档 miss。
+- 回放 `none` 档位的录制时，DPR 不比较（时区与语言就是浏览器的默认值，按上面的规则比较），HTTPS 升级的试探可能显示为主 frame 文档 miss。
+- 时区与语言 override 的所有者：同一个渲染进程里只有最先设它的 frame 是所有者。所有者走了之后，同进程的其余 frame（同一个站点的第二个跨源 iframe、保留 opener 的同站弹窗）在 0.2–0.3 s 内落回浏览器的默认值；保留 opener 的跨站弹窗从第一个文档起就读默认语言。时区因为 `TZ` 仍是 pin 的；语言是机器的系统语言，录在指纹里，回放要求它相同，但落回发生在哪一次观测之前，录制和回放之间可能不同。
+- 打不到 opener 的新 tab（不带 `rel` 的 `target=_blank`、`rel=noopener`、`window.open(..., 'noopener')`）的第一个请求带着 Chrome 默认的 `Sec-CH-UA`，录制和回放相同，回放时这个请求不出浏览器；之后的请求都不带。
 - 模糊匹配可能送错资源，日志里记着 `level: fuzzy` 和得分；用完的记录重复最后一条（`exhausted`）是有意的。
 - 回放停在 Chrome 的错误页上时，错误页上写着没送到的 URL；URL 每次都变的站点，按截图比较的回放确定性必然不同。
 - 页面落定的等待看不到窗口里只在途、还没完成的请求：点击之后一次慢的接口调用，页面又没有加载提示，不等它，下一步才看到结果。CSS 过渡与动画、canvas、进程外 iframe 里的变化不经过主文档的 DOM，不算变化。

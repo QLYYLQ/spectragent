@@ -229,13 +229,17 @@ class _FakeProcess:
 
 
 class TestLaunchArgsReachChrome:
+    #: The environment the last ``_open`` handed the subprocess (``None``: inherited as it is).
+    env: dict[str, str] | None = None
+
     async def _open(
         self, monkeypatch: pytest.MonkeyPatch, provider: LocalChromeProvider, **kwargs: Any
     ) -> tuple[list[str], dict[str, Any]]:
         record: dict[str, Any] = {}
 
-        async def _fake_exec(*cmd: str, **_kw: Any) -> _FakeProcess:
+        async def _fake_exec(*cmd: str, **kw: Any) -> _FakeProcess:
             record["cmd"] = list(cmd)
+            record["env"] = kw.get("env")
             return _FakeProcess()
 
         async def _fake_wait(_self: Any, _port: int) -> str:
@@ -246,6 +250,7 @@ class TestLaunchArgsReachChrome:
         provider.executable_path = "/fake/chrome"
         session = await provider.open(**kwargs)
         await provider.close(session)
+        self.env = record["env"]
         return record["cmd"], session.metadata
 
     async def test_launch_args_follow_extra_args_and_are_merged(
@@ -304,14 +309,48 @@ class TestLaunchArgsReachChrome:
     @pytest.mark.parametrize(
         "launch_args", [(), PINNED_LIKE, (*PINNED_LIKE, *NETWORK_ISOLATION_ARGS)]
     )
+    @pytest.mark.parametrize("launch_env", [None, {"TZ": "Asia/Tokyo"}])
     async def test_planned_flags_are_what_open_records(
-        self, monkeypatch: pytest.MonkeyPatch, launch_args: tuple[str, ...]
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        launch_args: tuple[str, ...],
+        launch_env: dict[str, str] | None,
     ) -> None:
         """Known before launch (a replay's consistency check) and equal to the launch's own."""
         provider = LocalChromeProvider(extra_args=["--mute-audio"])
-        planned = provider.planned_launch_flags(launch_args)
-        _cmd, meta = await self._open(monkeypatch, provider, launch_args=launch_args)
+        planned = provider.planned_launch_flags(launch_args, launch_env)
+        _cmd, meta = await self._open(
+            monkeypatch, provider, launch_args=launch_args, launch_env=launch_env
+        )
         assert planned == meta["launch_flags"]
+
+    async def test_the_launch_environment_reaches_chrome_and_heads_the_flags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``TZ`` (pinned's default time zone) is added to what Chrome inherits, and digested."""
+        monkeypatch.setenv("AF_INHERITED_PROBE", "kept")
+        monkeypatch.setenv("TZ", "Europe/Paris")
+        cmd, meta = await self._open(
+            monkeypatch, LocalChromeProvider(), launch_args=PINNED_LIKE, launch_env={"TZ": "UTC"}
+        )
+        assert self.env is not None
+        assert self.env["TZ"] == "UTC" and self.env["AF_INHERITED_PROBE"] == "kept"
+        assert meta["launch_env"] == {"TZ": "UTC"}
+        assert meta["launch_flags"][0] == "TZ=UTC"
+        assert not any(arg.startswith("TZ=") for arg in cmd), "never a switch on the command line"
+
+    async def test_no_launch_environment_inherits_this_process_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _cmd, meta = await self._open(monkeypatch, LocalChromeProvider(), launch_args=PINNED_LIKE)
+        assert self.env is None  # create_subprocess_exec inherits os.environ as it is
+        assert meta["launch_env"] == {}
+        assert not any(flag.startswith("TZ=") for flag in meta["launch_flags"])
+
+    def test_planned_browser_defaults_follow_the_launch_environment(self) -> None:
+        provider = LocalChromeProvider(executable_path="/fake/chrome")
+        assert provider.planned_browser_defaults({"TZ": "Asia/Tokyo"}).timezone == "Asia/Tokyo"
+        assert provider.planned_browser_defaults({"TZ": "JST-9"}).timezone is None
 
     async def test_the_isolation_switches_reach_chrome_as_two_elements(
         self, monkeypatch: pytest.MonkeyPatch

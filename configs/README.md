@@ -83,7 +83,7 @@ Notes:
 - A strategy is always a receptor block, never a name on `profile:`. `profile:` says which watchdogs run and which CDP round trips they may spend — nothing else. Naming a strategy there is what made `mouse_trajectory`, then `dom_cleaner`, then `dom_serializer` arrive default-constructed with every configured knob discarded.
 - `browser.dom` has a cost surface of its own, off by default: `dom_max_elements`, `dom_max_serialized_chars` (both a number or `unlimited`, the default — a numeric limit is never written `null`), `dom_interactive_only`, `dom_viewport_only`. When any of them cuts, the observation fragment records the cut in `budget`, so a trace never shows a truncated page as a sparse one.
 - The two input-humanization receptors are independent axes and each is its own off-switch: `mouse_trajectory: { trajectory_type: instant }` and `typing_rhythm: { rhythm_type: instant }` are the legacy instant jump and the legacy single bulk `Input.insertText`. There is no boolean beside either — the strategy *is* the switch.
-- `replayability` has the same shape (`docs/architecture_design.md` §4.14): `{ replayability_id: none }` pins nothing and opens no second CDP connection; `pinned` (knobs `base_time`, `random_seed`, `timezone`, `locale`, `device_scale_factor`, `user_agent`, `reduced_motion`) makes a recording replayable and needs a backend that launches its own browser (`local_chrome`).
+- `replayability` has the same shape (`docs/architecture_design.md` §4.14): `{ replayability_id: none }` pins nothing and opens no second CDP connection; `pinned` (knobs `base_time`, `random_seed`, `timezone`, `locale`, `device_scale_factor`, `user_agent`, `reduced_motion`) makes a recording replayable and needs a backend that launches its own browser (`local_chrome`), which it launches with `TZ=<timezone>` so a frame that lost the frame owning its process's overrides still reads the pinned zone.
 - `network_source` is the third axis of that shape (§4.14 "回放"): `{ source_id: live }` is the network itself and changes nothing; `archive` answers every request from a recorded run's archive at the Fetch Request stage and never sends one to the network (see [Replaying a recorded run](#replaying-a-recorded-run)). Whether the browser must be isolated from the network is the source's own `isolation` knob — there is no provider boolean beside it.
 
 ## Per-action configuration
@@ -330,8 +330,11 @@ replay's trace records the source run by absolute path.
   fingerprint alone, no index) and compares that fingerprint with this configuration; setup
   compares again before Chrome starts, then loads the whole archive to serve it: the tier and its
   parameters (`base_time` aside), the shim, the viewport, the launch flags (without the
-  network routing switches on either side). Any mismatch refuses the run, naming both
-  sides, together with the configuration's own cooperation problems. A different Chrome
+  network routing switches on either side; `TZ` included), and the browser's default time
+  zone and locale as far as this machine's system settings tell them (the locale on macOS
+  only). Any mismatch refuses the run, naming both sides, together with the configuration's
+  own cooperation problems. After Chrome starts, before any tab is prepared, its own default
+  time zone and locale are compared once more, which decides what the settings could not. A different Chrome
   version, an unpinned user agent or a changed redaction policy only warns — the warnings
   land in the replay's own `env/run.browser.json` (`network_source.warnings`).
 - **`base_time: from_archive`** starts the page clock at the recording's T0; it is refused

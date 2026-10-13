@@ -15,6 +15,7 @@ import pytest
 
 from spectragent.core.capabilities.browser.archive import NetworkArchiver, StorageArchiver
 from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFingerprint
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
     NETWORK_ISOLATION_ARGS,
 )
@@ -25,6 +26,7 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
     RecordedArchive,
 )
 from spectragent.core.capabilities.browser.replay.consistency import (
+    browser_default_problems,
     consistency_notes,
     consistency_problems,
     replay_t0,
@@ -36,6 +38,8 @@ T0 = 1_760_000_000_000
 BASE_FLAGS = ["--headless=new", "--user-data-dir=<user-data-dir>"]
 FIXTURE_MAP = "--host-resolver-rules=MAP shop.test 127.0.0.1:9000, MAP * ~NOTFOUND"
 VERSION = {"product": "Chrome/155.0", "revision": "@abc", "userAgent": "ScriptedChrome/1.0"}
+#: What the recording's browser fell back to (measured right after its launch).
+DEFAULTS = BrowserDefaults(timezone="UTC", locale="zh-CN")
 
 
 class _Version(ScriptedRecorder):
@@ -51,6 +55,7 @@ def _source(
     network: dict[str, Any] | None = None,
     network_files: int = 1,
     archivers: tuple[Any, ...] = (NetworkArchiver(require_replayable=False),),
+    defaults: BrowserDefaults | None = DEFAULTS,
     edit: Any = None,
 ) -> RecordedArchive:
     """A source run's archive (in memory) carrying a real fingerprint document."""
@@ -66,6 +71,7 @@ def _source(
             archivers=archivers,
             fresh_profile=True,
             network_fingerprint=network,
+            browser_defaults=defaults,
         )
     )
     if edit is not None:
@@ -179,6 +185,47 @@ def test_everything_is_reported_at_once() -> None:
         _source(network_files=0), PinnedReplayability(random_seed=9), viewport=(1, 1)
     )
     assert len(problems) == 3 and all(_names_both_sides(p) for p in problems)
+
+
+# ── the browser's defaults: what a frame no override reaches falls back to ──
+
+
+def test_the_recorded_defaults_are_in_the_fingerprint() -> None:
+    document = _source().fingerprint
+    assert document is not None
+    assert document["browser_defaults"] == {"timezone": "UTC", "locale": "zh-CN"}
+
+
+def test_defaults_read_before_launch_must_be_the_recordings() -> None:
+    """Strict, with no switch: another default locale or time zone refuses at ``prepare()``."""
+    recorded = _source()
+    assert _problems(recorded, browser_defaults=DEFAULTS) == []
+    (problem,) = _problems(recorded, browser_defaults=BrowserDefaults("UTC", "en-US"))
+    assert _names_both_sides(problem)
+    assert "locale='zh-CN'" in problem and "locale='en-US'" in problem
+    assert "read from this host before launch" in problem
+    (zone,) = _problems(recorded, browser_defaults=BrowserDefaults("Asia/Tokyo", "zh-CN"))
+    assert "timezone='UTC'" in zone and "timezone='Asia/Tokyo'" in zone
+
+
+def test_a_default_the_os_cannot_say_is_compared_after_launch() -> None:
+    """The locale off macOS: unknown before launch, decided by Chrome's own answer after it."""
+    recorded = _source()
+    assert _problems(recorded, browser_defaults=BrowserDefaults("UTC", None)) == []
+    assert browser_default_problems(recorded, DEFAULTS) == []
+    (problem,) = browser_default_problems(recorded, BrowserDefaults("UTC", "fr-FR"))
+    assert _names_both_sides(problem) and "measured after launch" in problem
+    assert "locale='zh-CN'" in problem and "locale='fr-FR'" in problem
+    # A value Chrome did not report is a difference too.
+    (missing,) = browser_default_problems(recorded, BrowserDefaults("UTC", None))
+    assert "locale=None" in missing
+
+
+def test_a_source_that_recorded_no_defaults_is_refused() -> None:
+    (problem,) = _problems(_source(defaults=None), browser_defaults=DEFAULTS)
+    assert _names_both_sides(problem) and "recorded no browser defaults" in problem
+    assert _problems(_source(defaults=None)) == [problem], "refused whatever this host says"
+    assert browser_default_problems(_source(defaults=None), DEFAULTS) == []
 
 
 # ── what is only noted or warned ──────────────────────────────────────

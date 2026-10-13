@@ -41,6 +41,7 @@ import io
 import json
 import socket
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from html import escape
@@ -148,6 +149,59 @@ FORM_SCENARIOS: tuple[str, ...] = ("form_submit",)
 #: - ``flywheel_blocked`` on ``blocked.example.test``: a 403 with Cloudflare's
 #:   challenge marks (``server: cloudflare``, ``cf-ray``, ``cf-mitigated``).
 FLYWHEEL_SCENARIOS: tuple[str, ...] = ("flywheel_shop", "flywheel_drift", "flywheel_blocked")
+#: Tabs a page opens (§4.14), kept apart for the same reason. ``page.html`` holds
+#: one control per way of opening a tab (:data:`NEW_TAB_BOXES`): plain
+#: ``target=_blank`` links (no ``rel``, ``rel=noopener``, ``rel=opener``, one to
+#: the other site, one whose document answers after 2 s, one plain for the
+#: replay) and ``window.open`` buttons (keeping the opener, ``noopener``, to the
+#: other site). Each opens ``target.html``, whose first script reports what the
+#: document sees (:data:`NEW_TAB_PROBE`) to ``/new_tab/report`` and, as asked
+#: by its query, moves to a second document, starts a dedicated worker and
+#: embeds a frame from the other site that report too. ``owners.html`` holds
+#: two frames from the other site (the second added after 1 s) and a button
+#: opening a same-site popup; ``owner.html`` reports its time zone and locale
+#: to ``/new_tab/owner_report`` every 250 ms — what a frame reads once the frame
+#: that set its process's overrides is gone.
+NEW_TAB_SCENARIOS: tuple[str, ...] = ("new_tab",)
+#: Where ``new_tab/page.html`` puts its controls: ``(left, top, width, height)`` in CSS px.
+NEW_TAB_BOXES: dict[str, tuple[int, int, int, int]] = {
+    name: (20, 20 + 50 * i, 400, 36)
+    for i, name in enumerate(
+        (
+            "blank",
+            "blank_noopener",
+            "blank_opener",
+            "blank_cross_site",
+            "window_open",
+            "window_open_noopener",
+            "window_open_cross_site",
+            "slow",
+            "replay",
+        )
+    )
+}
+#: What the first script of every ``new_tab`` document, worker and frame
+#: reports: the shim's mark, the clock, the seeded randomness, time zone,
+#: locale, language, user agent and brands, reduced motion — and whether any
+#: other script ran before it.
+NEW_TAB_PROBE = (
+    "(function () {"
+    " const g = globalThis; const o = Intl.DateTimeFormat().resolvedOptions();"
+    " const doc = typeof document === 'object' ? document : null;"
+    " return {"
+    " shim: !!g[Symbol.for('af.replayability.pinned')],"
+    " dates: [Date.now(), Date.now(), new Date().getTime()],"
+    " random: [Math.random(), Math.random(), Math.random()],"
+    " tz: o.timeZone || null, locale: o.locale || null,"
+    " language: navigator.language, ua: navigator.userAgent,"
+    " brands: navigator.userAgentData ? navigator.userAgentData.brands.map(b => b.brand) : null,"
+    " reduced: typeof matchMedia === 'function'"
+    " ? matchMedia('(prefers-reduced-motion: reduce)').matches : null,"
+    " scripts: doc ? doc.scripts.length : null"
+    " }; })()"
+)
+#: Request headers whose values the log keeps (:attr:`LoggedRequest.headers`).
+LOGGED_HEADER_VALUES = ("accept-language", "user-agent", "cache-control", "sec-ch-ua")
 #: Where the flywheel pages put their controls: ``(left, top, width, height)`` in CSS px.
 FLYWHEEL_BOXES: dict[str, tuple[int, int, int, int]] = {
     "query": (40, 100, 300, 32),
@@ -201,10 +255,22 @@ class LoggedRequest:
     body_sha256: str | None
     body_length: int
     range: str | None = None
+    #: ``time.monotonic()`` when the request line arrived.
+    received_at: float = 0.0
+    #: The values of :data:`LOGGED_HEADER_VALUES` the request carried (lower-cased names).
+    headers: tuple[tuple[str, str], ...] = ()
 
     @property
     def bare_path(self) -> str:
         return self.path.split("?", 1)[0]
+
+    @property
+    def query(self) -> dict[str, str]:
+        return dict(parse_qsl(self.path.partition("?")[2], keep_blank_values=True))
+
+    def header(self, name: str) -> str | None:
+        """A logged header value (:data:`LOGGED_HEADER_VALUES`), or ``None`` when it was not sent."""
+        return dict(self.headers).get(name.lower())
 
     @property
     def scenario(self) -> str | None:
@@ -216,6 +282,7 @@ class LoggedRequest:
             or head in HIT_TEST_SCENARIOS
             or head in FORM_SCENARIOS
             or head in FLYWHEEL_SCENARIOS
+            or head in NEW_TAB_SCENARIOS
         )
         return head if known else None
 
@@ -257,6 +324,7 @@ class _Handler(BaseHTTPRequestHandler):
         return None
 
     def _serve(self) -> None:
+        received_at = time.monotonic()
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
         site = self.server.site
@@ -270,6 +338,12 @@ class _Handler(BaseHTTPRequestHandler):
                 body_sha256=hashlib.sha256(body).hexdigest() if body else None,
                 body_length=len(body),
                 range=self.headers.get("Range"),
+                received_at=received_at,
+                headers=tuple(
+                    (name, str(self.headers[name]))
+                    for name in LOGGED_HEADER_VALUES
+                    if self.headers.get(name) is not None
+                ),
             )
         )
         site._respond(self, body)
@@ -439,6 +513,7 @@ class FixtureSite:
             + HIT_TEST_SCENARIOS
             + FORM_SCENARIOS
             + FLYWHEEL_SCENARIOS
+            + NEW_TAB_SCENARIOS
         )
         if scenario not in known:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {known}")
@@ -501,6 +576,8 @@ class FixtureSite:
             ],
             "flywheel_drift": ["/flywheel_drift/start.html", "/flywheel_drift/site.css"],
             "flywheel_blocked": ["/flywheel_blocked/start.html"],
+            # its entry page (no tab opens without an input event)
+            "new_tab": ["/new_tab/page.html"],
         }
         if scenario not in paths:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {sorted(paths)}")
@@ -960,7 +1037,161 @@ class FixtureSite:
             "/form_submit/result.html": self._form_result,
             # ── M33's metrics rehearsal: three sites ──
             **self._flywheel_routes(static),
+            # ── tabs a page opens ──
+            **self._new_tab_routes(static),
         }
+
+    def _new_tab_routes(
+        self, static: Callable[[bytes, str], Callable[[_Handler, bytes], None]]
+    ) -> dict[str, Callable[[_Handler, bytes], None]]:
+        cross = self.cross_origin
+        target = "/new_tab/target.html"
+
+        def control(name: str, kind: str, action: str) -> str:
+            left, top, width, height = NEW_TAB_BOXES[name]
+            style = (
+                f"position:absolute;left:{left}px;top:{top}px;width:{width}px;"
+                f"height:{height}px;display:block;margin:0;background:#eef"
+            )
+            if kind == "link":
+                return f'<a id="{name}" style="{style}" {action}>{name}</a>'
+            return f'<button id="{name}" type="button" style="{style}" onclick="{action}">{name}</button>'
+
+        def url(how: str, **query: Any) -> str:
+            return f"{target}?how={how}&n=1" + "".join(f"&{k}={v}" for k, v in query.items())
+
+        controls = "".join(
+            (
+                control("blank", "link", f'href="{url("blank", next=1, sub=1)}" target="_blank"'),
+                control(
+                    "blank_noopener",
+                    "link",
+                    f'href="{url("blank_noopener", next=1, sub=1)}" target="_blank" rel="noopener"',
+                ),
+                control(
+                    "blank_opener",
+                    "link",
+                    f'href="{url("blank_opener", next=1, sub=1)}" target="_blank" rel="opener"',
+                ),
+                control(
+                    "blank_cross_site",
+                    "link",
+                    f'href="{cross}{url("blank_cross_site", next=1, sub=1)}" target="_blank"',
+                ),
+                control(
+                    "window_open", "button", f"window.open('{url('window_open', next=1, sub=1)}')"
+                ),
+                control(
+                    "window_open_noopener",
+                    "button",
+                    f"window.open('{url('window_open_noopener', next=1, sub=1)}', '_blank', 'noopener')",
+                ),
+                control(
+                    "window_open_cross_site",
+                    "button",
+                    f"window.open('{cross}{url('window_open_cross_site', next=1, sub=1)}')",
+                ),
+                control("slow", "link", f'href="{url("slow", slow=2)}" target="_blank"'),
+                control("replay", "link", f'href="{url("replay")}" target="_blank"'),
+            )
+        )
+        opener = self._page(
+            "new tabs", f"<script>window.__probe = {NEW_TAB_PROBE};</script>{controls}"
+        )
+
+        def report_js(kind: str) -> str:
+            return (
+                "fetch('/new_tab/report?' + new URLSearchParams({how: q.get('how') || '',"
+                f" n: q.get('n') || '', kind: '{kind}', d: JSON.stringify(probe)}}),"
+                " {keepalive: true}).catch(() => {});"
+            )
+
+        def document(handler: _Handler, _body: bytes) -> None:
+            query = dict(parse_qsl(handler.path.partition("?")[2]))
+            delay = float(query.get("slow") or 0)
+            if delay:
+                time.sleep(delay)
+            how, n = query.get("how", "?"), int(query.get("n") or 1)
+            other = self._other_origin(handler)
+            extra = ""
+            if query.get("sub") == "1":
+                extra = (
+                    f"<script>new Worker('/new_tab/worker.js?how={how}&n={n}');</script>"
+                    f'<iframe src="{other}/new_tab/frame.html?how={how}&n={n}" '
+                    'style="width:300px;height:60px;border:0"></iframe>'
+                )
+            if query.get("next") == "1" and n == 1:
+                extra += (
+                    "<script>setTimeout(() => { location.href = "
+                    f"'{target}?how={how}&n=2&sub={query.get('sub') or 0}'; }}, 300);</script>"
+                )
+            page = self._page(
+                f"{how} {n}",
+                "<script>const q = new URLSearchParams(location.search);"
+                f" const probe = {NEW_TAB_PROBE}; {report_js('document')}</script>"
+                f'<p>{escape(how)} {n}</p><script src="/new_tab/cacheable.js"></script>{extra}',
+            )
+            self._send(handler, 200, page, _HTML)
+
+        def cacheable(handler: _Handler, _body: bytes) -> None:
+            content = b"window.cacheableLoaded = (window.cacheableLoaded || 0) + 1;\n"
+            handler.send_response(200)
+            handler.send_header("Content-Type", _JS)
+            handler.send_header("Content-Length", str(len(content)))
+            handler.send_header("Cache-Control", "public, max-age=3600")
+            handler.end_headers()
+            if handler.command != "HEAD":
+                handler.wfile.write(content)
+
+        worker = (
+            "const q = new URLSearchParams(location.search);"
+            f" const probe = {NEW_TAB_PROBE}; {report_js('worker')}"
+        ).encode()
+        frame = self._page(
+            "frame",
+            "<script>const q = new URLSearchParams(location.search);"
+            f" const probe = {NEW_TAB_PROBE}; {report_js('iframe')}</script><p>frame</p>",
+        )
+        reporter = (
+            "<script>const tag = new URLSearchParams(location.search).get('tag') || '?';"
+            " function report() { const o = Intl.DateTimeFormat().resolvedOptions();"
+            " fetch('/new_tab/owner_report?' + new URLSearchParams({tag, tz: o.timeZone || '',"
+            " locale: o.locale || '', language: navigator.language})).catch(() => {}); }"
+            " report(); setInterval(report, 250);</script>"
+        )
+        owners = self._page(
+            "owners",
+            f'<iframe id="frame_a" src="{cross}/new_tab/owner.html?tag=frame_a" '
+            'style="width:200px;height:50px;border:0"></iframe>'
+            "<script>setTimeout(() => { const f = document.createElement('iframe');"
+            f" f.id = 'frame_b'; f.src = '{cross}/new_tab/owner.html?tag=frame_b';"
+            " f.style.cssText = 'width:200px;height:50px;border:0';"
+            " document.body.appendChild(f); }, 1000);</script>"
+            '<button id="popup" type="button" style="position:absolute;left:20px;top:200px;'
+            'width:300px;height:40px" onclick="window.open(\'/new_tab/owner.html?tag=popup\')">'
+            "popup</button>",
+        )
+
+        def json_ok(handler: _Handler, _body: bytes) -> None:
+            self._send(handler, 200, b'{"ok": true}', _JSON)
+
+        return {
+            "/new_tab/page.html": static(opener, _HTML),
+            target: document,
+            "/new_tab/cacheable.js": cacheable,
+            "/new_tab/worker.js": static(worker, _JS),
+            "/new_tab/frame.html": static(frame, _HTML),
+            "/new_tab/report": json_ok,
+            "/new_tab/owners.html": static(owners, _HTML),
+            "/new_tab/owner.html": static(self._page("owner", reporter), _HTML),
+            "/new_tab/owner_report": json_ok,
+        }
+
+    def _other_origin(self, handler: _Handler) -> str:
+        """The site the request did not go to: main for a request to cross, cross otherwise."""
+        host = handler.headers.get("Host", "")
+        cross_host = self.cross_origin.split("://", 1)[1]
+        return self.main_origin if host == cross_host else self.cross_origin
 
     def _flywheel_routes(
         self, static: Callable[[bytes, str], Callable[[_Handler, bytes], None]]
@@ -1224,4 +1455,10 @@ def _box_link(name: str, href: str, label: str) -> str:
 def flywheel_point(name: str) -> tuple[int, int]:
     """The centre of a flywheel control (:data:`FLYWHEEL_BOXES`) — where UI-TARS clicks it."""
     left, top, width, height = FLYWHEEL_BOXES[name]
+    return left + width // 2, top + height // 2
+
+
+def new_tab_point(name: str) -> tuple[int, int]:
+    """The centre of a ``new_tab`` control (:data:`NEW_TAB_BOXES`)."""
+    left, top, width, height = NEW_TAB_BOXES[name]
     return left + width // 2, top + height // 2

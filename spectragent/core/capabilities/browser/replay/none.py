@@ -17,7 +17,7 @@ from spectragent.core.capabilities.browser.replay.replayability import (
 
 
 class NoneReplayability(ReplayabilityBase):
-    """No launch switches, the platform DPR, an empty plan."""
+    """No launch switches, no launch environment, the platform DPR, an empty plan."""
 
     __registry_key__ = "none"
 
@@ -27,6 +27,9 @@ class NoneReplayability(ReplayabilityBase):
 
     def launch_args(self) -> tuple[str, ...]:
         return ()
+
+    def launch_env(self) -> dict[str, str]:
+        return {}
 
     @property
     def device_scale_factor(self) -> float:

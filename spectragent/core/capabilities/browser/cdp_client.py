@@ -31,6 +31,14 @@ Liveness is pushed, not polled: :meth:`CDPClient.add_close_callback`
 registers a callback the receive loop calls once when the connection ends —
 with the transport error, or with ``None`` when :meth:`CDPClient.stop` closed
 it on purpose.
+
+Writing and waiting are two steps when the order on the wire matters:
+:meth:`CDPClient.post` writes a command at once and returns its
+:class:`PendingReply`, to be awaited later. Commands posted one after another
+from one task reach Chrome in that order — the recorder writes a waiting
+target's whole preparation and then its resume before it waits for any reply
+(``docs/architecture_design.md`` §4.14). :meth:`CDPClient.send` is the two
+steps together.
 """
 
 from __future__ import annotations
@@ -92,6 +100,65 @@ def transport_options(url: str) -> dict[str, Any]:
     except ValueError:
         loopback = False
     return {"proxy": None, "compression": None} if loopback else {}
+
+
+class PendingReply:
+    """A command already written to the socket; its reply is awaited later.
+
+    Returned by :meth:`CDPClient.post`. Whoever holds one either awaits
+    :meth:`wait` or calls :meth:`abandon`: a reply nobody waits for is dropped
+    when it arrives, never logged as unknown, and never leaves an exception
+    nobody retrieved.
+    """
+
+    __slots__ = ("_client", "_future", "_msg_id", "method", "session_id")
+
+    def __init__(
+        self,
+        client: CDPClient,
+        msg_id: int,
+        method: str,
+        session_id: str | None,
+        future: asyncio.Future[Any],
+    ) -> None:
+        self._client = client
+        self._msg_id = msg_id
+        self._future = future
+        self.method = method
+        self.session_id = session_id
+
+    async def wait(self, timeout: float | None = None) -> Any:
+        """The reply's result.
+
+        ``timeout`` bounds the wait from now. On expiry the command is
+        abandoned (a late reply is dropped) and ``TimeoutError`` names the
+        method. ``None`` waits as long as the connection lives.
+
+        Raises ``RuntimeError`` on a CDP protocol error, and the connection's
+        error when it ends first.
+        """
+        try:
+            if timeout is None:
+                return await self._future
+            return await asyncio.wait_for(self._future, timeout)
+        except TimeoutError:
+            self.abandon()
+            raise TimeoutError(
+                f"CDP {self.method} got no reply within {timeout:g}s"
+                + (f" (session {self.session_id})" if self.session_id else "")
+            ) from None
+        except asyncio.CancelledError:
+            self.abandon()
+            raise
+
+    def abandon(self) -> None:
+        """Stop waiting for the reply: it is dropped when it arrives. Idempotent."""
+        self._client._abandon(self._msg_id)
+        if not self._future.done():
+            self._future.cancel()
+        elif not self._future.cancelled():
+            # Arrived already: marked as read, so an error nobody waits for is not reported.
+            self._future.exception()
 
 
 class CDPClient:
@@ -228,13 +295,31 @@ class CDPClient:
         *,
         timeout: float | None = None,
     ) -> Any:
-        """Send a CDP command and return the result.
+        """Send a CDP command and return the result: :meth:`post`, then :meth:`PendingReply.wait`.
 
         ``timeout`` bounds the wait for the reply. On expiry the request is
         forgotten (a late reply is dropped) and ``TimeoutError`` names the
         method. ``None`` waits as long as the connection lives.
 
         Raises ``RuntimeError`` on CDP protocol errors or if not connected.
+        """
+        reply = await self.post(method, params, session_id)
+        return await reply.wait(timeout)
+
+    async def post(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> PendingReply:
+        """Write a CDP command now and return its reply, to be awaited later.
+
+        The command is on the socket when this returns, so commands posted one
+        after another from one task reach Chrome in that order, whatever their
+        replies do. The caller awaits :meth:`PendingReply.wait` or calls
+        :meth:`PendingReply.abandon`.
+
+        Raises ``RuntimeError`` if not connected or if the write fails.
         """
         if self._ws is None:
             raise RuntimeError("CDPClient not connected")
@@ -253,23 +338,14 @@ class CDPClient:
 
         try:
             await self._ws.send(json.dumps(msg))
+        except asyncio.CancelledError:
+            # The frame may already be in the transport: drop its reply quietly.
+            self._abandon(msg_id)
+            raise
         except Exception as exc:
             self._pending.pop(msg_id, None)
             raise RuntimeError(f"Failed to send CDP message: {exc}") from exc
-
-        try:
-            if timeout is None:
-                return await future
-            return await asyncio.wait_for(future, timeout)
-        except TimeoutError:
-            self._abandon(msg_id)
-            raise TimeoutError(
-                f"CDP {method} got no reply within {timeout:g}s"
-                + (f" (session {session_id})" if session_id else "")
-            ) from None
-        except asyncio.CancelledError:
-            self._abandon(msg_id)
-            raise
+        return PendingReply(self, msg_id, method, session_id, future)
 
     def on_event(self, method: str, callback: Callable[..., Any]) -> None:
         """Register an event callback.  Multiple callbacks per method supported."""

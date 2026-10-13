@@ -30,6 +30,7 @@ import yaml
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
+    planned_browser_defaults,
     planned_launch_flags,
 )
 from spectragent.core.capabilities.browser.input import WindMouseTrajectory
@@ -217,7 +218,8 @@ def _recorded_run_of(
     action negotiation, not the network source or the archive) through the
     same redaction ``TraceWriter`` applies — never a hand-written one. Its
     environment evidence — one exchange, and the browser fingerprint with
-    *root*'s tier, viewport and planned launch flags — is committed by
+    *root*'s tier, viewport, planned launch flags and this host's browser
+    defaults — is committed by
     ``RecordingScript``, the real archiver session and WAL, so the replay's
     consistency check reads what a recording writes.
     """
@@ -262,6 +264,8 @@ def _recorded_run_of(
         config=config,
         replayability=cap.replayability,
         launch_flags=planned_launch_flags(cap, cdp_url=None, injected_client=False),
+        # What this host's browser falls back to (a recording measures it right after launch).
+        browser_defaults=planned_browser_defaults(cap, cdp_url=None, injected_client=False),
     )
 
     async def _record() -> None:

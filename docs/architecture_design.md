@@ -2078,7 +2078,8 @@ BrowserCapability.setup(*, negotiation, cdp_url, start_url, replay_archive, logi
 │     1. setup 的 cdp_url 参数         (任务上下文按名字路由来的 per-run override)
 │     2. self.cdp_url                  (conscribe field)
 │     3. self.backend.open()           ← 取 ProviderSession.cdp_url
-│        （provider 声明了 LAUNCH_ARGS 时是 open(launch_args=档位的开关 + 需要时的隔离开关)）
+│        （provider 声明了 LAUNCH_ARGS 时是 open(launch_args=档位的开关 + 需要时的隔离开关,
+│         launch_env=档位的启动环境)）
 ├── 持有 self._session = ProviderSession(...)  以便 teardown 释放
 ├── 控制连接 CDPClient(cdp_url).start()（loopback 端点 proxy=None、compression=None：cdp_client.transport_options）
 ├── 需要时开 recorder 连接 + browser 级 archive scope + 回放服务（§4.14），在第一个 tab 之前
@@ -2099,12 +2100,12 @@ BrowserCapability.teardown()
 | 常量 | 承诺 | 谁要求它 |
 |---|---|---|
 | `NETWORK_CAPTURE` | 浏览器进程由 capability 经这个 provider 启动并在 teardown 杀掉；CDP 端点接受第二个 browser 级客户端（`waitForDebuggerOnStart` 的 auto-attach、Network、Fetch）；provider 实现 `NetworkCaptureProvider`：`persistent_profile() -> str \| None`（profile 不是每 run 新建时，点名是哪个旋钮——只有配置能让 profile 不是新建的，从不靠环境变量，`config.json` 才看得出来；它决定 §5.6 的 `logged_in` 与指纹的 `fresh_profile`；声明了 `NETWORK_CAPTURE` 却答不出的 provider 被协作检查拒绝，从不当作新建的） | 任一 browser 归档器被绑定；`replayability` 不是 `none`；`network_source: archive`——也就是一切需要 recorder 连接的配置（§4.14） |
-| `LAUNCH_ARGS` | `open(*, launch_args: Sequence[str] = ())` 接受本次 session 额外的 Chrome 开关；provider 实现 `LaunchArgsProvider`：`launch_arg_conflicts(launch_args) -> list[str]`（自己的哪些旋钮与这些开关矛盾，每条点名旋钮），以及 `planned_launch_flags(launch_args) -> list[str]`（M30：`open(launch_args=...)` 将会写进 `metadata["launch_flags"]` 的那张开关表，启动之前就能算——回放的一致性检查据此在启动浏览器之前比较开关摘要） | `replayability: pinned`（它的启动开关只能从这条路进浏览器）；`NETWORK_ISOLATION`（隔离开关也走这条路） |
+| `LAUNCH_ARGS` | `open(*, launch_args: Sequence[str] = (), launch_env: Mapping[str, str] \| None = None)` 接受本次 session 额外的 Chrome 开关与环境变量（加在浏览器从 provider 进程继承的环境上）；provider 实现 `LaunchArgsProvider`：`launch_arg_conflicts(launch_args) -> list[str]`（自己的哪些旋钮与这些开关矛盾，每条点名旋钮），`planned_launch_flags(launch_args, launch_env) -> list[str]`（M30：`open(...)` 将会写进 `metadata["launch_flags"]` 的那张表，环境变量写成 `NAME=value` 排在最前，启动之前就能算——回放的一致性检查据此在启动浏览器之前比较开关摘要），以及 `planned_browser_defaults(launch_env) -> BrowserDefaults`（它启动的浏览器会落回的默认时区与语言，从本机 OS 读，读不出的那项是 `None`，§4.14 "一致性检查"） | `replayability: pinned`（它的启动开关与 `TZ` 只能从这条路进浏览器）；`NETWORK_ISOLATION`（隔离开关也走这条路） |
 | `NETWORK_ISOLATION` | provider 启动的浏览器能被切断网络：capability 经 `open(launch_args=...)` 交给它 `chrome_switches.NETWORK_ISOLATION_ARGS`（`--host-resolver-rules=MAP * ~NOTFOUND` 与 `--no-proxy-server` 两个 argv 元素，不带 shell 引号；没有任何例外，`localhost` 也断，§4.14 "回放"）；provider 实现 `NetworkIsolatingProvider`：`isolation_conflicts() -> list[str]`（自己哪些旋钮会让隔离失效，每条点名旋钮：`local_chrome` 是 `proxy_server`、`proxy_bypass_list`、`extra_args` 里任何一个网络路由开关（与某个隔离开关一字不差的重复除外：它什么都不改）（`chrome_switches.NETWORK_ROUTING_SWITCHES`：`--host-resolver-rules`、`--proxy-server`、`--no-proxy-server`、`--proxy-pac-url`、`--proxy-auto-detect`、`--proxy-bypass-list`）、不是 `about:blank` 的 `startup_url`——它在任何 recorder 连上之前就从命令行加载）。声明它的 provider 也声明 `LAUNCH_ARGS` | `network_source: archive` 且 `isolation: required`（默认；§4.14 "回放"） |
 
-- `backends/base.py` 的约定本来就允许 `open()` 接收 per-session 的显式关键字参数；`launch_args` 是其中一个。capability 只对声明了 `LAUNCH_ARGS` 的 provider 传它；`none` 档位什么都不传，云 provider 的 `open()` 调用与以前完全一样。
+- `backends/base.py` 的约定本来就允许 `open()` 接收 per-session 的显式关键字参数；`launch_args` 与 `launch_env` 是其中两个。capability 只对声明了 `LAUNCH_ARGS` 的 provider 传它们；`none` 档位什么都不传，云 provider 的 `open()` 调用与以前完全一样。`local_chrome` 把 `launch_env` 加在 Chrome 从本进程继承的环境上（没有就原样继承），写进 `metadata["launch_env"]`。
 - `local_chrome` 把 `launch_args` 接在 `extra_args` 之后，然后把同一个开关的多次出现合并成一个：所有 `--js-flags` 合成一个（V8 flags 以空格拼接），所有 `--disable-features` / `--enable-features` 各合成一个（逗号拼接、去重）。Chrome 对这几个开关只认最后一次出现，原先 `CHROME_DEFAULT_ARGS` 与 `disable_security` 各带一个 `--disable-features`，后者静默吃掉了前者。合并写在 `backends/chrome_switches.py`（`merge_chrome_switches`），归 Chrome 命令行这一层，不是某个 provider 的私有函数。
-- `ProviderSession.metadata` 记录确切的命令行（`command_line`）与去掉易变值的开关表（`launch_flags`：不含可执行文件与启动 URL，`--user-data-dir` 的路径与 `--remote-debugging-port` 的端口换成占位符）。环境指纹只记后者的摘要，而且去掉网络路由开关之后才算（M30：录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，隔离单独记，§4.14），命令行本身从不进 trace（`proxy_server` 可能带着凭证）。
+- `ProviderSession.metadata` 记录确切的命令行（`command_line`）与去掉易变值的开关表（`launch_flags`：最前面是启动设的环境变量（`TZ=UTC`），然后是开关，不含可执行文件与启动 URL，`--user-data-dir` 的路径与 `--remote-debugging-port` 的端口换成占位符）。环境指纹只记后者的摘要，而且去掉网络路由开关之后才算（M30：录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，隔离单独记，§4.14），命令行本身从不进 trace（`proxy_server` 可能带着凭证）。
 - 显式 `cdp_url`、测试注入的控制客户端，都意味着浏览器不是 capability 拥有的：与任何需要 `NETWORK_CAPTURE` 的配置同时出现时报错，点名双方：`prepare()` 里（`check_setup`；`cdp_url` 来自配置或任务上下文）就报，setup 再查一遍（`prepare()` 之后才注入的客户端由它报）。
 
 **6 个具体 Capability（全部平级，无层级）**：
@@ -2562,7 +2563,8 @@ BrowserCapability
 │     永不设置 waitForDebuggerOnStart: true
 └── recorder 连接（RecorderConnection，browser/recorder.py；只在需要时打开）
       ├── browser 级 Target.setAutoAttach{autoAttach, waitForDebuggerOnStart, flatten}
-      ├── 每个新 target：流水线准备（replayability → 回放服务 → 归档器 → Fetch / 递归 auto-attach），finally 里 resume
+      ├── 每个新 target：整批准备命令（replayability → 回放服务 → 归档器 → Fetch / 递归 auto-attach）按序写出，
+      │     紧接着写 resume（finally 里），之后才等全部回复
       ├── 暂停类事件 → 直接派生的 task（finally 里 continue / resume；archive 来源回放时未应答的请求一律 failRequest，从不 continue），从不进 scope 队列
       ├── 回放服务 ReplayServer（network_source: archive，M30）：Request 阶段的 Fetch 暂停的主人，
       │     匹配 → fulfill / failRequest，在暂停它的那个 session 上应答；决定写进回放日志 → browser.replay_log 的 replay.jsonl
@@ -2595,10 +2597,12 @@ recorder 连接的 `CDPClient` 用 `compression=None`（websockets 默认与 Chr
 | 显式清理（关 auto-attach → 放行扣着的请求 → 每个 session `Fetch.disable` → `Target.detachFromTarget` → 关连接）之后，新 tab 正常加载 | teardown 的固定顺序；幂等；在建了一半的实例上也安全 |
 | agent-cdp 0.4.0 的 `PausedTarget` 模式 A 在 af 的 flatten 客户端上静默 resume 错 session | 只用模式 B：自带的 resume 回调，按 session 路由 `Runtime.runIfWaitingForDebugger` |
 | browser 级 auto-attach 也接上 Chrome 内部 target（`browser_ui`、`background_page`、扩展的 `service_worker`）；同一个 SW 会被接上两次（browser 级、注册它的页面之下），而 SW 主脚本的请求**只**在页面之下那个 session 上被拦截（M29 实测：那个 session 没开 Fetch 或被 detach，主脚本就哪儿也不暂停） | 只准备 `page` / `iframe` / `worker` / `shared_worker` / `service_worker` 且 URL 不是 `chrome:` / `chrome-extension:` / `devtools:` 的 target，其余只 resume 再 detach；同一 target 的第二个 session **照样准备**，不丢；于是它的请求可能每个 session 各暂停一次，由贡献者按 target 与请求去重记录（`RecorderConnection.sessions_for_target`） |
-| 等待中的 SW session 上，`Network.enable`、`Runtime.evaluate` 要到 resume 之后才应答（`Fetch.enable` 立即应答） | resume 之前的命令一律流水线发出、一起等（逐条超时）；SW 上的 `Network.*` / `Runtime.*` 放到 resume 之后再等 |
+| 等待中、还没有页面进程的 target 只立即应答 Chrome 自己处理的命令（`Fetch.enable`、`Target.setAutoAttach`）；`Page.*`、`Emulation.*`、`Network.*`、`Runtime.*` 要等它 resume、第一个文档提交之后才按顺序应答，resume 自己的回复最后到；排着的命令却在那个文档的第一个脚本之前全部生效。这样的 target 是打不到 opener 的 tab（不带 `rel` 的 `target=_blank`（Chrome 88 起默认 noopener）、`rel=noopener`、`window.open(url, '_blank', 'noopener')`）和等待中的 SW；保留 opener 的弹窗先在 opener 的进程里有一个活的 `about:blank`，10–30 ms 内全部应答（2026-10-14 实测，Chrome 155：等 6 s 也只有那两条应答；文档晚 2 s 到，回复就晚 2 s；两个文档、dedicated worker、跨站 iframe 上 shim、时钟、种子、时区、语言、UA、减少动画、缓存禁用都在第一个脚本之前生效，录到的网络完整；探针在本地的 `tmp/flywheel/followup/newtab/`） | 等待中的 target：整批命令按序写出，紧接着写 `Runtime.runIfWaitingForDebugger`，之后才等回复，resume 的也在内（下面"逐 target 的准备流水线"第 3 步）；没有为 SW 单设的规则。以前先等回复（逐条 1 s）再 resume：每个打不到 opener 的 tab 白等 1 s、记 10 条假失败 |
+| `Target.createTarget{url}` 在 recorder attach 之前就发出了文档请求：Fetch 没扣住、Network 事件里没有，带着宿主机的 `Accept-Language`、默认 UA、没有 `no-cache`；页面一侧的设置只是碰巧赶上了解析器（2026-10-14 实测，Chrome 155） | capability 自己开的 tab 一律在 `about:blank` 建，recorder 准备好它（`RecorderConnection.wait_prepared`）之后再导航：`create_tab(url)`；setup 的初始 tab 本来就是已存在的或 `about:blank` 的 |
 | recorder session 上不先 `Page.enable`，`Page.addScriptToEvaluateOnNewDocument` 返回 ok 却从不执行 | frame 先 `Page.enable`，再注入 |
 | dedicated worker 上没有 `Fetch.enable`；它的请求暂停在父页面 session 上 | 不给 dedicated worker 发 Fetch；永远在暂停请求的那个 session 上应答 |
 | 第二个客户端的 `Emulation.setTimezoneOverride` 失败（"already in effect"） | 每个 override 只有一个所有者（下表） |
+| 时区与语言的 override 在一个渲染进程里也只有一个所有者：最先设它的那个 frame。同进程的另一个 frame 再设语言得到 "Another locale override is already in effect"，再设时区返回成功却不成为所有者，都不记日志；所有者离开（被移除的 iframe、跳到别的站点去的 opener）之后 0.2–0.3 s 内，其余 frame 落回浏览器进程的默认时区与语言（`navigator.language` 按 session 设，不受影响）；保留 opener 的跨站弹窗准备时还在 opener 的进程里，到了自己的进程，从第一个文档起就读默认语言（时区照样 pin 住）。默认时区听启动时的 `TZ`；默认语言在 macOS 上没有办法定（`--lang`、`LANG` / `LC_ALL` / `LANGUAGE` 都不起作用，带 `-AppleLanguages` Chrome 起不来）（2026-10-14 实测，Chrome 155） | pinned 启动浏览器时设 `TZ=<timezone>`（`launch_env()`，与启动开关走同一条路，下面"`replayability`"）；浏览器的默认时区与语言记进环境指纹（`browser_defaults`），回放拒绝默认值与录制不同的宿主机（下面"一致性检查与回放指纹"）；剩下的写进"已知限制" |
 | 嵌套的 dedicated worker 脚本在 Request 与 Response 两个阶段都不经过 Fetch | 已知限制：既录不到也回放不了；从 Network 事件看得到的，记成未完成，不当作完整 |
 
 #### 所有权与存活
@@ -2609,7 +2613,7 @@ recorder 连接的 `CDPClient` 用 `compression=None`（websockets 默认与 Chr
 
 #### setup 与 teardown
 
-setup：协作检查（`check_setup`，`prepare()` 查过的同一个函数，再查一遍）→ 回放时加载整个源归档（`open_replay`）→ `backend.open(launch_args=...)`（只对声明了 `LAUNCH_ARGS` 的 provider）→ 控制连接 → 需要时建好 recorder 连接（还不 attach）：它的客户端、archive scope（`__archive__`，与 `__browser__` 平级，归 recorder 的生命周期）与 `ArchiveChannel`、`replayability` 的本 run 计划、已绑定归档器的运行期会话（`archive/run.py` 的 `BrowserArchiveRun`）→ global scope 与 watchdog（ArchiveWatchdog 按绑定安装）→ `RecorderConnection.open()`：设 browser 级 auto-attach，等已存在的 target 准备完（ready barrier）→ 初始 tab → `start_url`。watchdog 在 `open()` **之前**：ArchiveWatchdog 必须从 recorder 的第一个事件起就消费 archive scope，因为 `open()` 期间已存在 target 的 attach 事件若没人接，收集屏障会把它们算成丢失（M29 实测：fake CDP 下第一次收集就以"dropped 1 of 5"失败）。
+setup：协作检查（`check_setup`，`prepare()` 查过的同一个函数，再查一遍）→ 回放时加载整个源归档（`open_replay`）→ `backend.open(launch_args=..., launch_env=...)`（只对声明了 `LAUNCH_ARGS` 的 provider）→ 控制连接 → 需要时建好 recorder 连接（还不 attach）：它的客户端、archive scope（`__archive__`，与 `__browser__` 平级，归 recorder 的生命周期）与 `ArchiveChannel`；绑定了归档器时，在第一个 tab 主 frame 的 isolated world 里量浏览器的默认时区与语言（任何 override 都还没到，`backends/browser_defaults.py`；回放时在这里与源 run 的比较，不同就拒绝，下面"一致性检查与回放指纹"）；`replayability` 的本 run 计划、已绑定归档器的运行期会话（`archive/run.py` 的 `BrowserArchiveRun`）→ global scope 与 watchdog（ArchiveWatchdog 按绑定安装）→ `RecorderConnection.open()`：设 browser 级 auto-attach，等已存在的 target 准备完（ready barrier）→ 初始 tab → `start_url`。watchdog 在 `open()` **之前**：ArchiveWatchdog 必须从 recorder 的第一个事件起就消费 archive scope，因为 `open()` 期间已存在 target 的 attach 事件若没人接，收集屏障会把它们算成丢失（M29 实测：fake CDP 下第一次收集就以"dropped 1 of 5"失败）。
 
 teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{autoAttach:false, waitForDebuggerOnStart:false}` → 继续所有还扣着的请求 → 每个 session `Fetch.disable` → `Target.detachFromTarget` → 停掉 recorder 客户端）→ 关闭归档会话与 archive scope → 原有的 bridge / watchdog / scope / 控制连接 → `backend.close()`。每一步都容错地往下走，第二次调用什么也不做。
 
@@ -2634,7 +2638,7 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 | `network_source: archive` + recorder 所有权（provider 缺 `NETWORK_CAPTURE`、显式 `cdp_url`、注入的控制客户端，与上面同一组行） | setup |
 | `network_source: archive` `isolation: required` + provider 没有声明 `NETWORK_ISOLATION`（或缺 `LAUNCH_ARGS`）——除非写了 `isolation: none_acknowledged` | `bind_archivers`、setup |
 | `network_source: archive` `isolation: required` + provider 报告的隔离冲突（`local_chrome`：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的网络路由开关、不是 `about:blank` 的 `startup_url`） | `bind_archivers`、setup |
-| 回放一致性：源 run 的环境指纹与本 run 的配置不一致（下面"一致性检查"；`prepare()` 只读源 run 的指纹） | setup，启动浏览器之前（之后才加载整个归档） |
+| 回放一致性：源 run 的环境指纹与本 run 的配置不一致，含本机 OS 说浏览器会落回的默认时区与语言（下面"一致性检查"；`prepare()` 只读源 run 的指纹） | setup，启动浏览器之前（之后才加载整个归档）；默认时区与语言在启动之后、准备任何 target 之前按实测再比一次（OS 说不出的那项在这里定） |
 | 已协商的 browser fragment + 当前 profile 装的 watchdog 解析不了它（profile 在构造之后被改过；当场重新解析） | setup |
 | 任务的 `start_url` + setup 只打开一个完整的 http(s) URL：没有协议头、协议头不是 `http`/`https`、没有主机、含空白、不是合法的 URL（`start_page.py`，§4.10 "起始页"；这一行与配置无关，只看任务数据） | setup，启动浏览器之前 |
 
@@ -2644,7 +2648,8 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 
 1. 去重与过滤（上表）。
 2. 收集本 target 的命令：`replayability` 的本 run 计划先给（frame：`Page.enable`、`Page.addScriptToEvaluateOnNewDocument(shim)`、时区 / 语言 / UA / 媒体 override、`Network.enable` 后的 `Network.setCacheDisabled` 与 `Network.setBypassServiceWorker`；worker：`Runtime.evaluate(shim)`、`Network.enable`、`Network.setUserAgentOverride`、`Network.setCacheDisabled`），然后是回放服务（M30，只在 `network_source: archive` 时存在：`Network.enable`、`Network.setCacheDisabled`，frame 上再加 `Network.setBypassServiceWorker` 与拒绝 SW 注册的注入脚本），再给每个已绑定归档器的会话（`browser.network`：`Network.enable{maxPostDataSize}`；`browser.replay_log` 什么都不发），最后是 recorder 自己的：所有贡献者的 Fetch pattern 合成**一次** `Fetch.enable`（只在有 Fetch 的 target 上；回放服务的 Request 阶段 pattern 也走这条路），递归的 `Target.setAutoAttach{autoAttach, waitForDebuggerOnStart, flatten}`。
-3. 全部流水线发出，一起等（逐条超时），失败记日志、记在 target 上；`Runtime.runIfWaitingForDebugger` 用 `PausedTarget` 模式 B 放在 `finally` 里，任何一步抛错也照样 resume。
+3. 先写出，再 resume，最后才等回复。等待中的 target：整批命令按收集的顺序一条接一条写到 socket（`CDPClient.post`：写出就返回它的回复，回复之后再等；同一个 task 里先后写出的命令按这个顺序到 Chrome，不靠 task 的启动顺序），紧接着写 `Runtime.runIfWaitingForDebugger`，写之前一条回复也不等。之后等每一条回复，resume 的也在内，最长等到 recorder 自己可能扣住这个 target 第一个文档的时间（最长的贡献者预算加 1 s 宽限，或默认的 15 s）再加 15 s（`RESUMED_REPLY_MARGIN_S`）：没有页面进程的 target 等第一个文档提交才应答，而那个文档的 Response 阶段暂停正是 recorder 扣着的。失败与超时记日志、记在 target 上（`RecorderConnection.failures`，只作诊断），从不抛错；`close()` 取消时，没等到的回复丢掉。不在等待的 target（`open()` 时已存在的，ready barrier 等它们）照旧：整批写出，逐条在命令超时（1 s）之内等。`Runtime.runIfWaitingForDebugger` 用 `PausedTarget` 模式 B 放在 `finally` 里：命令建不出来、写不出去也照样 resume。实测（2026-10-14，Chrome 155，fixture，每种打开方式 3 次，从点击动作开始计到 fixture 收到文档请求）：打不到 opener 的 tab 21–70 ms（以前 1.02–1.05 s），每个 tab 0 条超时失败（以前 10 条；文档 2 s 才回的那个以前还多一条 resume 超时）；保留 opener 的 tab 与以前一样 20–55 ms，各有一条真实的失败（`setLocaleOverride` "already in effect"，上面的事实表）。Playwright 的 `FrameSession._initialize`（`crPage.ts`）也是把 `Page.enable`、注入脚本、各种 override 与 `Runtime.runIfWaitingForDebugger` 一起发出、再一起等。
+4. capability 自己开的 tab（`create_tab(url)`）在 `about:blank` 建，`RecorderConnection.wait_prepared` 等到 recorder 准备完它（attach、整批应答、resume）再导航，所以第一个请求被扣住、录下、pin 住（上面的事实表）。
 
 贡献者互不认识，recorder 也不按归档器 id 分支：它只问每个贡献者"这个 target 要发什么""你要哪些事件"。贡献者实现 recorder 的 `RecorderParticipant` 协议（`target_commands`、`fetch_patterns`、`event_methods`、`admit_event`、`on_event`、`pause_budget_s`、`on_paused`、`on_cycle`、`serves_requests`（M30），基类全部默认 no-op / `False`）：`replayability` 的本 run 计划是一个，回放服务是一个（M30），每个已绑定归档器的运行期会话各是一个。recorder 交给 archive scope 一侧的东西叫 `ArchiveChannel`（scope、贡献者、发出 / 处理计数与收集屏障），它只在绑定了归档器时存在。
 
@@ -2660,12 +2665,12 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 | 设置 | 所有者 | 怎么设 |
 |---|---|---|
 | viewport + DPR | 控制连接 | `Emulation.setDeviceMetricsOverride`（`deviceScaleFactor` = `replayability.device_scale_factor`（属性）；`none` 是 0，保留平台 DPR） |
-| 时区、语言 | recorder | `Emulation.setTimezoneOverride` / `setLocaleOverride`（每个 frame target，含 OOPIF） |
-| UA、UA metadata、`Accept-Language` | recorder | frame：`Emulation.setUserAgentOverride`；worker：`Network.setUserAgentOverride`（worker 继承页面的 UA，但不继承 `Accept-Language`：不单独设，worker 里的 `navigator.language` 是宿主机的；macOS 上 `--lang` 对 worker 不起作用）。不带 `userAgentMetadata`，所以 `navigator.userAgentData.brands` 为空、不发 `Sec-CH-UA`——录制与回放一样 |
+| 时区、语言 | recorder | `Emulation.setTimezoneOverride` / `setLocaleOverride`（每个 frame target，含 OOPIF）。一个渲染进程里只有最先设的那个 frame 是所有者，其余 frame 在它离开后落回浏览器的默认值（上面的事实表）：默认时区由 `replayability.launch_env()` 的 `TZ` 定成 pin 的时区；默认语言是宿主机的，记进指纹（`browser_defaults`）、回放时比较 |
+| UA、UA metadata、`Accept-Language` | recorder | frame：`Emulation.setUserAgentOverride`；worker：`Network.setUserAgentOverride`（worker 继承页面的 UA，但不继承 `Accept-Language`：不单独设，worker 里的 `navigator.language` 是宿主机的；macOS 上 `--lang` 对 worker 不起作用）。不带 `userAgentMetadata`，所以 `navigator.userAgentData.brands` 为空、不发 `Sec-CH-UA`——录制与回放一样；例外是打不到 opener 的 tab 的第一个请求，它带着 Chrome 默认的 brands（启动时给了 `--user-agent` 也一样：这个头在 tab attach 之前就算好了，任何 per-tab 命令都改不了；之后的请求与页面里的 `navigator.userAgentData` 都跟 override 走），录制与回放相同，回放时这个请求也不出浏览器（2026-10-14 实测，Chrome 155；已知限制） |
 | 媒体特性（减少动画） | recorder | `Emulation.setEmulatedMedia` |
 | 注入脚本（shim） | recorder | frame：`Page.enable` 之后 `Page.addScriptToEvaluateOnNewDocument{runImmediately: true}`（准备时已经在的文档，比如初始 tab 的 about:blank，也被 pin）；worker：resume 之前 `Runtime.evaluate` |
 | 缓存、SW 旁路 | recorder | `Network.enable` 之后的 `Network.setCacheDisabled(true)`、`Network.setBypassServiceWorker(true)`（M29 实测：没有 `Network.enable` 的 session 上这两条返回成功却不生效）；pinned 档位发，回放服务不论档位也发（M30：回放时 SW 一律拦住，否则 SW 代理的导航以 `XHR` 暂停在 SW 的 session 上，主 frame 文档 miss 就分不出来）。不做每 run 一次的 `Network.clearBrowserCache`：pinned 的 profile 每 run 新建（协作检查拒绝别的），缓存本来就是空的，而清空一个空缓存实测每次 setup 要 3.9–9.3 s |
-| V8 随机种子、`--lang`、`--force-device-scale-factor` 等启动开关 | `replayability.launch_args()` | 经 `LAUNCH_ARGS` 交给 provider（§4.9.x） |
+| V8 随机种子、`--lang`、`--force-device-scale-factor` 等启动开关；浏览器进程的默认时区（`TZ`） | `replayability.launch_args()` / `launch_env()` | 经 `LAUNCH_ARGS` 交给 provider（§4.9.x）；两者都进启动开关表（`launch_flags`），回放在启动之前比较 |
 | `Emulation.setVirtualTimePolicy` | 不用（实验性接口） | — |
 
 #### `replayability`：回放档位（`ReplayabilityRegistrar`）
@@ -2683,6 +2688,7 @@ class ReplayabilityProtocol(Protocol):
     def device_scale_factor(self) -> float: ...    # 给控制连接的 DPR；none → 0.0（平台 DPR）
                                                    # 属性而不是方法：在 pinned 上它就是同名的 YAML 旋钮
     def launch_args(self) -> tuple[str, ...]: ...    # 这个档位拥有的 Chrome 开关；none → ()
+    def launch_env(self) -> Mapping[str, str]: ...   # 这个档位给浏览器进程设的环境变量；none → {}
     def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan: ...
         # 本 run 的计划（也是一个 recorder 贡献者）：逐 target 的命令、指纹字段；配置实例不持有 run 状态
 ```
@@ -2690,6 +2696,7 @@ class ReplayabilityProtocol(Protocol):
 - **`none`**（默认）：什么都不做。
 - **`pinned`**：旋钮 `base_time: Literal["run_start", "from_archive"]`、`random_seed: int`（≥ 1：V8 把 0 当作"用系统随机数"）、`timezone`（IANA，构造时校验）、`locale`（语言标签，构造时校验）、`device_scale_factor`、`user_agent: str | None`（None：沿用浏览器自己的 UA，只 pin `Accept-Language`）、`reduced_motion: bool`。第零条规则：录制与回放用完全相同的 shim、开关、种子、UA 与 viewport。`Accept-Language` 写成不带 q 值的列表（`en-US,en`），Chrome 自己加 q 值。
   - 启动开关只由它自己的设置生成：`--js-flags=--random-seed=<seed>`、`--lang=<locale>`、`--force-device-scale-factor=<dpr>`、`--disable-back-forward-cache`、`--disable-features=HttpsUpgrades`（Chrome 153 默认先把可注册域名的 http 导航升级成 https 试探；录制与回放都关），以及 `--disable-background-networking --disable-component-update --disable-field-trial-config`（它们在 `CHROME_DEFAULT_ARGS` 里，`ignore_default_args` 会把它们丢掉，pinned 重新加回）；写了 `user_agent` 时另加 `--user-agent=<ua>`（worker 与网络栈也看到同一个 UA，provider 自己的 `user_agent` 旋钮也因此能被报成冲突）。每个 run 必须是新建的 profile。
+  - 启动环境只有一项：`TZ=<timezone>`（`launch_env()`，用户 2026-10-14 的裁决）。时区 override 在一个渲染进程里只有一个所有者，所有者离开之后其余 frame 读浏览器进程的默认时区（上面的事实表），`TZ` 让它就是 pin 的时区（实测：`TZ=Asia/Tokyo` 启动，没有任何 override 的页面读到 `Asia/Tokyo`；`:Asia/Tokyo` 也行，`JST-9` 这样的 POSIX 规则让 Intl 报不出时区）。它与开关走同一条路：capability 经 `open(launch_args=..., launch_env=...)` 交给声明了 `LAUNCH_ARGS` 的 provider，`local_chrome` 把它加到 Chrome 从本进程继承的环境上，并写在 `launch_flags` 的最前面（`TZ=UTC`，与 shell 的写法一样），所以启动开关摘要包含它，回放在启动之前就比较。语言没有对应的办法：macOS 上 Chrome 的应用语言取 Cocoa 为 Chrome 包选的本地化，`--lang`、`LANG` / `LC_ALL` / `LANGUAGE` 都不起作用，带 `-AppleLanguages` 的命令行 Chrome 直接退出（退出码 13，实测）；所以默认语言是宿主机的，记进指纹、回放时比较（下面"一致性检查与回放指纹"）。
   - shim（`replay/shims.py`，Python 字符串常量，移植自 WPR `deterministic.js`，BSD-3，保留 notice）：无参 `Date` 与 `Date.now()` 从 T0 起、每 25 次构造前进 50 ms（**不冻结**，忙等能结束）；带种子的 `Math.random` 与 `crypto.getRandomValues`；`crypto.randomUUID` 是合法的 RFC 4122 v4；拒绝 `ServiceWorkerContainer.prototype.register`（配合 `setBypassServiceWorker`）；防重复注入。时区偏移交给 timezone override（不学 WPR 硬改 `getTimezoneOffset`）；`performance.now` 与定时器不改（WPR 的模型，残余的不确定性写明）。`shim_sha256` 是模板源码的摘要，进指纹。
   - `base_time: from_archive` 只与回放归档的网络来源一起有效：T0 取自源 run 指纹里的 `replayability.t0_ms`，setup 在 `plan()` 之前解析好，shim 因此在任何 target 准备之前就带着录制时的 T0（M30）；与 `network_source: live` 一起在 `prepare()` 报错（`check_setup`）。
   - 协作检查（`prepare()` 时，setup 再查一遍；点名双方，一次报全）：provider 没有声明 `LAUNCH_ARGS` 或 `NETWORK_CAPTURE`；显式 `cdp_url`；注入的控制客户端；provider 报告的旋钮冲突（`local_chrome`：`deterministic_rendering=true` 的 V8 种子与 pinned 的 `random_seed` 不同、`force_device_scale_factor` 与 pinned 的 DPR 不同、`user_agent` 与 pinned 的不同、`extra_args` 另设了 pinned 拥有的开关；每一行都是值相同就放行，`deterministic_rendering` 也一样（用户 2026-10-13 的裁决），它的 `--deterministic-mode` 与 `--font-render-hinting=none` 不是 pinned 拥有的开关）；profile 不是新建的（`persistent_profile()` 非空：`user_data_dir`、非默认的 `profile_directory`、`extra_args` 里的 `--user-data-dir`；profile 目录只由 YAML 决定，以前的环境变量 `CHROME_USER_DATA_DIR` 已删掉（同一次裁决），因为它让 run 是否从新建的 profile 启动在 YAML 和 `config.json` 里都看不出来）；`base_time: from_archive` 而网络来源是 `live`。
@@ -2767,7 +2774,7 @@ class ReplayabilityProtocol(Protocol):
 
 #### 环境指纹（`env/run.browser.json`）
 
-capability 自己的 run 记录（`archiver_id="browser"`，`scope="run"`，`archive/fingerprint.py`），第一次收集时发出，内容变了才再发：Chrome 版本（`Browser.getVersion`）、UA 与 UA metadata、viewport、DPR、时区、语言（pinned 取参数；`none` 在第一个 tab 主 frame 的 isolated world 里经 recorder 的 `Runtime.evaluate` 实测：`Page.createIsolatedWorld`（`af-fingerprint`），页面脚本看不到这次读取、也改不了它读到的值（getter 陷阱、改写的 `JSON.stringify` 都不起作用，M29 实测）；每个文档（loaderId）只测一次，同一文档上的收集只多一条 `Page.getFrameTree`；残余：测量本身仍在页面的渲染进程里执行，主线程忙或对话框开着时这一次会等到 1 s 超时、换下一个 tab）、replayability 档位与参数（T0、种子……）、`shim_sha256`、启动开关摘要（`ProviderSession.metadata["launch_flags"]` 去掉网络路由开关（`chrome_switches.NETWORK_ROUTING_SWITCHES`）之后的 sha256；录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，两边才可比；`command_line` 从不进指纹）与 pinned 自己的开关表（单独存）、网络来源（M30：`network_source` 块，`live` 只有 `{"source_id": "live"}`，回放见下面"回放指纹"）、脱敏策略（`BROWSER_REDACTION_POLICY`，以及每个绑定归档器自报的 `redaction_facts()`：剥离的请求头）、隐私标记（`contains_session_state`、`fresh_profile`、`level`：有归档器保留会话态时是 `session_state`，否则 `redacted`）。`navigator.userAgentData` 只在 secure context 里存在（实测：tab 停在纯 http 的页面上时是 `null`），所以 UA metadata 记最近一次测到的，指纹不随页面来回翻。
+capability 自己的 run 记录（`archiver_id="browser"`，`scope="run"`，`archive/fingerprint.py`），第一次收集时发出，内容变了才再发：Chrome 版本（`Browser.getVersion`）、浏览器的默认时区与语言（`browser_defaults`：没有 override 够得着的 frame 读到的值，setup 在启动之后、recorder 准备任何 target 之前在第一个 tab 主 frame 的 isolated world 里实测的 Intl 时区与语言，`backends/browser_defaults.py`；pinned 下时区就是 pin 的（`TZ`），语言是宿主机的；量不出来时记 `null`，这个 run 不能再被回放）、UA 与 UA metadata、viewport、DPR、时区、语言（pinned 取参数；`none` 在第一个 tab 主 frame 的 isolated world 里经 recorder 的 `Runtime.evaluate` 实测：`Page.createIsolatedWorld`（`af-fingerprint`），页面脚本看不到这次读取、也改不了它读到的值（getter 陷阱、改写的 `JSON.stringify` 都不起作用，M29 实测）；每个文档（loaderId）只测一次，同一文档上的收集只多一条 `Page.getFrameTree`；残余：测量本身仍在页面的渲染进程里执行，主线程忙或对话框开着时这一次会等到 1 s 超时、换下一个 tab）、replayability 档位与参数（T0、种子……）、`shim_sha256`、启动开关摘要（`ProviderSession.metadata["launch_flags"]` 去掉网络路由开关（`chrome_switches.NETWORK_ROUTING_SWITCHES`）之后的 sha256；`launch_flags` 最前面是启动设的环境变量（`TZ=…`）；录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，两边才可比；`command_line` 从不进指纹）与 pinned 自己的开关表和启动环境（`replayability_args`、`replayability_env`，单独存）、网络来源（M30：`network_source` 块，`live` 只有 `{"source_id": "live"}`，回放见下面"回放指纹"）、脱敏策略（`BROWSER_REDACTION_POLICY`，以及每个绑定归档器自报的 `redaction_facts()`：剥离的请求头）、隐私标记（`contains_session_state`、`fresh_profile`、`level`：有归档器保留会话态时是 `session_state`，否则 `redacted`）。`navigator.userAgentData` 只在 secure context 里存在（实测：tab 停在纯 http 的页面上时是 `null`），所以 UA metadata 记最近一次测到的，指纹不随页面来回翻。
 
 #### 隐私（§5.6 的 browser 部分）
 
@@ -2961,14 +2968,17 @@ class ArchiveReader(Protocol):
 
 - 源 run 没有 `env/run.browser.json`，或没有录 `browser.network`；源 run 自己就是回放（指纹的 `network_source.source_id` 是 `archive`，它绑定的是 `browser.replay_log`、没有 WARC，应当回放原始录制）。
 - 档位不同；档位参数不同（`base_time` 除外，`from_archive` 正是回放要改的那一个）；`shim_sha256` 不同（pinned）；viewport 不同。
-- 启动开关摘要不同：本 run 的摘要由 provider 的 `planned_launch_flags(档位开关 + 隔离开关)` 在启动之前算出，两边都去掉网络路由开关（§4.9.x），所以隔离开关不进比较；隔离由上面的协作检查断言（`required` 而 provider 支持，或明写 `none_acknowledged`）。两边有一边没记摘要时跳过并记一条说明。
+- 启动开关摘要不同：本 run 的摘要由 provider 的 `planned_launch_flags(档位开关 + 隔离开关, 档位的启动环境)` 在启动之前算出（`TZ` 也在里面），两边都去掉网络路由开关（§4.9.x），所以隔离开关不进比较；隔离由上面的协作检查断言（`required` 而 provider 支持，或明写 `none_acknowledged`）。两边有一边没记摘要时跳过并记一条说明。
+- 浏览器的默认时区与语言不同（源指纹的 `browser_defaults`：没有 override 够得着的 frame 读到的值，录制启动之后实测的；用户 2026-10-14 的裁决：严格，没有开关）。启动之前，provider 从本机的 OS 读出它将启动的浏览器会落回什么（`LaunchArgsProvider.planned_browser_defaults(launch_env)`，`backends/browser_defaults.py`），读得出的每一项都比较：时区按 ICU 的规则，启动设的 `TZ`，没有就是继承的 `TZ`，再没有就是 `/etc/localtime` 链到的时区；语言只在 macOS 上读得出，用 CoreFoundation 对同样的输入做 Chrome 做的那次选择（Chrome 包的本地化、Chrome 自己的偏好域看到的 `AppleLanguages`，`_` 换成 `-`、`en` 读作 `en-US`）。源指纹没有 `browser_defaults` 也拒绝。
 - `base_time: from_archive` 的 T0 取自源指纹的 `replayability.t0_ms`，在 `plan()` 之前解析。
 
-浏览器起来之后（recorder 连上、准备第一个 target 之前），**只警告、不报错**的三项，记进回放指纹的 `warnings` 并打 WARNING 日志：Chrome 版本（`Browser.getVersion` 的 product / revision）不同；档位没有固定 `user_agent` 时浏览器自己的 UA 不同（它带着版本号）；源指纹的脱敏策略（`redaction.policy`）与当前 `BROWSER_REDACTION_POLICY` 不同（规则变了，带凭证字段的 POST 可能对不上键）。`none` 档位录下的时区、语言、DPR 是测出来的宿主机事实，不比较（写明）。
+浏览器起来之后、recorder 准备第一个 target 之前，setup 实测这个浏览器的默认时区与语言（上面"setup 与 teardown"），与源指纹的逐项比较，不同就**拒绝**（`browser_default_problems`，同样点名两边的值）：OS 在启动之前说不出的（macOS 以外的语言）在这里定下；实测与启动前读到的不一致时另打一条 WARNING（这台机器上启动前的那次比较不可信）；实测失败也拒绝。为什么选"启动前读 OS、启动后再量"（2026-10-14 实测，本机 zh-CN / Asia/Shanghai，Chrome 155）：环境变量不可信（本机 `LANG=en_US.UTF-8`，Chrome 落回 `zh-CN`），`AppleLanguages`（`zh-Hans-CN`）也不是 Chrome 的值；CoreFoundation 对 Chrome 包的选择（`zh_CN` → `zh-CN`）与实测一致，`/etc/localtime`（`Asia/Shanghai`）与 `TZ`（`Asia/Tokyo`、`UTC`、`:Asia/Tokyo`）也与实测一致，所以拒绝在 `prepare()` 就能出、不打开 trace（用户要求的优先级）；但别的语言列表在本机没法验证（改用户的全局偏好不可接受），macOS 以外的平台语言读不出，所以实测是记进指纹的值，也是启动后的那道比较；`requires_chrome` 的金丝雀（`test_browser_new_tab_live.py::test_the_os_facts_are_what_chrome_falls_back_to`）钉住"启动前读到的就是 Chrome 落回的"。
+
+同样在浏览器起来之后，**只警告、不报错**的三项，记进回放指纹的 `warnings` 并打 WARNING 日志：Chrome 版本（`Browser.getVersion` 的 product / revision）不同；档位没有固定 `user_agent` 时浏览器自己的 UA 不同（它带着版本号）；源指纹的脱敏策略（`redaction.policy`）与当前 `BROWSER_REDACTION_POLICY` 不同（规则变了，带凭证字段的 POST 可能对不上键）。`none` 档位录下的 DPR 是测出来的宿主机事实，不比较（写明）；它的时区与语言就是浏览器的默认值，按上面一条比较。
 
 **回放指纹**：回放 run 自己的 `env/run.browser.json` 多一个 `network_source` 块：`source_id: archive`、`source_run_id`、`source_fingerprint_sha256`（源指纹那份已提交记录的 sha256）、`site_rules_sha256`、`matcher`（levels、阈值、规则目录）、`miss_policy_id`、`shift_dates`、`isolation` 与 `warnings`。块的一半是配置实例自报的（`NetworkSourceProtocol.fingerprint()`：`live` 是 `{"source_id": "live"}`，`archive` 是它的旋钮），一半是这次 run 的事实（`ReplayServer.fingerprint()` 加上源 run 与两个摘要、`warnings`）；capability 有服务时交服务的块，否则交来源的块，`BrowserArchiveRun.collect(network_fingerprint=...)` 写进指纹。`warnings` 里还有一致性检查没能比较的说明（`consistency_notes`：一边没有启动开关摘要）。
 
-一致性一侧的函数都在 `replay/consistency.py`：`consistency_problems`（`prepare()` 与启动前，拒绝）、`consistency_notes`（启动前，说明）、`version_warnings`（启动后，警告）、`replay_t0`（`from_archive` 时 T0 取源指纹的，否则取本 run 的开始）。capability 只组装与转交；本 run 交给 provider 的开关（档位的，加上隔离的）与 provider 据此会记下的开关表，由 `cooperation.py` 的 `launch_args(cap)` / `planned_launch_flags(cap, ...)` 算出，同一份开关既用于启动，也用于启动前的比较。
+一致性一侧的函数都在 `replay/consistency.py`：`consistency_problems`（`prepare()` 与启动前，拒绝）、`browser_default_problems`（启动后、准备任何 target 之前，拒绝）、`consistency_notes`（启动前，说明）、`version_warnings`（启动后，警告）、`replay_t0`（`from_archive` 时 T0 取源指纹的，否则取本 run 的开始）。capability 只组装与转交；本 run 交给 provider 的开关（档位的，加上隔离的）、启动环境（档位的）与 provider 据此会记下的开关表、会落回的默认值，由 `cooperation.py` 的 `launch_args(cap)` / `launch_env(cap)` / `planned_launch_flags(cap, ...)` / `planned_browser_defaults(cap, ...)` 算出，同一份开关与环境既用于启动，也用于启动前的比较。
 
 #### 回放实测（S2a，Chrome 153；探针在本地的 `tmp/flywheel/spikes/s2a/`）
 
@@ -3016,20 +3026,21 @@ class ArchiveReader(Protocol):
 - 嵌套的 dedicated worker 脚本绕过 Fetch（见上）。
 - 归档开着时，内联读的 body（不超过 `max_inline_body_bytes`、没声明长度的，以及 64 MiB 以内的文档）会被扣到下载完，页面拿不到渐进的 HTML；最终 DOM 不变，依赖加载时序的页面行为可能不同（固定 fixture 上验证观测逐字节相同）。更大的 body 边下边收，不扣（上面"体积分档"）。
 - `pinned` 不改 `performance.now` 与定时器；没有 `Last-Modified` 头时，`document.lastModified` 是真实时钟（S2a）；不带参数的 `Intl.DateTimeFormat().format()` 也读真实时钟，不经过 shim 的 `Date`（M29 实测）。
-- 时区与语言的 override 是渲染进程级的：同进程的第二个页面（`window.open` 的弹窗）上再设一次，Chrome 回 "already in effect"。值已由第一个 session 设好，记为该 target 的命令失败（`RecorderConnection.failures`），不致命。
+- 时区与语言的 override 在一个渲染进程里只有一个所有者，最先设它的 frame（上面的事实表）。同进程的另一个 frame（保留 opener 的同站弹窗、同一个站点的第二个跨源 iframe）再设语言，Chrome 回 "already in effect"，记为该 target 的命令失败（`RecorderConnection.failures`）；再设时区返回成功、不成为所有者。所有者在的时候这些 frame 读到的都是 pin 的值；所有者一离开（iframe 被移除、opener 跳到别的站点），它们在 0.2–0.3 s 内落回浏览器的默认值，保留 opener 的跨站弹窗从第一个文档起就读默认语言。原先这里写"值已由第一个 session 设好、不致命"，只在所有者一直在的时候成立（2026-10-14 实测）。默认时区由启动时的 `TZ` 定成 pin 的时区（`launch_env()`），所以时区一直是 pin 的；默认语言是宿主机的（macOS 上定不下来），所以这些 frame 读到宿主机的语言：录制与回放在同一台机器、或默认语言相同的机器上读到的相同，而 setup 把默认语言记进指纹（`browser_defaults`），回放拒绝默认语言不同的宿主机。剩下的不确定只有落回发生在一次观测之前还是之后（所有者离开的时刻）。
+- 打不到 opener 的 tab 的第一个请求带着 Chrome 默认的 `Sec-CH-UA`（上面 override 表的 UA 一行）：录制与回放相同，回放时这个请求不出浏览器；之后的请求与页面里的 `navigator.userAgentData` 都跟 override 走。用户 2026-10-14 的裁决：写明、不改代码（另一条路是带上与 Chrome 自己相同的 `userAgentMetadata`，没有走）。
 - 长连接的响应（SSE、长轮询）在 Response 阶段被扣到 `body_read_timeout_s`，之后记为 `incomplete` 放行；没有 `Content-Length` 的 body 不论多大都内联读（分档只看声明的长度），解码后超过 64 MiB 的读完记 `too_large`。
 - `serialized_dom` 里的元素标记是 Chrome 的 backend node id，两次独立启动同一页面时会因加载时序不同而不同，归档**关着**两边也一样（实测：fixture 的进程外 iframe 元素一半启动是 `[13]`、一半是 `[14]`；开着归档时固定是 `[14]`）。所以"开关归档观测相同"的验收按出现顺序重编号这些标记后比较，其余每个字节（结构、文本、属性、截图）都必须相同。
 - **回放的残余**（M30）：
   - 隔离原先留着的 `EXCLUDE localhost` 口子已经关上（2026-10-13，上面"黑洞没有例外"）：隔离回放里绕过 Fetch 的流量连哪儿都连不上，`localhost` 也一样。
   - WebSocket 不回放（v1 记为 miss）；嵌套 dedicated worker 的脚本送不出（看得见的记 `unservable`）；超过 `max_fulfill_body_bytes` 的 body 不送（loopback blob 服务器推迟）。
   - JS 时钟固定在录制时刻（`base_time: from_archive`）时，页面 JS 设的绝对过期 cookie 可能被 Chrome 丢掉；没有 `Last-Modified` 的文档，`document.lastModified` 读真实时钟。
-  - 回放 `none` 档位的录制：时区、语言、DPR 不比较；SW 录制时放行、回放时被拦住；只有 pinned 关掉了 `HttpsUpgrades`，所以升级试探可能显示为主 frame 文档 miss。
+  - 回放 `none` 档位的录制：DPR 不比较（时区与语言是浏览器的默认值，按"一致性检查"比较）；SW 录制时放行、回放时被拦住；只有 pinned 关掉了 `HttpsUpgrades`，所以升级试探可能显示为主 frame 文档 miss。
   - L2 模糊命中可能送错资源（`fuzzy` 与得分照记）；`exhausted` 重复最后一条是有意的，日志里看得见。
   - 步归因是"收集取走它的那一步"：页面加载完之后才发出的异步请求（`fetch`、XHR、迟到的 beacon）可能落在下一步的 `replay.jsonl` 里，与录制时 `index.jsonl` 的归因是同一个模型（fixture 实测：金丝雀页面在第 0 步导航，它的 `fetch` 在第 1 步的日志里）。
   - 回放日志导出成 HAR 推迟（还没有按 HAR 打分的评测器）。
   - 第一次 live run（10 个真实 `online_mind2web` 任务上的度量）是度量链只跑录制、原路径回放与报告的那一种（§4.16）；它的链规格与命令在本地的 `tmp/flywheel/M33_live_plan.md`，等用户授权（路由、N、token 上限），没有跑过。M30 写的 `tmp/flywheel/s2b/` 脚本已被它取代。
 - **页面落定的残余**（上面"观测之前等页面落定"）：窗口里什么都没发生、只有一个比窗口长的请求在途时（点击之后一次慢的接口调用，页面又没有加载提示）不等它，下一步才看到结果，Chrome 不为同一文档里的变化报网络空闲，而在控制连接上跟踪每个请求会把所有网络事件压到 agent 的连接上（recorder 自己有连接正是为此）；CSS 过渡与动画、canvas / WebGL、进程外 iframe 里的变化不经过主文档的 DOM，不算变化；永远不静的页面每一步都付上限（实测：滚动之后 6/38 的站点等满 5 s）。
-- 本节的 Chrome 行为都是 153 的实测，归档器的部分是 155 的实测（本机 Chrome 在 M29 期间升到了 155，153 时写下的金丝雀全部照样通过）；`requires_chrome` 的回归测试是版本金丝雀。
+- 本节的 Chrome 行为都是 153 的实测，归档器的部分与新 tab 的准备、时区与语言的所有者是 155 的实测（本机 Chrome 在 M29 期间升到了 155，153 时写下的金丝雀全部照样通过）；`requires_chrome` 的回归测试是版本金丝雀（新 tab 的在 `test_browser_new_tab_live.py`）。
 
 ### 4.15 训练导出（M32）
 
@@ -4383,7 +4394,7 @@ environment:
 | **新增 Benchmark Loader** | 继承 `TaskLoaderBase` / `EvalLoaderBase` | SWE-bench, WebArena |
 | **新增 DOM Cleaner/Serializer** | 继承对应 Base | Markdown 序列化 |
 | **新增 Archiver（环境证据归档器）** | 继承所属 capability 的 archiver 基类（框架基类 `ArchiverBase`；browser 是 `BrowserArchiverBase`：声明 `needs`、实现 `open(ctx)` 返回运行期会话，§4.14），`__registry_key__ = "<capability>.<id>"`，旋钮写成 `Annotated` 构造参数（模块里不用 `from __future__ import annotations`），按需声明 `privacy_markers`；把键加进该 capability 的 `__wiring__["archiver"]`；capability 实现 `bind_archivers` / `collect_archive`（§4.9 归档契约）；把 capability 接入 `tests/_helpers/archive_contract.py` | `browser.network`、`browser.storage`、`browser.dom_raw`（M29）、`browser.replay_log`；以后的 `browser.rrweb`、`docker.fs_diff`、`android.ui_dump` |
-| **新增回放档位** | 继承 `ReplayabilityBase`，实现 `ReplayabilityProtocol` 全部成员（`replayable`、`launch_args`、`device_scale_factor`、`plan`），旋钮写成 `__init__` 关键字参数；启动开关只从自己的设置生成，经 `LAUNCH_ARGS` 进浏览器（§4.14） | 以后的 `realistic` |
+| **新增回放档位** | 继承 `ReplayabilityBase`，实现 `ReplayabilityProtocol` 全部成员（`replayable`、`launch_args`、`launch_env`、`device_scale_factor`、`plan`），旋钮写成 `__init__` 关键字参数；启动开关与启动环境只从自己的设置生成，经 `LAUNCH_ARGS` 进浏览器（§4.14） | 以后的 `realistic` |
 | **新增网络来源 / miss 策略** | 继承 `NetworkSourceBase` / `MissPolicyBase`，设 `__registry_key__`，实现 Protocol 全部成员；网络来源是不是在拦截（`intercepts`）、要不要隔离是策略自己的属性，旁边不加布尔；带受体的策略不是 dataclass、手写 `__init__`（§4.14 "回放"） | 以后的 `har`（从 HAR 回放）、`lenient`（miss 时放宽到 L2 再试） |
 | **新增恢复器（检查点恢复策略）** | 继承 `RestorerBase`（`core/loops/restore/`），设 `__registry_key__`，实现 `restore(ctx) -> AsyncGenerator[RestoredStep, None]`（写成 `async def` + `yield`）：只恢复环境、不碰 memory，k < t 每步交回一条，最后一条是经校验的第 t 步观测；每个恢复出的观测恰好调一次 `env.verify_restoration`（capability 的计数类证据是自上一次调用以来的增量，§4.9）；`strict` 下第一个不通过的校验（观测、重定位或动作成败）就抛 `RestorationDivergedError`，不再执行后面的动作；不吞 `RunAbort`（`test_abort_handler_hygiene.py` 递归扫描 `core/loops/`） | 以后的 `capability_checkpoint`（Docker snapshot、Android 模拟器快照，经新增的 `RestorableCapability` 协议） |
 | **新增分叉选步策略** | 继承 `StepSelectorBase`（`core/data_loader/task/step_selector/`），实现 `select(candidates) -> list[int]` | 按评测器给的关键帧选步 |

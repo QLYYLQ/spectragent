@@ -1,11 +1,13 @@
 """The recorder connection's CDP choreography, against a scripted browser.
 
-``docs/architecture_design.md`` §4.14. The live counterpart is
-``test_browser_recorder_live.py``; this module pins the rules that a real
-Chrome cannot be made to break on demand: pipelining, resume and continue in
-``finally``, session routing, the service-worker deferral, filtering and
-dedupe, the fixed cleanup order, pushed liveness, and what the capability
-does — and does not — send on each connection.
+``docs/architecture_design.md`` §4.14. The live counterparts are
+``test_browser_recorder_live.py`` and ``test_browser_new_tab_live.py``; this
+module pins the rules that a real Chrome cannot be made to break on demand:
+pipelining, a waiting target resumed right after its batch is written and its
+replies awaited afterwards (a target without a page process answers only then),
+resume and continue in ``finally``, session routing, filtering and dedupe, the
+fixed cleanup order, pushed liveness, and what the capability does — and does
+not — send on each connection.
 """
 
 from __future__ import annotations
@@ -18,12 +20,15 @@ import pytest
 from agent_cdp import EventScope, ScopeGroup
 
 from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
     LAUNCH_ARGS,
     NETWORK_CAPTURE,
 )
 from spectragent.core.capabilities.browser.recorder import (
+    PAUSE_OWNER_GRACE_S,
+    RESUMED_REPLY_MARGIN_S,
     ArchiveChannel,
     ArchiveChannelError,
     CDPCommand,
@@ -208,6 +213,19 @@ class TestPipeline:
         assert "cannot build commands" in recorder.failures[sid][0]
         await recorder.close()
 
+    async def test_resume_in_finally_when_a_command_cannot_be_written(self) -> None:
+        browser = FakeBrowser()
+        plan = _Participant("plan", commands=(CDPCommand("X.first"), CDPCommand("X.unwritable")))
+        recorder, client = await _recorder(browser, [plan])
+        await recorder.open()
+        sid = browser.open_target("pop-1", "page")[client.id]
+        browser.write_failures[("X.unwritable", sid)] = "socket full"
+        await _settle()
+        assert browser.is_running("pop-1")
+        assert client.methods(session_id=sid) == ["X.first", "Runtime.runIfWaitingForDebugger"]
+        assert any("socket full" in f for f in recorder.failures[sid])
+        await recorder.close()
+
     async def test_resume_is_routed_to_the_targets_own_session(self) -> None:
         """Mode B: never the session-less resume of agent-cdp's mode A."""
         browser = FakeBrowser()
@@ -235,9 +253,66 @@ class TestPipeline:
             assert "Fetch.enable" in client.methods(session_id=by_type[kind]), kind
         await recorder.close()
 
-    async def test_service_worker_network_and_runtime_replies_are_awaited_after_resume(
+    async def test_a_waiting_target_is_resumed_right_after_its_batch_before_any_reply(
         self,
     ) -> None:
+        """The batch and then the resume are on the wire before any reply is awaited."""
+        browser = FakeBrowser()
+        gate = browser.hold("X.slow")
+        plan = _Participant("plan", commands=(CDPCommand("X.slow"), CDPCommand("X.after")))
+        recorder, client = await _recorder(browser, [plan], command_timeout_s=5.0)
+        await recorder.open()
+        sid = browser.open_target("pop-1", "page")[client.id]
+        await _settle()
+        assert client.methods(session_id=sid) == [
+            "X.slow",
+            "X.after",
+            "Target.setAutoAttach",
+            "Runtime.runIfWaitingForDebugger",
+        ]
+        assert browser.is_running("pop-1"), "resumed while X.slow still has no reply"
+        assert recorder._attach_tasks, "the replies are still awaited"
+        gate.set()
+        await _settle()
+        assert not recorder._attach_tasks and sid not in recorder.failures
+        await recorder.close()
+
+    async def test_a_target_without_a_page_process_is_not_held_and_nothing_fails(
+        self,
+    ) -> None:
+        """A tab its opener cannot reach: its page-side replies come only after it runs.
+
+        Waiting for them before the resume held such a tab for the whole
+        timeout and recorded every page-side command as failed (measured,
+        Chrome 155, arch §4.14). Now the resume is written first and the late
+        answers — the resume's own last — are no failure.
+        """
+        browser = FakeBrowser()
+        plan = _Participant(
+            "plan",
+            commands=(
+                CDPCommand("Page.enable"),
+                CDPCommand("Page.addScriptToEvaluateOnNewDocument", {"source": "1"}),
+                CDPCommand("Emulation.setTimezoneOverride", {"timezoneId": "UTC"}),
+                CDPCommand("Network.enable"),
+            ),
+        )
+        archiver = _Participant("archiver", patterns=RESPONSE_STAGE)
+        recorder, client = await _recorder(browser, [plan, archiver], command_timeout_s=0.05)
+        await recorder.open()
+        sid = browser.open_target("pop-1", "page", page_process=False)[client.id]
+        await _settle()
+        assert browser.is_running("pop-1")
+        sent = client.methods(session_id=sid)
+        assert sent[-1] == "Runtime.runIfWaitingForDebugger"
+        assert sent.index("Fetch.enable") < sent.index("Runtime.runIfWaitingForDebugger")
+        await asyncio.sleep(0.1)  # past the command timeout: the late replies still count
+        assert sid not in recorder.failures
+        assert not recorder._attach_tasks
+        await recorder.close()
+
+    async def test_a_waiting_service_worker_is_one_case_of_the_rule(self) -> None:
+        """Its ``Network.*`` / ``Runtime.*`` answer after the resume, like any target without a page process."""
         browser = FakeBrowser()
         plan = _Participant(
             "plan",
@@ -246,16 +321,97 @@ class TestPipeline:
                 CDPCommand("Network.enable"),
             ),
         )
-        recorder, client = await _recorder(browser, [plan], command_timeout_s=0.5)
+        recorder, client = await _recorder(browser, [plan], command_timeout_s=0.05)
         await recorder.open()
         sid = browser.open_target("sw-1", "service_worker")[client.id]
         await _settle()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.1)
         assert browser.is_running("sw-1")
-        # The deferred replies arrived after the resume, so nothing failed.
         assert sid not in recorder.failures
         sent = client.methods(session_id=sid)
         assert sent.index("Runtime.runIfWaitingForDebugger") > sent.index("Network.enable")
+        await recorder.close()
+
+    async def test_a_reply_missing_past_the_wait_after_resume_is_recorded_not_raised(
+        self,
+    ) -> None:
+        browser = FakeBrowser()
+        plan = _Participant("plan", commands=(CDPCommand("Page.enable"),))
+        recorder, client = await _recorder(
+            browser,
+            [plan],
+            command_timeout_s=0.01,
+            pause_owner_timeout_s=0.05,
+            resumed_reply_margin_s=0.05,
+        )
+        await recorder.open()
+        sid = browser.open_target("pop-1", "page", page_process=False, commit_held=True)[client.id]
+        await asyncio.sleep(0.3)
+        assert browser.is_running("pop-1")
+        assert not recorder._attach_tasks, "the preparation gave up without raising"
+        failures = recorder.failures[sid]
+        # The page-side command and the resume (which answers last); the
+        # browser-side ``Target.setAutoAttach`` answered at once.
+        assert [f.split(":")[0] for f in failures] == [
+            "Page.enable",
+            "Runtime.runIfWaitingForDebugger",
+        ]
+        assert all("no reply within 0.1s" in f for f in failures)
+        browser.commit("pop-1")  # the first document commits late: the replies are dropped
+        await _settle()
+        assert len(recorder.failures[sid]) == len(failures)
+        await recorder.close()
+
+    def test_the_wait_after_resume_covers_the_longest_pause_the_recorder_may_hold(
+        self,
+    ) -> None:
+        """The first document's own Response-stage pause can hold the replies of its target."""
+
+        class _Budgeted(_Participant):
+            def __init__(self, name: str, budget: float | None) -> None:
+                super().__init__(name)
+                self.budget = budget
+
+            @property
+            def pause_budget_s(self) -> float | None:
+                return self.budget
+
+        def timeout(*participants: Any, default: float = 15.0) -> float:
+            client = FakeBrowser().client("ws://fake/devtools/browser")
+            recorder = RecorderConnection(
+                client,
+                participants=lambda: participants,
+                channel=None,
+                on_lost=lambda _e: None,
+                pause_owner_timeout_s=default,
+            )
+            return recorder._resumed_reply_timeout()
+
+        assert timeout() == 15.0 + RESUMED_REPLY_MARGIN_S
+        assert timeout(_Budgeted("network", 11.0)) == 15.0 + RESUMED_REPLY_MARGIN_S
+        assert timeout(_Budgeted("network", 60.0), _Budgeted("plan", None)) == (
+            60.0 + PAUSE_OWNER_GRACE_S + RESUMED_REPLY_MARGIN_S
+        )
+
+    async def test_wait_prepared_returns_once_the_preparation_has_every_reply(self) -> None:
+        browser = FakeBrowser()
+        gate = browser.hold("X.slow")
+        plan = _Participant("plan", commands=(CDPCommand("X.slow"),))
+        recorder, client = await _recorder(browser, [plan], command_timeout_s=5.0)
+        task = asyncio.create_task(recorder.open())
+        await _settle()
+        gate.set()
+        await task
+        held = browser.hold("X.slow")
+        waiting = asyncio.create_task(recorder.wait_prepared("pop-1", 5.0))
+        await _settle()
+        browser.open_target("pop-1", "page")
+        await _settle()
+        assert not waiting.done(), "X.slow has not answered yet"
+        held.set()
+        assert await waiting is True
+        assert await recorder.wait_prepared("pop-1", 0.01) is True
+        assert await recorder.wait_prepared("never-opened", 0.01) is False
         await recorder.close()
 
     async def test_internal_targets_are_resumed_and_detached(self) -> None:
@@ -714,14 +870,12 @@ class TestCleanup:
 
     async def test_still_waiting_targets_are_resumed_before_detaching(self) -> None:
         browser = FakeBrowser()
-        gate = browser.hold("X.slow")
         plan = _Participant("plan", commands=(CDPCommand("X.slow"),))
         recorder, client = await _recorder(browser, [plan], command_timeout_s=30)
-        task = asyncio.create_task(recorder.open())
-        await _settle()
-        gate.set()
-        await task
-        browser.hold("X.slow")  # the popup's preparation hangs
+        await recorder.open()
+        # The popup's batch cannot be written (a socket that takes nothing),
+        # so its resume never goes out: still waiting at close.
+        browser.stall_write("X.slow")
         sid = browser.open_target("pop-1", "page")[client.id]
         await _settle()
         assert not browser.is_running("pop-1")
@@ -736,15 +890,12 @@ class TestCleanup:
     async def test_a_resume_that_fails_does_not_stop_the_cleanup(self) -> None:
         """A waiting target that is gone (or a browser too busy to answer) at close."""
         browser = FakeBrowser()
-        gate = browser.hold("X.slow")
         plan = _Participant("plan", commands=(CDPCommand("X.slow"),), patterns=RESPONSE_STAGE)
         recorder, client = await _recorder(browser, [plan], command_timeout_s=30)
-        task = asyncio.create_task(recorder.open())
-        await _settle()
-        gate.set()
-        await task
+        await recorder.open()
         page_sid = recorder.session_for_target("page-1")
-        browser.hold("X.slow")  # the popup's preparation hangs: still waiting at close
+        # The popup's batch cannot be written: still waiting at close.
+        browser.stall_write("X.slow")
         sid = browser.open_target("pop-1", "page")[client.id]
         await _settle()
         browser.fail("Runtime.runIfWaitingForDebugger", TimeoutError("no reply"), session_id=sid)
@@ -989,8 +1140,12 @@ class _OwnBrowser:
     def launch_arg_conflicts(self, launch_args: Any) -> list[str]:
         return []
 
-    def planned_launch_flags(self, launch_args: Any) -> list[str]:
-        return list(launch_args)
+    def planned_launch_flags(self, launch_args: Any, launch_env: Any = None) -> list[str]:
+        env = [f"{name}={value}" for name, value in sorted((launch_env or {}).items())]
+        return [*env, *launch_args]
+
+    def planned_browser_defaults(self, launch_env: Any = None) -> BrowserDefaults:
+        return BrowserDefaults(timezone=(launch_env or {}).get("TZ", "UTC"), locale="en-US")
 
     def persistent_profile(self) -> str | None:
         return None
@@ -1048,7 +1203,9 @@ class TestZeroOverhead:
         pinned = PinnedReplayability(random_seed=4, timezone="UTC", locale="en-US")
         cap, browser, backend = await _capability(pinned)
         try:
-            assert backend.open_calls == [{"launch_args": pinned.launch_args()}]
+            assert backend.open_calls == [
+                {"launch_args": pinned.launch_args(), "launch_env": {"TZ": "UTC"}}
+            ]
             assert len(browser.clients) == 2
             recorder_client = browser.recorder
             assert recorder_client.options == {
@@ -1082,6 +1239,51 @@ class TestZeroOverhead:
             return [s.method for s in client.sent]
 
         assert _shape(off_browser.control) == _shape(pinned_browser.control)
+
+
+class TestCreateTab:
+    """``create_tab(url)``: created at ``about:blank``, prepared by the recorder, then navigated.
+
+    ``Target.createTarget`` with the URL itself starts the navigation before
+    the recorder attaches, so that first request is neither paused, recorded
+    nor pinned (measured, Chrome 155, arch §4.14).
+    """
+
+    async def test_the_new_tab_is_navigated_only_after_the_recorder_prepared_it(self) -> None:
+        cap, browser, _ = await _capability(PinnedReplayability())
+        try:
+            # Only the recorder's pinned plan sends this: hold the new tab's preparation.
+            gate = browser.hold("Emulation.setTimezoneOverride")
+            creating = asyncio.create_task(cap.create_tab("http://shop.test/next"))
+            await _settle()
+            created = [s.params for s in browser.control.sent if s.method == "Target.createTarget"]
+            assert created == [{"url": "about:blank"}]
+            assert not creating.done()
+            assert "Page.navigate" not in browser.control.methods(), "not before it is prepared"
+            gate.set()
+            sid = await asyncio.wait_for(creating, 5.0)
+            navigations = [
+                (s.params["url"], s.session_id)
+                for s in browser.control.sent
+                if s.method == "Page.navigate"
+            ]
+            assert navigations == [("http://shop.test/next", sid)]
+        finally:
+            await cap.teardown()
+
+    async def test_a_blank_tab_is_not_navigated_and_needs_no_recorder(self) -> None:
+        cap, browser, _ = await _capability()
+        try:
+            await cap.create_tab()
+            assert "Page.navigate" not in browser.control.methods()
+            sid = await cap.create_tab("http://shop.test/next")
+            created = [s.params for s in browser.control.sent if s.method == "Target.createTarget"]
+            assert created == [{"url": "about:blank"}, {"url": "about:blank"}]
+            assert [s.session_id for s in browser.control.sent if s.method == "Page.navigate"] == [
+                sid
+            ]
+        finally:
+            await cap.teardown()
 
 
 class TestOverrideOwnership:

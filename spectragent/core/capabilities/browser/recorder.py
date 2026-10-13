@@ -39,6 +39,17 @@ what to send to a target and who owns a paused request:
   participant; bodies and frame payloads go to the participant's own side
   store, and values it never stores (credentials) never enter the scope.
 
+- **A waiting target is resumed without waiting for its replies.** Its whole
+  preparation goes on the wire in order, then ``Runtime.runIfWaitingForDebugger``,
+  and only then are the replies awaited — the resume's last. A target Chrome
+  builds without a page process (a tab its opener cannot reach, a waiting
+  service worker) answers its page-side commands only once it runs and its
+  first document commits, yet applies them, queued in order, before that
+  document's first script (measured, Chrome 155, arch §4.14). Waiting for the
+  replies before the resume would hold such a tab for the whole timeout and
+  record every page-side command as failed. A reply that never arrives is
+  recorded on the target, never raised.
+
 Resume is agent-cdp ``PausedTarget`` mode B: our own callback sends
 ``Runtime.runIfWaitingForDebugger`` on the target's session. Mode A sends it
 without a session on af's flattened client and silently resumes the wrong
@@ -72,9 +83,15 @@ WORKER_TARGET_TYPES = frozenset({"worker", "shared_worker", "service_worker"})
 FETCH_TARGET_TYPES = frozenset({"page", "iframe", "shared_worker", "service_worker"})
 #: URLs of Chrome-internal targets, prepared as never.
 INTERNAL_URL_PREFIXES = ("chrome:", "chrome-extension:", "devtools:")
-#: On a *waiting* service worker these domains answer only after resume
-#: (measured, arch §4.14). Their replies are awaited after ``Runtime.runIfWaitingForDebugger``.
-DEFERRED_ON_SERVICE_WORKER = ("Network.", "Runtime.")
+#: The resume of a waiting target.
+RESUME_METHOD = "Runtime.runIfWaitingForDebugger"
+#: Seconds a resumed target's replies may take beyond the longest the recorder
+#: itself may hold a paused request. A target without a page process answers
+#: once its first document commits, and that waits for the network and for
+#: the Response-stage pause of that very document (its owner's budget plus
+#: :data:`PAUSE_OWNER_GRACE_S`, or the recorder's default); measured up to
+#: 3.75 s after the resume on a live site (Chrome 155, arch §4.14).
+RESUMED_REPLY_MARGIN_S = 15.0
 
 #: The recorder's auto-attach, browser-level and on every prepared target.
 AUTO_ATTACH_PARAMS: Mapping[str, Any] = {
@@ -423,6 +440,14 @@ class ArchiveChannel:
 # ── The connection ────────────────────────────────────────────────────
 
 
+class PendingCommand(Protocol):
+    """A command already on the wire (``cdp_client.PendingReply``)."""
+
+    async def wait(self, timeout: float | None = None) -> Any: ...
+
+    def abandon(self) -> None: ...
+
+
 class RecorderClient(Protocol):
     """The slice of :class:`CDPClient` the recorder uses."""
 
@@ -437,6 +462,13 @@ class RecorderClient(Protocol):
         *,
         timeout: float | None = None,
     ) -> Any: ...
+
+    async def post(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> PendingCommand: ...
 
     def on_event(self, method: str, callback: Callable[..., Any]) -> None: ...
 
@@ -466,6 +498,7 @@ class RecorderConnection:
         command_timeout_s: float = 1.0,
         pause_owner_timeout_s: float = 15.0,
         ready_timeout_s: float = 10.0,
+        resumed_reply_margin_s: float = RESUMED_REPLY_MARGIN_S,
     ) -> None:
         self._client = client
         self._participants = participants
@@ -474,6 +507,7 @@ class RecorderConnection:
         self._command_timeout_s = command_timeout_s
         self._pause_owner_timeout_s = pause_owner_timeout_s
         self._ready_timeout_s = ready_timeout_s
+        self._resumed_reply_margin_s = resumed_reply_margin_s
 
         #: Prepared targets by session.
         self._targets: dict[str, RecorderTarget] = {}
@@ -487,6 +521,9 @@ class RecorderConnection:
         self._fetch_sessions: set[str] = set()
         #: Failed commands, per session (diagnostics; never fatal by itself).
         self.failures: dict[str, list[str]] = {}
+        #: target id → set once its first session's preparation has every
+        #: reply in (or given up on): :meth:`wait_prepared`.
+        self._prepared: dict[str, asyncio.Event] = {}
 
         self._attach_tasks: set[asyncio.Task[None]] = set()
         self._pause_tasks: set[asyncio.Task[None]] = set()
@@ -529,6 +566,22 @@ class RecorderConnection:
     def sessions_for_target(self, target_id: str) -> list[str]:
         """Every prepared session of ``target_id``, in attach order."""
         return [sid for sid, target in self._targets.items() if target.target_id == target_id]
+
+    async def wait_prepared(self, target_id: str, timeout: float) -> bool:
+        """Wait until ``target_id`` is prepared: attached, its batch answered, resumed.
+
+        For a target the capability created itself (``create_tab``): its
+        ``Target.createTarget`` reply on the control connection may arrive
+        before this connection even saw the target attach, and a navigation
+        started before its ``Fetch.enable`` took effect would escape it.
+        ``False`` when the preparation did not finish within ``timeout``.
+        """
+        event = self._prepared.setdefault(target_id, asyncio.Event())
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
 
     async def send(
         self,
@@ -620,7 +673,7 @@ class RecorderConnection:
             # browser too busy to answer in time, must not leave the rest of
             # the browser paused, Fetch-enabled and attached.
             self._waiting.discard(sid)
-            await self._quietly("Runtime.runIfWaitingForDebugger", None, sid, timeout=t)
+            await self._quietly(RESUME_METHOD, None, sid, timeout=t)
 
         for sid in list(self._fetch_sessions):
             await self._quietly("Fetch.disable", {}, sid, timeout=t)
@@ -725,6 +778,8 @@ class RecorderConnection:
                 if known.target_id == target.target_id:
                     self._prepared_target_ids[target.target_id] = other
                     break
+            else:
+                self._prepared.pop(target.target_id, None)
         self._emit(RecorderEvent(session_id=sid, method="Target.detachedFromTarget", params=params))
 
     def _on_paused(self, params: dict[str, Any], session_id: str | None = None) -> None:
@@ -768,43 +823,67 @@ class RecorderConnection:
         task.add_done_callback(bucket.discard)
 
     async def _attach(self, target: RecorderTarget, params: dict[str, Any]) -> None:
-        """Prepare one target while it is paused; resume it in ``finally``."""
+        """Prepare one target: write its batch, resume it, then wait for every reply.
+
+        On a waiting target the batch and then ``Runtime.runIfWaitingForDebugger``
+        go on the wire in that order, one write after the other from this task,
+        before any reply is awaited (module docstring). The resume is written by
+        ``PausedTarget`` mode B on the way out of the block, so a batch that
+        cannot be built or written still resumes. The replies — the resume's
+        included — are awaited afterwards: within the command timeout on a
+        target that was not waiting (an existing one, behind the ready barrier),
+        and for longer than the recorder may itself hold the target's first
+        document on one that was (:meth:`_resumed_reply_timeout`). A failed or
+        missing reply is recorded on the target, never raised. Cancelled (by
+        :meth:`close`), the replies are abandoned unread.
+        """
         sid = target.session_id
-        deferred: list[tuple[CDPCommand, asyncio.Future[Any]]] = []
+        written: list[tuple[str, PendingCommand]] = []
         detach = False
-        paused = (
-            PausedTarget(resume=lambda: self._resume(sid))
-            if target.waiting
-            else contextlib.nullcontext()
-        )
+
+        async def resume() -> None:
+            reply = await self._write_resume(sid)
+            if reply is not None:
+                written.append((RESUME_METHOD, reply))
+
+        paused = PausedTarget(resume=resume) if target.waiting else contextlib.nullcontext()
         try:
-            async with paused:
-                # Closing, or Chrome's own target: resumed and detached, never
-                # prepared. A *second* session of one target (a service worker
-                # attaches at browser level and again under the page that
-                # registered it) is prepared like the first: Chrome intercepts
-                # the worker's main script only on the session under the page
-                # (measured, Chrome 153), so detaching it loses that request.
-                # Its traffic can then pause once per session; participants
-                # dedupe records by target and request, never by dropping a
-                # session (a service worker may attach twice, measured, arch §4.14).
-                if self._closing or target.internal:
-                    detach = True
-                else:
-                    self._targets[sid] = target
-                    self._prepared_target_ids.setdefault(target.target_id, sid)
-                    self._emit(
-                        RecorderEvent(
-                            session_id=sid, method="Target.attachedToTarget", params=params
+            try:
+                async with paused:
+                    # Closing, or Chrome's own target: resumed and detached,
+                    # never prepared. A *second* session of one target (a
+                    # service worker attaches at browser level and again under
+                    # the page that registered it) is prepared like the first:
+                    # Chrome intercepts the worker's main script only on the
+                    # session under the page (measured, Chrome 153), so
+                    # detaching it loses that request. Its traffic can then
+                    # pause once per session; participants dedupe records by
+                    # target and request, never by dropping a session (a
+                    # service worker may attach twice, measured, arch §4.14).
+                    if self._closing or target.internal:
+                        detach = True
+                    else:
+                        self._targets[sid] = target
+                        self._prepared_target_ids.setdefault(target.target_id, sid)
+                        self._emit(
+                            RecorderEvent(
+                                session_id=sid, method="Target.attachedToTarget", params=params
+                            )
                         )
-                    )
-                    deferred = await self._pipeline(target)
-        except Exception as exc:
-            self._fail(target, f"preparation: {exc!r}")
+                        for command in self._batch(target):
+                            reply = await self._client.post(
+                                command.method, dict(command.params), sid
+                            )
+                            written.append((command.method, reply))
+            except Exception as exc:
+                self._fail(target, f"preparation: {exc!r}")
+            timeout = self._resumed_reply_timeout() if target.waiting else self._command_timeout_s
+            await self._await_replies(target, written, timeout)
+        except BaseException:
+            for _method, reply in written:
+                reply.abandon()
+            raise
         finally:
-            if deferred:
-                results = await asyncio.gather(*(f for _, f in deferred), return_exceptions=True)
-                self._record(target, [c for c, _ in deferred], results)
             if detach:
                 await self._quietly(
                     "Target.detachFromTarget",
@@ -813,33 +892,44 @@ class RecorderConnection:
                     timeout=self._command_timeout_s,
                 )
                 self._sessions.discard(sid)
+        if not detach and self._prepared_target_ids.get(target.target_id) == sid:
+            self._prepared.setdefault(target.target_id, asyncio.Event()).set()
 
-    async def _pipeline(
-        self, target: RecorderTarget
-    ) -> list[tuple[CDPCommand, asyncio.Future[Any]]]:
-        """Send the whole batch at once; await all but the SW-deferred replies."""
-        commands = self._batch(target)
-        sent = [
-            (command, asyncio.ensure_future(self._command(target.session_id, command)))
-            for command in commands
-        ]
-        now: list[tuple[CDPCommand, asyncio.Future[Any]]] = []
-        later: list[tuple[CDPCommand, asyncio.Future[Any]]] = []
-        for command, future in sent:
-            if target.type == "service_worker" and command.method.startswith(
-                DEFERRED_ON_SERVICE_WORKER
-            ):
-                later.append((command, future))
-            else:
-                now.append((command, future))
-        try:
-            results = await asyncio.gather(*(f for _, f in now), return_exceptions=True)
-        except BaseException:
-            for _, future in sent:
-                future.cancel()
-            raise
-        self._record(target, [c for c, _ in now], results)
-        return later
+    async def _write_resume(self, session_id: str) -> PendingCommand | None:
+        """Write the resume of a still-waiting session; ``None`` when it was resumed already."""
+        if session_id not in self._waiting:
+            return None
+        self._waiting.discard(session_id)
+        return await self._client.post(RESUME_METHOD, None, session_id)
+
+    def _resumed_reply_timeout(self) -> float:
+        """How long a resumed target's replies may take (:data:`RESUMED_REPLY_MARGIN_S`).
+
+        At least as long as the recorder may itself hold the target's first
+        document — the longest owner budget plus :data:`PAUSE_OWNER_GRACE_S`,
+        or the default pause timeout — plus the margin for the network: the
+        replies of a target without a page process come after that document
+        commits.
+        """
+        holds = [self._pause_owner_timeout_s]
+        for participant in self._participants():
+            budget = participant.pause_budget_s
+            if budget is not None:
+                holds.append(budget + PAUSE_OWNER_GRACE_S)
+        return max(holds) + self._resumed_reply_margin_s
+
+    async def _await_replies(
+        self, target: RecorderTarget, written: Sequence[tuple[str, PendingCommand]], timeout: float
+    ) -> None:
+        """Every reply of *written*, each within *timeout*; a failure is recorded, never raised."""
+        if not written:
+            return
+        results = await asyncio.gather(
+            *(reply.wait(timeout) for _method, reply in written), return_exceptions=True
+        )
+        for (method, _reply), result in zip(written, results, strict=True):
+            if isinstance(result, BaseException):
+                self._fail(target, f"{method}: {result}")
 
     def _batch(self, target: RecorderTarget) -> list[CDPCommand]:
         participants = list(self._participants())
@@ -858,21 +948,6 @@ class RecorderConnection:
         commands.append(CDPCommand("Target.setAutoAttach", dict(AUTO_ATTACH_PARAMS)))
         return commands
 
-    async def _command(self, session_id: str, command: CDPCommand) -> Any:
-        return await self._client.send(
-            command.method,
-            dict(command.params),
-            session_id,
-            timeout=self._command_timeout_s,
-        )
-
-    def _record(
-        self, target: RecorderTarget, commands: Sequence[CDPCommand], results: Sequence[Any]
-    ) -> None:
-        for command, result in zip(commands, results, strict=True):
-            if isinstance(result, BaseException):
-                self._fail(target, f"{command.method}: {result}")
-
     def _fail(self, target: RecorderTarget, detail: str) -> None:
         self.failures.setdefault(target.session_id, []).append(detail)
         logger.warning(
@@ -881,17 +956,6 @@ class RecorderConnection:
             target.target_id,
             target.session_id,
             detail,
-        )
-
-    async def _resume(self, session_id: str) -> None:
-        if session_id not in self._waiting:
-            return
-        self._waiting.discard(session_id)
-        await self._client.send(
-            "Runtime.runIfWaitingForDebugger",
-            None,
-            session_id,
-            timeout=self._command_timeout_s,
         )
 
     async def _handle_paused(self, paused: PausedRequest) -> None:

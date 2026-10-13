@@ -36,6 +36,7 @@ from tests._helpers.fake_cdp import FakeBrowser
 from tests._helpers.replay_archive import RECORDED_T0_MS, RecordingScript
 
 PINNED_ARGS = tuple(PinnedReplayability(random_seed=7).launch_args())
+PINNED_ENV = dict(PinnedReplayability(random_seed=7).launch_env())
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +45,7 @@ def source_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
         script = RecordingScript(
             tmp_path_factory.mktemp("source"),
             run_id="run-src",
-            launch_flags=[*OwnedBrowser.BASE_FLAGS, *PINNED_ARGS],
+            launch_flags=OwnedBrowser().planned_launch_flags(PINNED_ARGS, PINNED_ENV),
         )
         await script.exchange("http://shop.test/api/data.json", body=b'{"n":1}')
         await script.commit(1)
@@ -82,7 +83,9 @@ class TestIsolation:
         cap, _browser = _replaying(backend)
         await cap.setup(replay_archive=str(source_run))
         try:
-            assert backend.open_calls == [{"launch_args": (*PINNED_ARGS, *NETWORK_ISOLATION_ARGS)}]
+            assert backend.open_calls == [
+                {"launch_args": (*PINNED_ARGS, *NETWORK_ISOLATION_ARGS), "launch_env": PINNED_ENV}
+            ]
         finally:
             await cap.teardown()
 
@@ -95,7 +98,7 @@ class TestIsolation:
         )
         await cap.setup(replay_archive=str(source_run))
         try:
-            assert backend.open_calls == [{"launch_args": PINNED_ARGS}]
+            assert backend.open_calls == [{"launch_args": PINNED_ARGS, "launch_env": PINNED_ENV}]
             batch = await cap.collect_archive()
             fingerprint = next(f for f in batch.files if f.scope == "run")
             block = json.loads(fingerprint.data)["network_source"]
@@ -112,6 +115,55 @@ class TestIsolation:
         assert problem.startswith("network_source: archive ↔ bound archivers ['browser.storage']")
         assert "bind browser.replay_log" in problem
         assert backend.open_calls == [] and browser.clients == []
+
+
+class TestBrowserDefaults:
+    """A replay's browser must fall back to the recording's time zone and locale (§4.14)."""
+
+    async def test_a_matching_browser_replays_and_records_its_defaults(
+        self, source_run: Path
+    ) -> None:
+        cap, _browser = _replaying(IsolatingBrowser())
+        await cap.setup(replay_archive=str(source_run))
+        try:
+            batch = await cap.collect_archive()
+            fingerprint = next(f for f in batch.files if f.scope == "run")
+            assert json.loads(fingerprint.data)["browser_defaults"] == {
+                "timezone": "UTC",
+                "locale": "en-US",
+            }
+        finally:
+            await cap.teardown()
+
+    async def test_a_default_the_os_could_not_say_is_refused_after_launch(
+        self, source_run: Path
+    ) -> None:
+        """No locale read before launch (a Linux host): Chrome's own answer decides, strictly."""
+
+        class _NoLocaleBeforeLaunch(IsolatingBrowser):
+            LOCALE = None
+
+        cap, browser = _replaying(_NoLocaleBeforeLaunch())
+        browser.default_locale = "fr-FR"
+        try:
+            with pytest.raises(BrowserCooperationError) as info:
+                await cap.setup(replay_archive=str(source_run))
+            (problem,) = info.value.problems
+            assert problem.startswith("source run 'run-src' browser default locale='en-US' ↔")
+            assert "locale='fr-FR' (measured after launch)" in problem
+            # Refused before the recorder prepared any target or opened its auto-attach.
+            assert "Target.setAutoAttach" not in browser.recorder.methods()
+        finally:
+            await cap.teardown()
+
+    async def test_a_failed_measurement_refuses_the_replay(self, source_run: Path) -> None:
+        cap, browser = _replaying(IsolatingBrowser())
+        browser.fail("Page.getFrameTree", RuntimeError("CDP error: no frame"))
+        try:
+            with pytest.raises(BrowserCooperationError, match="could not be measured after launch"):
+                await cap.setup(replay_archive=str(source_run))
+        finally:
+            await cap.teardown()
 
 
 class TestServing:

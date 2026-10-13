@@ -31,6 +31,8 @@ class _Server:
         self.extension_headers: list[str | None] = []
         self.closed = asyncio.Event()
         self.url = ""
+        #: Every method received, in arrival order.
+        self.methods: list[str] = []
 
     async def handler(self, ws: ServerConnection) -> None:
         assert ws.request is not None
@@ -39,6 +41,7 @@ class _Server:
             async for raw in ws:
                 msg = json.loads(raw)
                 method = msg["method"]
+                self.methods.append(method)
                 params = msg.get("params") or {}
                 if method == "Test.echo":
                     await ws.send(json.dumps({"id": msg["id"], "result": params}))
@@ -293,6 +296,45 @@ class TestTimeoutAndFailPending:
         # The connection itself is untouched.
         assert await client.send("Test.echo", {"y": 2}) == {"y": 2}
         await client.stop()
+
+
+class TestPost:
+    """``post`` writes now and waits later: the order on the wire is the order of the posts."""
+
+    async def test_posted_commands_reach_the_peer_in_order_before_any_reply_is_awaited(
+        self, server: _Server
+    ) -> None:
+        client = CDPClient(server.url, proxy=None)
+        await client.start()
+        never = await client.post("Test.never")
+        echo = await client.post("Test.echo", {"z": 3})
+        # The second reply arrives although the first command never answers.
+        assert await echo.wait(2.0) == {"z": 3}
+        assert server.methods == ["Test.never", "Test.echo"]
+        with pytest.raises(TimeoutError, match="Test.never"):
+            await never.wait(0.05)
+        assert client._pending == {}
+        await client.stop()
+
+    async def test_an_abandoned_reply_is_dropped_quietly(
+        self, server: _Server, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = CDPClient(server.url, proxy=None)
+        await client.start()
+        late = await client.post("Test.late", {"delay": 0.2})
+        late.abandon()
+        late.abandon()  # idempotent
+        assert client._pending == {}
+        with caplog.at_level(logging.WARNING, logger=cdp_client_module.__name__):
+            await asyncio.sleep(0.3)
+            assert await client.send("Test.echo", {"after": 1}) == {"after": 1}
+        assert not [r for r in caplog.records if "unknown id" in r.getMessage()]
+        await client.stop()
+
+    async def test_post_on_a_stopped_client_refuses(self, server: _Server) -> None:
+        client = CDPClient(server.url, proxy=None)
+        with pytest.raises(RuntimeError, match="not connected"):
+            await client.post("Test.echo")
 
 
 class TestControlTransportOptions:

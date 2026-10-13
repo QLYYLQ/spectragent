@@ -19,6 +19,12 @@ It holds:
   a collection on a document already measured costs one ``Page.getFrameTree``.
   The UA metadata (``navigator.userAgentData``) exists in secure contexts
   only; the last one measured is kept, so a tab on plain http does not flap it.
+- **The browser's defaults** (``browser_defaults``) — the time zone and
+  locale a frame no override reaches falls back to, measured by the
+  capability right after launch, in the first tab before the recorder
+  prepared it (``backends/browser_defaults.py``). Under ``pinned`` the time
+  zone is the pinned one (``TZ`` at launch) and the locale the host's; a
+  replay whose browser falls back to others is refused.
 - **The viewport** as configured.
 - **The tier** — ``ReplayabilityPlan.fingerprint()``: tier, parameters, T0,
   ``shim_sha256`` and the tier's own launch switches, kept apart from the
@@ -53,6 +59,7 @@ from spectragent.core.archive.privacy import MARKER_SESSION_STATE
 from spectragent.core.capabilities.browser.archive.base import BrowserArchiverBase, RecorderHandle
 from spectragent.core.capabilities.browser.archive.encoding import canonical_json
 from spectragent.core.capabilities.browser.archive.redaction import BROWSER_REDACTION_POLICY
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
     without_routing_switches,
 )
@@ -124,6 +131,7 @@ class BrowserFingerprint:
         fresh_profile: bool,
         clock: Callable[[], float],
         network_fingerprint: Mapping[str, Any] | None = None,
+        browser_defaults: BrowserDefaults | None = None,
         timeout: float = 1.0,
     ) -> ArchiveFile | None:
         """The fingerprint as a run record, or ``None`` when it did not change."""
@@ -136,6 +144,7 @@ class BrowserFingerprint:
             archivers=archivers,
             fresh_profile=fresh_profile,
             network_fingerprint=network_fingerprint,
+            browser_defaults=browser_defaults,
             timeout=timeout,
         )
         data = canonical_json(document)
@@ -162,6 +171,7 @@ class BrowserFingerprint:
         archivers: Sequence[BrowserArchiverBase],
         fresh_profile: bool,
         network_fingerprint: Mapping[str, Any] | None = None,
+        browser_defaults: BrowserDefaults | None = None,
         timeout: float = 1.0,
     ) -> dict[str, Any]:
         version = await recorder.browser_version()
@@ -192,6 +202,7 @@ class BrowserFingerprint:
                 "jsVersion": version.get("jsVersion"),
             },
             "page": page,
+            "browser_defaults": browser_defaults.as_record() if browser_defaults else None,
             "viewport": {"width": viewport[0], "height": viewport[1]},
             "replayability": dict(plan_fingerprint),
             "launch_flags_sha256": launch_flags_digest(session_metadata),

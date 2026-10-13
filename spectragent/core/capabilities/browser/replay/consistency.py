@@ -16,9 +16,18 @@ Refused (before launch):
   (``shim_sha256``, pinned);
 - the viewport differs;
 - the launch-flag digests differ — this run's computed from the provider's
-  ``planned_launch_flags`` (tier + isolation switches) before launch, both
-  sides without the network routing switches, so isolation is never part of
-  the comparison (the cooperation check asserts it instead);
+  ``planned_launch_flags`` (tier + isolation switches, and the tier's launch
+  environment, ``TZ``) before launch, both sides without the network routing
+  switches, so isolation is never part of the comparison (the cooperation
+  check asserts it instead);
+- the browser's defaults differ — the time zone and locale a frame no
+  override reaches falls back to (``browser_defaults`` in the fingerprint,
+  measured right after the recording's launch). Before launch, each value
+  the provider reads from this host's OS (``planned_browser_defaults``) is
+  compared; after launch (:func:`browser_default_problems`, in setup before
+  the recorder prepares any target) Chrome's own answer is compared, which
+  covers what the OS could not say (the locale off macOS). A source that
+  recorded no defaults is refused;
 - ``base_time: from_archive`` and the source recorded no T0.
 
 Tolerated, recorded as warnings in the replay fingerprint (after launch,
@@ -26,8 +35,9 @@ Tolerated, recorded as warnings in the replay fingerprint (after launch,
 another browser user agent when the tier does not pin one (it carries the
 version), another redaction policy (POSTs with credential fields may not key
 alike). What could not be compared at all — a side without a launch-flag
-digest — is a note (:func:`consistency_notes`). A ``none`` recording's time
-zone, locale and DPR are measured host facts and are not compared.
+digest — is a note (:func:`consistency_notes`). A ``none`` recording's DPR
+is a measured host fact and is not compared; its time zone and locale are the
+browser's defaults and are.
 
 .. note::
    No ``from __future__ import annotations`` — the browser replay package
@@ -39,6 +49,7 @@ from typing import Any
 
 from spectragent.core.capabilities.browser.archive.fingerprint import flags_digest
 from spectragent.core.capabilities.browser.archive.redaction import BROWSER_REDACTION_POLICY
+from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.replay.archive_index import (
     NETWORK_ARCHIVER,
     RecordedArchive,
@@ -72,14 +83,65 @@ def _current_plan(replayability: ReplayabilityProtocol) -> dict[str, Any]:
     return replayability.plan(t0_ms=0, browser_user_agent="").fingerprint()
 
 
+#: Why the browser's defaults must match: what a frame no override reaches reads.
+_DEFAULTS_WHY = (
+    "a frame no override reaches (an iframe whose process lost the frame that set the "
+    "overrides, a cross-site popup that keeps its opener) reads the browser's default"
+)
+
+
+def _defaults_problems(
+    source: str,
+    recorded: BrowserDefaults,
+    current: BrowserDefaults,
+    *,
+    how: str,
+    every_value: bool,
+) -> list[str]:
+    problems: list[str] = []
+    for name in BrowserDefaults.NAMES:
+        then, now = recorded.value(name), current.value(name)
+        if now is None and not every_value:
+            continue  # not known before launch: compared after launch
+        if then != now:
+            problems.append(
+                f"{source} browser default {name}={then!r} ↔ this browser's default "
+                f"{name}={now!r} ({how}): {_DEFAULTS_WHY} {name}, so the replay would see "
+                f"another one"
+            )
+    return problems
+
+
+def browser_default_problems(recorded: RecordedArchive, measured: BrowserDefaults) -> list[str]:
+    """The browser's defaults, measured right after this replay's launch, against the recording's.
+
+    Run by setup before the recorder prepares any target. Every value is
+    compared — this is where a value the OS could not say before launch
+    (``planned_browser_defaults``) is decided.
+    """
+    fingerprint = recorded.fingerprint or {}
+    then = BrowserDefaults.from_record(fingerprint.get("browser_defaults"))
+    if then is None:
+        return []  # refused before launch already (consistency_problems)
+    return _defaults_problems(
+        _source(recorded), then, measured, how="measured after launch", every_value=True
+    )
+
+
 def consistency_problems(
     recorded: RecordedArchive,
     *,
     replayability: ReplayabilityProtocol,
     viewport: tuple[int, int],
     planned_launch_flags: Sequence[str] | None,
+    browser_defaults: BrowserDefaults | None = None,
 ) -> list[str]:
-    """Every way the source run's fingerprint and this configuration disagree, at once."""
+    """Every way the source run's fingerprint and this configuration disagree, at once.
+
+    *browser_defaults* is what this host's OS says the browser will fall back
+    to (``planned_browser_defaults``); a value it does not know is compared
+    after launch instead (:func:`browser_default_problems`).
+    """
     source = _source(recorded)
     fingerprint = recorded.fingerprint
     if fingerprint is None:
@@ -144,6 +206,24 @@ def consistency_problems(
                 f"flags {planned}: the browser would start with other switches (routing "
                 f"switches excluded on both sides)"
             )
+
+    recorded_defaults = BrowserDefaults.from_record(fingerprint.get("browser_defaults"))
+    if recorded_defaults is None:
+        problems.append(
+            f"{source} recorded no browser defaults (the time zone and locale a frame no "
+            f"override reaches falls back to) ↔ network_source: archive: nothing says the "
+            f"replay's browser would fall back to the same ones; record the run again"
+        )
+    elif browser_defaults is not None:
+        problems.extend(
+            _defaults_problems(
+                source,
+                recorded_defaults,
+                browser_defaults,
+                how="read from this host before launch",
+                every_value=False,
+            )
+        )
 
     if replayability.needs_archive_clock and recorded.t0_ms is None:
         problems.append(

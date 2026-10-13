@@ -180,6 +180,22 @@ uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
   must equal `random_seed`; another `force_device_scale_factor` or `user_agent`; an
   `extra_args` entry setting one of its switches differently). It changes how live sites
   behave and is visible to anti-bot checks, so evaluation and anti-bot runs stay on `none`.
+- `pinned` also launches Chrome with `TZ=<timezone>` (`ReplayabilityProtocol.launch_env()`,
+  handed to the provider with the switches, written first in `launch_flags` and so in the
+  digest). Chrome keeps one owner of the time zone and locale overrides per renderer
+  process, the frame that set them first; once it leaves (an iframe removed, an opener that
+  moved to another site) the other frames fall back to the browser's defaults within
+  0.2–0.3 s, and a cross-site popup that keeps its opener reads the default locale from its
+  first document. `TZ` makes the default zone the pinned one. The default locale is the
+  host's (on macOS neither `--lang` nor `LANG` changes it), so with archivers bound setup
+  measures both defaults right after launch, before any override, and the fingerprint
+  records them as `browser_defaults`.
+- Tabs a page opens are prepared before their first request whatever opened them: the
+  recorder writes a waiting target's whole batch and then its resume, and only then waits
+  for the replies (a tab its opener cannot reach — `target=_blank` without `rel`,
+  `rel=noopener`, `window.open(..., 'noopener')` — answers its page-side commands only after
+  it runs; architecture §4.14, "逐 target 的准备流水线"). `create_tab(url)` creates the tab at
+  `about:blank` and navigates it once the recorder prepared it.
 - Evidence lands in `traces/<run>/env/`. A run that binds no archiver has no `env/` at all.
 
 ### 2.2 Replay
@@ -229,8 +245,15 @@ uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
   fingerprint (`env/run.browser.json`, read by `archive_index.load_fingerprint`: no index
   line, no WARC record) with this configuration; setup compares again before Chrome starts,
   then loads the whole archive to serve it: the tier and its parameters
-  except `base_time`, `shim_sha256`, the viewport, and the launch-flag digest with the
-  network-routing switches stripped on both sides. A mismatch refuses the run. A different
+  except `base_time`, `shim_sha256`, the viewport, the launch-flag digest with the
+  network-routing switches stripped on both sides (`TZ` included), and the browser's
+  defaults: each value this host's OS can say before launch
+  (`LaunchArgsProvider.planned_browser_defaults`: the time zone by ICU's rule, the locale on
+  macOS through CoreFoundation's choice for Chrome's bundle) against the recording's
+  `browser_defaults`. After launch, before any target is prepared, setup measures Chrome's
+  own defaults and compares every value again (`replay/consistency.py::browser_default_problems`),
+  which decides what the OS could not say. A mismatch refuses the run, strictly, with no
+  switch; a source with no `browser_defaults` is refused. A different
   Chrome version, an unpinned user agent or a changed redaction policy only warns, in the
   replay's own fingerprint. A run that was itself a replay is refused as a source.
 - `isolation: required` hands `--host-resolver-rules=MAP * ~NOTFOUND` (no exception: exact
@@ -705,13 +728,16 @@ already collected; regenerate all the same.
 |---|---|
 | Registrar | `ReplayabilityRegistrar` (`replayability_id`), `replay/replayability.py`; collected as `replayability` |
 | Design section | Architecture §4.14 ("`replayability`：回放档位"; "协作检查一览") |
-| Protocol, base | `ReplayabilityProtocol`: `replayable`, `needs_archive_clock`, the `device_scale_factor` property, `launch_args()`, `plan(*, t0_ms, browser_user_agent) -> ReplayabilityPlan`. `ReplayabilityBase`; `default_replayability()` is `none` |
+| Protocol, base | `ReplayabilityProtocol`: `replayable`, `needs_archive_clock`, the `device_scale_factor` property, `launch_args()`, `launch_env()`, `plan(*, t0_ms, browser_user_agent) -> ReplayabilityPlan`. `ReplayabilityBase`; `default_replayability()` is `none` |
 | Owner | `BrowserCapability.__wiring__["replayability"]`, a required single-instance receptor |
 | Tests to copy | `test_browser_replayability.py` (`TestRegistryAndGeneratedConfig`, `TestPinnedSwitches`, `TestPinnedPlan`, `TestShim`, `TestCooperation`), `test_browser_replay_consistency.py` |
 
-- The tier is the only source of its Chrome switches (through `LAUNCH_ARGS`) and of its
-  shim. Its run plan (`ReplayabilityPlan`) is a recorder participant that sends per-target
-  commands and reports fingerprint fields; the configured instance keeps no run state.
+- The tier is the only source of its Chrome switches and launch environment (both through
+  `LAUNCH_ARGS`; `pinned`'s environment is `TZ`) and of its shim. Its run plan
+  (`ReplayabilityPlan`) is a recorder participant that sends per-target commands and reports
+  fingerprint fields (`replayability_args`, `replayability_env`); the configured instance
+  keeps no run state. A participant's commands go out before the target runs but their
+  replies may come after it does; never make a later command depend on an earlier reply.
 - Record and replay must use the same tier, switches, seed, user agent and viewport. The
   consistency check compares the tier, the parameters its plan fingerprints (all but
   `base_time`) and `shim_sha256`, so a new tier fingerprints every parameter that changes
@@ -883,6 +909,13 @@ value on an existing one.
   that bool key means. A numeric limit is never `null`: no limit is `unlimited`
   (`max_document_misses`, the capability's `dom_max_*`, the chain's `token_limit`), and `[]`
   always means empty.
+- The recorder never awaits a reply before it resumes a waiting target: it writes the whole
+  batch, then `Runtime.runIfWaitingForDebugger`, in order from one task (`CDPClient.post`),
+  then waits for every reply for longer than it may itself hold the target's first document.
+  A target without a page process answers its page-side commands only once that document
+  commits, and applies them before its first script anyway. Waiting before the resume is
+  what held every no-opener tab 1 s and logged 10 false failures; there is no special case
+  for service workers.
 - `pinned` requires a fresh profile, `local_chrome`, no explicit `cdp_url`, no provider knob
   that contradicts the tier, a `random_seed` of at least 1, and `base_time: from_archive`
   only with the `archive` source. `--disable-back-forward-cache` is part of the tier's
@@ -998,6 +1031,8 @@ value on an existing one.
 | `spectragent-bench` exits 2: `the pre-flight check refused the configuration for task ...` | The first task's `prepare()` refused the stage YAML before any task ran; the original error follows the colon and names both sides. Check one task with `spectragent-run --dry-run` (`--replay-archive DIR` for a replay) |
 | `BrowserCooperationError` naming `browser.network` or `browser.replay_log` beside the network source | A replay binds `browser.replay_log` in `browser.network`'s place; a live run binds no `browser.replay_log` (§2.2) |
 | A replay refused at `prepare()`, naming the tier, shim, viewport or launch flags | `replay/consistency.py::consistency_problems`. The replay YAML must match the recording's tier, seed, user agent, viewport and provider switches |
+| A replay refused naming `browser default timezone` or `locale` (`read from this host before launch` at `prepare()`, or `measured after launch` from setup) | The host's browser falls back to another time zone or locale than the recording's (a frame no override reaches reads it). Replay on a host with the recording's system language; `pinned`'s zone comes from `TZ`. `recorded no browser defaults`: record the source again |
+| A recorder failure `Emulation.setLocaleOverride: ... already in effect` on a popup or iframe | Genuine and expected: the target shares a renderer process whose locale another frame owns (architecture §4.14). A failure `... got no reply within` on a new tab is not expected: the preparation must not wait for replies before the resume |
 | `ArchiveOpenError` | `replay_archive` is not a run directory with a committed manifest |
 | `ReplayArchiveError` | An index line or WARC record of the source does not read back; the source run is damaged |
 | `RecorderLostError` | The recorder connection dropped, and observation, action and collection fail closed. Look at Chrome, not at the archive |
