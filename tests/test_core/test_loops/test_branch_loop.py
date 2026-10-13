@@ -553,6 +553,37 @@ class TestCheckpointCompatibility:
         with pytest.raises(IncompatibleLoopInputError, match="requires checkpoint"):
             AgentRuntime.for_agent(run, AGENT_ID).prepare()
 
+    async def test_a_source_trace_never_closed_is_refused(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        """The trace's own ledger is a hard condition, however the checkpoint was chosen."""
+        manifest = source / "manifest.json"
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        document["status"] = "writing"
+        manifest.write_text(json.dumps(document), encoding="utf-8")
+        cap = make_cap()
+        with pytest.raises(IncompatibleCheckpointError, match="never closed"):
+            await run_branch(tmp_path, source, 1, ["click 100"], cap=cap)
+        assert cap.setups == 0
+
+    async def test_a_checkpoint_past_complete_through_is_refused(
+        self, tmp_path: Path, source: Path
+    ) -> None:
+        manifest = source / "manifest.json"
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        document.update(
+            status="incomplete",
+            complete_through=0,
+            incomplete_reason="recording failed at step 1: OSError: disk full",
+        )
+        manifest.write_text(json.dumps(document), encoding="utf-8")
+        cap = make_cap()
+        with pytest.raises(IncompatibleCheckpointError) as caught:
+            await run_branch(tmp_path, source, 1, ["click 100"], cap=cap)
+        assert "past the step its trace is complete through (0)" in str(caught.value)
+        assert "recording failed at step 1" in str(caught.value)
+        assert cap.setups == 0
+
     async def test_a_source_that_is_not_a_trace(self, tmp_path: Path) -> None:
         empty = tmp_path / "nothing-here"
         empty.mkdir()

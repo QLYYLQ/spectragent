@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 import yaml
 
-from spectragent.core.trace.models import RunStatus
+from spectragent.core.trace.models import TraceStatus
 from spectragent.flywheel.chain import (
     ChainConfigError,
     ChainSpec,
@@ -102,7 +102,7 @@ def commit_one_run(raw: dict[str, Any], argv: list[str]) -> int:
     """What a sweep that ran one task does: one committed run under the YAML's trace_dir."""
     (writer,) = [hook for hook in raw["hook"] if hook["hook_id"] == "trace_writer"]
     wal = new_wal(Path(writer["trace_dir"]), f"run-{len(argv)}")
-    wal.finalize(RunStatus.COMPLETED)
+    wal.finalize(TraceStatus.COMPLETE)
     return 0
 
 
@@ -222,12 +222,16 @@ class TestStageOutcomes:
             (lambda raw, argv: 1, "exited 1 and wrote no run"),
             (lambda raw, argv: 2, "exited 2"),
             (
+                lambda raw, argv: commit_one_run(raw, argv) or 3,
+                "exited 3: a guard vetoed the stage",
+            ),
+            (
                 lambda raw, argv: (_ for _ in ()).throw(SystemExit("No task_loader")),
                 "No task_loader",
             ),
             (lambda raw, argv: (_ for _ in ()).throw(RuntimeError("boom")), "RuntimeError: boom"),
         ],
-        ids=["no_run", "exit_code", "system_exit", "exception"],
+        ids=["no_run", "exit_code", "veto", "system_exit", "exception"],
     )
     def test_a_stage_failure_stops_the_chain_and_says_which(
         self, tmp_path: Path, act: Any, message: str

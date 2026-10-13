@@ -32,7 +32,7 @@ from spectragent.core.loops import ReactLoop
 from spectragent.core.loops._loop_fragments import LOOP_FRAGMENT_KEYS
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.runtime import AgentRuntime
-from spectragent.core.trace.models import RunStatus
+from spectragent.core.trace.models import TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation.fragments import TaskObs
@@ -275,9 +275,9 @@ class TestCompletedRunTrace:
         assert cfg.loop_id == "react"
         assert cfg.env_type == "trace_e2e_env"
 
-    async def test_manifest_completed_with_result(self, trace):
+    async def test_manifest_complete_with_result(self, trace):
         t, _ = trace
-        assert t.manifest.status == RunStatus.COMPLETED
+        assert t.manifest.status == TraceStatus.COMPLETE
         assert t.result is not None
         assert t.result.answer == "42 dollars"
         assert t.result.agent_reported_success is True
@@ -390,7 +390,8 @@ class TestTimedOutRunTrace:
 
         assert writer.run_dir is not None
         t = RunTrace(writer.run_dir)
-        assert t.manifest.status == RunStatus.ERROR  # not 'running'
+        # Closed, not 'writing' — and complete: the timeout is the agent's ledger.
+        assert t.manifest.status == TraceStatus.COMPLETE
         assert t.result is not None
         assert t.config.benchmark and t.config.task_id
         assert t.config.llm_model and t.config.loop_id
@@ -422,7 +423,7 @@ class TestAbnormalEndKeepsTheLastExchange:
         # Recorded as trailing, not as a step that never happened.
         assert t.step_count == 0
         assert t.llm_messages(0) == []
-        assert t.manifest.status == RunStatus.ERROR
+        assert t.manifest.status == TraceStatus.COMPLETE
 
     async def test_exception_commits_the_answered_call_as_trailing(self, tmp_path):
         run, writer = _run_with_hooks(tmp_path, plan=["done"], loop=_CrashAfterLLMLoop())
@@ -437,7 +438,7 @@ class TestAbnormalEndKeepsTheLastExchange:
 
         t = RunTrace(writer.run_dir)
         assert [m.text for m in t.trailing_calls[0].messages] == ["find the price"]
-        assert t.manifest.status == RunStatus.ERROR
+        assert t.manifest.status == TraceStatus.COMPLETE
 
 
 class TestACancelledCallKeepsItsPrompt:
@@ -452,7 +453,7 @@ class TestACancelledCallKeepsItsPrompt:
 
     @staticmethod
     def _assert_the_prompt_survived(t: RunTrace) -> None:
-        assert t.manifest.status == RunStatus.ERROR
+        assert t.manifest.status == TraceStatus.COMPLETE
         assert t.step_count == 0
         (call,) = t.trailing_calls
         assert (call.step, call.call, call.status) == (0, 0, "cancelled")
@@ -660,7 +661,7 @@ class TestEveryCallOfAStepThroughTheRealLoop:
         assert step.error_phase == "llm"
         assert step.token_usage is not None
         assert step.token_usage.total_tokens == billed
-        assert t.manifest.status == RunStatus.ERROR
+        assert t.manifest.status == TraceStatus.COMPLETE
 
     async def test_a_step_cut_off_by_a_cancel_keeps_every_call_as_trailing(self, tmp_path):
         llm = _ScriptedLLM(_refused(), _unusable(), _HANG)
@@ -702,7 +703,7 @@ class TestEveryCallOfAStepThroughTheRealLoop:
         assert cancelled.output_format.sha256 in t.manifest.output_formats
         assert t.result is not None
         assert t.result.error == "Execution cancelled"
-        assert t.manifest.status == RunStatus.ERROR
+        assert t.manifest.status == TraceStatus.COMPLETE
         assert env.torn_down
 
 

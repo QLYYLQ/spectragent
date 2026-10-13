@@ -77,6 +77,16 @@ class _FailingSetupEnv(_Env):
         raise RuntimeError("browser refused to start")
 
 
+class _VetoingSetupEnv(_Env):
+    """A guard in the environment's own setup refuses the start page."""
+
+    __registry_key__ = "lifecycle_vetoing_setup_env"
+
+    async def setup(self, context=None, *, negotiation=None):
+        self.events.append("setup")
+        raise RunAbort("risk-control page at the start URL", source="setup_guard")
+
+
 class _HangingSetupEnv(_Env):
     """An environment still coming up when the run is cancelled."""
 
@@ -451,6 +461,25 @@ class TestEnvLifecycle:
         assert result.env_status.value == "failed"
         assert result.error is not None and "browser refused to start" in result.error
         assert hook.end_kwargs["result"] is result
+
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    async def test_a_veto_raised_during_setup_is_a_veto(self, raise_on_error: bool):
+        """Not swallowed as a failed setup: closed out as vetoed and raised whatever the flag says.
+
+        ``raise_on_error=False`` would otherwise hand a sweep an ordinary
+        failed task and let it start the next one against the same site.
+        """
+        env = _make_env(_VetoingSetupEnv)
+        hook = _RecordingHook([])
+        runtime = AgentRuntime.for_agent(_mk(_Agent(), ReactLoop(), env, hooks=[hook]), AGENT_ID)
+        with pytest.raises(RunAbort, match="risk-control page at the start URL") as caught:
+            await runtime.execute("t", task_id="t-1", raise_on_error=raise_on_error)
+
+        result = hook.end_kwargs["result"]
+        assert result.agent_done == AgentDoneStatus.VETOED
+        assert result.error == "RunAbort: setup_guard: risk-control page at the start URL"
+        assert hook.error_kwargs["error"] is caught.value
+        assert env.events == ["setup", "teardown"]
 
     async def test_failed_setup_is_still_torn_down(self):
         """A setup that raised is exactly when teardown matters most.
@@ -862,7 +891,7 @@ class TestAnOutcomeOutranksTheRunsOwnTimeout:
             assert caught.value is veto
         assert caught.value.__notes__ == [_CUT_OFF_NOTE]
         result = hook.end_kwargs["result"]
-        assert result.agent_done == AgentDoneStatus.ERROR
+        assert result.agent_done == AgentDoneStatus.VETOED
         assert result.error == _VETOED_UNDER_TIMEOUT
         # Closed out as a vetoed run: on_run_error gets the veto, not a timeout.
         assert hook.error_kwargs["error"] is caught.value

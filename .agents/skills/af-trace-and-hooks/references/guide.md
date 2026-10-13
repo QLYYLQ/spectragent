@@ -136,23 +136,24 @@ between the call and `record_step`) is committed at run end as a *trailing* call
 path, and catches `asyncio.CancelledError` to close a cancelled run out with an
 `agent_done=ERROR`, `error="Execution cancelled"` result before re-raising it unchanged
 (`docs/architecture_design.md` §4.2). Before that, external cancellation reached no
-lifecycle callback at all: no `result.json`, a manifest stuck at `running`, and the
+lifecycle callback at all: no `result.json`, a manifest stuck at `writing`, and the
 in-flight prompt lost however the hook recorded it.
 
 "Unchanged" holds even when the close-out itself fails. A blocking hook that raises
-while a cancelled run is being closed out (`TraceWriter.on_run_end` on a full disk) is
-logged, and the `CancelledError` is still what the caller sees. Letting the hook's
+while a cancelled run is being closed out is logged, and the `CancelledError` is still
+what the caller sees. (`TraceWriter` itself raises nothing at close-out: what it cannot
+record goes into the trace's own ledger, `incomplete` with the reason.) Letting the hook's
 `OSError` win turned Ctrl-C into an ordinary task failure: a sweep's `except Exception`
 recorded it and started the next task, and a caller's `asyncio.timeout` saw `OSError`
 instead of `TimeoutError`. A hook whose close-out *awaits* can be cancelled inside it,
 and then the same rule is the hook's own: `TraceWriter` holds a cancellation of its
-close-out collection, finishes the close-out, logs a flush or `result.json` failure that
-happened under it, and re-raises the cancellation, in `on_run_end` and `on_run_error`
-alike.
+close-out collection, finishes the close-out (a flush or `result.json` failure under it
+becomes part of the trace's `incomplete_reason`), and re-raises the cancellation, in
+`on_run_end` and `on_run_error` alike.
 
 A guard's veto has the same precedence, kept by the runtime alone: a close-out
-that fails under a `RunAbort` (the vetoed step's calls cannot be flushed because the disk
-stayed full) is logged and attached to the veto as a note, and the `RunAbort` is what
+that fails under a `RunAbort` (some blocking hook raising in `on_run_end`) is logged and
+attached to the veto as a note, and the `RunAbort` is what
 `execute` raises, `raise_on_error=False` or not, so the sweep still stops. The run's own
 timeout is not an outside cancellation and does not outrank the veto either. When it
 expires while the Loop is still recording the vetoed step (`TraceWriter` collecting the
@@ -160,8 +161,9 @@ refused page's evidence, the first thing on the veto's way out that can take lon
 cancellation carries the veto (`loops.errors.RunEnded`), and `execute` closes the run
 out as vetoed and raises the `RunAbort` with the timeout as a note; a terminal result
 the Loop had built (a dead browser) is returned instead of a timeout result. For a hook
-nothing changes: the step is simply not committed, its calls land as trailing and the
-close-out collection takes the evidence the cut-off one never did. It is still the
+nothing changes but the ledger: the step is not committed (the trace is `incomplete`
+from it on — `recording step t was cut off by a cancellation`), its calls land as
+trailing and the close-out collection takes the evidence the cut-off one never did. It is still the
 reason `after_record_step` must never swallow a `CancelledError` (af-add-a-loop §3.3).
 
 On every other path a close-out failure propagates as it is,
@@ -327,8 +329,18 @@ Two things that are files but not steps: `commit_trailing(*, llm_calls, extra_fi
 cancellation, crash), and whatever a producer flushes at run end, by the same
 protocol, *without* a step record and without advancing `last_step_completed`:
 claiming a step would put an action-less phantom in the manifest. Each call appends one
-`manifest.trailing` entry. And `finalize` (`wal.py:303`) sets the terminal status; a
-trace stuck at `running` is a trace no evaluator will touch.
+`manifest.trailing` entry. And `finalize(status, *, incomplete_reason=None)` closes the
+trace — `complete`, or `incomplete` with what failed to be recorded; a trace stuck at
+`writing` is one nothing downstream uses. `commit_step` keeps `complete_through`, the end
+of the gapless run of committed steps from 0, so it stops before the first hole.
+
+**Two ledgers.** `result.json` says how the agent ended (`agent_done`: done, max_steps,
+error, timeout, vetoed); the manifest says whether the trace is a complete record
+(`status`: `writing` / `complete` / `incomplete`, plus `incomplete_reason` and
+`complete_through`). A run that timed out has a complete trace when everything it did was
+recorded. Never derive one ledger from the other: a reader that wants "only clean
+successes" asks both (the branch loader and the export make the trace's ledger a hard
+condition and the agent's a filter, `agent_outcome`).
 
 Fragments and calls are few per step, so the manifest indexes them itself:
 `fragments: {key: {file, artifact, failed}}` and `llm_calls`. Extra files are not:
@@ -370,13 +382,15 @@ still registered; each batch a failed step commit left behind (two steps' batche
 share a file name, so each needs its own `env/trailing/KK/`, where `KK` is the entry's
 position in `manifest.trailing`, the same number as `steps/trailing_KK.extra.json`); the
 tail collected at run end. A commit that fails costs only what it carried, and that item
-is dropped, not retried: `AgentRuntime` dispatches no `on_run_error` after `on_run_end`
-raised, and the veto and cancel close-outs do not retry either (a write the disk just
+is dropped, not retried: the close-out happens once and then clears what is still owed,
+so the `on_run_error` that follows `on_run_end` redoes nothing (a write the disk just
 refused rarely succeeds a few milliseconds later). The rest still lands, so a batch no
-retry can write never takes the unfinished step's calls or the tail down with it. The
-first failure is raised once everything was tried. The manifest then says `error`, as it
-does whenever a collection failed (at close-out or at any step), whatever the result
-reports. The WAL knows none of this; archive files are ordinary `TraceFile`s.
+retry can write never takes the unfinished step's calls or the tail down with it. Nothing
+is raised at close-out — the run's outcome is decided by then: every failure goes into
+the trace's `incomplete_reason`, as does a step whose collection or commit failed (a
+hole, `recording failed at step t: ...`), whatever the result reports. A hole mid-run
+does raise — `RecordingFailedError` from `after_record_step`, so the run stops there —
+unless the agent called done on that very step (its outcome is kept). The WAL knows none of this; archive files are ordinary `TraceFile`s.
 
 Every batch, the tail included, is checked before the WAL sees it: bound archivers only
 (content-addressed bodies too), single-segment `archiver_id` and `name` of at most 255
@@ -449,13 +463,13 @@ they say nothing about the trace. An evaluation process may never have imported 
 fragment class, so a registry miss runs `discover` over `spectragent.schemas` and
 `spectragent.core.capabilities` once before giving up (`_fragment_class`, `:635`).
 
-**The trace has a format version.** `TraceManifest.format_version` is 2 since the
-per-step index; a manifest without the field reads as 1. The accessors whose on-disk
-shape changed refuse a format-1 trace with `TraceSchemaError` (`_require_indexed`,
-`reader.py:532`), since its fragment failures carry no marker, while `config`, `result`
-and the step records stay readable. No shim (AGENTS.md §0.4): re-scoring an old trace
-with an image judge means re-running the task. A newer version than the build reads is
-refused when `RunTrace` is constructed.
+**The trace has a format version, and only the current one is read.**
+`TraceManifest.format_version` is 3 (the per-step index plus the trace's own ledger); a
+manifest without the field reads as 1. `RunTrace` refuses any other version at
+construction (`_require_current_format`, checked on the parsed JSON before the model
+validates it), config and result included: a format-2 `error` meant either "the agent
+failed" or "the trace is incomplete", and no reader can tell which. No shim (AGENTS.md
+§0.4): an old trace means re-running the task.
 
 **Steps have an origin (M31).** `StepRecord.origin` is `policy` (a step the run's own
 agent decided; every step of every older trace reads back as `policy`, which is right for
@@ -892,8 +906,8 @@ evaluators, months apart, on a machine with no browser installed.
 - Fail loudly on an unusable trace. `TraceIncompleteError` with the directory named beats
   a zero score — see `online_mind2web.py:104-125` for the pattern (no task text, no
   screenshots for an image judge). The reader already fails loudly on its side: a
-  `TraceSchemaError` is a damaged trace, or a format-1 trace read through a format-2
-  accessor, and re-running the evaluation will never change it.
+  `TraceSchemaError` is a damaged trace, or a trace of another format, and re-running
+  the evaluation will never change it.
 
 **The training export is the other offline consumer** (M32, `spectragent/export/`,
 arch §4.15): the same rules, a different product. It reads source runs only through

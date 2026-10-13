@@ -25,7 +25,6 @@ from spectragent.core.capabilities.browser.observations import BrowserMetaObs
 from spectragent.core.trace.encoding import EncodedFragment, EncodedLLMCall, TraceFile, sha256_hex
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
-from spectragent.schemas.step_record import StepRecord
 from tests._helpers.trace_builder import (
     ARCHIVE_CAPABILITY,
     STEPS_ARCHIVER,
@@ -389,80 +388,46 @@ class TestUnknownFragmentKeys:
         assert _trace(reference.run_dir).observation_fragment(0, "nowhere.thing") is None
 
 
-def _format_1_trace(base: Path) -> Path:
-    """A trace as written before the manifest carried ``format_version``."""
-    wal = new_wal(base, "run-v1")
-    wal.commit_step(0, step_record(0))
-    from tests._helpers.trace_builder import agent_result
-
-    wal.write_result(agent_result())
-    manifest = json.loads((wal.run_dir / "manifest.json").read_text())
-    del manifest["format_version"]
-    for key in ("trailing", "output_formats"):
-        del manifest[key]
-    manifest["unfinished_message_files"] = []
-    entry = manifest["steps"][0]
-    for key in ("fragments", "llm_calls", "extra_index"):
-        del entry[key]
-    entry.update(
-        observation_files=["observations/000_browser.screenshot.png"],
-        message_input_file="messages/000_input.json",
-        message_output_file="messages/000_output.json",
-        message_files=["messages/000_input.json", "messages/000_output.json"],
-    )
-    (wal.run_dir / "manifest.json").write_text(json.dumps(manifest))
-    (wal.run_dir / "observations/000_browser.screenshot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-    return wal.run_dir
-
-
-V2_ACCESSORS: dict[str, Read] = {
-    "observation_fragment": lambda d: _trace(d).observation_fragment(0, "browser.screenshot"),
-    "screenshot": lambda d: _trace(d).screenshot(0),
-    "screenshots": lambda d: _trace(d).screenshots,
-    "llm_messages": lambda d: _trace(d).llm_messages(0),
-    "trailing_calls": lambda d: _trace(d).trailing_calls,
-    "extra_files": lambda d: _trace(d).extra_files(0),
-    "trailing_extra_files": lambda d: _trace(d).trailing_extra_files,
-    "read_extra": lambda d: _trace(d).read_extra("env/x"),
-    "output_schema": lambda d: _trace(d).output_schema("0" * 64),
-    "archive_files": lambda d: _trace(d).archive_files(0, "x.y"),
-    # Not consumed: the format check happens at the call, not at the first ``next()``.
-    "iter_archive": lambda d: _trace(d).iter_archive("x.y"),
-    "blob": lambda d: _trace(d).blob("0" * 64),
-    "archive_run_file": lambda d: _trace(d).archive_run_file("x"),
-    "archive_lines": lambda d: _trace(d).archive_lines("env/x", StepRecord),
-    "committed_files": lambda d: _trace(d).committed_files,
-    "read_committed": lambda d: _trace(d).read_committed("manifest.json"),
-}
+def _declare_format(run_dir: Path, version: object) -> Path:
+    """Rewrite *run_dir*'s manifest to declare *version* (``None``: no field — before format 2)."""
+    path = run_dir / "manifest.json"
+    manifest = json.loads(path.read_text())
+    if version is None:
+        del manifest["format_version"]
+    else:
+        manifest["format_version"] = version
+    path.write_text(json.dumps(manifest))
+    return path
 
 
 class TestFormatVersions:
-    def test_a_format_1_trace_keeps_its_unchanged_accessors(self, tmp_path):
-        trace = _trace(_format_1_trace(tmp_path))
+    """Only the current format is read: format 3 split the manifest's status from the agent's."""
 
-        assert trace.manifest.format_version == 1
-        assert trace.step_count == 1
-        assert trace.config.agent_id == "test_agent"
-        assert trace.result is not None
-        assert trace.step(0) is not None
-        assert [record.step for record in trace.step_records] == [0]
+    @pytest.mark.parametrize(("version", "named"), [(None, "1"), (1, "1"), (2, "2"), ("3", "'3'")])
+    def test_an_older_or_malformed_format_is_refused_at_construction(
+        self, reference, version, named
+    ):
+        path = _declare_format(reference.run_dir, version)
+        with pytest.raises(TraceSchemaError, match=f"format version {named}") as exc_info:
+            _trace(reference.run_dir)
+        assert exc_info.value.path == path
+        assert "re-run the task" in str(exc_info.value)
 
-    @pytest.mark.parametrize("accessor", list(V2_ACCESSORS))
-    def test_a_format_1_trace_refuses_the_changed_ones(self, tmp_path, accessor):
-        run_dir = _format_1_trace(tmp_path)
-        with pytest.raises(TraceSchemaError, match="format version 1") as exc_info:
-            V2_ACCESSORS[accessor](run_dir)
-        assert accessor in str(exc_info.value)
-        assert exc_info.value.path == run_dir / "manifest.json"
+    def test_a_format_2_status_is_never_read_as_a_ledger(self, reference):
+        """An old ``error`` meant "the agent failed" or "the trace is incomplete": no guess."""
+        path = _declare_format(reference.run_dir, 2)
+        manifest = json.loads(path.read_text())
+        manifest["status"] = "error"
+        path.write_text(json.dumps(manifest))
+        with pytest.raises(TraceSchemaError, match="status mixed the two"):
+            _trace(reference.run_dir)
 
     def test_a_newer_format_is_refused_at_construction(self, reference):
-        path = reference.run_dir / "manifest.json"
-        manifest = json.loads(path.read_text())
-        manifest["format_version"] = 3
-        path.write_text(json.dumps(manifest))
-
-        with pytest.raises(TraceSchemaError, match="format version 3"):
+        path = _declare_format(reference.run_dir, 4)
+        with pytest.raises(TraceSchemaError, match="format version 4") as exc_info:
             _trace(reference.run_dir)
+        assert exc_info.value.path == path
+        assert "the spectragent that wrote it" in str(exc_info.value)
 
 
 class TestNotThereIsNotAnError:

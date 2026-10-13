@@ -18,7 +18,7 @@ import pytest
 
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.trace.encoding import EncodedFragment, encode_fragment
-from spectragent.core.trace.models import RunStatus, TraceConfig
+from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
@@ -160,7 +160,7 @@ def write_trace(
             ),
         )
     )
-    wal.finalize(RunStatus.COMPLETED)
+    wal.finalize(TraceStatus.COMPLETE)
     return wal.run_dir
 
 

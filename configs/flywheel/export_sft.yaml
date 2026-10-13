@@ -19,7 +19,8 @@ exporter:
     sources_root: traces             # null: traces in the working directory
     sources: ["recorded/*"]          # globs under sources_root, sorted by path (null: ["*"])
     filters:
-      require_status: completed      # error | any (the run manifest's status)
+      agent_outcome: any             # done | max_steps | error | timeout | vetoed (the run's result.json);
+                                     # an exported step is always one its trace is closed and complete through
       # null: no verdict filter, so a run the teacher failed is exported too
       # (each sample still carries labels.step_status and any verdicts, so a
       # trainer can filter later). Example: { evaluator_id: online_mind2web,

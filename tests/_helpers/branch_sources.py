@@ -7,7 +7,8 @@ same reason it is in production (``tests/_helpers/trace_builder.py``'s rule:
 nothing here spells a path or a JSON shape).
 
 :func:`write_source` commits a run whose shape each loader rule reads: the
-manifest status, the configuration (task, identity, the setup context, the
+trace's ledger (the manifest status and how far it is complete), the agent's
+(``result.json``), the configuration (task, identity, the setup context, the
 negotiation with its archive binding, a branch provenance), the step records
 (origin, error phase), the environment fingerprint, and verdicts in ``evals/``.
 """
@@ -22,17 +23,18 @@ from typing import Any
 
 from spectragent.core.archive.privacy import RedactionEntry, RedactionLedger
 from spectragent.core.trace.models import (
-    RunStatus,
     TaskSetupRecord,
     TraceConfig,
     TraceNegotiation,
+    TraceStatus,
 )
 from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.trace_builder import archive_file, write_verdict
+from tests._helpers.trace_builder import agent_result, archive_file, write_verdict
 
 #: The setup context every source records unless told otherwise.
 START_URL = "https://shop.test/"
@@ -61,6 +63,8 @@ def setup_record(
 
 
 _DEFAULT = object()
+#: Agent outcomes a result carries no error for.
+_CLEAN = frozenset({AgentDoneStatus.DONE, AgentDoneStatus.MAX_STEPS})
 
 
 def write_source(
@@ -68,7 +72,9 @@ def write_source(
     run_id: str,
     *,
     steps: Sequence[Step] | int = 3,
-    status: RunStatus = RunStatus.COMPLETED,
+    status: TraceStatus = TraceStatus.COMPLETE,
+    incomplete_reason: str = "recording failed at step 2: ArchiveCollectionError: boom",
+    agent_done: AgentDoneStatus | None = AgentDoneStatus.DONE,
     task_setup: Any = _DEFAULT,
     archivers: Sequence[str] = ("browser.network",),
     fingerprint: bool = True,
@@ -89,9 +95,13 @@ def write_source(
     (pass ``None`` for a run that recorded none); ``archivers`` are bound to
     the ``browser`` capability, whose environment fingerprint (a run record)
     is committed with step 0 unless ``fingerprint`` is false;
-    ``format_version`` rewrites the manifest's version afterwards (``1``: a
-    format-1 trace); the steps in ``uncommitted`` are left out (a gap — the
-    WAL commits a later step whatever came before it).
+    ``format_version`` rewrites the manifest's version afterwards (``2``: a
+    trace of the previous format); the steps in ``uncommitted`` are left out
+    (a gap — the WAL commits a later step whatever came before it, and the
+    trace is complete only through the step before the gap). ``status`` is
+    the trace's (``writing``: never closed out; ``incomplete`` closes it with
+    *incomplete_reason*); ``agent_done`` is the agent's, written as
+    ``result.json`` (``None``: no result.json).
     """
     specs = [Step() for _ in range(steps)] if isinstance(steps, int) else list(steps)
     wal = WALWriter(root, run_id)
@@ -138,8 +148,19 @@ def write_source(
             ),
             extra_files=extras,
         )
-    if status is not RunStatus.RUNNING:
-        wal.finalize(status)
+    if agent_done is not None:
+        wal.write_result(
+            agent_result(
+                agent_done=agent_done,
+                agent_reported_success=True if agent_done is AgentDoneStatus.DONE else None,
+                error=None if agent_done in _CLEAN else f"the run ended {agent_done.value}",
+            )
+        )
+    if status is not TraceStatus.WRITING:
+        wal.finalize(
+            status,
+            incomplete_reason=incomplete_reason if status is TraceStatus.INCOMPLETE else None,
+        )
     for slug, verdict in (verdicts or {}).items():
         write_verdict(wal.run_dir, slug, verdict)
     if format_version is not None:

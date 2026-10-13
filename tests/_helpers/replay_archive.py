@@ -34,8 +34,9 @@ from spectragent.core.capabilities.browser.replay.archive_index import IndexedRe
 from spectragent.core.capabilities.browser.replay.canonical import request_keys
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
 from spectragent.core.trace.encoding import EncodedFragment, encode_archive_file
-from spectragent.core.trace.models import RunStatus, TraceConfig
+from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.archive_recorder import ScriptedRecorder, deliver, event, open_session, paused
 from tests._helpers.trace_builder import agent_result, new_wal, step_record
@@ -383,9 +384,19 @@ class RecordingScript:
         self._trailing += 1
         return files
 
-    def finish(self, status: RunStatus = RunStatus.COMPLETED) -> Path:
-        self.wal.write_result(agent_result())
-        self.wal.finalize(status)
+    def finish(
+        self,
+        status: TraceStatus = TraceStatus.COMPLETE,
+        *,
+        result: AgentResult | None = None,
+        incomplete_reason: str = "recording failed at step 1: ArchiveCollectionError: boom",
+    ) -> Path:
+        """Write ``result.json`` (*result*, or a ``done`` one) and close the trace with *status*."""
+        self.wal.write_result(result if result is not None else agent_result())
+        self.wal.finalize(
+            status,
+            incomplete_reason=incomplete_reason if status is TraceStatus.INCOMPLETE else None,
+        )
         return self.run_dir
 
 

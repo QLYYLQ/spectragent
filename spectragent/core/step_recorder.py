@@ -27,6 +27,30 @@ from typing import Any, Protocol, runtime_checkable
 from spectragent.schemas.step_record import StepRecord
 
 
+class RecordingFailedError(Exception):
+    """A step the Loop handed over could not be recorded, and the run must stop there.
+
+    Raised out of ``record_step`` by a blocking hook that could not record
+    the step — ``TraceWriter`` when the step's evidence collection failed,
+    its batch broke the archiving contract, or the commit itself failed. The
+    hook's own failure is chained as ``__cause__``. The message is what the
+    run's result says when this ends it (``docs/architecture_design.md``
+    §4.6): ``recording failed at step <t>: <cause class>: <cause>``.
+
+    Not raised for a step whose outcome is already decided (the agent called
+    done on it): the run is over anyway, and raising would only replace that
+    outcome. The trace records the hole either way — it is ``incomplete``,
+    complete through the step before.
+
+    Attributes:
+        step: The step that was not recorded.
+    """
+
+    def __init__(self, step: int, cause: BaseException) -> None:
+        self.step = step
+        super().__init__(f"recording failed at step {step}: {type(cause).__name__}: {cause}")
+
+
 @runtime_checkable
 class StepSink(Protocol):
     """Contract for the object a Loop hands each completed step to."""
@@ -45,6 +69,11 @@ class StepSink(Protocol):
                 — i.e. *after* loop-source fragments were populated, which
                 is a different object from ``env.observe()``'s return
                 value. Optional so env-less loops can still record.
+
+        Raises:
+            RecordingFailedError: A hook could not record the step and the
+                run must stop (the woven sink raises it; this default one
+                never does).
         """
         ...
 

@@ -17,7 +17,7 @@ from spectragent.core.capabilities.browser.observations import DOMObs, Screensho
 from spectragent.core.llm.messages import SystemMessage, UserMessage
 from spectragent.core.trace.encoding import sha256_hex
 from spectragent.core.trace.errors import TraceSchemaError
-from spectragent.core.trace.models import TRACE_FORMAT_VERSION, RunStatus, TraceConfig
+from spectragent.core.trace.models import TRACE_FORMAT_VERSION, TraceConfig, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
@@ -57,8 +57,10 @@ class TestRunTrace:
     def test_manifest_loaded_eagerly(self, trace):
         assert trace.manifest.run_id == "run-test"
         assert trace.manifest.last_step_completed == 1
-        assert trace.manifest.status == RunStatus.ERROR
-        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 2
+        # The agent timed out (result.json); the trace recorded all of it.
+        assert trace.manifest.status == TraceStatus.COMPLETE
+        assert trace.manifest.complete_through == 1
+        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 3
 
     def test_run_id(self, trace):
         assert trace.run_id == "run-test"
@@ -647,7 +649,7 @@ class TestUnreadableTracesSayWhy:
     def _trace_with_result(self, tmp_path, payload: dict) -> RunTrace:
         wal = WALWriter(tmp_path, "run-legacy")
         wal.init_run(TraceConfig())
-        wal.finalize(RunStatus.COMPLETED)
+        wal.finalize(TraceStatus.COMPLETE)
         (wal.run_dir / "result.json").write_text(json.dumps(payload), "utf-8")
         return RunTrace(wal.run_dir)
 

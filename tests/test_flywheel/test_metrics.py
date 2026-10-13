@@ -25,6 +25,7 @@ from spectragent.flywheel.metrics import (
     archive_overhead,
     body_completeness_metric,
     branch_coverage,
+    ended_unclean,
     env_times,
     export_determinism,
     open_chain,
@@ -91,17 +92,20 @@ class TestOpeningTheRoles:
         (tmp_path / "there").mkdir()
         assert open_role(tmp_path / "there", "control").present is True
 
-    def test_a_format_1_trace_is_skipped_with_its_reason(
+    def test_an_older_format_is_skipped_with_its_reason(
         self, known: KnownChain, tmp_path: Path
     ) -> None:
         copy = tmp_path / "control"
         shutil.copytree(known.runs["ctl-shop"], copy / "old")
         manifest = copy / "old" / "manifest.json"
         document = json.loads(manifest.read_text())
-        document["format_version"] = 1
+        document["format_version"] = 2
         manifest.write_text(json.dumps(document))
         role = open_role(copy, "control")
-        assert role.runs == () and "format 1 trace" in role.skipped["old"]
+        assert role.runs == ()
+        assert role.skipped["old"] == (
+            "not a readable trace: manifest.json does not read back (TraceSchemaError)"
+        )
 
     def test_a_branch_run_finds_its_source_under_traces_record(self, chain: ChainRuns) -> None:
         (b0,) = [run for run in chain.role("branch").runs if run.rel == "br-b0"]
@@ -230,6 +234,21 @@ class TestSamePathFidelity:
             }
         ]
         assert found.unmatched == []
+
+    def test_errored_runs_count_either_ledger(self, chain: ChainRuns, tmp_path: Path) -> None:
+        """Not ending cleanly: an incomplete or unclosed trace, or an agent in error / timeout / veto."""
+        assert same_path_fidelity(chain).overall.errored_runs == 0
+        record = {run.rel: run for run in chain.role("record").runs}
+        assert ended_unclean(record["rec-broken"]), "its agent ended in error"
+        assert not ended_unclean(record["rec-shop"])
+        copy = tmp_path / "record"
+        shutil.copytree(record["rec-shop"].trace.trace_dir, copy / "rec-shop")
+        manifest = copy / "rec-shop" / "manifest.json"
+        document = json.loads(manifest.read_text())
+        document.update(status="incomplete", incomplete_reason="the close-out failed")
+        manifest.write_text(json.dumps(document))
+        (incomplete,) = open_role(copy, "record").runs
+        assert ended_unclean(incomplete), "its trace is incomplete, whatever its agent did"
 
     def test_a_source_not_under_traces_record_is_named(
         self, known: KnownChain, tmp_path: Path

@@ -24,19 +24,20 @@ from spectragent.core.archive.privacy import RedactionEntry, RedactionLedger
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.trace.encoding import TraceFile, encode_fragment
 from spectragent.core.trace.models import (
-    RunStatus,
     TaskSetupRecord,
     TraceConfig,
     TraceNegotiation,
+    TraceStatus,
 )
 from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.eval_result import EvalResult
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import StepInfoObs, TaskObs
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.trace_builder import write_verdict
+from tests._helpers.trace_builder import agent_result, write_verdict
 
 TASK_TEXT = "Put the blue kettle in the cart"
 START_URL = "https://shop.example.test/"
@@ -112,11 +113,18 @@ def write_run(
     task_setup: Any = _DEFAULT,
     negotiation: TraceNegotiation | None = _DEFAULT,
     branch: BranchProvenance | None = None,
-    status: RunStatus = RunStatus.COMPLETED,
+    status: TraceStatus = TraceStatus.COMPLETE,
+    incomplete_reason: str = "recording failed at step 1: ArchiveCollectionError: boom",
+    agent_done: AgentDoneStatus | None = AgentDoneStatus.DONE,
     verdicts: dict[str, EvalResult] | None = None,
     secrets_recorded: bool = False,
 ) -> Path:
-    """Commit one recorded run under ``root/<run_id>`` and return its directory."""
+    """Commit one recorded run under ``root/<run_id>`` and return its directory.
+
+    ``status`` is the trace's ledger (``writing``: never closed out;
+    ``incomplete`` closes it with *incomplete_reason*); ``agent_done`` the
+    agent's, written as ``result.json`` (``None``: none).
+    """
     wal = WALWriter(root, run_id)
     wal.init_run(
         TraceConfig(
@@ -174,8 +182,21 @@ def write_run(
             fragments=[item for item in encoded if item is not None],
             extra_files=list(spec.extra_files),
         )
-    if status is not RunStatus.RUNNING:
-        wal.finalize(status)
+    if agent_done is not None:
+        clean = agent_done in (AgentDoneStatus.DONE, AgentDoneStatus.MAX_STEPS)
+        wal.write_result(
+            agent_result(
+                task_id=task_id,
+                agent_done=agent_done,
+                agent_reported_success=True if agent_done is AgentDoneStatus.DONE else None,
+                error=None if clean else f"the run ended {agent_done.value}",
+            )
+        )
+    if status is not TraceStatus.WRITING:
+        wal.finalize(
+            status,
+            incomplete_reason=incomplete_reason if status is TraceStatus.INCOMPLETE else None,
+        )
     for slug, verdict in (verdicts or {}).items():
         write_verdict(wal.run_dir, slug, verdict)
     return wal.run_dir

@@ -63,6 +63,10 @@ def canonicalise(
 ) -> list[CanonicalStepSample]:
     """One :class:`CanonicalStepSample` per exportable committed step of *trace*, in step order.
 
+    Only steps the trace is complete through (``complete_through``): past a
+    hole, a step's context would rest on a step nobody recorded (the hard
+    condition of arch §4.15).
+
     Args:
         trace: The source run.
         rel_path: The run directory relative to the export's sources root
@@ -80,12 +84,13 @@ def canonicalise(
         IncompatibleError: ``thought_source`` is ``teacher`` and the teacher
             class has no ``parse_react_thought`` (worded as the export's
             need, not a Loop's).
-        TraceSchemaError: The trace cannot be read as committed (for
-            instance a format-1 trace, whose fragment index does not exist).
+        TraceSchemaError: The trace cannot be read as committed (a file
+            its manifest lists is damaged or missing).
     """
     config = trace.config
     read_thought = _thought_reader(config.agent_id, config.loop_id, thought_source, teacher_cls)
-    entries = {entry.step: entry for entry in trace.manifest.steps}
+    through = trace.manifest.complete_through
+    entries = {entry.step: entry for entry in trace.manifest.steps if entry.step <= through}
     records = [record for step in sorted(entries) if (record := trace.step(step)) is not None]
     exportable = [record.step for record in records if is_exportable(record)]
     exportable_set = frozenset(exportable)

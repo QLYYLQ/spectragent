@@ -44,7 +44,7 @@ ENTRY: dict[str, Any] = {
     "sources_root": "traces",
     "sources": ["recorded/*"],
     "filters": {
-        "require_status": "completed",
+        "agent_outcome": "any",
         "require_eval": None,
         "exclude_restoration_diverged": True,
         "max_document_misses": 0,

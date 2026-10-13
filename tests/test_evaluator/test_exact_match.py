@@ -162,12 +162,12 @@ async def test_an_agent_that_never_finished_is_still_scorable(traces_dir):
 
 
 async def test_trace_without_result_json_says_so(tmp_path):
-    from spectragent.core.trace.models import RunStatus, TraceConfig
+    from spectragent.core.trace.models import TraceConfig, TraceStatus
     from spectragent.core.trace.wal import WALWriter
 
     wal = WALWriter(tmp_path / "traces", "crashed")
     wal.init_run(TraceConfig(task_id="task-0", benchmark="b"))
-    wal.finalize(RunStatus.ERROR)
+    wal.finalize(TraceStatus.INCOMPLETE, incomplete_reason="result.json could not be written")
 
     with pytest.raises(TraceIncompleteError, match="result.json"):
         await ExactMatchEvaluator().evaluate(RunTrace(wal.run_dir), _reference("42"))

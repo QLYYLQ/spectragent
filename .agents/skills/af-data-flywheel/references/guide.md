@@ -271,7 +271,7 @@ task_loader:
     sources: null                      # globs under data_dir (null: ["*"])
     step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps} | last
     branches_per_step: 1
-    require_status: completed          # error | any
+    agent_outcome: any                 # done | max_steps | error | timeout | vetoed (result.json)
     require_eval: null                 # {evaluator_id, label: 1, slug: null}
     require_archive: null              # null: [browser.network]; []: none
     on_unbranchable: raise             # skip
@@ -286,13 +286,17 @@ uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   (re-resolved through the source benchmark's loader when it is missing or carries
   redactions), `replay_archive`, the `checkpoint` Loop input, and the branch provenance that
   only the trace receives.
-- Candidates are committed policy steps whose prefix is committed and whose observation was
-  recorded. A source that cannot be branched (it does not read back, is format 1, is itself a
-  branch or replay run, lacks a `require_archive` archiver or its fingerprint, has no
-  recoverable setup context, or shares its `run_id`) stops the sweep with every reason at
+- Candidates are committed policy steps whose prefix is committed, whose observation was
+  recorded and that the source's trace is complete through (`complete_through`). The trace's
+  own ledger is a hard condition, not a filter: a trace never closed (`writing`) has no
+  candidate; an `incomplete` one still gives every checkpoint before its hole. How the agent
+  ended is the filter, `agent_outcome` (`any` by default; it reads `result.json`). A source
+  that cannot be branched (it does not read back — an older trace format included — is
+  itself a branch or replay run, lacks a `require_archive` archiver or its fingerprint, has
+  no recoverable setup context, or shares its `run_id`) stops the sweep with every reason at
   once, or is left out under `on_unbranchable: skip`.
 - Before any setup, `BranchLoop.weave` raises `IncompatibleCheckpointError`, naming both
-  values, for another agent, a different closed-set or numeric agent knob, a different
+  values, for a source trace never closed or not complete through the checkpoint, another agent, a different closed-set or numeric agent knob, a different
   memory strategy or memory knob (`max_messages`, `window_size`), a different
   `agent_loop.max_actions_per_step` (the one loop setting compared; `max_steps` and the
   rest are the branch's own), a different observation or action negotiation, a source loop
@@ -307,7 +311,7 @@ uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   `on_unbranchable: raise` it would stop the next sweep.
 - Same-path replay is a branch sweep (`configs/flywheel/same_path_ui_tars_archive.yaml`):
   `step_selector: last`, `continue_steps: 0`, `verify: warn` so every step gets a check,
-  `branches_per_step: 2` for replay determinism, `require_status: any`,
+  `branches_per_step: 2` for replay determinism, `agent_outcome: any`,
   `on_unbranchable: skip`. It costs one teacher call per task, for the last step.
 
 ### 2.4 Export
@@ -318,7 +322,7 @@ exporter:
     sources_root: traces               # null: traces
     sources: ["recorded/*"]            # null: ["*"]; branch runs included
     filters:
-      require_status: completed
+      agent_outcome: any               # done | max_steps | error | timeout | vetoed
       require_eval: null               # optional: {evaluator_id, label: 1, slug: null}
       exclude_restoration_diverged: true
       max_document_misses: 0           # null: no replay-log filter
@@ -412,8 +416,10 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
 - A chain's export YAML uses `filters.require_eval: null` (the chain does not evaluate) and
   `decontamination: {against: []}` (the sources are the benchmark's own tasks) — both the
   defaults, and what the shipped `export_sft.yaml` writes.
-- A run stage succeeds when the bench exits 0 or 1 and wrote at least one new run; a failed
-  task is data. `same_path` and `branch` refuse `evaluate: true`. With the export selected,
+- A run stage succeeds when the bench exits 0 or 1 and wrote at least one new run; a task
+  with an infrastructure failure is data. The bench exits 3 when a guard vetoed the sweep
+  (the vetoed task is the summary's last row): the chain stops there and the vetoed stage's
+  runs never feed the next one. `same_path` and `branch` refuse `evaluate: true`. With the export selected,
   an existing `datasets/first` or `datasets/second` is a `ChainConfigError` before any paid
   stage runs.
 - Exit codes: 0 done, 1 a stage failed (`ChainStageError`, recorded in `<root>/chain.json`),
@@ -805,9 +811,15 @@ value on an existing one.
   determinism contract. The form-submit observation stall was fixed in the observation layer
   (`navigation.py` and the screenshot command bound); do not drop the switch to fix a timing
   bug.
-- Fail closed. A lost recorder fails observation, action and collection (`RecorderLostError`).
-  A collection that fails, or hands over a batch that breaks the contract, leaves its step
-  uncommitted, fails the run and closes the trace as `error`; nothing is collected after it.
+- Fail closed, two ledgers. A lost recorder fails observation, action and collection
+  (`RecorderLostError`). A collection that fails, or hands over a batch that breaks the
+  contract, is a hole: its step stays uncommitted, the trace closes `incomplete`, complete
+  through the step before (`complete_through`, reason in `incomplete_reason`), and nothing is
+  collected after it. The run stops there with `agent_done: error`, `error: "recording failed
+  at step t: ..."` (`RecordingFailedError`) — unless the agent called done on that very step,
+  whose answer is kept. A failure after the run ended (the close-out collection, an owed
+  trailing commit, the terminal observation, `result.json`) keeps the outcome, marks the
+  trace `incomplete` and raises nothing; what the close-out cannot commit is dropped.
   The `archive` network source never forwards a request to the network. That is the
   source's own rule, not a framework law: a source that falls back to the network would be
   a new network source.
@@ -878,6 +890,8 @@ value on an existing one.
 | Validation says `replayability_id` or `occlusion` is `False` | An unquoted `off` |
 | `Field required` for `step_selector`, `restorer`, `translator`, `miss_policy`, `network_source` or `replayability` | Write the receptor block (§4) |
 | `BrowserCooperationError` at `prepare()` (or setup, for a caller that skipped `prepare()`) | Architecture §4.14, "协作检查一览"; `browser/cooperation.py` (`binding_problems`, `cooperation_problems`), run by `BrowserCapability.check_setup`. Each line names both sides |
+| `spectragent-bench` exits 3: `the sweep was vetoed at ...` | A guard (`RunAbort`) stopped the sweep — during setup or the run — at the task named; its row says `vetoed: ...` and its `result.json` says `agent_done: vetoed`. Look at the vetoed run's last steps (a challenge page, a risk-control response), not at the configuration |
+| A summary row says `infrastructure failure: ...` | The environment failed, the model stayed unavailable after the provider's retries, or the run's trace is `incomplete` / never closed (its manifest's `incomplete_reason` says what was lost). The three counters above the rows are the agent's ledger, the environment's and the trace's |
 | `spectragent-bench` exits 2: `the pre-flight check refused the configuration for task ...` | The first task's `prepare()` refused the stage YAML before any task ran; the original error follows the colon and names both sides. Check one task with `spectragent-run --dry-run` (`--replay-archive DIR` for a replay) |
 | `BrowserCooperationError` naming `browser.network` or `browser.replay_log` beside the network source | A replay binds `browser.replay_log` in `browser.network`'s place; a live run binds no `browser.replay_log` (§2.2) |
 | A replay refused at `prepare()`, naming the tier, shim, viewport or launch flags | `replay/consistency.py::consistency_problems`. The replay YAML must match the recording's tier, seed, user agent, viewport and provider switches |

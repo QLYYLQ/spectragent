@@ -58,10 +58,11 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     iter_decisions,
 )
 from spectragent.core.trace.errors import TraceSchemaError
-from spectragent.core.trace.models import CommittedFile, RunStatus, TraceConfig
+from spectragent.core.trace.models import CommittedFile, TraceConfig, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.secret_patterns import find_secrets, iter_readable
 from spectragent.core.trace.sources import match_runs, task_identity, unreadable_reason
+from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.dataset import DATASET_FORMAT, DatasetManifest
 from spectragent.schemas.restoration import RestorationCheck
 from spectragent.schemas.step_record import StepRecord
@@ -72,8 +73,6 @@ logger = logging.getLogger(__name__)
 ROLES: tuple[str, ...] = ("record", "control", "same_path", "branch")
 #: The two exports of a chain; export determinism compares them.
 DATASETS: tuple[str, ...] = ("first", "second")
-#: The trace format with the per-step index every measure reads.
-_INDEXED_FORMAT = 2
 #: The site key of a run whose task recorded no start URL.
 NO_SITE = "(no start_url)"
 #: The action key of a miss the run's close-out collection took.
@@ -243,8 +242,8 @@ def open_role(directory: Path, role: str) -> RoleRuns:
     A run directory is a direct child holding a ``manifest.json``
     (``match_runs``). Skipped, with the reason: a trace whose manifest,
     configuration or step records do not read back (``unreadable_reason``:
-    the file, relative to the run, and the error class), and a format-1
-    trace. Never raises for a damaged run.
+    the file, relative to the run, and the error class) — a trace of an
+    older format among them. Never raises for a damaged run.
     """
     if not directory.is_dir():
         return RoleRuns(role=role, present=False)
@@ -253,13 +252,6 @@ def open_role(directory: Path, role: str) -> RoleRuns:
     for rel, run_dir in match_runs(directory, ["*"]):
         try:
             trace = RunTrace(run_dir)
-            version = trace.manifest.format_version
-            if version < _INDEXED_FORMAT:
-                skipped[rel] = (
-                    f"format {version} trace: the metrics read the format-{_INDEXED_FORMAT} "
-                    f"per-step index — re-record the run"
-                )
-                continue
             config = trace.config
             steps = trace.step_records
         except TraceSchemaError as exc:
@@ -696,6 +688,8 @@ class Fidelity(_Model):
     """Same-path replay fidelity of a set of runs."""
 
     runs: int
+    #: Runs that did not end cleanly: an incomplete or unclosed trace, or an
+    #: agent that ended in error, a timeout or a veto (:func:`ended_unclean`).
     errored_runs: int
     verified_steps: int
     #: The restorer's verdict: checks that were ``ok``.
@@ -802,8 +796,9 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
     with a ``restoration`` check): the restorer's verdict, and the strict
     measure — no evidence says the URL differs, and the screenshot's sha256
     equals the source run's at the same step (the source resolved by
-    ``source_trace`` under ``traces/record``). Every run counts, a failed or
-    errored one included; a run with no verified step does not pass. A run
+    ``source_trace`` under ``traces/record``). Every run counts, one that did
+    not end cleanly included (``errored_runs``: :func:`ended_unclean`); a run
+    with no verified step does not pass. A run
     one of whose compared screenshots (or its source's) does not read back is
     left out of the strict measure only, with the reason in ``skipped``: the
     restorer's verdicts are in its step records.
@@ -816,7 +811,7 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
         if source is None:
             unmatched.append(run.pointer)
         tallies = (overall, by_site.setdefault(run.site, _FidelityTally()))
-        errored = run.trace.manifest.status is not RunStatus.COMPLETED
+        errored = ended_unclean(run)
         checked = [record for record in run.steps if record.restoration is not None]
         first: FirstFailure | None = None
         verified = ok = strict_ok = strict_compared = 0
@@ -1256,7 +1251,9 @@ class SiteStats(_Model):
 
     tasks: int
     record_runs: int
+    #: The recordings' trace statuses (the manifest's ledger: complete, incomplete, writing).
     record_status: dict[str, int]
+    #: How the recordings' agents ended (``result.json``'s ``agent_done``).
     record_outcome: dict[str, int]
     #: Recordings whose environment failed at step 0 (or that committed no step).
     record_failed_at_step0: int
@@ -1283,6 +1280,28 @@ class Sites(_Model):
     exclude_sites: list[str]
     #: The exclusion list as an export ``filters`` fragment, ready to paste.
     yaml: str
+
+
+#: How an agent's run ended when it did not end cleanly (``result.json``'s ``agent_done``).
+UNCLEAN_ENDINGS: frozenset[AgentDoneStatus] = frozenset(
+    {AgentDoneStatus.ERROR, AgentDoneStatus.TIMEOUT, AgentDoneStatus.VETOED}
+)
+
+
+def ended_unclean(run: Run) -> bool:
+    """Whether *run* did not end cleanly, by either ledger.
+
+    Its trace is not ``complete`` (the manifest's ledger: incomplete, or
+    never closed), or its agent ended in error, a timeout or a veto — or
+    left no ``result.json`` that reads back (the agent's ledger).
+    """
+    if run.trace.manifest.status is not TraceStatus.COMPLETE:
+        return True
+    try:
+        result = run.trace.result
+    except TraceSchemaError:
+        return True
+    return result is None or result.agent_done in UNCLEAN_ENDINGS
 
 
 def failed_on_model_call(run: Run) -> bool:
@@ -1810,6 +1829,7 @@ __all__ = [
     "ROLES",
     "TERMINAL",
     "TRAILING",
+    "UNCLEAN_ENDINGS",
     "AntiBot",
     "ArchiveBytes",
     "ArchiveOverhead",
@@ -1859,6 +1879,7 @@ __all__ = [
     "components",
     "archive_bytes",
     "duplicate_branches",
+    "ended_unclean",
     "env_times",
     "export_determinism",
     "export_yield",

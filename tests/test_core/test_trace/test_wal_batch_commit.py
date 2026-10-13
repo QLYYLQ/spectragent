@@ -27,7 +27,7 @@ import pytest
 
 from spectragent.core.trace import fsio
 from spectragent.core.trace.encoding import EncodedFragment, EncodedLLMCall, TraceFile, sha256_hex
-from spectragent.core.trace.models import RunStatus, TraceConfig, TraceManifest
+from spectragent.core.trace.models import TraceConfig, TraceManifest, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from tests._helpers.trace_builder import (
@@ -658,10 +658,10 @@ class TestPathRules:
         assert io_log.writes() == []
 
         wal.write_result(agent_result())
-        wal.finalize(RunStatus.COMPLETED)
+        wal.finalize(TraceStatus.COMPLETE)
         trace = RunTrace(wal.run_dir)
         assert trace.result is not None
-        assert trace.manifest.status == RunStatus.COMPLETED
+        assert trace.manifest.status == TraceStatus.COMPLETE
 
     @pytest.mark.parametrize(
         ("first", "second"),

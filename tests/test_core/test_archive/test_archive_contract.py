@@ -34,7 +34,7 @@ from tests._helpers.archive_contract import (
     HARNESS_FACTORIES,
     ArchiveHarness,
     assert_a_broken_collection_raises,
-    assert_a_failed_collection_fails_the_trace_closed,
+    assert_a_failed_collection_leaves_the_trace_incomplete,
     assert_bind_routes_by_prefix_and_clears,
     assert_collect_hands_over_and_forgets,
     assert_collect_takes_no_step,
@@ -114,10 +114,10 @@ class TestThroughTheTraceHook:
     async def test_the_tail_lands_at_run_end(self, harness: ArchiveHarness, tmp_path) -> None:
         await assert_tail_lands_at_run_end(harness, tmp_path)
 
-    async def test_a_failed_collection_fails_the_trace_closed(
+    async def test_a_failed_collection_leaves_the_trace_incomplete(
         self, harness: ArchiveHarness, tmp_path
     ) -> None:
-        await assert_a_failed_collection_fails_the_trace_closed(harness, tmp_path)
+        await assert_a_failed_collection_leaves_the_trace_incomplete(harness, tmp_path)
 
     async def test_an_empty_archive_costs_nothing(self, harness: ArchiveHarness, tmp_path) -> None:
         await assert_empty_archive_costs_nothing(harness, tmp_path)
@@ -439,7 +439,7 @@ class TestTheArchiveContractHasTeeth:
             assert_steps_commit_and_read_back,
             assert_crash_window_hides_uncommitted_evidence,
             assert_tail_lands_at_run_end,
-            assert_a_failed_collection_fails_the_trace_closed,
+            assert_a_failed_collection_leaves_the_trace_incomplete,
             assert_empty_archive_costs_nothing,
             assert_run_records_stay_per_capability,
         ],

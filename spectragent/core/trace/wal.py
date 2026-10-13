@@ -78,10 +78,10 @@ from spectragent.core.trace.models import (
     ExtraFileIndex,
     ExtraFileRecord,
     FragmentFiles,
-    RunStatus,
     StepManifestEntry,
     TraceConfig,
     TraceManifest,
+    TraceStatus,
     TrailingEntry,
 )
 from spectragent.schemas.agent_result import AgentResult
@@ -166,7 +166,7 @@ class WALWriter:
             format_version=TRACE_FORMAT_VERSION,
             run_id=self._run_id,
             last_step_completed=-1,
-            status=RunStatus.RUNNING,
+            status=TraceStatus.WRITING,
             created_at=now,
             updated_at=now,
             config_hash=config_hash,
@@ -251,12 +251,20 @@ class WALWriter:
             llm_calls=[call.file.rel_path for call in llm_calls],
             extra_index=extra_index,
         )
+        # Complete through the end of the gapless run of committed steps from
+        # 0: a step whose recording failed was never committed, so the trace
+        # stops being whole there even if a later step commits.
+        committed = {item.step for item in manifest.steps} | {step}
+        through = manifest.complete_through
+        while through + 1 in committed:
+            through += 1
         self._commit(
             plan,
             manifest.model_copy(
                 update={
                     "steps": [*manifest.steps, entry],
                     "last_step_completed": max(manifest.last_step_completed, step),
+                    "complete_through": through,
                     "output_formats": [*manifest.output_formats, *plan.output_formats],
                     "updated_at": datetime.now(UTC),
                 }
@@ -307,11 +315,33 @@ class WALWriter:
         self._require_manifest()
         fsio.atomic_write(self._run_dir / RESULT_FILE, result.model_dump_json(indent=2).encode())
 
-    def finalize(self, status: RunStatus) -> None:
-        """Record the terminal status — a trace stuck at ``running`` is one no evaluator touches."""
+    def finalize(self, status: TraceStatus, *, incomplete_reason: str | None = None) -> None:
+        """Close the trace: ``complete``, or ``incomplete`` with what failed to be recorded.
+
+        A trace left ``writing`` is one nothing downstream uses — an
+        evaluator has no result to read, a branch or an export no step it
+        may take. ``complete_through`` is not set here: every commit keeps it.
+
+        Raises:
+            ValueError: *status* is ``writing``, or *incomplete_reason* is
+                missing for ``incomplete`` or given for ``complete``.
+        """
         manifest = self._require_manifest()
+        if status is TraceStatus.WRITING:
+            raise ValueError("finalize() closes a trace; 'writing' is the state of an open one")
+        if (status is TraceStatus.INCOMPLETE) != bool(incomplete_reason):
+            raise ValueError(
+                f"finalize({status.value!r}): an incomplete trace needs its reason and a "
+                f"complete one has none (got incomplete_reason={incomplete_reason!r})"
+            )
         self._write_manifest(
-            manifest.model_copy(update={"status": status, "updated_at": datetime.now(UTC)})
+            manifest.model_copy(
+                update={
+                    "status": status,
+                    "incomplete_reason": incomplete_reason or None,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
         )
 
     # ── internals ─────────────────────────────────────────────

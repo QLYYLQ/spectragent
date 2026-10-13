@@ -41,7 +41,7 @@ from spectragent.core.composer import (
 from spectragent.core.loops.validation import IncompatibleLoopInputError
 from spectragent.core.negotiation import IncompatibleActionError
 from spectragent.core.runtime import AgentRuntime
-from spectragent.core.trace.models import RunStatus, TraceConfig, TraceNegotiation
+from spectragent.core.trace.models import TraceConfig, TraceNegotiation, TraceStatus
 from spectragent.core.trace.redaction import redact_config
 from spectragent.schemas.restoration import Checkpoint
 from spectragent.schemas.step_record import StepRecord
@@ -269,7 +269,7 @@ def _recorded_run_of(
         await script.commit(0, StepRecord(step=0, observation_summary="the recorded page"))
 
     asyncio.run(_record())
-    return script.finish(RunStatus.COMPLETED).resolve()
+    return script.finish(TraceStatus.COMPLETE).resolve()
 
 
 class TestProviderSubConfig:

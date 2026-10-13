@@ -88,10 +88,6 @@ from spectragent.schemas.step_record import StepRecord
 M = TypeVar("M", bound=BaseModel)
 T = TypeVar("T")
 
-#: The first format with the per-step index, per-call records and the
-#: failure marker. Accessors over those refuse anything older.
-_INDEXED_FORMAT = 2
-
 #: Where fragment classes live. A reader in an evaluation process may never
 #: have imported the module that registers one — browser fragments register
 #: when their watchdog's module is imported.
@@ -111,7 +107,7 @@ class RunTrace:
     Raises:
         TraceSchemaError: At construction, when ``manifest.json`` is missing
             or unreadable, leads outside the run directory, or declares a
-            newer ``format_version`` than this build reads.
+            ``format_version`` other than the one this build reads.
     """
 
     def __init__(self, trace_dir: Path) -> None:
@@ -119,19 +115,18 @@ class RunTrace:
         # Resolved once: what every path the trace names must stay inside.
         self._root = trace_dir.resolve()
         self._manifest_path = trace_dir / MANIFEST_FILE
-        self._manifest = _read_model(self._own_file(MANIFEST_FILE), TraceManifest)
-        if self._manifest.format_version > TRACE_FORMAT_VERSION:
-            raise TraceSchemaError(
-                f"{trace_dir} is trace format version {self._manifest.format_version}; this "
-                f"build reads up to version {TRACE_FORMAT_VERSION}. Read it with the "
-                f"spectragent that wrote it.",
-                path=self._manifest_path,
-            )
+        path = self._own_file(MANIFEST_FILE)
+        document = _load_json(path, _read_bytes(path), "a TraceManifest")
+        # Checked on the parsed JSON, before the model: an older manifest's
+        # ``status`` is not a value the current one knows, and the version is
+        # the honest thing to report — not a field error.
+        _require_current_format(path, document)
+        self._manifest = _validated(path, document, TraceManifest.model_validate, "TraceManifest")
         self._discovered = False
         self._indexes: dict[str, ExtraFileIndex] = {}
         self._archives: dict[str, list[ArchiveRecord]] = {}
 
-    # ── shape unchanged since format 1: readable at any version ───
+    # ── identity, configuration, result, steps ───────────────
 
     @property
     def trace_dir(self) -> Path:
@@ -196,7 +191,7 @@ class RunTrace:
         entry = self._entries.get(idx)
         return self._read_step(entry) if entry is not None else None
 
-    # ── format-2 shape: refused for older traces ──────────────
+    # ── observations, calls, extra files ─────────────────────
 
     def observation_fragment(self, step: int, key: str) -> FragmentBase | FragmentFailure | None:
         """The fragment *key* (fully qualified, ``browser.dom``) recorded at *step*.
@@ -208,7 +203,6 @@ class RunTrace:
         Otherwise the class registered under *key* rebuilds the fragment from
         its JSON and its artifact (:meth:`FragmentBase.from_trace`).
         """
-        self._require_indexed("observation_fragment")
         entry = self._entries.get(step)
         files = entry.fragments.get(key) if entry is not None else None
         if files is None:
@@ -243,7 +237,6 @@ class RunTrace:
         fragment, or its capture failed — :meth:`observation_fragment` says
         why it failed.
         """
-        self._require_indexed("screenshot")
         entry = self._entries.get(step)
         files = self._screenshot_files(entry) if entry is not None else None
         if files is None or files.failed or files.artifact is None:
@@ -260,7 +253,6 @@ class RunTrace:
         manifest's fragment index: a frame for a step that never committed
         is not a frame of this run.
         """
-        self._require_indexed("screenshots")
         paths: list[Path] = []
         for entry in sorted(self._manifest.steps, key=lambda item: item.step):
             files = self._screenshot_files(entry)
@@ -279,7 +271,6 @@ class RunTrace:
         off by a cancellation (prompt only) alike. ``[]`` when the step did
         not commit — its calls, if it made any, are in :attr:`trailing_calls`.
         """
-        self._require_indexed("llm_messages")
         entry = self._entries.get(step)
         if entry is None:
             return []
@@ -288,14 +279,12 @@ class RunTrace:
     @cached_property
     def trailing_calls(self) -> list[RecordedLLMCall]:
         """Calls of a step the Loop never surrendered, in commit then start order."""
-        self._require_indexed("trailing_calls")
         return [
             self._read_call(rel) for entry in self._manifest.trailing for rel in entry.llm_calls
         ]
 
     def extra_files(self, step: int) -> list[ExtraFileRecord]:
         """The extra files *step* committed; ``[]`` for none, or an uncommitted step."""
-        self._require_indexed("extra_files")
         entry = self._entries.get(step)
         if entry is None or entry.extra_index is None:
             return []
@@ -304,7 +293,6 @@ class RunTrace:
     @cached_property
     def trailing_extra_files(self) -> list[ExtraFileRecord]:
         """The extra files every ``commit_trailing`` committed, in commit order."""
-        self._require_indexed("trailing_extra_files")
         return [
             record
             for entry in self._manifest.trailing
@@ -322,7 +310,6 @@ class RunTrace:
                 what the index recorded, or it lies outside the run
                 directory (the error then names the index).
         """
-        self._require_indexed("read_extra")
         found = self._extra_records.get(path)
         if found is None:
             raise KeyError(f"{path!r} is not a committed extra file of {self._trace_dir}")
@@ -346,7 +333,6 @@ class RunTrace:
                 promises, or the manifest's entry leads outside the run
                 directory.
         """
-        self._require_indexed("output_schema")
         if sha256 not in self._manifest.output_formats:
             raise KeyError(f"{sha256!r} is not a committed output schema of {self._trace_dir}")
         path, data = self._output_schema_bytes(sha256)
@@ -376,7 +362,6 @@ class RunTrace:
                 archive file's metadata does not parse — naming the file
                 that lists it.
         """
-        self._require_indexed("committed_files")
         self._own_file(CONFIG_FILE)
         files = [
             CommittedFile(path=MANIFEST_FILE, kind="manifest"),
@@ -419,7 +404,6 @@ class RunTrace:
                 the bytes its index or address promises, or outside the run
                 directory.
         """
-        self._require_indexed("read_committed")
         found = self._committed_by_path.get(path)
         if found is None:
             raise KeyError(f"{path!r} is not a committed file of {self._trace_dir}")
@@ -447,7 +431,6 @@ class RunTrace:
         its commit took nothing of that archiver. Bytes:
         ``read_extra(record.path)``.
         """
-        self._require_indexed("archive_files")
         entry = self._entries.get(step)
         if entry is None or entry.extra_index is None:
             return []
@@ -466,11 +449,7 @@ class RunTrace:
         follows as ``(None, record)``, in ``manifest.trailing`` order — never
         under a step number: it belongs to no committed step. Run records
         are not yielded.
-
-        The format check happens here, at the call, not at the first
-        ``next()``: a format-1 trace is refused where it is asked about.
         """
-        self._require_indexed("iter_archive")
         return self._iter_archive(archiver_id, include_trailing)
 
     def blob(self, sha256: str) -> bytes:
@@ -485,7 +464,6 @@ class RunTrace:
                 address.
             TraceSchemaError: As :meth:`read_extra`.
         """
-        self._require_indexed("blob")
         path = archive_blob_path(sha256)
         if path not in self._archive_blobs:
             raise KeyError(
@@ -509,7 +487,6 @@ class RunTrace:
                 or does not validate as *model* — naming the file and the
                 1-based line.
         """
-        self._require_indexed("archive_lines")
         data = self.read_extra(path)
         file = self._trace_dir / path
         lines: list[M] = []
@@ -541,7 +518,6 @@ class RunTrace:
         collected before the latest one as a later version. Bytes:
         ``read_extra(record.path)``.
         """
-        self._require_indexed("archive_run_file")
         latest: ArchiveRecord | None = None
         for rel in self._extra_indexes:
             for record in self._archive_records(rel):
@@ -740,18 +716,6 @@ class RunTrace:
                     )
         return records
 
-    def _require_indexed(self, accessor: str) -> None:
-        version = self._manifest.format_version
-        if version < _INDEXED_FORMAT:
-            raise TraceSchemaError(
-                f"{self._trace_dir} is trace format version {version}; {accessor} reads the "
-                f"format-{_INDEXED_FORMAT} layout (per-step fragment index, one record per LLM "
-                f"call). An older trace cannot be read that way safely — its fragment failures "
-                f"carry no marker — so re-run the task to record a current trace. Its config, "
-                f"result and step records stay readable.",
-                path=self._manifest_path,
-            )
-
     def _own_file(self, name: str) -> Path:
         """A file every run directory names itself (``manifest.json``, …), inside it."""
         path = self._trace_dir / name
@@ -924,11 +888,45 @@ def _parse(path: Path, data: bytes, validate: Callable[[Any], T], what: str) -> 
     Invalid UTF-8, invalid JSON, an empty or torn file (:func:`_load_json`)
     and a schema mismatch (pydantic's ``ValidationError``) alike.
     """
-    value = _load_json(path, data, f"a {what}")
+    return _validated(path, _load_json(path, data, f"a {what}"), validate, what)
+
+
+def _validated(path: Path, value: Any, validate: Callable[[Any], T], what: str) -> T:
+    """*value*, parsed from *path*, validated as *what* — a mismatch names the file."""
     try:
         return validate(value)
     except ValidationError as exc:
         raise TraceSchemaError(f"{path} does not parse as a {what}: {exc}", path=path) from exc
+
+
+def _require_current_format(path: Path, document: Any) -> None:
+    """Refuse a manifest of any format but :data:`TRACE_FORMAT_VERSION`.
+
+    Older formats are not read at all, not even their configuration or
+    result: format 3 split the manifest's ``status`` from the agent's
+    outcome, and a format-2 ``error`` meant either "the agent failed" or
+    "the trace is incomplete" — no reader can tell which, and there is no
+    compatibility shim (AGENTS.md §0.4). A newer format is one this build
+    does not know.
+    """
+    if not isinstance(document, dict):
+        return  # not a manifest at all: the model's validation names the file
+    found = document.get("format_version", 1)
+    if found == TRACE_FORMAT_VERSION and not isinstance(found, bool):
+        return
+    if isinstance(found, int) and not isinstance(found, bool) and found > TRACE_FORMAT_VERSION:
+        raise TraceSchemaError(
+            f"{path} declares trace format version {found}; this build reads version "
+            f"{TRACE_FORMAT_VERSION} only. Read it with the spectragent that wrote it.",
+            path=path,
+        )
+    raise TraceSchemaError(
+        f"{path} declares trace format version {found!r}; this build reads version "
+        f"{TRACE_FORMAT_VERSION} only, whose manifest says whether the trace is complete and "
+        f"leaves how the agent ended to result.json. An older trace's status mixed the two, "
+        f"so it is not read at all: re-run the task to record a current trace.",
+        path=path,
+    )
 
 
 def _read_model(path: Path, model: type[M]) -> M:

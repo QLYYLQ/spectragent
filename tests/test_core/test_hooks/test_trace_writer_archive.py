@@ -39,9 +39,10 @@ from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.negotiation import ArchiveNegotiationResult, negotiate_archive
 from spectragent.core.runtime import AgentRuntime
+from spectragent.core.step_recorder import RecordingFailedError
 from spectragent.core.trace import fsio
 from spectragent.core.trace.encoding import ARCHIVE_META_KEY, sha256_hex
-from spectragent.core.trace.models import RunStatus, TraceManifest
+from spectragent.core.trace.models import TraceManifest, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
@@ -482,7 +483,7 @@ class TestRunRecordsArePerCapability:
             item.capability_id for item in two.spy.batches[0].files if item.scope == "run"
         ) == [CAPABILITY_ID, PEER_A]
         trace = two.trace()
-        assert trace.manifest.status == RunStatus.COMPLETED
+        assert trace.manifest.status == TraceStatus.COMPLETE
         assert _latest_run_record(trace, CAPABILITY_ID) == ("env/run.contract_archive.json", 0)
         assert _latest_run_record(trace, PEER_A) == ("env/run.contract_archive_peer_a.json", 0)
         assert trace.read_extra("env/run.contract_archive_peer_a.json") == b'{"peer": 0}'
@@ -499,7 +500,7 @@ class TestRunRecordsArePerCapability:
         await two.writer.on_run_end(result=_done())
 
         trace = two.trace()
-        assert trace.manifest.status == RunStatus.COMPLETED
+        assert trace.manifest.status == TraceStatus.COMPLETE
         assert _latest_run_record(trace, CAPABILITY_ID) == ("env/run.contract_archive.1.json", 1)
         assert _latest_run_record(trace, PEER_A) == ("env/run.contract_archive_peer_a.2.json", 2)
         assert sorted(path.name for path in (run_dir / "env").glob("run.*")) == [
@@ -538,7 +539,7 @@ class TestRunRecordsArePerCapability:
         assert two.handed_over(CAPABILITY_ID) == [_FAKE_RUN_RECORD_V0]
         assert two.handed_over(PEER_A) == [_FAKE_RUN_RECORD_V0]
         trace = two.trace()
-        assert trace.manifest.status == RunStatus.COMPLETED
+        assert trace.manifest.status == TraceStatus.COMPLETE
         assert _latest_run_record(trace, CAPABILITY_ID) == ("env/run.contract_archive.json", 0)
         assert _latest_run_record(trace, PEER_A) == ("env/run.contract_archive_peer_a.json", 0)
         assert trace.read_extra("env/run.contract_archive_peer_a.json") == _FAKE_RUN_RECORD_V0
@@ -558,7 +559,7 @@ class TestTheCloseOut:
 
         trace = bench.trace()
         assert trace.manifest.last_step_completed == 1
-        assert trace.manifest.status == RunStatus.COMPLETED
+        assert trace.manifest.status == TraceStatus.COMPLETE
         (entry,) = trace.manifest.trailing
         assert entry.llm_calls == []
         assert entry.extra_index == "steps/trailing_00.extra.json"
@@ -616,7 +617,8 @@ class TestTheCloseOut:
 
         assert bench.spy.calls == collected
         assert len(bench.trace().manifest.trailing) == trailing
-        assert bench.trace().manifest.status == RunStatus.ERROR
+        # The run failed — its result says so; the trace recorded all of it.
+        assert bench.trace().manifest.status == TraceStatus.COMPLETE
 
     async def test_a_driver_that_only_dispatches_on_run_error_still_collects_once(self, tmp_path):
         bench = Bench(tmp_path)
@@ -630,26 +632,30 @@ class TestTheCloseOut:
         trace = bench.trace()
         assert bench.spy.calls == 2
         assert bench.writer._env is None
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.trailing_calls[0].messages[0].text == "lonely"
         assert [step for step, _ in trace.iter_archive(STEPS_KEY, include_trailing=True)] == [
             0,
             None,
         ]
 
-    async def test_a_failed_tail_on_a_run_that_succeeded_errors_the_trace_and_raises(
+    async def test_a_failed_tail_on_a_run_that_succeeded_leaves_the_trace_incomplete(
         self, tmp_path
     ):
+        """The outcome is decided: kept, and nothing raised — the trace says what it lost."""
         bench = Bench(tmp_path)
         await bench.start()
         await bench.step(0)
         await _call(bench.writer, "the last word")
         bench.cap.broken = True
-        with pytest.raises(ArchiveCollectionError, match="broken on purpose"):
-            await bench.writer.on_run_end(result=_done())
+        await bench.writer.on_run_end(result=_done())
 
         trace = bench.trace()
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.complete_through == 0
+        reason = trace.manifest.incomplete_reason or ""
+        assert reason.startswith("the close-out evidence collection failed: ArchiveCollectionError")
+        assert "broken on purpose" in reason
         assert trace.result is not None and trace.result.agent_done == AgentDoneStatus.DONE
         assert trace.trailing_calls[0].messages[0].text == "the last word"
         # And never again: ``on_run_error`` does not retry the collection.
@@ -663,8 +669,8 @@ class TestTheCloseOut:
         bench.cap.broken = True
         await bench.writer.on_run_end(result=_failed("the run's own error"))
 
-        assert bench.trace().manifest.status == RunStatus.ERROR
-        assert "close-out collection failed" in caplog.text
+        assert bench.trace().manifest.status == TraceStatus.INCOMPLETE
+        assert "the close-out evidence collection failed" in caplog.text
 
     @pytest.mark.parametrize("result", [_done, _failed], ids=["succeeded", "failed"])
     async def test_a_cancelled_tail_still_closes_the_trace_out_then_re_raises(
@@ -684,7 +690,7 @@ class TestTheCloseOut:
             await writer.on_run_end(result=result())
 
         trace = RunTrace(run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.result is not None
         assert trace.trailing_calls[0].messages[0].text == "in flight at the cancellation"
         await writer.on_run_error(error=asyncio.CancelledError(), partial_steps=[])
@@ -719,26 +725,27 @@ class TestTheCloseOut:
                 await writer.on_run_error(error=asyncio.CancelledError(), partial_steps=[])
 
         trace = RunTrace(run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
-        assert "closing out a cancelled run failed" in caplog.text
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        reason = trace.manifest.incomplete_reason or ""
+        assert "the close-out evidence collection was cancelled" in reason
+        assert "No space left on device" in reason
         assert "No space left on device" in caplog.text
-        # Not committed. The writer still holds it, so a second close-out a
-        # driver dispatches commits it; AgentRuntime dispatches none, and under
-        # it the call is dropped (``docs/architecture_design.md`` §5.2).
+        # Not committed, and dropped: the close-out happens once, and a later
+        # one a driver dispatches retries nothing (``docs/architecture_design.md``
+        # §5.2).
         assert trace.trailing_calls == []
         monkeypatch.undo()
         await writer.on_run_error(error=asyncio.CancelledError(), partial_steps=[])
-        assert [call.messages[0].text for call in RunTrace(run_dir).trailing_calls] == [
-            "in flight at the cancellation"
-        ]
+        assert RunTrace(run_dir).trailing_calls == []
 
     async def test_the_environment_is_released_at_close_out(self, tmp_path):
         bench = Bench(tmp_path)
         await bench.start()
         await bench.step(0)
         await bench.writer.on_run_end(result=_done())
-        with pytest.raises(RuntimeError, match="closed out"):
+        with pytest.raises(RecordingFailedError, match="closed out") as exc_info:
             await bench.step(1)
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
         assert bench.spy.calls == 2
 
 
@@ -776,7 +783,7 @@ class TestAReusedWriterStartsEachRunClean:
         await bench.writer.on_run_end(result=_done())
 
         second = await _second_run(bench)
-        assert second.manifest.status == RunStatus.COMPLETED
+        assert second.manifest.status == TraceStatus.COMPLETE
         assert [r.name for r in second.archive_files(0, STEPS_KEY)] == ["cycle_002.json"]
         # The same fingerprint as the first run's: in this trace, it is version 0.
         latest = second.archive_run_file(CAPABILITY_ID)
@@ -793,7 +800,7 @@ class TestAReusedWriterStartsEachRunClean:
 
         second = await _second_run(bench)
         assert second.step(0) is not None
-        assert second.manifest.status == RunStatus.COMPLETED
+        assert second.manifest.status == TraceStatus.COMPLETE
 
     async def test_without_the_batches_the_last_run_still_owed(self, tmp_path, monkeypatch):
         bench = Bench(tmp_path)
@@ -808,12 +815,13 @@ class TestAReusedWriterStartsEachRunClean:
             return real(path, data)
 
         monkeypatch.setattr(fsio, "write_durable", write_durable)
-        with pytest.raises(OSError):
+        with pytest.raises(RecordingFailedError):
             await _commit(bench.writer, 1)  # step 1's batch is owed now
-        with pytest.raises(OSError):
-            await bench.writer.on_run_end(result=_failed())
-        with pytest.raises(OSError):
-            await bench.writer.on_run_error(error=OSError("disk gone"), partial_steps=[])
+        # The close-out cannot write either: logged, never raised; the trace
+        # stays 'writing' and what it owed is dropped.
+        await bench.writer.on_run_end(result=_failed())
+        await bench.writer.on_run_error(error=OSError("disk gone"), partial_steps=[])
+        assert bench.trace().manifest.status == TraceStatus.WRITING
         monkeypatch.setattr(fsio, "write_durable", real)
 
         second = await _second_run(bench)
@@ -835,7 +843,7 @@ class TestAReusedWriterStartsEachRunClean:
         for run_dir in run_dirs:
             assert run_dir is not None
             trace = RunTrace(run_dir)
-            assert trace.manifest.status == RunStatus.COMPLETED
+            assert trace.manifest.status == TraceStatus.COMPLETE
             assert len(trace.archive_files(0, STEPS_KEY)) == 1
             latest = trace.archive_run_file(CAPABILITY_ID)
             assert latest is not None and latest.run_version == 0
@@ -944,25 +952,33 @@ class TestFailClosed:
         env = ScriptedEnv(batch)
         writer, run_dir = await _scripted_start(tmp_path, env)
         await _call(writer, "the step's call")
-        with pytest.raises(ArchiveContractError, match=why):
+        with pytest.raises(RecordingFailedError, match=why) as caught:
             await _commit(writer, 0)
+        assert isinstance(caught.value.__cause__, ArchiveContractError)
 
         trace = RunTrace(run_dir)
         assert trace.manifest.last_step_completed == -1
         assert trace.step(0) is None
         assert not (run_dir / "env").exists()
         # A Loop that swallowed it gets no later step committed either.
-        with pytest.raises(RuntimeError, match="since the collection at step 0") as exc_info:
+        with pytest.raises(
+            RecordingFailedError, match="since the collection at step 0"
+        ) as exc_info:
             await _commit(writer, 1)
-        assert isinstance(exc_info.value.__cause__, ArchiveContractError)
+        cause = exc_info.value.__cause__
+        assert isinstance(cause, RuntimeError)
+        assert isinstance(cause.__cause__, ArchiveContractError)
         assert env.calls == 1
-        # The close-out does not collect, keeps the call, and says error
-        # even for a run that reports success: the archive is incomplete.
+        # The close-out does not collect, keeps the call, and says incomplete
+        # even for a run that reports success: the archive has a hole.
         await writer.on_run_end(result=_done())
         trace = RunTrace(run_dir)
         assert env.calls == 1
         assert trace.trailing_calls[0].messages[0].text == "the step's call"
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert (trace.manifest.incomplete_reason or "").startswith(
+            "recording failed at step 0: ArchiveContractError"
+        )
 
     @pytest.mark.parametrize("breach", list(BREACHES))
     @pytest.mark.parametrize("succeeded", [True, False], ids=["succeeded", "failed"])
@@ -974,23 +990,20 @@ class TestFailClosed:
         It is where everything captured after the last commit point lands; an
         unchecked tail would commit an unbound archiver's evidence — a body
         the user left out on purpose — into a trace that then says
-        ``completed``.
+        ``complete``. Whatever the run's outcome, the breach is logged and
+        named in the trace, never raised over the outcome.
         """
         batch, why = BREACHES[breach]
         env = ScriptedEnv(ArchiveBatch(), batch)
         writer, run_dir = await _scripted_start(tmp_path, env)
         await _commit(writer, 0)
-        if succeeded:
-            with pytest.raises(ArchiveContractError, match=why):
-                await writer.on_run_end(result=_done())
-        else:
-            # The run's own failure is never masked: the breach is logged.
-            await writer.on_run_end(result=_failed())
-            assert "ArchiveContractError" in caplog.text
-            assert why in caplog.text
+        await writer.on_run_end(result=_done() if succeeded else _failed())
+        assert "ArchiveContractError" in caplog.text
+        assert why in caplog.text
+        assert why in (RunTrace(run_dir).manifest.incomplete_reason or "")
 
         trace = RunTrace(run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.trailing == []
         assert not (run_dir / "env").exists()
         # Refused, not retried: a later close-out collects nothing more.
@@ -1004,12 +1017,16 @@ class TestFailClosed:
         writer, run_dir = await _scripted_start(tmp_path, env)
         await _commit(writer, 0)
         await _call(writer, "step 1")
-        with pytest.raises(RuntimeError, match="socket gone"):
+        with pytest.raises(RecordingFailedError, match="socket gone") as first:
             await _commit(writer, 1)
-        with pytest.raises(RuntimeError, match="since the collection at step 1") as exc_info:
+        with pytest.raises(
+            RecordingFailedError, match="since the collection at step 1"
+        ) as exc_info:
             await _commit(writer, 2)
 
-        assert exc_info.value.__cause__ is boom
+        assert first.value.__cause__ is boom
+        cause = exc_info.value.__cause__
+        assert cause is not None and cause.__cause__ is boom
         assert env.calls == 2
         await writer.on_run_end(result=_failed())
         trace = RunTrace(run_dir)
@@ -1017,6 +1034,12 @@ class TestFailClosed:
         assert trace.step(1) is None
         assert trace.trailing_calls[0].messages[0].text == "step 1"
         assert env.calls == 2
+        # The first hole is the trace's reason; the later refusal follows from it.
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.complete_through == 0
+        assert trace.manifest.incomplete_reason == (
+            "recording failed at step 1: RuntimeError: socket gone"
+        )
 
     async def test_a_cancelled_collection_is_not_a_collection_failure(self, tmp_path):
         tail = archive_item(STEPS_KEY, "tail.json", b"{}")
@@ -1030,6 +1053,12 @@ class TestFailClosed:
         trace = RunTrace(run_dir)
         assert env.calls == 3  # the close-out still collected
         assert trace.step(1) is None
+        # No collection failed, but step 1's record is lost: incomplete from there.
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.incomplete_reason == (
+            "recording step 1 was cut off by a cancellation"
+        )
+        assert trace.manifest.complete_through == 0
         assert [
             (step, r.name) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
         ] == [(None, "tail.json")]
@@ -1054,7 +1083,7 @@ class TestFailClosed:
             return real(path, data)
 
         monkeypatch.setattr(fsio, "write_durable", write_durable)
-        with pytest.raises(OSError, match="power lost"):
+        with pytest.raises(RecordingFailedError, match="power lost"):
             await _commit(bench.writer, 1)
         orphan = "env/steps/001/contract_archive.steps/cycle_002.json"
         assert (run_dir / orphan).is_file()  # the failed attempt wrote it
@@ -1085,7 +1114,7 @@ class TestFailClosed:
         with pytest.raises(KeyError):
             trace.read_extra(orphan)
 
-    async def test_a_failed_trailing_commit_keeps_its_evidence_for_a_later_flush(
+    async def test_a_failed_trailing_commit_is_dropped_not_retried(
         self, tmp_path, monkeypatch
     ) -> None:
         bench = Bench(tmp_path)
@@ -1100,54 +1129,20 @@ class TestFailClosed:
             raise OSError("disk hiccup")
 
         monkeypatch.setattr(wal, "commit_trailing", failing)
-        with pytest.raises(OSError, match="disk hiccup"):
-            await bench.writer.on_run_end(result=_done())
-        # Not ``completed``: the trace does not hold everything the run owed it.
-        assert bench.trace().manifest.status == RunStatus.ERROR
+        await bench.writer.on_run_end(result=_done())  # never raised over the outcome
+        # Not ``complete``: the trace does not hold everything the run owed it.
+        trace = bench.trace()
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert "OSError: disk hiccup" in (trace.manifest.incomplete_reason or "")
 
+        # Dropped, not retried: a later close-out a driver dispatches commits nothing.
         monkeypatch.setattr(wal, "commit_trailing", real)
         await bench.writer.on_run_error(error=OSError("disk hiccup"), partial_steps=[])
         trace = bench.trace()
         assert [r.name for _, r in trace.iter_archive(STEPS_KEY, include_trailing=True)] == [
             "cycle_001.json",
-            "cycle_002.json",
         ]
         assert bench.spy.calls == 2
-
-    async def test_a_retried_close_out_commits_the_calls_and_the_tail_it_still_owes(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """A second close-out commits what the first could not, each thing exactly once.
-
-        Only a driver that dispatches ``on_run_error`` after a failed
-        ``on_run_end`` gets this second attempt; ``AgentRuntime`` does not, so
-        under it the failed item is dropped (``docs/architecture_design.md``
-        §5.2).
-        """
-        bench = Bench(tmp_path)
-        await bench.start()
-        await bench.step(0)
-        await bench.cap.produce(1)
-        await _call(bench.writer, "unfinished")
-        wal = bench.writer._wal
-        assert wal is not None
-        real = wal.commit_trailing
-
-        def failing(**kwargs: Any) -> None:
-            raise OSError("disk hiccup")
-
-        monkeypatch.setattr(wal, "commit_trailing", failing)
-        with pytest.raises(OSError, match="disk hiccup"):
-            await bench.writer.on_run_end(result=_done())
-        monkeypatch.setattr(wal, "commit_trailing", real)
-        await bench.writer.on_run_error(error=OSError("disk hiccup"), partial_steps=[])
-
-        trace = bench.trace()
-        assert [call.messages[0].text for call in trace.trailing_calls] == ["unfinished"]
-        assert [r.name for _, r in trace.iter_archive(STEPS_KEY, include_trailing=True)] == [
-            "cycle_001.json",
-            "cycle_002.json",
-        ]
 
     async def test_a_batch_that_can_never_be_written_costs_only_itself(
         self, tmp_path, monkeypatch
@@ -1175,7 +1170,7 @@ class TestFailClosed:
             return real_write(path, data)
 
         monkeypatch.setattr(fsio, "write_durable", write_durable)
-        with pytest.raises(OSError, match="power lost"):
+        with pytest.raises(RecordingFailedError, match="power lost"):
             await _commit(bench.writer, 1)  # step 1's batch is owed now
         wal = bench.writer._wal
         assert wal is not None
@@ -1188,22 +1183,20 @@ class TestFailClosed:
 
         monkeypatch.setattr(wal, "commit_trailing", refuses_step_1s_batch)
         await bench.cap.produce(2)  # the tail
-        with pytest.raises(OSError, match="File name too long"):
-            await bench.writer.on_run_end(result=_failed())
+        await bench.writer.on_run_end(result=_failed())
 
         trace = bench.trace()
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert "File name too long" in (trace.manifest.incomplete_reason or "")
         assert [call.messages[0].text for call in trace.trailing_calls] == [
             "step 1, never committed"
         ]
         assert [
             (step, r.name) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
         ] == [(0, "cycle_001.json"), (None, "cycle_003.json")]
-        # A second close-out (a driver's; AgentRuntime dispatches none) is refused
-        # the same way and commits nothing twice.
+        # A later close-out a driver dispatches retries nothing and commits nothing twice.
         trailing = len(trace.manifest.trailing)
-        with pytest.raises(OSError, match="File name too long"):
-            await bench.writer.on_run_error(error=OSError("x"), partial_steps=[])
+        await bench.writer.on_run_error(error=OSError("x"), partial_steps=[])
         assert len(bench.trace().manifest.trailing) == trailing
 
     async def test_a_trailing_run_record_is_numbered_after_an_owed_one(
@@ -1225,7 +1218,7 @@ class TestFailClosed:
             return real(path, data)
 
         monkeypatch.setattr(fsio, "write_durable", write_durable)
-        with pytest.raises(OSError, match="power lost"):
+        with pytest.raises(RecordingFailedError, match="power lost"):
             await _commit(bench.writer, 1)  # owed: generation 1 becomes version 1 at close-out
         bench.cap.change_run_record()  # generation 2 rides the tail
         await bench.writer.on_run_end(result=_failed())
@@ -1235,7 +1228,7 @@ class TestFailClosed:
         assert latest is not None
         assert (latest.path, latest.run_version) == ("env/run.contract_archive.2.json", 2)
         assert json.loads(trace.read_extra(latest.path))["generation"] == 2
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
 
     async def test_an_owed_run_record_older_than_a_committed_one_is_not_the_latest(
         self, tmp_path, monkeypatch, caplog
@@ -1255,7 +1248,7 @@ class TestFailClosed:
         bench.cap.change_run_record()  # generation 1 rides step 1's batch
         await bench.cap.produce(1)
         _lose_power_once(monkeypatch)
-        with pytest.raises(OSError, match="power lost"):
+        with pytest.raises(RecordingFailedError, match="power lost"):
             await _commit(bench.writer, 1)  # owed now
         bench.cap.change_run_record()  # generation 2 rides step 2's batch
         await bench.step(2)
@@ -1274,54 +1267,6 @@ class TestFailClosed:
         ] == [(0, "cycle_001.json"), (2, "cycle_003.json"), (None, "cycle_002.json")]
         assert "collection 3's run record of capability 'contract_archive' is newer" in caplog.text
 
-    async def test_a_retried_close_out_keeps_the_newer_run_record_the_latest(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """A second close-out keeps the newer run record the latest.
-
-        The second close-out is ``on_run_error`` after a failed ``on_run_end``.
-        ``AgentRuntime`` never dispatches it — under it the batch is dropped,
-        not retried (``docs/architecture_design.md`` §5.2) — but a driver that
-        does must not make a stale fingerprint the latest.
-        The close-out cannot write the batch step 1 owes but commits the
-        tail, whose record is newer; the second attempt then commits the owed
-        batch — without its stale record.
-        """
-        bench = Bench(tmp_path)
-        await bench.start()
-        await bench.step(0)
-        bench.cap.change_run_record()  # generation 1 rides step 1's batch
-        await bench.cap.produce(1)
-        _lose_power_once(monkeypatch)
-        with pytest.raises(OSError, match="power lost"):
-            await _commit(bench.writer, 1)
-        wal = bench.writer._wal
-        assert wal is not None
-        real_trailing = wal.commit_trailing
-        disk = {"full": True}
-
-        def refuses_step_1s_batch(**kwargs: Any) -> None:
-            if disk["full"] and any("cycle_002" in f.rel_path for f in kwargs["extra_files"]):
-                raise OSError(errno.ENOSPC, "No space left on device")
-            real_trailing(**kwargs)
-
-        monkeypatch.setattr(wal, "commit_trailing", refuses_step_1s_batch)
-        bench.cap.change_run_record()  # generation 2 rides the tail
-        await bench.cap.produce(2)
-        with pytest.raises(OSError, match="No space left"):
-            await bench.writer.on_run_end(result=_failed())
-        disk["full"] = False
-        await bench.writer.on_run_error(error=OSError("disk full"), partial_steps=[])
-
-        trace = bench.trace()
-        assert _run_records(trace, CAPABILITY_ID) == [
-            ("env/run.contract_archive.json", 0, 0),
-            ("env/run.contract_archive.1.json", 1, 2),
-        ]
-        assert [
-            (step, r.name) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
-        ] == [(0, "cycle_001.json"), (None, "cycle_003.json"), (None, "cycle_002.json")]
-
     async def test_an_unchanged_record_still_counts_as_the_latest_capture(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -1337,7 +1282,7 @@ class TestFailClosed:
         bench.cap.change_run_record()  # generation 1 rides step 1's batch
         await bench.cap.produce(1)
         _lose_power_once(monkeypatch)
-        with pytest.raises(OSError, match="power lost"):
+        with pytest.raises(RecordingFailedError, match="power lost"):
             await _commit(bench.writer, 1)
         bench.cap.fake.run_generation = 0  # back to what version 0 recorded
         bench.cap.fake.run_record_due = True
@@ -1364,10 +1309,10 @@ class TestFailClosed:
 
         monkeypatch.setattr(fsio, "write_durable", write_durable)
         await bench.cap.produce(1)
-        with pytest.raises(OSError):
+        with pytest.raises(RecordingFailedError):
             await _commit(bench.writer, 1)
         await bench.cap.produce(2)
-        with pytest.raises(OSError):
+        with pytest.raises(RecordingFailedError):
             await _commit(bench.writer, 1)  # a second owed batch
         failing["on"] = False
         await bench.writer.on_run_end(result=_failed())
@@ -1469,9 +1414,9 @@ class _FillingDisk:
 
     - ``"commits"`` — the WAL's step and trailing commits, while the small
       ``result.json`` and manifest rewrites still fit, so the trace can still
-      say ``error``;
+      say ``incomplete``;
     - ``"every write"`` — every durable write, the manifest included, which
-      therefore stays ``running``: nothing can be written at all.
+      therefore stays ``writing``: nothing can be written at all.
     """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, refuses: str) -> None:
@@ -1565,7 +1510,7 @@ class TestThroughTheRuntime:
         assert result.agent_done == AgentDoneStatus.DONE
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
-        assert trace.manifest.status == RunStatus.COMPLETED
+        assert trace.manifest.status == TraceStatus.COMPLETE
         assert [(step, r.name) for step, r in trace.iter_archive(STEPS_KEY)] == [
             (0, "cycle_001.json"),
             (1, "cycle_002.json"),
@@ -1580,49 +1525,135 @@ class TestThroughTheRuntime:
         assert trace.config.env_evidence_privacy is not None
 
     @pytest.mark.parametrize("failing_step", [0, 1])
-    async def test_a_failed_collection_fails_the_run_and_raises(self, tmp_path, failing_step):
+    async def test_a_failed_collection_stops_the_run_and_raises(self, tmp_path, failing_step):
         cap = FakeArchivingCapability()
         if failing_step == 0:
             cap.broken = True
         else:
             _break_after(cap, failing_step)
         writer = _archiving_writer(tmp_path)
-        with pytest.raises(ArchiveCollectionError, match="broken on purpose"):
+        with pytest.raises(
+            RecordingFailedError, match=f"recording failed at step {failing_step}: Archive"
+        ) as caught:
             await _runtime(writer, cap=cap, steps=3).execute("t", timeout=10, raise_on_error=True)
+        assert isinstance(caught.value.__cause__, ArchiveCollectionError)
+        assert "broken on purpose" in str(caught.value)
 
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.last_step_completed == failing_step - 1
+        assert trace.manifest.complete_through == failing_step - 1
+        assert trace.result is not None and trace.result.agent_done == AgentDoneStatus.ERROR
+        assert (trace.result.error or "").startswith(f"recording failed at step {failing_step}")
         assert trace.step(failing_step) is None
         assert trace.archive_files(failing_step, STEPS_KEY) == []
         assert [call.step for call in trace.trailing_calls] == [failing_step]
         # No further collection: not for a later step, not for the tail.
         assert cap.collect_calls == failing_step + 1
 
-    async def test_without_raise_on_error_the_result_names_the_collection_failure(
+    async def test_without_raise_on_error_the_result_names_the_recording_failure(
         self, tmp_path
     ) -> None:
         cap = FakeArchivingCapability()
         cap.broken = True
         writer = _archiving_writer(tmp_path)
-        result = await _runtime(writer, cap=cap).execute("t", timeout=10, raise_on_error=False)
+        result = await _runtime(writer, cap=cap, steps=3).execute(
+            "t", timeout=10, raise_on_error=False
+        )
 
         assert result.agent_done == AgentDoneStatus.ERROR
-        assert result.error is not None and "ArchiveCollectionError" in result.error
+        assert result.error is not None
+        assert result.error.startswith("recording failed at step 0: ArchiveCollectionError")
         assert writer.run_dir is not None
-        assert RunTrace(writer.run_dir).manifest.status == RunStatus.ERROR
+        assert RunTrace(writer.run_dir).manifest.status == TraceStatus.INCOMPLETE
 
-    async def test_a_failed_tail_on_a_successful_run_raises_from_execute(self, tmp_path):
+    @pytest.mark.parametrize("raise_on_error", [True, False])
+    async def test_a_hole_on_the_done_step_keeps_the_answer(self, tmp_path, raise_on_error):
+        """The agent's done is decided before its step is recorded: the hole never rewrites it.
+
+        Two ledgers: result.json keeps ``done`` and the answer; the trace is
+        incomplete, complete through the step before, and says why. Nothing
+        is raised — the run was ending anyway.
+        """
+        cap = FakeArchivingCapability()
+        cap.broken = True  # step 0 is the done step, and its collection fails
+        writer = _archiving_writer(tmp_path)
+        result = await _runtime(writer, cap=cap, steps=1).execute(
+            "t", timeout=10, raise_on_error=raise_on_error
+        )
+
+        assert result.agent_done == AgentDoneStatus.DONE
+        assert (result.answer, result.error) == ("42", None)
+        assert result.action_history
+        assert writer.run_dir is not None
+        trace = RunTrace(writer.run_dir)
+        assert trace.result is not None and trace.result.answer == "42"
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.complete_through == -1
+        assert (trace.manifest.incomplete_reason or "").startswith(
+            "recording failed at step 0: ArchiveCollectionError"
+        )
+        assert trace.step(0) is None
+        assert [call.step for call in trace.trailing_calls] == [0]
+        assert cap.collect_calls == 1  # no tail after the hole
+
+    async def test_a_failed_terminal_observation_keeps_the_outcome(self, tmp_path):
+        """The terminal step is a tail too: the run's done stands, the trace says what it lost."""
+        from spectragent.core.loops import ReactLoop
+        from tests._helpers.archive_fakes import (
+            ContractArchiveAgent,
+            ContractArchiveLLM,
+            ContractArchiveMemory,
+        )
+        from tests._helpers.assembly import make_run
+
+        cap = FakeArchivingCapability()
+        _break_after(cap, 1)  # step 0's pull works, the terminal step's does not
+        writer = _archiving_writer(tmp_path)
+        run = make_run(
+            agent=ContractArchiveAgent(keep_going_steps=0),
+            loop=ReactLoop(max_steps=5, terminal_observation=True),
+            env=make_archive_env(cap),
+            llm=ContractArchiveLLM(),
+            memory=ContractArchiveMemory(),
+            hooks=[writer],
+        )
+        result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
+            "t", timeout=10, raise_on_error=True
+        )
+
+        assert (result.agent_done, result.answer, result.error) == (
+            AgentDoneStatus.DONE,
+            "42",
+            None,
+        )
+        assert writer.run_dir is not None
+        trace = RunTrace(writer.run_dir)
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.complete_through == 0  # the policy step is whole
+        assert (trace.manifest.incomplete_reason or "").startswith(
+            "recording failed at step 1: ArchiveCollectionError"
+        )
+        assert trace.step(1) is None
+
+    async def test_a_failed_tail_on_a_successful_run_keeps_its_outcome(self, tmp_path):
+        """Not raised from ``execute``: the outcome is decided; the trace says what it lost."""
         cap = FakeArchivingCapability()
         _break_after(cap, 1)  # step 0's pull works, the close-out's does not
         writer = _archiving_writer(tmp_path)
-        with pytest.raises(ArchiveCollectionError):
-            await _runtime(writer, cap=cap, steps=1).execute("t", timeout=10, raise_on_error=False)
+        result = await _runtime(writer, cap=cap, steps=1).execute(
+            "t", timeout=10, raise_on_error=True
+        )
 
+        assert result.agent_done == AgentDoneStatus.DONE
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.complete_through == 0
+        assert "the close-out evidence collection failed" in (
+            trace.manifest.incomplete_reason or ""
+        )
         assert trace.result is not None and trace.result.agent_done == AgentDoneStatus.DONE
         assert trace.step(0) is not None
         assert [r.name for _, r in trace.iter_archive(STEPS_KEY)] == ["cycle_001.json"]
@@ -1631,7 +1662,7 @@ class TestThroughTheRuntime:
         """The veto propagates past ``raise_on_error=False``; the collection failure rides along.
 
         The recording of the vetoed step fails — fail closed, so the step is
-        not committed and the trace ends as ``error`` — but that failure must
+        not committed and the trace closes ``incomplete`` — but that failure must
         not take the veto's place: ``execute`` would then return an ordinary
         error result, and a sweep would start its next task.
         """
@@ -1647,13 +1678,14 @@ class TestThroughTheRuntime:
         assert any("ArchiveCollectionError" in note for note in caught.value.__notes__)
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.last_step_completed == 0
         assert trace.step(1) is None  # its collection failed: not committed
         assert [call.step for call in trace.trailing_calls] == [1]
         assert trace.result is not None and "risk-control page detected" in (
             trace.result.error or ""
         )
+        assert trace.result.agent_done == AgentDoneStatus.VETOED
         assert cap.collect_calls == 2  # step 0, the vetoed step 1 — and no tail
 
     async def test_an_infrastructure_failure_at_such_a_step_still_names_its_root_cause(
@@ -1671,10 +1703,12 @@ class TestThroughTheRuntime:
         root_cause, _, unrecorded = result.error.partition(" (recording this step failed too: ")
         assert root_cause.startswith("observe failed at step 1: ObservationFailedError")
         assert "ConnectionError: CDP websocket closed" in root_cause
-        assert unrecorded.startswith("ArchiveCollectionError")
+        assert unrecorded.startswith(
+            "RecordingFailedError: recording failed at step 1: ArchiveCollectionError"
+        )
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.step(1) is None
         assert trace.result is not None and trace.result.error == result.error
 
@@ -1693,7 +1727,8 @@ class TestThroughTheRuntime:
 
         assert summary.was_aborted
         assert summary.aborted is not None and "risk-control page detected" in summary.aborted
-        assert summary.total == 0
+        (vetoed,) = summary.outcomes  # shown, as the task that stopped the sweep
+        assert vetoed.agent_done == "vetoed"
         assert len(caps) == 1  # the next task never started
 
     @pytest.mark.parametrize("raise_on_error", [True, False])
@@ -1725,7 +1760,7 @@ class TestThroughTheRuntime:
         assert "run aborted during act at step 1" in caplog.text
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.last_step_completed == 0
         assert trace.step(1) is None  # cut off: never committed
         assert [call.step for call in trace.trailing_calls] == [1]
@@ -1733,8 +1768,11 @@ class TestThroughTheRuntime:
         assert [
             (step, r.name) for step, r in trace.iter_archive(STEPS_KEY, include_trailing=True)
         ] == [(0, "cycle_001.json"), (None, "cycle_002.json")]
+        assert trace.manifest.incomplete_reason == (
+            "recording step 1 was cut off by a cancellation"
+        )
         assert trace.result is not None
-        assert trace.result.agent_done == AgentDoneStatus.ERROR
+        assert trace.result.agent_done == AgentDoneStatus.VETOED
         assert trace.result.error == (
             "RunAbort: risk_guard: risk-control page detected (the run's timeout of 0.5s "
             "expired while the vetoed step was being recorded)"
@@ -1760,7 +1798,7 @@ class TestThroughTheRuntime:
         assert remark == "by the run's timeout of 0.5s)"
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.step(1) is None
         assert trace.result is not None and trace.result.error == result.error
 
@@ -1781,7 +1819,7 @@ class TestThroughTheRuntime:
 
         assert summary.was_aborted
         assert summary.aborted is not None and "risk-control page detected" in summary.aborted
-        assert summary.total == 0
+        assert [outcome.agent_done for outcome in summary.outcomes] == ["vetoed"]
         assert len(caps) == 1  # the next task was never composed
 
     @pytest.mark.parametrize("refuses", ["commits", "every write"])
@@ -1794,10 +1832,12 @@ class TestThroughTheRuntime:
         The disk fills at the vetoed step and stays full: the step's commit
         fails (the Loop notes that on the veto), and so does the close-out,
         which must commit the step's calls — archiving, also its owed batch
-        and the tail — as trailing. That second failure used to replace the
+        and the tail — as trailing. That second failure once replaced the
         veto: ``execute(raise_on_error=False)`` raised the ``OSError`` and a
         sweep went on to its next task (``docs/architecture_design.md``
-        §4.2, "否决总是上抛").
+        §4.2, "否决总是上抛"). The close-out now raises nothing at all: what
+        it could not write is in the trace's incomplete reason, as far as the
+        disk lets the manifest say so.
         """
         disk = _FillingDisk(monkeypatch, refuses)
         cap = FakeArchivingCapability()
@@ -1816,23 +1856,23 @@ class TestThroughTheRuntime:
         notes = caught.value.__notes__
         assert [note.partition(": ")[0] for note in notes] == [
             "Recording the vetoed step failed too",
-            "Closing the vetoed run out failed too",
         ]
         assert all("No space left on device" in note for note in notes)
-        assert "closing out a vetoed run failed" in caplog.text
+        assert "No space left on device" in caplog.text
         assert writer.run_dir is not None
         trace = RunTrace(writer.run_dir)
         assert trace.manifest.last_step_completed == 0
         assert trace.step(1) is None
-        assert trace.trailing_calls == []  # still owed: nothing could take them
+        assert trace.trailing_calls == []  # dropped: nothing could take them
         if refuses == "commits":
-            assert trace.manifest.status == RunStatus.ERROR
+            assert trace.manifest.status == TraceStatus.INCOMPLETE
+            assert "No space left on device" in (trace.manifest.incomplete_reason or "")
             assert trace.result is not None and "risk-control page detected" in (
                 trace.result.error or ""
             )
         else:
             # Not even the terminal state could be written.
-            assert trace.manifest.status == RunStatus.RUNNING
+            assert trace.manifest.status == TraceStatus.WRITING
             assert trace.result is None
         # Step 0, the vetoed step 1 (handed over, then owed), the close-out.
         assert cap.collect_calls == (3 if archiving else 0)
@@ -1862,7 +1902,7 @@ class TestThroughTheRuntime:
 
         assert summary.was_aborted
         assert summary.aborted is not None and "risk-control page detected" in summary.aborted
-        assert summary.total == 0
+        assert [outcome.agent_done for outcome in summary.outcomes] == ["vetoed"]
         assert len(caps) == 1  # the next task was never composed, let alone set up
 
     async def test_an_empty_archive_costs_nothing(self, tmp_path):

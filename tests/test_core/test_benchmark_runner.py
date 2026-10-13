@@ -8,18 +8,23 @@ import pytest
 
 from spectragent.core.benchmark_runner import (
     PREFLIGHT_EXIT_CODE,
+    VETO_EXIT_CODE,
     BenchmarkRunner,
     PreflightError,
+    TaskOutcome,
     _safe_run_id,
 )
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
+from spectragent.core.llm.exceptions import ModelOutputTruncatedError, ModelRateLimitError
 from spectragent.core.loops import ReactLoop
 from spectragent.core.loops._registrar import AgentLoopRegistrar, LoopInput
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.negotiation import IncompatibleActionError
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.task import TaskContext
@@ -542,10 +547,19 @@ class TestGuardVeto:
         assert "t-2" in summary.aborted
         assert "risk-control page detected" in summary.aborted
         # The guard said stop, not destroy the evidence: t-1 finished before
-        # the veto and its outcome is still here to be scored.
-        assert summary.total == 1
-        assert summary.outcomes[0].task_id == "t-1"
-        assert summary.outcomes[0].ok
+        # the veto and its outcome is still here to be scored — and the vetoed
+        # task is shown, as what stopped the sweep.
+        first, vetoed = summary.outcomes
+        assert (first.task_id, first.ok) == ("t-1", True)
+        assert vetoed.task_id == "t-2" and vetoed.agent_done == "vetoed"
+        assert vetoed.vetoed is not None and "risk-control page detected" in vetoed.vetoed
+        assert vetoed.result is not None and vetoed.result.agent_done == AgentDoneStatus.VETOED
+        assert not vetoed.ok and vetoed.infrastructure_error is None  # a veto, not a failure
+        assert summary.failed == 0
+        table = summary.format_table()
+        assert "vetoed=1" in table.splitlines()[0]
+        assert "  t-2: vetoed (" in table and "vetoed: RunAbort" in table
+        assert "vetoed: a guard stopped the sweep at t-2" in table
 
     async def test_an_ordinary_failure_still_does_not_stop_the_sweep(self, tmp_path):
         """The veto path must not have widened into "any exception stops"."""
@@ -574,14 +588,139 @@ class TestGuardVeto:
         summary = await runner.run()
 
         assert summary.was_aborted
-        assert summary.total == 0  # vetoed on the very first task
+        assert [o.agent_done for o in summary.outcomes] == ["vetoed"]  # the very first task
         # A trace was still opened and closed out for the vetoed run.
         trace_dirs = sorted((tmp_path / "traces").iterdir())
         assert trace_dirs, "the vetoed run left no trace at all"
         trace = RunTrace(trace_dirs[0])
         assert trace.result is not None
+        assert trace.result.agent_done == AgentDoneStatus.VETOED
         assert "RunAbort" in (getattr(trace.result, "error", "") or "")
         assert "risk-control page detected" in (getattr(trace.result, "error", "") or "")
+        assert summary.outcomes[0].trace_status == "complete"
+
+
+class _RaisingLLM:
+    model = "test-model"
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def ainvoke(self, messages, **kw):
+        raise self._exc
+
+
+def _factory_with(tmp_path, *, llm: Any):
+    def compose():
+        return make_run(
+            agent=_Agent(),
+            loop=ReactLoop(max_steps=2),
+            env=make_env(_Env, {"bench_runner_cap": _Cap()}),
+            llm=llm,
+            memory=_Memory(),
+            hooks=[TraceWriter(trace_dir=str(tmp_path / "traces"))],
+        )
+
+    return compose
+
+
+class TestTheSummaryCountsThreeLedgers:
+    """How the agent ended, whether the environment held, whether the trace is complete."""
+
+    async def test_the_table_has_the_three_counters(self, tmp_path):
+        runner = BenchmarkRunner(
+            loader=_Loader(), compose=_make_factory(tmp_path, [], []), timeout=10
+        )
+        summary = await runner.run()
+
+        assert summary.count_by_done() == {"done": 2}
+        assert summary.count_by_environment() == {"success": 2}
+        assert summary.count_by_trace() == {"complete": 2}
+        lines = summary.format_table().splitlines()
+        assert lines[1:4] == [
+            "  agent outcome: done=2",
+            "  environment: success=2",
+            "  trace: complete=2",
+        ]
+        assert all(o.trace_status == "complete" and o.ok for o in summary.outcomes)
+
+    async def test_a_model_unavailable_after_retries_is_an_infrastructure_failure(self, tmp_path):
+        """The agent's ledger says error; the summary says what it really was."""
+        llm = _RaisingLLM(ModelRateLimitError("rate limit exceeded", model="test-model"))
+        runner = BenchmarkRunner(
+            loader=_Loader(), compose=_factory_with(tmp_path, llm=llm), timeout=10
+        )
+        summary = await runner.run(task_ids=["t-1"])
+
+        (outcome,) = summary.outcomes
+        assert (outcome.agent_done, outcome.env_status) == ("error", "success")
+        assert outcome.model_unavailable == "ModelRateLimitError: rate limit exceeded"
+        assert outcome.infrastructure_error == (
+            "the model call failed after the provider's retries: "
+            "ModelRateLimitError: rate limit exceeded"
+        )
+        assert outcome.trace_status == "complete"
+        assert summary.failed == 1 and summary.completed == 0
+        assert "infrastructure failure: the model call failed" in summary.format_table()
+
+    async def test_a_truncated_reply_is_the_runs_own_ceiling_not_an_outage(self, tmp_path):
+        llm = _RaisingLLM(
+            ModelOutputTruncatedError(
+                model="test-model",
+                stop_reason="length",
+                ceiling_field="max_completion_tokens",
+                ceiling=16,
+            )
+        )
+        runner = BenchmarkRunner(
+            loader=_Loader(), compose=_factory_with(tmp_path, llm=llm), timeout=10
+        )
+        summary = await runner.run(task_ids=["t-1"])
+
+        (outcome,) = summary.outcomes
+        assert outcome.agent_done == "error"
+        assert outcome.model_unavailable is None
+        assert outcome.ok and summary.failed == 0
+
+    async def test_an_incomplete_trace_is_an_infrastructure_failure(self, tmp_path, monkeypatch):
+        def refuse(self, result):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(WALWriter, "write_result", refuse)
+        runner = BenchmarkRunner(
+            loader=_Loader(), compose=_make_factory(tmp_path, [], []), timeout=10
+        )
+        summary = await runner.run(task_ids=["t-1"])
+
+        (outcome,) = summary.outcomes
+        assert outcome.agent_done == "done"  # the agent's ledger is unharmed
+        assert outcome.trace_status == "incomplete"
+        assert outcome.trace_note == "result.json could not be written: OSError: disk full"
+        assert outcome.infrastructure_error == (
+            "the trace is incomplete: result.json could not be written: OSError: disk full"
+        )
+        assert summary.count_by_trace() == {"incomplete": 1}
+        assert summary.failed == 1
+
+    def test_the_cli_exits_3_on_a_veto(self, tmp_path, monkeypatch, capsys):
+        from spectragent.core.benchmark_runner import main
+        from tests._helpers.branch_sources import write_source
+
+        monkeypatch.setattr(BenchmarkRunner, "preflight", lambda self, task_id: None)
+
+        async def vetoed(self, task_id, **kw):
+            return TaskOutcome(task_id=task_id, vetoed="RunAbort: guard: risk-control page")
+
+        monkeypatch.setattr(BenchmarkRunner, "run_task", vetoed)
+        write_source(tmp_path / "recorded", "run-a", steps=2)
+        write_source(tmp_path / "recorded", "run-b", steps=2)
+
+        code = main(["--config", str(_branch_sweep_config(tmp_path)), "--no-eval"])
+
+        assert code == VETO_EXIT_CODE == 3
+        captured = capsys.readouterr()
+        assert "vetoed: a guard stopped the sweep at" in captured.out
+        assert "spectragent-bench: the sweep was vetoed at" in captured.err
 
 
 # ── The task context's three parts (M31) ──────────────────────────────

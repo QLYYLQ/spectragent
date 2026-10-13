@@ -202,13 +202,18 @@ abort shapes, `_abort`, a failed action, the last tolerated parse error) goes th
 `ReactLoop._surrender_failing`, which logs the recording failure and returns it: the
 veto is re-raised with it attached as a note (`_note_unrecorded`), the error result
 appends "recording this step failed too: …" (`_unrecorded_suffix`). A `RunAbort` the sink
-raises itself still propagates. On every other step, where the run would go on or
-succeed, a recording failure still ends the run (fail closed). Nothing is lost by not
-raising it: the recorder already knows (TraceWriter keeps the step's calls owed, commits them as
-trailing at close-out and closes the trace out as `error`, as far as the disk lets it).
-When the disk is still full at the close-out, that second failure is the runtime's to
-rank, not the Loop's: `AgentRuntime.execute` logs it and adds it to the veto as one more
-note (§3.4). A new Loop owes the same split.
+raises itself still propagates. On every other step, where the run would go on, a
+recording failure still ends the run (fail closed): `TraceWriter` raises
+`RecordingFailedError` (`core/step_recorder.py`), and the result reads `recording failed
+at step t: …`. On the step the agent called done on, `TraceWriter` raises nothing — the
+outcome is already decided — so a Loop's done path needs no special case. Nothing is lost
+by not raising it: the recorder already knows (TraceWriter keeps the step's calls owed,
+commits them as trailing at close-out and closes the trace out `incomplete`, complete
+through the step before, as far as the disk lets it). `TraceWriter` raises nothing at
+close-out either: a disk still full there costs the trace its ledger entry
+(`incomplete_reason`), never the outcome; a close-out failure of another hook is the
+runtime's to rank, not the Loop's: `AgentRuntime.execute` logs it and adds it to the veto
+as one more note (§3.4). A new Loop owes the same split.
 
 **A cancellation that cuts that hand-over off must carry the outcome.** The hand-over
 can take a while (`TraceWriter` pulls the environment's evidence there, of the very
@@ -278,17 +283,19 @@ The run's own timeout is the other way a veto used to get lost, and it is not an
 cancellation. `except TimeoutError` first asks `_outcome_under(timed_out)`: `wait_for`
 raises its `TimeoutError` *from* the cancellation it delivered into the Loop, and when
 that cancellation carries an outcome (`carried_outcome`, §3.3) the run had already
-ended. A carried veto is closed out as vetoed (`agent_done="error"`, an `error` that
+ended. A carried veto is closed out as vetoed (`agent_done="vetoed"`, an `error` that
 names the veto and says the timeout expired while the vetoed step was being recorded,
 the timeout as a note on the `RunAbort`) and re-raised whatever `raise_on_error` says;
 a carried terminal result is closed out and returned with the same remark appended to
 its `error`. Only a run cut off while still under way gets `agent_done="timeout"`. An
 outside cancellation never reads the chain: it is re-raised unchanged, as before.
 
-At the sweep layer, `run_task` re-raises `RunAbort` first (`benchmark_runner.py:409-419`)
-while still absorbing ordinary failures, and `run` breaks out, records
-`BenchmarkRunSummary.aborted` naming the task (`:132-155`, `:304-317`) — **and then still
-evaluates the outcomes that finished** (`:318-320`). The guard said stop, not destroy the
+At the sweep layer, `run_task` catches `RunAbort` first and returns it as the task's
+outcome (`TaskOutcome.vetoed`, its result read back from the trace) while still absorbing
+ordinary failures, and `run` stops after it, records `BenchmarkRunSummary.aborted` naming
+the task — **and then still evaluates the outcomes that finished**. The table shows the
+vetoed task and a `vetoed:` line, and `spectragent-bench` exits 3 (`VETO_EXIT_CODE`), so
+the flywheel chain stops. A veto raised during the environment's setup is a veto too. The guard said stop, not destroy the
 evidence; under Record Once, Evaluate Many those traces are complete and worth scoring.
 Without the `aborted` field a short sweep is indistinguishable from a small one.
 
@@ -296,11 +303,9 @@ This is also why `RunAbort` derives from `Exception` and not `BaseException`
 (`core/loops/errors.py:69-79`): a `BaseException` would skip `_finish` and destroy exactly
 the WAL commit the abort exists to preserve.
 
-Known gap, so you do not rediscover it: `AgentDoneStatus` (`schemas/_types.py:15-20`) has
-only done/max_steps/timeout/error. A finished veto reports `agent_done="error"` with
-`RunAbort` in the error string, so an evaluator selecting vetoed runs is string-matching
-(`tests/test_core/test_benchmark_runner.py:453`). The evidence is in the trace; the label
-is not in the artifact.
+A finished veto reports `agent_done="vetoed"` (`AgentDoneStatus.VETOED`, the agent's
+ledger in `result.json`), with the `RunAbort` in the error string; selecting vetoed runs
+needs no string matching.
 
 ### 3.5 What is deliberately still ReactLoop-local
 

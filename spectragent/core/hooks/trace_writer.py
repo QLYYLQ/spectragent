@@ -21,16 +21,25 @@ A run that ends between a call and the step (timeout, cancellation, crash)
 never reaches that commit point, so run end commits whatever calls are still
 registered as *trailing* calls instead of dropping them.
 
+**The trace's own ledger.** The manifest says whether the trace is a
+complete record of the run — ``writing``, ``complete``, or ``incomplete``
+with the reason and the step it is complete through — never how the agent
+ended: that is ``result.json``. A step that cannot be recorded is a hole: the
+trace is incomplete from it on, and the run stops there unless the agent had
+already called done on that step. Nothing that fails at close-out is raised
+over the run's outcome (``docs/architecture_design.md`` §4.6, §5.4).
+
 **Environment evidence.** With a non-empty ``archive`` this hook is the
 run's archive consumer
 (:class:`~spectragent.core.archive.protocols.ArchiveConsumer`): at each
 commit point it pulls ``collect_archive()`` from the *raw* environment
 ``on_run_start`` handed it, and the batch rides that step's commit under
 ``env/``; once more at close-out (``docs/architecture_design.md`` §4.6,
-§5.2–§5.4). Failing to collect fails the run — the archive was explicitly
-requested, and a silently incomplete one poisons replay and branching. With
-an empty ``archive`` none of that exists: no environment reference is kept
-and no archive method is ever called.
+§5.2–§5.4). A collection that fails is a hole like any other — the archive
+was explicitly requested, and a silently incomplete one poisons replay and
+branching, so nothing is collected or committed as if it were whole after
+it. With an empty ``archive`` none of that exists: no environment reference
+is kept and no archive method is ever called.
 
 Registered via conscribe as hook_id="trace_writer". See
 ``docs/architecture_design.md`` §4.6 and §5.4.
@@ -63,6 +72,7 @@ from spectragent.core.archive import (
 )
 from spectragent.core.archive.privacy import RedactionLedger, redact_value
 from spectragent.core.hooks._registrar import HookBase
+from spectragent.core.step_recorder import RecordingFailedError
 from spectragent.core.trace.encoding import (
     EncodedOutputFormat,
     PendingLLMCall,
@@ -79,24 +89,17 @@ from spectragent.core.trace.encoding import (
     snapshot,
 )
 from spectragent.core.trace.models import (
-    RunStatus,
     TaskSetupRecord,
     TraceConfig,
     TraceNegotiation,
+    TraceStatus,
 )
 from spectragent.core.trace.redaction import redact_config, trace_safe
 from spectragent.core.trace.wal import WALWriter
-from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import StepRecord
 
 logger = logging.getLogger(__name__)
-
-# Terminal states that mean "the agent stopped without a clean finish".
-# The manifest must say so: a trace stuck at ``running`` is a trace no
-# evaluator will touch, and 9 of the first 14 real traces were exactly
-# that because the timeout path never reached a finalizer.
-_ERROR_DONE_STATES = frozenset({AgentDoneStatus.TIMEOUT, AgentDoneStatus.ERROR})
 
 #: Run-record version table: capability id → (latest committed version, its
 #: sha256, the number of the collection it came from — see :class:`_Collected`).
@@ -249,6 +252,15 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self._step_started: float | None = None
         # Model wait accumulated since the last commit, in milliseconds.
         self._pending_llm_ms = 0.0
+        # ── the trace's own ledger ──
+        # The first step whose recording failed (collection, contract or
+        # commit), in plain words; later step failures follow from it.
+        self._hole: str | None = None
+        # What the close-out could not record, in the order it happened.
+        self._close_out_problems: list[str] = []
+        # Closed out (``on_run_end``, or an ``on_run_error`` standing in for
+        # it): once per run, never retried.
+        self._closed = False
 
         # ── archive state (only ever used with a non-empty archive) ──
         # The *raw* environment the evidence is pulled from — never its AOP
@@ -391,6 +403,9 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self._output_formats = {}
         self._step_started = time.perf_counter()
         self._pending_llm_ms = 0.0
+        self._hole = None
+        self._close_out_problems = []
+        self._closed = False
 
         self._env = env if self.archive else None
         self._archive_keys = frozenset(a.archiver_id for a in self.archive)
@@ -450,71 +465,39 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         logger.info("TraceWriter: initialized run %s at %s", resolved_run_id, self._wal.run_dir)
 
     async def on_run_end(self, *, result: Any = None, env: Any = None, **kwargs: Any) -> None:
-        """Collect the tail, commit what is owed as trailing, write result.json, finalize.
+        """Close the trace out: tail, what is owed, result.json, the trace's own status.
 
-        On every termination path. The close-out collection (archive only)
-        runs at most once and never after a failed one; whatever it raises
-        is held until the trace is closed out, so the registered calls, the
-        result and the terminal state land regardless. The manifest then
-        says ``error`` — the archive is incomplete — and the failure is
-        raised only when the run had not already failed (a run's own error
-        is never masked). The manifest also says ``error`` when a step's
-        collection failed earlier, or when what the trace is owed could not
-        all be committed, whatever the result reports.
+        On every termination path, once. The close-out evidence collection
+        (archive only) runs at most once and never after a failed one; the
+        calls still registered and every batch owed are committed as
+        trailing, each on its own; ``result.json`` is written; the manifest
+        is closed ``complete`` or ``incomplete``
+        (``docs/architecture_design.md`` §4.6, §5.4).
 
-        A cancellation of the close-out collection is always re-raised,
-        after the close-out — even when the close-out then failed under it
-        (a full disk): that failure is only logged. Raising it instead
-        would turn Ctrl-C into an ``OSError``, which a sweep's
-        ``except Exception`` records as one more failed task before it
-        starts the next, and which a caller's ``asyncio.timeout`` does not
-        recognise as its ``TimeoutError`` (``docs/architecture_design.md``
-        §4.2, "取消永远优先").
+        Nothing that fails to be recorded here is raised. The run has ended
+        and its outcome is decided — it is in *result*, which this writes as
+        it is — so a failed close-out collection, an owed item the disk
+        refuses (dropped, not retried) or a ``result.json`` that cannot be
+        written makes the trace ``incomplete``, names the failure in
+        ``incomplete_reason`` and is logged; it never replaces the outcome.
+        A manifest that cannot be closed out at all (the disk stays full)
+        stays ``writing`` and is logged as an error.
+
+        A cancellation of the close-out collection is the one thing
+        re-raised, after the close-out: Ctrl-C, or a caller's own
+        ``asyncio.timeout``, must still see its cancellation
+        (``docs/architecture_design.md`` §4.2, "取消永远优先").
         """
-        if self._wal is None:
+        if self._wal is None or self._closed:
             return
-        tail: _Collected | None = None
-        archive_error: BaseException | None = None
-        try:
-            tail = await self._collect_tail()
-        except BaseException as exc:  # held: the close-out must run to its end first
-            archive_error = exc
-        cancelled = archive_error is not None and not isinstance(archive_error, Exception)
-        try:
-            self._close_out(tail, result=result, incomplete=archive_error is not None)
-        except Exception as exc:
-            if not cancelled:
-                if archive_error is not None:
-                    logger.warning(
-                        "TraceWriter: the close-out collection also failed: %s: %s",
-                        type(archive_error).__name__,
-                        archive_error,
-                    )
-                raise
-            # The cancellation outranks a close-out that failed under it.
-            logger.warning(
-                "TraceWriter: closing out a cancelled run failed: %s: %s",
-                type(exc).__name__,
-                exc,
-                exc_info=exc,
-            )
+        cancellation = await self._close_out(result)
         logger.info(
-            "TraceWriter: finalized run at %s (%d steps)",
+            "TraceWriter: closed out run at %s (%d steps)",
             self._wal.run_dir,
             self._steps_written,
         )
-        if archive_error is None:
-            return
-        if not cancelled and _status_for(result) is RunStatus.ERROR:
-            # The run already failed; raising this would mask its own error.
-            logger.warning(
-                "TraceWriter: the close-out collection failed after the run had already "
-                "failed: %s: %s",
-                type(archive_error).__name__,
-                archive_error,
-            )
-            return
-        raise archive_error
+        if cancellation is not None:
+            raise cancellation
 
     async def on_run_error(
         self,
@@ -524,89 +507,104 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         env: Any = None,
         **kwargs: Any,
     ) -> None:
-        """Close the trace out as ``error`` — idempotent after :meth:`on_run_end`.
+        """Note the run's error; close the trace out only when ``on_run_end`` did not.
 
-        The run is already failing, so a failed close-out collection is
-        logged, never raised over the run's error. A cancelled one is held
-        and re-raised once the trace is closed out, and it outranks a flush
-        that fails under it, which is then logged — the same rule as
-        :meth:`on_run_end`.
+        ``AgentRuntime`` dispatches this right after ``on_run_end``, which
+        has already closed the trace out: nothing is collected, committed or
+        retried again — what the close-out could not commit was dropped. A
+        driver that dispatches only this closes the trace out here, with no
+        result (so no ``result.json``, and the trace ``incomplete``), by the
+        same rules, the cancellation of the close-out collection included.
         """
         if self._wal is None:
             return
-        tail: _Collected | None = None
-        cancellation: BaseException | None = None
-        try:
-            # ``None`` when ``on_run_end`` already collected, or after a
-            # failure: never a second close-out collection.
-            tail = await self._collect_tail()
-        except Exception:
-            # The run is already failing: logged, never raised over its error.
-            logger.warning("TraceWriter: the close-out collection failed", exc_info=True)
-        except BaseException as exc:  # held: the close-out must run to its end first
-            cancellation = exc
-        try:
-            # Idempotent: ``on_run_end`` normally commits the trailing calls
-            # first, but a driver that only dispatches ``on_run_error`` must
-            # not lose them — nor does a cancelled collection skip them.
-            try:
-                self._flush_trailing(tail)
-            finally:
-                self._wal.finalize(RunStatus.ERROR)
-                self._env = None
-        except Exception as exc:
-            if cancellation is None:
-                raise
-            # The cancellation outranks a close-out that failed under it.
-            logger.warning(
-                "TraceWriter: closing out a cancelled run failed: %s: %s",
-                type(exc).__name__,
-                exc,
-                exc_info=exc,
-            )
+        cancellation = None if self._closed else await self._close_out(None)
         logger.warning("TraceWriter: run errored after %d steps: %s", self._steps_written, error)
         if cancellation is not None:
             raise cancellation
 
-    def _close_out(self, tail: _Collected | None, *, result: Any, incomplete: bool) -> None:
-        """Commit what is owed, write result.json, write the terminal state, release the env.
+    async def _close_out(self, result: Any) -> BaseException | None:
+        """The close-out itself; returns a cancellation of the tail collection, raises nothing else.
 
-        The terminal state lands even if a trailing commit failed: a trace
-        stuck at ``running`` is a trace no evaluator will touch. No result
-        means no result.json. ``RunTrace.result`` returns ``None`` for
-        exactly that state; a file containing ``null`` would instead read
-        as a result that fails to parse.
-
-        ``error`` whatever the result says when the trace is no complete
-        record of the run: what it owes could not all be committed, or the
-        archive is incomplete — the close-out collection failed
-        (*incomplete*) or a step's did (a Loop that swallowed that error and
-        went on to report success does not make the archive whole) — or
-        result.json could not be written. The first failure is raised once
-        the terminal state is on disk.
+        In order: the close-out collection; the trailing commits (the calls
+        still registered, every owed batch, the tail — each its own commit,
+        so one the filesystem refuses costs only what it carried);
+        ``result.json`` when there is a result (none means none: a file
+        holding ``null`` would read as a result that fails to parse); then
+        the terminal status, attempted whatever happened before it. Every
+        recording failure becomes part of ``incomplete_reason`` instead of
+        an exception. What could not be committed is dropped: nothing
+        retries it (``docs/architecture_design.md`` §5.2).
         """
         wal = self._wal
-        if wal is None:
-            return
-        flushed = False
+        assert wal is not None
+        self._closed = True
+        cancellation: BaseException | None = None
+        tail: _Collected | None = None
         try:
-            self._flush_trailing(tail)
-            flushed = True
-        finally:
-            status = _status_for(result)
-            if incomplete or self._archive_failure is not None or not flushed:
-                status = RunStatus.ERROR
+            tail = await self._collect_tail()
+        except Exception as exc:
+            self._close_out_failed(
+                f"the close-out evidence collection failed: {type(exc).__name__}: {exc}"
+            )
+        except BaseException as exc:  # held: the close-out runs to its end first
+            cancellation = exc
+            self._close_out_failed("the close-out evidence collection was cancelled")
+        try:
             try:
-                if result is not None:
+                self._flush_trailing(tail)
+            except Exception as exc:
+                self._close_out_failed(
+                    f"the close-out could not commit everything the trace was owed (what it "
+                    f"could not commit was dropped): {type(exc).__name__}: {exc}"
+                )
+            if result is None:
+                self._close_out_failed(
+                    "the run was closed out without a result, so result.json was not written"
+                )
+            else:
+                try:
                     wal.write_result(result)
-            except BaseException:
-                # The trace is then no clean record of the run, whatever the run did.
-                status = RunStatus.ERROR
-                raise
+                except Exception as exc:
+                    self._close_out_failed(
+                        f"result.json could not be written: {type(exc).__name__}: {exc}"
+                    )
+        finally:
+            reason = self._incomplete_reason()
+            try:
+                wal.finalize(
+                    TraceStatus.INCOMPLETE if reason else TraceStatus.COMPLETE,
+                    incomplete_reason=reason,
+                )
+            except Exception as exc:
+                logger.error(
+                    "TraceWriter: the trace at %s could not be closed out and stays 'writing': "
+                    "%s: %s%s",
+                    wal.run_dir,
+                    type(exc).__name__,
+                    exc,
+                    f" (it was incomplete: {reason})" if reason else "",
+                    exc_info=exc,
+                )
             finally:
-                wal.finalize(status)
-                # Closed out: the trace holds no reference to the environment.
+                # Closed out: no environment reference, and nothing owed is
+                # kept for a retry that is not made.
                 self._env = None
+                self._pending_calls.clear()
+                self._pending_archive.clear()
+        if reason:
+            logger.warning("TraceWriter: the trace at %s is incomplete: %s", wal.run_dir, reason)
+        return cancellation
+
+    def _close_out_failed(self, reason: str) -> None:
+        """One thing the close-out could not record, for ``incomplete_reason``."""
+        logger.warning("TraceWriter: %s", reason)
+        self._close_out_problems.append(reason)
+
+    def _incomplete_reason(self) -> str | None:
+        """Why the trace is incomplete — the first lost step, then the close-out — or ``None``."""
+        reasons = [reason for reason in (self._hole, *self._close_out_problems) if reason]
+        return "; ".join(reasons) or None
 
     # ── AOP intercept handlers ────────────────────────────────
 
@@ -660,10 +658,22 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
 
         With an archive, the evidence is pulled here — after the timing
         stamp, before the manifest commit — so what step *t*'s commit takes
-        belongs to step *t*. A collection that raises, or hands over a
-        batch that breaks the contract, is re-raised with nothing of the
-        step committed: its calls stay registered for the trailing commit,
-        and the run fails.
+        belongs to step *t*.
+
+        A step that cannot be recorded — its collection raised, its batch
+        broke the contract, or the commit failed — is a hole: nothing of it
+        is committed, its calls stay registered for the trailing commit, and
+        the trace is incomplete, complete through the step before (the WAL
+        stops ``complete_through`` there). The run then stops on it: this
+        raises :class:`~spectragent.core.step_recorder.RecordingFailedError`
+        (the failure chained), so the run's result reads ``recording failed
+        at step t``. Not when the step's own record shows the run already
+        ended in success — the agent called done on it: raising would only
+        replace that outcome, so the failure is logged and the run ends as
+        the agent decided (``docs/architecture_design.md`` §4.6). A
+        cancellation of the collection is no recording failure and
+        propagates as it is — but the step it cut off is lost, so the trace
+        is incomplete from there too.
         """
         if self._wal is None:
             return
@@ -675,23 +685,33 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         step = int(getattr(record, "step", self._steps_written))
 
         self._stamp_timings(record)
-        batch = await self._step_archive(step) if self.archive else None
-        extra, versions = self._encode_archive(batch, step=step)
-
         pending = list(self._pending_calls)
         try:
-            self._wal.commit_step(
-                step,
-                record,
-                fragments=encode_observation(step, observation),
-                llm_calls=encode_llm_calls(step, pending, first_call=self._calls_flushed),
-                extra_files=extra,
-            )
+            batch = await self._step_archive(step) if self.archive else None
+            extra, versions = self._encode_archive(batch, step=step)
+            try:
+                self._wal.commit_step(
+                    step,
+                    record,
+                    fragments=encode_observation(step, observation),
+                    llm_calls=encode_llm_calls(step, pending, first_call=self._calls_flushed),
+                    extra_files=extra,
+                )
+            except BaseException:
+                # The capability has already forgotten the batch: it is owed
+                # to the trace, and run end commits it as trailing evidence.
+                if batch is not None and batch.files:
+                    self._pending_archive.append(batch)
+                raise
+        except Exception as exc:
+            self._step_not_recorded(record, step, exc)
+            return
         except BaseException:
-            # The capability has already forgotten the batch: it is owed to
-            # the trace, and run end commits it as trailing evidence.
-            if batch is not None and batch.files:
-                self._pending_archive.append(batch)
+            # A cancellation cut the recording off: no recording failed, but
+            # the step's record is lost all the same, so the trace is complete
+            # only through the step before. The cancellation goes on as it is.
+            if self._hole is None:
+                self._hole = f"recording step {step} was cut off by a cancellation"
             raise
         # Only once the commit succeeded: a run-record version, like a call,
         # exists only if it reached disk.
@@ -710,6 +730,29 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         )
 
     # ── internals ─────────────────────────────────────────────
+
+    def _step_not_recorded(self, record: Any, step: int, exc: Exception) -> None:
+        """Note the hole at *step*; stop the run with it unless the run already ended in success.
+
+        Only the first hole is the trace's reason: a step after it (a Loop
+        that swallowed the error and went on) fails because of it.
+
+        Raises:
+            RecordingFailedError: *record*'s step did not end the run in
+                success, so the run must stop here.
+        """
+        reason = f"recording failed at step {step}: {type(exc).__name__}: {exc}"
+        if self._hole is None:
+            self._hole = reason
+        if _ended_in_success(record):
+            logger.error(
+                "TraceWriter: %s; the agent called done on that step, so the run's outcome "
+                "stands and the trace is incomplete",
+                reason,
+                exc_info=exc,
+            )
+            return
+        raise RecordingFailedError(step, exc) from exc
 
     def _stamp_timings(self, record: Any) -> None:
         """Write the step's wall clock and model wait onto its record.
@@ -1039,14 +1082,12 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         commit that fails costs only what it carried, while everything else
         is still committed — a batch the filesystem refuses no longer takes
         the unfinished step's calls down with it. Once everything has been
-        tried, the first failure is raised.
+        tried, the first failure is raised — to the close-out, which makes it
+        part of the trace's ``incomplete_reason``.
 
-        What failed is not retried: ``AgentRuntime`` dispatches no
-        ``on_run_error`` after ``on_run_end`` raised, so under it that item
-        is dropped (``docs/architecture_design.md`` §5.2). It stays in memory
-        only because nothing here clears it; a driver that dispatches
-        ``on_run_error`` after a failed ``on_run_end`` gets one more attempt,
-        which the framework does not promise.
+        What failed is not retried: the close-out happens once and then
+        drops whatever is still owed (``docs/architecture_design.md`` §5.2);
+        a disk that just refused a write would most likely refuse it again.
         """
         if self._wal is None:
             return
@@ -1160,11 +1201,17 @@ def _task_setup_record(context: Any, *, record_secrets: bool) -> TaskSetupRecord
     return TaskSetupRecord(context=redacted, redactions=RedactionLedger(entries=entries))
 
 
-def _status_for(result: Any) -> RunStatus:
-    """Map a terminal AgentResult onto a manifest status."""
-    done = getattr(result, "agent_done", None)
-    if done is not None and done in _ERROR_DONE_STATES:
-        return RunStatus.ERROR
-    if getattr(result, "error", None):
-        return RunStatus.ERROR
-    return RunStatus.COMPLETED
+def _ended_in_success(record: Any) -> bool:
+    """Whether *record*'s own step ended the run in success: the agent called done on it.
+
+    The one outcome a step's record decides before it is handed over — a
+    Loop builds its done result from the very action result this reads
+    (``ActionResult.is_done``). A failing ending is the Loop's to protect:
+    it hands that step over through ``ReactLoop._surrender_failing``, which
+    keeps the outcome and attaches the recording failure to it.
+    """
+    return (
+        isinstance(record, StepRecord)
+        and record.origin == "policy"
+        and any(result.is_done for result in record.action_results)
+    )

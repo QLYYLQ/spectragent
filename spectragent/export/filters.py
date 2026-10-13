@@ -6,12 +6,15 @@ reason, neither an error:
 - **skipped** — a run the export cannot read as a sample source: not a
   readable trace (named by the file that does not read back, relative to the
   run: the reader's message carries absolute paths, so it goes to the log and
-  never into the manifest), a format-1 trace (no per-step fragment index),
-  recorded with ``record_secrets: true`` (raw credentials never enter a
-  dataset), no recorded negotiation (an assembly made by hand), or a
-  ``run_id`` another source shares (all sharers are skipped, as
+  never into the manifest; a trace of an older format among them), a trace
+  that was never closed (``writing`` — the hard condition on the trace's own
+  ledger; a closed trace's steps past ``complete_through`` are left out by
+  ``canonicalise``), recorded with ``record_secrets: true`` (raw credentials
+  never enter a dataset), no recorded negotiation (an assembly made by hand),
+  or a ``run_id`` another source shares (all sharers are skipped, as
   ``trace_branches`` does);
-- **filtered** — a readable run the ``filters`` exclude: ``require_status``,
+- **filtered** — a readable run the ``filters`` exclude: ``agent_outcome``
+  (how the run's agent ended, its ``result.json``; ``any`` by default),
   ``require_eval`` (a branch run is judged by its source run's verdicts),
   ``exclude_restoration_diverged`` (a restoration check that did not pass:
   ``warn`` — the branch went on regardless, so its context would be a prefix
@@ -33,15 +36,18 @@ from pathlib import Path
 
 from spectragent.core.capabilities.browser.replay.replay_log import document_miss_total
 from spectragent.core.trace.errors import TraceSchemaError
-from spectragent.core.trace.models import RunStatus, TraceConfig
+from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
-from spectragent.core.trace.sources import match_runs, task_identity, unreadable_reason
+from spectragent.core.trace.sources import (
+    agent_outcome_filtered_out,
+    match_runs,
+    not_closed_reason,
+    task_identity,
+    unreadable_reason,
+)
 from spectragent.export.settings import ExportFilters
 
 logger = logging.getLogger(__name__)
-
-#: The trace format with the per-step fragment index the export reads.
-_INDEXED_FORMAT = 2
 
 
 @dataclass(frozen=True)
@@ -80,16 +86,14 @@ def open_sources(root: Path, patterns: Sequence[str]) -> tuple[list[Source], dic
     for rel, directory in match_runs(root, patterns):
         try:
             trace = RunTrace(directory)
-            if trace.manifest.format_version < _INDEXED_FORMAT:
-                skipped[rel] = (
-                    f"format {trace.manifest.format_version} trace: the export reads the "
-                    f"format-{_INDEXED_FORMAT} per-step fragment index — re-record the run"
-                )
-                continue
             config = trace.config
         except TraceSchemaError as exc:
             logger.warning("export: skipping %s, it does not read back: %s", rel, exc)
             skipped[rel] = unreadable_reason(directory, exc)
+            continue
+        unclosed = not_closed_reason(trace.manifest)
+        if unclosed is not None:
+            skipped[rel] = unclosed
             continue
         if config.secrets_recorded:
             skipped[rel] = (
@@ -137,9 +141,9 @@ def filtered_out(
         if found is None:
             return f"branch source {branch.source_run_id!r} not among the sources"
         origin = found
-    status = source.trace.manifest.status
-    if filters.require_status != "any" and status != RunStatus(filters.require_status):
-        return f"status {status.value} (require_status: {filters.require_status})"
+    outcome = agent_outcome_filtered_out(source.trace, filters.agent_outcome)
+    if outcome is not None:
+        return outcome
     need = filters.require_eval
     if need is not None and not need.satisfied_by(origin.trace.evals()):
         whose = f"its source run {origin.rel}" if origin is not source else "it"

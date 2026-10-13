@@ -57,9 +57,11 @@ capability fits):
    lands as trailing evidence at close-out, never under the crashed step.
 10. :func:`assert_tail_lands_at_run_end` — evidence captured after the last
     commit point lands as trailing evidence at run end, claiming no step.
-11. :func:`assert_a_failed_collection_fails_the_trace_closed` — a step whose
-    collection fails is not committed, nothing is collected after it, and the
-    trace ends ``error`` even when the run reports success.
+11. :func:`assert_a_failed_collection_leaves_the_trace_incomplete` — a step
+    whose collection fails is not committed and stops the run
+    (``RecordingFailedError``), nothing is collected after it, and the trace
+    closes ``incomplete`` (complete through the step before) even when the run
+    reports success.
 12. :func:`assert_empty_archive_costs_nothing` — a trace hook with no archive
     never touches the environment's archive surface and writes no ``env/``.
 13. :func:`assert_run_records_stay_per_capability` — beside another archiving
@@ -91,6 +93,7 @@ from spectragent.core.archive import (
 from spectragent.core.environments.errors import ArchiveCollectionError
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.negotiation import negotiate_archive
+from spectragent.core.step_recorder import RecordingFailedError
 from spectragent.core.trace import fsio
 from spectragent.core.trace.encoding import (
     ENV_DIR,
@@ -100,7 +103,7 @@ from spectragent.core.trace.encoding import (
     archive_trailing_path,
     sha256_hex,
 )
-from spectragent.core.trace.models import ArchiveRecord, RunStatus
+from spectragent.core.trace.models import ArchiveRecord, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from tests._helpers.archive_fakes import (
     PEER_A,
@@ -518,12 +521,16 @@ async def assert_crash_window_hides_uncommitted_evidence(
     if harness.change_run_record is not None:
         harness.change_run_record()
     with _manifest_writes_fail():
-        await _expect_raise(
+        failure = await _expect_raise(
             recording.commit(1),
-            OSError,
+            RecordingFailedError,
             f"{harness.capability_id}: the commit of step 1 succeeded although its manifest "
             f"write failed.",
         )
+    assert isinstance(failure.__cause__, OSError), (
+        f"{harness.capability_id}: the failed manifest write surfaced as "
+        f"{type(failure.__cause__).__name__}, not the OSError behind the recording failure."
+    )
     crashed = recording.spy.batches[-1]
     crashed_steps = [item for item in crashed.files if item.scope == "step"]
     assert crashed_steps, (
@@ -605,7 +612,7 @@ async def assert_tail_lands_at_run_end(harness: ArchiveHarness, trace_root: Path
     assert trace.manifest.last_step_completed == 0, (
         "trailing evidence advanced last_step_completed — it belongs to no committed step"
     )
-    assert trace.manifest.status == RunStatus.COMPLETED
+    assert trace.manifest.status == TraceStatus.COMPLETE
     # The tail is the close-out's own commit: the last trailing entry.
     position = len(trace.manifest.trailing) - 1
     for key in harness.keys:
@@ -637,14 +644,17 @@ async def assert_tail_lands_at_run_end(harness: ArchiveHarness, trace_root: Path
         )
 
 
-async def assert_a_failed_collection_fails_the_trace_closed(
+async def assert_a_failed_collection_leaves_the_trace_incomplete(
     harness: ArchiveHarness, trace_root: Path
 ) -> None:
-    """A step whose collection fails is not committed, and the trace ends ``error``.
+    """A step whose collection fails is not committed, and the trace closes ``incomplete``.
 
-    Even when the run reports success: an explicitly requested archive with a
-    hole in it is not a complete record of the run. Nothing is collected
-    after the failure — not for a later step, not for the tail.
+    The run stops on that step (``RecordingFailedError``, the environment's
+    ``ArchiveCollectionError`` chained), and the trace is complete only through
+    the step before. Even when the run then reports success: an explicitly
+    requested archive with a hole in it is not a complete record of the run.
+    Nothing is collected after the failure — not for a later step, not for
+    the tail.
     """
     recording = _Recording(harness, trace_root)
     run_dir = await recording.start()
@@ -658,11 +668,16 @@ async def assert_a_failed_collection_fails_the_trace_closed(
         Exception,
         f"{harness.capability_id}: step 1 committed although its collection was broken.",
     )
-    assert isinstance(failure, ArchiveCollectionError), (
+    assert isinstance(failure, RecordingFailedError) and failure.step == 1, (
         f"{harness.capability_id}: a broken collection surfaced as {type(failure).__name__}, "
-        f"not the environment's ArchiveCollectionError."
+        f"not as the step's RecordingFailedError."
     )
-    assert harness.capability_id in failure.failures
+    cause = failure.__cause__
+    assert isinstance(cause, ArchiveCollectionError), (
+        f"{harness.capability_id}: the recording failure chains {type(cause).__name__}, not "
+        f"the environment's ArchiveCollectionError."
+    )
+    assert harness.capability_id in cause.failures
     trace = RunTrace(run_dir)
     assert trace.step(1) is None
     assert _archive_view(trace, harness) == before
@@ -670,10 +685,12 @@ async def assert_a_failed_collection_fails_the_trace_closed(
     collected = recording.spy.calls
     await recording.close()  # the run reports success; the trace must not
     trace = RunTrace(run_dir)
-    assert trace.manifest.status == RunStatus.ERROR, (
+    assert trace.manifest.status == TraceStatus.INCOMPLETE, (
         f"{harness.capability_id}: a run whose archive has a hole closed out as "
         f"{trace.manifest.status.value}."
     )
+    assert trace.manifest.complete_through == 0
+    assert "recording failed at step 1" in (trace.manifest.incomplete_reason or "")
     assert recording.spy.calls == collected, "something was collected after the failure"
     assert _archive_view(trace, harness)["evidence"] == before["evidence"]
 
@@ -747,7 +764,7 @@ async def assert_run_records_stay_per_capability(harness: ArchiveHarness, trace_
     await writer.on_run_end(result=agent_result())
 
     trace = RunTrace(run_dir)
-    assert trace.manifest.status == RunStatus.COMPLETED, (
+    assert trace.manifest.status == TraceStatus.COMPLETE, (
         f"{harness.capability_id}: beside a second archiving capability the trace closed out "
         f"as {trace.manifest.status.value}."
     )

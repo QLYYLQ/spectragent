@@ -16,11 +16,12 @@ from spectragent.core.capabilities.browser.archive import ReplayLogArchiver
 from spectragent.core.capabilities.browser.replay.replay_log import ReplayLog, ReplayLogEntry
 from spectragent.core.data_loader.task.require_eval import RequireEval
 from spectragent.core.trace.encoding import encode_archive_file
-from spectragent.core.trace.models import RunStatus
+from spectragent.core.trace.models import TraceStatus
 from spectragent.core.trace.sources import task_identity
 from spectragent.export.canonical import canonicalise
 from spectragent.export.filters import Source, filtered_out, open_sources
 from spectragent.export.settings import ExportFilters
+from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from tests._helpers.archive_recorder import open_session
 from tests._helpers.export_traces import (
@@ -60,13 +61,16 @@ def _branch(source_run_id: str, step: int = 1) -> BranchProvenance:
 
 
 class TestSkipped:
-    def test_secrets_recorded_format_1_no_negotiation_unreadable(self, tmp_path: Path) -> None:
+    def test_secrets_recorded_older_format_no_negotiation_unreadable_unclosed(
+        self, tmp_path: Path
+    ) -> None:
         _one(tmp_path, "ok")
         _one(tmp_path, "secrets", secrets_recorded=True)
         _one(tmp_path, "hand-made", negotiation=None)
+        _one(tmp_path, "writing", status=TraceStatus.WRITING, agent_done=None)
         old = _one(tmp_path, "old")
         manifest = json.loads((old / "manifest.json").read_text())
-        manifest["format_version"] = 1
+        manifest["format_version"] = 2
         (old / "manifest.json").write_text(json.dumps(manifest))
         broken = tmp_path / "broken"
         broken.mkdir()
@@ -75,10 +79,13 @@ class TestSkipped:
 
         sources, skipped = open_sources(tmp_path, ["*"])
         assert [s.rel for s in sources] == ["ok"]
-        assert sorted(skipped) == ["broken", "hand-made", "old", "secrets"]
+        assert sorted(skipped) == ["broken", "hand-made", "old", "secrets", "writing"]
         assert skipped["secrets"].startswith("recorded with record_secrets: true")
         assert skipped["hand-made"] == "no recorded negotiation (an assembly made by hand)"
-        assert skipped["old"].startswith("format 1 trace")
+        assert skipped["old"] == (
+            "not a readable trace: manifest.json does not read back (TraceSchemaError)"
+        ), "an older format is not read at all"
+        assert skipped["writing"].startswith("its trace was never closed (status writing)")
         assert skipped["broken"] == (
             "not a readable trace: manifest.json does not read back (TraceSchemaError)"
         ), "the run-relative file, never the reader's absolute path"
@@ -94,15 +101,43 @@ class TestSkipped:
 
 
 class TestFiltered:
-    def test_status(self, tmp_path: Path) -> None:
+    def test_agent_outcome(self, tmp_path: Path) -> None:
+        """How the run's agent ended is a filter, ``any`` by default."""
         _one(tmp_path, "done")
-        _one(tmp_path, "failed", status=RunStatus.ERROR)
+        _one(tmp_path, "failed", agent_done=AgentDoneStatus.ERROR)
         sources = _sources(tmp_path)
         assert filtered_out(sources["done"], ExportFilters(), sources) is None
-        assert filtered_out(sources["failed"], ExportFilters(), sources) == (
-            "status error (require_status: completed)"
+        assert filtered_out(sources["failed"], ExportFilters(), sources) is None
+        only_done = ExportFilters(agent_outcome="done")
+        assert filtered_out(sources["done"], only_done, sources) is None
+        assert filtered_out(sources["failed"], only_done, sources) == (
+            "its agent ended error (agent_outcome: done)"
         )
-        assert filtered_out(sources["failed"], ExportFilters(require_status="any"), sources) is None
+
+    def test_an_incomplete_trace_exports_the_steps_it_is_complete_through(
+        self, tmp_path: Path
+    ) -> None:
+        """The hard condition: past ``complete_through`` no step is a sample, whatever the filters."""
+        source = write_ui_tars_run(
+            tmp_path,
+            "holed",
+            [
+                ui_tars_step(click_at(1, 1)),
+                ui_tars_step(click_at(2, 2)),
+                ui_tars_step(click_at(3, 3)),
+            ],
+            status=TraceStatus.INCOMPLETE,
+            incomplete_reason="recording failed at step 2: OSError: disk full",
+            agent_done=AgentDoneStatus.ERROR,
+        )
+        path = source / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["complete_through"] = 1  # what a hole at step 2 leaves
+        path.write_text(json.dumps(manifest))
+        sources = _sources(tmp_path)
+        assert filtered_out(sources["holed"], ExportFilters(), sources) is None
+        samples = canonicalise(sources["holed"].trace, rel_path="holed")
+        assert [sample.step for sample in samples] == [0, 1]
 
     def test_require_eval(self, tmp_path: Path) -> None:
         _one(tmp_path, "passed", verdicts={"j": eval_result(evaluator_id="online_mind2web")})
@@ -193,11 +228,11 @@ class TestFiltered:
             assert filtered_out(sources[name], keep, sources) is None
 
     def test_a_strict_divergence_never_reaches_a_policy_step(self, tmp_path: Path) -> None:
-        """What ``strict`` leaves behind is removed by the status filter and has no sample.
+        """What ``strict`` leaves behind has no sample, whatever the filters.
 
         ``BranchLoop`` ends a run whose restoration diverged under ``strict``
         on the restored step (``error_phase="restore"``, ``env_status`` failed):
-        the manifest says ``error`` and no policy step was committed. So the
+        its agent ended in error and no policy step was committed. So the
         restoration filter is not what keeps it out of a dataset — the
         ``warn`` case above is the one only it catches.
         """
@@ -217,13 +252,15 @@ class TestFiltered:
                 ExportStep(origin="restored", error_phase="restore", restoration=diverged),
             ],
             branch=_branch("src"),
-            status=RunStatus.ERROR,
+            agent_done=AgentDoneStatus.ERROR,
         )
         sources = _sources(tmp_path)
         strict = sources["src-s1-b0"]
-        without = ExportFilters(exclude_restoration_diverged=False)
-        assert filtered_out(strict, without, sources) == "status error (require_status: completed)"
-        anything = ExportFilters(exclude_restoration_diverged=False, require_status="any")
+        done_only = ExportFilters(exclude_restoration_diverged=False, agent_outcome="done")
+        assert filtered_out(strict, done_only, sources) == (
+            "its agent ended error (agent_outcome: done)"
+        )
+        anything = ExportFilters(exclude_restoration_diverged=False)
         assert filtered_out(strict, anything, sources) is None
         assert canonicalise(strict.trace, rel_path=strict.rel) == [], "no exportable step"
 

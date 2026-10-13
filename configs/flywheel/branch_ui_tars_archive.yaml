@@ -82,6 +82,7 @@ task_loader:
     data_dir: traces/recorded            # placeholder: the directory your recorded runs are in
     step_selector: { selector_id: all }  # every_k {k, offset} | explicit {steps: [...]} | last
     branches_per_step: 1
-    require_status: completed            # error | any
+    agent_outcome: any                   # done | max_steps | error | timeout | vetoed: how the source's agent ended
+                                         # (a checkpoint is always a step the source's trace is closed and complete through)
     on_unbranchable: raise               # skip: leave an unbranchable source out, with its reason
     # require_eval: { evaluator_id: online_mind2web, label: 1 }   # only runs a judge passed

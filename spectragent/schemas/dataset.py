@@ -63,7 +63,7 @@ class SourceLedger(_Part):
     """Every matched source, by what became of it (relative path → reason)."""
 
     exported: list[ExportedSource]
-    skipped: dict[str, str]  # cannot be exported: unreadable, format 1, secrets recorded …
+    skipped: dict[str, str]  # cannot be exported: unreadable, never closed, secrets recorded …
     filtered: dict[str, str]  # left out by a filter or by decontamination
 
 

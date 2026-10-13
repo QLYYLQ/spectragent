@@ -40,7 +40,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     short_key,
 )
 from spectragent.core.trace.encoding import encode_archive_file
-from spectragent.core.trace.models import RunStatus
+from spectragent.core.trace.models import TraceStatus
 from spectragent.core.trace.reader import TraceSchemaError
 from tests._helpers.archive_recorder import ScriptedRecorder, open_session
 from tests._helpers.trace_builder import agent_result, new_wal, step_record
@@ -312,7 +312,7 @@ async def _committed(
                 extra_files=[encode_archive_file(f, step=step) for f in files],
             )
     wal.write_result(agent_result())
-    wal.finalize(RunStatus.COMPLETED)
+    wal.finalize(TraceStatus.COMPLETE)
     return wal.run_dir
 
 
@@ -385,7 +385,7 @@ class TestReading:
         )
         wal.commit_step(1, step_record(1), extra_files=[encode_archive_file(elsewhere, step=1)])
         wal.write_result(agent_result())
-        wal.finalize(RunStatus.COMPLETED)
+        wal.finalize(TraceStatus.COMPLETE)
         reader = open_archive(wal.run_dir)
         assert replay_log(reader, 1) == [] and list(iter_replay_log(reader)) == []
         assert document_miss_total(reader) == 0
@@ -403,7 +403,7 @@ class TestReading:
         )
         wal.commit_step(1, step_record(1), extra_files=[encode_archive_file(bad, step=1)])
         wal.write_result(agent_result())
-        wal.finalize(RunStatus.COMPLETED)
+        wal.finalize(TraceStatus.COMPLETE)
         with pytest.raises(TraceSchemaError, match=r"replay\.jsonl.*line 2|line 2.*replay\.jsonl"):
             replay_log(open_archive(wal.run_dir), 1)
 

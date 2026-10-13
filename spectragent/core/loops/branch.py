@@ -87,6 +87,7 @@ from spectragent.core.loops.run import LoopRun
 from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.trace.models import RecordedLLMCall, TraceNegotiation
 from spectragent.core.trace.redaction import OMITTED
+from spectragent.core.trace.sources import not_closed_reason, past_complete_reason
 from spectragent.schemas.action import Action
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation.dynamic_model import summarize_observation
@@ -232,21 +233,22 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
     def _check_checkpoint(self, source: SourceRun, agent: Any, deps: dict[str, Any]) -> None:
         """Refuse a source this assembly cannot resume, naming every problem."""
         manifest = source.manifest
-        if manifest.format_version < 2:
-            raise IncompatibleCheckpointError(
-                source.name,
-                [
-                    f"trace format {manifest.format_version}; branching reads the per-step "
-                    "fragment and call records of format 2"
-                ],
-            )
         t = source.checkpoint.step
         problems: list[str] = []
+        # The trace's own ledger is a hard condition however the checkpoint
+        # was chosen (``trace_branches`` never offers such a step): closed,
+        # and complete through the checkpoint.
+        unclosed = not_closed_reason(manifest)
+        if unclosed is not None:
+            problems.append(unclosed)
         committed = source.committed_steps()
         gaps = [k for k in range(t + 1) if k not in committed]
         if gaps:
             problems.append(f"steps {gaps} are not committed (the checkpoint is step {t})")
         else:
+            incomplete = past_complete_reason(manifest, t)
+            if incomplete is not None:
+                problems.append(incomplete)
             record = source.record(t)
             if record.origin != "policy":
                 problems.append(f"step {t} is a {record.origin!r} step, not a policy step")

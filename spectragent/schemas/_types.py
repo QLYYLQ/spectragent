@@ -13,10 +13,20 @@ class EnvironmentStatus(StrEnum):
 
 
 class AgentDoneStatus(StrEnum):
+    """How the agent's run ended — ``result.json``'s ledger.
+
+    Whether the run's trace is a complete record of it is the manifest's
+    ledger instead (``TraceStatus``): a run that timed out can have a
+    complete trace, and one that ended ``done`` an incomplete one.
+    ``vetoed``: a guard (a ``RunAbort``) stopped the run, during setup or
+    during the run.
+    """
+
     DONE = "done"
     MAX_STEPS = "max_steps"
     TIMEOUT = "timeout"
     ERROR = "error"
+    VETOED = "vetoed"
 
 
 # --- EnvironmentStatus normalization ---

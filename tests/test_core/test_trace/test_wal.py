@@ -13,9 +13,9 @@ import pytest
 
 from spectragent.core.trace.models import (
     TRACE_FORMAT_VERSION,
-    RunStatus,
     TraceConfig,
     TraceManifest,
+    TraceStatus,
 )
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.action import Action
@@ -63,13 +63,14 @@ class TestWALWriter:
         assert parsed["agent_id"] == "test_agent"
         assert parsed["loop_id"] == "react"
 
-    def test_init_run_writes_a_format_2_manifest(self, wal, config):
+    def test_init_run_writes_a_format_3_manifest_that_is_writing(self, wal, config):
         wal.init_run(config)
         manifest = _manifest(wal)
-        assert manifest.format_version == TRACE_FORMAT_VERSION == 2
+        assert manifest.format_version == TRACE_FORMAT_VERSION == 3
         assert manifest.run_id == "run-001"
         assert manifest.last_step_completed == -1
-        assert manifest.status == RunStatus.RUNNING
+        assert manifest.status == TraceStatus.WRITING
+        assert (manifest.incomplete_reason, manifest.complete_through) == (None, -1)
         assert manifest.steps == []
         assert manifest.trailing == []
         assert manifest.output_formats == []
@@ -179,23 +180,58 @@ class TestWALWriter:
         assert on_disk["answer"] == "42"
         assert on_disk["schema_version"] == "2.1"
 
-    def test_finalize_completed(self, wal, config):
+    def test_finalize_complete(self, wal, config):
         wal.init_run(config)
-        wal.finalize(RunStatus.COMPLETED)
-        assert _manifest(wal).status == RunStatus.COMPLETED
+        wal.finalize(TraceStatus.COMPLETE)
+        manifest = _manifest(wal)
+        assert (manifest.status, manifest.incomplete_reason) == (TraceStatus.COMPLETE, None)
 
-    def test_finalize_error(self, wal, config):
+    def test_finalize_incomplete_records_why(self, wal, config):
         wal.init_run(config)
-        wal.finalize(RunStatus.ERROR)
-        assert _manifest(wal).status == RunStatus.ERROR
+        wal.finalize(TraceStatus.INCOMPLETE, incomplete_reason="the disk was full")
+        manifest = _manifest(wal)
+        assert manifest.status == TraceStatus.INCOMPLETE
+        assert manifest.incomplete_reason == "the disk was full"
+
+    @pytest.mark.parametrize(
+        ("status", "reason"),
+        [
+            (TraceStatus.INCOMPLETE, None),
+            (TraceStatus.INCOMPLETE, ""),
+            (TraceStatus.COMPLETE, "a reason a complete trace cannot have"),
+            (TraceStatus.WRITING, None),
+        ],
+    )
+    def test_finalize_refuses_a_ledger_that_contradicts_itself(self, wal, config, status, reason):
+        wal.init_run(config)
+        with pytest.raises(ValueError):
+            wal.finalize(status, incomplete_reason=reason)
+        assert _manifest(wal).status == TraceStatus.WRITING
 
     def test_finalize_keeps_what_was_committed(self, wal, config):
         wal.init_run(config)
         wal.commit_step(0, step_record(0))
-        wal.finalize(RunStatus.COMPLETED)
+        wal.finalize(TraceStatus.COMPLETE)
         manifest = _manifest(wal)
         assert [entry.step for entry in manifest.steps] == [0]
-        assert manifest.format_version == 2
+        assert manifest.format_version == 3
+
+    def test_complete_through_follows_the_gapless_steps(self, wal, config):
+        """It stops at the first step that never committed, whatever commits after it."""
+        wal.init_run(config)
+        wal.commit_step(0, step_record(0))
+        wal.commit_step(1, step_record(1))
+        assert _manifest(wal).complete_through == 1
+        wal.commit_step(3, step_record(3))  # step 2's recording failed
+        manifest = _manifest(wal)
+        assert (manifest.last_step_completed, manifest.complete_through) == (3, 1)
+        wal.commit_step(2, step_record(2))  # a driver that retried it
+        assert _manifest(wal).complete_through == 3
+
+    def test_complete_through_waits_for_step_zero(self, wal, config):
+        wal.init_run(config)
+        wal.commit_step(1, step_record(1))
+        assert _manifest(wal).complete_through == -1
 
     def test_commit_without_init_raises(self, wal):
         with pytest.raises(RuntimeError, match="not initialized"):
@@ -207,4 +243,4 @@ class TestWALWriter:
 
     def test_finalize_without_init_raises(self, wal):
         with pytest.raises(RuntimeError, match="not initialized"):
-            wal.finalize(RunStatus.COMPLETED)
+            wal.finalize(TraceStatus.COMPLETE)

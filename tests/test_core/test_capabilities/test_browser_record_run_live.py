@@ -87,7 +87,7 @@ def test_record_config_produces_full_env(tmp_path: Path, monkeypatch: pytest.Mon
     assert len(llm.requests) == 2, "the scripted model was asked once per step"
     assert writer.run_dir is not None
     trace = RunTrace(writer.run_dir)
-    assert trace.manifest.status.value == "completed"
+    assert trace.manifest.status.value == "complete"
 
     env = writer.run_dir / "env"
     files = sorted(str(p.relative_to(env)) for p in env.rglob("*") if p.is_file())

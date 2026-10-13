@@ -70,5 +70,5 @@ task_loader:
     data_dir: traces/recorded            # placeholder: the directory your recorded runs are in
     step_selector: { selector_id: last } # each source's last branchable step
     branches_per_step: 2                 # the same input twice: replay determinism
-    require_status: any                  # a run that ended in error is measured too
+    agent_outcome: any                   # a run whose agent ended in error is measured too
     on_unbranchable: skip                # an unbranchable source is left out, with its reason

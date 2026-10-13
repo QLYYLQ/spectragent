@@ -12,6 +12,12 @@ are (:func:`task_identity`: a branch run's are its source task's) and how a
 run that does not read back is named (:func:`unreadable_reason`), so the
 dataset's ``split.by: site`` / ``exclude_sites`` and the report's per-site
 statistics use one key.
+
+The branch loader and the export also share how they select sources by the
+two ledgers (arch §4.10, §4.15): a hard condition on the trace's own ledger —
+closed, and complete through the step used (:func:`not_closed_reason`,
+:func:`past_complete_reason`) — and a filter on the agent's, how the run
+ended (:data:`AgentOutcomeFilter`, :func:`agent_outcome_filtered_out`).
 """
 
 from __future__ import annotations
@@ -20,13 +26,25 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Literal, get_args
 from urllib.parse import urlsplit
 
 from spectragent.core.trace.encoding import MANIFEST_FILE
 from spectragent.core.trace.errors import TraceSchemaError
-from spectragent.core.trace.models import TraceConfig
+from spectragent.core.trace.models import TraceConfig, TraceManifest, TraceStatus
+
+if TYPE_CHECKING:
+    from spectragent.core.trace.reader import RunTrace
 
 logger = logging.getLogger(__name__)
+
+#: The agent-outcome filter of a source selection (``trace_branches``'
+#: ``agent_outcome``, the export's ``filters.agent_outcome``): ``any`` keeps
+#: every source; any other value keeps the runs whose ``result.json`` says the
+#: agent ended that way (``AgentDoneStatus``).
+AgentOutcomeFilter = Literal["any", "done", "max_steps", "error", "timeout", "vetoed"]
+#: :data:`AgentOutcomeFilter`'s values, for a check outside pydantic.
+AGENT_OUTCOMES: tuple[str, ...] = get_args(AgentOutcomeFilter)
 
 
 def source_pattern_problem(pattern: str) -> str | None:
@@ -131,9 +149,63 @@ def task_identity(config: TraceConfig) -> TaskIdentity:
     )
 
 
+def not_closed_reason(manifest: TraceManifest) -> str | None:
+    """Why no step of the run may be used, when its trace was never closed; else ``None``.
+
+    A hard condition of every source selection, not a filter: a trace still
+    ``writing`` is being recorded right now, or its process died before
+    closing it out, and nothing about it is final.
+    """
+    if manifest.status is not TraceStatus.WRITING:
+        return None
+    return (
+        "its trace was never closed (status writing): the run is still being recorded, or its "
+        "process died before closing the trace out"
+    )
+
+
+def past_complete_reason(manifest: TraceManifest, step: int) -> str | None:
+    """Why *step* may not be used because the trace is not complete through it; else ``None``.
+
+    A hard condition: past ``complete_through`` the trace lost a step's
+    record or evidence, so a branch from there would restore a world nobody
+    recorded, and an exported step's context would have a hole.
+    """
+    if step <= manifest.complete_through:
+        return None
+    why = f": {manifest.incomplete_reason}" if manifest.incomplete_reason else ""
+    return (
+        f"step {step} is past the step its trace is complete through "
+        f"({manifest.complete_through}){why}"
+    )
+
+
+def agent_outcome_filtered_out(trace: RunTrace, wanted: AgentOutcomeFilter) -> str | None:
+    """Why the agent-outcome filter *wanted* leaves *trace* out, or ``None`` when it is kept.
+
+    Reads ``result.json`` only when the filter is set (``any`` reads nothing).
+
+    Raises:
+        TraceSchemaError: ``result.json`` does not read back.
+    """
+    if wanted == "any":
+        return None
+    result = trace.result
+    if result is None:
+        return f"it has no result.json, so how its agent ended is unknown (agent_outcome: {wanted})"
+    if result.agent_done != wanted:
+        return f"its agent ended {result.agent_done.value} (agent_outcome: {wanted})"
+    return None
+
+
 __all__ = [
+    "AGENT_OUTCOMES",
+    "AgentOutcomeFilter",
     "TaskIdentity",
+    "agent_outcome_filtered_out",
     "match_runs",
+    "not_closed_reason",
+    "past_complete_reason",
     "source_pattern_problem",
     "task_identity",
     "unreadable_reason",

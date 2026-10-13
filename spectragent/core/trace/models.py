@@ -28,23 +28,43 @@ from spectragent.core.llm.views import ChatInvokeUsage
 from spectragent.schemas._types import UTCDatetime
 from spectragent.schemas.restoration import BranchProvenance
 
-#: The on-disk layout this build writes and the newest it reads.
+#: The on-disk layout this build writes, and the only one it reads.
 #:
-#: 1 is every trace written before the manifest carried the field: a flat
+#: 1 is every trace written before the manifest carried the field (a flat
 #: fragment file list, paired ``NNN_input.json`` / ``NNN_output.json``
-#: message files, and a fragment-capture failure written under the
-#: fragment's own name with nothing to tell it from the fragment. 2 is the
-#: layout of §5.3: a per-step fragment index with an explicit failure
-#: marker, one record per LLM call, and an extra-file index.
-TRACE_FORMAT_VERSION = 2
+#: message files, a fragment-capture failure indistinguishable from the
+#: fragment). 2 added the per-step fragment index with an explicit failure
+#: marker, one record per LLM call and an extra-file index. 3 is the layout
+#: of §5.3: format 2 plus the trace's own ledger — the manifest's ``status``
+#: says whether the trace is complete (:class:`TraceStatus`), no longer how
+#: the agent ended (that is ``result.json``'s ``agent_done``), and it names
+#: why a trace is incomplete and through which step it is complete. A
+#: format-2 ``error`` meant either, so no reader can tell what an older
+#: manifest's status says: ``RunTrace`` refuses every other version.
+TRACE_FORMAT_VERSION = 3
 
 
-class RunStatus(StrEnum):
-    """Status of a trace run."""
+class TraceStatus(StrEnum):
+    """Whether a trace is a complete record of its run — the trace's ledger, not the agent's.
 
-    RUNNING = "running"
-    COMPLETED = "completed"
-    ERROR = "error"
+    How the agent ended (done, max_steps, error, timeout, vetoed) is
+    ``result.json``'s ``agent_done``; this says only whether what the run
+    did is all on disk. A run that timed out, or whose model call failed,
+    has a complete trace when everything it did was recorded.
+
+    - ``writing``: the trace is open — the run is still going, or its
+      process died before closing the trace out. Nothing about it is final.
+    - ``complete``: closed, and nothing the run did failed to be recorded.
+    - ``incomplete``: closed, but something failed to be recorded — a
+      step's evidence (the run stopped there), the close-out evidence
+      collection, an item the close-out could not commit, ``result.json``.
+      ``TraceManifest.incomplete_reason`` says what, and
+      ``TraceManifest.complete_through`` how far the trace is still whole.
+    """
+
+    WRITING = "writing"
+    COMPLETE = "complete"
+    INCOMPLETE = "incomplete"
 
 
 class FragmentFiles(BaseModel):
@@ -67,8 +87,6 @@ class FragmentFiles(BaseModel):
 
 class StepManifestEntry(BaseModel):
     """One committed step: its record, and every file it consists of."""
-
-    model_config = ConfigDict(extra="allow")
 
     step: int
     step_file: str  # steps/NNN.json
@@ -104,21 +122,30 @@ class TraceManifest(BaseModel):
     Written via write-then-rename to guarantee atomicity. A file it does
     not list was not committed, whatever is on disk.
 
-    ``extra="allow"`` so a format-1 manifest — different field names —
-    still parses: its identity, status and step files stay readable, and
-    the accessors whose on-disk shape changed refuse it by
-    ``format_version`` instead of failing on a field name.
+    It is the trace's ledger: ``status`` says whether the trace is a
+    complete record of the run (:class:`TraceStatus`), never how the agent
+    ended — ``result.json`` says that.
     """
-
-    model_config = ConfigDict(extra="allow")
 
     #: Absent on every manifest written before the field existed, which is
     #: exactly what makes the default 1 right. ``init_run`` writes
-    #: :data:`TRACE_FORMAT_VERSION`.
+    #: :data:`TRACE_FORMAT_VERSION`; ``RunTrace`` reads no other version.
     format_version: int = 1
     run_id: str
     last_step_completed: int = -1  # -1 means no step completed yet
-    status: RunStatus = RunStatus.RUNNING
+    status: TraceStatus = TraceStatus.WRITING
+    #: What failed to be recorded, in plain words — set exactly when
+    #: ``status`` is ``incomplete`` (several failures, in the order they
+    #: happened, joined by ``"; "``).
+    incomplete_reason: str | None = None
+    #: The last step through which the trace is complete: steps
+    #: ``0..complete_through`` are all committed, each with its evidence.
+    #: -1 when there is none. It stops at the first step whose recording
+    #: failed, so it equals ``last_step_completed`` unless a step was lost
+    #: and a later one still committed; it is kept up to date while the
+    #: trace is ``writing``, and a branch checkpoint or an exported step past
+    #: it is never used (``docs/architecture_design.md`` §4.10, §4.15).
+    complete_through: int = -1
     created_at: UTCDatetime
     updated_at: UTCDatetime
     config_hash: str = ""

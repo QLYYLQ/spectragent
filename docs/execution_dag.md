@@ -1376,7 +1376,7 @@ archive scope 是 browser 级的，因为弹窗的流量在控制连接接管它
 
 **Browser**：`retarget`——带 index 的动作先几何（`bounds` 在 `retarget_tolerance_px` 之内）再签名（tag、id / name / aria-label / role、文本哈希），唯一匹配改写 index，否则 `not_found` / `ambiguous`；`switch_tab` 按 tab 顺序与 URL；坐标与导航恒等。`verify_restoration`——URL、可交互元素签名多重集、截图 dHash（Pillow）距离、自上次校验以来的主 frame 文档 miss（回放日志的单调计数）。
 
-**分叉任务**：`trace_branches` 加载器（手写 `__init__`、惰性加载）只经 `RunTrace` 读已提交的部分，按 `sources` glob（排序）、`require_status`、`require_eval`（经 `RunTrace.evals()`）、`require_archive` 筛选，在已提交的策略步里经 `step_selector` 选步，每步展开 `branches_per_step` 个任务：id `<source_run_id>/s<t>/b<i>`，env 部分是源 run 的 `task_setup`（缺失或被脱敏时经源 benchmark 的加载器重解析）加 `replay_archive = 源 run 目录`，loop 部分是 `checkpoint`，branch 部分是 `BranchProvenance`（不进配置摘要）。v1 没有 `trace_branches` 的评测数据加载器。三个 browser agent 的 `__wiring__["agent_loop"]` 允许 `branch`。
+**分叉任务**：`trace_branches` 加载器（手写 `__init__`、惰性加载）只经 `RunTrace` 读已提交的部分，按 `sources` glob（排序）、`agent_outcome`（读 `result.json`，默认 `any`）、`require_eval`（经 `RunTrace.evals()`）、`require_archive` 筛选，在已提交、且源 trace 已关闭并完整到的策略步里（trace 自己那本账是硬条件，2026-10-13 起）经 `step_selector` 选步，每步展开 `branches_per_step` 个任务：id `<source_run_id>/s<t>/b<i>`，env 部分是源 run 的 `task_setup`（缺失或被脱敏时经源 benchmark 的加载器重解析）加 `replay_archive = 源 run 目录`，loop 部分是 `checkpoint`，branch 部分是 `BranchProvenance`（不进配置摘要）。v1 没有 `trace_branches` 的评测数据加载器。三个 browser agent 的 `__wiring__["agent_loop"]` 允许 `branch`。
 
 #### 验收
 
@@ -1405,7 +1405,7 @@ archive scope 是 browser 级的，因为弹窗的流量在控制连接接管它
 
 #### 业务逻辑
 
-**流水线**：源（`core/trace/sources.py::match_runs`，从 `trace_branches` 挪来的同一份）→ 源级检查与筛选（`require_status`、`require_eval`——分叉 run 用源 run 的判定、`exclude_restoration_diverged`、`max_document_misses`、`exclude_sites`、去污染）→ canonical 化（可导出的步：策略步、没有 `error_phase`、至少执行了一个动作）→ 翻译 → 学生渲染 → `exporter.format` → 校验 → 切分、重复标记、manifest → 原子落盘（`<output_dir>.partial/` 全部通过才改名）。
+**流水线**：源（`core/trace/sources.py::match_runs`，从 `trace_branches` 挪来的同一份）→ 源级检查与筛选（trace 从没关闭的源跳过、只导出 trace 完整到的步；`agent_outcome`、`require_eval`——分叉 run 用源 run 的判定、`exclude_restoration_diverged`、`max_document_misses`、`exclude_sites`、去污染）→ canonical 化（可导出的步：策略步、没有 `error_phase`、至少执行了一个动作）→ 翻译 → 学生渲染 → `exporter.format` → 校验 → 切分、重复标记、manifest → 原子落盘（`<output_dir>.partial/` 全部通过才改名）。
 
 **round-trip**（PRD 的 `parse(format(a)) == a` 做不到：`normalized_1000` 在 1280 px 上 22% 的 x 回不来）：名字按学生的守卫规则解析后相等 + 不动点 `format(parse(format(a))) == format(a)` + 每个点误差 ≤ `PointGrid.quantum` + 其余设了值的参数原样回来；写不出来的参数抛 `UnrepresentableActionError` → 不可译原因 `unrepresentable`。训练标签是量化后的点，量化误差分布进 manifest。
 

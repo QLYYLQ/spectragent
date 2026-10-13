@@ -21,6 +21,13 @@ The runner owns exactly four things:
 4. **Identity** — every run carries ``(benchmark, subset, task_id)`` and
    a stable ``run_id`` into the trace.
 
+The summary counts three ledgers per task — how the agent ended
+(``result.json``), whether the environment held up, whether the trace is a
+complete record (its manifest) — and names every infrastructure failure: an
+environment that failed, a model unavailable after the provider's retries,
+a trace that is incomplete or never closed. A guard's veto stops the sweep,
+is shown, and has its own exit code (:data:`VETO_EXIT_CODE`).
+
 Everything else — env setup/teardown ordering, lifecycle dispatch,
 timeout, result construction — belongs to :class:`AgentRuntime` and is
 deliberately *not* duplicated here.
@@ -46,12 +53,16 @@ import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from spectragent.core.composer import ComposedRun
+from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.runtime import AgentRuntime
-from spectragent.schemas._types import EnvironmentStatus
+from spectragent.core.trace.encoding import MANIFEST_FILE
+from spectragent.core.trace.errors import TraceSchemaError
+from spectragent.core.trace.reader import RunTrace
+from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +70,15 @@ _UNSAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
 #: ``spectragent-bench``'s exit code when the pre-flight check refused the
 #: configuration: no task ran and no trace was opened (0 and 1 are a sweep
-#: that ran, with no failed task / with one).
+#: that ran, with no infrastructure failure / with one).
 PREFLIGHT_EXIT_CODE = 2
+#: ``spectragent-bench``'s exit code when a guard vetoed the sweep: the sweep
+#: stopped at the vetoed task, whose trace and the finished tasks' traces stay
+#: (the flywheel chain stops on it, arch §4.16).
+VETO_EXIT_CODE = 3
+
+#: ``StepRecord.error_phase`` of a step whose model call failed (``ReactLoop``).
+_MODEL_CALL_PHASE = "llm"
 
 
 def _safe_run_id(task_id: str, *, prefix: str = "") -> str:
@@ -111,16 +129,37 @@ class PreflightError(RuntimeError):
 
 @dataclass(frozen=True)
 class TaskOutcome:
-    """What happened to one task."""
+    """What happened to one task — the agent's ledger, the environment's, the trace's.
+
+    ``result`` says how the agent ended (``agent_done``) and whether the
+    environment held up (``env_status``); the trace's own ledger — whether
+    the trace is a complete record of the run — is read back from its
+    manifest once the run is over (``trace_status``, ``trace_note``).
+    """
 
     task_id: str
     result: Any = None
     trace_dir: Path | None = None
     error: str | None = None
     elapsed_ms: int = 0
+    #: The guard's veto (a ``RunAbort``), when one stopped this task — and
+    #: with it the sweep.
+    vetoed: str | None = None
+    #: The trace's status as its manifest says once the run is over:
+    #: ``complete``, ``incomplete`` or ``writing`` (never closed out), or
+    #: ``unreadable``; ``None`` when no trace was written.
+    trace_status: str | None = None
+    #: Why the trace is incomplete (its ``incomplete_reason``), or why it
+    #: does not read back.
+    trace_note: str | None = None
+    #: The model call that ended the run by failing after the provider's own
+    #: retries (its error class and message), when that is how the run ended.
+    model_unavailable: str | None = None
 
     @property
     def agent_done(self) -> str:
+        if self.vetoed is not None:
+            return str(AgentDoneStatus.VETOED)
         done = getattr(self.result, "agent_done", None)
         return str(done) if done is not None else "not_started"
 
@@ -131,7 +170,7 @@ class TaskOutcome:
 
     @property
     def infrastructure_error(self) -> str | None:
-        """What stopped this task from being a real attempt, if anything.
+        """What stopped this task from being a real, fully recorded attempt, if anything.
 
         ``error`` alone is not that answer. The sweep calls
         ``execute(raise_on_error=False)``, so a browser that never
@@ -141,31 +180,47 @@ class TaskOutcome:
         outcome's own ``error`` reports 300 unstarted browsers as 300
         completed tasks and exits 0.
 
-        ``env_status`` is the field that exists precisely to separate "the
-        environment broke" from "the agent did badly", so it is the one
-        consulted here: an agent that ran out of steps in a healthy
-        browser is a completed attempt and stays ``ok``.
+        So each ledger is consulted for what it alone can say: the
+        environment failed (``env_status`` exists precisely to separate
+        that from an agent that did badly); the model was unavailable — its
+        call failed after the provider's own retries, which the agent ledger
+        records as an ordinary ``error``; the trace is not a complete record
+        (``incomplete``, never closed, unreadable). An agent that ran out of
+        steps in a healthy browser, fully recorded, is a completed attempt
+        and stays ``ok``. A veto is not an infrastructure failure: it is
+        reported on its own (``vetoed``).
         """
         if self.error is not None:
             return self.error
         if self.result is not None and self.env_status == EnvironmentStatus.FAILED:
             return str(getattr(self.result, "error", None) or "environment failed")
+        if self.model_unavailable is not None:
+            return f"the model call failed after the provider's retries: {self.model_unavailable}"
+        if self.trace_status == "incomplete":
+            return f"the trace is incomplete: {self.trace_note}"
+        if self.trace_status == "writing":
+            return "the trace was never closed out (its manifest still says writing)"
+        if self.trace_status == "unreadable":
+            return f"the trace does not read back: {self.trace_note}"
         return None
 
     @property
     def ok(self) -> bool:
-        """The task ran to a terminal state without infrastructure failure."""
-        return self.result is not None and self.infrastructure_error is None
+        """The task ran to a terminal state, fully recorded, with no infrastructure failure or veto."""
+        return self.vetoed is None and self.result is not None and self.infrastructure_error is None
 
 
 @dataclass(frozen=True)
 class BenchmarkRunSummary:
-    """Aggregate of one benchmark sweep.
+    """Aggregate of one benchmark sweep: three counters, the failures, the veto.
 
-    ``agent_done`` counts say how runs *terminated*. Whether an answer was
-    correct stays an Evaluator's business and lives in ``eval_summary``,
-    which is ``None`` unless the config declared an ``evaluator:`` layer —
-    a sweep is perfectly valid without one.
+    The counters are the three ledgers: how the agents ended
+    (:meth:`count_by_done`), whether the environment held up
+    (:meth:`count_by_environment`), whether each trace is a complete record
+    (:meth:`count_by_trace`). Whether an answer was correct stays an
+    Evaluator's business and lives in ``eval_summary``, which is ``None``
+    unless the config declared an ``evaluator:`` layer — a sweep is
+    perfectly valid without one.
     """
 
     benchmark: str
@@ -175,9 +230,9 @@ class BenchmarkRunSummary:
     eval_errors: list[str] = field(default_factory=list)
 
     #: Set when a guard vetoed the sweep (``RunAbort``), naming the task that
-    #: did it. ``outcomes`` then holds only the tasks that ran before it, so
-    #: without this a short sweep is indistinguishable from a small one — and
-    #: a reader would compare a 3-task partial against a 30-task full one.
+    #: did it. ``outcomes`` ends with that task, so without this a short sweep
+    #: is indistinguishable from a small one — and a reader would compare a
+    #: 3-task partial against a 30-task full one.
     aborted: str | None = None
 
     @property
@@ -194,21 +249,36 @@ class BenchmarkRunSummary:
 
     @property
     def failed(self) -> int:
-        return sum(1 for o in self.outcomes if not o.ok)
+        """Tasks with an infrastructure failure (:attr:`TaskOutcome.infrastructure_error`)."""
+        return sum(1 for o in self.outcomes if o.infrastructure_error is not None)
 
     def count_by_done(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for outcome in self.outcomes:
-            counts[outcome.agent_done] = counts.get(outcome.agent_done, 0) + 1
-        return counts
+        """How the agents ended: done, max_steps, error, timeout, vetoed (not_started: no result)."""
+        return _count(outcome.agent_done for outcome in self.outcomes)
+
+    def count_by_environment(self) -> dict[str, int]:
+        """Whether the environment held up: success, failed (``(no result)``: nothing to say)."""
+        return _count(outcome.env_status or "(no result)" for outcome in self.outcomes)
+
+    def count_by_trace(self) -> dict[str, int]:
+        """Whether each trace is a complete record: complete, incomplete, writing, unreadable."""
+        return _count(outcome.trace_status or "(no trace)" for outcome in self.outcomes)
 
     def format_table(self) -> str:
-        lines = [
-            f"benchmark={self.benchmark} subset={self.subset or '-'} "
-            f"tasks={self.total} completed={self.completed} failed={self.failed}",
-        ]
-        for done, count in sorted(self.count_by_done().items()):
-            lines.append(f"  agent_done={done}: {count}")
+        header = (
+            f"benchmark={self.benchmark} subset={self.subset or '-'} tasks={self.total} "
+            f"completed={self.completed} infrastructure_failures={self.failed}"
+        )
+        if self.aborted is not None:
+            header += " vetoed=1"
+        lines = [header]
+        for label, counts in (
+            ("agent outcome", self.count_by_done()),
+            ("environment", self.count_by_environment()),
+            ("trace", self.count_by_trace()),
+        ):
+            listed = ", ".join(f"{key}={count}" for key, count in sorted(counts.items()))
+            lines.append(f"  {label}: {listed or '-'}")
         for outcome in self.outcomes:
             where = outcome.trace_dir.name if outcome.trace_dir else "-"
             # ``infrastructure_error``, not ``error``: the message for a
@@ -216,10 +286,19 @@ class BenchmarkRunSummary:
             # only the bare status left "Environment setup failed: ..."
             # unreachable from the table it belongs in.
             failure = outcome.infrastructure_error
-            detail = f" error={failure}" if failure else ""
+            if outcome.vetoed is not None:
+                detail = f" vetoed: {outcome.vetoed}"
+            elif failure:
+                detail = f" infrastructure failure: {failure}"
+            else:
+                detail = ""
             lines.append(
                 f"  {outcome.task_id}: {outcome.agent_done} "
                 f"({outcome.elapsed_ms} ms, trace={where}){detail}"
+            )
+        if self.aborted is not None:
+            lines.append(
+                f"vetoed: a guard stopped the sweep at {self.aborted}; no task after it ran"
             )
         if self.eval_summary is not None:
             from spectragent.evaluator.summary import format_summary
@@ -229,6 +308,69 @@ class BenchmarkRunSummary:
         for message in self.eval_errors:
             lines.append(f"  eval error: {message}")
         return "\n".join(lines)
+
+
+def _count(keys: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for key in keys:
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+class _TraceLedger(NamedTuple):
+    """What a finished run's trace says about it (:func:`_trace_ledger`)."""
+
+    status: str | None = None
+    note: str | None = None
+    model_unavailable: str | None = None
+    #: The run's ``result.json`` — what a vetoed run's outcome is read from,
+    #: since ``execute`` raises the veto instead of returning a result.
+    result: Any = None
+
+
+def _trace_ledger(trace_dir: Path | None, result: Any) -> _TraceLedger:
+    """The trace's own ledger and the model call a run in error ended on, read back from the trace.
+
+    Read once the run is over, from what was committed — the manifest's
+    status and ``incomplete_reason``; and, for a run that ended in error on
+    a model call, that call's recorded failure (*result*, or the trace's own
+    ``result.json`` when there is no *result*, says how the run ended). A
+    truncated reply is the configured token ceiling, not the model's
+    availability, so it is not counted as one. No trace (none written, or
+    its manifest never made it to disk) is the empty ledger; one that does
+    not read back is ``unreadable`` with the reason.
+    """
+    if trace_dir is None or not (trace_dir / MANIFEST_FILE).exists():
+        return _TraceLedger()
+    try:
+        trace = RunTrace(trace_dir)
+        recorded = result if result is not None else trace.result
+        model = _model_call_that_ended(trace, recorded)
+    except TraceSchemaError as exc:
+        return _TraceLedger(status="unreadable", note=str(exc))
+    return _TraceLedger(
+        status=trace.manifest.status.value,
+        note=trace.manifest.incomplete_reason,
+        model_unavailable=model,
+        result=recorded,
+    )
+
+
+def _model_call_that_ended(trace: RunTrace, result: Any) -> str | None:
+    """The failed model call a run in error ended on — ``"<error class>: <detail>"`` — or ``None``."""
+    if getattr(result, "agent_done", None) != AgentDoneStatus.ERROR:
+        return None
+    policy = [record for record in trace.step_records if record.origin == "policy"]
+    if not policy or policy[-1].error_phase != _MODEL_CALL_PHASE:
+        return None
+    failed = [
+        call.failure
+        for call in trace.llm_messages(policy[-1].step)
+        if call.status == "failed" and call.failure is not None
+    ]
+    if not failed or failed[-1].error == ModelOutputTruncatedError.__name__:
+        return None
+    return f"{failed[-1].error}: {failed[-1].detail}"
 
 
 class BenchmarkRunner:
@@ -341,15 +483,15 @@ class BenchmarkRunner:
         aborted: str | None = None
         for task_id in selected:
             run, prepared = prepared, None
-            try:
-                outcomes.append(await self.run_task(task_id, run=run))
-            except RunAbort as exc:
+            outcome = await self.run_task(task_id, run=run)
+            outcomes.append(outcome)
+            if outcome.vetoed is not None:
                 # Stop the sweep, but keep what it produced. The guard said
-                # "stop", not "destroy the evidence": the finished tasks have
-                # complete traces, and under Record Once, Evaluate Many those
-                # are still worth scoring. Losing them silently would make a
-                # veto more destructive than a crash.
-                aborted = f"{task_id}: {exc}"
+                # "stop", not "destroy the evidence": the finished tasks and
+                # the vetoed one have closed traces, and under Record Once,
+                # Evaluate Many those are still worth scoring. Losing them
+                # silently would make a veto more destructive than a crash.
+                aborted = f"{task_id}: {outcome.vetoed}"
                 logger.warning(
                     "BenchmarkRunner: sweep vetoed at %s after %d/%d task(s)",
                     task_id,
@@ -433,8 +575,11 @@ class BenchmarkRunner:
 
         A benchmark sweep that dies on task 3 of 300 has destroyed the
         other 297 runs' worth of compute, so infrastructure failures are
-        captured per task and recorded. A guard's veto (``RunAbort``) is the
-        one exception, re-raised for :meth:`run` to stop the sweep.
+        captured per task and recorded. A guard's veto (``RunAbort``) is
+        recorded too — the outcome's ``vetoed`` — and :meth:`run` stops the
+        sweep on it. Once the run is over, the trace's own ledger is read
+        back from its manifest (``trace_status``), and so is the model call a
+        run in error ended on, when it failed after the provider's retries.
 
         Args:
             task_id: The task.
@@ -486,18 +631,19 @@ class BenchmarkRunner:
                 raise_on_error=False,
                 config=_task_snapshot(task, self._benchmark, self._subset),
             )
-            error = None
-        except RunAbort:
-            # First, and re-raised: this handler exists so one bad task does
-            # not stop the sweep, and a veto is precisely the case where it
-            # should. ``execute`` has already closed the trace out, so the
-            # veto and its evidence survive — and a close-out that failed
-            # under the veto (a full disk), or the run's own timeout expiring
-            # while the vetoed step was being recorded, arrives as a note on
-            # it, never in its place; ``run`` catches it above and summarises
-            # the tasks that did finish.
-            logger.warning("BenchmarkRunner: task %s vetoed the sweep", task_id)
-            raise
+            error = vetoed = None
+        except RunAbort as exc:
+            # First: this handler exists so one bad task does not stop the
+            # sweep, and a veto is precisely the case where it should.
+            # ``execute`` has already closed the trace out, so the veto and
+            # its evidence survive — and a close-out that failed under the
+            # veto (a full disk), or the run's own timeout expiring while the
+            # vetoed step was being recorded, arrives as a note on it, never
+            # in its place. ``run`` stops the sweep on the outcome's
+            # ``vetoed``.
+            logger.warning("BenchmarkRunner: task %s vetoed the sweep: %s", task_id, exc)
+            result = error = None
+            vetoed = f"{type(exc).__name__}: {exc}"
         except Exception as exc:
             # With ``raise_on_error=False`` what reaches here never got a
             # clean close-out: ``prepare`` or ``on_run_start`` failed, or a
@@ -505,15 +651,22 @@ class BenchmarkRunner:
             # vetoed — ``execute`` closes a run out once and does not retry
             # it.
             logger.exception("BenchmarkRunner: task %s failed", task_id)
-            result = None
+            result = vetoed = None
             error = f"{type(exc).__name__}: {exc}"
 
+        trace_dir = _trace_dir_of(run)
+        ledger = _trace_ledger(trace_dir, result)
         return TaskOutcome(
             task_id=task_id,
-            result=result,
-            trace_dir=_trace_dir_of(run),
+            # A veto leaves the run's result only in its trace.
+            result=ledger.result if vetoed is not None else result,
+            trace_dir=trace_dir,
             error=error,
             elapsed_ms=int((time.monotonic() - started) * 1000),
+            vetoed=vetoed,
+            trace_status=ledger.status,
+            trace_note=ledger.note,
+            model_unavailable=ledger.model_unavailable,
         )
 
 
@@ -713,6 +866,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"spectragent-bench: {exc}", file=sys.stderr)
         return PREFLIGHT_EXIT_CODE
     print(summary.format_table())
+    if summary.was_aborted:
+        # A guard said stop: its own code, so a script or the flywheel chain
+        # stops here too instead of feeding the vetoed stage's runs onwards.
+        print(f"spectragent-bench: the sweep was vetoed at {summary.aborted}", file=sys.stderr)
+        return VETO_EXIT_CODE
     return 0 if summary.failed == 0 else 1
 
 

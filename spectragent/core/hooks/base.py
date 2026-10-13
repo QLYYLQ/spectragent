@@ -185,6 +185,9 @@ class RuntimeHook(Protocol):
         own to keep: finish what it can, log any failure that happened
         under the cancellation, and re-raise the cancellation
         (``TraceWriter``'s close-out collection is the reference).
+        ``TraceWriter`` raises nothing else here: the run's outcome is
+        decided by now, so what it cannot record goes into the trace's own
+        ledger (``incomplete``, with the reason) instead of replacing it.
 
         *env* is live here on purpose: env-state scoring (SWE-bench
         running ``pytest FAIL_TO_PASS`` in the container, OSWorld
@@ -200,7 +203,7 @@ class RuntimeHook(Protocol):
         """Called when a run ends in a timeout, an exception or a cancellation.
 
         Always paired with :meth:`on_run_end`, which fires first with a
-        result carrying ``agent_done=ERROR|TIMEOUT``. This callback is for
+        result carrying ``agent_done=ERROR|TIMEOUT|VETOED``. This callback is for
         the detail only: *error* is the exception itself — a
         ``TimeoutError``, whatever the run raised, or the
         ``asyncio.CancelledError`` that cancelled it — and *partial_steps*

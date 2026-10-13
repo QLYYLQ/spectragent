@@ -43,7 +43,7 @@ from spectragent.core.negotiation import (
     negotiate_memory,
     negotiate_observation,
 )
-from spectragent.core.step_recorder import StepRecorder
+from spectragent.core.step_recorder import RecordingFailedError, StepRecorder
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.task import resolve_env_context_paths
@@ -602,7 +602,7 @@ class AgentRuntime:
         external cancellation) dispatches ``on_run_end`` with a real
         ``AgentResult``. Persistence hooks write the result there, so
         skipping it on the failure paths is what left two thirds of the
-        traces on disk permanently marked ``running`` with no
+        traces on disk permanently open (never closed out) with no
         ``result.json``.
 
         External cancellation — ``asyncio.CancelledError`` from Ctrl-C or a
@@ -617,11 +617,19 @@ class AgentRuntime:
         as failed and go on to the next. A cancellation that arrives after
         the close-out has started does not dispatch it a second time.
 
-        A guard's veto (``RunAbort`` out of the Loop) is also re-raised
-        whatever ``raise_on_error`` says, after the close-out — and it too
+        A guard's veto (``RunAbort`` out of the Loop, or out of the
+        environment's setup) is closed out with an ``agent_done=vetoed``
+        result and re-raised whatever ``raise_on_error`` says — and it too
         outranks a close-out that fails under it: the failure is logged and
         attached to the veto as a note, or a vetoed sweep would record one
         task as failed and go on to the next.
+
+        A step the recorder could not record stops the run
+        (``RecordingFailedError`` out of the Loop): its result is
+        ``agent_done=error`` with ``error`` reading ``recording failed at
+        step t: …``, and the trace says it is incomplete. A recording failure
+        never replaces an outcome the run had already reached — the Loop and
+        the recorder keep it (``docs/architecture_design.md`` §4.6).
 
         The run's own ``timeout`` is not an external cancellation, and it
         does not outrank an outcome the run had already reached. When it
@@ -751,6 +759,23 @@ class AgentRuntime:
             try:
                 await self.setup_environment(env_context)
             except Exception as exc:
+                if isinstance(exc, RunAbort):
+                    # A veto raised while the environment was being set up
+                    # is a veto like any other: closed out as vetoed and
+                    # re-raised whatever ``raise_on_error`` says, so a sweep
+                    # stops instead of recording one more failed setup and
+                    # starting the next task.
+                    logger.warning("AgentRuntime: run vetoed during environment setup: %s", exc)
+                    result = self._terminal_result(
+                        task=task,
+                        task_id=task_id,
+                        agent_done=AgentDoneStatus.VETOED,
+                        env_status=self._probe_env_status(),
+                        error=f"{type(exc).__name__}: {exc}",
+                        elapsed_ms=int((time.monotonic() - started) * 1000),
+                    )
+                    await self._close_out_vetoed(result, exc)
+                    raise
                 logger.exception("AgentRuntime: environment setup failed")
                 result = self._terminal_result(
                     task=task,
@@ -797,7 +822,7 @@ class AgentRuntime:
                     result = self._terminal_result(
                         task=task,
                         task_id=task_id,
-                        agent_done=AgentDoneStatus.ERROR,
+                        agent_done=AgentDoneStatus.VETOED,
                         env_status=self._probe_env_status(),
                         error=(
                             f"{type(ended).__name__}: {ended} (the run's timeout of {timeout}s "
@@ -837,6 +862,27 @@ class AgentRuntime:
                 return result
 
             except Exception as exc:
+                if isinstance(exc, RunAbort):
+                    # A veto. ``raise_on_error=False`` means "a task that
+                    # fails must not stop the sweep"; a veto is the opposite
+                    # instruction: a guard inspected this run and said
+                    # *stop*, so collapsing it into a returned
+                    # ``AgentResult`` would make the framework overrule the
+                    # guard it just obeyed inside the loop. It propagates
+                    # either way — after the close-out, so the veto and its
+                    # evidence are in the trace when it does, and even if
+                    # that close-out fails (``_close_out_vetoed``).
+                    logger.warning("AgentRuntime: run vetoed: %s", exc)
+                    result = self._terminal_result(
+                        task=task,
+                        task_id=task_id,
+                        agent_done=AgentDoneStatus.VETOED,
+                        env_status=self._probe_env_status(),
+                        error=f"{type(exc).__name__}: {exc}",
+                        elapsed_ms=int((time.monotonic() - started) * 1000),
+                    )
+                    await self._close_out_vetoed(result, exc)
+                    raise
                 logger.exception("AgentRuntime: execution failed")
                 result = self._terminal_result(
                     task=task,
@@ -846,24 +892,19 @@ class AgentRuntime:
                     # environment keeps ``env_status`` meaning what it says
                     # — a crashed browser, not just a crashed run.
                     env_status=self._probe_env_status(),
-                    error=f"{type(exc).__name__}: {exc}",
+                    # A step that could not be recorded stopped the run: its
+                    # message already reads "recording failed at step t: …".
+                    error=(
+                        str(exc)
+                        if isinstance(exc, RecordingFailedError)
+                        else f"{type(exc).__name__}: {exc}"
+                    ),
                     elapsed_ms=int((time.monotonic() - started) * 1000),
                 )
-                if not isinstance(exc, RunAbort):
-                    await self._finish(result, error=exc)
-                    if raise_on_error:
-                        raise
-                    return result
-                # A veto. ``raise_on_error=False`` means "a task that fails
-                # must not stop the sweep"; a veto is the opposite
-                # instruction: a guard inspected this run and said *stop*, so
-                # collapsing it into a returned ``AgentResult`` would make the
-                # framework overrule the guard it just obeyed inside the loop.
-                # It propagates either way — after the close-out, so the veto
-                # and its evidence are in the trace when it does, and even if
-                # that close-out fails (``_close_out_vetoed``).
-                await self._close_out_vetoed(result, exc)
-                raise
+                await self._finish(result, error=exc)
+                if raise_on_error:
+                    raise
+                return result
             else:
                 # Outside the ``try`` above on purpose: a blocking hook that
                 # raises while closing out a finished run must not land in
@@ -877,7 +918,7 @@ class AgentRuntime:
             # Ctrl-C, a cancelled sweep: not an exception of the run's own
             # (``CancelledError`` is a ``BaseException``, so neither arm
             # above sees it), but a termination path all the same. Without
-            # this the trace stayed ``running`` with no ``result.json``, and
+            # this the trace stayed ``writing`` with no ``result.json``, and
             # the prompt of the call in flight never reached disk. Not
             # dispatched again if the cancellation landed inside a close-out
             # that had already begun.

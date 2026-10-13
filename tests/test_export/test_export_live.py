@@ -166,7 +166,7 @@ def _check_targets(trace: RunTrace, rendered: list[RenderedSample]) -> None:
 
 def test_identity_export_matches_recorded_inputs(composer: ConfigComposer, tmp_path: Path) -> None:
     trace, traces = _record_ui_tars(tmp_path, [CLICK, WAIT, FINISH])
-    assert trace.step_count == 3 and trace.manifest.status.value == "completed"
+    assert trace.step_count == 3 and trace.manifest.status.value == "complete"
 
     rendered = _rendered(composer, trace)
     assert [item.sample.step for item in rendered] == [0, 1, 2]

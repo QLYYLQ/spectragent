@@ -17,7 +17,8 @@ answer, stated next to the run that produces it:
   — one content-addressed blob —, a ``too_large`` and a failed request;
   environment time 1000 and 1200 ms on steps 1 and 2), ``rec-blocked``
   (blocked.test: one 403 document with Cloudflare's challenge marks) and
-  ``rec-broken`` (broken.test: step 0's observation failed, status error);
+  ``rec-broken`` (broken.test: step 0's observation failed — its agent ended
+  in error with the environment failed, its trace complete);
 - **control** — ``ctl-shop`` at the same tier, no archive: 600 and 700 ms;
 - **same_path** — ``sp-shop-b0`` / ``sp-shop-b1`` (rec-shop at step 2: every
   check ok; b1's step-1 screenshot differs from the source's, so the strict
@@ -56,9 +57,16 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayLogEntry,
 )
 from spectragent.core.trace.encoding import EncodedFragment, encode_archive_file, encode_fragment
-from spectragent.core.trace.models import RunStatus, TaskSetupRecord, TraceConfig, TraceNegotiation
+from spectragent.core.trace.models import (
+    TaskSetupRecord,
+    TraceConfig,
+    TraceNegotiation,
+    TraceStatus,
+)
 from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.dataset import (
     DATASET_FORMAT,
     CaptureLedger,
@@ -266,15 +274,19 @@ async def write_recorded(
     *,
     task_id: str,
     site: str,
-    status: RunStatus = RunStatus.COMPLETED,
+    status: TraceStatus = TraceStatus.COMPLETE,
+    result: AgentResult | None = None,
 ) -> Path:
-    """A recording: each step's network evidence from M29's session, then its commit."""
+    """A recording: each step's network evidence from M29's session, then its commit.
+
+    *status* is the trace's ledger, *result* the agent's (a ``done`` one by default).
+    """
     script = RecordingScript(directory, run_id, config=config(task_id=task_id, site=site))
     for index, spec in enumerate(steps):
         if spec.network is not None:
             await spec.network(script)
         await script.commit(index, spec.record(index), spec.fragments(index))
-    return script.finish(status)
+    return script.finish(status, result=result)
 
 
 def write_plain(
@@ -292,7 +304,7 @@ def write_plain(
     for index, spec in enumerate(steps):
         wal.commit_step(index, spec.record(index), fragments=spec.fragments(index))
     wal.write_result(agent_result())
-    wal.finalize(RunStatus.COMPLETED)
+    wal.finalize(TraceStatus.COMPLETE)
     return wal.run_dir
 
 
@@ -332,7 +344,7 @@ async def write_replayed(
         files = await session.collect()
         wal.commit_trailing(extra_files=[encode_archive_file(item, trailing=0) for item in files])
     wal.write_result(agent_result())
-    wal.finalize(RunStatus.COMPLETED)
+    wal.finalize(TraceStatus.COMPLETE)
     return wal.run_dir
 
 
@@ -509,7 +521,14 @@ async def known_chain(root: Path) -> KnownChain:
         [Step(duration_ms=2000, error_phase="observe")],
         task_id="broken-1",
         site=BROKEN,
-        status=RunStatus.ERROR,
+        # The environment failed at step 0: the agent's ledger says so; the
+        # trace recorded all of it and is complete.
+        result=agent_result(
+            agent_done=AgentDoneStatus.ERROR,
+            agent_reported_success=None,
+            env_status=EnvironmentStatus.FAILED,
+            error="observe failed at step 0: ObservationFailedError: the page did not load",
+        ),
     )
     chain.runs["ctl-shop"] = write_plain(
         control,

@@ -24,7 +24,8 @@ from spectragent.core.llm.exceptions import (
 )
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
-from spectragent.core.trace.models import RunStatus, TraceManifest
+from spectragent.core.step_recorder import RecordingFailedError
+from spectragent.core.trace.models import TraceManifest, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
@@ -221,7 +222,7 @@ class TestTraceWriterLifecycle:
         run_dir = await _start(writer)
         assert (run_dir / "manifest.json").exists()
         assert (run_dir / "config.json").exists()
-        assert RunTrace(run_dir).manifest.format_version == 2
+        assert RunTrace(run_dir).manifest.format_version == 3
 
     async def test_config_records_full_identity(self, writer):
         """A trace nothing can join back to its dataset is an orphan.
@@ -419,33 +420,53 @@ class TestTraceWriterLifecycle:
         trace = RunTrace(run_dir)
         assert trace.result is not None
         assert trace.result.answer == "42"
-        assert trace.manifest.status == RunStatus.COMPLETED
+        assert trace.manifest.status == TraceStatus.COMPLETE
+        assert trace.manifest.incomplete_reason is None
 
-    async def test_timeout_result_finalizes_as_error(self, writer):
-        """status must not stay 'running' just because the agent timed out."""
+    async def test_a_timed_out_run_closes_a_complete_trace(self, writer):
+        """Two ledgers: the agent timed out (result.json); the trace has all of it.
+
+        Not 'writing' just because the agent timed out — and not 'incomplete'
+        either: the manifest no longer says how the agent ended.
+        """
         run_dir = await _start(writer)
         await writer.on_run_end(
             result=_result(AgentDoneStatus.TIMEOUT, error="Execution timed out after 1s")
         )
 
         trace = RunTrace(run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.COMPLETE
         assert trace.result is not None
+        assert trace.result.agent_done == AgentDoneStatus.TIMEOUT
 
     async def test_a_run_with_no_result_writes_no_result_file(self, writer):
-        """``result is None`` must mean "absent", never "unparseable"."""
+        """``result is None`` must mean "absent", never "unparseable" — and the trace says so."""
         run_dir = await _start(writer)
         await writer.on_run_end(result=None)
 
         assert not (run_dir / "result.json").exists()
-        assert RunTrace(run_dir).result is None
+        trace = RunTrace(run_dir)
+        assert trace.result is None
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert "result.json was not written" in (trace.manifest.incomplete_reason or "")
 
-    async def test_on_run_error_finalizes(self, writer):
+    async def test_on_run_error_alone_closes_the_trace_out(self, writer):
+        """A driver that dispatches only on_run_error: closed, with no result, so incomplete."""
         run_dir = await _start(writer)
         await writer.on_run_error(error=RuntimeError("boom"), partial_steps=[])
 
         manifest = TraceManifest.model_validate_json((run_dir / "manifest.json").read_text())
-        assert manifest.status == RunStatus.ERROR
+        assert manifest.status == TraceStatus.INCOMPLETE
+
+    async def test_on_run_error_after_on_run_end_changes_nothing(self, writer):
+        """The close-out happens once: the error that follows it neither reopens nor retries it."""
+        run_dir = await _start(writer)
+        await writer.on_run_end(result=_result(AgentDoneStatus.ERROR, error="it broke"))
+        before = (run_dir / "manifest.json").read_bytes()
+        await writer.on_run_error(error=RuntimeError("it broke"), partial_steps=[])
+
+        assert (run_dir / "manifest.json").read_bytes() == before
+        assert RunTrace(run_dir).manifest.status == TraceStatus.COMPLETE
 
 
 class TestEveryCallOfAStep:
@@ -791,7 +812,7 @@ class TestTrailingCalls:
         trace = RunTrace(run_dir)
         assert trace.trailing_calls == []
         assert trace.manifest.trailing == []
-        assert trace.manifest.status == RunStatus.COMPLETED
+        assert trace.manifest.status == TraceStatus.COMPLETE
 
     async def test_a_step_committed_after_its_trailing_calls_numbers_after_them(self, writer):
         """A driver that drains and keeps going must not collide with what it drained."""
@@ -825,13 +846,42 @@ class TestTrailingCalls:
             raise OSError("disk full")
 
         monkeypatch.setattr(writer._wal, "commit_step", failing_commit)
-        with pytest.raises(OSError, match="disk full"):
+        with pytest.raises(RecordingFailedError, match="recording failed at step 0: OSError"):
             await writer.after_record_step(None, args=(_step(0),), kwargs={})
         monkeypatch.undo()
         await writer.on_run_end(result=_result(AgentDoneStatus.ERROR))
 
-        (call,) = RunTrace(run_dir).trailing_calls
+        trace = RunTrace(run_dir)
+        (call,) = trace.trailing_calls
         assert call.messages[0].text == "owed to the trace"
+        # The hole: the trace is incomplete, complete through no step.
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.complete_through == -1
+        assert (trace.manifest.incomplete_reason or "").startswith(
+            "recording failed at step 0: OSError: disk full"
+        )
+
+    async def test_a_step_the_agent_called_done_on_is_never_raised_over(self, writer, monkeypatch):
+        """Its outcome is decided before it is recorded: the hole is the trace's, not the run's."""
+        run_dir = await _start(writer)
+        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        assert writer._wal is not None
+
+        def failing_commit(*args: Any, **kwargs: Any) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(writer._wal, "commit_step", failing_commit)
+        done = _step(1, action_results=[ActionResult(success=True, is_done=True)])
+        await writer.after_record_step(None, args=(done,), kwargs={})  # not raised
+        with pytest.raises(RecordingFailedError, match="recording failed at step 2"):
+            await writer.after_record_step(None, args=(_step(2),), kwargs={})
+        monkeypatch.undo()
+        await writer.on_run_end(result=_result())
+
+        manifest = RunTrace(run_dir).manifest
+        assert (manifest.status, manifest.complete_through) == (TraceStatus.INCOMPLETE, 0)
+        # The first hole is the reason; the later failure follows from it.
+        assert manifest.incomplete_reason == "recording failed at step 1: OSError: disk full"
 
     async def test_the_terminal_state_lands_even_if_the_trailing_commit_fails(
         self, writer, monkeypatch
@@ -844,17 +894,19 @@ class TestTrailingCalls:
             raise OSError("disk hiccup")
 
         monkeypatch.setattr(writer._wal, "commit_trailing", failing_trailing)
-        with pytest.raises(OSError, match="disk hiccup"):
-            await writer.on_run_end(result=_result(AgentDoneStatus.TIMEOUT))
+        # Not raised: the run's outcome is decided; the trace says what it lost.
+        await writer.on_run_end(result=_result(AgentDoneStatus.TIMEOUT))
 
         trace = RunTrace(run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert "OSError: disk hiccup" in (trace.manifest.incomplete_reason or "")
         assert trace.result is not None
+        assert trace.trailing_calls == []  # dropped, not retried
 
     async def test_the_terminal_state_lands_even_if_result_json_cannot_be_written(
         self, writer, monkeypatch
     ):
-        """Not ``running`` forever — and not ``completed`` without the result it claims."""
+        """Not ``writing`` forever — and not ``complete`` without the result it claims."""
         run_dir = await _start(writer)
         assert writer._wal is not None
 
@@ -862,9 +914,11 @@ class TestTrailingCalls:
             raise OSError("disk full")
 
         monkeypatch.setattr(writer._wal, "write_result", failing_result)
-        with pytest.raises(OSError, match="disk full"):
-            await writer.on_run_end(result=_result())
+        await writer.on_run_end(result=_result())
 
         trace = RunTrace(run_dir)
-        assert trace.manifest.status == RunStatus.ERROR
+        assert trace.manifest.status == TraceStatus.INCOMPLETE
+        assert trace.manifest.incomplete_reason == (
+            "result.json could not be written: OSError: disk full"
+        )
         assert trace.result is None

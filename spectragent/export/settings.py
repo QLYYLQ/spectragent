@@ -15,8 +15,8 @@ from pydantic import ConfigDict, Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 from spectragent.core.data_loader.task.require_eval import RequireEval
+from spectragent.core.trace.sources import AgentOutcomeFilter
 
-RequireStatus = Literal["completed", "error", "any"]
 SplitBy = Literal["site", "task"]
 DecontaminationMatch = Literal["task_id", "site_instruction", "either"]
 ImageTokens = Literal["qwen_vl", "fixed"]
@@ -30,13 +30,16 @@ class ExportFilters:
     """Which matched sources become samples (``filters``).
 
     A source a filter leaves out is listed in the dataset manifest's
-    ``sources.filtered`` with the reason; it is not an error.
+    ``sources.filtered`` with the reason; it is not an error. Whether a
+    source's trace is closed and complete through a step is not a filter but
+    a hard condition the export always applies (arch §4.15).
     """
 
-    require_status: RequireStatus = Field(
-        default="completed",
+    agent_outcome: AgentOutcomeFilter = Field(
+        default="any",
         description=(
-            "Keep sources whose manifest status is this ('any' keeps unfinished runs too)."
+            "Keep sources whose agent ended this way, as their result.json says (done, "
+            "max_steps, error, timeout, vetoed); 'any' (the default) keeps every outcome."
         ),
     )
     require_eval: RequireEval | None = Field(
@@ -175,7 +178,6 @@ __all__ = [
     "ImageTokens",
     "LengthBudget",
     "RequireEval",
-    "RequireStatus",
     "SplitBy",
     "SplitSettings",
     "ThoughtIndexRefs",

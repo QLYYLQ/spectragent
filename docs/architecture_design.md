@@ -425,7 +425,7 @@ class BranchLoop(ReactLoop):
 
 - **何时**：done、`max_steps` 用尽、连续解析失败到上限，以及 `BranchLoop` 的步数预算用尽。**从不**在基础设施失败（`_abort`）、动作失败、恢复发散和任何 `RunAbort` 路径上。
 - **结果在前**：终止的 `AgentResult` 在决定结局时就建好，终止观测不改它的 `agent_done`、`env_status`、`answer` 与 `end_to_end_ms`（后者不含这次观测）；唯一的例外见下一条：交出终止记录失败时，失败的结局在 `error` 后附上原因。
-- **不致命**：observe 抛普通异常时记一条带 `error_phase="observe"` 的终止记录，run 的结局不变。guard 在这次 observe 上否决：先把这条终止记录作为被否决的一步交出，再上抛否决（否决优先于已经定下的结局，§4.2）。交出终止记录失败不顶替结局（与"记录失败不顶替 run 已经定下的结局"同一条规则，§4.6）：失败的结局在 `error` 后面附上原因，成功的结局只记日志；交出被取消切断时取消带着结局离开（`carry_outcome`）。
+- **不致命**：observe 抛普通异常时记一条带 `error_phase="observe"` 的终止记录，run 的结局不变。guard 在这次 observe 上否决：先把这条终止记录作为被否决的一步交出，再上抛否决（否决优先于已经定下的结局，§4.2）。交出终止记录失败不顶替结局（与"记录失败不顶替 run 已经定下的结局"同一条规则，§4.6）：失败的结局在 `error` 后面附上原因，成功的结局只记日志，什么也不抛；trace 记为 `incomplete`（完整到最后一个策略步，原因写明，§4.6 "尾部失败不抛错"）；交出被取消切断时取消带着结局离开（`carry_outcome`）。
 - **分层**：observe 并建出终止记录是 `AgentLoopBase._observe_terminal(env, negotiated_obs, *, step)`（任何 Loop 可用，自己不交出记录）；交出与结局优先级用的是 `ReactLoop` 现有的交出方法。终止观测只有 env 来源的 fragment：没有 agent 看它，所以 loop 来源的 fragment 不填。
 
 #### `BranchLoop`：从检查点分叉（M31）
@@ -444,7 +444,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):      # restorer 只在普通 
 
 **装配期（`weave`，在 `prepare()` 里、任何 setup 之前）**：打开检查点的源 trace，对照当前装配，不符就抛 `IncompatibleCheckpointError`，点名源 run 以及两边的值：
 
-- 源 trace 是 format 2、第 t 步已提交且 `origin == "policy"`、它的观测已记录（`error_phase != "observe"`）、0..t 每一步都已提交；源 run 的 `loop_id` 是 `react`（重放用的是 ReAct 的 memory 协议）；源 run 自己不是分叉 run（`TraceConfig.branch` 为空：分叉 run 的前缀没有 LLM 调用可重放，要分叉就从它的源 run 分叉）。
+- 源 trace 已关闭（manifest 不是 `writing`）、且完整到第 t 步（`t ≤ complete_through`，§5.3）：trace 自己那本账是硬条件，不论检查点是谁选的（`trace_branches` 从不给出这样的步，§4.10）；第 t 步已提交且 `origin == "policy"`、它的观测已记录（`error_phase != "observe"`）、0..t 每一步都已提交；（比当前格式旧的 trace 根本读不出来，`SourceRun.open` 照"没有可读的 trace"拒绝，§5.5）源 run 的 `loop_id` 是 `react`（重放用的是 ReAct 的 memory 协议）；源 run 自己不是分叉 run（`TraceConfig.branch` 为空：分叉 run 的前缀没有 LLM 调用可重放，要分叉就从它的源 run 分叉）。
 - 同一个 agent（默认 teacher 必须是源 run 的 agent 类）：`agent_id` 相同；源 `resolved` 里这个 agent 条目上记下来的每个标量旋钮（闭集值与数字原样记录，§5.6：`observation_mode`、`coordinate_space`、`prompt_template`、Skyvern 的 `action_history_window`……；`"<omitted>"` 的不比）与当前 agent 实例的同名属性相同；memory 的 `memory_id` 与它记下来的标量旋钮（`max_messages`、`window_size`……）相同；loop 那一块只比挑出来的一项：`agent_loop.max_actions_per_step` 与本分叉 Loop 的相同（它写在种子 prompt 里，也决定重放丢掉几个动作；两边 loop 的其余设置本来就不同：`loop_id`、`max_steps`、`terminal_observation`）；`TraceConfig.negotiation` 的观测与动作两部分（激活与必需的 fragment、激活的动作、两张绑定表）与本次协商相同；归档那两个字段不比，分叉记录什么证据是它自己的选择（裁决 D3）。
 - 自由字符串的旋钮（没标 trace-safe 的，如 BrowserUse 设过的 `extend_system_message`）在源 trace 里是 `"<omitted>"`（§5.6），装配期比不了；数字原样记录之前写下的源 trace 里 `max_actions_per_step` 也是 `"<omitted>"`。它们由运行期的种子与重放逐条校验兜住（下一条），在任何动作执行之前。llm 那一块从来不比：teacher 的模型与采样可以与源 run 不同。
 
@@ -606,6 +606,10 @@ class AgentRuntime:
             try:
                 await self.setup_environment(env_context)
             except Exception as exc:
+                if isinstance(exc, RunAbort):           # setup 里的否决也是否决
+                    result = ...   # agent_done=VETOED
+                    await self._close_out_vetoed(result, exc)
+                    raise                               # 不看 raise_on_error
                 result = ...   # agent_done=ERROR, env_status=FAILED
                 await self._finish(result, error=exc)
                 if raise_on_error:
@@ -621,7 +625,7 @@ class AgentRuntime:
                 ended = _outcome_under(timed_out)
                 if isinstance(ended, RunAbort):         # 否决在先：照否决收尾、重抛
                     ended.add_note(...)                 # 超时只是否决上的一条 note
-                    result = ...   # agent_done=ERROR，error 点名否决并注明超时
+                    result = ...   # agent_done=VETOED，error 点名否决并注明超时
                     await self._close_out_vetoed(result, ended)
                     raise ended from timed_out
                 if isinstance(ended, AgentResult):      # Loop 已建好的终止结果：照它收尾、返回
@@ -632,14 +636,15 @@ class AgentRuntime:
                 await self._finish(result, error=TimeoutError(result.error))
                 return result
             except Exception as exc:
-                result = ...   # agent_done=ERROR
-                if not isinstance(exc, RunAbort):
-                    await self._finish(result, error=exc)
-                    if raise_on_error:
-                        raise
-                    return result
-                await self._close_out_vetoed(result, exc)   # guard 的否决：总是上抛，不看 raise_on_error
-                raise
+                if isinstance(exc, RunAbort):
+                    result = ...   # agent_done=VETOED
+                    await self._close_out_vetoed(result, exc)   # guard 的否决：总是上抛，不看 raise_on_error
+                    raise
+                result = ...   # agent_done=ERROR；RecordingFailedError 时 error = "recording failed at step t: …"
+                await self._finish(result, error=exc)
+                if raise_on_error:
+                    raise
+                return result
             else:
                 await self._finish(result)   # 在 try 之外：收尾失败不会被当成 run 失败再收尾一次
                 return result
@@ -690,6 +695,8 @@ class AgentRuntime:
 
 **sweep 先过一次 `prepare()`。** `BenchmarkRunner.run`（`core/benchmark_runner.py`）在跑任何任务之前，为第一个选中的任务组装栈并调一次 `prepare(task_id=, loop_inputs=, env_context=)`（`BenchmarkRunner.preflight`）：组装失败、读不到任务上下文、`prepare()` 拒绝，都抛 `PreflightError`（点名任务，原错误作为 `__cause__`、原样写进消息，所以报错仍点名双方），一个任务也不跑、一个 trace 也不打开；`spectragent-bench` 把它印到 stderr，退出码 2（`PREFLIGHT_EXIT_CODE`；0 与 1 是跑过了的 sweep），度量链（§4.16）因此在这一段停下。通过之后第一个任务就跑在 pre-flight 组装的那个栈上，所以每个任务仍然恰好组装一次栈。之后的任务各自 `execute()` 时照样 `prepare()`，只有某个任务自己的数据有问题时才在那个任务上报（记在它的 `TaskOutcome.error`，不打开 trace）。
 
+**sweep 的汇总：三本账、基础设施失败、否决（用户 2026-10-13 的裁决）。** 每个任务的 `TaskOutcome` 带三本账：agent 怎么结束（`result.json` 的 `agent_done`：done / max_steps / error / timeout / vetoed）、环境撑没撑住（`env_status`）、trace 记全没有（run 结束之后读回它的 manifest：`complete` / `incomplete` 加原因 / `writing`，读不回来是 `unreadable`）。`format_table` 先印这三本账的计数，再逐个任务印一行。**基础设施失败**（`infrastructure_error`，计入 `failed`，退出码 1）都看得见：环境坏了（`env_status=failed`）；模型在 provider 自己的重试之后仍不可用（run 以 `error` 结束在一次模型调用上：最后一个策略步 `error_phase == "llm"`，它失败的那次调用记录不是截断——截断是本 run 自己的 token 上限，不算不可用；读的是 trace 里记下的调用，不解析 `error` 文本）；trace 不完整、没关闭或读不回来。agent 在健康的环境里用完了步数、并且全部记下了，是一次完整的尝试（`ok`）。**否决**不是基础设施失败：被否决的任务照样是一个 outcome（`vetoed`，结果从它的 `result.json` 读回），表里有它那一行和一行 `vetoed: ...`，sweep 在它之后停下，`spectragent-bench` 退出码 3（`VETO_EXIT_CODE`），度量链因此在这一段停下（§4.16），被否决那一段的 run 不会被当作正常输入交给下一段。
+
 **归档：先校验，最后绑定。** 归档轴（§4.5）的协商与绑定分在 `prepare()` 的两头：
 
 - `negotiate_archive` 紧跟 `negotiate_memory`，在任何织入之前运行，所以绑定错误（`IncompatibleArchiveError`）和另外几条协商一样在装配期暴露。`spectragent-run --dry-run` 也调 `prepare()`，干跑就能发现；
@@ -703,11 +710,11 @@ class AgentRuntime:
 
 **任务上下文的三部分各走各的路（M31）。** 一个任务的 `TaskContext{env, loop, branch}`（§4.10）由调用方（`BenchmarkRunner.run_task`）拆开交给 `execute`：`env` → `env_context`（相对的 `replay_archive` 先解析成绝对路径，§4.10；→ `prepare()` 的 setup 之前的检查 → 原样记进 `task_setup` → `setup_environment`，按 capability `setup()` 签名路由，§4.3）；`loop` → `loop_inputs`（→ `prepare()` 校验后进 weave 的 `ctx["loop_inputs"]`，§4.1）；`branch` → `branch`（一个 `BranchProvenance`，按名字传给 `on_run_start`，记成 `TraceConfig.branch`，§5.3；runtime 不解读它）。三者之间不互相渗透：环境拿不到检查点，Loop 拿不到 setup context，trace 只记来源。
 
-**每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `running`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
+**每条终止路径都派发 lifecycle，外部取消也一样。** `on_run_start` 之后，done / max_steps / timeout / 异常 / 外部取消都经 `_finish` 收尾：先以一个真实的 `AgentResult` 调 `on_run_end`，有异常再调 `on_run_error`，最后 drain 后台 handler；env teardown 留在 `finally` 里，永远在 `on_run_end` 之后（env-state 打分要活着的环境）。外部取消（`asyncio.CancelledError`：Ctrl-C、sweep 被取消）构造 `agent_done=ERROR`、`error="Execution cancelled"` 的结果，`_finish` 之后**原样重抛**，调用方的 `asyncio.timeout` / `TaskGroup` 语义不受影响；取消若在 `_finish` 已经开始之后才到，不再二次派发。缺了这一条，被取消的 run 没有 `result.json`，manifest 永远停在 `writing`，进行中那次 LLM 调用的 prompt 也落不了盘（§5.4）。进程被直接 kill 不在此列：那要求 prompt 预写（write-ahead），目前不做。
 
-**收尾只做一次，取消永远优先。** 被取消的 run 收尾时，blocking hook 自己失败了（`TraceWriter.on_run_end` 遇到磁盘写满），这个错误只记日志，重抛的仍是原来那个 `CancelledError`：否则 Ctrl-C 会变成一个普通的 `OSError`，sweep 的 `except Exception` 把它记成一次任务失败、接着跑下一个任务，调用方的 `asyncio.timeout` 也只会看到 `OSError` 而不是 `TimeoutError`。被否决的 run 同理（下一段）。其余路径（完成、超时、其他异常、setup 失败）上收尾失败，hook 的错误照原样上抛，不看 `raise_on_error`；run 不会被再收尾一次。成功路径的 `_finish` 因此放在 `try` 的 `else` 里：放在 `try` 之内时，hook 在 `on_run_end` 里抛的错会落进 `except Exception`，同一个 run 被当成失败再收尾一次，每个 hook 都收到两次 `on_run_end`。
+**收尾只做一次，取消永远优先。** 被取消的 run 收尾时，blocking hook 自己失败了（某个 hook 的 `on_run_end` 抛错；`TraceWriter` 自己收尾时从不抛错，它把写不进去的东西记进 trace 的 `incomplete_reason`，§4.6），这个错误只记日志，重抛的仍是原来那个 `CancelledError`：否则 Ctrl-C 会变成一个普通的 `OSError`，sweep 的 `except Exception` 把它记成一次任务失败、接着跑下一个任务，调用方的 `asyncio.timeout` 也只会看到 `OSError` 而不是 `TimeoutError`。被否决的 run 同理（下一段）。其余路径（完成、超时、其他异常、setup 失败）上收尾失败，hook 的错误照原样上抛，不看 `raise_on_error`；run 不会被再收尾一次。成功路径的 `_finish` 因此放在 `try` 的 `else` 里：放在 `try` 之内时，hook 在 `on_run_end` 里抛的错会落进 `except Exception`，同一个 run 被当成失败再收尾一次，每个 hook 都收到两次 `on_run_end`。
 
-**否决总是上抛，记录失败顶替不了它。** `execute` 只看从 Loop 里出来的是不是 `RunAbort`。Loop 重抛否决之前先把被否决的那一步交给 `record_step`；那次记录若失败（归档收集坏了、磁盘满），记录失败绝不能取代否决从 Loop 里出来，否则 `raise_on_error=False` 会把它当成普通失败吞成结果，sweep 接着跑下一个任务。Loop 把它作为 note 附在否决上照样重抛；基础设施失败的终止结果同理，`error` 仍然点名根因（§4.6 "记录失败不顶替 run 已经定下的结局"）。收尾失败同样顶替不了它：磁盘一直满着时，`TraceWriter` 收尾要把这一步还登记着的调用（归档时还有遗留批次和尾部）作为 trailing 提交，照样失败，`on_run_end` 抛出这个错误。`execute` 对否决和对取消一样处理（`_close_out_vetoed`）：`_finish` 抛出的 `Exception` 只记日志，并作为又一条 note 附在否决上，重抛的仍是 `RunAbort`，sweep 照样停下。取消落在否决的收尾里时，取消优先：`CancelledError` 是 `BaseException`，这一层不接它。
+**否决总是上抛，记录失败顶替不了它。** `execute` 只看从 Loop 里出来的是不是 `RunAbort`。Loop 重抛否决之前先把被否决的那一步交给 `record_step`；那次记录若失败（归档收集坏了、磁盘满），记录失败绝不能取代否决从 Loop 里出来，否则 `raise_on_error=False` 会把它当成普通失败吞成结果，sweep 接着跑下一个任务。Loop 把它作为 note 附在否决上照样重抛；基础设施失败的终止结果同理，`error` 仍然点名根因（§4.6 "记录失败不顶替 run 已经定下的结局"）。收尾失败同样顶替不了它：`execute` 对否决和对取消一样处理（`_close_out_vetoed`）：`_finish` 抛出的 `Exception`（某个 blocking hook 收尾失败）只记日志，并作为又一条 note 附在否决上，重抛的仍是 `RunAbort`，sweep 照样停下。磁盘一直满着时，`TraceWriter` 收尾要把这一步还登记着的调用（归档时还有遗留批次和尾部）作为 trailing 提交，照样失败——它不抛错，写不进去的那一样丢掉，原因记进 trace 的 `incomplete_reason`（连终态都写不进去时 manifest 停在 `writing`），§4.6。**setup 里的否决也是否决**：环境 setup 期间抛出的 `RunAbort` 不被当成普通的 setup 失败，照样以 `agent_done=vetoed` 收尾、越过 `raise_on_error=False` 上抛，sweep 照样停下。取消落在否决的收尾里时，取消优先：`CancelledError` 是 `BaseException`，这一层不接它。
 
 **run 自己的超时顶替不了已经定下的结局。** 优先级从高到低：外部取消 > 否决 > run 自己的超时、收尾失败、记录失败。Loop 在结局离开之前要先记录 run 结束在的那一步，这次交接可能要等：归档时 `TraceWriter` 正是在这里收集环境证据，收的恰好是 guard 拒绝的那个重页面。run 的超时（`wait_for`）若在这时到期，取消落在 Loop 里。Loop 不吞取消（它也可能是 Ctrl-C 或调用方自己的 `asyncio.timeout`），可是只原样重抛的话，`wait_for` 把它变成 `TimeoutError`，`execute` 返回一个普通的超时结果（不看 `raise_on_error`），sweep 记下一个超时任务、接着对 guard 刚拒绝的站点跑下一个，日志和 trace 里都找不到 guard 说过停。所以 Loop 重抛的是同一个取消，但让它带上结局（`core/loops/errors.py`：`carry_outcome` 把一个 `RunEnded` 放到取消的 `__context__` 链最前面；在 `except RunAbort` 里等待时，否决本来就在那条链上）。`execute` 只在 `except TimeoutError` 里读这条链（`carried_outcome`，经 `wait_for` 的 `TimeoutError.__cause__`，3.11 与 3.12 一样）：带着否决，就照否决收尾（`agent_done=ERROR`，`error` 点名否决并注明超时在记录被否决那一步时到期，超时作为 note 附在 `RunAbort` 上），然后重抛它，不看 `raise_on_error`；带着 Loop 已建好的终止结果（基础设施失败、动作失败、最后一次容许的解析错误），就照这个结果收尾并返回它，`error` 仍点名根因，后面注明记录被 run 的超时切断，不会把死掉的浏览器记成"模型太慢"。只有切断的是一个还在进行的 run，结果才是 `agent_done=TIMEOUT`。外部取消不读这条链，照旧原样重抛：结局只留在它的 traceback 里。ReactLoop 的做法见 §4.6 "记录失败不顶替 run 已经定下的结局"，新 Loop 的义务见 `af-add-a-loop` guide §3.3。
 
@@ -1725,13 +1732,15 @@ AOP 方案让 Loop 代码完全干净 — 没有 `emitter` 参数，没有 `disp
 
 runtime 通过 `ArchiveConsumer` Protocol（`core/archive/protocols.py`）发现记录器：它只有一个属性 `archive: list[ArchiverBase]`，与 YAML 受体同名（M29）。`archive` 非空的 hook 就是本 run 的归档消费者，v1 至多一个（§4.5）；它必须是 blocking 的，因为 `blocking=False` 的 handler 进不了 trace（见上）：`negotiate_archive` 把不是 blocking 的消费者作为一条问题报出（§4.5 的表），所以它在 `prepare()` 就被拒绝，不会在提交点之后悄悄丢掉证据。
 
-**失败语义：fail closed。** 归档是显式要求的，静默不完整的归档会毒化回放和分叉（"一个写不了 trace 的 TraceWriter 就是一个必须停下的 run"）。所以：
+**失败语义：两本账，出洞就停，不改判已经定下的结局（用户 2026-10-13 的裁决）。** `result.json` 记 agent 怎么结束（done / max_steps / error / timeout / vetoed），manifest 记 trace 记全没有（`writing` / `complete` / `incomplete` 加原因与"完整到第几步"，§5.3）；一个超时的 run 可以有完整的 trace，一个 done 的 run 也可以有不完整的。归档是显式要求的，静默不完整的归档会毒化回放和分叉，所以记录失败仍然 fail closed：
 
-- 某一步的 `collect_archive` 抛错（或交回的批次违反契约，`ArchiveContractError`）→ 这一步**不提交**，它登记的 LLM 调用在收尾时作为 trailing 调用落盘，错误照原样上抛，run 失败，trace 以 `error` 收尾；之后不再收集：Loop 若吞掉了那个错误还要继续，下一次提交直接抛错，点名哪一步的收集失败了。
-- 收尾时至多再收集一次，而且只在之前没有失败过时收集。
-- 收尾那次收集失败：trace 记为 `error`；只有 run 本身没有失败时才把这个错误上抛（成功的 run 由 `execute` 抛出它），run 已经失败时只记日志，不掩盖 run 自己的错误。收尾那次收集被取消：调用照样冲刷、终态照样写（记为 `error`），然后原样重抛取消；冲刷或写终态在它底下又失败了（磁盘满）时，那个错误也只记日志，`on_run_end` 与 `on_run_error` 都一样（§4.2 "取消永远优先"）。
-- **记录失败不顶替 run 已经定下的结局。** 某一步的收集失败（或任何让 `record_step` 抛错的记录失败）恰好落在 run 正因失败而结束的那一步（guard 的否决正在上抛，或 Loop 正要把基础设施失败、动作失败或最后一次容许的解析错误变成终止结果）时，Loop 不让这个记录失败从 Loop 里取代那个结局：否决照样上抛（记录失败作为 note 附在 `RunAbort` 上，`execute` 因此照样越过 `raise_on_error=False` 把它交给 sweep，sweep 照样停下；记录失败若一直持续到收尾（磁盘一直满着），收尾的失败同样只是否决上的又一条 note，§4.2 "否决总是上抛"），终止结果的 `error` 仍然点名根因，后面附上"这一步也没能记录"及其原因（`result.json` 于是说清楚 trace 为什么少了这一步）。fail closed 不受影响：这一步照样不提交，它的调用照样作为 trailing 落盘、trace 照样以 `error` 收尾（磁盘写得进去的话；写不进去的那一样就丢了，不重试，§5.2），之后不再收集。只有在 run 本来要继续或成功结束的那一步，记录失败才是让 run 失败的那个错误。记录被取消切断（这一步的收集太慢，run 自己的超时恰好到期）也顶替不了那个结局：取消照样原样离开 Loop，但带着结局（否决本身，或已建好的终止结果，`loops.errors.carry_outcome`）；是 run 自己的超时时，`execute` 照这个结局收尾，外部取消照旧优先（§4.2 "run 自己的超时顶替不了已经定下的结局"）。被否决的那一步，Loop 在交出它之前先记下否决的日志，所以交接不论怎样结束，日志里都有 guard 说过停。（`ReactLoop._surrender_failing`、`_surrender_vetoed`、`_end_failing`；新 Loop 的义务见 `af-add-a-loop` guide §3。）
-- 取消不是采集失败：被取消的那一步不提交（交接之后才被取消的那一批证据随之丢失；已提交的步各自带着自己的证据，不受影响），收尾照常收集一次，run 以 `error` 收尾。交接之前就被取消的，按交接契约（§4.9 "交出并忘掉"）仍在 capability 里，由收尾那次收集取走，作为 trailing 证据落盘。
+- **出洞：某一步记不下来。** 这一步的 `collect_archive` 抛错、交回的批次违反契约（`ArchiveContractError`），或这一步的提交本身失败（I/O）→ 这一步**不提交**，它登记的 LLM 调用在收尾时作为 trailing 调用落盘，trace 记为 `incomplete`、完整到第 t-1 步（`complete_through`，WAL 维护，§5.2），`incomplete_reason` 写 `recording failed at step t: <原错误>`；之后不再收集，也不再带着证据提交任何一步：Loop 若吞掉了那个错误还要继续，下一次提交照样失败，点名先出洞的那一步。run 在这一步停下：`TraceWriter` 抛 `RecordingFailedError`（`core/step_recorder.py`，原错误是 `__cause__`），run 的结局是 `agent_done=error`、`error` 为 `recording failed at step t: <原错误>`（`execute` 照 `raise_on_error` 抛出或返回）——除非这一步的结局已经定了：
+- **已经定下的结局不改判。** agent 就在这一步说了 done（这一步的记录里有 `is_done` 的动作结果）：`TraceWriter` 不抛错，只记日志，run 照 agent 的决定以 done 结束、答案保留；抛错只会把 done 改判成失败、清空答案，而 run 本来就在这里结束。trace 照样是 `incomplete`，完整到第 t-1 步。run 正因失败而结束的那一步（否决、基础设施失败、动作失败、最后一次容许的解析错误）由 Loop 保住结局，见下面"记录失败不顶替"那一条。在 `max_steps` 用尽的最后一步出洞不算已定：Loop 要到这一步记下之后才决定以 `max_steps` 结束，所以那是 `recording failed at step t`。
+- **尾部失败不抛错。** run 结束之后的尾部——收尾那次收集、收尾要补写的欠账（trailing 提交）、终止观测那一步（§4.1）——失败时，run 的结局不变，trace 记为 `incomplete`（原因写明），不抛错。收尾时 `TraceWriter` 一律不抛错，因为这时 run 的结局已经定了，就在它要写的 `result` 里：收尾的收集失败或被取消、某一样 trailing 提交失败（那一样就此丢掉、不重试，§5.2）、`result.json` 写不进去，都只进 `incomplete_reason` 并记日志；连终态都写不进去（磁盘一直满着）时 manifest 停在 `writing`，记一条 ERROR。唯一上抛的是收尾收集被取消时的那个取消，在终态写完之后（§4.2 "取消永远优先"）。
+- 收尾时至多再收集一次，而且只在之前没有出过洞时收集。收尾也只做一次：`on_run_end` 收过尾之后，紧跟着的 `on_run_error`（`AgentRuntime` 在有错误时总会派发它）什么也不重做；只派发 `on_run_error` 的驱动由它按同样的规则收尾，没有 `result`，所以没有 `result.json`、trace 是 `incomplete`。
+- **记录失败不顶替 run 已经定下的结局。** 某一步的收集失败（或任何让 `record_step` 抛错的记录失败）恰好落在 run 正因失败而结束的那一步（guard 的否决正在上抛，或 Loop 正要把基础设施失败、动作失败或最后一次容许的解析错误变成终止结果）时，Loop 不让这个记录失败从 Loop 里取代那个结局：否决照样上抛（记录失败作为 note 附在 `RunAbort` 上，`execute` 因此照样越过 `raise_on_error=False` 把它交给 sweep，sweep 照样停下；记录失败若一直持续到收尾（磁盘一直满着），`TraceWriter` 的收尾不抛错，写不进去的只进 trace 的 `incomplete_reason`，别的 hook 收尾失败才是否决上的又一条 note，§4.2 "否决总是上抛"），终止结果的 `error` 仍然点名根因，后面附上"这一步也没能记录"及其原因（`result.json` 于是说清楚 trace 为什么少了这一步）。fail closed 不受影响：这一步照样不提交，它的调用照样作为 trailing 落盘，trace 照样记为 `incomplete`、完整到前一步（磁盘写得进去的话；写不进去的那一样就丢了，不重试，§5.2），之后不再收集。只有在 run 本来要继续的那一步，记录失败才是让 run 失败的那个错误（上面的第一条）。记录被取消切断（这一步的收集太慢，run 自己的超时恰好到期）也顶替不了那个结局：取消照样原样离开 Loop，但带着结局（否决本身，或已建好的终止结果，`loops.errors.carry_outcome`）；是 run 自己的超时时，`execute` 照这个结局收尾，外部取消照旧优先（§4.2 "run 自己的超时顶替不了已经定下的结局"）。被否决的那一步，Loop 在交出它之前先记下否决的日志，所以交接不论怎样结束，日志里都有 guard 说过停。（`ReactLoop._surrender_failing`、`_surrender_vetoed`、`_end_failing`；新 Loop 的义务见 `af-add-a-loop` guide §3。）
+- 取消不是采集失败：某一步的记录被取消切断时，这一步不提交（交接之后才被取消的那一批证据随之丢失；已提交的步各自带着自己的证据，不受影响），收尾照常收集一次；这一步的记录本已存在、却没能写下，所以 trace 是 `incomplete`（`recording step t was cut off by a cancellation`），完整到第 t-1 步。取消落在一步还没结束的时候（比如 LLM 调用当中）不是洞：那一步本来就没有记录，它的调用作为 trailing 落盘，trace 可以是 `complete`。交接之前就被取消的证据，按交接契约（§4.9 "交出并忘掉"）仍在 capability 里，由收尾那次收集取走，作为 trailing 证据落盘。
+- "降级继续"（不致命的洞照写这一步、标"证据缺失"，run 继续）暂不做，等 live 数据说明它常见时再定：它还要重置网络证据全 run 共用的去重索引（`warc.py`），否则洞之后的重复响应会指向丢掉的那条记录。
 
 ### 4.7 LLM 抽象
 
@@ -2237,10 +2246,11 @@ class TaskContext(BaseModel):
 
 **分叉任务：`trace_branches` 加载器**（`core/data_loader/task/trace_branches.py`，`benchmark_name: trace_branches`）把已录制的 run 展开成分叉任务。它读源 trace 只经 `RunTrace`，只读已提交的部分。
 
-- **旋钮**：`data_dir`（sources 的根目录，默认 `traces`）；`sources: list[str]`（相对根的 glob，展开后按路径排序；必须相对根、不含 `..`，构造时检查；一个匹配到的路径不是目录或没有 `manifest.json` 就不是 run，忽略）；`step_selector` 受体（`StepSelectorRegistrar`，`selector_id`：`explicit{steps}` / `every_k{k, offset}` / `all` / `last`，`core/data_loader/task/step_selector/`）；`branches_per_step`（≥ 1）；`require_status`（`completed` 默认 / `error` / `any`，读 `TraceManifest.status`）；`require_eval`（`RequireEval{evaluator_id, label: 1, slug: null}`，pydantic dataclass，在 `core/data_loader/task/require_eval.py`：至少一份该评测器的 `verdict_source == "graded"` 的判定，其 `predicted_label == label`，给了 `slug` 时只看那一份；经 `RunTrace.evals()` 读，§5.5，不读 `result.json`）；`require_archive`（默认 `["browser.network"]`，`[]` 不要求任何归档：源 run 绑定了这些归档器、且它们的 capability 有已提交的 run 记录即环境指纹）；`on_unbranchable: raise | skip`（默认 `raise`）；`subset` 只是标签。`sources` 与 `require_archive` 在 YAML 里的默认写作 `null`，意思就是上面两个默认值：conscribe 读签名生成配置，签名里写不了非空的列表默认值（列表是共享的可变默认，`tuple[str, ...]` 被生成成 pyright 拒绝的 `tuple[str, Ellipsis]`）。
-- **筛选与前提**：`require_status` / `require_eval` 是筛选，不符的源跳过（记 INFO，也记在 `loader.skipped`，原因以 `filtered:` 开头；筛掉的源从不触发抛错）。前提不满足的源按 `on_unbranchable` 抛错或跳过，原因都记在 `loader.skipped`（源路径 → 原因）：读不回来的 trace（manifest、配置、步记录或 `evals/` 坏了）；format 1 的 trace；源 run 本身是分叉 run（`config.branch` 不为空）或回放 run（`task_setup` 里有 `replay_archive`）；`require_archive` 不满足；环境 setup context 拿不到（见下）；源 run 的 `run_id` 与另一个通过筛选的源重复（共享这个 `run_id` 的每个源都不可分叉，因为它们的任务 id 会撞）。`raise` 一次列出全部不可分叉的源（一个 `BenchmarkDataError`），这次扫描不发布任何任务；`skip` 记 WARNING。
+- **旋钮**：`data_dir`（sources 的根目录，默认 `traces`）；`sources: list[str]`（相对根的 glob，展开后按路径排序；必须相对根、不含 `..`，构造时检查；一个匹配到的路径不是目录或没有 `manifest.json` 就不是 run，忽略）；`step_selector` 受体（`StepSelectorRegistrar`，`selector_id`：`explicit{steps}` / `every_k{k, offset}` / `all` / `last`，`core/data_loader/task/step_selector/`）；`branches_per_step`（≥ 1）；`agent_outcome`（`any` 默认 / `done` / `max_steps` / `error` / `timeout` / `vetoed`：源 run 的 agent 怎么结束，读 `result.json` 的 `agent_done`，只在设了时读；没有 `result.json` 的源过不了设了值的筛选）；`require_eval`（`RequireEval{evaluator_id, label: 1, slug: null}`，pydantic dataclass，在 `core/data_loader/task/require_eval.py`：至少一份该评测器的 `verdict_source == "graded"` 的判定，其 `predicted_label == label`，给了 `slug` 时只看那一份；经 `RunTrace.evals()` 读，§5.5，不读 `result.json`）；`require_archive`（默认 `["browser.network"]`，`[]` 不要求任何归档：源 run 绑定了这些归档器、且它们的 capability 有已提交的 run 记录即环境指纹）；`on_unbranchable: raise | skip`（默认 `raise`）；`subset` 只是标签。`sources` 与 `require_archive` 在 YAML 里的默认写作 `null`，意思就是上面两个默认值：conscribe 读签名生成配置，签名里写不了非空的列表默认值（列表是共享的可变默认，`tuple[str, ...]` 被生成成 pyright 拒绝的 `tuple[str, Ellipsis]`）。
+- **两本账（用户 2026-10-13 的裁决）**：trace 自己那本账是**硬条件**，不是筛选、关不掉：检查点永远是源 trace 已关闭、而且完整到的那一步。`writing` 的 trace（还在写，或进程死在收尾之前）没有可分叉的步（记在 `loader.skipped`，原因 `no branchable step: its trace was never closed ...`）；`incomplete` 的 trace 只有 `complete_through` 之前（含）的步是候选，所以一个在第 t 步出洞停下的 run 仍然贡献 0..t-1 的每个检查点，一个被限流打断的 30 步 run 前 25 个检查点照样能用，尾部失败（收尾收集、终止观测）的 run 一个检查点也不少。agent 那本账是**筛选**：`agent_outcome`，默认 `any`。
+- **筛选与前提**：`agent_outcome` / `require_eval` 是筛选，不符的源跳过（记 INFO，也记在 `loader.skipped`，原因以 `filtered:` 开头；筛掉的源从不触发抛错）。前提不满足的源按 `on_unbranchable` 抛错或跳过，原因都记在 `loader.skipped`（源路径 → 原因）：读不回来的 trace（manifest、配置、步记录、`result.json`（`agent_outcome` 设了时）或 `evals/` 坏了；比当前格式旧的 trace 也在此列，`RunTrace` 只读 format 3，§5.5）；源 run 本身是分叉 run（`config.branch` 不为空）或回放 run（`task_setup` 里有 `replay_archive`）；`require_archive` 不满足；环境 setup context 拿不到（见下）；源 run 的 `run_id` 与另一个通过筛选的源重复（共享这个 `run_id` 的每个源都不可分叉，因为它们的任务 id 会撞）。`raise` 一次列出全部不可分叉的源（一个 `BenchmarkDataError`），这次扫描不发布任何任务；`skip` 记 WARNING。
 - **环境 setup context**：取源 `TraceConfig.task_setup.context`（M28 起记录）；没有这份记录、或它的脱敏台账不空（值被换成了 `<redacted>`，照它重建的环境不是源环境）时，按源 run 的 `(benchmark, subset, task_id)` 用源 benchmark 的 TaskLoader 重新解析（一次扫描里每个 `(benchmark, subset)` 只建一个加载器）；都不行就是不可分叉。分叉任务的 env 部分 = 这份 context，加上 `replay_archive = 源 run 目录的绝对路径`。
-- **选步**：候选是已提交的、`origin == "policy"` 的步 t，要求 0..t 每一步都已提交、第 t 步的观测已记录（`error_phase != "observe"`）；`step_selector` 在候选里选，候选之外的步（如 `explicit` 写了超出某个源长度的步）跳过并记原因，键是 `<源路径>#s<t>`（没提交、前缀有缺口、是恢复或终止步、观测没记录）。选步策略是纯函数：`all` 返回全部候选；`every_k` 按**步号**数（`offset`、`offset + k`……里是候选的那些），不按候选里的位置，所以一个源缺了第 4 步时 `k: 2` 仍然选 0、2、6；`explicit` 原样返回写了的每一步（至少一步，构造时检查，因为生成的配置不带 `min_length`），由加载器判断哪些是候选；`last`（M33）只返回最后一个候选，每个源 run 恰好一步，长短不一的源也一样（`explicit` 写不出"每个源的最后一步"），度量闸门的原路径回放段用它（§4.16）。一个源一个候选都没有时记在 `loader.skipped`，不抛错。
+- **选步**：候选是已提交的、`origin == "policy"` 的步 t，要求 0..t 每一步都已提交、trace 完整到第 t 步（`t ≤ complete_through`）、第 t 步的观测已记录（`error_phase != "observe"`）；`step_selector` 在候选里选，候选之外的步（如 `explicit` 写了超出某个源长度的步）跳过并记原因，键是 `<源路径>#s<t>`（没提交、前缀有缺口、超出 trace 完整到的那一步、是恢复或终止步、观测没记录）。选步策略是纯函数：`all` 返回全部候选；`every_k` 按**步号**数（`offset`、`offset + k`……里是候选的那些），不按候选里的位置，所以一个源缺了第 4 步时 `k: 2` 仍然选 0、2、6；`explicit` 原样返回写了的每一步（至少一步，构造时检查，因为生成的配置不带 `min_length`），由加载器判断哪些是候选；`last`（M33）只返回最后一个候选，每个源 run 恰好一步，长短不一的源也一样（`explicit` 写不出"每个源的最后一步"），度量闸门的原路径回放段用它（§4.16）。一个源一个候选都没有时记在 `loader.skipped`，不抛错。
 - **展开**：每个选中的 t 展开 `branches_per_step` 个任务，任务 id `<source_run_id>/s<t>/b<i>`，`branch_group_id = <source_run_id>/s<t>`；`TaskDefinition.task_text` 是源 run 的任务文本，`env_type` 是源 run 的，`difficulty` / `domain` / `tags` 取自源 `TraceConfig.extra`（结果照样按它们切片），`setup` 在 env 类型有对应 setup 变体时照 env 部分写一份（只是描述；跑的始终是 `get_task_context` 的 env 部分）；`get_task_context` 给出 env（上面那份）、loop（`checkpoint`）与 branch（`BranchProvenance`），每次给一份副本。
 - **惰性加载**：构造时不读盘，第一次 `task_ids()` / `__getitem__` / `get_task_context` 时才扫描源，所以组装配置（每个任务都会重组一次）不做 I/O。一个源都没匹配上时任务列表为空并记 WARNING，点名根目录与 glob。
 - **受体写法**：`TaskLoaderBase` 在 `__post_init__` 里加载、而受体在构造之后才注入，所以这个加载器不是 dataclass：手写 `__init__`（接受继承来的 `subset` / `data_dir` 与上面的旋钮），`step_selector` 是类级注解的单实例受体加 Python 侧默认（`all`），与 `ArchiveNetworkSource.miss_policy` 同一写法。
@@ -2882,7 +2892,7 @@ exporter:
     sources_root: traces             # sources 的根（null：工作目录下的 traces）
     sources: ["recorded/*"]          # 相对根的 glob，按路径排序（null：["*"]）
     filters:
-      require_status: completed      # error | any（读 manifest 的 status）
+      agent_outcome: any             # done | max_steps | error | timeout | vetoed（读 result.json）
       require_eval: null             # 可选：{evaluator_id, label: 1, slug: null}，只留判分通过的 run
       exclude_restoration_diverged: true
       max_document_misses: 0         # null：不按回放日志过滤
@@ -2929,8 +2939,9 @@ exporter:
 
 #### 源级检查与筛选
 
-- **不可导出的源**（跳过，原因记进 manifest 的 `sources.skipped`）：读不回来（`TraceSchemaError`；原因只写相对 run 目录的文件与错误类，如 `not a readable trace: manifest.json does not read back (TraceSchemaError)`；读取器的消息带绝对路径、可能引用读不出的字节，只进日志，manifest 因此与 sources 根在哪无关）、format 1、`TraceConfig.secrets_recorded`（带原样凭证的 trace 不进数据集）、没有记录协商（`TraceConfig.negotiation is None`，手工组装的 run）、与另一个源共用 `run_id`（共用者全部跳过，同 `trace_branches`）。
-- **筛选**（`filters`，原因记进 `sources.filtered`）：`require_status`（manifest 的 status，默认 `completed`）；`require_eval`（可选，默认 `null`、发布的配置也是 `null`：不按判定筛，teacher 失败的轨迹一样导出，每个样本照样带 `labels.step_status` 与判定标签，训练时可以再筛；设了时是 `RequireEval.satisfied_by(RunTrace.evals())`，**分叉 run 用它的源 run 的判定**，因为分叉 run 在 v1 没有评测加载器；源 run 按 `TraceConfig.branch.source_run_id` 在本次匹配到的源里找，找不到就筛掉，原因 `branch source not among the sources`）；`exclude_restoration_diverged`（默认 `true`：任何一条 `StepRecord.restoration` 没通过（`verdict` 不是 `ok`）的 run 整个排除：`warn` 下发散后照常走完的分叉，它的策略步决策时的状态不是源 run 的前缀，上下文因此是错的，这是只有这个筛选挡得住的一类；`diverged` 是 `strict` 中止的分叉，它在策略步之前就以 `error` 结束，本来就过不了 `require_status`、也没有可导出的步）；`max_document_misses`（回放日志里的主 frame 文档 miss 总数超过它就排除，计数规则与 `ReplayLog.diverged_total` 相同，折叠进 `summary` 的也算；读侧是 browser 的 `replay/replay_log.py::document_miss_total(reader)`；没有回放日志的 run 是 0）；`exclude_sites`（站点键命中列表：主机名相等或以 `.` + 条目结尾）。分叉 run 的源 run 不在本次可读的源里时，不论有没有 `require_eval` 都筛掉（`branch source '<id>' not among the sources`）：它的上下文就是源 run 的前缀。读筛选要用的文件读不回来（`TraceSchemaError`）算跳过，不算筛掉（原因的写法同上）。
+- **不可导出的源**（跳过，原因记进 manifest 的 `sources.skipped`）：读不回来（`TraceSchemaError`；原因只写相对 run 目录的文件与错误类，如 `not a readable trace: manifest.json does not read back (TraceSchemaError)`；读取器的消息带绝对路径、可能引用读不出的字节，只进日志，manifest 因此与 sources 根在哪无关；比当前格式旧的 trace 也是这样读不回来，§5.5）、trace 从没关闭（manifest 还是 `writing`：trace 自己那本账的硬条件，同 `trace_branches`，§4.10）、`TraceConfig.secrets_recorded`（带原样凭证的 trace 不进数据集）、没有记录协商（`TraceConfig.negotiation is None`，手工组装的 run）、与另一个源共用 `run_id`（共用者全部跳过，同 `trace_branches`）。
+- **完整到哪一步是硬条件**：已关闭的源只导出它完整到的那些步（`complete_through` 之前、含它；`canonicalise` 只取这些），所以一个出洞停下的 run 导出洞之前的步，尾部失败的 run 一步不少（用户 2026-10-13 的裁决，与分叉同一条规则）。
+- **筛选**（`filters`，原因记进 `sources.filtered`）：`agent_outcome`（agent 怎么结束，读源 run 自己的 `result.json`，默认 `any`；没有 `result.json` 的源过不了设了值的筛选）；`require_eval`（可选，默认 `null`、发布的配置也是 `null`：不按判定筛，teacher 失败的轨迹一样导出，每个样本照样带 `labels.step_status` 与判定标签，训练时可以再筛；设了时是 `RequireEval.satisfied_by(RunTrace.evals())`，**分叉 run 用它的源 run 的判定**，因为分叉 run 在 v1 没有评测加载器；源 run 按 `TraceConfig.branch.source_run_id` 在本次匹配到的源里找，找不到就筛掉，原因 `branch source not among the sources`）；`exclude_restoration_diverged`（默认 `true`：任何一条 `StepRecord.restoration` 没通过（`verdict` 不是 `ok`）的 run 整个排除：`warn` 下发散后照常走完的分叉，它的策略步决策时的状态不是源 run 的前缀，上下文因此是错的，这是只有这个筛选挡得住的一类；`diverged` 是 `strict` 中止的分叉，它在策略步之前就以 `error` 结束，本来就没有可导出的步）；`max_document_misses`（回放日志里的主 frame 文档 miss 总数超过它就排除，计数规则与 `ReplayLog.diverged_total` 相同，折叠进 `summary` 的也算；读侧是 browser 的 `replay/replay_log.py::document_miss_total(reader)`；没有回放日志的 run 是 0）；`exclude_sites`（站点键命中列表：主机名相等或以 `.` + 条目结尾）。分叉 run 的源 run 不在本次可读的源里时，不论有没有 `require_eval` 都筛掉（`branch source '<id>' not among the sources`）：它的上下文就是源 run 的前缀。读筛选要用的文件读不回来（`TraceSchemaError`）算跳过，不算筛掉（原因的写法同上）。
 
 #### 可导出的步与 `CanonicalStepSample`
 
@@ -3054,9 +3065,9 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - **布局**（链的约定，报告只认它，`metrics.ChainLayout`）：`<root>/traces/{record,control,same_path,branch}/`、`<root>/datasets/{first,second}/`、`<root>/report/{report.json,report.md}`、`<root>/configs/<段>.yaml`（每段实际用的配置；导出两份：`export_first.yaml` / `export_second.yaml`）、`<root>/evals/<段>/`（`evaluate: true` 的段的 `--evals-dir`；判定也照常写进每个 trace 的 `evals/`）、`<root>/chain.json`（每段的 argv、退出码、产生的 run 目录与起止时刻；`--stages` 再跑时与已有的段合并；只是来历记录，报告不依赖它）。
 - **路径从哪里算**：规格里的相对路径（`root`、每段的 `config`）相对工作目录，与每个 af CLI 读路径的方式一样（阶段 YAML 自己的相对路径，例如 `matcher.site_rules: configs/replay_rules`，也相对工作目录）；`root` 解析成绝对路径后，链写进阶段 YAML 的路径都是绝对的。
 - **链只改路径**：每段的 YAML 原样读入，链只写这几个字段再落到 `<root>/configs/<段>.yaml`：唯一的 `trace_writer` 的 `trace_dir`（`<root>/traces/<段>`）；`same_path` / `branch` 唯一的 `trace_branches` 加载器的 `data_dir`（`<root>/traces/record`）；导出段唯一的导出器的 `sources_root`（`<root>/traces`）、`sources`（`["record/*", "branch/*"]`）与 `output_dir`（`<root>/datasets/first`，第二次 `second`）。缺这些块（或多于一个）在任何一段开跑之前报错、点名段与缺的块。其余一切（agent、档位、归档器、选步、分支数、`verify`、评测器）都写在段的 YAML 里；对照组的 YAML 自己写 `archive: []`。
-- **段的成败**：`spectragent-bench` 退出码 0 或 1（个别任务失败是要度量的数据）且这一段写出了至少一个新的 run 目录，算跑完；别的退出码（2：它的 pre-flight 拒绝了这一段的配置，一个任务也没跑，§4.2）、`SystemExit`、异常、一个新 run 目录都没有，是这一段失败：链停下（`ChainStageError` 点名这一段），之前的产物留着。导出段退出码非 0 就失败（导出什么也没写）；报告段抛出的异常（缺陷、报告目录写不了；坏 run 从不让它抛，见下）同样是这一段失败（`ChainStageError` 点名 `report`，`chain.json` 记下）。选了导出段而 `<root>/datasets/<first|second>` 已经存在，是在任何一段开跑之前的 `ChainConfigError`（导出从不覆盖，要重导先删掉；不让前面花钱的段为一次必然被拒的导出白跑）。`--stages` 只跑列出的段（按规格的顺序；未知的段名、规格里没配的段在任何一段开跑之前报 `ChainConfigError`），已经跑完的段可以不重跑；重跑一个运行段会在已有的 run 旁边再加 run（记 WARNING）。
+- **段的成败**：`spectragent-bench` 退出码 0 或 1（个别任务的基础设施失败是要度量的数据）且这一段写出了至少一个新的 run 目录，算跑完；别的退出码（2：它的 pre-flight 拒绝了这一段的配置，一个任务也没跑；3：一个 guard 否决了这一段，被否决那一段的 run 不喂给下一段；§4.2）、`SystemExit`、异常、一个新 run 目录都没有，是这一段失败：链停下（`ChainStageError` 点名这一段），之前的产物留着。导出段退出码非 0 就失败（导出什么也没写）；报告段抛出的异常（缺陷、报告目录写不了；坏 run 从不让它抛，见下）同样是这一段失败（`ChainStageError` 点名 `report`，`chain.json` 记下）。选了导出段而 `<root>/datasets/<first|second>` 已经存在，是在任何一段开跑之前的 `ChainConfigError`（导出从不覆盖，要重导先删掉；不让前面花钱的段为一次必然被拒的导出白跑）。`--stages` 只跑列出的段（按规格的顺序；未知的段名、规格里没配的段在任何一段开跑之前报 `ChainConfigError`），已经跑完的段可以不重跑；重跑一个运行段会在已有的 run 旁边再加 run（记 WARNING）。
 - **规格**：`ChainSpec{name, root, evidence, tasks{benchmark, subset, task_ids, limit}, record, control?, same_path?, branch?, export?, report{planted}}`，每段 `StageSpec{config, timeout, evaluate}`（`same_path` / `branch` 写 `evaluate: true` 被拒：`trace_branches` 没有评测加载器），导出段 `ExportStageSpec{config, repeat: 1|2}`，植入值 `PlantedSecret{label, value | env}`（恰好一个）。CLI：`spectragent-flywheel run --spec X [--stages a,b]`、`report --spec X [--out D]`、`report --root R --evidence live|rehearsal [--name N] [--out D]`（没有规格就没有植入值，只扫凭证形状）；退出码 0 完成、1 某段失败、2 规格或参数不对。测试的接缝是 `run_chain(spec, bench=..., export=...)`（替换两个进程内的 `main`）。
-- **原路径回放是一个分叉段**：`configs/flywheel/same_path_ui_tars_archive.yaml`：`branch` loop，选步 `last`（每个源 run 最后一个可分叉的策略步，§4.10），`continue_steps: 0`，`verify: warn`（发散了照样走完，每一步都有校验结果），`branches_per_step: 2`（回放确定性的重复），`require_status: any`，`on_unbranchable: skip`。它取代 M30 `tests/_helpers/replay_driver.py`"把录下的模型输出喂回同一个 agent"作为度量手段：恢复器本来就逐步重放录下的动作、逐步校验观测（§4.14 "恢复"），只有最后一步要 teacher 再决定一次（每个分支一次 LLM 调用）。S2b 就是只跑 `record`、`same_path` 与报告的这条链。
+- **原路径回放是一个分叉段**：`configs/flywheel/same_path_ui_tars_archive.yaml`：`branch` loop，选步 `last`（每个源 run 最后一个可分叉的策略步，§4.10），`continue_steps: 0`，`verify: warn`（发散了照样走完，每一步都有校验结果），`branches_per_step: 2`（回放确定性的重复），`agent_outcome: any`，`on_unbranchable: skip`。它取代 M30 `tests/_helpers/replay_driver.py`"把录下的模型输出喂回同一个 agent"作为度量手段：恢复器本来就逐步重放录下的动作、逐步校验观测（§4.14 "恢复"），只有最后一步要 teacher 再决定一次（每个分支一次 LLM 调用）。S2b 就是只跑 `record`、`same_path` 与报告的这条链。
 - `spectragent-bench` 不读 `.env`，链也不读：跑之前在 shell 里导出密钥（`set -a; . ./.env; set +a`）。
 - **链的导出 YAML** 用 `filters.require_eval: null`（链默认不评测，没有判定可筛）与 `decontamination: {against: []}`（源 run 本来就是被测 benchmark 的任务）：这两个现在就是导出的默认值，也是发布的 `export_sft.yaml` 的写法；`max_document_misses` 与 `exclude_restoration_diverged` 照常，被它们筛掉的分叉正是要计数的产出损失。
 
@@ -3068,7 +3079,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 |---|---|---|
 | 归档开销 | `record` 与 `control` 的 `StepRecord`；`record` 的 env/ extra 索引与 `index.jsonl` | **延迟**：策略步、从第 1 步起（第 0 步含环境 setup），每步环境侧时间 = `duration_ms − (llm_latency_ms 或 0)`（`duration_ms` 为 `None` 的步不计）；两组各自的 p50 / p95（最近秩的 `percentile`），开销 = 开 − 关。两组的档位（`TraceConfig.resolved` 里 capability 的 `replayability`）不同、或任一组为空时为 `null`。live 的两组走的不是同一条路径，比的是分布。**字节**：每个录制 run 的 env/ 去重前后（`RunTrace.committed_files` 里带 `archive` 的条目）——去重后 = 每个不同路径各计一次的 `size`；去重前 = 每一步（与收尾）的 extra 索引列出的每个 env 文件各计一次（内容寻址的文件被每个引用它的步各计一次），再加 revisit 记录替掉的完整记录长度（browser 的 `revisit_saving`）；按步数平均。与 M29 `ArchiveOverheadReport` 同一账法：`before == after + saved_by_revisit + saved_by_content_addressing` |
 | body 完整率 | `record` 的 `index.jsonl`（`iter_index_lines`） | 每个 `record_id` 的最终状态（最后一行；`streamed_later` 看有没有它的 `kind: body` 行）：有 body（`ok`、补取到 body 的 `streamed_later`）、不需要 body（`redirect`、`websocket`）、明确没有 body（`too_large`、`incomplete`；最后一行是 `pending` 的按 `incomplete` 读，§4.14）。完整率 = 有 body 或状态明确的记录 / 全部记录；另报有 body 率（分母去掉不需要 body 的）与按状态的分布（browser 的 `body_completeness`）。"服务器发了、归档里没有"只有 fixture 的访问日志能判：那是演练测试的断言，不是报告的度量 |
-| 原路径回放保真（按站点） | `same_path` 的 `StepRecord.restoration`；源 run（`TraceConfig.branch.source_trace`，相对 `<root>/traces/record`）的截图 | 被校验的每一步（恢复步与检查点步）：恢复器判定 `ok` 的占比（URL、元素签名多重集、截图 dHash ≤ 阈值、无文档 miss，§4.14 "恢复"）；严格版：URL 相等且截图 sha256 与源 run 同一步相同的占比；每个 run 第一个不通过的步与原因；全部通过的 run 占比 |
+| 原路径回放保真（按站点） | `same_path` 的 `StepRecord.restoration`；源 run（`TraceConfig.branch.source_trace`，相对 `<root>/traces/record`）的截图 | 被校验的每一步（恢复步与检查点步）：恢复器判定 `ok` 的占比（URL、元素签名多重集、截图 dHash ≤ 阈值、无文档 miss，§4.14 "恢复"）；严格版：URL 相等且截图 sha256 与源 run 同一步相同的占比；每个 run 第一个不通过的步与原因；全部通过的 run 占比；`errored_runs`：没有干净结束的 run 数（两本账任一：trace 不是 `complete`，或 agent 以 error / timeout / vetoed 结束、没有读得回的 `result.json`） |
 | 恢复校验率 | `branch` 的 `StepRecord.restoration` | 通过的校验 / 全部校验；不通过的按 `RestorationCheck.reasons` 计（一条多个原因各计一次）；重定位失败按 `not_found` / `ambiguous` 与 `RetargetMethod` 计 |
 | 分叉结果覆盖 | `branch` 的回放日志（`iter_decisions`）、`TraceConfig.branch.checkpoint_step`、各步执行的动作 | 检查点步及之后（策略步、终止步、收尾）一个主 frame 文档 miss（回放自己的 `diverged`）都没有的分叉占比；同一范围里其余的 miss（子 frame 文档、beacon、子资源；折叠的按它代表的条数计）按动作类型（miss 所在步执行的动作名；终止步记为 `terminal`、收尾的记为 `trailing`——页面加载完之后才发出的请求落在取走它的那次收集，§4.14 "步归因"）、`resourceType`、host、原因与请求类别分布。检查点之前的 miss 属于恢复，由恢复校验率的 `document_miss` 体现，不算这一项 |
 | 回放确定性 | `same_path` 与 `branch` 的终止步、检查点步的截图 | 同一输入 = 同一源 run、同一检查点、策略步执行的动作逐个相同（名字与参数的规范 JSON）；组内两两比较终止截图（`origin == "terminal"`）的 sha256，报可比的对数与相同的对数（没有终止步的 run 不比、计数）；另报同一检查点所有分支的检查点步截图（恢复出的状态，与 teacher 无关）是否相同 |
@@ -3077,7 +3088,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 
 #### 各节与建议（`report.py`）
 
-- **站点**：每个站点（任务 `start_url` 的主机，`core/trace/sources.py::task_identity(config).site`，与导出 `split.by: site` 和 `exclude_sites` 用的是同一个键；分叉 run 用它的源任务）的任务数、录制的结局、原路径保真、恢复校验率、分叉覆盖、miss 数。**剔除名单**：被拦截（下一条）、或原路径保真低于 `EXCLUDE_FIDELITY`（0.8）、或录制的环境在第 0 步就失败（观测或动作失败，即循环以 `env_status: failed` 结束的那两个阶段；或一步都没提交）的站点；模型调用失败（`error_phase: llm`：429、超时、被拒的 schema）是路由的失败，从不剔除站点，按站点单独计数（`record_model_failures`）；输出成 `ExportFilters.exclude_sites` 的形状（主机名，后缀匹配）并附 YAML 片段。链不自动套用（导出在报告之前）：人把它放进导出配置再导一次。
+- **站点**：每个站点（任务 `start_url` 的主机，`core/trace/sources.py::task_identity(config).site`，与导出 `split.by: site` 和 `exclude_sites` 用的是同一个键；分叉 run 用它的源任务）的任务数、录制的两本账（`record_status`：trace 的状态 `complete` / `incomplete` / `writing`；`record_outcome`：agent 的 `agent_done`）、原路径保真、恢复校验率、分叉覆盖、miss 数。**剔除名单**：被拦截（下一条）、或原路径保真低于 `EXCLUDE_FIDELITY`（0.8）、或录制的环境在第 0 步就失败（观测或动作失败，即循环以 `env_status: failed` 结束的那两个阶段；或一步都没提交）的站点；模型调用失败（`error_phase: llm`：429、超时、被拒的 schema）是路由的失败，从不剔除站点，按站点单独计数（`record_model_failures`）；输出成 `ExportFilters.exclude_sites` 的形状（主机名，后缀匹配）并附 YAML 片段。链不自动套用（导出在报告之前）：人把它放进导出配置再导一次。
 - **anti-bot / Cloudflare**：录制里文档请求（`resourceType: Document`，主 frame 与子 frame 都算，验证码 iframe 也是拦截）的应答带拦截特征（browser 的 `challenge_documents`：状态 403 / 429 / 503，且有 `cf-mitigated: challenge` 头、或 `server: cloudflare` 加 `cf-ray`）的站点、run 与步；建议：剔除。只认应答头，不带这些头的拦截页面认不出来（写明的残余）。
 - **重复分叉率**：同一 `branch_group_id` 里检查点步执行的动作（规范 JSON）与排在前面的分支相同的分叉占比（与导出的 `duplicate_of` 同一规则），并对照数据集 manifest 的 `duplicates`。
 - **POST 分叉的 miss**：分叉 run 检查点及之后方法为 POST 的 miss（文档、子资源分开），有 POST miss 的分叉占比。
@@ -3177,7 +3188,7 @@ class WALWriter:
         """write_durable config.json（按需建 run 目录和 traces/），建 steps/ observations/ messages/ evals/，
         把这些目录项一批 fsync：run 目录，加上为它新建的每个目录的父目录（traces/；这个 run
         新建了 traces/ 时再加 traces/ 的父目录），然后才 atomic_write 初始 manifest
-        （format_version=2，last_step_completed=-1，status=running）。
+        （format_version=3，last_step_completed=-1，complete_through=-1，status=writing）。
         先有 config.json 才有 manifest：run 存在了，它的配置就一定在。之后的提交只 fsync run 目录
         之内的目录，run 目录自己的名字只在这里落盘。manifest 写成之前任何一步失败，都不留下 run。"""
 
@@ -3190,7 +3201,8 @@ class WALWriter:
         llm_calls: Sequence[EncodedLLMCall] = (),
         extra_files: Sequence[TraceFile] = (),
     ) -> None:
-        """按上面的 0–4 提交一步；返回即已落盘。"""
+        """按上面的 0–4 提交一步；返回即已落盘。manifest 的 complete_through 随之更新：
+        从第 0 步起不间断的已提交步的最后一步（记不下来的那一步从不提交，所以它停在洞前）。"""
 
     def commit_trailing(
         self,
@@ -3202,7 +3214,8 @@ class WALWriter:
         manifest.trailing 追加一条 TrailingEntry。两样都为空时什么也不做。"""
 
     def write_result(self, result: AgentResult) -> None: ...   # atomic_write result.json
-    def finalize(self, status: RunStatus) -> None: ...         # 写终态，原子重写 manifest
+    def finalize(self, status: TraceStatus, *,
+                 incomplete_reason: str | None = None) -> None: ...   # 关闭 trace：complete，或 incomplete 加原因
 ```
 
 参数类型来自 `core/trace/encoding.py`。它是落盘形状的唯一规则，`TraceWriter`、`RunTrace` 和测试 fixture 共用同一份（文件名与记录类型见 §5.3）：
@@ -3283,13 +3296,13 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 **文件权限就是普通写入会给的权限。** 临时文件用 `os.open(..., 0o666)` 创建，由内核按 umask 屏蔽；替换已有文件时，写入第一个字节之前先把临时文件改成原文件的权限位，所以它从来不比被替换的文件更宽。不用 `tempfile.mkstemp`：它固定 `0o600`，适合临时数据，不适合马上要 rename 到位的文件：用了它，每个 trace 文件和每个 verdict 都只有属主可读，另一个用户（队友、看板、CI 上传）读共享的 `--evals-dir` 拿到 `PermissionError`，重新打分还会把运维特意设的权限改回 `0o600`。读 umask 也不行：`os.umask` 只能"设置并返回旧值"，会和其他线程创建文件互相竞争。trace 是否私有，由 umask 或目录权限决定，和进程写的其他文件一样；需要私有的 trace（`record_secrets` 打开时）放在私有目录里。
 
-**不属于任何已提交 step 的文件走 `commit_trailing`。** 它落盘 Loop 没来得及交出的那一步的 LLM 调用（超时、外部取消、崩溃），以及 M28 在 run 结束时冲刷的环境证据。它走同一套校验、同一种批量 fsync、同一个提交点，但不写 StepRecord，也不推进 `last_step_completed`：声称一个完成的 step，会在 manifest 里放进一个没有动作的幽灵步。`finalize(status)` 则写终态；停在 `running` 的 trace 没有 evaluator 会碰。
+**不属于任何已提交 step 的文件走 `commit_trailing`。** 它落盘 Loop 没来得及交出的那一步的 LLM 调用（超时、外部取消、崩溃），以及 M28 在 run 结束时冲刷的环境证据。它走同一套校验、同一种批量 fsync、同一个提交点，但不写 StepRecord，也不推进 `last_step_completed`：声称一个完成的 step，会在 manifest 里放进一个没有动作的幽灵步。`finalize(status, incomplete_reason=...)` 关闭 trace：`complete`，或 `incomplete` 加上没记下来的是什么（`writing` 不是终态，`incomplete` 没有原因、`complete` 带着原因都被拒绝）；停在 `writing` 的 trace 没有任何下游会用（evaluator 没有结果可读，分叉和导出没有可用的步）。
 
 **环境证据走同一个提交。** 归档文件是普通的 extra 文件，WAL 不认识它们（接口仍然只有 `TraceFile`）：
 
 - 一步的 `after_record_step` 在 manifest 提交之前拉取的批次，随**这一步**的 `commit_step(..., extra_files=...)` 落盘，列在 `steps/NNN.extra.json`；内容寻址的文件由 WAL 在 run 内去重，每个引用它的步的索引都列它。
 - 收尾时每样欠 trace 的东西**各自一次** `commit_trailing`，按这个顺序：(1) 还登记着的 LLM 调用；(2) 提交失败的步遗留下来的每个批次（不止一个时，两步的批次可能带着同名的归档文件，不能挤进同一个 `env/trailing/KK/`；只有提交失败之后还继续跑的驱动会这样）；(3) 收尾时收集到的尾部。所以每一批证据都有自己的 `env/trailing/KK/`，调用那一次没有 extra 索引。没东西可提交的就不提交。
-- 一次提交失败时，它带的归档文件留在 TraceWriter 里，收尾时作为上面的 (2) 提交，重新按 trailing 路径编码（失败那次写下的文件是孤立文件，对读侧不可见）。归档文件的路径段与要进索引的字符串在交给 WAL 之前就校验过（§4.9、§5.4），所以这样的批次不会因为同样的路径错误再失败一次。即便如此，收尾的某一次 trailing 提交仍然失败（磁盘满，或某个批次因为任何重试都修不好的原因写不进去），它也只赔上它自己带的东西：**那一样就此丢掉，不重试**（用户 2026-10-13 的裁决）。`AgentRuntime` 在 `on_run_end` 抛错之后不再派发 `on_run_error`，否决与取消的收尾也不重试；磁盘刚拒绝过的写，几毫秒后再试多半还是失败，多一次重试只会让收尾更复杂（TraceWriter 不会为此清掉内存里的那一样，所以一个在 `on_run_end` 失败之后自己再派发 `on_run_error` 的驱动会再试一次，但这不是框架提供的保证）。其余各样照常提交，trace 以 `error` 收尾；全部试过之后抛出第一个错误（被取消或被否决的 run 上，`execute` 只把它记日志，否决上再附一条 note，重抛的仍是取消或否决，§4.2）。调用单独先提交，正是为了这一点：写不进去的一批证据不会连累未完成那一步的 LLM 调用和尾部（"提交失败不丢调用"，§5.4）。
+- 一次提交失败时，它带的归档文件留在 TraceWriter 里，收尾时作为上面的 (2) 提交，重新按 trailing 路径编码（失败那次写下的文件是孤立文件，对读侧不可见）。归档文件的路径段与要进索引的字符串在交给 WAL 之前就校验过（§4.9、§5.4），所以这样的批次不会因为同样的路径错误再失败一次。即便如此，收尾的某一次 trailing 提交仍然失败（磁盘满，或某个批次因为任何重试都修不好的原因写不进去），它也只赔上它自己带的东西：**那一样就此丢掉，不重试**（用户 2026-10-13 的裁决）。收尾只做一次：TraceWriter 收尾之后就清掉还欠着的东西，之后的 `on_run_error`（`AgentRuntime` 在有错误时紧跟 `on_run_end` 派发它）什么也不重做；磁盘刚拒绝过的写，几毫秒后再试多半还是失败，多一次重试只会让收尾更复杂。其余各样照常提交；全部试过之后，第一个错误写进 trace 的 `incomplete_reason`（trace 记为 `incomplete`）并记日志，不抛出：收尾时 run 的结局已经定了，记录失败不顶替它（§4.6）。调用单独先提交，正是为了这一点：写不进去的一批证据不会连累未完成那一步的 LLM 调用和尾部（"提交失败不丢调用"，§5.4）。
 
 ### 5.3 目录结构
 
@@ -3298,9 +3311,9 @@ traces/
   ├── suite_index.json                  # 可选：后置生成的聚合索引
   │
   └── {run_id}/
-      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 2
+      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 3；trace 自己那本账
       ├── config.json                   # TraceConfig 快照（init_run 写一次）
-      ├── result.json                   # AgentResult（run 结束时写一次）
+      ├── result.json                   # AgentResult（run 结束时写一次）；agent 那本账
       │
       ├── steps/
       │   ├── 000.json                  # StepRecord
@@ -3356,14 +3369,16 @@ traces/
 
 归档路径的根是 `ENV_DIR = "env"`，四个函数都在 `encoding.py`。每个归档文件在它所在索引里的 `ExtraFileRecord.meta["archive"]` 是一份 `ArchiveMeta`（下面的记录类型）：读侧靠它知道一个 extra 文件是归档文件、属于哪个归档器、第几版 run 记录。
 
-**manifest（format_version 2）**，以一个在第 2 步超时的 run 为例：
+**manifest（format_version 3）**，以一个在第 2 步超时的 run 为例：agent 超时了（`result.json` 的 `agent_done: timeout`），trace 却是完整的——它记下了这个 run 做过的一切，被切断那一步的调用作为 trailing 落了盘：
 
 ```json
 {
-  "format_version": 2,
+  "format_version": 3,
   "run_id": "f2bbae22",
   "last_step_completed": 1,
-  "status": "error",
+  "status": "complete",
+  "incomplete_reason": null,
+  "complete_through": 1,
   "created_at": "2026-10-10T08:00:00Z",
   "updated_at": "2026-10-10T08:05:00Z",
   "config_hash": "…",
@@ -3396,7 +3411,19 @@ traces/
 }
 ```
 
-**记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 2`）：
+同一个 run 若在第 2 步收集环境证据失败（出洞，§4.6），manifest 是 `"status": "incomplete"`、`"incomplete_reason": "recording failed at step 2: ArchiveCollectionError: …"`、`"complete_through": 1`，`result.json` 是 `agent_done: error`、`error: "recording failed at step 2: …"`；若那一步正是 agent 说 done 的一步，`result.json` 仍是 done 带着答案，manifest 照样是 `incomplete`。
+
+**两本账（用户 2026-10-13 的裁决）。** `result.json` 只说 agent 怎么结束：done / max_steps / error / timeout / vetoed（`AgentDoneStatus`）。manifest 只说 trace 记全没有：
+
+| `status` | 含义 | 谁写 |
+|---|---|---|
+| `writing` | trace 还开着：run 还在跑，或进程死在收尾之前；什么都不作数 | `init_run` |
+| `complete` | 已关闭，run 做过的一切都记下了 | `finalize`（收尾没有记录失败） |
+| `incomplete` | 已关闭，但有东西没记下来：某一步（出洞，run 在那里停下）、收尾那次收集、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
+
+`complete_through` 是"完整到第几步"：0..`complete_through` 每一步都已提交、各自带着自己的证据；-1 表示一步也没有。它由 `commit_step` 维护（从第 0 步起不间断的已提交步的最后一步），记不下来的那一步从不提交，所以它停在第一个洞之前，之后就算还有步提交也不前进；没出过洞时它等于 `last_step_completed`，尾部失败不动它。`writing` 的 trace 里它也一直是当前值。读者各取所需：分叉与导出把"已关闭、且完整到所用的那一步"当硬条件（§4.10、§4.15），agent 怎么结束是另一个筛选；sweep 的汇总分三栏计数（§4.2）；度量按站点分别数两本账（§4.16）。格式 2 的 `error` 两种意思都有，读者分不出来，所以 format 3 不读任何更旧的 trace（§5.5），不做兼容 shim。
+
+**记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 3`）：
 
 ```python
 class FragmentFiles(BaseModel):
@@ -3405,7 +3432,6 @@ class FragmentFiles(BaseModel):
     failed: bool = False               # True：file 里是 FragmentFailure，不是 fragment
 
 class StepManifestEntry(BaseModel):
-    model_config = ConfigDict(extra="allow")                # v1 的旧字段名照样能解析
     step: int
     step_file: str                                          # steps/NNN.json
     fragments: dict[str, FragmentFiles] = Field(default_factory=dict)  # 全限定 key → 文件
@@ -3416,12 +3442,18 @@ class TrailingEntry(BaseModel):                             # 每次 commit_trai
     llm_calls: list[str] = Field(default_factory=list)
     extra_index: str | None = None                          # steps/trailing_KK.extra.json
 
+class TraceStatus(StrEnum):            # trace 自己那本账，不是 agent 的
+    WRITING = "writing"
+    COMPLETE = "complete"
+    INCOMPLETE = "incomplete"
+
 class TraceManifest(BaseModel):
-    model_config = ConfigDict(extra="allow")   # v1 manifest 照样能解析，由 format_version 决定哪些访问器拒绝它
-    format_version: int = 1            # 缺省 = M27 之前写的 trace；init_run 写 TRACE_FORMAT_VERSION
+    format_version: int = 1            # 缺省 = M27 之前写的 trace；init_run 写 TRACE_FORMAT_VERSION；RunTrace 只读 3
     run_id: str
     last_step_completed: int = -1
-    status: RunStatus = RunStatus.RUNNING
+    status: TraceStatus = TraceStatus.WRITING
+    incomplete_reason: str | None = None     # 恰在 incomplete 时有值
+    complete_through: int = -1               # 完整到第几步；commit_step 维护
     created_at: UTCDatetime
     updated_at: UTCDatetime
     config_hash: str = ""
@@ -3663,88 +3695,89 @@ class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂�
         record = args[0] if args else kwargs.get("record")
         step = int(getattr(record, "step", self._steps_written))
         self._stamp_timings(record)
-        extra = await self._step_archive(step) if self.archive else []
-        # ↑ 拉取 → 校验 → 定 run 记录版本 → encode_archive_file(..., step=step)。
-        #   collect_archive() 抛错、或批次违反契约（ArchiveContractError）：记下失败、原样上抛，
-        #   这一步不提交，它登记的调用留给收尾的 trailing
         pending = list(self._pending_calls)    # 本步全部调用，按开始顺序
-        self._wal.commit_step(
-            step, record,
-            fragments=encode_observation(step, kwargs.get("observation")),
-            llm_calls=encode_llm_calls(step, pending, first_call=self._calls_flushed),
-            extra_files=extra,                 # 提交抛错：这批归档文件留给收尾的 trailing（自己一次）
-        )
+        try:
+            batch = await self._step_archive(step) if self.archive else None
+            # ↑ 拉取 → 校验（违反契约：ArchiveContractError）；之前出过洞就直接抛错
+            extra, versions = self._encode_archive(batch, step=step)
+            self._wal.commit_step(             # 提交抛错：这批归档文件留给收尾的 trailing（自己一次）
+                step, record,
+                fragments=encode_observation(step, kwargs.get("observation")),
+                llm_calls=encode_llm_calls(step, pending, first_call=self._calls_flushed),
+                extra_files=extra,
+            )
+        except Exception as exc:               # 出洞：这一步不提交，它的调用留给收尾的 trailing
+            self._hole = self._hole or f"recording failed at step {step}: ..."
+            if _ended_in_success(record):      # agent 就在这一步说了 done：结局已定，不抛
+                return
+            raise RecordingFailedError(step, exc) from exc   # run 在这一步停下
+        except BaseException:                  # 取消切断了这一步的记录：不是记录失败，但这一步丢了
+            self._hole = self._hole or f"recording step {step} was cut off by a cancellation"
+            raise
+        self._run_versions = versions
         del self._pending_calls[: len(pending)]   # 提交成功之后才移出
         self._calls_flushed = 0
 
     async def on_run_end(self, *, result, env, **kwargs):
-        tail, archive_error = [], None
-        try:
-            tail = await self._collect_tail()  # 至多一次；之前失败过就不收集
-        except BaseException as exc:           # 先记下：收尾必须照常走完
-            archive_error = exc
-        cancelled = archive_error is not None and not isinstance(archive_error, Exception)
-        try:
-            self._close_out(tail, result=result, incomplete=archive_error is not None)
-        except Exception:
-            if not cancelled:
-                raise                          # 冲刷 / result.json 的失败照原样上抛（否决的 run 上 execute 只把它附成 note，§4.2）
-            logger.warning(...)                # 取消永远优先：收尾在它底下又失败了，只记日志
-        if archive_error is not None and (
-            cancelled                                         # 取消：原样重抛
-            or _status_for(result) is not RunStatus.ERROR     # 只在 run 本身没有失败时上抛
-        ):
-            raise archive_error
-
-    def _close_out(self, tail, *, result, incomplete):
-        flushed = False
-        try:
-            self._flush_trailing(tail)         # 调用、每个遗留批次、尾部 —— 各一次 commit_trailing
-            flushed = True
-        finally:                               # trailing 提交失败，终态也照样写
-            status = _status_for(result)
-            if incomplete or self._archive_failure is not None or not flushed:
-                status = RunStatus.ERROR       # 归档不完整（收尾或某一步的收集失败过），或欠 trace 的没提交完
-            try:
-                if result is not None:
-                    self._wal.write_result(result)
-            except BaseException:
-                status = RunStatus.ERROR       # result.json 写不进去：trace 不是这个 run 的完整记录
-                raise
-            finally:
-                self._wal.finalize(status)
-                self._env = None               # 收尾之后不再持有环境
+        if self._closed:
+            return
+        cancellation = await self._close_out(result)   # 从不抛错，只交回收尾收集的取消
+        if cancellation is not None:
+            raise cancellation                 # 取消永远优先：终态写完之后原样重抛
 
     async def on_run_error(self, *, error, partial_steps, env, **kwargs):
-        tail, cancellation = [], None
-        try:
-            tail = await self._collect_tail()  # on_run_end 已经收过就是 []；失败只记日志——run 本来就在失败
-        except Exception:
-            logger.warning(...)
-        except BaseException as exc:           # 取消：收尾走完之后再原样重抛
-            cancellation = exc
-        try:
-            try:
-                self._flush_trailing(tail)     # 幂等：on_run_end 通常已经冲刷过
-            finally:
-                self._wal.finalize(RunStatus.ERROR)
-                self._env = None
-        except Exception:
-            if cancellation is None:
-                raise
-            logger.warning(...)                # 同上：取消优先于它底下失败的收尾
+        # AgentRuntime 在 on_run_end 之后才派发它：已经收过尾，什么也不重做、不重试。
+        # 只派发 on_run_error 的驱动：按同样的规则收尾，没有 result（所以 trace 是 incomplete）
+        cancellation = None if self._closed else await self._close_out(None)
         if cancellation is not None:
             raise cancellation
+
+    async def _close_out(self, result):
+        self._closed = True                    # 收尾只做一次
+        cancellation = None
+        try:
+            tail = await self._collect_tail()  # 至多一次；出过洞就不收集
+        except Exception as exc:
+            tail = None
+            self._close_out_problems.append(f"the close-out evidence collection failed: {exc}")
+        except BaseException as exc:           # 取消：先记下，收尾照常走完
+            tail, cancellation = None, exc
+            self._close_out_problems.append("the close-out evidence collection was cancelled")
+        try:
+            try:
+                self._flush_trailing(tail)     # 调用、每个遗留批次、尾部 —— 各一次 commit_trailing
+            except Exception as exc:           # 写不进去的那一样丢掉，不重试
+                self._close_out_problems.append(f"the close-out could not commit ...: {exc}")
+            if result is None:
+                self._close_out_problems.append("... so result.json was not written")
+            else:
+                try:
+                    self._wal.write_result(result)
+                except Exception as exc:
+                    self._close_out_problems.append(f"result.json could not be written: {exc}")
+        finally:                               # 终态不论前面怎样都试着写
+            reason = "; ".join(r for r in (self._hole, *self._close_out_problems) if r) or None
+            try:
+                self._wal.finalize(TraceStatus.INCOMPLETE if reason else TraceStatus.COMPLETE,
+                                   incomplete_reason=reason)
+            except Exception:
+                logger.error(...)              # 连终态都写不进去：manifest 停在 writing
+            finally:
+                self._env = None               # 收尾之后不再持有环境
+                self._pending_calls.clear()    # 欠着的东西就此丢掉
+                self._pending_archive.clear()
+        return cancellation
 ```
 
 **归档的写侧规则**（`archive` 非空时才生效；为空时 TraceWriter 不缓存环境、不碰任何归档方法，行为与 M27 完全相同）：
 
 - **`archive` 是 YAML 受体（M29）。** `TraceWriter.__wiring__ = {"archive": "archiver"}`；同一个构造参数是 `Annotated[list[ArchiverBase] | None, Field(...)]`；类级的 `archive: list[ArchiverBase]` 注解放在 mixin（`_TraceWriterReceptors`）上，因为 Composer 读类级注解决定按 list 注入（§4.2.1）；`archiver` 在 `_collect_registrars()` 里。生成的配置于是是 browser 归档器配置的判别联合列表：拼错的 `archiver_id` 校验失败，每个归档器的旋钮都从 YAML 可达。三种情形由 Composer 测试钉住：写了列表就用它；`archive: []` 是不归档；省略时 deferred resolution 采纳顶层 `archiver:` 段的全部实例（没有顶层段就是不归档）。capability 块里写 `archiver:`（那是 provides 声明，没有 slot）在组装时以 negotiation-only 的报错拒绝。历史：M28 时注册表还是空的，空注册表不能成为 Composer 层，所以 `archive` 先是普通构造参数、被 `__config_annotated_only__` 挡在生成的配置之外；给它一个没有 wiring 的 `Annotated` 类型会生成 `archive: Any`、把原始 dict 交给 hook，M28 因此没有那样做。
 - **`on_run_start`**：在 `init_run` 之前核对（所以拒绝时不留下 trace 目录）：`archive_negotiation is None`、`set(archive_negotiation.active_archivers) != {a.archiver_id for a in self.archive}`、`env is None`，任何一条都抛 `RuntimeError`，说明归档器必须经 `AgentRuntime.prepare()` 协商并绑定。核对通过才缓存原始 `env`。
-- **`after_record_step`** 的顺序：`_stamp_timings` → 如果之前已经有过归档失败（Loop 吞掉了第一次的错误又提交了一步），直接抛 `RuntimeError`，点名收集失败的那一步，`__cause__` 是记下的那个失败，不再收集（从那以后归档已经不完整）→ `batch = await env.collect_archive()`（抛 `Exception`：记为归档失败，原样上抛）→ 校验批次（违反时抛 `ArchiveContractError`，同样记为归档失败、整批丢弃，在写任何字节之前）→ 定 run 记录版本 → `encode_archive_file(..., step=step)` → `commit_step(..., extra_files=...)`。`commit_step` 自己抛错（I/O）时，这批文件留在 TraceWriter 里等收尾，错误照原样上抛；成功之后才更新 run 记录的版本表。
+- **`after_record_step`** 的顺序：`_stamp_timings` → 如果之前已经有过归档失败（Loop 吞掉了第一次的错误又提交了一步），这一步就记不下来：`RuntimeError` 点名收集失败的那一步，`__cause__` 是记下的那个失败，不再收集（从那以后归档已经不完整）→ `batch = await env.collect_archive()`（抛 `Exception`：记为归档失败）→ 校验批次（违反时 `ArchiveContractError`，同样记为归档失败、整批丢弃，在写任何字节之前）→ 定 run 记录版本 → `encode_archive_file(..., step=step)` → `commit_step(..., extra_files=...)`。`commit_step` 自己抛错（I/O）时，这批文件留在 TraceWriter 里等收尾。这几处的错误都是这一步的洞（见下面"出洞"那一条）：包成 `RecordingFailedError` 上抛（原错误是 `__cause__`），这一步结局已定（done）时不抛；成功之后才更新 run 记录的版本表。
 - **批次校验**（`ArchiveContractError`，步提交与收尾的批次一样查）：步级文件的 `archiver_id` 必须是本 run 绑定的键之一，内容寻址的文件（响应体）也一样：用户故意没绑定的归档器，它的证据不能借 `env/blobs/` 落盘；run 记录的 `capability_id` 必须是某个绑定归档器所属的 capability（`archive_bindings` 的值），它的 `archiver_id` 是绑定键或那个裸 capability id；每个 capability 至多一份 run 记录；`archiver_id` 与 `name` 各是文件系统接受的单段（§4.9 的段规则：至多 255 字节 UTF-8），`media_type` 与 `ids` 的键和值都能编码成 UTF-8；编码后的路径在批次内按 `encoding.fold_path` 的键互不相同，不区分大小写、也不区分 Unicode 规范化形式（内容寻址的同一路径可以重复，只写一次）；每条路径都过 `encoding.check_relative_path`。`ArchiveFile` 构造时已经拒绝了其中大半，这里再查一遍：被拒绝的批次从不成为欠 trace 的东西，而因为这类原因失败的提交，每次重试都会同样失败。
-- **run 记录版本**：TraceWriter 给每次收集按发生顺序编号（步提交的收集与收尾那次都算），并记着每个 capability 已提交的最新一版（版本号、sha256、它来自第几次收集）。来自更早一次收集的 run 记录不再提交，记一条日志——这只发生在遗留批次上：它在收尾才提交，之后某次收集的 run 记录可能已经落盘（继续跑的驱动；或者收尾写不进遗留批次、尾部却落了盘，而驱动又自己派发了一次 `on_run_error`，即 §5.2 说的那种再试，`AgentRuntime` 不这样做）；与最新一版字节相同的再发直接丢掉，但它的收集仍算作最新的采集；否则取下一个版本号（第一版是 0）。版本表只在提交成功之后生效，收尾的每一次 trailing 提交之前重新计算。
-- **收尾**：`_collect_tail()` 在 `archive` 非空、之前没有归档失败、也没有收尾收集过时才收集，并立刻标记"已收尾收集"——所以 `on_run_end` 之后的 `on_run_error` 不会再收集一次，只派发 `on_run_error` 的驱动也照样收集一次。冲刷按 §5.2：调用、每个遗留批次、尾部各自一次 `commit_trailing`，trailing 位置编号是提交前 `len(manifest.trailing)`；某一次失败只赔上它自己那一样（丢掉、不重试，§5.2），其余照常提交，全部试过之后抛第一个错误。收尾的收集没有正常完成（抛错或被取消），manifest 记为 `error`；抛错只在 run 本身没有失败时才从 `on_run_end` 上抛（`execute` 因此抛出它），`on_run_error` 里只记日志；取消在终态写完之后原样重抛，两个 hook 都一样；即使冲刷或写终态又在它底下失败（磁盘满），那个错误也只记日志，重抛的仍是取消（§4.2 "取消永远优先"）。某一步的收集失败过时，不论 result 怎么说（Loop 吞掉了那个错误、最后报告成功），manifest 同样记为 `error`：归档不完整，trace 就不是这个 run 的完整记录。收尾之后 TraceWriter 不再持有环境；之后再有提交（排空之后还继续跑的驱动）抛 `RuntimeError`：归档已经收尾，那一步不能带着证据提交。
+- **run 记录版本**：TraceWriter 给每次收集按发生顺序编号（步提交的收集与收尾那次都算），并记着每个 capability 已提交的最新一版（版本号、sha256、它来自第几次收集）。来自更早一次收集的 run 记录不再提交，记一条日志——这只发生在遗留批次上：它在收尾才提交，之后某次收集的 run 记录可能已经落盘（提交失败之后还继续跑的驱动）；与最新一版字节相同的再发直接丢掉，但它的收集仍算作最新的采集；否则取下一个版本号（第一版是 0）。版本表只在提交成功之后生效，收尾的每一次 trailing 提交之前重新计算。
+- **收尾**：只做一次（`_closed`）。`_collect_tail()` 在 `archive` 非空、之前没有出过洞、也没有收尾收集过时才收集，并立刻标记"已收尾收集"。冲刷按 §5.2：调用、每个遗留批次、尾部各自一次 `commit_trailing`，trailing 位置编号是提交前 `len(manifest.trailing)`；某一次失败只赔上它自己那一样（丢掉、不重试，§5.2），其余照常提交。然后写 `result.json`（没有 result 就不写，trace 因此是 `incomplete`），最后不论前面怎样都试着写终态：没有任何记录失败是 `complete`，否则是 `incomplete`，`incomplete_reason` 依次写第一个洞（某一步没记下来；Loop 吞掉了那个错误、最后报告成功也一样）和收尾里每一样没记下来的东西（收尾的收集失败或被取消、某一样 trailing 提交失败、`result.json` 写不进去）。这些都不抛错，只记日志：收尾时 run 的结局已经定了（§4.6）。终态本身写不进去（磁盘一直满着）记一条 ERROR，manifest 停在 `writing`。唯一上抛的是收尾收集被取消时的那个取消，在终态写完之后（§4.2 "取消永远优先"）。收尾之后 TraceWriter 不再持有环境、清掉还欠着的东西；之后的 `on_run_error` 什么也不重做；之后再有提交（排空之后还继续跑的驱动）在有归档时失败：归档已经收尾，那一步不能带着证据提交。
+- **出洞**：`after_record_step` 里，这一步的拉取、校验或提交失败（`Exception`）→ 记下第一个洞（`recording failed at step t: …`），这一步不提交；这一步的记录里有 `is_done` 的动作结果（agent 在这一步说了 done，结局已定）就只记日志、不抛，否则抛 `RecordingFailedError`（`core/step_recorder.py`，原错误是 `__cause__`），run 在这一步停下（§4.6）。取消（`BaseException`）切断这一步的记录时也记一个洞（`recording step t was cut off by a cancellation`），取消原样上抛。WAL 的 `complete_through` 因为这一步没提交而停在它前面。
 - **耗时记在下一步上。** 拉取发生在 `_stamp_timings` 之后，和提交 I/O 一样算进下一步的 `duration_ms`；M29 的归档开销度量单独计时。
 
 > **Commit 粒度说明**：`around_ainvoke` 只登记 LLM 调用，不写盘；一次 step 可能包含多次调用，而动作及其结果要到调用之后才产生。Loop 将含本步 actions、action results 和 usage 的完整 `StepRecord` 交给 `record_step()` 后，`after_record_step` 才把观测、本步全部调用记录和 step record 一次交给 `WALWriter.commit_step()`；manifest 的原子更新是持久化提交点。若运行在 `record_step()` 前结束（超时、外部取消、崩溃），已登记的调用（包括被取消、只有 prompt 的那一次）在 `on_run_end` / `on_run_error` 里经 `commit_trailing()` 落盘为 trailing calls，但不冒充一个完成的 step。
@@ -3757,7 +3790,7 @@ class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂�
 
 死掉的 socket 什么也没交回，记录就只有 `error` 和 `detail`。不造一个装着错误的 completion：读 trace 的人必须分得清模型写的回复和框架编的回复。被取消的调用 `status: cancelled`，`completion` 为空，`failure.error` 是取消异常的类名（`CancelledError`），prompt 完整保留。提交或收尾时仍在进行中的调用（目前的 Loop 不会出现，调用都在 Loop 内 await）同样记为 `cancelled`，但 `failure` 为空：trace 到此为止，hook 没见到任何异常，prompt 照样保留。
 
-**提交失败不丢调用，收尾失败不丢终态。** `commit_step` 抛错（I/O 错误）时，这一步登记的调用仍留在 TraceWriter 里，run 结束时经 `commit_trailing` 落盘。它们自己一次提交，排在任何证据批次之前，所以一批写不进去的证据连累不到它们（§5.2）。`on_run_end` 里 trailing 提交本身失败时，`result.json` 和终态照样写，终态记为 `error`（欠 trace 的调用或证据没落盘，trace 不是这个 run 的完整记录；M28 之前这里沿用 result 的状态，成功的 run 因此可能带着丢失的尾部标成 `completed`），错误随后上抛。没写进去的那一样丢掉，不重试（§5.2）。`result.json` 自己写不进去时，终态也照样写，但记为 `error`：没有 `result.json` 的 trace 不是这个 run 的干净记录，不能标成 `completed`；停在 `running` 则更糟，没有 evaluator 会碰它。
+**提交失败不丢调用，收尾失败不丢终态。** `commit_step` 抛错（I/O 错误）时，这一步登记的调用仍留在 TraceWriter 里，run 结束时经 `commit_trailing` 落盘。它们自己一次提交，排在任何证据批次之前，所以一批写不进去的证据连累不到它们（§5.2）。`on_run_end` 里 trailing 提交本身失败时，`result.json` 和终态照样写，终态记为 `incomplete`，原因写明（欠 trace 的调用或证据没落盘，trace 不是这个 run 的完整记录），不抛错。没写进去的那一样丢掉，不重试（§5.2）。`result.json` 自己写不进去时，终态也照样写，记为 `incomplete`：没有 `result.json` 的 trace 不是这个 run 的完整记录，不能标成 `complete`；停在 `writing` 则更糟，没有任何下游会用它。
 
 **output schema 每个类每个 run 只算一次。** `output_format` 来自 `kwargs["output_format"]`（ReactLoop 以 `llm.ainvoke(context, output_format=output_model)` 调用）。TraceWriter 按类缓存 `model_json_schema()`，编码成内容寻址的 `messages/output_formats/<sha256>.json`，随第一次引用它的提交落盘；之后的调用只带 `OutputFormatRef`。生成不了 schema 的回复模型记为没有 schema（`output_format: null`）并打 warning，不因为 trace 让调用失败：provider 用同一个 schema 构造请求，那个失败由 provider 自己报。
 
@@ -3769,7 +3802,7 @@ class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂�
 
 ```python
 class RunTrace:
-    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json
+    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json；不是 format 3 就抛 TraceSchemaError
 
     @property
     def trace_dir(self) -> Path: ...
@@ -3780,7 +3813,7 @@ class RunTrace:
     @property
     def step_count(self) -> int: ...                        # last_step_completed + 1，无 I/O
 
-    # ── 形状自 v1 未变：任何 format_version 都可读 ─────────────────
+    # ── 身份、配置、结果、步记录 ─────────────────────────────────
     @cached_property
     def config(self) -> TraceConfig: ...                    # config.json
     @cached_property
@@ -3789,7 +3822,7 @@ class RunTrace:
     def step_records(self) -> list[StepRecord]: ...         # 每个已提交 step，manifest 顺序
     def step(self, idx: int) -> StepRecord | None: ...      # None = 该步没有提交
 
-    # ── v2 形状：format_version < 2 时抛 TraceSchemaError ────────────
+    # ── 观测、调用、extra 文件 ───────────────────────────────────
     def observation_fragment(self, step: int, key: str) -> FragmentBase | FragmentFailure | None: ...
     def screenshot(self, step: int) -> bytes | None: ...
     @cached_property
@@ -3845,7 +3878,7 @@ class RunTrace:
 - `evals()`（M31）：这个 run 的 `evals/` 目录里每一份判定，`verdict_slug`（文件名去掉 `.json`）→ `EvalResult`，按 slug 排序；目录按排序后的顺序遍历，所以几份都坏时点名的是哪一份不取决于文件系统列目录的顺序；只看 `*.json`（原子写中断留下的 `tmp….tmp` 不算）。evals 是后置产物（`EvaluationRunner` 在 run 之后原子写入，§5.3），不在 manifest 里，所以这是唯一按目录列文件的访问器：没有 `evals/` → `{}`；目录与每个文件都必须在 run 目录之内（解析符号链接之后），否则 `TraceSchemaError`；一份不是 JSON 或不能按 `EvalResult` 校验的文件 → 点名它的 `TraceSchemaError`。不缓存：同一个 `RunTrace` 在评测写入之后再读，看得见新的判定。`trace_branches` 的 `require_eval` 经它筛选源 run（§4.10），从不读 `result.json`。
 - `committed_files`（M33）：这个 run 提交了的每个文件，每被列出一次算一条（`CommittedFile{path, kind, step, fragment, extra, archive}`），按提交顺序：run 自己的三个文件（`manifest.json`、`config.json`，写了的话还有 `result.json`）；按 manifest 顺序每一步的步记录、每个 fragment 的文件（或记在它位置上的失败）与 artifact、每次 LLM 调用、extra 索引与它列出的每个文件；每个 trailing 提交的调用、索引与文件；最后是请求的回复 schema。`kind` 说文件是什么（`manifest` / `config` / `result` / `step` / `fragment` / `artifact` / `llm_call` / `extra_index` / `output_schema` / `extra`），`step` 是列出它的那次提交（run 自己的文件、trailing 提交与回复 schema 为 `None`），extra 文件带它的索引条目，是归档文件的再带 `ArchiveRecord`（与 `iter_archive` 同一个读法）。被几次提交引用的内容寻址文件，每次提交各列一次；怎么计数是调用方的规则（度量的存储每个路径计一次；归档字节的"去重前"每次列出计一次，§4.16）。每个路径列出时就过 `_listed` 的同一套检查（写侧的形状、解析符号链接之后仍在 run 目录之内，违反时点名列出它的文件），manifest 与已提交的索引没列的文件不会出现。消费者因此不必自己走 manifest 的字段、不必按名字探测 `result.json`、也不必再写一遍包含检查。
 - `read_committed(path)`（M33）：`committed_files` 列出的一个文件的字节，经它自己那个访问器的检查：extra 文件就是 `read_extra`（size / sha256）；回复 schema 的字节要与它的地址相符；artifact 不能为空；每个文件都要在磁盘上、在 run 目录之内。没被列出 → `KeyError`。
-- 任何 `ArchiveRecord` 的字节都用 `read_extra(record.path)` 读，同一套 size / sha256 校验。这四个访问器全部只从每步和 trailing 的 extra 索引解析（索引里 `meta` 带 `"archive"` 键的记录才是归档文件），不探测路径、不 glob，所以孤立的 `env/` 文件对它们不可见；它们和 `extra_files` 一样拒绝 format 1 的 trace。
+- 任何 `ArchiveRecord` 的字节都用 `read_extra(record.path)` 读，同一套 size / sha256 校验。这四个访问器全部只从每步和 trailing 的 extra 索引解析（索引里 `meta` 带 `"archive"` 键的记录才是归档文件），不探测路径、不 glob，所以孤立的 `env/` 文件对它们不可见。
 
 **读回来的必须是写进去的那个类型。** Writer 拿到的是 `StepRecord` / `AgentResult`，reader 就必须还原成同一个 model，而不是 `dict[str, Any]` —— 否则字段名只能靠翻 JSON 文件去猜，猜错（`rec["step_index"]`，实际是 `rec.step`）能通过全部静态检查、到运行时才炸。这也是 Evaluator 唯一的输入契约。
 
@@ -3875,7 +3908,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | 归档元数据不合法 | extra 索引里一条记录的 `meta["archive"]` 不能按 `ArchiveMeta` 校验通过；点名那个索引文件 |
 | 记录与位置不符 | step 文件里的 `step`、调用记录里的 `step` 与 manifest 提交它的那一步不符；一步里有两个截图 fragment（协商只允许一个） |
 | fragment key 不认识 | 懒发现之后注册表里仍然没有这个 key；或 payload 的 `fragment_id` 与 key 不符 |
-| `format_version` 不支持 | 低于 2：只有 v2 形状的访问器抛错；高于 reader 支持的版本：构造 `RunTrace` 时就抛 |
+| `format_version` 不支持 | 不是 3（更旧、更新、或不是整数）：构造 `RunTrace` 时就抛，在校验 manifest 的其余字段之前 |
 
 把前两者都塌缩成 `None`，会让一批旧 schema 的 trace 静默地表现为“agent 没跑完”。`AgentResult.schema_version` 只接受当前版本：旧版本字段名对不上，接受它只会换来一条指着某个被改名字段的 pydantic 报错，而不是“这个 trace 太旧”。
 
@@ -3887,7 +3920,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 **二进制 fragment 的后缀来自字节本身，不来自配置。** 截图的编码是 capability 配置（`screenshot_format: png | jpeg`，默认 png 与旧行为逐字节相同），但 `ScreenshotObs.trace_binary()` 是从图像头读出后缀的——一个"声明的格式"字段能和字节不一致（provider 没听配置、fragment 从磁盘文件重建），而不一致会在几层之外变成 vision provider 的 400。同理，agent 拼 `data:` URL 的 media type、artifact 落盘时的后缀、evaluator 按后缀判类型，读的都是同一个来源（`spectragent/schemas/observation/image.py`）。
 
-**trace 格式有版本。** `TraceManifest.format_version` 从 M27 起写 `2`（`TRACE_FORMAT_VERSION`）；M27 之前的 manifest 没有这个字段，按 1 读。v1 的 fragment 列表、成对的 `NNN_input.json` / `NNN_output.json` 和没有判别字段的失败 JSON 无法安全地类型化读回，所以 v2 形状的访问器（上面代码块的第二组）对 v1 trace 抛 `TraceSchemaError` 并点名版本；`config` / `result` / `step` / `step_records` / `step_count` 照常可读。不做兼容 shim（AGENTS.md §0.4）：要用图像 judge 重新给 v1 trace 打分，只能重跑任务。
+**trace 格式有版本，只读当前这一版。** `TraceManifest.format_version` 写 `3`（`TRACE_FORMAT_VERSION`）。1 是 M27 之前没有这个字段的 manifest（扁平的 fragment 列表、成对的 `NNN_input.json` / `NNN_output.json`、没有判别字段的失败 JSON）；2 是 M27 起每步的 fragment 索引、每次调用一个记录、extra 索引；3 在 2 之上把 manifest 的 `status` 收窄成 trace 自己那本账（`writing` / `complete` / `incomplete`，加 `incomplete_reason` 与 `complete_through`，§5.3），agent 怎么结束只看 `result.json`。格式 2 的 `error` 既可能是"agent 失败了"也可能是"trace 没记全"，任何读者都分不出来，所以 `RunTrace` 在构造时就拒绝不是 3 的 manifest（先读版本，再校验其余字段，报错点名 manifest 与版本），连旧 trace 的配置与结果也不读。不做兼容 shim（AGENTS.md §0.4）：旧 trace 只能重跑任务（用户 2026-10-13 的裁决：旧 trace 是没有价值的测试数据）。
 
 **离线读者找得到 fragment 类。** 评测进程未必 import 过定义 fragment 的模块（browser 的 fragment 是被各自的 watchdog import 时才注册的）。`ObservationRegistrar.get(key)` 落空时，reader 懒执行一次 `discover("spectragent.schemas")` 和 `discover("spectragent.core.capabilities")` 再查；仍然落空就抛 `TraceSchemaError`，点名 key，并说明定义它的模块必须在读侧可导入。
 

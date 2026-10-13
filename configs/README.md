@@ -367,24 +367,29 @@ task_loader:
     # sources: ["*"]                # globs relative to data_dir, sorted
     step_selector: { selector_id: all }   # every_k {k, offset} | explicit {steps: [2, 5]} | last
     branches_per_step: 1            # b0, b1, ... per selected step
-    require_status: completed       # error | any (reads the manifest status)
+    agent_outcome: any              # done | max_steps | error | timeout | vetoed (reads result.json)
     # require_eval: { evaluator_id: online_mind2web, label: 1, slug: null }
     # require_archive: [browser.network]   (default; [] requires none)
     on_unbranchable: raise          # skip: leave such a source out, with its reason
 ```
 
 - **The tasks.** Every committed policy step of every selected source run whose prefix is
-  committed and whose observation was recorded is a candidate; the `step_selector` picks
-  among them. A task id is `<source_run_id>/s<t>/b<i>`; its context carries the source's
+  committed, whose observation was recorded and that the source's trace is complete through
+  is a candidate; the `step_selector` picks among them. The trace's own ledger is a hard
+  condition: a trace never closed (`writing`) gives no candidate, an `incomplete` one every
+  step before its hole. A task id is `<source_run_id>/s<t>/b<i>`; its context carries the source's
   setup context (`start_url` …), `replay_archive` (the source run directory, absolute) and
-  the `checkpoint` — nothing on the command line. `require_status` / `require_eval` filter
-  sources; a source that cannot be branched (format 1, itself a branch or a replay run, no
+  the `checkpoint` — nothing on the command line. `agent_outcome` (how the agent ended,
+  `any` by default) / `require_eval` filter sources; a source that cannot be branched (an
+  unreadable trace — an older trace format included — itself a branch or a replay run, no
   `browser.network` archive or environment fingerprint, no unredacted setup context and no
   source benchmark to re-resolve it from, a run id another source shares) stops the sweep
   before anything runs, or is left out with `on_unbranchable: skip`. The sources are read
-  through the trace reader only — what their manifests committed — never `result.json`.
+  through the trace reader only — what their manifests committed — and `result.json` only
+  when `agent_outcome` asks how the agent ended.
 - **Before any setup**, the branch loop opens the source and refuses a mismatch naming both
-  sides: another agent, a different closed-set or numeric agent knob (`prompt_template`,
+  sides: a source trace never closed or not complete through the checkpoint, another agent,
+  a different closed-set or numeric agent knob (`prompt_template`,
   `coordinate_space` …), a different memory strategy or memory knob (`max_messages` …), a
   different `max_actions_per_step`, a different observation or action negotiation, a source
   loop other than `react`, a source that is itself a branch. The teacher's model and
@@ -422,7 +427,7 @@ exporter:
     sources_root: traces             # null: traces in the working directory
     sources: ["recorded/*"]          # globs, sorted by path; branch runs included
     filters:
-      require_status: completed      # error | any
+      agent_outcome: any             # done | max_steps | error | timeout | vetoed
       require_eval: null             # optional: { evaluator_id, label: 1, slug: null }
       exclude_restoration_diverged: true
       max_document_misses: 0         # replay-log main-frame document misses; null: no limit

@@ -148,7 +148,7 @@ class TestTheTaskLoaderSurface:
             _sweep(
                 data_dir="/recorded",
                 branches_per_step=3,
-                require_status="any",
+                agent_outcome="done",
                 require_eval={"evaluator_id": "online_mind2web", "slug": "online_mind2web-ab"},
                 require_archive=[],
                 on_unbranchable="skip",
@@ -159,10 +159,10 @@ class TestTheTaskLoaderSurface:
         assert isinstance(loader, TraceBranchesTaskLoader)
         assert isinstance(loader.step_selector, EveryKSteps)
         assert (loader.step_selector.k, loader.step_selector.offset) == (2, 1)
-        assert (loader.data_dir, loader.branches_per_step, loader.require_status) == (
+        assert (loader.data_dir, loader.branches_per_step, loader.agent_outcome) == (
             "/recorded",
             3,
-            "any",
+            "done",
         )
         assert loader.require_eval == RequireEval(
             evaluator_id="online_mind2web", label=1, slug="online_mind2web-ab"
@@ -186,8 +186,12 @@ class TestTheTaskLoaderSurface:
                 id="require_eval-shape",
             ),
             pytest.param(
-                {"step_selector": {"selector_id": "all"}, "require_status": "done"},
-                id="require_status-value",
+                {"step_selector": {"selector_id": "all"}, "agent_outcome": "completed"},
+                id="agent_outcome-value",
+            ),
+            pytest.param(
+                {"step_selector": {"selector_id": "all"}, "require_status": "any"},
+                id="the-removed-require_status",
             ),
             pytest.param(
                 {"step_selector": {"selector_id": "all"}, "branch_per_step": 2}, id="loader-knob"

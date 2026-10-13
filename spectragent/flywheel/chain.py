@@ -24,11 +24,13 @@ naming the stage and the block — before any stage runs. Everything else
 (agent, tier, archivers, selector, branches, ``verify``, evaluator) is the
 stage YAML's; a control group's YAML says ``archive: []`` itself.
 
-**A stage's outcome.** A run stage that exits 0 or 1 (a task that failed is
-data to measure) and wrote at least one run directory ran; another exit code
-(2: its pre-flight refused the stage's configuration and no task ran),
-``SystemExit``, an exception or no run directory is :class:`ChainStageError`
-naming the stage — the chain stops, the products so far stay. An export that exits
+**A stage's outcome.** A run stage that exits 0 or 1 (a task with an
+infrastructure failure is data to measure) and wrote at least one run
+directory ran; another exit code (2: its pre-flight refused the stage's
+configuration and no task ran; 3: a guard vetoed the stage — its runs are not
+fed to the next stage), ``SystemExit``, an exception or no run directory is
+:class:`ChainStageError` naming the stage — the chain stops, the products so
+far stay. An export that exits
 non-zero (it then wrote nothing) is one too. So is an exception out of the
 report stage — a defect or an unwritable report directory, never a damaged
 run (the report skips one with its reason). A selected export whose
@@ -482,6 +484,14 @@ def _run_stage(
     outcome.exit_codes.append(code)
     new = sorted(_run_dirs(directory) - before)
     outcome.runs = [f"traces/{stage}/{name}" for name in new]
+    from spectragent.core.benchmark_runner import VETO_EXIT_CODE
+
+    if code == VETO_EXIT_CODE:
+        raise ChainStageError(
+            stage,
+            f"spectragent-bench exited {code}: a guard vetoed the stage, so the chain stops "
+            f"here (the stage's summary and the vetoed run's trace say why)",
+        )
     if code not in (0, 1):
         raise ChainStageError(stage, f"spectragent-bench exited {code}")
     if not new:

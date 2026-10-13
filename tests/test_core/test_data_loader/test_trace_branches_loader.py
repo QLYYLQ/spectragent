@@ -16,7 +16,8 @@ from spectragent.core.data_loader._common import BENCHMARK_DATA_ENV, BenchmarkDa
 from spectragent.core.data_loader.task import TaskLoaderRegistrar, TraceBranchesTaskLoader
 from spectragent.core.data_loader.task.require_eval import RequireEval
 from spectragent.core.data_loader.task.step_selector import EveryKSteps, ExplicitSteps, LastStep
-from spectragent.core.trace.models import RunStatus
+from spectragent.core.trace.models import TraceStatus
+from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.task import BrowserSetup, TaskContext
 from tests._helpers.branch_sources import (
@@ -257,22 +258,108 @@ class TestCandidates:
 
 class TestFilters:
     @pytest.mark.parametrize(
-        ("require", "kept"),
-        [("completed", {"done"}), ("error", {"failed"}), ("any", {"done", "failed", "running"})],
+        ("wanted", "kept"),
+        [
+            ("any", {"done", "failed", "timed-out"}),
+            ("done", {"done"}),
+            ("error", {"failed"}),
+            ("timeout", {"timed-out"}),
+            ("vetoed", set()),
+        ],
     )
-    def test_require_status(self, tmp_path: Path, require: str, kept: set[str]) -> None:
+    def test_agent_outcome(self, tmp_path: Path, wanted: str, kept: set[str]) -> None:
+        """How the agent ended is a filter, any by default — a separate ledger from the trace's."""
         write_source(tmp_path, "done", steps=1)
-        write_source(tmp_path, "failed", steps=1, status=RunStatus.ERROR)
-        write_source(tmp_path, "running", steps=1, status=RunStatus.RUNNING)
-        tasks = loader(tmp_path, require_status=require)
+        write_source(tmp_path, "failed", steps=1, agent_done=AgentDoneStatus.ERROR)
+        write_source(tmp_path, "timed-out", steps=1, agent_done=AgentDoneStatus.TIMEOUT)
+        tasks = loader(tmp_path, agent_outcome=wanted)
         assert {task_id.split("/")[0] for task_id in tasks.task_ids()} == kept
-        for name in {"done", "failed", "running"} - kept:
-            assert tasks.skipped[name].startswith("filtered: status ")
+        for name in {"done", "failed", "timed-out"} - kept:
+            assert tasks.skipped[name].startswith("filtered: its agent ended ")
+            assert f"(agent_outcome: {wanted})" in tasks.skipped[name]
+
+    def test_without_a_result_the_outcome_filter_cannot_keep_a_source(self, tmp_path: Path) -> None:
+        write_source(tmp_path, "no-result", steps=1, agent_done=None)
+        assert loader(tmp_path).task_ids() == ["no-result/s0/b0"]  # any reads no result.json
+        tasks = loader(tmp_path, agent_outcome="done")
+        assert tasks.task_ids() == []
+        assert "it has no result.json" in tasks.skipped["no-result"]
 
     def test_a_filtered_source_never_raises(self, tmp_path: Path) -> None:
         """A filter leaves a source out even when it could not be branched anyway."""
-        write_source(tmp_path, "failed", steps=1, status=RunStatus.ERROR, archivers=())
-        assert loader(tmp_path).task_ids() == []
+        write_source(tmp_path, "failed", steps=1, agent_done=AgentDoneStatus.ERROR, archivers=())
+        assert loader(tmp_path, agent_outcome="done").task_ids() == []
+
+
+class TestTheTracesOwnLedger:
+    """A checkpoint is a step the source's trace is closed and complete through — always."""
+
+    def test_a_trace_never_closed_has_no_branchable_step(self, tmp_path: Path) -> None:
+        write_source(tmp_path, "writing", steps=2, status=TraceStatus.WRITING, agent_done=None)
+        write_source(tmp_path, "closed", steps=1)
+        tasks = loader(tmp_path, agent_outcome="any")
+        assert tasks.task_ids() == ["closed/s0/b0"]
+        assert tasks.skipped["writing"].startswith("no branchable step: its trace was never closed")
+
+    def test_an_incomplete_trace_gives_every_checkpoint_before_its_hole(
+        self, tmp_path: Path
+    ) -> None:
+        """The run stopped on a hole at step 2: steps 0 and 1 are still worth branching."""
+        write_source(
+            tmp_path,
+            "holed",
+            steps=3,
+            uncommitted=[2],
+            status=TraceStatus.INCOMPLETE,
+            incomplete_reason="recording failed at step 2: ArchiveCollectionError: boom",
+            agent_done=AgentDoneStatus.ERROR,
+        )
+        tasks = loader(tmp_path)
+        assert tasks.task_ids() == ["holed/s0/b0", "holed/s1/b0"]
+
+    def test_a_selected_step_past_the_hole_names_it(self, tmp_path: Path) -> None:
+        write_source(
+            tmp_path,
+            "holed",
+            steps=4,
+            uncommitted=[2],
+            status=TraceStatus.INCOMPLETE,
+            incomplete_reason="recording failed at step 2: ArchiveCollectionError: boom",
+        )
+        tasks = loader(tmp_path, step_selector=ExplicitSteps(steps=[1, 3]))
+        assert tasks.task_ids() == ["holed/s1/b0"]
+        assert "step 3's prefix is not committed (step 2 is missing)" in tasks.skipped["holed#s3"]
+
+    def test_the_rule_is_complete_through_not_merely_committed(self, tmp_path: Path) -> None:
+        """A committed step past ``complete_through`` is no checkpoint, whatever made it so."""
+        source = write_source(
+            tmp_path,
+            "run-a",
+            steps=3,
+            status=TraceStatus.INCOMPLETE,
+            incomplete_reason="recording failed at step 1: OSError: disk full",
+        )
+        path = source / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["complete_through"] = 0
+        path.write_text(json.dumps(manifest))
+        tasks = loader(tmp_path, step_selector=ExplicitSteps(steps=[0, 2]))
+        assert tasks.task_ids() == ["run-a/s0/b0"]
+        assert tasks.skipped["run-a#s2"] == (
+            "step 2 is past the step its trace is complete through (0): recording failed at "
+            "step 1: OSError: disk full"
+        )
+
+    def test_a_tail_failure_costs_no_checkpoint(self, tmp_path: Path) -> None:
+        """Incomplete only after its last step (the close-out collection failed): all steps count."""
+        write_source(
+            tmp_path,
+            "tail",
+            steps=2,
+            status=TraceStatus.INCOMPLETE,
+            incomplete_reason="the close-out evidence collection failed: ArchiveCollectionError",
+        )
+        assert loader(tmp_path).task_ids() == ["tail/s0/b0", "tail/s1/b0"]
 
     @pytest.mark.parametrize(
         ("verdicts", "kept"),
@@ -341,9 +428,9 @@ def _duplicate(root: Path) -> None:
 
 
 _PRECONDITIONS: dict[str, tuple[Any, str]] = {
-    "format_1": (
-        lambda root: write_source(root, "run-x", steps=1, format_version=1),
-        "format 1 trace",
+    "older_format": (
+        lambda root: write_source(root, "run-x", steps=1, format_version=2),
+        "trace format version 2",
     ),
     "branch_run": (
         lambda root: write_source(
@@ -421,8 +508,9 @@ class TestPreconditions:
 
     def test_a_shared_run_id_filtered_out_is_no_collision(self, tmp_path: Path) -> None:
         write_source(tmp_path / "a", "run-x", steps=1)
-        write_source(tmp_path / "copy", "run-x", steps=1, status=RunStatus.ERROR)
-        assert loader(tmp_path, sources=["*/*"]).task_ids() == ["run-x/s0/b0"]
+        write_source(tmp_path / "copy", "run-x", steps=1, agent_done=AgentDoneStatus.ERROR)
+        tasks = loader(tmp_path, sources=["*/*"], agent_outcome="done")
+        assert tasks.task_ids() == ["run-x/s0/b0"]
 
     def test_every_unbranchable_source_is_listed_at_once(self, tmp_path: Path) -> None:
         write_source(tmp_path, "run-1", steps=1, archivers=())
@@ -534,9 +622,9 @@ class TestKnobs:
     def test_defaults(self) -> None:
         built = TraceBranchesTaskLoader()
         assert built.sources == ("*",) and built.require_archive == ("browser.network",)
-        assert (built.branches_per_step, built.require_status, built.on_unbranchable) == (
+        assert (built.branches_per_step, built.agent_outcome, built.on_unbranchable) == (
             1,
-            "completed",
+            "any",
             "raise",
         )
         assert built.require_eval is None and built.step_selector.selector_id == "all"
@@ -544,7 +632,7 @@ class TestKnobs:
 
     @pytest.mark.parametrize(
         "knobs",
-        [{"branches_per_step": 0}, {"require_status": "done"}, {"on_unbranchable": "ignore"}],
+        [{"branches_per_step": 0}, {"agent_outcome": "done!"}, {"on_unbranchable": "ignore"}],
     )
     def test_out_of_range_knobs(self, knobs: dict[str, Any]) -> None:
         with pytest.raises(ValueError, match="trace_branches"):

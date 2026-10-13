@@ -106,9 +106,9 @@ uv run spectragent-bench --config configs/browser_use_local.yaml \
 
 ## 看结果与定位入口
 
-每次运行的 trace 写在 `traces/<run_id>/`，配置里的 `hook: [{hook_id: trace_writer}]` 决定是否落盘。`manifest.json` 是已提交内容的唯一索引（`format_version: 2`），`config.json` 是配置快照，`steps/NNN.json` 是每步的记录。`observations/` 存观测和截图，文件名带全限定的 fragment key，如 `000_browser.dom.json`、`000_browser.screenshot.png`。`messages/` 每次 LLM 调用一个 `NNN_call_KK.json`（parse 重试、校验失败、截断、被取消的调用各占一个）；请求了结构化输出时，schema 每个 run 只在 `messages/output_formats/` 存一份。绑定了归档器的录制 run 还有 `env/`；现成的评测 YAML 不录环境证据，没有这个目录。
+每次运行的 trace 写在 `traces/<run_id>/`，配置里的 `hook: [{hook_id: trace_writer}]` 决定是否落盘。`manifest.json` 是已提交内容的唯一索引（`format_version: 3`），`config.json` 是配置快照，`steps/NNN.json` 是每步的记录。`observations/` 存观测和截图，文件名带全限定的 fragment key，如 `000_browser.dom.json`、`000_browser.screenshot.png`。`messages/` 每次 LLM 调用一个 `NNN_call_KK.json`（parse 重试、校验失败、截断、被取消的调用各占一个）；请求了结构化输出时，schema 每个 run 只在 `messages/output_formats/` 存一份。绑定了归档器的录制 run 还有 `env/`；现成的评测 YAML 不录环境证据，没有这个目录。
 
-run 开始之后，不论完成、超时、出错还是被外部中断，都会写 `result.json`，manifest 的 `status` 相应变成 `completed` 或 `error`。`result.json` 的 `metrics.steps` 只数策略步，即 `steps/` 里 `origin` 为 `policy` 的步。`agent_loop.terminal_observation: true` 在 run 结束后多记的一次观测（`origin: terminal`），以及分叉 run 恢复出的前缀步（`origin: restored`），都在 `steps/` 里，但不计数。模型调用次数另记在 `metrics.llm_calls`。`spectragent-bench` 会在终端列出每个任务的终止状态与 trace 目录名。
+run 开始之后，不论完成、超时、出错、被否决还是被外部中断，都会写 `result.json`，它的 `agent_done` 说 agent 怎么结束（`done`、`max_steps`、`error`、`timeout`、`vetoed`）。manifest 的 `status` 只说 trace 记全没有：写着时是 `writing`，收尾之后是 `complete`，或 `incomplete` 加上 `incomplete_reason`（某一步或收尾时有东西没记下来）和 `complete_through`（完整到第几步）。超时的 run 照样可以是 `complete`。`result.json` 的 `metrics.steps` 只数策略步，即 `steps/` 里 `origin` 为 `policy` 的步。`agent_loop.terminal_observation: true` 在 run 结束后多记的一次观测（`origin: terminal`），以及分叉 run 恢复出的前缀步（`origin: restored`），都在 `steps/` 里，但不计数。模型调用次数另记在 `metrics.llm_calls`。`spectragent-bench` 会在终端先列出三本账的计数（agent 怎么结束、环境、trace 完整与否），再列每个任务的终止状态与 trace 目录名；环境坏了、模型在重试之后仍不可用、trace 不完整都标成 infrastructure failure，退出码 1；guard 否决了某个任务时 sweep 停在那里，退出码 3。
 
 用 `RunTrace` 读 trace，参数是 `Path`：
 
@@ -122,7 +122,7 @@ trace.llm_messages(0)        # 第 0 步的每一次 LLM 调用
 trace.screenshot(0)          # 第 0 步截图的字节
 ```
 
-它只按 manifest 找文件，manifest 没列出的文件不算数；列出了却读不回来的文件（缺失、为空、损坏、类型不符）抛 `TraceSchemaError`，点名那个文件。manifest 里没有 `format_version: 2` 的旧 trace 只能读出配置、结果和步骤记录，读观测、截图和 LLM 调用的访问器对它抛 `TraceSchemaError`。
+它只按 manifest 找文件，manifest 没列出的文件不算数；列出了却读不回来的文件（缺失、为空、损坏、类型不符）抛 `TraceSchemaError`，点名那个文件。`format_version` 不是 3 的旧 trace 整个读不出来（构造 `RunTrace` 时就抛 `TraceSchemaError`，点名版本）：旧格式的 `status` 把 agent 的结局和 trace 是否完整混在一起，读不出可靠的含义，只能重跑任务。
 
 需要继续改入口时，按执行顺序看 [单任务入口](../spectragent/core/run_cli.py)、[基准入口](../spectragent/core/benchmark_runner.py)、[装配器](../spectragent/core/composer.py)、[运行时](../spectragent/core/runtime.py)。agent 的配置与输出协议分别在 `spectragent/agents/browser_use.py`、`skyvern.py`、`ui_tars.py`；browser capability 与 backend 在 `spectragent/core/capabilities/browser/`。配置字段细节见 [configs/README.md](../configs/README.md)。
 

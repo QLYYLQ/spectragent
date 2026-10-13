@@ -48,7 +48,7 @@ from spectragent.core.trace.encoding import (
     sha256_hex,
 )
 from spectragent.core.trace.fsio import atomic_write
-from spectragent.core.trace.models import RunStatus, TraceConfig
+from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
@@ -280,7 +280,9 @@ def build_reference_trace(base: Path, run_id: str = "run-test") -> ReferenceTrac
             error="Execution timed out after 1s",
         )
     )
-    wal.finalize(RunStatus.ERROR)
+    # The agent timed out; the trace recorded all of it, the cut-off step's
+    # call included (trailing) — the two ledgers say different things.
+    wal.finalize(TraceStatus.COMPLETE)
 
     return ReferenceTrace(
         wal=wal,
@@ -448,7 +450,7 @@ def build_archive_trace(base: Path, run_id: str = "run-archive") -> ArchiveTrace
         )
     wal.commit_trailing(llm_calls=[cancelled_call(3, 0, "cut off")], extra_files=evidence[-1])
     wal.write_result(agent_result())
-    wal.finalize(RunStatus.COMPLETED)
+    wal.finalize(TraceStatus.COMPLETE)
     return ArchiveTrace(
         wal=wal,
         shared_blob=shared,

@@ -53,7 +53,11 @@ class TestSites:
             exclude_below=rules.EXCLUDE_FIDELITY,
         )
         shop = found.by_site["shop.test"]
-        assert (shop.tasks, shop.record_runs, shop.record_status) == (1, 1, {"completed": 1})
+        assert (shop.tasks, shop.record_runs, shop.record_status) == (1, 1, {"complete": 1})
+        assert shop.record_outcome == {"done": 1}
+        broken = found.by_site["broken.test"]
+        # Two ledgers: its agent ended in error, its trace recorded all of it.
+        assert (broken.record_status, broken.record_outcome) == ({"complete": 1}, {"error": 1})
         assert (shop.same_path.value, shop.restoration.numerator, shop.restoration.denominator) == (
             1.0,
             4,

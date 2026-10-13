@@ -218,10 +218,11 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
             ExportFilters | None,
             Field(
                 description=(
-                    "Which sources become samples: require_status, require_eval, "
+                    "Which sources become samples: agent_outcome, require_eval, "
                     "exclude_restoration_diverged, max_document_misses, exclude_sites. "
-                    "Null: the defaults (completed runs; branches whose restoration failed a "
-                    "check and runs with a document miss left out)."
+                    "Null: the defaults (every agent outcome; branches whose restoration "
+                    "failed a check and runs with a document miss left out). A source's trace "
+                    "is always closed and complete through every step exported."
                 ),
             ),
         ] = None,

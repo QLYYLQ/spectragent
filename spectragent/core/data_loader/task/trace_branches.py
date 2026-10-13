@@ -13,18 +13,26 @@ the recorded network); the Loop part — ``checkpoint``; and the branch part —
 ``TraceConfig.branch``.
 
 It reads a source only through :class:`RunTrace`, so only what was committed
-exists for it (an uncommitted step file is invisible), and never reads
-``result.json``.
+exists for it (an uncommitted step file is invisible); ``result.json`` only
+when ``agent_outcome`` asks how the agent ended.
 
-**Filters and preconditions.** ``require_status`` and ``require_eval`` are
+**The two ledgers.** Whether the source's trace is a complete record is a
+hard condition: a trace that was never closed (``writing``) has no branchable
+step, and a checkpoint past the step the trace is complete through
+(``complete_through``: an evidence hole stopped the run there) is never one —
+so an incomplete run still contributes every checkpoint before its hole. How
+the agent ended is a filter, ``agent_outcome``, ``any`` by default: a run cut
+off by a rate limit at step 25 still gives its first 25 checkpoints.
+
+**Filters and preconditions.** ``agent_outcome`` and ``require_eval`` are
 filters: a source that does not match is left out (logged at INFO). A source
-that matches but cannot be branched — an unreadable or format-1 trace, a
-branch or replay run, a missing required archive or environment fingerprint,
-no environment setup context, a run id another source shares — is a
-precondition failure: ``on_unbranchable: raise`` (the default) raises one
-:class:`BenchmarkDataError` listing every such source; ``skip`` leaves them
-out. Every source or step left out is in :attr:`TraceBranchesTaskLoader.skipped`
-with its reason.
+that matches but cannot be branched — an unreadable trace (one of an older
+format among them), a branch or replay run, a missing required archive or
+environment fingerprint, no environment setup context, a run id another
+source shares — is a precondition failure: ``on_unbranchable: raise`` (the
+default) raises one :class:`BenchmarkDataError` listing every such source;
+``skip`` leaves them out. Every source or step left out is in
+:attr:`TraceBranchesTaskLoader.skipped` with its reason.
 
 **Lazy.** The constructor touches no file: the CLI composes the whole YAML
 once per task, and a sweep over a thousand sources must not rescan them a
@@ -71,9 +79,17 @@ from spectragent.core.data_loader.task.step_selector import (  # noqa: F401 — 
     default_step_selector,
 )
 from spectragent.core.trace.errors import TraceSchemaError
-from spectragent.core.trace.models import RunStatus, TraceConfig
+from spectragent.core.trace.models import TraceConfig, TraceManifest
 from spectragent.core.trace.reader import RunTrace
-from spectragent.core.trace.sources import match_runs, source_pattern_problem
+from spectragent.core.trace.sources import (
+    AGENT_OUTCOMES,
+    AgentOutcomeFilter,
+    agent_outcome_filtered_out,
+    match_runs,
+    not_closed_reason,
+    past_complete_reason,
+    source_pattern_problem,
+)
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.step_record import StepRecord
 from spectragent.schemas.task import (
@@ -87,8 +103,6 @@ logger = logging.getLogger(__name__)
 
 #: The Loop-input key ``BranchLoop`` declares.
 CHECKPOINT_KEY = "checkpoint"
-#: The trace format with the per-step index the branch path reads.
-_INDEXED_FORMAT = 2
 #: ``sources`` when the config leaves it null: every run directly under the root.
 DEFAULT_SOURCES: tuple[str, ...] = ("*",)
 #: ``require_archive`` when the config leaves it null: what an offline browser branch
@@ -115,7 +129,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
     # ── the knobs, as attributes (assigned in __init__) ──
     sources: tuple[str, ...]
     branches_per_step: int
-    require_status: Literal["completed", "error", "any"]
+    agent_outcome: AgentOutcomeFilter
     require_eval: RequireEval | None
     require_archive: tuple[str, ...]
     on_unbranchable: Literal["raise", "skip"]
@@ -154,15 +168,18 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             int,
             Field(ge=1, description="Branch tasks per selected checkpoint step (b0, b1, ...)."),
         ] = 1,
-        require_status: Annotated[
-            Literal["completed", "error", "any"],
+        agent_outcome: Annotated[
+            AgentOutcomeFilter,
             Field(
                 description=(
-                    "Filter: keep sources whose manifest status is this ('any' keeps "
-                    "every source, unfinished ones included)."
+                    "Filter: keep sources whose agent ended this way, as their result.json "
+                    "says (done, max_steps, error, timeout, vetoed); 'any' (the default) keeps "
+                    "every outcome. Separate from the hard condition on the trace itself: a "
+                    "checkpoint is always a step the source's trace is closed and complete "
+                    "through."
                 ),
             ),
-        ] = "completed",
+        ] = "any",
         require_eval: Annotated[
             RequireEval | None,
             Field(
@@ -208,17 +225,17 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             raise ValueError(
                 f"trace_branches: branches_per_step must be >= 1, got {branches_per_step}"
             )
-        if require_status not in ("completed", "error", "any"):
+        if agent_outcome not in AGENT_OUTCOMES:
             raise ValueError(
-                f"trace_branches: require_status is 'completed', 'error' or 'any', "
-                f"got {require_status!r}"
+                f"trace_branches: agent_outcome is one of {', '.join(AGENT_OUTCOMES)}, "
+                f"got {agent_outcome!r}"
             )
         if on_unbranchable not in ("raise", "skip"):
             raise ValueError(
                 f"trace_branches: on_unbranchable is 'raise' or 'skip', got {on_unbranchable!r}"
             )
         self.branches_per_step = branches_per_step
-        self.require_status = require_status
+        self.agent_outcome = agent_outcome
         # The Composer hands a nested knob over as a dict; Python callers pass the config.
         self.require_eval = (
             require_eval
@@ -361,9 +378,12 @@ class _Scan:
     def _filtered_out(self, trace: RunTrace) -> str | None:
         """Why a filter leaves *trace* out, or ``None`` when it is kept."""
         loader = self.loader
-        status = trace.manifest.status
-        if loader.require_status != "any" and status != RunStatus(loader.require_status):
-            return f"status {status.value} (require_status: {loader.require_status})"
+        try:
+            outcome = agent_outcome_filtered_out(trace, loader.agent_outcome)
+        except TraceSchemaError as exc:
+            raise _Unbranchable(f"its result.json does not read back: {exc}") from exc
+        if outcome is not None:
+            return outcome
         need = loader.require_eval
         if need is not None:
             try:
@@ -380,11 +400,6 @@ class _Scan:
 
     def _expand(self, rel: str, directory: Path, trace: RunTrace) -> None:
         """Every branch task of one source that passed the filters."""
-        if trace.manifest.format_version < _INDEXED_FORMAT:
-            raise _Unbranchable(
-                f"format {trace.manifest.format_version} trace: branching reads the "
-                f"format-{_INDEXED_FORMAT} layout — re-record the run"
-            )
         try:
             config = trace.config
             records = trace.step_records
@@ -400,17 +415,22 @@ class _Scan:
         self._require_archive(trace, config)
         env = self._setup_context(config)
 
+        manifest = trace.manifest
+        unclosed = not_closed_reason(manifest)
+        if unclosed is not None:
+            self.skipped[rel] = f"no branchable step: {unclosed}"
+            return
         by_step = {record.step: record for record in records}
-        candidates = _candidates(by_step)
+        candidates = _candidates(by_step, manifest.complete_through)
         if not candidates:
             self.skipped[rel] = (
-                "no branchable step (a committed policy step whose prefix is committed and "
-                "whose observation was recorded)"
+                "no branchable step (a committed policy step whose prefix is committed, "
+                "whose observation was recorded and that the trace is complete through)"
             )
             return
         for step in self.loader.step_selector.select(candidates):
             if step not in candidates:
-                self.skipped[f"{rel}#s{step}"] = _why_not_a_candidate(by_step, step)
+                self.skipped[f"{rel}#s{step}"] = _why_not_a_candidate(by_step, step, manifest)
                 continue
             for index in range(self.loader.branches_per_step):
                 self._add_task(trace.run_id, rel, directory, config, env, step, index)
@@ -516,11 +536,12 @@ class _Scan:
         )
 
 
-def _candidates(by_step: Mapping[int, StepRecord]) -> list[int]:
-    """Committed policy steps whose prefix is committed and whose observation was recorded."""
+def _candidates(by_step: Mapping[int, StepRecord], complete_through: int) -> list[int]:
+    """Committed policy steps whose prefix is committed, whose observation was recorded, and
+    that the trace is complete through."""
     candidates: list[int] = []
     step = 0
-    while step in by_step:
+    while step in by_step and step <= complete_through:
         record = by_step[step]
         if record.origin == "policy" and record.error_phase != "observe":
             candidates.append(step)
@@ -528,7 +549,9 @@ def _candidates(by_step: Mapping[int, StepRecord]) -> list[int]:
     return candidates
 
 
-def _why_not_a_candidate(by_step: Mapping[int, StepRecord], step: int) -> str:
+def _why_not_a_candidate(
+    by_step: Mapping[int, StepRecord], step: int, manifest: TraceManifest
+) -> str:
     if step not in by_step:
         committed = sorted(by_step)
         last = f"its last committed step is {committed[-1]}" if committed else "it has no step"
@@ -536,6 +559,9 @@ def _why_not_a_candidate(by_step: Mapping[int, StepRecord], step: int) -> str:
     missing = next((k for k in range(step) if k not in by_step), None)
     if missing is not None:
         return f"step {step}'s prefix is not committed (step {missing} is missing)"
+    past = past_complete_reason(manifest, step)
+    if past is not None:
+        return past
     record = by_step[step]
     if record.origin != "policy":
         return f"step {step} is a {record.origin} step, not one the agent decided"
