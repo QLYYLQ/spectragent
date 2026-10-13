@@ -450,7 +450,7 @@ class TestParseReactOutput:
             agent.parse_react_output(_reply())
 
     def test_unparseable_text_raises_parse_error(self) -> None:
-        # H1 regression: parse failures used to return a "done" action
+        # Regression: parse failures used to return a "done" action
         # that silently classified the task as successful. They now
         # raise ParseError so ReactLoop handles retry/termination.
         from spectragent.core.loops.errors import ParseError

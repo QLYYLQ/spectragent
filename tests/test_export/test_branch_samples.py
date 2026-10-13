@@ -1,4 +1,4 @@
-"""Branch runs as samples (arch §4.15 "分叉样本"; PRD §11 Q2: a neutral record).
+"""Branch runs as samples (arch §4.15 "分叉样本": a neutral record).
 
 A branch run contributes its policy steps; its context is its source run's
 prefix (rendered from the source trace, the same translation and segment

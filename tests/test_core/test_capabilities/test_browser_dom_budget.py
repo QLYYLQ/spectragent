@@ -1,4 +1,4 @@
-"""F6 — the DOM serializer is a receptor, and the DOM fragment has a price.
+"""The DOM serializer is a receptor, and the DOM fragment has a price.
 
 Two halves of the same round, and they belong together because the second
 only became possible once the first landed.

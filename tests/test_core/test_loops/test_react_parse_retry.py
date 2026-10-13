@@ -1,4 +1,4 @@
-"""ReactLoop in-step parse retry — N4, and the F11 invariant it must not break.
+"""ReactLoop in-step parse retry, and the observation invariant it must not break.
 
 Before this, one malformed reply cost a whole step: ``react.py`` only had
 the cross-step ``max_consecutive_parse_errors``, so a format mistake spent
@@ -10,7 +10,7 @@ misplaced brace.
 half that is easy to get wrong is the other half of the contract: the
 re-ask must *not* open a new observation cycle.
 
-That is not a stylistic preference. F11 was "the step after a parse failure
+That is not a stylistic preference. The defect was "the step after a parse failure
 got the previous step's screenshot, byte for byte" — the browser capability
 kept one observe cycle alive until the next ``execute_action``, and a step
 that ran no action (a reply that failed to parse) reused it. The fix made
@@ -191,7 +191,7 @@ def _ctx(*, env: Any, llm: Any, memory: Any, act_fn: Any, recorder: Any) -> dict
 
 
 class TestRetryDoesNotOpenANewObservationCycle:
-    """F11, pinned from the Loop side."""
+    """The observation invariant, pinned from the Loop side."""
 
     async def test_retry_reuses_the_step_observation(self) -> None:
         env, cap = _fresh_env()
@@ -260,7 +260,7 @@ class TestRetryDoesNotOpenANewObservationCycle:
         """The contrast that makes the invariant meaningful.
 
         Once the retries are gone the step *is* spent, and the next step
-        opens a real new cycle — the F11 fix, still working.
+        opens a real new cycle — the fix, still working.
         """
         env, cap = _fresh_env()
         agent = _Agent()
@@ -488,7 +488,7 @@ class TestAccounting:
 
 
 class TestRetryPathRespectsRunAbort:
-    """N4 sits on top of B5 — the retry loop must not re-swallow a veto."""
+    """The in-step retry sits on top of the veto rule — it must not re-swallow a veto."""
 
     async def test_abort_during_a_retry_propagates(self) -> None:
         env, _cap = _fresh_env()

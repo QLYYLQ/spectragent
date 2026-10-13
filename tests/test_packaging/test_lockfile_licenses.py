@@ -2,7 +2,7 @@
 
 warcio (Apache-2.0) is a core dependency of the network archiver. The WACZ /
 CDXJ tooling around it is not: ``py-wacz`` requires ``cdxj-indexer``, which
-requires ``surt`` — AGPL-3.0 (``ref/flywheel/MANIFEST.md``). The PRD's license
+requires ``surt`` — AGPL-3.0 (``ref/flywheel/MANIFEST.md``). That license
 trap is kept out by this test, not by memory: none of the three may appear in
 ``uv.lock``, under any extra.
 """

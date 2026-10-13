@@ -24,7 +24,8 @@ agent:
     # ``google`` at the gateway root, claude-* takes ``anthropic`` at the
     # root, and ``openai`` (at ``<root>/v1``) is for models whose native API
     # is already the OpenAI one. See browser_use_local.yaml for the measured
-    # reason, and docs/llm/dmxapi.cn.md for the numbers.
+    # reason, and .agents/skills/af-add-an-llm-provider/references/guide.md §1
+    # for the numbers.
     llm:
       model_type: openai
       model: gpt-4o

@@ -1,4 +1,4 @@
-"""Tool-call groups must survive memory eviction (F4.5 / §5.2.5).
+"""Tool-call groups must survive memory eviction.
 
 ``sliding_window`` and ``token_budget`` advertised ``tool_call`` in
 ``supports_protocols`` before a ``ToolMessage`` even existed, so memory

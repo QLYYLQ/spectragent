@@ -1,4 +1,4 @@
-"""F10 — an agent declares what it needs, not who provides it.
+"""An agent declares what it needs, not who provides it.
 
 ``__registry_key__`` is fully qualified (``browser.click``) because
 registration must be collision-free and ``EnvironmentBase.act`` routes on
@@ -203,7 +203,7 @@ class MockDesktopCapability(CapabilityBase):
 
 
 class _RelativeAgent:
-    """Declares domain verbs only — the F10 shape."""
+    """Declares domain verbs only — the relative-key shape."""
 
     __wiring__: ClassVar[dict[str, Any]] = {
         "action": ("action", ["click_coordinate", "done"], ["scroll"]),
@@ -262,7 +262,7 @@ class TestRelativeKeysResolveAgainstWhoeverIsPresent:
     def test_same_wiring_negotiates_against_desktop(self) -> None:
         """The acceptance case: byte-identical ``__wiring__``, other provider.
 
-        This is what fails before F10 — ``browser.click_coordinate`` and
+        This is what failed before relative keys — ``browser.click_coordinate`` and
         ``desktop.click_coordinate`` are two registry keys and set
         subtraction cannot see that they mean the same verb.
         """
@@ -552,7 +552,7 @@ class _DesktopActionsAndFragments:
 class TestUITarsRunsWhereverItsVerbsExist:
     """UI-TARS is a computer-use model. Its wiring must not say ``browser``.
 
-    Before F10 it declared ``browser.click_coordinate`` /
+    Before relative keys it declared ``browser.click_coordinate`` /
     ``browser.screenshot``, so the model whose own config offers
     COMPUTER_USE / MOBILE_USE / GROUNDING could only ever negotiate
     against a browser. These four assertions are the whole point of the

@@ -1,5 +1,4 @@
-# Export recorded runs as an SFT dataset for the UI-TARS student (data flywheel,
-# M32):
+# Export recorded runs as an SFT dataset for the UI-TARS student (data flywheel):
 #
 #   uv run spectragent-export --config configs/flywheel/export_sft.yaml
 #

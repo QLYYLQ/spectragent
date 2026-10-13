@@ -217,7 +217,7 @@ class TestWhatIsArchived:
             await cap.teardown()
 
     async def test_an_offline_clean_of_the_archive_reproduces_the_observation(self) -> None:
-        """BrowserUse's cleaner is pure given capture, viewport and DPR (PRD §6.3)."""
+        """BrowserUse's cleaner is pure given capture, viewport and DPR (arch §4.14, ``browser.dom_raw``)."""
         capture = reference_page()
         cleaner, serializer = BrowserUseCleaner(), TextSerializer()
         live = await cleaner.clean(capture, (1280, 720), device_pixel_ratio=1.0)

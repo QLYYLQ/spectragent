@@ -578,7 +578,7 @@ def test_the_guard_catches_a_switch_beside_the_network_source_receptor() -> None
 
     ``replay_from: str = "archive"`` on ``__init__`` is the "convenience" flag
     that would sit beside the receptor and silently disagree with a configured
-    ``live`` block (or the PRD's withdrawn ``network_isolation`` boolean, which
+    ``live`` block (or the withdrawn ``network_isolation`` boolean, which
     is why isolation is a knob of the ``archive`` source instead). It is named
     after nothing, so only the value check (``"archive"`` is a key of the
     ``network_source`` registry) can catch it; a model field called
@@ -804,7 +804,7 @@ def test_no_receptor_is_a_parameter_of_a_synthesised_init() -> None:
 
     assert BrowserCapability in checked, "a hand-written-__init__ receptor owner was not checked"
     assert TraceWriter in checked, (
-        "TraceWriter carries the archive receptor (M29) and was not checked by Rule 3"
+        "TraceWriter carries the archive receptor and was not checked by Rule 3"
     )
     assert any(dataclass_synthesised_init(cls) for cls in checked), (
         "no dataclass receptor owner was checked — the AgentReceptors shape this rule must "

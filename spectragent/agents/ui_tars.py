@@ -610,8 +610,9 @@ class UITarsAgent(AgentBase):
     __registry_key__ = "ui_tars"
 
     # ── Cross-registry wiring ────────────────────────────────────
-    # Domain verbs only. No ``capability`` entry: naming one is the
-    # welding F10 removed, and nothing at runtime read it — it only
+    # Domain verbs only. No ``capability`` entry: naming one would weld the
+    # agent to one capability (negotiation binds relative keys instead,
+    # AGENTS.md §2.5), and nothing at runtime read it — it only
     # narrowed the generated config to whichever capability happened to
     # be registered.
     #

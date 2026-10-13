@@ -1,4 +1,4 @@
-"""PRD §9 metrics over a chain root of WAL-committed runs with known answers (arch §4.16).
+"""The report's metrics over a chain root of WAL-committed runs with known answers (arch §4.16).
 
 The chain is ``tests/_helpers/flywheel_traces.py::known_chain``; every
 expected number below is derived in that module's docstring from the runs it
@@ -16,32 +16,52 @@ from pathlib import Path
 
 import pytest
 
+from spectragent.core.trace.digest import tree_digest
 from spectragent.core.trace.reader import RunTrace
 from spectragent.flywheel.metrics import (
+    NO_RESULT,
+    UNREADABLE_RESULT,
     ChainLayout,
     ChainRuns,
+    DatasetFormatError,
     Planted,
+    agent_outcome,
     archive_bytes,
     archive_overhead,
     body_completeness_metric,
     branch_coverage,
+    branch_document_misses,
+    duplicate_branches,
+    empty_branch,
     ended_unclean,
     env_times,
     export_determinism,
+    export_yield,
     open_chain,
     open_role,
     percentile,
     privacy,
     ratio,
+    read_dataset_manifest,
     replay_determinism,
     restoration,
     restoration_rate,
     run_tier,
     same_path_fidelity,
-    tree_digest,
+    sites,
 )
 from spectragent.flywheel.report import build_report, report_json
-from tests._helpers.flywheel_traces import BIG, KnownChain, Step, write_plain
+from tests._helpers.flywheel_traces import (
+    BIG,
+    KnownChain,
+    Step,
+    check,
+    click,
+    miss,
+    provenance,
+    write_plain,
+    write_replayed,
+)
 from tests.test_flywheel.conftest import empty_layout
 
 
@@ -69,7 +89,7 @@ class TestShapes:
     def test_a_percentile_of_nothing_raises(self) -> None:
         with pytest.raises(ValueError, match="no values"):
             percentile([], 50)
-        assert percentile([1000, 1200], 50) == 1000.0  # nearest rank, M29's rounding
+        assert percentile([1000, 1200], 50) == 1000.0  # nearest rank, the benchmark's rounding
         assert percentile([1000, 1200], 95) == 1200.0
 
 
@@ -121,6 +141,7 @@ class TestArchiveOverhead:
             "role": "record",
             "runs": 3,
             "steps": 2,  # rec-shop's steps 1 and 2: step 0 holds the setup
+            "sites": 1,  # only rec-shop measured a step after step 0
             "tier": "browser:pinned",
             "p50_ms": 1000.0,
             "p95_ms": 1200.0,
@@ -494,3 +515,191 @@ class TestPrivacy:
         found = privacy(layout, [Planted(label="x", value="planted-xyz-123", source="value")])
         assert found.files_scanned > 0
         assert (found.planted[0].occurrences, found.shapes) == (0, {})
+
+
+class TestSiteCounts:
+    """Every measure a recommendation rests on counts the distinct sites its data came from."""
+
+    def test_on_the_known_chain(self, layout: ChainLayout) -> None:
+        report = build_report(layout, evidence="live")
+        metrics, sections, inputs = report.metrics, report.sections, report.decision_inputs
+        found = {
+            "archived": metrics.archive_overhead.archived.sites,  # rec-shop measured steps 1, 2
+            "control": metrics.archive_overhead.control.sites
+            if metrics.archive_overhead.control
+            else None,
+            "body": metrics.body_completeness.sites,  # rec-broken archived no record
+            "fidelity": metrics.same_path_fidelity.sites,
+            "restoration": metrics.restoration.sites,
+            "coverage": metrics.branch_coverage.sites,
+            "determinism": metrics.replay_determinism.sites,  # the two shop pairs
+            "anti_bot": sections.anti_bot.sites,
+            "duplicates": sections.duplicate_branches.sites,
+            "post": sections.post_branch_misses.sites,
+            "storage": sections.storage.sites,
+            "document_misses": inputs.branch_document_misses.sites,
+            "site_rules": inputs.site_rule_candidates.sites,
+        }
+        assert found == {
+            "archived": 1,
+            "control": 1,
+            "body": 2,
+            "fidelity": 2,
+            "restoration": 1,
+            "coverage": 1,
+            "determinism": 1,
+            "anti_bot": 3,
+            "duplicates": 1,
+            "post": 1,
+            "storage": 3,
+            "document_misses": 1,
+            "site_rules": 2,
+        }
+        recommendation = report.recommendations
+        assert recommendation.metrics.privacy.sites == 3, "every readable run of every role"
+        assert recommendation.sections.export_yield.sites == 1, "the export's sources: shop only"
+        assert recommendation.sections.sites.sites == 3
+
+
+class TestEmptyBranches:
+    """A branch that executed no action from its checkpoint on is left out and counted apart."""
+
+    @staticmethod
+    async def _branches(root: Path) -> None:
+        directory = root / "traces" / "branch"
+        page_navigation = miss("http://shop.test/timer", document=True)
+        cases: dict[str, list[Step]] = {
+            # The teacher clicked; the page it opened was never recorded.
+            "acted": [
+                Step("restored", [click(1, 1)], restoration=check(0)),
+                Step(
+                    "policy",
+                    [click(5, 5)],
+                    restoration=check(1),
+                    replay=[miss("http://shop.test/new", document=True)],
+                ),
+                Step("terminal"),
+            ],
+            # The teacher's call failed; the page navigated by itself meanwhile.
+            "model": [
+                Step("restored", [click(1, 1)], restoration=check(0)),
+                Step("policy", error_phase="llm", restoration=check(1), replay=[page_navigation]),
+                Step("terminal"),
+            ],
+            # The reply parsed to nothing, or did not parse: no action, no error phase.
+            "silent": [
+                Step("restored", [click(1, 1)], restoration=check(0)),
+                Step("policy", restoration=check(1)),
+                Step("terminal"),
+            ],
+            # The restoration ended the run before the teacher was asked.
+            "unrestored": [Step("restored", error_phase="restore", restoration=check(0))],
+        }
+        for index, (run_id, steps) in enumerate(cases.items()):
+            await write_replayed(
+                directory,
+                run_id,
+                steps,
+                task_id="shop-1",
+                site="shop.test",
+                branch=provenance("rec-shop", 1, index, "shop-1"),
+            )
+
+    async def test_reasons_coverage_duplicates_and_misses(self, tmp_path: Path) -> None:
+        await self._branches(tmp_path)
+        chain = open_chain(ChainLayout(tmp_path))
+        runs = chain.role("branch").by_rel()
+        assert {rel: empty_branch(run) for rel, run in runs.items()} == {
+            "acted": None,
+            "model": "model_call_failed",
+            "silent": "no_action",
+            "unrestored": "ended_before_decision",
+        }
+        coverage = branch_coverage(chain.role("branch"))
+        assert coverage.branches == 4 and coverage.sites == 1
+        assert coverage.empty.model_dump() == {
+            "total": 3,
+            "by_reason": {"ended_before_decision": 1, "model_call_failed": 1, "no_action": 1},
+        }
+        share = coverage.zero_document_miss
+        assert (share.numerator, share.denominator) == (0, 1), (
+            "counted as branches without a document miss, the three empty ones made it 3 of 4"
+        )
+        assert coverage.document_misses == 1, "the page's own navigation is no teacher outcome"
+        duplicates = duplicate_branches(chain.role("branch"), None)
+        assert (duplicates.not_compared, duplicates.duplicates, duplicates.rate.denominator) == (
+            3,
+            0,
+            1,
+        ), "three empty checkpoint steps are not two duplicates"
+        misses = branch_document_misses(chain.role("branch"))
+        assert (misses.branches, misses.document_misses) == (1, 1)
+        per_site = sites(chain, fidelity=same_path_fidelity(chain), blocked=[], exclude_below=0.8)
+        assert per_site.by_site["shop.test"].branch_zero_document_miss.denominator == 1
+
+    async def test_a_continue_step_that_acts_makes_the_branch_non_empty(
+        self, tmp_path: Path
+    ) -> None:
+        await write_replayed(
+            tmp_path,
+            "late",
+            [
+                Step("restored", [click(1, 1)], restoration=check(0)),
+                Step("policy", restoration=check(1)),  # no action at the checkpoint
+                Step("policy", [click(9, 9)]),  # a continue step acts
+            ],
+            task_id="shop-1",
+            site="shop.test",
+            branch=provenance("rec-shop", 1, 0, "shop-1"),
+        )
+        (run,) = open_role(tmp_path, "branch").runs
+        assert empty_branch(run) is None
+
+
+class TestUnreadableResults:
+    """A recording whose ``result.json`` does not read back is named, never a crash."""
+
+    @pytest.mark.parametrize("damage", ["garbage", "directory"])
+    def test_sites_and_the_unclean_ending(
+        self, known: KnownChain, tmp_path: Path, damage: str
+    ) -> None:
+        record = tmp_path / "traces" / "record"
+        shutil.copytree(known.runs["rec-shop"], record / "rec-shop")
+        result = record / "rec-shop" / "result.json"
+        result.unlink()
+        if damage == "garbage":
+            result.write_text("{not json")
+        else:
+            result.mkdir()  # reading it raises IsADirectoryError, an OSError
+        chain = open_chain(ChainLayout(tmp_path))
+        (run,) = chain.role("record").runs
+        assert agent_outcome(run) == UNREADABLE_RESULT
+        assert ended_unclean(run)
+        found = sites(chain, fidelity=same_path_fidelity(chain), blocked=[], exclude_below=0.8)
+        assert found.by_site["shop.test"].record_outcome == {UNREADABLE_RESULT: 1}
+
+    def test_no_result_is_said_apart(self, known: KnownChain, tmp_path: Path) -> None:
+        record = tmp_path / "record"
+        shutil.copytree(known.runs["rec-shop"], record / "rec-shop")
+        (record / "rec-shop" / "result.json").unlink()
+        (run,) = open_role(record, "record").runs
+        assert agent_outcome(run) == NO_RESULT
+
+
+class TestDatasetSamples:
+    """The samples are read through the export's own model: never a silent zero."""
+
+    def test_a_sample_that_does_not_validate_is_refused_by_name(
+        self, known: KnownChain, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "chain"
+        shutil.copytree(known.root / "datasets", root / "datasets")
+        samples = root / "datasets" / "first" / "train.samples.jsonl"
+        lines = samples.read_text().splitlines()
+        renamed = json.loads(lines[1])
+        renamed["sample"]["labels"]["status"] = renamed["sample"]["labels"].pop("step_status")
+        lines[1] = json.dumps(renamed)
+        samples.write_text("\n".join(lines) + "\n")
+        layout = ChainLayout(root)
+        with pytest.raises(DatasetFormatError, match=r"datasets/first/train.samples.jsonl line 2"):
+            export_yield(layout, read_dataset_manifest(layout))

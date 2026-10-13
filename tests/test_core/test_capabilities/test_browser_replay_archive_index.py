@@ -203,7 +203,9 @@ class TestTheIndexAsAWhole:
         assert "session" not in ruled.keys.normalized
         index = reader.archive_files(0, "browser.network")
         line = json.loads(reader.read_extra(next(e.path for e in index if e.name == INDEX_NAME)))
-        assert not [key for key in line if "key" in key], "M29 stores raw facts, never a key"
+        assert not [key for key in line if "key" in key], (
+            "the archive stores raw facts, never a key"
+        )
 
     async def test_a_run_without_network_evidence_loads_empty(self, tmp_path: Path) -> None:
         recording = RecordingScript(tmp_path, fingerprint=False)

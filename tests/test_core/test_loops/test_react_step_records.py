@@ -1,4 +1,4 @@
-"""ReactLoop surrenders complete StepRecords — F6.
+"""ReactLoop surrenders complete StepRecords.
 
 The loop always *built* a proper StepRecord and then handed it to nobody,
 so every trace on disk had two keys per step. These tests pin the sink

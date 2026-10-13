@@ -12,7 +12,8 @@ masking are the capability's job (``docs/architecture_design.md`` §4.9,
   rule sources — both name patterns, the placeholder, the URL pattern and
   the code of every function below that decides what is replaced, the URL
   rules included — to make forgetting that impossible.
-- Two name patterns: :data:`SENSITIVE_FIELD_PATTERN` (the PRD §5.10 list
+- Two name patterns: :data:`SENSITIVE_FIELD_PATTERN` (the list in
+  ``docs/architecture_design.md`` §5.6
   for form and POST fields, a substring search — deliberately
   over-inclusive) and :data:`CREDENTIAL_NAME_PATTERN` (a trailing
   ``key`` / ``apikey`` / ``sig`` / ``signature`` / ``auth`` /
@@ -144,7 +145,7 @@ class RedactionLedger(BaseModel):
 
 
 def is_sensitive_field(name: str) -> bool:
-    """True when *name* contains one of the PRD §5.10 sensitive substrings."""
+    """True when *name* contains one of the sensitive substrings (arch §5.6)."""
     return SENSITIVE_FIELD_PATTERN.search(name) is not None
 
 

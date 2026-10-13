@@ -40,7 +40,8 @@ awaits — the session (``archive/network.py``) reads bodies and decides what to
 write; this module decides what belongs to which exchange and when an exchange
 is settled.
 
-Rules (Chrome facts measured in S1 / S2a and on the fixture site):
+Rules (Chrome facts measured on Chrome 153 and on the fixture site,
+``docs/architecture_design.md`` §4.14):
 
 - **Either order.** A ``Fetch.requestPaused`` reaches the session as soon as
   Chrome sends it; the ``Network`` events arrive later, through the archive
@@ -504,8 +505,8 @@ class NetworkModel:
                 hop.wall_offset = float(wall) - float(stamp)
         hop.has_post_data = hop.has_post_data or bool(request.get("hasPostData"))
         if hop.paused_session is None:
-            # Fetch-visible headers win when the request paused (S2a: they are
-            # what replay's Request stage sees too).
+            # Fetch-visible headers win when the request paused (measured, arch
+            # §4.14 "回放实测": they are what replay's Request stage sees too).
             hop.request_headers = self._stripped(
                 hop, request.get("headers") or {}, "/request/headers"
             )

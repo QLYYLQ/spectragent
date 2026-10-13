@@ -10,7 +10,6 @@ and opening and reading write nothing.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -23,6 +22,7 @@ from spectragent.core.archive.source import (
     ArchiveReader,
     open_archive,
 )
+from spectragent.core.trace.digest import tree_digest
 from spectragent.core.trace.encoding import archive_step_path, sha256_hex
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.reader import RunTrace
@@ -38,18 +38,6 @@ from tests._helpers.trace_builder import (
 @pytest.fixture()
 def archived(tmp_path: Path) -> ArchiveTrace:
     return build_archive_trace(tmp_path)
-
-
-def tree_digest(root: Path) -> str:
-    """sha256 over every path, file mode, size, mtime and content under *root*."""
-    digest = hashlib.sha256()
-    for path in sorted(root.rglob("*")):
-        stat = path.lstat()
-        digest.update(str(path.relative_to(root)).encode())
-        digest.update(f"{stat.st_mode}:{stat.st_size}:{stat.st_mtime_ns}".encode())
-        if path.is_file() and not path.is_symlink():
-            digest.update(path.read_bytes())
-    return digest.hexdigest()
 
 
 class _Line(BaseModel):
@@ -117,7 +105,7 @@ class TestOnlyCommittedEvidenceIsVisible:
 
 class TestReplayReadsWithoutWriting:
     def test_opening_and_reading_writes_nothing(self, archived: ArchiveTrace) -> None:
-        before = tree_digest(archived.run_dir)
+        before = tree_digest(archived.run_dir, metadata=True)
         reader = open_archive(archived.run_dir)
         for archiver in (STEPS_ARCHIVER, BLOBS_ARCHIVER):
             for _, entry in reader.iter_archive(archiver, include_trailing=True):
@@ -129,7 +117,7 @@ class TestReplayReadsWithoutWriting:
         assert run_record is not None
         json.loads(reader.read_extra(run_record.path))
         reader.archive_lines(reader.archive_files(2, STEPS_ARCHIVER)[0].path, _Line)
-        assert tree_digest(archived.run_dir) == before
+        assert tree_digest(archived.run_dir, metadata=True) == before
 
 
 class TestOpeningSaysWhatIsWrong:

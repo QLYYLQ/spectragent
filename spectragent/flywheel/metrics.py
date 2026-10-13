@@ -1,4 +1,4 @@
-"""The flywheel's metrics: PRD §9 and the §10 / §11 sections, from a chain's committed data (arch §4.16).
+"""The flywheel's metrics and sections, from a chain's committed data (``docs/architecture_design.md`` §4.16).
 
 **What is read, and how.** A chain root has a fixed layout
 (:class:`ChainLayout`): runs under ``traces/<role>/`` for the roles
@@ -9,19 +9,33 @@ like every other offline consumer, read only through ``RunTrace``'s accessors
 with a reason worded as the export words it (``unreadable_reason``), never
 fatal. The browser's evidence is read by the browser package's own functions
 (``iter_index_lines``, ``iter_decisions``, ``archive_stats``); this module
-only organises the calls. Datasets are read as the files an export published.
-Two measures walk directories on purpose: privacy (a leak in a file nothing
-indexes is still a leak — every file under ``traces/`` and ``datasets/``) and
-the dataset digests (an export's output is its files).
+only organises the calls. Datasets are read as the files an export published,
+each through the model the export writes it with (``DatasetManifest``,
+``CanonicalStepSample``). Two measures walk directories on purpose: privacy (a
+leak in a file nothing indexes is still a leak — every file under
+``traces/`` and ``datasets/``) and the dataset digests (an export's output is
+its files).
 
 **Every number has its denominator.** A ratio over nothing is ``null`` with
 the reason, never ``0`` — "not measured" must not read as "measured zero"
-(the ``evaluator/summary.py`` rule). A percentile of no values raises.
+(the ``evaluator/summary.py`` rule). A percentile of no values raises. A
+measure that skips a run's damaged evidence says so in its ``skipped``, and
+every measure a recommendation rests on counts the distinct ``sites`` its data
+came from: the report's breadth rule reads it.
+
+**Empty branches.** A branch run that executed no action from its checkpoint
+on (:func:`empty_branch`: its teacher call failed, its reply ran no action,
+or the run ended before the teacher decided) says nothing about where the
+teacher's choices lead. The branch-outcome measures leave it out and count
+it apart.
 
 **Lifted, not copied** (§4.16 "共用而不是复制"): :class:`RestorationRate` /
-:func:`restoration_rate` and :func:`components` were M31's live-test
-helpers; :class:`DedupBytes` and :func:`percentile` were M29's benchmark's
-(its revisit half is the browser's ``archive_stats.revisit_saving``).
+:func:`restoration_rate` and :func:`components` were the branch live test's
+helpers; :class:`DedupBytes` and :func:`percentile` were the archive overhead
+benchmark's (its revisit half is the browser's
+``archive_stats.revisit_saving``); the dataset digest is
+``core/trace/digest.py``'s, the one the tests use to prove a reader left a run
+untouched.
 
 .. note::
    No ``from __future__ import annotations``: pydantic models throughout.
@@ -57,6 +71,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayLogEntry,
     iter_decisions,
 )
+from spectragent.core.trace.digest import TreeDigest, tree_digest
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import CommittedFile, TraceConfig, TraceStatus
 from spectragent.core.trace.reader import RunTrace
@@ -65,6 +80,7 @@ from spectragent.core.trace.sources import match_runs, task_identity, unreadable
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.dataset import DATASET_FORMAT, DatasetManifest
 from spectragent.schemas.restoration import RestorationCheck
+from spectragent.schemas.sample import CanonicalStepSample
 from spectragent.schemas.step_record import StepRecord
 
 logger = logging.getLogger(__name__)
@@ -87,6 +103,19 @@ NO_ACTION = "(no action)"
 ENVIRONMENT_PHASES: frozenset[str] = frozenset({"observe", "act"})
 #: The step error phase of a failed model call.
 MODEL_CALL_PHASE = "llm"
+#: How a recording's agent ended when it wrote no ``result.json`` (the run died first).
+NO_RESULT = "(no result)"
+#: How a recording's agent ended when its ``result.json`` does not read back.
+UNREADABLE_RESULT = "(unreadable result)"
+#: Why a branch is empty (:func:`empty_branch`): a policy step's model call failed, and no
+#: policy step ran an action.
+EMPTY_MODEL_CALL_FAILED = "model_call_failed"
+#: Why a branch is empty: the teacher's replies ran no action — a reply that did not parse
+#: and a reply that named none are recorded alike (no action, no error phase).
+EMPTY_NO_ACTION = "no_action"
+#: Why a branch is empty: the run ended before the teacher decided — its restoration
+#: ended it, or the checkpoint step's observation or prompt failed.
+EMPTY_ENDED_BEFORE_DECISION = "ended_before_decision"
 #: What reading a run's evidence can raise when the evidence is damaged.
 EVIDENCE_ERRORS: tuple[type[Exception], ...] = (
     TraceSchemaError,
@@ -94,6 +123,9 @@ EVIDENCE_ERRORS: tuple[type[Exception], ...] = (
     ValueError,
     KeyError,
 )
+#: What reading a run's ``result.json`` can raise: it does not parse as a result, or it
+#: cannot be read at all (permissions, I/O). Either way the agent's ending is unknown.
+RESULT_ERRORS: tuple[type[Exception], ...] = (TraceSchemaError, OSError)
 #: Leading bytes of files that are already compressed (gzip, PNG, JPEG, GIF, WebP's RIFF).
 _COMPRESSED_MAGIC: tuple[bytes, ...] = (
     b"\x1f\x8b",
@@ -313,7 +345,7 @@ def ratio(numerator: int, denominator: int, *, empty: str) -> Ratio:
 
 
 def percentile(values: Sequence[float], q: float) -> float:
-    """The *q*-th percentile (0–100), nearest-rank on a sorted copy (M29's definition).
+    """The *q*-th percentile (0–100), nearest-rank on a sorted copy (the overhead benchmark's definition).
 
     Raises:
         ValueError: *values* is empty — a percentile of nothing is not 0.
@@ -343,22 +375,60 @@ def _url_path(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}{parts.path}"
 
 
-# ── lifted: M31's restoration rate and components ─────────────────────
+def site_count(runs: Iterable[Run]) -> int:
+    """The distinct sites of *runs* — :data:`NO_SITE` is no site."""
+    return len({run.site for run in runs} - {NO_SITE})
+
+
+def agent_outcome(run: Run) -> str:
+    """How *run*'s agent ended (``agent_done``), :data:`NO_RESULT` or :data:`UNREADABLE_RESULT`."""
+    try:
+        result = run.trace.result
+    except RESULT_ERRORS:
+        return UNREADABLE_RESULT
+    return str(result.agent_done) if result is not None else NO_RESULT
+
+
+def empty_branch(run: Run) -> str | None:
+    """Why the branch run *run* executed no action from its checkpoint on, or ``None`` when it did.
+
+    Its policy steps from the checkpoint on (the checkpoint step and any
+    continue step) are read: one that ran an action makes the branch
+    non-empty. Otherwise the reason is :data:`EMPTY_MODEL_CALL_FAILED` when a
+    model call failed (``error_phase`` :data:`MODEL_CALL_PHASE`),
+    :data:`EMPTY_NO_ACTION` when every such step ended without an error (the
+    teacher's reply did not parse or named no action), and
+    :data:`EMPTY_ENDED_BEFORE_DECISION` when there is no such step or it
+    failed before the model was asked (restoration, observation, prompt).
+    """
+    checkpoint = run.checkpoint or 0
+    policy = [r for r in run.steps if r.origin == "policy" and r.step >= checkpoint]
+    if any(record.actions for record in policy):
+        return None
+    if any(record.error_phase == MODEL_CALL_PHASE for record in policy):
+        return EMPTY_MODEL_CALL_FAILED
+    if policy and all(not record.error_phase for record in policy):
+        return EMPTY_NO_ACTION
+    return EMPTY_ENDED_BEFORE_DECISION
+
+
+# ── lifted: the restoration rate and the components that ran ──────────
 
 
 class RestorationRate(_Model):
-    """PRD §9 恢复校验率 over a set of branch runs.
+    """The restoration verification rate (恢复校验率) over a set of branch runs.
 
     ``ok`` of ``total`` restoration checks passed (one per restored step,
     plus the checkpoint step's). Failed checks by reason — a check with
     several reasons counts for each — and failed retargets by failure and
-    method (PRD §10 "元素重定位失败").
+    method. ``sites``: the distinct sites of the runs that recorded a check.
     """
 
     ok: int = 0
     total: int = 0
     by_reason: dict[str, int] = {}
     retarget_failures: dict[str, dict[str, int]] = {}
+    sites: int = 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -381,20 +451,27 @@ def restoration_rate(traces: Iterable[RunTrace]) -> RestorationRate:
     ok = total = 0
     reasons: Counter[str] = Counter()
     retargets: dict[str, Counter[str]] = {}
+    sites: set[str] = set()
     for trace in traces:
+        checked = 0
         for check in _checks(trace.step_records):
-            total += 1
+            checked += 1
             if check.verdict == "ok":
                 ok += 1
             reasons.update(check.reasons)
             for action in check.actions:
                 if action.failure is not None:
                     retargets.setdefault(action.failure, Counter())[action.method] += 1
+        total += checked
+        site = task_identity(trace.config).site if checked else None
+        if site:
+            sites.add(site)
     return RestorationRate(
         ok=ok,
         total=total,
         by_reason=_counts(reasons),
         retarget_failures={name: _counts(retargets[name]) for name in sorted(retargets)},
+        sites=len(sites),
     )
 
 
@@ -402,8 +479,8 @@ def components(trace: RunTrace) -> dict[str, Any]:
     """The components the trace says ran: agent, loop, restorer, cleaner, serializer, backend, network source, model route.
 
     Read from ``TraceConfig.resolved`` (the composed configuration, redacted:
-    a free-form value nobody marked trace-safe reads ``<omitted>``) — PRD §12
-    item 8, "name what ran".
+    a free-form value nobody marked trace-safe reads ``<omitted>``): a
+    validation names the configuration it used (arch §4.16 "报告").
     """
     resolved = trace.config.resolved
     agent = (resolved.get("agent") or [{}])[0]
@@ -433,11 +510,11 @@ def run_tier(config: TraceConfig) -> str | None:
     return ",".join(sorted(tiers)) or None
 
 
-# ── lifted: M29's dedup accounting ────────────────────────────────────
+# ── lifted: the archive's dedup accounting ────────────────────────────
 
 
 class DedupBytes(_Model):
-    """Archive bytes before and after the run's two deduplications (M29's accounting).
+    """Archive bytes before and after the run's two deduplications (the overhead benchmark's accounting).
 
     - **Revisit records** (``browser.network``): a payload already written in
       the run is a WARC ``revisit`` record instead of a full response record;
@@ -498,7 +575,7 @@ def archive_bytes(run: Run) -> DedupBytes:
     )
 
 
-# ── §9: archive overhead ──────────────────────────────────────────────
+# ── metric: archive overhead ──────────────────────────────────────────
 
 
 class LatencyGroup(_Model):
@@ -507,6 +584,8 @@ class LatencyGroup(_Model):
     role: str
     runs: int
     steps: int
+    #: Distinct sites of the runs that contributed a measured step.
+    sites: int
     tier: str | None
     p50_ms: float | None
     p95_ms: float | None
@@ -524,7 +603,7 @@ class ArchiveBytes(_Model):
 
 
 class ArchiveOverhead(_Model):
-    """PRD §9 归档开销: archived (``record``) against control, and the bytes."""
+    """Archive overhead (归档开销): archived (``record``) against control, and the bytes."""
 
     archived: LatencyGroup
     control: LatencyGroup | None
@@ -548,7 +627,8 @@ def env_times(run: Run) -> list[int]:
 
 
 def _latency(role: RoleRuns) -> tuple[LatencyGroup, str | None]:
-    values = [value for run in role.runs for value in env_times(run)]
+    measured = {run.rel: env_times(run) for run in role.runs}
+    values = [value for run in role.runs for value in measured[run.rel]]
     tiers = {run_tier(run.config) for run in role.runs}
     problem: str | None = None
     tier = next(iter(tiers)) if len(tiers) == 1 else None
@@ -560,6 +640,7 @@ def _latency(role: RoleRuns) -> tuple[LatencyGroup, str | None]:
         role=role.role,
         runs=len(role.runs),
         steps=len(values),
+        sites=site_count(run for run in role.runs if measured[run.rel]),
         tier=tier,
         p50_ms=percentile(values, 50) if values else None,
         p95_ms=percentile(values, 95) if values else None,
@@ -568,7 +649,7 @@ def _latency(role: RoleRuns) -> tuple[LatencyGroup, str | None]:
 
 
 def archive_overhead(record: RoleRuns, control: RoleRuns) -> ArchiveOverhead:
-    """PRD §9 归档开销 (arch §4.16): latency against the control group, and ``env/`` bytes.
+    """Archive overhead (arch §4.16): latency against the control group, and ``env/`` bytes.
 
     Latency: p50 / p95 of :func:`env_times` in each group, overhead = archived
     minus control; ``null`` with the reason when the control group was not
@@ -629,13 +710,15 @@ def archive_overhead(record: RoleRuns, control: RoleRuns) -> ArchiveOverhead:
     )
 
 
-# ── §9: body completeness ─────────────────────────────────────────────
+# ── metric: body completeness ─────────────────────────────────────────
 
 
 class BodyCompletenessMetric(_Model):
-    """PRD §9 body 完整率 over the recordings' ``browser.network`` records."""
+    """Body completeness (body 完整率) over the recordings' ``browser.network`` records."""
 
     runs: int
+    #: Distinct sites of the runs that archived at least one record.
+    sites: int
     records: int
     by_state: dict[str, int]
     #: Records with a body or an explicit state, over all records.
@@ -646,20 +729,25 @@ class BodyCompletenessMetric(_Model):
 
 
 def body_completeness_metric(record: RoleRuns) -> BodyCompletenessMetric:
-    """PRD §9 body 完整率 (arch §4.16): every record's final state, by ``archive_stats``."""
+    """Body completeness (arch §4.16): every record's final state, by ``archive_stats``."""
     total = BodyCompleteness()
     runs = 0
+    with_records: list[Run] = []
     skipped: dict[str, str] = {}
     for run in record.runs:
         try:
-            total = total + body_completeness(line for _step, line in run.index_lines)
+            found = body_completeness(line for _step, line in run.index_lines)
         except EVIDENCE_ERRORS as exc:
             skipped[run.rel] = f"its network index does not read back ({type(exc).__name__})"
             continue
+        total = total + found
         runs += 1
+        if found.records:
+            with_records.append(run)
     explicit = total.with_body + total.no_body_needed + total.explicit_no_body
     return BodyCompletenessMetric(
         runs=runs,
+        sites=site_count(with_records),
         records=total.records,
         by_state=dict(total.by_state),
         complete=ratio(explicit, total.records, empty="no network record was archived"),
@@ -672,7 +760,7 @@ def body_completeness_metric(record: RoleRuns) -> BodyCompletenessMetric:
     )
 
 
-# ── §9: same-path replay fidelity ─────────────────────────────────────
+# ── metric: same-path replay fidelity ─────────────────────────────────
 
 
 class FirstFailure(_Model):
@@ -704,10 +792,12 @@ class Fidelity(_Model):
 
 
 class SamePathFidelity(_Model):
-    """PRD §9 原路径回放保真, overall and by site."""
+    """Same-path replay fidelity (原路径回放保真), overall and by site."""
 
     overall: Fidelity
     by_site: dict[str, Fidelity]
+    #: Distinct sites with at least one verified step.
+    sites: int
     #: Same-path runs whose source run is not under ``traces/record``.
     unmatched: list[str] = []
 
@@ -790,7 +880,7 @@ def _strict(run: Run, source: Run, checked: Sequence[StepRecord]) -> tuple[int, 
 
 
 def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
-    """PRD §9 原路径回放保真 (arch §4.16), from the ``same_path`` role.
+    """Same-path replay fidelity (arch §4.16), from the ``same_path`` role.
 
     Every verified step (each restored step and the checkpoint step, each
     with a ``restoration`` check): the restorer's verdict, and the strict
@@ -849,19 +939,20 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
     return SamePathFidelity(
         overall=overall.result(),
         by_site={site: by_site[site].result() for site in sorted(by_site)},
+        sites=sum(1 for site, tally in by_site.items() if site != NO_SITE and tally.verified),
         unmatched=sorted(unmatched),
     )
 
 
-# ── §9: restoration verification rate ─────────────────────────────────
+# ── metric: restoration verification rate ─────────────────────────────
 
 
 def restoration(branch: RoleRuns) -> RestorationRate:
-    """PRD §9 恢复校验率 (arch §4.16), over the ``branch`` role."""
+    """The restoration verification rate (arch §4.16), over the ``branch`` role."""
     return restoration_rate(run.trace for run in branch.runs)
 
 
-# ── §9: branch outcome coverage ───────────────────────────────────────
+# ── metric: branch outcome coverage ───────────────────────────────────
 
 
 class MissDistribution(_Model):
@@ -913,11 +1004,27 @@ def after_checkpoint(run: Run) -> list[tuple[int | None, ReplayLogEntry, int]]:
     ]
 
 
+class EmptyBranches(_Model):
+    """Branches that executed no action from their checkpoint on, by reason (:func:`empty_branch`)."""
+
+    total: int = 0
+    by_reason: dict[str, int] = {}
+
+
 class BranchCoverage(_Model):
-    """PRD §9 分叉结果覆盖: from each branch's checkpoint on."""
+    """Branch outcome coverage (分叉结果覆盖): from each branch's checkpoint on.
+
+    ``branches`` and ``empty`` count every branch whose replay log reads
+    back; everything else is over the branches that acted — an empty branch
+    did nothing the archive could fail to serve.
+    """
 
     branches: int
-    #: Branches with no main-frame document miss at or after the checkpoint.
+    #: Of ``branches``, the ones that executed no action from the checkpoint on.
+    empty: EmptyBranches
+    #: Distinct sites of the branches that acted.
+    sites: int
+    #: Branches that acted with no main-frame document miss at or after the checkpoint.
     zero_document_miss: Ratio
     document_misses: int
     #: Every other miss in the same range (sub-frame documents, beacons, subresources).
@@ -926,13 +1033,16 @@ class BranchCoverage(_Model):
 
 
 def branch_coverage(branch: RoleRuns) -> BranchCoverage:
-    """PRD §9 分叉结果覆盖 (arch §4.16), over the ``branch`` role's replay logs.
+    """Branch outcome coverage (arch §4.16), over the ``branch`` role's replay logs.
 
     A main-frame document miss is a ``diverged`` decision (the replay's own
     definition). Misses before the checkpoint belong to restoration (its
-    ``document_miss`` reason), not here.
+    ``document_miss`` reason), not here. An empty branch (:func:`empty_branch`)
+    is counted in ``empty`` and left out of everything else.
     """
     clean = branches = documents = 0
+    acted: list[Run] = []
+    empty: Counter[str] = Counter()
     others = _MissTally()
     skipped: dict[str, str] = {}
     for run in branch.runs:
@@ -942,6 +1052,11 @@ def branch_coverage(branch: RoleRuns) -> BranchCoverage:
             skipped[run.rel] = f"its replay log does not read back ({type(exc).__name__})"
             continue
         branches += 1
+        reason = empty_branch(run)
+        if reason is not None:
+            empty[reason] += 1
+            continue
+        acted.append(run)
         diverged = sum(weight for _step, entry, weight in decisions if entry.diverged)
         documents += diverged
         clean += int(diverged == 0)
@@ -950,14 +1065,18 @@ def branch_coverage(branch: RoleRuns) -> BranchCoverage:
                 others.add(run, step, entry, weight)
     return BranchCoverage(
         branches=branches,
-        zero_document_miss=ratio(clean, branches, empty="no branch run"),
+        empty=EmptyBranches(total=sum(empty.values()), by_reason=_counts(empty)),
+        sites=site_count(acted),
+        zero_document_miss=ratio(
+            clean, len(acted), empty="no branch run that acted" if branches else "no branch run"
+        ),
         document_misses=documents,
         other_misses=others.result(),
         skipped=skipped,
     )
 
 
-# ── §9: replay determinism ────────────────────────────────────────────
+# ── metric: replay determinism ────────────────────────────────────────
 
 
 class Determinism(_Model):
@@ -980,9 +1099,11 @@ class Determinism(_Model):
 
 
 class ReplayDeterminism(_Model):
-    """PRD §9 回放确定性, by role (``same_path`` and ``branch``)."""
+    """Replay determinism (回放确定性), by role (``same_path`` and ``branch``)."""
 
     by_role: dict[str, Determinism]
+    #: Distinct sites of the runs in a comparable pair of terminal screenshots, either role.
+    sites: int
 
 
 def _policy_actions(run: Run) -> str:
@@ -996,9 +1117,10 @@ def _policy_actions(run: Run) -> str:
     )
 
 
-def _determinism(role: RoleRuns) -> Determinism:
+def _determinism(role: RoleRuns) -> tuple[Determinism, set[str]]:
+    """One role's :class:`Determinism`, and the sites of the runs in a comparable terminal pair."""
     # Each run's terminal and checkpoint-step screenshot digests, by input and by checkpoint.
-    terminals: dict[tuple[str, int, str], list[str | None]] = {}
+    terminals: dict[tuple[str, int, str], list[tuple[str | None, str]]] = {}
     checkpoints: dict[tuple[str, int], list[str | None]] = {}
     skipped: dict[str, str] = {}
     for run in role.runs:
@@ -1014,28 +1136,31 @@ def _determinism(role: RoleRuns) -> Determinism:
             continue
         terminals.setdefault(
             (branch.source_trace, branch.checkpoint_step, _policy_actions(run)), []
-        ).append(final)
+        ).append((final, run.site))
         checkpoints.setdefault((branch.source_trace, branch.checkpoint_step), []).append(restored)
     pairs = identical = without = unpaired = groups = 0
-    for digests in terminals.values():
-        if len(digests) < 2:
-            unpaired += len(digests)
+    compared: set[str] = set()
+    for members in terminals.values():
+        if len(members) < 2:
+            unpaired += len(members)
             continue
         groups += 1
-        known = [digest for digest in digests if digest is not None]
-        without += len(digests) - len(known)
-        for i, first in enumerate(known):
-            for second in known[i + 1 :]:
+        known = [(digest, site) for digest, site in members if digest is not None]
+        without += len(members) - len(known)
+        if len(known) >= 2:
+            compared.update(site for _digest, site in known)
+        for i, (first, _site) in enumerate(known):
+            for second, _other in known[i + 1 :]:
                 pairs += 1
                 identical += int(first == second)
-    same_checkpoint = compared = 0
+    same_checkpoint = checkpoints_compared = 0
     for digests in checkpoints.values():
-        known = [digest for digest in digests if digest is not None]
-        if len(known) < 2:
+        known_checkpoints = [digest for digest in digests if digest is not None]
+        if len(known_checkpoints) < 2:
             continue
-        compared += 1
-        same_checkpoint += int(len(set(known)) == 1)
-    return Determinism(
+        checkpoints_compared += 1
+        same_checkpoint += int(len(set(known_checkpoints)) == 1)
+    determinism = Determinism(
         runs=len(role.runs) - len(skipped),
         groups=groups,
         unpaired=unpaired,
@@ -1044,47 +1169,35 @@ def _determinism(role: RoleRuns) -> Determinism:
             identical, pairs, empty="no two runs of one input with terminal screenshots"
         ),
         checkpoint_identical=ratio(
-            same_checkpoint, compared, empty="no checkpoint with two branches' screenshots"
+            same_checkpoint,
+            checkpoints_compared,
+            empty="no checkpoint with two branches' screenshots",
         ),
         skipped=dict(sorted(skipped.items())),
     )
+    return determinism, compared - {NO_SITE}
 
 
 def replay_determinism(chain: ChainRuns) -> ReplayDeterminism:
-    """PRD §9 回放确定性 (arch §4.16): terminal and checkpoint screenshots within one input.
+    """Replay determinism (arch §4.16): terminal and checkpoint screenshots within one input.
 
     A run one of whose compared screenshots does not read back is left out of
     its role's comparisons, with the reason in ``skipped`` (arch §4.16:
     damaged evidence is skipped only in the measures that read it).
     """
-    return ReplayDeterminism(
-        by_role={role: _determinism(chain.role(role)) for role in ("same_path", "branch")}
-    )
+    by_role: dict[str, Determinism] = {}
+    sites: set[str] = set()
+    for role in ("same_path", "branch"):
+        by_role[role], compared = _determinism(chain.role(role))
+        sites |= compared
+    return ReplayDeterminism(by_role=by_role, sites=len(sites))
 
 
-# ── §9: export determinism ────────────────────────────────────────────
-
-
-class TreeDigest(_Model):
-    """A directory tree's digest: every file's relative path and sha256, by path."""
-
-    digest: str
-    files: int
-
-
-def tree_digest(root: Path) -> TreeDigest:
-    """sha256 over ``<relative path>\\0<file sha256>\\n`` of every file under *root*, sorted by path."""
-    digest = hashlib.sha256()
-    files = 0
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        rel = path.relative_to(root).as_posix()
-        digest.update(f"{rel}\0{hashlib.sha256(path.read_bytes()).hexdigest()}\n".encode())
-        files += 1
-    return TreeDigest(digest=digest.hexdigest(), files=files)
+# ── metric: export determinism ────────────────────────────────────────
 
 
 class ExportDeterminism(_Model):
-    """PRD §9 导出确定性: the two exports' tree digests."""
+    """Export determinism (导出确定性): the two exports' tree digests (``core/trace/digest.py``)."""
 
     first: TreeDigest | None
     second: TreeDigest | None
@@ -1093,7 +1206,7 @@ class ExportDeterminism(_Model):
 
 
 def export_determinism(layout: ChainLayout) -> ExportDeterminism:
-    """PRD §9 导出确定性 (arch §4.16): ``datasets/first`` and ``datasets/second`` digest alike.
+    """Export determinism (arch §4.16): ``datasets/first`` and ``datasets/second`` digest alike.
 
     ``null`` with the reason when an export is missing (``repeat: 1`` writes
     only the first).
@@ -1115,7 +1228,7 @@ def export_determinism(layout: ChainLayout) -> ExportDeterminism:
     return ExportDeterminism(first=first, second=second, identical=first == second)
 
 
-# ── §9: privacy ───────────────────────────────────────────────────────
+# ── metric: privacy ───────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -1142,7 +1255,7 @@ class PlantedCount(_Model):
 
 
 class Privacy(_Model):
-    """PRD §9 隐私: planted credentials and credential shapes under ``traces/`` and ``datasets/``."""
+    """Privacy (隐私): planted credentials and credential shapes under ``traces/`` and ``datasets/``."""
 
     files_scanned: int
     planted: list[PlantedCount]
@@ -1151,7 +1264,7 @@ class Privacy(_Model):
 
 
 def privacy(layout: ChainLayout, planted: Sequence[Planted]) -> Privacy:
-    """PRD §9 隐私 (arch §4.16): every file under ``traces/`` and ``datasets/``, gzip peeled.
+    """Privacy (arch §4.16): every file under ``traces/`` and ``datasets/``, gzip peeled.
 
     Walks the trees, not the manifests (``iter_readable``): a leak in a file
     nothing indexes is still a leak. Counts each planted value's occurrences
@@ -1192,7 +1305,7 @@ def privacy(layout: ChainLayout, planted: Sequence[Planted]) -> Privacy:
     )
 
 
-# ── §10 / §11 sections ────────────────────────────────────────────────
+# ── sections ──────────────────────────────────────────────────────────
 
 
 class ChallengeHit(_Model):
@@ -1207,18 +1320,20 @@ class ChallengeHit(_Model):
 
 
 class AntiBot(_Model):
-    """PRD §10 anti-bot / Cloudflare: sites, runs and steps whose documents carried challenge marks."""
+    """Anti-bot / Cloudflare: sites, runs and steps whose documents carried challenge marks."""
 
     runs_checked: int
+    #: Distinct sites of the recordings checked.
+    sites: int
     hits: list[ChallengeHit]
     blocked_sites: list[str]
     skipped: dict[str, str] = {}
 
 
 def anti_bot(record: RoleRuns) -> AntiBot:
-    """PRD §10 anti-bot (arch §4.16): ``archive_stats.challenge_documents`` over the recordings."""
+    """Anti-bot (arch §4.16): ``archive_stats.challenge_documents`` over the recordings."""
     hits: list[ChallengeHit] = []
-    checked = 0
+    checked: list[Run] = []
     skipped: dict[str, str] = {}
     for run in record.runs:
         try:
@@ -1226,7 +1341,7 @@ def anti_bot(record: RoleRuns) -> AntiBot:
         except EVIDENCE_ERRORS as exc:
             skipped[run.rel] = f"its network archive does not load ({type(exc).__name__})"
             continue
-        checked += 1
+        checked.append(run)
         hits.extend(
             ChallengeHit(
                 site=run.site,
@@ -1239,7 +1354,8 @@ def anti_bot(record: RoleRuns) -> AntiBot:
             for document in found
         )
     return AntiBot(
-        runs_checked=checked,
+        runs_checked=len(checked),
+        sites=site_count(checked),
         hits=hits,
         blocked_sites=sorted({hit.site for hit in hits}),
         skipped=skipped,
@@ -1247,13 +1363,14 @@ def anti_bot(record: RoleRuns) -> AntiBot:
 
 
 class SiteStats(_Model):
-    """One site's numbers across the chain (§10 "按站点统计")."""
+    """One site's numbers across the chain (arch §4.16 "站点")."""
 
     tasks: int
     record_runs: int
     #: The recordings' trace statuses (the manifest's ledger: complete, incomplete, writing).
     record_status: dict[str, int]
-    #: How the recordings' agents ended (``result.json``'s ``agent_done``).
+    #: How the recordings' agents ended (``result.json``'s ``agent_done``; ``(no result)`` when
+    #: it was never written, ``(unreadable result)`` when it does not read back).
     record_outcome: dict[str, int]
     #: Recordings whose environment failed at step 0 (or that committed no step).
     record_failed_at_step0: int
@@ -1273,13 +1390,16 @@ class SiteExclusion(_Model):
 
 
 class Sites(_Model):
-    """PRD §10 per-site statistics and the exclusion list, in ``ExportFilters.exclude_sites`` shape."""
+    """Per-site statistics and the exclusion list, in ``ExportFilters.exclude_sites`` shape."""
 
     by_site: dict[str, SiteStats]
     exclusions: list[SiteExclusion]
     exclude_sites: list[str]
     #: The exclusion list as an export ``filters`` fragment, ready to paste.
     yaml: str
+    #: Replayed runs (``traces/<role>/<run>``) left out of their site's miss counts and branch
+    #: share, and why: their replay log does not read back.
+    skipped: dict[str, str] = {}
 
 
 #: How an agent's run ended when it did not end cleanly (``result.json``'s ``agent_done``).
@@ -1299,7 +1419,7 @@ def ended_unclean(run: Run) -> bool:
         return True
     try:
         result = run.trace.result
-    except TraceSchemaError:
+    except RESULT_ERRORS:
         return True
     return result is None or result.agent_done in UNCLEAN_ENDINGS
 
@@ -1324,14 +1444,17 @@ def _failed_at_step0(run: Run) -> bool:
 def sites(
     chain: ChainRuns, *, fidelity: SamePathFidelity, blocked: Sequence[str], exclude_below: float
 ) -> Sites:
-    """PRD §10 by site (arch §4.16): counts, outcomes, fidelity, restoration, coverage, misses.
+    """By site (arch §4.16): counts, outcomes, fidelity, restoration, coverage, misses.
 
     Excluded: a site whose recordings met a challenge (*blocked*), whose
     same-path fidelity (the restorer's) is below *exclude_below*, or one of
     whose recordings' environment failed at step 0 (an observation or an
     action failed, or no step committed). A recording that failed on its
     model call is counted apart (``record_model_failures``) and excludes
-    nothing.
+    nothing. A recording whose ``result.json`` does not read back counts as
+    ``(unreadable result)``; a replayed run whose replay log does not read
+    back is left out of the miss counts and the branch share (``skipped``);
+    an empty branch (:func:`empty_branch`) is left out of the branch share.
     """
     record = chain.role("record")
     names = sorted(
@@ -1340,16 +1463,11 @@ def sites(
     )
     by_site: dict[str, SiteStats] = {}
     exclusions: list[SiteExclusion] = []
+    skipped: dict[str, str] = {}
     for site in names:
         recorded = [run for run in record.runs if run.site == site]
         statuses = Counter(run.trace.manifest.status.value for run in recorded)
-        outcomes: Counter[str] = Counter()
-        for run in recorded:
-            try:
-                result = run.trace.result
-            except TraceSchemaError:
-                result = None
-            outcomes[str(result.agent_done) if result is not None else "(no result)"] += 1
+        outcomes = Counter(agent_outcome(run) for run in recorded)
         failed0 = sum(1 for run in recorded if _failed_at_step0(run))
         branches = [run for run in chain.role("branch").runs if run.site == site]
         rate = restoration_rate(run.trace for run in branches)
@@ -1360,11 +1478,14 @@ def sites(
                     continue
                 try:
                     decisions = run.decisions
-                except EVIDENCE_ERRORS:
+                except EVIDENCE_ERRORS as exc:
+                    skipped[run.pointer] = (
+                        f"its replay log does not read back ({type(exc).__name__})"
+                    )
                     continue
                 documents += sum(w for _s, e, w in decisions if e.diverged)
                 others += sum(w for _s, e, w in decisions if e.kind == "miss" and not e.diverged)
-                if role == "branch":
+                if role == "branch" and empty_branch(run) is None:
                     counted += 1
                     clean += int(not any(e.diverged for _s, e, _w in after_checkpoint(run)))
         site_fidelity = fidelity.by_site.get(site)
@@ -1383,7 +1504,9 @@ def sites(
             blocked=site in blocked,
             same_path=same_path,
             restoration=ratio(rate.ok, rate.total, empty="no restoration check on this site"),
-            branch_zero_document_miss=ratio(clean, counted, empty="no branch run of this site"),
+            branch_zero_document_miss=ratio(
+                clean, counted, empty="no branch run of this site that acted"
+            ),
             document_misses=documents,
             other_misses=others,
         )
@@ -1399,15 +1522,27 @@ def sites(
             exclusions.append(SiteExclusion(site=site, reasons=reasons))
     excluded = [item.site for item in exclusions]
     snippet = "filters:\n  exclude_sites: [" + ", ".join(excluded) + "]\n"
-    return Sites(by_site=by_site, exclusions=exclusions, exclude_sites=excluded, yaml=snippet)
+    return Sites(
+        by_site=by_site,
+        exclusions=exclusions,
+        exclude_sites=excluded,
+        yaml=snippet,
+        skipped=dict(sorted(skipped.items())),
+    )
 
 
 class DuplicateBranches(_Model):
-    """PRD §10 重复分叉率: branches whose checkpoint-step actions repeat an earlier branch of the group."""
+    """Duplicate branches (重复分叉率): checkpoint-step actions that repeat an earlier branch of the group."""
 
     branches: int
+    #: Branches whose checkpoint step ran no action: nothing to compare — the export flags only
+    #: samples, and a step without an action is none. Left out of ``rate``.
+    not_compared: int
+    #: Distinct sites of the branches compared.
+    sites: int
     groups: int
     duplicates: int
+    #: Duplicates over the branches compared.
     rate: Ratio
     #: The first export's ``duplicates`` (its samples flagged ``duplicate_of``), when it exists.
     dataset_duplicates: int | None
@@ -1416,18 +1551,21 @@ class DuplicateBranches(_Model):
 def duplicate_branches(
     branch: RoleRuns, dataset_manifest: DatasetManifest | None
 ) -> DuplicateBranches:
-    """PRD §10 重复分叉率 (arch §4.16): the export's ``duplicate_of`` rule, on executed actions.
+    """Duplicate branches (arch §4.16): the export's ``duplicate_of`` rule, on executed actions.
 
     Within one ``branch_group_id``, in ``branch_index`` order, a branch whose
     checkpoint step ran the same actions (canonical JSON of names and
-    params) as an earlier one is a duplicate.
+    params) as an earlier one is a duplicate. A branch whose checkpoint step
+    ran no action is not compared (``not_compared``): a failed teacher call
+    is no duplicate, and the export never flags such a step.
     """
     groups: dict[str, list[Run]] = {}
     for run in branch.runs:
         provenance = run.config.branch
         if provenance is not None:
             groups.setdefault(provenance.branch_group_id, []).append(run)
-    duplicates = branches = 0
+    duplicates = branches = not_compared = 0
+    compared: list[Run] = []
     for members in groups.values():
         seen: set[str] = set()
         for run in sorted(
@@ -1435,40 +1573,54 @@ def duplicate_branches(
         ):
             branches += 1
             record = run.step(run.checkpoint or 0)
-            target = canonical_json(
-                [[a.name, a.params] for a in record.actions] if record is not None else []
-            )
+            if record is None or not record.actions:
+                not_compared += 1
+                continue
+            compared.append(run)
+            target = canonical_json([[a.name, a.params] for a in record.actions])
             if target in seen:
                 duplicates += 1
             seen.add(target)
     return DuplicateBranches(
         branches=branches,
+        not_compared=not_compared,
+        sites=site_count(compared),
         groups=len(groups),
         duplicates=duplicates,
-        rate=ratio(duplicates, branches, empty="no branch run"),
+        rate=ratio(
+            duplicates,
+            len(compared),
+            empty="no branch whose checkpoint step ran an action" if branches else "no branch run",
+        ),
         dataset_duplicates=dataset_manifest.duplicates if dataset_manifest is not None else None,
     )
 
 
 class PostBranchMisses(_Model):
-    """PRD §10 POST 分叉的 miss: POST misses from each branch's checkpoint on."""
+    """POST branch misses (POST 分叉的 miss): POST misses from each branch's checkpoint on."""
 
     branches: int
+    #: Distinct sites of the branches counted.
+    sites: int
     document_misses: int
     other_misses: int
     #: Branches with at least one POST miss.
     branches_with_post_miss: Ratio
+    skipped: dict[str, str] = {}
 
 
 def post_branch_misses(branch: RoleRuns) -> PostBranchMisses:
-    """PRD §10 POST 分叉的 miss (arch §4.16): documents and the rest apart."""
-    documents = others = with_miss = branches = 0
+    """POST branch misses (arch §4.16): documents and the rest apart."""
+    documents = others = with_miss = 0
+    counted: list[Run] = []
+    skipped: dict[str, str] = {}
     for run in branch.runs:
         try:
             decisions = after_checkpoint(run)
-        except EVIDENCE_ERRORS:
+        except EVIDENCE_ERRORS as exc:
+            skipped[run.rel] = f"its replay log does not read back ({type(exc).__name__})"
             continue
-        branches += 1
+        counted.append(run)
         posts = [
             (e, w) for _s, e, w in decisions if e.kind == "miss" and e.method.upper() == "POST"
         ]
@@ -1476,10 +1628,12 @@ def post_branch_misses(branch: RoleRuns) -> PostBranchMisses:
         others += sum(w for e, w in posts if e.resource_type != "Document")
         with_miss += int(any(w > 0 for _e, w in posts))
     return PostBranchMisses(
-        branches=branches,
+        branches=len(counted),
+        sites=site_count(counted),
         document_misses=documents,
         other_misses=others,
-        branches_with_post_miss=ratio(with_miss, branches, empty="no branch run"),
+        branches_with_post_miss=ratio(with_miss, len(counted), empty="no branch run"),
+        skipped=skipped,
     )
 
 
@@ -1505,10 +1659,12 @@ class RoleStorage(_Model):
 
 
 class Storage(_Model):
-    """PRD §10 存储增长 and the compression evaluation's input, by role, plus the datasets."""
+    """Storage growth (存储增长) and the compression evaluation's input, by role, plus the datasets."""
 
     by_role: dict[str, RoleStorage]
     datasets: dict[str, int]
+    #: Distinct sites of the runs whose files were counted, every role.
+    sites: int
 
 
 def _already_compressed(data: bytes) -> bool:
@@ -1572,9 +1728,11 @@ def _run_storage(trace: RunTrace) -> dict[str, list[int]]:
     return totals
 
 
-def _role_storage(role: RoleRuns) -> RoleStorage:
+def _role_storage(role: RoleRuns) -> tuple[RoleStorage, list[Run]]:
+    """One role's storage, and the runs whose files were counted."""
     totals: dict[str, list[int]] = {}
     steps = runs = 0
+    counted: list[Run] = []
     skipped: dict[str, str] = {}
     for run in role.runs:
         try:
@@ -1584,12 +1742,13 @@ def _role_storage(role: RoleRuns) -> RoleStorage:
             continue
         runs += 1
         steps += len(run.steps)
+        counted.append(run)
         for category, counts in found.items():
             slot = totals.setdefault(category, [0, 0, 0, 0])
             for index, value in enumerate(counts):
                 slot[index] += value
     total = sum(slot[1] for slot in totals.values())
-    return RoleStorage(
+    storage = RoleStorage(
         runs=runs,
         steps=steps,
         bytes=total,
@@ -1607,6 +1766,7 @@ def _role_storage(role: RoleRuns) -> RoleStorage:
         },
         skipped=skipped,
     )
+    return storage, counted
 
 
 def _tree_bytes(root: Path) -> int:
@@ -1614,7 +1774,7 @@ def _tree_bytes(root: Path) -> int:
 
 
 def storage(chain: ChainRuns) -> Storage:
-    """PRD §10 存储 (arch §4.16): bytes by category per role, per run and per step; gzip ratios.
+    """Storage (arch §4.16): bytes by category per role, per run and per step; gzip ratios.
 
     A run's files are the ones ``RunTrace.committed_files`` lists (never a
     walk of the directory), each path once, read through ``read_committed``
@@ -1622,15 +1782,20 @@ def storage(chain: ChainRuns) -> Storage:
     screenshots, the WARC, gzip captures, by their leading bytes — are
     reported as size only.
     """
+    by_role: dict[str, RoleStorage] = {}
+    counted: list[Run] = []
+    for role in ROLES:
+        if chain.role(role).present:
+            by_role[role], runs = _role_storage(chain.role(role))
+            counted += runs
     return Storage(
-        by_role={
-            role: _role_storage(chain.role(role)) for role in ROLES if chain.role(role).present
-        },
+        by_role=by_role,
         datasets={
             name: _tree_bytes(chain.layout.dataset(name))
             for name in DATASETS
             if chain.layout.dataset(name).is_dir()
         },
+        sites=site_count(counted),
     )
 
 
@@ -1640,7 +1805,7 @@ class Projection(_Model):
 
 
 class Retention(_Model):
-    """PRD §11 Q7: bytes per run of each role and per dataset sample, and a projection."""
+    """Retention and capacity: bytes per run of each role and per dataset sample, and a projection."""
 
     per_run: dict[str, float | None]
     per_sample: float | None
@@ -1653,7 +1818,7 @@ class Retention(_Model):
 def retention(
     chain: ChainRuns, stored: Storage, samples: int | None, tasks: Sequence[int]
 ) -> Retention:
-    """PRD §11 Q7 (arch §4.16): per-run and per-sample bytes, projected to *tasks* tasks.
+    """Retention and capacity (arch §4.16): per-run and per-sample bytes, projected to *tasks* tasks.
 
     Bytes per task = a recording plus, for every other role, its runs per
     recording times its bytes per run; the first dataset's bytes per sample
@@ -1688,7 +1853,7 @@ def retention(
 
 
 class ExportYield(_Model):
-    """PRD §10 导出产出 from the first dataset: samples, drops, skips, ``action_failed`` share."""
+    """Export yield (导出产出) from the first dataset: samples, drops, skips, ``action_failed`` share."""
 
     present: bool
     samples: dict[str, int] = {}
@@ -1701,9 +1866,11 @@ class ExportYield(_Model):
     action_failed: Ratio
 
 
-class DatasetManifestError(ValueError):
-    """A published dataset's ``manifest.json`` does not read back as this build's format.
+class DatasetFormatError(ValueError):
+    """A published dataset's file does not read back as this build's format.
 
+    Its ``manifest.json`` (:class:`~spectragent.schemas.dataset.DatasetManifest`)
+    or a ``<split>.samples.jsonl`` line (``{"sample": CanonicalStepSample, ...}``).
     Raised rather than read as empty counts: a renamed key must not turn into
     a measured zero. The message names the file relative to the chain root.
     """
@@ -1716,7 +1883,7 @@ def read_dataset_manifest(layout: ChainLayout, name: str = "first") -> DatasetMa
     (``schemas/dataset.py::DatasetManifest``).
 
     Raises:
-        DatasetManifestError: The file exists but does not read back as the
+        DatasetFormatError: The file exists but does not read back as the
             dataset format this build writes.
     """
     path = layout.dataset(name) / "manifest.json"
@@ -1725,30 +1892,58 @@ def read_dataset_manifest(layout: ChainLayout, name: str = "first") -> DatasetMa
     try:
         return DatasetManifest.model_validate_json(path.read_bytes())
     except ValidationError as exc:
-        raise DatasetManifestError(
+        raise DatasetFormatError(
             f"datasets/{name}/manifest.json does not read back as dataset format "
             f"{DATASET_FORMAT!r}: {exc}"
         ) from exc
 
 
+def dataset_samples(layout: ChainLayout, name: str = "first") -> list[CanonicalStepSample]:
+    """Every sample an export published (the first by default), split by split.
+
+    Each ``<split>.samples.jsonl`` line is ``{"sample": ..., "render": ...}``;
+    the sample is read through the model the export dumps
+    (``schemas/sample.py::CanonicalStepSample``), the rendering is not read.
+
+    Raises:
+        DatasetFormatError: A line does not parse, or its sample does not
+            validate; the message names the file and the line.
+    """
+    samples: list[CanonicalStepSample] = []
+    root = layout.dataset(name)
+    for path in sorted(root.glob("*.samples.jsonl")):
+        rel = f"datasets/{name}/{path.name}"
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                document = json.loads(line)
+                if not isinstance(document, dict):
+                    raise ValueError("a line is a JSON object")
+                samples.append(CanonicalStepSample.model_validate(document["sample"]))
+            except (ValueError, KeyError) as exc:  # JSONDecodeError and ValidationError included
+                raise DatasetFormatError(
+                    f"{rel} line {number} does not read back as a sample of dataset format "
+                    f"{DATASET_FORMAT!r}: {exc}"
+                ) from exc
+    return samples
+
+
 def export_yield(layout: ChainLayout, manifest: DatasetManifest | None) -> ExportYield:
-    """PRD §10 导出产出 (arch §4.16), read from the published files of ``datasets/first``.
+    """Export yield (arch §4.16), read from the published files of ``datasets/first``.
 
     ``action_failed``: samples whose ``labels.step_status`` is
-    ``action_failed`` over all samples (``<split>.samples.jsonl``) — the
-    keep-or-drop question M32 handed to M33.
+    ``action_failed`` over all samples (:func:`dataset_samples`) — whether
+    the export should keep or drop them.
+
+    Raises:
+        DatasetFormatError: A sample line does not read back.
     """
     if manifest is None:
         return ExportYield(present=False, action_failed=ratio(0, 0, empty="no first export"))
-    root = layout.dataset("first")
-    failed = total = 0
-    for path in sorted(root.glob("*.samples.jsonl")):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            sample = json.loads(line).get("sample") or {}
-            total += 1
-            failed += int((sample.get("labels") or {}).get("step_status") == "action_failed")
+    samples = dataset_samples(layout)
+    total = len(samples)
+    failed = sum(1 for sample in samples if sample.labels.step_status == "action_failed")
     return ExportYield(
         present=True,
         samples=dict(sorted(manifest.split.samples.items())),
@@ -1766,47 +1961,71 @@ class SiteRuleCandidates(_Model):
     """Replay misses a per-site query rule would have matched (``archive_stats``), by host."""
 
     runs: int
+    #: Distinct sites of the replayed runs counted.
+    sites: int
     by_host: dict[str, int]
     params: dict[str, dict[str, int]]
+    #: Replayed runs (``traces/<role>/<run>``) left out, and why.
+    skipped: dict[str, str] = {}
 
 
 def site_rules(chain: ChainRuns) -> SiteRuleCandidates:
     """Near misses in every replayed run (``same_path`` and ``branch``), by host and parameter."""
     misses: Counter[str] = Counter()
     params: dict[str, Counter[str]] = {}
-    runs = 0
+    counted: list[Run] = []
+    skipped: dict[str, str] = {}
     for role in ("same_path", "branch"):
         for run in chain.role(role).runs:
             try:
                 found = site_rule_candidates(run.decisions)
-            except EVIDENCE_ERRORS:
+            except EVIDENCE_ERRORS as exc:
+                skipped[run.pointer] = f"its replay log does not read back ({type(exc).__name__})"
                 continue
-            runs += 1
+            counted.append(run)
             for host, candidate in found.items():
                 misses[host] += candidate.misses
                 params.setdefault(host, Counter()).update(dict(candidate.params))
     return SiteRuleCandidates(
-        runs=runs,
+        runs=len(counted),
+        sites=site_count(counted),
         by_host=_counts(misses),
         params={host: _counts(params[host]) for host in sorted(params)},
+        skipped=dict(sorted(skipped.items())),
     )
 
 
 class BranchDocumentMisses(_Model):
-    """Q4's input: the branches' main-frame document misses, and how many were GETs of unrecorded URLs."""
+    """The recording-coverage decision's input: the branches' main-frame document misses.
 
+    Over the branches that acted (an empty branch is left out, as in
+    :func:`branch_coverage`), and how many of their misses were GETs of URLs
+    the recording never fetched.
+    """
+
+    #: Branches counted: their replay log reads back and they acted.
+    branches: int
+    #: Distinct sites of the branches counted.
+    sites: int
     document_misses: int
     get_no_match: Ratio
+    skipped: dict[str, str] = {}
 
 
 def branch_document_misses(branch: RoleRuns) -> BranchDocumentMisses:
     """Of the branches' document misses (from the checkpoint on), the GETs nothing recorded matched."""
     total = unrecorded = 0
+    counted: list[Run] = []
+    skipped: dict[str, str] = {}
     for run in branch.runs:
         try:
             decisions = after_checkpoint(run)
-        except EVIDENCE_ERRORS:
+        except EVIDENCE_ERRORS as exc:
+            skipped[run.rel] = f"its replay log does not read back ({type(exc).__name__})"
             continue
+        if empty_branch(run) is not None:
+            continue
+        counted.append(run)
         for _step, entry, weight in decisions:
             if not entry.diverged:
                 continue
@@ -1814,22 +2033,52 @@ def branch_document_misses(branch: RoleRuns) -> BranchDocumentMisses:
             if entry.method.upper() == "GET" and entry.reason == "no_match":
                 unrecorded += weight
     return BranchDocumentMisses(
+        branches=len(counted),
+        sites=site_count(counted),
         document_misses=total,
         get_no_match=ratio(unrecorded, total, empty="no document miss in any branch"),
+        skipped=skipped,
     )
+
+
+def chain_sites(chain: ChainRuns) -> int:
+    """The distinct sites of every readable run of the chain, every role."""
+    return site_count(run for role in chain.roles.values() for run in role.runs)
+
+
+def exported_sites(chain: ChainRuns, manifest: DatasetManifest | None) -> int:
+    """The distinct sites of the runs an export exported (its manifest's sources, under ``traces/``).
+
+    A source the chain does not hold (exported from elsewhere) has no site here.
+    """
+    if manifest is None:
+        return 0
+    found: list[Run] = []
+    for source in manifest.sources.exported:
+        role, _, rel = source.path.partition("/")
+        run = chain.roles[role].by_rel().get(rel) if role in chain.roles else None
+        if run is not None:
+            found.append(run)
+    return site_count(found)
 
 
 __all__ = [
     "DATASETS",
+    "EMPTY_ENDED_BEFORE_DECISION",
+    "EMPTY_MODEL_CALL_FAILED",
+    "EMPTY_NO_ACTION",
     "ENVIRONMENT_PHASES",
     "EVIDENCE_ERRORS",
     "MODEL_CALL_PHASE",
     "NO_ACTION",
+    "NO_RESULT",
     "NO_SITE",
+    "RESULT_ERRORS",
     "ROLES",
     "TERMINAL",
     "TRAILING",
     "UNCLEAN_ENDINGS",
+    "UNREADABLE_RESULT",
     "AntiBot",
     "ArchiveBytes",
     "ArchiveOverhead",
@@ -1839,10 +2088,11 @@ __all__ = [
     "ChainLayout",
     "ChainRuns",
     "ChallengeHit",
-    "DatasetManifestError",
+    "DatasetFormatError",
     "DedupBytes",
     "Determinism",
     "DuplicateBranches",
+    "EmptyBranches",
     "ExportDeterminism",
     "ExportYield",
     "Fidelity",
@@ -1868,21 +2118,25 @@ __all__ = [
     "Sites",
     "Storage",
     "StorageCategory",
-    "TreeDigest",
     "after_checkpoint",
+    "agent_outcome",
     "anti_bot",
+    "archive_bytes",
     "archive_overhead",
     "body_completeness_metric",
     "branch_coverage",
     "branch_document_misses",
     "canonical_json",
+    "chain_sites",
     "components",
-    "archive_bytes",
+    "dataset_samples",
     "duplicate_branches",
+    "empty_branch",
     "ended_unclean",
     "env_times",
     "export_determinism",
     "export_yield",
+    "exported_sites",
     "failed_on_model_call",
     "open_chain",
     "open_role",
@@ -1897,9 +2151,9 @@ __all__ = [
     "retention",
     "run_tier",
     "same_path_fidelity",
+    "site_count",
     "site_rules",
     "sites",
     "storage",
     "storage_category",
-    "tree_digest",
 ]

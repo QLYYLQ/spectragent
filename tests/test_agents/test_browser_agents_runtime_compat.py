@@ -313,7 +313,7 @@ class TestAgentToCapabilityActionVocabulary:
         assert _resolve(agent, actions[0], capability) == "browser.click_coordinate"
 
     def test_all_three_agents_done_uses_extracted_content(self) -> None:
-        # C2 regression: every adapted agent must emit its done action
+        # Regression: every adapted agent must emit its done action
         # with the ``extracted_content`` key so the answer survives the
         # capability's DoneEvent translation.
         from spectragent.agents._output_models import SkyvernOutput

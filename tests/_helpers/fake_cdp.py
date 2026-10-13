@@ -8,7 +8,7 @@ answers the commands the capability's setup and the recorder's pipeline
 use, routes events to the client that caused them, and can be told to fail
 a method, hold a reply until something else happens, or drop a connection.
 
-It models the session facts the recorder depends on (S1 / S2a):
+It models the session facts the recorder depends on (measured, ``docs/architecture_design.md`` §4.14):
 
 - browser-level ``Target.setAutoAttach`` attaches every existing target to
   *that* client before it replies, not waiting;

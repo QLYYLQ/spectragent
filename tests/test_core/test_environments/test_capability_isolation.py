@@ -1,4 +1,4 @@
-"""F8 — the framework ABI carries no capability-private routing handle.
+"""The framework ABI carries no capability-private routing handle.
 
 ``session_id`` is a CDP tab handle. It used to be a **required**
 parameter of ``BaseAction.execute`` and an optional one on

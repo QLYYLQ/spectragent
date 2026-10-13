@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ import yaml
 from spectragent.flywheel import chain as chain_module
 from spectragent.flywheel.cli import main
 from spectragent.flywheel.metrics import ChainLayout
+from tests._helpers.flywheel_traces import KnownChain
 from tests.test_flywheel.test_chain import RUN_YAML, Recorder, commit_one_run
 
 
@@ -118,3 +120,27 @@ def test_run_and_a_failing_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(chain_module, "_bench_entry", lambda: Recorder(no_run))
     assert main(["run", "--spec", str(spec), "--stages", "record"]) == 1
+
+
+def test_an_unwritable_out_is_named_not_a_traceback(
+    layout: ChainLayout, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    blocker = tmp_path / "a-file"
+    blocker.write_text("a file where the report directory goes")
+    out = blocker / "report"
+    argv = ["report", "--root", str(layout.root), "--evidence", "live", "--out", str(out)]
+    assert main(argv) == 1
+    err = capsys.readouterr().err
+    assert f"stage 'report': cannot write the report to {out}: " in err
+
+
+def test_a_dataset_this_build_cannot_read_is_named_not_a_traceback(
+    known: KnownChain, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "chain"
+    shutil.copytree(known.root / "datasets", root / "datasets")
+    (root / "datasets" / "first" / "manifest.json").write_text("{}")
+    argv = ["report", "--root", str(root), "--evidence", "live", "--out", str(tmp_path / "out")]
+    assert main(argv) == 1
+    assert "datasets/first/manifest.json does not read back" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists(), "nothing is written for a report that did not compute"

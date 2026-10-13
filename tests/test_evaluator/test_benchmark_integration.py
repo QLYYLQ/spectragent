@@ -1,4 +1,4 @@
-"""The F7 acceptance path, run offline.
+"""The benchmark acceptance path, run offline.
 
     spectragent-bench --benchmark ... --subset ... --config ...
     -> one traces/ directory per task

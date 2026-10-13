@@ -15,7 +15,7 @@ seed, user agent and viewport. This tier is the **only** source of each:
   ``--user-agent=<ua>``, so workers and the network stack see the pinned
   string too and a provider's own ``user_agent`` is caught as a conflict.
   No ``--disable-site-isolation-trials``: it is not needed for coverage and
-  changes how out-of-process iframes are observed (S1).
+  changes how out-of-process iframes are observed (measured, arch §4.14).
 - **Overrides on the recorder connection** (the plan's commands): the shim
   (frames: ``Page.enable`` first, then ``Page.addScriptToEvaluateOnNewDocument``;
   workers: ``Runtime.evaluate`` before resume), time zone, locale, user agent
@@ -32,8 +32,8 @@ seed, user agent and viewport. This tier is the **only** source of each:
   which the control connection applies with ``setDeviceMetricsOverride``.
 
 ``base_time: from_archive`` (T0 taken from the archive being replayed) is
-valid only with an archive network source, which arrives in M30; the
-capability's cooperation check refuses it until then.
+valid only with the ``archive`` network source; the capability's
+cooperation check refuses it with a ``live`` one at ``prepare()``.
 """
 
 import re
@@ -67,8 +67,8 @@ class PinnedReplayability(ReplayabilityBase):
                 description=(
                     "Where the shim's clock starts. 'run_start': the moment "
                     "setup ran (a recording). 'from_archive': the T0 recorded "
-                    "in the archive being replayed — valid only with an "
-                    "archive network source (M30); refused at setup until then."
+                    "in the archive being replayed — valid only with the "
+                    "'archive' network source; prepare() refuses it with a 'live' one."
                 ),
             ),
         ] = "run_start",

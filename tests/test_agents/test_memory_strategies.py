@@ -26,7 +26,7 @@ class TestSimpleMemoryKeepsSystem:
     """§6.3.1 — SimpleMemory silently evicted the system prompt."""
 
     def test_system_prompt_survives_eviction(self) -> None:
-        """The handoff's exact repro: max_messages=3, four messages in."""
+        """The reported repro, exactly: max_messages=3, four messages in."""
         mem = SimpleMemory(max_messages=3)
         mem.add_messages(
             [

@@ -384,7 +384,7 @@ class TestConfigHash:
 
 
 class TestStepTimings:
-    """B7 — filled from AOP ``around`` advice, never by the Loop."""
+    """Step timings are filled from AOP ``around`` advice, never by the Loop."""
 
     def test_duration_and_llm_latency_are_measured(self, trace):
         rec = trace.step(0)

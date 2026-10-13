@@ -24,12 +24,12 @@ with a loopback scripted model — ``tests/_helpers/replay_driver.py``:
 
 Every replay feeds the agent the source run's own recorded completions, so
 the actions are the recording's step for step. The fixture servers count
-TCP accepts and HTTP requests: an isolated replay must add neither (S2a —
+TCP accepts and HTTP requests: an isolated replay must add neither (measured —
 counting requests alone would miss preconnects). The pages live on mapped,
 non-localhost names, and a replay drops the fixture's name mapping, so those
 names have no route to the fixture with or without isolation: for them the
 counters cannot move. The egress page's IP literals need no mapping — only
-the isolation's blackhole (``MAP *`` covers IP literals, S2a Q2) cuts them —
+the isolation's blackhole (``MAP *`` covers IP literals, measured, arch §4.14) cuts them —
 and the negative control shows the counters do move without it. The
 localhost page's routes need none either: the blackhole cuts exact
 ``localhost`` too, while the CDP connection — which the DevTools server takes
@@ -57,6 +57,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
     iter_replay_log,
     replay_log,
 )
+from spectragent.core.trace.digest import TreeDigest, tree_digest
 from tests._helpers import replay_driver as driver
 from tests._helpers.fixture_site import (
     CANARY_HOST,
@@ -104,7 +105,7 @@ class Runs:
     """A recording and its replays."""
 
     source: driver.Outcome
-    source_tree_before: str
+    source_tree_before: TreeDigest
     replays: dict[str, Replayed]
 
 
@@ -162,7 +163,7 @@ def flow(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs:
             driver.run_task(raw, task="Visit the pages.", start_url=site.url(FLOW[0]))
         )
     source.require_finished(len(FLOW) + 1, "visited")
-    before = driver.tree_hash(source.run_dir)
+    before = tree_digest(source.run_dir)
     start = site.url(FLOW[0])
     replays = {
         "first": _replay(site, raw, source, base / "replay-1", start_url=start),
@@ -190,7 +191,7 @@ def strict(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs:
             driver.run_task(raw, task="Visit the pages.", start_url=site.url("strict"))
         )
     source.require_finished(len(script), "visited")
-    before = driver.tree_hash(source.run_dir)
+    before = tree_digest(source.run_dir)
     replay = _replay(site, raw, source, base / "replay", start_url=site.url("strict"))
     return Runs(source, before, {"strict": replay})
 
@@ -204,7 +205,7 @@ def egress(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs:
         raw = driver.record_config(site=site, llm=llm, trace_dir=base / "record")
         source = asyncio.run(driver.run_task(raw, task="Visit the page.", start_url=start))
     source.require_finished(1, "visited")
-    before = driver.tree_hash(source.run_dir)
+    before = tree_digest(source.run_dir)
     replays = {
         "isolated": _replay(site, raw, source, base / "replay", start_url=start),
         "unisolated": _replay(
@@ -228,7 +229,7 @@ def local(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs:
         raw = driver.record_config(site=site, llm=llm, trace_dir=base / "record")
         source = asyncio.run(driver.run_task(raw, task="Visit the page.", start_url=start))
     source.require_finished(1, "visited")
-    before = driver.tree_hash(source.run_dir)
+    before = tree_digest(source.run_dir)
     replays = {
         "isolated": _replay(site, raw, source, base / "replay", start_url=start),
         "unisolated": _replay(
@@ -441,7 +442,7 @@ def test_replay_leaves_the_source_untouched(
     flow: Runs, strict: Runs, egress: Runs, local: Runs
 ) -> None:
     for runs in (flow, strict, egress, local):
-        assert driver.tree_hash(runs.source.run_dir) == runs.source_tree_before
+        assert tree_digest(runs.source.run_dir) == runs.source_tree_before
 
 
 def test_base_time_from_archive_replays_the_recorded_clock(flow: Runs) -> None:

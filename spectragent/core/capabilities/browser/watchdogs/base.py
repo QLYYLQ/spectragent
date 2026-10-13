@@ -220,7 +220,7 @@ class BrowserWatchdog(WatchdogBase):
         built. A watchdog installed *by binding* rather than by profile —
         ``ArchiveWatchdog``, which exists only while archivers are bound —
         answers from the context: what a run records is a per-run choice,
-        not a property of the profile (ruling D3).
+        not a property of the profile (the user's ruling of 2026-10-09, AGENTS.md §2.5).
         """
         return True
 

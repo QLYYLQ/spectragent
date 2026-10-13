@@ -1,4 +1,4 @@
-"""A click lands *inside* the element, not on its exact centre (defect B2).
+"""A click lands *inside* the element, not on its exact centre.
 
 Measured on real pages, every strategy — instant or not — put the press within
 0.78 px of the element's arithmetic centre every single time, because the

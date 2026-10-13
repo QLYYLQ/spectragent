@@ -4,7 +4,7 @@ A miss policy is a receptor of the archive network source
 (``ArchiveNetworkSource.__wiring__["miss_policy"]``), so it is configured
 nested inside the ``network_source`` block and arrives constructed, knobs and
 all. v1 has one policy, ``strict`` (``strict.py``); the axis exists because the
-user asked for room to add others (PRD R3). It decides three things about
+user asked for room to add others (docs/architecture_design.md §4.14). It decides three things about
 one miss and nothing else: the request's class (``document`` / ``benign`` /
 ``subresource``), how to answer it (fulfil with a status, or fail), and
 whether the miss means the replay diverged from the recording.
@@ -42,7 +42,7 @@ RequestClass = Literal["document", "benign", "subresource"]
 #: own network log can tell them apart.
 REPLAY_MISS_HEADER = ("x-replay-miss", "1")
 #: How a document miss fails: ``Failed`` keeps Chrome's http fallback alive
-#: (a 404 or ``BlockedByClient`` cuts it off — S2a).
+#: (a 404 or ``BlockedByClient`` cuts it off — measured, arch §4.14).
 DOCUMENT_ERROR_REASON = "Failed"
 
 

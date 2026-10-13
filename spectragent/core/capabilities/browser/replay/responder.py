@@ -16,7 +16,7 @@ The shapes, one function each:
   unconditional request.
 - **A byte range** (:func:`serve_range`): ``206`` with ``Content-Range`` and
   ``Accept-Ranges`` cut from the archive's range map — never a ``200`` for a
-  ``Range`` request (S2a: a 200 plays, but seeking breaks).
+  ``Range`` request (measured, arch §4.14: a 200 plays, but seeking breaks).
 - **A CORS preflight the archive does not hold** (:func:`synthetic_preflight`):
   ``204`` echoing the request's ``Origin`` (never ``*``), method and headers,
   with ``Access-Control-Allow-Credentials: true`` and ``Vary: Origin``. A
@@ -29,7 +29,7 @@ Every response goes through the same header hygiene (:func:`sanitised_headers`):
 ``Content-Length`` recomputed from the bytes served, a value spanning several
 lines split into several entries (each ``Set-Cookie`` its own). Bodies are
 stored decoded, and ``fulfillRequest`` sends bytes as they are, so this is
-hygiene for what page JavaScript reads, not framing (S2a).
+hygiene for what page JavaScript reads, not framing (measured, arch §4.14).
 
 **Dates** (:func:`dated_headers`), ``shift_dates``:
 
@@ -40,7 +40,7 @@ hygiene for what page JavaScript reads, not framing (S2a).
 - ``all`` — all four shifted by one Δ = now − record time (the recorded
   ``Date``, else the request's start, the WARC-Date source); pairs with
   ``base_time: run_start``.
-- Never a subset: shifting the cookie expiry alone double-shifts it (S2a Q9).
+- Never a subset: shifting the cookie expiry alone double-shifts it (measured, arch §4.14).
   A response without ``Date`` gets one (record time + Δ) so Chrome's
   rebasing has its anchor. A value that does not parse as a date is served
   as recorded.

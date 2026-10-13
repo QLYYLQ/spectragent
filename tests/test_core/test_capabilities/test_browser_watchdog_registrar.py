@@ -1,4 +1,4 @@
-"""F9 — watchdog axis is a registrar, and observation cost is negotiated.
+"""The watchdog axis is a registrar, and observation cost is negotiated.
 
 Three claims are under test here, all of which were false before:
 

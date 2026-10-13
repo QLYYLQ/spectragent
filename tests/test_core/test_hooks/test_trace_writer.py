@@ -615,7 +615,7 @@ class TestEveryCallOfAStep:
         """``llm_latency_ms`` is the step's wait on the model, whatever came back.
 
         The accumulator sits in ``around``'s ``finally``: a step whose only
-        call was refused or cut off — the parse-retry steps F17 was about —
+        call was refused or cut off — a parse-retry step, say —
         waited all the same, and must not read as unmeasured.
         """
         run_dir = await _start(writer)

@@ -429,7 +429,7 @@ class ReplayServer(RecorderParticipantBase):
 
         An OOPIF's document pauses on its parent page's session with the
         iframe's frame id; a popup's first document pauses on its own page
-        session with the popup's own id (S2a).
+        session with the popup's own id (measured, arch §4.14).
         """
         if target is not None and target.type == "page" and frame_id == target.target_id:
             return "main"

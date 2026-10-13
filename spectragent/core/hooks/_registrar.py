@@ -71,8 +71,8 @@ class HookBase(metaclass=HookRegistrar.Meta):
       ``@dataclass`` too, declare its knobs as ``Annotated`` fields and its
       internals as ``field(init=False, repr=False)``. The synthesised
       ``__init__`` makes each knob a named parameter. Example below.
-    - **A receptor** (``trace_writer``, whose ``archive`` becomes one in
-      M29): **not** a ``@dataclass``. conscribe's metaclass decides whether
+    - **A receptor** (``trace_writer``, whose ``archive`` is one):
+      **not** a ``@dataclass``. conscribe's metaclass decides whether
       a ``__wiring__`` entry is already a constructor parameter by reading
       ``inspect.signature(cls.__init__)`` at class creation — before
       ``@dataclass`` has synthesised anything — so a receptor that is a

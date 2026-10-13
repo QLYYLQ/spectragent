@@ -20,7 +20,7 @@ the source and both values.
 
 1. the seeded memory (the runtime wrote ``agent.prepare``'s seed messages)
    must equal the start of the source's first recorded prompt;
-2. the conversation is rebuilt **from the source trace** (PRD revision F1):
+2. the conversation is rebuilt **from the source trace** (``docs/architecture_design.md`` §4.1):
    for each ``k < t`` the recorded observation is rendered by the agent's own
    ``build_react_prompt`` and every recorded model call of the step is
    replayed through ``parse_react_output`` and ReAct's memory protocol
@@ -104,7 +104,7 @@ logger = logging.getLogger(__name__)
 
 #: The parts of ``TraceConfig.negotiation`` a branch must reproduce: what the
 #: agent observed and could do. The archive parts are the branch's own choice
-#: (ruling D3) and are not compared.
+#: (the user's ruling of 2026-10-09, AGENTS.md §2.5) and are not compared.
 NEGOTIATION_FIELDS = (
     "active_fragments",
     "required_fragments",

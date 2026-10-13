@@ -414,7 +414,7 @@ class SchemaOptimizer:
 
     @staticmethod
     def remove_min_items(schema: Any) -> None:
-        """Drop ``minItems``/``min_items`` everywhere (defect F12).
+        """Drop ``minItems``/``min_items`` everywhere.
 
         Not a preference — a rejection. The strict dialect lists
         ``minItems``/``maxItems``/``uniqueItems`` among the array keywords it

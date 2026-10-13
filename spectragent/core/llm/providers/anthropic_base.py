@@ -222,7 +222,8 @@ class AnthropicCompatBase(ChatModelBase):
         time. Left to the garbage collector, the SDK's ``__del__`` schedules
         a late ``aclose()`` that unregisters a reused descriptor number from
         the event loop's selector — the next model call's connect with it
-        (PRD H28; ``OpenAICompatBase._request_client`` has the mechanism).
+        (``docs/architecture_design.md`` §4.7; ``OpenAICompatBase._request_client``
+        has the mechanism).
         An injected ``http_client`` belongs to whoever injected it and is
         left open.
         """

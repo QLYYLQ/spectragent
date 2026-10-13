@@ -106,8 +106,9 @@ class OpenAICompatBase(ChatModelBase):
     # workarounds for a gateway whose OpenAI-compatible route translates to
     # a vendor's native API and loses the schema on the way; native routing
     # is the fix (Gemini at ``model_type: google``, Claude at
-    # ``model_type: anthropic``, both against the gateway root — see
-    # ``docs/llm/dmxapi.cn.md``). The last two are dialect rules, and
+    # ``model_type: anthropic``, both against the gateway root — see the
+    # measured routes in ``.agents/skills/af-add-an-llm-provider/references/guide.md``
+    # §1). The last two are dialect rules, and
     # ``architecture_design.md`` §4.5 says where a dialect rule goes:
     # "去除写在 optimizer 里一次，而不是每个 provider 各配一个旋钮".
     # ``strict`` implies the ``minItems`` removal inside
@@ -233,8 +234,7 @@ class OpenAICompatBase(ChatModelBase):
         freed descriptor number, and closing the stale transport
         unregisters that number from the loop's selector — the next model
         call's connect callback with it, so the connect never completes and
-        the call hangs to its timeout (PRD H28,
-        ``docs/architecture_design.md`` §4.7).
+        the call hangs to its timeout (``docs/architecture_design.md`` §4.7).
 
         An injected ``http_client`` belongs to whoever injected it: closing
         the SDK client would close it too, so a client built around it is

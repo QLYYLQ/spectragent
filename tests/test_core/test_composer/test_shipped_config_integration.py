@@ -408,7 +408,7 @@ class TestMultipleAgents:
         self,
         two_agent_run: Any,
     ) -> None:
-        """F3: a second ``weave`` must not rewrite the first agent's deps.
+        """A second ``weave`` must not rewrite the first agent's deps.
 
         Both agents are prepared through the real runtime; each
         ``agent.run`` closure has to keep pointing at the memory that

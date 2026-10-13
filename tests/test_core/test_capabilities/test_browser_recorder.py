@@ -459,7 +459,7 @@ class TestPausedRequests:
         await recorder.close()
 
     async def test_request_stage_is_continued_with_continue_request(self) -> None:
-        owner = _Participant("m30", patterns=({"urlPattern": "*", "requestStage": "Request"},))
+        owner = _Participant("replay", patterns=({"urlPattern": "*", "requestStage": "Request"},))
         _browser, recorder, client, sid = await self._ready([owner])
         _pause(client, sid, "q1", status=None)
         await _settle()
@@ -471,7 +471,7 @@ class TestPausedRequests:
         async def _fulfil(paused: PausedRequest) -> None:
             paused.answered = True
 
-        owner = _Participant("m30", patterns=RESPONSE_STAGE, on_paused=_fulfil)
+        owner = _Participant("replay", patterns=RESPONSE_STAGE, on_paused=_fulfil)
         _browser, recorder, client, sid = await self._ready([owner])
         _pause(client, sid, "r1")
         await _settle()
@@ -658,7 +658,7 @@ class TestServingParticipant:
 
     async def test_serving_is_decided_by_the_participants_at_open(self) -> None:
         """A non-serving owner of the Request stage still continues (recording mode)."""
-        owner = _Participant("m29", patterns=REQUEST_STAGE)
+        owner = _Participant("archive", patterns=REQUEST_STAGE)
         _browser, recorder, client, sid = await self._ready([owner])
         _pause(client, sid, "q1", status=None)
         await _settle()

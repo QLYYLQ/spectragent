@@ -1,7 +1,7 @@
-"""The recorder connection against a real headless Chrome — the S1 regression.
+"""The recorder connection against a real headless Chrome — the measured facts as regressions.
 
 Everything ``docs/architecture_design.md`` §4.14 says about two CDP clients
-on one browser was measured (S1 / S2a, Chrome 153), and every one of those
+on one browser was measured (Chrome 153), and every one of those
 facts can change with a Chrome release. These tests pin them as canaries,
 against the local fixture site only, with short timeouts:
 
@@ -161,7 +161,7 @@ async def _served(site: FixtureSite, paths: list[str], seconds: float) -> set[st
     return {r.bare_path for r in site.requests}
 
 
-# ── S1: coverage, cleanup, the wedge, resume modes ────────────────────
+# ── coverage, cleanup, the wedge, resume modes ────────────────────────
 
 
 COVERED_SCENARIOS = (
@@ -203,7 +203,7 @@ async def test_recorder_captures_every_fixture_request() -> None:
                     assert any(t == "iframe" for _u, t in collector.paused)
                     assert any(t == "service_worker" for _u, t in collector.paused)
                     # The known gap: a nested dedicated worker's script never
-                    # reaches Fetch at either stage (S2a Q3) — its fetch does.
+                    # reaches Fetch at either stage (measured, arch §4.14) — its fetch does.
                     nested = {r.bare_path for r in site.requests_for("nested_worker")}
                     assert "/nested_worker/inner.js" in nested
                     assert "/nested_worker/inner.js" not in collector.paths()
@@ -240,7 +240,7 @@ async def test_unclean_drop_wedges_new_targets() -> None:
     A client holding browser-level ``waitForDebuggerOnStart`` whose socket
     stays open but which no longer services it (a hung recorder) leaves every
     *new* target in the browser paused — for every client. This is the
-    failure S1 recorded as "an unclean disconnect": its client's ``stop()``
+    failure first recorded as "an unclean disconnect": its client's ``stop()``
     never closed the socket (fixed in M29), so the browser saw a silent
     client, not a gone one. A socket that really closes is released (next
     test). Hence §4.14's rules: liveness is pushed, a local receive error

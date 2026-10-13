@@ -210,8 +210,8 @@ class ChatGoogle(ChatModelBase):
         it. google-genai's async client, collected unclosed while the loop
         runs, schedules a late ``aclose()`` from ``__del__`` that unregisters
         a reused descriptor number from the event loop's selector — another
-        socket's connect with it (PRD H28; ``OpenAICompatBase._request_client``
-        has the mechanism). An instance is dropped at the end of every task
+        socket's connect with it (``docs/architecture_design.md`` §4.7;
+        ``OpenAICompatBase._request_client`` has the mechanism). An instance is dropped at the end of every task
         of a benchmark run, while the loop goes on to the next one.
 
         Both halves are closed: ``aio.aclose()`` the async transport this

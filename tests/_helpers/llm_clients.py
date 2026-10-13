@@ -1,7 +1,7 @@
 """Fake SDK clients for provider tests: what a test gives them, plus the closing a provider owes them.
 
 A provider closes the SDK client it builds for a request before the request returns
-(``docs/architecture_design.md`` §4.7, PRD H28). A fake handed to a provider through a
+(``docs/architecture_design.md`` §4.7). A fake handed to a provider through a
 patched ``get_client`` is closed the same way, so it carries the SDK's closing surface —
 and counts what the provider did with it:
 

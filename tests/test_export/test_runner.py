@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.trace.digest import tree_digest
 from spectragent.export.benchmarks import BenchmarkLoaders
 from spectragent.export.errors import (
     ExportConfigError,
@@ -20,7 +21,7 @@ from spectragent.export.errors import (
 from spectragent.export.runner import ExportRunner
 from spectragent.schemas.action import Action
 from spectragent.schemas.dataset import DATASET_FORMAT, DatasetManifest, StepLedger
-from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export, tree_hash
+from tests._helpers.export_runs import exporter_entry, read_jsonl, run_export
 from tests._helpers.export_traces import (
     ExportStep,
     click_at,
@@ -58,7 +59,7 @@ class TestDeterminism:
         _write_sources(tmp_path / "src2", ["run-b", "run-c", "run-a"])
         first = run_export(composer, exporter_entry(tmp_path / "src1", tmp_path / "out1"))
         second = run_export(composer, exporter_entry(tmp_path / "src2", tmp_path / "out2"))
-        assert tree_hash(tmp_path / "out1") == tree_hash(tmp_path / "out2")
+        assert tree_digest(tmp_path / "out1") == tree_digest(tmp_path / "out2")
         assert first.manifest == second.manifest
         assert sum(first.samples.values()) == 5
 
@@ -147,7 +148,7 @@ class TestDeterminism:
         text = (tmp_path / "out-0" / "manifest.json").read_text()
         assert str(tmp_path) not in text and "/private/" not in text
         assert first.manifest == second.manifest
-        assert tree_hash(tmp_path / "out-0") == tree_hash(tmp_path / "out-1")
+        assert tree_digest(tmp_path / "out-0") == tree_digest(tmp_path / "out-1")
 
 
 class TestFailClosed:

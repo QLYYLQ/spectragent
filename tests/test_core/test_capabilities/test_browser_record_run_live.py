@@ -1,4 +1,4 @@
-"""The shipped recording config, run end to end: the PRD's first deliverable (M29).
+"""The shipped recording config, run end to end: the data flywheel's first deliverable.
 
 ``configs/flywheel/record_ui_tars_pinned.yaml`` composed by the real Composer
 and run by the real runtime against the local fixture site, with honest

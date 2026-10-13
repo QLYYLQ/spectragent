@@ -14,9 +14,9 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 | `ui_tars_local.yaml` | UITarsAgent + ReactLoop + LocalChrome backend |
 | `flywheel/record_ui_tars_pinned.yaml` | A **recording** run (data flywheel): UITarsAgent, `replayability: pinned`, the three browser archivers on the trace hook — see [Recording environment evidence](#recording-environment-evidence) |
 | `flywheel/replay_ui_tars_archive.yaml` | Its **offline replay**: the same agent and tier with `network_source: archive` (isolated, strict misses) and `base_time: from_archive`; the recorded run arrives as `--replay-archive DIR` — see [Replaying a recorded run](#replaying-a-recorded-run) |
-| `flywheel/branch_ui_tars_archive.yaml` | **Branching** recorded runs (data flywheel, M31): `agent_loop: branch` (the `prefix_replay` restorer) over the replay browser block, tasks from `task_loader: trace_branches`, the teacher at temperature 0.8 with three branches per step — see [Branching a recorded run](#branching-a-recorded-run) |
-| `flywheel/same_path_ui_tars_archive.yaml` | **Same-path replay** (data flywheel, M33): the branch sweep restoring every recording to its last step (`step_selector: last`, `continue_steps: 0`, `verify: warn`, two tasks per source) — the metrics chain's fidelity measure, see [Measuring the flywheel](#measuring-the-flywheel) |
-| `flywheel/export_sft.yaml` | **Exporting** recorded runs as a training dataset (data flywheel, M32): one `exporter:` block, no agent, no environment — see [Exporting training data](#exporting-training-data) |
+| `flywheel/branch_ui_tars_archive.yaml` | **Branching** recorded runs (data flywheel): `agent_loop: branch` (the `prefix_replay` restorer) over the replay browser block, tasks from `task_loader: trace_branches`, the teacher at temperature 0.8 with three branches per step — see [Branching a recorded run](#branching-a-recorded-run) |
+| `flywheel/same_path_ui_tars_archive.yaml` | **Same-path replay** (data flywheel): the branch sweep restoring every recording to its last step (`step_selector: last`, `continue_steps: 0`, `verify: warn`, two tasks per source) — the metrics chain's fidelity measure, see [Measuring the flywheel](#measuring-the-flywheel) |
+| `flywheel/export_sft.yaml` | **Exporting** recorded runs as a training dataset (data flywheel): one `exporter:` block, no agent, no environment — see [Exporting training data](#exporting-training-data) |
 | `flywheel/ui_tars_student.yaml` | The export's **student**: UITarsAgent with `coordinate_space: normalized_1000`, the recording's screenshot pipeline, no hooks; assembled by the export, never run by it |
 
 ## Quick start
@@ -512,9 +512,10 @@ task_loader:
 
 `spectragent-flywheel` runs the data flywheel end to end and reports on it
 (`docs/architecture_design.md` §4.16): record → same-path replay → branch → export (twice) →
-a report of every PRD §9 metric and §10 / §11 section, each with a rule-based, evidence-backed
-recommendation. The report reads only committed traces and published datasets, so it can be
-recomputed anywhere.
+a report of every metric and section, each with a rule-based, evidence-backed recommendation
+(`supported` only on live evidence from at least 10 sites; fewer is `partial`, an
+"insufficient sample"). The report reads only committed traces and published datasets, so it
+can be recomputed anywhere.
 
 The chain is a plain YAML spec — not a run root, so it does not live in `configs/flywheel/`
 (every file there must compose and prepare). Its stages name ordinary run YAMLs; the chain
@@ -523,8 +524,8 @@ only writes their path fields (the trace writer's `trace_dir`, the `trace_branch
 in this process. Relative paths are relative to the working directory.
 
 ```yaml
-name: m33-live
-root: runs/m33-live                    # everything lands under it
+name: first-live
+root: traces/chains/first-live         # everything lands under it (traces/ is git-ignored)
 evidence: live                         # live | rehearsal: the basis of every recommendation
 tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # record / control flags
 record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # evaluate: false → --no-eval
@@ -540,7 +541,7 @@ set -a; . ./.env; set +a     # spectragent-bench and the chain never read .env
 uv run spectragent-flywheel run --spec chain.yaml                      # every configured stage
 uv run spectragent-flywheel run --spec chain.yaml --stages record      # one stage at a time
 uv run spectragent-flywheel report --spec chain.yaml                   # recompute the report
-uv run spectragent-flywheel report --root runs/m33-live --evidence live --out /tmp/report
+uv run spectragent-flywheel report --root traces/chains/first-live --evidence live --out /tmp/report
 ```
 
 - **Layout**: `<root>/traces/{record,control,same_path,branch}/`, `<root>/datasets/{first,second}/`,

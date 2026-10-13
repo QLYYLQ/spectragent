@@ -9,7 +9,7 @@ answered 204, and every other subresource 404 — both with
 Documents come first on purpose: an ad or analytics *iframe* that missed is
 a sub-frame document and fails like any other, rather than rendering an
 empty 204 page. A document fails with ``Failed`` because a 404 or
-``BlockedByClient`` would cut off Chrome's http fallback (S2a).
+``BlockedByClient`` would cut off Chrome's http fallback (measured, arch §4.14).
 """
 
 from typing import Annotated

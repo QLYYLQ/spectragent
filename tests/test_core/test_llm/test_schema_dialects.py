@@ -216,7 +216,7 @@ class TestStripAdditionalProperties:
         assert schema == {"type": "object"}
 
 
-# ── 3. remove_min_items (defect F12) ───────────────────────────────
+# ── 3. remove_min_items ─────────────────────────────────────────────
 
 
 class TestRemoveMinItems:

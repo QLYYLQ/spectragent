@@ -16,7 +16,7 @@ frame tree, whose storage is partitioned by the top-level site — in
 ``unread_frames`` (not read in v1).
 
 That the read happens at collection rather than at every observation cycle
-is deliberate (a documented deviation from PRD §6.3): the collection point is
+is deliberate (``docs/architecture_design.md`` §4.14, ``browser.storage``): the collection point is
 the step boundary already, and a per-cycle read would record the same state
 again. ``storage.json`` is written only when the state differs from the last
 one written (its capture time aside), so a reader takes the latest

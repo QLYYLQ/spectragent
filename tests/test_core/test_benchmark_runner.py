@@ -1,4 +1,4 @@
-"""BenchmarkRunner — per-task lifecycle, identity, and isolation (F5)."""
+"""BenchmarkRunner — per-task lifecycle, identity, and isolation."""
 
 from __future__ import annotations
 

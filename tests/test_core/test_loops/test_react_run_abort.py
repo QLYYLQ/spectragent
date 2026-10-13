@@ -1,4 +1,4 @@
-"""ReactLoop must not absorb a veto — B5.
+"""ReactLoop must not absorb a veto.
 
 Everything a Loop catches is turned into a terminal ``AgentResult``: a
 dead browser, a 429, an action that raised. That is right for a failure
@@ -240,7 +240,7 @@ class TestAbortEscapesTheActGuard:
 
 
 class TestOrdinaryFailuresAreUnchanged:
-    """B5 is a *distinction*, not a new blanket re-raise."""
+    """Not absorbing a veto is a *distinction*, not a new blanket re-raise."""
 
     async def test_action_failure_still_returns_a_terminal_result(self) -> None:
         recorder = StepRecorder()

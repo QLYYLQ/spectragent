@@ -1,4 +1,4 @@
-"""A provider closes the client it built for a request before the request returns (arch §4.7, PRD H28).
+"""A provider closes the client it built for a request before the request returns (arch §4.7).
 
 Each provider family builds a new SDK client — a connection pool — for a request. Left to
 the garbage collector it is not merely leaked: openai, anthropic, groq and google-genai
@@ -6,14 +6,14 @@ clients schedule ``aclose()`` on the running loop from ``__del__``. When the col
 reaches one in a reference cycle, the same pass closes its pooled socket, the next socket
 takes the freed descriptor number, and the late ``aclose()`` unregisters that *number* from
 the loop's selector — the next model call's connect callback with it, so that call never
-connects, whatever its timeout (the M33 rehearsal: kettle → sign-in → drift, drift's step 1).
+connects, whatever its timeout (the flywheel rehearsal: kettle → sign-in → drift, drift's step 1).
 
 Each family's real SDK runs here against a loopback HTTP/1.1 keep-alive endpoint, with the
 collector off so nothing but the provider can close anything:
 
 - the connection a request opened is hung up by the time ``ainvoke`` returns, on success
   and on an error reply alike;
-- H28 itself, provoked: the run holding the provider is dropped and collected, a new socket
+- the hang itself, provoked: the run holding the provider is dropped and collected, a new socket
   takes the lowest free descriptor number — the request's, had the collector freed it — and
   a reader registered on it must still fire after whatever the collection queued has run;
 - an injected ``http_client`` is its injector's, and stays open.
@@ -258,7 +258,7 @@ async def test_a_reused_descriptor_keeps_its_registration(family: _Family) -> No
                 pytest.fail(
                     f"{family.id}: a late close of the request's client unregistered descriptor "
                     f"{reader.fileno()}, which a new socket owns — the next model call's "
-                    "connect would never complete (PRD H28)"
+                    "connect would never complete (arch §4.7)"
                 )
         finally:
             loop.remove_reader(reader)

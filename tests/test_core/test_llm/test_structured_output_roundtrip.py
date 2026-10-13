@@ -1,4 +1,4 @@
-"""Structured output, end to end (F4 / §6.1.1 + §6.1.2 + §6.4.5).
+"""Structured output, end to end.
 
 ``ReactLoop`` used to compute ``agent.get_react_output_model()`` and then
 call ``llm.ainvoke(context, output_format=None)`` — a dead store that made
@@ -56,7 +56,7 @@ def _prepared_agent() -> BrowserUseAgent:
 _PAYLOAD = {"memory": "m", "action": [{"browser.click": {"index": 1}}]}
 
 
-# ── 1. The acceptance criterion from the handoff ──────────────────
+# ── 1. The acceptance criterion ─────────────────────────────────────
 
 
 class TestPerRunModelRoundTrip:
@@ -308,7 +308,7 @@ class TestReactLoopRoutesOutputFormat:
 
 
 class TestCompletionSerialization:
-    """F4 item 5 — the success and ParseError branches must agree."""
+    """The success and ParseError branches must agree."""
 
     def test_structured_completion_serializes_as_json_not_repr(self) -> None:
         agent = _prepared_agent()
@@ -873,7 +873,7 @@ class TestIsStrictCompatible:
 
         Of the cases below, ``minItems`` is the one a production caller
         cannot reach: both call sites compile with ``strict=True`` first,
-        and that compile already removes it (defect F12 is fixed in the
+        and that compile already removes it (the rejection is fixed in the
         compiler, not here). It is kept as a case because the predicate is
         also a public answer to "is this schema strict-legal" — but the
         keywords this actually rescues in production are the rest, led by

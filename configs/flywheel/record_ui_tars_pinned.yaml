@@ -1,4 +1,4 @@
-# Record a UI-TARS run with the full browser archive (data flywheel, M29):
+# Record a UI-TARS run with the full browser archive (data flywheel):
 # `replayability: pinned` (seeded randomness, a stepped clock, fixed time zone,
 # locale and DPR, its own launch switches) and the three browser archivers —
 # every request/response with its body (WARC), cookies and Web Storage, and the

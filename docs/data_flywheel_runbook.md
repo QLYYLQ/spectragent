@@ -326,6 +326,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 - 链用的导出 YAML 用 `filters.require_eval: null`（链默认不评测）和 `decontamination: {against: []}`（源本来就是被测 benchmark 的任务）；这两个就是默认值，发布的 `export_sft.yaml` 也这么写。
 - 运行段退出码是 0 或 1、并且写出了新的 run，就算跑完；个别任务的基础设施失败是要度量的数据。其余情况链停在这一段，报 `ChainStageError`，之前的产物保留；退出码 2 表示这一段的 pre-flight 拒绝了它的配置，一个任务也没跑（原因在 stderr）；退出码 3 表示一个 guard 否决了这一段（比如录制撞上风控页），sweep 停在被否决的任务，这一段的 run 不会喂给下一段。
 - `report --root` 没有规格，也就没有植入值，隐私一项的结论是 `insufficient`。
+- `report` 写不了 `--out`（建不了目录、写不进去），或者数据集读不回来（别的版本导出的 manifest 或样本行），退出码是 1，stderr 点名是哪个目录或哪个文件（样本行带行号），不会打出 traceback。录制的 `result.json` 读不回来不会让报告失败：它在 `sections.sites` 里记作 `(unreadable result)`。
 
 `report.json` 的 `metrics`：
 
@@ -340,9 +341,11 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 | `export_determinism` | 同样的 run 导出两遍是否逐字节相同 | `datasets/first` 与 `datasets/second` 的目录树摘要；`repeat: 1` 时为 `null` |
 | `privacy` | 凭证有没有落盘 | `<root>/traces` 和 `<root>/datasets` 下每个文件（gzip 先解开）里每个植入值出现的次数，以及凭证形状的命中数；`env/` 也算，`storage.json` 里原样保存的 cookie 与 Web Storage 值会被数到 |
 
-分母为 0 的值是 `null` 加原因，从不写成 0。`sections` 另有：按站点的统计和剔除名单（被 anti-bot 拦截、原路径保真低于 0.8、录制在第 0 步环境就失败的站点；模型调用失败从不让站点进名单），anti-bot 拦截（文档应答 403、429 或 503，且带 `cf-mitigated: challenge` 或 `server: cloudflare` 加 `cf-ray`），重复分叉率，POST 分叉的 miss，按角色和类别的存储字节与 gzip 压缩比，每个任务的字节和 10、20、300 个任务的投影，导出产出。`decisions` 是四个待决问题的建议：`q1_miss_policy`（零文档 miss 的分叉占比不低于 0.9 就保留 `strict`），`q4_coverage`（分叉的文档 miss 里 GET 未录 URL 的占比达到 0.5 就扩大录制时的覆盖），`site_rules`（一个 host 有 2 次以上近邻 miss 就建议生成 `ignore_query` 规则供人审），`q7_retention`（容量）。
+分母为 0 的值是 `null` 加原因，从不写成 0。`sections` 另有：按站点的统计和剔除名单（被 anti-bot 拦截、原路径保真低于 0.8、录制在第 0 步环境就失败的站点；模型调用失败从不让站点进名单），anti-bot 拦截（文档应答 403、429 或 503，且带 `cf-mitigated: challenge` 或 `server: cloudflare` 加 `cf-ray`），重复分叉率，POST 分叉的 miss，按角色和类别的存储字节与 gzip 压缩比，每个任务的字节和 10、20、300 个任务的投影，导出产出。`decisions` 是四个待决问题的建议：`miss_policy`（动了手的分叉里零文档 miss 的占比不低于 0.9 就保留 `strict`），`recording_coverage`（动了手的分叉的文档 miss 里 GET 未录 URL 的占比达到 0.5 就扩大录制时的覆盖），`site_rules`（一个 host 有 2 次以上近邻 miss 就建议生成 `ignore_query` 规则供人审），`retention`（每个任务占多少磁盘，与 `sections.retention` 是同一条建议）。
 
-每条建议是 `{status, verdict, rule, evidence, basis}`。`status` 在 live 证据上是 `supported`，演练上最多 `partial`，没有数据时是 `insufficient`、`verdict` 为空。`rule` 写出所用的阈值常量，常量都在 `spectragent/flywheel/report.py`；`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，但各项度量自己的 `skipped`（某项读不到证据而略过的 run）只在 `report.json` 里。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
+空分叉是从检查点起一个动作也没执行的分叉：teacher 的模型调用失败、回复没有动作（解析失败和解析出零个动作在记录里看起来一样），或者 teacher 决定之前 run 就结束了（恢复失败、观测失败）。它说明不了 teacher 的选择会走到哪里，所以不计入 `branch_coverage` 的占比和 miss、也不计入 `miss_policy` 与 `recording_coverage` 依据的数，按原因记在 `metrics.branch_coverage.empty`；重复分叉率不比较检查点步没有动作的分叉（`sections.duplicate_branches.not_compared`）。
+
+每条建议是 `{status, verdict, rule, evidence, basis, sites, status_reason}`。`sites` 是证据来自几个不同的站点。只有 live 证据、而且来自至少 10 个站点（`SUPPORTED_MIN_SITES`），建议才是 `supported`；不到 10 个站点最多是 `partial`，原因写 "insufficient sample"；演练最多是 `partial`；没有数据时是 `insufficient`、`verdict` 为空。低于 `supported` 的原因都写在 `status_reason` 里。所以 2 到 3 个任务的 live run 只是冒烟测试：它证明整条链能跑通，不拿来定阈值和上面四个决定。`rule` 写出所用的阈值常量和它的值。阈值是 live 之前定的起点，留在 `spectragent/flywheel/report.py` 里，等一次覆盖足够多站点的 live run 校准；每步归档开销的上限 300 ms 例外，它在 `spectragent/core/archive/budget.py`，归档开销基准用的也是它。`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。报告格式是 `af-flywheel-report-2`。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，也列出各项度量自己的 `skipped`（某项读不到证据而略过的 run）。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
 
 链在报告之前导出，不会套用报告给出的剔除名单。`sections.sites.yaml` 是 `filters.exclude_sites` 形状的片段：把它放进导出 YAML，换一个 `output_dir`，手动再导一次。
 
@@ -419,7 +422,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
    uv run spectragent-flywheel run --spec chain.yaml --stages export,report
    ```
 
-   以模型调用失败结束的 run（429、超时、被拒的 schema，`error_phase: llm`）列在 `model_failures` 里。它们不会让站点进剔除名单，但照样计入各项度量：teacher 调用失败的分叉算作没有文档 miss 的分叉，会抬高 `q1_miss_policy` 依据的占比；原路径回放在最后一步失败的 run 没有终止截图。预算里给重跑这些任务留出余量。
+   以模型调用失败结束的 run（429、超时、被拒的 schema，`error_phase: llm`）列在 `model_failures` 里。它们不会让站点进剔除名单。teacher 调用失败的分叉是空分叉，不计入 `miss_policy` 依据的占比，按原因记在 `metrics.branch_coverage.empty`；原路径回放在最后一步失败的 run 没有终止截图。预算里给重跑这些任务留出余量。
 5. 磁盘。每次模型调用的消息文件都内联了之前的每一张截图，`messages/` 随步数平方增长，此外还有 WARC 里的 body 和原始 DOM。真实页面上每个任务（各段合计）粗估 50 到 150 MB；报告的存储和保留期两节给出实测的字节数。
 6. 评测默认关闭（`evaluate: false`，即 `--no-eval`）。给 `record` 段写 `evaluate: true` 并在录制 YAML 里加 `evaluator:` 块，每个录制的任务会多一次评测器调用，判定写到 `<root>/evals/record/` 和每个 trace 的 `evals/`。
 7. 报告之后，把 `sections.sites.yaml` 放进导出配置的 `filters`，手动再导一次。

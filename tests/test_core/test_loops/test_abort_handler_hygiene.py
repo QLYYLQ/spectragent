@@ -1,11 +1,11 @@
 """Every blanket ``except Exception`` in a Loop must let ``RunAbort`` out.
 
-B5 is not a bug that was fixed once. It is a shape that has to hold at
+Absorbing a veto is not a bug that was fixed once. It is a shape that has to hold at
 every place a Loop catches everything, forever, in every Loop that gets
 written — ``CodeActLoop`` and ``PlanExecLoop`` are in the design and do
 not exist yet. The obligation used to live in a docstring, which is worth
 nothing: a new phase written with only ``except Exception`` reintroduces
-B5 for that phase, no test turns red, and the guard's veto is silently
+the bug for that phase, no test turns red, and the guard's veto is silently
 flattened into ``agent_done="error"`` again.
 
 So this file reads the package's own source. For every ``try`` in
@@ -145,7 +145,7 @@ def test_blanket_handlers_let_run_abort_through(path: Path) -> None:
     offenders = _offenders(path)
     assert not offenders, (
         "These `except Exception` handlers can swallow a RunAbort — a guard's "
-        "veto would come back as an ordinary failed AgentResult (B5):\n  "
+        "veto would come back as an ordinary failed AgentResult:\n  "
         + "\n  ".join(offenders)
         + "\n\nAdd `except RunAbort as exc:` above it (record the step via "
         "_note_abort, then bare `raise`), or capture the exception and "

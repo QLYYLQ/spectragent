@@ -9,7 +9,7 @@ executors, not data-transfer objects.
 Reference pattern: :class:`spectragent.agents._registrar.AgentBase`, which
 also combines ``@dataclass`` + conscribe metaclass + ``Annotated`` fields.
 
-See docs/architecture_design.md §4.5 and docs/design_discussion.md §3.3.
+See docs/architecture_design.md §4.5.
 """
 
 from __future__ import annotations

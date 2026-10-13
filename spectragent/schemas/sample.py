@@ -178,7 +178,7 @@ class SampleRedaction(_Record):
 
 
 class BranchSampleMeta(_Record):
-    """Where a branch run's sample came from (PRD §11 Q2: a neutral record).
+    """Where a branch run's sample came from (a neutral record: no verdict, no preference).
 
     Attributes:
         branch_group_id: ``<source_run_id>/s<t>`` — every branch of one

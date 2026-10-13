@@ -53,7 +53,7 @@ class DemandOutsideWiringError(Exception):
     A configured instance may **narrow** what it takes into negotiation —
     promote one of its class's optional keys to required, or drop one it
     will not use this time — but only inside the space the class declared
-    (``docs/design_discussion.md`` §2.5 Q3). Two things make that boundary
+    (``docs/architecture_design.md`` §4.4, "实例在类声明空间内收窄"). Two things make that boundary
     load-bearing rather than decorative:
 
     - conscribe turns the class ``__wiring__`` into the ``Literal`` the

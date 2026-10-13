@@ -283,7 +283,7 @@ class TestParseReactOutput:
         assert actions[0].params == {"coordinate_x": 100, "coordinate_y": 200}
 
     def test_parses_finished_to_done_with_extracted_content(self) -> None:
-        # C2 regression: the UITars ``finished`` action carries its
+        # Regression: the UITars ``finished`` action carries its
         # answer text under ``extracted_content`` (not ``text``) so
         # BrowserCapability/DoneEvent can read it.
         agent = _make_agent()
@@ -295,7 +295,7 @@ class TestParseReactOutput:
         assert actions[0].params["success"] is True
 
     def test_parses_type_to_the_executable_shape(self) -> None:
-        """R2: ``type`` used to emit ``{content, point}`` and be 100% dead.
+        """``type`` used to emit ``{content, point}`` and be 100% dead.
 
         ``TypeAction`` reads ``index`` (which a vision-only run has no
         selector map for) and ``text`` (which the agent spelled

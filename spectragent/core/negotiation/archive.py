@@ -9,7 +9,7 @@ answer out again.
 **The one asymmetry is where the demand comes from.** Observation and action
 demands are class declarations, capability-relative, bound to a provider
 here. An archive demand is the trace hook *instance's* ``archive`` list —
-what a run records is a per-run choice (user ruling D3), neither an agent
+what a run records is a per-run choice (the user's ruling of 2026-10-09, AGENTS.md §2.5), neither an agent
 class's domain knowledge nor a property of the recorder class — and it is
 always fully qualified: the archiver's own ``archiver_id`` names its
 provider. So there is no relative key to resolve, and the rules are a

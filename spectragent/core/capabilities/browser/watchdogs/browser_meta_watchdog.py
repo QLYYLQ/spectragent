@@ -3,8 +3,8 @@
 Extracted from ``BrowserCapability`` so that ``browser.browser_meta`` is
 produced the same way every other fragment is: by a registered watchdog
 that declares ``provides``. The capability previously special-cased this
-fragment with its own resolver branch and its own cache field, which is
-exactly the coupling F9 removes.
+fragment with its own resolver branch and its own cache field: the coupling
+a watchdog registry exists to remove (``docs/architecture_design.md`` §11).
 
 Tab enumeration is browser-level state (which target is focused is owned
 by the capability, not by any one tab's ``EventScope``), so the capability

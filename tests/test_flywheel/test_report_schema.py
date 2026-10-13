@@ -1,20 +1,23 @@
-"""The report's shape: every PRD item covered, evidence that resolves, determinism, secrecy (arch §4.16 "报告").
+"""The report's shape: every item covered, evidence that resolves, determinism, secrecy (arch §4.16 "报告").
 
-PRD M33's acceptance — "the report covers every §9 row and gives an
-evidence-backed recommendation for every open decision" — is checked here on
-its coverage half: every row, section and decision is in ``report.json`` and
-``report.md`` with a recommendation; on a rehearsal basis each one says
-``partial``.
+The metrics gate's acceptance — "the report covers every metric and gives an
+evidence-backed recommendation for every open decision"
+(``docs/execution_dag.md``) — is checked here on its coverage half: every
+metric, section and decision is in ``report.json`` and ``report.md`` with a
+recommendation; on a rehearsal basis, or from fewer sites than a supported
+recommendation needs, each one says ``partial`` and why.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from spectragent.flywheel.metrics import ChainLayout, Planted
 from spectragent.flywheel.report import (
+    INSUFFICIENT_SAMPLE,
     REHEARSAL_NOTE,
     REPORT_FORMAT,
     FlywheelReport,
@@ -26,8 +29,8 @@ from spectragent.flywheel.report import (
 from spectragent.schemas.dataset import DATASET_FORMAT
 from tests.test_flywheel.conftest import empty_layout
 
-#: PRD §9's rows, §10 / §11's items M33 owns, PRD M33's decisions.
-PRD_METRICS = (
+#: The report's metrics, sections and pending decisions (arch §4.16).
+REPORT_METRICS = (
     "archive_overhead",
     "body_completeness",
     "same_path_fidelity",
@@ -37,7 +40,7 @@ PRD_METRICS = (
     "export_determinism",
     "privacy",
 )
-PRD_SECTIONS = (
+REPORT_SECTIONS = (
     "sites",
     "anti_bot",
     "duplicate_branches",
@@ -46,7 +49,7 @@ PRD_SECTIONS = (
     "retention",
     "export_yield",
 )
-PRD_DECISIONS = ("q1_miss_policy", "q4_coverage", "site_rules", "q7_retention")
+REPORT_DECISIONS = ("miss_policy", "recording_coverage", "site_rules", "retention")
 MD_HEADINGS = (
     "### 归档开销",
     "### body 完整率",
@@ -63,10 +66,10 @@ MD_HEADINGS = (
     "### 存储增长与压缩评估",
     "### 保留期与容量",
     "### 导出产出",
-    "### Q1",
-    "### Q4",
+    "### Miss policy",
+    "### Recording coverage",
     "### Site rules",
-    "### Q7",
+    "### Retention",
 )
 
 
@@ -85,19 +88,19 @@ def recommendations(report: FlywheelReport) -> dict[str, Any]:
     return found
 
 
-def test_every_prd_item_is_present(report: FlywheelReport) -> None:
+def test_every_report_item_is_present(report: FlywheelReport) -> None:
     document = json.loads(report_json(report))
-    assert document["format"] == REPORT_FORMAT
-    assert set(document["metrics"]) == set(PRD_METRICS)
-    assert set(document["sections"]) == set(PRD_SECTIONS)
-    assert set(document["decisions"]) == set(PRD_DECISIONS)
-    assert set(document["recommendations"]["metrics"]) == set(PRD_METRICS)
-    assert set(document["recommendations"]["sections"]) == set(PRD_SECTIONS)
+    assert document["format"] == REPORT_FORMAT == "af-flywheel-report-2"
+    assert set(document["metrics"]) == set(REPORT_METRICS)
+    assert set(document["sections"]) == set(REPORT_SECTIONS)
+    assert set(document["decisions"]) == set(REPORT_DECISIONS)
+    assert set(document["recommendations"]["metrics"]) == set(REPORT_METRICS)
+    assert set(document["recommendations"]["sections"]) == set(REPORT_SECTIONS)
     markdown = render_markdown(report)
     for heading in MD_HEADINGS:
         assert heading in markdown, heading
-    assert markdown.count("**Recommendation**") == len(PRD_METRICS) + len(PRD_SECTIONS) + len(
-        PRD_DECISIONS
+    assert markdown.count("**Recommendation**") == len(REPORT_METRICS) + len(REPORT_SECTIONS) + len(
+        REPORT_DECISIONS
     )
 
 
@@ -112,15 +115,27 @@ def test_every_evidence_pointer_resolves_to_its_value(report: FlywheelReport) ->
 def test_rehearsal_basis_is_partial(report: FlywheelReport) -> None:
     statuses = {name: item.status for name, item in recommendations(report).items()}
     assert set(statuses.values()) <= {"partial", "insufficient"}
-    assert statuses["decisions.q1_miss_policy"] == "partial"
+    assert statuses["decisions.miss_policy"] == "partial"
     assert all(item.basis == "rehearsal" for item in recommendations(report).values())
+    reason = report.decisions.miss_policy.status_reason
+    assert reason is not None and REHEARSAL_NOTE in reason and INSUFFICIENT_SAMPLE in reason, (
+        "the known chain is fixture data from one branched site: both reasons"
+    )
     assert REHEARSAL_NOTE in render_markdown(report)
 
 
 def test_no_data_is_insufficient(tmp_path: Path) -> None:
     empty = build_report(empty_layout(tmp_path), evidence="rehearsal")
     for name, item in recommendations(empty).items():
-        assert (item.status, item.verdict) == ("insufficient", None), name
+        assert (item.status, item.verdict, item.sites) == ("insufficient", None, 0), name
+        assert item.status_reason, f"{name} does not say why it has no data"
+
+
+def test_every_status_below_supported_says_why(report: FlywheelReport) -> None:
+    for name, item in recommendations(report).items():
+        assert (item.status == "supported") == (item.status_reason is None), name
+        if item.status == "partial":
+            assert f"- why partial: {item.status_reason}" in render_markdown(report), name
 
 
 def test_the_inputs_name_what_ran(report: FlywheelReport) -> None:
@@ -172,3 +187,21 @@ def test_no_planted_value_absolute_path_or_clock_in_the_report(
         "site password",
         "teacher api key",
     ]
+
+
+#: Planning codes a reader of the report could not resolve (AGENTS.md §3.6): local-plan
+#: section and question numbers, module ids, defect and spike labels.
+PLANNING_CODE = re.compile(
+    r"(?<![A-Za-z0-9])(?:PRD|M\d{2}|[Qq]\d|H\d{2}|S2[ab]?)(?![A-Za-z0-9])|§(?:9|10|11|12)(?![0-9.])"
+)
+
+
+def test_the_report_names_things_without_planning_codes(
+    report: FlywheelReport, tmp_path: Path
+) -> None:
+    for coded in ("decisions.q1_miss_policy", "Q4_EXPAND", "(PRD §11)", "M29's bound", "S2b"):
+        assert PLANNING_CODE.search(coded), f"the pattern misses {coded!r}"
+    assert not PLANNING_CODE.search("arch §4.14, sha256 0f1e, 1.5 MB, M2M, Q10x"), "no false hit"
+    for path in write_report(report, tmp_path / "out"):
+        found = PLANNING_CODE.findall(path.read_text())
+        assert not found, (path.name, found)

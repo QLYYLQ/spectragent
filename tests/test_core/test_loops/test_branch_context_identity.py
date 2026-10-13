@@ -1,7 +1,7 @@
 """A branch's policy step decides on the source's context — for the real browser agents.
 
-The acceptance criterion of the branching decision (PRD F1, Option A;
-``docs/architecture_design.md`` §4.1 "`BranchLoop`"): the conversation before
+The acceptance criterion of the branching decision
+(``docs/architecture_design.md`` §4.1 "`BranchLoop`"): the conversation before
 the checkpoint is rebuilt **from the source trace**, through the agent's own
 slots and ReAct's memory protocol, and only the checkpoint step's prompt is
 built from the restored, live observation. For ``browser_use`` (``dom_vision``),

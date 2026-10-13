@@ -1,4 +1,4 @@
-# Branch recorded UI-TARS runs offline (data flywheel, M31): every task puts a
+# Branch recorded UI-TARS runs offline (data flywheel): every task puts a
 # recorded run back where it stood before step t — the browser replays the
 # source run's archive, the recorded prefix is re-executed and verified step by
 # step — then lets the teacher (this config's llm) decide step t again.

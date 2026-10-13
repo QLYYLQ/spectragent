@@ -1,6 +1,6 @@
 """The browser archivers against a real headless Chrome and the fixture site (§4.14).
 
-The M29 acceptance criteria that only a real browser can show:
+The browser archive's acceptance criteria that only a real browser can show:
 
 - **Completeness** — every request the fixture's access log saw has an index
   line (an exchange, or a last ``pending`` line, which reads as an explicit
@@ -11,8 +11,9 @@ The M29 acceptance criteria that only a real browser can show:
   for a DOM agent and for a vision agent.
 - **Overhead** — p50 / p95 per step, bytes per step before and after
   deduplication (every scenario visited twice) and the vision self-capture's
-  duration, written as a machine-readable report (``ArchiveOverheadReport``)
-  for M33.
+  duration, written as a machine-readable report (``ArchiveOverheadReport``);
+  the p50 bound is the archive's per-step budget
+  (``core/archive/budget.py``), the one the flywheel report judges by too.
 - **The control connection carries no body** — with a 2 MiB frame limit it
   survives a 6 MB response the archive records.
 - **Privacy** — credentials planted in request headers, a POST password and a
@@ -42,7 +43,7 @@ from typing import Any
 
 import pytest
 
-from spectragent.core.archive import ArchiveBatch
+from spectragent.core.archive import ARCHIVE_MAX_P50_OVERHEAD_MS, ArchiveBatch
 from spectragent.core.capabilities.browser.archive import (
     DomRawArchiver,
     NetworkArchiver,
@@ -276,16 +277,17 @@ def test_renumbering_keeps_every_other_byte() -> None:
 
 # ── overhead ──────────────────────────────────────────────────────────
 
-#: The PRD's eleven scenarios plus the beacon: every fixture scenario but the
-#: nested worker, a known limitation whose inner script the archive can only
-#: flag as incomplete. Each is visited twice in one browser, so the second
-#: visit's payloads repeat the first's.
+#: Every fixture scenario but the nested worker, a known limitation whose
+#: inner script the archive can only flag as incomplete. Each is visited twice
+#: in one browser, so the second visit's payloads repeat the first's.
 _BENCH_SCENARIOS = tuple(s for s in SCENARIOS if s != "nested_worker")
 _BENCH_VISITS = 2
 
 
 def test_overhead_benchmark(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    bound = float(os.environ.get("SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS", "300"))
+    bound = float(
+        os.environ.get("SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS") or ARCHIVE_MAX_P50_OVERHEAD_MS
+    )
     self_captures: list[float] = []
     on_cycle = DomRawSession.on_cycle
 

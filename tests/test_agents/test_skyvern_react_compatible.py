@@ -434,7 +434,7 @@ class TestParseReactOutput:
         assert actions[0].params["extracted_content"] == "hit a paywall"
 
     def test_is_done_emits_only_done_action_not_mixed(self) -> None:
-        # H2 regression: when ``is_done`` is set, Skyvern previously
+        # Regression: when ``is_done`` is set, Skyvern previously
         # returned ``[click, done]`` which ReactLoop's default
         # max_actions_per_step=1 would truncate back to ``[click]``,
         # preventing task completion. The fixed behaviour returns
@@ -454,7 +454,7 @@ class TestParseReactOutput:
         actions = agent.parse_react_output(out)
         assert len(actions) == 1
         assert actions[0].name == "done"
-        # C2 regression: ``extracted_content`` is the canonical key
+        # Regression: ``extracted_content`` is the canonical key
         # (not ``text``).
         assert actions[0].params["extracted_content"] == "answer text"
         assert "text" not in actions[0].params

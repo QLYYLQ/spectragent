@@ -1,4 +1,4 @@
-"""PRD §10 / §11 sections and the decision rules over the known-answer chain (arch §4.16).
+"""The report's sections and decision rules over the known-answer chain (arch §4.16).
 
 Each section's numbers come from ``tests/_helpers/flywheel_traces.py::known_chain``;
 each rule is exercised on both sides of its named threshold, and on no data
@@ -19,7 +19,8 @@ from spectragent.flywheel.metrics import (
     BranchDocumentMisses,
     ChainLayout,
     ChainRuns,
-    DatasetManifestError,
+    DatasetFormatError,
+    EmptyBranches,
     MissDistribution,
     Planted,
     PlantedCount,
@@ -50,7 +51,7 @@ class TestSites:
             chain,
             fidelity=same_path_fidelity(chain),
             blocked=["blocked.test"],
-            exclude_below=rules.EXCLUDE_FIDELITY,
+            exclude_below=rules.SITE_MIN_FIDELITY,
         )
         shop = found.by_site["shop.test"]
         assert (shop.tasks, shop.record_runs, shop.record_status) == (1, 1, {"complete": 1})
@@ -222,7 +223,7 @@ class TestExportYield:
         manifest = json.loads(dataset_manifest(samples=3).model_dump_json())
         damage(manifest)
         (directory / "manifest.json").write_text(json.dumps(manifest))
-        with pytest.raises(DatasetManifestError, match="datasets/first/manifest.json"):
+        with pytest.raises(DatasetFormatError, match="datasets/first/manifest.json"):
             read_dataset_manifest(layout)
 
 
@@ -236,8 +237,10 @@ class TestDecisionInputs:
         found = site_rules(chain)
         assert found.model_dump() == {
             "runs": 6,
+            "sites": 2,
             "by_host": {"shop.test": 3},
             "params": {"shop.test": {"session": 3}},
+            "skipped": {},
         }
 
 
@@ -247,29 +250,28 @@ class TestDecisionInputs:
 class TestTheDecisionsOnTheKnownChain:
     def test_each_decision_states_its_rule_evidence_and_basis(self, report: FlywheelReport) -> None:
         decisions = report.decisions
-        assert decisions.q1_miss_policy.verdict == (
-            "evaluate a document fallback (live_fallback): only 2 of 3 branches stayed inside "
-            "the archive (1 POST document miss(es))"
+        assert decisions.miss_policy.verdict == (
+            "evaluate a fallback for documents: only 2 of 3 branches stayed inside the archive "
+            "(1 POST document miss(es))"
         )
-        assert decisions.q4_coverage.verdict is not None
-        assert decisions.q4_coverage.verdict.startswith("do not expand coverage: 0 of 1")
+        assert decisions.recording_coverage.verdict is not None
+        assert decisions.recording_coverage.verdict.startswith("do not expand coverage: 0 of 1")
         assert (
             decisions.site_rules.verdict
             == "generate ignore_query rules for review: shop.test [session]"
         )
-        assert (
-            decisions.q7_retention.verdict is not None
-            and "per task" in decisions.q7_retention.verdict
-        )
-        for name in ("q1_miss_policy", "q4_coverage", "site_rules", "q7_retention"):
+        assert decisions.retention.verdict is not None and "per task" in decisions.retention.verdict
+        for name in ("miss_policy", "recording_coverage", "site_rules", "retention"):
             item = getattr(decisions, name)
             assert (item.status, item.basis) == ("partial", "rehearsal"), name
             assert item.evidence and item.rule, name
 
 
-def _coverage(clean: int, branches: int) -> BranchCoverage:
+def _coverage(clean: int, branches: int, *, sites: int = 10, empty: int = 0) -> BranchCoverage:
     return BranchCoverage(
-        branches=branches,
+        branches=branches + empty,
+        empty=EmptyBranches(total=empty, by_reason={"model_call_failed": empty} if empty else {}),
+        sites=sites,
         zero_document_miss=ratio(clean, branches, empty="no branch run"),
         document_misses=branches - clean,
         other_misses=MissDistribution(),
@@ -279,6 +281,7 @@ def _coverage(clean: int, branches: int) -> BranchCoverage:
 def _post(misses: int, branches: int) -> PostBranchMisses:
     return PostBranchMisses(
         branches=branches,
+        sites=10,
         document_misses=misses,
         other_misses=0,
         branches_with_post_miss=ratio(min(misses, branches), branches, empty="no branch run"),
@@ -288,20 +291,42 @@ def _post(misses: int, branches: int) -> PostBranchMisses:
 class TestRuleThresholds:
     @pytest.mark.parametrize(
         ("clean", "branches", "starts"),
-        [(9, 10, "keep strict"), (8, 10, "evaluate a document fallback"), (0, 0, None)],
+        [(9, 10, "keep strict"), (8, 10, "evaluate a fallback for documents"), (0, 0, None)],
     )
-    def test_q1(
+    def test_miss_policy(
         self, report: FlywheelReport, clean: int, branches: int, starts: str | None
     ) -> None:
         metrics = report.metrics.model_copy(update={"branch_coverage": _coverage(clean, branches)})
         sections = report.sections.model_copy(update={"post_branch_misses": _post(0, branches)})
-        found = rules._q1(metrics, sections, "live")
+        found = rules._decide_miss_policy(metrics, sections, "live")
         if starts is None:
             assert (found.status, found.verdict) == ("insufficient", None)
         else:
             assert found.status == "supported" and found.verdict is not None
             assert found.verdict.startswith(starts)
-        assert "0.9" in found.rule and "Q1_KEEP_STRICT" in found.rule
+        assert "0.9" in found.rule and "STRICT_MIN_IN_ARCHIVE_SHARE" in found.rule
+
+    def test_empty_branches_leave_the_strict_share_and_are_counted(
+        self, report: FlywheelReport
+    ) -> None:
+        """Three failed teacher calls beside 8 of 10 clean branches: still 8 of 10, not 11 of 13."""
+        coverage = _coverage(8, 10, empty=3)
+        metrics = report.metrics.model_copy(update={"branch_coverage": coverage})
+        sections = report.sections.model_copy(update={"post_branch_misses": _post(0, 13)})
+        found = rules._decide_miss_policy(metrics, sections, "live")
+        assert found.verdict == (
+            "evaluate a fallback for documents: only 8 of 10 branches stayed inside the archive "
+            "(0 POST document miss(es); 3 empty branch(es) left out)"
+        )
+        assert any(
+            ref.pointer.endswith("/empty/total") and ref.value == 3 for ref in found.evidence
+        )
+
+    def test_only_empty_branches_is_insufficient_and_says_so(self, report: FlywheelReport) -> None:
+        metrics = report.metrics.model_copy(update={"branch_coverage": _coverage(0, 0, empty=2)})
+        found = rules._decide_miss_policy(metrics, report.sections, "live")
+        assert (found.status, found.verdict) == ("insufficient", None)
+        assert found.status_reason == "every branch was empty (2: no action from the checkpoint on)"
 
     @pytest.mark.parametrize(
         ("unrecorded", "misses", "starts"),
@@ -311,21 +336,37 @@ class TestRuleThresholds:
             (0, 0, "do not expand coverage: no"),
         ],
     )
-    def test_q4(self, report: FlywheelReport, unrecorded: int, misses: int, starts: str) -> None:
+    def test_recording_coverage(
+        self, report: FlywheelReport, unrecorded: int, misses: int, starts: str
+    ) -> None:
         inputs = report.decision_inputs.model_copy(
             update={
                 "branch_document_misses": BranchDocumentMisses(
+                    branches=4,
+                    sites=10,
                     document_misses=misses,
                     get_no_match=ratio(unrecorded, misses, empty="no document miss in any branch"),
                 )
             }
         )
-        found = rules._q4(inputs, report.metrics, "live")
+        found = rules._decide_recording_coverage(inputs, "live")
         assert found.verdict is not None and found.verdict.startswith(starts)
+        assert found.status == "supported"
 
-    def test_q4_without_branches_is_insufficient(self, report: FlywheelReport) -> None:
-        metrics = report.metrics.model_copy(update={"branch_coverage": _coverage(0, 0)})
-        found = rules._q4(report.decision_inputs, metrics, "rehearsal")
+    def test_recording_coverage_without_branches_is_insufficient(
+        self, report: FlywheelReport
+    ) -> None:
+        inputs = report.decision_inputs.model_copy(
+            update={
+                "branch_document_misses": BranchDocumentMisses(
+                    branches=0,
+                    sites=0,
+                    document_misses=0,
+                    get_no_match=ratio(0, 0, empty="no document miss in any branch"),
+                )
+            }
+        )
+        found = rules._decide_recording_coverage(inputs, "rehearsal")
         assert (found.status, found.verdict) == ("insufficient", None)
 
     @pytest.mark.parametrize(
@@ -339,11 +380,11 @@ class TestRuleThresholds:
         inputs = report.decision_inputs.model_copy(
             update={
                 "site_rule_candidates": SiteRuleCandidates(
-                    runs=4, by_host={"a.test": misses}, params={"a.test": {"q": misses}}
+                    runs=4, sites=1, by_host={"a.test": misses}, params={"a.test": {"q": misses}}
                 )
             }
         )
-        assert rules._site_rules_decision(inputs, "live").verdict == verdict
+        assert rules._decide_site_rules(inputs, "live").verdict == verdict
 
     def test_no_data_anywhere_is_insufficient_everywhere(self, tmp_path: Path) -> None:
         empty = build_report(empty_layout(tmp_path), evidence="live")
@@ -355,10 +396,37 @@ class TestRuleThresholds:
             for name, item in group:
                 assert (item.status, item.verdict) == ("insufficient", None), name
 
-    def test_live_evidence_is_supported(self, layout: ChainLayout) -> None:
+    def test_live_evidence_from_too_few_sites_is_partial(self, layout: ChainLayout) -> None:
+        """The known chain is live-shaped data from three sites, one of them branched."""
         live = build_report(layout, evidence="live")
-        assert live.decisions.q1_miss_policy.status == "supported"
-        assert live.recommendations.metrics.export_determinism.status == "supported"
+        miss_policy = live.decisions.miss_policy
+        assert (miss_policy.status, miss_policy.sites) == ("partial", 1)
+        assert miss_policy.status_reason == (
+            "insufficient sample: data from 1 site(s); supported needs at least 10 "
+            "(SUPPORTED_MIN_SITES)"
+        )
+        assert miss_policy.verdict is not None, "partial still says what the evidence shows"
+        export = live.recommendations.metrics.export_determinism
+        assert (export.status, export.sites) == ("partial", 1), "the export's one source site"
+
+    @pytest.mark.parametrize(("sites", "status"), [(9, "partial"), (10, "supported")])
+    def test_supported_needs_ten_sites(self, tmp_path: Path, sites: int, status: str) -> None:
+        """Live recordings from *sites* sites: the sites section is supported from ten on."""
+        assert rules.SUPPORTED_MIN_SITES == 10
+        layout = empty_layout(tmp_path)
+        for index in range(sites):
+            write_plain(
+                layout.traces("record"),
+                f"rec-{index}",
+                [Step(actions=[click(1, 1)])],
+                task_id=f"t{index}",
+                site=f"site{index}.test",
+            )
+        found = build_report(layout, evidence="live").recommendations.sections.sites
+        assert (found.status, found.sites) == (status, sites)
+        assert (found.status_reason is None) == (status == "supported")
+        rehearsed = build_report(layout, evidence="rehearsal").recommendations.sections.sites
+        assert rehearsed.status == "partial", "rehearsal evidence is never more than partial"
 
 
 UNSET_KEY = Planted(label="teacher api key", value=None, source="env:OPENAI_API_KEY")
@@ -366,7 +434,7 @@ SITE_PASSWORD = Planted(label="site password", value="pw-never-written-7", sourc
 
 
 class TestThePrivacyRule:
-    """PRD §9 privacy is "planted occurrences = 0": a credential not searched for concludes nothing."""
+    """Privacy is "planted occurrences = 0": a credential not searched for concludes nothing."""
 
     @pytest.mark.parametrize(
         "planted",
@@ -381,17 +449,25 @@ class TestThePrivacyRule:
         assert (found.status, found.verdict) == ("insufficient", None)
         assert live.metrics.privacy.files_scanned > 0 and live.metrics.privacy.shapes == {}
         assert "needs every planted credential searched for" in found.rule
+        unset = [item.label for item in planted if item.value is None]
+        assert found.status_reason == (
+            f"not searched: {', '.join(unset)}"
+            if unset
+            else "no planted credential to search for (the chain spec plants none, or there is "
+            "no spec)"
+        )
 
-    def test_every_planted_value_searched_and_absent_is_supported(
+    def test_every_planted_value_searched_and_absent_concludes_no_leak(
         self, layout: ChainLayout
     ) -> None:
         live = build_report(layout, evidence="live", planted=[SITE_PASSWORD])
         found = live.recommendations.metrics.privacy
-        assert (found.status, found.verdict) == (
-            "supported",
+        assert (found.status, found.sites, found.verdict) == (
+            "partial",
+            3,
             "no planted credential (1 searched) and no credential shape under traces/ and "
             "datasets/",
-        )
+        ), "every role's sites count; three are too few for supported"
 
     def test_a_credential_shape_is_a_leak_even_with_a_value_unsearched(self) -> None:
         privacy = Privacy(
@@ -408,7 +484,7 @@ class TestThePrivacyRule:
             shapes={"openai-style api key": 1},
             shape_files={"openai-style api key": 1},
         )
-        found = rules._rec_privacy(privacy, "live")
+        found = rules._rec_privacy(privacy, "live", sites=10)
         assert (found.status, found.verdict) == (
             "supported",
             "leak: no planted value found, 1 credential-shaped string(s): fix before sharing "

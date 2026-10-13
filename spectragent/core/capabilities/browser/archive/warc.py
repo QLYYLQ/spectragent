@@ -11,8 +11,8 @@ dependency, Apache-2.0), one gzip member per record:
   HTTP header block is the raw one where Chrome reported it
   (``responseReceivedExtraInfo``, the only source of ``Set-Cookie``), with
   ``Content-Encoding`` / ``Transfer-Encoding`` dropped and ``Content-Length``
-  set to the *decoded* body's length: the body is stored decoded (S2a:
-  ``Fetch.fulfillRequest`` serves bytes verbatim, so replay needs them
+  set to the *decoded* body's length: the body is stored decoded (measured,
+  arch §4.14 "回放实测": ``Fetch.fulfillRequest`` serves bytes verbatim, so replay needs them
   decoded), and the original values go into the index instead;
 - a ``revisit`` record (profile ``identical-payload-digest``, pointing at the
   first response) instead, when a non-empty payload was already written

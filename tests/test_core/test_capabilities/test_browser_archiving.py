@@ -347,7 +347,7 @@ class TestWiring:
         assert (await cap.collect_archive()).is_empty
 
 
-# ── the archive scope carries metadata only (§4.14, D4) ───────────────
+# ── the archive scope carries metadata only (§4.14, §5.6) ─────────────
 
 _SECRET = "planted-secret-Q7"
 _FRAME = "frame-payload-W3"

@@ -13,8 +13,8 @@ Usage::
     client.on_event("Page.loadEventFired", my_callback)
     await client.stop()
 
-Transport options (``docs/architecture_design.md`` §4.14, measured in the
-data-flywheel S2a probes against Chrome 153):
+Transport options (``docs/architecture_design.md`` §4.14, measured against
+Chrome 153):
 
 - ``max_frame_size`` is the largest incoming message accepted. A message over
   it closes the whole connection (websockets answers 1009) and fails every
@@ -72,7 +72,7 @@ def transport_options(url: str) -> dict[str, Any]:
 
     - ``proxy=None``: websockets' default honours ``http_proxy``, which
       tunnels loopback CDP through whatever local proxy the machine exports
-      (S2a measured Clash in the path).
+      (measured with a Clash proxy in the path).
     - ``compression=None``: measured on Chrome 153 against one target through
       two clients, ``DOMSnapshot.captureSnapshot`` of a 23 MB page took 1066 ms
       uncompressed vs 1237 ms with permessage-deflate (median of 9; p90 1083

@@ -1,6 +1,6 @@
 """Instance-level narrowing: what a *configured* agent takes into negotiation.
 
-``design_discussion.md`` §2.5 Q3 decided that a config may adjust the
+``docs/architecture_design.md`` §4.4 ("实例在类声明空间内收窄") says that a config may adjust the
 required/optional sets an instance hands to negotiation. This is that
 decision, implemented — and it is deliberately the *only* new degree of
 freedom: the negotiation rules themselves (``_observation_rules``,

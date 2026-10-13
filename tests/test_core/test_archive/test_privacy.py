@@ -322,8 +322,14 @@ class TestPlaceholders:
 #: ``PRIVACY_POLICY`` and add a row here. An edit to those functions that
 #: changes no behaviour (a comment, a docstring, formatting) moves the digest
 #: too: then, and only then, re-pin the current row — and say so in the change.
+#: Policy version → digest of the rule sources. A rule changed in place fails
+#: ``test_a_rule_change_bumps_the_policy``: bump ``PRIVACY_POLICY`` and pin the new
+#: digest. A change that alters no behaviour (a comment, a docstring) moves it too —
+#: re-pin, and say so: ``af-privacy-1`` was re-pinned on 2026-10-13 when
+#: ``is_sensitive_field``'s docstring stopped citing a local planning document; the
+#: rules did not change.
 _KNOWN_POLICIES = {
-    "af-privacy-1": "d20c59ef75268a31d5e4ed00a580f1d1b83a4834075587520250acf8319a549e",
+    "af-privacy-1": "c1f10a69ec3c9aee1e8bb8f543499434e789e66290cc57c5839be516e7d30951",
 }
 
 

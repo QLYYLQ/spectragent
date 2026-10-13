@@ -8,7 +8,7 @@ whose collection takes it — so they run the whole runtime twice, no LLM spend:
   mode (a DOM fragment and a screenshot each step), a loopback scripted model
   (``tests/_helpers/scripted_llm.py``) answering with ``navigate`` /
   ``click_coordinate`` / ``done`` only — never an index action: backend node
-  ids differ from launch to launch (C32), coordinates and URLs do not —
+  ids differ from launch to launch, coordinates and URLs do not —
   ``replayability: pinned`` and ``browser.network`` + ``browser.storage`` +
   ``browser.dom_raw`` on the trace writer, against the mapped fixture site
   with a hermetic resolver (every unmapped name resolves to nothing).
@@ -321,12 +321,3 @@ def step_signatures(trace: RunTrace) -> list[StepSignature]:
             )
         )
     return signatures
-
-
-def tree_hash(root: Path) -> str:
-    """sha256 over every file under *root*: its relative path and bytes."""
-    digest = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        digest.update(str(path.relative_to(root)).encode() + b"\0")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
-    return digest.hexdigest()

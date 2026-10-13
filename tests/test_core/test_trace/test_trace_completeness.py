@@ -1,4 +1,4 @@
-"""End-to-end acceptance for F5 + F6: a trace you can actually evaluate.
+"""End-to-end acceptance for the run lifecycle and complete step records: a trace you can actually evaluate.
 
 Drives a real ``AgentRuntime`` with the real ``TraceWriter`` and
 ``MetricsCollector``, then reads the result back through ``RunTrace`` —

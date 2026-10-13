@@ -8,7 +8,7 @@ here instead, on a separate :class:`CDPClient` that sets browser-level
 ``Target.setAutoAttach{waitForDebuggerOnStart: true}`` and prepares every
 target while it is paused. Why a second connection, and the Chrome facts
 every rule below rests on, are in ``docs/architecture_design.md`` §4.14
-(measured in the data-flywheel S1 / S2a probes, Chrome 153).
+(measured on Chrome 153).
 
 This module is the CDP choreography and nothing else. It does not know what
 any participant records or pins; it asks each :class:`RecorderParticipant`
@@ -42,7 +42,7 @@ what to send to a target and who owns a paused request:
 Resume is agent-cdp ``PausedTarget`` mode B: our own callback sends
 ``Runtime.runIfWaitingForDebugger`` on the target's session. Mode A sends it
 without a session on af's flattened client and silently resumes the wrong
-target (S1).
+target (measured, arch §4.14).
 """
 
 import asyncio
@@ -73,7 +73,7 @@ FETCH_TARGET_TYPES = frozenset({"page", "iframe", "shared_worker", "service_work
 #: URLs of Chrome-internal targets, prepared as never.
 INTERNAL_URL_PREFIXES = ("chrome:", "chrome-extension:", "devtools:")
 #: On a *waiting* service worker these domains answer only after resume
-#: (S2a). Their replies are awaited after ``Runtime.runIfWaitingForDebugger``.
+#: (measured, arch §4.14). Their replies are awaited after ``Runtime.runIfWaitingForDebugger``.
 DEFERRED_ON_SERVICE_WORKER = ("Network.", "Runtime.")
 
 #: The recorder's auto-attach, browser-level and on every prepared target.
@@ -88,7 +88,7 @@ AUTO_ATTACH_PARAMS: Mapping[str, Any] = {
 PAUSE_OWNER_GRACE_S = 1.0
 #: How the recorder settles a Request-stage pause nobody answered while a
 #: participant serves requests: ``Failed``, the reason that keeps Chrome's
-#: http fallback alive (a 404 or ``BlockedByClient`` cuts it off — S2a).
+#: http fallback alive (a 404 or ``BlockedByClient`` cuts it off — measured, arch §4.14).
 UNANSWERED_ERROR_REASON = "Failed"
 
 #: The first step of cleanup: stop pausing new targets.
@@ -600,7 +600,7 @@ class RecorderConnection:
 
         An unclean disconnect while holding browser-level
         ``waitForDebuggerOnStart`` wedges every new target in the browser
-        (S1), so nothing here may be skipped because an earlier step failed.
+        (measured, arch §4.14), so nothing here may be skipped because an earlier step failed.
         """
         if self._closed:
             return
@@ -787,7 +787,7 @@ class RecorderConnection:
                 # (measured, Chrome 153), so detaching it loses that request.
                 # Its traffic can then pause once per session; participants
                 # dedupe records by target and request, never by dropping a
-                # session (S1: "SW may attach twice → dedupe records").
+                # session (a service worker may attach twice, measured, arch §4.14).
                 if self._closing or target.internal:
                     detach = True
                 else:

@@ -1440,7 +1440,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._alive = True
 
         # The task's landing page. Routed here by name from
-        # ``TaskLoader.get_task_context()``; before F8 it arrived in a
+        # ``TaskLoader.get_task_context()``; it once arrived in a
         # ``**kwargs`` sink and was dropped, so every browser benchmark
         # started the agent on about:blank.
         if start_url:

@@ -1,4 +1,4 @@
-# Same-path replay of recorded UI-TARS runs (data flywheel, M33): the metrics
+# Same-path replay of recorded UI-TARS runs (data flywheel): the metrics
 # chain's measure of replay fidelity (docs/architecture_design.md §4.16). A
 # branch sweep in which every task restores a recorded run to its LAST
 # branchable step: prefix_replay re-executes and verifies every earlier step

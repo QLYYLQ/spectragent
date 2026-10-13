@@ -1,4 +1,4 @@
-# Replay a recorded UI-TARS run offline (data flywheel, M30): the network is
+# Replay a recorded UI-TARS run offline (data flywheel): the network is
 # the recorded run's archive, never the live web. Pair it with the recording
 # config (record_ui_tars_pinned.yaml) — everything a replay compares with its
 # source run is set the same here: the tier and its seed, the viewport, the

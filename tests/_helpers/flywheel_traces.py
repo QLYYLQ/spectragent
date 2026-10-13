@@ -1,13 +1,14 @@
-"""Chain roots for the flywheel metrics, committed by the real WAL with known answers (M33).
+"""Chain roots for the flywheel metrics, committed by the real WAL with known answers.
 
 Every run is committed the way production commits it (``trace_builder.py``'s
 rule — nothing here spells a trace path or a JSON shape): ``WALWriter`` for
-steps and fragments, M29's own ``browser.network`` session for a recording's
+steps and fragments, the browser's own ``browser.network`` session for a recording's
 network evidence (``replay_archive.RecordingScript``) and the
 ``browser.replay_log`` session for a replay's log (``ReplayLogSession`` over a
 real ``ReplayLog``, folding included), ``encode_archive_file`` for every
 archive file. The datasets are
-written as the files an export publishes (the metrics read them as files).
+written as the files an export publishes, each through the model the export
+writes it with (the metrics read them as files, through the same models).
 
 :func:`known_chain` writes one chain root whose every measure has a known
 answer, stated next to the run that produces it:
@@ -86,6 +87,7 @@ from spectragent.schemas.restoration import (
     RestorationEvidence,
     RestoredAction,
 )
+from spectragent.schemas.sample import CanonicalStepSample, SampleLabels
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.archive_recorder import open_session
 from tests._helpers.replay_archive import RecordingScript
@@ -277,7 +279,7 @@ async def write_recorded(
     status: TraceStatus = TraceStatus.COMPLETE,
     result: AgentResult | None = None,
 ) -> Path:
-    """A recording: each step's network evidence from M29's session, then its commit.
+    """A recording: each step's network evidence from the browser's session, then its commit.
 
     *status* is the trace's ledger, *result* the agent's (a ``done`` one by default).
     """
@@ -409,16 +411,23 @@ def dataset_manifest(
     )
 
 
+def sample_line(index: int, status: str) -> str:
+    """One ``<split>.samples.jsonl`` line: a canonical sample (as the export dumps it) and its rendering."""
+    sample = CanonicalStepSample(
+        sample_id=f"run/s{index}",
+        run_id="run",
+        source_trace="record/run",
+        step=index,
+        teacher_actions=[click(index, index)],
+        labels=SampleLabels(step_status=status),  # type: ignore[arg-type]
+    )
+    return json.dumps({"sample": sample.model_dump(mode="json"), "render": {}}, sort_keys=True)
+
+
 def write_dataset(directory: Path, *, samples: Sequence[str], duplicates: int) -> Path:
     """A published dataset's files: ``manifest.json`` and one split's samples (as an export writes)."""
     directory.mkdir(parents=True)
-    lines = [
-        json.dumps(
-            {"sample": {"sample_id": f"run/s{i}", "labels": {"step_status": status}}, "render": {}},
-            sort_keys=True,
-        )
-        for i, status in enumerate(samples)
-    ]
+    lines = [sample_line(i, status) for i, status in enumerate(samples)]
     (directory / "train.samples.jsonl").write_text("\n".join(lines) + "\n")
     (directory / "train.jsonl").write_text("\n".join('{"messages":[]}' for _ in samples) + "\n")
     manifest = dataset_manifest(

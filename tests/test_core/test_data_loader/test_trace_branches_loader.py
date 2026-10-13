@@ -1,4 +1,4 @@
-"""The ``trace_branches`` task loader (``docs/architecture_design.md`` §4.10, PRD F6/F7/F12/F17).
+"""The ``trace_branches`` task loader (``docs/architecture_design.md`` §4.10).
 
 Sources are committed by the real ``WALWriter`` (``tests/_helpers/branch_sources.py``),
 so every rule here reads a run exactly as it reads a recorded one.
@@ -541,7 +541,7 @@ class TestPreconditions:
             tasks.get_task_context("run-ok/s0/b0")
 
 
-# ── the environment setup context (Q6) ───────────────────────────────
+# ── the environment setup context ────────────────────────────────────
 
 
 def _mind2web_data(root: Path, start_url: str) -> Path:

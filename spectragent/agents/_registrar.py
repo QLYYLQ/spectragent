@@ -126,7 +126,7 @@ class AgentBase(AgentReceptors, metaclass=AgentRegistrar.Meta):
         instance may narrow inside it — promote an optional key to
         required, or exclude one it will not use — which is how one agent
         class covers several modes without a second registry key or a
-        second prompt tree (``docs/design_discussion.md`` §2.5 Q3).
+        second prompt tree (``docs/architecture_design.md`` §4.4, "实例在类声明空间内收窄").
 
         The default narrows nothing. An override must route through
         :func:`~spectragent.core.negotiation._base.bounded_demand`, which

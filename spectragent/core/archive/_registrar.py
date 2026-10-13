@@ -13,14 +13,14 @@ of an action or an observation fragment, and it is shaped the same way:
   to the capability that provides it.
 
 The one asymmetry is where the *demand* comes from. What a run records is
-a per-run choice (user ruling D3), so no class ``__wiring__`` declares an
+a per-run choice (the user's ruling of 2026-10-09, AGENTS.md §2.5), so no class ``__wiring__`` declares an
 archiver requirement: the trace hook instance's ``archive`` list does
 (:class:`~spectragent.core.archive.protocols.ArchiveConsumer`), always
 fully qualified.
 
 :class:`ArchiverBase` carries **identity and declarations only**. Capture
-behaviour belongs to the providing capability's own archiver base (M29's
-browser archivers); the framework — runtime, environment, trace hook —
+behaviour belongs to the providing capability's own archiver base (the
+browser's archivers); the framework — runtime, environment, trace hook —
 never calls a capture method on an archiver. An archiver's knobs are
 ``Annotated`` constructor parameters on its subclass, and the instances
 travel with them: the trace hook holds them, ``bind_archivers`` hands them
@@ -33,13 +33,11 @@ to the capability.
    PEP 563 a knob's annotation is a string that has to resolve in the
    globals of the module defining it, and one that does not resolve
    carries no field info, so ``__config_annotated_only__`` drops the knob
-   from the generated config — silently. Nothing catches that for an
-   archiver yet: ``tests/test_generated/test_no_dropped_annotated_fields.py``
-   visits only the layers ``_collect_registrars()`` returns (``archiver``
-   joins them in M29) and reads class-level annotations, not a
-   hand-written ``__init__``. The knob-reachability coverage — a knob
-   reaching the generated config, a typo refused — is M29's to add when it
-   collects the layer.
+   from the generated config — silently.
+   ``tests/test_generated/test_no_dropped_annotated_fields.py`` catches it:
+   it visits every layer ``_collect_registrars()`` returns, ``archiver``
+   among them, and reads both class-level annotations and the parameters of
+   a hand-written ``__init__``.
 """
 
 from typing import ClassVar, Protocol, runtime_checkable

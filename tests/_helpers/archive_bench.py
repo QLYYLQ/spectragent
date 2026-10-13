@@ -1,4 +1,4 @@
-"""Shared helpers for the live archive tests and the overhead benchmark (M29, reused by M33).
+"""Shared helpers for the live archive tests and the overhead benchmark.
 
 - :class:`LiveRecording` — a real ``BrowserCapability`` on a headless local
   Chrome with the browser archivers bound, recording the fixture site
@@ -15,9 +15,10 @@
   to committed traces.
 - :class:`ArchiveOverheadReport` — the machine-readable overhead artefact
   (p50 / p95 per-step overhead, bytes per step before and after
-  deduplication, the vision self-capture cost): M29's regression bound. The
-  flywheel report does not read it — it measures overhead from traces
-  against a control group (arch §4.16).
+  deduplication, the vision self-capture cost), asserted against the archive's
+  per-step budget (``core/archive/budget.py``). The flywheel report does not
+  read it — it measures overhead from traces against a control group and
+  judges by the same budget (arch §4.16).
 """
 
 from __future__ import annotations
@@ -284,7 +285,7 @@ def served_but_not_captured(
 
 
 class ArchiveOverheadReport(BaseModel):
-    """What archiving costs per step — written for M33's budget, read by machines.
+    """What archiving costs per step — judged by the archive's per-step budget, read by machines.
 
     Times are milliseconds of one step (navigate + observe + collect on the
     fixture site), compared between the same steps with archiving off and on

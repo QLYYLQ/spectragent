@@ -183,7 +183,7 @@ def test_branches_do_not_share_state(sweep: Sweep) -> None:
     assert "cookie: (none)" in branch.page_text(sweep.source.trace, branch.CHECKPOINT + 1)
 
 
-# ── PRD §9: the restoration verification rate ────────────────────────
+# ── the restoration verification rate (arch §4.16) ───────────────────
 
 
 def test_restoration_rate_is_reported(sweep: Sweep, capsys: pytest.CaptureFixture[str]) -> None:
@@ -204,4 +204,4 @@ def test_restoration_rate_is_reported(sweep: Sweep, capsys: pytest.CaptureFixtur
         "network_source": "archive",
     }
     with capsys.disabled():
-        print(f"\n[M31] restoration verification rate: {rate.summary()}; ran: {ran}")
+        print(f"\n[branch] restoration verification rate: {rate.summary()}; ran: {ran}")

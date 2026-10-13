@@ -1,14 +1,14 @@
-"""The metrics chain on the fixture site with scripted models — no model spend (M33, arch §4.16 "演练").
+"""The metrics chain on the fixture site with scripted models — no model spend (arch §4.16 "演练").
 
 One command runs the whole chain and writes the rehearsal report::
 
-    uv run python -m tests._helpers.flywheel_rehearsal --out tmp/flywheel/m33_rehearsal
+    uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
 
 ``test_rehearsal_live.py`` calls :func:`run_rehearsal`, the function behind it, in the test
 process and reads what it ran: the chain root and :meth:`Rehearsal.summary` (the command
 writes that summary as ``rehearsal.json``). What it does:
 
-- starts M29's fixture site (mapped hosts) and one loopback scripted model per
+- starts the fixture site (mapped hosts) and one loopback scripted model per
   run stage (:class:`Router`: UI-TARS replies routed by the task's marker in
   the prompt and the request's assistant-turn count — the step number; the
   branch stage decides the shop task's checkpoint three ways in loader order:
@@ -21,7 +21,7 @@ writes that summary as ``rehearsal.json``). What it does:
   Cloudflare challenge answers;
 - adapts the **shipped** configurations (``configs/flywheel/``: the UI-TARS
   recording, its same-path replay, its branch sweep, the SFT export) the way
-  M30–M32's drivers do — the model's address and key, the fixture's routing
+  the replay, branch and export drivers do — the model's address and key, the fixture's routing
   switches, the task data directory, absolute paths for the repository's own
   files — plus a control group (the recording with ``archive: []``); the
   export reads every run (``require_eval: null``) and decontaminates against
@@ -127,9 +127,9 @@ SHOP_LOGIN = RehearsalTask(
 )
 #: In the order the recording sweeps them. The sign-in task right before the
 #: drift task is the order that once hung drift's step-1 model call in TCP
-#: connect, at any timeout (PRD H28: a provider left each request's SDK client
-#: to the garbage collector, whose late ``aclose()`` unregistered a reused
-#: descriptor from the event loop — ``docs/architecture_design.md`` §4.7).
+#: connect, at any timeout (a provider left each request's SDK client to the
+#: garbage collector, whose late ``aclose()`` unregistered a reused descriptor
+#: from the event loop — ``docs/architecture_design.md`` §4.7).
 TASKS: tuple[RehearsalTask, ...] = (
     SHOP_KETTLE,
     SHOP_LOGIN,
@@ -298,7 +298,7 @@ def chain_spec(out: Path, configs: dict[str, Path]) -> ChainSpec:
     """The rehearsal's chain spec (written to ``<out>/chain.yaml`` by :func:`run_rehearsal`)."""
     return ChainSpec.model_validate(
         {
-            "name": "m33-rehearsal",
+            "name": "fixture-rehearsal",
             "root": out / "chain",
             "evidence": "rehearsal",
             "tasks": {
@@ -446,7 +446,7 @@ def run_rehearsal(out: Path) -> Rehearsal:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tests._helpers.flywheel_rehearsal",
-        description="Run the M33 metrics chain on the fixture site with scripted models.",
+        description="Run the flywheel metrics chain on the fixture site with scripted models.",
     )
     parser.add_argument(
         "--out", type=Path, required=True, help="A new directory for the rehearsal."

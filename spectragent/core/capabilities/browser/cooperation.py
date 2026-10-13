@@ -19,7 +19,7 @@ The rows this module owns:
   capability launched itself: a provider declaring ``NETWORK_CAPTURE``, no
   explicit ``cdp_url``, no injected control client. A recorder holding
   ``waitForDebuggerOnStart`` on a browser it does not own can wedge that
-  browser for everyone (S1).
+  browser for everyone (measured, ``docs/architecture_design.md`` §4.14).
 - **Replayability** — a tier with launch switches needs a provider declaring
   ``LAUNCH_ARGS`` (the only way the switches reach Chrome), none of the
   provider's knobs may contradict them, the profile must be fresh, and a

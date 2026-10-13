@@ -10,10 +10,11 @@ browser's evidence formats are read by the browser package's own functions
 ``replay/archive_index.py::iter_index_lines``,
 ``replay/replay_log.py::iter_decisions``); this package organises the calls.
 
-- ``metrics.py`` — the chain root's layout, the roles' runs, every PRD §9
-  metric and every PRD §10 / §11 section M33 owns;
+- ``metrics.py`` — the chain root's layout, the roles' runs, every metric
+  and every section of the report;
 - ``report.py`` — the report model, the recommendation rules (named
-  thresholds), ``report.json`` and ``report.md``;
+  thresholds, the minimum number of sites behind a supported one),
+  ``report.json`` and ``report.md``;
 - ``chain.py`` — the chain: the existing CLIs' ``main(argv)`` in order, path
   fields only;
 - ``cli.py`` — ``spectragent-flywheel run | report``.

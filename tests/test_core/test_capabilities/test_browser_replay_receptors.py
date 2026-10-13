@@ -150,7 +150,7 @@ class TestTheStrategies:
             ArchiveNetworkSource(**knobs)
 
     def test_the_fulfil_cap_stays_under_one_cdp_message(self) -> None:
-        """base64 (4/3) of the largest body plus an envelope fits in 100 MiB (S2a)."""
+        """base64 (4/3) of the largest body plus an envelope fits in 100 MiB (measured, §4.14)."""
         assert MAX_FULFILL_BODY_BYTES * 4 / 3 + 1024 * 1024 < 100 * 2**20
         # The schema's bound is spelled out in the annotation (the stub cannot
         # see module constants); it must be the same number.

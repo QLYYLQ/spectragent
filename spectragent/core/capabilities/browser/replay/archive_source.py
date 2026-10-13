@@ -78,7 +78,7 @@ MIB = 1024 * 1024
 #: The default fulfil cap.
 DEFAULT_FULFILL_BODY_BYTES = 64 * MIB
 #: The largest fulfil cap: base64 (4/3) of 72 MiB plus the JSON envelope stays
-#: under the 100 MiB a single CDP message may carry (S2a).
+#: under the 100 MiB a single CDP message to Chrome may carry (measured, arch §4.14).
 MAX_FULFILL_BODY_BYTES = 72 * MIB
 
 _MATCHER: TypeAdapter[MatcherConfig] = TypeAdapter(MatcherConfig)

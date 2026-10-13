@@ -531,7 +531,7 @@ class TestBackendIoC:
         assert self.constructed_kwargs == [{"additional_headers": None}]
 
     def test_a_loopback_endpoint_is_reached_directly_and_uncompressed(self, monkeypatch) -> None:
-        """No ``http_proxy`` tunnel and no permessage-deflate on loopback (S2a, §4.14)."""
+        """No ``http_proxy`` tunnel and no permessage-deflate on loopback (measured, §4.14)."""
         import asyncio
 
         cap = BrowserCapability()

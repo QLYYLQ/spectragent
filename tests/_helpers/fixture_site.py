@@ -20,7 +20,7 @@ Two host modes:
   to its server by :meth:`FixtureSite.chrome_args` —
   ``--host-resolver-rules=MAP … 127.0.0.1:P, …`` plus ``--no-proxy-server``
   (without it Chrome on macOS uses the system proxy and the rules map only
-  the proxy host; S2a Q7). Pass them as the provider's ``extra_args``. These
+  the proxy host; measured, arch §4.14). Pass them as the provider's ``extra_args``. These
   names are what M30's DNS blackhole makes unreachable, so a replay miss is
   a real miss. The service-worker page stays on ``http://localhost:P``.
 
@@ -91,7 +91,7 @@ SCENARIOS: tuple[str, ...] = (
 #: IP literal and reaches the fixture servers only by IP literal — a
 #: ``<link rel=preconnect>`` to cross, a script and a WebSocket — routes that
 #: need no name mapping, so in a replay only the isolation's blackhole
-#: (``MAP *`` covers IP literals, S2a Q2) cuts them, and a replay that let a
+#: (``MAP *`` covers IP literals, measured, arch §4.14) cuts them, and a replay that let a
 #: request through would reach the fixture; ``localhost`` is the same page on
 #: exact ``localhost`` — served there, its script, a ``<link rel=preconnect>``
 #: to cross and a WebSocket all by ``localhost`` — the name the isolation
@@ -402,7 +402,7 @@ class FixtureSite:
 
         *hermetic* (M30's recordings) resolves every other name to nothing
         as well (``MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1``
-        after the fixture's own rules — the first match wins, S2a Q2), so a
+        after the fixture's own rules — the first match wins, measured, arch §4.14), so a
         recording never leaves the machine. Loopback stays reachable — exact
         ``localhost`` and the IP literal ``127.0.0.1`` (which ``MAP *`` would
         blackhole too), where the fixture servers are: the ``egress`` page

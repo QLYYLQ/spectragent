@@ -1,4 +1,4 @@
-"""Native function calling in the LLM layer (F4.5 / §5.2.5).
+"""Native function calling in the LLM layer.
 
 ``AssistantMessage.tool_calls`` existed with no inbound counterpart: there was
 no ``tool`` role, and ``ainvoke`` had no ``tools`` parameter. Native function

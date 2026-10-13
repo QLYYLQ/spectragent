@@ -34,7 +34,7 @@ class ArchivingCapability(Protocol):
     capability by capability, every clause that can be checked from outside;
     the three that depend on the capability's own timing — never blocking,
     the atomic hand-over, an in-flight item handed over exactly once — are
-    for each capability's own tests (the browser's in M29, under fake CDP):
+    for each capability's own tests (the browser's under fake CDP):
 
     - :meth:`bind_archivers` **replaces** the whole binding (an empty list
       unbinds) and acquires nothing. The runtime binds at the end of
@@ -82,7 +82,7 @@ class ArchivingCapability(Protocol):
 class ArchiveConsumer(Protocol):
     """Whoever persists environment evidence — found by the runtime through this.
 
-    One attribute, named like the YAML receptor it becomes in M29. A hook
+    One attribute, named like the YAML receptor it is (``trace_writer.archive``). A hook
     whose ``archive`` is non-empty is the run's archive consumer: the
     runtime negotiates its archivers against the environment, binds them,
     and the consumer pulls ``Environment.collect_archive()`` on the raw

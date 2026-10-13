@@ -1,4 +1,4 @@
-"""Shared pieces of the training-export tests (M32): student configs, one export, tree hashes.
+"""Shared pieces of the training-export tests: student configs, one export, JSON lines.
 
 An export is composed exactly as ``spectragent-export`` composes it — one
 ``exporter:`` entry through the real ``ConfigComposer`` — and run by the real
@@ -8,7 +8,6 @@ An export is composed exactly as ``spectragent-export`` composes it — one
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -69,15 +68,6 @@ def run_export(
     document = {"exporter": [copy.deepcopy(entry)], **copy.deepcopy(layers)}
     run = composer.compose(document)
     return ExportRunner.from_run(run, composer=composer, origin="the test document").run()
-
-
-def tree_hash(root: Path) -> str:
-    """sha256 over every file under *root*: relative path and bytes, in path order."""
-    digest = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        digest.update(path.relative_to(root).as_posix().encode() + b"\0")
-        digest.update(path.read_bytes() + b"\0")
-    return digest.hexdigest()
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:

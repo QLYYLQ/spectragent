@@ -411,8 +411,8 @@ is a plain YAML file (`ChainSpec`, `extra="forbid"`). It is not a run root, so i
 of `configs/flywheel/`.
 
 ```yaml
-name: m33-live
-root: traces/chains/m33-live          # everything lands under it (traces/ is git-ignored)
+name: first-live
+root: traces/chains/first-live        # everything lands under it (traces/ is git-ignored)
 evidence: live                         # live | rehearsal
 tasks: {benchmark: online_mind2web, subset: All, task_ids: [...], limit: null}   # record / control only
 record:    {config: <recording YAML>, timeout: 600, evaluate: false}   # timeout defaults to 300
@@ -427,7 +427,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}  # value o
 set -a; . ./.env; set +a              # neither spectragent-bench nor the chain reads .env
 uv run spectragent-flywheel run --spec chain.yaml [--stages record,same_path]
 uv run spectragent-flywheel report --spec chain.yaml [--out DIR]
-uv run spectragent-flywheel report --root traces/chains/m33-live --evidence live [--name N] [--out DIR]
+uv run spectragent-flywheel report --root traces/chains/first-live --evidence live [--name N] [--out DIR]
 uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture rehearsal, no spend
 ```
 
@@ -445,21 +445,37 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   runs never feed the next one. `same_path` and `branch` refuse `evaluate: true`. With the export selected,
   an existing `datasets/first` or `datasets/second` is a `ChainConfigError` before any paid
   stage runs.
-- Exit codes: 0 done, 1 a stage failed (`ChainStageError`, recorded in `<root>/chain.json`),
-  2 a bad spec or argument.
+- Exit codes: 0 done, 1 a stage failed (`ChainStageError`, recorded in `<root>/chain.json`;
+  for `report`, also a published dataset that does not read back or an `--out` that cannot be
+  written, named in the message), 2 a bad spec or argument.
 - Every metric carries its denominator. A zero denominator gives `null` with a reason, never
-  0. Each recommendation is `supported`, `partial` or `insufficient`, and rehearsal evidence
-  is at most `partial`. Thresholds are named constants in `flywheel/report.py`, written into
-  each rule.
+  0. A measure that skips a run's damaged evidence names it in its `skipped`, and `report.md`
+  lists those too. Every measure a recommendation rests on counts the distinct sites its data
+  came from (`sites`).
+- Each recommendation is `supported`, `partial` or `insufficient`, with `sites` and a
+  `status_reason` for anything below `supported`. `supported` needs live evidence from at
+  least `SUPPORTED_MIN_SITES` (10) sites; fewer is at most `partial` ("insufficient sample"),
+  and rehearsal evidence is at most `partial`. A 2–3-task live run is a smoke test. Thresholds
+  are named constants in `flywheel/report.py` (`<what>_MIN_<quantity>` /
+  `<what>_MAX_<quantity>`), written into each rule by name and value, and stay in code until
+  a live run over enough sites calibrates them. The per-step archive overhead budget,
+  `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
+  by both the report and the browser's overhead benchmark.
+- The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
+  report format is `af-flywheel-report-2`. Report keys, headings and rule texts never use a
+  planning code (`test_report_schema.py` pins it).
 - The chain does not apply the report's site exclusions. `sections.sites.yaml` in
   `report.json` has the `filters.exclude_sites` shape: add it to the export YAML and export
   again by hand.
-- A branch whose teacher call failed counts as a branch with no document miss. The report
-  lists such runs in `inputs.roles.branch.model_failures`, and the live plan removes them by
-  hand. Excluding them automatically would change a metric's definition, which is the user's
-  call.
-- The live plan (S2b and the full chain) is local, `tmp/flywheel/M33_live_plan.md`. It has
-  not run and needs the user's approval of route, task count and token ceiling.
+- An empty branch executed no action from its checkpoint on (`metrics.empty_branch`: its
+  teacher call failed, its reply ran no action, or the run ended before the teacher decided).
+  It is left out of the strict share (`branch_coverage`, `miss_policy`), the
+  recording-coverage input and the per-site branch share, and counted by reason in
+  `metrics.branch_coverage.empty` (the user's ruling of 2026-10-13). The duplicate rate does
+  not compare a branch whose checkpoint step ran no action (`not_compared`).
+- The live plan (a first run over 10 tasks, then the full chain) is local,
+  `tmp/flywheel/M33_live_plan.md`. It has not run and needs the user's approval of route,
+  task count and token ceiling.
 
 ## 3. Extension recipes
 

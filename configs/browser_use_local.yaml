@@ -44,7 +44,8 @@ agent:
 
     # ``model_type`` is the *protocol*, not the vendor's brand — pick it by
     # which API the model's own vendor speaks, never by which gateway you
-    # bought it through. Measured against dmxapi.cn (docs/llm/dmxapi.cn.md):
+    # bought it through. Measured against dmxapi.cn (the table in
+    # .agents/skills/af-add-an-llm-provider/references/guide.md §1):
     #
     #   gemini-*   -> model_type: google     base_url: <root>       (no /v1)
     #   claude-*   -> model_type: anthropic  base_url: <root>       (no /v1)

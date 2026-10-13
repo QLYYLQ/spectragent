@@ -1,4 +1,4 @@
-"""The metrics chain rehearsed end to end on the fixture site (M33 acceptance, arch §4.16 "演练").
+"""The metrics chain rehearsed end to end on the fixture site (the metrics gate's acceptance, arch §4.16 "演练").
 
 One rehearsal — ``run_rehearsal``, the function behind the one command
 ``python -m tests._helpers.flywheel_rehearsal --out DIR``, called in this
@@ -6,8 +6,8 @@ process — runs the whole chain in a real Chrome with scripted models:
 record → control → same-path replay → branch → export twice → report. In
 this process on purpose, deep in the full suite and with the sign-in task
 recorded right before the drift task: that is where a model call's TCP
-connect once never completed (PRD H28, fixed in the LLM providers, arch
-§4.7). Each value of the report is asserted together with the reason it has
+connect once never completed (fixed in the LLM providers, arch §4.7). Each
+value of the report is asserted together with the reason it has
 that value, read back from the runs themselves where it can be:
 
 - the deterministic shop flow (a GET form submission included) replays
@@ -22,7 +22,7 @@ that value, read back from the runs themselves where it can be:
   so does the drift site's fidelity;
 - the credentials the sign-in page assembled and sent every way a page can,
   and the teacher's key, occur nowhere under ``traces/`` or ``datasets/``;
-- every recommendation is ``partial``: fixture evidence;
+- every recommendation is ``partial``: fixture evidence, from three sites;
 - nothing left the machine.
 """
 
@@ -199,14 +199,15 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     candidates = report["decision_inputs"]["site_rule_candidates"]["params"]
     assert candidates[SHOP] == {"session": 4} and candidates[DRIFT] == {"visit": 2}
     decisions = report["decisions"]
-    assert decisions["q1_miss_policy"]["verdict"].startswith("evaluate a document fallback")
-    assert decisions["q4_coverage"]["verdict"].startswith("do not expand coverage: 0 of 1")
+    assert decisions["miss_policy"]["verdict"].startswith("evaluate a fallback for documents")
+    assert decisions["recording_coverage"]["verdict"].startswith("do not expand coverage: 0 of 1")
     assert "drift.example.test [visit]" in decisions["site_rules"]["verdict"]
     statuses = {item["status"] for item in decisions.values()}
     statuses |= {
         item["status"] for group in report["recommendations"].values() for item in group.values()
     }
     assert statuses == {"partial"}, "fixture evidence is never more than partial"
+    assert coverage["empty"] == {"total": 0, "by_reason": {}}, "every scripted teacher acted"
 
 
 def test_report_recomputes_byte_identical(rehearsal: Rehearsed, report: dict) -> None:

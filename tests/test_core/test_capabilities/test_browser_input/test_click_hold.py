@@ -1,4 +1,4 @@
-"""The button stays down for a human length of time (defect B1).
+"""The button stays down for a human length of time.
 
 Measured on real pages, every strategy pressed and released within 1.4-3.4 ms
 — one CDP round trip, because that is literally all there was between the two
@@ -193,7 +193,7 @@ class TestTheControllerSpendsIt:
 
         A 30 ms round trip plus a 120 ms sleep would hold the button for 150
         ms — the transport deciding the behaviour, which is the bug the
-        scheduler was introduced to kill (F14). On the schedule the release is
+        scheduler was introduced to kill. On the schedule the release is
         due 120 ms after the press was *due*, so the round trip comes out of
         the hold and the hold is the hold.
         """

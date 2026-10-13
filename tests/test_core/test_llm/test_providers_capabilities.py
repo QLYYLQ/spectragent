@@ -129,7 +129,8 @@ class TestNoStructuredOutputOptOut:
                     offenders.append(f"{module.__name__}.{name}")
         assert offenders == [], (
             "A gateway that drops response_format is a routing bug, not a "
-            "model capability — see docs/llm/dmxapi.cn.md: " + ", ".join(offenders)
+            "model capability — see the routing rule in "
+            ".agents/skills/af-add-an-llm-provider/references/guide.md §1: " + ", ".join(offenders)
         )
 
     async def test_the_structured_path_always_sends_response_format(self) -> None:

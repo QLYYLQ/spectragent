@@ -1,4 +1,4 @@
-"""AgentRuntime owns the run lifecycle — F5.
+"""AgentRuntime owns the run lifecycle.
 
 Covers the guarantees that used to be caller conventions (or absent):
 env setup/teardown ordering, on_run_end on *every* termination path

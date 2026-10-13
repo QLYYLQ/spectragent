@@ -173,7 +173,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
 
     __registry_key__ = "trace_writer"
     # The run's archive is the trace hook's: what a run records is a per-run
-    # choice (user ruling D3), so the receptor is here, never on an agent.
+    # choice (the user's ruling of 2026-10-09, AGENTS.md §2.5), so the receptor is here, never on an agent.
     __wiring__: ClassVar[dict[str, Any]] = {"archive": "archiver"}
     # Archiving has one switch (the user's ruling of 2026-10-13): the list is
     # filled from this hook's own block or not at all, never adopted from a

@@ -21,7 +21,7 @@ LLM spend, building on M30's ``replay_driver``:
   (:func:`run_branch_task`), so the task context — setup, ``replay_archive``,
   ``checkpoint``, provenance — is the loader's, as in a sweep.
 
-PRD §9's 恢复校验率 and the "name what ran" components the live test reports
+The restoration verification rate (恢复校验率) and the "name what ran" components the live test reports
 are the flywheel metrics' (``spectragent/flywheel/metrics.py``:
 ``restoration_rate``, ``components``), not a copy here.
 """

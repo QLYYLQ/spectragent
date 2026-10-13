@@ -98,7 +98,7 @@ class ChatGroq(OpenAICompatBase):
         groq_messages = OpenAIMessageSerializer.serialize_messages(messages)
 
         # Each request's client is closed before it returns, for the reason
-        # ``OpenAICompatBase._request_client`` gives (PRD H28). ``AsyncGroq`` is
+        # ``OpenAICompatBase._request_client`` gives (arch §4.7). ``AsyncGroq`` is
         # not openai's client, so this is the SDK's own ``async with``; it never
         # wraps an injected ``http_client``, so it is always this request's.
         try:

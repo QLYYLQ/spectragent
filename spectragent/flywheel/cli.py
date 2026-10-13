@@ -4,7 +4,7 @@
 
     spectragent-flywheel run --spec chain.yaml [--stages record,same_path,report]
     spectragent-flywheel report --spec chain.yaml [--out DIR]
-    spectragent-flywheel report --root runs/m33 --evidence live|rehearsal [--out DIR]
+    spectragent-flywheel report --root traces/chains/first-live --evidence live|rehearsal [--out DIR]
 
 ``run`` runs the spec's stages in order (``chain.py``); ``report`` reads
 the chain root only — committed runs and published datasets — and can be
@@ -13,7 +13,10 @@ repeated on any machine: the same inputs give the same bytes. With
 credential-shape scan still runs). Neither loads ``.env``: export keys in
 the shell first (``set -a; . ./.env; set +a``).
 
-Exit codes: 0 done; 1 a stage failed; 2 the spec or the arguments are wrong.
+Exit codes: 0 done; 1 a stage failed — for ``report``, the report could not be
+computed (a published dataset does not read back as this build's format) or
+written (``--out`` names a directory that cannot be created or written), and
+the message names which; 2 the spec or the arguments are wrong.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from spectragent.flywheel.chain import (
@@ -30,8 +34,8 @@ from spectragent.flywheel.chain import (
     resolve_planted,
     run_chain,
 )
-from spectragent.flywheel.metrics import ChainLayout
-from spectragent.flywheel.report import build_report, write_report
+from spectragent.flywheel.metrics import ChainLayout, DatasetFormatError
+from spectragent.flywheel.report import FlywheelReport, build_report, write_report
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -85,18 +89,24 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--evidence and --name come from the spec; give them only with --root")
             spec = ChainSpec.load(args.spec)
             layout = ChainLayout(spec.root.expanduser().resolve())
-            report = build_report(
-                layout,
-                evidence=spec.evidence,
-                planted=resolve_planted(spec.report.planted),
-                name=spec.name,
+            report = _build(
+                lambda: build_report(
+                    layout,
+                    evidence=spec.evidence,
+                    planted=resolve_planted(spec.report.planted),
+                    name=spec.name,
+                )
             )
         else:
             if args.evidence is None:
                 parser.error("--root needs --evidence live|rehearsal")
             layout = ChainLayout(args.root.expanduser().resolve())
-            report = build_report(layout, evidence=args.evidence, name=args.name)
-        json_path, md_path = write_report(report, args.out or layout.report_dir)
+            report = _build(lambda: build_report(layout, evidence=args.evidence, name=args.name))
+        out = args.out or layout.report_dir
+        try:
+            json_path, md_path = write_report(report, out)
+        except OSError as exc:
+            raise ChainStageError("report", f"cannot write the report to {out}: {exc}") from exc
         print(f"report: {json_path}\nreport: {md_path}")
         return 0
     except ChainConfigError as exc:
@@ -105,6 +115,14 @@ def main(argv: list[str] | None = None) -> int:
     except ChainStageError as exc:
         print(f"spectragent-flywheel: {exc}", file=sys.stderr)
         return 1
+
+
+def _build(compute: Callable[[], FlywheelReport]) -> FlywheelReport:
+    """The report, or the report stage's failure naming the dataset that does not read back."""
+    try:
+        return compute()
+    except DatasetFormatError as exc:
+        raise ChainStageError("report", str(exc)) from exc
 
 
 if __name__ == "__main__":  # pragma: no cover

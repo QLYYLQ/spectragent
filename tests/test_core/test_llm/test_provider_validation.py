@@ -27,7 +27,7 @@ half of this file drives every registered provider through a stub client
 that answers badly, and asserts on the type the *Loop* sees.
 
 The same cases carry one more thing every provider owes: the client it built
-for the request is closed before the request returns (PRD H28 — left to the
+for the request is closed before the request returns (arch §4.7 — left to the
 collector, an SDK client's late ``aclose()`` unregisters a reused descriptor
 from the event loop; ``test_request_clients.py`` runs the real SDKs).
 """
@@ -625,7 +625,7 @@ def test_every_request_client_is_opened_where_it_is_closed() -> None:
         offenders.extend(f"{path.name}:{line}" for line in calls.bare)
     assert offenders == [], (
         "These request paths take a client from get_client() outside _request_client() or "
-        "an `async with`, so nothing closes it before the request returns (PRD H28):\n  "
+        "an `async with`, so nothing closes it before the request returns (arch §4.7):\n  "
         + "\n  ".join(offenders)
     )
     for name in _UNCLOSED_GET_CLIENT:
@@ -660,7 +660,7 @@ async def test_a_request_closes_the_client_it_built(case: _Case) -> None:
     assert built, "the request built no client through get_client"
     assert all(_closed_once(client) for client in built), (
         "a request returned with the client it built still open: closing it was left to "
-        "the garbage collector (PRD H28)"
+        "the garbage collector (arch §4.7)"
     )
 
 

@@ -457,7 +457,7 @@ class _Scan:
                 )
 
     def _setup_context(self, config: TraceConfig) -> dict[str, Any]:
-        """The source's environment setup context — never a redacted one (§4.10, PRD F6)."""
+        """The source's environment setup context — never a redacted one (§4.10)."""
         setup = config.task_setup
         if setup is not None and not setup.redactions.entries:
             return dict(setup.context)
