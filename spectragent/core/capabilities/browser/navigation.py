@@ -93,6 +93,10 @@ class MainFrameNavigation:
         if self._is_main(frame_id):
             self._settled.set()
 
+    def gone(self) -> None:
+        """The tab is gone: nothing of it is in flight any more, and nothing waits for it."""
+        self._settled.set()
+
     async def wait_settled(self, timeout: float) -> bool:
         """Wait until nothing is in flight, for at most *timeout* seconds.
 
@@ -122,6 +126,12 @@ class NavigationFeed:
     as ``CDPEventBridge`` accepts it. ``Page.enable`` — sent when the tab is
     attached — is what makes these events fire. :meth:`close` unregisters
     every callback and is idempotent.
+
+    The feed also closes itself when its session detaches
+    (``Target.detachedFromTarget`` naming it): a popup the page closes on its
+    own never passes through ``close_tab``, and its callbacks would otherwise
+    stay registered until teardown. The tracker is settled then, so nothing
+    keeps waiting on a tab that is gone.
     """
 
     def __init__(
@@ -136,6 +146,8 @@ class NavigationFeed:
             "Page.frameStartedNavigating": self._on_started,
             "Page.frameNavigated": self._on_navigated,
             "Page.frameStoppedLoading": self._on_stopped,
+            # Sent on the browser session, naming the detached session in its params.
+            "Target.detachedFromTarget": self._on_detached,
         }
         for method, handler in handlers.items():
             callback = self._for_this_session(handler)
@@ -173,3 +185,9 @@ class NavigationFeed:
 
     def _on_stopped(self, params: Mapping[str, Any]) -> None:
         self.navigation.stopped(params.get("frameId"))
+
+    def _on_detached(self, params: Mapping[str, Any]) -> None:
+        if params.get("sessionId") != self._session_id:
+            return
+        self.close()
+        self.navigation.gone()

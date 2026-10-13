@@ -22,13 +22,16 @@ itself builds its argv through it.
 
 from collections.abc import Sequence
 
-#: The switches that cut a replaying browser off from the network (M30, S2a):
-#: every host name resolves to nothing except exact ``localhost``, and no
-#: proxy — Chrome on macOS uses the system proxy and ignores ``http_proxy``,
-#: and with a proxy the resolver rules cover only the proxy host. Two argv
-#: elements, no shell quoting.
+#: The switches that cut a replaying browser off from the network
+#: (``docs/architecture_design.md`` §4.14, "回放"): every host name resolves to
+#: nothing — IP literals and exact ``localhost`` included — and no proxy:
+#: Chrome on macOS uses the system proxy and ignores ``http_proxy``, and with
+#: a proxy the resolver rules cover only the proxy host. The rules cover the
+#: page's outgoing connections only; the DevTools server takes the CDP
+#: connection in, so control and recording keep working (measured, Chrome
+#: 155). Two argv elements, no shell quoting.
 NETWORK_ISOLATION_ARGS: tuple[str, ...] = (
-    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost",
+    "--host-resolver-rules=MAP * ~NOTFOUND",
     "--no-proxy-server",
 )
 #: Switches that decide where the browser's traffic goes. They are left out

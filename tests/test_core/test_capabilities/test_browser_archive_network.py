@@ -2,8 +2,9 @@
 
 Event by event and pause by pause, with no Chrome: pairing in either order,
 redirect hops, ExtraInfo and ``Set-Cookie``, worker and service-worker
-sessions, POST sources and redaction, WebSockets, 304 / 206, the size tiers,
-timeouts, revisit records, and what the WARC and the index say. The live
+sessions, POST sources and redaction, WebSockets, 304 / 206, the size tiers —
+inline, streamed while the page reads it, over the 64 MiB limit — timeouts,
+revisit records, and what the WARC and the index say. The live
 completeness check against the fixture site is ``test_browser_archive_live.py``.
 """
 
@@ -19,20 +20,26 @@ from warcio.archiveiterator import ArchiveIterator
 
 from spectragent.core.archive import ArchiveFile
 from spectragent.core.capabilities.browser.archive import NetworkArchiver
+from spectragent.core.capabilities.browser.archive import network as network_module
 from spectragent.core.capabilities.browser.archive.network import (
     INDEX_NAME,
+    MAX_BODY_BYTES,
     WARC_NAME,
     WEBSOCKET_NAME,
     NetworkSession,
     parse_content_range,
 )
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
+from spectragent.core.capabilities.browser.replay.archive_source import (
+    DEFAULT_FULFILL_BODY_BYTES,
+)
 from tests._helpers.archive_recorder import (
     ScriptedRecorder,
     deliver,
     event,
     open_session,
     paused,
+    stream_chunks,
 )
 
 URL = "http://shop.test/api"
@@ -354,11 +361,14 @@ class TestHeadersAndPrivacy:
 
 class TestBodies:
     def test_the_pause_budget_is_the_archivers_own_reads(self) -> None:
-        """The recorder waits for the owner as long as its knobs say (plus a grace)."""
+        """The recorder waits for the owner as long as its knobs say (plus a grace).
+
+        A POST body read and a stream that does not start, then the body read inline.
+        """
         session, _ = _session()
-        assert session.pause_budget_s == 1.0 + 10.0
+        assert session.pause_budget_s == 2 * 1.0 + 10.0
         slow, _ = _session(body_read_timeout_s=30.0, command_timeout_s=2.0)
-        assert slow.pause_budget_s == 32.0
+        assert slow.pause_budget_s == 34.0
 
     async def test_encoding_headers_describe_the_wire_not_the_stored_body(self) -> None:
         session, recorder = _session()
@@ -406,7 +416,7 @@ class TestBodies:
         (line,) = _index(await session.collect())
         assert (line["status"], line["body_status"], line["payload_length"]) == (304, "ok", 0)
 
-    async def test_206_keeps_its_content_range_and_is_never_refetched(self) -> None:
+    async def test_206_keeps_its_content_range(self) -> None:
         session, recorder = _session(max_inline_body_bytes=10)
         await _one_exchange(
             session,
@@ -419,75 +429,7 @@ class TestBodies:
         (line,) = _index(await session.collect())
         assert line["content_range"] == {"unit": "bytes", "start": 0, "end": 3, "total": 300}
         assert line["body_status"] == "ok"
-        assert "Network.loadNetworkResource" not in recorder.methods()
-
-    async def test_a_large_static_get_is_streamed_later(self) -> None:
-        session, recorder = _session(max_inline_body_bytes=8)
-        big = b"x" * 3000
-        recorder.resources[URL] = big
-        await _one_exchange(
-            session,
-            recorder,
-            resource_type="Script",
-            headers={"Content-Length": str(len(big)), "Content-Type": "text/javascript"},
-        )
-        files = await session.collect()
-        assert "Fetch.getResponseBody" not in recorder.methods(), (
-            "a declared length over the inline tier is never read inline"
-        )
-        lines = _index(files)
-        exchange = next(line for line in lines if line["kind"] == "exchange")
-        body = next(line for line in lines if line["kind"] == "body")
-        assert exchange["body_status"] == "streamed_later"
-        assert exchange["response_record_id"] is None, "no response record with a partial body"
-        assert body["record_id"] == exchange["record_id"] and body["payload_length"] == 3000
-        (blob,) = [item for item in files if item.content_addressed]
-        assert blob.data == big
-        reads = [p for m, p, _ in recorder.sent if m == "IO.read"]
-        assert reads and all(p["size"] <= 1024 * 1024 for p in reads)
-
-    async def test_a_large_xhr_is_too_large(self) -> None:
-        session, recorder = _session(max_inline_body_bytes=8)
-        await _one_exchange(session, recorder, headers={"Content-Length": "9000"})
-        (line,) = _index(await session.collect())
-        assert line["body_status"] == "too_large"
-        assert "Fetch.getResponseBody" not in recorder.methods()
-
-    async def test_a_body_still_streaming_is_pending_until_its_body_line(self) -> None:
-        """Flag 1: a record never ends on a line that promises a body nobody wrote."""
-        session, recorder = _session(max_inline_body_bytes=8, drain_timeout_s=0.05)
-        big = b"x" * 3000
-        recorder.resources[URL] = big
-        stalled = recorder.holds["IO.read"] = asyncio.Event()
-        await _one_exchange(
-            session,
-            recorder,
-            resource_type="Script",
-            headers={"Content-Length": str(len(big)), "Content-Type": "text/javascript"},
-        )
-
-        def _kinds(lines: list[dict[str, Any]]) -> list[tuple[str, Any]]:
-            return [(x["kind"], x.get("body_status") or x.get("waiting_for")) for x in lines]
-
-        first = _index(await session.collect())
-        assert _kinds(first) == [("exchange", "streamed_later"), ("pending", "streamed_body")]
-        assert first[1]["record_id"] == first[0]["record_id"]
-        assert _kinds(_index(await session.collect())) == [("pending", "streamed_body")]
-        stalled.set()
-        last = _index(await session.collect())
-        assert _kinds(last) == [("body", "ok")]
-        assert last[0]["record_id"] == first[0]["record_id"]
-        assert _index(await session.collect()) == []
-
-    async def test_a_refetch_over_its_budget_is_too_large(self) -> None:
-        session, recorder = _session(max_inline_body_bytes=8, max_streamed_body_bytes=2048)
-        recorder.resources[URL] = b"y" * 5000
-        await _one_exchange(
-            session, recorder, resource_type="Image", headers={"Content-Length": "2000"}
-        )
-        lines = _index(await session.collect())
-        body = next(line for line in lines if line["kind"] == "body")
-        assert body["body_status"] == "too_large"
+        assert "Network.streamResourceContent" not in recorder.methods()
 
     async def test_a_body_read_that_times_out_is_incomplete(self) -> None:
         session, recorder = _session(body_read_timeout_s=0.05)
@@ -517,6 +459,258 @@ class TestBodies:
         (line,) = _index(await session.collect())
         assert line["body_status"] == "incomplete"
         assert "detached" in line["error_text"]
+
+
+def _kinds(lines: list[dict[str, Any]]) -> list[tuple[str, Any]]:
+    return [(x["kind"], x.get("body_status") or x.get("waiting_for")) for x in lines]
+
+
+async def _start_streamed(
+    session: NetworkSession,
+    recorder: ScriptedRecorder,
+    body_length: int,
+    *,
+    resource_type: str = "XHR",
+    method: str = "GET",
+    status: int = 200,
+    headers: dict[str, str] | None = None,
+    network_session: str = "page-s",
+) -> None:
+    """A request over the inline tier, paused and released: its body has not arrived yet."""
+    declared = {"Content-Length": str(body_length), "Content-Type": "application/json"}
+    deliver(session, _request_event("n1", method=method, session_id=network_session))
+    await session.on_paused(
+        paused(
+            request_id="i1",
+            network_id="n1",
+            url=URL,
+            method=method,
+            status=status,
+            resource_type=resource_type,
+            headers={**declared, **(headers or {})},
+        )
+    )
+    deliver(session, _response_event("n1", status, session_id=network_session))
+
+
+class TestStreamedBodies:
+    """Over the inline tier and up to 64 MiB, a body streams while the page reads it (§4.14)."""
+
+    async def test_it_streams_whatever_its_type_and_lands_as_a_blob(self) -> None:
+        session, recorder = _session(max_inline_body_bytes=8)
+        big = b'{"rows": "' + b"x" * 3000 + b'"}'
+        await _start_streamed(session, recorder, len(big), method="POST")
+        stream_chunks(session, "n1", big)
+        deliver(session, _finished("n1"))
+        files = await session.collect()
+        assert "Fetch.getResponseBody" not in recorder.methods(), "never held for an inline read"
+        assert [(m, p, sid) for m, p, sid in recorder.sent if m.startswith("Network.stream")] == [
+            ("Network.streamResourceContent", {"requestId": "n1"}, "page-s")
+        ]
+        lines = _index(files)
+        assert _kinds(lines) == [("exchange", "streamed_later"), ("body", "ok")]
+        exchange, body = lines
+        assert exchange["response_record_id"] is None, "no response record with a partial body"
+        assert exchange["method"] == "POST" and "streamed" in exchange["body_note"]
+        assert body["record_id"] == exchange["record_id"] and body["payload_length"] == len(big)
+        (blob,) = [item for item in files if item.content_addressed]
+        assert blob.data == big
+
+    async def test_what_arrived_before_streaming_comes_first(self) -> None:
+        session, recorder = _session(max_inline_body_bytes=8)
+        recorder.buffered["n1"] = b"head-"
+        await _start_streamed(session, recorder, 15)
+        stream_chunks(session, "n1", b"0123456789")
+        deliver(session, _finished("n1"))
+        (blob,) = [item for item in await session.collect() if item.content_addressed]
+        assert blob.data == b"head-0123456789"
+
+    async def test_a_body_still_streaming_is_pending_until_its_body_line(self) -> None:
+        """A record never ends on a line that promises a body nobody wrote; the drain never waits."""
+        session, recorder = _session(max_inline_body_bytes=8, drain_timeout_s=5.0)
+        big = b"x" * 3000
+        await _start_streamed(session, recorder, len(big))
+        started = asyncio.get_running_loop().time()
+        first = _index(await session.collect())
+        assert asyncio.get_running_loop().time() - started < 1.0, "a stream is never drained"
+        assert _kinds(first) == [("exchange", "streamed_later"), ("pending", "streamed_body")]
+        assert first[1]["record_id"] == first[0]["record_id"]
+        stream_chunks(session, "n1", big[:1000])
+        assert _kinds(_index(await session.collect())) == [("pending", "streamed_body")]
+        stream_chunks(session, "n1", big[1000:])
+        deliver(session, _finished("n1"))
+        last = _index(await session.collect())
+        assert _kinds(last) == [("body", "ok")]
+        assert last[0]["record_id"] == first[0]["record_id"]
+        assert _index(await session.collect()) == []
+
+    async def test_a_reader_cancelled_after_the_last_byte_is_complete(self) -> None:
+        """Every declared byte arrived: ``loadingFailed`` (a cancelled reader, measured) changes nothing."""
+        session, recorder = _session(max_inline_body_bytes=8)
+        await _start_streamed(session, recorder, 2000)
+        stream_chunks(session, "n1", b"r" * 2000)
+        deliver(
+            session,
+            event(
+                "Network.loadingFailed",
+                {"requestId": "n1", "errorText": "net::ERR_ABORTED", "canceled": True},
+            ),
+        )
+        lines = _index(await session.collect())
+        assert _kinds(lines)[-1] == ("body", "ok")
+
+    async def test_a_stream_cut_short_is_incomplete(self) -> None:
+        session, recorder = _session(max_inline_body_bytes=8)
+        await _start_streamed(session, recorder, 2000)
+        stream_chunks(session, "n1", b"r" * 500)
+        deliver(
+            session,
+            event("Network.loadingFailed", {"requestId": "n1", "errorText": "net::ERR_FAILED"}),
+        )
+        files = await session.collect()
+        body = _index(files)[-1]
+        assert (body["kind"], body["body_status"]) == ("body", "incomplete")
+        assert "500 of 2000" in body["note"] and "net::ERR_FAILED" in body["note"]
+        assert not [item for item in files if item.content_addressed]
+
+    async def test_a_compressed_body_completes_when_the_load_finishes(self) -> None:
+        """Declared is the wire length; the decoded chunks are longer, and the finish says done."""
+        session, recorder = _session(max_inline_body_bytes=8)
+        decoded = b"text " * 1000
+        await _start_streamed(session, recorder, 100, headers={"Content-Encoding": "gzip"})
+        stream_chunks(session, "n1", decoded, encoded=60)
+        deliver(session, _finished("n1"))
+        files = await session.collect()
+        assert _index(files)[-1]["body_status"] == "ok"
+        (blob,) = [item for item in files if item.content_addressed]
+        assert blob.data == decoded
+
+    async def test_a_compressed_body_whose_load_failed_short_of_its_wire_bytes_is_incomplete(
+        self,
+    ) -> None:
+        session, recorder = _session(max_inline_body_bytes=8)
+        await _start_streamed(session, recorder, 100, headers={"Content-Encoding": "br"})
+        stream_chunks(session, "n1", b"text " * 100, encoded=60)
+        deliver(
+            session,
+            event("Network.loadingFailed", {"requestId": "n1", "errorText": "net::ERR_ABORTED"}),
+        )
+        assert _index(await session.collect())[-1]["body_status"] == "incomplete"
+
+    async def test_a_detached_target_ends_its_stream_incomplete(self) -> None:
+        session, recorder = _session(max_inline_body_bytes=8)
+        await _start_streamed(session, recorder, 2000)
+        stream_chunks(session, "n1", b"r" * 100)
+        deliver(session, event("Target.detachedFromTarget", {"sessionId": "page-s"}, "page-s"))
+        body = _index(await session.collect())[-1]
+        assert (body["kind"], body["body_status"]) == ("body", "incomplete")
+        assert "detached" in body["note"]
+
+    async def test_a_worker_request_streams_on_the_worker_session(self) -> None:
+        """Paused on the page's session, reported on the worker's: the chunks come there."""
+        session, recorder = _session(max_inline_body_bytes=8)
+        recorder.add_target("worker-s", "W", "worker")
+        await _start_streamed(session, recorder, 1000, network_session="worker-s")
+        assert ("Network.streamResourceContent", {"requestId": "n1"}, "worker-s") in recorder.sent
+        stream_chunks(session, "n1", b"p" * 1000, session_id="page-s")  # not the streaming session
+        stream_chunks(session, "n1", b"w" * 1000, session_id="worker-s")
+        deliver(session, _finished("n1", session_id="worker-s"))
+        files = await session.collect()
+        (blob,) = [item for item in files if item.content_addressed]
+        assert blob.data == b"w" * 1000
+
+    async def test_chunks_never_enter_the_archive_scope(self) -> None:
+        """Admission keeps a chunk (or drops it, for a request nothing streams) and admits nothing."""
+        session, recorder = _session(max_inline_body_bytes=2)
+        assert "Network.dataReceived" in session.event_methods()
+        unrelated = {"requestId": "other", "dataLength": 3, "encodedDataLength": 3, "data": "YWJj"}
+        assert session.admit_event("Network.dataReceived", unrelated, "page-s") is None
+        await _start_streamed(session, recorder, 3)
+        streamed = {**unrelated, "requestId": "n1"}
+        assert session.admit_event("Network.dataReceived", streamed, "page-s") is None
+        deliver(session, _finished("n1"))
+        (blob,) = [item for item in await session.collect() if item.content_addressed]
+        assert blob.data == b"abc"
+
+    async def test_streaming_that_cannot_start_reads_the_body_inline(self) -> None:
+        session, recorder = _session(max_inline_body_bytes=8)
+        recorder.failures["Network.streamResourceContent"] = RuntimeError(
+            "CDP error: Request with the provided ID does not exists"
+        )
+        await _one_exchange(session, recorder, body=b"y" * 2000, headers={"Content-Length": "2000"})
+        (line,) = _index(await session.collect())
+        assert (line["body_status"], line["payload_length"]) == ("ok", 2000)
+        assert "streaming could not start" in line["body_note"]
+        assert "Fetch.getResponseBody" in recorder.methods()
+
+    async def test_a_large_document_is_read_inline(self) -> None:
+        """A navigation's body streams only after it commits, which the pause holds back."""
+        session, recorder = _session(max_inline_body_bytes=8)
+        await _one_exchange(
+            session,
+            recorder,
+            body=b"<html>" + b"d" * 2000,
+            resource_type="Document",
+            headers={"Content-Length": "2006", "Content-Type": "text/html"},
+        )
+        (line,) = _index(await session.collect())
+        assert (line["body_status"], line["payload_length"]) == ("ok", 2006)
+        assert "Network.streamResourceContent" not in recorder.methods()
+
+    async def test_a_stream_over_its_declared_tier_but_empty_by_protocol_is_not_streamed(
+        self,
+    ) -> None:
+        """A HEAD declares the length of a body it does not carry."""
+        session, recorder = _session(max_inline_body_bytes=8)
+        recorder.failures["Fetch.getResponseBody"] = RuntimeError("CDP error: No data found")
+        await _one_exchange(session, recorder, method="HEAD", headers={"Content-Length": "9000"})
+        (line,) = _index(await session.collect())
+        assert (line["body_status"], line["payload_length"]) == ("ok", 0)
+        assert "Network.streamResourceContent" not in recorder.methods()
+
+
+class TestTheSizeLimit:
+    """Nothing over 64 MiB is stored, however the size is learned (the replay's limit)."""
+
+    async def test_a_body_declared_over_64_mib_is_never_read(self) -> None:
+        session, recorder = _session()
+        await _one_exchange(session, recorder, headers={"Content-Length": str(MAX_BODY_BYTES + 1)})
+        (line,) = _index(await session.collect())
+        assert line["body_status"] == "too_large"
+        assert "64 MiB" in line["body_note"]
+        assert not {"Fetch.getResponseBody", "Network.streamResourceContent"} & set(
+            recorder.methods()
+        )
+
+    async def test_a_stream_that_grows_past_the_limit_is_too_large(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(network_module, "MAX_BODY_BYTES", 1000)
+        session, recorder = _session(max_inline_body_bytes=8)
+        await _start_streamed(session, recorder, 100, headers={"Content-Encoding": "gzip"})
+        stream_chunks(session, "n1", b"z" * 1500, encoded=100)
+        deliver(session, _finished("n1"))
+        files = await session.collect()
+        body = _index(files)[-1]
+        assert (body["kind"], body["body_status"]) == ("body", "too_large")
+        assert not [item for item in files if item.content_addressed]
+
+    async def test_a_body_read_inline_that_decodes_past_the_limit_is_too_large(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No declared length: read inline, and kept only if it fits."""
+        monkeypatch.setattr(network_module, "MAX_BODY_BYTES", 1000)
+        session, recorder = _session()
+        await _one_exchange(
+            session, recorder, body=b"q" * 1500, headers={"Content-Type": "text/plain"}
+        )
+        (line,) = _index(await session.collect())
+        assert (line["body_status"], line["payload_length"]) == ("too_large", None)
+        assert line["response_record_id"] is None
+
+    def test_the_limit_is_the_replays_default_fulfil_limit(self) -> None:
+        """Everything a default replay can serve is recorded — and nothing it cannot."""
+        assert MAX_BODY_BYTES == DEFAULT_FULFILL_BODY_BYTES == 64 * 1024 * 1024
 
 
 class TestWebSocket:
@@ -666,7 +860,7 @@ class TestTheArchiver:
         assert session.fetch_patterns(target) == ({"urlPattern": "*", "requestStage": "Response"},)
 
     async def test_a_pause_without_a_network_id_is_not_recorded(self) -> None:
-        """The archiver's own refetch carries none; the recorder releases it as is."""
+        """Traffic the inspector does not know: nothing to pair; the recorder releases it as is."""
         session, recorder = _session()
         await session.on_paused(paused(request_id="i9", network_id=None, url=URL))
         assert recorder.methods() == [] and await session.collect() == []

@@ -25,6 +25,12 @@ from spectragent.core.capabilities.browser.dom.models import TargetCapture
 
 logger = logging.getLogger(__name__)
 
+#: ``raw_dom`` maps keyed by the page script's integer element refs. JSON keys
+#: are strings, so whatever reads a stored capture back restores these keys
+#: (``archive/dom_raw.py::capture_from_document``): the cleaners look nodes
+#: up by the tree's integer ``ref``.
+INTEGER_KEYED_MAPS: tuple[str, ...] = ("skyvern_nodes", "skyvern_hit_tests")
+
 
 async def capture_skyvern(source: DOMCaptureSource, *, hit_test: bool = False) -> TargetCapture:
     """Build JS trees for the tab, its documents and attached frame targets.

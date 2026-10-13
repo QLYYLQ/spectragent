@@ -20,6 +20,10 @@ reads — so its stamp can be compared with theirs. The URL is the frame's
 ``url`` plus its ``urlFragment`` (CDP keeps the fragment apart; a hash-routed
 page is still told ``…#/inbox``). The title still comes from the navigation
 history, which is the only place CDP keeps it.
+
+**Both reads are bounded** (``base.OBSERVATION_READ_TIMEOUT_S``, §4.14): a
+renderer that does not answer costs this fragment its stamp, or its URL and
+title, never the whole observation event.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
     WatchdogLevel,
+    observation_read,
 )
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
@@ -87,10 +92,9 @@ class BrowserMetaWatchdog(BrowserWatchdog):
         url = ""
         page_title = ""
         try:
-            nav_history = await self._cdp.send(
+            nav_history = await observation_read(
+                self._cdp.send("Page.getNavigationHistory", {}, session_id=self._session_id),
                 "Page.getNavigationHistory",
-                {},
-                session_id=self._session_id,
             )
             if nav_history is not None:
                 entries = nav_history.get("entries", [])
@@ -98,6 +102,8 @@ class BrowserMetaWatchdog(BrowserWatchdog):
                 if entries and 0 <= idx < len(entries):
                     url = entries[idx].get("url", "")
                     page_title = entries[idx].get("title", "")
+        except TimeoutError as exc:
+            logger.warning("%s (session %s)", exc, self._session_id)
         except Exception as exc:
             logger.debug(
                 "Page.getNavigationHistory failed for %s: %s",
@@ -107,7 +113,10 @@ class BrowserMetaWatchdog(BrowserWatchdog):
 
         loader_id: str | None = None
         try:
-            tree = await self._cdp.send("Page.getFrameTree", {}, session_id=self._session_id)
+            tree = await observation_read(
+                self._cdp.send("Page.getFrameTree", {}, session_id=self._session_id),
+                "Page.getFrameTree",
+            )
             frame = ((tree or {}).get("frameTree") or {}).get("frame") or {}
             loader_id = frame.get("loaderId")
             if frame.get("unreachableUrl"):
@@ -120,6 +129,8 @@ class BrowserMetaWatchdog(BrowserWatchdog):
                 # ``urlFragment`` — and a hash-routed page is told its whole
                 # URL, as the navigation history told it.
                 url = f"{frame['url']}{frame.get('urlFragment') or ''}"
+        except TimeoutError as exc:
+            logger.warning("%s (session %s); browser_meta goes unstamped", exc, self._session_id)
         except Exception as exc:
             logger.debug("Page.getFrameTree failed for %s: %s", self._session_id, exc)
 

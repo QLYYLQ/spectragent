@@ -57,6 +57,7 @@ from spectragent.core.capabilities.browser.dom.capture import capture_target
 from spectragent.core.capabilities.browser.dom.cleaning.browser_use import (
     REQUIRED_COMPUTED_STYLES,
 )
+from spectragent.core.capabilities.browser.dom.js.skyvern_capture import INTEGER_KEYED_MAPS
 from spectragent.core.capabilities.browser.dom.models import TargetCapture
 from spectragent.core.capabilities.browser.recorder import CycleRequest
 
@@ -215,12 +216,21 @@ def capture_from_document(capture: Mapping[str, Any]) -> TargetCapture:
     """Rebuild a ``TargetCapture`` from an archived document's ``capture``.
 
     The inverse of the archive's encoding (lists back to sets, frames back to
-    captures), so a cleaner can run offline on what a run recorded — a
-    different cleaner or serializer, or occlusion from the paint order.
+    captures, the Skyvern ref maps' string keys back to the integers the
+    cleaners look up), so a cleaner can run offline on what a run recorded —
+    a different cleaner or serializer, or occlusion from the paint order.
     """
     listeners = capture.get("js_click_listener_ids")
+    raw_dom = dict(capture.get("raw_dom") or {})
+    for key in INTEGER_KEYED_MAPS:
+        refs = raw_dom.get(key)
+        if isinstance(refs, Mapping):
+            raw_dom[key] = {
+                int(ref) if isinstance(ref, str) and ref.isdigit() else ref: value
+                for ref, value in refs.items()
+            }
     return TargetCapture(
-        raw_dom=dict(capture.get("raw_dom") or {}),
+        raw_dom=raw_dom,
         snapshot=dict(capture.get("snapshot") or {}),
         ax_tree=dict(capture.get("ax_tree") or {}),
         session_id=capture.get("session_id"),

@@ -125,7 +125,7 @@ hook:
 | Block | Knobs (default) |
 |---|---|
 | `pinned` | `base_time` (`run_start`; `from_archive` is for replays), `random_seed` (1, at least 1), `timezone` (`UTC`), `locale` (`en-US`), `device_scale_factor` (1.0), `user_agent` (null: keep the browser's own and pin only `Accept-Language`), `reduced_motion` (true) |
-| `browser.network` | `max_inline_body_bytes` (5 000 000, at most 64 MiB), `max_streamed_body_bytes` (100 000 000), `body_read_timeout_s` (10), `command_timeout_s` (1), `drain_timeout_s` (2), `max_post_data_size` (65536), `strip_request_headers` (null; added to `Cookie`, `Authorization`, `Proxy-Authorization`), `require_replayable` (true), `allow_session_state` (false) |
+| `browser.network` | `max_inline_body_bytes` (5 000 000, at most 64 MiB: a larger body streams while the page reads it, any type except a document; over 64 MiB is `too_large`), `body_read_timeout_s` (10), `command_timeout_s` (1), `drain_timeout_s` (2), `max_post_data_size` (65536), `strip_request_headers` (null; added to `Cookie`, `Authorization`, `Proxy-Authorization`), `require_replayable` (true), `allow_session_state` (false) |
 | `browser.storage` | `allow_session_state` (false: refuse a non-fresh profile; values are stored as they are either way), `command_timeout_s` (1) |
 | `browser.dom_raw` | `allow_session_state` (false), `self_capture_timeout_s` (10) |
 
@@ -230,8 +230,10 @@ uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
   network-routing switches stripped on both sides. A mismatch refuses the run. A different
   Chrome version, an unpinned user agent or a changed redaction policy only warns, in the
   replay's own fingerprint. A run that was itself a replay is refused as a source.
-- `isolation: required` hands `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost` and
-  `--no-proxy-server` to a provider declaring `NETWORK_ISOLATION`, and refuses
+- `isolation: required` hands `--host-resolver-rules=MAP * ~NOTFOUND` (no exception: exact
+  `localhost` is cut too, so a run recorded against a local site replays from its archive
+  with the site still up) and `--no-proxy-server` to a provider declaring
+  `NETWORK_ISOLATION`, and refuses
   `proxy_server`, `proxy_bypass_list`, routing switches in `extra_args`, and a `startup_url`
   other than `about:blank`.
 - `strict` fails documents (a main-frame miss marks its step diverged), and answers beacons,

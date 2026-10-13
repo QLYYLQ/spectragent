@@ -4,21 +4,34 @@ The archiver is a recorder participant twice over:
 
 - **Bodies at the Fetch Response stage.** Every frame and worker target asks
   for a Response-stage ``Fetch`` pause (the recorder merges the patterns into
-  one ``Fetch.enable``), and :meth:`NetworkSession.on_paused` reads the body
-  with ``Fetch.getResponseBody`` while Chrome holds the response — the
-  recorder continues it in ``finally``, whatever happened here. Nothing
-  depends on ``Network.getResponseBody``'s buffer (200 MB in total, 20 MB per
-  body, first-in-first-out, dropped on a cross-process navigation). Tiered by
-  the declared ``Content-Length``: up to ``max_inline_body_bytes`` read
-  inline (bounded by ``body_read_timeout_s`` — at this stage the read
-  includes the download); above it never read inline: a ``GET`` of a
-  refetch-safe static type is fetched again after the response was
-  released, with ``Network.loadNetworkResource`` + ``IO.read`` in ≤ 1 MiB
-  chunks up to ``max_streamed_body_bytes`` (``streamed_later``; a ``body``
-  index line points the record at a content-addressed blob later), anything
-  else is ``too_large``. The tiers are this archiver's policy, not a
-  transport limit: Chrome caps a CDP message it *reads* at 100 MiB, which
-  binds the replay's fulfil, while a reply it sends may reach 256 MiB
+  one ``Fetch.enable``), and :meth:`NetworkSession.on_paused` decides there,
+  while Chrome holds the response, how its body is captured — the recorder
+  continues it in ``finally``, whatever happened here. Nothing depends on
+  ``Network.getResponseBody``'s buffer (200 MB in total, 20 MB per body,
+  first-in-first-out, dropped on a cross-process navigation). By the
+  declared ``Content-Length``:
+
+  - up to ``max_inline_body_bytes``, or none declared: read inline with
+    ``Fetch.getResponseBody`` (bounded by ``body_read_timeout_s`` — at this
+    stage the read includes the download);
+  - above it, up to :data:`MAX_BODY_BYTES` (64 MiB, the replay's default
+    limit for one body): **streamed while the page reads it** —
+    ``Network.streamResourceContent`` on the session that reported the
+    request, then the response is released, and the page's own download
+    arrives as ``Network.dataReceived`` chunks (``streamed_later``; a
+    ``body`` index line points the record at a content-addressed blob when
+    the request ends). Measured (Chrome 155, a page fetching 60 MiB at
+    8 MiB/s): inline, the page's first byte came after 8.1 s, when the whole
+    body had been downloaded and handed over; streamed, after 5 ms, and it
+    finished with the unrecorded page (7.48 s) — §4.14 "体积分档". A
+    document is the exception and is read inline: a navigation's body can
+    only stream once it commits, which the pause holds back;
+  - over 64 MiB: ``too_large``, never read — and a body that turns out
+    larger once decoded (no declared length, or compressed) too.
+
+  The size limit is this archiver's policy, not a transport limit: Chrome
+  caps a CDP message it *reads* at 100 MiB, which binds the replay's
+  fulfil, while a reply it sends may reach 256 MiB
   (``docs/architecture_design.md`` §4.14, "消息上限").
 - **Metadata from the archive scope.** The session declares the ``Network.*``
   events it consumes; the recorder hands each one to
@@ -29,17 +42,20 @@ The archiver is a recorder participant twice over:
   :meth:`NetworkSession.on_event` through the ArchiveWatchdog, gets its held
   bytes back, and is paired into exchanges by
   :class:`~.network_model.NetworkModel` (redirect hops, ExtraInfo, workers,
-  WebSockets).
+  WebSockets). A streamed chunk never enters the scope at all: admission
+  appends it to its stream (the side store) and admits nothing.
 
-Each collection waits up to ``drain_timeout_s`` for body reads in flight,
-then swaps everything settled out in one synchronous statement and writes,
-for that step: ``exchanges.warc.gz`` (``archive/warc.py``), ``index.jsonl``
-(one ``exchange`` line per exchange, exactly once, when it settles; a
-``pending`` line for each exchange still in flight, and for each written
-``streamed_later`` exchange whose body is still streaming; a ``body`` line per
-refetched body) and ``websocket.jsonl`` (frames). There is no match key in the
-index: replay (M30) derives keys from the raw request facts with one
-canonicaliser, so a rule change leaves no stale key behind.
+Each collection waits up to ``drain_timeout_s`` for inline body reads in
+flight (never for a stream: it ends when the page's download does), then
+swaps everything settled out in one synchronous statement and writes, for
+that step: ``exchanges.warc.gz`` (``archive/warc.py``), ``index.jsonl`` (one
+``exchange`` line per exchange, exactly once, when it settles; a ``pending``
+line for each exchange still in flight, and for each written
+``streamed_later`` exchange whose body is still streaming; a ``body`` line
+per streamed body when its request ends) and ``websocket.jsonl`` (frames).
+There is no match key in the index: replay derives keys from the raw
+request facts with one canonicaliser, so a rule change leaves no stale key
+behind.
 
 The archiver always records live traffic. A run that replays an archive
 (``network_source: archive``) has none — every byte it serves is already in
@@ -54,12 +70,12 @@ replay server's decisions.
 
 import asyncio
 import base64
-import contextlib
+import binascii
 import hashlib
 import logging
 import re
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar
 
 from pydantic import Field
@@ -74,7 +90,6 @@ from spectragent.core.capabilities.browser.archive.base import (
 )
 from spectragent.core.capabilities.browser.archive.encoding import jsonl
 from spectragent.core.capabilities.browser.archive.network_model import (
-    REFETCH_SAFE_TYPES,
     Exchange,
     HeldBytes,
     NetworkModel,
@@ -88,7 +103,6 @@ from spectragent.core.capabilities.browser.archive.redaction import (
 )
 from spectragent.core.capabilities.browser.archive.warc import PayloadIndex, StepWarc, warc_date
 from spectragent.core.capabilities.browser.recorder import (
-    FRAME_TARGET_TYPES,
     TARGET_BOOKKEEPING,
     CDPCommand,
     PausedRequest,
@@ -98,13 +112,16 @@ from spectragent.core.capabilities.browser.recorder import (
 
 logger = logging.getLogger(__name__)
 
-#: The inline tier's upper bound: the replay's default fulfil cap, the most a
-#: replay serves of one body by default. Not a message limit: Chrome caps a CDP
-#: message it reads at 100 MiB (that binds the replay's fulfil), and a reply it
-#: sends may reach 256 MiB (``docs/architecture_design.md`` §4.14, "消息上限").
-MAX_INLINE_BODY_CAP = 64 * 1024 * 1024
-#: Chunk size of a streamed refetch (``IO.read``).
-STREAM_CHUNK_BYTES = 1024 * 1024
+#: The largest body recorded: the replay's default fulfil limit
+#: (``replay/archive_source.py`` ``DEFAULT_FULFILL_BODY_BYTES``), so everything
+#: a default replay can serve is captured, whatever its type (the user's
+#: ruling of 2026-10-13); a larger body is ``too_large``. Not a message limit:
+#: Chrome caps a CDP message it reads at 100 MiB (that binds the replay's
+#: fulfil), and a reply it sends may reach 256 MiB
+#: (``docs/architecture_design.md`` §4.14, "消息上限").
+MAX_BODY_BYTES = 64 * 1024 * 1024
+#: The event that carries a streamed body's chunks (``Network.streamResourceContent``).
+STREAM_CHUNK_EVENT = "Network.dataReceived"
 #: ``Content-Range: bytes 0-99/1000`` / ``bytes */1000``.
 _CONTENT_RANGE = re.compile(r"^\s*(\w+)\s+(?:(\d+)-(\d+)|\*)/(\d+|\*)\s*$")
 
@@ -159,26 +176,18 @@ class NetworkArchiver(BrowserArchiverBase):
             int,
             Field(
                 ge=0,
-                le=MAX_INLINE_BODY_CAP,
+                le=MAX_BODY_BYTES,
                 description=(
-                    "Bodies whose declared Content-Length is at most this many bytes are "
-                    "read inline at the Fetch Response stage. Larger ones are released "
-                    "unread first; a GET of a static resource is then fetched again and "
-                    "streamed (streamed_later), anything else is recorded as too_large. "
-                    "At most 64 MiB, the replay's default limit for one body."
+                    "Bodies whose declared Content-Length is at most this many bytes, or "
+                    "that declare none, are read inline at the Fetch Response stage, while "
+                    "Chrome holds the response until the whole body is in. A larger body, "
+                    "up to 64 MiB (the replay's default limit for one body), is streamed "
+                    "while the page reads it, without holding the response "
+                    "(streamed_later); a document is read inline at any size up to 64 MiB. "
+                    "A body over 64 MiB is recorded as too_large, never read. At most 64 MiB."
                 ),
             ),
         ] = 5_000_000,
-        max_streamed_body_bytes: Annotated[
-            int,
-            Field(
-                ge=0,
-                description=(
-                    "Most bytes a streamed refetch of a large static body reads before it "
-                    "gives up and records too_large."
-                ),
-            ),
-        ] = 100_000_000,
         body_read_timeout_s: Annotated[
             float,
             Field(
@@ -249,7 +258,6 @@ class NetworkArchiver(BrowserArchiverBase):
         ] = False,
     ) -> None:
         self.max_inline_body_bytes = max_inline_body_bytes
-        self.max_streamed_body_bytes = max_streamed_body_bytes
         self.body_read_timeout_s = body_read_timeout_s
         self.command_timeout_s = command_timeout_s
         self.drain_timeout_s = drain_timeout_s
@@ -277,12 +285,88 @@ class NetworkArchiver(BrowserArchiverBase):
 
 @dataclass
 class _BodyLine:
-    """A refetched body, held until its exchange line is written."""
+    """A streamed body's outcome, held until its exchange line is written."""
 
     record_id: str
     line: dict[str, Any]
     blob: ArchiveFile | None
     captured_at: float
+
+
+@dataclass
+class _Stream:
+    """A body streamed while the page reads it (``Network.streamResourceContent``).
+
+    Chunks come in ``Network.dataReceived`` on the session streaming was
+    enabled on, appended at admission; :meth:`outcome` judges the body when
+    the request ends.
+    """
+
+    hop: Exchange
+    #: The session streaming was enabled on, which carries the chunks.
+    session_id: str
+    #: The declared ``Content-Length`` — of the encoded body when compressed.
+    declared: int
+    #: No ``Content-Encoding``: the declared length is the body's own.
+    identity: bool
+    #: ``bufferedData`` of the enabling reply: what arrived before streaming.
+    prefix: bytes = b""
+    chunks: list[bytes] = field(default_factory=list)
+    size: int = 0
+    #: Sum of the chunks' ``encodedDataLength`` (bytes on the wire).
+    encoded: int = 0
+    #: Why the body cannot be kept (``too_large`` or ``incomplete``), once known.
+    dropped: tuple[str, str] | None = None
+
+    def start(self, prefix: bytes) -> None:
+        self.prefix = prefix
+        self.size = len(prefix)
+        self._check_size()
+
+    def take(self, params: Mapping[str, Any]) -> None:
+        """One ``Network.dataReceived`` of this request: its chunk, if it carries one."""
+        encoded = params.get("encodedDataLength")
+        if isinstance(encoded, int | float):
+            self.encoded += int(encoded)
+        data = params.get("data")
+        if not data or self.dropped is not None:
+            return
+        try:
+            chunk = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError, TypeError) as exc:
+            self._drop("incomplete", f"a streamed chunk did not decode ({exc})")
+            return
+        self.chunks.append(chunk)
+        self.size += len(chunk)
+        self._check_size()
+
+    def _check_size(self) -> None:
+        if self.size > MAX_BODY_BYTES:
+            self._drop("too_large", f"streamed past {MAX_BODY_BYTES} bytes (64 MiB)")
+
+    def _drop(self, status: str, note: str) -> None:
+        self.dropped = (status, note)
+        self.prefix, self.chunks = b"", []
+
+    def outcome(self, *, finished: bool, ended: str) -> tuple[str, bytes | None, str | None]:
+        """``(body_status, body, note)`` once the request ended (*ended* says how).
+
+        Complete when every declared byte arrived — an uncompressed body's
+        declared length is its own, whatever the terminal event (a page that
+        cancels its reader after the last byte gets ``loadingFailed``,
+        measured) — or, for a compressed one, when the load finished or the
+        bytes on the wire reached the declared length.
+        """
+        if self.dropped is not None:
+            status, note = self.dropped
+            return status, None, note
+        if self.identity:
+            complete = self.size == self.declared
+        else:
+            complete = finished or self.encoded >= self.declared
+        if not complete:
+            return "incomplete", None, f"streamed {self.size} of {self.declared} bytes; {ended}"
+        return "ok", self.prefix + b"".join(self.chunks), None
 
 
 class NetworkSession(BrowserArchiveSession):
@@ -301,8 +385,8 @@ class NetworkSession(BrowserArchiveSession):
         self._payloads = PayloadIndex()
         #: Body reads in flight (one per pause being handled).
         self._reads: set[asyncio.Future[None]] = set()
-        #: Streamed refetches in flight, with the exchange each one completes.
-        self._refetches: dict[asyncio.Task[None], Exchange] = {}
+        #: Bodies streaming while the page reads them, by network request id.
+        self._streams: dict[str, _Stream] = {}
         self._body_lines: list[_BodyLine] = []
         #: Exchange record ids already written (what a body line may follow).
         self._written: set[str] = set()
@@ -322,8 +406,12 @@ class NetworkSession(BrowserArchiveSession):
 
     @property
     def pause_budget_s(self) -> float:
-        """The longest :meth:`on_paused` runs: a POST body read, then the body read."""
-        return self.archiver.command_timeout_s + self.archiver.body_read_timeout_s
+        """The longest :meth:`on_paused` runs.
+
+        A POST body read and a stream that will not start (two commands),
+        then the body read inline.
+        """
+        return 2 * self.archiver.command_timeout_s + self.archiver.body_read_timeout_s
 
     def event_methods(self) -> Collection[str]:
         return self.EVENT_METHODS
@@ -331,8 +419,18 @@ class NetworkSession(BrowserArchiveSession):
     def admit_event(
         self, method: str, params: Mapping[str, Any], session_id: str | None
     ) -> RecorderEvent | None:
-        """Metadata for the archive scope; the bytes stay here (§4.14)."""
+        """Metadata for the archive scope; the bytes stay here (§4.14).
+
+        A streamed chunk is not admitted at all: it goes straight into its
+        stream — or nowhere, when nothing streams that request on that
+        session (Chrome reports ``dataReceived`` for every request).
+        """
         if self._closed:
+            return None
+        if method == STREAM_CHUNK_EVENT:
+            stream = self._streams.get(str(params.get("requestId") or ""))
+            if stream is not None and stream.session_id == session_id:
+                stream.take(params)
             return None
         slim, held = admit_network_event(method, params, strip=self._strip)
         event = RecorderEvent(session_id=session_id, method=method, params=slim)
@@ -369,12 +467,49 @@ class NetworkSession(BrowserArchiveSession):
 
     def _on_finished(self, event: RecorderEvent, _held: HeldBytes | None) -> None:
         self.model.loading_finished(event.session_id, event.params)
+        self._end_stream(event, finished=True, ended="loadingFinished")
 
     def _on_failed(self, event: RecorderEvent, _held: HeldBytes | None) -> None:
         self.model.loading_failed(event.session_id, event.params)
+        error = event.params.get("errorText") or "no error text"
+        self._end_stream(event, finished=False, ended=f"loadingFailed ({error})")
 
     def _on_detached(self, event: RecorderEvent, _held: HeldBytes | None) -> None:
         self.model.target_detached(event.session_id)
+        for request_id, stream in list(self._streams.items()):
+            if stream.session_id == event.session_id:
+                self._settle_stream(request_id, finished=False, ended="the target detached")
+
+    def _end_stream(self, event: RecorderEvent, *, finished: bool, ended: str) -> None:
+        """A request's end settles its stream, when it is the streaming session's."""
+        request_id = str(event.params.get("requestId") or "")
+        stream = self._streams.get(request_id)
+        if stream is not None and stream.session_id == event.session_id:
+            self._settle_stream(request_id, finished=finished, ended=ended)
+
+    def _settle_stream(self, request_id: str, *, finished: bool, ended: str) -> None:
+        """Judge a stream whose request ended and queue its ``body`` line (and blob)."""
+        stream = self._streams.pop(request_id)
+        status, body, note = stream.outcome(finished=finished, ended=ended)
+        hop = stream.hop
+        line: dict[str, Any] = {"kind": "body", "record_id": hop.record_id, "body_status": status}
+        blob: ArchiveFile | None = None
+        if body is not None:
+            digest = hashlib.sha256(body).hexdigest()
+            blob = ArchiveFile(
+                archiver_id=self.archiver.archiver_id,
+                name=f"body-{digest[:32]}.bin",
+                media_type=hop.mime_type or "application/octet-stream",
+                data=body,
+                meta=ArchiveProvenance(
+                    captured_at=self.ctx.clock(), ids={"record_id": hop.record_id}
+                ),
+                content_addressed=True,
+            )
+            line.update(payload_sha256=digest, payload_length=len(body))
+        else:
+            line["note"] = note
+        self._body_lines.append(_BodyLine(hop.record_id, line, blob, self.ctx.clock()))
 
     def _on_ws_created(self, event: RecorderEvent, _held: HeldBytes | None) -> None:
         self.model.websocket_created(event.session_id, event.params)
@@ -421,14 +556,18 @@ class NetworkSession(BrowserArchiveSession):
         "Network.webSocketClosed": _on_ws_closed,
     }
     #: The CDP events this session asks the recorder for: every handled one
-    #: except the recorder's own target bookkeeping, which it gets anyway.
-    EVENT_METHODS: ClassVar[frozenset[str]] = frozenset(_EVENTS) - TARGET_BOOKKEEPING
+    #: except the recorder's own target bookkeeping, which it gets anyway, and
+    #: the streamed chunks, which admission keeps (they never reach the scope).
+    EVENT_METHODS: ClassVar[frozenset[str]] = (frozenset(_EVENTS) - TARGET_BOOKKEEPING) | frozenset(
+        {STREAM_CHUNK_EVENT}
+    )
 
     async def on_paused(self, paused: PausedRequest) -> None:
-        """Read a paused response's body; the recorder continues it afterwards.
+        """Take a paused response's body, or start streaming it; the recorder continues it afterwards.
 
         The future registered first thing — before any ``await`` — is what a
-        collection drains; it resolves in ``finally`` whatever the read did.
+        collection drains; it resolves in ``finally`` whatever the read did
+        (a stream outlives it: the stream ends with its request).
         """
         if self._closed or paused.stage != "Response":
             return
@@ -438,10 +577,9 @@ class NetworkSession(BrowserArchiveSession):
             return  # responseErrorReason: no response; the Network events say why
         url = paused.url
         if paused.network_id is None:
-            # Not traffic the inspector knows. A defensive fallback: the
-            # archiver's own refetch (``Network.loadNetworkResource``) neither
-            # pauses here nor emits Network events (measured, Chrome 155), but a
-            # Chrome that paused it would hand over no networkId. Released as is.
+            # Not traffic the inspector knows: nothing to pair it with, and
+            # nothing to stream it by. Released as is (defensive: the archiver
+            # sends no request of its own).
             return
         target = paused.target
         target_id = target.target_id if target is not None else paused.session_id
@@ -453,7 +591,7 @@ class NetworkSession(BrowserArchiveSession):
         done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._reads.add(done)
         try:
-            await self._read_body(paused, hop, int(status), url, target)
+            await self._read_body(paused, hop, int(status))
         except asyncio.CancelledError:
             if hop.body_reading:
                 self.model.body_finished(
@@ -469,14 +607,7 @@ class NetworkSession(BrowserArchiveSession):
             if not done.done():
                 done.set_result(None)
 
-    async def _read_body(
-        self,
-        paused: PausedRequest,
-        hop: Exchange,
-        status: int,
-        url: str,
-        target: RecorderTarget | None,
-    ) -> None:
+    async def _read_body(self, paused: PausedRequest, hop: Exchange, status: int) -> None:
         params = paused.params
         archiver = self.archiver
         headers = params.get("responseHeaders") or []
@@ -487,27 +618,30 @@ class NetworkSession(BrowserArchiveSession):
             return
         content_range = parse_content_range(header_value(headers, "content-range"))
         declared = _declared_length(headers)
-        if declared is not None and declared > archiver.max_inline_body_bytes:
-            refetchable = (
-                status == 200
-                and hop.method == "GET"
-                and (params.get("resourceType") or hop.resource_type) in REFETCH_SAFE_TYPES
-                and declared <= archiver.max_streamed_body_bytes
+        if declared is not None and declared > MAX_BODY_BYTES:
+            self.model.body_finished(
+                hop,
+                status="too_large",
+                note=f"declared Content-Length {declared} > {MAX_BODY_BYTES} (64 MiB)",
+                content_range=content_range,
             )
-            note = f"declared Content-Length {declared} > max_inline_body_bytes"
-            if refetchable:
-                self.model.body_finished(hop, status="streamed_later", note=note)
-                frame_id = (
-                    params.get("frameId")
-                    if target is None or target.type in FRAME_TARGET_TYPES
-                    else None
-                )
-                self._spawn_refetch(hop, paused.session_id, frame_id)
-            else:
-                self.model.body_finished(
-                    hop, status="too_large", note=note, content_range=content_range
-                )
             return
+        note: str | None = None
+        empty_by_protocol = status in (204, 304) or hop.method == "HEAD"
+        if (
+            declared is not None
+            and declared > archiver.max_inline_body_bytes
+            and not empty_by_protocol
+        ):
+            if (params.get("resourceType") or hop.resource_type) == "Document":
+                # A navigation's body streams only once it commits, which this
+                # pause holds back (measured, Chrome 155): read it here.
+                note = f"a document is read inline (declared Content-Length {declared})"
+            else:
+                refused = await self._start_stream(paused, hop, declared, headers, content_range)
+                if refused is None:
+                    return
+                note = refused
         try:
             reply = await self.ctx.recorder.send(
                 "Fetch.getResponseBody",
@@ -524,18 +658,71 @@ class NetworkSession(BrowserArchiveSession):
             )
             return
         except Exception as exc:  # a CDP error: no body for this response
-            empty = status in (204, 304) or hop.method == "HEAD"
             self.model.body_finished(
                 hop,
-                status="ok" if empty else "incomplete",
-                body=b"" if empty else None,
-                note=None if empty else f"Fetch.getResponseBody failed: {exc}",
+                status="ok" if empty_by_protocol else "incomplete",
+                body=b"" if empty_by_protocol else None,
+                note=None if empty_by_protocol else f"Fetch.getResponseBody failed: {exc}",
+                content_range=content_range,
+            )
+            return
+        body = _decode_body(reply)
+        if len(body) > MAX_BODY_BYTES:
+            self.model.body_finished(
+                hop,
+                status="too_large",
+                note=f"read {len(body)} bytes > {MAX_BODY_BYTES} (64 MiB)",
                 content_range=content_range,
             )
             return
         self.model.body_finished(
-            hop, status="ok", body=_decode_body(reply), content_range=content_range
+            hop, status="ok", body=body, note=note, content_range=content_range
         )
+
+    async def _start_stream(
+        self,
+        paused: PausedRequest,
+        hop: Exchange,
+        declared: int,
+        headers: Any,
+        content_range: dict[str, Any] | None,
+    ) -> str | None:
+        """Stream *hop*'s body while the page reads it; ``None`` once it streams, else why not.
+
+        ``Network.streamResourceContent`` goes to the session that reported the
+        request (a dedicated worker's, though its request pauses on the
+        page's), before the response is released: nothing has arrived yet, and
+        every chunk then comes in ``Network.dataReceived``. The stream is
+        registered first, so no chunk can come before it is. When the
+        command fails the caller reads the body inline instead, still paused.
+        """
+        session = hop.session_id or paused.session_id
+        encoding = (header_value(headers, "content-encoding") or "identity").strip().lower()
+        stream = _Stream(
+            hop=hop, session_id=session, declared=declared, identity=encoding == "identity"
+        )
+        self._streams[hop.network_id] = stream
+        try:
+            reply = await self.ctx.recorder.send(
+                "Network.streamResourceContent",
+                {"requestId": hop.network_id},
+                session,
+                timeout=self.archiver.command_timeout_s,
+            )
+            stream.start(base64.b64decode((reply or {}).get("bufferedData") or ""))
+        except asyncio.CancelledError:
+            self._streams.pop(hop.network_id, None)
+            raise
+        except Exception as exc:
+            self._streams.pop(hop.network_id, None)
+            return f"streaming could not start ({exc}); read inline"
+        self.model.body_finished(
+            hop,
+            status="streamed_later",
+            note=f"declared Content-Length {declared} > max_inline_body_bytes: streamed",
+            content_range=content_range,
+        )
+        return None
 
     async def _fetch_post_data(self, paused: PausedRequest, hop: Exchange) -> None:
         """The last POST source: ``Network.getRequestPostData`` on the reporting session."""
@@ -558,105 +745,17 @@ class NetworkSession(BrowserArchiveSession):
         )
         self.model.set_post_body(hop, body, "getRequestPostData")
 
-    # ── streamed refetch ─────────────────────────────────────────────
-
-    def _spawn_refetch(self, hop: Exchange, session_id: str, frame_id: str | None) -> None:
-        task = asyncio.get_running_loop().create_task(self._refetch(hop, session_id, frame_id))
-        self._refetches[task] = hop
-        task.add_done_callback(lambda done: self._refetches.pop(done, None))
-
-    async def _refetch(self, hop: Exchange, session_id: str, frame_id: str | None) -> None:
-        """Fetch a large static body again, after the page got its response, in chunks.
-
-        Follows Playwright's ``createResponseBodyCallback`` (crNetworkManager.ts
-        @ d9f2fd3e, Apache-2.0; see THIRD_PARTY_NOTICES.md): only a ``GET`` of a
-        refetch-safe static type, ``Network.loadNetworkResource`` then
-        ``IO.read`` until ``eof``. Modified: run after the response was
-        released, ≤ 1 MiB per read, stopped at ``max_streamed_body_bytes``.
-        """
-        archiver = self.archiver
-        send = self.ctx.recorder.send
-        line: dict[str, Any] = {"kind": "body", "record_id": hop.record_id}
-        blob: ArchiveFile | None = None
-        stream: str | None = None
-        try:
-            params: dict[str, Any] = {
-                "url": hop.url,
-                "options": {"disableCache": False, "includeCredentials": True},
-            }
-            if frame_id:
-                params["frameId"] = frame_id
-            reply = await send(
-                "Network.loadNetworkResource",
-                params,
-                session_id,
-                timeout=archiver.body_read_timeout_s,
-            )
-            resource = (reply or {}).get("resource") or {}
-            stream = resource.get("stream")
-            if not resource.get("success") or not stream:
-                line.update(
-                    body_status="incomplete",
-                    note=f"loadNetworkResource failed: {resource.get('netErrorName') or resource.get('httpStatusCode')}",
-                )
-                return
-            chunks: list[bytes] = []
-            size = 0
-            while True:
-                chunk = await send(
-                    "IO.read",
-                    {"handle": stream, "size": STREAM_CHUNK_BYTES},
-                    session_id,
-                    timeout=archiver.body_read_timeout_s,
-                )
-                data = (chunk or {}).get("data") or ""
-                piece = (
-                    base64.b64decode(data)
-                    if (chunk or {}).get("base64Encoded")
-                    else data.encode("utf-8")
-                )
-                chunks.append(piece)
-                size += len(piece)
-                if size > archiver.max_streamed_body_bytes:
-                    line.update(
-                        body_status="too_large",
-                        note=f"refetch exceeded max_streamed_body_bytes ({size} bytes read)",
-                    )
-                    return
-                if (chunk or {}).get("eof"):
-                    break
-            body = b"".join(chunks)
-            digest = hashlib.sha256(body).hexdigest()
-            blob = ArchiveFile(
-                archiver_id=archiver.archiver_id,
-                name=f"body-{digest[:32]}.bin",
-                media_type=hop.mime_type or "application/octet-stream",
-                data=body,
-                meta=ArchiveProvenance(
-                    captured_at=self.ctx.clock(), ids={"record_id": hop.record_id}
-                ),
-                content_addressed=True,
-            )
-            line.update(body_status="ok", payload_sha256=digest, payload_length=len(body))
-        except asyncio.CancelledError:
-            line.update(body_status="incomplete", note="refetch cancelled")
-            raise
-        except Exception as exc:
-            line.update(body_status="incomplete", note=f"refetch failed: {exc}")
-        finally:
-            if stream:
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(
-                        send("IO.close", {"handle": stream}, session_id), archiver.command_timeout_s
-                    )
-            self._body_lines.append(_BodyLine(hop.record_id, line, blob, self.ctx.clock()))
-
     # ── collection ───────────────────────────────────────────────────
 
     async def collect(self) -> list[ArchiveFile]:
-        """Wait (bounded) for bodies in flight, swap, then write this step's files."""
+        """Wait (bounded) for inline reads in flight, swap, then write this step's files.
+
+        Never for a stream: it ends when the page's download does, which a
+        stalled consumer (a paused video, a body nobody reads) may never let
+        happen; it stays ``pending`` until it ends.
+        """
         archiver = self.archiver
-        inflight = [*self._reads, *self._refetches]
+        inflight = list(self._reads)
         if inflight and archiver.drain_timeout_s > 0:
             await asyncio.wait(inflight, timeout=archiver.drain_timeout_s)
         if self._errors:
@@ -673,11 +772,9 @@ class NetworkSession(BrowserArchiveSession):
             line for line in self._body_lines if line.record_id not in self._written
         ]
         # A written ``streamed_later`` exchange whose body is still streaming:
-        # its record must not end on a line that promises a body (Flag 1).
+        # its record must not end on a line that promises a body.
         streaming = [
-            hop
-            for task, hop in self._refetches.items()
-            if not task.done() and hop.record_id in self._written
+            stream.hop for stream in self._streams.values() if stream.hop.record_id in self._written
         ]
         return self._files(settled.exchanges, settled.pending, settled.frames, ready, streaming)
 
@@ -861,8 +958,4 @@ class NetworkSession(BrowserArchiveSession):
     async def aclose(self) -> None:
         self._closed = True
         self._held.clear()
-        tasks = list(self._refetches)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        self._streams.clear()

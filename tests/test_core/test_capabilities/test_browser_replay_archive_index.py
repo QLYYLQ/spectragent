@@ -82,11 +82,11 @@ async def recorded(tmp_path: Path) -> RecordedArchive:
         resource_type="Media",
         headers={"Content-Range": "bytes 4-6/10"},
     )
-    stalled = await recording.streamed_later(f"{SHOP}/late.js", b"l" * 6000, hold=True)
+    finish = await recording.streamed_later(f"{SHOP}/late.js", b"l" * 6000, hold=True)
     recording.in_flight(f"{SHOP}/never")
     await recording.commit(1)
-    assert stalled is not None
-    stalled.set()
+    assert finish is not None
+    finish()
     await recording.commit_trailing()
     return load_archive(open_archive(recording.finish()))
 
@@ -289,11 +289,11 @@ class TestTheLinesAsRead:
         recording = RecordingScript(tmp_path)
         await recording.exchange(f"{SHOP}/a")
         await recording.commit(0)
-        stalled = await recording.streamed_later(f"{SHOP}/late.js", b"l" * 6000, hold=True)
+        finish = await recording.streamed_later(f"{SHOP}/late.js", b"l" * 6000, hold=True)
         recording.in_flight(f"{SHOP}/never")
         await recording.commit(2)
-        assert stalled is not None
-        stalled.set()
+        assert finish is not None
+        finish()
         await recording.commit_trailing()
         reader = open_archive(recording.finish())
 

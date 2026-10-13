@@ -86,12 +86,6 @@ from spectragent.core.capabilities.browser.recorder import RecorderTarget
 #: URL schemes that are network traffic worth recording.
 RECORDED_SCHEMES = ("http://", "https://", "ws://", "wss://")
 
-#: Playwright's ``kRefetchSafeResourceTypes``: static subresources a GET can
-#: fetch again without side effects (CDP spells them capitalised).
-REFETCH_SAFE_TYPES = frozenset(
-    {"Font", "Image", "Manifest", "Media", "Script", "Stylesheet", "TextTrack"}
-)
-
 BodyStatus = Literal["ok", "redirect", "too_large", "streamed_later", "websocket", "incomplete"]
 Terminal = Literal["redirected", "finished", "failed", "websocket"]
 
@@ -708,9 +702,9 @@ class NetworkModel:
     ) -> Exchange | None:
         """Attach a Response-stage pause to its hop; ``None`` when it records nothing.
 
-        ``None`` for a pause the inspector does not know (no ``networkId`` —
-        the archiver's own refetch, say), for a non-network URL, and for the
-        same hop paused again by a second session of the same target.
+        ``None`` for a pause the inspector does not know (no ``networkId``),
+        for a non-network URL, and for the same hop paused again by a second
+        session of the same target.
         """
         network_id = params.get("networkId")
         request = params.get("request") or {}

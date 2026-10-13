@@ -22,8 +22,9 @@ It models the session facts the recorder depends on (S1 / S2a):
 For the archivers (M29) it also answers what a collection and a DOM capture
 read: response bodies (:attr:`FakeBrowser.response_bodies`), cookies and
 Web Storage, a small document for ``DOM.getDocument`` / ``DOMSnapshot`` /
-the accessibility tree, the fingerprint probe (and its isolated world), and a
-streamed ``Network.loadNetworkResource`` (:attr:`FakeBrowser.resources`).
+the accessibility tree, the fingerprint probe (and its isolated world), and
+``Network.streamResourceContent`` (nothing buffered: the chunks are events a
+test fires).
 """
 
 from __future__ import annotations
@@ -216,9 +217,6 @@ class FakeBrowser:
         #: origin → items, for local and session storage.
         self.local_storage: dict[str, dict[str, str]] = {}
         self.session_storage: dict[str, dict[str, str]] = {}
-        #: ``Network.loadNetworkResource`` URL → the bytes its stream yields.
-        self.resources: dict[str, bytes] = {}
-        self._streams: dict[str, bytes] = {}
         #: ``Page.createIsolatedWorld`` calls answered (the fingerprint probe's world).
         self.isolated_worlds = 0
         #: What the page reports to the fingerprint probe.
@@ -393,26 +391,8 @@ class FakeBrowser:
             if data is None:
                 raise RuntimeError("CDP error: No post data available for the request")
             return {"postData": base64.b64encode(data).decode("ascii"), "base64Encoded": True}
-        if method == "Network.loadNetworkResource":
-            url = str(params.get("url"))
-            if url not in self.resources:
-                return {"resource": {"success": False, "netErrorName": "net::ERR_FAILED"}}
-            handle = f"stream-{len(self._streams) + 1}"
-            self._streams[handle] = self.resources[url]
-            return {"resource": {"success": True, "httpStatusCode": 200, "stream": handle}}
-        if method == "IO.read":
-            handle = str(params.get("handle"))
-            data = self._streams.get(handle, b"")
-            size = int(params.get("size") or 65536)
-            chunk, self._streams[handle] = data[:size], data[size:]
-            return {
-                "data": base64.b64encode(chunk).decode("ascii"),
-                "base64Encoded": True,
-                "eof": not self._streams[handle],
-            }
-        if method == "IO.close":
-            self._streams.pop(str(params.get("handle")), None)
-            return {}
+        if method == "Network.streamResourceContent":
+            return {"bufferedData": ""}
         if method == "Storage.getCookies":
             return {"cookies": [dict(cookie) for cookie in self.cookies]}
         if method == "DOMStorage.getDOMStorageItems":

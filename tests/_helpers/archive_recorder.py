@@ -38,14 +38,14 @@ class ScriptedRecorder:
     bodies: dict[str, bytes] = field(default_factory=dict)
     #: Network request id → POST body for ``Network.getRequestPostData``.
     post_data: dict[str, bytes] = field(default_factory=dict)
-    #: URL → bytes for ``Network.loadNetworkResource`` streams.
-    resources: dict[str, bytes] = field(default_factory=dict)
+    #: Network request id → ``bufferedData`` of ``Network.streamResourceContent``
+    #: (what arrived before streaming started; empty unless set).
+    buffered: dict[str, bytes] = field(default_factory=dict)
     #: method → exception.
     failures: dict[str, BaseException] = field(default_factory=dict)
     #: method → event the reply waits for.
     holds: dict[str, asyncio.Event] = field(default_factory=dict)
     sent: list[tuple[str, dict[str, Any], str | None]] = field(default_factory=list)
-    _streams: dict[str, bytes] = field(default_factory=dict)
 
     def add_target(self, session_id: str, target_id: str, type_: str = "page") -> RecorderTarget:
         target = RecorderTarget(session_id=session_id, target_id=target_id, type=type_)
@@ -99,23 +99,9 @@ class ScriptedRecorder:
             if data is None:
                 raise RuntimeError("CDP error: No post data available for the request")
             return {"postData": data.decode()}
-        if method == "Network.loadNetworkResource":
-            url = str(params.get("url"))
-            if url not in self.resources:
-                return {"resource": {"success": False, "netErrorName": "net::ERR_FAILED"}}
-            handle = f"h{len(self._streams)}"
-            self._streams[handle] = self.resources[url]
-            return {"resource": {"success": True, "httpStatusCode": 200, "stream": handle}}
-        if method == "IO.read":
-            handle = str(params.get("handle"))
-            data = self._streams.get(handle, b"")
-            size = int(params.get("size") or 1024)
-            chunk, self._streams[handle] = data[:size], data[size:]
-            return {
-                "data": base64.b64encode(chunk).decode(),
-                "base64Encoded": True,
-                "eof": not self._streams[handle],
-            }
+        if method == "Network.streamResourceContent":
+            buffered = self.buffered.get(str(params.get("requestId")), b"")
+            return {"bufferedData": base64.b64encode(buffered).decode()}
         return {}
 
 
@@ -171,6 +157,37 @@ def deliver(session: BrowserArchiveSession, raw: RecorderEvent) -> None:
             session.on_event(admitted)
         return
     session.on_event(raw)
+
+
+def stream_chunks(
+    session: BrowserArchiveSession,
+    request_id: str,
+    body: bytes,
+    *,
+    session_id: str = "page-s",
+    chunk_bytes: int = 1024,
+    encoded: int | None = None,
+) -> None:
+    """*body* arriving as ``Network.dataReceived`` chunks, as Chrome streams it.
+
+    *encoded* is the bytes on the wire spread over the chunks (a compressed
+    body's); by default each chunk's own length.
+    """
+    pieces = [body[i : i + chunk_bytes] for i in range(0, len(body), chunk_bytes)] or [b""]
+    wire = [len(piece) for piece in pieces]
+    if encoded is not None:
+        wire = [encoded // len(pieces)] * len(pieces)
+        wire[-1] += encoded - sum(wire)
+    for piece, on_wire in zip(pieces, wire, strict=True):
+        params: dict[str, Any] = {
+            "requestId": request_id,
+            "timestamp": 10.5,
+            "dataLength": len(piece),
+            "encodedDataLength": on_wire,
+        }
+        if piece:
+            params["data"] = base64.b64encode(piece).decode()
+        deliver(session, event("Network.dataReceived", params, session_id))
 
 
 def paused(

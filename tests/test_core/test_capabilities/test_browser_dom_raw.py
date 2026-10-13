@@ -23,9 +23,14 @@ from spectragent.core.capabilities.browser.archive.dom_raw import (
 )
 from spectragent.core.capabilities.browser.archive.redaction import redact_raw_capture
 from spectragent.core.capabilities.browser.dom.cleaning.browser_use import BrowserUseCleaner
+from spectragent.core.capabilities.browser.dom.cleaning.skyvern import SkyvernCleaner
+from spectragent.core.capabilities.browser.dom.cleaning.skyvern_hit_test import (
+    SkyvernHitTestCleaner,
+)
 from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, DOMState, TargetCapture
 from spectragent.core.capabilities.browser.dom.serializers.text_serializer import TextSerializer
 from tests._helpers.browser_archive import archiving_capability, settle
+from tests._helpers.dom_captures import load_capture
 from tests._helpers.dom_payloads import reference_page
 
 DOM_COMMANDS = ("DOM.", "DOMSnapshot.", "Accessibility.")
@@ -221,6 +226,57 @@ class TestWhatIsArchived:
         offline = await cleaner.clean(archived, (1280, 720), device_pixel_ratio=1.0)
         assert serializer.serialize(offline) == serializer.serialize(live)
         assert sorted(offline.selector_map) == sorted(live.selector_map)
+
+
+def _skyvern_capture_with_hit_tests() -> TargetCapture:
+    """The committed Skyvern capture, with hit-test results: the covered link covered."""
+
+    def add(capture: TargetCapture) -> None:
+        results: dict[int, Any] = {}
+        for ref, node in capture.raw_dom["skyvern_nodes"].items():
+            attributes = node.get("attributes") or []
+            element_id = dict(zip(attributes[::2], attributes[1::2], strict=False)).get("id")
+            if element_id == "covered":
+                results[ref] = {"center_topmost": False, "offset": None}
+            elif element_id:
+                results[ref] = {"center_topmost": True, "offset": [4.0, 4.0]}
+        capture.raw_dom["skyvern_hit_tests"] = results
+        for child in capture.frames.values():
+            add(child)
+
+    capture = load_capture("skyvern_sticky")
+    add(capture)
+    return capture
+
+
+@pytest.mark.parametrize(
+    "cleaner", [SkyvernCleaner(), SkyvernHitTestCleaner()], ids=["skyvern", "skyvern_hit_test"]
+)
+async def test_an_offline_skyvern_clean_of_the_archive_reproduces_the_observation(
+    cleaner: Any,
+) -> None:
+    """The Skyvern ref maps come back keyed by the integers the cleaners look up.
+
+    JSON keys are strings: read back as they were stored, every node lookup
+    by ``ref`` missed and the offline tree lost its elements' backend ids.
+    """
+    capture = _skyvern_capture_with_hit_tests()
+    live = await cleaner.clean(capture, (1280, 720))
+    data, _ = redact_raw_capture(capture)
+    archived = capture_from_document(json.loads(json.dumps(data)))
+    for key in ("skyvern_nodes", "skyvern_hit_tests"):
+        assert archived.raw_dom[key] and all(isinstance(ref, int) for ref in archived.raw_dom[key])
+    offline = await cleaner.clean(archived, (1280, 720))
+    serializer = TextSerializer()
+    assert serializer.serialize(offline) == serializer.serialize(live)
+    assert sorted(offline.selector_map) == sorted(live.selector_map)
+    assert live.selector_map, "the comparison has elements to compare"
+    assert {
+        handle: (node.backend_node_id, node.hit_test)
+        for handle, node in offline.selector_map.items()
+    } == {
+        handle: (node.backend_node_id, node.hit_test) for handle, node in live.selector_map.items()
+    }
 
 
 def test_declarations() -> None:

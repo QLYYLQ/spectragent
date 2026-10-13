@@ -11,8 +11,8 @@ Knobs (all reachable from YAML; the generated config nests ``matcher`` and the
 - ``matcher`` — :class:`~.matcher.MatcherConfig`: the levels to try, the fuzzy
   threshold, the site-rules directory;
 - ``isolation`` — ``required`` (the default): the browser is launched cut off
-  from the network (``--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE
-  localhost`` and ``--no-proxy-server``) by a provider declaring
+  from the network, ``localhost`` included (``--host-resolver-rules=MAP *
+  ~NOTFOUND`` and ``--no-proxy-server``), by a provider declaring
   ``NETWORK_ISOLATION``; ``none_acknowledged`` says, in writing, to rely on
   Fetch interception alone (which leaks connections Fetch never sees);
 - ``shift_dates`` — ``none`` (the default; pairs with ``base_time:

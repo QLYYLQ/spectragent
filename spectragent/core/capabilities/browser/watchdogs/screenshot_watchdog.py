@@ -42,6 +42,7 @@ from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
     WatchdogLevel,
+    observation_read,
 )
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateRequestEvent,
@@ -157,11 +158,15 @@ class ScreenshotWatchdog(BrowserWatchdog):
 
         After, not before: a document that swapped during the capture then
         disagrees with the DOM stamp and the cycle is re-fired (§4.14). One
-        cheap round trip; a failure leaves the screenshot unstamped rather
-        than failing it.
+        cheap round trip, bounded (``base.OBSERVATION_READ_TIMEOUT_S``); a
+        failure or a timeout leaves the screenshot unstamped rather than
+        failing it.
         """
         try:
-            tree = await self._cdp.send("Page.getFrameTree", {}, session_id=self._session_id)
+            tree = await observation_read(
+                self._cdp.send("Page.getFrameTree", {}, session_id=self._session_id),
+                "Page.getFrameTree",
+            )
         except Exception as exc:
             logger.debug("Page.getFrameTree after the screenshot failed: %s", exc)
             return None

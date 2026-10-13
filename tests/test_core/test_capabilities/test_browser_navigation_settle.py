@@ -48,13 +48,15 @@ from tests._helpers.fake_cdp import FakeBrowser, FakeClient
 from tests._helpers.fragment_samples import PNG_BYTES
 
 MAIN = "MAIN"
-#: The control-connection events a feed listens to.
+#: The control-connection ``Page`` events a feed follows its tab's main frame with.
 NAVIGATION_EVENTS = (
     "Page.frameRequestedNavigation",
     "Page.frameStartedNavigating",
     "Page.frameNavigated",
     "Page.frameStoppedLoading",
 )
+#: Every control-connection event a feed listens to: those, and its tab's detach.
+FEED_EVENTS = (*NAVIGATION_EVENTS, "Target.detachedFromTarget")
 
 
 def _finished_without_suspending(coro: Coroutine[Any, Any, Any]) -> Any:
@@ -200,12 +202,34 @@ class TestNavigationFeed:
     def test_close_unregisters_every_callback(self) -> None:
         client, feed = _feed()
         assert {method for method, callbacks in client.callbacks.items() if callbacks} == set(
-            NAVIGATION_EVENTS
+            FEED_EVENTS
         )
         feed.close()
         feed.close()
         assert not any(client.callbacks.values())
         client.fire("Page.frameRequestedNavigation", _requested(MAIN), "S1")
+        assert not feed.navigation.in_flight
+
+    async def test_its_tab_detaching_releases_it(self) -> None:
+        """A popup the page closes itself: its feed lets go and nothing waits on it.
+
+        The detach comes on the browser session and names the session in its
+        params. Another tab's detach, and a child session (an iframe or a
+        worker of this tab) detaching on this tab's session, leave it alone.
+        """
+        client, feed = _feed()
+        client.fire("Page.frameRequestedNavigation", _requested(MAIN), "S1")
+        waiter = asyncio.create_task(feed.navigation.wait_settled(5.0))
+        await asyncio.sleep(0)
+        client.fire("Target.detachedFromTarget", {"sessionId": "S2", "targetId": "T2"})
+        client.fire("Target.detachedFromTarget", {"sessionId": "CHILD", "targetId": "F1"}, "S1")
+        assert {method for method, callbacks in client.callbacks.items() if callbacks} == set(
+            FEED_EVENTS
+        )
+        assert feed.navigation.in_flight
+        client.fire("Target.detachedFromTarget", {"sessionId": "S1", "targetId": "T1"})
+        assert not any(client.callbacks.values())
+        assert await asyncio.wait_for(waiter, 1.0) is True
         assert not feed.navigation.in_flight
 
 
@@ -461,6 +485,29 @@ class TestTabLifecycle:
             assert not popup_feed.navigation.in_flight
         finally:
             await cap.teardown()
+
+    async def test_a_popup_that_closes_itself_releases_its_feed(self) -> None:
+        """No ``close_tab``: Chrome's detach alone lets the popup's feed go; the opener's stays."""
+        browser = FakeBrowser()
+        cap = await _capability(browser)
+        try:
+            first, _main = _focused(cap)
+            popup = await cap.create_tab()
+            assert _live_callbacks(browser.control) == dict.fromkeys(NAVIGATION_EVENTS, 2)
+            popup_target = cap._session_to_target[popup]
+            browser.control.fire(
+                "Target.detachedFromTarget", {"sessionId": popup, "targetId": popup_target}
+            )
+            assert _live_callbacks(browser.control) == dict.fromkeys(NAVIGATION_EVENTS, 1)
+            browser.control.fire(
+                "Page.frameRequestedNavigation",
+                _requested(str(cap._navigation_feeds[first].navigation.main_frame_id)),
+                first,
+            )
+            assert cap._navigation_feeds[first].navigation.in_flight, "the opener still follows"
+        finally:
+            await cap.teardown()
+        assert _live_callbacks(browser.control) == dict.fromkeys(NAVIGATION_EVENTS, 0)
 
     async def test_a_failed_attach_drops_its_feed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         browser = FakeBrowser()

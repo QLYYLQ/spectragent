@@ -133,8 +133,9 @@ def test_what_the_scenarios_recorded(full_recording: dict[str, Any]) -> None:
     statuses = captured_paths(full_recording["lines"])
     assert statuses["/redirect/hop1"] == ["redirect"]
     assert statuses["/redirect/hop2"] == ["redirect"]
+    # Over the 5 MB inline tier, whatever the type: streamed while the page read it.
     assert statuses["/large/static.js"] == ["streamed_later"]
-    assert statuses["/large/data.bin"] == ["too_large"]
+    assert statuses["/large/data.bin"] == ["streamed_later"]
     assert statuses["/websocket/echo"] == ["websocket"]
     lines = full_recording["lines"]
     (video,) = [
@@ -142,7 +143,8 @@ def test_what_the_scenarios_recorded(full_recording: dict[str, Any]) -> None:
     ][:1]
     assert video["status"] == 206 and video["content_range"]["unit"] == "bytes"
     bodies = [line for line in lines if line["kind"] == "body"]
-    assert bodies and bodies[0]["body_status"] == "ok" and bodies[0]["payload_length"] > 6_000_000
+    assert len(bodies) >= 2, "the script and the XHR"
+    assert all(b["body_status"] == "ok" and b["payload_length"] > 6_000_000 for b in bodies)
     form = next(line for line in lines if line.get("url", "").endswith("/post_form/submit"))
     assert form["method"] == "POST" and form["request"]["post"]["length"] > 0
     # The form's password reached the server; in the archive the request
@@ -352,8 +354,8 @@ def test_overhead_benchmark(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     path = write_report(report, out)
     assert ArchiveOverheadReport.model_validate_json(path.read_text("utf-8")) == report
     # Both deduplications ran on this traffic, so the two figures differ for a
-    # reason: second visits wrote revisit records, and the large static body
-    # streamed on both visits was stored once.
+    # reason: second visits wrote revisit records, and each large body streamed
+    # on both visits was stored once.
     assert any(line.get("revisit_of") for line in on.index_lines()), "no revisit record written"
     assert dedup.saved_by_content_addressing > 6_000_000, "the large body was stored twice"
     assert report.bytes_per_step_after_dedup < report.bytes_per_step_before_dedup

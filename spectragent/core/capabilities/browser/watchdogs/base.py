@@ -27,9 +27,10 @@ able to release it on ``close_tab`` / ``teardown``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
 from agent_cdp import EventScope, WatchdogBase, WatchdogRegistrar
 
@@ -55,6 +56,30 @@ if TYPE_CHECKING:
 #: instance to the global scope; ``"shared"`` builds one instance whose
 #: connections may fan in from any number of tab scopes.
 WatchdogLevel = Literal["tab", "browser", "shared"]
+
+_T = TypeVar("_T")
+
+#: How long an observation waits for one small read of its tab — the main
+#: frame's tree (``Page.getFrameTree``), the navigation history — before it
+#: goes on without it (``docs/architecture_design.md`` §4.14, "命令上限"). A
+#: healthy renderer answers in milliseconds; a busy one (a dialog, a page
+#: script spinning, a document swap) holds the reply, and the tab's serial
+#: observation scope with it, until the whole ``BrowserStateRequestEvent``
+#: times out (30 s).
+OBSERVATION_READ_TIMEOUT_S = 2.0
+
+
+async def observation_read(reply: Awaitable[_T], what: str) -> _T:
+    """*reply* within :data:`OBSERVATION_READ_TIMEOUT_S`, else ``TimeoutError`` naming *what*.
+
+    A late reply is dropped by the client, which forgets a request whose
+    waiter gave up.
+    """
+    timeout = OBSERVATION_READ_TIMEOUT_S
+    try:
+        return await asyncio.wait_for(reply, timeout)
+    except TimeoutError:
+        raise TimeoutError(f"{what} got no reply within {timeout:g}s") from None
 
 
 async def _no_tabs() -> list[dict[str, Any]]:

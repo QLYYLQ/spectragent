@@ -63,25 +63,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   (https://github.com/puppeteer/puppeteer/blob/master/LICENSE)."
 - **Ported into:** `spectragent/core/capabilities/browser/archive/network_model.py`
   (the event model; the file keeps the upstream license header and a modification
-  statement) and `spectragent/core/capabilities/browser/archive/network.py`
-  (`NetworkSession._refetch`, `REFETCH_SAFE_TYPES`), the `browser.network` archiver.
+  statement), the `browser.network` archiver.
 - **Kept:** pairing `Fetch.requestPaused` with `Network.requestWillBeSent` by the
   network request id in either arrival order; one record per redirect hop, closed by
   the next hop's `redirectResponse` and linked by `redirectedFrom`; worker requests
   reported on the worker session but paused on the page session; `*ExtraInfo` events
   paired with responses per request id, responses served from cache treated as having
   none (crbug 1340398); `data:` URLs skipped; the WebSocket event set and its
-  wall-clock baseline; the refetch of an oversized body — only a `GET` of a
-  refetch-safe static type (font, image, manifest, media, script, stylesheet,
-  texttrack), `Network.loadNetworkResource` then `IO.read` until `eof`, then `IO.close`.
+  wall-clock baseline.
 - **Modified by af:** re-implemented in Python as a passive accumulator for an archive
   instead of a live request router — no routing, interception overrides,
   authentication, CORS preflight synthesis or frame manager. Added: deduplication
   across two recorder sessions of one target; settle / pending bookkeeping (an
   exchange whose body was read at the Fetch Response stage settles without
-  `loadingFinished`); the browser redaction rules applied as each event is stored;
-  the refetch runs after the response was released, reads in ≤ 1 MiB chunks and stops
-  at a byte budget.
+  `loadingFinished`); the browser redaction rules applied as each event is stored.
+  The port of Playwright's refetch of an oversized body (`Network.loadNetworkResource`
+  then `IO.read`) was removed on 2026-10-13: a large body is now streamed while the
+  page itself downloads it (`Network.streamResourceContent`), af's own code.
 
 ```
                                  Apache License

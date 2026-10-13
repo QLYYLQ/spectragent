@@ -56,11 +56,11 @@ async def test_every_record_ends_in_one_explicit_state(tmp_path: Path) -> None:
     recording.websocket("ws://shop.test/socket")
     await recording.streamed_later(f"{SHOP}/now.js", b"n" * 5000)
     await recording.commit(0)
-    stalled = await recording.streamed_later(f"{SHOP}/late.js", b"l" * 6000, hold=True)
+    finish = await recording.streamed_later(f"{SHOP}/late.js", b"l" * 6000, hold=True)
     recording.in_flight(f"{SHOP}/never")
     await recording.commit(1)
-    assert stalled is not None
-    stalled.set()
+    assert finish is not None
+    finish()
     await recording.commit_trailing()
     lines = _lines(recording.finish())
     assert "body" in [line.kind for line in lines], "the fixture writes a late body line"
@@ -73,7 +73,7 @@ async def test_every_record_ends_in_one_explicit_state(tmp_path: Path) -> None:
         "too_large": 1,
         "incomplete": 2,  # the failed request and the one still pending at the end
         "websocket": 1,
-        "streamed_later": 2,  # bodies refetched: in the same commit and a later one
+        "streamed_later": 2,  # bodies streamed: in the same commit and a later one
     }
     assert (found.records, found.with_body, found.no_body_needed, found.explicit_no_body) == (
         9,
@@ -85,10 +85,10 @@ async def test_every_record_ends_in_one_explicit_state(tmp_path: Path) -> None:
 
 async def test_a_streamed_body_still_pending_at_the_end_is_incomplete(tmp_path: Path) -> None:
     recording = RecordingScript(tmp_path)
-    stalled = await recording.streamed_later(f"{SHOP}/late.js", b"l" * 6000, hold=True)
+    finish = await recording.streamed_later(f"{SHOP}/late.js", b"l" * 6000, hold=True)
     await recording.commit(0)
     await recording.commit_trailing()  # the body never arrived
-    assert stalled is not None
+    assert finish is not None
     assert body_completeness(_lines(recording.finish())).by_state == {"incomplete": 1}
 
 

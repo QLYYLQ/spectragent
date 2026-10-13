@@ -49,7 +49,7 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
 from spectragent.core.capabilities.browser.replay.canonical import canonical_query, host_of
 from spectragent.core.capabilities.browser.replay.replay_log import ReplayLogEntry
 
-#: Final states with a body in the archive: written whole, or refetched later.
+#: Final states with a body in the archive: written whole, or streamed as a later blob.
 WITH_BODY: tuple[str, ...] = ("ok", "streamed_later")
 #: Final states that need no body: a redirect hop, a WebSocket handshake.
 NO_BODY_NEEDED: tuple[str, ...] = ("redirect", "websocket")

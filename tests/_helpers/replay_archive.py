@@ -19,15 +19,14 @@ canonicaliser the loader uses.
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from spectragent.core.archive import ArchiveFile
 from spectragent.core.capabilities.browser.archive import NetworkArchiver
 from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFingerprint
-from spectragent.core.capabilities.browser.archive.network import NetworkSession
+from spectragent.core.capabilities.browser.archive.network import MAX_BODY_BYTES, NetworkSession
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.core.capabilities.browser.replay import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord
@@ -38,7 +37,14 @@ from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.step_record import StepRecord
-from tests._helpers.archive_recorder import ScriptedRecorder, deliver, event, open_session, paused
+from tests._helpers.archive_recorder import (
+    ScriptedRecorder,
+    deliver,
+    event,
+    open_session,
+    paused,
+    stream_chunks,
+)
 from tests._helpers.trace_builder import agent_result, new_wal, step_record
 
 #: The recording's T0 (epoch milliseconds) the fingerprint carries.
@@ -253,31 +259,49 @@ class RecordingScript:
         self._finished(network_id)
         return network_id
 
-    async def too_large(self, url: str, *, declared: int = 10 * INLINE_LIMIT) -> str:
-        """An XHR whose declared length is over the inline tier: recorded without a body."""
+    async def too_large(self, url: str, *, declared: int = MAX_BODY_BYTES + 1) -> str:
+        """A response declaring more than the 64 MiB limit: recorded without a body, never read."""
         return await self.exchange(url, headers={"Content-Length": str(declared)}, body=b"")
 
     async def streamed_later(
         self, url: str, body: bytes, *, hold: bool = False
-    ) -> asyncio.Event | None:
-        """A large static GET refetched after its response; *hold* keeps its body back.
+    ) -> Callable[[], None] | None:
+        """A body over the inline tier, streamed while the page reads it; *hold* keeps it back.
 
-        With *hold*, the refetch stalls until the returned event is set — so
+        The response is released at once; the body arrives in
+        ``Network.dataReceived`` chunks and the request ends. With *hold* the
+        chunks and the end wait until the returned callable is called — so
         the exchange line is committed first and its body line in a later
         commit.
         """
         assert len(body) > INLINE_LIMIT
-        self.recorder.resources[url] = body
-        stalled = None
-        if hold:
-            stalled = self.recorder.holds["IO.read"] = asyncio.Event()
-        await self.exchange(
-            url,
-            body=b"",
-            resource_type="Script",
-            headers={"Content-Length": str(len(body)), "Content-Type": "text/javascript"},
+        network_id, interception = self._ids()
+        headers = {"Content-Length": str(len(body)), "Content-Type": "text/javascript"}
+        sent = {"Accept": "*/*"}
+        self._request(
+            network_id, url, method="GET", headers=sent, post=None, resource_type="Script"
         )
-        return stalled
+        await self.session.on_paused(
+            paused(
+                request_id=interception,
+                network_id=network_id,
+                url=url,
+                headers=headers,
+                resource_type="Script",
+                request_headers=sent,
+                target=self.page,
+            )
+        )
+        self._response(network_id, url, 200, headers, "Script")
+
+        def finish() -> None:
+            stream_chunks(self.session, network_id, body, session_id=PAGE_SESSION)
+            self._finished(network_id)
+
+        if hold:
+            return finish
+        finish()
+        return None
 
     def failed(self, url: str) -> str:
         """A request that failed before any response: an ``incomplete`` record."""

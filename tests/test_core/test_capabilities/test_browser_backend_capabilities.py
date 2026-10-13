@@ -107,12 +107,24 @@ class TestDeclarations:
 
 class TestNetworkIsolation:
     def test_isolation_args_have_no_shell_quotes(self) -> None:
-        """Two argv elements exactly as Chrome reads them (S2a) — never a quoted shell string."""
+        """Two argv elements exactly as Chrome reads them — never a quoted shell string."""
         assert NETWORK_ISOLATION_ARGS == (
-            "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost",
+            "--host-resolver-rules=MAP * ~NOTFOUND",
             "--no-proxy-server",
         )
         assert not any(quote in arg for arg in NETWORK_ISOLATION_ARGS for quote in "\"'")
+
+    def test_isolation_leaves_no_host_out(self) -> None:
+        """Not even ``localhost``: the blackhole has no exception (the user's ruling of 2026-10-13).
+
+        ``test_browser_replay_live.py`` shows a real Chrome launched with these
+        switches refusing a replayed page's connections to ``localhost`` while
+        the CDP connection itself keeps working.
+        """
+        (rules,) = [
+            arg for arg in NETWORK_ISOLATION_ARGS if arg.startswith("--host-resolver-rules")
+        ]
+        assert "EXCLUDE" not in rules
 
     def test_routing_switches_are_dropped_from_a_flag_list(self) -> None:
         flags = [

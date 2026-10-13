@@ -310,3 +310,18 @@ class TestHostModes:
             )
             rules = mapped.chrome_args(hermetic=True)[0]
             assert rules.endswith("MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1")
+
+    def test_the_localhost_page_is_served_and_linked_on_localhost_only(self) -> None:
+        """Every route of the page goes by exact ``localhost``; a hermetic recording reaches them."""
+        with FixtureSite(mapped=True) as mapped:
+            assert mapped.url("localhost") == (
+                f"http://localhost:{mapped.main_port}/localhost/page.html"
+            )
+            page = _get(mapped, "/localhost/page.html").text
+            hosts = re.findall(r"(?:https?|wss?)://([^/'\"]+)", page)
+            assert sorted(hosts) == sorted(
+                f"localhost:{port}"
+                for port in (mapped.cross_port, mapped.main_port, mapped.ws_port)
+            )
+            assert _get(mapped, "/localhost/local.js").status_code == 200
+            assert "EXCLUDE localhost" in mapped.chrome_args(hermetic=True)[0]

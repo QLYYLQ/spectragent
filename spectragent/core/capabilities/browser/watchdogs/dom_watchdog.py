@@ -15,10 +15,17 @@ twice; see ``tests/.../test_receptor_hygiene.py``.
 Between cleaning and returning, the DOM budget (``dom/budget.py``) decides
 what the fragment is allowed to cost, and — this is the part that matters
 for the trace — records every cut on ``DOMObs.budget``.
+
+The tab's capture is bounded as a whole (:data:`_DOM_CAPTURE_TIMEOUT_S`,
+§4.14 "命令上限"), whichever cleaner chose its commands: a renderer that
+stops answering costs this attempt its DOM fragment — the observe cycle
+re-fires — instead of holding the tab's serial observation scope until the
+whole event times out.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any, ClassVar
@@ -52,6 +59,15 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: How long one observation waits for the tab's DOM capture — every command
+#: the cleaner chose, frames included — before this attempt goes without its
+#: DOM fragment (§4.14 "命令上限"). The screenshot's 10 s again: the capture,
+#: the screenshot and ``browser_meta``'s bounded reads then fit inside the
+#: 30 s ``BrowserStateRequestEvent``, so a stuck command costs one attempt and
+#: the cycle's re-fire still has room. A 23 MB page's ``DOMSnapshot`` takes
+#: about 1.1 s (§4.14).
+_DOM_CAPTURE_TIMEOUT_S = 10.0
 
 
 class DOMWatchdog(BrowserWatchdog):
@@ -231,8 +247,14 @@ class DOMWatchdog(BrowserWatchdog):
             return None
 
     async def _capture_cdp_data(self) -> tuple[TargetCapture, float]:
-        """Let the configured cleaner select capture calls for this tab."""
-        return await self._cleaner.capture(
+        """Let the configured cleaner select capture calls for this tab, within the bound.
+
+        Raises:
+            TimeoutError: The capture did not finish within
+                :data:`_DOM_CAPTURE_TIMEOUT_S`; its commands are abandoned
+                (late replies are dropped by the client).
+        """
+        capture = self._cleaner.capture(
             DOMCaptureSource(
                 cdp=self._cdp,
                 session_id=self._session_id,
@@ -242,6 +264,11 @@ class DOMWatchdog(BrowserWatchdog):
                 frame_timeout_s=self._frame_capture_timeout_s,
             )
         )
+        bound = _DOM_CAPTURE_TIMEOUT_S
+        try:
+            return await asyncio.wait_for(capture, bound)
+        except TimeoutError:
+            raise TimeoutError(f"the DOM capture got no reply within {bound:g}s") from None
 
     async def _run_js(
         self, method: str, params: dict[str, Any], session_id: str | None

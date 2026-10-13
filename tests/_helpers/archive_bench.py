@@ -275,8 +275,8 @@ def served_but_not_captured(
 ) -> list[str]:
     """Paths the fixture served for *scenarios* that have no record in the archive.
 
-    Set semantics on (path): a refetch of a large static body, a repeat of a
-    request, or a preconnect never makes a served path "uncaptured".
+    Set semantics on (path): a repeat of a request, or a preconnect, never
+    makes a served path "uncaptured".
     """
     wanted = set(scenarios)
     served = {r.bare_path for r in site.requests if r.scenario in wanted}

@@ -7,7 +7,8 @@ output is pinned byte for byte (``test_browser_skyvern_hit_test.py``).
 
 JSON cannot key an object by ``int``; the Skyvern capture keys
 ``skyvern_nodes`` (and the hit-test results) by the page script's integer
-ref, and :func:`capture_from_json` restores those keys.
+ref, and :func:`capture_from_json` restores those keys — the maps the
+archive's own reader restores (``skyvern_capture.INTEGER_KEYED_MAPS``).
 """
 
 from __future__ import annotations
@@ -16,13 +17,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from spectragent.core.capabilities.browser.dom.js.skyvern_capture import INTEGER_KEYED_MAPS
 from spectragent.core.capabilities.browser.dom.models import TargetCapture
 
 #: Directory of the committed captures and their goldens.
 CAPTURES_DIR = Path(__file__).resolve().parent.parent / "test_core" / "test_capabilities" / "data"
-
-#: ``raw_dom`` maps whose keys are the page script's integer refs.
-_INT_KEYED = ("skyvern_nodes", "skyvern_hit_tests")
 
 
 def capture_to_json(capture: TargetCapture) -> dict[str, Any]:
@@ -46,7 +45,7 @@ def capture_to_json(capture: TargetCapture) -> dict[str, Any]:
 def capture_from_json(data: dict[str, Any]) -> TargetCapture:
     """The inverse of :func:`capture_to_json`."""
     raw_dom = dict(data["raw_dom"])
-    for key in _INT_KEYED:
+    for key in INTEGER_KEYED_MAPS:
         if isinstance(raw_dom.get(key), dict):
             raw_dom[key] = {int(ref): value for ref, value in raw_dom[key].items()}
     listeners = data.get("js_click_listener_ids")

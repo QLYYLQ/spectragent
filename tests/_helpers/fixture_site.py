@@ -57,8 +57,13 @@ from websockets.sync.server import serve as serve_websocket
 FIXTURE_PASSWORD = "fixture-password-Zq81Lm"
 #: A planted credential for the JSON POST scenario.
 FIXTURE_TOKEN = "fixture-token-Vx27Kp"
-#: Size of the large bodies — over ``browser.network``'s 5 MB inline tier.
+#: Size of the large bodies — over ``browser.network``'s 5 MB inline tier, so
+#: streamed while the page reads them.
 LARGE_BODY_BYTES = 6 * 1024 * 1024
+#: Size of the ``strict`` page's huge body — over the 64 MiB limit, the
+#: replay's default limit for one body, so recorded ``too_large``. Streamed
+#: from a repeated block, never held whole.
+HUGE_BODY_BYTES = 65 * 1024 * 1024
 #: Size of the Range-served media resource.
 VIDEO_BYTES = 300_000
 
@@ -81,13 +86,18 @@ SCENARIOS: tuple[str, ...] = (
 #: ``clock`` shows the page's pinned clock and seeded randomness in a button;
 #: ``canary`` fetches a host no recording can hold; ``strict`` makes one
 #: request of each miss class to hosts a hermetic recording cannot reach
-#: (a sub-frame document, a beacon, a subresource); ``egress`` is served by
+#: (a sub-frame document, a beacon, a subresource), and fetches one body over
+#: the 64 MiB limit (:data:`HUGE_BODY_BYTES`, recorded without it); ``egress`` is served by
 #: IP literal and reaches the fixture servers only by IP literal — a
 #: ``<link rel=preconnect>`` to cross, a script and a WebSocket — routes that
 #: need no name mapping, so in a replay only the isolation's blackhole
 #: (``MAP *`` covers IP literals, S2a Q2) cuts them, and a replay that let a
-#: request through would reach the fixture.
-REPLAY_SCENARIOS: tuple[str, ...] = ("clock", "canary", "strict", "egress")
+#: request through would reach the fixture; ``localhost`` is the same page on
+#: exact ``localhost`` — served there, its script, a ``<link rel=preconnect>``
+#: to cross and a WebSocket all by ``localhost`` — the name the isolation
+#: once left out (``EXCLUDE localhost``): a recording made against a local
+#: site, which a replay serves from the archive with the fixture still up.
+REPLAY_SCENARIOS: tuple[str, ...] = ("clock", "canary", "strict", "egress", "localhost")
 #: M31's branch pages, kept apart for the same reason: a small shop flow whose
 #: every step is an *index* action — a link (``open-form``), a text input
 #: (``item``), a radio button (``size-large``), a link the page keeps pointing
@@ -382,6 +392,11 @@ class FixtureSite:
         """Exact ``localhost`` — a secure context over plain http, in both modes."""
         return f"http://localhost:{self.cross_port}"
 
+    @property
+    def localhost_origin(self) -> str:
+        """The main server on exact ``localhost`` — reachable without a name mapping, in both modes."""
+        return f"http://localhost:{self.main_port}"
+
     def chrome_args(self, *, hermetic: bool = False) -> list[str]:
         """Switches that make the mapped hostnames reach the fixture servers.
 
@@ -430,6 +445,7 @@ class FixtureSite:
         origin = {
             "service_worker": self.sw_origin,
             "egress": self.ip_origin,
+            "localhost": self.localhost_origin,
             "flywheel_drift": self.site_origin(self.DRIFT_HOST),
             "flywheel_blocked": self.site_origin(self.BLOCKED_HOST),
         }.get(scenario, self.main_origin)
@@ -567,6 +583,9 @@ class FixtureSite:
         ip_main = self.ip_origin
         ip_cross = f"http://127.0.0.1:{self.cross_port}"
         ip_ws = f"ws://127.0.0.1:{self.ws_port}"
+        local_main = self.localhost_origin
+        local_cross = f"http://localhost:{self.cross_port}"
+        local_ws = f"ws://localhost:{self.ws_port}"
         return {
             # redirect: 302 → 301 → 200
             "/redirect/hop1": lambda h, _b: self._redirect(h, 302, "/redirect/hop2"),
@@ -772,7 +791,8 @@ class FixtureSite:
                 ),
                 _HTML,
             ),
-            # one request of each miss class, to hosts a hermetic recording cannot reach
+            # one request of each miss class, to hosts a hermetic recording cannot reach,
+            # and a body over the 64 MiB limit
             "/strict/page.html": static(
                 self._page(
                     "strict",
@@ -781,10 +801,12 @@ class FixtureSite:
                     'style="width:200px;height:60px;border:0"></iframe><script>'
                     "navigator.sendBeacon('http://stats.example.test/collect', 'e=1');"
                     "fetch('http://api.example.test/data.json').catch(() => {});"
+                    "fetch('/strict/huge.bin').then(r => r.arrayBuffer()).catch(() => {});"
                     "</script>",
                 ),
                 _HTML,
             ),
+            "/strict/huge.bin": self._huge,
             # served by IP literal; reaches the fixture servers by IP literal: a
             # preconnect to cross (never a request, never paused), a script
             # (paused at the Request stage) and a WebSocket (never paused);
@@ -801,6 +823,22 @@ class FixtureSite:
             ),
             "/egress/ip.js": static(
                 b"document.getElementById('ip').textContent = 'served by IP literal';\n", _JS
+            ),
+            # the same routes on exact localhost: served there, its script
+            # (paused at the Request stage), a preconnect to cross and a
+            # WebSocket (neither ever paused) — all by localhost
+            "/localhost/page.html": static(
+                self._page(
+                    "localhost",
+                    f'<link rel="preconnect" href="{local_cross}">'
+                    '<button id="local" type="button">pending</button>'
+                    f'<script src="{local_main}/localhost/local.js"></script>'
+                    f"<script>new WebSocket('{local_ws}/localhost/echo');</script>",
+                ),
+                _HTML,
+            ),
+            "/localhost/local.js": static(
+                b"document.getElementById('local').textContent = 'served on localhost';\n", _JS
             ),
             # ── M31's branch pages: every step an index action ──
             "/branch/page.html": static(
@@ -1102,6 +1140,20 @@ class FixtureSite:
         handler.send_header("Content-Length", "0")
         handler.send_header("Cache-Control", "no-store")
         handler.end_headers()
+
+    @staticmethod
+    def _huge(handler: _Handler, _body: bytes) -> None:
+        """:data:`HUGE_BODY_BYTES`, written block by block."""
+        block = bytes(range(256)) * 4096  # 1 MiB
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/octet-stream")
+        handler.send_header("Content-Length", str(HUGE_BODY_BYTES))
+        handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+        if handler.command == "HEAD":
+            return
+        for _ in range(HUGE_BODY_BYTES // len(block)):
+            handler.wfile.write(block)
 
     def _range(self, handler: _Handler, _body: bytes) -> None:
         total = len(self._video)

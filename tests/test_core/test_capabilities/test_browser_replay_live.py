@@ -9,13 +9,18 @@ with a loopback scripted model — ``tests/_helpers/replay_driver.py``:
   pinned clock), then replayed from its archive twice with ``base_time:
   from_archive`` and once with ``run_start``;
 - **the strict flow** — a page that asks hosts a hermetic recording cannot
-  reach (a sub-frame document, a beacon, a subresource), the canary, bodies
-  over the inline tier (``too_large`` / ``streamed_later``), a WebSocket and a
-  main-frame navigation to an unreachable host — recorded, then replayed;
+  reach (a sub-frame document, a beacon, a subresource) and fetches a body
+  over the 64 MiB limit (``too_large``), the canary, bodies over the inline
+  tier (streamed: ``streamed_later``), a WebSocket and a main-frame
+  navigation to an unreachable host — recorded, then replayed;
 - **the egress page** — the fixture servers reached by IP literal: a
   ``<link rel=preconnect>``, a script and a WebSocket — recorded, replayed
   isolated, and replayed once more launched without the blackhole
-  (``isolation: none_acknowledged``, the negative control).
+  (``isolation: none_acknowledged``, the negative control);
+- **the localhost page** — the same routes on exact ``localhost``, the name
+  the blackhole once left out (``EXCLUDE localhost``): a recording made
+  against a local site, replayed isolated with the fixture still up, and
+  replayed once more without the blackhole (the negative control).
 
 Every replay feeds the agent the source run's own recorded completions, so
 the actions are the recording's step for step. The fixture servers count
@@ -25,7 +30,10 @@ non-localhost names, and a replay drops the fixture's name mapping, so those
 names have no route to the fixture with or without isolation: for them the
 counters cannot move. The egress page's IP literals need no mapping — only
 the isolation's blackhole (``MAP *`` covers IP literals, S2a Q2) cuts them —
-and the negative control shows the counters do move without it.
+and the negative control shows the counters do move without it. The
+localhost page's routes need none either: the blackhole cuts exact
+``localhost`` too, while the CDP connection — which the DevTools server takes
+in, not a connection the page makes — keeps driving the replay.
 """
 
 from __future__ import annotations
@@ -211,6 +219,39 @@ def egress(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs:
     return Runs(source, before, replays)
 
 
+@pytest.fixture(scope="module")
+def local(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Runs:
+    """The localhost page: recorded on localhost, replayed isolated and without the blackhole."""
+    base = tmp_path_factory.mktemp("localhost")
+    start = site.url("localhost")
+    with ScriptedLLMServer([driver.done("visited")]) as llm:
+        raw = driver.record_config(site=site, llm=llm, trace_dir=base / "record")
+        source = asyncio.run(driver.run_task(raw, task="Visit the page.", start_url=start))
+    source.require_finished(1, "visited")
+    before = driver.tree_hash(source.run_dir)
+    replays = {
+        "isolated": _replay(site, raw, source, base / "replay", start_url=start),
+        "unisolated": _replay(
+            site,
+            raw,
+            source,
+            base / "replay-unisolated",
+            start_url=start,
+            isolation="none_acknowledged",
+        ),
+    }
+    return Runs(source, before, replays)
+
+
+def _localhost_urls(site: FixtureSite) -> tuple[str, str, str]:
+    """The localhost page, its script and its WebSocket — all on exact ``localhost``."""
+    return (
+        site.url("localhost"),
+        f"{site.localhost_origin}/localhost/local.js",
+        f"ws://localhost:{site.ws_port}/localhost/echo",
+    )
+
+
 def _egress_urls(site: FixtureSite) -> tuple[str, str, str]:
     """The egress page, its script and its WebSocket — all by IP literal."""
     return (
@@ -278,16 +319,18 @@ def test_two_replays_give_identical_screenshots(flow: Runs) -> None:
     assert first == second
 
 
-def test_replay_has_no_live_egress(flow: Runs, strict: Runs, egress: Runs) -> None:
+def test_replay_has_no_live_egress(flow: Runs, strict: Runs, egress: Runs, local: Runs) -> None:
     """Not one TCP connection, not one HTTP request, on any fixture server, during any isolated replay.
 
-    The egress replay is the one with a route to cut (the next two tests);
-    the others ask only for mapped names, which a replay cannot reach anyway.
+    The egress and localhost replays are the ones with a route to cut (the
+    tests below); the others ask only for mapped names, which a replay cannot
+    reach anyway.
     """
     isolated = [
         *flow.replays.items(),
         *strict.replays.items(),
         ("egress", egress.replays["isolated"]),
+        ("localhost", local.replays["isolated"]),
     ]
     for name, replayed in isolated:
         assert replayed.accepts_after == replayed.accepts_before, name
@@ -343,8 +386,61 @@ def test_without_isolation_the_egress_page_reaches_the_fixture(
     assert page in hits and script in hits
 
 
-def test_replay_leaves_the_source_untouched(flow: Runs, strict: Runs, egress: Runs) -> None:
-    for runs in (flow, strict, egress):
+def test_isolation_blocks_bypassing_connections_to_localhost(
+    site: FixtureSite, local: Runs
+) -> None:
+    """A preconnect and a WebSocket to exact ``localhost`` connect nowhere in an isolated replay.
+
+    Neither ever pauses in Fetch, so only the blackhole stands between them
+    and a local server that is still up — the hole ``EXCLUDE localhost`` left
+    open. The WebSocket was attempted (logged as a miss); the negative
+    control, the same replay launched without the blackhole, shows both
+    connections reaching the fixture, so the zero is not vacuous. In both,
+    every request Chrome paused was answered from the archive: not one HTTP
+    request reaches the main server.
+    """
+    _page, _script, websocket = _localhost_urls(site)
+    isolated = local.replays["isolated"]
+    assert isolated.accepts_after == isolated.accepts_before
+    assert [(e.kind, e.reason, e.answer) for _, e in isolated.log() if e.url == websocket] == [
+        ("miss", "websocket", "none")
+    ]
+    control = local.replays["unisolated"]
+    assert control.accepts_after["cross"] > control.accepts_before["cross"]
+    assert control.accepts_after["ws"] > control.accepts_before["ws"]
+    assert control.requests_after["main"] == control.requests_before["main"]
+
+
+def test_a_recording_against_a_localhost_site_replays_from_the_archive(
+    site: FixtureSite, local: Runs
+) -> None:
+    """Recorded against ``localhost``, replayed from the archive alone, the server still up.
+
+    The recording reached the fixture on ``localhost``; the isolated replay
+    served the page and its script from the source run (the page shows what
+    the script writes, as recorded) without one HTTP request to the fixture —
+    and the CDP connection drove the whole replay through a browser whose
+    resolver blackholes every name, ``localhost`` included.
+    """
+    page, script, _websocket = _localhost_urls(site)
+    recorded = {(r.server, r.path, r.host) for r in site.requests_for("localhost")}
+    host = f"localhost:{site.main_port}"
+    assert {("main", "/localhost/page.html", host), ("main", "/localhost/local.js", host)} <= (
+        recorded
+    )
+    isolated = local.replays["isolated"]
+    hits = [(e.url, e.run_id) for _, e in isolated.log() if e.kind == "hit"]
+    assert hits == [(page, local.source.trace.run_id), (script, local.source.trace.run_id)]
+    assert isolated.requests_after == isolated.requests_before
+    signatures = driver.step_signatures(isolated.outcome.trace)
+    assert signatures == driver.step_signatures(local.source.trace)
+    assert any("served on localhost" in element for element, _ in signatures[0].elements)
+
+
+def test_replay_leaves_the_source_untouched(
+    flow: Runs, strict: Runs, egress: Runs, local: Runs
+) -> None:
+    for runs in (flow, strict, egress, local):
         assert driver.tree_hash(runs.source.run_dir) == runs.source_tree_before
 
 
@@ -389,14 +485,17 @@ def test_strict_classes_end_to_end(strict: Runs) -> None:
     assert (main_frame.frame, main_frame.answer, main_frame.diverged) == ("main", "failed", True)
     subresource = misses["http://api.example.test/data.json"]
     assert (subresource.request_class, subresource.status) == ("subresource", 404)
-    too_large = misses["http://shop.example.test/large/data.bin"]
+    too_large = misses["http://shop.example.test/strict/huge.bin"]
     assert (too_large.reason, too_large.status, too_large.record_id is not None) == (
         "too_large",
         404,
         True,
     )
     hits = {entry.url for _, entry in strict.replays["strict"].log() if entry.kind == "hit"}
-    assert "http://shop.example.test/large/static.js" in hits, "streamed_later is served"
+    assert {
+        "http://shop.example.test/large/static.js",
+        "http://shop.example.test/large/data.bin",
+    } <= hits, "streamed bodies are served, whatever their type"
     reader = open_archive(strict.replays["strict"].outcome.run_dir)
     gone_step = 3
     assert diverged_steps(reader) == [gone_step]

@@ -162,9 +162,10 @@ def to_replay_config(
 
     The fixture's name mapping is dropped either way, so a mapped name has
     no route to the fixture in a replay; only IP-literal and ``localhost``
-    traffic does (the ``egress`` page). ``isolation: none_acknowledged`` —
-    the negative control of the egress tests — keeps ``--no-proxy-server``,
-    so it differs from an isolated replay only by the blackhole, and nothing
+    traffic has one (the ``egress`` and ``localhost`` pages), and an
+    isolated replay's blackhole cuts both. ``isolation: none_acknowledged``
+    — the negative control of those tests — keeps ``--no-proxy-server``, so
+    it differs from an isolated replay only by the blackhole, and nothing
     reaches the machine's own proxy.
     """
     replay = copy.deepcopy(raw)

@@ -70,14 +70,14 @@ hook:
 | 路径 | 内容 |
 |---|---|
 | `env/steps/NNN/browser.network/exchanges.warc.gz` | 第 NNN 步的提交收集到的交换，WARC/1.1，body 是解码后的字节；同一 run 里重复的 payload 写成 revisit 记录 |
-| `env/steps/NNN/browser.network/index.jsonl` | 同一步的索引：`kind: exchange`（每个交换恰好一行，带 `body_status`），`kind: body`（之后补取到的大 body），`kind: pending`（收集时还在途） |
+| `env/steps/NNN/browser.network/index.jsonl` | 同一步的索引：`kind: exchange`（每个交换恰好一行，带 `body_status`），`kind: body`（边下边收的大 body 收完时一行，指向它的 blob），`kind: pending`（收集时还在途） |
 | `env/steps/NNN/browser.network/websocket.jsonl` | WebSocket 帧（方向、opcode、时间、内容），有帧时才有 |
 | `env/steps/NNN/browser.storage/storage.json` | cookie 和每个 origin 的 local / session storage，值原样保存；状态变了才写，某一步的状态是那一步及之前最近的一份 |
-| `env/blobs/sha256/<ab>/<rest>` | 内容寻址的文件，run 内只存一份：`browser.dom_raw` 的 `dom-<cycle>-<tab>.json.gz`，补取的大 body `body-<sha>.bin` |
+| `env/blobs/sha256/<ab>/<rest>` | 内容寻址的文件，run 内只存一份：`browser.dom_raw` 的 `dom-<cycle>-<tab>.json.gz`，边下边收的大 body `body-<sha>.bin` |
 | `env/run.browser.json`，之后的 `env/run.browser.1.json`…… | 环境指纹：Chrome 版本、UA、viewport、DPR、时区、语言、档位与参数（含 T0 和种子）、shim 摘要、启动开关摘要、网络来源、脱敏策略与隐私标记；内容变了才写新的一版 |
 | `env/trailing/KK/<archiver_id>/<name>` | run 结束时那次收集的证据，不归任何一步 |
 
-`body_status` 的取值：`ok`、`redirect`、`too_large`（声明的长度超过 `max_inline_body_bytes`，默认 5 MB，又不是能事后补取的静态 GET）、`streamed_later`（大的静态资源，事后补取）、`websocket`、`incomplete`（超时或 run 结束时没读完）。UI-TARS 是纯视觉 agent，不协商 DOM，`browser.dom_raw` 会在每个观测 cycle 自己多采一次 DOM。各归档器的其余旋钮（`body_read_timeout_s`、`drain_timeout_s`、`strip_request_headers`、`self_capture_timeout_s` 等）见生成的 schema，拼错的键在校验时被拒。
+`body_status` 的取值：`ok`、`redirect`、`too_large`（超过 64 MiB，回放默认能送出的上限，不论类型都不存）、`streamed_later`（声明的长度超过 `max_inline_body_bytes`，默认 5 MB：页面下载的同时边下边收，不扣响应；请求结束时 `kind: body` 行说收没收全）、`websocket`、`incomplete`（超时、请求中断，或 run 结束时没收完）。超过 5 MB 的文档例外，照样在暂停里读完（导航的 body 提交之后才开得了流）。UI-TARS 是纯视觉 agent，不协商 DOM，`browser.dom_raw` 会在每个观测 cycle 自己多采一次 DOM。各归档器的其余旋钮（`body_read_timeout_s`、`drain_timeout_s`、`strip_request_headers`、`self_capture_timeout_s` 等）见生成的 schema，拼错的键在校验时被拒。
 
 pinned 的旋钮：`base_time`（录制用默认的 `run_start`，回放和分叉用 `from_archive`）、`random_seed`、`timezone`（默认 `UTC`）、`locale`（默认 `en-US`）、`device_scale_factor`（默认 1.0）、`user_agent`（默认不固定，只固定 `Accept-Language`）、`reduced_motion`（默认 `true`）。回放会把这些参数、viewport 和 Chrome 启动命令行的摘要（调试端口、profile 目录和网络路由开关除外）与录制逐项比较，所以录制、回放、分叉三份配置的档位参数、`viewport_width` / `viewport_height` 和 backend 块（`headless`、窗口大小、`extra_args`……）都要相同。
 
@@ -132,7 +132,7 @@ network_source:
 `trace_writer.archive` 里用 `browser.replay_log` 代替 `browser.network`，其余归档器不变。`browser.replay_log` 记回放日志，回放没有它就被拒；`browser.network` 只录线上流量，回放没有自己的线上流量（送出的每个字节都已经在源归档里），所以它在 `archive` 来源下被拒，报错点名 `browser.replay_log`。反过来，`live` 来源绑定 `browser.replay_log` 也被拒，因为没有回放可记。这几条都在 `prepare()` 里报，`--dry-run` 也一样。
 
 - `prepare()` 打开源 run（只读已提交的部分），拿它的环境指纹比较本次配置（setup 启动 Chrome 之前再比一次）：档位和参数（`base_time` 除外）、shim、viewport、启动开关摘要。有一项不符就拒绝运行，每条点名两边的值。启动开关摘要只覆盖 provider（`local_chrome`）拼出的启动参数，调试端口和 profile 目录换成占位符，网络路由开关两边都去掉，可执行文件路径和 Chrome 版本都不在里面。`headless: true` 会加上 `--headless=new`，所以只改 `headless` 也会不符；要看着浏览器回放，录制和回放都得写 `headless: false`，也就是重新录制。Chrome 版本不同、档位没固定 UA 而浏览器 UA 不同、脱敏策略不同只警告，写进回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
-- `isolation: required`（默认）给 `local_chrome` 加 `--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost` 和 `--no-proxy-server`，并拒绝会绕过它们的旋钮：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的路由开关、不是 `about:blank` 的 `startup_url`。写 `isolation: none_acknowledged` 时只靠 Fetch 拦截，preconnect 和 WebSocket 会连到真实网络。
+- `isolation: required`（默认）给 `local_chrome` 加 `--host-resolver-rules=MAP * ~NOTFOUND` 和 `--no-proxy-server`（没有例外，`localhost` 也断：对着本机网站录的 run 照样从归档回放，回放时那个服务开着也连不上），并拒绝会绕过它们的旋钮：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的路由开关、不是 `about:blank` 的 `startup_url`。写 `isolation: none_acknowledged` 时只靠 Fetch 拦截，preconnect 和 WebSocket 会连到真实网络。
 - `base_time: from_archive` 让页面时钟从录制时的 T0 开始，只能配 `archive` 来源。`shift_dates: none`（默认）原样送出录下的 `Date`、`Expires`、`Last-Modified` 和 cookie 过期时间。
 - 匹配默认用 `levels: [exact, normalized]`，模糊一级（`fuzzy`）要显式打开；规范化会去掉 `utm_*`、`fbclid` 这类易变参数。每条录下的记录按录制顺序只送一次，用完之后重复最后一条，并在日志里记 `exhausted`。站点规则放在 `configs/replay_rules/<domain>.yaml`，写法见[它的 README](../configs/replay_rules/README.md)。
 - `strict` 处理归档里没有的请求：主 frame 的文档 `Fetch.failRequest` 并标 `diverged`；子 frame 的文档同样失败；beacon、ping、CSP 报告、内置的分析类主机、`extra_benign_hosts` 和站点规则 `synthesize_204` 命中的回 204；其余子资源回 404。回放编出来的应答都带 `x-replay-miss: 1` 头。归档里没有的 CORS 预检合成 204。
@@ -458,9 +458,8 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 
 - 嵌套的 dedicated worker（worker 里再起的 worker）的脚本在 Request 和 Response 两个阶段都不经过 Fetch：录不到，也回放不了。录制时记成 `incomplete`，回放时看得见的记成 `unservable`。
 - WebSocket 不回放。录制时帧写进 `websocket.jsonl`；回放时握手记为 miss（`reason: websocket`），隔离下握手直接失败。
-- 隔离留着 `EXCLUDE localhost` 这个口子：绕过 Fetch 的流量（preconnect、嵌套 worker 的脚本、WebSocket）如果指向精确的 `localhost`，回放时仍能连到本机的服务。
-- 页面定时器发起的导航：观测开始前会等主 frame 在途的跨文档导航提交（最多 10 s），但检查之后才由定时器发起的导航跟踪不到。截图命令有 10 s 的上限，那一次采集失败后重发，这一步因此多花约 10 s。
-- 归档开着时，Response 阶段读 body 会把响应扣到下载完成，页面拿不到渐进加载的 HTML 或流式媒体。SSE 和长轮询被扣到 `body_read_timeout_s`，之后记为 `incomplete`。
+- 页面定时器发起的导航：观测开始前会等主 frame 在途的跨文档导航提交（最多 10 s），但检查之后才由定时器发起的导航跟踪不到。截图命令有 10 s 的上限，那一次采集失败后重发，这一步因此多花约 10 s。DOM 采集同样有 10 s 的上限，读文档戳的小命令 2 s：渲染进程不回应时，一次观测尝试最多花掉这些时间，不会卡满整个 30 s。
+- 归档开着时，内联读的 body（5 MB 以内、没声明长度的，以及文档）会把响应扣到下载完成，页面拿不到渐进加载的 HTML。更大的 body 边下边收，不扣；但页面不读的 body（`fetch()` 之后从不读，或停住的视频）流不完，记成 `incomplete`。SSE 和长轮询被扣到 `body_read_timeout_s`，之后记为 `incomplete`。
 - pinned 不固定 `performance.now` 和定时器。没有 `Last-Modified` 头时 `document.lastModified` 读真实时钟，不带参数的 `Intl.DateTimeFormat().format()` 也读真实时钟。`base_time: from_archive` 下，页面 JS 设的绝对过期时间的 cookie 可能被 Chrome 丢掉。
 - 回放 `none` 档位的录制时，时区、语言、DPR 不比较，HTTPS 升级的试探可能显示为主 frame 文档 miss。
 - 模糊匹配可能送错资源，日志里记着 `level: fuzzy` 和得分；用完的记录重复最后一条（`exhausted`）是有意的。
