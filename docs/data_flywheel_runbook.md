@@ -425,7 +425,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
    ```
 
    以模型调用失败结束的 run（429、超时、被拒的 schema，`error_phase: llm`）列在 `model_failures` 里。它们不会让站点进剔除名单。teacher 调用失败的分叉是空分叉，不计入 `miss_policy` 依据的占比，按原因记在 `metrics.branch_coverage.empty`；原路径回放在最后一步失败的 run 没有终止截图。预算里给重跑这些任务留出余量。
-5. 磁盘。每次模型调用的消息文件都内联了之前的每一张截图，`messages/` 随步数平方增长，此外还有 WARC 里的 body 和原始 DOM。真实页面上每个任务（各段合计）粗估 50 到 150 MB；报告的存储和保留期两节给出实测的字节数。
+5. 磁盘。UI-TARS 每次模型调用都带着之前的每一张截图，但 trace 里每张截图只存一份（`messages/images/`，报告存储一节的 `messages:images` 类别），调用记录里只写引用，所以 `messages/` 随不同截图的张数线性增长；此外还有 WARC 里的 body 和原始 DOM。截图只存一份之前，一个 12 步的 UI-TARS 录制在 `messages/` 里存了 78 份截图（32.9 MB），不同的只有 10 张（3.9 MB）；现在同一个录制的 `messages/` 约 3 MB。三个站点的冒烟链按每个任务各段合计约 74 MB（之前约 102 MB），300 个任务约 22 GB；真实页面上的字节以报告的存储和保留期两节的实测为准。
 6. 评测默认关闭（`evaluate: false`，即 `--no-eval`）。给 `record` 段写 `evaluate: true` 并在录制 YAML 里加 `evaluator:` 块，每个录制的任务会多一次评测器调用，判定写到 `<root>/evals/record/` 和每个 trace 的 `evals/`。
 7. 报告之后，把 `sections.sites.yaml` 放进导出配置的 `filters`，手动再导一次。
 

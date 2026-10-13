@@ -2299,7 +2299,7 @@ class TaskContext(BaseModel):
 
 - **旋钮**：`data_dir`（sources 的根目录，默认 `traces`）；`sources: list[str]`（相对根的 glob，展开后按路径排序；必须相对根、不含 `..`，构造时检查；一个匹配到的路径不是目录或没有 `manifest.json` 就不是 run，忽略）；`step_selector` 受体（`StepSelectorRegistrar`，`selector_id`：`explicit{steps}` / `every_k{k, offset}` / `all` / `last`，`core/data_loader/task/step_selector/`）；`branches_per_step`（≥ 1）；`agent_outcome`（`any` 默认 / `done` / `max_steps` / `error` / `timeout` / `vetoed`：源 run 的 agent 怎么结束，读 `result.json` 的 `agent_done`，只在设了时读；没有 `result.json` 的源过不了设了值的筛选）；`require_eval`（`RequireEval{evaluator_id, label: 1, slug: null}`，pydantic dataclass，在 `core/data_loader/task/require_eval.py`：至少一份该评测器的 `verdict_source == "graded"` 的判定，其 `predicted_label == label`，给了 `slug` 时只看那一份；经 `RunTrace.evals()` 读，§5.5，不读 `result.json`）；`require_archive`（默认 `["browser.network"]`，`[]` 不要求任何归档：源 run 绑定了这些归档器、且它们的 capability 有已提交的 run 记录即环境指纹）；`on_unbranchable: raise | skip`（默认 `raise`）；`subset` 只是标签。`sources` 与 `require_archive` 在 YAML 里的默认写作 `null`，意思就是上面两个默认值：conscribe 读签名生成配置，签名里写不了非空的列表默认值（列表是共享的可变默认，`tuple[str, ...]` 被生成成 pyright 拒绝的 `tuple[str, Ellipsis]`）。
 - **两本账（用户 2026-10-13 的裁决）**：trace 自己那本账是**硬条件**，不是筛选、关不掉：检查点永远是源 trace 已关闭、而且完整到的那一步。`writing` 的 trace（还在写，或进程死在收尾之前）没有可分叉的步（记在 `loader.skipped`，原因 `no branchable step: its trace was never closed ...`）；`incomplete` 的 trace 只有 `complete_through` 之前（含）的步是候选，所以一个在第 t 步出洞停下的 run 仍然贡献 0..t-1 的每个检查点，一个被限流打断的 30 步 run 前 25 个检查点照样能用，尾部失败（收尾收集、终止观测）的 run 一个检查点也不少。agent 那本账是**筛选**：`agent_outcome`，默认 `any`。
-- **筛选与前提**：`agent_outcome` / `require_eval` 是筛选，不符的源跳过（记 INFO，也记在 `loader.skipped`，原因以 `filtered:` 开头；筛掉的源从不触发抛错）。前提不满足的源按 `on_unbranchable` 抛错或跳过，原因都记在 `loader.skipped`（源路径 → 原因）：读不回来的 trace（manifest、配置、步记录、`result.json`（`agent_outcome` 设了时）或 `evals/` 坏了；比当前格式旧的 trace 也在此列，`RunTrace` 只读 format 3，§5.5）；源 run 本身是分叉 run（`config.branch` 不为空）或回放 run（`task_setup` 里有 `replay_archive`）；`require_archive` 不满足；环境 setup context 拿不到（见下）；源 run 的 `run_id` 与另一个通过筛选的源重复（共享这个 `run_id` 的每个源都不可分叉，因为它们的任务 id 会撞）。`raise` 一次列出全部不可分叉的源（一个 `BenchmarkDataError`），这次扫描不发布任何任务；`skip` 记 WARNING。
+- **筛选与前提**：`agent_outcome` / `require_eval` 是筛选，不符的源跳过（记 INFO，也记在 `loader.skipped`，原因以 `filtered:` 开头；筛掉的源从不触发抛错）。前提不满足的源按 `on_unbranchable` 抛错或跳过，原因都记在 `loader.skipped`（源路径 → 原因）：读不回来的 trace（manifest、配置、步记录、`result.json`（`agent_outcome` 设了时）或 `evals/` 坏了；比当前格式旧的 trace 也在此列，`RunTrace` 只读 format 4，§5.5）；源 run 本身是分叉 run（`config.branch` 不为空）或回放 run（`task_setup` 里有 `replay_archive`）；`require_archive` 不满足；环境 setup context 拿不到（见下）；源 run 的 `run_id` 与另一个通过筛选的源重复（共享这个 `run_id` 的每个源都不可分叉，因为它们的任务 id 会撞）。`raise` 一次列出全部不可分叉的源（一个 `BenchmarkDataError`），这次扫描不发布任何任务；`skip` 记 WARNING。
 - **环境 setup context**：取源 `TraceConfig.task_setup.context`（M28 起记录）；没有这份记录、或它的脱敏台账不空（值被换成了 `<redacted>`，照它重建的环境不是源环境）时，按源 run 的 `(benchmark, subset, task_id)` 用源 benchmark 的 TaskLoader 重新解析（一次扫描里每个 `(benchmark, subset)` 只建一个加载器）；都不行就是不可分叉。分叉任务的 env 部分 = 这份 context，加上 `replay_archive = 源 run 目录的绝对路径`。
 - **选步**：候选是已提交的、`origin == "policy"` 的步 t，要求 0..t 每一步都已提交、trace 完整到第 t 步（`t ≤ complete_through`）、第 t 步的观测已记录（`error_phase != "observe"`）；`step_selector` 在候选里选，候选之外的步（如 `explicit` 写了超出某个源长度的步）跳过并记原因，键是 `<源路径>#s<t>`（没提交、前缀有缺口、超出 trace 完整到的那一步、是恢复或终止步、观测没记录）。选步策略是纯函数：`all` 返回全部候选；`every_k` 按**步号**数（`offset`、`offset + k`……里是候选的那些），不按候选里的位置，所以一个源缺了第 4 步时 `k: 2` 仍然选 0、2、6；`explicit` 原样返回写了的每一步（至少一步，构造时检查，因为生成的配置不带 `min_length`），由加载器判断哪些是候选；`last`（M33）只返回最后一个候选，每个源 run 恰好一步，长短不一的源也一样（`explicit` 写不出"每个源的最后一步"），度量闸门的原路径回放段用它（§4.16）。一个源一个候选都没有时记在 `loader.skipped`，不抛错。
 - **展开**：每个选中的 t 展开 `branches_per_step` 个任务，任务 id `<source_run_id>/s<t>/b<i>`，`branch_group_id = <source_run_id>/s<t>`；`TaskDefinition.task_text` 是源 run 的任务文本，`env_type` 是源 run 的，`difficulty` / `domain` / `tags` 取自源 `TraceConfig.extra`（结果照样按它们切片），`setup` 在 env 类型有对应 setup 变体时照 env 部分写一份（只是描述；跑的始终是 `get_task_context` 的 env 部分）；`get_task_context` 给出 env（上面那份）、loop（`checkpoint`）与 branch（`BranchProvenance`），每次给一份副本。
@@ -3219,7 +3219,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 - **anti-bot / Cloudflare**：录制里文档请求（`resourceType: Document`，主 frame 与子 frame 都算，验证码 iframe 也是拦截）的应答带拦截特征（browser 的 `challenge_documents`：状态 403 / 429 / 503，且有 `cf-mitigated: challenge` 头、或 `server: cloudflare` 加 `cf-ray`）的站点、run 与步；建议：剔除。只认应答头，不带这些头的拦截页面认不出来（写明的残余）。
 - **重复分叉率**：同一 `branch_group_id` 里检查点步执行的动作（规范 JSON）与排在前面的分支相同的分叉，占参与比较的分叉的比例（与导出的 `duplicate_of` 同一规则：检查点步没有动作的分叉不比较，计在 `not_compared`——三次失败的 teacher 调用不是两个重复），并对照数据集 manifest 的 `duplicates`。teacher 的采样够不够分散就看它；它高时再考虑每个分支不同的提示（§4.1 "teacher 采样"）。
 - **POST 分叉的 miss**：分叉 run 检查点及之后方法为 POST 的 miss（文档、子资源分开），有 POST miss 的分叉占比。
-- **存储增长与压缩评估的输入**：按角色、按类别的字节（`observations:<fragment>` 的 json、`artifacts:<fragment>`（截图）、`messages`、`steps`（步记录与 extra 索引）、`env:<归档器>`、`env:blobs`（内容寻址）、`env:run`（capability 的 run 记录）、`run`（manifest / config / result）），每个 run、每步的平均；文件是 `RunTrace.committed_files` 列出的那些（run 自己的三个文件、manifest 与 extra 索引列出的；不按目录树走，路径的形状与"留在 run 目录里"由 RunTrace 检查，§5.5），每个路径计一次，字节经 `read_committed` 读，类别按条目的 `kind` 与 `archive` 定（`metrics.storage_category`）；还没压缩的字节用 gzip（level 6）实测压缩比；按文件开头的字节认出已经压缩的（gzip、PNG、JPEG、GIF、WebP：截图、WARC、`dom_raw`），只报大小；数据集目录按文件树的字节。
+- **存储增长与压缩评估的输入**：按角色、按类别的字节（`observations:<fragment>` 的 json、`artifacts:<fragment>`（截图）、`messages`（调用记录与 output schema）、`messages:images`（prompt 里内联的图片，每个 run 每张只存一份，§5.3）、`steps`（步记录与 extra 索引）、`env:<归档器>`、`env:blobs`（内容寻址）、`env:run`（capability 的 run 记录）、`run`（manifest / config / result）），每个 run、每步的平均；文件是 `RunTrace.committed_files` 列出的那些（run 自己的三个文件、manifest 与 extra 索引列出的；不按目录树走，路径的形状与"留在 run 目录里"由 RunTrace 检查，§5.5），每个路径计一次，字节经 `read_committed` 读，类别按条目的 `kind` 与 `archive` 定（`metrics.storage_category`）；还没压缩的字节用 gzip（level 6）实测压缩比；按文件开头的字节认出已经压缩的（gzip、PNG、JPEG、GIF、WebP：截图、WARC、`dom_raw`），只报大小；数据集目录按文件树的字节。
 - **保留期与容量**：每个角色每个 run 的平均字节、数据集每个样本的字节；每个任务的字节 = 一次录制 + 其余每个角色"每次录制有几个 run × 每个 run 的字节" + 数据集每个任务的字节；按 `RETENTION_PROJECTION_TASKS`（10、20、300：第一次 live run、完整的 live 链、整个 `All` 子集）投影。
 - **导出产出**：每个切分的样本数、按原因的丢弃与跳过（数据集 manifest，经导出写它用的同一个 `DatasetManifest` 读），`labels.step_status == action_failed` 的样本占比（导出该留还是该丢它们；每行 `<split>.samples.jsonl` 的样本经导出 dump 它用的同一个 `CanonicalStepSample` 读，`metrics.dataset_samples`）。读不回来的 manifest 或样本行是点名文件（与行号）的 `DatasetFormatError`，不读成 0。
 - **待决的决定**：`miss_policy`（`strict` 够不够用；"miss 时转去真实网络"不是 miss 策略，而是一个新的网络来源，§4.14）看分叉覆盖、子资源 miss 的分布与 POST miss（`STRICT_MIN_IN_ARCHIVE_SHARE` 0.9：动了手的分叉里零文档 miss 的占比不低于它就留 `strict`，空分叉不进分母）；`recording_coverage`（录制时扩大覆盖：预取或探索）看动了手的分叉在检查点之后的文档 miss 里 GET 到未录 URL（`no_match`）的占比（`EXPAND_COVERAGE_MIN_UNRECORDED_SHARE` 0.5；没有文档 miss 时结论是"不扩大"）；`site_rules`（要不要自动生成站点规则）看所有回放 run（`same_path` 与 `branch`）的近邻 miss（browser 的 `site_rule_candidates`：最佳候选（匹配器排第一的那个）同 host、同 path、同方法、规范化查询参数不同的 `no_match`，按 host 与不同的参数名计数；某个 host 达到 `SITE_RULE_MIN_NEAR_MISSES` 2 次就建议生成 `ignore_query` 规则供人审）；`retention` 看上一条的容量数（与 `recommendations.sections.retention` 是同一条建议）。这几个决定的输入（分叉的文档 miss、近邻 miss）单列在报告的 `decision_inputs` 里。
@@ -3260,7 +3260,7 @@ browser 证据的格式知识留在 browser 的包里：纯函数，只经 `Arch
 - 拦截只按应答头识别；隐私只认植入的值与凭证的形状（同 §4.15 "隐私"的残余），而且只看两道门：`env/` 与 trace 的其余文件不搜，一个只落在那里的秘密这一项看不到（它们不离开这台机器，§5.6）。
 - 度量只认 browser 的证据格式；第二条数据线见本节开头。
 - 一次回放停在错误页上时，Chrome 的错误页写着没送到的 URL：URL 每次不同的发散站点，回放确定性按截图比必然"不同"，报告照实计数（演练里的发散站点就是这样）。
-- 存储的字节是 trace 落盘的样子：每次模型调用的消息文件内联了它之前的每一张截图（UI-TARS 的 memory 保留全部截图），所以 `messages` 随步数平方增长。这是保留期与压缩评估的主要输入，演练的 fixture 页面太小，看不出真实比例。
+- 存储的字节是 trace 落盘的样子。UI-TARS 的 memory 保留全部截图，每次模型调用的 prompt 都带着之前的每一张；trace 里每张图只存一份（`messages:images`，§5.3 "调用记录里的图片只存一份"），调用记录只写引用，所以 `messages` 随不同截图的张数线性增长，不再随步数平方增长（发给模型的 token 仍然是平方增长的，那是 agent 的选择）。这是保留期与压缩评估的主要输入，演练的 fixture 页面太小，看不出真实比例。
 
 #### 代码位置
 
@@ -3291,8 +3291,8 @@ browser 证据的格式知识留在 browser 的包里：纯函数，只经 `Arch
 ```
 commit_step(step, record, *, fragments, llm_calls, extra_files) 的顺序:
   0. 校验（写任何字节之前）：路径规则见下；内容寻址文件的摘要与路径一致
-  1. 内容物：fragment JSON 与 artifact、每次 LLM 调用的记录、本 run 还没提交过的 output schema、
-     extra 文件 —— 逐个 tmp → fsync(file) → os.replace；不做逐文件的目录 fsync，
+  1. 内容物：fragment JSON 与 artifact、每次 LLM 调用的记录、本 run 还没提交过的 output schema
+     与 prompt 图片、extra 文件 —— 逐个 tmp → fsync(file) → os.replace；不做逐文件的目录 fsync，
      只记下写入触及的目录和新建的目录
   2. steps/NNN.json（StepRecord）；有 extra 文件时再写 steps/NNN.extra.json（ExtraFileIndex），
      同样只做数据 fsync
@@ -3319,7 +3319,7 @@ class WALWriter:
         """write_durable config.json（按需建 run 目录和 traces/），建 steps/ observations/ messages/ evals/，
         把这些目录项一批 fsync：run 目录，加上为它新建的每个目录的父目录（traces/；这个 run
         新建了 traces/ 时再加 traces/ 的父目录），然后才 atomic_write 初始 manifest
-        （format_version=3，last_step_completed=-1，complete_through=-1，status=writing）。
+        （format_version=4，last_step_completed=-1，complete_through=-1，status=writing）。
         先有 config.json 才有 manifest：run 存在了，它的配置就一定在。之后的提交只 fsync run 目录
         之内的目录，run 目录自己的名字只在这里落盘。manifest 写成之前任何一步失败，都不留下 run。"""
 
@@ -3370,11 +3370,13 @@ class EncodedFragment:               # encode_observation(step, observation) -> 
 class EncodedLLMCall:                # encode_llm_call(step, call, pending) -> EncodedLLMCall
     file: TraceFile                  # messages/NNN_call_KK.json
     output_format: TraceFile | None = None  # messages/output_formats/<sha256>.json（内容寻址）
+    images: tuple[TraceFile, ...] = ()      # messages/images/<sha256><后缀>（内容寻址）：prompt 里内联的每张不同的图片
 ```
 
 `encode_llm_call` 的 `pending`（`PendingLLMCall`）是 TraceWriter 在 `around_ainvoke` 里登记的那次调用：登记那一刻取下的 prompt 的 JSON 快照（之后 memory 或 serializer 再改 message 对象，记录不变）、按类缓存、已编码的请求 schema（`EncodedOutputFormat`：`OutputFormatRef` 加它指向的内容寻址文件）、开始时间，以及结局——由 `complete` / `fail` / `cancel` 中先到的那一个定下，同样在发生时取快照（§5.4）。快照由 `snapshot(value)` 取：pydantic model、dataclass、映射和序列按结构转换，bytes 记成 base64，其余 JSON 装不下的东西变成它的 `str()`，自身永不抛错。同一模块还有：
 
 - `encode_llm_calls(step, pending, *, first_call=0)`：按开始顺序编号，从 `first_call` 起；TraceWriter 用它让一步的调用接在这一步已提交的 trailing 调用之后；
+- `store_prompt_images(messages) -> StoredPrompt`：`encode_llm_call` 用它把 prompt 里内联的每张图片换成对存储文件的引用（规则见 §5.3 "调用记录里的图片只存一份"），得到换好的 messages、每个引用在 messages 里的位置（记录的 `image_refs`）和要提交的图片文件（`EncodedLLMCall.images`，同一次调用里重复的图片只列一次）。它从不抛错：走不完的 prompt 原样记录，图片留在原处，两种写法都无损。读侧的逆运算是 `restore_prompt_images(record, text_of)`（按 `image_refs` 把每个位置上的引用换回 `text_of(ref)` 给出的原文，就地修改，并去掉 `image_refs`；位置或引用不合法抛 `ValueError`）和 `prompt_image_text(ref, data)`（由存储文件的字节还原原文；该是 UTF-8 文本却不是时抛 `ValueError`）；
 - `encode_output_format(output_format) -> EncodedOutputFormat`：回复模型的 `model_json_schema()`，规范化 JSON 加 sha256；不是 pydantic model 类就抛 `TypeError`；
 - `encode_fragment(step, value)`：单个 slot，`encode_observation` 逐个调用它；
 - 读侧用的 `decode_fragment(key, cls, payload, artifact)`：先核对 payload 的 `fragment_id`，再调 `from_trace`；
@@ -3386,14 +3388,14 @@ fixture 与 `RunTrace` 共用这些函数。
 
 - POSIX 相对路径：不以 `/` 开头，不含 `\`，没有空段、`.` 段或 `..` 段（`encoding.check_relative_path`，读侧用同一条规则，§5.5）。每个通道都查，`encoding.py` 命名的文件也不例外：fragment 文件按 key 命名，而 `FragmentFailure.fragment_id` 是自由文本；下面"待在自己的目录里"那条只是前缀判断，`observations/000_x/../../../escaped.json` 照样通过，output schema 的父目录判断经 `PurePosixPath` 规范化，`.` 段和空段会被吃掉；
 - extra 文件不得落在 WAL 自有的名字上：`manifest.json`、`config.json`、`result.json`，以及 `steps/`、`observations/`、`messages/`、`evals/` 之下的任何路径。这些名字由 WAL 和 `encoding.py` 自己决定。按第一段判断，所以 WAL 的文件名也不能被当成目录：`result.json/evidence.txt` 会建出一个叫 `result.json` 的目录，run 收尾时写 `result.json` 就会失败；
-- 一个路径要么是文件、要么是目录，不能两者都是：`env/a` 和 `env/a/b` 不能同时出现，不论在同一次提交里还是跨提交（不区分大小写），WAL 自己的目录（`steps/`、`observations/`、`messages/`、`messages/output_formats/`、`evals/`）也不能被文件占用。不在校验里拦住，它会在写到一半时变成 `NotADirectoryError`；
+- 一个路径要么是文件、要么是目录，不能两者都是：`env/a` 和 `env/a/b` 不能同时出现，不论在同一次提交里还是跨提交（不区分大小写），WAL 自己的目录（`steps/`、`observations/`、`messages/`、`messages/output_formats/`、`messages/images/`、`evals/`）也不能被文件占用。不在校验里拦住，它会在写到一半时变成 `NotADirectoryError`；
 - 已提交的文件不可变：非内容寻址文件不得与本 run 已提交的路径同名；
 - 内容寻址文件的路径必须包含 `sha256(data)` 的完整十六进制摘要，允许按 `<前两位>/<其余>` 分片（如 M28 的 `env/blobs/sha256/ab/cdef…`）；
-- `encoding.py` 命名的文件待在自己的目录里：fragment 文件和 artifact 在 `observations/` 下，调用记录在 `messages/` 下（不在 `messages/output_formats/` 里），output schema 必须内容寻址、直接位于 `messages/output_formats/` 下；
+- `encoding.py` 命名的文件待在自己的目录里：fragment 文件和 artifact 在 `observations/` 下，调用记录在 `messages/` 下（不在 `messages/output_formats/`、`messages/images/` 里），output schema 必须内容寻址、直接位于 `messages/output_formats/` 下，prompt 图片必须内容寻址、直接位于 `messages/images/` 下；
 - 同一次提交里同一路径只能出现一次（内容寻址文件除外，只写一次），同一步里同一个 fragment key 只能出现一次；`record.step` 必须等于 `step`，一个 step 只能提交一次；
 - 以上比较一律按 `encoding.fold_path` 的键进行：macOS 默认的 APFS 既不区分大小写、也不区分 Unicode 规范化形式，`env/A.txt` 和 `env/a.txt` 是同一个文件，`café.json` 的预组合（NFC）与分解（NFD）两种写法也是同一个文件，trace 拷到这样的文件系统上也不能互相覆盖。键是 Unicode 的规范无大小写匹配（canonical caseless matching，Unicode §3.13 D145）：`NFD(casefold(NFD(path)))`。只做 `casefold` 漏掉规范化变体；先 NFC 再 `casefold` 仍会漏掉大小写折叠之后才分解出来的那些对（`Ś` 与 `ſ` + 组合尖音符）。
 
-**内容寻址文件在 run 内去重。** WAL 在内存里记着本 run 已提交的内容寻址路径，只在 manifest 提交成功之后更新。再遇到同一路径就跳过写入：extra 文件照常列进本次提交的索引（同一个响应体会被很多步引用）；output schema 只在 `manifest.output_formats` 里出现一次，由引用它的每条调用记录指向（同一个回复模型会被几十次调用使用）。去重跳过的只是写入，摘要校验照做：同一路径换了字节再提交会被拒绝，否则索引会记下磁盘上那个文件并不具有的 size 和 sha256。
+**内容寻址文件在 run 内去重。** WAL 在内存里记着本 run 已提交的内容寻址路径，只在 manifest 提交成功之后更新。再遇到同一路径就跳过写入：extra 文件照常列进本次提交的索引（同一个响应体会被很多步引用）；output schema 只在 `manifest.output_formats` 里出现一次，由引用它的每条调用记录指向（同一个回复模型会被几十次调用使用）；prompt 图片同样只在 `manifest.prompt_images` 里出现一次，由引用它的每条调用记录指向（保留全部截图的 agent，之后每一步的调用都带着同一张截图）。去重跳过的只是写入，摘要校验照做：同一路径换了字节再提交会被拒绝，否则索引会记下磁盘上那个文件并不具有的 size 和 sha256。
 
 **为什么每个文件的数据 fsync 都保留，只合并目录 fsync。** §5.1 承诺每步确认落盘才继续。只 rename、不 fsync 数据，掉电后 manifest 可能列着一个空文件，提交点本身就在说谎。数据 fsync 之前还要先把字节 flush 出 Python 的缓冲：`os.fdopen` 最多缓冲 `st_blksize`（APFS、ext4 上是 4 KiB），漏了 flush 或者把 fsync 挪到写之前，所有比它小的文件（step 记录、前几步的 manifest、调用记录、verdict）fsync 时都还是空的，字节要到 `close()` 才进内核。fsync 的次数和顺序都不变，只有 fsync 那一刻的文件大小看得出来，测试就按这个检查。目录 fsync 让 `os.replace` 和 `mkdir` 产生的目录项落盘；一个目录 fsync 一次，就覆盖本批在它下面产生的全部目录项，所以按目录合并不损失任何保证。省下的是逐文件的目录 fsync，M28 那种每步上百个证据文件时尤其明显。macOS（APFS）上 1000 个 1 KiB 文件一次提交约 0.2 s；macOS 的 `os.fsync` 不刷设备缓存，fsync 的真实代价在 Linux ext4/xfs 上。**TODO（Linux）**：这些数只在 macOS 的 APFS 上校准过，ext4/xfs 还没测过。1000 个文件一次提交的墙钟上限（默认 3 s）只是 `test_wal_batch_commit.py` 基准测试里的断言，运行时不强制，`SPECTRAGENT_WAL_COMMIT_BUDGET_S` 可覆盖；Linux 上的提交只会更慢，不会因此失败。
 
@@ -3442,7 +3444,7 @@ traces/
   ├── suite_index.json                  # 可选：后置生成的聚合索引
   │
   └── {run_id}/
-      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 3；trace 自己那本账
+      ├── manifest.json                 # 提交点（每次提交原子重写），format_version: 4；trace 自己那本账
       ├── config.json                   # TraceConfig 快照（init_run 写一次）
       ├── result.json                   # AgentResult（run 结束时写一次）；agent 那本账
       │
@@ -3467,8 +3469,11 @@ traces/
       │   ├── 000_call_01.json          # 同一步的第二次调用：parse 重试、校验失败后重问……
       │   ├── 002_call_00.json          # trailing：第 2 步没有提交，列在 manifest.trailing
       │   ├── ...
-      │   └── output_formats/
-      │       └── <sha256>.json         # 请求的 output schema，run 内按内容寻址、只写一次
+      │   ├── output_formats/
+      │   │   └── <sha256>.json         # 请求的 output schema，run 内按内容寻址、只写一次
+      │   └── images/
+      │       ├── <sha256>.png          # prompt 里内联的图片（解码后的字节，后缀取自字节头），run 内只写一次
+      │       └── <sha256>.txt          # base64 不是标准写法的 data: URL，原文照存
       │
       ├── env/                                  # 环境证据（经 extra_files 提交）；archive 为空的 run 没有它
       │   ├── run.<capability_id>.json          # capability 的 run 记录（环境指纹等，JSON）：第 0 版
@@ -3489,8 +3494,9 @@ traces/
 |---|---|---|
 | fragment JSON | `observations/{step:03d}_{key}.json` | `fragment.model_dump(mode="json", exclude=fragment.trace_json_exclude())`；采集失败时是 `FragmentFailure.model_dump(mode="json")` |
 | fragment artifact | `observations/{step:03d}_{key}{suffix}` | `trace_binary()` 返回的字节，`suffix` 来自字节头 |
-| LLM 调用 | `messages/{step:03d}_call_{call:02d}.json` | `RecordedLLMCall`；`call` 是本步内按开始顺序的序号，从 0 起 |
+| LLM 调用 | `messages/{step:03d}_call_{call:02d}.json` | `RecordedLLMCall`；`call` 是本步内按开始顺序的序号，从 0 起；prompt 里内联的每张图片在原处换成 `PromptImageRef`，`image_refs` 列出它们的位置（下面"调用记录里的图片只存一份"） |
 | output schema | `messages/output_formats/{sha256}.json` | 请求的 JSON schema，序列化为规范化 JSON（键排序、紧凑分隔符、UTF-8）；`sha256` 是这些字节的摘要 |
+| prompt 图片 | `messages/images/{sha256}{suffix}` | `prompt_image_path(sha256, suffix)`；解码后的图片字节，`suffix` 来自字节头（`.png`、`.jpg`、`.gif`、`.webp`，认不出是 `.bin`）；或 `data:` URL 的原文（UTF-8），`suffix` 是 `.txt`；`sha256` 是文件字节的摘要，run 内只写一次 |
 | step record | `steps/{step:03d}.json` | `StepRecord` |
 | extra 文件索引 | `steps/{step:03d}.extra.json`、`steps/trailing_{n:02d}.extra.json` | `ExtraFileIndex`；`n` 是该条目在 `manifest.trailing` 里的位置 |
 | 归档文件（步） | `env/steps/{step:03d}/{archiver_id}/{name}` | `archive_step_path(step, archiver_id, name)`；`ArchiveFile.data` 原样 |
@@ -3500,11 +3506,11 @@ traces/
 
 归档路径的根是 `ENV_DIR = "env"`，四个函数都在 `encoding.py`。每个归档文件在它所在索引里的 `ExtraFileRecord.meta["archive"]` 是一份 `ArchiveMeta`（下面的记录类型）：读侧靠它知道一个 extra 文件是归档文件、属于哪个归档器、第几版 run 记录。
 
-**manifest（format_version 3）**，以一个在第 2 步超时的 run 为例：agent 超时了（`result.json` 的 `agent_done: timeout`），trace 却是完整的——它记下了这个 run 做过的一切，被切断那一步的调用作为 trailing 落了盘：
+**manifest（format_version 4）**，以一个在第 2 步超时的 run 为例：agent 超时了（`result.json` 的 `agent_done: timeout`），trace 却是完整的——它记下了这个 run 做过的一切，被切断那一步的调用作为 trailing 落了盘：
 
 ```json
 {
-  "format_version": 3,
+  "format_version": 4,
   "run_id": "f2bbae22",
   "last_step_completed": 1,
   "status": "complete",
@@ -3538,7 +3544,8 @@ traces/
   "trailing": [
     {"llm_calls": ["messages/002_call_00.json"], "extra_index": null}
   ],
-  "output_formats": ["3b6f…"]
+  "output_formats": ["3b6f…"],
+  "prompt_images": ["messages/images/9f2c….png", "messages/images/d41a….png"]
 }
 ```
 
@@ -3552,9 +3559,9 @@ traces/
 | `complete` | 已关闭，run 做过的一切都记下了 | `finalize`（收尾没有记录失败） |
 | `incomplete` | 已关闭，但有东西没记下来：某一步（出洞，run 在那里停下）、收尾那次收集、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
 
-`complete_through` 是"完整到第几步"：0..`complete_through` 每一步都已提交、各自带着自己的证据；-1 表示一步也没有。它由 `commit_step` 维护（从第 0 步起不间断的已提交步的最后一步），记不下来的那一步从不提交，所以它停在第一个洞之前，之后就算还有步提交也不前进；没出过洞时它等于 `last_step_completed`，尾部失败不动它。`writing` 的 trace 里它也一直是当前值。读者各取所需：分叉与导出把"已关闭、且完整到所用的那一步"当硬条件（§4.10、§4.15），agent 怎么结束是另一个筛选；sweep 的汇总分三栏计数（§4.2）；度量按站点分别数两本账（§4.16）。格式 2 的 `error` 两种意思都有，读者分不出来，所以 format 3 不读任何更旧的 trace（§5.5），不做兼容 shim。
+`complete_through` 是"完整到第几步"：0..`complete_through` 每一步都已提交、各自带着自己的证据；-1 表示一步也没有。它由 `commit_step` 维护（从第 0 步起不间断的已提交步的最后一步），记不下来的那一步从不提交，所以它停在第一个洞之前，之后就算还有步提交也不前进；没出过洞时它等于 `last_step_completed`，尾部失败不动它。`writing` 的 trace 里它也一直是当前值。读者各取所需：分叉与导出把"已关闭、且完整到所用的那一步"当硬条件（§4.10、§4.15），agent 怎么结束是另一个筛选；sweep 的汇总分三栏计数（§4.2）；度量按站点分别数两本账（§4.16）。格式 2 的 `error` 两种意思都有，读者分不出来，所以从 format 3 起不读任何更旧的 trace（§5.5），不做兼容 shim。
 
-**记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 3`）：
+**记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 4`）：
 
 ```python
 class FragmentFiles(BaseModel):
@@ -3579,7 +3586,7 @@ class TraceStatus(StrEnum):            # trace 自己那本账，不是 agent �
     INCOMPLETE = "incomplete"
 
 class TraceManifest(BaseModel):
-    format_version: int = 1            # 缺省 = M27 之前写的 trace；init_run 写 TRACE_FORMAT_VERSION；RunTrace 只读 3
+    format_version: int = 1            # 缺省 = M27 之前写的 trace；init_run 写 TRACE_FORMAT_VERSION；RunTrace 只读 4
     run_id: str
     last_step_completed: int = -1
     status: TraceStatus = TraceStatus.WRITING
@@ -3591,6 +3598,7 @@ class TraceManifest(BaseModel):
     steps: list[StepManifestEntry] = Field(default_factory=list)
     trailing: list[TrailingEntry] = Field(default_factory=list)
     output_formats: list[str] = Field(default_factory=list)  # 已提交的 output schema 的 sha256
+    prompt_images: list[str] = Field(default_factory=list)   # 已提交的 prompt 图片：messages/images/<sha256><后缀>，每张一次，按提交顺序
 
 class ExtraFileRecord(BaseModel):      # extra 文件索引里的一条
     path: str                          # run 目录下的相对路径
@@ -3659,7 +3667,24 @@ class RecordedLLMCall(BaseModel):      # messages/NNN_call_KK.json
     output_format: OutputFormatRef | None = None   # None = 非结构化调用
     completion: RecordedCompletion | None = None   # 仅 completed
     failure: CallFailure | None = None             # failed、cancelled
+
+class PromptImageRef(BaseModel):       # 盘上的调用记录里，一张内联图片所在的位置放的是它
+    model_config = ConfigDict(extra="forbid")
+    stored_image: str                  # messages/images/<sha256><后缀>，必须列在 manifest.prompt_images 里
+    prefix: str | None                 # 字符串：data: URL 到逗号为止（"data:image/png;base64,"），文件是解码后的字节，
+                                       #   原文 = prefix + 字节的标准 base64；None：文件就是原文（UTF-8）
 ```
+
+盘上的调用记录比 `RecordedLLMCall` 多一样东西：prompt 里带了内联图片时，`messages` 后面有 `image_refs`，列出每个 `PromptImageRef` 在 `messages` 里的位置（从 `messages` 起的键与下标，如 `[1, "content", 1, "image_url", "url"]`）；没有内联图片的调用不写这个键（有值才写）。`RunTrace` 按它把原文放回去之后才按 `RecordedLLMCall` 校验，所以读回来的永远是完整的 prompt；绕过 `RunTrace` 直接按 `RecordedLLMCall` 校验盘上的记录会失败（`url` 的位置是一个对象，不是字符串），不会悄悄拿到一个缺了图片的 prompt。
+
+**调用记录里的图片只存一份（用户 2026-10-14 的裁决）。** 调用记录存的是整份 prompt，而 memory 保留全部截图的 agent（UI-TARS）每次调用都带着之前的每一张：第 k 次调用把前面 k 张截图再存一遍。实测一个 12 步的 UI-TARS 录制：`messages/` 里存了 78 份截图（32.9 MB），不同的只有 10 张（3.9 MB，按 base64 计），同一个 run 的 `observations/` 是 3.5 MB；三个站点的冒烟链共 305 MB，其中 127 MB 是调用记录。按下面的规则重新编码同一批记录：这个录制的 `messages/` 从 33.8 MB 降到 3.1 MB（调用记录 0.1 MB，10 张图片解码后 3.0 MB），整条链的调用记录与图片从 129.7 MB 降到 46.6 MB，报告按每个任务各段合计的字节从 102 MB 降到 74 MB；57 次调用读回来与原记录逐字节相同。现在：
+
+- **什么算内联图片**：`messages` 的 JSON 里，任何 `image_url` 键下的对象的 `url`，只要它是 base64 的 `data:` URL（`data:<任意参数>;base64,<载荷>`，不区分大小写）。这就是 af 的消息模型放图片的地方（`ContentPartImageParam.image_url.url`，user 与 tool 消息都一样）。按 URL 发的图片、文字里出现的 `data:` 字样、`image_url` 之外的任何字符串都原样留在记录里。
+- **存什么**：载荷解码之后，再按标准 base64 编码回去恰好是原来的载荷、而且解码出的字节不为空，就存解码后的字节（`messages/images/<sha256><后缀>`，后缀取自字节头，认不出是 `.bin`），引用的 `prefix` 记下逗号之前（含逗号）的原文；否则（换行、缺填充、URL 安全字母表、尾部多余的位、非 ASCII 字符）存原文本身（`messages/images/<sha256>.txt`，UTF-8），`prefix` 为 `None`。原文连 UTF-8 都编码不了（孤立的代理字符）时图片留在原处。哪一种都是无损的：读回来的原文与写进去的逐字符相同。`sha256` 是文件字节的摘要：截图以 PNG 发出时，它与该步截图 artifact 的摘要相同。
+- **只存一次**：图片文件是内容寻址的，与 output schema 同一个机制（§5.2）：随第一次带着它的提交落盘，列进 `manifest.prompt_images`，之后的提交只校验、不再写。图片文件与调用记录同属一次提交的内容物，在提交点之前带着各自的数据 fsync 落盘；提交点之前崩溃，写下的图片与调用记录一样是孤立文件，对每个访问器都不可见（§5.5）。
+- **写侧从不因此失败**：`store_prompt_images` 只认上面那一种形状，走不完的 prompt（嵌套深到递归走不下去之类）原样记录，图片留在原处。它是编码层的事：TraceWriter 和 Loop 都不知道它。
+- **读侧**：`RunTrace` 每读一条调用记录，就按 `image_refs` 读回每张图片、核对摘要、把原文放回原处（`restore_prompt_images`），然后才校验；每次读都核对，不缓存。引用的图片不在 `manifest.prompt_images` 里（从没提交过）、位置不对或引用不合法，`TraceSchemaError` 点名调用记录；图片文件缺失、字节与名字里的摘要不符、该是 UTF-8 的原文不是，点名图片文件。
+- **代价**：读一条调用记录要多读它引用的图片文件（与原先从调用记录里解析同样多的 base64 相比不更慢；冒烟链 57 次调用经 `RunTrace` 读回共约 0.2 s）；第 k 次调用的编码要解码并哈希 k 张图片（12 步共 78 张、约 30 MB 的 base64，实测约 0.1 s）。图片只在一个 run 之内去重：分叉与原路径回放的 run 各自存一份它重建的前缀里的截图，调用记录里的图片也不去引用同一个 run 已经存下的观测截图（字节相同、摘要相同，但那是另一种文件）。
 
 **fragment 索引进 manifest，extra 文件索引不进。** 每步的 fragment 和 LLM 调用只有几个，放进 manifest，读者一次 eager 读就知道每步记录了什么。extra 文件（M28 的环境证据）每步可能上百个；manifest 每次提交都整份重写，每个 `RunTrace` 又都 eager 读它，把这些文件内联进去会让 manifest 随 run 长度二次增长。所以每步一个 `steps/NNN.extra.json`，manifest 只记它的路径（`extra_index`）。
 
@@ -3667,7 +3692,7 @@ class RecordedLLMCall(BaseModel):      # messages/NNN_call_KK.json
 
 **fragment JSON 就是 fragment 自己的 JSON。** `file` 的内容恰好是 `model_dump(mode="json", exclude=trace_json_exclude())`，不再往里塞 `artifact_file`：二进制文件只由索引的 `artifact` 指向，WAL 的布局信息不混进 fragment 的数据。读侧用 `from_trace(payload, artifact)` 还原（§5.5）。
 
-**每次 LLM 调用一个文件，不论结局。** 一步可能有多次调用（ReactLoop 的 parse 重试、结构化输出校验失败后重问），它们按开始顺序编号、全部提交。`completed` 记 `RecordedCompletion`，`failed` / `cancelled` 记 `CallFailure`（字段语义见 §5.4）。写侧把登记时拿到的 prompt 直接序列化成 JSON，不做 model 校验，hook 永远不会因为 trace 的类型问题让 run 失败；读侧按 `RecordedLLMCall` 校验，不合法就是 `TraceSchemaError`。Loop 没来得及交出的那一步，其调用沿用那一步的编号（`last_step_completed + 1`），由 `commit_trailing` 提交、列在 `manifest.trailing`。驱动冲刷之后若继续跑并提交了这一步，它的调用编号接在已提交的 trailing 调用之后，已提交的文件不会被覆盖。
+**每次 LLM 调用一个文件，不论结局。** 一步可能有多次调用（ReactLoop 的 parse 重试、结构化输出校验失败后重问），它们按开始顺序编号、全部提交。`completed` 记 `RecordedCompletion`，`failed` / `cancelled` 记 `CallFailure`（字段语义见 §5.4）。写侧把登记时拿到的 prompt 直接序列化成 JSON（内联图片换成引用，见上面"调用记录里的图片只存一份"），不做 model 校验，hook 永远不会因为 trace 的类型问题让 run 失败；读侧把图片放回去之后按 `RecordedLLMCall` 校验，不合法就是 `TraceSchemaError`。Loop 没来得及交出的那一步，其调用沿用那一步的编号（`last_step_completed + 1`），由 `commit_trailing` 提交、列在 `manifest.trailing`。驱动冲刷之后若继续跑并提交了这一步，它的调用编号接在已提交的 trailing 调用之后，已提交的文件不会被覆盖。
 
 **调用记录带着模型的推理，前提是响应带回了它。** `RecordedCompletion.thinking` / `redacted_thinking` 就是 provider 填进 `ChatInvokeCompletion` 的那两个字段（来源与合成规则见 §4.7），写侧照录，读侧原样读回；响应没带推理的调用两者都是 `null`。它只是记录：请求从不为了拿到推理而改动，推理也从不回喂给模型，写进记忆、带进下一轮提示的只有 `completion`（§4.7）。失败的调用记 `CallFailure`，没有这两个字段，它的推理不记。
 
@@ -3935,7 +3960,7 @@ class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂�
 
 ```python
 class RunTrace:
-    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json；不是 format 3 就抛 TraceSchemaError
+    def __init__(self, trace_dir: Path) -> None: ...        # 只读 manifest.json；不是 format 4 就抛 TraceSchemaError
 
     @property
     def trace_dir(self) -> Path: ...
@@ -3998,8 +4023,8 @@ class RunTrace:
 - `observation_fragment(step, key)`：`key` 是全限定 fragment key（`browser.dom`）。该步没提交，或它的 fragment 索引里没有这个 key（本 run 没激活、这一步没记录）→ `None`。索引 `failed: true` → 按 `FragmentFailure` 读回并返回（它记录的 `fragment_id` 也必须等于 `key`）。否则用 `ObservationRegistrar.get(key)` 找到类，要求 payload 的 `fragment_id == key`，返回 `cls.from_trace(payload, artifact)`；`from_trace` 抛的 `ValueError`（以及嵌套深到解码器走不下去的 `RecursionError`，远超写侧的深度）转成点名文件和类的 `TraceSchemaError`。
 - `screenshot(step)`：该步本地名为 `screenshot` 的 fragment（`browser.screenshot`、`desktop.screenshot`……，协商保证一步至多一个）的 artifact 字节。该步没提交、没有截图 fragment、或截图采集失败 → `None`；失败原因用 `observation_fragment` 读。
 - `screenshots`：按 step 顺序，每个已提交 step 的截图 artifact 的路径，由 manifest 索引得出；采集失败、没有 artifact 的 step 跳过。索引列了的 artifact 缺失或为空 → `TraceSchemaError`。evaluator 继续拿路径（`online_mind2web`、`lexbench_browser` 按后缀判媒体类型）。写侧保证不会提交空 artifact：CDP 回复里没有图像数据时，`ScreenshotWatchdog` 抛错（resolver 规则"抛错，不伪造"），这一步按 optional / required 记成 `FragmentFailure` 或终止 run；仍然带着 `b""` 的 `ScreenshotObs` 不写 artifact（`trace_binary()` 返回 `None`），读回时 `image_bytes=None`。过去空截图被写成 0 字节的 `.png`，读侧把它当损坏，一帧就让整个 run 的 `screenshots` 抛错。
-- `llm_messages(step)`：该步**每一次** LLM 调用，按开始顺序：parse 重试、带 `raw_output` 的校验失败、带 `partial_output` 的截断、只有 prompt 的取消。该步没提交 → `[]`；它的调用如果有，在 `trailing_calls` 里。
-- `trailing_calls`：Loop 没来得及交出的那一步的调用（`manifest.trailing`），先按提交顺序、再按开始顺序。
+- `llm_messages(step)`：该步**每一次** LLM 调用，按开始顺序：parse 重试、带 `raw_output` 的校验失败、带 `partial_output` 的截断、只有 prompt 的取消。该步没提交 → `[]`；它的调用如果有，在 `trailing_calls` 里。prompt 里内联的图片已经放回原处（§5.3 "调用记录里的图片只存一份"）：`messages` 与写进去时逐字节相同，每张图片读的时候都核对摘要。
+- `trailing_calls`：Loop 没来得及交出的那一步的调用（`manifest.trailing`），先按提交顺序、再按开始顺序；图片同样放回原处。
 - `extra_files(step)` / `trailing_extra_files`：已提交的 extra 文件记录，来自 `steps/NNN.extra.json` / `steps/trailing_KK.extra.json`；没有 → `[]`。
 - `read_extra(path)`：只读已提交的 extra 文件。`path` 不在任何已提交的索引里 → `KeyError`（没提交和没写过，对读者是同一个事实）；读出的字节与记录的 `size` / `sha256` 不符 → `TraceSchemaError`。
 - `output_schema(sha256)`：`OutputFormatRef.sha256` 指向的那份请求的 JSON schema。不在 `manifest.output_formats` 里 → `KeyError`；字节的摘要不符 → `TraceSchemaError`。
@@ -4009,8 +4034,8 @@ class RunTrace:
 - `archive_run_file(capability_id)`：该 capability 已提交的 run 记录里 `run_version` 最高的那一版，跨步索引和 trailing 索引找；没有 → `None`。字节用 `read_extra(record.path)` 读。
 - `archive_lines(path, model)`（M30）：一个已提交的、逐行 JSON 的归档文件（`index.jsonl`、`replay.jsonl`……），每个非空行用 `model.model_validate` 读回，按文件顺序返回；字节经 `read_extra` 读（同样的 size / sha256 校验，没提交 → `KeyError`），一行不是 JSON 或校验不过 → `TraceSchemaError`，点名文件与行号。它是通用的：行的类型由调用方给（browser 的 `ReplayLogEntry` 与网络索引行的模型都在 browser 包里，trace 层不认识它们），"读回来的必须是写进去的那个类型"对 capability 的证据也成立。`RunTrace` 由此结构化地满足 `core/archive` 的 `ArchiveReader`（§4.14 "回放的数据通路"）。
 - `evals()`（M31）：这个 run 的 `evals/` 目录里每一份判定，`verdict_slug`（文件名去掉 `.json`）→ `EvalResult`，按 slug 排序；目录按排序后的顺序遍历，所以几份都坏时点名的是哪一份不取决于文件系统列目录的顺序；只看 `*.json`（原子写中断留下的 `tmp….tmp` 不算）。evals 是后置产物（`EvaluationRunner` 在 run 之后原子写入，§5.3），不在 manifest 里，所以这是唯一按目录列文件的访问器：没有 `evals/` → `{}`；目录与每个文件都必须在 run 目录之内（解析符号链接之后），否则 `TraceSchemaError`；一份不是 JSON 或不能按 `EvalResult` 校验的文件 → 点名它的 `TraceSchemaError`。不缓存：同一个 `RunTrace` 在评测写入之后再读，看得见新的判定。`trace_branches` 的 `require_eval` 经它筛选源 run（§4.10），从不读 `result.json`。
-- `committed_files`（M33）：这个 run 提交了的每个文件，每被列出一次算一条（`CommittedFile{path, kind, step, fragment, extra, archive}`），按提交顺序：run 自己的三个文件（`manifest.json`、`config.json`，写了的话还有 `result.json`）；按 manifest 顺序每一步的步记录、每个 fragment 的文件（或记在它位置上的失败）与 artifact、每次 LLM 调用、extra 索引与它列出的每个文件；每个 trailing 提交的调用、索引与文件；最后是请求的回复 schema。`kind` 说文件是什么（`manifest` / `config` / `result` / `step` / `fragment` / `artifact` / `llm_call` / `extra_index` / `output_schema` / `extra`），`step` 是列出它的那次提交（run 自己的文件、trailing 提交与回复 schema 为 `None`），extra 文件带它的索引条目，是归档文件的再带 `ArchiveRecord`（与 `iter_archive` 同一个读法）。被几次提交引用的内容寻址文件，每次提交各列一次；怎么计数是调用方的规则（度量的存储每个路径计一次；归档字节的"去重前"每次列出计一次，§4.16）。每个路径列出时就过 `_listed` 的同一套检查（写侧的形状、解析符号链接之后仍在 run 目录之内，违反时点名列出它的文件），manifest 与已提交的索引没列的文件不会出现。消费者因此不必自己走 manifest 的字段、不必按名字探测 `result.json`、也不必再写一遍包含检查。
-- `read_committed(path)`（M33）：`committed_files` 列出的一个文件的字节，经它自己那个访问器的检查：extra 文件就是 `read_extra`（size / sha256）；回复 schema 的字节要与它的地址相符；artifact 不能为空；每个文件都要在磁盘上、在 run 目录之内。没被列出 → `KeyError`。
+- `committed_files`（M33）：这个 run 提交了的每个文件，每被列出一次算一条（`CommittedFile{path, kind, step, fragment, extra, archive}`），按提交顺序：run 自己的三个文件（`manifest.json`、`config.json`，写了的话还有 `result.json`）；按 manifest 顺序每一步的步记录、每个 fragment 的文件（或记在它位置上的失败）与 artifact、每次 LLM 调用、extra 索引与它列出的每个文件；每个 trailing 提交的调用、索引与文件；然后是请求的回复 schema；最后是 prompt 图片（`manifest.prompt_images` 的顺序）。`kind` 说文件是什么（`manifest` / `config` / `result` / `step` / `fragment` / `artifact` / `llm_call` / `extra_index` / `output_schema` / `prompt_image` / `extra`），`step` 是列出它的那次提交（run 自己的文件、trailing 提交、回复 schema 与 prompt 图片为 `None`），extra 文件带它的索引条目，是归档文件的再带 `ArchiveRecord`（与 `iter_archive` 同一个读法）。被几次提交引用的内容寻址文件，每次提交各列一次；怎么计数是调用方的规则（度量的存储每个路径计一次；归档字节的"去重前"每次列出计一次，§4.16）。每个路径列出时就过 `_listed` 的同一套检查（写侧的形状、解析符号链接之后仍在 run 目录之内，违反时点名列出它的文件），manifest 与已提交的索引没列的文件不会出现。消费者因此不必自己走 manifest 的字段、不必按名字探测 `result.json`、也不必再写一遍包含检查。
+- `read_committed(path)`（M33）：`committed_files` 列出的一个文件的字节，经它自己那个访问器的检查：extra 文件就是 `read_extra`（size / sha256）；回复 schema 与 prompt 图片的字节要与它的地址相符；artifact 不能为空；调用记录是盘上的样子（图片是引用）；每个文件都要在磁盘上、在 run 目录之内。没被列出 → `KeyError`。
 - 任何 `ArchiveRecord` 的字节都用 `read_extra(record.path)` 读，同一套 size / sha256 校验。这四个访问器全部只从每步和 trailing 的 extra 索引解析（索引里 `meta` 带 `"archive"` 键的记录才是归档文件），不探测路径、不 glob，所以孤立的 `env/` 文件对它们不可见。
 
 **读回来的必须是写进去的那个类型。** Writer 拿到的是 `StepRecord` / `AgentResult`，reader 就必须还原成同一个 model，而不是 `dict[str, Any]` —— 否则字段名只能靠翻 JSON 文件去猜，猜错（`rec["step_index"]`，实际是 `rec.step`）能通过全部静态检查、到运行时才炸。这也是 Evaluator 唯一的输入契约。
@@ -4038,10 +4063,11 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | manifest 列了、磁盘上没有 | 提交过的文件丢了是损坏，不是"没跑完"；`manifest.json`、`config.json` 缺失同理 |
 | 路径出了 run 目录 | manifest 或 extra 索引列出的路径不符合写侧的路径规则（绝对路径、`..` 段等），或解析符号链接之后不在 run 目录里；三个固定名字的文件是指向目录外的链接。点名列出它的文件，被指向的文件不会被打开 |
 | 字节与索引不符 | 空的 artifact；extra 文件或 output schema 的 size / sha256 对不上；同一个 extra 路径在两个索引里的 size / sha256 不一致 |
+| 调用记录引用的图片对不上 | 引用的图片不在 `manifest.prompt_images` 里（没提交过）、`image_refs` 列的位置上不是一个合法的 `PromptImageRef`：点名调用记录；图片文件缺失、字节与名字里的摘要不符、该是 UTF-8 的原文不是：点名图片文件 |
 | 归档元数据不合法 | extra 索引里一条记录的 `meta["archive"]` 不能按 `ArchiveMeta` 校验通过；点名那个索引文件 |
 | 记录与位置不符 | step 文件里的 `step`、调用记录里的 `step` 与 manifest 提交它的那一步不符；一步里有两个截图 fragment（协商只允许一个） |
 | fragment key 不认识 | 懒发现之后注册表里仍然没有这个 key；或 payload 的 `fragment_id` 与 key 不符 |
-| `format_version` 不支持 | 不是 3（更旧、更新、或不是整数）：构造 `RunTrace` 时就抛，在校验 manifest 的其余字段之前 |
+| `format_version` 不支持 | 不是 4（更旧、更新、或不是整数）：构造 `RunTrace` 时就抛，在校验 manifest 的其余字段之前 |
 
 把前两者都塌缩成 `None`，会让一批旧 schema 的 trace 静默地表现为“agent 没跑完”。`AgentResult.schema_version` 只接受当前版本：旧版本字段名对不上，接受它只会换来一条指着某个被改名字段的 pydantic 报错，而不是“这个 trace 太旧”。
 
@@ -4053,7 +4079,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 
 **二进制 fragment 的后缀来自字节本身，不来自配置。** 截图的编码是 capability 配置（`screenshot_format: png | jpeg`，默认 png 与旧行为逐字节相同），但 `ScreenshotObs.trace_binary()` 是从图像头读出后缀的——一个"声明的格式"字段能和字节不一致（provider 没听配置、fragment 从磁盘文件重建），而不一致会在几层之外变成 vision provider 的 400。同理，agent 拼 `data:` URL 的 media type、artifact 落盘时的后缀、evaluator 按后缀判类型，读的都是同一个来源（`spectragent/schemas/observation/image.py`）。
 
-**trace 格式有版本，只读当前这一版。** `TraceManifest.format_version` 写 `3`（`TRACE_FORMAT_VERSION`）。1 是 M27 之前没有这个字段的 manifest（扁平的 fragment 列表、成对的 `NNN_input.json` / `NNN_output.json`、没有判别字段的失败 JSON）；2 是 M27 起每步的 fragment 索引、每次调用一个记录、extra 索引；3 在 2 之上把 manifest 的 `status` 收窄成 trace 自己那本账（`writing` / `complete` / `incomplete`，加 `incomplete_reason` 与 `complete_through`，§5.3），agent 怎么结束只看 `result.json`。格式 2 的 `error` 既可能是"agent 失败了"也可能是"trace 没记全"，任何读者都分不出来，所以 `RunTrace` 在构造时就拒绝不是 3 的 manifest（先读版本，再校验其余字段，报错点名 manifest 与版本），连旧 trace 的配置与结果也不读。不做兼容 shim（AGENTS.md §0.4）：旧 trace 只能重跑任务（用户 2026-10-13 的裁决：旧 trace 是没有价值的测试数据）。
+**trace 格式有版本，只读当前这一版。** `TraceManifest.format_version` 写 `4`（`TRACE_FORMAT_VERSION`）。1 是 M27 之前没有这个字段的 manifest（扁平的 fragment 列表、成对的 `NNN_input.json` / `NNN_output.json`、没有判别字段的失败 JSON）；2 是 M27 起每步的 fragment 索引、每次调用一个记录、extra 索引；3 在 2 之上把 manifest 的 `status` 收窄成 trace 自己那本账（`writing` / `complete` / `incomplete`，加 `incomplete_reason` 与 `complete_through`，§5.3），agent 怎么结束只看 `result.json`；4 在 3 之上把 prompt 里内联的图片每个 run 只存一份（`messages/images/`、`manifest.prompt_images`），调用记录里写引用（`PromptImageRef` 与 `image_refs`，§5.3 "调用记录里的图片只存一份"）。格式 2 的 `error` 既可能是"agent 失败了"也可能是"trace 没记全"，任何读者都分不出来；格式 3 的调用记录与 4 的形状不同。`RunTrace` 在构造时就拒绝不是 4 的 manifest（先读版本，再校验其余字段，报错点名 manifest 与版本），连旧 trace 的配置与结果也不读。不做兼容 shim（AGENTS.md §0.4）：旧 trace 只能重跑任务（用户 2026-10-13 与 2026-10-14 的裁决：旧 trace 是没有价值的测试数据，盘上格式为此变一次）。
 
 **离线读者找得到 fragment 类。** 评测进程未必 import 过定义 fragment 的模块（browser 的 fragment 是被各自的 watchdog import 时才注册的）。`ObservationRegistrar.get(key)` 落空时，reader 懒执行一次 `discover("spectragent.schemas")` 和 `discover("spectragent.core.capabilities")` 再查；仍然落空就抛 `TraceSchemaError`，点名 key，并说明定义它的模块必须在读侧可导入。
 

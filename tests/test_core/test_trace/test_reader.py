@@ -60,7 +60,7 @@ class TestRunTrace:
         # The agent timed out (result.json); the trace recorded all of it.
         assert trace.manifest.status == TraceStatus.COMPLETE
         assert trace.manifest.complete_through == 1
-        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 3
+        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 4
 
     def test_run_id(self, trace):
         assert trace.run_id == "run-test"
@@ -483,7 +483,12 @@ class TestCommittedFiles:
         ]
         trailing = [("llm_call", None, None), ("extra_index", None, None), ("extra", None, None)]
         own = [("manifest", None, None), ("config", None, None), ("result", None, None)]
-        assert listed == own + step0 + step1 + trailing + [("output_schema", None, None)]
+        last = [("output_schema", None, None)] + [("prompt_image", None, None)] * 3
+        assert listed == own + step0 + step1 + trailing + last
+        images = [file.path for file in trace.committed_files if file.kind == "prompt_image"]
+        assert images == [image.rel_path for image in reference.images], (
+            "each image once, in the order the commits first carried it"
+        )
         extras = [(file.step, file.path) for file in trace.committed_files if file.kind == "extra"]
         assert extras == [
             *((0, item.rel_path) for item in reference.extras[0]),

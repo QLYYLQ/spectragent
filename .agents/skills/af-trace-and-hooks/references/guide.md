@@ -205,6 +205,24 @@ The reply schema a structured call asked for lands once per run, content-address
 schema was honoured. A class whose schema cannot be generated is recorded as
 `output_format: null` with a warning; the trace is never what fails a call.
 
+**An image a prompt sent inline is stored once per run** (user ruling 2026-10-14,
+format 4). A call record holds the whole prompt, and an agent that keeps every screenshot
+in its memory (UI-TARS) sends all of them on every call: a 12-step recording stored 78
+copies (32.9 MB) of 10 distinct screenshots (3.9 MB). `encode_llm_call` now runs the
+snapshot through `store_prompt_images`: the `url` of any object under an `image_url` key
+that is a base64 `data:` URL is replaced, in place, by a `PromptImageRef`
+(`{"stored_image": "messages/images/<sha256><suffix>", "prefix": "data:image/png;base64,"}`),
+and the record's `image_refs` lists where each one stands (keys and indices from
+`messages`; written only when there is one). The file holds the decoded image when
+re-encoding the bytes in standard base64 gives the payload back exactly, and the URL's own
+text (`.txt`, `prefix: null`) when it does not (line breaks, missing padding, another
+alphabet), so the round trip is lossless either way; a URL that is not even UTF-8 stays
+inline. The files ride `EncodedLLMCall.images` into the same commit as the record,
+content-addressed like the reply schemas: written by the first commit that carries one,
+listed once in `manifest.prompt_images`. It lives in the encoding layer only; the hook and
+the Loop know nothing of it, and it never raises (a prompt it cannot walk is recorded as
+it is). Reading is the inverse, in `RunTrace` (§3).
+
 **`around` is also the only place a hook can measure time** — `before`/`after` see one
 edge each and neither sees a call that raised. `around_ainvoke` accumulates into
 `_pending_llm_ms` in a `finally` (`trace_writer.py:618`), and `_stamp_timings`
@@ -230,7 +248,8 @@ extra_files)` (`core/trace/wal.py:191`), in this order (`wal.py:7-16`):
 0. validate everything before writing a byte: path rules, content addresses, a step
    not already committed (`_Plan`, `wal.py:347`);
 1. every content file (fragment JSON and artifacts, one record per LLM call, output
-   schemas this run has not committed yet, extra files) through `fsio.write_durable`
+   schemas and prompt images this run has not committed yet, extra files) through
+   `fsio.write_durable`
    (`core/trace/fsio.py:104`): temp file → write and flush → `fsync(file)` →
    `os.replace`, and **no** directory `fsync`;
 2. `steps/NNN.json`, plus `steps/NNN.extra.json` when the step carries extra files;
@@ -316,7 +335,9 @@ redundant with the directory rule. An extra file may not take a name the WAL own
 `result.json/evidence.txt` cannot turn the result into a directory the close-out then
 fails to write; a path is a file or a directory of the run, never both (`env/a` with
 `env/a/b`, in one commit or across two, and no file on a WAL directory such as
-`messages/output_formats`), or the commit would die half-way with `NotADirectoryError`;
+`messages/output_formats` or `messages/images`), or the commit would die half-way with
+`NotADirectoryError`; a prompt image is content-addressed and directly under
+`messages/images/`, and no call record lives there or among the schemas;
 a committed path is immutable; a content-addressed path names its data's full sha256
 (whole, or sharded `ab/cdef…`) and is written once per run however many commits list it,
 since deduplication skips the write, never that check. All of these compare paths case-
@@ -435,8 +456,8 @@ accessors, and what comes back is the type that was written:
 | `step_records` / `step(idx)` / `step_count` | `StepRecord`s, in manifest order | `step` → `None` |
 | `observation_fragment(step, key)` | the class registered under the qualified key, rebuilt by `from_trace` — or the `FragmentFailure` recorded in its place | `None` |
 | `screenshot(step)` / `screenshots` | the bytes / every committed frame's `Path`, step order | `None` / skipped |
-| `llm_messages(step)` | every `RecordedLLMCall` of the step, start order | `[]` |
-| `trailing_calls` | the calls of the step never surrendered | `[]` |
+| `llm_messages(step)` | every `RecordedLLMCall` of the step, start order, each prompt image put back where its reference stood (byte for byte what was written; every image's digest checked on every read, nothing cached) | `[]` |
+| `trailing_calls` | the calls of the step never surrendered, images put back alike | `[]` |
 | `extra_files(step)` / `trailing_extra_files` | `ExtraFileRecord`s | `[]` |
 | `read_extra(path)` / `output_schema(sha256)` | bytes / `dict`, checked against size and sha256 | `KeyError` |
 | `archive_files(step, archiver_id)` | that step's step-scoped `ArchiveRecord`s for the archiver (content-addressed ones included), index order | `[]` |
@@ -445,7 +466,7 @@ accessors, and what comes back is the type that was written:
 | `archive_run_file(capability_id)` | the `ArchiveRecord` of the highest committed run-record version; bytes via `read_extra(record.path)` | `None` |
 | `archive_lines(path, model)` (M30) | each non-blank line of a committed line-delimited archive file (`index.jsonl`, `replay.jsonl`) validated as the caller's `model`, in file order; bytes via `read_extra`; a line that is not JSON or does not validate → `TraceSchemaError` naming the file and line. With the accessors above it is how `RunTrace` satisfies `core/archive/source.py`'s `ArchiveReader`, the replay's read side | `KeyError` |
 | `evals()` (M31) | `verdict_slug` → `EvalResult` for every `evals/<slug>.json`, sorted by slug and walked in sorted order (which bad file is named first does not depend on the file system's listing order); not cached (a verdict written later is seen); `evals/` or a file in it resolving outside the run → `TraceSchemaError`, as is a file that does not read as an `EvalResult` | `{}` |
-| `committed_files` / `read_committed(path)` (M33) | every listing of a committed file in commit order — the run's own three files, what the manifest lists, what each committed extra index lists (a shared blob once per commit that lists it) — as `CommittedFile` (`kind`, `step`, `fragment`, the index entry, the `ArchiveRecord` when it is evidence), each path checked as it is listed; the bytes through that file's own accessor's checks. What consumers that account for a whole run (M33's storage and archive bytes) read instead of walking the manifest's fields themselves | `KeyError` (`read_committed`) |
+| `committed_files` / `read_committed(path)` (M33) | every listing of a committed file in commit order — the run's own three files, what the manifest lists, what each committed extra index lists (a shared blob once per commit that lists it), then the reply schemas and the prompt images (`kind="prompt_image"`, once each) — as `CommittedFile` (`kind`, `step`, `fragment`, the index entry, the `ArchiveRecord` when it is evidence), each path checked as it is listed; the bytes through that file's own accessor's checks. What consumers that account for a whole run (M33's storage and archive bytes) read instead of walking the manifest's fields themselves | `KeyError` (`read_committed`) |
 
 "Not there" and "not readable" never collapse. Anything the manifest lists that cannot
 be read — corrupt JSON, bytes that are not UTF-8, an empty file, a schema mismatch, a
@@ -464,12 +485,25 @@ fragment class, so a registry miss runs `discover` over `spectragent.schemas` an
 `spectragent.core.capabilities` once before giving up (`_fragment_class`, `:635`).
 
 **The trace has a format version, and only the current one is read.**
-`TraceManifest.format_version` is 3 (the per-step index plus the trace's own ledger); a
-manifest without the field reads as 1. `RunTrace` refuses any other version at
-construction (`_require_current_format`, checked on the parsed JSON before the model
-validates it), config and result included: a format-2 `error` meant either "the agent
-failed" or "the trace is incomplete", and no reader can tell which. No shim (AGENTS.md
-§0.4): an old trace means re-running the task.
+`TraceManifest.format_version` is 4 (the per-step index, the trace's own ledger, and
+prompt images stored once); a manifest without the field reads as 1. `RunTrace` refuses
+any other version at construction (`_require_current_format`, checked on the parsed JSON
+before the model validates it), config and result included: a format-2 `error` meant
+either "the agent failed" or "the trace is incomplete", and no reader can tell which; a
+format-3 call record held every image inline. No shim (AGENTS.md §0.4): an old trace
+means re-running the task.
+
+**A call record is read in two moves.** `_read_call` parses the JSON, then
+`restore_prompt_images` walks the record's `image_refs`: at each position it validates
+the `PromptImageRef` and puts back `prompt_image_text(ref, bytes)`, the bytes read through
+`_prompt_image_bytes` (listed in `manifest.prompt_images`, `_listed`, on disk, hashing to
+the digest in their name); only then does `RecordedLLMCall` validate it. Errors name the
+file at fault: the call record for an uncommitted image, a bad position or a bad reference;
+the image file when it is missing, does not match its hash, or is a `.txt` that is not
+UTF-8. Validating a stored record directly as `RecordedLLMCall` fails on purpose (an
+object stands where `url` wants a string): nobody gets a prompt with its images silently
+missing. Tests that encode a call without committing it read it back through
+`tests/_helpers/trace_builder.py::read_back`.
 
 **Steps have an origin (M31).** `StepRecord.origin` is `policy` (a step the run's own
 agent decided; every step of every older trace reads back as `policy`, which is right for
@@ -936,10 +970,10 @@ are byte-identical.
 | `core/archive/privacy.py` | `PRIVACY_POLICY`, the shared field-name / credential-name patterns, `redact_url`, `redact_value`, `RedactionLedger`, privacy marker constants |
 | `core/negotiation/archive.py` | `negotiate_archive`, `ArchiveNegotiationResult` (`archive`), `IncompatibleArchiveError` |
 | `core/step_recorder.py` | "model it as a Protocol method" — the worked example |
-| `core/trace/encoding.py` | the one on-disk rule: file names, `TraceFile`, `encode_fragment` / `decode_fragment`, `PendingLLMCall`, `encode_llm_call`, output schemas, the `env/` paths and `encode_archive_file` |
+| `core/trace/encoding.py` | the one on-disk rule: file names, `TraceFile`, `encode_fragment` / `decode_fragment`, `PendingLLMCall`, `encode_llm_call`, output schemas, prompt images (`store_prompt_images` / `restore_prompt_images` / `prompt_image_text`), the `env/` paths and `encode_archive_file` |
 | `core/trace/fsio.py` | `write_durable`, `fsync_dir` and its errno policy, `atomic_write`, plain-write permissions |
 | `core/trace/wal.py` | the commit protocol, path rules (file-or-directory included), content-addressed dedup, durable-directory tracking, `commit_trailing` |
-| `core/trace/models.py` | `TraceManifest` and its per-step index, `RecordedLLMCall`, `CallFailure`, `TraceConfig`, `TraceNegotiation`, `ArchiveMeta` / `ArchiveRecord`, `TaskSetupRecord`, the digest |
+| `core/trace/models.py` | `TraceManifest` and its per-step index, `RecordedLLMCall`, `PromptImageRef`, `CallFailure`, `TraceConfig`, `TraceNegotiation`, `ArchiveMeta` / `ArchiveRecord`, `TaskSetupRecord`, the digest |
 | `core/trace/redaction.py` | `trace_safe`, `is_safe_by_type`, `is_closed_set`, `redact_config` |
 | `core/trace/reader.py` | `RunTrace` — typed accessors resolved through the manifest (the archive ones through the extra indexes), `_listed` (containment), `_read_model` (`json.loads`), the format gate |
 | `core/trace/errors.py` | `TraceSchemaError` — every way a committed trace is unreadable |
@@ -950,6 +984,7 @@ are byte-identical.
 | `tests/test_core/test_archive/test_archive_boundaries.py` | the layering of §10 on source text: runtime / negotiation / environments never name `TraceWriter` or a concrete archiver module, `core/archive` imports none of its dependents (one exception by exact module name: `core/archive/source.py`, the replay opener, imports `core.trace.reader`), `core/trace` imports only `core.archive.privacy`; no money field in the new models; the browser's evidence readers import neither `core.trace` nor `spectragent.flywheel` |
 | `tests/test_core/test_runtime/test_archive_binding_errors.py` | every archive binding error raised by `prepare()` naming the parties, and by `execute()` before `on_run_start` and before setup |
 | `tests/test_core/test_trace/test_crash_window.py` | every accessor ignores what the manifest does not list |
+| `tests/test_core/test_trace/test_prompt_images.py` | prompt images stored once: the 12-step growing history, lossless round trips (non-standard base64 included), what is left alone, the commit order, and every way a referenced image can be damaged |
 | `tests/test_core/test_trace/test_reader_errors.py` | every reader input × every corruption → `TraceSchemaError` naming the file; every listed path × every way out of the run directory |
 | `tests/test_core/test_trace/test_fsio.py` | the directory `fsync` errno policy, plain-write permissions, every data `fsync` holding the file's bytes |
 | `tests/test_core/test_trace/test_wal_batch_commit.py` | `init_run`'s order, commit order, one `fsync` per directory, the path rule on every channel, injected failures, the 1000-file budget |

@@ -107,6 +107,12 @@ async def _source(tmp_path: Path, kind: AgentKind, memory: str) -> tuple[Outcome
         )
     assert trace.step(1).truncated_actions == 1  # type: ignore[union-attr]
     assert trace.step_count == STEPS
+    # The vision agents' prompts carry screenshots inline: the source stores each one once
+    # and its call records refer to it, so every comparison below — and the branch's own
+    # check of the rebuilt context — reads prompts put back together
+    # (docs/architecture_design.md §5.3).
+    if kind != "skyvern":
+        assert trace.manifest.prompt_images
     return outcome, trace
 
 

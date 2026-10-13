@@ -70,6 +70,7 @@ from tests._helpers.trace_builder import (
     archive_item,
     new_wal,
     prompt,
+    read_back,
     step_record,
     usage,
 )
@@ -187,7 +188,7 @@ class TestAFailureNeverDecodesAsAnEmptyFragment:
 def _round_trip(pending: PendingLLMCall, step: int = 3, call: int = 1) -> RecordedLLMCall:
     encoded = encode_llm_call(step, call, pending)
     assert encoded.file.rel_path == f"messages/{step:03d}_call_{call:02d}.json"
-    return RecordedLLMCall.model_validate_json(encoded.file.data)
+    return read_back(encoded)
 
 
 def _raw(pending: PendingLLMCall) -> dict[str, Any]:

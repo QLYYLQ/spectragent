@@ -59,6 +59,7 @@ from spectragent.core.trace.encoding import (
     MESSAGES_DIR,
     OBSERVATIONS_DIR,
     OUTPUT_FORMATS_DIR,
+    PROMPT_IMAGES_DIR,
     RESULT_FILE,
     STEPS_DIR,
     WAL_OWNED_DIRS,
@@ -106,9 +107,10 @@ class WALWriter:
     committed file can never be overwritten), every directory those paths
     run through (so no later path can turn one into a file, or a file into
     a directory), the content-addressed paths already on disk (so a blob
-    many steps reference is written once), and the directories whose own
-    names are known durable (so a retried commit still ``fsync``-s the
-    parent of a directory its failed attempt created).
+    many steps reference — an output schema, a prompt image, a response
+    body — is written once), and the directories whose own names are known
+    durable (so a retried commit still ``fsync``-s the parent of a directory
+    its failed attempt created).
     """
 
     def __init__(self, base_dir: Path, run_id: str) -> None:
@@ -189,9 +191,11 @@ class WALWriter:
 
         self._manifest = manifest
         self._committed = set()
-        # The WAL's own directories, and the one it creates on demand: no
+        # The WAL's own directories, and the ones it creates on demand: no
         # file may ever take one of these names.
-        self._committed_dirs = {fold_path(name) for name in (*own_dirs, OUTPUT_FORMATS_DIR)}
+        self._committed_dirs = {
+            fold_path(name) for name in (*own_dirs, OUTPUT_FORMATS_DIR, PROMPT_IMAGES_DIR)
+        }
         self._committed_blobs = set()
         self._durable_dirs = {self._run_dir / name for name in own_dirs}
 
@@ -266,6 +270,7 @@ class WALWriter:
                     "last_step_completed": max(manifest.last_step_completed, step),
                     "complete_through": through,
                     "output_formats": [*manifest.output_formats, *plan.output_formats],
+                    "prompt_images": [*manifest.prompt_images, *plan.prompt_images],
                     "updated_at": datetime.now(UTC),
                 }
             ),
@@ -305,6 +310,7 @@ class WALWriter:
                 update={
                     "trailing": [*manifest.trailing, entry],
                     "output_formats": [*manifest.output_formats, *plan.output_formats],
+                    "prompt_images": [*manifest.prompt_images, *plan.prompt_images],
                     "updated_at": datetime.now(UTC),
                 }
             ),
@@ -397,6 +403,8 @@ class _Plan:
     blobs: set[str] = field(default_factory=set)
     #: Output schemas this commit is the first to carry.
     output_formats: list[str] = field(default_factory=list)
+    #: Prompt images this commit is the first to carry, by path.
+    prompt_images: list[str] = field(default_factory=list)
 
     def add_fragments(self, fragments: Iterable[EncodedFragment]) -> None:
         keys: set[str] = set()
@@ -410,24 +418,26 @@ class _Plan:
 
     def add_calls(self, calls: Iterable[EncodedLLMCall]) -> None:
         for call in calls:
-            if _within(call.file.rel_path, OUTPUT_FORMATS_DIR):
-                raise ValueError(f"{call.file.rel_path!r}: a call record cannot live among schemas")
+            for directory, holding in (
+                (OUTPUT_FORMATS_DIR, "schemas"),
+                (PROMPT_IMAGES_DIR, "stored prompt images"),
+            ):
+                if _within(call.file.rel_path, directory):
+                    raise ValueError(
+                        f"{call.file.rel_path!r}: a call record cannot live among {holding}"
+                    )
+            # The images before the record that names them. Only tidiness:
+            # the manifest is the commit point, whatever order the content
+            # files land in.
+            for image in call.images:
+                _check_content_addressed_in(image, PROMPT_IMAGES_DIR, "a prompt image")
+                if self._blob(image):
+                    self.prompt_images.append(image.rel_path)
             self._own(call.file, MESSAGES_DIR)
             schema = call.output_format
             if schema is None:
                 continue
-            # Before the parent test below: ``PurePosixPath`` drops ``.`` and
-            # empty segments, so ``messages/output_formats/./<sha>.json``
-            # would pass it.
-            check_relative_path(schema.rel_path)
-            if not schema.content_addressed or PurePosixPath(
-                schema.rel_path
-            ).parent != PurePosixPath(OUTPUT_FORMATS_DIR):
-                raise ValueError(
-                    f"{schema.rel_path!r}: an output schema is content-addressed, "
-                    f"directly under {OUTPUT_FORMATS_DIR}/"
-                )
-            digest = _check_address(schema)
+            digest = _check_content_addressed_in(schema, OUTPUT_FORMATS_DIR, "an output schema")
             if self._blob(schema):
                 self.output_formats.append(digest)
 
@@ -533,6 +543,20 @@ def _check_not_wal_owned(rel_path: str) -> None:
             f"{rel_path!r} is a name the WAL owns ({sorted(WAL_OWNED_FILES)}, or anything "
             f"under {sorted(f'{d}/' for d in WAL_OWNED_DIRS)}); extra files go elsewhere"
         )
+
+
+def _check_content_addressed_in(item: TraceFile, directory: str, what: str) -> str:
+    """*item* is content-addressed, directly under *directory*: its sha256, or ``ValueError``."""
+    # Before the parent test: ``PurePosixPath`` drops ``.`` and empty
+    # segments, so ``messages/output_formats/./<sha>.json`` would pass it.
+    check_relative_path(item.rel_path)
+    if not item.content_addressed or PurePosixPath(item.rel_path).parent != PurePosixPath(
+        directory
+    ):
+        raise ValueError(
+            f"{item.rel_path!r}: {what} is content-addressed, directly under {directory}/"
+        )
+    return _check_address(item)
 
 
 def _ancestors(rel_path: str) -> list[str]:

@@ -19,16 +19,26 @@ hold. ``TraceWriter`` is a blocking hook, so a validation error raised here
 would end the run it is recording — over a typing question about the
 trace. The reader validates instead (``RecordedLLMCall``), where a record
 that does not fit is reported as an unreadable trace file.
+
+**An image a prompt sent inline is stored once per run.** A call record
+holds the whole prompt, and an agent that keeps every screenshot in its
+memory sends all of them on every call. :func:`store_prompt_images` puts a
+:class:`~spectragent.core.trace.models.PromptImageRef` where each one stood
+and hands the image over as a content-addressed file under
+``messages/images/``; :func:`restore_prompt_images` is the reader's inverse,
+and the round trip is lossless (``docs/architecture_design.md`` §5.3).
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
+import re
 import time
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -36,10 +46,11 @@ from pydantic import BaseModel
 from pydantic_core import to_json, to_jsonable_python
 
 from spectragent.core.llm.views import ChatInvokeUsage
-from spectragent.core.trace.models import ArchiveMeta, OutputFormatRef
+from spectragent.core.trace.models import ArchiveMeta, OutputFormatRef, PromptImageRef
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.dynamic_model import iter_fragments
 from spectragent.schemas.observation.failure import FragmentFailure
+from spectragent.schemas.observation.image import image_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +63,7 @@ STEPS_DIR = "steps"
 OBSERVATIONS_DIR = "observations"
 MESSAGES_DIR = "messages"
 OUTPUT_FORMATS_DIR = f"{MESSAGES_DIR}/output_formats"
+PROMPT_IMAGES_DIR = f"{MESSAGES_DIR}/images"
 EVALS_DIR = "evals"
 
 #: Names the WAL and this module decide. An extra file may not land on one:
@@ -98,6 +110,27 @@ def call_path(step: int, call: int) -> str:
 def output_format_path(sha256: str) -> str:
     """``messages/output_formats/<sha256>.json`` — content-addressed."""
     return f"{OUTPUT_FORMATS_DIR}/{sha256}.json"
+
+
+def prompt_image_path(sha256: str, suffix: str) -> str:
+    """``messages/images/<sha256><suffix>`` — content-addressed, one file per distinct image."""
+    return f"{PROMPT_IMAGES_DIR}/{sha256}{suffix}"
+
+
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def prompt_image_digest(rel_path: str) -> str | None:
+    """The sha256 a prompt image's path is named by, or ``None`` when it is named by none.
+
+    The path is directly under ``messages/images/``, and its name is 64
+    lowercase hex digits followed by nothing or a suffix.
+    """
+    directory, _, name = rel_path.rpartition("/")
+    stem = name.partition(".")[0]
+    if directory != PROMPT_IMAGES_DIR or not _SHA256_HEX.fullmatch(stem):
+        return None
+    return stem
 
 
 # ── environment evidence (env/) ───────────────────────────────
@@ -244,14 +277,19 @@ class EncodedLLMCall:
     """One LLM call, ready to commit.
 
     Attributes:
-        file: ``messages/NNN_call_KK.json`` — a ``RecordedLLMCall``.
+        file: ``messages/NNN_call_KK.json`` — a ``RecordedLLMCall``, its
+            inline images stored apart (:func:`store_prompt_images`).
         output_format: The requested schema the record points at,
             content-addressed. The WAL writes it with the first commit that
             carries it and skips it after that.
+        images: Every distinct image the record refers to,
+            ``messages/images/<sha256><suffix>``, content-addressed: written
+            with the first commit that carries it, like the schema.
     """
 
     file: TraceFile
     output_format: TraceFile | None = None
+    images: tuple[TraceFile, ...] = ()
 
 
 # ── observations ──────────────────────────────────────────────
@@ -524,32 +562,39 @@ def encode_output_format(output_format: Any) -> EncodedOutputFormat:
 
 
 def encode_llm_call(step: int, call: int, pending: PendingLLMCall) -> EncodedLLMCall:
-    """``messages/NNN_call_KK.json`` for one registered call.
+    """``messages/NNN_call_KK.json`` for one registered call, and the images it refers to.
 
     A call still in flight when its step is committed or the run is closed
     out is recorded as ``cancelled`` with no failure record: the trace ends
-    there, no exception reached the hook, and its prompt is kept.
+    there, no exception reached the hook, and its prompt is kept. Every
+    image the prompt sent inline is stored apart (:func:`store_prompt_images`):
+    the record holds a reference in its place, and ``image_refs`` — written
+    only when there is one — lists where each reference stands.
     """
     latency = pending.latency_ms
     if latency is None:
         latency = _elapsed_ms(pending._started)
-    record = {
+    stored = store_prompt_images(pending.messages)
+    record: dict[str, Any] = {
         "step": step,
         "call": call,
         "status": pending.status or "cancelled",
         "started_at": pending.started_at,
         "latency_ms": latency,
-        "messages": pending.messages,
-        "output_format": (
-            pending.output_format.ref.model_dump(mode="json") if pending.output_format else None
-        ),
-        "completion": pending.completion,
-        "failure": pending.failure,
+        "messages": stored.messages,
     }
+    if stored.image_refs:
+        record[IMAGE_REFS_KEY] = stored.image_refs
+    record["output_format"] = (
+        pending.output_format.ref.model_dump(mode="json") if pending.output_format else None
+    )
+    record["completion"] = pending.completion
+    record["failure"] = pending.failure
     data = to_json(record, indent=2, fallback=_unknown, bytes_mode="base64")
     return EncodedLLMCall(
         file=TraceFile(call_path(step, call), data),
         output_format=pending.output_format.file if pending.output_format else None,
+        images=stored.images,
     )
 
 
@@ -558,6 +603,225 @@ def encode_llm_calls(
 ) -> list[EncodedLLMCall]:
     """Encode calls in start order, numbered from *first_call*."""
     return [encode_llm_call(step, first_call + offset, item) for offset, item in enumerate(pending)]
+
+
+# ── prompt images ─────────────────────────────────────────────
+
+#: The call record's key listing where each ``PromptImageRef`` stands in its
+#: ``messages``: the keys and indices leading to it. Written only when the
+#: prompt sent an image inline.
+IMAGE_REFS_KEY = "image_refs"
+
+#: An inline image: a ``data:`` URL whose payload is base64 (RFC 2397), with
+#: whatever parameters and letter case it came with.
+_BASE64_DATA_URL = re.compile(r"data:[^,]*;base64,", re.IGNORECASE)
+
+#: The suffix of a stored image whose header names no image this framework
+#: knows, and of one stored as its URL's own text.
+_UNKNOWN_IMAGE_SUFFIX = ".bin"
+_TEXT_SUFFIX = ".txt"
+
+#: A position in a prompt's JSON: the keys and indices leading to a value.
+Position = list[str | int]
+
+
+@dataclass(frozen=True)
+class StoredPrompt:
+    """A prompt as its call record holds it, and the image files it refers to.
+
+    Attributes:
+        messages: The prompt's JSON form with every inline image replaced by
+            a ``PromptImageRef`` (its JSON form) — the very object passed in
+            when nothing was replaced.
+        image_refs: Where each reference stands in *messages*, in document
+            order.
+        images: The files the references name, each distinct file once, in
+            the order first referenced.
+    """
+
+    messages: Any
+    image_refs: list[Position]
+    images: tuple[TraceFile, ...]
+
+
+def store_prompt_images(messages: Any) -> StoredPrompt:
+    """*messages* — a prompt's JSON snapshot — with every inline image stored apart.
+
+    An inline image is the ``url`` of an object under an ``image_url`` key
+    when it is a base64 ``data:`` URL: where ``ContentPartImageParam`` puts
+    one, in a user and a tool message alike. Each becomes a
+    ``PromptImageRef`` naming a file under ``messages/images/``, which holds
+
+    - the decoded bytes, when they are not empty and re-encoding them in
+      standard base64 gives the payload back exactly — named by their sha256
+      and the suffix their header gives (``.bin`` when it names none); the
+      reference keeps the URL up to its comma;
+    - otherwise the URL's own text, UTF-8, as ``<sha256>.txt``: decoding a
+      payload with line breaks, missing padding or another alphabet would
+      lose them.
+
+    A URL that is not even UTF-8 (a lone surrogate) stays where it is, and so
+    does every other string — an image sent by URL, ``data:`` inside a text
+    part. *messages* itself is not modified: the containers on the way to a
+    replaced URL are copied.
+
+    Never raises: a prompt it cannot walk is recorded as it is, its images
+    inline. Either way the record reads back exactly as it was sent.
+    """
+    try:
+        replacements: list[tuple[tuple[str | int, ...], dict[str, Any]]] = []
+        files: dict[str, TraceFile] = {}
+        for at, url in _inline_images(messages):
+            stored = _stored_image(url)
+            if stored is None:
+                continue
+            ref, file = stored
+            replacements.append((at, ref))
+            files.setdefault(file.rel_path, file)
+        if not replacements:
+            return StoredPrompt(messages, [], ())
+        return StoredPrompt(
+            _replaced(messages, replacements),
+            [list(at) for at, _ in replacements],
+            tuple(files.values()),
+        )
+    except Exception:  # the record must never be what fails a run
+        logger.warning(
+            "trace encoding: the prompt could not be walked; its images are recorded inline",
+            exc_info=True,
+        )
+        return StoredPrompt(messages, [], ())
+
+
+def restore_prompt_images(record: Any, text_of: Callable[[PromptImageRef], str]) -> None:
+    """Put back, in a parsed call record, the text each ``PromptImageRef`` stands for.
+
+    The inverse of :func:`store_prompt_images`: at each position the
+    record's ``image_refs`` lists, the reference becomes ``text_of(ref)``,
+    and ``image_refs`` is removed — in place. A record without
+    ``image_refs`` sent no image inline and is left as it is.
+
+    Raises:
+        ValueError: ``image_refs`` is not a list of positions, a position
+            leads nowhere in ``messages``, or what stands there is not a
+            reference (pydantic's ``ValidationError`` is a ``ValueError``).
+            Whatever *text_of* raises propagates as it is.
+    """
+    if not isinstance(record, dict) or IMAGE_REFS_KEY not in record:
+        return
+    positions = record.pop(IMAGE_REFS_KEY)
+    if not isinstance(positions, list):
+        raise ValueError(f"{IMAGE_REFS_KEY} is a {type(positions).__name__}, not a list")
+    messages = record.get("messages")
+    for at in positions:
+        holder, key = _locate(messages, at)
+        ref = PromptImageRef.model_validate(holder[key])
+        holder[key] = text_of(ref)
+
+
+def prompt_image_text(ref: PromptImageRef, data: bytes) -> str:
+    """The text a stored prompt image stands for: its ``data:`` URL, exactly as the prompt sent it.
+
+    Raises:
+        ValueError: The file is to hold the text itself, and is not UTF-8.
+    """
+    if ref.prefix is not None:
+        return ref.prefix + base64.b64encode(data).decode("ascii")
+    return data.decode("utf-8")
+
+
+def _inline_images(messages: Any) -> list[tuple[tuple[str | int, ...], str]]:
+    """``(position, url)`` of every inline image in *messages*, in document order.
+
+    Walked with a stack, not by recursion: how deep a prompt nests is the
+    caller's business, and the walk must not be what fails on it.
+    """
+    found: list[tuple[tuple[str | int, ...], str]] = []
+    stack: list[tuple[Any, tuple[str | int, ...]]] = [(messages, ())]
+    while stack:
+        value, at = stack.pop()
+        if isinstance(value, list):
+            stack.extend((item, (*at, index)) for index, item in reversed(list(enumerate(value))))
+        elif isinstance(value, dict):
+            if at and at[-1] == "image_url":
+                url = value.get("url")
+                if isinstance(url, str) and _BASE64_DATA_URL.match(url):
+                    found.append(((*at, "url"), url))
+            stack.extend(
+                (item, (*at, key))
+                for key, item in reversed(list(value.items()))
+                if isinstance(key, str)
+            )
+    return found
+
+
+def _stored_image(url: str) -> tuple[dict[str, Any], TraceFile] | None:
+    """The reference that stands for the inline image *url*, and its file; ``None``: keep it inline."""
+    match = _BASE64_DATA_URL.match(url)
+    if match is None:
+        return None
+    prefix, payload = url[: match.end()], url[match.end() :]
+    try:
+        data = base64.b64decode(payload, validate=True)
+    except ValueError:  # binascii.Error, or a payload that is not ASCII
+        data = b""
+    if data and base64.b64encode(data).decode("ascii") == payload:
+        rel_path = prompt_image_path(sha256_hex(data), image_suffix(data) or _UNKNOWN_IMAGE_SUFFIX)
+        file = TraceFile(rel_path, data, content_addressed=True)
+    else:
+        try:
+            text = url.encode("utf-8")
+        except UnicodeEncodeError:
+            return None
+        rel_path = prompt_image_path(sha256_hex(text), _TEXT_SUFFIX)
+        prefix = None
+        file = TraceFile(rel_path, text, content_addressed=True)
+    ref = PromptImageRef(stored_image=rel_path, prefix=prefix)
+    return ref.model_dump(mode="json"), file
+
+
+def _replaced(root: Any, replacements: list[tuple[tuple[str | int, ...], Any]]) -> Any:
+    """*root* with each position set to its value — copying only the containers on the way."""
+    copies: set[int] = set()
+
+    def own(container: Any) -> Any:
+        copy = list(container) if isinstance(container, list) else dict(container)
+        copies.add(id(copy))
+        return copy
+
+    root = own(root)
+    for at, value in replacements:
+        holder = root
+        for key in at[:-1]:
+            child = holder[key]
+            if id(child) not in copies:
+                child = own(child)
+                holder[key] = child
+            holder = child
+        holder[at[-1]] = value
+    return root
+
+
+def _locate(messages: Any, at: Any) -> tuple[Any, str | int]:
+    """The container *at* — keys and indices from *messages* — ends in, and its last key.
+
+    Raises:
+        ValueError: *at* is not a non-empty list, or it leads nowhere.
+    """
+    if not isinstance(at, list) or not at:
+        raise ValueError(f"{at!r} is not a position: a non-empty list of keys and indices")
+    holder = messages
+    for key in at[:-1]:
+        holder = holder[_key_in(holder, key, at)]
+    return holder, _key_in(holder, at[-1], at)
+
+
+def _key_in(holder: Any, key: Any, at: list[Any]) -> str | int:
+    if isinstance(holder, list) and type(key) is int and 0 <= key < len(holder):
+        return key
+    if isinstance(holder, dict) and isinstance(key, str) and key in holder:
+        return key
+    raise ValueError(f"the position {at!r} leads nowhere in messages (at {key!r})")
 
 
 # ── environment evidence ──────────────────────────────────────

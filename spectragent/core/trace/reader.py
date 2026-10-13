@@ -35,6 +35,13 @@ must have the shape the WAL writes (``check_relative_path``) and must still
 be inside the run directory once symlinks are resolved. Otherwise a crafted
 manifest listing ``/home/me/.ssh/id_rsa`` as a screenshot would hand that
 file to an image judge.
+
+**A recorded prompt comes back whole.** A call record holds a reference
+where each image its prompt sent inline stood; the image is stored once per
+run under ``messages/images/``. Every accessor that returns recorded calls
+puts each image's text back — checked against its hash, on every read —
+before the record is validated, so the prompt is byte for byte what was
+written (``docs/architecture_design.md`` §5.3).
 """
 
 from __future__ import annotations
@@ -58,6 +65,9 @@ from spectragent.core.trace.encoding import (
     check_relative_path,
     decode_fragment,
     output_format_path,
+    prompt_image_digest,
+    prompt_image_text,
+    restore_prompt_images,
     sha256_hex,
 )
 from spectragent.core.trace.errors import TraceSchemaError
@@ -70,6 +80,7 @@ from spectragent.core.trace.models import (
     ExtraFileIndex,
     ExtraFileRecord,
     FragmentFiles,
+    PromptImageRef,
     RecordedLLMCall,
     StepManifestEntry,
     TraceConfig,
@@ -270,6 +281,12 @@ class RunTrace:
         ``raw_output``), truncations (with ``partial_output``) and calls cut
         off by a cancellation (prompt only) alike. ``[]`` when the step did
         not commit — its calls, if it made any, are in :attr:`trailing_calls`.
+        Each prompt holds its inline images again, exactly as they were sent.
+
+        Raises:
+            TraceSchemaError: A call record does not read back — naming it,
+                or naming an image it refers to that is missing or does not
+                match its hash.
         """
         entry = self._entries.get(step)
         if entry is None:
@@ -278,7 +295,11 @@ class RunTrace:
 
     @cached_property
     def trailing_calls(self) -> list[RecordedLLMCall]:
-        """Calls of a step the Loop never surrendered, in commit then start order."""
+        """Calls of a step the Loop never surrendered, in commit then start order.
+
+        Their prompts hold their inline images again, as :meth:`llm_messages`'
+        do.
+        """
         return [
             self._read_call(rel) for entry in self._manifest.trailing for rel in entry.llm_calls
         ]
@@ -349,12 +370,13 @@ class RunTrace:
         manifest order, the step record, each fragment's file and artifact,
         each LLM call, the extra index and every file it lists; then each
         trailing commit's calls, index and files; then the requested reply
-        schemas. An extra file several commits reference (content-addressed)
-        is listed once per commit that lists it — how to count it is the
-        caller's rule. Nothing the manifest (or a committed index) does not
-        list is here, and every path is checked as it is listed (the WAL's
-        shape, inside the run directory), as every accessor checks before it
-        opens one. Bytes: :meth:`read_committed`.
+        schemas; then the prompt images, each once (a call record's own
+        bytes refer to them). An extra file several commits reference
+        (content-addressed) is listed once per commit that lists it — how to
+        count it is the caller's rule. Nothing the manifest (or a committed
+        index) does not list is here, and every path is checked as it is
+        listed (the WAL's shape, inside the run directory), as every accessor
+        checks before it opens one. Bytes: :meth:`read_committed`.
 
         Raises:
             TraceSchemaError: A listed path is malformed or leads outside the
@@ -388,15 +410,17 @@ class RunTrace:
             self._listing(output_format_path(sha256), "output_schema", None)
             for sha256 in self._manifest.output_formats
         ]
+        files += [self._listing(rel, "prompt_image", None) for rel in self._manifest.prompt_images]
         return files
 
     def read_committed(self, path: str) -> bytes:
         """The bytes of a file :attr:`committed_files` lists, through its own accessor's checks.
 
         An extra file is :meth:`read_extra` (size and sha256 against its
-        index); a reply schema must hash to its address; an artifact must
-        not be empty; every listed file must be on disk, inside the run
-        directory.
+        index); a reply schema and a prompt image must hash to their
+        address; an artifact must not be empty; every listed file must be on
+        disk, inside the run directory. A call record comes back as it is on
+        disk, its images as references.
 
         Raises:
             KeyError: *path* is not a committed file of this run.
@@ -418,6 +442,8 @@ class RunTrace:
             return self._read_artifact(path)
         if found.kind == "output_schema":
             return self._output_schema_bytes(self._schema_addresses[path])[1]
+        if found.kind == "prompt_image":
+            return self._prompt_image_bytes(path, listed_in=self._manifest_path)
         return _read_bytes(self._listed(path))
 
     # ── environment evidence (env/): through the extra indexes ─
@@ -762,14 +788,72 @@ class RunTrace:
         return record
 
     def _read_call(self, rel: str, *, step: int | None = None) -> RecordedLLMCall:
+        """A call record, its prompt images put back, validated as a ``RecordedLLMCall``."""
         path = self._listed(rel)
-        call = _read_model(path, RecordedLLMCall)
+        record = _load_json(path, _read_bytes(path), "a RecordedLLMCall")
+        try:
+            restore_prompt_images(record, lambda ref: self._prompt_image_text(ref, listed_in=path))
+        except ValueError as exc:
+            raise TraceSchemaError(
+                f"{path}: a stored prompt image cannot be put back: {exc}", path=path
+            ) from exc
+        call = _validated(path, record, RecordedLLMCall.model_validate, "RecordedLLMCall")
         if step is not None and call.step != step:
             raise TraceSchemaError(
                 f"{path} records a call of step {call.step}, but is committed with step {step}",
                 path=path,
             )
         return call
+
+    @cached_property
+    def _committed_prompt_images(self) -> frozenset[str]:
+        return frozenset(self._manifest.prompt_images)
+
+    def _prompt_image_text(self, ref: PromptImageRef, *, listed_in: Path) -> str:
+        """The text the prompt image *ref* (found in the call record *listed_in*) stands for."""
+        data = self._prompt_image_bytes(ref.stored_image, listed_in=listed_in)
+        try:
+            return prompt_image_text(ref, data)
+        except ValueError as exc:  # UnicodeDecodeError
+            file = self._trace_dir / ref.stored_image
+            raise TraceSchemaError(
+                f"{file} does not read back as the text {listed_in} refers to: {exc}", path=file
+            ) from exc
+
+    def _prompt_image_bytes(self, rel: str, *, listed_in: Path) -> bytes:
+        """A committed prompt image's bytes, which must hash to the sha256 its name carries.
+
+        Checked on every read, never cached.
+
+        Raises:
+            TraceSchemaError: *rel* is not a committed prompt image (naming
+                *listed_in*, which refers to it); the manifest lists it under
+                a name no sha256 makes, or outside the run directory (naming
+                the manifest); the file is missing or does not hash to its
+                name (naming the file).
+        """
+        if rel not in self._committed_prompt_images:
+            raise TraceSchemaError(
+                f"{listed_in} refers to the stored prompt image {rel!r}, which the manifest does "
+                f"not list: it was never committed",
+                path=listed_in,
+            )
+        file = self._listed(rel)
+        digest = prompt_image_digest(rel)
+        if digest is None:
+            raise TraceSchemaError(
+                f"{self._manifest_path} lists {rel!r} as a stored prompt image, but no sha256 "
+                f"names it",
+                path=self._manifest_path,
+            )
+        data = _read_bytes(file)
+        if sha256_hex(data) != digest:
+            raise TraceSchemaError(
+                f"{file} is content-addressed by {digest}, but its bytes hash to "
+                f"{sha256_hex(data)}",
+                path=file,
+            )
+        return data
 
     def _read_index(self, rel: str) -> ExtraFileIndex:
         index = self._indexes.get(rel)
@@ -903,11 +987,12 @@ def _require_current_format(path: Path, document: Any) -> None:
     """Refuse a manifest of any format but :data:`TRACE_FORMAT_VERSION`.
 
     Older formats are not read at all, not even their configuration or
-    result: format 3 split the manifest's ``status`` from the agent's
-    outcome, and a format-2 ``error`` meant either "the agent failed" or
-    "the trace is incomplete" — no reader can tell which, and there is no
-    compatibility shim (AGENTS.md §0.4). A newer format is one this build
-    does not know.
+    result, and there is no compatibility shim (AGENTS.md §0.4): format 4
+    stores each image a prompt sent inline once per run, where a format-3
+    call record holds them inline; format 3 split the manifest's ``status``
+    from the agent's outcome, where a format-2 ``error`` meant either "the
+    agent failed" or "the trace is incomplete" — no reader can tell which.
+    A newer format is one this build does not know.
     """
     if not isinstance(document, dict):
         return  # not a manifest at all: the model's validation names the file
@@ -922,11 +1007,25 @@ def _require_current_format(path: Path, document: Any) -> None:
         )
     raise TraceSchemaError(
         f"{path} declares trace format version {found!r}; this build reads version "
-        f"{TRACE_FORMAT_VERSION} only, whose manifest says whether the trace is complete and "
-        f"leaves how the agent ended to result.json. An older trace's status mixed the two, "
-        f"so it is not read at all: re-run the task to record a current trace.",
+        f"{TRACE_FORMAT_VERSION} only. {_why_not_read(found)} An older trace is not read at all: "
+        f"re-run the task to record a current trace.",
         path=path,
     )
+
+
+def _why_not_read(found: Any) -> str:
+    """What changed since the format *found*, in the words of a refusal."""
+    if found == 3 and type(found) is int:
+        return (
+            "A format-3 trace holds every image a prompt sent inline in each call record; "
+            "the current format stores each one once."
+        )
+    if type(found) is int and found < 3:
+        return (
+            "The current manifest says whether the trace is complete and leaves how the agent "
+            "ended to result.json; an older trace's status mixed the two."
+        )
+    return "That is not a format version."
 
 
 def _read_model(path: Path, model: type[M]) -> M:

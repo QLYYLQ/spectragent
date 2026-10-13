@@ -8,8 +8,9 @@ that it does not list, both pinned here against *every* accessor:
   failing the manifest write of a real ``commit_step`` / ``commit_trailing``
   after everything else of the commit is on disk;
 - files dropped into the directory by hand, under ``observations/``,
-  ``messages/``, ``steps/`` and an ``env/``-like extra-file tree, including
-  files a committed step's index does not name.
+  ``messages/`` (stored prompt images included), ``steps/`` and an
+  ``env/``-like extra-file tree, including files a committed step's index
+  does not name.
 
 Either way the reader's answers must be exactly what they were before — the
 environment-evidence accessors included, over the M27 reference trace (where
@@ -31,10 +32,11 @@ from spectragent.core.trace import fsio
 from spectragent.core.trace.encoding import (
     encode_output_format,
     output_format_path,
+    prompt_image_path,
     sha256_hex,
 )
 from spectragent.core.trace.reader import RunTrace
-from tests._helpers.fragment_samples import SAMPLES
+from tests._helpers.fragment_samples import PNG_BYTES, SAMPLES
 from tests._helpers.trace_builder import (
     ARCHIVE_CAPABILITY,
     BLOBS_ARCHIVER,
@@ -48,6 +50,7 @@ from tests._helpers.trace_builder import (
     build_reference_trace,
     cancelled_call,
     completed_call,
+    data_url,
     extra,
     fragment,
     screenshot,
@@ -162,6 +165,20 @@ class TestACrashBeforeTheManifestRename:
         assert not any(before["archive_run_file"].values())
         late_blob = blob(b"evidence of a step that never happened")
         late_schema = encode_output_format(LateReply)
+        # A screenshot no committed prompt sent, beside one step 0's already did.
+        late_png = PNG_BYTES + b"late"
+        late_image = prompt_image_path(sha256_hex(late_png), ".png")
+        late_call = completed_call(
+            2,
+            1,
+            "late",
+            output_format=LateReply,
+            images=[data_url(PNG_BYTES), data_url(late_png)],
+        )
+        assert [image.rel_path for image in late_call.images] == [
+            reference.images[0].rel_path,
+            late_image,
+        ]
 
         with pytest.raises(OSError, match="power lost"):
             reference.wal.commit_step(
@@ -171,7 +188,7 @@ class TestACrashBeforeTheManifestRename:
                 # Call 1: call 0 of step 2 is the reference trace's trailing
                 # call, committed and immutable — numbered after, as
                 # TraceWriter numbers a step's calls after its trailing ones.
-                llm_calls=[completed_call(2, 1, "late", output_format=LateReply)],
+                llm_calls=[late_call],
                 extra_files=[extra("env/steps/002/x.y/name", b"late"), late_blob],
             )
         with pytest.raises(OSError, match="power lost"):
@@ -193,6 +210,7 @@ class TestACrashBeforeTheManifestRename:
             "messages/002_call_01.json",
             "messages/003_call_00.json",
             f"messages/output_formats/{late_schema.ref.sha256}.json",
+            late_image,
             "env/steps/002/x.y/name",
             late_blob.rel_path,
             "env/final/late.txt",
@@ -201,9 +219,10 @@ class TestACrashBeforeTheManifestRename:
 
         trace = RunTrace(run_dir)
         assert views(trace) == before
+        assert late_image not in trace.manifest.prompt_images
         assert_not_visible(
             trace,
-            paths=["env/steps/002/x.y/name", late_blob.rel_path, "env/final/late.txt"],
+            paths=["env/steps/002/x.y/name", late_blob.rel_path, "env/final/late.txt", late_image],
             schemas=[late_schema.ref.sha256],
         )
 
@@ -215,6 +234,8 @@ class TestHandPlantedOrphans:
         committed_call = (run_dir / "messages/000_call_01.json").read_bytes()
         planted_schema = b'{"type":"object"}'
         planted_sha = sha256_hex(planted_schema)
+        planted_png = PNG_BYTES + b"planted"
+        planted_image = prompt_image_path(sha256_hex(planted_png), ".png")
         step_two_index = (
             b'{"files": [{"path": "env/steps/002/x.y/name", "size": 4, '
             b'"sha256": "' + sha256_hex(b"late").encode() + b'"}]}'
@@ -238,6 +259,8 @@ class TestHandPlantedOrphans:
             "env/steps/000/orphan.bin": b"never indexed",
             "steps/trailing_01.extra.json": b'{"files": []}',
             f"messages/output_formats/{planted_sha}.json": planted_schema,
+            # a stored prompt image no committed call record refers to
+            planted_image: planted_png,
         }
         for rel, data in planted.items():
             path = run_dir / rel

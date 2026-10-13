@@ -1880,6 +1880,7 @@ _CATEGORY_OF_KIND: dict[str, str] = {
     "extra_index": "steps",
     "llm_call": "messages",
     "output_schema": "messages",
+    "prompt_image": "messages:images",
 }
 
 
@@ -1889,7 +1890,9 @@ def storage_category(file: CommittedFile) -> str:
     ``observations:<fragment>`` / ``artifacts:<fragment>``, ``env:run`` (a
     capability's run record), ``env:blobs`` (content-addressed evidence),
     ``env:<archiver>``, ``extra`` (an extra file that is no evidence), and
-    ``run`` / ``steps`` / ``messages`` by kind.
+    ``run`` / ``steps`` / ``messages`` (call records and reply schemas) /
+    ``messages:images`` (the images prompts sent inline, each stored once)
+    by kind.
     """
     if file.kind == "fragment":
         return f"observations:{file.fragment}"

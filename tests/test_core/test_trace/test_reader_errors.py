@@ -401,9 +401,15 @@ def _declare_format(run_dir: Path, version: object) -> Path:
 
 
 class TestFormatVersions:
-    """Only the current format is read: format 3 split the manifest's status from the agent's."""
+    """Only the current format is read.
 
-    @pytest.mark.parametrize(("version", "named"), [(None, "1"), (1, "1"), (2, "2"), ("3", "'3'")])
+    Format 3 split the manifest's status from the agent's outcome; format 4
+    stores each image a prompt sent inline once per run.
+    """
+
+    @pytest.mark.parametrize(
+        ("version", "named"), [(None, "1"), (1, "1"), (2, "2"), (3, "3"), ("4", "'4'")]
+    )
     def test_an_older_or_malformed_format_is_refused_at_construction(
         self, reference, version, named
     ):
@@ -412,6 +418,13 @@ class TestFormatVersions:
             _trace(reference.run_dir)
         assert exc_info.value.path == path
         assert "re-run the task" in str(exc_info.value)
+
+    def test_a_format_3_trace_is_refused_for_its_inline_images(self, reference):
+        """Its call records would read, but the format changed once and is not read back."""
+        path = _declare_format(reference.run_dir, 3)
+        with pytest.raises(TraceSchemaError, match="inline in each call record") as exc_info:
+            _trace(reference.run_dir)
+        assert exc_info.value.path == path
 
     def test_a_format_2_status_is_never_read_as_a_ledger(self, reference):
         """An old ``error`` meant "the agent failed" or "the trace is incomplete": no guess."""
@@ -423,8 +436,8 @@ class TestFormatVersions:
             _trace(reference.run_dir)
 
     def test_a_newer_format_is_refused_at_construction(self, reference):
-        path = _declare_format(reference.run_dir, 4)
-        with pytest.raises(TraceSchemaError, match="format version 4") as exc_info:
+        path = _declare_format(reference.run_dir, 5)
+        with pytest.raises(TraceSchemaError, match="format version 5") as exc_info:
             _trace(reference.run_dir)
         assert exc_info.value.path == path
         assert "the spectragent that wrote it" in str(exc_info.value)
@@ -599,6 +612,38 @@ class TestAPathTheTraceListsStaysInsideIt:
             else (lambda d: _trace(d).committed_files)
         )
         self._refused(read, run_dir, listed_in=run_dir / "manifest.json")
+
+    @pytest.mark.parametrize("escape", ["absolute", "dot-dot", "symlink"])
+    @pytest.mark.parametrize("accessor", ["llm_messages", "committed_files", "read_committed"])
+    def test_a_stored_prompt_image(self, reference, secret, accessor, escape):
+        """The manifest lists it and a call record refers to it: neither may lead out.
+
+        A reference the call record crafts names nothing the manifest committed, so it is
+        refused naming the call record before anything is opened.
+        """
+        run_dir = reference.run_dir
+        image = reference.images[0].rel_path
+        manifest = run_dir / "manifest.json"
+        outside = str(secret) if escape == "absolute" else "../outside/id_rsa"
+        listed_in = manifest
+        if escape == "symlink":
+            (run_dir / image).unlink()
+            (run_dir / image).symlink_to(secret)
+        elif accessor == "llm_messages":
+            listed_in = run_dir / "messages/000_call_00.json"
+            record = json.loads(listed_in.read_text())
+            ref = record["messages"][1]["content"][1]["image_url"]["url"]
+            ref["stored_image"] = outside
+            listed_in.write_text(json.dumps(record))
+        else:
+            self._edit_manifest(run_dir, ("prompt_images", 0), outside)
+
+        reads: dict[str, Read] = {
+            "llm_messages": lambda d: _trace(d).llm_messages(0),
+            "committed_files": lambda d: _trace(d).committed_files,
+            "read_committed": lambda d: _trace(d).read_committed(image),
+        }
+        self._refused(reads[accessor], run_dir, listed_in=listed_in)
 
     @pytest.mark.parametrize("escape", ["absolute", "dot-dot"])
     @pytest.mark.parametrize("accessor", ["extra_files", "read_extra", "committed_files"])

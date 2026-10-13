@@ -9,6 +9,7 @@ counts every entry it folds.
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 from pathlib import Path
@@ -33,7 +34,7 @@ from spectragent.core.trace.encoding import (
     TraceFile,
     encode_llm_call,
 )
-from spectragent.core.trace.models import RecordedLLMCall, TraceStatus
+from spectragent.core.trace.models import TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.secret_patterns import iter_readable
 from spectragent.core.trace.wal import WALWriter
@@ -71,6 +72,7 @@ from spectragent.flywheel.metrics import (
     same_path_fidelity,
     settle_wait,
     sites,
+    storage,
 )
 from spectragent.flywheel.report import build_report, render_markdown, report_json
 from spectragent.schemas.action import Action, ActionResult
@@ -87,7 +89,15 @@ from tests._helpers.flywheel_traces import (
     write_plain,
     write_replayed,
 )
-from tests._helpers.trace_builder import agent_result, archive_file, prompt, step_record, usage
+from tests._helpers.fragment_samples import PNG_BYTES
+from tests._helpers.trace_builder import (
+    agent_result,
+    archive_file,
+    prompt,
+    read_back,
+    step_record,
+    usage,
+)
 from tests.test_flywheel.conftest import empty_layout
 
 
@@ -594,6 +604,8 @@ class TestExportDeterminism:
 #: disk under ``env/`` and in the step record, where the privacy measure does not search.
 PLANTED_VALUE = "pw-Qx41"
 SITE_KEY_URL = "https://maps.test/js?key=AIzaSyPublicBrowserKey0123"
+#: A real image sent inline, in standard base64: the trace stores its decoded bytes.
+PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode()
 
 
 def _call(step: int, call: int, messages: list[Any]) -> EncodedLLMCall:
@@ -612,9 +624,10 @@ def privacy_chain(root: Path) -> ChainLayout:
     """Two readable runs that sent the model something, two that do not read back, a dataset.
 
     - ``record/run-a`` (a.test): step 0 sent the planted value twice in one text part, once more
-      inside an inline image's data URL (not text: left out), and an image by a URL carrying a
-      token; its env/ evidence and its step record (the typed action) hold the planted value and a
-      site's key-carrying URL too.
+      inside an inline image's data URL (not text: left out; its base64 is not the standard
+      encoding, so the trace stores the URL's own text), a real PNG inline (stored decoded), and
+      an image by a URL carrying a token; its env/ evidence and its step record (the typed
+      action) hold the planted value and a site's key-carrying URL too.
     - ``record/run-b`` (b.test): a trailing call (a step the loop never surrendered) whose
       history holds a bearer token.
     - ``same_path/damaged``: its one recorded call no longer parses.
@@ -638,6 +651,7 @@ def privacy_chain(root: Path) -> ChainLayout:
                 ContentPartImageParam(
                     image_url=ImageURL(url=f"data:image/png;base64,{PLANTED_VALUE}AAAA")
                 ),
+                ContentPartImageParam(image_url=ImageURL(url=PNG_DATA_URL)),
                 ContentPartImageParam(
                     image_url=ImageURL(url="https://img.test/shot.png?token=abcdefgh12345678")
                 ),
@@ -742,7 +756,7 @@ class TestPrivacy:
             assert value not in dumped
 
     def test_inline_image_data_is_not_text_but_an_image_url_is(self) -> None:
-        call = RecordedLLMCall.model_validate_json(
+        call = read_back(
             _call(
                 0,
                 0,
@@ -757,11 +771,42 @@ class TestPrivacy:
                         ]
                     )
                 ],
-            ).file.data
+            )
         )
         texts = request_texts(call)
         assert "look" in texts and "https://img.test/a.png" in texts
         assert not [text for text in texts if text.startswith("data:")]
+
+    def test_it_reads_the_prompts_back_whole_from_their_stored_images(
+        self, found: Privacy, tmp_path: Path
+    ) -> None:
+        """The request's two inline images are stored apart; the measure reads them back in place.
+
+        The URL with the planted value is stored as its own text (its base64 is not the
+        standard encoding), the PNG decoded. Both come back where they stood, and are skipped
+        as image data: only the text part's two occurrences count.
+        """
+        run_a = tmp_path / "chain" / "traces" / "record" / "run-a"
+        trace = RunTrace(run_a)
+        stored = sorted(Path(rel).suffix for rel in trace.manifest.prompt_images)
+        assert stored == [".png", ".txt"]
+        (call,) = trace.llm_messages(0)
+        user = call.messages[1]
+        assert isinstance(user, UserMessage) and isinstance(user.content, list)
+        urls = [part.image_url.url for part in user.content if part.type == "image_url"]
+        assert urls == [
+            f"data:image/png;base64,{PLANTED_VALUE}AAAA",
+            PNG_DATA_URL,
+            "https://img.test/shot.png?token=abcdefgh12345678",
+        ]
+        assert found.model_requests.planted[0].occurrences == 2
+
+    def test_stored_prompt_images_are_their_own_storage_category(self, tmp_path: Path) -> None:
+        found = storage(open_chain(privacy_chain(tmp_path / "chain")))
+        images = found.by_role["record"].categories["messages:images"]
+        text = f"data:image/png;base64,{PLANTED_VALUE}AAAA".encode()
+        assert (images.files, images.bytes) == (2, len(PNG_BYTES) + len(text))
+        assert images.compressible_bytes == len(text), "the PNG is reported as size only"
 
     def test_the_known_chain_leaks_nothing(self, layout: ChainLayout) -> None:
         found = privacy(

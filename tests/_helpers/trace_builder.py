@@ -1,4 +1,4 @@
-"""Build format-2 traces through the real encoder and the real ``WALWriter``.
+"""Build traces through the real encoder and the real ``WALWriter``.
 
 Every reader test needs a trace whose bytes are what production writes —
 a hand-written sidecar is how fixtures drifted from the writer before. So
@@ -9,8 +9,9 @@ and the commit through ``WALWriter.commit_step`` / ``commit_trailing``.
 :func:`build_reference_trace` writes one directory that exercises every
 accessor: a DOM page, screenshots in two encodings, a fragment whose capture
 failed, a step with a refused structured reply then a completed one, a
-shared output schema, per-step and content-addressed extra files, and the
-trailing calls and files of a step that never committed.
+shared output schema, prompts that send a growing history of screenshots
+inline (each image stored once), per-step and content-addressed extra files,
+and the trailing calls and files of a step that never committed.
 
 :func:`build_archive_trace` writes one that exercises the environment
 evidence accessors: step evidence from several archivers, a
@@ -23,7 +24,9 @@ archive file. Archive files go through :func:`archive_file` →
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,7 +37,13 @@ from pydantic import BaseModel
 from spectragent.core.archive import ArchiveFile, ArchiveProvenance, ArchiveScope
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
-from spectragent.core.llm.messages import SystemMessage, UserMessage
+from spectragent.core.llm.messages import (
+    ContentPartImageParam,
+    ContentPartTextParam,
+    ImageURL,
+    SystemMessage,
+    UserMessage,
+)
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 from spectragent.core.trace.encoding import (
     EncodedFragment,
@@ -45,10 +54,12 @@ from spectragent.core.trace.encoding import (
     encode_fragment,
     encode_llm_call,
     encode_output_format,
+    prompt_image_text,
+    restore_prompt_images,
     sha256_hex,
 )
 from spectragent.core.trace.fsio import atomic_write
-from spectragent.core.trace.models import TraceConfig, TraceStatus
+from spectragent.core.trace.models import RecordedLLMCall, TraceConfig, TraceStatus
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionResult
@@ -56,6 +67,7 @@ from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.eval_result import AgentResultRef, EvalDetails, EvalResult
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import TaskObs
+from spectragent.schemas.observation.image import image_media_type
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 from tests._helpers.fragment_samples import JPEG_BYTES, PNG_BYTES, SAMPLES
 
@@ -78,8 +90,20 @@ def usage(prompt: int = 10, completion: int = 5) -> ChatInvokeUsage:
     )
 
 
-def prompt(text: str) -> list[Any]:
-    return [SystemMessage(content="You operate a browser."), UserMessage(content=text)]
+def data_url(data: bytes) -> str:
+    """*data* as a prompt sends an image inline: a ``data:`` URL in standard base64."""
+    media_type = image_media_type(data) or "application/octet-stream"
+    return f"data:{media_type};base64,{base64.b64encode(data).decode()}"
+
+
+def prompt(text: str, images: Sequence[str] = ()) -> list[Any]:
+    """A system message, then a user message: *text* and each image URL of *images* after it."""
+    system = SystemMessage(content="You operate a browser.")
+    if not images:
+        return [system, UserMessage(content=text)]
+    parts: list[Any] = [ContentPartTextParam(text=text)]
+    parts += [ContentPartImageParam(image_url=ImageURL(url=url)) for url in images]
+    return [system, UserMessage(content=parts)]
 
 
 def completed_call(
@@ -89,28 +113,50 @@ def completed_call(
     *,
     reply: Any = "done()",
     output_format: type[BaseModel] | None = None,
+    images: Sequence[str] = (),
 ) -> EncodedLLMCall:
     pending = PendingLLMCall(
-        prompt(text), encode_output_format(output_format) if output_format else None
+        prompt(text, images), encode_output_format(output_format) if output_format else None
     )
     pending.complete(ChatInvokeCompletion(completion=reply, usage=usage(), stop_reason="end_turn"))
     return encode_llm_call(step, call, pending)
 
 
 def failed_call(
-    step: int, call: int, text: str, exc: Exception, *, output_format: type[BaseModel] | None = None
+    step: int,
+    call: int,
+    text: str,
+    exc: Exception,
+    *,
+    output_format: type[BaseModel] | None = None,
+    images: Sequence[str] = (),
 ) -> EncodedLLMCall:
     pending = PendingLLMCall(
-        prompt(text), encode_output_format(output_format) if output_format else None
+        prompt(text, images), encode_output_format(output_format) if output_format else None
     )
     pending.fail(exc)
     return encode_llm_call(step, call, pending)
 
 
-def cancelled_call(step: int, call: int, text: str) -> EncodedLLMCall:
-    pending = PendingLLMCall(prompt(text))
+def cancelled_call(
+    step: int, call: int, text: str, *, images: Sequence[str] = ()
+) -> EncodedLLMCall:
+    pending = PendingLLMCall(prompt(text, images))
     pending.cancel(asyncio.CancelledError())
     return encode_llm_call(step, call, pending)
+
+
+def read_back(encoded: EncodedLLMCall) -> RecordedLLMCall:
+    """An encoded call record read back the way ``RunTrace`` reads one, without a commit.
+
+    Its stored prompt images come from the encoded call's own files, so a
+    test of the encoding alone sees the prompt exactly as ``llm_messages``
+    would hand it back.
+    """
+    record = json.loads(encoded.file.data)
+    files = {image.rel_path: image.data for image in encoded.images}
+    restore_prompt_images(record, lambda ref: prompt_image_text(ref, files[ref.stored_image]))
+    return RecordedLLMCall.model_validate(record)
 
 
 def screenshot(step: int, data: bytes = PNG_BYTES) -> EncodedFragment:
@@ -200,6 +246,11 @@ def new_wal(base: Path, run_id: str = "run-test") -> WALWriter:
     return wal
 
 
+#: An image URL whose base64 is not the standard encoding of what it decodes to
+#: (the last character's low bits are set): the trace stores its own text.
+NONSTANDARD_IMAGE_URL = "data:image/png;base64,QR=="
+
+
 @dataclass
 class ReferenceTrace:
     """What :func:`build_reference_trace` committed, for assertions."""
@@ -211,6 +262,9 @@ class ReferenceTrace:
     shared_blob: TraceFile
     #: Extra files by step (``-1`` for the trailing commit).
     extras: dict[int, list[TraceFile]] = field(default_factory=dict)
+    #: The stored prompt images, in the order the commits first carried them:
+    #: step 0's PNG, step 1's JPEG, the trailing call's text.
+    images: list[TraceFile] = field(default_factory=list)
 
     @property
     def run_dir(self) -> Path:
@@ -220,6 +274,43 @@ class ReferenceTrace:
 def build_reference_trace(base: Path, run_id: str = "run-test") -> ReferenceTrace:
     wal = new_wal(base, run_id)
     shared = blob(b'{"status": 200, "body": "shared response"}')
+    # The history of screenshots each prompt sends inline grows by one a step.
+    step0_images = [data_url(PNG_BYTES)]
+    step1_images = [*step0_images, data_url(JPEG_BYTES)]
+    trailing_images = [*step1_images, NONSTANDARD_IMAGE_URL]
+    calls: dict[int, list[EncodedLLMCall]] = {
+        0: [
+            failed_call(
+                0,
+                0,
+                "what do you see?",
+                StructuredOutputValidationError(
+                    "schema mismatch", raw_output='{"thought": 1}', usage=usage()
+                ),
+                output_format=Reply,
+                images=step0_images,
+            ),
+            completed_call(
+                0,
+                1,
+                "what do you see? (again)",
+                reply=Reply(thought="a button", action="click"),
+                output_format=Reply,
+                images=step0_images,
+            ),
+        ],
+        1: [
+            completed_call(
+                1,
+                0,
+                "and now?",
+                reply=Reply(thought="done", action="done"),
+                output_format=Reply,
+                images=step1_images,
+            )
+        ],
+        -1: [cancelled_call(2, 0, "step two, never answered", images=trailing_images)],
+    }
 
     step0_extra = [
         extra("env/steps/000/browser.network/response.json", b'{"url": "https://a"}', kind="net"),
@@ -234,24 +325,7 @@ def build_reference_trace(base: Path, run_id: str = "run-test") -> ReferenceTrac
             failure(0, "browser.browser_meta"),
             fragment(0, TaskObs(user_request="find the answer")),
         ],
-        llm_calls=[
-            failed_call(
-                0,
-                0,
-                "what do you see?",
-                StructuredOutputValidationError(
-                    "schema mismatch", raw_output='{"thought": 1}', usage=usage()
-                ),
-                output_format=Reply,
-            ),
-            completed_call(
-                0,
-                1,
-                "what do you see? (again)",
-                reply=Reply(thought="a button", action="click"),
-                output_format=Reply,
-            ),
-        ],
+        llm_calls=calls[0],
         extra_files=step0_extra,
     )
 
@@ -260,19 +334,12 @@ def build_reference_trace(base: Path, run_id: str = "run-test") -> ReferenceTrac
         1,
         step_record(1, "done()"),
         fragments=[screenshot(1, JPEG_BYTES), fragment(1, TaskObs(user_request="find it"))],
-        llm_calls=[
-            completed_call(
-                1, 0, "and now?", reply=Reply(thought="done", action="done"), output_format=Reply
-            )
-        ],
+        llm_calls=calls[1],
         extra_files=step1_extra,
     )
 
     trailing_extra = [extra("env/final/summary.txt", b"run ended mid-step")]
-    wal.commit_trailing(
-        llm_calls=[cancelled_call(2, 0, "step two, never answered")],
-        extra_files=trailing_extra,
-    )
+    wal.commit_trailing(llm_calls=calls[-1], extra_files=trailing_extra)
     wal.write_result(
         agent_result(
             agent_done=AgentDoneStatus.TIMEOUT,
@@ -284,11 +351,16 @@ def build_reference_trace(base: Path, run_id: str = "run-test") -> ReferenceTrac
     # call included (trailing) — the two ledgers say different things.
     wal.finalize(TraceStatus.COMPLETE)
 
+    first: dict[str, TraceFile] = {}
+    for call in (*calls[0], *calls[1], *calls[-1]):
+        for image in call.images:
+            first.setdefault(image.rel_path, image)
     return ReferenceTrace(
         wal=wal,
         schema_sha=encode_output_format(Reply).ref.sha256,
         shared_blob=shared,
         extras={0: step0_extra, 1: step1_extra, -1: trailing_extra},
+        images=list(first.values()),
     )
 
 

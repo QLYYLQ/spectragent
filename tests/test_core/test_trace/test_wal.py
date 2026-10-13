@@ -63,10 +63,10 @@ class TestWALWriter:
         assert parsed["agent_id"] == "test_agent"
         assert parsed["loop_id"] == "react"
 
-    def test_init_run_writes_a_format_3_manifest_that_is_writing(self, wal, config):
+    def test_init_run_writes_a_format_4_manifest_that_is_writing(self, wal, config):
         wal.init_run(config)
         manifest = _manifest(wal)
-        assert manifest.format_version == TRACE_FORMAT_VERSION == 3
+        assert manifest.format_version == TRACE_FORMAT_VERSION == 4
         assert manifest.run_id == "run-001"
         assert manifest.last_step_completed == -1
         assert manifest.status == TraceStatus.WRITING
@@ -214,7 +214,7 @@ class TestWALWriter:
         wal.finalize(TraceStatus.COMPLETE)
         manifest = _manifest(wal)
         assert [entry.step for entry in manifest.steps] == [0]
-        assert manifest.format_version == 3
+        assert manifest.format_version == 4
 
     def test_complete_through_follows_the_gapless_steps(self, wal, config):
         """It stops at the first step that never committed, whatever commits after it."""

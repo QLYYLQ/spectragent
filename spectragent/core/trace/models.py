@@ -34,14 +34,17 @@ from spectragent.schemas.restoration import BranchProvenance
 #: fragment file list, paired ``NNN_input.json`` / ``NNN_output.json``
 #: message files, a fragment-capture failure indistinguishable from the
 #: fragment). 2 added the per-step fragment index with an explicit failure
-#: marker, one record per LLM call and an extra-file index. 3 is the layout
-#: of §5.3: format 2 plus the trace's own ledger — the manifest's ``status``
-#: says whether the trace is complete (:class:`TraceStatus`), no longer how
-#: the agent ended (that is ``result.json``'s ``agent_done``), and it names
-#: why a trace is incomplete and through which step it is complete. A
-#: format-2 ``error`` meant either, so no reader can tell what an older
-#: manifest's status says: ``RunTrace`` refuses every other version.
-TRACE_FORMAT_VERSION = 3
+#: marker, one record per LLM call and an extra-file index. 3 added the
+#: trace's own ledger — the manifest's ``status`` says whether the trace is
+#: complete (:class:`TraceStatus`), no longer how the agent ended (that is
+#: ``result.json``'s ``agent_done``), and it names why a trace is incomplete
+#: and through which step it is complete. 4 is the layout of §5.3: format 3
+#: with every image a prompt sent inline stored once per run under
+#: ``messages/images/`` (:attr:`TraceManifest.prompt_images`), the call
+#: records holding a :class:`PromptImageRef` where each one stood. A format-2
+#: ``error`` meant either outcome, and a format-3 call record holds its
+#: images inline: ``RunTrace`` refuses every version but this one.
+TRACE_FORMAT_VERSION = 4
 
 
 class TraceStatus(StrEnum):
@@ -154,6 +157,11 @@ class TraceManifest(BaseModel):
     #: sha256 of every committed output schema
     #: (``messages/output_formats/<sha256>.json``), each listed once.
     output_formats: list[str] = Field(default_factory=list)
+    #: Every committed prompt image (``messages/images/<sha256><suffix>``),
+    #: each listed once, in commit order. A call record's
+    #: :class:`PromptImageRef` names one of these; an image it names that is
+    #: not listed here was never committed.
+    prompt_images: list[str] = Field(default_factory=list)
 
 
 class ExtraFileRecord(BaseModel):
@@ -256,8 +264,8 @@ class ArchiveRecord(BaseModel):
 #: What a committed file is (:class:`CommittedFile`): the run's own files
 #: (``manifest``, ``config``, ``result``), what the manifest lists (``step``,
 #: ``fragment`` — an observation's JSON or its recorded failure —,
-#: ``artifact``, ``llm_call``, ``extra_index``, ``output_schema``), and what an
-#: extra index lists (``extra``).
+#: ``artifact``, ``llm_call``, ``extra_index``, ``output_schema``,
+#: ``prompt_image``), and what an extra index lists (``extra``).
 CommittedKind = Literal[
     "manifest",
     "config",
@@ -268,6 +276,7 @@ CommittedKind = Literal[
     "llm_call",
     "extra_index",
     "output_schema",
+    "prompt_image",
     "extra",
 ]
 
@@ -286,7 +295,7 @@ class CommittedFile(BaseModel):
         path: Relative to the run directory, POSIX — the shape the WAL writes.
         kind: What the file is (:data:`CommittedKind`).
         step: The step whose commit lists it; ``None`` for the run's own files,
-            a trailing commit's and the reply schemas.
+            a trailing commit's, the reply schemas and the prompt images.
         fragment: The fully-qualified fragment key of a ``fragment`` or
             ``artifact``.
         extra: An ``extra`` file's index entry (size, sha256, producer meta).
@@ -357,8 +366,43 @@ class CallFailure(BaseModel):
 RecordedMessage = Annotated[BaseMessage, Field(discriminator="role")]
 
 
+class PromptImageRef(BaseModel):
+    """An image a prompt sent inline, as its call record holds it: a reference to the stored file.
+
+    A prompt's inline image is a base64 ``data:`` URL in the ``url`` of an
+    object under an ``image_url`` key (``ContentPartImageParam``). The call
+    record holds this object in its place, and the record's ``image_refs``
+    lists where each one stands. The image is stored once per run at
+    :attr:`stored_image`, however many calls sent it. ``RunTrace`` puts the
+    text back, character for character, before it validates the record, so a
+    :class:`RecordedLLMCall` it hands back holds the whole prompt
+    (``docs/architecture_design.md`` §5.3).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: ``messages/images/<sha256><suffix>``: content-addressed, written once
+    #: per run, listed in :attr:`TraceManifest.prompt_images`.
+    stored_image: str
+    #: How the text is rebuilt from the file's bytes. A string is the
+    #: ``data:`` URL up to and including its comma
+    #: (``data:image/png;base64,``): the file holds the decoded image, and the
+    #: text is this prefix followed by the bytes' standard base64. ``None``:
+    #: the file holds the text itself, UTF-8, because the URL's base64 was not
+    #: the standard encoding of what it decodes to (line breaks, missing
+    #: padding, another alphabet), and decoding it would lose that.
+    prefix: str | None
+
+
 class RecordedLLMCall(BaseModel):
-    """``messages/NNN_call_KK.json`` — one LLM call, whatever its outcome."""
+    """``messages/NNN_call_KK.json`` — one LLM call, whatever its outcome.
+
+    On disk, every image the prompt sent inline is a :class:`PromptImageRef`
+    and the record's ``image_refs`` says where each one stands; this model is
+    the record once ``RunTrace`` has put the images back. Validated directly,
+    a stored record that sent an image fails (an object stands where ``url``
+    wants a string), so nothing reads a prompt with its images missing.
+    """
 
     #: The step the Loop was on. For a trailing call, the step it never
     #: surrendered (``last_step_completed + 1``).
@@ -371,7 +415,8 @@ class RecordedLLMCall(BaseModel):
     started_at: float
     #: From the start to the return, the raise or the cancellation.
     latency_ms: int
-    #: The whole prompt, as the caller handed it to ``ainvoke``.
+    #: The whole prompt, as the caller handed it to ``ainvoke`` — its inline
+    #: images included.
     messages: list[RecordedMessage]
     output_format: OutputFormatRef | None = None  # None: an unstructured call
     completion: RecordedCompletion | None = None  # completed calls only
