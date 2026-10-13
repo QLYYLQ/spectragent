@@ -29,8 +29,11 @@ class _NoEnvLoop(AgentLoopBase):
 
 
 def teardown_module():
-    AgentLoopRegistrar.unregister("test_weave_loop")
-    AgentLoopRegistrar.unregister("test_weave_noenv")
+    # Idempotent: pytest tears a module down once per contiguous run of its
+    # tests, so a selection that interleaves files tears this one down twice.
+    for key in ("test_weave_loop", "test_weave_noenv"):
+        if AgentLoopRegistrar.get_or_none(key) is not None:
+            AgentLoopRegistrar.unregister(key)
 
 
 class _GoodAgent:

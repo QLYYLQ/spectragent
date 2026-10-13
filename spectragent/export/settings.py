@@ -16,6 +16,7 @@ from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 from spectragent.core.data_loader.task.require_eval import RequireEval
 from spectragent.core.trace.sources import AgentOutcomeFilter
+from spectragent.schemas._types import Unlimited
 
 SplitBy = Literal["site", "task"]
 DecontaminationMatch = Literal["task_id", "site_instruction", "either"]
@@ -57,11 +58,12 @@ class ExportFilters:
             "one) or diverged (strict ended it)."
         ),
     )
-    max_document_misses: Annotated[int, Field(ge=0)] | None = Field(
+    max_document_misses: Annotated[int, Field(ge=0)] | Unlimited = Field(
         default=0,
         description=(
             "Leave out a replayed run whose replay log counts more main-frame document "
-            "misses than this (a run without a replay log counts 0). None: no limit."
+            "misses than this (a run without a replay log counts 0). Default 0; "
+            "'unlimited': no limit."
         ),
     )
     exclude_sites: tuple[str, ...] = Field(
@@ -149,7 +151,12 @@ class LengthBudget:
         ),
     )
     fixed_image_tokens: int | None = Field(
-        default=None, ge=0, description="Tokens per image under image_tokens: fixed."
+        default=None,
+        ge=0,
+        description=(
+            "Tokens per image under image_tokens: fixed, where it is required. None (the "
+            "default): not set, which only image_tokens: qwen_vl accepts."
+        ),
     )
     chars_per_token: float = Field(
         default=4.0, gt=0.0, description="Characters of text per estimated token."

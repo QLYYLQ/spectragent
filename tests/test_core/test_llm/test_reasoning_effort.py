@@ -7,8 +7,10 @@ set its effort at all — and the default effort there made one grid-crop
 call take ~120 s against ~8 s at ``low``.
 
 Pinned here: the value domain is validated at config time, an explicit
-value is sent for any model, and a config that never names the knob sends
-exactly what it sent before (``low`` for listed models, nothing otherwise).
+value is sent for any model, and the default ``auto`` sends exactly what a
+config that never named the knob always sent (``low`` for listed models,
+nothing otherwise). ``auto`` is spelled out rather than ``null``: null only
+means an optional item is not set (``docs/architecture_design.md`` §4.2.1).
 """
 
 from __future__ import annotations
@@ -16,15 +18,17 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 import yaml
+from openai.types.shared.reasoning_effort import ReasoningEffort
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.llm.providers.openai import ChatOpenAI
 from spectragent.core.llm.providers.openai_azure import ChatAzureOpenAI
+from spectragent.core.llm.providers.openai_base import ReasoningEffortSetting
 from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.llm_clients import FakeClient
 
@@ -32,17 +36,22 @@ SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_
 
 
 class TestWhatGoesOnTheWire:
-    def test_unset_on_a_listed_reasoning_model_keeps_the_old_default(self) -> None:
+    def test_auto_on_a_listed_reasoning_model_keeps_the_old_default(self) -> None:
         params = ChatOpenAI(model="gpt-5-mini")._common_model_params()
         assert params["reasoning_effort"] == "low"
         # OpenAI's reasoning models reject sampling knobs.
         assert "temperature" not in params
         assert "frequency_penalty" not in params
 
-    def test_unset_on_any_other_model_sends_nothing(self) -> None:
+    def test_auto_on_any_other_model_sends_nothing(self) -> None:
         params = ChatOpenAI(model="gpt-4o")._common_model_params()
         assert "reasoning_effort" not in params
         assert params["temperature"] == 0.2
+
+    def test_none_is_sent_as_none(self) -> None:
+        """``none`` is a wire value (no reasoning), not "not set"."""
+        params = ChatOpenAI(model="gpt-5", reasoning_effort="none")._common_model_params()
+        assert params["reasoning_effort"] == "none"
 
     def test_explicit_value_reaches_a_model_the_list_does_not_know(self) -> None:
         params = ChatOpenAI(model="gemini-3.5-flash", reasoning_effort="low")._common_model_params()
@@ -95,10 +104,19 @@ class TestReachableFromYaml:
         assert llm.reasoning_effort == "low"
         assert llm._common_model_params()["reasoning_effort"] == "low"
 
-    def test_omitting_it_leaves_it_unset(self) -> None:
+    def test_omitting_it_is_auto(self) -> None:
         llm = _compose_with_llm()
-        assert llm.reasoning_effort is None
+        assert llm.reasoning_effort == "auto"
+
+    def test_null_is_refused(self) -> None:
+        with pytest.raises(Exception, match="reasoning_effort"):
+            _compose_with_llm(model="gemini-3.5-flash", reasoning_effort=None)
 
     def test_a_value_outside_the_domain_fails_at_config_time(self) -> None:
         with pytest.raises(Exception, match="reasoning_effort"):
             _compose_with_llm(model="gemini-3.5-flash", reasoning_effort="lowest")
+
+
+def test_every_setting_but_auto_is_a_wire_value_the_sdk_accepts() -> None:
+    (wire,) = (arg for arg in get_args(ReasoningEffort) if arg is not type(None))
+    assert set(get_args(ReasoningEffortSetting)) == {"auto", *get_args(wire)}

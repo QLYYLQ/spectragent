@@ -15,7 +15,7 @@ before it launches anything — defensive re-checks of the same function.
 The rows this module owns:
 
 - **Ownership** — everything that opens the recorder connection (a bound
-  browser archiver, ``replayability`` other than ``off``) needs a browser the
+  browser archiver, ``replayability`` other than ``none``) needs a browser the
   capability launched itself: a provider declaring ``NETWORK_CAPTURE``, no
   explicit ``cdp_url``, no injected control client. A recorder holding
   ``waitForDebuggerOnStart`` on a browser it does not own can wedge that
@@ -38,7 +38,7 @@ The rows this module owns:
 
 - **Archivers** — every bound browser archiver opens the recorder connection
   (the ownership rows above), a ``require_replayable`` archiver refuses the
-  ``off`` tier, a browser that did not start from a fresh profile needs
+  ``none`` tier, a browser that did not start from a fresh profile needs
   ``allow_session_state`` on every bound archiver (§5.6: the definition of
   ``logged_in``), and a profile that excludes the ``archive`` watchdog leaves
   nothing to drain the archive scope. :func:`binding_problems` is this group
@@ -162,7 +162,7 @@ def recorder_needs(cap: CooperatingCapability) -> list[str]:
 
 
 def persistent_profile(backend: Any) -> str | None:
-    """Which knob or variable makes the provider's profile non-fresh, or ``None``.
+    """Which knob makes the provider's profile non-fresh, or ``None``.
 
     Asked of a provider that owns its browser (``NETWORK_CAPTURE``); one that
     declares it without implementing ``NetworkCaptureProvider`` never gets

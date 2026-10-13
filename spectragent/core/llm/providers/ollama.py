@@ -25,8 +25,19 @@ class ChatOllama(ChatModelBase):
     model: Annotated[str, Field(description="Ollama model name")]
 
     # Client initialization parameters
-    host: Annotated[str | None, Field(description="Ollama server host")] = None
-    timeout: Annotated[float | None, Field(description="Request timeout in seconds")] = None
+    host: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Ollama server host. None (the default): the client reads OLLAMA_HOST, else "
+                "http://127.0.0.1:11434."
+            )
+        ),
+    ] = None
+    timeout: Annotated[
+        float | None,
+        Field(description="Request timeout in seconds. None (the default): no timeout."),
+    ] = None
     client_params: dict[str, Any] | None = None
     ollama_options: Mapping[str, Any] | Options | None = None
 

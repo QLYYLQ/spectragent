@@ -34,7 +34,7 @@ BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
 | `dom_vision` | DOM 文本和截图 | 元素索引或坐标 |
 | `vision` | 截图 | 坐标 `browser.click_coordinate` |
 
-视觉模式建议保留 `profile: standard`：协商会跳过不需要的 DOM 提取，同时保留该 profile 的 SecurityWatchdog。截图会在三个 BrowserUse 模式下写入 trace。若页面动画导致坐标点击落在过时画面上，可给 `actions:` 中的 `browser.click_coordinate` 配 `post_delay_ms`；显式列出 `actions:` 后，也要列出该运行所需的其他动作，包括 `browser.navigate`（数据集起始 URL 要用它打开）。详细例子见 [configs/README.md](../configs/README.md#vision-agents)。
+视觉模式建议保留 `profile: standard`：协商会跳过不需要的 DOM 提取，同时保留该 profile 的 SecurityWatchdog。截图会在三个 BrowserUse 模式下写入 trace。若页面动画导致坐标点击落在过时画面上，可给 `actions:` 中的 `browser.click_coordinate` 配 `post_delay_ms`；显式列出 `actions:` 后，也要列出该运行所需的其他动作，包括 `browser.navigate`（数据集起始 URL 要用它打开）。不写 `actions:` 是全部动作，`actions: []` 是一个动作都没有。详细例子见 [configs/README.md](../configs/README.md#vision-agents)。
 
 动作引起的主 frame 跨文档导航不需要这个延迟，比如提交表单、在文本框里回车、点链接、设置 `location.href`。观测在每次采集尝试之前先等在途的导航提交或停止加载，每次最多 10 s，到时仍未结束就照常采集并记一条警告；没有在途导航时不等。所以提交表单后，下一次观测看到的是结果页。观测截图另有 10 s 上限：Chrome 不回应时，这次尝试算缺截图，再采一次（每次观测最多尝试两次）。页面定时器在观测开始采集之后才发起的导航不在这个等待之内，只受截图上限约束。
 
@@ -75,13 +75,13 @@ backend:
 每个 browser capability 块都必须写 `replayability` 与 `network_source`，现成 YAML 里都有。评测用的写法是：
 
 ```yaml
-replayability: { replayability_id: "off" }
+replayability: { replayability_id: none }
 network_source: { source_id: live }
 ```
 
-漏写任一项，`--dry-run` 会报该字段 `Field required`，例如 `environment.0.capabilities.0.replayability`。`"off"` 的引号不能省：PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`，校验会报 `Input tag 'False' found using 'replayability_id' does not match any of the expected tags: 'off', 'pinned'`。`"off"` 不 pin 任何东西，`live` 直接用线上网络，两者都不会打开第二条 CDP 连接，任何后端都能用。
+漏写任一项，`--dry-run` 会报该字段 `Field required`，例如 `environment.0.capabilities.0.replayability`。这一档原名 `off`，现在叫 `none`：PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`，旧写法会报 `Input tag 'False' found using 'replayability_id' does not match any of the expected tags: 'none', 'pinned'`。`none` 不 pin 任何东西，`live` 直接用线上网络，两者都不会打开第二条 CDP 连接，任何后端都能用。
 
-`replayability: pinned`、`network_source: archive` 和 trace hook 绑定的归档器用于录制与回放，只支持 `local_chrome`。归档器或 `pinned` 配云后端，都在 `--dry-run` 就报错（`prepare()` 的 setup 检查；正式运行时同样在打开 trace、打开浏览器会话之前报）。评测和 anti-bot 实验保持 `"off"`，因为 `pinned` 会改变线上站点的行为，它本身也是能被检测到的特征。
+`replayability: pinned`、`network_source: archive` 和 trace hook 绑定的归档器用于录制与回放，只支持 `local_chrome`。归档器或 `pinned` 配云后端，都在 `--dry-run` 就报错（`prepare()` 的 setup 检查；正式运行时同样在打开 trace、打开浏览器会话之前报）。评测和 anti-bot 实验保持 `none`，因为 `pinned` 会改变线上站点的行为，它本身也是能被检测到的特征。
 
 连到本机 CDP 端点（`localhost`、`127.0.0.0/8`、`::1`，`local_chrome` 启动的浏览器就在这里）的连接直连、不压缩，不读 `http_proxy` 等代理环境变量，本机开着代理（如 Clash）时 CDP 流量也不经过它。远端端点（云后端）仍按 websockets 的默认读环境代理、协商压缩。
 

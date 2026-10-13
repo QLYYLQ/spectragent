@@ -34,7 +34,7 @@ def _locate(name: str, **kwargs: object) -> ElementPoint:
 
 class TestGeometry:
     def test_page_box_minus_scroll_centre_of_the_visible_part(self) -> None:
-        located = _locate("clear", occlusion="off")
+        located = _locate("clear", occlusion="none")
         # page (580, 700, 240, 40) - scroll (0, 500) -> viewport (580..820, 200..240)
         assert located.point == (700, 220)
         assert located.provenance["visible_rect"] == [580.0, 200.0, 820.0, 240.0]
@@ -46,7 +46,7 @@ class TestGeometry:
     def test_a_partly_visible_element_is_clicked_in_its_visible_part(self) -> None:
         state = sticky_state()
         state.selector_map[INDEX["clear"]].bounds = DOMRect(1200, 1150, 200, 100)
-        located = locate_element(INDEX["clear"], state, state.selector_map, occlusion="off")
+        located = locate_element(INDEX["clear"], state, state.selector_map, occlusion="none")
         # viewport (1200..1400, 650..750) clipped to 1280x720 -> (1200..1280, 650..720)
         assert located.point == (1240, 685)
 
@@ -56,7 +56,7 @@ class TestGeometry:
         assert "[9]" in located.detail
 
     def test_a_smaller_screenshot_viewport_clips_too(self) -> None:
-        located = _locate("clear", occlusion="off", viewport=(640, 360))
+        located = _locate("clear", occlusion="none", viewport=(640, 360))
         # (580..820, 200..240) clipped to 640x360 -> (580..640, 200..240)
         assert located.point == (610, 220)
 
@@ -70,7 +70,7 @@ class TestGeometry:
         state = sticky_state()
         inside = state.selector_map[INDEX["inside"]]
         inside.bounds = DOMRect(1100, 650, 100, 30)  # past the owner's right edge (1160)
-        located = locate_element(INDEX["inside"], state, state.selector_map, occlusion="off")
+        located = locate_element(INDEX["inside"], state, state.selector_map, occlusion="none")
         assert located.point == (1130, 165)
         assert located.provenance["frame_clip"] == "applied"
 
@@ -83,7 +83,7 @@ class TestGeometry:
         frame = next(n for n in state.dom_tree.descendants() if n.attributes.get("id") == "frame")
         assert frame.content_document is not None
         frame.content_document.children.clear()
-        located = locate_element(INDEX["inside"], state, state.selector_map, occlusion="off")
+        located = locate_element(INDEX["inside"], state, state.selector_map, occlusion="none")
         assert located.point == (1150, 165)
         assert located.provenance["frame_clip"] == "unknown"
 
@@ -227,6 +227,6 @@ def test_no_evidence_is_occlusion_unknown_and_off_checks_nothing() -> None:
     unknown = _locate("covered", state=state)
     assert (unknown.point, unknown.failure) == (None, "occlusion_unknown")
     assert unknown.provenance["evidence"] == "none"
-    off = _locate("covered", state=state, occlusion="off")
+    off = _locate("covered", state=state, occlusion="none")
     assert off.point == (140, 50)
     assert off.provenance["occlusion"] == "unchecked"

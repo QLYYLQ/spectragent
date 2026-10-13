@@ -5,10 +5,10 @@ configuration decides what a run records — each archiver with its own knobs,
 validated against the generated union. Pinned here, against the real
 Composer and the real registrars:
 
-- the three cases of an optional list receptor: ``archive`` omitted with no
-  top-level ``archiver:`` section records nothing; ``archive: []`` records
-  nothing whatever else the file says; ``archive`` omitted beside a top-level
-  ``archiver:`` section adopts every instance of it;
+- archiving has one switch: ``archive`` omitted, ``null`` or ``[]`` records
+  nothing, and a top-level ``archiver:`` section is refused with a message
+  naming ``trace_writer.archive`` — beside an omitted archive, an empty one or
+  an inline list alike (``TraceWriter.__inline_only__``);
 - an inline ``archive:`` list builds its archivers in place, knobs reaching the
   instances;
 - a mistyped ``archiver_id`` and an unknown knob are refused by validation;
@@ -36,7 +36,11 @@ from spectragent.core.capabilities.browser.archive import (
     ReplayLogArchiver,
     StorageArchiver,
 )
-from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
+from spectragent.core.composer import (
+    ConfigComposer,
+    InlineOnlyLayerError,
+    UnresolvedWiringError,
+)
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.scripts.generate_all import _collect_registrars
 
@@ -64,29 +68,27 @@ def _trace_entry(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 class TestWhatARunRecords:
-    def test_omitted_without_a_top_level_section_records_nothing(
-        self, composer: ConfigComposer
-    ) -> None:
+    def test_omitted_records_nothing(self, composer: ConfigComposer) -> None:
+        assert "archive" not in _trace_entry(_base())
         assert _writer(composer, _base()).archive == []
 
-    def test_an_empty_list_records_nothing_even_beside_a_top_level_section(
+    @pytest.mark.parametrize("value", [None, []], ids=["null", "empty-list"])
+    def test_null_and_an_empty_list_record_nothing(
+        self, composer: ConfigComposer, value: list[Any] | None
+    ) -> None:
+        raw = _base()
+        _trace_entry(raw)["archive"] = value
+        assert _writer(composer, raw).archive == []
+
+    def test_a_writer_that_omits_it_never_takes_another_writers_archivers(
         self, composer: ConfigComposer
     ) -> None:
         raw = _base()
-        raw["archiver"] = [{"archiver_id": "browser.storage"}]
-        _trace_entry(raw)["archive"] = []
-        assert _writer(composer, raw).archive == []
-
-    def test_omitted_adopts_every_top_level_archiver(self, composer: ConfigComposer) -> None:
-        raw = _base()
-        raw["archiver"] = [
-            {"archiver_id": "browser.network", "require_replayable": False, "drain_timeout_s": 0.5},
-            {"archiver_id": "browser.storage", "allow_session_state": True},
-        ]
-        archive = _writer(composer, raw).archive
-        assert [type(a) for a in archive] == [NetworkArchiver, StorageArchiver]
-        assert archive[0].drain_timeout_s == 0.5  # type: ignore[attr-defined]
-        assert archive[1].allow_session_state is True  # type: ignore[attr-defined]
+        _trace_entry(raw)["archive"] = [{"archiver_id": "browser.storage"}]
+        raw["hook"].append({"hook_id": "trace_writer", "trace_dir": "elsewhere"})
+        run = composer.compose(raw)
+        writers = [hook for hook in run.instances("hook") if isinstance(hook, TraceWriter)]
+        assert [[a.archiver_id for a in w.archive] for w in writers] == [["browser.storage"], []]
 
     def test_an_inline_list_builds_its_archivers_in_place(self, composer: ConfigComposer) -> None:
         raw = _base()
@@ -101,6 +103,31 @@ class TestWhatARunRecords:
 
 
 class TestWhatIsRefused:
+    @pytest.mark.parametrize(
+        "inline",
+        ["omitted", None, [], [{"archiver_id": "browser.dom_raw"}]],
+        ids=["archive-omitted", "archive-null", "archive-empty", "archive-inline"],
+    )
+    def test_a_top_level_archiver_section(self, composer: ConfigComposer, inline: Any) -> None:
+        raw = _base()
+        raw["archiver"] = [
+            {"archiver_id": "browser.network", "require_replayable": False},
+            {"archiver_id": "browser.storage"},
+        ]
+        if inline != "omitted":
+            _trace_entry(raw)["archive"] = inline
+        with pytest.raises(InlineOnlyLayerError) as refused:
+            composer.compose(raw)
+        message = str(refused.value)
+        assert "top-level 'archiver' section" in message
+        assert "trace_writer.archive" in message
+        assert "['browser.network', 'browser.storage']" in message
+
+    def test_an_empty_top_level_section_is_no_section(self, composer: ConfigComposer) -> None:
+        raw = _base()
+        raw["archiver"] = []
+        assert _writer(composer, raw).archive == []
+
     def test_a_mistyped_archiver_id(self, composer: ConfigComposer) -> None:
         raw = _base()
         _trace_entry(raw)["archive"] = [{"archiver_id": "browser.netwrok"}]

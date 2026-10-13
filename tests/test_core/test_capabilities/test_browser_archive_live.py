@@ -96,7 +96,7 @@ def _run(coro: Any) -> Any:
 
 @pytest.fixture(scope="module")
 def full_recording() -> dict[str, Any]:
-    """Every fixture scenario recorded once, at ``off`` (service workers run)."""
+    """Every fixture scenario recorded once, at ``none`` (service workers run)."""
 
     async def record() -> dict[str, Any]:
         with FixtureSite(mapped=True) as site:
@@ -194,7 +194,7 @@ def _renumbered(observation: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.mark.parametrize(
     ("tier", "kind"),
-    [("off", "dom"), ("off", "vision"), ("pinned", "dom"), ("pinned", "vision")],
+    [("none", "dom"), ("none", "vision"), ("pinned", "dom"), ("pinned", "vision")],
     ids=["off-dom", "off-vision", "pinned-dom", "pinned-vision"],
 )
 def test_archive_does_not_change_observations(tier: str, kind: str) -> None:
@@ -330,7 +330,7 @@ def test_overhead_benchmark(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     fingerprint = next(item for item in on.files() if item.scope == "run")
     report = ArchiveOverheadReport(
         chrome=str(json.loads(fingerprint.data)["chrome"]["product"]),
-        tier="off",
+        tier="none",
         steps=steps,
         visits_per_scenario=_BENCH_VISITS,
         p50_off_ms=median(off_ms),

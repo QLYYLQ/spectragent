@@ -66,7 +66,7 @@ def _compose(**capability_block: Any) -> BrowserCapability:
                     "capability_id": "browser",
                     "mouse_trajectory": {"trajectory_type": "instant"},
                     "typing_rhythm": {"rhythm_type": "instant"},
-                    "replayability": {"replayability_id": "off"},
+                    "replayability": {"replayability_id": "none"},
                     "network_source": {"source_id": "live"},
                     "dom_cleaner": {"cleaner_type": "browser_use"},
                     "dom_serializer": {"serializer_type": "text"},
@@ -592,3 +592,15 @@ def test_a_nonsense_budget_fails_validation_not_the_run() -> None:
 
     with pytest.raises(ValidationError, match="dom_max_elements"):
         _compose(dom_max_elements=0)
+
+
+@pytest.mark.parametrize("knob", ["dom_max_elements", "dom_max_serialized_chars"])
+def test_no_cap_is_written_unlimited_and_is_the_default(knob: str) -> None:
+    """A numeric cap never uses null (§4.2.1): ``unlimited`` is the shown default."""
+    from pydantic import ValidationError
+
+    assert getattr(_compose(), knob) == "unlimited"
+    cap = _compose(**{knob: "unlimited"})
+    assert cap.dom_budget.is_open
+    with pytest.raises(ValidationError, match=knob):
+        _compose(**{knob: None})

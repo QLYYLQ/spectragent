@@ -19,8 +19,14 @@ class ChatOpenAI(OpenAICompatBase):
     __registry_key__ = "openai.direct"
 
     # --- Direct OpenAI-specific fields ---
-    organization: Annotated[str | None, Field(description="Organization ID")] = None
-    project: Annotated[str | None, Field(description="Project ID")] = None
+    organization: Annotated[
+        str | None,
+        Field(description="Organization ID. None (the default): the client reads OPENAI_ORG_ID."),
+    ] = None
+    project: Annotated[
+        str | None,
+        Field(description="Project ID. None (the default): the client reads OPENAI_PROJECT_ID."),
+    ] = None
 
     @property
     def provider(self) -> str:

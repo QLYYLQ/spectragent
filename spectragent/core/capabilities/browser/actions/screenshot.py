@@ -88,7 +88,12 @@ class ScreenshotAction(ActionBase):
 
     default_quality: Annotated[
         int | None,
-        PydanticField(description="Default quality (jpeg/webp 0-100); ignored for png"),
+        PydanticField(
+            description=(
+                "Default quality (jpeg/webp 0-100); ignored for png. None (the default): "
+                "not sent, Chrome's own default."
+            )
+        ),
     ] = None
 
     class Params(BaseModel):

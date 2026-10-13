@@ -46,6 +46,7 @@ from spectragent.core.trace.sources import (
     unreadable_reason,
 )
 from spectragent.export.settings import ExportFilters
+from spectragent.schemas._types import limit_value
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +166,7 @@ def filtered_out(
                 f"restoration diverged at step(s) {', '.join(diverged)} "
                 f"(exclude_restoration_diverged)"
             )
-    limit = filters.max_document_misses
+    limit = limit_value(filters.max_document_misses)
     if limit is not None:
         misses = document_miss_total(source.trace)
         if misses > limit:

@@ -7,7 +7,10 @@ All Chrome CLI flags are exposed as configurable ``__init__`` parameters
 (Tier 2 conscribe config via ``Annotated[..., Field(...)]``).  This gives
 full control over Chrome's behavior from YAML config files.
 
-Env vars: ``CHROME_EXECUTABLE_PATH``, ``CHROME_USER_DATA_DIR``.
+Env var: ``CHROME_EXECUTABLE_PATH``. The profile directory is ``user_data_dir``
+in YAML only: an environment variable would decide whether a run starts from a
+fresh profile without the configuration or ``config.json`` showing it
+(``docs/architecture_design.md`` §4.14).
 """
 
 from __future__ import annotations
@@ -45,7 +48,6 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
     contradicting_switch,
     merge_chrome_switches,
     split_switch,
-    v8_flags,
 )
 from spectragent.schemas.provider_session import ProviderSession
 
@@ -279,7 +281,10 @@ class LocalChromeProvider(BrowserProviderBase):
     user_data_dir: Annotated[
         str | None,
         Field(
-            description="Chrome profile directory. A temp dir is created if None. Env: CHROME_USER_DATA_DIR"
+            description=(
+                "Chrome profile directory. Omitted or null (the default): a fresh "
+                "temporary profile per launch, deleted at close."
+            )
         ),
     ] = None
 
@@ -297,13 +302,21 @@ class LocalChromeProvider(BrowserProviderBase):
     proxy_server: Annotated[
         str | None,
         Field(
-            description="Proxy server URL, e.g. 'socks5://127.0.0.1:1080' or 'http://proxy:8080'"
+            description=(
+                "Proxy server URL, e.g. 'socks5://127.0.0.1:1080' or 'http://proxy:8080'. "
+                "None (the default): no proxy switch."
+            )
         ),
     ] = None
 
     proxy_bypass_list: Annotated[
         str | None,
-        Field(description="Comma-separated hosts to bypass proxy (e.g. 'localhost,127.0.0.1')"),
+        Field(
+            description=(
+                "Comma-separated hosts to bypass proxy (e.g. 'localhost,127.0.0.1'). "
+                "None (the default): no bypass list."
+            )
+        ),
     ] = None
 
     # ── security ───────────────────────────────────────────────────────
@@ -322,7 +335,7 @@ class LocalChromeProvider(BrowserProviderBase):
     # ── extensions ─────────────────────────────────────────────────────
     load_extensions: Annotated[
         list[str] | None,
-        Field(description="Paths to unpacked Chrome extensions to load"),
+        Field(description="Paths to unpacked Chrome extensions to load. None (the default): none."),
     ] = None
 
     # ── performance ────────────────────────────────────────────────────
@@ -341,7 +354,7 @@ class LocalChromeProvider(BrowserProviderBase):
     # ── user agent ─────────────────────────────────────────────────────
     user_agent: Annotated[
         str | None,
-        Field(description="Custom user-agent string"),
+        Field(description="Custom user-agent string. None (the default): Chrome's own user agent."),
     ] = None
 
     # ── misc Chrome flags ──────────────────────────────────────────────
@@ -397,7 +410,12 @@ class LocalChromeProvider(BrowserProviderBase):
 
     force_device_scale_factor: Annotated[
         float | None,
-        Field(description="Override device scale factor (e.g. 1.0, 2.0)"),
+        Field(
+            description=(
+                "Override device scale factor (e.g. 1.0, 2.0). None (the default): the "
+                "display's own."
+            )
+        ),
     ] = None
 
     # ── advanced ───────────────────────────────────────────────────────
@@ -409,7 +427,10 @@ class LocalChromeProvider(BrowserProviderBase):
     extra_args: Annotated[
         list[str] | None,
         Field(
-            description="Additional raw Chrome CLI flags (e.g. ['--disable-features=Foo', '--enable-logging'])"
+            description=(
+                "Additional raw Chrome CLI flags (e.g. ['--disable-features=Foo', "
+                "'--enable-logging']). None (the default): none."
+            )
         ),
     ] = None
 
@@ -557,12 +578,8 @@ class LocalChromeProvider(BrowserProviderBase):
             kwargs.get("remote_debugging_port") or self.remote_debugging_port or _find_free_port()
         )
 
-        # Resolve user data dir.
-        udd = (
-            kwargs.get("user_data_dir")
-            or self.user_data_dir
-            or os.environ.get("CHROME_USER_DATA_DIR")
-        )
+        # Resolve user data dir: the configuration's, or a fresh temporary one.
+        udd = kwargs.get("user_data_dir") or self.user_data_dir
         temp_dir: str | None = None
         if udd is None:
             temp_dir = tempfile.mkdtemp(prefix="chrome-profile-")
@@ -636,22 +653,17 @@ class LocalChromeProvider(BrowserProviderBase):
         One entry per knob, naming it and the switch it contradicts.
         Repeating an owned switch with the same value is fine, and so is
         adding unrelated V8 flags or features to a list switch — the merge
-        keeps both.
+        keeps both. ``deterministic_rendering`` follows the same rule (the
+        user's ruling of 2026-10-13): its V8 seed contradicts a tier that pins
+        another one, and passes when the two agree.
         """
         owned = list(launch_args)
         if not owned:
             return []
         problems: list[str] = []
-        owned_v8 = v8_flags(owned)
-        if self.deterministic_rendering and "--random-seed" in owned_v8:
-            # Two sources of the V8 seed even when the values agree, and
-            # ``--deterministic-mode`` changes rendering on top of it.
-            problems.append(
-                "deterministic_rendering=true contradicts "
-                f"--js-flags=--random-seed={owned_v8['--random-seed']} (it sets its own V8 "
-                "seed and --deterministic-mode)"
-            )
         knobs: list[tuple[str, tuple[str, ...]]] = []
+        if self.deterministic_rendering:
+            knobs.append(("deterministic_rendering=true", CHROME_DETERMINISTIC_RENDERING_ARGS))
         if self.force_device_scale_factor is not None:
             knobs.append(
                 (
@@ -724,18 +736,15 @@ class LocalChromeProvider(BrowserProviderBase):
         """Name what makes this browser start from a profile that is not fresh.
 
         ``None`` when every run gets a new temporary ``--user-data-dir``.
-        Otherwise every source that applies, in ``open()``'s precedence: the
-        ``user_data_dir`` knob (else the ``CHROME_USER_DATA_DIR`` variable),
-        a ``profile_directory`` other than ``"Default"`` (counted
-        conservatively: it is how an existing profile is selected), and an
-        ``extra_args`` ``--user-data-dir``, which Chrome lets win because it
-        comes last.
+        Otherwise every source that applies, all of them configuration: the
+        ``user_data_dir`` knob, a ``profile_directory`` other than
+        ``"Default"`` (counted conservatively: it is how an existing profile
+        is selected), and an ``extra_args`` ``--user-data-dir``, which Chrome
+        lets win because it comes last.
         """
         found: list[str] = []
         if self.user_data_dir:
             found.append(f"user_data_dir={self.user_data_dir!r}")
-        elif os.environ.get("CHROME_USER_DATA_DIR"):
-            found.append(f"CHROME_USER_DATA_DIR={os.environ['CHROME_USER_DATA_DIR']!r}")
         if self.profile_directory != "Default":
             found.append(f"profile_directory={self.profile_directory!r}")
         found.extend(

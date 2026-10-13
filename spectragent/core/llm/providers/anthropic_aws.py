@@ -22,10 +22,28 @@ class ChatAnthropicAWS(AnthropicCompatBase):
     __registry_key__ = "anthropic.aws"
 
     # --- AWS-specific fields ---
-    aws_access_key: Annotated[str | None, Field(description="AWS access key ID")] = None
-    aws_secret_key: Annotated[str | None, Field(description="AWS secret access key")] = None
-    aws_session_token: Annotated[str | None, Field(description="AWS session token")] = None
-    aws_region: Annotated[str | None, Field(description="AWS region name")] = None
+    aws_access_key: Annotated[
+        str | None,
+        Field(
+            description="AWS access key ID. None (the default): the client resolves AWS credentials."
+        ),
+    ] = None
+    aws_secret_key: Annotated[
+        str | None,
+        Field(
+            description="AWS secret access key. None (the default): the client resolves AWS credentials."
+        ),
+    ] = None
+    aws_session_token: Annotated[
+        str | None,
+        Field(
+            description="AWS session token. None (the default): the client resolves AWS credentials."
+        ),
+    ] = None
+    aws_region: Annotated[
+        str | None,
+        Field(description="AWS region name. None (the default): the client resolves the region."),
+    ] = None
     session: "Session | None" = None
 
     @property

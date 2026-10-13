@@ -28,7 +28,7 @@ def configured_capability(
                     "profile": "skyvern",
                     "mouse_trajectory": {"trajectory_type": "instant"},
                     "typing_rhythm": {"rhythm_type": "instant"},
-                    "replayability": {"replayability_id": "off"},
+                    "replayability": {"replayability_id": "none"},
                     "network_source": {"source_id": "live"},
                     "dom_cleaner": {
                         "cleaner_type": "skyvern",

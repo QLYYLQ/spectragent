@@ -9,7 +9,7 @@ every type checker that imports it. Here it is a real class to everyone.
 from collections.abc import Mapping
 from typing import Any
 
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 
@@ -26,9 +26,12 @@ class RequireEval:
     other type (af-add-a-receptor §7).
     """
 
-    evaluator_id: str
-    label: int = 1
-    slug: str | None = None
+    evaluator_id: str = Field(description="The evaluator whose verdicts count.")
+    label: int = Field(default=1, description="The predicted label a verdict must carry.")
+    slug: str | None = Field(
+        default=None,
+        description="Only the verdict file of this verdict_slug counts. None (the default): any.",
+    )
 
     def satisfied_by(self, verdicts: Mapping[str, Any]) -> bool:
         """Whether one of *verdicts* (``verdict_slug`` → ``EvalResult``) meets this."""

@@ -89,7 +89,7 @@ def _collect_registrars() -> dict[str, type]:
         "typing_rhythm": TypingRhythmRegistrar,
         "dom_cleaner": DOMCleanerRegistrar,
         "dom_serializer": DOMSerializerRegistrar,
-        # How far a run is pinned for replay (``off`` / ``pinned``, §4.14):
+        # How far a run is pinned for replay (``none`` / ``pinned``, §4.14):
         # collected so ``pinned``'s seed / time zone / locale / DPR knobs are
         # typed in the generated union rather than lost behind a Literal.
         "replayability": ReplayabilityRegistrar,

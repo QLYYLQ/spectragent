@@ -76,7 +76,7 @@ META_FRAGMENT: Final = "browser.browser_meta"
 #: The archiver whose files hold the step's raw DOM (evidence 2).
 DOM_RAW_ARCHIVER: Final = "browser.dom_raw"
 
-Occlusion = Literal["off", "check"]
+Occlusion = Literal["none", "check"]
 PointSource = Literal["center", "hit_test", "grid"]
 OcclusionVerdict = Literal["clear", "occluded", "unknown", "unchecked"]
 Evidence = Literal["hit_test", "dom_raw", "paint_order", "none"]
@@ -143,7 +143,7 @@ def locate_element(
         selector_map: The step's recorded entries (``DOMObs.selector_map``).
         viewport: The screenshot's viewport in CSS px, when known; the point
             is kept inside it as well as inside the DOM's own viewport.
-        occlusion: ``check`` consults the evidence; ``off`` does not.
+        occlusion: ``check`` consults the evidence; ``none`` does not.
         documents: The step's ``browser.dom_raw`` documents, decoded
             (``archive/dom_raw.read_dom_document``).
         loader_id: The step's document stamp (``browser.browser_meta``) —
@@ -184,7 +184,7 @@ def locate_element(
     provenance["visible_rect"] = list(visible)
     center = _inside(visible, ((visible[0] + visible[2]) / 2, (visible[1] + visible[3]) / 2))
 
-    if occlusion == "off":
+    if occlusion == "none":
         return _decided(center, "center", "unchecked", "none", provenance)
 
     # (1) the in-page hit test, when the cleaner recorded one: the point it

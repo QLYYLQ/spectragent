@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import BeforeValidator
 
@@ -144,3 +144,17 @@ def _ensure_utc(value: Any) -> datetime:
 UTCDatetime = Annotated[datetime, BeforeValidator(_ensure_utc)]
 NormalizedEnvironmentStatus = Annotated[EnvironmentStatus, BeforeValidator(_normalize_env_status)]
 NormalizedAgentDoneStatus = Annotated[AgentDoneStatus, BeforeValidator(_normalize_agent_done)]
+
+
+# --- "No limit" for a numeric cap ---
+
+#: How the configuration surface writes "no limit" for a numeric cap
+#: (``docs/architecture_design.md`` §4.2.1): a word, never ``null``, so a
+#: cap's default shows its real value in the generated config.
+UNLIMITED: Final = "unlimited"
+Unlimited = Literal["unlimited"]
+
+
+def limit_value(limit: int | Unlimited) -> int | None:
+    """A numeric cap as code reads it: the number, or ``None`` for ``unlimited``."""
+    return None if limit == UNLIMITED else limit

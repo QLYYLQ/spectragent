@@ -13,14 +13,13 @@ import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Annotated, Any, TypeVar, overload
+from typing import Annotated, Any, Literal, TypeVar, overload
 
 import httpx
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.responses import Response
 from openai.types.shared.chat_model import ChatModel
-from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.response_format_json_schema import (
     JSONSchema,
     ResponseFormatJSONSchema,
@@ -43,9 +42,14 @@ from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
-#: What a model on ``reasoning_models`` receives when ``reasoning_effort`` is
-#: left unset.
+#: What a model on ``reasoning_models`` receives under ``reasoning_effort: auto``.
 _LISTED_MODEL_DEFAULT_EFFORT = "low"
+
+#: ``reasoning_effort``'s settings: ``auto`` (the provider's policy) plus every
+#: value the OpenAI SDK accepts on the wire (its ``ReasoningEffort``, which a
+#: test keeps in step). Not optional: ``null`` would be a second spelling of
+#: ``auto`` (``docs/architecture_design.md`` §4.2.1).
+ReasoningEffortSetting = Literal["auto", "none", "minimal", "low", "medium", "high", "xhigh"]
 
 
 @dataclass
@@ -62,23 +66,30 @@ class OpenAICompatBase(ChatModelBase):
     temperature: Annotated[float | None, Field(description="Sampling temperature")] = 0.2
     frequency_penalty: Annotated[float | None, Field(description="Frequency penalty")] = 0.3
     reasoning_effort: Annotated[
-        ReasoningEffort,
+        ReasoningEffortSetting,
         Field(
             description=(
-                "Sent as ``reasoning_effort`` whenever it is set, for any model. "
-                "Leave it unset to keep the provider's default policy: a model "
-                "on the provider's built-in reasoning-model list (o-series, "
-                "gpt-5*) gets 'low', every other model gets no parameter. Set "
-                "it to reach a reasoning model that list does not know, e.g. "
-                "gemini behind an OpenAI-compatible gateway. The value domain "
-                "is the OpenAI SDK's; a gateway may still refuse one of them "
-                "(a gemini proxy answers 'none' with HTTP 400)."
+                "'auto' (the default) keeps the provider's policy: a model on "
+                "the provider's built-in reasoning-model list (o-series, gpt-5*) "
+                "gets 'low', every other model gets no parameter. Any other "
+                "value is sent as ``reasoning_effort`` for any model, so it "
+                "reaches a reasoning model that list does not know, e.g. gemini "
+                "behind an OpenAI-compatible gateway; 'none' sends 'none' (no "
+                "reasoning). Those values are the OpenAI SDK's; a gateway may "
+                "still refuse one of them (a gemini proxy answers 'none' with "
+                "HTTP 400)."
             )
         ),
+    ] = "auto"
+    seed: Annotated[int | None, Field(description="Random seed. None (the default): not sent.")] = (
+        None
+    )
+    service_tier: Annotated[
+        str | None, Field(description="Service tier. None (the default): not sent.")
     ] = None
-    seed: Annotated[int | None, Field(description="Random seed")] = None
-    service_tier: Annotated[str | None, Field(description="Service tier")] = None
-    top_p: Annotated[float | None, Field(description="Top-p sampling")] = None
+    top_p: Annotated[
+        float | None, Field(description="Top-p sampling. None (the default): not sent.")
+    ] = None
 
     # --- Structured output options: none, deliberately ---
     #
@@ -109,9 +120,33 @@ class OpenAICompatBase(ChatModelBase):
     # ``core/llm/schema/optimizer.py`` first.
 
     # --- Client params ---
-    api_key: Annotated[str | None, Field(description="API key")] = None
-    base_url: Annotated[str | None, Field(description="Custom API base URL")] = None
-    timeout: Annotated[float | None, Field(description="Request timeout")] = None
+    api_key: Annotated[
+        str | None,
+        Field(
+            description=(
+                "API key. None (the default): the client library's own environment "
+                "variable (OPENAI_API_KEY for the OpenAI client, GROQ_API_KEY for Groq's); "
+                "the azure provider first tries AZURE_OPENAI_KEY, then AZURE_OPENAI_API_KEY."
+            )
+        ),
+    ] = None
+    base_url: Annotated[
+        str | None,
+        Field(
+            description="Custom API base URL. None (the default): the provider's standard endpoint."
+        ),
+    ] = None
+    timeout: Annotated[
+        float | None,
+        Field(
+            description=(
+                "Request timeout in seconds, read by the direct and groq providers only "
+                "(the others do not pass it to their client). None (the default): the "
+                "direct client's own 600 s; Groq's client is handed None, which waits "
+                "without a limit."
+            )
+        ),
+    ] = None
     max_retries: Annotated[int, Field(description="Max retry attempts")] = 5
     max_completion_tokens: Annotated[int | None, Field(description="Max completion tokens")] = 4096
 
@@ -285,12 +320,12 @@ class OpenAICompatBase(ChatModelBase):
     def _effective_reasoning_effort(self) -> str | None:
         """The effort to put on the wire, or ``None`` to send nothing.
 
-        An explicit ``reasoning_effort`` always wins. Unset, a listed
-        reasoning model gets :data:`_LISTED_MODEL_DEFAULT_EFFORT` — the value
-        the field defaulted to before it became optional, so configs that
-        never named it send exactly what they sent before.
+        Anything but ``auto`` is sent as written. Under ``auto`` a listed
+        reasoning model gets :data:`_LISTED_MODEL_DEFAULT_EFFORT` and every
+        other model gets nothing — what configs that never named the knob
+        have always sent.
         """
-        if self.reasoning_effort is not None:
+        if self.reasoning_effort != "auto":
             return self.reasoning_effort
         if self._is_listed_reasoning_model():
             return _LISTED_MODEL_DEFAULT_EFFORT

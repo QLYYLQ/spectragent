@@ -145,7 +145,7 @@ environment:
           rhythm_type: instant
 
         # How far the run is pinned for replay (docs/architecture_design.md
-        # §4.14) — the strategy is the switch, like the two above. ``off``
+        # §4.14) — the strategy is the switch, like the two above. ``none``
         # pins nothing and opens no second CDP connection. ``pinned`` seeds
         # Math.random / crypto, steps the JS clock from the run's start,
         # fixes time zone, locale, user agent and DPR, and adds its own
@@ -158,7 +158,7 @@ environment:
         #   locale: en-US
         #   device_scale_factor: 1.0
         replayability:
-          replayability_id: "off"   # quoted: YAML 1.1 reads a bare off as false
+          replayability_id: none
 
         # Where the network comes from (§4.14 "回放") — the strategy is the
         # switch again. ``live`` is the network itself. ``archive`` answers
@@ -207,7 +207,8 @@ environment:
         # half of screenshot_format / screenshot_quality above. Whenever a
         # limit cuts the tree, the fragment records it in ``DOMObs.budget``
         # so the trace can tell a truncated page from a sparse one. This
-        # run caps the text before the agent sees it.
+        # run caps the text before the agent sees it. Both caps default to
+        # ``unlimited``.
         #
         # dom_max_elements: 150          # cap indexed elements (doc order)
         dom_max_serialized_chars: 40000  # cap the prompt text, cut at a line
@@ -224,6 +225,7 @@ environment:
         # block entirely — as this file does — to get all sixteen actions
         # the capability's __wiring__ offers. Narrow it and any agent that
         # requires a dropped action fails action negotiation, by design.
+        # ``actions: []`` builds no action at all; it is not "the default".
         #
         # actions:
         #   - action_id: browser.navigate

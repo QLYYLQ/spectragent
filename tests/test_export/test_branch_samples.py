@@ -178,7 +178,10 @@ def test_require_eval_reads_source_run(composer: ConfigComposer, tmp_path: Path)
     entry = exporter_entry(
         tmp_path / "src",
         tmp_path / "out",
-        filters={"require_eval": {"evaluator_id": "online_mind2web"}, "max_document_misses": None},
+        filters={
+            "require_eval": {"evaluator_id": "online_mind2web"},
+            "max_document_misses": "unlimited",
+        },
     )
     report = run_export(composer, entry)
     exported = [s.path for s in report.manifest.sources.exported]
@@ -233,7 +236,7 @@ def test_a_warned_restoration_leaves_the_branch_out(
     switched_off = exporter_entry(
         tmp_path / "src",
         tmp_path / "kept",
-        filters={"exclude_restoration_diverged": False, "max_document_misses": None},
+        filters={"exclude_restoration_diverged": False, "max_document_misses": "unlimited"},
     )
     kept = run_export(composer, switched_off)
     exported = {s.path: s.samples for s in kept.manifest.sources.exported}

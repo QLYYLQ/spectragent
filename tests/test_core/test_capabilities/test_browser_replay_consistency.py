@@ -19,7 +19,7 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
     NETWORK_ISOLATION_ARGS,
 )
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
-from spectragent.core.capabilities.browser.replay import OffReplayability, PinnedReplayability
+from spectragent.core.capabilities.browser.replay import NoneReplayability, PinnedReplayability
 from spectragent.core.capabilities.browser.replay.archive_index import (
     ArchiveIndex,
     RecordedArchive,
@@ -99,7 +99,7 @@ def _names_both_sides(problem: str) -> bool:
 
 def test_a_matching_source_has_no_problem() -> None:
     assert _problems(_source()) == []
-    assert _problems(_source(OffReplayability()), OffReplayability()) == []
+    assert _problems(_source(NoneReplayability()), NoneReplayability()) == []
 
 
 def test_a_source_without_a_fingerprint_is_refused() -> None:
@@ -124,8 +124,8 @@ def test_a_source_that_is_itself_a_replay_is_refused() -> None:
 
 
 def test_another_tier_is_refused() -> None:
-    (problem,) = _problems(_source(OffReplayability()))
-    assert _names_both_sides(problem) and "'off'" in problem and "'pinned'" in problem
+    (problem,) = _problems(_source(NoneReplayability()))
+    assert _names_both_sides(problem) and "'none'" in problem and "'pinned'" in problem
 
 
 def test_tier_params_must_match_except_base_time() -> None:

@@ -861,7 +861,7 @@ def fake_archive_harness() -> ArchiveHarness:
 def browser_archive_harness() -> ArchiveHarness:
     """``BrowserCapability`` and its three archivers, against the fake browser (M29).
 
-    ``off`` tier with ``require_replayable: false`` (a pinned tier adds
+    ``none`` tier with ``require_replayable: false`` (a pinned tier adds
     nothing the contract checks); ``produce`` runs one committed cycle, one
     network exchange and a storage change; ``break_collect`` drops the
     recorder connection; ``change_run_record`` changes the user agent the

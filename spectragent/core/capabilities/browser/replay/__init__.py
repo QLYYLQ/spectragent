@@ -1,6 +1,6 @@
 """Replay: the browser's three replay axes (§4.14).
 
-- ``replayability`` (``ReplayabilityRegistrar``: ``off`` / ``pinned``) — how far a
+- ``replayability`` (``ReplayabilityRegistrar``: ``none`` / ``pinned``) — how far a
   recording is pinned so it can be replayed;
 - ``network_source`` (``NetworkSourceRegistrar``: ``live`` / ``archive``) — where
   the network comes from; ``archive`` replays a recorded run offline;
@@ -34,7 +34,7 @@ from spectragent.core.capabilities.browser.replay.network_source import (
     NetworkSourceRegistrar,
     default_network_source,
 )
-from spectragent.core.capabilities.browser.replay.off import OffReplayability
+from spectragent.core.capabilities.browser.replay.none import NoneReplayability
 from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.replay_log import (
     ReplayLog,
@@ -65,7 +65,7 @@ __all__ = [
     "NetworkSourceBase",
     "NetworkSourceProtocol",
     "NetworkSourceRegistrar",
-    "OffReplayability",
+    "NoneReplayability",
     "PinnedReplayability",
     "ReplayContext",
     "ReplayLog",

@@ -32,13 +32,13 @@ def test_the_shipped_translators() -> None:
 def test_knobs_arrive_from_yaml() -> None:
     translator = _compose(
         yaml.safe_load(
-            'translator_id: index_to_coordinate\nocclusion: "off"\n'
+            "translator_id: index_to_coordinate\nocclusion: none\n"
             "occlusion_unknown: untranslatable\nuntranslatable: keep_as_text\n"
         )
     )
     assert isinstance(translator, IndexToCoordinateTranslator)
     assert (translator.occlusion, translator.occlusion_unknown, translator.untranslatable) == (
-        "off",
+        "none",
         "untranslatable",
         "keep_as_text",
     )
@@ -51,9 +51,10 @@ def test_knobs_arrive_from_yaml() -> None:
     [
         {"translator_id": "index_to_coordinates"},
         {"translator_id": "index_to_coordinate", "occlusion": "maybe"},
-        # A bare ``off`` is YAML 1.1's false: refused, not silently "check".
+        # The old spelling, bare (YAML 1.1's false) or quoted: refused, not silently "check".
         yaml.safe_load("translator_id: index_to_coordinate\nocclusion: off\n"),
-        {"translator_id": "identity", "occlusion": "off"},
+        {"translator_id": "index_to_coordinate", "occlusion": "off"},
+        {"translator_id": "identity", "occlusion": "none"},
     ],
 )
 def test_a_wrong_block_is_refused(block: dict[str, object]) -> None:

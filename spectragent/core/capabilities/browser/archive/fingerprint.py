@@ -166,7 +166,7 @@ class BrowserFingerprint:
     ) -> dict[str, Any]:
         version = await recorder.browser_version()
         params = dict(plan_fingerprint.get("params") or {})
-        pinned = plan_fingerprint.get("tier") not in (None, "off")
+        pinned = plan_fingerprint.get("tier") not in (None, "none")
         if pinned:
             page: dict[str, Any] = {
                 "source": "replayability",

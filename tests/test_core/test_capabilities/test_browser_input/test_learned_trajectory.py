@@ -128,7 +128,7 @@ def _capability_config(mouse_trajectory: dict[str, Any]) -> Any:
         {
             "mouse_trajectory": mouse_trajectory,
             "typing_rhythm": {"rhythm_type": "instant"},
-            "replayability": {"replayability_id": "off"},
+            "replayability": {"replayability_id": "none"},
             "network_source": {"source_id": "live"},
             "dom_cleaner": {"cleaner_type": "browser_use"},
             "dom_serializer": {"serializer_type": "text"},

@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import math
 import random
+from typing import Annotated
+
+from pydantic import Field as PydanticField
 
 from spectragent.core.capabilities.browser.input._aim import (
     DEFAULT_AIM_MARGIN_PX,
@@ -60,7 +63,16 @@ class WindMouseTrajectory(MouseTrajectoryBase):
         click_hold_max_ms: float = DEFAULT_CLICK_HOLD_MAX_MS,
         aim_sigma_ratio: float = DEFAULT_AIM_SIGMA_RATIO,
         aim_margin_px: float = DEFAULT_AIM_MARGIN_PX,
-        seed: int | None = None,
+        seed: Annotated[
+            int | None,
+            PydanticField(
+                description=(
+                    "Seed for this instance's random stream, which draws the path, "
+                    "its timing, the click hold and the aim point: one seed replays "
+                    "the cursor. None (the default) draws fresh entropy."
+                ),
+            ),
+        ] = None,
     ) -> None:
         self._g = gravity
         self._w = wind

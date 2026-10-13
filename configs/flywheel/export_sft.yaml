@@ -27,7 +27,7 @@ exporter:
       # label: 1, slug: null } keeps only runs that evaluator graded 1.
       require_eval: null
       exclude_restoration_diverged: true
-      max_document_misses: 0         # null: no replay-log filter
+      max_document_misses: 0         # unlimited: no replay-log filter
       exclude_sites: []              # host names, suffix-matched
     split: { by: site, validation_fraction: 0.1, salt: af-split-1 }   # by: site | task
     # against lists the benchmarks the student will be evaluated on; a source
@@ -41,7 +41,7 @@ exporter:
     decontamination: { against: [], match: either }
     translator:
       translator_id: index_to_coordinate
-      occlusion: check               # "off" must be quoted (a bare off is a YAML boolean)
+      occlusion: check               # none: the point is not checked for covering elements
       occlusion_unknown: raise       # untranslatable: a step with no evidence is dropped instead
       untranslatable: drop_step      # truncate | keep_as_text | fail
     student_run_config: configs/flywheel/ui_tars_student.yaml

@@ -297,7 +297,7 @@ def archiving_capability(
     backend: OwnedBrowser | None = None,
     fragments: frozenset[str] = frozenset({"browser.dom"}),
 ) -> tuple[BrowserCapability, BrowserDriver]:
-    """A capability on the fake browser with *archivers* (default: all three, off tier)."""
+    """A capability on the fake browser with *archivers* (default: all three, none tier)."""
     browser = browser or FakeBrowser()
     capability = BrowserCapability()
     capability.backend = backend or OwnedBrowser()  # type: ignore[assignment]

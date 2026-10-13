@@ -27,8 +27,21 @@ class ChatBrowserUse(ChatModelBase):
     def __init__(
         self,
         model: Annotated[str, Field(description="Browser-use model name")] = "bu-latest",
-        api_key: Annotated[str | None, Field(description="Browser-use API key")] = None,
-        base_url: Annotated[str | None, Field(description="API base URL")] = None,
+        api_key: Annotated[
+            str | None,
+            Field(
+                description="Browser-use API key. None (the default): read from BROWSER_USE_API_KEY."
+            ),
+        ] = None,
+        base_url: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "API base URL. None (the default): read from BROWSER_USE_LLM_URL, else "
+                    "https://llm.api.browser-use.com."
+                )
+            ),
+        ] = None,
         timeout: Annotated[float, Field(description="Request timeout in seconds")] = 120.0,
         max_retries: Annotated[int, Field(description="Maximum retry attempts")] = 5,
         retry_base_delay: Annotated[

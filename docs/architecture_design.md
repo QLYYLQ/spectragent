@@ -773,6 +773,7 @@ class ConfigComposer:
     def compose(self, raw: dict | BaseModel) -> ComposedRun:
         cfg = (raw if isinstance(raw, BaseModel)
                else self.top_level_type.model_validate(raw))   # 3) Pydantic 校验
+        self._refuse_inline_only_sections(cfg)                 #    只能内联的层不许有顶层段（下面）
 
         by_layer = {layer: {} for layer in self._registrars}
         for layer in self._composed.dependency_order:           # 4) leaves-first 实例化
@@ -788,7 +789,12 @@ class ConfigComposer:
 - 单实例注解 → single receptor，注入唯一 instance
 - list / dict / single 的判定读的是**类级注解**（`get_type_hints(cls)`），不是 `__init__` 签名：只在 `__init__` 参数里出现、类上没有注解的受体会走单实例分支。所以 list 受体必须在 MRO 里有一条类级注解（`archive: list[ArchiverBase]`；类体要把这个名字另作他用时放在 mixin 上，见 `_BrowserReceptors` / `AgentReceptors`）
 - 不在 init_params 也不在 class_hints → 纯协商声明（没有 slot，如 agent / loop 的 `observation:`、`action:`，capability 的 `observation:` 与 `archiver:` provides 声明）：conscribe 把它生成成可选字段，Pydantic 照样校验它的 `Literal[...]`；**但 YAML 一旦填了值，Composer 抛 `UnresolvedWiringError`**（"negotiation-only entry"）：没有任何地方接收这个值，这条报错就是为了不让它被静默丢掉
-- 可选的 list / dict 受体在 YAML 里**省略**时不等于空：Composer 在所有实例建完之后的第二遍（`_resolve_deferred`，deferred resolution）把它绑定到所连注册表那一层的**全部**实例（wiring 条目列了 key 时只取被允许的那些）。后果之一落在 `trace_writer.archive` 上（M29 起 YAML 可达）：省略它、而配置里有顶层 `archiver:` 段时，归档会被打开；"不归档"是写 `archive: []`，或者根本没有顶层 `archiver:` 段。M29 用 Composer 测试钉住这三种情形
+- 可选的 list / dict 受体在 YAML 里**省略**（或写 `null`）是"没设"，不等于空：Composer 在所有实例建完之后的第二遍（`_resolve_deferred`，deferred resolution）从所连注册表那一层的**全部**实例里取（wiring 条目列了 key 时只取被允许的那些）；这一层一个可取的实例也没有时，受体保持主人自己的默认值（`capability.actions` 省略 = wiring 提供的全部动作），只有主人自己不给默认值时（`environment.capabilities`）才设成空容器。`[]` 永远是空：`capability.actions: []` 一个动作都不建（用户 2026-10-13 的裁决）。`environment.capabilities` 与 `capability.actions` 的池子采纳不变（`tests/test_core/test_composer/test_inline_only.py` 钉住这条规则）
+- **只能内联的受体**（`__inline_only__`，主人类上的声明）：主人把一个 list / dict 受体列进 `__inline_only__`，它就只从自己的配置块取值：省略或 `null` 是主人的默认值，从不从池子里取（池子里还有别的块内联建出来的实例，也不取）；它所连的那一层的顶层段在组装时被拒绝（`InlineOnlyLayerError`），报错点名实例该写在哪里（由 wiring 算出，形如 `trace_writer.archive`）。Composer 构造时检查声明：只能点名本类的 list / dict 受体；同一层不能一边只能内联、一边被别的受体从池子里取。唯一的用例是 `TraceWriter.archive`：**归档只有一个开关**（用户 2026-10-13 的裁决），省略、`null`、`[]` 都是不归档，顶层 `archiver:` 段报错并提示写进 `trace_writer.archive`（`tests/test_core/test_composer/test_archive_yaml_surface.py`）。conscribe 给每个层都生成顶层段、而且没有选项去掉，所以这一段由 af 的组装器拒绝；"只能内联的层"已写进给 conscribe 的反馈，上游支持后这段检查改成生成配置时的声明
+- **配置面的拼写规则**（用户 2026-10-13 的裁决；注册名、选项值与旋钮都遵守）：
+  - "不启用"拼作 `none`（`replayability: none`、导出的 `occlusion: none`、`shift_dates: none`、`thought_source: none`）；默认值本身做一件正常事的保留描述性名字（`live`、`instant`、`identity`）；`isolation: none_acknowledged` 是书面承认会漏流量，保留。注册名与选项值都不许是 YAML 1.1 读成布尔或 null 的词（on / off / yes / no / true / false / null / ~，任何大小写）：所有入口都用 PyYAML 的 `safe_load`，它按 YAML 1.1 读，裸写的这些词到校验时已经是 `False` 或 `None`。`tests/test_core/test_composer/test_yaml_safe_values.py` 扫描每个注册表的全部键，以及运行配置、链规格、站点规则三份 schema 里的全部选项值
+  - `null` 只表示"这个可选项没设"（可选的子块与覆盖值：`require_eval`、`user_agent`、`length`……），默认为 null 的旋钮都在说明里写明没设时是什么（`None (the default): ...`）。数值上限不用 null：不限写 `unlimited`，默认值写出真实的值（`dom_max_elements`、`dom_max_serialized_chars` 默认 `unlimited`，导出的 `max_document_misses` 默认 `0`）；共用的拼写与读法在 `schemas/_types.py`（`UNLIMITED`、`Unlimited`、`limit_value()`，代码内部仍用 `None` 表示不限）。类型写成 `Annotated[int, Field(ge=1)] | Unlimited`：界写在 `int` 那一支上（写在外层 pydantic 会拿它去比 `"unlimited"`）。conscribe 1.3 生成 `_composed.py` 时会丢掉这个嵌套的界，但 Composer 校验用的是活的模型，界照样生效。"按 provider 自己的策略"这类默认写成显式的词：`reasoning_effort: auto`
+  - `[]` 永远是空（上面省略受体的那一条规则）。真实的列表默认值要等 conscribe 支持后才能直接显示在生成的配置里（反馈报告）；在那之前，这类字段（`sources`、`require_archive`）在说明里写明默认值，带注释的示例 YAML 也解释它
 
 **注入方式**：init param → 进 `__init__` 的 kwargs；class_hints-only → 通过 `setattr(instance, name, value)` 注入（conscribe `WiredField` descriptor 接受这次写入并把值放到 instance dict，遮蔽自身）。
 
@@ -1542,6 +1548,8 @@ capability:
     # 等价于 ablation 收窄
 ```
 
+不写 `actions`（或写 `null`）得到 wiring 提供的全部动作；`actions: []` 一个动作都不建（`[]` 永远是空，§4.2.1），任何要求动作的 agent 都在协商时失败。
+
 #### 协商流程
 
 AgentRuntime 在启动前运行对称的 action 协商：
@@ -1977,7 +1985,7 @@ class CaptureCheck(Protocol):
 ```
 
 - 为什么需要：训练导出用学生的运行配置渲染样本（§4.15），图像却来自源 trace。学生配置的截图管线与录制时不同（格式、viewport、DPR、图像尺寸），训练图像就与学生服务时看到的不同，而导出本身看不出来，只有 capability 知道它的配置会采出什么。
-- Browser（`core/capabilities/browser/capture_check.py`，`capability.py` 只委托）：对 `browser.screenshot` 比较 `viewport_width/height`（配置 vs 录下的）、`screenshot_format`（配置 vs 录下字节的 `image_media_type`）、DPR（`replayability` 的 `device_scale_factor` vs 录下的 `image_width / viewport_width`）以及由它推出的图像尺寸（viewport × DPR）。`off` 档位用宿主机的 DPR，配置期不可知：DPR 与图像尺寸进 `unchecked`，不算差异。其余 fragment 不比较。
+- Browser（`core/capabilities/browser/capture_check.py`，`capability.py` 只委托）：对 `browser.screenshot` 比较 `viewport_width/height`（配置 vs 录下的）、`screenshot_format`（配置 vs 录下字节的 `image_media_type`）、DPR（`replayability` 的 `device_scale_factor` vs 录下的 `image_width / viewport_width`）以及由它推出的图像尺寸（viewport × DPR）。`none` 档位用宿主机的 DPR，配置期不可知：DPR 与图像尺寸进 `unchecked`，不算差异。其余 fragment 不比较。
 - 与 `RestorationSupport` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认；路由与"没人实现就没有可比的"在 environment 一侧（§4.3）。
 
 **setup 之前的检查也是单独的、可选的 Protocol**（`core/capabilities/base.py`）：
@@ -2050,11 +2058,11 @@ BrowserCapability.teardown()
 
 | 常量 | 承诺 | 谁要求它 |
 |---|---|---|
-| `NETWORK_CAPTURE` | 浏览器进程由 capability 经这个 provider 启动并在 teardown 杀掉；CDP 端点接受第二个 browser 级客户端（`waitForDebuggerOnStart` 的 auto-attach、Network、Fetch）；provider 实现 `NetworkCaptureProvider`：`persistent_profile() -> str \| None`（profile 不是每 run 新建时，点名是哪个旋钮或环境变量——它决定 §5.6 的 `logged_in` 与指纹的 `fresh_profile`；声明了 `NETWORK_CAPTURE` 却答不出的 provider 被协作检查拒绝，从不当作新建的） | 任一 browser 归档器被绑定；`replayability` 不是 `off`；`network_source: archive`——也就是一切需要 recorder 连接的配置（§4.14） |
+| `NETWORK_CAPTURE` | 浏览器进程由 capability 经这个 provider 启动并在 teardown 杀掉；CDP 端点接受第二个 browser 级客户端（`waitForDebuggerOnStart` 的 auto-attach、Network、Fetch）；provider 实现 `NetworkCaptureProvider`：`persistent_profile() -> str \| None`（profile 不是每 run 新建时，点名是哪个旋钮——只有配置能让 profile 不是新建的，从不靠环境变量，`config.json` 才看得出来；它决定 §5.6 的 `logged_in` 与指纹的 `fresh_profile`；声明了 `NETWORK_CAPTURE` 却答不出的 provider 被协作检查拒绝，从不当作新建的） | 任一 browser 归档器被绑定；`replayability` 不是 `none`；`network_source: archive`——也就是一切需要 recorder 连接的配置（§4.14） |
 | `LAUNCH_ARGS` | `open(*, launch_args: Sequence[str] = ())` 接受本次 session 额外的 Chrome 开关；provider 实现 `LaunchArgsProvider`：`launch_arg_conflicts(launch_args) -> list[str]`（自己的哪些旋钮与这些开关矛盾，每条点名旋钮），以及 `planned_launch_flags(launch_args) -> list[str]`（M30：`open(launch_args=...)` 将会写进 `metadata["launch_flags"]` 的那张开关表，启动之前就能算——回放的一致性检查据此在启动浏览器之前比较开关摘要） | `replayability: pinned`（它的启动开关只能从这条路进浏览器）；`NETWORK_ISOLATION`（隔离开关也走这条路） |
 | `NETWORK_ISOLATION` | provider 启动的浏览器能被切断网络：capability 经 `open(launch_args=...)` 交给它 `chrome_switches.NETWORK_ISOLATION_ARGS`（`--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost` 与 `--no-proxy-server` 两个 argv 元素，不带 shell 引号）；provider 实现 `NetworkIsolatingProvider`：`isolation_conflicts() -> list[str]`（自己哪些旋钮会让隔离失效，每条点名旋钮：`local_chrome` 是 `proxy_server`、`proxy_bypass_list`、`extra_args` 里任何一个网络路由开关（与某个隔离开关一字不差的重复除外：它什么都不改）（`chrome_switches.NETWORK_ROUTING_SWITCHES`：`--host-resolver-rules`、`--proxy-server`、`--no-proxy-server`、`--proxy-pac-url`、`--proxy-auto-detect`、`--proxy-bypass-list`）、不是 `about:blank` 的 `startup_url`——它在任何 recorder 连上之前就从命令行加载）。声明它的 provider 也声明 `LAUNCH_ARGS` | `network_source: archive` 且 `isolation: required`（默认；§4.14 "回放"） |
 
-- `backends/base.py` 的约定本来就允许 `open()` 接收 per-session 的显式关键字参数；`launch_args` 是其中一个。capability 只对声明了 `LAUNCH_ARGS` 的 provider 传它；`off` 档位什么都不传，云 provider 的 `open()` 调用与以前完全一样。
+- `backends/base.py` 的约定本来就允许 `open()` 接收 per-session 的显式关键字参数；`launch_args` 是其中一个。capability 只对声明了 `LAUNCH_ARGS` 的 provider 传它；`none` 档位什么都不传，云 provider 的 `open()` 调用与以前完全一样。
 - `local_chrome` 把 `launch_args` 接在 `extra_args` 之后，然后把同一个开关的多次出现合并成一个：所有 `--js-flags` 合成一个（V8 flags 以空格拼接），所有 `--disable-features` / `--enable-features` 各合成一个（逗号拼接、去重）。Chrome 对这几个开关只认最后一次出现，原先 `CHROME_DEFAULT_ARGS` 与 `disable_security` 各带一个 `--disable-features`，后者静默吃掉了前者。合并写在 `backends/chrome_switches.py`（`merge_chrome_switches`），归 Chrome 命令行这一层，不是某个 provider 的私有函数。
 - `ProviderSession.metadata` 记录确切的命令行（`command_line`）与去掉易变值的开关表（`launch_flags`：不含可执行文件与启动 URL，`--user-data-dir` 的路径与 `--remote-debugging-port` 的端口换成占位符）。环境指纹只记后者的摘要，而且去掉网络路由开关之后才算（M30：录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，隔离单独记，§4.14），命令行本身从不进 trace（`proxy_server` 可能带着凭证）。
 - 显式 `cdp_url`、测试注入的控制客户端，都意味着浏览器不是 capability 拥有的：与任何需要 `NETWORK_CAPTURE` 的配置同时出现时报错，点名双方：`prepare()` 里（`check_setup`；`cdp_url` 来自配置或任务上下文）就报，setup 再查一遍（`prepare()` 之后才注入的客户端由它报）。
@@ -2086,8 +2094,8 @@ class BrowserCapability(CapabilityBase):
         # 归档 provides（全限定键，M29 起）：没有 slot；requires 在 trace hook 的 archive 列表里
         "archiver": ("archiver", ["browser.network", "browser.storage", "browser.dom_raw",
                                   "browser.replay_log"]),
-        # 回放档位受体（M29，§4.14）：策略即开关，off 是默认；YAML 必须写一个
-        "replayability": ("replayability", ["off", "pinned"]),
+        # 回放档位受体（M29，§4.14）：策略即开关，none 是默认；YAML 必须写一个
+        "replayability": ("replayability", ["none", "pinned"]),
         "backend": "browser_provider",
     }
 
@@ -2481,7 +2489,7 @@ numpy 来自可选 extra `learned-mouse`，只在构造 `LearnedTrajectory` 时�
 
 ### 4.14 回放与归档中间层（recorder 连接、`replayability`、browser 归档器）
 
-Browser 实现了 §4.5 的第三条 provides 轴（`browser.network` / `browser.storage` / `browser.dom_raw`；回放 run 用 `browser.replay_log` 代替 `browser.network`），另有三根自己的环境策略轴：`replayability`（`off` / `pinned`，录制的可回放档位）、`network_source`（`live` / `archive`，网络从哪里来，M30）与挂在 `archive` 来源上的 `miss_policy`（`strict`，M30）。它们共用一条独立于 agent 的 CDP 连接，即 **recorder 连接**（也叫 early-attach 连接）。这一层的设计依据来自两轮实测（S1、S2a，Chrome 153.0.8010.53，headless，macOS；探针脚本在本地的 `tmp/flywheel/spikes/`）。前半部分是录制（M29），"回放"之后的几节是离线回放（M30）。下面引用的 Chrome 行为都会随版本变化，`requires_chrome` 的回归测试把它们钉成版本金丝雀。
+Browser 实现了 §4.5 的第三条 provides 轴（`browser.network` / `browser.storage` / `browser.dom_raw`；回放 run 用 `browser.replay_log` 代替 `browser.network`），另有三根自己的环境策略轴：`replayability`（`none` / `pinned`，录制的可回放档位）、`network_source`（`live` / `archive`，网络从哪里来，M30）与挂在 `archive` 来源上的 `miss_policy`（`strict`，M30）。它们共用一条独立于 agent 的 CDP 连接，即 **recorder 连接**（也叫 early-attach 连接）。这一层的设计依据来自两轮实测（S1、S2a，Chrome 153.0.8010.53，headless，macOS；探针脚本在本地的 `tmp/flywheel/spikes/`）。前半部分是录制（M29），"回放"之后的几节是离线回放（M30）。下面引用的 Chrome 行为都会随版本变化，`requires_chrome` 的回归测试把它们钉成版本金丝雀。
 
 ```
 BrowserCapability
@@ -2509,7 +2517,7 @@ recorder 连接的 `CDPClient` 用 `compression=None`（websockets 默认与 Chr
 
 #### 什么时候打开
 
-- 绑定了任一 browser 归档器、`replayability` 不是 `off`，或 `network_source` 拦截（`archive`，M30）：setup 在建第一个 tab 之前打开它。回放必须绑定 `browser.replay_log`（下面的协作检查），所以回放时 archive scope 与 ArchiveWatchdog 总在。
+- 绑定了任一 browser 归档器、`replayability` 不是 `none`，或 `network_source` 拦截（`archive`，M30）：setup 在建第一个 tab 之前打开它。回放必须绑定 `browser.replay_log`（下面的协作检查），所以回放时 archive scope 与 ArchiveWatchdog 总在。
 - 只开了 `replayability`、没有归档器：**只做 shim** 的模式：不建 archive scope，不装 ArchiveWatchdog，不开 Fetch，不挂任何 Network 事件处理器（pinned 为了让缓存禁用与 SW 旁路生效会在各 session 上发 `Network.enable`，事件到了 recorder 客户端无人接收、直接丢弃）。
 - 两者都没有：不开第二个客户端，不建 archive scope，控制连接上一条命令也不多发。"`archive` 为空就零开销"由 fake CDP 测试钉住（M28 验收里在 M28 时空成立的那一条，在这里重新断言）。
 
@@ -2547,9 +2555,9 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 | 组合 | `prepare()` 之后谁再查 |
 |---|---|
 | 任一 browser 归档器 + provider 没有声明 `NETWORK_CAPTURE`（六个云 lite provider） | `bind_archivers`、setup |
-| 任一 browser 归档器（或非 `off` 的档位）+ provider 声明了 `NETWORK_CAPTURE` 却没实现 `persistent_profile()`（说不出 profile 是否新建） | `bind_archivers`（档位：只有 setup）、setup |
+| 任一 browser 归档器（或非 `none` 的档位）+ provider 声明了 `NETWORK_CAPTURE` 却没实现 `persistent_profile()`（说不出 profile 是否新建） | `bind_archivers`（档位：只有 setup）、setup |
 | 任一 browser 归档器 + 显式 `cdp_url`（配置里的或任务上下文里的）或注入的控制客户端 | `bind_archivers`（配置里的 `cdp_url`）、setup |
-| `browser.network`（`require_replayable: true`）+ `replayability: off` | `bind_archivers`、setup |
+| `browser.network`（`require_replayable: true`）+ `replayability: none` | `bind_archivers`、setup |
 | 任一 browser 归档器 + profile 不是新建的 + 该归档器 `allow_session_state: false` | `bind_archivers`、setup |
 | 任一 browser 归档器 + profile 排除了 `archive` watchdog | `bind_archivers`、setup |
 | `replayability: pinned` + provider 缺 `LAUNCH_ARGS` 或 `NETWORK_CAPTURE` / 显式 `cdp_url` / 注入的控制客户端 / provider 报告的旋钮冲突 / profile 不是新建的 | setup |
@@ -2585,7 +2593,7 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 
 | 设置 | 所有者 | 怎么设 |
 |---|---|---|
-| viewport + DPR | 控制连接 | `Emulation.setDeviceMetricsOverride`（`deviceScaleFactor` = `replayability.device_scale_factor`（属性）；`off` 是 0，保留平台 DPR） |
+| viewport + DPR | 控制连接 | `Emulation.setDeviceMetricsOverride`（`deviceScaleFactor` = `replayability.device_scale_factor`（属性）；`none` 是 0，保留平台 DPR） |
 | 时区、语言 | recorder | `Emulation.setTimezoneOverride` / `setLocaleOverride`（每个 frame target，含 OOPIF） |
 | UA、UA metadata、`Accept-Language` | recorder | frame：`Emulation.setUserAgentOverride`；worker：`Network.setUserAgentOverride`（worker 继承页面的 UA，但不继承 `Accept-Language`：不单独设，worker 里的 `navigator.language` 是宿主机的；macOS 上 `--lang` 对 worker 不起作用）。不带 `userAgentMetadata`，所以 `navigator.userAgentData.brands` 为空、不发 `Sec-CH-UA`——录制与回放一样 |
 | 媒体特性（减少动画） | recorder | `Emulation.setEmulatedMedia` |
@@ -2596,30 +2604,30 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 
 #### `replayability`：回放档位（`ReplayabilityRegistrar`）
 
-`core/capabilities/browser/replay/`：`replayability.py`（Protocol、注册表、基类、`ReplayabilityPlan`、`default_replayability()`）、`off.py`、`pinned.py`、`shims.py`。它是 `BrowserCapability.__wiring__["replayability"]` 上的受体：类级注解加 Python 默认（`off`），与 `typing_rhythm` 同一种形状。单实例受体在生成的 schema 里是必填的，所以**每一个手写的 capability 块**都写 `replayability: {replayability_id: "off"}`。`off` 要加引号：YAML 1.1（PyYAML）把裸的 `off` 读成 `false`，哪个档位都不匹配。
+`core/capabilities/browser/replay/`：`replayability.py`（Protocol、注册表、基类、`ReplayabilityPlan`、`default_replayability()`）、`none.py`、`pinned.py`、`shims.py`。它是 `BrowserCapability.__wiring__["replayability"]` 上的受体：类级注解加 Python 默认（`none`），与 `typing_rhythm` 同一种形状。单实例受体在生成的 schema 里是必填的，所以**每一个手写的 capability 块**都写 `replayability: {replayability_id: none}`。这一档原名 `off`，用户 2026-10-13 的裁决改成 `none`：YAML 1.1（PyYAML）把裸的 `off` 读成 `false`，以前必须加引号（§4.2.1 的拼写规则）。
 
 ```python
 @runtime_checkable
 class ReplayabilityProtocol(Protocol):
     @property
-    def replayable(self) -> bool: ...              # off → False；策略本身就是开关，旁边没有布尔
+    def replayable(self) -> bool: ...              # none → False；策略本身就是开关，旁边没有布尔
     @property
     def needs_archive_clock(self) -> bool: ...     # base_time: from_archive → True（协作检查用）
     @property
-    def device_scale_factor(self) -> float: ...    # 给控制连接的 DPR；off → 0.0（平台 DPR）
+    def device_scale_factor(self) -> float: ...    # 给控制连接的 DPR；none → 0.0（平台 DPR）
                                                    # 属性而不是方法：在 pinned 上它就是同名的 YAML 旋钮
-    def launch_args(self) -> tuple[str, ...]: ...    # 这个档位拥有的 Chrome 开关；off → ()
+    def launch_args(self) -> tuple[str, ...]: ...    # 这个档位拥有的 Chrome 开关；none → ()
     def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan: ...
         # 本 run 的计划（也是一个 recorder 贡献者）：逐 target 的命令、指纹字段；配置实例不持有 run 状态
 ```
 
-- **`off`**（默认）：什么都不做。
+- **`none`**（默认）：什么都不做。
 - **`pinned`**：旋钮 `base_time: Literal["run_start", "from_archive"]`、`random_seed: int`（≥ 1：V8 把 0 当作"用系统随机数"）、`timezone`（IANA，构造时校验）、`locale`（语言标签，构造时校验）、`device_scale_factor`、`user_agent: str | None`（None：沿用浏览器自己的 UA，只 pin `Accept-Language`）、`reduced_motion: bool`。第零条规则：录制与回放用完全相同的 shim、开关、种子、UA 与 viewport。`Accept-Language` 写成不带 q 值的列表（`en-US,en`），Chrome 自己加 q 值。
   - 启动开关只由它自己的设置生成：`--js-flags=--random-seed=<seed>`、`--lang=<locale>`、`--force-device-scale-factor=<dpr>`、`--disable-back-forward-cache`、`--disable-features=HttpsUpgrades`（Chrome 153 默认先把可注册域名的 http 导航升级成 https 试探；录制与回放都关），以及 `--disable-background-networking --disable-component-update --disable-field-trial-config`（它们在 `CHROME_DEFAULT_ARGS` 里，`ignore_default_args` 会把它们丢掉，pinned 重新加回）；写了 `user_agent` 时另加 `--user-agent=<ua>`（worker 与网络栈也看到同一个 UA，provider 自己的 `user_agent` 旋钮也因此能被报成冲突）。每个 run 必须是新建的 profile。
   - shim（`replay/shims.py`，Python 字符串常量，移植自 WPR `deterministic.js`，BSD-3，保留 notice）：无参 `Date` 与 `Date.now()` 从 T0 起、每 25 次构造前进 50 ms（**不冻结**，忙等能结束）；带种子的 `Math.random` 与 `crypto.getRandomValues`；`crypto.randomUUID` 是合法的 RFC 4122 v4；拒绝 `ServiceWorkerContainer.prototype.register`（配合 `setBypassServiceWorker`）；防重复注入。时区偏移交给 timezone override（不学 WPR 硬改 `getTimezoneOffset`）；`performance.now` 与定时器不改（WPR 的模型，残余的不确定性写明）。`shim_sha256` 是模板源码的摘要，进指纹。
   - `base_time: from_archive` 只与回放归档的网络来源一起有效：T0 取自源 run 指纹里的 `replayability.t0_ms`，setup 在 `plan()` 之前解析好，shim 因此在任何 target 准备之前就带着录制时的 T0（M30）；与 `network_source: live` 一起在 `prepare()` 报错（`check_setup`）。
-  - 协作检查（setup 时，点名双方，一次报全）：provider 没有声明 `LAUNCH_ARGS` 或 `NETWORK_CAPTURE`；显式 `cdp_url`；注入的控制客户端；provider 报告的旋钮冲突（`local_chrome`：`deterministic_rendering=true`、`force_device_scale_factor` 与 pinned 的 DPR 不同、`user_agent` 与 pinned 的不同、`extra_args` 另设了 pinned 拥有的开关）；profile 不是新建的（`persistent_profile()` 非空：`user_data_dir`、非默认的 `profile_directory`、`CHROME_USER_DATA_DIR`、`extra_args` 里的 `--user-data-dir`）；`base_time: from_archive` 而网络来源是 `live`。
-  - 已知取舍：pinned 会改变活站点的行为，本身也是 anti-bot 能抓到的特征（用户已接受）；评测 run 与 anti-bot run 保持 `off`。
+  - 协作检查（`prepare()` 时，setup 再查一遍；点名双方，一次报全）：provider 没有声明 `LAUNCH_ARGS` 或 `NETWORK_CAPTURE`；显式 `cdp_url`；注入的控制客户端；provider 报告的旋钮冲突（`local_chrome`：`deterministic_rendering=true` 的 V8 种子与 pinned 的 `random_seed` 不同、`force_device_scale_factor` 与 pinned 的 DPR 不同、`user_agent` 与 pinned 的不同、`extra_args` 另设了 pinned 拥有的开关；每一行都是值相同就放行，`deterministic_rendering` 也一样（用户 2026-10-13 的裁决），它的 `--deterministic-mode` 与 `--font-render-hinting=none` 不是 pinned 拥有的开关）；profile 不是新建的（`persistent_profile()` 非空：`user_data_dir`、非默认的 `profile_directory`、`extra_args` 里的 `--user-data-dir`；profile 目录只由 YAML 决定，以前的环境变量 `CHROME_USER_DATA_DIR` 已删掉（同一次裁决），因为它让 run 是否从新建的 profile 启动在 YAML 和 `config.json` 里都看不出来）；`base_time: from_archive` 而网络来源是 `live`。
+  - 已知取舍：pinned 会改变活站点的行为，本身也是 anti-bot 能抓到的特征（用户已接受）；评测 run 与 anti-bot run 保持 `none`。
 
 #### Browser 归档器：配置实例与运行期会话
 
@@ -2631,7 +2639,7 @@ class ReplayabilityProtocol(Protocol):
 - **原始 DOM 的待定槽位**在 `_ObserveCycleCache.raw`（§4.12）：DOM resolver 的 sink 与 dom_raw 自采（经 context 的 `park_raw`）都放进当前 cycle 的槽位；每次尝试开始时清空（重发的那次替换上一次），`_populate_cycle` 成功时由 `BrowserArchiveRun.commit_raw` 补上 cycle、tab、viewport、cleaner 键后提交进 `RawCaptureStore`，失败的 cycle 什么也不留。sink 只在 setup 时打开了 `raw_dom` 通道时才装；装了之后，当前没有绑定要 `raw_dom` 的归档器时它什么也不放。
 - **ArchiveWatchdog**（`watchdogs/archive_watchdog.py`，`level="shared"`，`provides=∅`，先例是 `JavaScriptExecutionWatchdog`）：**按绑定安装，不按 profile**。`BrowserWatchdog.should_install(ctx)` 是新的类方法（默认 True），capability 在建 watchdog 的地方求值；ArchiveWatchdog 只在 `ctx.archive` 存在（recorder 开着且绑定了归档器）时返回 True，从没有 recorder 的 context 也能惰性地建出来。它在 archive scope 上把准入的事件交给准入它的会话（target 簿记交给每个会话），并给每一个记一次"已处理"（屏障由 `ArchiveChannel` 自己应答）；某个会话处理事件时抛错，记进 `ArchiveChannel.errors`，不打断别的会话。有会话要 `observation_cycle` 时，它覆盖 `bind_tab_scopes(observation_scope, js_scope, *, session_id)`，把 tab 观测 scope 的 `BrowserStateRequestEvent` 跨 scope 连到 archive scope（`target_scope=`），`unbind_tab` 丢掉每 tab 的状态。tab 的 scope 仍然只有观测与 JS 两个，为每 tab 第三个 scope 设计的 `TabScopes` 组合对象不做：archive scope 是 browser 级的（弹窗的流量在控制连接接管它之前就到了），那个动机已经不存在，到下一个真正 per-tab 的 scope 再泛化 `bind_tab_scopes`。
 - **`collect_archive()`**：没 setup 或什么都没绑定 → 空批次；否则入口查存活 → 屏障 → 上次收集以来有会话处理事件时抛过错（`ArchiveChannel.errors` 增加了）就抛错 → 按绑定顺序收集每个会话（每个会话在一条同步语句里换出自己的缓冲区）→ 指纹 run 记录（内容变了才再发）→ 批次。每一步都有界；采不到就抛错。
-- **实测开销**（M29，Chrome 155，fixture 站点除 `nested_worker` 外的 12 个场景、在同一个浏览器里各访问两次，`off` 档位，DOM agent，三个归档器全开；`test_browser_archive_live.py::test_overhead_benchmark` 写出 `ArchiveOverheadReport`）：每步（导航 + 观测 + 收集）p50 多 ≈ 10–25 ms、p95 多 ≈ 90 ms；默认上限 p50 300 ms（`SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS` 可覆盖）。字节（这次 run 收集到的全部证据，含收尾那次收集，除以步数）：去重前每步 ≈ 537 KB，去重后 ≈ 275 KB。去重前的算法：每份内容寻址文件都计入，每条 revisit 记录按它指向的那条完整 response 记录的存储长度计入（payload 与压缩相同，只差几个头部字节）。省下的字节几乎全来自内容寻址：`large` 场景 6 MB 的静态 body 两次访问各补取一遍，只存一份（每步 ≈ 262 KB）。revisit 每步只净省 ≈ 82 B：gzip 后一条 revisit 记录约 510–530 B，比几十字节的 JSON 或脚本的完整记录还大，这些 payload 写成 revisit 反而各多花 50–90 B；净省主要来自 Range 视频的 206 body 和较大的 HTML 页面。
+- **实测开销**（M29，Chrome 155，fixture 站点除 `nested_worker` 外的 12 个场景、在同一个浏览器里各访问两次，`none` 档位，DOM agent，三个归档器全开；`test_browser_archive_live.py::test_overhead_benchmark` 写出 `ArchiveOverheadReport`）：每步（导航 + 观测 + 收集）p50 多 ≈ 10–25 ms、p95 多 ≈ 90 ms；默认上限 p50 300 ms（`SPECTRAGENT_ARCHIVE_OVERHEAD_P50_MS` 可覆盖）。字节（这次 run 收集到的全部证据，含收尾那次收集，除以步数）：去重前每步 ≈ 537 KB，去重后 ≈ 275 KB。去重前的算法：每份内容寻址文件都计入，每条 revisit 记录按它指向的那条完整 response 记录的存储长度计入（payload 与压缩相同，只差几个头部字节）。省下的字节几乎全来自内容寻址：`large` 场景 6 MB 的静态 body 两次访问各补取一遍，只存一份（每步 ≈ 262 KB）。revisit 每步只净省 ≈ 82 B：gzip 后一条 revisit 记录约 510–530 B，比几十字节的 JSON 或脚本的完整记录还大，这些 payload 写成 revisit 反而各多花 50–90 B；净省主要来自 Range 视频的 206 body 和较大的 HTML 页面。
 
 #### `browser.network`
 
@@ -2650,7 +2658,7 @@ class ReplayabilityProtocol(Protocol):
 - **什么时候定下来**：终结事件（下一跳的 `redirectResponse`、`loadingFinished`、`loadingFailed`、WebSocket 握手应答）到了、body 读完；**或者** body 已在 Response 阶段读完：Chrome 扣着响应直到放行，读到的就是完整的 body，而页面从不读取 body 的 `fetch()` 根本不会有 `loadingFinished`（M29 实测，Chrome 155：GraphQL、弹窗、SW 的 fetch 原本都永远停在 `pending`）。两种等待只值一次收集：这种交换的 `responseReceived`，以及任何交换的原始响应头（`responseReceivedExtraInfo`，`Set-Cookie` 只在这里，Fetch 的 `responseHeaders` 与 `responseReceived` 都不带它，实测）。屏障保证收集之前发出的事件都已处理，所以一次收集的宽限足够；Chrome 不发的，到期照样写出（`raw_response_headers: false`）。从缓存来的响应不等 ExtraInfo（crbug 1340398）。目标 detach 时它还在加载的交换记为失败。
 - **body 是解码后的**：`Fetch.getResponseBody` 返回解码后的字节（实测：`Content-Encoding: gzip`、`Content-Length: 50` 的响应读出 1600 字节明文）；索引的 `original_encoding` 记原来的 CE / TE / CL。Fetch 看到的请求头里有 `Cookie`（Chrome 155），与其他来源一样剥离。`Network.loadNetworkResource` 既不发 Network 事件、也不在 recorder 的 Fetch 上暂停（Chrome 155 实测）；没有 `networkId` 的暂停一律不记、原样放行，是防御性的后备（上面"体积分档"）；`IO.read` / `IO.close` 必须发在打开流的那个 session 上。
 - **WARC 里只放已知的响应**：`ok`、`redirect`、`websocket`（101）有 response（或 revisit）记录；`too_large`、`streamed_later`、`incomplete` 只有 request 记录，状态与响应头写在索引行里，因为空的或不完整的 payload 会骗过不读索引的人。补取到的 body 是内容寻址的 blob（`body-<sha>.bin`），`kind: body` 行在它的 `exchange` 行写出之后才交出。
-- `require_replayable: bool = True`：与 `replayability: off` 一起绑定 → `prepare()` 报错（`check_setup`；`bind_archivers` 与 setup 再查一遍），点名归档器与档位。
+- `require_replayable: bool = True`：与 `replayability: none` 一起绑定 → `prepare()` 报错（`check_setup`；`bind_archivers` 与 setup 再查一遍），点名归档器与档位。
 - **只录线上流量**：`browser.network` 永远是"录流量"（用户 2026-10-13 的裁决），不随网络来源换意思。回放（`network_source: archive`）没有自己的线上流量，送出的每个字节都已经在源归档里，所以绑定它被协作检查拒绝（按 `fetch_response` 需求，`prepare()` 就报），报错点名回放要绑定的 `browser.replay_log`（下面）。
 - 其他旋钮：`strip_request_headers`（大小写不敏感，追加在默认三个之后）、`max_post_data_size`、`max_streamed_body_bytes`、`allow_session_state`。
 
@@ -2678,7 +2686,7 @@ class ReplayabilityProtocol(Protocol):
 
 #### 环境指纹（`env/run.browser.json`）
 
-capability 自己的 run 记录（`archiver_id="browser"`，`scope="run"`，`archive/fingerprint.py`），第一次收集时发出，内容变了才再发：Chrome 版本（`Browser.getVersion`）、UA 与 UA metadata、viewport、DPR、时区、语言（pinned 取参数；`off` 在第一个 tab 主 frame 的 isolated world 里经 recorder 的 `Runtime.evaluate` 实测：`Page.createIsolatedWorld`（`af-fingerprint`），页面脚本看不到这次读取、也改不了它读到的值（getter 陷阱、改写的 `JSON.stringify` 都不起作用，M29 实测）；每个文档（loaderId）只测一次，同一文档上的收集只多一条 `Page.getFrameTree`；残余：测量本身仍在页面的渲染进程里执行，主线程忙或对话框开着时这一次会等到 1 s 超时、换下一个 tab）、replayability 档位与参数（T0、种子……）、`shim_sha256`、启动开关摘要（`ProviderSession.metadata["launch_flags"]` 去掉网络路由开关（`chrome_switches.NETWORK_ROUTING_SWITCHES`）之后的 sha256；录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，两边才可比；`command_line` 从不进指纹）与 pinned 自己的开关表（单独存）、网络来源（M30：`network_source` 块，`live` 只有 `{"source_id": "live"}`，回放见下面"回放指纹"）、脱敏策略（`BROWSER_REDACTION_POLICY`，以及每个绑定归档器自报的 `redaction_facts()`：剥离的请求头）、隐私标记（`contains_session_state`、`fresh_profile`、`level`：有归档器保留会话态时是 `session_state`，否则 `redacted`）。`navigator.userAgentData` 只在 secure context 里存在（实测：tab 停在纯 http 的页面上时是 `null`），所以 UA metadata 记最近一次测到的，指纹不随页面来回翻。
+capability 自己的 run 记录（`archiver_id="browser"`，`scope="run"`，`archive/fingerprint.py`），第一次收集时发出，内容变了才再发：Chrome 版本（`Browser.getVersion`）、UA 与 UA metadata、viewport、DPR、时区、语言（pinned 取参数；`none` 在第一个 tab 主 frame 的 isolated world 里经 recorder 的 `Runtime.evaluate` 实测：`Page.createIsolatedWorld`（`af-fingerprint`），页面脚本看不到这次读取、也改不了它读到的值（getter 陷阱、改写的 `JSON.stringify` 都不起作用，M29 实测）；每个文档（loaderId）只测一次，同一文档上的收集只多一条 `Page.getFrameTree`；残余：测量本身仍在页面的渲染进程里执行，主线程忙或对话框开着时这一次会等到 1 s 超时、换下一个 tab）、replayability 档位与参数（T0、种子……）、`shim_sha256`、启动开关摘要（`ProviderSession.metadata["launch_flags"]` 去掉网络路由开关（`chrome_switches.NETWORK_ROUTING_SWITCHES`）之后的 sha256；录制时 fixture 的 `MAP` 规则与回放时的隔离开关都不进摘要，两边才可比；`command_line` 从不进指纹）与 pinned 自己的开关表（单独存）、网络来源（M30：`network_source` 块，`live` 只有 `{"source_id": "live"}`，回放见下面"回放指纹"）、脱敏策略（`BROWSER_REDACTION_POLICY`，以及每个绑定归档器自报的 `redaction_facts()`：剥离的请求头）、隐私标记（`contains_session_state`、`fresh_profile`、`level`：有归档器保留会话态时是 `session_state`，否则 `redacted`）。`navigator.userAgentData` 只在 secure context 里存在（实测：tab 停在纯 http 的页面上时是 `null`），所以 UA metadata 记最近一次测到的，指纹不随页面来回翻。
 
 #### 隐私（§5.6 的 browser 部分）
 
@@ -2690,7 +2698,7 @@ capability 自己的 run 记录（`archiver_id="browser"`，`scope="run"`，`arc
 - `storage.json` 原样保存 cookie 与 local / session storage 的值（用户 2026-10-13 裁决，§5.6）；`browser.storage` 声明 `contains_session_state`，`allow_session_state` 只表示"接受非新建的 profile"。
 - 两个新规则名（`request_header` / `input_value`）加进共享台账的 `RedactionRule`；browser 的规则版本是 `BROWSER_REDACTION_POLICY`（`<PRIVACY_POLICY>+browser-2`，写进每个 browser 台账的 `policy`），规则源码由测试按摘要钉住；与 `PRIVACY_POLICY` 一样，改规则就升版本。`browser-2`（2026-10-13）删掉了 cookie 值的哈希和它的规则名 `value_hash`。
 - **键入标记**：`browser.type` / `browser.type_coordinate` 在敲字之前读焦点所在的元素（穿过开放的 shadow root 与同进程的 iframe），按同一条规则判定，动作结果的 `typed_into_sensitive_field` 记下判定：`true` / `false`；焦点在看不进去的 frame 里（进程外的 iframe、跨源）或读焦点失败时是 `null`（不知道，不是"不敏感"）；封闭的 shadow root 里看到的是宿主，判为 `false`。它进 `steps/NNN.json`；agent 只渲染动作结果的成败与错误，提示词逐字节不变（测试钉住）；导出怎么用它随学生侧一起推迟。键入的文字本身照旧原样留在动作参数与 LLM 记录里（§5.6）。
-- **会话态（`logged_in` 的定义）**：没有任何地方声明 `logged_in`，所以定义为"浏览器不是从新建的 profile 启动的"，即 provider 的 `persistent_profile()`（`NETWORK_CAPTURE` 的承诺之一，§4.9.x）点名了一个旋钮或环境变量。这时只要绑定了归档器，每个归档器都必须写 `allow_session_state: true`，否则报错，点名 provider 的旋钮与归档器（pinned 本来就拒绝非新建的 profile）。v1 的数据来源是无需登录的公开站点。
+- **会话态（`logged_in` 的定义）**：没有任何地方声明 `logged_in`，所以定义为"浏览器不是从新建的 profile 启动的"，即 provider 的 `persistent_profile()`（`NETWORK_CAPTURE` 的承诺之一，§4.9.x）点名了一个旋钮（只看配置，从不看环境变量）。这时只要绑定了归档器，每个归档器都必须写 `allow_session_state: true`，否则报错，点名 provider 的旋钮与归档器（pinned 本来就拒绝非新建的 profile）。v1 的数据来源是无需登录的公开站点。
 - 残余，写明：WebSocket 帧的内容原样记录（没有字段规则可用）；字段名规则只认凭证形状的名字；URL 原样记录（回放按 URL 匹配），query 里的凭证不脱敏；`browser.extract_content` 给了元素编号时返回 `DOM.getOuterHTML` 的原文，页面写进标记的敏感 `value` 会随动作结果进提示词（动作路径，未改）。
 - 验证（`test_browser_archive_live.py`）：经 `Network.setExtraHTTPHeaders` 植入 `Authorization` 与 `X-Api-Key`（后者在 `strip_request_headers` 里）、经 `Network.setCookie` 植入 cookie、一个 urlencoded POST 的密码、脚本设置的密码输入值，fixture 收到了每一个；植入的 cookie 值只出现在 `storage.json`（原值），其余植入值在 trace 目录里（gzip 解开）一次也不出现，三种台账规则都出现；正向对照：WARC 里的标记请求能找到。DOM 观测路径另有一条（`test_privacy_guard_on_the_dom_path`，BrowserUse 清洗，绑定 `browser.dom_raw`，观测像运行期那样提交进 trace）：写进标记的、脚本设置的、`display:none` 的密码，在提示词与 trace 目录里一次也不出现；经 `browser.type` 敲进去的只出现在 `steps/000.json` 的动作参数里，它的结果带 `typed_into_sensitive_field: true`，敲进普通文本框的是 `false`；普通文本框的值照常出现在观测里（正向对照）。`Proxy-Authorization` 无法这样植入：Chrome 155 让每个带它的请求以 `net::ERR_INVALID_ARGUMENT` 失败；它的剥离由 fake CDP 测试覆盖（ExtraInfo 与 Fetch 两个来源）。
 
@@ -2709,15 +2717,15 @@ M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚
 - 点击不等它发起的导航：动作在 `Input.dispatchMouseEvent` 返回后就结束，观测约 5 ms 后开始，`Page.captureScreenshot` 发在 `Page.frameRequestedNavigation` / `Page.frameStartedNavigating` 与提交（`Page.frameNavigated`）之间；
 - pinned 的 `--disable-back-forward-cache` 下，表单提交的跨文档导航替换文档时，Chrome 对这一窗口里的 `Page.captureScreenshot` 要么报 `Not attached to an active page`（裸 CDP 探针），要么一直不回应（af 的 run：没有回应，直到事件超时）。
 
-对照：`off` 档位 3/3 通过；只加 `--disable-back-forward-cache`、不开 recorder 也不 pinned，GET 与 POST 都失败；pinned 里只去掉这一个开关 4/4 通过；去掉其余开关（逐个或成组）或 recorder 除 `Page.enable` 之外的全部命令，仍然失败（去掉 `--js-flags` 的 4 次里有 1 次碰巧通过，因为这是一场赛跑）；链接点击在每种设置下都通过；在观测开始前等 0.5 s，GET 与 POST 都通过。recorder、shim、归档器都不相关。
+对照：`none` 档位 3/3 通过；只加 `--disable-back-forward-cache`、不开 recorder 也不 pinned，GET 与 POST 都失败；pinned 里只去掉这一个开关 4/4 通过；去掉其余开关（逐个或成组）或 recorder 除 `Page.enable` 之外的全部命令，仍然失败（去掉 `--js-flags` 的 4 次里有 1 次碰巧通过，因为这是一场赛跑）；链接点击在每种设置下都通过；在观测开始前等 0.5 s，GET 与 POST 都通过。recorder、shim、归档器都不相关。
 
 修法在观测这一层（`BrowserCapability` 的观测 cycle 与 `ScreenshotWatchdog`），不在 pinned：那个开关是回放档位的确定性契约（与指纹一起，§4.14 `replayability`），赛跑本身与它无关，它只是让赛跑必输：
 
 - **跟踪**（`core/capabilities/browser/navigation.py`）：`MainFrameNavigation` 是每个 tab 一份的纯状态，不碰 CDP——主 frame 的请求（`requested`）或跨文档的开始（`started`）置起在途，提交（`committed`）或停止加载（`stopped`）清掉；子 frame 与同文档类型（`sameDocument` / `historySameDocument`）不算，不知道主 frame id 时什么都不算。`NavigationFeed` 在控制连接上按该 tab 的 session 把 `Page.frameRequestedNavigation`（只认 `disposition: currentTab`：开新 tab、新窗口或下载不替换这一页）、`Page.frameStartedNavigating`、`Page.frameNavigated`、`Page.frameStoppedLoading` 喂给它，回调在接收循环里按线上的顺序执行。`_attach_tab` 拿到主 frame id 之后建它（`Page.enable` 已经发过），`close_tab`、attach 的回滚与 `teardown` 拆掉。
-- **等待**：`_capture_once` 每次尝试之前 `wait_settled(_NAVIGATION_SETTLE_TIMEOUT_S)`（10 s，模块常量，与 `_OBSERVE_MAX_ATTEMPTS` 同一写法）；到上限仍在途就记一条警告、照常采集（下一条兜底）；上限按尝试算。没有在途导航时立即返回、不让出事件循环：没有导航的步与链接点击（fixture 上实测：链接的提交早于下一次观测）的时序不变；任何档位上观测时仍在途的跨文档导航都会被等：`off` 档位的表单提交同样等到提交（实测约 15 ms），真实站点上应答慢的链接也一样，看到的是新文档而不是旧的。
+- **等待**：`_capture_once` 每次尝试之前 `wait_settled(_NAVIGATION_SETTLE_TIMEOUT_S)`（10 s，模块常量，与 `_OBSERVE_MAX_ATTEMPTS` 同一写法）；到上限仍在途就记一条警告、照常采集（下一条兜底）；上限按尝试算。没有在途导航时立即返回、不让出事件循环：没有导航的步与链接点击（fixture 上实测：链接的提交早于下一次观测）的时序不变；任何档位上观测时仍在途的跨文档导航都会被等：`none` 档位的表单提交同样等到提交（实测约 15 ms），真实站点上应答慢的链接也一样，看到的是新文档而不是旧的。
 - 实测（裸 CDP，Chrome 155，带 pinned 的这个开关）各种交互在该 tab 的 session 上发什么：表单提交（GET / POST）、链接、`location.href` 是请求 → 跨文档的开始 → `frameNavigated` → `frameStoppedLoading`，点击最后一个回复比请求早约 1 ms 到；文本框里回车时请求早于按键的最后一个回复，动作返回时导航已经在途；204 与下载是请求 → 开始 → `frameStoppedLoading`，没有提交；锚点链接（含 `href="#"`）、`pushState` 没有请求，只有 `navigatedWithinDocument`；`mailto:` 是请求 → 开始 → `frameStoppedLoading`；连不上的主机提交的是出错页（`chrome-error://chromewebdata/`），之后 Chrome 自己重载一次（开始 → 停止加载）；`javascript:` 链接、被 `preventDefault()` 拦下的提交、`target=_blank`（链接或表单）、`<a download>` 在这个 session 上没有请求。
 - **命令上限**：观测截图的 `Page.captureScreenshot` 有自己的上限（`screenshot_watchdog._SCREENSHOT_COMMAND_TIMEOUT_S`，10 s，远小于事件的 30 s；`browser.screenshot` 动作不受限）：Chrome 不回应的那一次算这次尝试缺 fragment，由原有的 `_OBSERVE_MAX_ATTEMPTS` 重发吸收，不再吃掉整个事件的超时，晚到的回复由客户端丢弃。它兜住跟踪覆盖不到的：检查之后才发起的导航（页面的定时器）。实测：把等待拿掉，表单提交之后那一步 10.1 s、第二次尝试成功（修之前 30 s 后以 `observe` 失败）。
-- **回归**：`test_browser_form_submit_live.py`（真实 Chrome，fixture 的 `form_submit` 页，`replay_driver.record_config` 的形状：pinned + 三个归档器、BrowserUse `dom_vision`、按元素 id 点击的脚本化模型）：GET 与 POST 表单的点击提交、文本框里回车提交（`browser.send_keys`），提交之后那一步 5 s 之内完成（实测约 0.1 s）、URL 是结果页、loaderId 换了、DOM 里是回显的字段、没有 `observe` 错误；`off` 档位、不开归档的同样流程照旧通过。不用 Chrome 的部分在 `test_browser_navigation_settle.py`。
+- **回归**：`test_browser_form_submit_live.py`（真实 Chrome，fixture 的 `form_submit` 页，`replay_driver.record_config` 的形状：pinned + 三个归档器、BrowserUse `dom_vision`、按元素 id 点击的脚本化模型）：GET 与 POST 表单的点击提交、文本框里回车提交（`browser.send_keys`），提交之后那一步 5 s 之内完成（实测约 0.1 s）、URL 是结果页、loaderId 换了、DOM 里是回显的字段、没有 `observe` 错误；`none` 档位、不开归档的同样流程照旧通过。不用 Chrome 的部分在 `test_browser_navigation_settle.py`。
 
 #### 回放：网络来源与 miss 策略（M30）
 
@@ -2836,7 +2844,7 @@ class ArchiveReader(Protocol):
 - 启动开关摘要不同：本 run 的摘要由 provider 的 `planned_launch_flags(档位开关 + 隔离开关)` 在启动之前算出，两边都去掉网络路由开关（§4.9.x），所以隔离开关不进比较；隔离由上面的协作检查断言（`required` 而 provider 支持，或明写 `none_acknowledged`）。两边有一边没记摘要时跳过并记一条说明。
 - `base_time: from_archive` 的 T0 取自源指纹的 `replayability.t0_ms`，在 `plan()` 之前解析。
 
-浏览器起来之后（recorder 连上、准备第一个 target 之前），**只警告、不报错**的三项，记进回放指纹的 `warnings` 并打 WARNING 日志：Chrome 版本（`Browser.getVersion` 的 product / revision）不同；档位没有固定 `user_agent` 时浏览器自己的 UA 不同（它带着版本号）；源指纹的脱敏策略（`redaction.policy`）与当前 `BROWSER_REDACTION_POLICY` 不同（规则变了，带凭证字段的 POST 可能对不上键）。`off` 档位录下的时区、语言、DPR 是测出来的宿主机事实，不比较（写明）。
+浏览器起来之后（recorder 连上、准备第一个 target 之前），**只警告、不报错**的三项，记进回放指纹的 `warnings` 并打 WARNING 日志：Chrome 版本（`Browser.getVersion` 的 product / revision）不同；档位没有固定 `user_agent` 时浏览器自己的 UA 不同（它带着版本号）；源指纹的脱敏策略（`redaction.policy`）与当前 `BROWSER_REDACTION_POLICY` 不同（规则变了，带凭证字段的 POST 可能对不上键）。`none` 档位录下的时区、语言、DPR 是测出来的宿主机事实，不比较（写明）。
 
 **回放指纹**：回放 run 自己的 `env/run.browser.json` 多一个 `network_source` 块：`source_id: archive`、`source_run_id`、`source_fingerprint_sha256`（源指纹那份已提交记录的 sha256）、`site_rules_sha256`、`matcher`（levels、阈值、规则目录）、`miss_policy_id`、`shift_dates`、`isolation` 与 `warnings`。块的一半是配置实例自报的（`NetworkSourceProtocol.fingerprint()`：`live` 是 `{"source_id": "live"}`，`archive` 是它的旋钮），一半是这次 run 的事实（`ReplayServer.fingerprint()` 加上源 run 与两个摘要、`warnings`）；capability 有服务时交服务的块，否则交来源的块，`BrowserArchiveRun.collect(network_fingerprint=...)` 写进指纹。`warnings` 里还有一致性检查没能比较的说明（`consistency_notes`：一边没有启动开关摘要）。
 
@@ -2893,7 +2901,7 @@ class ArchiveReader(Protocol):
   - `EXCLUDE localhost` 是开着的口子：绕过 Fetch 的流量（preconnect、嵌套 worker 脚本、WebSocket）若指向精确的 `localhost`，仍能连到本机服务；回放的 fixture 页面从不用 localhost，M29 fixture 的 SW 页面在 `http://localhost:P` 上，所以不在零外联的回放流程里。
   - WebSocket 不回放（v1 记为 miss）；嵌套 dedicated worker 的脚本送不出（看得见的记 `unservable`）；超过 `max_fulfill_body_bytes` 的 body 不送（loopback blob 服务器推迟）。
   - JS 时钟固定在录制时刻（`base_time: from_archive`）时，页面 JS 设的绝对过期 cookie 可能被 Chrome 丢掉；没有 `Last-Modified` 的文档，`document.lastModified` 读真实时钟。
-  - 回放 `off` 档位的录制：时区、语言、DPR 不比较；SW 录制时放行、回放时被拦住；只有 pinned 关掉了 `HttpsUpgrades`，所以升级试探可能显示为主 frame 文档 miss。
+  - 回放 `none` 档位的录制：时区、语言、DPR 不比较；SW 录制时放行、回放时被拦住；只有 pinned 关掉了 `HttpsUpgrades`，所以升级试探可能显示为主 frame 文档 miss。
   - L2 模糊命中可能送错资源（`fuzzy` 与得分照记）；`exhausted` 重复最后一条是有意的，日志里看得见。
   - 步归因是"收集取走它的那一步"：页面加载完之后才发出的异步请求（`fetch`、XHR、迟到的 beacon）可能落在下一步的 `replay.jsonl` 里，与录制时 `index.jsonl` 的归因是同一个模型（fixture 实测：金丝雀页面在第 0 步导航，它的 `fetch` 在第 1 步的日志里）。
   - 回放日志导出成 HAR 推迟（还没有按 HAR 打分的评测器）。
@@ -2921,13 +2929,13 @@ exporter:
       agent_outcome: any             # done | max_steps | error | timeout | vetoed（读 result.json）
       require_eval: null             # 可选：{evaluator_id, label: 1, slug: null}，只留判分通过的 run
       exclude_restoration_diverged: true
-      max_document_misses: 0         # null：不按回放日志过滤
+      max_document_misses: 0         # unlimited：不按回放日志过滤
       exclude_sites: []              # 主机名，后缀匹配（M33 的报告喂它）
     split: {by: site, validation_fraction: 0.1, salt: af-split-1}   # by: site | task
     decontamination: {against: [], match: either}                  # 见"切分与去污染"；[]（默认）：不去污染
     translator:
       translator_id: index_to_coordinate
-      occlusion: check               # "off" 要加引号（YAML 1.1 的布尔）
+      occlusion: check               # none：不查遮挡
       occlusion_unknown: raise       # untranslatable：没证据的步按 untranslatable 处理
       untranslatable: drop_step      # truncate | keep_as_text | fail
     student_run_config: configs/flywheel/ui_tars_student.yaml
@@ -2946,7 +2954,7 @@ exporter:
 
 - **`ExporterBase`**（不是 dataclass，手写关键字 `__init__`，与 `trace_branches` 同一写法）：上面每个任务字段都是 `__init__` 的 `Annotated` 参数：`sources_root: str | None`、`sources: list[str] | None`、`filters: ExportFilters | None`、`split: SplitSettings | None`、`decontamination: Decontamination | None`、`student_run_config: str`（必填）、`thought_source: Literal["teacher", "none"]`、`thought_index_refs: Literal["drop", "keep"]`、`length: LengthBudget | None`、`output_dir: str`（必填），以及 v1 所有导出器共有的 `sample: Literal["per_step"]`、`image_store: Literal["files"]`。列表默认写 `None`、表示文档写明的默认值（conscribe 1.3：非空列表默认是共享可变默认、`tuple[str, ...]` 生成不了）。嵌套旋钮是 pydantic dataclass，各在 `spectragent/export/settings.py`（`ExportFilters`、`SplitSettings`、`Decontamination`、`BenchmarkRef`、`LengthBudget`）。带受体的类的存根把同模块兄弟类型写成 `Any`，`BaseModel` 会被代码生成当成它自己生成的子模型（af-add-a-receptor §7）；`require_eval` 复用 `core/data_loader/task/require_eval.py::RequireEval`（M31 的同一个类型、同一个语义）。`translator` 是单实例受体：`__wiring__ = {"translator": "action_translator"}`、类级注解、Python 默认 `default_translator()`（`identity`）。自己没有旋钮的导出器不写 `__init__`（conscribe 读到的就是基类的签名）；有自己旋钮的导出器要写出完整签名。`af-regenerate-and-verify` 的检查 1 证明任务字段与 `translator: Union[...]` 都在生成的每键配置上（`tests/test_export/test_registrar.py`）。
 - **`Exporter` Protocol**（`_registrar.py`）：`exporter_id`、只读的 `translator`、上面的任务字段、`root()`（sources 根的绝对路径）与 `format(rendered: RenderedSample, images: ImageStore) -> ExportRecord`。`ImageStore.put(data, media_type) -> <数据集里的相对路径>`、`ExportRecord{sample_id, record, images}` 也在 `_registrar.py`，`RenderedSample` 在 `render.py`（它不 import `_registrar`）。Protocol 里的 `translator` 写成只读 property：生成的存根把受体类型写成 `ActionTranslatorBase`，可变属性在 Protocol 里是不变型的。
-- **翻译器旋钮**：`ActionTranslatorBase.untranslatable: Literal["drop_step", "truncate", "keep_as_text", "fail"] = "drop_step"`；`index_to_coordinate` 另有 `occlusion: Literal["off", "check"] = "check"`、`occlusion_unknown: Literal["raise", "untranslatable"] = "raise"`。翻译器没有受体，旋钮是手写 `__init__` 的关键字参数。
+- **翻译器旋钮**：`ActionTranslatorBase.untranslatable: Literal["drop_step", "truncate", "keep_as_text", "fail"] = "drop_step"`；`index_to_coordinate` 另有 `occlusion: Literal["none", "check"] = "check"`、`occlusion_unknown: Literal["raise", "untranslatable"] = "raise"`。翻译器没有受体，旋钮是手写 `__init__` 的关键字参数。
 - **CLI**：`spectragent-export --config <yaml>`（`spectragent/export/cli.py`，`pyproject` 的 `[project.scripts]`）：用 `ConfigComposer(registrars=_collect_registrars())` 组装，`ExportRunner.from_run(run, ...)` 取恰好一个 `exporter` 实例（否则 `ExportConfigError`）与文档里的加载器（`BenchmarkLoaders.from_run`），跑它，打印每个切分的样本数与按原因的丢弃数；失败非零退出。`/datasets/` 在 `.gitignore` 里。
 
 #### 流水线（`ExportRunner`，`spectragent/export/runner.py`）
@@ -3001,7 +3009,7 @@ class ActionTranslator(Protocol):
 - **`identity`**：原样交出 `teacher_actions`。UI-TARS 录下的 run 本来就是坐标动作。
 - **`index_to_coordinate`**：带元素 index 的动作（参数上带 `RequiresFragment("browser.dom")` 且这一次给了值的那些，`core/actions/params.py::param_fragments`）换成坐标动作：`browser.click` → `browser.click_coordinate`、`browser.type` → `browser.type_coordinate`（`text`、`clear` 照搬），其余带了 index 的（`select_dropdown`、带 `index` 的 `scroll` / `extract_content`）是 `no_counterpart`；不带 index 的动作原样。index 在录下的 `selector_map` 里找不到（源 run 的这个动作当时就找不到目标）也是 `no_counterpart`。换算的 browser 知识在 `core/capabilities/browser/index_points.py`（纯函数，读交进来的 fragment 与文档，不 import `core.trace`），翻译器只组织调用：
   - **几何**：录下的条目（M27 起自包含）的 `bounds` 是顶层文档的页面坐标（CSS px，已计入 iframe 偏移，与 DPR 无关）；减去 `DOMState.scroll_info` 的滚动得到视口坐标；与视口求交；条目在重链接的 `element_tree.dom_tree` 里找得到时，再与每一层 frame 宿主的 `bounds` 求交（被深度截断而找不到时只裁视口，来源记录里写 `frame_clip: "unknown"`）；交集为空是 `target_offscreen`（live 的 index 点击会先滚动到可见，录下的截图上表达不了）；否则取可见部分的中心，四舍五入成整数 CSS px（坐标动作的参数是 `int`）。变换过的 iframe 只按平移处理（已知限制）。
-  - **遮挡**（`occlusion: check`，只对换算出的点）：证据按优先级：(a) 这一步的 `selector_map` 条目带 `hit_test`（`skyvern_hit_test` 录的）：中心命中用中心，否则用 `visible_point`，两者都没有就是 `occluded`；(b) 这一步的 `browser.dom_raw` 文档（`RunTrace.archive_files(step, "browser.dom_raw")`，`archive/dom_raw.py::read_dom_document` 解开；按文档戳挑与本步同一个文档的那份）里的 DOMSnapshot：在目标所在的主文档里，包含该点（快照 `bounds` 是设备像素，除以文档里记的 DPR）且 paint order 最大的布局节点必须是目标或它的后代（`pointer-events: none` 与 `visibility: hidden` 的节点不算，点击穿过它们；并列的 paint order 算目标的），v1 只判主文档里的目标，frame 里的目标这一条证据不适用；(c) `browser_use` 清洗过、trace 里带 `paint_order` 的 `dom_tree`：同一个查询，只在目标所在文档的、留下来的节点里做（BrowserUse cleaner 已经把整个被盖住的元素去掉了，所以这一条只抓得到部分遮挡）。(b)(c) 判定被盖住时，在可见部分里按 5×5 内点网格（内缩 2 px、行优先）找第一个不被盖住的点；找不到是 `occluded`。三条证据都没有：`occlusion_unknown: raise`（默认）抛 `OcclusionEvidenceMissingError`，点名样本与 index，并提示"绑定 `browser.dom_raw` 或用 cleaner `skyvern_hit_test` 录制"；`untranslatable` 时按不可译原因 `occlusion_unknown` 处理。`occlusion: "off"` 不查。
+  - **遮挡**（`occlusion: check`，只对换算出的点）：证据按优先级：(a) 这一步的 `selector_map` 条目带 `hit_test`（`skyvern_hit_test` 录的）：中心命中用中心，否则用 `visible_point`，两者都没有就是 `occluded`；(b) 这一步的 `browser.dom_raw` 文档（`RunTrace.archive_files(step, "browser.dom_raw")`，`archive/dom_raw.py::read_dom_document` 解开；按文档戳挑与本步同一个文档的那份）里的 DOMSnapshot：在目标所在的主文档里，包含该点（快照 `bounds` 是设备像素，除以文档里记的 DPR）且 paint order 最大的布局节点必须是目标或它的后代（`pointer-events: none` 与 `visibility: hidden` 的节点不算，点击穿过它们；并列的 paint order 算目标的），v1 只判主文档里的目标，frame 里的目标这一条证据不适用；(c) `browser_use` 清洗过、trace 里带 `paint_order` 的 `dom_tree`：同一个查询，只在目标所在文档的、留下来的节点里做（BrowserUse cleaner 已经把整个被盖住的元素去掉了，所以这一条只抓得到部分遮挡）。(b)(c) 判定被盖住时，在可见部分里按 5×5 内点网格（内缩 2 px、行优先）找第一个不被盖住的点；找不到是 `occluded`。三条证据都没有：`occlusion_unknown: raise`（默认）抛 `OcclusionEvidenceMissingError`，点名样本与 index，并提示"绑定 `browser.dom_raw` 或用 cleaner `skyvern_hit_test` 录制"；`untranslatable` 时按不可译原因 `occlusion_unknown` 处理。`occlusion: none` 不查（原名 `off`，用户 2026-10-13 的裁决改名）。
   - **来源记录**：元素引用（`element_index`、`backend_node_id`、`target_id`）、页面 bbox、视口里的可见矩形、点的来源（`center` / `hit_test` / `grid`）、遮挡判定（`clear` / `occluded` / `unknown`）与所用证据（`hit_test` / `dom_raw` / `paint_order` / `none`）。
 
 #### 学生渲染（`spectragent/export/render.py`）
@@ -3797,7 +3805,7 @@ class TraceWriter(HookBase):                   # 不是 @dataclass（§4.6 "挂�
 
 **归档的写侧规则**（`archive` 非空时才生效；为空时 TraceWriter 不缓存环境、不碰任何归档方法，行为与 M27 完全相同）：
 
-- **`archive` 是 YAML 受体（M29）。** `TraceWriter.__wiring__ = {"archive": "archiver"}`；同一个构造参数是 `Annotated[list[ArchiverBase] | None, Field(...)]`；类级的 `archive: list[ArchiverBase]` 注解放在 mixin（`_TraceWriterReceptors`）上，因为 Composer 读类级注解决定按 list 注入（§4.2.1）；`archiver` 在 `_collect_registrars()` 里。生成的配置于是是 browser 归档器配置的判别联合列表：拼错的 `archiver_id` 校验失败，每个归档器的旋钮都从 YAML 可达。三种情形由 Composer 测试钉住：写了列表就用它；`archive: []` 是不归档；省略时 deferred resolution 采纳顶层 `archiver:` 段的全部实例（没有顶层段就是不归档）。capability 块里写 `archiver:`（那是 provides 声明，没有 slot）在组装时以 negotiation-only 的报错拒绝。历史：M28 时注册表还是空的，空注册表不能成为 Composer 层，所以 `archive` 先是普通构造参数、被 `__config_annotated_only__` 挡在生成的配置之外；给它一个没有 wiring 的 `Annotated` 类型会生成 `archive: Any`、把原始 dict 交给 hook，M28 因此没有那样做。
+- **`archive` 是 YAML 受体（M29）。** `TraceWriter.__wiring__ = {"archive": "archiver"}`；同一个构造参数是 `Annotated[list[ArchiverBase] | None, Field(...)]`；类级的 `archive: list[ArchiverBase]` 注解放在 mixin（`_TraceWriterReceptors`）上，因为 Composer 读类级注解决定按 list 注入（§4.2.1）；`archiver` 在 `_collect_registrars()` 里。生成的配置于是是 browser 归档器配置的判别联合列表：拼错的 `archiver_id` 校验失败，每个归档器的旋钮都从 YAML 可达。归档只有这一个开关（用户 2026-10-13 的裁决）：写了列表就用它；省略、`null`、`[]` 都是不归档；`TraceWriter.__inline_only__ = {"archive"}`，所以它从不从池子里取，YAML 顶层的 `archiver:` 段在组装时被拒绝（`InlineOnlyLayerError`，报错提示把归档器写进 `trace_writer.archive`，§4.2.1）。Composer 测试钉住这几种情形。capability 块里写 `archiver:`（那是 provides 声明，没有 slot）在组装时以 negotiation-only 的报错拒绝。历史：M28 时注册表还是空的，空注册表不能成为 Composer 层，所以 `archive` 先是普通构造参数、被 `__config_annotated_only__` 挡在生成的配置之外；给它一个没有 wiring 的 `Annotated` 类型会生成 `archive: Any`、把原始 dict 交给 hook，M28 因此没有那样做。
 - **`on_run_start`**：在 `init_run` 之前核对（所以拒绝时不留下 trace 目录）：`archive_negotiation is None`、`set(archive_negotiation.active_archivers) != {a.archiver_id for a in self.archive}`、`env is None`，任何一条都抛 `RuntimeError`，说明归档器必须经 `AgentRuntime.prepare()` 协商并绑定。核对通过才缓存原始 `env`。
 - **`after_record_step`** 的顺序：`_stamp_timings` → 如果之前已经有过归档失败（Loop 吞掉了第一次的错误又提交了一步），这一步就记不下来：`RuntimeError` 点名收集失败的那一步，`__cause__` 是记下的那个失败，不再收集（从那以后归档已经不完整）→ `batch = await env.collect_archive()`（抛 `Exception`：记为归档失败）→ 校验批次（违反时 `ArchiveContractError`，同样记为归档失败、整批丢弃，在写任何字节之前）→ 定 run 记录版本 → `encode_archive_file(..., step=step)` → `commit_step(..., extra_files=...)`。`commit_step` 自己抛错（I/O）时，这批文件留在 TraceWriter 里等收尾。这几处的错误都是这一步的洞（见下面"出洞"那一条）：包成 `RecordingFailedError` 上抛（原错误是 `__cause__`），这一步结局已定（done）时不抛；成功之后才更新 run 记录的版本表。
 - **批次校验**（`ArchiveContractError`，步提交与收尾的批次一样查）：步级文件的 `archiver_id` 必须是本 run 绑定的键之一，内容寻址的文件（响应体）也一样：用户故意没绑定的归档器，它的证据不能借 `env/blobs/` 落盘；run 记录的 `capability_id` 必须是某个绑定归档器所属的 capability（`archive_bindings` 的值），它的 `archiver_id` 是绑定键或那个裸 capability id；每个 capability 至多一份 run 记录；`archiver_id` 与 `name` 各是文件系统接受的单段（§4.9 的段规则：至多 255 字节 UTF-8），`media_type` 与 `ids` 的键和值都能编码成 UTF-8；编码后的路径在批次内按 `encoding.fold_path` 的键互不相同，不区分大小写、也不区分 Unicode 规范化形式（内容寻址的同一路径可以重复，只写一次）；每条路径都过 `encoding.check_relative_path`。`ArchiveFile` 构造时已经拒绝了其中大半，这里再查一遍：被拒绝的批次从不成为欠 trace 的东西，而因为这类原因失败的提交，每次重试都会同样失败。
@@ -3967,7 +3975,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | 训练导出的产物（`output_dir`） | `secrets_recorded` 的源不导出；写出的每个文本字节过 `SECRET_PATTERNS`，命中则整个导出失败、不留输出（fail closed）；源 `task_setup` 的台账抄进样本的 `redactions`；残余：形状之外的秘密（键入的密码），见 §4.15 "隐私" | 导出（M32） |
 | 请求头 `Cookie` / `Authorization` / `Proxy-Authorization`（以及 `browser.network` 的 `strip_request_headers` 追加的，大小写不敏感） | 采集时在每一个来源剥离（含 ExtraInfo 与 `associatedCookies`），从不落盘；台账只记名字 | browser（M29，§4.14） |
 | 响应头 `Set-Cookie` | 保留（回放的 cookie jar 需要）；`browser.network` 声明 `contains_session_state`，capability 的 run 记录（指纹）同样标出 | browser（M29） |
-| 会话态（`logged_in`） | 定义为"浏览器不是从新建的 profile 启动的"（provider 的 `persistent_profile()` 点名旋钮或环境变量；这是 `NETWORK_CAPTURE` 的承诺之一，答不出的 provider 被拒）；此时每个绑定的归档器都要写 `allow_session_state: true`，否则报错点名 provider 旋钮与归档器；`pinned` 一律拒绝非新建的 profile | browser（M29） |
+| 会话态（`logged_in`） | 定义为"浏览器不是从新建的 profile 启动的"（provider 的 `persistent_profile()` 点名旋钮，只看配置；这是 `NETWORK_CAPTURE` 的承诺之一，答不出的 provider 被拒）；此时每个绑定的归档器都要写 `allow_session_state: true`，否则报错点名 provider 旋钮与归档器；`pinned` 一律拒绝非新建的 profile | browser（M29） |
 | cookie 与 local / session storage 的值（`browser.storage`） | 原样保存（用户 2026-10-13 裁决）；会话 token 就在里面，所以 `browser.storage` 声明 `contains_session_state`；`allow_session_state` 只表示"接受非新建的 profile" | browser（M29；2026-10-13 改存原值） |
 | DOM 原始采集里的输入值 | 敏感控件（`dom/sensitivity.py`：type、autocomplete、OTP 提示，与 Skyvern 页内规则对齐）的 value 属性、UA shadow 里的文本、`DOMSnapshot` 的 inputValue / textValue、AX value 在落盘之前替换（`input_value`） | browser（M29） |
 | DOM 观测里的输入值（提示词与 `browser.dom` fragment） | 同一条规则：BrowserUse 清洗器建树时把敏感控件的 value 属性、它下面的文本、内部节点的无障碍名字换成 `<redacted>`（§4.12）；Skyvern 页内脚本本来就不放进树 | browser（2026-10-13） |
@@ -4006,7 +4014,7 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `ActionRegistrar` | `action_id` (flat, dotted key `source.id`) | 每个 Action 独立注册；键含 source 前缀避免跨 capability 撞名（`browser.click` vs `desktop.click`） | ✅ |
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
 | `ArchiverRegistrar` | `archiver_id` (flat, dotted key `source.id`) | 环境证据归档器；键含提供它的 capability 前缀（`browser.network`）。capability 的 `__wiring__["archiver"]` 声明 provides，trace hook 实例的 `archive` 列表声明 requires（全限定）；`negotiate_archive` 在 `prepare()` 校验，并在 `prepare()` 末尾绑定（§4.5） | ✅ M28 框架机制；M29：`browser.network` / `browser.storage` / `browser.dom_raw`，回放的 `browser.replay_log`（§4.14），进 `_collect_registrars()`，经 `trace_writer.archive` 由 YAML 选择 |
-| `ReplayabilityRegistrar` | `replayability_id` (flat) | Browser 的回放档位（`off` / `pinned`），`core/capabilities/browser/replay/`；`BrowserCapability.__wiring__["replayability"]` 受体，策略即开关，YAML 每个 capability 块必填（§4.14） | ✅（browser 内部，M29） |
+| `ReplayabilityRegistrar` | `replayability_id` (flat) | Browser 的回放档位（`none` / `pinned`），`core/capabilities/browser/replay/`；`BrowserCapability.__wiring__["replayability"]` 受体，策略即开关，YAML 每个 capability 块必填（§4.14） | ✅（browser 内部，M29） |
 | `NetworkSourceRegistrar` | `source_id` (flat) | Browser 的网络来源（`live` 默认 / `archive` 从已录制 run 的归档离线回放），`core/capabilities/browser/replay/network_source.py`；`BrowserCapability.__wiring__["network_source"]` 受体，策略即开关——隔离由来源推出，provider 上没有并列的布尔；YAML 每个 capability 块必填（§4.14 "回放"） | ✅ M30（browser 内部） |
 | `MissPolicyRegistrar` | `miss_policy_id` (flat) | 回放 miss 的应答策略（v1 只有 `strict`），`core/capabilities/browser/replay/miss_policy.py`；`ArchiveNetworkSource.__wiring__["miss_policy"]` 受体（嵌套在 `network_source` 里），`archive` 块里必填（§4.14 "回放"） | ✅ M30（browser 内部） |
 | `NegotiationResultRegistrar` | `result_type` (flat) | 协商结果类型；内置 `observation` / `action` / `archive` 自动注册，自定义协商协议注册自己的结果类型并作为 `target_class` 传给 `negotiate()` | ✅ |
@@ -4127,14 +4135,14 @@ capability:
 hook:
   - hook_id: trace_writer
     trace_dir: ./traces
-    archive:                               # [] = 不归档；省略 = 采纳顶层 archiver: 段（§4.2.1）
+    archive:                               # 归档的唯一开关；省略、null、[] = 不归档；顶层 archiver: 段报错（§4.2.1）
       - archiver_id: browser.network
         max_inline_body_bytes: 5000000
       - archiver_id: browser.storage
       - archiver_id: browser.dom_raw
 ```
 
-评测配置不写 `archive`、也没有顶层 `archiver:` 段，归档关闭；但每个手写的 capability 块都写 `replayability: {replayability_id: "off"}` 与 `network_source: {source_id: live}`（单实例受体必填，与 `mouse_trajectory`、`typing_rhythm` 一样；`off` 加引号，YAML 1.1 把裸的 `off` 读成 `false`）。
+评测配置不写 `archive`，归档关闭（顶层 `archiver:` 段会被拒绝）；但每个手写的 capability 块都写 `replayability: {replayability_id: none}` 与 `network_source: {source_id: live}`（单实例受体必填，与 `mouse_trajectory`、`typing_rhythm` 一样）。
 
 **回放 run（M30，§4.14 "回放"；发布的完整配置在 `configs/flywheel/replay_*.yaml`）**。它与录制配置只差网络来源、T0 与 fixture 用的路由开关；源 run 目录是每个任务不同的输入，经任务上下文的 `replay_archive` 送到 `prepare()` 的检查与 setup（`spectragent-run --replay-archive DIR`；不给它，`prepare()` 就拒绝这份配置），不写在配置里：
 
@@ -4321,7 +4329,7 @@ environment:
 Browser Capability
 ├── agent-cdp 中间层
 │   ├── 控制连接 CDPClient (WebSocket → Chrome/Chromium；agent 的 tab、观测、动作、viewport)
-│   ├── recorder 连接 CDPClient（只在绑定了归档器或 replayability ≠ off 时；§4.14）
+│   ├── recorder 连接 CDPClient（只在绑定了归档器或 replayability ≠ none 时；§4.14）
 │   │   ├── browser 级 auto-attach + waitForDebuggerOnStart，逐 target 流水线准备，finally 里 resume
 │   │   ├── 暂停类事件（Fetch.requestPaused、等待中的 attach）→ 派生的 task，finally 里 continue / resume
 │   │   ├── 贡献者声明的元数据事件 → 本地分发器（逐贡献者准入，带 session id；字节进侧存储）→ archive EventScope
@@ -4338,7 +4346,7 @@ Browser Capability
 │   │                              ← 共享 JavaScriptExecutionWatchdog 的 handler
 │   ├── DOM Pipeline (策略选择 capture → clean → budget → serialize)
 │   │    └── raw_capture_sink → 本 cycle 缓存 → 提交的 cycle → browser.dom_raw（§4.12）
-│   ├── 回放 replay/（ReplayabilityRegistrar：off / pinned；NetworkSourceRegistrar：live / archive；
+│   ├── 回放 replay/（ReplayabilityRegistrar：none / pinned；NetworkSourceRegistrar：live / archive；
 │   │    MissPolicyRegistrar：strict；canonical / matcher / site_rules / archive_index / responder / server，§4.14）
 │   ├── 归档器 archive/（browser.network / browser.storage / browser.dom_raw / browser.replay_log + 环境指纹，§4.14）
 │   └── Input 拟人化层 (input/, §4.13)

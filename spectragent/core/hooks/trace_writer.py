@@ -164,16 +164,21 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     ``Annotated`` parameters of the hand-written ``__init__``, and the
     receptor's class-level annotation is on :class:`_TraceWriterReceptors`.
 
-    **YAML** (``docs/architecture_design.md`` §4.2.1, §5.4): an inline
-    ``archive:`` list builds the archivers in place; ``archive: []`` records
-    nothing; an omitted ``archive`` adopts every instance of a top-level
-    ``archiver:`` section, so with no such section nothing is recorded either.
+    **YAML** (``docs/architecture_design.md`` §4.2.1, §5.4): the ``archive:``
+    list is the one switch for archiving. Written, it builds the archivers in
+    place; omitted, ``null`` or ``[]``, nothing is recorded. A top-level
+    ``archiver:`` section is refused at compose time, with a message naming
+    ``trace_writer.archive`` (``__inline_only__``).
     """
 
     __registry_key__ = "trace_writer"
     # The run's archive is the trace hook's: what a run records is a per-run
     # choice (user ruling D3), so the receptor is here, never on an agent.
     __wiring__: ClassVar[dict[str, Any]] = {"archive": "archiver"}
+    # Archiving has one switch (the user's ruling of 2026-10-13): the list is
+    # filled from this hook's own block or not at all, never adopted from a
+    # top-level ``archiver:`` section, which ``ConfigComposer`` therefore refuses.
+    __inline_only__: ClassVar[frozenset[str]] = frozenset({"archive"})
     __intercepts__ = [
         # The one recording point for LLM calls — see :meth:`around_ainvoke`.
         Intercept("ainvoke", role="llm", advice="around"),
@@ -220,9 +225,10 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 description=(
                     "Environment evidence this run records (``browser.network``, "
                     "``browser.storage``, ``browser.dom_raw``, ...), each archiver with its "
-                    "own knobs; evidence lands under env/ with each step. [] records "
-                    "nothing; omitted, every instance of a top-level ``archiver:`` section "
-                    "is adopted (no such section: nothing)."
+                    "own knobs; evidence lands under env/ with each step. The one switch "
+                    "for archiving: omitted or null (the default) records nothing, and so "
+                    "does []. Archivers are listed only here; a top-level ``archiver:`` "
+                    "section is refused."
                 ),
             ),
         ] = None,

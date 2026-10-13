@@ -14,7 +14,7 @@ mapped fixture's ``form_submit`` pages, with a loopback scripted model that
 picks elements by id: a GET form and a POST form submitted with their button,
 and a search field submitted with Enter. The step after the submission must
 end promptly, observing the result page (URL, a new document, the echoed
-fields), with no observation error. ``off`` with no archivers runs the GET
+fields), with no observation error. ``none`` with no archivers runs the GET
 flow as the control.
 """
 
@@ -58,8 +58,8 @@ def _run(
 ) -> driver.Outcome:
     with ScriptedLLMServer(script) as llm:
         raw = driver.record_config(site=site, llm=llm, trace_dir=base / "traces")
-        if tier == "off":
-            raw["environment"][0]["capabilities"][0]["replayability"] = {"replayability_id": "off"}
+        if tier == "none":
+            raw["environment"][0]["capabilities"][0]["replayability"] = {"replayability_id": "none"}
             raw["hook"][0]["archive"] = []
         outcome = asyncio.run(
             driver.run_task(
@@ -138,6 +138,6 @@ class TestFormSubmission:
 
     def test_off_tier_unchanged(self, site: FixtureSite, tmp_path: Path) -> None:
         script = [branch_driver.click("add"), driver.done(ANSWER)]
-        outcome = _run(site, tmp_path, script, page="get.html", tier="off")
+        outcome = _run(site, tmp_path, script, page="get.html", tier="none")
         _require_submitted(site, outcome, step=1, method="GET", query="item=kettle")
         assert not (outcome.run_dir / "env").exists(), "the control run archives nothing"

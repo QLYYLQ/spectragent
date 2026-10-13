@@ -54,7 +54,7 @@ class TestCooperation:
             cap.bind_archivers([NetworkArchiver()])
         (problem,) = info.value.problems
         assert problem.startswith(
-            "archiver browser.network require_replayable=true ↔ replayability: off"
+            "archiver browser.network require_replayable=true ↔ replayability: none"
         )
         assert cap.bound_archivers == (), "refused before anything changed"
         cap.replayability = PinnedReplayability()

@@ -23,8 +23,6 @@ Open user decisions, each surfaced and none taken:
 - Dropping `--disable-site-isolation-trials`: `pinned` no longer passes it, because the
   recorder captured out-of-process frames without it and the switch changes their
   observation. It still needs sign-off.
-- Renaming the `off` replayability tier: YAML 1.1 reads a bare `off` as `false`, so every
-  block has to quote it.
 - Failed-teacher branches: a branch whose teacher call failed counts as a branch with no
   document miss, which inflates the rate the strict-miss-policy decision reads. The report
   lists such runs (`model_failures`); excluding them would change the metric's definition.
@@ -39,6 +37,15 @@ DOM observation masks sensitive control values with the shared rule (architectur
 `storage.json` keeps cookie and Web Storage values as they are, under redaction policy
 `af-privacy-1+browser-2` (§4.14, §5.6); typing records
 `ActionResult.typed_into_sensitive_field`, which export does not use yet.
+
+Decided by the user on 2026-10-13 and implemented (the configuration surface): "not
+enabled" is spelled `none`, so the replayability tier `off` is now `none` and the export's
+`occlusion: off` is `occlusion: none`, and a test refuses registry keys and option values
+YAML 1.1 reads as booleans or null; `trace_writer.archive` is the one archiving switch and
+a top-level `archiver:` section is refused; numeric limits say `unlimited`, never `null`;
+`actions: []` means no actions; `reasoning_effort` defaults to an explicit `auto`; the
+`CHROME_USER_DATA_DIR` fallback is gone; `deterministic_rendering` passes when its seed
+equals the tier's (architecture §4.2.1, §4.14).
 
 The `react.py` layering handoff (`HANDOFF_261010_react_loop_layering.md`, local) is still
 open. `_UsageTally`, `_merge_token_usage` and most other private helpers in `react.py`

@@ -28,6 +28,16 @@ the caller's registrar dict.
 ``f"{registry_key}#{ordinal}"``. ``by_layer`` is keyed by that instance
 id, so two instances of the same class coexist with their own configs.
 The conscribe registry key is only ever used to look the *class* up.
+
+**An omitted receptor is "not set", never "empty".** A list or dict
+receptor the config leaves out adopts the matching instances of its
+layer's top-level section; when there are none, the owner's own default
+stands (an empty container is what ``[]`` says). A receptor its owner
+lists in ``__inline_only__`` is never adopted at all: it is filled from
+its own config block or keeps the owner's default, and its layer's
+top-level section is refused, naming where the instances go
+(``docs/architecture_design.md`` §4.2.1; ``trace_writer.archive`` is the
+case: archiving has one switch).
 """
 
 from __future__ import annotations
@@ -58,6 +68,10 @@ class UnresolvedWiringError(ComposeError):
 
 class DuplicateInstanceIdError(ComposeError):
     """Two config entries in one layer claimed the same instance id."""
+
+
+class InlineOnlyLayerError(ComposeError):
+    """A top-level section for a layer whose instances are written only inline."""
 
 
 @dataclass(frozen=True)
@@ -202,6 +216,9 @@ class ConfigComposer:
         for layer, result in self._composed.layer_results.items():
             for key, model in result.per_key_models.items():
                 self._model_to_lk[model] = (layer, key)
+        #: Layer → the receptors its instances are written under, for every
+        #: layer some owner fills only inline (``__inline_only__``).
+        self._inline_only = _inline_only_layers(registrars)
 
     @cached_property
     def top_level_type(self) -> type[BaseModel]:
@@ -216,6 +233,7 @@ class ConfigComposer:
     def compose(self, raw: dict | BaseModel) -> ComposedRun:
         """Validate, instantiate (leaves-first), inject, assemble."""
         cfg = raw if isinstance(raw, BaseModel) else self.top_level_type.model_validate(raw)
+        self._refuse_inline_only_sections(cfg)
         state = _State(by_layer={layer: {} for layer in self._registrars})
 
         for layer in self._composed.dependency_order:
@@ -225,6 +243,26 @@ class ConfigComposer:
 
         self._resolve_deferred(state)
         return ComposedRun(by_layer=state.by_layer, top_level_cfg=cfg)
+
+    def _refuse_inline_only_sections(self, cfg: BaseModel) -> None:
+        """Refuse a top-level section whose instances only a receptor's own block may hold.
+
+        conscribe generates a top-level section for every layer, so the
+        section validates; nothing would ever adopt its instances, so it is
+        refused before anything is built, naming where they go.
+        """
+        for layer, receptors in self._inline_only.items():
+            entries = getattr(cfg, layer, None) or []
+            if not entries:
+                continue
+            keys = [
+                self._lookup_layer_key(entry, f"{layer}[{i}]")[1] for i, entry in enumerate(entries)
+            ]
+            raise InlineOnlyLayerError(
+                f"The top-level {layer!r} section is not accepted: {layer} instances are "
+                f"written only inline, under {' or '.join(receptors)}. Move "
+                f"{'its entry' if len(keys) == 1 else f'its {len(keys)} entries'} {keys} there."
+            )
 
     # -- Per-instance assembly ---------------------------------------
 
@@ -243,6 +281,7 @@ class ConfigComposer:
         init_params = _init_param_names(cls)
         slots = _receptor_slots(cls)
         wiring_by_name = {spec.param_name: spec for spec in parse_wiring(cls)}
+        inline_only = _inline_only_names(cls)
         model_fields = type(cfg).model_fields
 
         instance_id = self._claim_instance_id(cfg, state, layer, key, path)
@@ -286,6 +325,10 @@ class ConfigComposer:
                 )
             value = getattr(cfg, name, None) if name in model_fields else None
             if value is None:
+                if name in inline_only:
+                    # Filled from its own block or not at all: omitted or
+                    # null leaves the owner's default, never the pool.
+                    continue
                 # Declarative multi-instance receptor: either the per-key
                 # model exposes no field at all, or the field is optional
                 # and the config left it out. Resolve from the pool of
@@ -445,6 +488,16 @@ class ConfigComposer:
             }
             origin = get_origin(_slot_annotation(item.owner_cls, item.field_name))
 
+            if (
+                origin in (dict, list)
+                and not selected
+                and _holds_own_value(item.owner, item.field_name)
+            ):
+                # Nothing to adopt, so the receptor stays "not set" and the
+                # owner's own default stands (a capability's ``actions``:
+                # every wired action). An empty container would say "none",
+                # which is what ``[]`` in the config says — never omission.
+                continue
             if origin is dict:
                 resolved: Any = selected
             elif origin is list:
@@ -615,6 +668,73 @@ def _allowed_keys(spec: WiringSpec) -> frozenset[str] | None:
     return frozenset(spec.allowed_keys or ()) | frozenset(spec.optional_keys or ())
 
 
+def _holds_own_value(owner: Any, name: str) -> bool:
+    """Whether *owner* already answers *name* itself — its constructor's default.
+
+    An unfilled receptor is conscribe's ``WiredField``, which raises
+    ``AttributeError`` on read.
+    """
+    try:
+        getattr(owner, name)
+    except AttributeError:
+        return False
+    return True
+
+
+def _inline_only_names(cls: type) -> frozenset[str]:
+    """The receptors *cls* fills only from its own config block (``__inline_only__``)."""
+    return frozenset(getattr(cls, "__inline_only__", ()))
+
+
+def _inline_only_layers(registrars: dict[str, Any]) -> dict[str, tuple[str, ...]]:
+    """Every layer some receptor owner fills only inline, and the receptors that do.
+
+    A receptor in its owner's ``__inline_only__`` is a list or dict receptor
+    that never adopts the pool of a top-level section, so that section has
+    no reader: the Composer refuses it. Returned as ``{layer: ("<key>.<receptor>",
+    ...)}`` (``{"archiver": ("trace_writer.archive",)}``), the text of the refusal.
+
+    Raises:
+        ComposeError: A declaration names no list or dict receptor of its
+            class, or another receptor still adopts the same layer from the
+            pool — the section would then be both refused and needed.
+    """
+    inline: dict[str, list[str]] = defaultdict(list)
+    pooled: dict[str, list[str]] = defaultdict(list)
+    for registrar in registrars.values():
+        # A snapshot of the classes, not a lookup per key: reading declarations
+        # resolves nothing (a sweep that scores nothing never asks for an eval loader).
+        for key, cls in sorted(registrar.get_all().items()):
+            declared = _inline_only_names(cls)
+            slots = _receptor_slots(cls)
+            receptors = {s.param_name: s for s in parse_wiring(cls) if s.param_name in slots}
+            containers = {
+                name
+                for name in receptors
+                if get_origin(_slot_annotation(cls, name)) in (dict, list)
+            }
+            if declared - containers:
+                raise ComposeError(
+                    f"{cls.__name__}.__inline_only__ names {sorted(declared - containers)}, "
+                    f"which are not list or dict receptors of the class (its list and dict "
+                    f"receptors: {sorted(containers)})."
+                )
+            for name, spec in receptors.items():
+                where = inline if name in declared else pooled
+                where[spec.registry_name].append(f"{key}.{name}")
+    clashes = sorted(layer for layer in inline if layer in pooled)
+    if clashes:
+        raise ComposeError(
+            "A layer cannot be both written only inline and adopted from its top-level "
+            "section: "
+            + "; ".join(
+                f"{layer!r}: inline-only for {inline[layer]}, adopted by {pooled[layer]}"
+                for layer in clashes
+            )
+        )
+    return {layer: tuple(where) for layer, where in inline.items() if layer in registrars}
+
+
 def _unwrap_nested_model(value: Any) -> Any:
     """Flatten nested Pydantic models back to dicts for __init__ consumption."""
     if isinstance(value, BaseModel):
@@ -631,6 +751,7 @@ __all__ = [
     "ComposedRun",
     "ConfigComposer",
     "DuplicateInstanceIdError",
+    "InlineOnlyLayerError",
     "InstantiationError",
     "UnresolvedWiringError",
 ]

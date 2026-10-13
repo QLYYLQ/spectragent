@@ -37,7 +37,10 @@ class _InputLoop(AgentLoopBase):
 
 
 def teardown_module() -> None:
-    AgentLoopRegistrar.unregister("test_loop_inputs_loop")
+    # Idempotent: pytest tears a module down once per contiguous run of its
+    # tests, so a selection that interleaves files tears this one down twice.
+    if AgentLoopRegistrar.get_or_none("test_loop_inputs_loop") is not None:
+        AgentLoopRegistrar.unregister("test_loop_inputs_loop")
 
 
 class _Agent:

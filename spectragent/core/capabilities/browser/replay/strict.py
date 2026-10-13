@@ -83,7 +83,8 @@ class StrictMissPolicy(MissPolicyBase):
                 description=(
                     "Hosts (matched as a suffix: 'stats.example.com' covers "
                     "'a.stats.example.com') whose misses are answered 204 as "
-                    "benign analytics, on top of the built-in list."
+                    "benign analytics, on top of the built-in list. None (the "
+                    "default): the built-in list only."
                 ),
             ),
         ] = None,

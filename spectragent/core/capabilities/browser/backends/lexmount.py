@@ -39,17 +39,27 @@ class LexmountProvider(BrowserProviderBase):
 
     # ── connection config ─────────────────────────────────────────────
     api_key: Annotated[
-        str | None, Field(description="Lexmount API key (env: LEXMOUNT_API_KEY)")
+        str | None,
+        Field(description="Lexmount API key. None (the default): read from LEXMOUNT_API_KEY."),
     ] = None
     project_id: Annotated[
-        str | None, Field(description="Lexmount project ID (env: LEXMOUNT_PROJECT_ID)")
+        str | None,
+        Field(
+            description="Lexmount project ID. None (the default): read from LEXMOUNT_PROJECT_ID."
+        ),
     ] = None
-    base_url: Annotated[str | None, Field(description="API base URL override")] = None
+    base_url: Annotated[
+        str | None,
+        Field(description="API base URL override. None (the default): the service's own endpoint."),
+    ] = None
 
     # ── capability config (visible at init, overrideable in open()) ───
     browser_mode: Annotated[str, Field(description="Browser mode: 'normal' or 'light'")] = "normal"
     context_id: Annotated[
-        str | None, Field(description="Context ID for persistence across sessions")
+        str | None,
+        Field(
+            description="Context ID for persistence across sessions. None (the default): no context is attached."
+        ),
     ] = None
     context_mode: Annotated[
         str, Field(description="Context access mode: 'read_write' or 'read_only'")

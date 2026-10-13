@@ -298,7 +298,9 @@ class TestFiltered:
             filtered_out(sources["replayed"], ExportFilters(max_document_misses=3), sources) is None
         )
         assert (
-            filtered_out(sources["replayed"], ExportFilters(max_document_misses=None), sources)
+            filtered_out(
+                sources["replayed"], ExportFilters(max_document_misses="unlimited"), sources
+            )
             is None
         )
 

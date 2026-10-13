@@ -133,7 +133,7 @@ class TestDeterminism:
                 tmp_path / f"out-{len(reports)}",
                 filters={
                     "require_eval": {"evaluator_id": "online_mind2web"},
-                    "max_document_misses": None,
+                    "max_document_misses": "unlimited",
                 },
             )
             reports.append(run_export(composer, entry))
@@ -222,10 +222,10 @@ def test_the_runner_reaches_strategies_only_through_the_exporter(
         sources_root=str(tmp_path / "src"),
         filters=None,
     )
-    exporter.translator = IndexToCoordinateTranslator(occlusion="off")
+    exporter.translator = IndexToCoordinateTranslator(occlusion="none")
     report = ExportRunner(exporter, composer=composer, benchmarks=BenchmarkLoaders()).run()
     assert report.manifest.translator == {
-        "occlusion": "off",
+        "occlusion": "none",
         "occlusion_unknown": "raise",
         "translator_id": "index_to_coordinate",
         "untranslatable": "drop_step",

@@ -350,10 +350,19 @@ class BrowserUseAgent(AgentBase):
         bool, PydanticField(description="Using fine-tuned browser-use model")
     ] = False
     override_system_message: Annotated[
-        str | None, PydanticField(description="Override the entire system prompt")
+        str | None,
+        PydanticField(
+            description=(
+                "Replace the entire system prompt with this text. None (the default): "
+                "the agent's own prompt."
+            )
+        ),
     ] = None
     extend_system_message: Annotated[
-        str | None, PydanticField(description="Append text to system prompt")
+        str | None,
+        PydanticField(
+            description="Append this text to the system prompt. None (the default): nothing."
+        ),
     ] = None
 
     # ── internal state populated by prepare() ──────────────────

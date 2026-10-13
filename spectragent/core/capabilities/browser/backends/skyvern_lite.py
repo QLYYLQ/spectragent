@@ -37,17 +37,24 @@ class SkyvernProvider(BrowserProviderBase):
     __capabilities__: ClassVar[set[str]] = {CDP, PROXY, ADBLOCK, CAPTCHA_SOLVE}
 
     # ── connection config ─────────────────────────────────────────────
-    api_key: Annotated[str | None, Field(description="Skyvern API key (env: SKYVERN_API_KEY)")] = (
-        None
-    )
-    base_url: Annotated[str | None, Field(description="API base URL override")] = None
+    api_key: Annotated[
+        str | None,
+        Field(description="Skyvern API key. None (the default): read from SKYVERN_API_KEY."),
+    ] = None
+    base_url: Annotated[
+        str | None,
+        Field(description="API base URL override. None (the default): the service's own endpoint."),
+    ] = None
 
     # ── capability config (visible at init, overrideable in open()) ───
     timeout_minutes: Annotated[int, Field(description="Session timeout in minutes (5-1440)")] = 60
     solve_captcha: Annotated[bool, Field(description="Enable automatic CAPTCHA solving")] = False
     adblock: Annotated[bool, Field(description="Enable ad / tracker blocking")] = False
     proxy_country: Annotated[
-        str | None, Field(description="Managed proxy country code (e.g. 'US')")
+        str | None,
+        Field(
+            description="Managed proxy country code (e.g. 'US'). None (the default): no managed proxy is requested."
+        ),
     ] = None
 
     # ── internal state ────────────────────────────────────────────────

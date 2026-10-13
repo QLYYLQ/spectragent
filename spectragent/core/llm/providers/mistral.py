@@ -54,17 +54,30 @@ class ChatMistral(ChatModelBase):
 
     # Generation params
     temperature: Annotated[float | None, Field(description="Sampling temperature")] = 0.2
-    top_p: Annotated[float | None, Field(description="Nucleus sampling top-p")] = None
+    top_p: Annotated[
+        float | None, Field(description="Nucleus sampling top-p. None (the default): not sent.")
+    ] = None
     max_tokens: Annotated[int | None, Field(description="Max tokens to generate")] = 4096
-    seed: Annotated[int | None, Field(description="Random seed for reproducibility")] = None
+    seed: Annotated[
+        int | None,
+        Field(description="Random seed for reproducibility. None (the default): not sent."),
+    ] = None
     safe_prompt: Annotated[bool, Field(description="Enable Mistral safe prompt mode")] = False
 
     # Client params
-    api_key: Annotated[str | None, Field(description="Mistral API key")] = None
+    api_key: Annotated[
+        str | None,
+        Field(description="Mistral API key. None (the default): read from MISTRAL_API_KEY."),
+    ] = None
     base_url: Annotated[str, Field(description="Mistral API base URL")] = (
         "https://api.mistral.ai/v1"
     )
-    timeout: Annotated[float | None, Field(description="Request timeout in seconds")] = None
+    timeout: Annotated[
+        float | None,
+        Field(
+            description="Request timeout in seconds. None (the default): the HTTP client's 5 s default."
+        ),
+    ] = None
     max_retries: Annotated[int, Field(description="Max request retries")] = 5
     default_headers: Mapping[str, str] | None = None
     default_query: Mapping[str, object] | None = None

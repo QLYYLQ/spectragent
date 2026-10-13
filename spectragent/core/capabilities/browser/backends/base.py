@@ -37,9 +37,11 @@ class NetworkCaptureProvider(Protocol):
     browser starts from — and whether that profile is fresh is what decides
     §5.6's ``logged_in``: archivers need ``allow_session_state`` and the
     environment fingerprint reports ``fresh_profile`` from it.
-    :meth:`persistent_profile` names the knob or environment variable that
-    makes the browser start from a profile that is not fresh for this run,
-    or returns ``None`` when every run gets a new one. A provider that
+    :meth:`persistent_profile` names the knob that makes the browser start
+    from a profile that is not fresh for this run, or returns ``None`` when
+    every run gets a new one. Only configuration may make a profile
+    persistent, never an environment variable: ``config.json`` must show it.
+    A provider that
     declares ``NETWORK_CAPTURE`` without answering it is refused by the
     cooperation check (fail closed), never taken as fresh.
     """

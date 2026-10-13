@@ -30,7 +30,7 @@ from tests._helpers.fixture_site import LoggedRequest
 def _report(**overrides: object) -> ArchiveOverheadReport:
     fields: dict[str, object] = {
         "chrome": "Chrome/155.0.8059.39",
-        "tier": "off",
+        "tier": "none",
         "steps": 10,
         "visits_per_scenario": 2,
         "p50_off_ms": 400.0,

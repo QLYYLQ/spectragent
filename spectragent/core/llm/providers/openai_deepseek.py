@@ -28,7 +28,10 @@ class ChatDeepSeek(OpenAICompatBase):
     __registry_key__ = "openai.deepseek"
 
     # --- DeepSeek-specific ---
-    client_params: Annotated[dict[str, Any] | None, Field(description="Extra client params")] = None
+    client_params: Annotated[
+        dict[str, Any] | None,
+        Field(description="Extra client constructor arguments. None (the default): none."),
+    ] = None
 
     @property
     def provider(self) -> str:

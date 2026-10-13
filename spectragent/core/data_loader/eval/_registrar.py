@@ -50,7 +50,7 @@ class EvalLoaderBase(metaclass=EvalLoaderRegistrar.Meta):
         Field(
             None,
             description=(
-                "Data dir for this loader ('~' expanded). Overrides "
+                "Data dir for this loader ('~' expanded). None (the default): "
                 "$SPECTRAGENT_BENCHMARK_DATA/<env_type>/<benchmark>."
             ),
         ),

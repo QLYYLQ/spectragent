@@ -32,7 +32,7 @@ from spectragent.core.capabilities.browser.cooperation import (
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.core.capabilities.browser.replay import (
     SHIM_SHA256,
-    OffReplayability,
+    NoneReplayability,
     PinnedReplayability,
     ReplayabilityProtocol,
     ReplayabilityRegistrar,
@@ -76,12 +76,12 @@ def _capability_config(replayability: Any) -> Any:
 
 class TestRegistryAndGeneratedConfig:
     def test_both_tiers_are_registered(self) -> None:
-        assert sorted(ReplayabilityRegistrar.keys()) == ["off", "pinned"]
-        assert ReplayabilityRegistrar.get("off") is OffReplayability
+        assert sorted(ReplayabilityRegistrar.keys()) == ["none", "pinned"]
+        assert ReplayabilityRegistrar.get("none") is NoneReplayability
         assert ReplayabilityRegistrar.get("pinned") is PinnedReplayability
 
     def test_every_tier_satisfies_the_protocol(self) -> None:
-        for tier in (OffReplayability(), PinnedReplayability()):
+        for tier in (NoneReplayability(), PinnedReplayability()):
             assert isinstance(tier, ReplayabilityProtocol)
 
     def test_generated_union_carries_every_pinned_knob(self) -> None:
@@ -106,9 +106,9 @@ class TestRegistryAndGeneratedConfig:
         )
         assert (r.device_scale_factor, r.user_agent, r.reduced_motion) == (2.0, "Pinned/1", False)
 
-    def test_off_validates(self) -> None:
-        assert _capability_config({"replayability_id": "off"}).replayability.replayability_id == (
-            "off"
+    def test_none_validates(self) -> None:
+        assert _capability_config({"replayability_id": "none"}).replayability.replayability_id == (
+            "none"
         )
 
     @pytest.mark.parametrize(
@@ -118,47 +118,48 @@ class TestRegistryAndGeneratedConfig:
             {"replayability_id": "pinned", "random_seed": 0},
             {"replayability_id": "pinned", "base_time": "now"},
             {"replayability_id": "pinned", "device_scale_factor": 0},
-            {"replayability_id": "off", "random_seed": 3},
+            {"replayability_id": "none", "random_seed": 3},
+            {"replayability_id": "off"},
         ],
-        ids=["typo", "seed-zero", "base-time", "dpr-zero", "knob-on-off"],
+        ids=["typo", "seed-zero", "base-time", "dpr-zero", "knob-on-none", "old-off-name"],
     )
     def test_invalid_blocks_are_rejected(self, bad: dict[str, Any]) -> None:
         with pytest.raises(ValidationError):
             _capability_config(bad)
 
-    def test_a_bare_yaml_off_is_a_boolean_and_is_rejected(self) -> None:
-        """YAML 1.1 (PyYAML) reads ``off`` as ``False``: the shipped configs quote it."""
-        block = yaml.safe_load("replayability: { replayability_id: off }")["replayability"]
-        assert block == {"replayability_id": False}
+    def test_a_bare_yaml_none_is_a_plain_word(self) -> None:
+        """YAML 1.1 (PyYAML) reads a bare ``off`` as ``False``; ``none`` stays a string."""
+        block = yaml.safe_load("replayability: { replayability_id: none }")["replayability"]
+        assert _capability_config(block).replayability.replayability_id == "none"
+        bare_off = yaml.safe_load("replayability: { replayability_id: off }")["replayability"]
+        assert bare_off == {"replayability_id": False}
         with pytest.raises(ValidationError):
-            _capability_config(block)
-        quoted = yaml.safe_load('replayability: { replayability_id: "off" }')["replayability"]
-        assert _capability_config(quoted).replayability.replayability_id == "off"
+            _capability_config(bare_off)
 
-    def test_the_capability_defaults_to_off(self) -> None:
+    def test_the_capability_defaults_to_none(self) -> None:
         cap = BrowserCapability()
-        assert isinstance(cap.replayability, OffReplayability)
-        assert isinstance(default_replayability(), OffReplayability)
+        assert isinstance(cap.replayability, NoneReplayability)
+        assert isinstance(default_replayability(), NoneReplayability)
         assert BrowserCapability.__wiring__["replayability"] == (
             "replayability",
-            ["off", "pinned"],
+            ["none", "pinned"],
         )
 
 
-class TestOffIsInert:
+class TestNoneIsInert:
     def test_no_switches_platform_dpr_and_an_empty_plan(self) -> None:
-        off = OffReplayability()
-        assert off.replayable is False
-        assert off.needs_archive_clock is False
-        assert off.launch_args() == ()
-        assert off.device_scale_factor == 0.0
-        plan = off.plan(t0_ms=123, browser_user_agent="UA")
-        assert plan.tier == "off"
+        tier = NoneReplayability()
+        assert tier.replayable is False
+        assert tier.needs_archive_clock is False
+        assert tier.launch_args() == ()
+        assert tier.device_scale_factor == 0.0
+        plan = tier.plan(t0_ms=123, browser_user_agent="UA")
+        assert plan.tier == "none"
         for kind in ("page", "iframe", "worker", "shared_worker", "service_worker", "browser_ui"):
             assert plan.target_commands(_target(kind)) == ()
             assert plan.fetch_patterns(_target(kind)) == ()
         assert plan.fingerprint() == {
-            "tier": "off",
+            "tier": "none",
             "params": {},
             "t0_ms": None,
             "shim_sha256": None,
@@ -489,8 +490,7 @@ class TestCooperation:
         for problem in problems:
             assert problem in str(error)
 
-    def test_the_real_local_chrome_reports_its_own_knobs(self, monkeypatch) -> None:
-        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
+    def test_the_real_local_chrome_reports_its_own_knobs(self) -> None:
         cap = _pinned_capability(
             LocalChromeProvider(deterministic_rendering=True, user_data_dir="/p"),
             device_scale_factor=2.0,

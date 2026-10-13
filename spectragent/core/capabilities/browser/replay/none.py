@@ -1,10 +1,13 @@
-"""``off`` — the default tier: nothing is pinned, nothing is sent.
+"""``none`` — the default tier: nothing is pinned, nothing is sent.
 
-With ``off`` and no archiver bound the capability opens no recorder
+With ``none`` and no archiver bound the capability opens no recorder
 connection at all and sends the control connection exactly what it always
 did. With archivers bound (and ``require_replayable: false`` on
 ``browser.network``) the recorder runs and this tier's plan contributes no
 command to any target.
+
+Spelled ``none``, the configuration surface's word for "not enabled": a bare
+``off`` is a boolean to YAML 1.1 (``docs/architecture_design.md`` §4.14).
 """
 
 from spectragent.core.capabilities.browser.replay.replayability import (
@@ -13,10 +16,10 @@ from spectragent.core.capabilities.browser.replay.replayability import (
 )
 
 
-class OffReplayability(ReplayabilityBase):
+class NoneReplayability(ReplayabilityBase):
     """No launch switches, the platform DPR, an empty plan."""
 
-    __registry_key__ = "off"
+    __registry_key__ = "none"
 
     @property
     def replayable(self) -> bool:

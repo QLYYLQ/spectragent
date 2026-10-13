@@ -260,7 +260,6 @@ class TestLaunchArgsReachChrome:
     async def test_metadata_records_the_command_line_and_placeholdered_flags(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
         provider = LocalChromeProvider(remote_debugging_port=9555)
         cmd, meta = await self._open(monkeypatch, provider, launch_args=PINNED_LIKE)
         assert meta["command_line"] == cmd
@@ -278,7 +277,6 @@ class TestLaunchArgsReachChrome:
         assert "--user-data-dir=<user-data-dir>" in flags
 
     async def test_flags_are_stable_across_launches(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
         first = await self._open(monkeypatch, LocalChromeProvider(), launch_args=PINNED_LIKE)
         second = await self._open(monkeypatch, LocalChromeProvider(), launch_args=PINNED_LIKE)
         assert first[0] != second[0]  # fresh profile dir and port each launch
@@ -298,7 +296,6 @@ class TestLaunchArgsReachChrome:
         self, monkeypatch: pytest.MonkeyPatch, launch_args: tuple[str, ...]
     ) -> None:
         """Known before launch (a replay's consistency check) and equal to the launch's own."""
-        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
         provider = LocalChromeProvider(extra_args=["--mute-audio"])
         planned = provider.planned_launch_flags(launch_args)
         _cmd, meta = await self._open(monkeypatch, provider, launch_args=launch_args)
@@ -307,7 +304,6 @@ class TestLaunchArgsReachChrome:
     async def test_the_isolation_switches_reach_chrome_as_two_elements(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
         cmd, _ = await self._open(
             monkeypatch, LocalChromeProvider(), launch_args=NETWORK_ISOLATION_ARGS
         )
@@ -327,11 +323,12 @@ class TestLaunchArgConflicts:
         assert problems[0].startswith("deterministic_rendering=true")
         assert "--random-seed=42" in problems[0]
 
-    def test_deterministic_rendering_conflicts_even_with_an_equal_seed(self) -> None:
-        """Two owners of the V8 seed, and ``--deterministic-mode`` besides."""
+    def test_deterministic_rendering_passes_with_an_equal_seed(self) -> None:
+        """Like every other row: equal values agree (the user's ruling of 2026-10-13)."""
         same_seed = ("--js-flags=--random-seed=1157259159",)
-        problems = LocalChromeProvider(deterministic_rendering=True).launch_arg_conflicts(same_seed)
-        assert len(problems) == 1 and "--deterministic-mode" in problems[0]
+        assert (
+            LocalChromeProvider(deterministic_rendering=True).launch_arg_conflicts(same_seed) == []
+        )
 
     def test_force_device_scale_factor_only_when_it_differs(self) -> None:
         same = LocalChromeProvider(force_device_scale_factor=1.0)
@@ -358,38 +355,32 @@ class TestLaunchArgConflicts:
 
 
 class TestPersistentProfile:
-    def test_fresh_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
+    def test_fresh_by_default(self) -> None:
         assert LocalChromeProvider().persistent_profile() is None
 
     @pytest.mark.parametrize(
-        ("kwargs", "env", "expected"),
+        ("kwargs", "expected"),
         [
-            ({"user_data_dir": "/p"}, None, "user_data_dir='/p'"),
-            ({}, "/e", "CHROME_USER_DATA_DIR='/e'"),
-            ({"user_data_dir": "/p"}, "/e", "user_data_dir='/p'"),
-            ({"profile_directory": "Profile 2"}, None, "profile_directory='Profile 2'"),
-            (
-                {"extra_args": ["--user-data-dir=/x"]},
-                None,
-                "extra_args entry '--user-data-dir=/x'",
-            ),
+            ({"user_data_dir": "/p"}, "user_data_dir='/p'"),
+            ({"profile_directory": "Profile 2"}, "profile_directory='Profile 2'"),
+            ({"extra_args": ["--user-data-dir=/x"]}, "extra_args entry '--user-data-dir=/x'"),
         ],
     )
-    def test_each_source_is_named(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        kwargs: dict[str, Any],
-        env: str | None,
-        expected: str,
-    ) -> None:
-        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
-        if env is not None:
-            monkeypatch.setenv("CHROME_USER_DATA_DIR", env)
+    def test_each_source_is_named(self, kwargs: dict[str, Any], expected: str) -> None:
         assert LocalChromeProvider(**kwargs).persistent_profile() == expected
 
-    def test_several_sources_are_all_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
+    async def test_the_old_environment_variable_is_ignored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The profile directory is YAML only: config.json must show it (ruling of 2026-10-13)."""
+        monkeypatch.setenv("CHROME_USER_DATA_DIR", "/home/me/chrome")
+        provider = LocalChromeProvider()
+        assert provider.persistent_profile() is None
+        cmd, meta = await TestLaunchArgsReachChrome()._open(monkeypatch, provider)
+        assert meta["user_data_dir"] != "/home/me/chrome"
+        assert "--user-data-dir=/home/me/chrome" not in cmd
+
+    def test_several_sources_are_all_named(self) -> None:
         found = LocalChromeProvider(
             user_data_dir="/p", profile_directory="Work"
         ).persistent_profile()

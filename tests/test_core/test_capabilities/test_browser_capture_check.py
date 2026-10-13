@@ -2,7 +2,7 @@
 
 ``docs/architecture_design.md`` §4.9: viewport, format (from the recorded
 bytes), device scale factor (``replayability``) and the image size it
-implies are compared for ``browser.screenshot``; under ``replayability: off``
+implies are compared for ``browser.screenshot``; under ``replayability: none``
 the DPR is the host's, so DPR and size are unchecked, not differences. The
 capability only delegates to ``capture_check.compare_capture`` and never
 needs a browser.
@@ -79,7 +79,7 @@ class TestTheComparison:
         mismatches, unchecked = _compare(screenshot(dpr=2), device_scale_factor=0.0)
         assert mismatches == ()
         assert unchecked == (
-            "browser.screenshot: device scale factor and image size (replayability off "
+            "browser.screenshot: device scale factor and image size (replayability none "
             "keeps the host's DPR, which configuration does not know)",
         )
 

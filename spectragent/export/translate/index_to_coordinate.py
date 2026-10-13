@@ -65,7 +65,7 @@ class IndexToCoordinateTranslator(ActionTranslatorBase):
     __registry_key__ = "index_to_coordinate"
 
     # ── the knobs, as attributes (assigned in __init__) ──
-    occlusion: Literal["off", "check"]
+    occlusion: Literal["none", "check"]
     occlusion_unknown: Literal["raise", "untranslatable"]
 
     def __init__(
@@ -81,12 +81,12 @@ class IndexToCoordinateTranslator(ActionTranslatorBase):
             ),
         ] = "drop_step",
         occlusion: Annotated[
-            Literal["off", "check"],
+            Literal["none", "check"],
             Field(
                 description=(
-                    "check: a point covered by another element is moved to an uncovered "
-                    "point of the element, or the step is untranslatable (occluded). "
-                    'Write "off" quoted in YAML (a bare off is a YAML 1.1 boolean).'
+                    "check (the default): a point covered by another element is moved to "
+                    "an uncovered point of the element, or the step is untranslatable "
+                    "(occluded). none: the point is not checked."
                 )
             ),
         ] = "check",

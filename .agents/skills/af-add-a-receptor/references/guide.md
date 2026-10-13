@@ -28,7 +28,9 @@ find out by measuring a run that ignored you.
 **(a) A plain `Annotated` scalar** — when there is nothing to swap. One behaviour,
 a number or an enum that tunes it. `screenshot_format`, `screenshot_quality`,
 `dom_max_elements` on `BrowserCapability.__init__`. Give it real constraints
-(`ge=1`) so a nonsense value fails Pydantic validation, not the run.
+(`ge=1`) so a nonsense value fails Pydantic validation, not the run. A cap that can be
+lifted is `Annotated[int, Field(ge=1)] | Unlimited` with the word `unlimited`, never
+`int | None` (architecture §4.2.1); "not enabled" in a closed set is spelled `none`.
 
 **(b) A strategy *name*** — a `str`/`Literal` field someone downstream resolves
 into a class. **Almost always wrong.** It is shape (b) that produced all three
@@ -441,12 +443,14 @@ the Composer has injected the configured selector. Same shape as
   `cls.__module__.startswith("spectragent.")`.
 - **A receptor is negotiated by name, not by contract.** Nothing checks that the
   strategy you register actually satisfies the Protocol. Put a test on that seam.
-- **A registry key that YAML 1.1 reads as something else must be quoted.** PyYAML is
-  YAML 1.1: a bare `off`, `on`, `yes`, `no` is a boolean. `replayability` (§4.14) has an
-  `off` tier, so every shipped block writes `replayability: { replayability_id: "off" }`;
-  unquoted, the discriminator arrives as `False` and validation rejects the block
-  (`test_browser_replayability.py::test_a_bare_yaml_off_is_a_boolean_and_is_rejected`).
-  Prefer a key that is a plain word in YAML when you name a new strategy.
+- **No registry key or option value may be a word YAML 1.1 reads as something else.**
+  PyYAML is YAML 1.1: a bare on / off / yes / no / true / false is a boolean and null / ~
+  is null, so such a discriminator arrives as `False` or `None` and validation rejects the
+  block. `tests/test_core/test_composer/test_yaml_safe_values.py` refuses every one of
+  them (any case) across all registry keys and every schema option value. "Not enabled"
+  is spelled `none` (architecture §4.2.1): the replayability tier that used to be `off` is
+  `none`, so every block writes `replayability: { replayability_id: none }` unquoted.
+  A no-op strategy that does a normal thing keeps a descriptive name (`instant`, `live`).
 - **A required single-instance receptor ripples through every hand-written block.**
   Adding `replayability` made it mandatory in the generated schema, so the same change
   edited every capability block that writes one by hand (the set
@@ -479,17 +483,29 @@ the Composer has injected the configured selector. Same shape as
   (2) a `tuple[str, ...]` parameter is generated as `tuple[str, Ellipsis]`, which pyright
   rejects in `_composed.py`, and a list default in a signature is a shared mutable default,
   so a list knob with a non-empty default is `list[str] | None = None`, `None` meaning the
-  documented default (`sources`, `require_archive`);
+  documented default (`sources`, `require_archive`), and its description must state that
+  default ("Null (the default): ..."), as every null-default knob does (architecture
+  §4.2.1). A numeric limit is never such a field: no limit is `unlimited`
+  (`Annotated[int, Field(ge=1)] | Unlimited`, `schemas/_types.py`; the bound sits on the
+  `int` branch, and conscribe 1.3 drops it from `_composed.py` while the Composer's live
+  model keeps it);
   (3) `Field(min_length=…)` on a top-level knob is dropped from the generated config (it
   survives inside an imported pydantic dataclass such as `MatcherConfig`), so enforce such a
   bound where the strategy is constructed (`ExplicitSteps.__post_init__`).
-- **An optional *list* receptor omitted is not the same as empty.** `trace_writer.archive`
-  (`__wiring__ = {"archive": "archiver"}`, `Annotated[list[ArchiverBase] | None, ...]`
-  on the hand-written `__init__`, `archive: list[ArchiverBase]` on the
-  `_TraceWriterReceptors` mixin): written inline, the list is used; `archive: []` records
-  nothing; **omitted**, `_resolve_deferred` adopts *every* instance of a top-level
-  `archiver:` section, and with no such section, nothing. A config that means "record
-  nothing" while a top-level section exists must say `[]`. Pinned in
+- **An optional list or dict receptor omitted is "not set", never empty.** Omitted (or
+  `null`), `_resolve_deferred` adopts every matching instance of the layer's top-level
+  section; with none to adopt, the owner's own default stands (`capability.actions`: every
+  wired action), and only an owner with no default of its own gets an empty container
+  (`environment.capabilities`). `[]` always means empty: `actions: []` builds no action.
+  Pinned in `tests/test_core/test_composer/test_inline_only.py`.
+- **A receptor that must never be adopted from a pool goes in `__inline_only__`.**
+  `TraceWriter.__inline_only__ = frozenset({"archive"})`: the list is filled from the hook's
+  own block or keeps the owner's default (`[]`), never takes instances another block
+  built, and the Composer refuses a top-level `archiver:` section with an
+  `InlineOnlyLayerError` naming the receptor (`trace_writer.archive`), computed from the
+  wiring. That is how archiving has one switch (architecture §4.2.1). The Composer checks
+  the declaration when it is built: it may name only list or dict receptors of its class,
+  and no other receptor may adopt the same layer from the pool. Pinned in
   `tests/test_core/test_composer/test_archive_yaml_surface.py`, which also shows the
   receptor's other half: an `archiver:` block on the *capability* (a provides
   declaration with no slot) is refused at compose time with the negotiation-only error.

@@ -47,9 +47,15 @@ class HyperbrowserProvider(BrowserProviderBase):
 
     # ── connection config ─────────────────────────────────────────────
     api_key: Annotated[
-        str | None, Field(description="Hyperbrowser API key (env: HYPERBROWSER_API_KEY)")
+        str | None,
+        Field(
+            description="Hyperbrowser API key. None (the default): read from HYPERBROWSER_API_KEY."
+        ),
     ] = None
-    base_url: Annotated[str | None, Field(description="API base URL override")] = None
+    base_url: Annotated[
+        str | None,
+        Field(description="API base URL override. None (the default): the service's own endpoint."),
+    ] = None
 
     # ── capability config (visible at init, overrideable in open()) ───
     stealth: Annotated[bool, Field(description="Enable stealth browsing mode")] = True
@@ -57,10 +63,16 @@ class HyperbrowserProvider(BrowserProviderBase):
     adblock: Annotated[bool, Field(description="Enable ad / tracker blocking")] = False
     enable_recording: Annotated[bool, Field(description="Enable web session recording")] = False
     proxy_country: Annotated[
-        str | None, Field(description="Managed proxy country code (e.g. 'US')")
+        str | None,
+        Field(
+            description="Managed proxy country code (e.g. 'US'). None (the default): no managed proxy is requested."
+        ),
     ] = None
     proxy_server: Annotated[
-        str | None, Field(description="Custom proxy server URL (e.g. 'http://proxy:8080')")
+        str | None,
+        Field(
+            description="Custom proxy server URL (e.g. 'http://proxy:8080'). None (the default): no custom proxy."
+        ),
     ] = None
 
     # ── internal state ────────────────────────────────────────────────

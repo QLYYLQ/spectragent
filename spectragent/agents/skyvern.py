@@ -108,19 +108,28 @@ class SkyvernAgent(AgentBase):
         PydanticField(
             description=(
                 "User details the task needs (form values, credentials, "
-                "preferences); rendered as <user_details> in the system prompt"
+                "preferences); rendered as <user_details> in the system prompt. "
+                "None (the default): an empty section."
             )
         ),
     ] = None
     complete_criterion: Annotated[
         str | None,
         PydanticField(
-            description=("Condition that must hold before the agent may finish with success=true")
+            description=(
+                "Condition that must hold before the agent may finish with success=true. "
+                "None (the default): no condition."
+            )
         ),
     ] = None
     terminate_criterion: Annotated[
         str | None,
-        PydanticField(description="Condition on which the agent must give up (success=false)"),
+        PydanticField(
+            description=(
+                "Condition on which the agent must give up (success=false). None (the "
+                "default): no condition."
+            )
+        ),
     ] = None
     verification_code_check: Annotated[
         bool,

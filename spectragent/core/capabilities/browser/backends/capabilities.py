@@ -40,7 +40,7 @@ SCREEN_SIZE = "screen_size"  # Custom screen / viewport size
 # implements ``NetworkCaptureProvider`` (``persistent_profile``: whether that
 # browser starts from a fresh profile — §5.6's ``logged_in``). Required by every
 # configuration that opens the recorder connection: a bound browser archiver,
-# or ``replayability`` other than ``off``.
+# or ``replayability`` other than ``none``.
 NETWORK_CAPTURE = "network_capture"
 # ``open(*, launch_args=...)`` accepts extra Chrome switches for this session,
 # and the provider implements ``LaunchArgsProvider`` (``launch_arg_conflicts``,

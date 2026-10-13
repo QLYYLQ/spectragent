@@ -37,16 +37,39 @@ class ChatBedrock(ChatModelBase):
         "anthropic.claude-3-5-sonnet-20240620-v1:0"
     )
     max_tokens: Annotated[int | None, Field(description="Maximum tokens to generate")] = 4096
-    temperature: Annotated[float | None, Field(description="Sampling temperature")] = None
-    top_p: Annotated[float | None, Field(description="Top-p sampling parameter")] = None
-    seed: Annotated[int | None, Field(description="Random seed for reproducibility")] = None
-    stop_sequences: Annotated[list[str] | None, Field(description="Stop sequences")] = None
+    temperature: Annotated[
+        float | None, Field(description="Sampling temperature. None (the default): not sent.")
+    ] = None
+    top_p: Annotated[
+        float | None, Field(description="Top-p sampling parameter. None (the default): not sent.")
+    ] = None
+    seed: Annotated[
+        int | None,
+        Field(description="Random seed for reproducibility. None (the default): not sent."),
+    ] = None
+    stop_sequences: Annotated[
+        list[str] | None, Field(description="Stop sequences. None (the default): not sent.")
+    ] = None
 
     # AWS credentials
-    aws_access_key_id: Annotated[str | None, Field(description="AWS access key ID")] = None
-    aws_secret_access_key: Annotated[str | None, Field(description="AWS secret access key")] = None
-    aws_session_token: Annotated[str | None, Field(description="AWS session token")] = None
-    aws_region: Annotated[str | None, Field(description="AWS region")] = None
+    aws_access_key_id: Annotated[
+        str | None,
+        Field(description="AWS access key ID. None (the default): read from AWS_ACCESS_KEY_ID."),
+    ] = None
+    aws_secret_access_key: Annotated[
+        str | None,
+        Field(
+            description="AWS secret access key. None (the default): read from AWS_SECRET_ACCESS_KEY."
+        ),
+    ] = None
+    aws_session_token: Annotated[
+        str | None,
+        Field(description="AWS session token. None (the default): read from AWS_SESSION_TOKEN."),
+    ] = None
+    aws_region: Annotated[
+        str | None,
+        Field(description="AWS region. None (the default): AWS_REGION, else AWS_DEFAULT_REGION."),
+    ] = None
     aws_sso_auth: Annotated[bool, Field(description="Use AWS SSO authentication")] = False
     session: "Session | None" = None
 

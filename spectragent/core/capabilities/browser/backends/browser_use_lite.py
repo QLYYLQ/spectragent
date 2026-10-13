@@ -30,21 +30,41 @@ class BrowserUseProvider(BrowserProviderBase):
 
     # ── connection config ─────────────────────────────────────────────
     api_key: Annotated[
-        str | None, Field(description="Browser-Use API key (env: BROWSER_USE_API_KEY)")
+        str | None,
+        Field(
+            description="Browser-Use API key. None (the default): read from BROWSER_USE_API_KEY."
+        ),
     ] = None
-    base_url: Annotated[str | None, Field(description="API base URL override")] = None
+    base_url: Annotated[
+        str | None,
+        Field(description="API base URL override. None (the default): the service's own endpoint."),
+    ] = None
 
     # ── capability config (visible at init, overrideable in open()) ───
     proxy_country: Annotated[
-        str | None, Field(description="Managed proxy country code (e.g. 'US')")
+        str | None,
+        Field(
+            description="Managed proxy country code (e.g. 'US'). None (the default): no managed proxy is requested."
+        ),
     ] = None
     proxy_server: Annotated[
-        str | None, Field(description="Custom proxy server URL (e.g. 'http://proxy:8080')")
+        str | None,
+        Field(
+            description="Custom proxy server URL (e.g. 'http://proxy:8080'). None (the default): no custom proxy."
+        ),
     ] = None
-    screen_width: Annotated[int | None, Field(description="Browser screen width in pixels")] = None
-    screen_height: Annotated[int | None, Field(description="Browser screen height in pixels")] = (
-        None
-    )
+    screen_width: Annotated[
+        int | None,
+        Field(
+            description="Browser screen width in pixels. None (the default): the service's default."
+        ),
+    ] = None
+    screen_height: Annotated[
+        int | None,
+        Field(
+            description="Browser screen height in pixels. None (the default): the service's default."
+        ),
+    ] = None
 
     # ── internal state ────────────────────────────────────────────────
     _client: Any = field(default=None, init=False, repr=False)

@@ -18,7 +18,7 @@ Compared, for ``browser.screenshot`` only (other fragments are not):
 - the image size that factor implies — viewport x DPR against the recorded
   image, within a pixel per axis (Chrome rounds a fractional DPR's size).
 
-``replayability: off`` keeps the host's DPR (``device_scale_factor`` 0), which
+``replayability: none`` keeps the host's DPR (``device_scale_factor`` 0), which
 configuration cannot know: DPR and image size are then reported as
 ``unchecked``, not as differences. Reads configuration and the fragments it
 is handed only — no setup, no browser, no ``core.trace`` (§10).
@@ -58,7 +58,7 @@ def compare_capture(
         viewport: The configured CSS viewport ``(width, height)``.
         screenshot_format: The configured ``screenshot_format``.
         device_scale_factor: The replayability tier's DPR; ``0`` is the
-            host's (``off``), unknown from configuration.
+            host's (``none``), unknown from configuration.
     """
     shot = recorded.get(SCREENSHOT_KEY)
     if not isinstance(shot, ScreenshotObs):
@@ -85,7 +85,7 @@ def compare_capture(
 
     if device_scale_factor <= 0:
         unchecked.append(
-            f"{SCREENSHOT_KEY}: device scale factor and image size (replayability off "
+            f"{SCREENSHOT_KEY}: device scale factor and image size (replayability none "
             f"keeps the host's DPR, which configuration does not know)"
         )
         return CaptureComparison(mismatches=tuple(mismatches), unchecked=tuple(unchecked))

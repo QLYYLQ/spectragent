@@ -62,7 +62,7 @@ environment:
         profile: standard
         mouse_trajectory: { trajectory_type: instant }
         typing_rhythm: { rhythm_type: instant }
-        replayability: { replayability_id: "off" }
+        replayability: { replayability_id: none }
         network_source: { source_id: live }
         screenshot_format: png      # jpeg + screenshot_quality shrinks a
                                     # vision step's image ~2-4x
@@ -79,11 +79,11 @@ Notes:
 
 - A wiring entry becomes a runtime receptor **only** when the owning class declares a slot for it. `observation` / `action` on the agent and `observation` on the capability have no slot: they are declaration-only constraints the negotiation engine reads off `__wiring__`. They are optional in the schema, and *populating* one is a hard `UnresolvedWiringError` — the value would otherwise be silently dropped.
 - Mode 1 wirings (`agent_loop`, `llm`, `memory`) become full discriminated unions of every registered config — you write the **complete child config** inline, no top-level reference list needed.
-- Single-instance receptors (`llm`, `agent_loop`, `capability.backend`, `capability.mouse_trajectory`, `capability.typing_rhythm`, `capability.dom_cleaner`, `capability.dom_serializer`, `capability.replayability`, `capability.network_source`, and `miss_policy` inside an `archive` network source) are **required**; list-shaped ones (`environment.capabilities`, `capability.actions`) are optional and fall back to a sensible default when omitted.
+- Single-instance receptors (`llm`, `agent_loop`, `capability.backend`, `capability.mouse_trajectory`, `capability.typing_rhythm`, `capability.dom_cleaner`, `capability.dom_serializer`, `capability.replayability`, `capability.network_source`, and `miss_policy` inside an `archive` network source) are **required**; list-shaped ones (`environment.capabilities`, `capability.actions`) are optional: omitted (or `null`) they adopt the matching instances of a top-level section, and with none the owner's default applies (every compatible capability; every wired action). `[]` always means empty: `actions: []` builds no action at all.
 - A strategy is always a receptor block, never a name on `profile:`. `profile:` says which watchdogs run and which CDP round trips they may spend — nothing else. Naming a strategy there is what made `mouse_trajectory`, then `dom_cleaner`, then `dom_serializer` arrive default-constructed with every configured knob discarded.
-- `browser.dom` has a cost surface of its own, off by default: `dom_max_elements`, `dom_max_serialized_chars`, `dom_interactive_only`, `dom_viewport_only`. When any of them cuts, the observation fragment records the cut in `budget`, so a trace never shows a truncated page as a sparse one.
+- `browser.dom` has a cost surface of its own, off by default: `dom_max_elements`, `dom_max_serialized_chars` (both a number or `unlimited`, the default — a numeric limit is never written `null`), `dom_interactive_only`, `dom_viewport_only`. When any of them cuts, the observation fragment records the cut in `budget`, so a trace never shows a truncated page as a sparse one.
 - The two input-humanization receptors are independent axes and each is its own off-switch: `mouse_trajectory: { trajectory_type: instant }` and `typing_rhythm: { rhythm_type: instant }` are the legacy instant jump and the legacy single bulk `Input.insertText`. There is no boolean beside either — the strategy *is* the switch.
-- `replayability` has the same shape (`docs/architecture_design.md` §4.14): `{ replayability_id: "off" }` pins nothing and opens no second CDP connection (quote `"off"`: YAML 1.1 — PyYAML — reads a bare `off` as `false`, which no tier matches); `pinned` (knobs `base_time`, `random_seed`, `timezone`, `locale`, `device_scale_factor`, `user_agent`, `reduced_motion`) makes a recording replayable and needs a backend that launches its own browser (`local_chrome`).
+- `replayability` has the same shape (`docs/architecture_design.md` §4.14): `{ replayability_id: none }` pins nothing and opens no second CDP connection; `pinned` (knobs `base_time`, `random_seed`, `timezone`, `locale`, `device_scale_factor`, `user_agent`, `reduced_motion`) makes a recording replayable and needs a backend that launches its own browser (`local_chrome`).
 - `network_source` is the third axis of that shape (§4.14 "回放"): `{ source_id: live }` is the network itself and changes nothing; `archive` answers every request from a recorded run's archive at the Fetch Request stage and never sends one to the network (see [Replaying a recorded run](#replaying-a-recorded-run)). Whether the browser must be isolated from the network is the source's own `isolation` knob — there is no provider boolean beside it.
 
 ## Per-action configuration
@@ -106,7 +106,7 @@ capabilities:
     backend: { provider_id: local_chrome }
 ```
 
-The list is also an **ablation switch**: only the actions it names are instantiated, advertised to the model and executable. Omit the block entirely to get everything `BrowserCapability.__wiring__` offers. Narrow it and an agent that *requires* a dropped action fails action negotiation before the run starts — that is the intended "config errors surface at negotiation, not at the first LLM call" guarantee.
+The list is also an **ablation switch**: only the actions it names are instantiated, advertised to the model and executable. Omit the block entirely (or write `actions: null`) to get everything `BrowserCapability.__wiring__` offers; `actions: []` builds no action at all. Narrow it and an agent that *requires* a dropped action fails action negotiation before the run starts — that is the intended "config errors surface at negotiation, not at the first LLM call" guarantee.
 
 `action_id` uses the fully-qualified registry key (`browser.scroll`, not `scroll`).
 
@@ -236,7 +236,7 @@ environment:
 hook:
   - hook_id: trace_writer
     trace_dir: traces
-    archive:                          # [] = record nothing
+    archive:                          # the one switch: omitted, null or [] = record nothing
       - archiver_id: browser.network  # WARC/1.1 + index.jsonl per step
       - archiver_id: browser.storage  # cookies + local/session storage, values as they are
       - archiver_id: browser.dom_raw  # raw DOM of each committed cycle
@@ -244,13 +244,13 @@ hook:
 
 - Evidence lands in `traces/<run>/env/` and is read through `RunTrace.archive_files` /
   `blob` / `archive_run_file`.
-- `archive` omitted while the file has a top-level `archiver:` section adopts every
-  archiver of that section; with neither, nothing is recorded. Write `archive: []` to be
-  explicit.
+- `trace_writer.archive` is the one switch for archiving: omitted, `null` or `[]`, nothing
+  is recorded. Archivers are listed only there; a top-level `archiver:` section is refused
+  at compose time with a message that says to list them under `trace_writer.archive`.
 - Each archiver has knobs (`max_inline_body_bytes`, `strip_request_headers`,
   `drain_timeout_s`, `allow_session_state`, …), validated against the generated schema;
   a mistyped `archiver_id` is refused.
-- `browser.network` refuses `replayability: "off"` unless it says
+- `browser.network` refuses `replayability: none` unless it says
   `require_replayable: false` (an archive of an unpinned run may not replay). Only
   `local_chrome` can record (`NETWORK_CAPTURE`); a cloud backend, an explicit `cdp_url`,
   or a non-fresh profile without `allow_session_state: true` on every archiver is refused
@@ -440,13 +440,13 @@ exporter:
       agent_outcome: any             # done | max_steps | error | timeout | vetoed
       require_eval: null             # optional: { evaluator_id, label: 1, slug: null }
       exclude_restoration_diverged: true
-      max_document_misses: 0         # replay-log main-frame document misses; null: no limit
+      max_document_misses: 0         # replay-log main-frame document misses; unlimited: no limit
       exclude_sites: []              # host names, suffix-matched
     split: { by: site, validation_fraction: 0.1, salt: af-split-1 }   # site | task, never step
     decontamination: { against: [], match: either }   # the benchmarks you evaluate on; []: none
     translator:
       translator_id: index_to_coordinate   # identity: the teacher's actions as recorded
-      occlusion: check               # "off" (quoted) skips the check
+      occlusion: check               # none skips the check
       occlusion_unknown: raise       # untranslatable: drop a step with no occlusion evidence
       untranslatable: drop_step      # truncate | keep_as_text | fail
     student_run_config: configs/flywheel/ui_tars_student.yaml

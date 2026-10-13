@@ -81,9 +81,15 @@ class AnthropicCompatBase(ChatModelBase):
 
     # --- Generation params ---
     max_tokens: Annotated[int, Field(description="Maximum output tokens")] = 8192
-    temperature: Annotated[float | None, Field(description="Sampling temperature")] = None
-    top_p: Annotated[float | None, Field(description="Nucleus sampling top-p")] = None
-    top_k: Annotated[int | None, Field(description="Top-k sampling parameter")] = None
+    temperature: Annotated[
+        float | None, Field(description="Sampling temperature. None (the default): not sent.")
+    ] = None
+    top_p: Annotated[
+        float | None, Field(description="Nucleus sampling top-p. None (the default): not sent.")
+    ] = None
+    top_k: Annotated[
+        int | None, Field(description="Top-k sampling parameter. None (the default): not sent.")
+    ] = None
     seed: Annotated[
         int | None,
         Field(
@@ -94,7 +100,9 @@ class AnthropicCompatBase(ChatModelBase):
             )
         ),
     ] = None
-    stop_sequences: Annotated[list[str] | None, Field(description="Stop sequences")] = None
+    stop_sequences: Annotated[
+        list[str] | None, Field(description="Stop sequences. None (the default): not sent.")
+    ] = None
 
     # --- Structured output ---
     # Default = native output_config.format (constrained decoding): ~40-60% fewer
@@ -114,9 +122,27 @@ class AnthropicCompatBase(ChatModelBase):
     ] = "structured-outputs-2025-12-15"
 
     # --- Client params ---
-    api_key: Annotated[str | None, Field(description="Anthropic API key")] = None
-    auth_token: Annotated[str | None, Field(description="Anthropic auth token")] = None
-    base_url: Annotated[str | None, Field(description="Custom API base URL")] = None
+    api_key: Annotated[
+        str | None,
+        Field(
+            description="Anthropic API key. None (the default): the client reads ANTHROPIC_API_KEY."
+        ),
+    ] = None
+    auth_token: Annotated[
+        str | None,
+        Field(
+            description="Anthropic auth token. None (the default): the client reads ANTHROPIC_AUTH_TOKEN."
+        ),
+    ] = None
+    base_url: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Custom API base URL. None (the default): the client reads ANTHROPIC_BASE_URL, "
+                "else Anthropic's own endpoint."
+            )
+        ),
+    ] = None
     max_retries: Annotated[int, Field(description="Max API retry attempts")] = 10
 
     # --- Non-config internal fields ---

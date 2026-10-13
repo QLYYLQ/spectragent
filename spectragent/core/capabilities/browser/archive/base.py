@@ -246,7 +246,7 @@ class BrowserArchiverBase(ArchiverBase):
 
     @property
     def requires_replayable(self) -> bool:
-        """Whether binding this archiver needs a replayability tier other than ``off``."""
+        """Whether binding this archiver needs a replayability tier other than ``none``."""
         return False
 
     @property

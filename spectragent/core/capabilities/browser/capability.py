@@ -142,7 +142,7 @@ from spectragent.core.capabilities.browser.replay import (  # noqa: F401 — reg
     ArchiveNetworkSource,
     LiveNetworkSource,
     NetworkSourceProtocol,
-    OffReplayability,
+    NoneReplayability,
     PinnedReplayability,
     ReplayabilityPlan,
     ReplayabilityProtocol,
@@ -185,6 +185,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     describe_stamps,
     documents_disagree,
 )
+from spectragent.schemas._types import UNLIMITED, Unlimited, limit_value
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.provider_session import ProviderSession
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
@@ -443,13 +444,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # against a fourth.
         "dom_serializer": ("dom_serializer", ["text", "html"]),
         # ``replayability`` (§4.14) decides how far a run is pinned for replay:
-        # ``off`` (the default, the no-op) or ``pinned`` (seeded randomness, a
+        # ``none`` (the default, the no-op) or ``pinned`` (seeded randomness, a
         # stepped clock from T0, fixed time zone / locale / user agent / DPR,
         # its own Chrome launch switches). Same shape as ``typing_rhythm``:
         # the strategy is the switch, so YAML names one in every capability
         # block, and nothing beside it can disagree with it. Anything but
-        # ``off`` opens the recorder connection.
-        "replayability": ("replayability", ["off", "pinned"]),
+        # ``none`` opens the recorder connection.
+        "replayability": ("replayability", ["none", "pinned"]),
         # ``network_source`` (§4.14 "回放") decides where the network comes
         # from: ``live`` (the default, the no-op) or ``archive`` (every request
         # answered from a recorded run's archive at the Fetch Request stage,
@@ -495,8 +496,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     debug_highlight: bool
     screenshot_format: Literal["png", "jpeg"]
     screenshot_quality: int
-    dom_max_elements: int | None
-    dom_max_serialized_chars: int | None
+    dom_max_elements: int | Unlimited
+    dom_max_serialized_chars: int | Unlimited
     dom_interactive_only: bool
     dom_viewport_only: bool
     retarget_tolerance_px: float
@@ -622,9 +623,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             ),
         ] = 80,
         dom_max_elements: Annotated[
-            int | None,
+            Annotated[int, PydanticField(ge=1)] | Unlimited,
             PydanticField(
-                ge=1,
                 description=(
                     "Cap on indexed elements in the browser.dom observation "
                     "fragment, kept in document order. The DOM half of "
@@ -635,15 +635,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "still appear in the serialization as unindexed structure "
                     "— a scroll container or an iframe still prints its tag — "
                     "which is why this caps cost rather than hiding a page. "
-                    "None (default) is unlimited. Whenever this cuts, the "
-                    "fragment says so in DOMObs.budget."
+                    "A number of at least 1, or 'unlimited' (the default): no "
+                    "cap. Whenever this cuts, the fragment says so in "
+                    "DOMObs.budget."
                 ),
             ),
-        ] = None,
+        ] = UNLIMITED,
         dom_max_serialized_chars: Annotated[
-            int | None,
+            Annotated[int, PydanticField(ge=1)] | Unlimited,
             PydanticField(
-                ge=1,
                 description=(
                     "Budget for the serialized DOM string, cut at the last "
                     "line boundary inside it. Applied after the element "
@@ -654,11 +654,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "DOMObs.budget for the trace. The note is metadata about "
                     "the cut and is not charged against this budget, so the "
                     "final string runs ~45 characters over it: this bounds "
-                    "page content, it is not a hard cap on the field. None "
-                    "(default) is unlimited."
+                    "page content, it is not a hard cap on the field. A "
+                    "number of at least 1, or 'unlimited' (the default): no "
+                    "budget."
                 ),
             ),
-        ] = None,
+        ] = UNLIMITED,
         dom_interactive_only: Annotated[
             bool,
             PydanticField(
@@ -707,11 +708,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 description=(
                     "Actions this capability instantiates, each with its own "
                     "side-effect configuration (scroll distance, navigation "
-                    "wait mode, post-action settle delay, ...). Omit to get "
-                    "every action the wiring declares. Listing a subset is an "
-                    "ablation: the actions you leave out are not built, are "
-                    "not advertised to the model, and will fail action "
-                    "negotiation if an agent requires one of them."
+                    "wait mode, post-action settle delay, ...). Omitted or null "
+                    "(the default): every action the wiring declares. Listing a "
+                    "subset is an ablation: the actions you leave out are not "
+                    "built, are not advertised to the model, and will fail "
+                    "action negotiation if an agent requires one of them. [] "
+                    "builds no action at all."
                 ),
             ),
         ] = None,
@@ -803,15 +805,16 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     def actions(self, value: list[ActionBase] | None) -> None:
         """Adopt an explicit action list, or derive the full wired set.
 
-        ``None`` / ``[]`` means "everything the wiring offers" — that is
-        both the no-``actions:``-block YAML case and the Composer's
-        deferred-receptor pass, which setattrs an empty list when no
-        top-level ``action:`` section exists. A non-empty list is taken
-        literally: actions the config did not name are not instantiated,
-        which is the design doc's ablation narrowing.
+        ``None`` means "everything the wiring offers": no ``actions:`` in
+        YAML, or ``actions: null`` (the Composer leaves an omitted receptor
+        to this default when no top-level ``action:`` section offers any).
+        A list is taken literally: actions the config did not name are not
+        instantiated, which is the design doc's ablation narrowing, and
+        ``[]`` builds none (``docs/architecture_design.md`` §4.2.1: ``[]``
+        always means empty).
         """
         offered = self._wired_action_names()
-        if not value:
+        if value is None:
             resolved = [_build_wired_action(name) for name in offered]
         else:
             unknown = sorted({a.action_id for a in value} - set(offered))
@@ -836,8 +839,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         arguments it has to keep in sync.
         """
         return DOMBudget(
-            max_elements=self.dom_max_elements,
-            max_serialized_chars=self.dom_max_serialized_chars,
+            max_elements=limit_value(self.dom_max_elements),
+            max_serialized_chars=limit_value(self.dom_max_serialized_chars),
             interactive_only=self.dom_interactive_only,
             viewport_only=self.dom_viewport_only,
         )
@@ -973,7 +976,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         local window chrome happened to give us, so "in viewport" filtering
         was computed against the wrong rectangle.
 
-        The DPR is the ``replayability`` tier's: ``off`` answers ``0``, which
+        The DPR is the ``replayability`` tier's: ``none`` answers ``0``, which
         keeps the platform's real DPR (the DOM watchdog queries it live per
         observe); ``pinned`` answers its own, so a recording and its replay
         render at the same scale. This control connection is the only owner

@@ -50,7 +50,7 @@ class TestGeometry:
                 )
             ]
         )
-        translation = IndexToCoordinateTranslator(occlusion="off").translate(sample, trace)
+        translation = IndexToCoordinateTranslator(occlusion="none").translate(sample, trace)
         assert translation.actions == [
             Action(
                 name="browser.type_coordinate",
@@ -202,7 +202,7 @@ class TestOcclusion:
 
     def test_off_reads_no_evidence(self, recorded: Recorder) -> None:
         sample, trace = recorded([_click("covered")], state=sticky_state(paint_orders=False))
-        translation = IndexToCoordinateTranslator(occlusion="off").translate(sample, trace)
+        translation = IndexToCoordinateTranslator(occlusion="none").translate(sample, trace)
         assert translation.actions is not None
         assert translation.actions[0].params == {"coordinate_x": 140, "coordinate_y": 50}
         assert translation.records[0].payload["occlusion"] == "unchecked"

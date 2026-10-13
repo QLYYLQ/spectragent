@@ -164,6 +164,7 @@ def test_nulls_are_the_documented_defaults(composer: ConfigComposer) -> None:
         (("decontamination", "against"), None),  # [] means none; null is no list
         (("length", "image_tokens"), "fixed"),  # fixed needs fixed_image_tokens
         (("filters", "max_document_misses"), -1),
+        (("filters", "max_document_misses"), None),  # no limit is written unlimited
         (("split", "validation_fraction"), 1.5),
     ],
 )

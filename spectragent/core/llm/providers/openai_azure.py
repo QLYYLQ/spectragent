@@ -47,10 +47,27 @@ class ChatAzureOpenAI(OpenAICompatBase):
     __registry_key__ = "openai.azure"
 
     # --- Azure-specific fields ---
-    api_version: Annotated[str | None, Field(description="Azure API version")] = None
-    azure_endpoint: Annotated[str | None, Field(description="Azure endpoint URL")] = None
-    azure_deployment: Annotated[str | None, Field(description="Azure deployment name")] = None
-    azure_ad_token: Annotated[str | None, Field(description="Azure AD token")] = None
+    api_version: Annotated[
+        str | None, Field(description="Azure API version. None (the default): 2024-12-01-preview.")
+    ] = None
+    azure_endpoint: Annotated[
+        str | None,
+        Field(
+            description="Azure endpoint URL. None (the default): read from AZURE_OPENAI_ENDPOINT."
+        ),
+    ] = None
+    azure_deployment: Annotated[
+        str | None,
+        Field(
+            description="Azure deployment name. None (the default): read from AZURE_OPENAI_DEPLOYMENT."
+        ),
+    ] = None
+    azure_ad_token: Annotated[
+        str | None,
+        Field(
+            description="Azure AD token. None (the default): the client reads AZURE_OPENAI_AD_TOKEN."
+        ),
+    ] = None
     azure_ad_token_provider: Any | None = None
     use_responses_api: Annotated[
         str, Field(description="Use Responses API: true, false, or auto")

@@ -139,9 +139,9 @@ uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
 ```
 
 - The recorder connection, a second CDP client the capability owns, opens only when an
-  archiver is bound, the tier is not `off`, or the network source intercepts. With none of
+  archiver is bound, the tier is not `none`, or the network source intercepts. With none of
   the three, nothing extra is opened or sent.
-- Whatever opens the recorder connection (a bound archiver, a tier other than `off`, the
+- Whatever opens the recorder connection (a bound archiver, a tier other than `none`, the
   `archive` network source) needs a browser the capability launched itself. It is refused
   with an explicit `cdp_url` (the capability knob, or the task context's `cdp_url`), with an
   injected control client (`_inject_cdp_client`; a test that needs the recorder swaps only
@@ -151,8 +151,9 @@ uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
   `browser_use`, `hyperbrowser`, `agentbay`, `airtop`, `skyvern`). `local_chrome` passes;
   it is the one provider declaring `NETWORK_CAPTURE`, `LAUNCH_ARGS` and `NETWORK_ISOLATION`.
 - The browser starts from a fresh profile when the provider's `persistent_profile()` returns
-  None; for `local_chrome` that means no `user_data_dir` or `CHROME_USER_DATA_DIR`, the
-  `Default` profile directory and no `--user-data-dir` in `extra_args`. Otherwise every
+  None; for `local_chrome` that means no `user_data_dir`, the `Default` profile directory
+  and no `--user-data-dir` in `extra_args`. The profile is YAML only: the old
+  `CHROME_USER_DATA_DIR` fallback is gone, so `config.json` always shows it. Otherwise every
   bound archiver needs `allow_session_state: true`. A capability `profile` whose
   `watchdogs_exclude` lists `archive` refuses every bound archiver, because nothing would
   drain the archive scope.
@@ -167,14 +168,15 @@ uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
   runs `prepare()` once for the first task before the sweep (the pre-flight): a refused
   configuration runs no task, opens no trace and exits 2.
 - `browser.network` has `require_replayable` (default true), so binding it under
-  `replayability: "off"` raises `BrowserCooperationError` at `prepare()`. To archive an evaluation run as it is, write
+  `replayability: none` raises `BrowserCooperationError` at `prepare()`. To archive an evaluation run as it is, write
   `- {archiver_id: browser.network, require_replayable: false}` in `trace_writer.archive`.
   That archive was recorded with unpinned randomness and clocks and may not replay.
   `browser.storage` and `browser.dom_raw` have no such knob.
-- `pinned` needs a fresh profile and refuses provider knobs that contradict it
-  (`deterministic_rendering`, another `force_device_scale_factor` or `user_agent`,
-  `extra_args` repeating its switches). It changes how live sites behave and is visible to
-  anti-bot checks, so evaluation and anti-bot runs stay on `"off"`.
+- `pinned` needs a fresh profile and refuses provider knobs that contradict it: a different
+  value passes nowhere, an equal one everywhere (`deterministic_rendering`, whose V8 seed
+  must equal `random_seed`; another `force_device_scale_factor` or `user_agent`; an
+  `extra_args` entry setting one of its switches differently). It changes how live sites
+  behave and is visible to anti-bot checks, so evaluation and anti-bot runs stay on `none`.
 - Evidence lands in `traces/<run>/env/`. A run that binds no archiver has no `env/` at all.
 
 ### 2.2 Replay
@@ -344,13 +346,13 @@ exporter:
       agent_outcome: any               # done | max_steps | error | timeout | vetoed
       require_eval: null               # optional: {evaluator_id, label: 1, slug: null}
       exclude_restoration_diverged: true
-      max_document_misses: 0           # null: no replay-log filter
+      max_document_misses: 0           # unlimited: no replay-log filter
       exclude_sites: []
     split: { by: site, validation_fraction: 0.1, salt: af-split-1 }
     decontamination: { against: [], match: either }     # against: [{benchmark, subset}, ...]
     translator:
       translator_id: index_to_coordinate
-      occlusion: check                 # "off", quoted
+      occlusion: check                 # none: no occlusion check
       occlusion_unknown: raise         # untranslatable
       untranslatable: drop_step        # truncate | keep_as_text | fail
     student_run_config: configs/flywheel/ui_tars_student.yaml
@@ -390,7 +392,7 @@ split and the drops by reason, and exits non-zero on any failure.
   start-URL host and normalised instruction (case-folded, whitespace collapsed) match a task
   of its task loader; `either` drops on either test. A benchmark whose loaders cannot load
   fails the export (`ExportConfigError`).
-- `occlusion: "off"` consults no occlusion evidence. A `browser.click` or `browser.type` on a
+- `occlusion: none` consults no occlusion evidence. A `browser.click` or `browser.type` on a
   covered element is taught at the centre of the element's visible box as if nothing covered
   it (its translation record says `occlusion: unchecked`), and `occlusion_unknown` never
   applies.
@@ -464,7 +466,9 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
 A new strategy on an existing axis:
 
 1. Subclass the axis base in the axis package and set `__registry_key__`. Pick a key that
-   YAML 1.1 reads as a string, so not `off`, `on`, `yes` or `no`.
+   YAML 1.1 reads as a string: never on / off / yes / no / true / false / null / ~ in any
+   case (`tests/test_core/test_composer/test_yaml_safe_values.py` refuses them). "Not
+   enabled" is spelled `none`.
 2. Make sure an import registers it. Each package's `__init__` imports its implementations,
    and an owner's module imports whatever its `__wiring__` lists.
 3. Add the key to the owner's `__wiring__` list when the owner restricts keys. Every
@@ -565,7 +569,7 @@ For a browser archiver:
   `redaction_facts()`, which enters the fingerprint.
 - `requires_replayable` defaults to False. Override it when an archive of an unpinned run is
   of no use; `browser.network` returns its `require_replayable` knob, so a user can still
-  archive an `off` run, and a new archiver with the same need takes the same knob.
+  archive a `none` run, and a new archiver with the same need takes the same knob.
 - Import the class in `core/capabilities/browser/archive/__init__.py` and add its key to
   `BrowserCapability.__wiring__["archiver"]`. conscribe resolves those keys only when it
   builds a config (`spectragent-gen` and every `ConfigComposer`), and one key that does not
@@ -642,7 +646,7 @@ already collected; regenerate all the same.
 |---|---|
 | Registrar | `ReplayabilityRegistrar` (`replayability_id`), `replay/replayability.py`; collected as `replayability` |
 | Design section | Architecture §4.14 ("`replayability`：回放档位"; "协作检查一览") |
-| Protocol, base | `ReplayabilityProtocol`: `replayable`, `needs_archive_clock`, the `device_scale_factor` property, `launch_args()`, `plan(*, t0_ms, browser_user_agent) -> ReplayabilityPlan`. `ReplayabilityBase`; `default_replayability()` is `off` |
+| Protocol, base | `ReplayabilityProtocol`: `replayable`, `needs_archive_clock`, the `device_scale_factor` property, `launch_args()`, `plan(*, t0_ms, browser_user_agent) -> ReplayabilityPlan`. `ReplayabilityBase`; `default_replayability()` is `none` |
 | Owner | `BrowserCapability.__wiring__["replayability"]`, a required single-instance receptor |
 | Tests to copy | `test_browser_replayability.py` (`TestRegistryAndGeneratedConfig`, `TestPinnedSwitches`, `TestPinnedPlan`, `TestShim`, `TestCooperation`), `test_browser_replay_consistency.py` |
 
@@ -798,32 +802,27 @@ value on an existing one.
   agent-side relative name to bind (architecture §4.5). Never put an archive entry in an
   agent's `__wiring__`. An `archiver:` key on a capability block is refused at compose
   time. A run binds at most one archive consumer.
-- An omitted `archive` adopts every instance of the run root's `archiver:` section, and with
-  no such section nothing is recorded:
-
-  ```yaml
-  archiver:                            # the run root, beside hook:
-    - archiver_id: browser.storage
-  hook:
-    - hook_id: trace_writer            # archive omitted: records browser.storage
-  ```
-
-  An inline `archive:` list, `[]` included, builds its own instances and ignores the
-  section; write `archive: []` when you mean nothing. A hook whose `archive` ends up empty
-  is not an archive consumer: no negotiation, no `bind_archivers`, no `collect_archive`, no
-  `env/`. Two hooks with non-empty archives (two trace writers adopting one section, say),
-  one archiver in two hooks, and one key listed twice are each a problem in one
-  `IncompatibleArchiveError` at `prepare()`, so two hooks cannot split the evidence.
+- `trace_writer.archive` is the one switch for archiving (the user's ruling of 2026-10-13).
+  Omitted, `null` or `[]`, nothing is recorded. Archivers are listed only there:
+  `TraceWriter.__inline_only__` makes the Composer refuse a top-level `archiver:` section
+  (`InlineOnlyLayerError`, whose message says to list them under `trace_writer.archive`),
+  and an omitted `archive` never adopts archivers another block built (architecture
+  §4.2.1). A hook whose `archive` is
+  empty is not an archive consumer: no negotiation, no `bind_archivers`, no
+  `collect_archive`, no `env/`. Two hooks with non-empty archives, one archiver in two
+  hooks, and one key listed twice are each a problem in one `IncompatibleArchiveError` at
+  `prepare()`, so two hooks cannot split the evidence.
 - Required single-instance receptors are required in YAML: `replayability` and
   `network_source` in every capability block, `miss_policy` in every
   `network_source: {source_id: archive}` block (the replay's network source, unrelated to
   the `trace_writer.archive` list of archivers), `restorer` in every `branch` loop block,
   `step_selector` in every `trace_branches` block, `translator` in every exporter block.
   The `default_*()` factories serve objects built by hand only.
-- Quote `"off"`. PyYAML is YAML 1.1 and reads a bare `off` as `false`, so an unquoted
-  `replayability_id: off` or `occlusion: off` fails validation. In a site rule `fuzzy: on` is
-  read as `true`, which is what that key means. Renaming the `off` tier is an open user
-  decision.
+- "Not enabled" is spelled `none` (the same ruling): `replayability_id: none`,
+  `occlusion: none`. The old `off` fails validation, bare or quoted (PyYAML is YAML 1.1 and
+  reads a bare `off` as `false`). In a site rule `fuzzy: on` is read as `true`, which is what
+  that bool key means. A numeric limit is never `null`: no limit is `unlimited`
+  (`max_document_misses`, the capability's `dom_max_*`), and `[]` always means empty.
 - `pinned` requires a fresh profile, `local_chrome`, no explicit `cdp_url`, no provider knob
   that contradicts the tier, a `random_seed` of at least 1, and `base_time: from_archive`
   only with the `archive` source. `--disable-back-forward-cache` is part of the tier's
@@ -913,7 +912,8 @@ value on an existing one.
 | `IncompatibleArchiveError` with `lists archiver ... more than once`, `is requested by more than one hook` or `more than one hook requests archivers` | v1 binds the archive of one hook. Put every archiver in one `trace_writer.archive` list, once each. All the problems arrive in one error at `prepare()` |
 | Validation: `Input tag 'network' found using 'archiver_id' does not match any of the expected tags` | Archive keys are never relative: write `browser.network`. Unlike action and fragment names, nothing binds a relative archiver name, because the key is the registry key itself and its prefix is the providing capability. The same message names a mistyped key, or an archiver whose class never registered (next row) |
 | Every browser block fails validation with `Extra inputs are not permitted` on `replayability`, `network_source`, `mouse_trajectory` and the other receptors | A key in `BrowserCapability.__wiring__`, such as a new archiver's, names a class that never registered, and conscribe dropped the capability's whole wiring. Look in the log for `Failed to import module`: `discover()` skips a module whose import raises `ImportError` or `SyntaxError` |
-| Validation says `replayability_id` or `occlusion` is `False` | An unquoted `off` |
+| Validation says `replayability_id` or `occlusion` is `False` | The old name `off`, unquoted; write `none` |
+| `InlineOnlyLayerError: The top-level 'archiver' section is not accepted ...` | Move the entries into `trace_writer.archive` |
 | `Field required` for `step_selector`, `restorer`, `translator`, `miss_policy`, `network_source` or `replayability` | Write the receptor block (§4) |
 | `BrowserCooperationError` at `prepare()` (or setup, for a caller that skipped `prepare()`) | Architecture §4.14, "协作检查一览"; `browser/cooperation.py` (`binding_problems`, `cooperation_problems`), run by `BrowserCapability.check_setup`. Each line names both sides |
 | `spectragent-bench` exits 3: `the sweep was vetoed at ...` | A guard (`RunAbort`) stopped the sweep — during setup or the run — at the task named; its row says `vetoed: ...` and its `result.json` says `agent_done: vetoed`. Look at the vetoed run's last steps (a challenge page, a risk-control response), not at the configuration |
@@ -936,7 +936,7 @@ value on an existing one.
 | `IncompatibleError ... needed for training export` | The student lacks `format_react_output`, or the teacher lacks `parse_react_thought` under `thought_source: teacher` |
 | `IncompatibleFragmentError` naming the source run | The student negotiates a fragment the source never recorded, such as a DOM student over a vision recording |
 | `StudentCaptureMismatchError` | The student's viewport, screenshot format or DPR differs from the recording's |
-| `OcclusionEvidenceMissingError` | Bind `browser.dom_raw`, record with the `skyvern_hit_test` cleaner, or set `occlusion_unknown: untranslatable`; `occlusion: "off"` also avoids it, at the cost §2.4 names |
+| `OcclusionEvidenceMissingError` | Bind `browser.dom_raw`, record with the `skyvern_hit_test` cleaner, or set `occlusion_unknown: untranslatable`; `occlusion: none` also avoids it, at the cost §2.4 names |
 | `RoundTripError` | The student's formatter breaks the round-trip definition; fix the formatter |
 | `SampleTooLongError` | `length.max_tokens` against the student's `max_steps` and its screenshot in every turn |
 | `CredentialLeakError`, `ReferenceLeakError` | A credential-shaped string in the output, or the reference answer in seed or task text |

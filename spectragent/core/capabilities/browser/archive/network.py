@@ -223,7 +223,8 @@ class NetworkArchiver(BrowserArchiverBase):
                 description=(
                     "Request headers stripped at capture in addition to Cookie, "
                     "Authorization and Proxy-Authorization (case-insensitive). They are "
-                    "never written; the ledger records their names."
+                    "never written; the ledger records their names. None (the default): "
+                    "only those three."
                 ),
             ),
         ] = None,
@@ -232,7 +233,7 @@ class NetworkArchiver(BrowserArchiverBase):
             Field(
                 description=(
                     "Refuse to record unless the capability's replayability tier is not "
-                    "'off': an archive recorded with unpinned randomness and clocks may "
+                    "'none': an archive recorded with unpinned randomness and clocks may "
                     "not replay. Set false to archive an evaluation run as it is."
                 ),
             ),

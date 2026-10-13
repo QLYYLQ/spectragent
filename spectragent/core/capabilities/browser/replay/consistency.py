@@ -26,7 +26,7 @@ Tolerated, recorded as warnings in the replay fingerprint (after launch,
 another browser user agent when the tier does not pin one (it carries the
 version), another redaction policy (POSTs with credential fields may not key
 alike). What could not be compared at all — a side without a launch-flag
-digest — is a note (:func:`consistency_notes`). An ``off`` recording's time
+digest — is a note (:func:`consistency_notes`). A ``none`` recording's time
 zone, locale and DPR are measured host facts and are not compared.
 
 .. note::

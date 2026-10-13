@@ -39,20 +39,30 @@ class AgentBayProvider(BrowserProviderBase):
 
     # ── connection config ─────────────────────────────────────────────
     api_key: Annotated[
-        str | None, Field(description="AgentBay API key (env: AGENTBAY_API_KEY)")
+        str | None,
+        Field(description="AgentBay API key. None (the default): read from AGENTBAY_API_KEY."),
     ] = None
     endpoint: Annotated[
-        str | None, Field(description="AgentBay RPC endpoint (env: AGENTBAY_ENDPOINT)")
+        str | None,
+        Field(
+            description="AgentBay RPC endpoint. None (the default): read from AGENTBAY_ENDPOINT."
+        ),
     ] = None
 
     # ── capability config (visible at init, overrideable in open()) ───
     stealth: Annotated[bool, Field(description="Enable stealth browsing mode")] = False
     enable_recording: Annotated[bool, Field(description="Enable browser session recording")] = True
     proxy_country: Annotated[
-        str | None, Field(description="Managed proxy country code (e.g. 'US')")
+        str | None,
+        Field(
+            description="Managed proxy country code (e.g. 'US'). None (the default): no managed proxy is requested."
+        ),
     ] = None
     context_id: Annotated[
-        str | None, Field(description="Context ID for persistence across sessions")
+        str | None,
+        Field(
+            description="Context ID for persistence across sessions. None (the default): no context is attached."
+        ),
     ] = None
 
     # ── internal state ────────────────────────────────────────────────

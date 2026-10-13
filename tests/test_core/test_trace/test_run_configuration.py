@@ -209,7 +209,7 @@ class TestResolvedConfigIsRecorded:
         assert cap["mouse_trajectory"]["trajectory_type"] == "instant"
         assert cap["typing_rhythm"]["rhythm_type"] == "instant"
         # How far the run was pinned for replay is part of what was run.
-        assert cap["replayability"]["replayability_id"] == "off"
+        assert cap["replayability"]["replayability_id"] == "none"
         # And where its network came from.
         assert cap["network_source"]["source_id"] == "live"
         assert cap["dom_cleaner"]["cleaner_type"] == "browser_use"

@@ -47,7 +47,7 @@ def exporter_entry(sources_root: Path, output_dir: Path, **overrides: Any) -> di
         "exporter_id": "openai_messages",
         "sources_root": str(sources_root),
         "sources": ["*"],
-        "filters": {"max_document_misses": None},
+        "filters": {"max_document_misses": "unlimited"},
         "decontamination": {"against": []},
         "translator": {"translator_id": "identity"},
         "student_run_config": str(STUDENT_CONFIG),

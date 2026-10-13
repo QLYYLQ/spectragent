@@ -42,6 +42,9 @@ from __future__ import annotations
 
 import math
 import random
+from typing import Annotated
+
+from pydantic import Field as PydanticField
 
 from spectragent.core.capabilities.browser.input.rhythm import (
     Keystroke,
@@ -79,7 +82,16 @@ class HumanRhythm(TypingRhythmBase):
         hold_sigma: float = 0.22,
         min_hold_ms: float = 20.0,
         max_hold_ms: float = 300.0,
-        seed: int | None = None,
+        seed: Annotated[
+            int | None,
+            PydanticField(
+                description=(
+                    "Seed for this instance's random stream, which draws every flight "
+                    "and hold time: one seed replays the typing. None (the default) "
+                    "draws fresh entropy."
+                ),
+            ),
+        ] = None,
     ) -> None:
         self._median_iki = max(1.0, median_iki_ms)
         self._iki_sigma = max(0.0, iki_sigma)

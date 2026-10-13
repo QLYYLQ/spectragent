@@ -154,8 +154,7 @@ class TestRows:
         )
         assert _problems(acknowledged) == []
 
-    def test_the_real_local_chrome_names_its_routing_knobs(self, monkeypatch) -> None:
-        monkeypatch.delenv("CHROME_USER_DATA_DIR", raising=False)
+    def test_the_real_local_chrome_names_its_routing_knobs(self) -> None:
         cap = _replaying(LocalChromeProvider(proxy_server="http://127.0.0.1:7897"))
         (problem,) = _problems(cap)
         assert "provider_id='local_chrome' knob proxy_server='http://127.0.0.1:7897'" in problem

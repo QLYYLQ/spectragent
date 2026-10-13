@@ -43,14 +43,28 @@ class AirtopProvider(BrowserProviderBase):
     }
 
     # ── connection config ─────────────────────────────────────────────
-    api_key: Annotated[str | None, Field(description="Airtop API key (env: AIRTOP_API_KEY)")] = None
-    base_url: Annotated[str | None, Field(description="API base URL override")] = None
+    api_key: Annotated[
+        str | None,
+        Field(description="Airtop API key. None (the default): read from AIRTOP_API_KEY."),
+    ] = None
+    base_url: Annotated[
+        str | None,
+        Field(description="API base URL override. None (the default): the service's own endpoint."),
+    ] = None
 
     # ── capability config (visible at init, overrideable in open()) ───
-    profile_name: Annotated[str | None, Field(description="Browser profile name to restore")] = None
+    profile_name: Annotated[
+        str | None,
+        Field(
+            description="Browser profile name to restore. None (the default): no profile is restored."
+        ),
+    ] = None
     solve_captcha: Annotated[bool, Field(description="Enable automatic CAPTCHA solving")] = False
     proxy_country: Annotated[
-        str | None, Field(description="Managed proxy country code (e.g. 'US')")
+        str | None,
+        Field(
+            description="Managed proxy country code (e.g. 'US'). None (the default): no managed proxy is requested."
+        ),
     ] = None
 
     # ── internal state ────────────────────────────────────────────────

@@ -152,29 +152,29 @@ class TestArchiveOverhead:
     def test_groups_at_different_tiers_are_not_compared(
         self, chain: ChainRuns, tmp_path: Path
     ) -> None:
-        off = {
+        unpinned = {
             "environment": [
                 {
                     "capabilities": [
-                        {"capability_id": "browser", "replayability": {"replayability_id": "off"}}
+                        {"capability_id": "browser", "replayability": {"replayability_id": "none"}}
                     ]
                 }
             ]
         }
         write_plain(
             tmp_path,
-            "ctl-off",
+            "ctl-unpinned",
             [Step(duration_ms=3000), Step(duration_ms=900), Step(duration_ms=1000)],
             task_id="shop-1",
             site="shop.test",
-            resolved=off,
+            resolved=unpinned,
         )
         control = open_role(tmp_path, "control")
-        assert run_tier(control.runs[0].config) == "browser:off"
+        assert run_tier(control.runs[0].config) == "browser:none"
         found = archive_overhead(chain.role("record"), control)
         assert found.p50_overhead_ms is None
         assert found.reason == (
-            "the groups are at different tiers (record browser:pinned, control browser:off)"
+            "the groups are at different tiers (record browser:pinned, control browser:none)"
         )
 
     def test_bytes_before_and_after_dedup(self, chain: ChainRuns) -> None:

@@ -29,15 +29,15 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
     tests/test_core/test_capabilities/test_browser_replay_live.py
   ```
 
-- `pinned` 档位要求每个 run 从新建的 profile 启动：`user_data_dir`、环境变量 `CHROME_USER_DATA_DIR`、不是 `Default` 的 `profile_directory`、`extra_args` 里的 `--user-data-dir` 都会被拒。provider 上与档位矛盾的旋钮也会被拒：`deterministic_rendering: true`，与档位不同的 `force_device_scale_factor` 或 `user_agent`，`extra_args` 里由档位负责的开关。`random_seed` 至少是 1。评测 run 和 anti-bot 实验保持 `"off"`：pinned 会改变站点的行为，本身也是 anti-bot 能识别的特征。
+- `pinned` 档位要求每个 run 从新建的 profile 启动：`user_data_dir`、不是 `Default` 的 `profile_directory`、`extra_args` 里的 `--user-data-dir` 都会被拒。profile 目录只由 YAML 决定，环境变量 `CHROME_USER_DATA_DIR` 不再起作用。provider 上与档位矛盾的旋钮也会被拒，值相同的放行：`deterministic_rendering: true`（它的 V8 种子与档位的 `random_seed` 不同时），与档位不同的 `force_device_scale_factor` 或 `user_agent`，`extra_args` 里由档位负责、值不同的开关。`random_seed` 至少是 1。评测 run 和 anti-bot 实验保持 `none`：pinned 会改变站点的行为，本身也是 anti-bot 能识别的特征。
 - 每个手写的 capability 块都要写下面两个块。它们是生成 schema 里必填的单实例受体，不录制的配置也要写：
 
   ```yaml
-  replayability: { replayability_id: "off" }   # 录制用 pinned
+  replayability: { replayability_id: none }     # 录制用 pinned
   network_source: { source_id: live }          # 回放用 archive
   ```
 
-  `"off"` 必须加引号：PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`。
+  这一档原来叫 `off`，现在叫 `none`，不用加引号；写 `off` 会被拒（PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`）。
 - 归档器只写在 `trace_writer` 的 `archive` 列表里，键要全限定（`browser.network`）。写进 capability 块的 `archiver:` 在组装时被拒。
 - 这些组合问题全部在 `prepare()` 报：归档器与档位、provider 与它的旋钮、profile、网络来源，以及回放时与源 run 的一致性（`prepare()` 只读源 run 的环境指纹）。错误在打开 trace、启动 Chrome 之前出现，每条点名两边，`spectragent-run --dry-run` 也查得出来（回放配置要加 `--replay-archive DIR`）。`spectragent-bench` 开跑前先用第一个任务检查一次（pre-flight）：被拒时一个任务也不跑、不建 trace，在 stderr 印出原因，退出码 2。setup 在启动 Chrome 之前再查一遍。
 
@@ -63,7 +63,7 @@ hook:
       - archiver_id: browser.dom_raw   # 每个提交的观测 cycle 的原始 DOM
 ```
 
-`archive: []` 表示不录。不写 `archive` 时，文件里有顶层 `archiver:` 段就采纳那一段的全部归档器，没有就不录。`browser.network` 默认 `require_replayable: true`，与 `"off"` 档位一起绑定会被拒；要把一次评测 run 照原样存档，写 `require_replayable: false`，这样的归档不保证能回放。
+`archive` 是录不录环境证据的唯一开关：不写、写 `null` 或 `[]` 都不录。归档器只能写在这里，YAML 顶层写 `archiver:` 段会在组装时报错，提示把归档器写进 `trace_writer.archive`。`browser.network` 默认 `require_replayable: true`，与 `none` 档位一起绑定会被拒；要把一次评测 run 照原样存档，写 `require_replayable: false`，这样的归档不保证能回放。
 
 证据都在 run 目录的 `env/` 下，只有绑定了归档器的 run 才有这个目录：
 
@@ -268,10 +268,10 @@ uv run spectragent-export --config configs/flywheel/export_sft.yaml
 导出 YAML 有一个 `exporter:` 块，可以再加 `eval_loader:` / `task_loader:` 块（见下面的去污染），没有 agent 和 environment。v1 唯一的导出器是 `exporter_id: openai_messages`，`sample: per_step` 与 `image_store: files` 也只有这一个取值。发布的 `export_sft.yaml` 不按评测结果筛（`filters.require_eval: null`），也不去污染（`decontamination.against: []`），所以直接用在 online_mind2web 的录制上就能导出；teacher 失败的轨迹也会进数据集，每个样本带着 `labels.step_status` 和判定标签，训练时可以再筛。开跑前按自己的数据改这几处：
 
 - `sources_root` 和 `sources`：发布值是 `sources_root: traces`、`sources: ["recorded/*"]`。`sources` 是相对 `sources_root` 的 glob，按路径排序；`sources_root` 写相对路径时按工作目录解析。要导出分叉 run 就加上它们的目录，例如 `["recorded/*", "branches/*"]`，原路径回放的 run 在 `same_path/*`。分叉 run（含原路径回放的 run）的源 run 也必须在本次读到的源里，否则被筛掉，原因记为 `branch source '<id>' not among the sources`。列进来的录制 run 自己也会产出样本，没有只导出分叉的开关。
-- `filters`：`agent_outcome`（默认 `any`；读源 run 自己的 `result.json`）；`require_eval`（默认和发布值都是 `null`，不读判定；要只留判分通过的 run 才写 `{evaluator_id, label: 1, slug: null}`，这要求录制时评测过）；`exclude_restoration_diverged: true`，有一步的恢复检查判为 `warn` 或 `diverged` 的 run 整个排除；`max_document_misses: 0`，回放日志里主 frame 文档 miss 超过这个数的 run 排除（`null` 不限，没有回放日志的 run 算 0）；`exclude_sites`，主机名后缀匹配，度量报告会给出这份名单。对分叉 run，`agent_outcome` 看它自己的结局，`require_eval` 看它的源 run 的判定。不管筛选怎么写，trace 从没关闭的源都跳过，一个源只导出它的 trace 完整到的那些步。用 `verify: warn` 跑的原路径回放 run 只要有一步的检查没通过，就整个被 `exclude_restoration_diverged` 排除。
+- `filters`：`agent_outcome`（默认 `any`；读源 run 自己的 `result.json`）；`require_eval`（默认和发布值都是 `null`，不读判定；要只留判分通过的 run 才写 `{evaluator_id, label: 1, slug: null}`，这要求录制时评测过）；`exclude_restoration_diverged: true`，有一步的恢复检查判为 `warn` 或 `diverged` 的 run 整个排除；`max_document_misses: 0`，回放日志里主 frame 文档 miss 超过这个数的 run 排除（`unlimited` 不限，没有回放日志的 run 算 0）；`exclude_sites`，主机名后缀匹配，度量报告会给出这份名单。对分叉 run，`agent_outcome` 看它自己的结局，`require_eval` 看它的源 run 的判定。不管筛选怎么写，trace 从没关闭的源都跳过，一个源只导出它的 trace 完整到的那些步。用 `verify: warn` 跑的原路径回放 run 只要有一步的检查没通过，就整个被 `exclude_restoration_diverged` 排除。
 - `decontamination`：`against` 列出学生将来评测用的 benchmark（`[{benchmark: <名字>, subset: <子集>}]`），只查列出来的这些，从不从评测器或判定推断。默认 `[]`：不去污染，manifest 记 `decontaminated: false`；`null` 不是列表，组装时报错。把录制所用的 benchmark 自己列进去会把这些录制全部排除（`ExportEmptyError`）。`match` 取 `task_id`、`site_instruction` 或 `either`。去污染和参考答案泄漏扫描经导出 YAML 自己的 `eval_loader:` / `task_loader:` 块读基准数据，没配的 benchmark 用注册加载器的默认值。
 - `split`：`by: site`（源任务 `start_url` 的主机）或 `by: task`，从不按步切，同一组分叉总在同一个切分里。
-- `translator`：`identity` 原样使用 teacher 执行过的动作，UI-TARS 录下的本来就是坐标动作。`index_to_coordinate` 把带元素 index 的 `browser.click`、`browser.type` 换成元素可见部分上的坐标动作，其余带 index 的动作不可译（`no_counterpart`），不带 index 的原样保留。它的 `occlusion: check` 要确认换算出的点没有被别的元素盖住，证据按优先级是 cleaner `skyvern_hit_test` 录下的命中测试、`browser.dom_raw` 的原始 DOM、BrowserUse cleaner 录下的 paint order（只认得出部分遮挡）。三样都没有时抛 `OcclusionEvidenceMissingError`；写 `occlusion_unknown: untranslatable` 则把这一步当作不可译。`occlusion: "off"` 要加引号。`untranslatable` 决定不可译的步怎么处理：`drop_step`（结束当前段）、`truncate`（结束这条轨迹）、`keep_as_text`、`fail`。
+- `translator`：`identity` 原样使用 teacher 执行过的动作，UI-TARS 录下的本来就是坐标动作。`index_to_coordinate` 把带元素 index 的 `browser.click`、`browser.type` 换成元素可见部分上的坐标动作，其余带 index 的动作不可译（`no_counterpart`），不带 index 的原样保留。它的 `occlusion: check` 要确认换算出的点没有被别的元素盖住，证据按优先级是 cleaner `skyvern_hit_test` 录下的命中测试、`browser.dom_raw` 的原始 DOM、BrowserUse cleaner 录下的 paint order（只认得出部分遮挡）。三样都没有时抛 `OcclusionEvidenceMissingError`；写 `occlusion_unknown: untranslatable` 则把这一步当作不可译。`occlusion: none` 不查遮挡（原来写作 `"off"`）。`untranslatable` 决定不可译的步怎么处理：`drop_step`（结束当前段）、`truncate`（结束这条轨迹）、`keep_as_text`、`fail`。
 - `thought_source: teacher | none` 与 `thought_index_refs: drop | keep` 决定 thought 从哪来、提到元素 index 的 thought 是否丢掉。
 - `length: { max_tokens: 65536 }`：学生每轮都保留截图，30 步的整段在 1280×720 上光图像约 36k token。有记录超出预算时，导出失败并点名这条记录，从不截断；训练器的上下文更短时，换一个 `max_steps` 更小的学生。
 - `output_dir`：发布值 `datasets/sft_v1`，相对工作目录；已存在就拒绝。
@@ -359,7 +359,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 | 原始 DOM 里的输入值 | 敏感控件（密码框、一次性验证码、卡号等）的 `value`、它下面 shadow root 里的文本、DOMSnapshot 的输入值、无障碍树的 value，在写盘之前替换 | 无 |
 | DOM 观测（提示词与 `browser.dom` fragment） | BrowserUse 清洗时按同一条规则把敏感控件的 `value` 和它下面的文本（包括键入的值）换成 `<redacted>`；Skyvern 本来就不带 | 无 |
 | 键入的文字 | 原样记在动作参数和 LLM 记录里；动作结果的 `typed_into_sensitive_field` 记下文字是否进了敏感控件（`true` / `false`，看不见时 `null`），提示词里不显示 | 无 |
-| 从非新建 profile 启动的浏览器（登录态） | 绑定了归档器就拒绝；pinned 一律拒绝 | 每个归档器都写 `allow_session_state: true`，只能配 `"off"` 档位 |
+| 从非新建 profile 启动的浏览器（登录态） | 绑定了归档器就拒绝；pinned 一律拒绝 | 每个归档器都写 `allow_session_state: true`，只能配 `none` 档位 |
 | 配置和任务 setup context | `config.json` 只记标为 trace-safe 的字段，其余写 `"<omitted>"`；setup context 按值脱敏（凭证形状的键、URL 里的 userinfo 和凭证形状的查询参数） | `trace_writer` 的 `record_secrets: true` 原样记录；这样的 run 永远不会被导出 |
 | `env/` 归档 | 永不导出，数据集里只有截图、动作、thought 和引用 | 无 |
 | 导出写出的每个文本字节 | 过凭证形状的正则，命中就整个导出失败，不留输出 | 无 |
@@ -426,11 +426,12 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 
 ## 排错
 
-- `Input tag 'False' found using 'replayability_id' does not match any of the expected tags: 'off', 'pinned'`：YAML 里写了裸的 `off`，改成 `replayability_id: "off"`。翻译器的 `occlusion: "off"` 同理。
+- `Input tag 'False' found using 'replayability_id' does not match any of the expected tags: 'none', 'pinned'`：YAML 里写了裸的 `off`（旧名字），改成 `replayability_id: none`。翻译器的 `occlusion: off` 同理，改成 `occlusion: none`。
+- `The top-level 'archiver' section is not accepted: archiver instances are written only inline, under trace_writer.archive. ...`：把顶层 `archiver:` 段里的条目挪进 `trace_writer` 的 `archive` 列表。
 - 校验错误 `environment.0.capabilities.0.replayability`（或 `network_source`）下面写着 `Field required`：capability 块缺必填的受体块，补上 `replayability` 和 `network_source`。`network_source: archive` 块里还要写 `miss_policy: { miss_policy_id: strict }`。
 - `UnresolvedWiringError: environment[0].capabilities[0].archiver: ...`：归档器写进了 capability 块，挪到 `trace_writer.archive`。
 - `IncompatibleArchiveError`：`trace_writer.archive` 里同一个键写了两次、两个 hook 都带了归档列表，或者环境里没有提供这个归档器的 capability。每个归档器只写一次，只写在一个 trace_writer 上；消息点名请求方和环境实际提供的归档器。
-- `BrowserCooperationError: BrowserCapability cannot run this configuration (N problem(s); ...)`：每一行是一个协作问题，点名两边。常见的有：云 provider 没有 `NETWORK_CAPTURE`，换 `local_chrome`；`browser.network require_replayable=true ↔ replayability: off`，录制改用 pinned，或给 `browser.network` 写 `require_replayable: false`；profile 不是新建的，去掉 `user_data_dir` 或 `unset CHROME_USER_DATA_DIR`；pinned 与 provider 的旋钮冲突；`base_time: from_archive` 配了 `live` 来源；`network_source: archive ↔ task context: no replay_archive`，给 `--replay-archive`（只适用于 react 回放配置），或者经 `trace_branches` 任务运行；`live` 来源却给了 `replay_archive`；回放没有绑定 `browser.replay_log`，或者绑了 `browser.network`（都是把 `browser.network` 换成 `browser.replay_log`）；`live` 来源绑了 `browser.replay_log`；`isolation: required` 与代理或路由开关冲突。
+- `BrowserCooperationError: BrowserCapability cannot run this configuration (N problem(s); ...)`：每一行是一个协作问题，点名两边。常见的有：云 provider 没有 `NETWORK_CAPTURE`，换 `local_chrome`；`browser.network require_replayable=true ↔ replayability: none`，录制改用 pinned，或给 `browser.network` 写 `require_replayable: false`；profile 不是新建的，去掉 `user_data_dir`、非默认的 `profile_directory` 或 `extra_args` 里的 `--user-data-dir`；pinned 与 provider 的旋钮冲突；`base_time: from_archive` 配了 `live` 来源；`network_source: archive ↔ task context: no replay_archive`，给 `--replay-archive`（只适用于 react 回放配置），或者经 `trace_branches` 任务运行；`live` 来源却给了 `replay_archive`；回放没有绑定 `browser.replay_log`，或者绑了 `browser.network`（都是把 `browser.network` 换成 `browser.replay_log`）；`live` 来源绑了 `browser.replay_log`；`isolation: required` 与代理或路由开关冲突。
 - 回放一致性不符：同一个错误里以 `source run '<id>'` 开头的行，例如 `replayability random_seed=7 ↔ this run's random_seed=1`、`viewport 1280x720 ↔ this run's viewport ...`、`launch_flags_sha256=... ↔ this run's planned launch flags ...`、`the source run is itself a replay`、`recorded no browser.network evidence`、`has no environment fingerprint`。让回放配置的档位参数、viewport 和 backend 块与录制一致，回放原始录制而不是回放 run。只警告的差异看回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
 - `ArchiveOpenError: replay archive ... is not a directory`：`--replay-archive` 要指向源 run 目录，也就是含 `manifest.json` 的那个。`ReplayArchiveError` 说明源 run 的索引行读不回来，或者指向的 WARC 记录对不上，消息点名文件和记录 id；源归档已损坏，重新录制。
 - 回放里有 miss：用 `diverged_steps` 找出有主 frame 文档 miss 的步，再看这些步的 `replay.jsonl`。`no_match` 而 `candidates` 里有同 host、同 path、只差查询参数的记录，说明参数是每次访问都会变的值（时间戳、会话 id），给这个站点写 `ignore_query` 规则；文档 URL 本身带每次访问不同的值时，回放必然在那一步发散。`too_large`：body 超过 `max_fulfill_body_bytes`，或录制时就是 `too_large`。`body_unavailable`：录制时 body 没读完。`range_uncovered`：录制没覆盖请求的字节区间。`websocket` 和 `unservable` 见"已知限制"。报告的 `decision_inputs.site_rule_candidates` 汇总了所有回放 run 的近邻 miss。
@@ -461,7 +462,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 页面定时器发起的导航：观测开始前会等主 frame 在途的跨文档导航提交（最多 10 s），但检查之后才由定时器发起的导航跟踪不到。截图命令有 10 s 的上限，那一次采集失败后重发，这一步因此多花约 10 s。
 - 归档开着时，Response 阶段读 body 会把响应扣到下载完成，页面拿不到渐进加载的 HTML 或流式媒体。SSE 和长轮询被扣到 `body_read_timeout_s`，之后记为 `incomplete`。
 - pinned 不固定 `performance.now` 和定时器。没有 `Last-Modified` 头时 `document.lastModified` 读真实时钟，不带参数的 `Intl.DateTimeFormat().format()` 也读真实时钟。`base_time: from_archive` 下，页面 JS 设的绝对过期时间的 cookie 可能被 Chrome 丢掉。
-- 回放 `"off"` 档位的录制时，时区、语言、DPR 不比较，HTTPS 升级的试探可能显示为主 frame 文档 miss。
+- 回放 `none` 档位的录制时，时区、语言、DPR 不比较，HTTPS 升级的试探可能显示为主 frame 文档 miss。
 - 模糊匹配可能送错资源，日志里记着 `level: fuzzy` 和得分；用完的记录重复最后一条（`exhausted`）是有意的。
 - 回放停在 Chrome 的错误页上时，错误页上写着没送到的 URL；URL 每次都变的站点，按截图比较的回放确定性必然不同。
 - 进程外 iframe 的 storage 不读，记在 `storage.json` 的 `unread_frames` 里。

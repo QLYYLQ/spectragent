@@ -546,10 +546,10 @@ def test_the_guard_fails_on_a_reintroduced_defect() -> None:
 def test_the_guard_catches_a_switch_beside_the_replayability_receptor() -> None:
     """Positive control for the newest receptor (§4.14): the tier is the switch.
 
-    ``record_mode: str = "off"`` on ``__init__`` is the shape a "convenience"
+    ``record_mode: str = "none"`` on ``__init__`` is the shape a "convenience"
     flag would take next to ``replayability`` — a second place to say "not
     pinned", which would silently disagree with a configured ``pinned``
-    block. It is named after nothing, so only the value check (``"off"`` is a
+    block. It is named after nothing, so only the value check (``"none"`` is a
     key of the ``replayability`` registry) can catch it. A profile-like model
     field called ``replayability`` is the name-shaped variant.
     """
@@ -560,15 +560,15 @@ def test_the_guard_catches_a_switch_beside_the_replayability_receptor() -> None:
         replayability: str = "default"
 
     class _Defective:
-        __wiring__ = {"replayability": ("replayability", ["off", "pinned"])}
+        __wiring__ = {"replayability": ("replayability", ["none", "pinned"])}
         replayability: Any
 
-        def __init__(self, record_mode: str = "off") -> None:
+        def __init__(self, record_mode: str = "none") -> None:
             self.record_mode = record_mode
 
     surfaces = _init_surfaces(_Defective) + _model_surfaces(_Profile, check_values=True)
     found = collisions(_receptor_specs(_Defective), surfaces, registrars)
-    assert any("record_mode" in hit and "'off'" in hit for hit in found), found
+    assert any("record_mode" in hit and "'none'" in hit for hit in found), found
     assert any("_Profile.replayability" in hit for hit in found), found
     assert all("replayability" in hit for hit in found)
 

@@ -87,13 +87,31 @@ class ChatGoogle(ChatModelBase):
     # Model configuration
     model: Annotated[str, Field(description="Google Gemini model name")]
     temperature: Annotated[float | None, Field(description="Sampling temperature")] = 0.5
-    top_p: Annotated[float | None, Field(description="Nucleus sampling top-p")] = None
-    seed: Annotated[int | None, Field(description="Random seed for reproducibility")] = None
+    top_p: Annotated[
+        float | None, Field(description="Nucleus sampling top-p. None (the default): not sent.")
+    ] = None
+    seed: Annotated[
+        int | None,
+        Field(description="Random seed for reproducibility. None (the default): not sent."),
+    ] = None
     thinking_budget: Annotated[
-        int | None, Field(description="Thinking token budget (-1 dynamic, 0 disable)")
+        int | None,
+        Field(
+            description=(
+                "Thinking token budget (-1 dynamic, 0 disable). None (the default): -1 on "
+                "Gemini 3 Flash without a thinking_level and on Gemini 2.5 and gemini-flash "
+                "models, nothing on other models; Gemini 3 Pro ignores it."
+            )
+        ),
     ] = None
     thinking_level: Annotated[
-        str | None, Field(description="Thinking level (minimal/low/medium/high)")
+        str | None,
+        Field(
+            description=(
+                "Thinking level (minimal/low/medium/high), for Gemini 3 models. None (the "
+                "default): low on Gemini 3 Pro; Gemini 3 Flash then uses thinking_budget."
+            )
+        ),
     ] = None
     max_output_tokens: Annotated[int | None, Field(description="Maximum output tokens")] = 8096
     config: types.GenerateContentConfigDict | None = None
@@ -113,12 +131,43 @@ class ChatGoogle(ChatModelBase):
     ] = 60.0
 
     # Client initialization parameters
-    api_key: Annotated[str | None, Field(description="Google API key")] = None
-    base_url: Annotated[str | None, Field(description="Custom API base URL")] = None
-    vertexai: Annotated[bool | None, Field(description="Whether to use Vertex AI")] = None
+    api_key: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Google API key. None (the default): the client reads GOOGLE_API_KEY or "
+                "GEMINI_API_KEY."
+            )
+        ),
+    ] = None
+    base_url: Annotated[
+        str | None,
+        Field(
+            description="Custom API base URL. None (the default): the client's standard endpoint."
+        ),
+    ] = None
+    vertexai: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "Whether to use Vertex AI. None (the default): the client reads "
+                "GOOGLE_GENAI_USE_VERTEXAI."
+            )
+        ),
+    ] = None
     credentials: Credentials | None = None
-    project: Annotated[str | None, Field(description="Google Cloud project ID")] = None
-    location: Annotated[str | None, Field(description="Google Cloud location")] = None
+    project: Annotated[
+        str | None,
+        Field(
+            description="Google Cloud project ID. None (the default): the client reads GOOGLE_CLOUD_PROJECT."
+        ),
+    ] = None
+    location: Annotated[
+        str | None,
+        Field(
+            description="Google Cloud location. None (the default): the client reads GOOGLE_CLOUD_LOCATION."
+        ),
+    ] = None
     http_options: types.HttpOptions | types.HttpOptionsDict | None = None
 
     @property

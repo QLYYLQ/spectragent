@@ -24,8 +24,11 @@ class _NoSlotLoop(AgentLoopBase):
 
 
 def teardown_module():
-    AgentLoopRegistrar.unregister("test_slot_validation")
-    AgentLoopRegistrar.unregister("test_no_slot_validation")
+    # Idempotent: pytest tears a module down once per contiguous run of its
+    # tests, so a selection that interleaves files tears this one down twice.
+    for key in ("test_slot_validation", "test_no_slot_validation"):
+        if AgentLoopRegistrar.get_or_none(key) is not None:
+            AgentLoopRegistrar.unregister(key)
 
 
 class TestValidateSlots:

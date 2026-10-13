@@ -31,7 +31,12 @@ class ChatVercel(OpenAICompatBase):
     __registry_key__ = "openai.vercel"
 
     # --- Vercel-specific ---
-    provider_options: Annotated[dict[str, Any] | None, Field(description="Provider options")] = None
+    provider_options: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description="Provider options, sent as providerOptions. None (the default): not sent."
+        ),
+    ] = None
 
     @property
     def provider(self) -> str:

@@ -2,7 +2,7 @@
 
 A run record owned by the capability: emitted on the first collection and
 again only when it changed. Pinned facts come from the tier's parameters,
-``off`` facts are measured in the page; the launch flags are a digest, never
+``none`` facts are measured in the page; the launch flags are a digest, never
 the command line; the privacy section says what the bound archivers keep.
 """
 
@@ -79,11 +79,11 @@ async def _measure(plan: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
 
 
 async def test_off_measures_what_the_page_sees() -> None:
-    document = await _measure({"tier": "off", "params": {}})
+    document = await _measure({"tier": "none", "params": {}})
     assert document["page"] == {"source": "measured", **PROBE}
     assert document["chrome"]["product"] == "Chrome/155.0"
     assert document["viewport"] == {"width": 1280, "height": 720}
-    assert document["replayability"] == {"tier": "off", "params": {}}
+    assert document["replayability"] == {"tier": "none", "params": {}}
 
 
 async def test_pinned_states_its_parameters() -> None:
@@ -101,7 +101,7 @@ async def test_pinned_states_its_parameters() -> None:
 
 
 async def test_launch_flags_are_a_digest_and_the_command_line_never_appears() -> None:
-    document = await _measure({"tier": "off", "params": {}})
+    document = await _measure({"tier": "none", "params": {}})
     expected = hashlib.sha256(canonical_json(METADATA["launch_flags"])).hexdigest()
     assert document["launch_flags_sha256"] == expected == launch_flags_digest(METADATA)
     text = json.dumps(document)
@@ -110,13 +110,13 @@ async def test_launch_flags_are_a_digest_and_the_command_line_never_appears() ->
 
 
 async def test_privacy_says_what_the_archivers_keep() -> None:
-    with_network = await _measure({"tier": "off"})
+    with_network = await _measure({"tier": "none"})
     assert with_network["privacy"]["contains_session_state"] is True, "Set-Cookie is kept"
     assert with_network["privacy"]["level"] == "session_state"
     # Storage values are stored as they are: nothing per instance to report.
     assert with_network["redaction"]["archivers"]["browser.storage"] == {}
     assert with_network["redaction"]["policy"] == "af-privacy-1+browser-2"
-    dom_only = await _measure({"tier": "off"}, archivers=(DomRawArchiver(),))
+    dom_only = await _measure({"tier": "none"}, archivers=(DomRawArchiver(),))
     assert dom_only["privacy"] == {
         "contains_session_state": False,
         "fresh_profile": True,
@@ -132,7 +132,7 @@ async def test_ua_metadata_is_kept_across_a_plain_http_page() -> None:
     common: dict[str, Any] = {
         "recorder": recorder,
         "tabs": [TAB],
-        "plan_fingerprint": {"tier": "off"},
+        "plan_fingerprint": {"tier": "none"},
         "viewport": (1, 1),
         "session_metadata": None,
         "archivers": (),
@@ -173,7 +173,7 @@ async def test_off_probes_in_an_isolated_world_once_per_document() -> None:
     common: dict[str, Any] = {
         "recorder": recorder,
         "tabs": [TAB],
-        "plan_fingerprint": {"tier": "off"},
+        "plan_fingerprint": {"tier": "none"},
         "viewport": (1, 1),
         "session_metadata": None,
         "archivers": (),
@@ -261,7 +261,7 @@ def test_digest_ignores_routing_switches() -> None:
 
 
 async def test_a_live_run_records_its_source() -> None:
-    document = await _measure({"tier": "off", "params": {}})
+    document = await _measure({"tier": "none", "params": {}})
     assert document["network_source"] == {"source_id": "live"}
 
 
@@ -277,5 +277,5 @@ async def test_replay_block() -> None:
         "isolation": "required",
         "warnings": ["Chrome version differs"],
     }
-    document = await _measure({"tier": "off", "params": {}}, network_fingerprint=block)
+    document = await _measure({"tier": "none", "params": {}}, network_fingerprint=block)
     assert document["network_source"] == block

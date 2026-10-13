@@ -63,7 +63,7 @@ _CAPABILITY: dict[str, Any] = {
     "capability_id": "browser",
     "mouse_trajectory": {"trajectory_type": "instant"},
     "typing_rhythm": {"rhythm_type": "instant"},
-    "replayability": {"replayability_id": "off"},
+    "replayability": {"replayability_id": "none"},
     "network_source": {"source_id": "live"},
     "dom_cleaner": {"cleaner_type": "browser_use"},
     "dom_serializer": {"serializer_type": "text"},
@@ -813,6 +813,31 @@ class TestDeclaredConfigSurfaceIsReachable:
         assert set(cap._actions_by_name) == {"browser.scroll", "browser.done"}
         assert cap._actions_by_name["browser.scroll"] is run.instances("action")[0]
         assert cap._actions_by_name["browser.scroll"].default_amount == 900
+
+    @pytest.mark.parametrize(
+        ("actions", "expected"),
+        [("omitted", 16), (None, 16), ([], 0), ([{"action_id": "browser.done"}], 1)],
+        ids=["omitted", "null", "empty-list", "one-action"],
+    )
+    def test_omitted_actions_mean_every_wired_action_and_an_empty_list_none(
+        self,
+        composer: ConfigComposer,
+        actions: Any,
+        expected: int,
+    ) -> None:
+        """``[]`` always means empty (§4.2.1); only omission means the default.
+
+        With no top-level ``action:`` section the omitted receptor has nothing
+        to adopt, so the capability keeps its own default instead of the
+        Composer's empty pool.
+        """
+        capability = dict(_CAPABILITY)
+        if actions != "omitted":
+            capability["actions"] = actions
+        run = composer.compose(
+            {"environment": [{"env_type": "browser", "capabilities": [capability]}]}
+        )
+        assert len(run.single("capability").provided_actions) == expected
 
 
 # ── Every value the shipped YAML states must reach the object that reads it ──

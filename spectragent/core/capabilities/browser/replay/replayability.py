@@ -2,7 +2,7 @@
 
 A replayability *tier* is a ``BrowserCapability`` receptor
 (``__wiring__["replayability"]``), with the shape of ``typing_rhythm``: the
-strategy is the switch, ``off`` is the default and the no-op, and there is no
+strategy is the switch, ``none`` is the default and the no-op, and there is no
 boolean beside it. A tier owns three things and nothing else:
 
 - the Chrome **launch switches** only it may set (:meth:`launch_args`,
@@ -75,11 +75,11 @@ class ReplayabilityPlan(RecorderParticipantBase):
 
 @runtime_checkable
 class ReplayabilityProtocol(Protocol):
-    """A replayability tier (``off`` / ``pinned``)."""
+    """A replayability tier (``none`` / ``pinned``)."""
 
     @property
     def replayable(self) -> bool:
-        """``False`` only for ``off``: the strategy is the switch."""
+        """``False`` only for ``none``: the strategy is the switch."""
         ...
 
     @property
@@ -101,7 +101,7 @@ class ReplayabilityProtocol(Protocol):
         ...
 
     def launch_args(self) -> tuple[str, ...]:
-        """Chrome switches this tier owns; ``()`` for ``off``."""
+        """Chrome switches this tier owns; ``()`` for ``none``."""
         ...
 
     def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan:
@@ -122,7 +122,7 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
     Each tier sets ``__registry_key__`` explicitly (the YAML-facing
     ``replayability_id``) and takes its knobs as ``__init__`` keyword
     parameters. Only genuinely safe defaults live here: a tier is replayable
-    unless it is ``off``, and its clock starts at the run unless it says
+    unless it is ``none``, and its clock starts at the run unless it says
     otherwise. The launch switches, the DPR (``device_scale_factor``, a
     property or a knob attribute) and the plan have no safe default and must
     be written by every tier.
@@ -155,11 +155,11 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
 
 
 def default_replayability() -> ReplayabilityProtocol:
-    """The tier used when no configuration named one: ``off``.
+    """The tier used when no configuration named one: ``none``.
 
     Not a registry lookup — the receptor is the configuration surface; this
     is the framework's answer for a hand-built capability.
     """
-    from spectragent.core.capabilities.browser.replay.off import OffReplayability
+    from spectragent.core.capabilities.browser.replay.none import NoneReplayability
 
-    return OffReplayability()
+    return NoneReplayability()

@@ -192,12 +192,15 @@ class TestDefaultActionInstantiation:
         assert set(cap._actions_by_name) == {"browser.scroll", "browser.click"}
         assert cap.provided_actions == frozenset({"browser.scroll", "browser.click"})
 
-    def test_empty_list_falls_back_to_the_full_wired_set(self) -> None:
-        """The Composer setattrs ``[]`` when no top-level pool exists."""
+    def test_an_empty_list_builds_no_action(self) -> None:
+        """``[]`` always means empty; only ``None`` (omitted) means the full set."""
+        assert BrowserCapability(actions=[]).provided_actions == frozenset()
         cap = BrowserCapability()
         # ``actions`` has a property setter; conscribe's stub writer only
         # emits the getter, so pyright sees it as read-only.
         cap.actions = []  # type: ignore[misc]
+        assert cap._actions_by_name == {}
+        cap.actions = None  # type: ignore[misc]
         assert len(cap._actions_by_name) == 16
 
     def test_action_the_capability_does_not_provide_raises(self) -> None:

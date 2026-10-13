@@ -25,8 +25,12 @@ class ChatOpenRouter(OpenAICompatBase):
     __registry_key__ = "openai.openrouter"
 
     # --- OpenRouter-specific ---
-    http_referer: Annotated[str | None, Field(description="HTTP referer")] = None
-    extra_body: Annotated[dict | None, Field(description="Extra body params")] = None
+    http_referer: Annotated[
+        str | None, Field(description="HTTP referer. None (the default): no HTTP-Referer header.")
+    ] = None
+    extra_body: Annotated[
+        dict | None, Field(description="Extra request body fields. None (the default): none.")
+    ] = None
 
     @property
     def provider(self) -> str:
