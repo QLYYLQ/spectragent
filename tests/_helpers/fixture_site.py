@@ -161,8 +161,16 @@ FLYWHEEL_SCENARIOS: tuple[str, ...] = ("flywheel_shop", "flywheel_drift", "flywh
 #: two frames from the other site (the second added after 1 s) and a button
 #: opening a same-site popup; ``owner.html`` reports its time zone and locale
 #: to ``/new_tab/owner_report`` every 250 ms — what a frame reads once the frame
-#: that set its process's overrides is gone.
+#: that set its process's overrides is gone. For following a new tab (§4.14
+#: "页面新开的标签页"): the ``closes`` link opens a ``target.html`` that closes
+#: itself :data:`NEW_TAB_CLOSES_AFTER_MS` after it loads, and ``timer.html``
+#: opens a tab on its own :data:`NEW_TAB_TIMER_MS` after it loads, with no user
+#: activation.
 NEW_TAB_SCENARIOS: tuple[str, ...] = ("new_tab",)
+#: When the ``closes`` link's tab closes itself, after it loads.
+NEW_TAB_CLOSES_AFTER_MS = 1500
+#: When ``timer.html`` opens its tab, after it loads.
+NEW_TAB_TIMER_MS = 1500
 #: Where ``new_tab/page.html`` puts its controls: ``(left, top, width, height)`` in CSS px.
 NEW_TAB_BOXES: dict[str, tuple[int, int, int, int]] = {
     name: (20, 20 + 50 * i, 400, 36)
@@ -177,6 +185,7 @@ NEW_TAB_BOXES: dict[str, tuple[int, int, int, int]] = {
             "window_open_cross_site",
             "slow",
             "replay",
+            "closes",
         )
     )
 }
@@ -1093,6 +1102,11 @@ class FixtureSite:
                 ),
                 control("slow", "link", f'href="{url("slow", slow=2)}" target="_blank"'),
                 control("replay", "link", f'href="{url("replay")}" target="_blank"'),
+                control(
+                    "closes",
+                    "link",
+                    f'href="{url("closes", close=NEW_TAB_CLOSES_AFTER_MS)}" target="_blank"',
+                ),
             )
         )
         opener = self._page(
@@ -1124,6 +1138,11 @@ class FixtureSite:
                 extra += (
                     "<script>setTimeout(() => { location.href = "
                     f"'{target}?how={how}&n=2&sub={query.get('sub') or 0}'; }}, 300);</script>"
+                )
+            if query.get("close"):
+                extra += (
+                    "<script>addEventListener('load', () => setTimeout(() => window.close(), "
+                    f"{int(query['close'])}));</script>"
                 )
             page = self._page(
                 f"{how} {n}",
@@ -1175,8 +1194,15 @@ class FixtureSite:
         def json_ok(handler: _Handler, _body: bytes) -> None:
             self._send(handler, 200, b'{"ok": true}', _JSON)
 
+        timer = self._page(
+            "timer",
+            "<p>timer</p><script>addEventListener('load', () => setTimeout(() => "
+            f"window.open('{url('timer')}'), {NEW_TAB_TIMER_MS}));</script>",
+        )
+
         return {
             "/new_tab/page.html": static(opener, _HTML),
+            "/new_tab/timer.html": static(timer, _HTML),
             target: document,
             "/new_tab/cacheable.js": cacheable,
             "/new_tab/worker.js": static(worker, _JS),

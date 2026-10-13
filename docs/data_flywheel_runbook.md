@@ -87,6 +87,8 @@ pinned 启动的 Chrome 带着环境变量 `TZ=<timezone>`。Chrome 的时区与
 
 页面打开的新 tab（`target=_blank` 链接、`window.open`）从第一个请求起就被扣住、录下、pin 住，不论它能不能访问打开它的页面；`create_tab(url)` 打开的 tab 先建成 `about:blank`，recorder 准备好之后再导航。
 
+agent 的动作让当前页开了新 tab 时，下一次观测看到的就是这个新 tab（capability 的 `new_tabs`，默认 `follow`，与真实浏览器把新 tab 提到前台一样）；页面在没有用户点击的情况下自己开的 tab 不跟。录制、回放、分叉按同一条规则走，三份配置用同一个值（发布的配置都用默认值）：分叉的前缀回放重新执行录下的点击，焦点在同一次观测之前再跟过去一次，恢复校验比较的就是跟过去之后的那个 tab；两边的值不一样时，第一处跟随就以 `url_mismatch` 发散。焦点移过的那次观测，每个 fragment 都记着 `focus_moved`（原因、从哪个 tab 到哪个 tab），查 trace 时看这里。
+
 ## 读回 env/ 里的证据
 
 `env/` 下的每个文件都登记在每步和收尾的 extra 索引里，manifest 是提交点（[architecture_design.md](architecture_design.md) §5.3、§5.5）。按路径直接打开或 glob 可能读到崩溃时没提交成的文件。用 `RunTrace` 的访问器读：它们只认已提交的文件，并按索引核对大小和 sha256。

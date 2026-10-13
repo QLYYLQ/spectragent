@@ -38,6 +38,7 @@ from spectragent.core.capabilities.browser.dom.models import (
     traced_fields,
 )
 from spectragent.core.capabilities.browser.settle import PageSettle
+from spectragent.core.capabilities.browser.tabs import FocusMove
 from spectragent.schemas.observation._registrar import FragmentBase
 from spectragent.schemas.observation.image import image_suffix
 
@@ -385,7 +386,7 @@ def _relink(root: DOMElementNode) -> None:
 
 
 class BrowserCaptureFragment(FragmentBase):
-    """What every fragment of one browser capture shares: how the capture waited.
+    """What every fragment of one browser capture shares: how the capture waited, and on which tab.
 
     One capture serves every negotiated browser fragment of an observation
     cycle, after one settle wait (``settle.py``, §4.14). ``settle`` records
@@ -394,16 +395,31 @@ class BrowserCaptureFragment(FragmentBase):
     browser fragment the run negotiated. ``None`` — and then left out of the
     trace JSON: the wait is turned off (``settle_max_wait_s: 0``), or the
     fragment was not served by an observation (a test built it).
+
+    ``focus_moved`` is the same kind of record: the capability moved the
+    agent's focus to another tab before this capture — it followed a tab the
+    page opened during the agent's actions, or left a focused tab that closed
+    itself (``tabs.py``, §4.14 "页面新开的标签页"). ``None`` — and then left
+    out of the trace JSON — when the focus stayed where it was, so an
+    observation without a move writes what it always wrote. No agent renders
+    either field.
     """
 
     __abstract__ = True
 
     settle: PageSettle | None = None
+    focus_moved: FocusMove | None = None
 
     def trace_json_exclude(self) -> set[str]:
         # Left out of the trace when there is no record, so a fragment that was
-        # never served by a waiting observation writes what it always wrote.
-        return set() if self.settle is not None else {"settle"}
+        # never served by a waiting observation, or captured the tab the agent
+        # was already on, writes what it always wrote.
+        excluded: set[str] = set()
+        if self.settle is None:
+            excluded.add("settle")
+        if self.focus_moved is None:
+            excluded.add("focus_moved")
+        return excluded
 
 
 class DOMObs(BrowserCaptureFragment):

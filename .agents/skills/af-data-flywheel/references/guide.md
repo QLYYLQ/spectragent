@@ -196,6 +196,14 @@ uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
   `rel=noopener`, `window.open(..., 'noopener')` — answers its page-side commands only after
   it runs; architecture §4.14, "逐 target 的准备流水线"). `create_tab(url)` creates the tab at
   `about:blank` and navigates it once the recorder prepared it.
+- The agent's focus follows a tab its actions opened (`new_tabs: follow`, the capability's
+  default; architecture §4.14 "页面新开的标签页"): the observation after the actions shows
+  the newest tab the focused tab opened during them, unless Chrome reported it opened without
+  the user's activation (`Page.windowOpen{userGesture: false}`: a popup a page opens as it
+  loads or from a timer, one click's second window). A focused tab that closes itself hands
+  the focus to the tab that opened it, under `stay` too. Every fragment of that capture
+  carries `focus_moved{reason, from_tab, to_tab}`; record, replay and branch configs keep
+  one `new_tabs` value.
 - Evidence lands in `traces/<run>/env/`. A run that binds no archiver has no `env/` at all.
 
 ### 2.2 Replay
@@ -358,6 +366,12 @@ uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml -
 - Write branch runs outside the sources glob; the shipped file sets the trace writer's
   `trace_dir` to `traces/branches`. A branch run is unbranchable, so under
   `on_unbranchable: raise` it would stop the next sweep.
+- Focus moves are not restored on their own: `prefix_replay` re-executes the recorded actions
+  and observes as the recording did, so a tab the recording followed is followed again by the
+  same rule, before the same observation, and the check compares the tab captured. A move not
+  reproduced shows as `url_mismatch` or `screenshot_distance`. `browser.switch_tab` is
+  re-targeted by the tab's position in `browser_meta.tabs`, which lists tabs in the order they
+  opened, the same order in both runs.
 - Same-path replay is a branch sweep (`configs/flywheel/same_path_ui_tars_archive.yaml`):
   `step_selector: last`, `continue_steps: 0`, `verify: warn` so every step gets a check,
   `branches_per_step: 2` for replay determinism, `agent_outcome: any`,
@@ -934,6 +948,15 @@ value on an existing one.
   compares the recorded and restored observations as they are: there is no capture taken
   for verification only. Cost: at least one quiet window per observation, the cap on every
   step of a page that never goes quiet.
+- The focus moves only at an observation, never inside an action (`tabs.py`, architecture
+  §4.14 "页面新开的标签页"): the agent's action opens the follow window, the first fragment of
+  the next observation decides (after one `Target.getTargets`, before the navigation and
+  settle waits, which then run on the tab captured), the end of the waits decides again from
+  events alone, and the capture closes the window. Every action of one step therefore acts
+  on the tab the step observed. The decision reads the control connection's target discovery
+  (`TabRegistry`), so it is the same with or without the recorder, in recording, replay and
+  branching. Each fragment of the capture carries `focus_moved` (`None` and left out of the
+  trace JSON when nothing moved); agents never render it.
 - Fail closed, two ledgers. A lost recorder fails observation, action and collection
   (`RecorderLostError`). A collection that fails, or hands over a batch that breaks the
   contract, is a hole: its step stays uncommitted, the trace closes `incomplete`, complete
@@ -1041,6 +1064,8 @@ value on an existing one.
 | A main-frame document miss (`diverged`) | The page asked for a document the recording never fetched, such as a time-stamped URL. A restored step shows `document_miss` |
 | `IncompatibleCheckpointError` | The branch's agent, closed-set or numeric knobs, memory, `max_actions_per_step`, negotiation, seed messages or replayed calls differ from the source's; the error names both values. Fix the branch YAML |
 | `RestorationDivergedError` | `verify: strict` met a failed check; read `StepRecord.restoration.reasons`. `verify: warn` records every step's check for diagnosis |
+| A restored step right after a click shows `url_mismatch` against a URL from another tab | Compare the step's `focus_moved` in the source and the branch (any browser fragment of that step's observation): the branch's `new_tabs` differs from the recording's, or the tab opened later than the observation captured in one of the runs. Record, replay and branch keep one `new_tabs` |
+| An agent keeps clicking a link that opens a new tab and sees no change | The run has `new_tabs: stay`, or the tab never finished its first navigation within 10 s (a WARNING `the focus cannot move to tab ...`), or Chrome reported it opened without the user's activation (the tab is listed in `browser_meta.tabs`, the trace has no `focus_moved`) |
 | A branch sweep refuses its sources, or lists no tasks | The reasons in `loader.skipped` (`spectragent-bench --list`); `on_unbranchable: skip`. Branch and replay runs are never sources |
 | The bench refuses before starting: no eval loader for `trace_branches` | Pass `--no-eval` |
 | `ExportEmptyError` | The counts in the message; most often a `require_eval` over runs nobody evaluated, or `decontamination.against` listing the benchmark the sources were recorded on (§2.4) |

@@ -213,6 +213,23 @@ agent:
 
 Which grid a given model uses is not something to guess from its name: check a few of its answers against known element positions before a run. A point off the grid is clamped onto the edge of the viewport.
 
+## New tabs
+
+When the page an agent acts on opens a new tab — a `target=_blank` link or form, a button calling `window.open` — the next observation shows the new tab, as a real browser brings it to the front. This holds for every agent, including `ui_tars`, which has no `browser.switch_tab`. It is a capability knob:
+
+```yaml
+capabilities:
+  - capability_id: browser
+    new_tabs: follow       # the default; stay: the agent stays on its tab (the behaviour before)
+```
+
+- **Which tab is followed.** A tab the agent's tab opened during the agent's actions, from the first action after an observation until the next observation captures; of several, the last one opened. A tab a page opens on its own without the user's activation — a popup it opens as it loads or from a timer, the second window of one click, the ones a real browser's popup blocker stops — is listed in `browser_meta`'s tabs and not followed. So is a tab a page opens between an observation and the agent's next action. After a `browser.switch_tab` the agent's own choice stands: only tabs the newly focused tab opens from then on are followed.
+- **A tab that closes itself.** When the tab the agent is on closes itself (`window.close()`), the agent goes back to the tab that opened it, or to the most recently opened tab still open. This holds under `stay` too: there is nothing left to stay on.
+- **What the observation waits for.** The observation's navigation and settle waits run on the followed tab; a tab that does not finish its first navigation within 10 s is not followed (a warning says so).
+- **What the trace says.** Every fragment of the capture that followed a tab carries `focus_moved: {reason: new_tab | tab_closed, from_tab, to_tab}` (the `tab_id`s `browser_meta` lists); a capture that moved nothing writes no such key. No agent renders it; a prompt differs only because the page it shows is another one.
+- **Tab order.** `browser_meta.tabs`, and the "most recently opened tab" of `browser.switch_tab` with `target_id: null`, follow the order the tabs opened, not Chrome's own tab list.
+- **Recording, replay and branching** apply the same rule, so all three configs use one value; the shipped ones use the default. The value is recorded raw in `config.json`. A branch whose `new_tabs` differs from its recording's diverges at the first tab the recording followed (`url_mismatch`).
+
 ## Switching backend
 
 Edit only `environment[0].capabilities[0].backend`:
@@ -413,9 +430,11 @@ task_loader:
   sees exactly what the source agent saw — and every recorded model call is replayed through
   the agent's parser and checked against the recording. The browser replays the source's
   archive; `prefix_replay` re-executes the recorded actions (element indexes re-found by
-  position and signature within `retarget_tolerance_px`, tab ids by tab order and URL) and
-  verifies every step: URL, interactive-element signatures, screenshot hash distance, main
-  -frame document misses, action outcomes. The restored steps are recorded as
+  position and signature within `retarget_tolerance_px`, tab ids by their position in the
+  order the tabs opened and their URL) and verifies every step: URL, interactive-element
+  signatures, screenshot hash distance, main-frame document misses, action outcomes. A tab
+  the recording's actions opened is followed again by the same rule (`new_tabs`, above), so
+  the restored observation is of the same tab. The restored steps are recorded as
   `origin: restored` with their check; step *t* and the `continue_steps` after it are the
   teacher's (`origin: policy`); the terminal observation is `origin: terminal`. A branch
   run is a replay, so its trace hook binds `browser.replay_log` in `browser.network`'s

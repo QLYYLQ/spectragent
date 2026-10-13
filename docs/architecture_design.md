@@ -1249,7 +1249,9 @@ class ScreenshotWatchdog(BrowserWatchdog):
 
 # BrowserCapability 从注册表发现 watchdog，按 level 建立 scope 连接；
 # negotiated fragments 决定一次 BrowserStateRequestEvent 激活哪些 resolver。
-# 这一次采集之前先等页面落定（§4.14 "观测之前等页面落定"）：一次采集一个等待，
+# 这一次采集之前先决定焦点在哪个 tab（§4.14 "页面新开的标签页"：跟过去 agent 的动作
+# 打开的 tab、离开自己关掉的 tab，移了就记在每个 browser fragment 的 focus_moved 上），
+# 再等页面落定（§4.14 "观测之前等页面落定"）：一次采集一个等待，
 # 所有 fragment 共用，记在每个 browser fragment 的 settle 上。
 ```
 
@@ -2578,7 +2580,7 @@ BrowserCapability
 - **消息上限**：控制连接的 `max_frame_size` 是 100 MiB（af 自己的设置），超过就以 1009 关掉整条连接，所以一个大响应体或大上传（`Fetch.requestPaused` 把 POST body 带两份：`postData` 和 base64 的 `postDataEntries`）不能走控制连接，否则会带走 agent。Chrome 自己的上限分方向：它**读入**的一条 CDP 消息至多 100 MiB（DevTools HTTP server 的读缓冲，约合 75 MiB 的 base64 body），超过直接断开 socket，这只约束发给 Chrome 的消息，也就是回放的 `Fetch.fulfillRequest`（`max_fulfill_body_bytes`，下面"回放"）；它**发出**的一条消息至多 256 MiB（发送缓冲），超过的那条回复被悄悄丢掉、连接不断（2026-10-12 实测，Chrome 155：150 MiB 的 body 照常收到，200 MiB 的 body 没有回复）。所以 100 MiB 不限制录制：recorder 客户端不设帧上限，录制时哪些 body 存不下，由 `browser.network` 自己的分档决定（下面"体积分档"）。
 - **队头阻塞**：大帧会堵住 agent 的命令回复。
 - **暂停**：被 Fetch 扣着的请求一直卡住页面，直到有人应答；这条通道需要自己的事件处理，不能排在观测后面。
-- **早接管**：只有 browser 级 auto-attach 加 `waitForDebuggerOnStart`，才能在弹窗、worker、OOPIF 的第一个请求和第一个脚本之前做好准备；控制连接要到 `switch_tab` 才接管弹窗。
+- **早接管**：只有 browser 级 auto-attach 加 `waitForDebuggerOnStart`，才能在弹窗、worker、OOPIF 的第一个请求和第一个脚本之前做好准备；控制连接要到焦点移过去（`switch_tab`，或下面"页面新开的标签页"的跟随）才接管弹窗。
 
 recorder 连接的 `CDPClient` 用 `compression=None`（websockets 默认与 Chrome 协商 permessage-deflate，大帧慢 13–48 倍）、`proxy=None`（websockets 默认读 `http_proxy`，loopback 的 CDP 流量会绕道本机代理）、`max_frame_size=None`。控制连接对 loopback 端点（`localhost`、`127.0.0.0/8`、`::1`）同样用 `proxy=None` 与 `compression=None`（`cdp_client.transport_options`）：M29 实测（Chrome 153，同一个 target 经两个客户端各取 9 次）23 MB 的 `DOMSnapshot.captureSnapshot` 中位数 1066 ms 对 deflate 的 1237 ms（p90 1083 对 1318），300 个元素的页面 15.2 对 18.0 ms，两边的回复 sha256 相同。逐字节不变而且确实更快，所以关掉。远端端点保持 websockets 的默认（环境代理、压缩），没有在真实网络上测过。
 
@@ -2852,6 +2854,24 @@ M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚
 - **与观测的落定等待**（上一节）是两份预算：导航的生命周期等待属于动作，落定等待属于观测，`MainFrameLoad` 只记观测为一个文档等过多久。`load` 永远不来的页面因此一共多花：导航的生命周期上限（默认 30 s）一次，之后第一次观测的落定上限（默认 5 s，记为 `capped`、`waiting_for: [load, dom]`）一次；之后的观测不再等它的 `load`，只量静默窗口。`load` 在上限之内到了的页面，导航等到它，观测的落定只量静默窗口。
 - **回归**：`test_navigate_lifecycle.py`（fake CDP：提交超时、Chrome 拒绝、`errorText`、同文档导航、生命周期超时只记警告、事件上限由两段推出）；`test_browser_navigate_live.py`（真实 Chrome，本地页面里一张图片的响应永远不结束：setup 在生命周期上限之后记警告并成功，第一次观测在落定上限处采集、第二次不再等 `load`；服务器一直不回应的导航在提交上限之后失败，setup 报 could not open start_url；204 立即失败）。
 
+#### 页面新开的标签页：焦点跟过去（与归档无关）
+
+2026-10-14 为 LexBench L1 的中文站点做零 token 筛选时（本地的 `tmp/flywheel/followup/live2/screening.md`）发现：agent 的焦点只有 `browser.switch_tab` 能移动，UI-TARS 又没有这个动作，于是点了一个在新标签页打开的链接，下一次观测看到的还是原来的页面，像是点击没有发生。选出的站点里这样的链接很多（机核 81/81、起点 886/960、AcFun 367/451、腾讯视频 44/80）。用户的裁决（2026-10-14）：动作让当前页打开了新标签页，就像真实浏览器一样把它提到前台，下一次观测看到新页；对所有 agent 一样，录制、回放、分叉按同一条规则走；capability 上加一个封闭选项（跟随 / 不跟随），默认跟随。
+
+- **选项**：`BrowserCapability.new_tabs: follow | stay`（默认 `follow`；封闭的集合，原样记进 `config.json`）。`stay` 就是这之前的行为：焦点留在原来的 tab，新 tab 列在 `browser_meta` 的 tab 列表里，只有 `switch_tab` 能过去。录制、回放与分叉要用同一个值（发布的配置都用默认值）；它不进环境指纹，两边不一致时，第一处该跟随的地方就以 `url_mismatch` 发散。
+- **跟哪个 tab**（`core/capabilities/browser/tabs.py` 的 `tabs_to_follow`，纯函数）：从上一次观测之后 agent 的第一个动作开始、到下一次观测采集为止（"跟随窗口"），由窗口开始时焦点所在的 tab 打开的 page target（`Target.targetCreated` 的 `openerId` 是它），采集时还开着，Chrome 也没有报告它是在没有用户激活的情况下打开的（`Page.windowOpen{userGesture: false}`），里面最后打开的那一个：真实浏览器里每个前台新 tab 都盖在前一个上面。没有用户激活的那些（页面加载时自己弹的、计时器弹的、一次点击开的第二个窗口）真实浏览器的弹窗拦截会拦下；af 的 Chrome 关着拦截（`--disable-popup-blocking`），它们照样开着、列在 tab 列表里，焦点不过去。跨站 iframe 里的链接开的 tab 收不到 `Page.windowOpen`（它发在 iframe 自己的 session 上，控制连接不听），按"不知道"处理，照样跟。窗口里 `switch_tab` 成功之后，窗口从新焦点重新开始：agent 自己选了看哪里，之前开的 tab 不再跟，新焦点之后开的照样跟。不跟的：观测采集之后、下一个动作之前页面自己开的 tab（计时器、广告）；窗口开始时焦点所在 tab 之外的 tab 开的；setup 打开起始页时开的（起始页不是 agent 的动作，走内部的同一条执行路径 `_run_action`，不开窗口）。
+- **自己关掉的 tab**（`tabs_after_close`）：焦点所在的 tab 自己关掉（`window.close()`）时，焦点回到打开它的 tab（还开着的话），否则回到最近打开的、还开着的 tab，与真实浏览器一样。这一条与选项无关：`stay` 下焦点也没有可以留的地方。一个 tab 都不剩时这次观测失败，错误点名那个 tab（整个 cycle 一个错误，同一个 cycle 的其余 fragment 拿到同一个异常）。焦点所在的 tab 已经关了、观测还没把焦点移走时执行的动作立即失败，错误说那个 tab 自己关了、下一次观测看到焦点移去的 tab。
+- **怎么知道**：控制连接在 setup 时、接管初始 tab 之前开 `Target.setDiscoverTargets{discover: true, filter: [{type: "page"}]}`（已经开着的 tab 在它的回复之前就报上来），`TabRegistry` 按打开的先后记下每个 tab（`type: page`，没有 `subtype` 的 target）、它的 opener、URL、是否已关，以及与它配对的 `Page.windowOpen`：同一个 opener 的 session 上、它之前 2 s 之内到的那一条（实测先到约 10 ms；控制连接接管的每个 tab 都开着 `Page.enable`，所以收得到）。浏览器不接受 discovery 时记一条 WARNING，照这之前的样子跑：不跟随、不离开关掉的 tab、tab 列表按 `Target.getTargets` 的顺序。
+- **什么时候移**：`execute_action`（agent 的动作）在没有窗口时开一个；观测的第一个 fragment 先决定焦点（`_settle_focus`）：窗口开着、或者已知焦点 tab 关了时，先发一次 `Target.getTargets`（屏障：此刻开着的 tab 的 `targetCreated` 都在它的回复之前到；它也说出哪些 tab 还开着），再按上面两条规则移；之后才是等在途的导航与等页面落定（上面两节），所以两样都在跟过去的 tab 上做。等完、采集之前再按同一规则查一次（只读事件，不发命令）：等待期间才开的 tab（点击的处理函数先发请求、回来再 `window.open` 的页面）或刚关掉的焦点 tab 也照规则处理，然后在新焦点上重新等，不算一次重发。一次观测最多移 3 次焦点（页面每被跟一次就再开一个 tab 时，不让观测一直等下去）。采集完窗口关闭，无论这次采集成败。
+- **怎么移**：与 `switch_tab` 同一段代码（`_move_focus`）：懒接管（`_attach_tab`）、`Target.activateTarget`（实测：新 tab 变 `visible`，原来的变 `hidden`，与真实浏览器一样）、丢掉它旧的 cycle 缓存。跟随的接管有上限（`_FOLLOW_ADOPT_TIMEOUT_S`，10 s，与等在途导航同一个上限）：第一个导航还在途的 tab，第一条页面一侧的命令（`Page.enable`）要等那个导航提交才应答（实测：文档 2 s 才回，`Page.enable` 2.0 s 后才应答，不论 tab 能不能够到 opener），所以接管本身就等到了第一次提交；之后 `Page.setLifecycleEventsEnabled` 让 Chrome 把当前文档的生命周期事件再报一遍，落定等待由此知道它加载完没有。接管不了的（超时、tab 已经没了）这次运行里不再试，换更早的候选，都不行就留在原处并记 WARNING。接管过、又被页面关掉的 tab，它的 bridge、导航跟踪、watchdog 与各张映射在下一次决定焦点之后释放（与 `close_tab` 同一段代码 `_release_tab`，只是不再关 target）；它的两个 scope 空着留到 teardown 一起关：agent-cdp 关一个 scope 实测约 250 ms，不该算在发现 tab 已关的那次观测上。
+- **trace 里看得出焦点移了**：这次采集的每个 browser fragment 上都有同一份 `focus_moved: FocusMove{reason: new_tab | tab_closed, from_tab, to_tab}`（tab 是 CDP targetId，即 `browser_meta.tabs` 的 `tab_id`；`from_tab` 是这次观测开始时的焦点，`to_tab` 是采集的那个 tab），与 `settle` 一样放在 `BrowserCaptureFragment` 上：采集之前移了焦点，是这次采集的出处，只协商截图的 run（UI-TARS）也找得到。没有移、或者移了又回到原处时是 `None`，trace 的 JSON 里不写这个键，字节与以前相同。agent 自己的 `switch_tab` 不记在这里，它就是那一步的动作。所以离线读者在第 t 步观测的任一 browser fragment 上就看得到：采集之前焦点从哪个 tab 移到哪个、为什么（`new_tab`：上一步的动作让原来的 tab 开了这个 tab）。
+- **agent 不变**：没有 agent 渲染 `focus_moved`，提示词只因为观测本身看到了新页面而不同；同一个观测，UI-TARS 的提示词与这之前逐字节相同（测试按这之前那个提交上测出的摘要钉住），三个 agent 有没有这条记录提示词都相同。`switch_tab` 照旧可用。
+- **tab 列表按打开的先后**：`browser_meta.tabs` 与 `switch_tab` 的候选按 `TabRegistry` 的先后排，不再按 `Target.getTargets` 的顺序（实测不是打开的先后：打不到 opener 的 tab 排在 opener 前面，`window.open` 开的排在后面）；所以 `switch_tab` 的 `target_id: null`（"最近打开的 tab"）名副其实，恢复时按位置重定位 `switch_tab`（下面"恢复"），两边的位置也是同一个意思。
+- **回放与分叉**：规则不看网络来源。`archive` 回放里同一个动作开同一个 tab（第一个文档从归档送出，见上面的事实表与 `test_browser_replay_live.py`），焦点照样跟过去。前缀回放经 `act_fn` 重新执行录下的动作、经 `env.observe` 观测，窗口与跟随和录制时一样，所以焦点的移动被重现；恢复校验比较的是采集到的那个 tab 的 URL、元素签名与截图，没有重现的移动表现为 `url_mismatch` / `screenshot_distance`。`core/loops/restore/` 从不指名哪个 tab，没有要改的地方。
+- **实测**（2026-10-14，Chrome 155 headless；探针在本地的 `tmp/flywheel/followup/follow_tabs/`）：不带 `rel`、`rel=noopener`、`rel=opener` 的 `target=_blank` 链接，`window.open` 带不带 `noopener`，`target=_blank` 的表单，同站与跨站 iframe 里的链接，`targetCreated` 的 `openerId` 都是打开它的 tab（iframe 里的链接另有 `openerFrameId`），都在点击的回复之前到；`Page.windowOpen` 在打开它的 tab 的 session 上，早 7–13 ms，`userGesture` 对点击是 `true`（处理函数 800 ms 之后、或等一个 fetch 回来再开的也是），对页面加载时自己弹的与一次点击开的第二个窗口是 `false`，跨站 iframe 里的链接没有；下载开的 tab 约 75 ms 后被 Chrome 关掉；204 开的 tab 留在空白页；接管自己关掉的 tab 之后，`Target.detachedFromTarget` 与 `targetDestroyed` 同时到，之后发到它 session 的命令立即报 "Session with given id not found"。
+- **残余**：跟过去的 tab 第一次布局用的是窗口大小，接管时才收到 viewport 的 override（`local_chrome` 默认窗口 1280×720，与默认 viewport 相同）；接管超过 10 s 的 tab（第一个文档一直不回）不跟，agent 看到的是没有变化的原页面；204 开的空白 tab 也会被跟过去（真实浏览器同样显示它），没有 `switch_tab` 的 agent 只能等它自己关掉；同一个点击开的多个 tab，后到的 `Page.windowOpen` 与先到的 tab 不再配对（2 s 之后过期），极少见的乱序会让一个没有激活的 tab 被当成"不知道"而跟过去。
+- **回归**：`test_browser_tabs.py`（纯函数：打开的先后、配对与过期、窗口、opener、已关、没有激活、关掉之后去哪、trace 往返）；`test_browser_follow_tab.py`（fake CDP：跟过去并记下、多个取最后、没有激活不跟、不知道照跟、窗口外不跟、别的 tab 开的不跟、起始页不开窗口、`stay`、等待中才开的、`switch_tab` 重开窗口、接管超时换上一个、关掉回 opener / 最近的、`stay` 也离开关掉的 tab、对关掉的 tab 动作失败、一个 tab 都不剩、tab 列表的顺序、浏览器拒绝 discovery、teardown 放开回调）；`test_browser_follow_tab_live.py`（真实 Chrome，fixture 的 `new_tab` 页：四种打开方式都跟过去、`stay`、跟过去的 tab 自己关掉、计时器与加载时弹的不跟、`switch_tab` 照旧；录一个跟过新 tab 的 run，离线回放沿同一路径、分叉的前缀恢复逐步校验通过且焦点的移动被重现）；`tests/test_agents/test_focus_moved_prompts.py`（三个 agent 的提示词不受这条记录影响，UI-TARS 的提示词按这之前的摘要钉住）。
+
 #### 回放：网络来源与 miss 策略（M30）
 
 两根 browser 内部的策略轴，都在 `core/capabilities/browser/replay/`，与 `replayability` 同一种受体形状（策略即开关，单实例受体在生成的 schema 里必填）：
@@ -3005,7 +3025,7 @@ class ArchiveReader(Protocol):
 | 录下的动作 | 方式 |
 |---|---|
 | 带元素 index 的动作：`browser.click`、`browser.type`、`browser.select_dropdown`，以及带了 `index` 的 `browser.scroll` / `browser.extract_content` | 几何再签名（`method="geometry_signature"`），见下 |
-| `browser.switch_tab`（`target_id` 是每个浏览器新生成的 CDP targetId） | 按 tab 顺序与 URL（`method="tab_order_url"`）：在录下观测的 `browser_meta.tabs` 里找到这个 `target_id` 的位置，恢复出的 `tabs` 同一位置的 tab URL 相同就换成它的 id；`target_id` 为空（"最近打开的 tab"）原样 |
+| `browser.switch_tab`（`target_id` 是每个浏览器新生成的 CDP targetId） | 按 tab 顺序与 URL（`method="tab_order_url"`）：在录下观测的 `browser_meta.tabs`（按 tab 打开的先后排，上面"页面新开的标签页"）里找到这个 `target_id` 的位置，恢复出的 `tabs` 同一位置的 tab URL 相同就换成它的 id；`target_id` 为空（"最近打开的 tab"）原样 |
 | 坐标动作、导航（`navigate` / `go_back` / `go_forward`）、`send_keys`、`wait`、`done`，以及不带 `index` 的 `scroll` / `extract_content` | 恒等（`method="identity"`）：pinned 回放下布局确定，截图哈希兜底 |
 
 几何再签名：(1) 取录下观测 `selector_map[index]` 的条目：它的 `bounds`（页面坐标的 border box，已计入 iframe 偏移）、`tag_name`、`attributes` 与子树文本；(2) 在恢复出的 `selector_map` 里找 `bounds` 的四个量都在 `retarget_tolerance_px`（`BrowserCapability` 的旋钮，默认 2.0 CSS px）之内的候选；(3) 用签名确认：`tag_name`，`id` / `name` / `aria-label` / `role`（属性，或 AX role）各自相等，子树文本规范化（空白折叠）后的 sha256 相等；(4) 恰好一个候选时把 `params["index"]` 改写成它的 handle（可以在别的 OOPIF 命名空间里），其余参数不动；(5) 没有候选是 `failure="not_found"`，多于一个是 `failure="ambiguous"`，`detail` 写候选数。录下的条目缺 `bounds`、本 run 没有激活 `browser.dom`（或这一次的 `browser.dom` 采集失败），或者录下的 `selector_map` 里根本没有这个 index（源 run 的这个动作当时就找不到目标），都是 `not_found`（`detail` 说明原因）。子树文本只读到条目根以下 64 层（`TEXT_DEPTH_LIMIT`）：trace 的编码大约在第 100 层截断条目的子树，活的节点没有截断，两边读到同样的层数，同一个元素的签名才相同；实测的页面最深约 40 层。
@@ -3018,6 +3038,8 @@ class ArchiveReader(Protocol):
 - `document_misses`：自上一次 `verify_restoration` 以来回放服务记下的主 frame 文档 miss 数（`ReplayLog` 的单调计数 `diverged_total`，带 `diverged` 的条目（折叠进 `summary` 的也算）每条加一；回放日志照常被 `browser.replay_log` 逐步取走，不影响这个计数）。capability 记着上一次读到的总数，建回放服务时与 teardown 时归零。`network_source` 是 `live` 时为 `None`。
 
 阈值不在这里：`screenshot_max_distance` 与 `strict | warn` 是恢复器的旋钮（§4.1）。
+
+焦点的移动不用单独恢复：前缀回放重新执行录下的动作、照常观测，跟随新 tab 与离开关掉的 tab 按与录制时同一条规则发生（上面"页面新开的标签页"），校验比较的就是移动之后采集到的那个 tab；没有重现的移动是 `url_mismatch` 或 `screenshot_distance`。
 
 校验比较的就是录下的与恢复出的两个观测本身，也就是 agent 看到的那两个：两边都在采集之前等过页面落定（上面"观测之前等页面落定"，录制与回放用同一个等待），没有只为校验而另拍的截图或另读的 DOM。
 
@@ -4547,7 +4569,8 @@ attach/detach 事件得出的 tab→iframe session 归属表，以拒绝跨 tab 
 任何 tab 的 DOM 提取缓存或 cleaner 配置。
 同一 scope 的 QUEUED handler 逐个等待，观测 scope 通过 `target_scope` 投递到另一个
 JS scope 后可等待其结果而不自等待。`_attach_tab()` 成组创建并绑定两个 scope；
-`switch_tab()` 懒附加走同一路径，`close_tab()` 和 teardown 成组释放。
+`switch_tab()` 与跟随新 tab（§4.14 "页面新开的标签页"）的懒附加走同一路径，`close_tab()` 和
+teardown 成组释放（页面自己关掉的 tab 先放开回调与 watchdog，两个 scope 留到 teardown）。
 
 archive scope 不是第三个 per-tab scope，而是 browser 级的一个：recorder 连接在控制连接接管
 一个 tab 之前（弹窗）就收到它的流量，per-tab 的 scope 那时还不存在。它与 recorder 连接同生

@@ -42,6 +42,14 @@ in-page probe, which reports the page quiet at once
 And the measurement of the browser's defaults right after launch
 (``backends/browser_defaults.py``): its isolated world and its probe, answered
 with :attr:`FakeBrowser.default_timezone` / :attr:`FakeBrowser.default_locale`.
+
+And target discovery, as following a new tab reads it (``tabs.py``, §4.14
+"页面新开的标签页"): ``Target.setDiscoverTargets`` reports every existing tab
+to that client before it replies, :meth:`FakeBrowser.open_target` reports a new
+one (``openerId`` from ``opener_id``) before it attaches it anywhere, and
+:meth:`FakeBrowser.close_target` — or ``Target.closeTarget`` — detaches every
+session of the target and reports it destroyed. ``Page.windowOpen`` is a test's
+to fire, on the opener's session (:meth:`FakeClient.fire`).
 """
 
 from __future__ import annotations
@@ -141,6 +149,8 @@ class FakeClient:
         self.stopped = False
         self.connected = False
         self.auto_attach: dict[str | None, dict[str, Any]] = {}
+        #: The target types ``Target.setDiscoverTargets`` asked to hear about, or ``None``.
+        self.discovers: frozenset[str] | None = None
         self._pending: set[asyncio.Future[Any]] = set()
         self._handlers: set[asyncio.Task[None]] = set()
         self.failed_with: BaseException | None = None
@@ -294,6 +304,8 @@ class FakeBrowser:
         self.write_failures: dict[tuple[str, str | None], str] = {}
         #: Page-side commands of a target without a page process still unanswered, per session.
         self._queued: dict[str, int] = {}
+        #: Sessions of targets that closed: a command sent on one fails, as in Chrome.
+        self.closed_sessions: set[str] = set()
         #: Sessions resumed via a session-less runIfWaitingForDebugger (mode A).
         self.sessionless_resumes = 0
         self.loader_id = "loader-1"
@@ -385,6 +397,7 @@ class FakeBrowser:
         parent: tuple[FakeClient, str] | None = None,
         page_process: bool | None = None,
         commit_held: bool = False,
+        opener_id: str | None = None,
     ) -> dict[int, str]:
         """A new target appears; every auto-attaching client gets it, waiting.
 
@@ -392,18 +405,23 @@ class FakeBrowser:
         page) instead of at browser level. ``page_process=False`` builds it
         without a page process (the default for a service worker), and
         ``commit_held`` keeps its first document from committing until
-        :meth:`commit`. Returns client id → session.
+        :meth:`commit`. ``opener_id`` is the tab that opened it. Every
+        discovering client hears of it first. Returns client id → session.
         """
         target = FakeTarget(
             target_id,
             type_,
             url,
+            opener_id=opener_id,
             page_process=(type_ != "service_worker") if page_process is None else page_process,
             commit_held=commit_held,
         )
         if target.page_process:
             target.running.set()
         self.targets[target_id] = target
+        for client in self.clients:
+            if client.discovers is not None and type_ in client.discovers:
+                client.fire("Target.targetCreated", {"targetInfo": target.info()}, None)
         attached: dict[int, str] = {}
         for client in self.clients:
             scope = parent[1] if parent and parent[0] is client else None
@@ -425,6 +443,19 @@ class FakeBrowser:
             )
         return attached
 
+    def close_target(self, target_id: str) -> None:
+        """The target goes (``window.close()``, ``Target.closeTarget``): sessions detach, discovery hears."""
+        target = self.targets.pop(target_id)
+        self.closed_sessions.update(target.sessions.values())
+        for client in self.clients:
+            sid = target.sessions.get(client.id)
+            if sid is not None:
+                client.fire(
+                    "Target.detachedFromTarget", {"sessionId": sid, "targetId": target_id}, None
+                )
+            if client.discovers is not None and target.type in client.discovers:
+                client.fire("Target.targetDestroyed", {"targetId": target_id}, None)
+
     def is_running(self, target_id: str) -> bool:
         return not self.targets[target_id].waiting
 
@@ -443,6 +474,8 @@ class FakeBrowser:
             exc = self.failures.get(key)
             if exc is not None:
                 raise exc
+        if session_id is not None and session_id in self.closed_sessions:
+            raise RuntimeError("CDP error: Session with given id not found.")
         target = self._target_of(session_id)
         if (
             target is not None
@@ -502,13 +535,32 @@ class FakeBrowser:
             return {}
         if method == "Target.getTargets":
             return {"targetInfos": [t.info() for t in self.targets.values() if t.type == "page"]}
+        if method == "Target.setDiscoverTargets":
+            if not params.get("discover"):
+                client.discovers = None
+                return {}
+            wanted = [entry.get("type") for entry in params.get("filter") or [{"type": "page"}]]
+            client.discovers = frozenset(str(kind) for kind in wanted if kind)
+            for existing in list(self.targets.values()):
+                if existing.type in client.discovers:
+                    client.fire("Target.targetCreated", {"targetInfo": existing.info()}, None)
+            return {}
+        if method == "Target.closeTarget":
+            if params.get("targetId") not in self.targets:
+                raise RuntimeError("CDP error: No target with given id found")
+            self.close_target(str(params["targetId"]))
+            return {"success": True}
         if method == "Target.attachToTarget":
-            attached = self.targets[params["targetId"]]
+            attached = self.targets.get(params["targetId"])
+            if attached is None:
+                raise RuntimeError("CDP error: No target with given id found")
             sid = self.new_session(f"c{client.id}")
             attached.sessions[client.id] = sid
             return {"sessionId": sid}
         if method == "Target.createTarget":
             target_id = f"page-{len(self.targets) + 1}"
+            while target_id in self.targets:
+                target_id = f"{target_id}x"
             self.open_target(target_id, "page", url=params.get("url", ""))
             return {"targetId": target_id}
         if method == "Browser.getVersion":

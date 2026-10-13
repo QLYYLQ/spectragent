@@ -27,8 +27,12 @@ Key design points:
   ``execute_action()`` drops the acted tab's cycle as well, so an action's
   effects are never observed through the capture that preceded them.
 - **Multi-tab focus is capability state**: the CDP session id of the
-  focused tab lives in ``_default_session_id`` and is changed through
-  :meth:`BrowserCapability.switch_tab`. It is *not* a parameter of
+  focused tab lives in ``_default_session_id``. The agent changes it with
+  :meth:`BrowserCapability.switch_tab`; the capability changes it itself
+  at the start of an observation — to a tab the page opened during the
+  agent's actions (``new_tabs: follow``, the default, as a real browser
+  brings a new tab to the front), or off a focused tab that closed itself
+  (``tabs.py``, §4.14 "页面新开的标签页"). It is *not* a parameter of
   ``execute_action`` / ``resolve_fragment``, and nothing above this
   package knows it exists — a CDP tab handle is a browser concept, and
   threading it through the framework's Action / Environment / Runtime /
@@ -40,6 +44,7 @@ See docs/architecture_design.md §4.9 and docs/execution_dag.md M13.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -181,6 +186,15 @@ from spectragent.core.capabilities.browser.settle import (
     wait_for_settle,
 )
 from spectragent.core.capabilities.browser.start_page import start_page_problem
+from spectragent.core.capabilities.browser.tabs import (
+    FocusMove,
+    FocusMoveReason,
+    FollowWindow,
+    PageTab,
+    TabRegistry,
+    tabs_after_close,
+    tabs_to_follow,
+)
 
 # Importing the package registers every watchdog under agent_cdp's
 # ``WatchdogRegistrar``. This module then looks them up by key — it never
@@ -243,6 +257,24 @@ _BROWSER_DEFAULTS_TIMEOUT_S = 5.0
 # tab it created before navigating it (§4.14). An ``about:blank`` tab is
 # prepared in tens of milliseconds.
 _NEW_TAB_PREPARED_TIMEOUT_S = 10.0
+
+# How long moving the focus to a tab the page opened may take to adopt it
+# (§4.14 "页面新开的标签页"). A tab whose first navigation is still in flight
+# answers its first page-side command (``Page.enable``) only once that
+# navigation commits — measured, Chrome 155: a document answered after 2 s,
+# ``Page.enable`` after 2.0 s, whether or not the tab can reach its opener —
+# so adopting it waits for its first commit, under the bound an observation
+# already waits for a main-frame navigation.
+_FOLLOW_ADOPT_TIMEOUT_S = _NAVIGATION_SETTLE_TIMEOUT_S
+
+# How many times one observation moves the focus before it captures where it
+# is: a page that opens a tab every time it is followed must not hold the
+# observation forever.
+_FOCUS_MOVES_PER_OBSERVATION = 3
+
+# How long the tab list read that closes an observation's follow window may
+# take (``Target.getTargets``, answered by the browser itself).
+_TAB_LIST_TIMEOUT_S = 2.0
 
 
 # ── Cache entry ───────────────────────────────────────────────────────
@@ -531,6 +563,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     settle_quiet_ms: int
     settle_max_wait_s: float
     retarget_tolerance_px: float
+    new_tabs: Literal["follow", "stay"]
 
     # ── internal state, never config (assigned in __init__) ──────────
     # Declared here as type-only annotations so both pyright and the
@@ -584,6 +617,23 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     #: The time zone and locale a frame no override reaches falls back to,
     #: measured right after launch when archivers are bound (§4.14).
     _browser_defaults: BrowserDefaults | None
+    #: Every tab, in the order they opened, from the control connection's
+    #: target discovery (``tabs.py``) — between setup and teardown, when the
+    #: browser accepted the discovery.
+    _tabs: TabRegistry | None
+    #: The discovery callbacks registered on the control connection.
+    _tab_callbacks: list[tuple[str, Callable[..., None]]]
+    #: The agent's actions since the last observation (opened by the first of
+    #: them, closed by the next capture): a tab they make the focused page open
+    #: is followed (``new_tabs: follow``).
+    _follow_window: FollowWindow | None
+    #: The observation cycle whose focus has been settled, and what it did.
+    _focus_cycle: int | None
+    _focus_from: str | None
+    _focus_moves: int
+    _focus_moved: FocusMove | None
+    #: Tabs the focus could not be moved to (adoption failed); never tried again.
+    _unfollowable: set[str]
 
     # ── Init machinery ────────────────────────────────────────────────
 
@@ -767,6 +817,27 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = 2.0,
+        new_tabs: Annotated[
+            Literal["follow", "stay"],
+            PydanticField(
+                description=(
+                    "What the agent sees when the page it acts on opens a new "
+                    "tab during its actions (a target=_blank link, window.open, "
+                    "a form that opens in a new tab). 'follow' (the default): "
+                    "the new tab comes to the front, as in a real browser, and "
+                    "the next observation shows it; a tab Chrome reports as "
+                    "opened without the user's activation (a popup a page opens "
+                    "as it loads or from a timer), which a real browser's popup "
+                    "blocker stops, is not followed. 'stay': the agent stays on "
+                    "its tab; the new one is listed in browser_meta's tabs and "
+                    "reachable with browser.switch_tab. Either way, when the tab "
+                    "the agent is on closes itself, the agent goes to the tab "
+                    "that opened it, or to the most recently opened tab still "
+                    "open. Recording, replay and branching apply the same rule, "
+                    "so all three use one value."
+                ),
+            ),
+        ] = "follow",
         actions: Annotated[
             list[ActionBase] | None,
             PydanticField(
@@ -806,6 +877,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.settle_quiet_ms = settle_quiet_ms
         self.settle_max_wait_s = settle_max_wait_s
         self.retarget_tolerance_px = retarget_tolerance_px
+        self.new_tabs = new_tabs
 
         # In-Python default for the wired trajectory receptor. YAML must
         # name one (a single-instance receptor is required in the
@@ -856,6 +928,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._archive = None
         self._diverged_seen = 0
         self._browser_defaults = None
+        self._tabs = None
+        self._tab_callbacks = []
+        self._follow_window = None
+        self._focus_cycle = None
+        self._focus_from = None
+        self._focus_moves = 0
+        self._focus_moved = None
+        self._unfollowable = set()
 
         self.actions = actions
 
@@ -1495,6 +1575,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             )
             await self._cdp.start()
 
+        # 1a. Every tab, in the order it opens, and which tab opened it (§4.14
+        # "页面新开的标签页"): what following a new tab and leaving a closed one
+        # read. Before the first tab is adopted — discovery reports the tabs
+        # already open before its reply.
+        await self._start_tab_discovery()
+
         # 1b. The recorder connection (§4.14), built but not yet attached: its
         # client, the archive scope and channel, this run's plan and the bound
         # archivers' sessions.
@@ -1546,9 +1632,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # The task's landing page. Routed here by name from
         # ``TaskLoader.get_task_context()``; it once arrived in a
         # ``**kwargs`` sink and was dropped, so every browser benchmark
-        # started the agent on about:blank.
+        # started the agent on about:blank. Not an action of the agent's, so
+        # it opens no follow window: a tab the start page opens as it loads is
+        # not followed.
         if start_url:
-            result = await self.execute_action(
+            result = await self._run_action(
                 Action(name="browser.navigate", params={"url": start_url})
             )
             if not result.success:
@@ -1800,6 +1888,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         if archive is not None:
             await archive.aclose()
 
+        # The tab discovery's callbacks and the focus state go with the run.
+        self._stop_tab_discovery()
+
         # Close all CDP→scope bridges BEFORE closing scope_group, so late
         # CDP events don't try to dispatch into a half-torn-down scope.
         for sid, bridge in list(self._bridges.items()):
@@ -1870,6 +1961,28 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 logger.debug("Watchdog %s detach failed: %s", type(wd).__name__, exc)
 
     async def execute_action(self, action: Action) -> ActionResult:
+        """Run one of the agent's actions on the focused tab (:meth:`_run_action`).
+
+        It is the agent's action, so it opens the follow window when none is
+        open (§4.14 "页面新开的标签页"): a tab the focused page opens from now
+        until the next observation captures is followed (``new_tabs:
+        follow``). An action on a focused tab that has closed itself fails at
+        once, naming the tab; the next observation moves the focus off it.
+        """
+        self._ensure_recording()
+        self._open_follow_window()
+        closed = self._focused_tab_closed()
+        if closed is not None:
+            return ActionResult(
+                success=False,
+                error=(
+                    f"the tab the agent was on ({closed}) closed itself; the next "
+                    f"observation shows the tab the focus moves to"
+                ),
+            )
+        return await self._run_action(action)
+
+    async def _run_action(self, action: Action) -> ActionResult:
         """Delegate action execution to the registered action instance.
 
         There is no central dispatch table or ``if/else`` chain here —
@@ -1878,8 +1991,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         dispatching so a subsequent ``resolve_fragment`` call will see
         the post-action page state.
 
-        The tab acted on is the focused one (:attr:`default_session_id`),
-        changed via :meth:`switch_tab`.
+        The tab acted on is the focused one (:attr:`default_session_id`).
+        Setup opens the start page through here directly: not an action of
+        the agent's, so no follow window.
         """
         self._ensure_recording()
         sid = self._default_session_id
@@ -1940,10 +2054,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         Which keys are supported is decided by the installed watchdogs'
         ``provides`` — there is no branch per fragment here. The tab
-        observed is the focused one (:attr:`default_session_id`).
+        observed is the focused one (:attr:`default_session_id`), after the
+        cycle's first fragment settled where the focus is
+        (:meth:`_settle_focus`: a tab the agent's actions opened is followed,
+        a focused tab that closed itself is left).
         """
-        sid = self._default_session_id
-        if sid is None:
+        if self._default_session_id is None:
             raise RuntimeError("No active browser session")
 
         provided = self.provided_fragments
@@ -1954,8 +2070,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 f"{sorted(provided)}."
             )
 
-        # Ensure this tab holds a capture belonging to the current cycle.
-        await self._populate_cycle(sid)
+        # Ensure the focused tab holds a capture belonging to the current cycle.
+        sid = await self._populate_cycle()
 
         return self._cycle_cache[sid].fragments.get(fragment_key)
 
@@ -1976,8 +2092,18 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
     # ── Cycle cache machinery ─────────────────────────────────────────
 
-    async def _populate_cycle(self, sid: str) -> None:
-        """Fire one batched state event per tab per cycle and cache the result.
+    def _cycle_entry(self, sid: str) -> _ObserveCycleCache:
+        """Tab *sid*'s cache entry for the current cycle, made fresh when it has none."""
+        cache = self._cycle_cache.get(sid)
+        if cache is None or cache.cycle != self._observation_cycle:
+            # No capture for this tab, or one belonging to an observation
+            # that is over. Either way the page must be read again.
+            cache = _ObserveCycleCache(cycle=self._observation_cycle)
+            self._cycle_cache[sid] = cache
+        return cache
+
+    async def _populate_cycle(self) -> str:
+        """Fire one batched state event per cycle on the focused tab, cache it, return its session.
 
         The event carries :attr:`provided_fragments` — the *negotiated*
         set, not the capability's full provides set. Every fragment the
@@ -2008,16 +2134,31 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         as a ``FragmentFailure`` if it was optional. This method does not
         get to make that call, and must never soften it by serving a
         fragment it could not capture.
-        """
-        cache = self._cycle_cache.get(sid)
-        if cache is None or cache.cycle != self._observation_cycle:
-            # No capture for this tab, or one belonging to an observation
-            # that is over. Either way the page must be read again.
-            cache = _ObserveCycleCache(cycle=self._observation_cycle)
-            self._cycle_cache[sid] = cache
 
+        **Where the focus is, is settled first** (§4.14 "页面新开的标签页"):
+        the cycle's first fragment asks :meth:`_settle_focus` before anything
+        is waited for or captured, so the navigation and settle waits run on
+        the tab the capture shows; :meth:`_capture_once` asks again after its
+        waits. A failure there (no tab left open) is the cycle's failure,
+        recorded the same way. The capture closes the follow window, whatever
+        became of it.
+        """
+        if self._focus_cycle != self._observation_cycle:
+            self._focus_cycle = self._observation_cycle
+            self._focus_from = self._focused_target()
+            self._focus_moves = 0
+            self._focus_moved = None
+            try:
+                await self._settle_focus(read_tab_list=True)
+            except Exception as exc:
+                self._follow_window = None
+                self._cycle_entry(self.default_session_id).error = exc
+                raise
+
+        sid = self.default_session_id
+        cache = self._cycle_entry(sid)
         if cache.fired:
-            return  # This cycle's capture is already in hand.
+            return sid  # This cycle's capture is already in hand.
 
         if cache.error is not None:
             # This cycle's capture already failed, and it is one capture
@@ -2029,15 +2170,19 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             raise cache.error
 
         try:
-            outcome = await self._capture_once(sid)
+            sid, outcome = await self._capture_once(sid)
         except Exception as exc:
-            # Remembered on the cycle, so the rest of this slice is
-            # refused rather than re-captured. Anything that reaches here
-            # — a lost race, a dead scope, a CDP transport error — costs
+            # Remembered on the cycle — on the tab focused now, the one every
+            # later fragment of this slice asks for — so the rest of this
+            # slice is refused rather than re-captured. Anything that reaches
+            # here — a lost race, a dead scope, a CDP transport error — costs
             # the same once.
-            cache.error = exc
+            self._cycle_entry(self.default_session_id).error = exc
             raise
+        finally:
+            self._follow_window = None
 
+        cache = self._cycle_entry(sid)
         cache.fragments.update(outcome.fragments)
         cache.fired = True
         if cache.raw and self._archive is not None:
@@ -2052,9 +2197,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             )
             cache.raw.clear()
+        return sid
 
-    async def _capture_once(self, sid: str) -> _StateEventOutcome:
-        """One tab's capture attempt-with-retries, or raise.
+    async def _capture_once(self, sid: str) -> tuple[str, _StateEventOutcome]:
+        """One capture attempt-with-retries of the focused tab; its session and outcome, or raise.
 
         Split out of :meth:`_populate_cycle` so every way a capture can
         fail passes through one ``except`` there and lands on
@@ -2077,16 +2223,25 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         the one event that captures every negotiated fragment, whichever
         they are, and every fragment of the served capture records it
         (``BrowserCaptureFragment.settle``).
-        """
-        scope = self._scopes.get(sid)
-        if scope is None:
-            raise RuntimeError(f"Unknown session_id: {sid}")
 
+        Between the waits and the capture, the focus is settled again
+        (:meth:`_settle_focus`, from the events alone): a tab the agent's
+        actions opened while this observation waited — a click whose handler
+        opens the tab once a request it sent comes back — is followed, a
+        focused tab that closed meanwhile is left, and the waits run again on
+        the tab focused now, without spending an attempt. Every fragment of
+        the served capture records whether the focus moved
+        (``BrowserCaptureFragment.focus_moved``).
+        """
         wanted = self.provided_fragments
-        cache = self._cycle_cache.get(sid)
-        feed = self._navigation_feeds.get(sid)
         outcome: _StateEventOutcome | None = None
-        for attempt in range(1, _OBSERVE_MAX_ATTEMPTS + 1):
+        attempt = 1
+        while True:
+            scope = self._scopes.get(sid)
+            if scope is None:
+                raise RuntimeError(f"Unknown session_id: {sid}")
+            cache = self._cycle_entry(sid)
+            feed = self._navigation_feeds.get(sid)
             # Never capture between a main-frame navigation's request and its
             # commit (§4.14, M33); nothing in flight returns without a wait.
             if feed is not None and not await feed.navigation.wait_settled(
@@ -2103,8 +2258,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             # The page settles before anything of it is captured (§4.14): the
             # same wait for every fragment, recorded on each of them.
             settle = await self._settle(sid, feed)
-            if cache is not None:
-                cache.raw.clear()  # a re-fired attempt's capture replaces the last one's
+            # The follow window is open until the capture (§4.14): a tab opened
+            # while this observation waited moves the focus, and the waits run
+            # again on the tab focused now.
+            if await self._settle_focus(read_tab_list=False):
+                sid = self.default_session_id
+                continue
+            cache.raw.clear()  # a re-fired attempt's capture replaces the last one's
             outcome = await self._fire_state_event(sid, scope, wanted)
             # A recorder lost during the capture: nothing of it is served,
             # and the error says why rather than "no watchdog produced …".
@@ -2114,7 +2274,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     for fragment in outcome.fragments.values():
                         if isinstance(fragment, BrowserCaptureFragment):
                             fragment.settle = settle
-                    return outcome
+                            fragment.focus_moved = self._focus_moved
+                    return sid, outcome
                 # The page navigated during the capture: the DOM, the
                 # screenshot and the URL describe different documents. Same
                 # rule as a missing fragment — never serve it (§4.14, M18).
@@ -2126,19 +2287,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     _OBSERVE_MAX_ATTEMPTS,
                     describe_stamps(outcome.stamps),
                 )
-                continue
-            logger.warning(
-                "observe cycle (sid=%s): BrowserStateRequestEvent attempt "
-                "%d/%d did not produce %s (handlers responded: %d%s)",
-                sid,
-                attempt,
-                _OBSERVE_MAX_ATTEMPTS,
-                sorted(wanted - outcome.fragments.keys()),
-                outcome.handler_count,
-                f"; errors: {outcome.errors}" if outcome.errors else "",
-            )
+            else:
+                logger.warning(
+                    "observe cycle (sid=%s): BrowserStateRequestEvent attempt "
+                    "%d/%d did not produce %s (handlers responded: %d%s)",
+                    sid,
+                    attempt,
+                    _OBSERVE_MAX_ATTEMPTS,
+                    sorted(wanted - outcome.fragments.keys()),
+                    outcome.handler_count,
+                    f"; errors: {outcome.errors}" if outcome.errors else "",
+                )
+            if attempt >= _OBSERVE_MAX_ATTEMPTS:
+                break
+            attempt += 1
 
-        assert outcome is not None  # loop body runs at least once
+        assert outcome is not None  # a capture was fired before the loop could end
         if wanted <= outcome.fragments.keys():
             raise RuntimeError(
                 f"observe cycle (sid={sid}): the evidence of every attempt described "
@@ -2240,7 +2404,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         return outcome
 
     async def _get_tabs_safe(self) -> list[dict[str, Any]]:
-        """Best-effort tab enumeration; returns empty on error."""
+        """Best-effort tab enumeration, in the order the tabs opened; returns empty on error.
+
+        ``Target.getTargets`` lists tabs in no fixed order (measured, Chrome
+        155: a tab its opener cannot reach before its opener, a
+        ``window.open`` tab after it), so the tab registry's order is used:
+        the position of a tab means the same in a recording and in its
+        restoration (``browser.switch_tab`` is re-targeted by it, §4.14).
+        """
         if self._cdp is None:
             return []
         try:
@@ -2259,6 +2430,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                             "is_active": (sid == self._default_session_id),
                         }
                     )
+            if self._tabs is not None:
+                order = self._tabs.in_opening_order(tab["tab_id"] for tab in tabs)
+                tabs.sort(key=lambda tab: order.index(tab["tab_id"]))
             return tabs
         except Exception as exc:
             logger.debug("Failed to get tabs: %s", exc)
@@ -2315,15 +2489,17 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         return sid
 
     async def _page_target_ids(self) -> list[str]:
-        """Every open page target id, in ``Target.getTargets`` order."""
+        """Every open page target id, in the order the tabs opened (``Target.getTargets`` order
+        without the tab registry)."""
         if self._cdp is None:
             raise RuntimeError("BrowserCapability not set up")
         result = await self._cdp.send("Target.getTargets", {})
-        return [
+        ids = [
             t["targetId"]
             for t in (result or {}).get("targetInfos", [])
             if t.get("type") == "page" and t.get("targetId")
         ]
+        return self._tabs.in_opening_order(ids) if self._tabs is not None else ids
 
     async def switch_tab(self, target_id: str | None = None) -> str:
         """Move agent focus to another tab; returns its CDP session id.
@@ -2331,7 +2507,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         ``target_id`` is a CDP ``targetId`` — the same string the agent
         already sees as ``tab_id`` in the ``browser_meta`` fragment.
         ``None`` means "the most recently opened tab other than the
-        current one", matching the action's advertised semantics.
+        current one", matching the action's advertised semantics: the last
+        in the order the tabs opened (the tab registry's).
+
+        The agent chose where to look, so an open follow window restarts at
+        the tab it switched to (§4.14 "页面新开的标签页"): a tab the tab it
+        left opened is no longer followed, one the newly focused tab opens
+        from now is.
 
         Why this is a capability method and not a watchdog handler: agent
         focus is capability-level state (``_default_session_id``), and a
@@ -2362,22 +2544,252 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         elif target_id not in page_targets:
             raise ValueError(f"switch_tab: unknown tab {target_id!r}. Open tabs: {page_targets}")
 
-        # Attach lazily — a tab opened by the page itself (target=_blank)
-        # has no scope/watchdogs until we adopt it here.
-        sid = self._target_to_session.get(target_id)
-        if sid is None:
-            sid = await self._attach_tab(target_id)
-
-        # Bring it to the front so the page runs foreground timers,
-        # renders, and screenshots the way a user-visible tab would.
-        await self._cdp.send("Target.activateTarget", {"targetId": target_id})
-
-        self._default_session_id = sid
-        # The new tab may carry a cache from a previous cycle; the agent is
-        # about to observe it fresh.
-        self._cycle_cache.pop(sid, None)
+        sid = await self._move_focus(target_id)
+        if self._follow_window is not None and self._tabs is not None:
+            self._follow_window = FollowWindow(focused=target_id, mark=self._tabs.mark)
         logger.info("Agent focus switched to tab %s (session %s)", target_id, sid)
         return sid
+
+    async def _move_focus(
+        self, target_id: str, *, url: str = "", adopt_timeout: float | None = None
+    ) -> str:
+        """Make *target_id* the focused tab; return its session.
+
+        What :meth:`switch_tab` and following a new tab share (§4.14
+        "页面新开的标签页"): a tab the page opened has no scope or watchdogs
+        until it is adopted here (:meth:`_attach_tab`; *adopt_timeout* bounds
+        that), ``Target.activateTarget`` brings it to the front so it runs
+        foreground timers, renders and screenshots the way a user-visible tab
+        does (measured, Chrome 155: it turns ``visible`` and the tab it
+        replaced ``hidden``), and its cache from an earlier cycle is dropped —
+        the agent is about to observe it fresh.
+        """
+        if self._cdp is None:
+            raise RuntimeError("BrowserCapability not set up")
+        sid = self._target_to_session.get(target_id)
+        if sid is None:
+            attach = self._attach_tab(target_id, url)
+            sid = await (
+                attach if adopt_timeout is None else asyncio.wait_for(attach, adopt_timeout)
+            )
+        await self._cdp.send("Target.activateTarget", {"targetId": target_id})
+        self._default_session_id = sid
+        self._cycle_cache.pop(sid, None)
+        return sid
+
+    # ── Following new tabs, leaving closed ones (§4.14 "页面新开的标签页") ──
+
+    async def _start_tab_discovery(self) -> None:
+        """Turn on the control connection's target discovery, feeding a fresh :class:`TabRegistry`.
+
+        ``Target.setDiscoverTargets{discover: true, filter: [{type: page}]}``
+        reports every tab's ``targetCreated`` (with ``openerId``),
+        ``targetInfoChanged`` and ``targetDestroyed`` — the tabs already open
+        before its reply (measured, Chrome 155). ``Page.windowOpen``, which
+        says whether a window was opened with the user's activation, arrives
+        on the session of the tab that opened it: every tab this connection
+        adopted has ``Page.enable``. A browser that refuses discovery runs
+        without it, as before: nothing is followed, a focused tab that closes
+        is not left, tabs are listed in ``Target.getTargets`` order.
+        """
+        if self._cdp is None:
+            return
+        registry = TabRegistry()
+
+        def created(params: Mapping[str, Any], _session_id: str | None = None) -> None:
+            registry.created(params.get("targetInfo") or {})
+
+        def changed(params: Mapping[str, Any], _session_id: str | None = None) -> None:
+            registry.changed(params.get("targetInfo") or {})
+
+        def destroyed(params: Mapping[str, Any], _session_id: str | None = None) -> None:
+            registry.destroyed(str(params.get("targetId") or ""))
+
+        def window_open(params: Mapping[str, Any], session_id: str | None = None) -> None:
+            opener = self._session_to_target.get(session_id or "")
+            if opener is not None:
+                registry.window_opened(opener, bool(params.get("userGesture")))
+
+        for method, callback in (
+            ("Target.targetCreated", created),
+            ("Target.targetInfoChanged", changed),
+            ("Target.targetDestroyed", destroyed),
+            ("Page.windowOpen", window_open),
+        ):
+            self._cdp.on_event(method, callback)
+            self._tab_callbacks.append((method, callback))
+        self._tabs = registry
+        # The filter keeps every other target's events off this connection; a
+        # browser that predates it gets them all, and the registry keeps the tabs.
+        refused: Exception | None = None
+        for params in (
+            {"discover": True, "filter": [{"type": "page"}]},
+            {"discover": True},
+        ):
+            try:
+                await self._cdp.send("Target.setDiscoverTargets", params)
+            except Exception as exc:
+                refused = exc
+                continue
+            return
+        logger.warning(
+            "BrowserCapability: the browser refused target discovery (%s): a tab a page "
+            "opens is not followed, and a focused tab that closes itself is not left",
+            refused,
+        )
+        self._stop_tab_discovery()
+
+    def _stop_tab_discovery(self) -> None:
+        """Unregister the discovery callbacks; forget the registry and the focus state."""
+        callbacks, self._tab_callbacks = self._tab_callbacks, []
+        if self._cdp is not None:
+            for method, callback in callbacks:
+                self._cdp.off_event(method, callback)
+        self._tabs = None
+        self._follow_window = None
+        self._focus_cycle = None
+        self._focus_from = None
+        self._focus_moves = 0
+        self._focus_moved = None
+        self._unfollowable = set()
+
+    def _focused_target(self) -> str | None:
+        """The focused tab's target id, when one is attached."""
+        return self._session_to_target.get(self._default_session_id or "")
+
+    def _open_follow_window(self) -> None:
+        """Open the follow window at the focused tab, unless one is open (``new_tabs: follow``)."""
+        if self._follow_window is not None or self._tabs is None or self.new_tabs != "follow":
+            return
+        focused = self._focused_target()
+        if focused is not None:
+            self._follow_window = FollowWindow(focused=focused, mark=self._tabs.mark)
+
+    def _focused_tab_closed(self) -> str | None:
+        """The focused tab's target id when the page closed it, else ``None``."""
+        focused = self._focused_target()
+        if focused is not None and self._tabs is not None and self._tabs.is_closed(focused):
+            return focused
+        return None
+
+    async def _settle_focus(self, *, read_tab_list: bool) -> bool:
+        """Move the focus before a capture when the rule says so; whether it moved.
+
+        In order (§4.14 "页面新开的标签页"):
+
+        1. ``new_tabs: follow`` with the follow window open: the newest tab
+           the window's focused tab opened during the window, still open, and
+           not reported as opened without the user's activation
+           (:func:`~spectragent.core.capabilities.browser.tabs.tabs_to_follow`),
+           unless the focus is on it already; one that cannot be adopted gives
+           way to the next newest;
+        2. the focused tab closed itself, whichever ``new_tabs``: the tab that
+           opened it if it is still open, else the most recently opened tab
+           still open (:func:`~spectragent.core.capabilities.browser.tabs.tabs_after_close`).
+           No tab open at all raises.
+
+        *read_tab_list* — the cycle's first decision, when a window is open or
+        the focused tab is known closed — reads ``Target.getTargets`` first:
+        every ``targetCreated`` of a tab open now arrives before its reply, and
+        the answer says which tabs are still open. The decision after the
+        observation's waits reads only the events since. At most
+        ``_FOCUS_MOVES_PER_OBSERVATION`` moves per observation. Afterwards the
+        tabs the page closed are released.
+        """
+        registry = self._tabs
+        focused = self._focused_target()
+        if registry is None or self._cdp is None or focused is None:
+            return False
+        window = self._follow_window if self.new_tabs == "follow" else None
+        if read_tab_list and (window is not None or registry.is_closed(focused)):
+            await self._read_tab_list(registry)
+        moved = False
+        if self._focus_moves < _FOCUS_MOVES_PER_OBSERVATION:
+            if window is not None:
+                for tab in tabs_to_follow(registry, window, exclude=self._unfollowable):
+                    if tab.target_id == focused:
+                        break  # the newest such tab is where the focus is
+                    if await self._move_focus_to(tab, "new_tab"):
+                        moved = True
+                        break
+            if not moved and registry.is_closed(focused):
+                after = tabs_after_close(registry, focused)
+                if not after:
+                    raise RuntimeError(
+                        f"the tab the agent was on ({focused}) closed itself, and no other "
+                        f"tab is open"
+                    )
+                for tab in after:
+                    if tab.target_id not in self._unfollowable and await self._move_focus_to(
+                        tab, "tab_closed"
+                    ):
+                        moved = True
+                        break
+        await self._release_closed_tabs()
+        return moved
+
+    async def _read_tab_list(self, registry: TabRegistry) -> None:
+        """One ``Target.getTargets``, reconciled into *registry*; a failure is only logged."""
+        assert self._cdp is not None
+        try:
+            reply = await self._cdp.send("Target.getTargets", {}, timeout=_TAB_LIST_TIMEOUT_S)
+        except Exception as exc:
+            logger.debug("BrowserCapability: Target.getTargets failed: %s", exc)
+            return
+        registry.reconcile(
+            info for info in (reply or {}).get("targetInfos", []) if isinstance(info, Mapping)
+        )
+
+    async def _move_focus_to(self, tab: PageTab, reason: FocusMoveReason) -> bool:
+        """Move the focus to *tab* for this observation and record why; ``False`` when it cannot be adopted.
+
+        Adoption is bounded by ``_FOLLOW_ADOPT_TIMEOUT_S``: a tab whose first
+        navigation is in flight answers its first page-side command only once
+        that navigation commits, so adopting it waits for its first document.
+        A tab that cannot be adopted (it never committed in time, or it is
+        gone) is never tried again.
+        """
+        try:
+            await self._move_focus(
+                tab.target_id, url=tab.url, adopt_timeout=_FOLLOW_ADOPT_TIMEOUT_S
+            )
+        except Exception as exc:
+            self._unfollowable.add(tab.target_id)
+            logger.warning(
+                "BrowserCapability: the focus cannot move to tab %s (%s, %s): %r",
+                tab.target_id,
+                tab.url or "no URL yet",
+                reason,
+                exc,
+            )
+            return False
+        self._focus_moves += 1
+        start = self._focus_from
+        self._focus_moved = (
+            FocusMove(reason=reason, from_tab=start, to_tab=tab.target_id)
+            if start is not None and start != tab.target_id
+            else None
+        )
+        logger.info(
+            "BrowserCapability: the focus moved to tab %s (%s): %s",
+            tab.target_id,
+            tab.url or "no URL yet",
+            "a tab the page opened" if reason == "new_tab" else "the focused tab closed itself",
+        )
+        return True
+
+    async def _release_closed_tabs(self) -> None:
+        """Release what the capability holds for tabs the page closed — never the focused one.
+
+        Their two scopes stay open, idle, until teardown closes every scope:
+        closing a scope takes agent-cdp about 250 ms (measured), which would
+        land on the observation that noticed the tab was gone.
+        """
+        if self._tabs is None:
+            return
+        for target_id, sid in list(self._target_to_session.items()):
+            if sid != self._default_session_id and self._tabs.is_closed(target_id):
+                await self._release_tab(sid, close_scopes=False)
 
     async def close_tab(self, session_id: str) -> None:
         """Close a tab by its CDP session_id."""
@@ -2386,9 +2798,26 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 "Cannot close the default session tab. "
                 "Create a new tab and reassign before closing."
             )
-        target_id = self._session_to_target.get(session_id)
+        target_id = await self._release_tab(session_id)
         if target_id is None:
             return
+
+        if self._cdp is not None:
+            try:
+                await self._cdp.send("Target.closeTarget", {"targetId": target_id})
+            except Exception as exc:
+                logger.debug("Failed to close target %s: %s", target_id, exc)
+
+    async def _release_tab(self, session_id: str, *, close_scopes: bool = True) -> str | None:
+        """Release one adopted tab's bridges, feed, watchdogs and scopes; return its target id.
+
+        :meth:`close_tab` closes the tab afterwards; a tab the page closed
+        itself is only released (:meth:`_release_closed_tabs`), its scopes
+        left to teardown (*close_scopes* false).
+        """
+        target_id = self._session_to_target.get(session_id)
+        if target_id is None:
+            return None
 
         # Close the CDP→scope bridge BEFORE the scope so late CDP events
         # don't hit a half-torn-down scope.
@@ -2410,7 +2839,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         for wd in self._shared_watchdogs:
             wd.unbind_tab(session_id)
 
-        if self._scope_group is not None:
+        if self._scope_group is not None and close_scopes:
             await self._scope_group.close_scope(target_id)
             await self._scope_group.close_scope(f"{target_id}:js")
 
@@ -2422,12 +2851,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._session_to_target.pop(session_id, None)
         self._cycle_cache.pop(session_id, None)
         self._main_frame_ids.pop(session_id, None)
-
-        if self._cdp is not None:
-            try:
-                await self._cdp.send("Target.closeTarget", {"targetId": target_id})
-            except Exception as exc:
-                logger.debug("Failed to close target %s: %s", target_id, exc)
+        return target_id
 
     async def _attach_tab(self, target_id: str, url: str = "") -> str:
         """Flatten-attach to a target, build per-tab scope + watchdogs.

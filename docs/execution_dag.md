@@ -708,6 +708,8 @@ Browser 特有的 CDP、tab/frame 和输入实现留在 capability 内；Runtime
 
 **2026-04-08 修订**：初版仍有 `_ACTION_EVENT_MAP` / `_ACTION_DESCRIPTORS` / `_translate_params` 硬编码中心节点；现已由 per-action conscribe 注册与对称协商取代。agent 声明相对动作需求，能力声明可提供的全限定动作，`AgentRuntime.prepare()` 在运行前验证并绑定，不保留旧 dispatch 路径。
 
+**跟进（2026-10-14，按用户的裁决）**：焦点以前只有 `switch_tab` 能移动，UI-TARS 没有这个动作，点开在新标签页打开的链接就像什么都没发生。现在 agent 的动作让当前页开了新 tab 时，下一次观测跟过去（`new_tabs: follow | stay`，默认 `follow`）：控制连接开 target discovery，`tabs.py` 的 `TabRegistry` 记下每个 tab 打开的先后、opener 与用户激活，观测的第一个 fragment 决定焦点（之后才等导航与落定，等完再查一次），每个 fragment 记 `focus_moved`；没有用户激活的弹窗不跟，焦点 tab 自己关掉时回到 opener；`browser_meta.tabs` 按打开的先后排。录制、回放、分叉同一条规则，前缀回放重新执行点击即重现焦点的移动。见 architecture §4.14 "页面新开的标签页"。
+
 ---
 
 ### M14: Browser Agents 三件套适配

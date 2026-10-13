@@ -117,8 +117,11 @@ async def execute(self, params: dict[str, Any], *, capability) -> ActionResult: 
 One call, one `ActionResult`. The capability is injected whole — an action belongs to
 exactly one capability and they ship together (`core/actions/base.py:59-85`). There is
 no routing handle: which tab/container/window you land in is capability *state*,
-selected by `switch_tab` and remembered. Return `ActionResult(success=False, error=...)`
-for a failure; do not raise.
+selected by `switch_tab` (or, for the browser, moved by the capability itself at the next
+observation to a tab the agent's actions opened, architecture §4.14 "页面新开的标签页") and
+remembered. An action never moves the focus as a side effect: every action of one step acts
+on the tab the step observed. Return `ActionResult(success=False, error=...)` for a failure;
+do not raise.
 
 ### 1.5 Register it, then wire it
 
