@@ -697,7 +697,7 @@ class AgentRuntime:
 
 **setup 会拒绝的，`prepare()` 就拒绝（用户 2026-10-13 的裁决：两个开关的组合由 `prepare()` 校验，sweep 开跑前先过一次 `prepare()`）。** 能否运行由配置与任务数据决定的问题，都不留到 setup：
 
-- 第 3d 步（上面）把本任务的环境 setup context、观测协商结果与将要绑定的归档器交给 `Environment.check_setup`（§4.3 "setup 之前的检查"）：谁都不接受的 setup 键在这里报 `ValueError`；实现了 `SetupCheck` 的 capability 检查自己的那一份（browser：§4.14 "协作检查一览"的全部行，含回放与源 run 的一致性检查，读的只是源 run 的环境指纹；profile 的 watchdog 解析不了的已协商 fragment）。只校验：不 setup、不绑定、不收窄、不连浏览器；
+- 第 3d 步（上面）把本任务的环境 setup context、观测协商结果与将要绑定的归档器交给 `Environment.check_setup`（§4.3 "setup 之前的检查"）：谁都不接受的 setup 键在这里报 `ValueError`；实现了 `SetupCheck` 的 capability 检查自己的那一份（browser：§4.14 "协作检查一览"的全部行，含回放与源 run 的一致性检查，读的只是源 run 的环境指纹；profile 的 watchdog 解析不了的已协商 fragment；任务的起始页是不是一个 http(s) URL，§4.10 "起始页"）。只校验：不 setup、不绑定、不收窄、不连浏览器；
 - 所以这些错误和其余装配错误一样，在 `on_run_start` 打开 trace 之前、任何东西启动之前从 `prepare()`（`execute()` 里也一样，不看 `raise_on_error`）出去，`spectragent-run --dry-run` 也查得出来（`--start-url` / `--replay-archive` 是它的任务上下文）；
 - setup 照样再查一遍（capability 的 `setup()` 调同一个 `check_setup`，带着那时已绑定的归档器）：直接调 setup 的调用方、`prepare()` 之后才注入控制客户端的测试，仍在启动任何东西之前被拒绝；
 - 需要读盘的只有回放的一致性检查：`load_fingerprint` 只读源 run 的环境指纹（`env/run.browser.json`）并数 `index.jsonl` 文件，从不读索引行或 WARC；setup 才把整个归档加载进来用于服务（§4.14 "一致性检查与回放指纹"）。
@@ -2042,7 +2042,7 @@ class SetupCheck(Protocol):
 - 为什么需要：配置与任务数据决定的"能不能跑"，要在 `AgentRuntime.prepare()` 里就报（§4.2 第 3d 步），不能等到 setup——那时 trace 已经打开，run 被记成一次环境失败，sweep 对每个任务都重复同一个错误。只有 capability 知道自己的这些规则。
 - `Environment.check_setup` 负责路由（§4.3 "setup 之前的检查"）：context 按 `setup()` 签名分、归档器按前缀分，capability 只拿到自己的那一份；没实现的 capability 只经过路由检查。
 - capability 的 `setup()` 可以再调一次同一个方法（防御性复查，带着那时已绑定的归档器）：browser 如此。
-- Browser 的实现（`BrowserCapability.check_setup`）：profile 的 watchdog 解析不了的已协商 fragment（profile 当场重新解析），§4.14 "协作检查一览"的全部行（`cdp_url` 取路由来的 context，没有再取旋钮），回放时源 run 与本配置的一致性（只读源 run 的环境指纹）；一次报全，合成一个 `BrowserCooperationError`。`replay_archive` 指向的不是已提交的 run 目录时抛 `ArchiveOpenError`。
+- Browser 的实现（`BrowserCapability.check_setup`）：profile 的 watchdog 解析不了的已协商 fragment（profile 当场重新解析），任务的起始页不是一个 http(s) URL（`start_page.py::start_page_problem`，§4.10 "起始页"），§4.14 "协作检查一览"的全部行（`cdp_url` 取路由来的 context，没有再取旋钮），回放时源 run 与本配置的一致性（只读源 run 的环境指纹）；一次报全，合成一个 `BrowserCooperationError`。`replay_archive` 指向的不是已提交的 run 目录时抛 `ArchiveOpenError`。
 - 与 `RestorationSupport`、`CaptureCheck` 同样不进 `BaseCapability`、`CapabilityBase` 不给默认。
 
 #### 4.9.x Capability ↔ Backend 生命周期
@@ -2072,8 +2072,8 @@ BrowserCapability.setup(*, negotiation, cdp_url, start_url, replay_archive, logi
 ├── network_source 拦截（archive）时：先经 core/archive 的 open_archive(replay_archive) 打开源 run
 │     （ArchiveReader，只读已提交的部分），加载它的指纹与网络索引（§4.14 "回放"）
 ├── 协作检查 + 回放一致性检查（§4.14）：需要 recorder 连接的配置与 provider / cdp_url / 注入客户端 /
-│     provider 旋钮是否相容、隔离、归档指纹与本 run 配置是否一致；不相容就在启动任何浏览器之前
-│     抛错，一次报全、点名双方
+│     provider 旋钮是否相容、隔离、归档指纹与本 run 配置是否一致，任务的 start_url 是不是一个
+│     http(s) URL（§4.10）；不相容就在启动任何浏览器之前抛错，一次报全、点名双方
 ├── cdp_url 优先级:
 │     1. setup 的 cdp_url 参数         (任务上下文按名字路由来的 per-run override)
 │     2. self.cdp_url                  (conscribe field)
@@ -2082,7 +2082,7 @@ BrowserCapability.setup(*, negotiation, cdp_url, start_url, replay_archive, logi
 ├── 持有 self._session = ProviderSession(...)  以便 teardown 释放
 ├── 控制连接 CDPClient(cdp_url).start()（loopback 端点 proxy=None、compression=None：cdp_client.transport_options）
 ├── 需要时开 recorder 连接 + browser 级 archive scope + 回放服务（§4.14），在第一个 tab 之前
-└── 创建 watchdogs / 初始 tab / start_url / 等等
+└── 创建 watchdogs / 初始 tab / 用 browser.navigate 打开 start_url（先等提交、再等 load，load 不来只记警告，§4.14）/ 等等
 
 BrowserCapability.teardown()
 ├── recorder 显式清理（§4.14：关 auto-attach → 放行扣着的请求 → Fetch.disable → detach → 关连接）
@@ -2279,13 +2279,21 @@ BaseTaskLoader (Protocol)           BaseEvalLoader (Protocol)
 
 | 键 | 谁接受 | 含义 |
 |---|---|---|
-| `start_url` | browser | 任务的落地页，agent 第一次观测之前打开（`TaskSetup.to_context()`；`spectragent-run --start-url`） |
+| `start_url` | browser | 任务的落地页，agent 第一次观测之前打开（`TaskSetup.to_context()`；`spectragent-run --start-url`）。必须是一个完整的 `http://` 或 `https://` URL：没有协议头、协议头不是这两个、没有主机、含空白的，在 `prepare()` 报错（`check_setup`，§4.9），点名这个起始页，不打开 trace。数据写成别的形状的，由读它的加载器在 trace 记下它之前补全（下面"起始页"） |
 | `login_required`、`login_type`、`credentials_ref`、`risk_control`、`risk_control_types` | browser | `BrowserSetup` 的其余词表；接受、记 WARNING、还不处理 |
 | `cdp_url` | browser | 显式 CDP 端点（per-run override；与需要 recorder 连接的配置互斥，§4.14） |
 | `replay_archive` | browser（M30） | 回放的**源 run 目录**（一个 trace 目录，含 `manifest.json`）。`network_source` 拦截（`archive`）时必须给、不拦截（`live`）时不许给，都在 `prepare()` 报错（`check_setup`）、点名双方。capability 经 `core/archive` 的 `open_archive` 打开它，只读已提交的部分（§4.14 "回放"）；`spectragent-run --replay-archive DIR`。相对路径可以写，意思是相对启动目录（af 从不切换工作目录，所以就是当前目录；`~` 先展开）：`AgentRuntime.execute` 在交给 `prepare()` 检查、记进 `task_setup`、交给 setup 之前把它解析成绝对路径（`schemas/task.py::resolve_env_context_paths`；`prepare()` 自己也解析一遍，直接调它的调用方一样），对每个调用方都一样：CLI、任务加载器、自己组 `env_context` 的 Python 调用方；按 capability id 挂的那一块（`{"browser": {...}}`）里的也一样。trace 因此记下 setup 打开的那个目录（用户 2026-10-13 的裁决） |
 | `task_tools` | tool_sandbox（设计中，M23） | 每个 task 的工具定义（§13.5） |
 
 整个 context 按值级规则脱敏后记进 `TraceConfig.task_setup`（§5.6），所以 `replay_archive` 是路径字符串，不是打开的对象；分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。上面的键都属于 `TaskContext.env`，路由不变（下一段）。
+
+**起始页：加载器补全，浏览器只认完整的 URL（用户 2026-10-14 的裁决）。** 2026-10-14 零 token 筛选 LexBench L1 的中文站点（本地的 `tmp/flywheel/followup/live2/screening.md`）发现：`lexbench_browser` 的九个 split（包括它自己那份 Online-Mind2Web）没有一个起始页带协议头，几乎都是裸主机名（`www.bilibili.com`，少数带路径：`s.weibo.com/top/summary`）；全集有 10 个任务写的是文字或几个站点（L1 的 7 个与 L2 的 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）。加载器原样交出、setup 原样导航，SecurityWatchdog 把它当作"不安全的协议"拦下，每个 LexBench 任务都在 setup 以 `agent_done: error` 结束、一次模型调用都没有，sweep 的 pre-flight 也看不出来。规则：
+
+- **补全**：`lexbench_browser` 任务加载器（`core/data_loader/task/lexbench_browser.py::complete_start_page`，在 `_normalize_raw` 里，新旧两种记录形状都经过它）把一个**裸主机名**补成 `https://…`：由 ASCII 字母、数字、连字符组成、至少有一个点的主机名，可带端口，后面可带以 `/`、`?`、`#` 开头的部分，整串不含空白、全是 ASCII。别的一律原样：已经带协议头的、文字、几个站点。
+- **为什么在加载器、在 trace 记下它之前**：trace 记下的 `task_setup.context.start_url` 就是交给 setup 的那一个，而飞轮报告的站点、导出的 `split.by: site` 与 `exclude_sites`、去污染的 `site_instruction` 都按 `urlsplit(start_url).hostname` 认站点（`core/trace/sources.py::TaskIdentity.site`、`export/split.py`）。裸主机名取不出主机名：只在浏览器里补，每个 run 仍会被算成"没有 start_url"，站点数是 0。
+- **为什么只在 `lexbench_browser`，不在 `TaskLoaderBase`**：别的数据都写完整的 URL（`online_mind2web` 的 300 个任务全是 `https://`，`Hard` 的 77 个在其中；`browsecomp` 没有起始页；`trace_branches` 用源 run 记下的那一份）。裸主机名是 LexBench 数据自己的写法（它上游的字段叫 `target_website`，是网站，不是 URL）；放进共用的基类，就会把一份本该写 URL 的数据里的错误悄悄改掉，而那种错误应该由下一条点名。
+- **补不全的在 `prepare()` 被拒**：`BrowserCapability.check_setup`（§4.9 `SetupCheck`，§4.14 "协作检查一览"）拒绝不是一个 http(s) URL 的起始页，消息点名这个起始页和原因（没有协议头、协议头是别的、没有主机、含空白、不是合法的 URL），trace 不打开。sweep 的第一个任务是这样时 pre-flight 停下（退出码 2）；否则只在那个任务上报（`TaskOutcome.error`）。`spectragent-run --start-url` 不补全：只写主机名，`--dry-run` 就报错。setup 自己再查一遍（同一个 `check_setup`），绕过 `prepare()` 直接 setup 的调用方也在启动浏览器之前被拒。
+- 智能体自己发出的 `browser.navigate` 不经过这条检查；一个没有协议头的 URL 由 SecurityWatchdog 拦下，消息说缺协议头（`Navigation BLOCKED: missing scheme in …`），被禁止的协议头（`javascript:`、`file:` 等）仍是 `unsafe scheme`。profile 不装 SecurityWatchdog 时（`vision_only`），Chrome 自己拒绝这样的 URL，导航同样失败（§4.14 "`browser.navigate`"）。
 
 **`TaskContext`：一个任务交给三个不同的消费者的三样东西（M31）**（`spectragent/schemas/task.py`）：
 
@@ -2607,7 +2615,7 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 
 #### 协作检查一览
 
-"能配什么"由生成的配置约束，"能否协作"在这里查（2026-09-24 的裁决）。全部由 `browser/cooperation.py` 的一个函数算出、一次报全，每条点名双方。每一行都只取决于配置与任务数据，所以**全部在 `prepare()` 报**（用户 2026-10-13 的裁决）：`BrowserCapability.check_setup`（§4.9 `SetupCheck`，经 `Environment.check_setup`，§4.2 第 3d 步）带着本任务的 setup context（`cdp_url`、`replay_archive`）、观测协商结果与将要绑定的归档器算全部行，加上回放的一致性检查；错误在 `on_run_start` 打开 trace 之前出去，`spectragent-run --dry-run` 也查得出来。之后还有两次防御性复查，调的是同一个函数：`bind_archivers` 在绑定前查与绑定有关的行，setup 在启动浏览器之前把全部再查一遍（拦住绕过 `prepare()` 直接 setup 的调用方，与 `prepare()` 之后才注入控制客户端的测试）：
+"能配什么"由生成的配置约束，"能否协作"在这里查（2026-09-24 的裁决）。全部由 `browser/cooperation.py` 的一个函数算出、一次报全，每条点名双方。每一行都只取决于配置与任务数据，所以**全部在 `prepare()` 报**（用户 2026-10-13 的裁决）：`BrowserCapability.check_setup`（§4.9 `SetupCheck`，经 `Environment.check_setup`，§4.2 第 3d 步）带着本任务的 setup context（`cdp_url`、`replay_archive`、`start_url`）、观测协商结果与将要绑定的归档器算全部行，加上回放的一致性检查；错误在 `on_run_start` 打开 trace 之前出去，`spectragent-run --dry-run` 也查得出来。之后还有两次防御性复查，调的是同一个函数：`bind_archivers` 在绑定前查与绑定有关的行，setup 在启动浏览器之前把全部再查一遍（拦住绕过 `prepare()` 直接 setup 的调用方，与 `prepare()` 之后才注入控制客户端的测试）：
 
 | 组合 | `prepare()` 之后谁再查 |
 |---|---|
@@ -2628,6 +2636,7 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 | `network_source: archive` `isolation: required` + provider 报告的隔离冲突（`local_chrome`：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的网络路由开关、不是 `about:blank` 的 `startup_url`） | `bind_archivers`、setup |
 | 回放一致性：源 run 的环境指纹与本 run 的配置不一致（下面"一致性检查"；`prepare()` 只读源 run 的指纹） | setup，启动浏览器之前（之后才加载整个归档） |
 | 已协商的 browser fragment + 当前 profile 装的 watchdog 解析不了它（profile 在构造之后被改过；当场重新解析） | setup |
+| 任务的 `start_url` + setup 只打开一个完整的 http(s) URL：没有协议头、协议头不是 `http`/`https`、没有主机、含空白、不是合法的 URL（`start_page.py`，§4.10 "起始页"；这一行与配置无关，只看任务数据） | setup，启动浏览器之前 |
 
 #### 逐 target 的准备流水线
 
@@ -2818,6 +2827,23 @@ M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚
 
   取舍的依据，同样的数据：窗口 300 ms 时 navigate 之后只有 17/26 拍全；1000 ms 与 500 ms 同为 21/26，平均多等 1.2 s。上限 3 s 时点击导航之后只有 11/32，8 s 时 21/32、平均多等 1.6 s。再加 Chrome 的 `networkAlmostIdle`（至多两个请求在途 500 ms）作为第三个条件：navigate 之后平均多等约 1 s（1.75 → 2.71 s），拍全的站点数不变（21/26），点击导航之后也不变（18/32），所以不用它；在 40 个站点里，`networkIdle` 有 19 个、`networkAlmostIdle` 有 9 个在导航之后 18 s 之内从没出现。只算 DOM 变化、不算资源完成：navigate 之后 17/26、滚动之后 33/38。在真实的 `BrowserCapability` 上沿录制的路径复跑（pinned）：nvidia 点开搜索之后的观测等了 0.67 s，拍到渲染完的搜索面板（关掉等待时拍到的是还在淡出的 cookie 对话框，第二次点击落在它上面，搜索面板没打开）；megabus 第 0 步等了 1.29 s，订票表单在图里。
 - **回归**：`test_browser_settle.py`（fake CDP：加载跟踪与它的总预算、静默的页面早结束、忙碌的页面在上限结束、不回应的页面、读不到状态立即采集、等待中换了文档、等待先于采集、每个 fragment 同一份记录、只协商 DOM 也等、`0` 关掉、每次尝试各等一次、trace 往返）；`test_browser_settle_live.py`（真实 Chrome，本地页面在 `load` 之后经三个各 300 ms 的请求才渲染主体：截图里有它，只协商 DOM 的观测里也有它；关掉等待的对照组两样都没有；永远不静的页面在上限采集）。fixture 上的录制、回放、分叉、导出与归档测试（`replay_driver.record_config`、`archive_bench.LiveRecording`）把窗口设成 100 ms：fixture 的页面是静态的、从本机送，短窗口不丢它们要验的东西，整套测试也不因此慢下来；默认值由上面两个测试和用发布配置跑的演练（§4.16）覆盖。演练里 drift 站点的每次回放现在把错误页的 URL 请求两次：观测等页面落定时 run 还在，赶上了 Chrome 约 1 s 后对错误页的自动重载（第二次在终止观测的收集里）。
+
+#### `browser.navigate`：先等提交，再等 `load`，`load` 不来就照常继续（与归档无关）
+
+2026-10-14 筛选 LexBench L1 的中文站点时（本地的 `tmp/flywheel/followup/live2/screening.md`），第一财经与经济观察网的首页早已画出来，`load` 事件却一直没来（有资源一直加载不完），setup 等了 30 s 之后报 "could not open start_url"。原因是两个各 30 s 的时钟：`NavigateToUrlEvent.event_timeout`（调用方 `await event` 的上限，agent-cdp 也拿它限制 handler 本身）从发出事件就开始计时，生命周期等待（`lifecycle_timeout_ms` → `timeout_ms` → 30 s）在 `Page.navigate` 回应之后才开始，所以总是前者先到，handler 注释里承诺的"等不到就记一条警告、照常继续"永远走不到。这对每一个会导航的 agent 都成立。用户的裁决（2026-10-14）：主 frame 的导航提交了而 `load` 没按时到，记警告、照常继续；从没提交的导航仍然失败；调用方的等待与生命周期等待分开。
+
+- **两段等待，先后各有上限**（`ActionWatchdog._on_navigate`）：(1) **提交**：Chrome 在导航提交或失败时才回应 `Page.navigate`，最多等 `timeout_ms`（`browser.navigate` 的旋钮，默认 30 s）；(2) **生命周期**：回应里的 `loaderId` 那个文档到达 `wait_until`（默认 `load`），最多等 `lifecycle_timeout_ms`（不写时同 `timeout_ms`），从回应开始计时。两个上限都在事件上（`NavigateToUrlEvent.commit_timeout_s` / `lifecycle_timeout_s`）。
+- **结果**由 handler 决定，失败时它回复 `{"error": ...}`（与点击、输入同一个约定，`actions/_common.py::handler_error`），`NavigateAction` 据此返回 `success=False`：
+  - 按时回应、等到了 `wait_until` → 成功；
+  - 按时回应、`wait_until` 没按时到 → 记一条 WARNING（点名 URL、阶段与等了多久），成功：页面已经是新文档，后面的观测照常采集；
+  - 回应里没有 `loaderId`：同文档导航（只改了 fragment），没有新文档可等 → 立即成功；
+  - 没按时回应 → 失败：`navigation to '<url>' did not commit within 30 s`；
+  - Chrome 拒绝这条命令（例如它认为无效的 URL）→ 失败，带 Chrome 的错误；
+  - 回应带 `errorText`（CDP：只在导航失败时出现）→ 立即失败，带这段文字。
+- **实测**（Chrome 155，本机页面；探针在本地的 `tmp/flywheel/followup/start_pages/probe_nav.py`）：正常页面的回应在提交时到，`load` 随后；一张图片的响应永远不结束时，回应与 `DOMContentLoaded` 照常到，`load` 永远不来；服务器一直不回应时 `Page.navigate` 一直没有回应；连不上的端口回应带 `errorText`，随后提交 Chrome 的出错页（`chrome-error://chromewebdata/`，它也有 `load`）；204 与下载回应带 `errorText: net::ERR_ABORTED` 和一个 `loaderId`，却什么都不提交（没有 `frameNavigated`、没有生命周期事件），所以等它们的生命周期只会等满上限。连不上的主机因此从"成功、页面是出错页"变成"失败、页面仍是出错页"：setup 打开不了起始页时以 `could not open start_url` 结束，不再让 agent 对着出错页花模型调用；agent 自己的导航失败时，下一次观测看到的仍是出错页。
+- **调用方的等待比两段加起来更长**：事件不写 `event_timeout` 时由它自己推出：提交上限 + 生命周期上限 + `NAVIGATION_EVENT_MARGIN_S`（10 s），默认 70 s。handler 的答复因此总在调用方放弃之前到，上面每一种结果都由 handler 决定，而不是看哪个时钟先到。
+- **与观测的落定等待**（上一节）是两份预算：导航的生命周期等待属于动作，落定等待属于观测，`MainFrameLoad` 只记观测为一个文档等过多久。`load` 永远不来的页面因此一共多花：导航的生命周期上限（默认 30 s）一次，之后第一次观测的落定上限（默认 5 s，记为 `capped`、`waiting_for: [load, dom]`）一次；之后的观测不再等它的 `load`，只量静默窗口。`load` 在上限之内到了的页面，导航等到它，观测的落定只量静默窗口。
+- **回归**：`test_navigate_lifecycle.py`（fake CDP：提交超时、Chrome 拒绝、`errorText`、同文档导航、生命周期超时只记警告、事件上限由两段推出）；`test_browser_navigate_live.py`（真实 Chrome，本地页面里一张图片的响应永远不结束：setup 在生命周期上限之后记警告并成功，第一次观测在落定上限处采集、第二次不再等 `load`；服务器一直不回应的导航在提交上限之后失败，setup 报 could not open start_url；204 立即失败）。
 
 #### 回放：网络来源与 miss 策略（M30）
 

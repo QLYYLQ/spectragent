@@ -94,7 +94,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", required=True, type=Path, help="YAML run config")
     parser.add_argument("--task", default="", help="Task text (required unless --dry-run)")
-    parser.add_argument("--start-url", help="Browser page to open before the agent starts")
+    parser.add_argument(
+        "--start-url",
+        help="Browser page to open before the agent starts: one complete http:// or https:// URL",
+    )
     parser.add_argument(
         "--replay-archive",
         help="Recorded run directory to replay the browser's network from "

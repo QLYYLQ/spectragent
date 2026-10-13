@@ -16,6 +16,7 @@ from typing import Any
 
 from agent_cdp import BaseEvent
 from pydantic import Field as PydanticField
+from pydantic import model_validator
 
 # ---------------------------------------------------------------------------
 # Result container for BrowserStateRequestEvent
@@ -79,18 +80,70 @@ class BrowserStateSummary:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class NavigateToUrlEvent(BaseEvent[None]):
-    """Navigate the current tab to a URL."""
+#: How long a navigation may take to commit, and then to reach its ``wait_until``
+#: phase, when the event names no timeout (ms).
+DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000
+#: How much longer than its two waits together the caller of a navigation waits (s):
+#: room for the handler's queue wait before them and its bookkeeping after.
+NAVIGATION_EVENT_MARGIN_S = 10.0
+
+
+class NavigateToUrlEvent(BaseEvent[dict[str, Any] | None]):
+    """Navigate the current tab to a URL: wait for the commit, then for ``wait_until``.
+
+    ``ActionWatchdog._on_navigate`` waits twice, one after the other:
+
+    - **commit** — Chrome answers ``Page.navigate`` once the navigation
+      committed or failed (a server that never answers gets no reply at all);
+      at most :attr:`commit_timeout_s`. No reply in time, a command Chrome
+      refuses, or an ``errorText`` in the reply fails the navigation;
+    - **lifecycle** — then the committed document's ``wait_until`` phase, at
+      most :attr:`lifecycle_timeout_s` from the reply. A phase that does not
+      arrive in time is logged and the navigation carries on: the tab already
+      shows the new document (a page whose ``load`` never comes because one
+      resource never finishes is still drawn).
+
+    The handler answers ``{"error": ...}`` when the navigation failed and
+    ``None`` otherwise. ``event_timeout`` — how long ``await event`` waits, and
+    agent-cdp's own bound on the handler — is derived from the two waits when
+    it is not given: both plus :data:`NAVIGATION_EVENT_MARGIN_S`. Its clock
+    starts when the event is emitted, before ``Page.navigate`` is even sent,
+    so with the two equal (30 s each, as they once were) it always ended
+    first and the carry-on above was never reached.
+    """
 
     url: str
     wait_until: str = "load"  # "load" | "domcontentloaded" | "networkidle" | "" (no wait)
     new_tab: bool = False
+    #: How long the navigation may take to commit (ms); ``None``: 30 s.
     timeout_ms: int | None = None
-    # Lifecycle wait timeout (ms). When None, falls back to ``timeout_ms`` and
-    # then to a 30s default. Independent from ``event_timeout`` (which gates
-    # ``await event`` / handler completion, not the CDP lifecycle wait).
+    #: How long the committed document may take to reach ``wait_until`` (ms);
+    #: ``None``: ``timeout_ms``, else 30 s.
     lifecycle_timeout_ms: int | None = None
-    event_timeout: float = 30.0
+
+    @property
+    def commit_timeout_s(self) -> float:
+        """The commit wait's bound: ``timeout_ms``, else 30 s — in seconds."""
+        ms = self.timeout_ms if self.timeout_ms is not None else DEFAULT_NAVIGATION_TIMEOUT_MS
+        return ms / 1000
+
+    @property
+    def lifecycle_timeout_s(self) -> float:
+        """The lifecycle wait's bound: ``lifecycle_timeout_ms``, else ``timeout_ms``, else 30 s."""
+        ms = self.lifecycle_timeout_ms
+        if ms is None:
+            ms = self.timeout_ms if self.timeout_ms is not None else DEFAULT_NAVIGATION_TIMEOUT_MS
+        return ms / 1000
+
+    @model_validator(mode="after")
+    def _outlast_both_waits(self) -> NavigateToUrlEvent:
+        # Derived only when the emitter did not choose one (``None`` there
+        # still means "wait indefinitely", as for every agent-cdp event).
+        if "event_timeout" not in self.model_fields_set:
+            self.event_timeout = (
+                self.commit_timeout_s + self.lifecycle_timeout_s + NAVIGATION_EVENT_MARGIN_S
+            )
+        return self
 
 
 class ClickElementEvent(BaseEvent[dict[str, Any] | None]):

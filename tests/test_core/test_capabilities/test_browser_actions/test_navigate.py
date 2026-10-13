@@ -8,6 +8,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 )
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
+    answering_capability,
 )
 
 
@@ -34,6 +35,27 @@ class TestNavigateExecute:
         event = fake_capability._scopes["sid_main"].emitted[0]
         assert event.wait_until == "networkidle"
         assert event.timeout_ms == 5000
+
+    async def test_the_caller_waits_longer_than_the_handler_s_two_waits(
+        self, fake_capability: FakeCapability
+    ) -> None:
+        await NavigateAction(timeout_ms=4000, lifecycle_timeout_ms=1000).execute(
+            {"url": "https://example.com"},
+            capability=fake_capability,  # type: ignore[arg-type]
+        )
+        event = fake_capability._scopes["sid_main"].emitted[0]
+        assert isinstance(event, NavigateToUrlEvent)
+        assert event.event_timeout is not None and event.event_timeout > 4.0 + 1.0
+
+    async def test_a_handler_error_fails_the_action(self) -> None:
+        """The handler answers ``{"error": ...}`` when the navigation never committed."""
+        error = "navigation to 'https://slow.example/' did not commit within 30 s"
+        result = await NavigateAction().execute(
+            {"url": "https://slow.example/"},
+            capability=answering_capability({"error": error}),  # type: ignore[arg-type]
+        )
+        assert result.success is False
+        assert result.error == error
 
     async def test_missing_url_fails(self, fake_capability: FakeCapability) -> None:
         result = await NavigateAction().execute(

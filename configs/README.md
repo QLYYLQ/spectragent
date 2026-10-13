@@ -106,6 +106,8 @@ capabilities:
     backend: { provider_id: local_chrome }
 ```
 
+`browser.navigate` (also what setup opens the task's start page with) waits twice. First for the page to commit, which is Chrome answering the navigation, for at most `timeout_ms` (default 30000). Then for its `wait_until` phase (`load` by default), for at most `lifecycle_timeout_ms` (default: the same as `timeout_ms`). A page that committed but whose `load` never arrives in time (a resource that never finishes loading, while the page is already drawn) gets a WARNING in the log and the navigation succeeds. A server that never answers, a URL Chrome refuses, and a navigation Chrome reports failed (an unreachable host, a 204, a download) fail it.
+
 The list is also an **ablation switch**: only the actions it names are instantiated, advertised to the model and executable. Omit the block entirely (or write `actions: null`) to get everything `BrowserCapability.__wiring__` offers; `actions: []` builds no action at all. Narrow it and an agent that *requires* a dropped action fails action negotiation before the run starts — that is the intended "config errors surface at negotiation, not at the first LLM call" guarantee.
 
 `action_id` uses the fully-qualified registry key (`browser.scroll`, not `scroll`).
@@ -608,6 +610,15 @@ task_loader:
 Precedence is `data_dir:` > `$SPECTRAGENT_BENCHMARK_DATA` > the in-package
 `spectragent/benchmark_data/` directory. Tests that read shipped data skip
 themselves — naming the dataset — when none of the three resolves.
+
+A browser task's start page must be one complete `http://` or `https://` URL.
+LexBench's data writes its start pages as bare hosts (`www.bilibili.com`,
+sometimes with a path), so the `lexbench_browser` loader turns each into
+`https://…` before the run records it; the flywheel report and the export
+recognise a site by that URL's host. A start page written as text or as
+several sites (`www.xiachufang.com或其他美食网站`) is left as written, and
+`prepare()` refuses that task, naming its start page, before a trace is
+opened. The other benchmarks already write complete URLs and are not changed.
 
 ## Regenerating the schema
 

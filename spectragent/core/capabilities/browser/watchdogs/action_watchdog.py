@@ -901,15 +901,38 @@ class ActionWatchdog(BrowserWatchdog):
     # Navigation
     # -----------------------------------------------------------------------
 
-    async def _on_navigate(self, event: NavigateToUrlEvent) -> None:
-        """Navigate to a URL and (optionally) wait for a Page lifecycle phase.
+    async def _on_navigate(self, event: NavigateToUrlEvent) -> dict[str, Any] | None:
+        """Navigate to a URL: wait for the commit, then (optionally) for a lifecycle phase.
 
-        ``wait_until`` honours ``"load"`` / ``"domcontentloaded"`` /
-        ``"networkidle"``. Anything else (including the empty string)
-        means fire-and-forget — emit ``NavigationCompleteEvent`` as soon
-        as ``Page.navigate`` returns.
+        Two waits, one after the other (``docs/architecture_design.md`` §4.14,
+        "``browser.navigate``"):
 
-        Lifecycle waiter is registered **synchronously** before
+        1. **The commit.** Chrome answers ``Page.navigate`` once the
+           navigation committed or failed; a server that never answers gets
+           no reply at all. The reply is awaited for at most
+           ``event.commit_timeout_s``. No reply in time, a command Chrome
+           refuses (an invalid URL), or an ``errorText`` in the reply (an
+           unreachable host, whose error page Chrome then shows; a 204 or a
+           download, which commit nothing) fail the navigation: the answer is
+           ``{"error": ...}``, which ``NavigateAction`` turns into a failed
+           result.
+        2. **The lifecycle phase.** ``wait_until`` honours ``"load"`` /
+           ``"domcontentloaded"`` / ``"networkidle"``; anything else
+           (including the empty string) does not wait. The committed
+           document is waited on for at most ``event.lifecycle_timeout_s``
+           from the reply. A phase that does not arrive in time is logged at
+           WARNING and the navigation succeeds: the tab already shows the new
+           document — a page whose ``load`` never comes because one resource
+           never finishes is still drawn, and the next observation's settle
+           wait pays for that ``load`` at most once more. A reply without a
+           ``loaderId`` is a same-document navigation: there is no new
+           document to wait for.
+
+        The event's own timeout outlasts both waits
+        (``NavigateToUrlEvent._outlast_both_waits``), so every outcome above
+        is this handler's answer, never the caller giving up first.
+
+        The lifecycle waiter is registered **synchronously** before
         ``Page.navigate`` is sent so we don't race the CDP response.
         Using :func:`agent_cdp.advanced.expect.expect` here would be a
         race because its ``scope.connect`` runs inside the coroutine
@@ -924,14 +947,9 @@ class ActionWatchdog(BrowserWatchdog):
           both are populated; this discards stale ``Page.lifecycleEvent``
           replays Chrome may emit when ``Page.enable`` is called against
           an already-loaded document)
-
-        Timeout is ``lifecycle_timeout_ms`` (or ``timeout_ms``, or 30s).
-        On timeout we log a warning and emit ``NavigationCompleteEvent``
-        normally — settle behaviour for popup-after-load is the job of
-        ``post_delay_ms`` / ``browser.wait``, not this code path.
         """
         if not self._scope:
-            return
+            return None
 
         # 1. Pick lifecycle event class + base predicate from wait_until.
         lifecycle_target = self._lifecycle_target(event.wait_until)
@@ -939,16 +957,16 @@ class ActionWatchdog(BrowserWatchdog):
         # 2. Synchronously register the waiter BEFORE Page.navigate.
         future: asyncio.Future[Any] | None = None
         connection: Any = None
+        # ``main_loader_holder`` is mutated after Page.navigate returns so we
+        # can tighten the predicate to the just-issued navigation. We use a
+        # list as a poor-man's cell.
+        main_loader_holder: list[str | None] = [None]
         if lifecycle_target is not None:
             target_evt, base_predicate = lifecycle_target
             future = asyncio.get_running_loop().create_future()
             main_frame_id = (
                 self._main_frame_id_getter() if self._main_frame_id_getter is not None else None
             )
-            # ``main_loader_holder`` is mutated after Page.navigate
-            # returns so we can tighten the predicate to the just-issued
-            # navigation. We use a list as a poor-man's cell.
-            main_loader_holder: list[str | None] = [None]
 
             def _waiter(e: Any) -> None:
                 if future is None or future.done():
@@ -977,7 +995,8 @@ class ActionWatchdog(BrowserWatchdog):
                 priority=-1000,
             )
 
-        # 3. Emit start, then fire Page.navigate, then wait, then emit complete.
+        # 3. Emit start, then fire Page.navigate (the commit), then wait for
+        #    the phase, then emit complete.
         self._scope.emit(
             NavigationStartedEvent(
                 target_id=self._session_id or "",
@@ -985,58 +1004,86 @@ class ActionWatchdog(BrowserWatchdog):
             )
         )
 
-        error_text: str | None = None
         try:
+            commit_s = event.commit_timeout_s
             try:
-                result = await self._cdp.send(
-                    "Page.navigate",
-                    {"url": event.url},
-                    session_id=self._session_id,
+                result = await asyncio.wait_for(
+                    self._cdp.send(
+                        "Page.navigate",
+                        {"url": event.url},
+                        session_id=self._session_id,
+                    ),
+                    timeout=commit_s,
                 )
+            except TimeoutError:
+                return self._navigation_failed(event, f"did not commit within {commit_s:g} s")
             except Exception as exc:
-                logger.error("Page.navigate failed: %s", exc)
-                self._scope.emit(
-                    BrowserErrorEvent(
-                        error_type="navigation",
-                        message=str(exc),
-                    )
+                return self._navigation_failed(event, f"was refused by the browser: {exc}")
+
+            reply: dict[str, Any] = result if isinstance(result, dict) else {}
+            error_text = reply.get("errorText")
+            if error_text:
+                # Chrome says the navigation failed: an unreachable host (its
+                # error page is now on screen), a 204 or a download (nothing
+                # committed). There is no document of this navigation to wait for.
+                return self._navigation_failed(
+                    event, f"failed: {error_text}", error_text=str(error_text)
                 )
-                return
 
-            if result:
-                error_text = result.get("errorText")
+            loader_id = reply.get("loaderId")
+            if future is not None and loader_id:
                 # Tighten the predicate to this navigation's loader.
-                if future is not None:
-                    main_loader_holder[0] = result.get("loaderId")
-
-            if future is not None:
-                wait_s = self._resolve_lifecycle_timeout_s(event)
+                main_loader_holder[0] = loader_id
+                wait_s = event.lifecycle_timeout_s
                 try:
                     await asyncio.wait_for(future, timeout=wait_s)
                 except TimeoutError:
                     logger.warning(
-                        "navigate wait_until=%r timed out after %.1fs on %s — "
-                        "emitting NavigationCompleteEvent anyway; tune "
-                        "post_delay_ms or use browser.wait if popups arrive "
-                        "later via JS timer",
+                        "navigate: %s committed, but its %r lifecycle event did not arrive "
+                        "within %gs; carrying on with the page as it is",
+                        event.url,
                         event.wait_until,
                         wait_s,
-                        event.url,
                     )
 
             self._scope.emit(
                 NavigationCompleteEvent(
                     target_id=self._session_id or "",
                     url=event.url,
-                    error_text=error_text,
                 )
             )
+            return None
         finally:
             if connection is not None:
                 try:
                     connection.disconnect()
                 except Exception as exc:
                     logger.debug("Lifecycle connection disconnect failed: %s", exc)
+
+    def _navigation_failed(
+        self, event: NavigateToUrlEvent, what: str, *, error_text: str | None = None
+    ) -> dict[str, Any]:
+        """The answer for a navigation that did not reach its page: ``{"error": ...}``.
+
+        Logged at WARNING and announced on the scope: Chrome's own verdict
+        (*error_text*, the reply's ``errorText``) on ``NavigationCompleteEvent``,
+        anything else — no reply in time, a refused command — on
+        ``BrowserErrorEvent``.
+        """
+        message = f"navigation to {event.url!r} {what}"
+        logger.warning("%s", message)
+        if self._scope is not None:
+            if error_text is not None:
+                self._scope.emit(
+                    NavigationCompleteEvent(
+                        target_id=self._session_id or "",
+                        url=event.url,
+                        error_text=error_text,
+                    )
+                )
+            else:
+                self._scope.emit(BrowserErrorEvent(error_type="navigation", message=message))
+        return {"error": message}
 
     def _lifecycle_target(
         self,
@@ -1061,16 +1108,6 @@ class ActionWatchdog(BrowserWatchdog):
                 lambda e: getattr(e, "name", "") in ("networkIdle", "networkAlmostIdle")
             )
         return None
-
-    @staticmethod
-    def _resolve_lifecycle_timeout_s(event: NavigateToUrlEvent) -> float:
-        """``lifecycle_timeout_ms`` → ``timeout_ms`` → 30000ms, in seconds."""
-        ms = event.lifecycle_timeout_ms
-        if ms is None:
-            ms = event.timeout_ms
-        if ms is None:
-            ms = 30000
-        return ms / 1000
 
     async def _on_go_back(self, _event: GoBackEvent) -> None:
         try:

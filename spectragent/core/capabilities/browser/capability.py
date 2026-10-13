@@ -173,6 +173,7 @@ from spectragent.core.capabilities.browser.settle import (
     PageSettle,
     wait_for_settle,
 )
+from spectragent.core.capabilities.browser.start_page import start_page_problem
 
 # Importing the package registers every watchdog under agent_cdp's
 # ``WatchdogRegistrar``. This module then looks them up by key — it never
@@ -1212,6 +1213,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         - the profile's watchdogs vs the negotiated fragments (a fragment
           the run negotiated that no installed watchdog resolves);
+        - the task's ``start_url``: setup opens it, and only one complete
+          http(s) URL can be opened (``start_page.py``) — a start page with no
+          scheme, another scheme, no host or whitespace is named here;
         - every row of the cooperation check (``cooperation.py``): the
           archivers, the ``replayability`` tier and the ``network_source``
           against the provider, its knobs and its profile, the explicit
@@ -1232,6 +1236,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         replay_archive = context.get(REPLAY_ARCHIVE_KEY)
         injected = self._injected_client is not None
         problems = self._unresolvable_fragments(negotiation)
+        start_page = start_page_problem(context.get("start_url"))
+        if start_page is not None:
+            problems.append(start_page)
         problems.extend(
             cooperation_problems(
                 self,
@@ -1335,7 +1342,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         ``self._session`` is retained so :meth:`teardown` can release it.
 
         ``start_url`` opens the task's landing page before the agent's
-        first observe. ``replay_archive`` is the source run directory an
+        first observe, with ``browser.navigate``: one complete http(s) URL,
+        which :meth:`check_setup` checks before anything is launched (a page
+        that commits but never fires ``load`` is opened with a warning; one
+        that never commits fails setup).
+
+        ``replay_archive`` is the source run directory an
         intercepting ``network_source`` (``archive``, M30) replays: opened
         through ``core/archive``'s ``open_archive`` and loaded whole, to be
         served, before anything is launched (§4.14).
@@ -1364,7 +1376,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # ran, again, before anything is launched: every problem reported at
         # once, each naming both parties (§4.14).
         self.check_setup(
-            {"cdp_url": cdp_url, REPLAY_ARCHIVE_KEY: replay_archive},
+            {"cdp_url": cdp_url, REPLAY_ARCHIVE_KEY: replay_archive, "start_url": start_url},
             negotiation=negotiation,
             archivers=self.bound_archivers,
         )

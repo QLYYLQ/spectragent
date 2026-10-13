@@ -206,6 +206,43 @@ def test_the_fingerprint_read_is_the_full_load_s_minus_the_index(source_run: Pat
     assert full.index.records, "the full load holds the recorded exchange"
 
 
+class TestStartPage:
+    """The task's start page: setup opens only one complete http(s) URL (§4.10 "起始页")."""
+
+    def test_a_start_page_with_no_scheme_is_refused_by_name(self) -> None:
+        (problem,) = _refused(BrowserCapability(), {"start_url": "www.bilibili.com"})
+        assert problem.startswith("start_url 'www.bilibili.com' ↔ browser setup: ")
+        assert "(it has no scheme)" in problem
+
+    def test_text_or_several_sites_are_refused_by_name(self) -> None:
+        (problem,) = _refused(
+            BrowserCapability(), {"start_url": "www.xiachufang.com或其他美食网站"}
+        )
+        assert problem.startswith("start_url 'www.xiachufang.com或其他美食网站' ↔ browser setup")
+        (several,) = _refused(BrowserCapability(), {"start_url": "jd.com + tmall.com"})
+        assert "it contains whitespace" in several
+
+    def test_a_complete_url_cooperates(self) -> None:
+        BrowserCapability().check_setup({"start_url": "https://www.bilibili.com"})
+        BrowserCapability().check_setup({})
+
+    def test_it_is_reported_with_every_other_problem_at_once(self) -> None:
+        problems = _refused(_pinned(_CloudBrowser()), {"start_url": "www.bilibili.com"})
+        assert len(problems) == 3
+        assert sum(p.startswith("start_url 'www.bilibili.com'") for p in problems) == 1
+
+    async def test_setup_refuses_it_before_launching_anything(self) -> None:
+        backend = OwnedBrowser()
+        cap = BrowserCapability()
+        cap.backend = backend  # type: ignore[assignment]
+        try:
+            with pytest.raises(BrowserCooperationError, match="start_url 'www.bilibili.com'"):
+                await cap.setup(start_url="www.bilibili.com")
+        finally:
+            await cap.teardown()
+        assert backend.open_calls == []
+
+
 class TestProfile:
     def test_a_negotiated_fragment_no_installed_watchdog_resolves(self) -> None:
         cap = BrowserCapability()  # negotiation read the standard profile's fragments
@@ -281,3 +318,20 @@ def test_prepare_refuses_a_replay_against_its_source(source_run: Path) -> None:
     runtime = AgentRuntime.for_agent(_run(_replaying(seed=8)), AGENT_ID)
     with pytest.raises(BrowserCooperationError, match="random_seed=8"):
         runtime.prepare(env_context={"replay_archive": str(source_run)})
+
+
+def test_prepare_refuses_a_start_page_that_is_not_a_url() -> None:
+    backend = OwnedBrowser()
+    cap = BrowserCapability()
+    cap.backend = backend  # type: ignore[assignment]
+    runtime = AgentRuntime.for_agent(_run(cap), AGENT_ID)
+    with pytest.raises(BrowserCooperationError) as info:
+        runtime.prepare(env_context={"start_url": "www.xiachufang.com或其他美食网站"})
+    assert info.value.problems == [
+        "start_url 'www.xiachufang.com或其他美食网站' ↔ browser setup: the task's start page "
+        "is not an http(s) URL (it has no scheme); setup opens the start page before the "
+        "agent's first observation and opens only one complete http:// or https:// URL, so "
+        "correct the task's start page"
+    ]
+    assert backend.open_calls == []
+    runtime.prepare(env_context={"start_url": "https://www.xiachufang.com"})
