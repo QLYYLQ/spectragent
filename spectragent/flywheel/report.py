@@ -18,7 +18,7 @@ them; each is written into the rule that uses it, by name and value. The
 per-step archive overhead budget is not defined here but in
 ``core/archive/budget.py``, which the browser's overhead benchmark reads too.
 
-:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-5``:
+:func:`write_report` writes ``report.json`` (format ``af-flywheel-report-6``:
 sorted keys, fixed separators, no wall clock, no absolute path, no host
 information — the same inputs give the same bytes) and ``report.md``,
 rendered from the same model, every measure's skipped runs included.
@@ -100,7 +100,7 @@ from spectragent.schemas._types import UNLIMITED, Unlimited
 from spectragent.schemas.dataset import DatasetManifest
 
 #: ``report.json``'s format.
-REPORT_FORMAT = "af-flywheel-report-5"
+REPORT_FORMAT = "af-flywheel-report-6"
 REPORT_JSON = "report.json"
 REPORT_MD = "report.md"
 
@@ -304,7 +304,7 @@ class Decisions(_Model):
 class FlywheelReport(_Model):
     """The report (``report.json``)."""
 
-    format: Literal["af-flywheel-report-5"] = REPORT_FORMAT
+    format: Literal["af-flywheel-report-6"] = REPORT_FORMAT
     chain: ChainInfo
     token_use: TokenUseReport
     inputs: Inputs
@@ -1402,8 +1402,8 @@ def _lines_section(name: str, sections: Sections) -> list[str]:
             )
             + f", same-path {_ratio_md(item.same_path)}, restoration {_ratio_md(item.restoration)}, "
             f"branches without a document miss {_ratio_md(item.branch_zero_document_miss)}, document "
-            f"misses {item.document_misses}, other misses {item.other_misses}"
-            + (" — blocked" if item.blocked else "")
+            f"misses {item.document_misses}, other misses {item.other_misses}, JSONP callback "
+            f"names rewritten {item.callback_rewrites}" + (" — blocked" if item.blocked else "")
             for site, item in s.by_site.items()
         ]
         lines += [f"- exclude {item.site}: {'; '.join(item.reasons)}" for item in s.exclusions]

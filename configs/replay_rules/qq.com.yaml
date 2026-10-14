@@ -1,0 +1,5 @@
+# Tencent telemetry inside the sj.qq.com frame on Qidian (POST beacons and kv pixels).
+synthesize_204:
+  - "https://otheve.beacon.qq.com/*"
+  - "https://h.trace.qq.com/*"
+  - "https://yybadaccess.3g.qq.com/v3/pcyyb_report_profile_info*"

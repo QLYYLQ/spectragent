@@ -308,6 +308,10 @@ network_source:
 
 - `matcher` is typed: a misspelled key (`levelz`), an unknown level or a threshold
   outside `[0, 1]` is refused at validation, like a misspelled `source_id`.
+- A recorded JSONP answer served to a request that asks for another callback name
+  calls the name this request asks for: the replay rewrites the leading function name
+  when the wrapper is provable, and the hit's replay-log entry says so
+  (`callback_rewrite`). No knob: `docs/architecture_design.md` §4.14 "JSONP 回调名".
 - `strict` fails a document it cannot serve (a main-frame one marks the step diverged),
   answers beacons, pings, reports and analytics hosts (`extra_benign_hosts` adds more)
   with 204, and every other subresource with 404 + `x-replay-miss: 1`.

@@ -27,6 +27,7 @@ from spectragent.core.capabilities.browser.archive.replay_log import (
     ReplayLogSession,
 )
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
+from spectragent.core.capabilities.browser.replay.jsonp import CallbackRewrite
 from spectragent.core.capabilities.browser.replay.replay_log import (
     MAX_KEY_CHARS,
     ReplayCandidate,
@@ -133,6 +134,36 @@ class TestTheRepeatLimit:
         drained = log.drain()
         assert [line["kind"] for line in drained] == ["miss", "summary"]
         assert drained[-1]["count"] == 2
+
+    def test_a_jsonp_poll_asking_fresh_names_is_one_request(self) -> None:
+        """The name asked for is part of the URL: per occurrence; the recorded name is not."""
+
+        def rewritten(recorded: str, requested: str) -> ReplayLogEntry:
+            return _entry(
+                "exhausted",
+                url=f"http://shop.test/poll?callback={requested}",
+                callback_rewrite=CallbackRewrite(
+                    parameter="callback", recorded=recorded, requested=requested
+                ),
+            )
+
+        log = ReplayLog(repeat_limit=1)
+        for n in range(3):
+            log.append(rewritten("cb_0", f"cb_{n + 1}"))
+        log.append(rewritten("cb_9", "cb_4"))
+        drained = log.drain()
+        assert [line["kind"] for line in drained] == ["exhausted", "exhausted", "summary"]
+        assert [line["callback_rewrite"]["recorded"] for line in drained] == [
+            "cb_0",
+            "cb_9",
+            "cb_0",
+        ]
+        assert drained[-1]["count"] == 2
+        assert drained[-1]["callback_rewrite"]["requested"] == "cb_3", "the last folded one"
+        read = ReplayLogEntry.model_validate(drained[0])
+        assert read.callback_rewrite == CallbackRewrite(
+            parameter="callback", recorded="cb_0", requested="cb_1"
+        )
 
     def test_requests_without_a_canonical_key_fold_by_url(self) -> None:
         """WebSockets and escaped requests never reach the matcher: each URL stays visible."""

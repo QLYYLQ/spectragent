@@ -1,0 +1,3 @@
+# mediadata.xuexi.cn: an analytics SDK on 21jingji's pages.
+# _abfpc: a browser fingerprint hash on its scripts (rcfg.js, pbe.js): 86165b40... vs 0a7ad531....
+ignore_query: [_abfpc]

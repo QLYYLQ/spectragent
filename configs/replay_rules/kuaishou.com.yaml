@@ -1,0 +1,3 @@
+# wlog.kuaishou.com: Kuaishou's web log pixel on AcFun.
+synthesize_204:
+  - "https://wlog.kuaishou.com/rest/n/log/*"

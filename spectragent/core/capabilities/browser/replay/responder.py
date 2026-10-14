@@ -13,7 +13,12 @@ The shapes, one function each:
   own (Playwright's ``harBackend`` follows the chain inside its lookup and
   serves the final response; we serve the recorded hop, which is more
   faithful under Fetch interception). A ``304`` never answers an
-  unconditional request.
+  unconditional request. Two things may change the recorded body: the site
+  rule's ``response_echo``, and a JSONP answer whose callback name this
+  request asks differently (``jsonp.py``: the leading name is replaced and
+  the :class:`Fulfilment` says so). A changed body is served without the
+  recorded body digests (:data:`BODY_DIGEST_HEADERS`), which no longer
+  describe it.
 - **A byte range** (:func:`serve_range`): ``206`` with ``Content-Range`` and
   ``Accept-Ranges`` cut from the archive's range map — never a ``200`` for a
   ``Range`` request (measured, arch §4.14: a 200 plays, but seeking breaks).
@@ -65,6 +70,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord, RangeCover
+from spectragent.core.capabilities.browser.replay.jsonp import CallbackRewrite, rewrite_callback
 from spectragent.core.capabilities.browser.replay.matcher import CONDITIONAL_HEADERS, LiveRequest
 from spectragent.core.capabilities.browser.replay.miss_policy import MissDecision, MissReason
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
@@ -74,6 +80,12 @@ ShiftDates = Literal["none", "all"]
 #: Headers never served: the body is stored decoded and ``fulfillRequest``
 #: sends it as it is, so these would lie to page JavaScript.
 DROPPED_HEADERS = frozenset({"content-encoding", "transfer-encoding", "content-length"})
+#: Headers that vouch for the recorded body's exact bytes: dropped when the
+#: replay serves other bytes (an echoed id, a rewritten callback name). Chrome
+#: checks none of them; page JavaScript reading one must not be told a digest of
+#: bytes it never got. An ``ETag`` is a validator, not a digest, and a replay
+#: disables the cache, so nothing revalidates against it: it stays.
+BODY_DIGEST_HEADERS = frozenset({"content-md5", "digest", "content-digest", "repr-digest"})
 #: The headers ``shift_dates: all`` moves (cookie expiry is ``Set-Cookie``'s attribute).
 DATE_HEADERS = frozenset({"date", "expires", "last-modified"})
 #: Statuses that carry no body, hence no ``Content-Length``.
@@ -91,12 +103,16 @@ class Fulfilment:
         headers: The response headers, in order, one entry per header line.
         body: The bytes served (decoded).
         status_text: The reason phrase (``""``: Chrome's standard one).
+        callback_rewrite: The JSONP callback name this response calls instead
+            of the recorded one (``None``: not rewritten); the replay log
+            records it.
     """
 
     status: int
     headers: tuple[tuple[str, str], ...]
     body: bytes = b""
     status_text: str = ""
+    callback_rewrite: CallbackRewrite | None = None
 
     def header(self, name: str) -> str | None:
         wanted = name.lower()
@@ -164,15 +180,28 @@ def serve_record(
 
     *raw_body* is the live request's body as the page sent it (the site
     rule's ``response_echo`` copies values from it); *now* is wall-clock
-    seconds; *cap* the fulfil cap.
+    seconds; *cap* the fulfil cap, checked against the bytes actually served.
+    A JSONP answer whose callback name *request* asks differently calls that
+    name instead (``jsonp.rewrite_callback``), and the fulfilment says so.
     """
     if record.status is None:
         return Refusal("body_unavailable")
     if record.status == 304 and not is_conditional(request):
         return Refusal("no_match")
+    served = body
     if rule is not None and raw_body:
-        body = rule.echo(request.url, raw_body, request.content_type, body)
-    if len(body) > cap:
+        served = rule.echo(request.url, raw_body, request.content_type, served)
+    rewrite: CallbackRewrite | None = None
+    rewritten = rewrite_callback(
+        served,
+        recorded_url=record.url,
+        request_url=request.url,
+        resource_type=request.resource_type,
+        content_type=_header(record.response_headers, "content-type"),
+    )
+    if rewritten is not None:
+        served, rewrite = rewritten
+    if len(served) > cap:
         return Refusal("too_large")
     headers = dated_headers(
         record.response_headers,
@@ -180,11 +209,16 @@ def serve_record(
         now=now,
         record_time=record.started_at,
     )
+    if served != body:
+        headers = [
+            (name, value) for name, value in headers if name.lower() not in BODY_DIGEST_HEADERS
+        ]
     return Fulfilment(
         status=record.status,
-        headers=sanitised_headers(headers, status=record.status, body_length=len(body)),
-        body=body,
+        headers=sanitised_headers(headers, status=record.status, body_length=len(served)),
+        body=served,
         status_text=record.status_text,
+        callback_rewrite=rewrite,
     )
 
 
@@ -257,6 +291,12 @@ def miss_response(decision: MissDecision) -> Fulfilment:
 
 
 # ── headers ───────────────────────────────────────────────────────────
+
+
+def _header(headers: Iterable[tuple[str, str]], name: str) -> str | None:
+    """The first value of header *name* (any case) in *headers*, or ``None``."""
+    wanted = name.lower()
+    return next((value for key, value in headers if key.lower() == wanted), None)
 
 
 def sanitised_headers(

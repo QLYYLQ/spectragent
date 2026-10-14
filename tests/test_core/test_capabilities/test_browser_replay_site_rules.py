@@ -275,10 +275,29 @@ class TestTheDigest:
         ).sha256
         assert plain == with_readme
 
-    def test_the_shipped_example_directory_loads(self) -> None:
+    def test_the_shipped_directory_loads_every_rule(self) -> None:
+        """Every shipped ``<domain>.yaml`` is a valid rule; its digest names the directory."""
         shipped = Path(__file__).resolve().parents[3] / "configs" / "replay_rules"
         rules = SiteRules.load(shipped)
-        assert rules.sha256 is not None
+        files = sorted(path.name.removesuffix(".yaml") for path in shipped.glob("*.yaml"))
+        assert files and rules.domains() == files
+        assert rules.sha256 is not None and len(rules.sha256) == 64
+
+    @pytest.mark.parametrize(
+        ("host", "parameter"),
+        [
+            ("erebor.douban.com", "callback"),
+            ("sso.le.com", "jsonp"),
+            ("anonflow2.eastmoney.com", "callback"),
+        ],
+    )
+    def test_the_shipped_random_callback_parameters_are_ignored(
+        self, host: str, parameter: str
+    ) -> None:
+        """Safe since the replay writes the requested callback name into the answer."""
+        shipped = Path(__file__).resolve().parents[3] / "configs" / "replay_rules"
+        rule = SiteRules.load(shipped).for_host(host)
+        assert rule is not None and rule.ignores_query(parameter)
 
 
 def _rules_with(domain: str, rule: SiteRule) -> SiteRules:

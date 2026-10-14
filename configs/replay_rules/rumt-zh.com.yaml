@@ -1,0 +1,3 @@
+# rumt-zh.com: Tencent's performance monitor (timings: ssl, tcp, ttfb; payload= JSON).
+synthesize_204:
+  - "https://rumt-zh.com/*"

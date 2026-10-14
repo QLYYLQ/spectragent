@@ -1,0 +1,6 @@
+# NetEase news (news.163.com, tech.163.com, nex.163.com, gw.m.163.com).
+# useruuid: the visitor id on nex.163.com ad requests (null / 1e335df7... vs dcd839ad...);
+#   the slot is chosen by l, type and location, and cb (nteeaseadtrack2021<n>) is the same
+#   in recording and replay.
+# trace_id: a random id plus a timestamp on gw.m.163.com/.../getUserByCookie.
+ignore_query: [useruuid, trace_id]

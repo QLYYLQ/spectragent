@@ -1,0 +1,9 @@
+# AcFun (www.acfun.cn, apilog-web.acfun.cn).
+# t: a timestamp on the search page's ajaxpipe requests (t=1791958477977 vs ...777);
+#   keyword, sortType, type, pagelets select the content.
+# reqID: the page's count of ajaxpipe requests so far (1 vs 0); the response does not
+#   echo it (checked in the recorded bodies).
+ignore_query: [t, reqID]
+# perfLog: the page's performance log (POST).
+synthesize_204:
+  - "https://apilog-web.acfun.cn/rest/direct/frontend/perfLog*"

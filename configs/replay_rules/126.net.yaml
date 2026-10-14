@@ -1,0 +1,6 @@
+# NetEase's analytics hosts on 126.net. h5.analytics.126.net puts its whole event (session
+# id, uuid, time) in the query as one JSON parameter name; webstat.ws.126.net reports page
+# timings, sizes and run ids (pgr, prev_pgr, utime, cost, pagesize). Answer their misses 204.
+synthesize_204:
+  - "https://h5.analytics.126.net/*"
+  - "https://webstat.ws.126.net/*"

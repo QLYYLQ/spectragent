@@ -1,0 +1,3 @@
+# track.sfccn.com/public_client_log: a client log (POST, the payload in the body).
+synthesize_204:
+  - "https://track.sfccn.com/*"

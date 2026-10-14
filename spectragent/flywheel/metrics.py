@@ -1631,6 +1631,9 @@ class SiteStats(_Model):
     branch_zero_document_miss: Ratio
     document_misses: int
     other_misses: int
+    #: Responses the replays (same-path and branch) served calling the JSONP callback name
+    #: the page asked for instead of the recorded one (the replay log's ``callback_rewrite``).
+    callback_rewrites: int
 
 
 class SiteExclusion(_Model):
@@ -1693,7 +1696,7 @@ def _failed_at_step0(run: Run) -> bool:
 def sites(
     chain: ChainRuns, *, fidelity: SamePathFidelity, blocked: Sequence[str], exclude_below: float
 ) -> Sites:
-    """By site (arch §4.16): counts, outcomes, fidelity, restoration, coverage, misses.
+    """By site (arch §4.16): counts, outcomes, fidelity, restoration, coverage, misses, rewrites.
 
     Excluded: a site whose recordings met a challenge (*blocked*), whose
     same-path fidelity (the restorer's) is below *exclude_below*, or one of
@@ -1720,7 +1723,7 @@ def sites(
         failed0 = sum(1 for run in recorded if _failed_at_step0(run))
         branches = [run for run in chain.role("branch").runs if run.site == site]
         rate = restoration_rate(run.trace for run in branches)
-        clean = counted = documents = others = 0
+        clean = counted = documents = others = rewrites = 0
         for role in ("same_path", "branch"):
             for run in chain.role(role).runs:
                 if run.site != site:
@@ -1734,6 +1737,7 @@ def sites(
                     continue
                 documents += sum(w for _s, e, w in decisions if e.diverged)
                 others += sum(w for _s, e, w in decisions if e.kind == "miss" and not e.diverged)
+                rewrites += sum(w for _s, e, w in decisions if e.callback_rewrite is not None)
                 if role == "branch" and empty_branch(run) is None:
                     counted += 1
                     clean += int(not any(e.diverged for _s, e, _w in after_checkpoint(run)))
@@ -1758,6 +1762,7 @@ def sites(
             ),
             document_misses=documents,
             other_misses=others,
+            callback_rewrites=rewrites,
         )
         by_site[site] = stats
         reasons: list[str] = []

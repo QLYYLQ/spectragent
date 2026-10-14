@@ -147,6 +147,9 @@ class LiveRequest:
         headers: The Fetch-visible request headers.
         body: The request body **after** ``redact_post_body`` (``None``: none).
         is_document: The request loads a document (``resourceType: Document``).
+        resource_type: CDP's ``resourceType`` (``Script``, ``XHR`` …), when
+            known: the responder tries the JSONP callback rewrite on scripts
+            only (``jsonp.py``).
     """
 
     method: str
@@ -154,6 +157,7 @@ class LiveRequest:
     headers: Mapping[str, str] = dataclasses.field(default_factory=dict)
     body: bytes | None = None
     is_document: bool = False
+    resource_type: str | None = None
 
     def header(self, name: str) -> str | None:
         wanted = name.lower()

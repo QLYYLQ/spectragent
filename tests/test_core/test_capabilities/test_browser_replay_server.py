@@ -596,6 +596,91 @@ class TestNeverContinue:
             server.log.drain()
 
 
+#: A recorded jQuery JSONP call: the built-in normalisation drops the callback
+#: value from the key, so another name matches it (§4.14 "JSONP 回调名").
+JSONP_URL = "http://shop.test/api/hot?size=2&callback={name}&_={ts}"
+JSONP_RECORDED = "jQuery371_1791958613693"
+JSONP_DATA = b'({"hot":["a","b"]});'
+
+
+@pytest.fixture(scope="module")
+def jsonp_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    async def _record() -> Path:
+        script = RecordingScript(tmp_path_factory.mktemp("jsonp"), run_id="run-jsonp")
+        await script.exchange(
+            JSONP_URL.format(name=JSONP_RECORDED, ts=1791958613694),
+            body=JSONP_RECORDED.encode() + JSONP_DATA,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            resource_type="Script",
+        )
+        await script.commit(1)
+        return script.finish()
+
+    return asyncio.run(_record())
+
+
+class TestJsonpCallbackNames:
+    async def test_a_hit_calls_the_name_this_request_asks_for(self, jsonp_run: Path) -> None:
+        _browser, recorder, client, server, sid = await _serving(jsonp_run)
+        asked = "jQuery371_1791958613701"
+        _pause(client, sid, "q1", JSONP_URL.format(name=asked, ts=1), resource_type="Script")
+        await _settle()
+        params = _sent(client, "q1")
+        assert _body(params) == asked.encode() + JSONP_DATA
+        assert _headers(params)["content-length"] == str(len(asked) + len(JSONP_DATA))
+        (entry,) = _log(server)
+        assert (entry["kind"], entry["level"], entry["answer"]) == (
+            "hit",
+            "normalized",
+            "fulfilled",
+        )
+        assert entry["callback_rewrite"] == {
+            "parameter": "callback",
+            "recorded": JSONP_RECORDED,
+            "requested": asked,
+        }
+        await recorder.close()
+
+    async def test_the_recorded_name_is_served_as_recorded(self, jsonp_run: Path) -> None:
+        _browser, recorder, client, server, sid = await _serving(jsonp_run)
+        url = JSONP_URL.format(name=JSONP_RECORDED, ts=1791958613694)
+        _pause(client, sid, "q1", url, resource_type="Script")
+        await _settle()
+        assert _body(_sent(client, "q1")) == JSONP_RECORDED.encode() + JSONP_DATA
+        (entry,) = _log(server)
+        assert entry["level"] == "exact" and "callback_rewrite" not in entry
+        await recorder.close()
+
+    async def test_repeats_fold_and_count_every_rewrite(self, jsonp_run: Path) -> None:
+        _browser, recorder, client, server, sid = await _serving(jsonp_run)
+        names = [f"jQuery371_17919586137{i:02d}" for i in range(6)]
+        for index, name in enumerate(names):
+            _pause(
+                client,
+                sid,
+                f"q{index}",
+                JSONP_URL.format(name=name, ts=index),
+                resource_type="Script",
+            )
+            await _settle()
+        for index, name in enumerate(names):
+            assert _body(_sent(client, f"q{index}")) == name.encode() + JSONP_DATA
+        entries = _log(server)
+        # One hit, then the record repeated: three exhausted entries in full (each with
+        # its own name), the other two folded into one summary that keeps the last.
+        assert [e["kind"] for e in entries] == [
+            "hit",
+            "exhausted",
+            "exhausted",
+            "exhausted",
+            "summary",
+        ]
+        assert [e["callback_rewrite"]["requested"] for e in entries] == [*names[:4], names[5]]
+        summary = entries[-1]
+        assert (summary["folded_kind"], summary["count"]) == ("exhausted", 2)
+        await recorder.close()
+
+
 class TestState:
     async def test_closing_a_tab_mid_pause_leaves_no_state(self, source_run: Path) -> None:
         browser, recorder, client, server, _sid = await _serving(

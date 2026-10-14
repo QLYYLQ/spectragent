@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import socket
 import threading
 import time
@@ -211,6 +212,21 @@ KEYS_BOXES: dict[str, tuple[int, int, int, int]] = {
 #: contexts only, and Chrome sends ``Sec-CH-UA`` to them only: serve it from an
 #: unmapped site (``127.0.0.1``).
 CLIENT_HINTS_SCENARIOS: tuple[str, ...] = ("client_hints",)
+#: JSONP whose callback names differ between a recording and its replay
+#: (architecture §4.14 "JSONP 回调名"), kept apart for the same reason.
+#: ``page.html`` names its two callbacks after ``performance.timeOrigin`` (the
+#: real clock, which pinned leaves alone, so a replay never asks the recording's
+#: names) and loads two JSONP scripts: ``hot.js?callback=jQuery<µs>_1``, the
+#: jQuery shape the built-in normalisation drops from the match key, answered
+#: ``NAME({…});`` as ``application/json``; and ``ad.js?cb=ad_<µs in hex>``, a
+#: name with a random part that only a site rule ignoring ``cb`` lets match,
+#: answered in Express's wrapper (``/**/ typeof NAME === 'function' &&
+#: NAME({…});``) as ``text/html``. Each callback adds one button per item
+#: (:data:`JSONP_ITEMS`) to its box; a callback that never runs adds none. The
+#: answers echo the name they are asked for, as a JSONP server does.
+JSONP_SCENARIOS: tuple[str, ...] = ("jsonp",)
+#: The buttons each JSONP answer adds, by the box (and the endpoint) they belong to.
+JSONP_ITEMS: dict[str, tuple[str, ...]] = {"hot": ("first", "second", "third"), "ad": ("banner",)}
 #: What the first script of every ``new_tab`` document, worker and frame
 #: reports: the shim's mark, the clock, the seeded randomness, time zone,
 #: locale, language, user agent and brands, reduced motion — and whether any
@@ -275,6 +291,8 @@ _HTML = "text/html; charset=utf-8"
 _JS = "application/javascript"
 _JSON = "application/json"
 _HEAD = '<meta charset="utf-8"><link rel="icon" href="data:,">'
+#: A callback name the JSONP endpoints accept: one JavaScript identifier.
+_JSONP_NAME = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
 
 
 @dataclass(frozen=True)
@@ -323,6 +341,7 @@ class LoggedRequest:
             or head in NEW_TAB_SCENARIOS
             or head in KEYS_SCENARIOS
             or head in CLIENT_HINTS_SCENARIOS
+            or head in JSONP_SCENARIOS
         )
         return head if known else None
 
@@ -556,6 +575,7 @@ class FixtureSite:
             + NEW_TAB_SCENARIOS
             + KEYS_SCENARIOS
             + CLIENT_HINTS_SCENARIOS
+            + JSONP_SCENARIOS
         )
         if scenario not in known:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {known}")
@@ -623,6 +643,7 @@ class FixtureSite:
             # its entry page (nothing is submitted without a key)
             "keys": ["/keys/page.html"],
             "client_hints": ["/client_hints/page.html", "/client_hints/report"],
+            "jsonp": ["/jsonp/page.html", "/jsonp/hot.js", "/jsonp/ad.js"],
         }
         if scenario not in paths:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {sorted(paths)}")
@@ -1090,6 +1111,10 @@ class FixtureSite:
             # ── the browser's client hints ──
             "/client_hints/page.html": static(self._client_hints_page(), _HTML),
             "/client_hints/report": static(b"{}", _JSON),
+            # ── JSONP callback names ──
+            "/jsonp/page.html": static(self._jsonp_page(), _HTML),
+            "/jsonp/hot.js": self._jsonp_hot,
+            "/jsonp/ad.js": self._jsonp_ad,
         }
 
     def _keys_page(self) -> bytes:
@@ -1140,6 +1165,48 @@ class FixtureSite:
             "fetch('/client_hints/report?d=' + encodeURIComponent(JSON.stringify(seen)));"
             "</script>",
         )
+
+    def _jsonp_page(self) -> bytes:
+        boxes = "".join(f'<div id="{box}"></div>' for box in JSONP_ITEMS)
+        return self._page(
+            "jsonp",
+            f"<p>Hot searches and an ad, by JSONP</p>{boxes}<script>"
+            "const t = Math.round(performance.timeOrigin * 1000);"
+            "const names = {hot: 'jQuery' + t + '_1', ad: 'ad_' + t.toString(16)};"
+            "function show(box, items) {"
+            " for (const item of items) { const b = document.createElement('button');"
+            " b.id = box + '-' + item; b.type = 'button'; b.textContent = item;"
+            " document.getElementById(box).appendChild(b); } }"
+            "window[names.hot] = data => show('hot', data.hot);"
+            "window[names.ad] = data => show('ad', [data.ad]);"
+            "function load(src) { const s = document.createElement('script'); s.src = src;"
+            " document.head.appendChild(s); }"
+            "load('/jsonp/hot.js?size=3&callback=' + names.hot + '&_=' + t);"
+            "load('/jsonp/ad.js?unit=top&cb=' + names.ad);"
+            "</script>",
+        )
+
+    def _jsonp_answer(self, handler: _Handler, parameter: str) -> str | None:
+        """The callback name *handler*'s request asks for in *parameter*, or ``None`` (answered 400)."""
+        query = dict(parse_qsl(handler.path.partition("?")[2], keep_blank_values=True))
+        name = query.get(parameter, "")
+        if not _JSONP_NAME.fullmatch(name):
+            self._send(handler, 400, b"bad callback", "text/plain")
+            return None
+        return name
+
+    def _jsonp_hot(self, handler: _Handler, _body: bytes) -> None:
+        name = self._jsonp_answer(handler, "callback")
+        if name is not None:
+            data = json.dumps({"hot": list(JSONP_ITEMS["hot"])})
+            self._send(handler, 200, f"{name}({data});".encode(), "application/json; charset=utf-8")
+
+    def _jsonp_ad(self, handler: _Handler, _body: bytes) -> None:
+        name = self._jsonp_answer(handler, "cb")
+        if name is not None:
+            data = json.dumps({"ad": JSONP_ITEMS["ad"][0]})
+            body = f"/**/ typeof {name} === 'function' && {name}({data});"
+            self._send(handler, 200, body.encode(), _HTML)
 
     def _new_tab_routes(
         self, static: Callable[[bytes, str], Callable[[_Handler, bytes], None]]

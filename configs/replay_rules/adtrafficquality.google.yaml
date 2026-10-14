@@ -1,0 +1,2 @@
+# ep1.adtrafficquality.google: Google's ad traffic check; bg is a per-page challenge blob.
+ignore_query: [bg]

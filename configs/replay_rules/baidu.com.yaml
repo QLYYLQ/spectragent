@@ -1,0 +1,7 @@
+# Baidu analytics (hm.baidu.com) and ad tracking (eclick.baidu.com) on several sites.
+# rnd: a random number on every hm.gif pixel. stamp: a timestamp on eclick's rt.jpg.
+ignore_query: [rnd, stamp]
+# hm.gif pixels whose event fields differ (ep, et, tt, vl describe the event) still miss:
+# answer them 204 like other analytics.
+synthesize_204:
+  - "https://hm.baidu.com/hm.gif*"

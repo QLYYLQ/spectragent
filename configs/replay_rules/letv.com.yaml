@@ -1,0 +1,8 @@
+# LeTV's other domain (dc.letv.com, fe-go.letv.com, ark.letv.com, search-*.letv.com).
+# lc, uuid, apprunid, weid, device_id: device, visit and run ids in the dc / fe-go pixels.
+# _r: a random float on fe-go pixels (0.1749... vs 0.8379...).
+# vvid: the ad request's view id on ark.letv.com/s (c567fbb5-..._179... vs d085b8cf-...),
+#   a random UUID and a timestamp; the ad slot is chosen by ark= and n=.
+ignore_query: [lc, uuid, apprunid, weid, device_id, _r, vvid]
+# Not ignored: ps on search-lekan (page size 25 vs 30: it changes the result count);
+# ap (which element a pixel reports); url (the page a pixel reports).

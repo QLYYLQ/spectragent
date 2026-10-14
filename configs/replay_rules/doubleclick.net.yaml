@@ -1,0 +1,5 @@
+# Google ads (googleads.g.doubleclick.net): the ad frame (pagead/ads) and conversion tags.
+# bdt: browser time delta; lmt: the page's last-modified time (pinned does not fix it);
+# correlator, random, fst: per-page random numbers and timestamps; eid: experiment ids
+# Google assigns per page view. The client, slot and size parameters select the ad.
+ignore_query: [bdt, lmt, correlator, random, fst, eid]

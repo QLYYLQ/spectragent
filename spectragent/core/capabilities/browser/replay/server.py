@@ -16,8 +16,9 @@ pure construction — and owned by the capability from setup to teardown:
   request reaches :meth:`ReplayServer.on_paused` in a task the recorder
   spawned. The live body is redacted with M29's ``redact_post_body`` before
   any key; the matcher selects and consumes a record in one synchronous call;
-  ``responder.py`` shapes the answer; the miss policy answers what the archive
-  cannot. The answer goes to the **pausing** session (a dedicated worker's
+  ``responder.py`` shapes the answer (a JSONP answer calls the callback name
+  this request asks for, ``jsonp.py``); the miss policy answers what the
+  archive cannot. The answer goes to the **pausing** session (a dedicated worker's
   request pauses on its page's; an OOPIF's document on its parent page's).
   ``answered`` is set only after the send succeeded; whatever is not
   answered, the recorder fails — **nothing is ever continued to the
@@ -312,7 +313,12 @@ class ReplayServer(RecorderParticipantBase):
         content_type = next((v for k, v in headers.items() if k.lower() == "content-type"), None)
         redacted = redact_post_body(raw_body, content_type)[0] if raw_body else None
         live = LiveRequest(
-            method=method, url=url, headers=headers, body=redacted, is_document=is_document
+            method=method,
+            url=url,
+            headers=headers,
+            body=redacted,
+            is_document=is_document,
+            resource_type=resource_type,
         )
         base = {
             "captured_at": self.ctx.clock(),
@@ -344,6 +350,7 @@ class ReplayServer(RecorderParticipantBase):
                     fuzzy_score=result.fuzzy_score,
                     range=served.header("content-range") if result.range is not None else None,
                     status=served.status,
+                    callback_rewrite=served.callback_rewrite,
                     **base,
                 )
             reason = served.reason

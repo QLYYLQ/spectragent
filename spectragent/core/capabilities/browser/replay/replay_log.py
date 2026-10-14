@@ -16,11 +16,12 @@ collection window, the rest are only counted and come out as one
 ``summary`` entry with ``count``. Identical means every field but when it
 happened (``captured_at``, ``cycle``) and the candidates listed — the same
 decision (kind, reason, answer, status, request class, frame, ``diverged``,
-record) about the same request in the same frame — where the request is
-named by its canonical key (a cache-busted poll is one request asked again)
-or, without one (a WebSocket, an escaped request), by its URL. So different
-URLs never fold together, and a divergence is never folded into misses that
-are not one.
+record, the callback rewrite's parameter and recorded name) about the same
+request in the same frame — where the request is named by its canonical key
+(a cache-busted poll is one request asked again, and so is a JSONP poll
+asking a fresh callback name each time) or, without one (a WebSocket, an
+escaped request), by its URL. So different URLs never fold together, and a
+divergence is never folded into misses that are not one.
 
 Reading side, over the :class:`~spectragent.core.archive.source.ArchiveReader`
 Protocol (no trace import here), finding the files by the archiver that
@@ -49,6 +50,7 @@ from spectragent.core.capabilities.browser.archive.replay_log import (
     REPLAY_LOG_ARCHIVER,
     REPLAY_LOG_NAME,
 )
+from spectragent.core.capabilities.browser.replay.jsonp import CallbackRewrite
 from spectragent.core.capabilities.browser.replay.miss_policy import MissReason, RequestClass
 
 #: What one entry records. ``hit``: served from the archive; ``exhausted``:
@@ -102,6 +104,9 @@ class ReplayLogEntry(BaseModel):
     fuzzy_score: float | None = None
     #: ``bytes N-E/T`` of a range answer.
     range: str | None = None
+    #: A JSONP answer served calling the callback name this request asked for
+    #: instead of the recorded one: which parameter, which two names (``jsonp.py``).
+    callback_rewrite: CallbackRewrite | None = None
     # ── the answer ──
     request_class: RequestClass | None = None
     reason: MissReason | None = None
@@ -133,6 +138,11 @@ def _fold_key(entry: ReplayLogEntry) -> _FoldKey:
     if entry.match_key is not None:
         # The canonical key names the request; the URL may differ in volatile parameters.
         del identity["url"]
+    rewrite = entry.callback_rewrite
+    if rewrite is not None:
+        # The name asked for is part of the URL, so it is per occurrence too: a
+        # poll asking a fresh name each time is still one request asked again.
+        identity["callback_rewrite"] = (rewrite.parameter, rewrite.recorded)
     return tuple(identity.items())
 
 

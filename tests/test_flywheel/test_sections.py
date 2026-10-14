@@ -13,6 +13,8 @@ from typing import Any
 
 import pytest
 
+from spectragent.core.capabilities.browser.replay.jsonp import CallbackRewrite
+from spectragent.core.capabilities.browser.replay.replay_log import ReplayLogEntry
 from spectragent.flywheel import report as rules
 from spectragent.flywheel.metrics import (
     BranchCoverage,
@@ -42,7 +44,15 @@ from spectragent.flywheel.metrics import (
     storage,
 )
 from spectragent.flywheel.report import FlywheelReport, build_report, render_markdown
-from tests._helpers.flywheel_traces import Step, click, dataset_manifest, write_plain
+from tests._helpers.flywheel_traces import (
+    Step,
+    click,
+    dataset_manifest,
+    hit,
+    provenance,
+    write_plain,
+    write_replayed,
+)
 from tests.test_flywheel.conftest import empty_layout
 
 
@@ -85,6 +95,50 @@ class TestSites:
     def test_the_exclusion_threshold_is_the_named_one(self, chain: ChainRuns) -> None:
         lenient = sites(chain, fidelity=same_path_fidelity(chain), blocked=[], exclude_below=0.0)
         assert lenient.exclude_sites == ["broken.test"], "0.0 is not below 0.0; no challenge given"
+
+
+class TestCallbackRewrites:
+    """Every JSONP answer a replay served under the name the page asked for is counted, by site."""
+
+    async def test_rewrites_are_counted_through_folded_repeats(self, tmp_path: Path) -> None:
+        layout = empty_layout(tmp_path)
+        write_plain(layout.traces("record"), "rec-jsonp", [Step()], task_id="t1", site="jsonp.test")
+
+        def served(kind: str, requested: str | None) -> ReplayLogEntry:
+            entry = hit(f"http://jsonp.test/hot?callback={requested or 'cb_0'}")
+            rewrite = (
+                CallbackRewrite(parameter="callback", recorded="cb_0", requested=requested)
+                if requested is not None
+                else None
+            )
+            return entry.model_copy(
+                update={"kind": kind, "resource_type": "Script", "callback_rewrite": rewrite}
+            )
+
+        # Same path: one hit as recorded, one rewritten, then five rewritten repeats of which
+        # the log writes three in full and folds two into one summary.
+        same_path = [served("hit", None), served("hit", "cb_1")]
+        same_path += [served("exhausted", f"cb_{n}") for n in range(2, 7)]
+        await write_replayed(
+            layout.traces("same_path"),
+            "rec-jsonp-s0-b0",
+            [Step(origin="restored", replay=same_path), Step()],
+            task_id="t1",
+            site="jsonp.test",
+            branch=provenance("rec-jsonp", 0, 0, "t1"),
+            repeat_limit=3,
+        )
+        await write_replayed(
+            layout.traces("branch"),
+            "rec-jsonp-s0-b1",
+            [Step(replay=[served("hit", "cb_7")])],
+            task_id="t1",
+            site="jsonp.test",
+            branch=provenance("rec-jsonp", 0, 1, "t1"),
+        )
+        report = build_report(layout, evidence="rehearsal")
+        assert report.sections.sites.by_site["jsonp.test"].callback_rewrites == 1 + 5 + 1
+        assert "JSONP callback names rewritten 7" in render_markdown(report)
 
 
 class TestAFailedModelCallIsNotTheSites:

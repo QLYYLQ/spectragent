@@ -1,0 +1,3 @@
+# vmonitor.ws.netease.com: NetEase's performance monitor (param= one JSON blob of timings).
+synthesize_204:
+  - "https://vmonitor.ws.netease.com/*"

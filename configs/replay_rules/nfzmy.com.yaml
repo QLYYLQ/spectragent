@@ -1,0 +1,3 @@
+# rmapi.nfzmy.com: an analytics endpoint on 21jingji's pages.
+# actionTime: a timestamp; deviceid: a random UUID (8b42c835-... vs 42c83548-...).
+ignore_query: [actionTime, deviceid]

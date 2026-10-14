@@ -1,0 +1,21 @@
+# East Money (www.eastmoney.com and its hosts).
+# timespan: a random cache buster on the index chart images
+#   (webquotepic.eastmoney.com/GetPic.aspx?nid=...&timespan=367959); nid picks the chart.
+#   The replay's values are the recording's sequence shifted by one random draw.
+# domreadyt, wt, mt, asi, psi: timings and session ids of the bdwblog Web_JS / Web_Event
+#   pixels (domreadyt 272 vs 1801, mt ...-197137260 vs ...-977946104).
+# callback: anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_<random
+#   digits> (ewtsdk_jsonp_29325 vs ewtsdk_jsonp_40552). The answer never uses it: all six
+#   recorded answers are the same bytes, a static file calling the fixed name callback
+#   (/**/ typeof callback === 'function' && callback({...})), so the replay serves it as
+#   recorded. Every other callback value on eastmoney.com is a fixed name the page always
+#   asks (wsc_checkuser, bulletin_base_1566, emroadshow, cb) or a name the built-in
+#   normalisation already drops (jQuery<digits>_<n>, jsonp_<...>); an answer that calls the
+#   name it is asked for gets the requested name written in (docs/architecture_design.md
+#   §4.14 "JSONP 回调名").
+# Not ignored: cb. reportapi's cb=callback<7 random digits> hit exactly in every replay so
+#   far, and push2's cb=quotedelaytip0 is a request of its own.
+ignore_query: [timespan, domreadyt, wt, mt, asi, psi, callback]
+# CommonRecommend.png carries its whole event as one JSON parameter (json=...).
+synthesize_204:
+  - "https://huaxiang.eastmoney.com/CommonRecommend.png*"

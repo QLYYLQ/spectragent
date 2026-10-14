@@ -1,0 +1,4 @@
+# galileotelemetry.tencent.com/collect: Tencent's telemetry collector (POST) inside
+# Qidian's pages.
+synthesize_204:
+  - "https://galileotelemetry.tencent.com/*"

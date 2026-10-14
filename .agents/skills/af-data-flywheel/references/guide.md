@@ -299,7 +299,24 @@ uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
 - Site rules are `<domain>.yaml` files chosen by the longest host suffix
   (`configs/replay_rules/README.md`: `ignore_query`, `ignore_body_paths`, `ignore_headers`,
   `fuzzy`, `synthesize_204`, `response_echo`). Their digest enters the replay fingerprint, and
-  match keys are recomputed at load, so a rule change needs no new recording.
+  match keys are recomputed at load, so a rule change needs no new recording. The 25 shipped
+  files were written from twelve live recordings of Chinese sites and committed as one set
+  (the user's ruling of 2026-10-14: the analytics rules shift the page's random draws and
+  request counters too, so a subset can replay worse); each comment carries its evidence, and
+  `ctrip.com.yaml`'s top-level body `id` is a risk kept on purpose and written in the file.
+  Ignore only values that change per visit and select nothing.
+- JSONP callback names (`replay/jsonp.py`, architecture §4.14 "JSONP 回调名"): when the
+  archive serves a recorded JSONP answer to a request asking another callback name, the
+  responder writes the requested name over the recorded one at the call the body opens with,
+  and the hit's log entry carries `callback_rewrite` (`parameter`, `recorded`, `requested`).
+  Only provable wrappers: a `Script` / `XHR` / `Fetch` request, a JavaScript, JSON,
+  `text/plain`, `text/html` or `application/octet-stream` answer (or none), a body opening
+  with `NAME(`, `typeof NAME === 'function' && NAME(`, `NAME && NAME(` or one of them inside
+  `try {` (whitespace, comments, a leading `;` and a BOM allowed before), exactly one recorded
+  query parameter whose value is `NAME`, and a requested value that is itself an identifier
+  path. Everything else is served byte for byte. That is what makes ignoring a random-part
+  callback parameter in a site rule safe (`douban.com.yaml` `callback`, `le.com.yaml`
+  `jsonp`).
 - Read the log with `replay_log(reader, step)`, `iter_replay_log(reader)` or
   `diverged_steps(reader)` over `spectragent.core.archive.source.open_archive(run_dir)`.
   They find it under `browser.replay_log`; a file named `replay.jsonl` under another
@@ -546,12 +563,15 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
   by both the report and the browser's overhead benchmark.
 - The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
-  report format is `af-flywheel-report-5` (`-4` added `archive_overhead.settle_wait`: per
+  report format is `af-flywheel-report-6` (`-4` added `archive_overhead.settle_wait`: per
   role, the p50 / p95 of the settle wait before each observation, the share the cap ended
   and the observations whose page state was unknown, read from the `settle` record on every
   browser fragment through `settle.py::recorded_settle`; `-5` added `token_use`: the limit
   from the spec, every role's recorded tokens and calls, the calls without usage, and
-  `limit_reached`; `report --root` has no spec, so its `limit` is `null`). Report keys,
+  `limit_reached`; `report --root` has no spec, so its `limit` is `null`; `-6` added each
+  site's `callback_rewrites`: the replayed responses, same-path and branch, served under the
+  JSONP callback name the page asked for, counted from the replay log with folded repeats
+  weighted). Report keys,
   headings and rule texts never use a planning code (`test_report_schema.py` pins it).
 - The privacy measure checks only the two gates of the threat model "only me" (the user's
   ruling of 2026-10-13): what was sent to the model (`model_requests`: the text in the
@@ -947,6 +967,15 @@ value on an existing one.
   that bool key means. A numeric limit is never `null`: no limit is `unlimited`
   (`max_document_misses`, the capability's `dom_max_*`, the chain's `token_limit`), and `[]`
   always means empty.
+- A replay serves recorded bytes, changed in two ways only, both in
+  `responder.serve_record`: a site rule's `response_echo`, and the JSONP callback name
+  (`jsonp.rewrite_callback`). Either way the body's `Content-Length` is recomputed, the
+  `max_fulfill_body_bytes` cap is checked on the bytes served, and the recorded body digests
+  (`Content-MD5`, `Digest`, `Content-Digest`, `Repr-Digest`) are dropped; `ETag` stays (a
+  replay disables the cache, nothing revalidates). Never write into a served script anything
+  but an identifier the request itself carried, and never touch a body the wrapper grammar
+  does not prove: an unrecognised shape is served as recorded and stays visible as a hit
+  without `callback_rewrite`.
 - The recorder never awaits a reply before it resumes a waiting target: it writes the whole
   batch, then `Runtime.runIfWaitingForDebugger`, in order from one task (`CDPClient.post`),
   then waits for every reply for longer than it may itself hold the target's first document.
@@ -1105,5 +1134,6 @@ value on an existing one.
 | The pre-flight refuses `--token-limit`: `this configuration writes no trace` | No hook exposes a run directory, so no token can be counted: add a `trace_writer` hook or drop the limit |
 | A metric is `null` | Its denominator was zero; the `reason` says why. No data gives `insufficient`, never a default verdict |
 | The observation after a form submit stalls | Navigations in flight are awaited before capture (`navigation.py`). A navigation a page timer starts after that check still costs up to 10 s per attempt |
+| A replay log hit on a JSONP request, yet the page lacks what it loads (hot searches, an ad, search results) | The entry's `callback_rewrite`: absent while the requested name differs from the record's means the answer is outside the wrapper grammar (a callback in the path, `window.NAME(`), or the request hit a record of the same endpoint without a callback. `sections.sites.by_site.<site>.callback_rewrites` counts the rewrites per site |
 | Recorded and replayed screenshots differ, or an agent decided on a half-rendered page | Read the step's `settle` record on its browser fragments: `capped` means the page never went quiet within `settle_max_wait_s` (a carousel, a video, a poll); `unknown` means its state could not be read (`detail`). The wait sees no request still in flight with nothing else changing (architecture §4.14) |
 | A model call waits until its timeout late in a long process | A provider that leaves its SDK client to the garbage collector (architecture §4.7). A provider closes every client it builds before the request returns |

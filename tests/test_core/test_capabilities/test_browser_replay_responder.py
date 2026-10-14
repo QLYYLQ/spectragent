@@ -212,6 +212,74 @@ def test_response_echo_copies_the_request_id() -> None:
     assert served.header("content-length") == str(len(served.body))
 
 
+# ── JSONP callback names (jsonp.py; the shapes are in test_browser_replay_jsonp.py) ──
+
+JSONP_RECORDED = "http://shop.test/api/hot?callback=jQuery1_1791958613693&_=5"
+JSONP_ASKED = "http://shop.test/api/hot?callback=jQuery1_17919586136951&_=6"
+JSONP_BODY = b'jQuery1_1791958613693({"hot":["a","b"]});'
+#: Headers vouching for the recorded bytes, and one that does not.
+DIGESTS = (
+    ("Content-MD5", "Q2hlY2sgSW50ZWdyaXR5IQ=="),
+    ("Digest", "sha-256=X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE="),
+    ("Content-Digest", "sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:"),
+    ("Repr-Digest", "sha-256=:X48E9qOokqqrvdts8nOJRJN3OWDUoyWxBf7kbu9DBPE=:"),
+    ("ETag", '"v1"'),
+)
+
+
+def _jsonp_record(headers: tuple[tuple[str, str], ...] = ()):
+    return indexed(
+        JSONP_RECORDED,
+        record_id="jsonp-1",
+        order=0,
+        status=200,
+        response_headers=(("Content-Type", "text/plain;charset=UTF-8"), *headers),
+        started_at=RECORDED,
+        status_text="OK",
+    )
+
+
+def _script(url: str = JSONP_ASKED, resource_type: str = "Script") -> LiveRequest:
+    return LiveRequest(method="GET", url=url, resource_type=resource_type)
+
+
+def test_a_jsonp_answer_calls_the_name_this_request_asks_for() -> None:
+    served = _served(_serve(_jsonp_record(), JSONP_BODY, request=_script()))
+    assert served.body == b'jQuery1_17919586136951({"hot":["a","b"]});'
+    assert served.header("content-length") == str(len(served.body)) == str(len(JSONP_BODY) + 1)
+    assert served.callback_rewrite is not None
+    assert served.callback_rewrite.model_dump() == {
+        "parameter": "callback",
+        "recorded": "jQuery1_1791958613693",
+        "requested": "jQuery1_17919586136951",
+    }
+
+
+def test_a_rewritten_body_drops_the_recorded_digests_and_keeps_the_etag() -> None:
+    record = _jsonp_record(DIGESTS)
+    rewritten = _served(_serve(record, JSONP_BODY, request=_script()))
+    names = {name.lower() for name, _ in rewritten.headers}
+    assert not names & {"content-md5", "digest", "content-digest", "repr-digest"}
+    assert rewritten.header("etag") == '"v1"'
+    as_recorded = _served(_serve(record, JSONP_BODY, request=_script(JSONP_RECORDED)))
+    assert as_recorded.body == JSONP_BODY and as_recorded.callback_rewrite is None
+    for name, value in DIGESTS:
+        assert as_recorded.header(name) == value, "the recorded bytes keep their digests"
+
+
+def test_a_jsonp_body_is_not_rewritten_for_a_document() -> None:
+    served = _served(_serve(_jsonp_record(), JSONP_BODY, request=_script(resource_type="Document")))
+    assert served.body == JSONP_BODY and served.callback_rewrite is None
+
+
+def test_the_cap_is_checked_against_the_rewritten_bytes() -> None:
+    record = _jsonp_record()
+    padded = JSONP_BODY + b" " * (CAP - len(JSONP_BODY))
+    assert len(padded) == CAP
+    assert _served(_serve(record, padded, request=_script(JSONP_RECORDED))).body == padded
+    assert _serve(record, padded, request=_script()) == Refusal("too_large")
+
+
 def test_304_never_answers_an_unconditional_request() -> None:
     not_modified = _record(304, (("ETag", '"v1"'),), status_text="Not Modified")
     assert _serve(not_modified) == Refusal("no_match")

@@ -1,0 +1,9 @@
+# Ctrip's static and telemetry domain (webresource.c-ctrip.com, s.c-ctrip.com).
+# v: the version cache buster on webresource scripts (d.min.js?v=1791879616082 vs
+#   v=202610141414); the path names the file.
+ignore_query: [v]
+# bee/collect: the UBT telemetry collector (POST, the payload in the body); a failed send
+#   is retried (retry=1). bf.gif: the same collector's image fallback (d= the payload).
+synthesize_204:
+  - "https://s.c-ctrip.com/bee/collect*"
+  - "https://s.c-ctrip.com/bf.gif*"

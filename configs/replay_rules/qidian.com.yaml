@@ -1,0 +1,9 @@
+# Qidian (www.qidian.com, qdp.qidian.com).
+# _csrfToken: a per-session token the site's jQuery setup reads from a cookie and appends
+#   to every www.qidian.com XHR (getPortalAdv, ajax/comment/index); recorded
+#   dQWv9mcd... vs replayed VASOBcpS... It never selects content.
+ignore_query: [_csrfToken]
+# qreport: tracking pixels whose parameters describe the event (eid, l1, e1, e2 name the
+#   element clicked or shown); a miss is answered 204 like other analytics.
+synthesize_204:
+  - "https://qdp.qidian.com/qreport*"

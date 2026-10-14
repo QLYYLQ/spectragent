@@ -2948,7 +2948,7 @@ class ArchiveReader(Protocol):
 **规范化（`canonical.py`，唯一实现，加载与线上请求共用）**：
 
 - **先脱敏**：线上请求的 body 先过 M29 的 `redact_post_body(body, content_type)`（`archive/redaction.py`，录制时存进 WARC 的就是它的输出），再算任何键。归档里只有 `<redacted>`，所以带密码或 token 的 POST 照样精确命中。
-- **URL**：scheme 与 host 小写，去掉默认端口与 fragment，query 参数排序；去掉易变参数（事实取自 pywb `rules.yaml`、wabac、WARC-Bench 的列表，规则自己写，不移植它们的代码）：`utm_*`、`fbclid`、`_ga`；名字是 `_` / `cb` / `uncache` 或含 `cache`、值是数字（可带 `.`、`-`）的参数；值形如 `jsonp…` / `jQuery\d+_\d+` 的参数（jsonp 的 `callback`）；名字含 `bust` 或 `ts` 且值是时间戳的参数，即值是 `1` 再跟 12–15 位数字（pywb 的 `1[\d]{12,15}`：毫秒或微秒的 epoch；任意 13–16 位数字会把 `products=<EAN-13>` 这样的条码、编号也当成时间戳去掉，L1 就把不同的资源当成同一个）。WARC-Bench 的 `timestamp`、`_`、`r`、`width`、`height` 照它自己的做法只抹掉值、保留参数名。
+- **URL**：scheme 与 host 小写，去掉默认端口与 fragment，query 参数排序；去掉易变参数（事实取自 pywb `rules.yaml`、wabac、WARC-Bench 的列表，规则自己写，不移植它们的代码）：`utm_*`、`fbclid`、`_ga`；名字是 `_` / `cb` / `uncache` 或含 `cache`、值是数字（可带 `.`、`-`）的参数；值形如 `jsonp…` / `jQuery\d+_\d+` 的参数（jsonp 的 `callback`：键里不看它，送出的应答由下面"JSONP 回调名"改写成这次请求的名字）；名字含 `bust` 或 `ts` 且值是时间戳的参数，即值是 `1` 再跟 12–15 位数字（pywb 的 `1[\d]{12,15}`：毫秒或微秒的 epoch；任意 13–16 位数字会把 `products=<EAN-13>` 这样的条码、编号也当成时间戳去掉，L1 就把不同的资源当成同一个）。WARC-Bench 的 `timestamp`、`_`、`r`、`width`、`height` 照它自己的做法只抹掉值、保留参数名。
 - **body**（移植 cdxj-indexer `postquery.py`，Apache-2.0，保留 notice；不依赖 cdxj-indexer / surt）：加 `__wb_method=<METHOD>`；urlencoded 与 multipart 变成参数（multipart 不看 boundary，文件部分与不是 UTF-8 的部分取 sha256）；JSON（含 `*+json`）拍平，键是**完整路径**（`a.b.0.c`，上游只用叶子名会撞键；空对象 / 空数组记成 `{}` / `[]`），逐行 JSON 逐行拍平；`text/plain` 或没有类型的先试 JSON、再试 `k=v&…` 表单形状（与 `redact_post_body` 认类型的方式一致）；解析不了的 body 记作 `__wb_post_data=<sha256>`；body 参数与 query 参数合在一起排序——**排序是我们自己写的**（上游 `postquery.py` 不排序，排序来自 AGPL 的 `surt`）。规范化后的 body 串超过 4096 字符时换成它的 sha256（上游截断到 4096 字符，大 GraphQL 请求会撞键）。所有带 body 的方法都参与（上游只取 POST / PUT）。
 - **GraphQL**（JSON body 里有看起来是 GraphQL 文档的 `query`（以 `{`、`query`、`mutation`、`subscription` 或 `fragment` 开头，所以 `{"query": "red shoes"}` 这样的搜索 API 不算），或有 `extensions.persistedQuery.sha256Hash`；GET 的 `query` / `variables` / `operationName` / `extensions` 参数同理）：键是 `operationName` + 空白归一后的 query 的 sha256（只有 persisted query 的 hash 时用它自己的 sha256）+ 拍平后去掉易变路径（站点规则 `ignore_body_paths`，在单个操作之内匹配 `variables.cursor` 这样的路径，所以同一条规则对单个请求和批量请求都有效）的 `variables`；批量请求（顶层数组）逐项算、按顺序编号（`0.operationName`…）连起来。
 
@@ -2966,6 +2966,8 @@ class ArchiveReader(Protocol):
 
 **站点规则**（`site_rules.py`；`matcher.site_rules` 目录里的 `<domain>.yaml`，例 `configs/replay_rules/`）：请求 host 按**最长后缀**选一个文件（`a.b.example.com` 依次找 `a.b.example.com.yaml`、`b.example.com.yaml`、`example.com.yaml`……），不依赖 Public Suffix List；文件名写可注册域名照样能用。schema 是 extra-forbid 的 `SiteRule`：`ignore_query`（参数名或通配）、`ignore_body_paths`（完整路径通配）、`ignore_headers`、`fuzzy: on`（YAML 1.1 读成 `true`）、`synthesize_204`（URL 通配：miss 时当良性请求回 204，分析类请求）、`response_echo`（`[{url, request_path, response_path}]`：命中时把请求 JSON 里的 id 抄进响应 JSON 的对应路径，路径可带 `*` 走数组，即 WARC-Bench 处理 Salesforce Aura 的那种；表单 body 里值是 JSON 的参数也能走进去（`message.actions.*.id`）；请求里的值按顺序写进响应里已有的位置，只有一个值时写进每个位置；不新增键；响应不是 JSON、请求里没有值、或值本来就相同时，字节原样不动；`SiteRule.echo` 是纯函数，由应答一侧调用）。规则目录的摘要（每个文件的名字与 sha256，排序后再取 sha256）进回放指纹。
 
+规则忽略一个 JSONP 回调参数是安全的（名字带随机部分的那种，例如豆瓣的 `callback=erebor_<32 位十六进制>`）：命中的应答若调用录制时的名字，回放会换成这次请求的名字（下面"JSONP 回调名"）；应答根本不用这个参数的（只调用固定名字的静态文件），忽略它送出的本来就是同样的字节。忽略一个决定内容的参数则不安全，规则从来只写会变而不选内容的参数。`configs/replay_rules/` 发布 25 个文件（2026-10-14 在 12 个中文站点的录制上写成，用户同日裁决整套提交）：每个可注册域名一个，每个参数的证据（录制与回放两边的取值）写在文件的注释里；`ctrip.com.yaml` 忽略请求体顶层的 `id`（广告接口的随机请求 id），它对 ctrip.com 每个接口的请求体都生效，这个风险照用户的裁决保留、写在文件里。
+
 #### 服务（Request 阶段，在 recorder 连接上）
 
 - **回放服务**（`server.py`，`ReplayServer`，由 `ArchiveNetworkSource.serve(recorded, ctx)` 造出，纯构造）是一个 recorder 贡献者：在每个 page / iframe / shared worker / service worker target 上贡献 `{urlPattern: "*", requestStage: "Request"}`（合进那一次 `Fetch.enable`），在每个准备的 target 上 `Network.enable` + `Network.setCacheDisabled(true)`，frame 上再加 `Network.setBypassServiceWorker(true)` 与拒绝 `ServiceWorkerContainer.prototype.register` 的注入脚本（`replay/shims.py` 的 `SERVICE_WORKER_BLOCK`，`Page.enable` 之后、`runImmediately`；它只替换 `register`，注入几次结果都一样，pinned 的 shim 也拒绝，两份叠加无害），这些全部在 `runIfWaitingForDebugger` 之前（模式 B）。它是 Request 阶段暂停的主人，`serves_requests` 为真；recorder 在 `open()` 时看一次参与者里有没有服务（与 Fetch pattern 一样，打开时定下），之后按它决定兜底是 fail 还是 continue。`ctx` 是 `server.py` 的 `ReplayContext`（recorder 句柄、观测 cycle、时钟），capability 在建 recorder 连接时组装。
@@ -2977,6 +2979,7 @@ class ArchiveReader(Protocol):
   - 不在归档里的 CORS 预检（`OPTIONS` 且带 `Access-Control-Request-Method`；不按 resourceType 判断，它是 `XHR`）→ 合成 204：`Access-Control-Allow-Origin` = 请求的 `Origin`（从不是 `*`）、`Access-Control-Allow-Credentials: true`、`Access-Control-Allow-Methods` / `-Headers` 回显请求的方法与头，加 `Vary: Origin`。**预检永远不走 404**：预检失败，真正的请求就不会发出。
   - `Range: bytes=N-` / `bytes=N-M` → 用区间图合成 206（`Content-Range: bytes N-E/total`、`Accept-Ranges: bytes`），长度受 `max_fulfill_body_bytes` 限制（Chrome 会接着要后面的区间）；**从不用 200 回答 Range 请求**（S2a：200 能播放但 seek 失效）；区间没被覆盖 → miss（`range_uncovered`）。
   - 去掉 `Content-Encoding` / `Transfer-Encoding`，按送出的 body 重算 `Content-Length`，去掉 HTTP/2 伪头（`:status`…）。这是给页面 JS 看的头部卫生，`fulfillRequest` 本身原样送字节、不看这几个头。多条 `Set-Cookie` 分成多个头条目送出。
+  - 送出的 body 只有两处可能与录下的不同：站点规则的 `response_echo`，与 JSONP 应答开头的回调名（下面"JSONP 回调名"）。body 变了就去掉为录下的字节作保的摘要头（`Content-MD5`、`Digest`、`Content-Digest`、`Repr-Digest`，`responder.BODY_DIGEST_HEADERS`）：Chrome 一个都不校验，但页面 JS 读到的摘要不能对不上它拿到的字节。`ETag` 是校验器不是摘要，回放关了缓存（`Network.setCacheDisabled`），没有谁拿它重新验证，所以照送。超过 `max_fulfill_body_bytes` 的判断用的是实际送出的字节。
   - 日期：`shift_dates: none`（默认）原样送出录下的 `Date` / `Expires` / `Last-Modified` 与 cookie 过期时间；`all` 把四者按同一个 Δ = now − 记录时间（录下的 `Date`，没有就用 WARC-Date）一起平移。**从不只平移一部分**：Chrome 会按送出的 `Date` 重算 cookie 过期（`Expires + (now − Date)`），只移 cookie 会移两次。没有 `Date` 的响应补一个 `Date` = 记录时间 + Δ，让 Chrome 的换算有锚点。`none` 配 `base_time: from_archive`，`all` 配 `base_time: run_start`；两者独立配置，不互相检查。
   - body 超过 `max_fulfill_body_bytes` → 不 fulfill（发给 Chrome 的一条消息超过 100 MiB 会带走整条 recorder 连接），按 miss 处理（原因 `too_large`）。
 - **miss（`strict`）**：类别按 method、头与 frame 判断，文档优先：
@@ -2986,14 +2989,33 @@ class ArchiveReader(Protocol):
   - 归档里有记录但送不出 body 的（`too_large`、`body_unavailable`、`range_uncovered`）按同一张表应答，原因照记。
 - **WebSocket 与绕过 Fetch 的请求**：握手从不经过 Fetch，v1 一律记为 miss：回放服务声明 `Network.webSocketCreated`，记 `reason: websocket`；隔离下握手本身失败。`Network.requestWillBeSent` 看到、却从没在 Fetch 上暂停过（按 `networkId` 对）、随后 `Network.loadingFailed` 的 http(s) 请求（嵌套的 dedicated worker 脚本就是这样）记 `reason: unservable`，`answer: none`；随后是 `Network.loadingFinished` 的也记，那是一个绕过 Fetch、真的从别处拿到了响应的请求（隔离下黑洞没有例外，不应出现；`none_acknowledged` 下是线上），日志里必须看得见。这两类不经 miss 策略（没有暂停可以应答），`request_class` 为空。事件经 recorder 的分发器准入（只留 `requestId`、URL、method、type、frameId，不带头与 body）进 archive scope；暂停先到还是 `requestWillBeSent` 先被处理都一样（服务按 `networkId` 对账）。v2 的 WebSocket 回放用页面内 shim（参照 Playwright `webSocketMock.ts`）。
 
+#### JSONP 回调名（`jsonp.py`）
+
+JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(数据)` 的脚本。名字是页面自己起的：jQuery 起成 `jQuery<随机数字>_<请求计数>`，别的脚本带一段随机数。pinned 固定了随机数种子，却不固定页面上几个脚本谁先取随机数、谁先发请求（一个请求失败、页面走进错误处理，后面的取数就全部错位），所以回放时页面要的名字常常与录制时不同。jQuery 形状的名字本来就不进匹配键（上面"规范化"），这样的请求照样命中，送出的却是调用录制时名字的脚本，页面定义的是另一个函数，数据悄悄丢掉（2026-10-14 的 12 站实测：东方财富与界面新闻的"热门搜索"、21 经济网的搜索结果）；名字带随机部分的（豆瓣广告的 `erebor_<32 位十六进制>`、乐视登录接口的 `vjs_<时间><两位随机数>`）连键都对不上。用户 2026-10-14 的裁决：回放送出这种应答时，把开头的函数名换成这次请求的回调名，每次改写都记进回放日志，度量里看得见。
+
+**改写的条件**（`jsonp.rewrite_callback`，纯函数，由 `responder.serve_record` 在 `response_echo` 之后调用；全部满足才改，否则字节原样送出）：
+
+0. **是页面会运行或读取的脚本**（`may_be_script`）：请求的 `resourceType` 是 `Script`、`XHR` 或 `Fetch`（脚本标签，或某个库取回文本再执行：jQuery 对同源 JSONP 就用 XHR），文档、图片、样式表、字体、媒体请求一律不改；录下的应答的媒体类型是 JavaScript 或 JSON 类型、`text/plain`、`text/html`、`application/octet-stream`，或者没有类型：12 个站点的 JSONP 应答用过的就是这些（`application/json` 与 `text/html` 都有）。一张宽 40 像素的 GIF 开头正好读作 `GIF89a(`，它不是调用。
+1. **应答以一次调用开头**（`leading_call`），形状是下面之一，各处的 `NAME` 是同一个名字：`NAME(`；`typeof NAME === 'function' && NAME(`（`==` 与双引号也认，Express 的 `res.jsonp` 就写成这样）；`NAME && NAME(`；以上任一个包在 `try {` 里（`try{NAME(…)}catch(e){}`）。调用之前与各记号之间只允许空白、注释（`/* … */`、`// …`）、第一个记号之前的 `;`，以及最开头的 UTF-8 BOM。`NAME` 是 ASCII 字母、数字、`_`、`$` 组成、不以数字开头的 JavaScript 标识符，或几个这样的标识符用点连起来（Angular 的 `angular.callbacks._0`）。左括号之后的内容一概不读。扫描是手写的，线性的，不用会回溯的正则（连续的 `/**/` 会让回溯正则指数爆炸）。
+2. **录下的请求里恰好一个查询参数的值是 `NAME`**（`callback_parameter`）：服务器回显的就是它。参数名不限（12 个站点里有 `callback`、`cb`、`jsonp`、`dcb`、`j`、`method`）。两个参数都是这个值、或这个参数出现两次，就说不准服务器读的是哪个，不改。
+3. **这次请求恰好带一次这个参数，值是同样规则下的名字，且与 `NAME` 不同**。不是名字的值（`cb);alert(1)//`）从不写进脚本。
+
+不改的情形因此包括：应答是 JSON、HTML，或开头不是这种调用；服务器写死的名字（乐视广告的 `LETV.Plugin.AD.resoJsonp(`、东方财富 `version.jsonp` 不管参数写什么都调用 `callback(`：没有参数的值是它，条件 2 不成立）；回调名在路径或请求体里。12 个录制的 4295 条记录里，开头是调用的应答 247 条，满足条件 0–2 的 212 条（`Script` 203、`XHR` 9）；其余 35 条没有哪个参数的值是被调用的名字：写死的回调名，以 `$(`、`if(` 开头的普通脚本，还有两张开头恰好像调用的图片。
+
+**字节**：名字是 ASCII，改写只替换名字所在的那几段字节，其余原样拷贝，所以不需要知道字符集（GBK 的应答还是 GBK）。名字长短不同，`Content-Length` 按送出的字节重算（上面"按记录的形态应答"），为录下的字节作保的摘要头去掉。子资源完整性（SRI）：页面不可能为一个回调名每次都变的脚本事先写好 `integrity`；回调名固定的脚本名字两边相同，不改写。
+
+**记录**：命中（`hit` / `exhausted`）的日志条目多一个 `callback_rewrite`：`parameter`（哪个参数）、`recorded`（录下的名字）、`requested`（这次请求要的名字），没改写时不写。度量按站点数改写了多少个应答（§4.16 "站点"的 `callback_rewrites`）。折叠时 `requested` 与 URL 一样算每次不同的部分，所以每次换新名字的 JSONP 轮询仍按同一个请求折叠，`summary` 带着最后一次的改写、`count` 计入其余的。
+
+**站点规则因此可以忽略回调参数**：名字带随机部分的参数忽略之后，请求命中录下的应答，名字由改写对上；应答不用这个参数的，忽略它送出的本来就是同样的字节（上面"站点规则"）。
+
 #### 回放日志（`replay.jsonl`）
 
 回放服务把每个决定写进自己的日志（`replay_log.py`：`ReplayLog`），`browser.replay_log` 的 `ReplayLogSession` 在每次收集时把它换出来、写成本步的 `env/steps/NNN/browser.replay_log/replay.jsonl`。**收集取走它的那一步就是归因的那一步**（capability 不知道步号，与网络证据同一个模型；episode 就是这个 run）。每行是一个 `ReplayLogEntry`（pydantic，extra-forbid）：
 
 - `kind`：`hit` / `exhausted`（重复了用尽的最后一条）/ `synthetic`（合成的预检）/ `miss` / `summary`（被限流折叠的那些）；`captured_at`、`cycle`；请求事实 `method`、`url`、`resource_type`、`frame_id`、`frame`（文档：`main` / `sub`）、`target_id`、`session_id`。
-- 命中：`record_id` 与它的 `run_id`、`level`（`exact` / `normalized` / `fuzzy`）、`fuzzy_score`、`range`。
+- 命中：`record_id` 与它的 `run_id`、`level`（`exact` / `normalized` / `fuzzy`）、`fuzzy_score`、`range`；送出的 JSONP 应答改写了回调名时还有 `callback_rewrite`（`parameter`、`recorded`、`requested`，上面"JSONP 回调名"）。
 - miss：`request_class`（`document` / `benign` / `subresource`；`websocket` / `unservable` 不经策略，为空）、`reason`（`no_match` / `too_large` / `body_unavailable` / `range_uncovered` / `websocket` / `unservable`）、`answer`（`fulfilled` / `failed` / `none`）与 `status`、`match_key` 与 `body_key`（规范键，超过 512 字符的写成 `sha256:<hex>`）、`candidates`（最近的 3 个）、`diverged`（主 frame 文档 miss）；匹配到了、却送不出 body 的（`too_large`、`body_unavailable`）也带 `record_id` / `run_id`。每个决定（命中也一样）都记 `answer` 与 `status`。
-- **限流**：同一次收集里**完全相同**的条目超过 `log_repeat_limit` 之后只计数，收集时折成一条 `summary`（它是最后一条被折叠的条目，`folded_kind` 记它原来的 kind，`count` 是折叠掉的条数，不含照写的那 `log_repeat_limit` 条），因为归档页面的轮询可能每分钟上千次。完全相同指除了发生的时刻（`captured_at`、`cycle`）与列出的候选之外每个字段都相同：对同一个请求、在同一个 frame 里的同一个决定（kind、原因、应答、状态、请求类别、`frame`、`diverged`、record）；请求按规范键认（带缓存破坏参数的轮询是同一个请求反复问），没有规范键的（WebSocket、绕过 Fetch 的请求）按 URL。所以不同的 URL 从不折在一起，发散也从不被折进别的 miss。
+- **限流**：同一次收集里**完全相同**的条目超过 `log_repeat_limit` 之后只计数，收集时折成一条 `summary`（它是最后一条被折叠的条目，`folded_kind` 记它原来的 kind，`count` 是折叠掉的条数，不含照写的那 `log_repeat_limit` 条），因为归档页面的轮询可能每分钟上千次。完全相同指除了发生的时刻（`captured_at`、`cycle`）与列出的候选之外每个字段都相同：对同一个请求、在同一个 frame 里的同一个决定（kind、原因、应答、状态、请求类别、`frame`、`diverged`、record、回调名改写的参数与录下的名字）；请求按规范键认（带缓存破坏参数的轮询是同一个请求反复问，每次换新回调名的 JSONP 轮询也是），没有规范键的（WebSocket、绕过 Fetch 的请求）按 URL。所以不同的 URL 从不折在一起，发散也从不被折进别的 miss。
 
 读侧：`RunTrace.archive_lines(path, model)`（§5.5，通用的逐行 JSON 访问器，解析或校验失败抛点名文件与行号的 `TraceSchemaError`）；browser 一侧的 `replay_log(reader, step) -> list[ReplayLogEntry]`、`iter_replay_log(reader)`（含 trailing）、`diverged_steps(reader)` 建在 `ArchiveReader` 上，按写它的归档器（`browser.replay_log`）找文件，别的归档器下同名的文件不是回放日志。**"这一步发散了"在读时推出**：这一步的回放日志里有主 frame 文档 miss；M30 不改 `StepRecord`（M31 的 `restoration` 另算）。回放日志导出成 HAR 是可选项，推迟到有按 HAR 打分的评测器时。
 
@@ -3078,6 +3100,7 @@ class ArchiveReader(Protocol):
   - JS 时钟固定在录制时刻（`base_time: from_archive`）时，页面 JS 设的绝对过期 cookie 可能被 Chrome 丢掉；没有 `Last-Modified` 的文档，`document.lastModified` 读真实时钟。
   - 回放 `none` 档位的录制：DPR 不比较（时区与语言是浏览器的默认值，按"一致性检查"比较）；SW 录制时放行、回放时被拦住；只有 pinned 关掉了 `HttpsUpgrades`，所以升级试探可能显示为主 frame 文档 miss。
   - L2 模糊命中可能送错资源（`fuzzy` 与得分照记）；`exhausted` 重复最后一条是有意的，日志里看得见。
+  - JSONP 回调名只在上面"JSONP 回调名"列出的形状里改写：回调名在路径或请求体里的、包装不在这几种形状里的（例如 `window.NAME(`、`if (…) NAME(`），照录下的字节送出，页面照旧拿不到数据，而日志里是普通的命中。jQuery 名字不进匹配键，所以一个 JSONP 请求也可能命中同一接口不带回调参数的 JSON 记录（或反过来），这种应答没有可改的名字。
   - 步归因是"收集取走它的那一步"：页面加载完之后才发出的异步请求（`fetch`、XHR、迟到的 beacon）可能落在下一步的 `replay.jsonl` 里，与录制时 `index.jsonl` 的归因是同一个模型（fixture 实测：金丝雀页面在第 0 步导航，它的 `fetch` 在第 1 步的日志里）。
   - 回放日志导出成 HAR 推迟（还没有按 HAR 打分的评测器）。
   - 第一次 live run（10 个真实 `online_mind2web` 任务上的度量）是度量链只跑录制、原路径回放与报告的那一种（§4.16）；它的链规格与命令在本地的 `tmp/flywheel/M33_live_plan.md`，等用户授权（路由、N、token 上限），没有跑过。M30 写的 `tmp/flywheel/s2b/` 脚本已被它取代。
@@ -3307,7 +3330,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 
 #### 各节与建议（`report.py`）
 
-- **站点**：每个站点（任务 `start_url` 的主机，`core/trace/sources.py::task_identity(config).site`，与导出 `split.by: site` 和 `exclude_sites` 用的是同一个键；分叉 run 用它的源任务）的任务数、录制的两本账（`record_status`：trace 的状态 `complete` / `incomplete` / `writing`；`record_outcome`：agent 的 `agent_done`，没写 `result.json` 是 `(no result)`，读不回来是 `(unreadable result)`）、原路径保真、恢复校验率、分叉覆盖（空分叉不计）、miss 数；回放日志读不回来的 run 不进 miss 数与分叉占比，记在 `sections.sites.skipped`。**剔除名单**：被拦截（下一条）、或原路径保真低于 `SITE_MIN_FIDELITY`（0.8）、或录制的环境在第 0 步就失败（观测或动作失败，即循环以 `env_status: failed` 结束的那两个阶段；或一步都没提交）的站点；模型调用失败（`error_phase: llm`：429、超时、被拒的 schema）是路由的失败，从不剔除站点，按站点单独计数（`record_model_failures`）；输出成 `ExportFilters.exclude_sites` 的形状（主机名，后缀匹配）并附 YAML 片段。链不自动套用（导出在报告之前）：人把它放进导出配置再导一次。
+- **站点**：每个站点（任务 `start_url` 的主机，`core/trace/sources.py::task_identity(config).site`，与导出 `split.by: site` 和 `exclude_sites` 用的是同一个键；分叉 run 用它的源任务）的任务数、录制的两本账（`record_status`：trace 的状态 `complete` / `incomplete` / `writing`；`record_outcome`：agent 的 `agent_done`，没写 `result.json` 是 `(no result)`，读不回来是 `(unreadable result)`）、原路径保真、恢复校验率、分叉覆盖（空分叉不计）、miss 数、回放改写了 JSONP 回调名的应答数（`callback_rewrites`：原路径回放与分叉合计，从回放日志的 `callback_rewrite` 数，折叠的条目按它代表的条数计，§4.14 "JSONP 回调名"）；回放日志读不回来的 run 不进 miss 数、改写数与分叉占比，记在 `sections.sites.skipped`。**剔除名单**：被拦截（下一条）、或原路径保真低于 `SITE_MIN_FIDELITY`（0.8）、或录制的环境在第 0 步就失败（观测或动作失败，即循环以 `env_status: failed` 结束的那两个阶段；或一步都没提交）的站点；模型调用失败（`error_phase: llm`：429、超时、被拒的 schema）是路由的失败，从不剔除站点，按站点单独计数（`record_model_failures`）；输出成 `ExportFilters.exclude_sites` 的形状（主机名，后缀匹配）并附 YAML 片段。链不自动套用（导出在报告之前）：人把它放进导出配置再导一次。
 - **anti-bot / Cloudflare**：录制里文档请求（`resourceType: Document`，主 frame 与子 frame 都算，验证码 iframe 也是拦截）的应答带拦截特征（browser 的 `challenge_documents`：状态 403 / 429 / 503，且有 `cf-mitigated: challenge` 头、或 `server: cloudflare` 加 `cf-ray`）的站点、run 与步；建议：剔除。只认应答头，不带这些头的拦截页面认不出来（写明的残余）。
 - **重复分叉率**：同一 `branch_group_id` 里检查点步执行的动作（规范 JSON）与排在前面的分支相同的分叉，占参与比较的分叉的比例（与导出的 `duplicate_of` 同一规则：检查点步没有动作的分叉不比较，计在 `not_compared`——三次失败的 teacher 调用不是两个重复），并对照数据集 manifest 的 `duplicates`。teacher 的采样够不够分散就看它；它高时再考虑每个分支不同的提示（§4.1 "teacher 采样"）。
 - **POST 分叉的 miss**：分叉 run 检查点及之后方法为 POST 的 miss（文档、子资源分开），有 POST miss 的分叉占比。
@@ -3322,7 +3345,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 
 #### 报告
 
-- `report.json`：格式 `af-flywheel-report-5`（pydantic `FlywheelReport{format, chain{name, evidence}, token_use, inputs, metrics, sections, decision_inputs, recommendations{metrics, sections}, decisions{miss_policy, recording_coverage, site_rules, retention}}`；`-2` 起：建议带 `sites` 与 `status_reason`，决定改用语义名，度量带 `sites`、空分叉与 `skipped`；`-3` 起：隐私一项只看两道门，按门分开计数，带 `runs`、`sites` 与 `skipped`；`-4` 起：归档开销带每个角色观测前的落定等待 `settle_wait`；`-5` 起：每个角色记下的 token 用量与链的 token 上限 `token_use`，见上面"token 上限"），键排序、缩进 2，**没有墙钟字段、绝对路径或主机信息**（run 写成相对链根的 `traces/<角色>/<run>`），同样的输入算两次逐字节相同；`inputs` 按角色记 run 数、跳过的 trace 与原因、以模型调用失败结束的 run（`model_failures`：路由的失败，不是站点的证据；它们照样计入各项度量，live 计划写了怎么处理），以及 trace 里实际运行的组件（agent、loop、恢复器、cleaner、serializer、backend、网络来源、模型路由；由 `metrics.components(trace)` 读脱敏后的 `TraceConfig.resolved`，没标 trace-safe 的自由字符串读作 `<omitted>`：验证要点名所用的配置），数据集记在不在与格式。每条证据的 `pointer` 都能在 `report.json` 里解析到它的 `value`（测试钉住）。
+- `report.json`：格式 `af-flywheel-report-6`（pydantic `FlywheelReport{format, chain{name, evidence}, token_use, inputs, metrics, sections, decision_inputs, recommendations{metrics, sections}, decisions{miss_policy, recording_coverage, site_rules, retention}}`；`-2` 起：建议带 `sites` 与 `status_reason`，决定改用语义名，度量带 `sites`、空分叉与 `skipped`；`-3` 起：隐私一项只看两道门，按门分开计数，带 `runs`、`sites` 与 `skipped`；`-4` 起：归档开销带每个角色观测前的落定等待 `settle_wait`；`-5` 起：每个角色记下的 token 用量与链的 token 上限 `token_use`，见上面"token 上限"；`-6` 起：每个站点回放改写了 JSONP 回调名的应答数 `sections.sites.by_site.<站点>.callback_rewrites`），键排序、缩进 2，**没有墙钟字段、绝对路径或主机信息**（run 写成相对链根的 `traces/<角色>/<run>`），同样的输入算两次逐字节相同；`inputs` 按角色记 run 数、跳过的 trace 与原因、以模型调用失败结束的 run（`model_failures`：路由的失败，不是站点的证据；它们照样计入各项度量，live 计划写了怎么处理），以及 trace 里实际运行的组件（agent、loop、恢复器、cleaner、serializer、backend、网络来源、模型路由；由 `metrics.components(trace)` 读脱敏后的 `TraceConfig.resolved`，没标 trace-safe 的自由字符串读作 `<omitted>`：验证要点名所用的配置），数据集记在不在与格式。每条证据的 `pointer` 都能在 `report.json` 里解析到它的 `value`（测试钉住）。
 - `report.md`：同一个模型渲染，标题是 `Token use` / `Metrics` / `Sections` / `Pending decisions`（链在 token 上限处停下时，`Token use` 一节开头写明，见上面"token 上限"），每项度量、每一节、每个决定各占一节，各项跳过的 run 与原因逐条列出，每节末尾是建议、证据、站点数、基础，以及低于 `supported` 的原因。报告里的名字、标题与规则文字不用规划编号（AGENTS.md §3.6；`test_report_schema.py` 钉住）。
 - `spectragent-flywheel report --spec <chain.yaml>`（或 `--root <dir> --evidence live|rehearsal`）只读、可重复；`run` 的最后一段就是它。
 
