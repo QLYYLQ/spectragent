@@ -165,8 +165,12 @@ def callback_parameter(url: str, name: str) -> str | None:
     ``None`` too when *name* is the value of two parameters, or of one
     parameter given twice: then which one the server echoed is not known.
     """
-    carrying = [key for key, value in _query(url) if value == name]
-    return carrying[0] if len(carrying) == 1 else None
+    query = _query(url)
+    carrying = [key for key, value in query if value == name]
+    if len(carrying) != 1:
+        return None
+    parameter = carrying[0]
+    return parameter if sum(key == parameter for key, _ in query) == 1 else None
 
 
 def is_callback_name(value: str) -> bool:

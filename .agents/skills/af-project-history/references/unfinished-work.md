@@ -7,6 +7,51 @@ commits; mark it complete only after verifying the resulting behavior.
 
 ## Data flywheel line (2026-10-10 to 2026-10-12)
 
+### Later evidence: live runs and the interrupted session (2026-10-14)
+
+The fixture-only and pending-live statements below describe the earlier snapshot, not
+the current state. The user subsequently authorized the live runs and made further
+decisions in the local `tmp/flywheel/followup/RULINGS_2026-10-13.md` and
+`RULINGS_2026-10-14.md`. The latter records a twelve-site LexBench run, a repeat with
+site rules, about 1.59 million model tokens used against a 3 million token ceiling,
+and the final two work items: JSONP callback rewriting with all 25 site-rule files,
+then a zero-model-call virtual-time probe on six sites. The probe is measurement only;
+it is not authorization to implement virtual time or change restoration checks.
+
+Claude's latest session stopped at its weekly limit after committing `e8b8308`
+(JSONP rewriting, replay-log counts, and the site rules). Its full gate passed:
+7,050 tests and 187 generated-config checks; pyright had no new errors against its
+existing baseline, not zero errors. The unfinished actions were the replay comparison
+and the virtual-time findings, not the older React-layering backlog. Codex resumed
+those actions from the existing scripts and traces. The local continuation outputs are
+`tmp/flywheel/followup/jsonp_report.md`, `vtime/findings.md` under that same follow-up
+directory, and `resume_report.md`; read their final status and evidence before doing
+another run. The replay experiment also found that the host's light/dark appearance
+changes screenshots; its light-media override is a measurement-only patch, not a
+shipped pinned-tier setting.
+
+With that appearance aligned, the previous rules run passed 171/236 checks (72.5%);
+the released rules with JSONP rewriting passed 188/236 (79.7%, 62 rewrites). The
+same-rules control with rewriting disabled passed 174/236 (73.7%). Each set completed
+24 replays, two per site, using only a local scripted model. A follow-up corrected the
+documented duplicate-parameter boundary: a recorded callback key appearing more than
+once is ambiguous even when only one of its values equals the called name.
+
+The completed virtual-time probe recommends against shipping its current approach:
+baseline completed all six sites (28/62 restoration checks passed); both the one-second
+and three-second variants completed only one site, with the other five ending on
+screenshot failures. Their surviving prefixes (14/21 and 14/22) are not evidence of a
+fidelity improvement over the baseline. The recommendation is experimental evidence,
+not a new user ruling; volatile-region masking still needs its design discussion.
+
+The earlier implementation boundaries still apply: do not edit `react.py` before the
+user's revised design; keep the export side frozen; record agent-cdp requirements in
+the local append-only ledger, without changing that upstream repository; do not push
+the local commits without current authorization. Preserve failed experimental traces
+and compare completed-run counts as well as per-step fidelity.
+
+### Earlier snapshot
+
 Done: eight commits on `main` after `661c924`, `422b006` to `1ad8e47`, covering typed
 trace read-back, the archive axis, browser archivers and the recorder connection, offline
 replay, branching from recorded checkpoints, SFT export through the student agent, the

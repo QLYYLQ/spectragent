@@ -254,6 +254,30 @@ def test_callback_parameter_names_the_one_carrier() -> None:
 
 
 @pytest.mark.parametrize(
+    "query",
+    [
+        "cb=foo&cb=other",
+        "cb=other&cb=foo",
+        "cb=foo&cb=",
+        "cb=&cb=foo",
+        "cb=foo&%63b=other",
+        "%63b=other&cb=foo",
+    ],
+)
+def test_a_repeated_recorded_parameter_is_ambiguous_even_when_values_differ(query: str) -> None:
+    recorded_url = f"https://a.test/x?{query}"
+    assert callback_parameter(recorded_url, "foo") is None
+    assert (
+        _rewrite(
+            b"foo({})",
+            recorded_url=recorded_url,
+            request_url="https://a.test/x?cb=bar",
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
     ("value", "expected"),
     [
         ("jQuery123_456", True),
