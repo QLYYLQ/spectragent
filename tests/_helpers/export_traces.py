@@ -21,7 +21,8 @@ from typing import Any
 from PIL import Image
 
 from spectragent.core.archive.privacy import RedactionEntry, RedactionLedger
-from spectragent.core.capabilities.browser.observations import ScreenshotObs
+from spectragent.core.capabilities.browser.observations import BrowserPlatformObs, ScreenshotObs
+from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.trace.encoding import TraceFile, encode_fragment
 from spectragent.core.trace.models import (
     TaskSetupRecord,
@@ -118,6 +119,7 @@ def write_run(
     agent_done: AgentDoneStatus | None = AgentDoneStatus.DONE,
     verdicts: dict[str, EvalResult] | None = None,
     secrets_recorded: bool = False,
+    input_platform: InputPlatform = "macos",
 ) -> Path:
     """Commit one recorded run under ``root/<run_id>`` and return its directory.
 
@@ -125,6 +127,21 @@ def write_run(
     ``incomplete`` closes it with *incomplete_reason*); ``agent_done`` the
     agent's, written as ``result.json`` (``None``: none).
     """
+    recorded_negotiation = (
+        TraceNegotiation(
+            active_fragments=[
+                "browser.screenshot",
+                "browser.platform",
+                "loop.step_info",
+                "loop.task",
+            ],
+            required_fragments=["browser.platform"],
+            env_sourced_fragments=["browser.screenshot", "browser.platform"],
+            loop_sourced_fragments=["loop.step_info", "loop.task"],
+        )
+        if negotiation is _DEFAULT
+        else negotiation
+    )
     wal = WALWriter(root, run_id)
     wal.init_run(
         TraceConfig(
@@ -136,15 +153,7 @@ def write_run(
             subset=subset,
             task=task,
             task_id=task_id,
-            negotiation=(
-                TraceNegotiation(
-                    active_fragments=["browser.screenshot", "loop.step_info", "loop.task"],
-                    env_sourced_fragments=["browser.screenshot"],
-                    loop_sourced_fragments=["loop.step_info", "loop.task"],
-                )
-                if negotiation is _DEFAULT
-                else negotiation
-            ),
+            negotiation=recorded_negotiation,
             task_setup=setup_record() if task_setup is _DEFAULT else task_setup,
             branch=branch,
             secrets_recorded=secrets_recorded,
@@ -157,6 +166,17 @@ def write_run(
             else [ActionResult(success=True) for _ in spec.actions]
         )
         values: list[Any] = list(spec.fragments)
+        # This fixture describes an explicitly known simulated browser. Supply
+        # its fact only when negotiated; deliberate absence/failure stays absent.
+        if (
+            recorded_negotiation is not None
+            and "browser.platform" in recorded_negotiation.env_sourced_fragments
+            and "browser.platform" not in spec.failed
+            and not any(
+                getattr(value, "fragment_id", None) == "browser.platform" for value in values
+            )
+        ):
+            values.append(BrowserPlatformObs(operating_system=input_platform))
         if spec.loop_fragments:
             values += [
                 TaskObs(user_request=task),
@@ -206,9 +226,9 @@ def write_run(
 
 #: What a UI-TARS run over the browser negotiates (``write_run(negotiation=...)``).
 UI_TARS_NEGOTIATION = TraceNegotiation(
-    active_fragments=["browser.screenshot", "loop.step_info", "loop.task"],
-    required_fragments=["browser.screenshot", "loop.task"],
-    env_sourced_fragments=["browser.screenshot"],
+    active_fragments=["browser.screenshot", "browser.platform", "loop.step_info", "loop.task"],
+    required_fragments=["browser.screenshot", "browser.platform", "loop.task"],
+    env_sourced_fragments=["browser.screenshot", "browser.platform"],
     loop_sourced_fragments=["loop.step_info", "loop.task"],
     active_actions=[
         "browser.click_coordinate",
@@ -227,11 +247,17 @@ BROWSER_USE_NEGOTIATION = TraceNegotiation(
         "browser.browser_meta",
         "browser.dom",
         "browser.screenshot",
+        "browser.platform",
         "loop.step_info",
         "loop.task",
     ],
-    required_fragments=["browser.dom", "loop.task"],
-    env_sourced_fragments=["browser.browser_meta", "browser.dom", "browser.screenshot"],
+    required_fragments=["browser.dom", "browser.platform", "loop.task"],
+    env_sourced_fragments=[
+        "browser.browser_meta",
+        "browser.dom",
+        "browser.screenshot",
+        "browser.platform",
+    ],
     loop_sourced_fragments=["loop.step_info", "loop.task"],
     active_actions=[
         "browser.click",

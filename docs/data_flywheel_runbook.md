@@ -83,6 +83,8 @@ hook:
 
 pinned 的旋钮：`base_time`（录制用默认的 `run_start`，回放和分叉用 `from_archive`）、`random_seed`、`timezone`（默认 `UTC`）、`locale`（默认 `en-US`）、`device_scale_factor`（默认 1.0）、`user_agent`（默认不固定，只固定 `Accept-Language`；写普通 Chrome 标识时版本要写本机 Chrome 的大版本，见下）、`reduced_motion`（默认 `true`）。回放会把这些参数、viewport 和 Chrome 启动命令行的摘要（调试端口、profile 目录和网络路由开关除外）与录制逐项比较，所以录制、回放、分叉三份配置的档位参数、`viewport_width` / `viewport_height` 和 backend 块（`headless`、窗口大小、`extra_args`……）都要相同。
 
+颜色主题不需要 YAML 旋钮。pinned 录制在浏览器启动后、业务页面准备前测出当前媒体主题（`light` 或 `dark`），本次运行的所有 tab 与进程外 iframe 都固定该值，与 `reduced_motion` 同时生效。指纹的 `replayability.color_scheme` 记录测量值；回放和分叉直接沿用它，即使回放机器当前主题不同也不拒绝。录制测不到就明确失败；源归档缺少该字段或值非法时，在 `prepare()` / `--dry-run` 拒绝，必须重录，不猜浅色、不修改旧归档。`none` 保持宿主行为；网站自己的账户、Cookie 或按钮主题偏好仍由网站决定。
+
 pinned 启动的 Chrome 带着环境变量 `TZ=<timezone>`。Chrome 的时区与语言 override 在一个渲染进程里只认最先设它的那个 frame，这个 frame 走了（iframe 被移除、打开弹窗的页面跳到别的站点），同进程的其余 frame 就落回浏览器的默认值；`TZ` 让默认时区就是 pin 的时区。默认语言定不下来（macOS 上 Chrome 取系统语言，`--lang` 和 `LANG` 都不起作用），所以录制把浏览器的默认时区与语言记进指纹，回放在默认值与录制不同的机器上被拒绝：`prepare()` 时比较本机系统设置读得出的（时区；macOS 上还有语言），启动浏览器之后、准备任何 tab 之前再按 Chrome 实测的比较一次。录制和回放在同一台机器上，或者系统语言相同的机器上，就不会碰到这一条。
 
 浏览器标识与 client hints：页面读两处浏览器身份，UA 字符串，和 `navigator.userAgentData` 与请求头 `Sec-CH-UA*` 里的 client hints（brands、平台、是否移动端）。pinned 在浏览器启动之后、准备任何 tab 之前，先在一个后台的临时 `chrome://version` 页里读出浏览器自己的 client hints，再随 UA override 一起发给每个 tab 和 worker。条件是标识是 Chrome 自己的写法：不写 `user_agent`，或写普通 Chrome 标识，例如 live 配置用的 `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36`。这样页面读到的就是这个 Chrome 自己给的，打不到 opener 的新 tab 的第一个请求也一样。普通 Chrome 标识的大版本、平台或移动端与浏览器自己的不符时，setup 以 `BrowserCooperationError` 拒绝这个 run，点名两边；要启动浏览器才知道，所以 `--dry-run` 和链的开跑前检查都查不出。Chrome 自动更新之后改标识里的版本号就行。别的写法的标识不带 client hints：brands 为空，不发 `Sec-CH-UA`。指纹的 `replayability.client_hints` 记着发出去的值，`page.userAgentData` 是其中页面不问就读得到的那部分。回放在启动之后比较：pin 了标识时与录制的不同就拒绝，没 pin 时只记一条警告。在 override 带上 client hints 之前录的 pinned run，回放一律拒绝（那时页面读到的 brands 是空的），要重录。
@@ -90,6 +92,8 @@ pinned 启动的 Chrome 带着环境变量 `TZ=<timezone>`。Chrome 的时区与
 页面打开的新 tab（`target=_blank` 链接、`window.open`）从第一个请求起就被扣住、录下、pin 住，不论它能不能访问打开它的页面；`create_tab(url)` 打开的 tab 先建成 `about:blank`，recorder 准备好之后再导航。
 
 agent 的动作让当前页开了新 tab 时，下一次观测看到的就是这个新 tab（capability 的 `new_tabs`，默认 `follow`，与真实浏览器把新 tab 提到前台一样）；页面在没有用户点击的情况下自己开的 tab 不跟。录制、回放、分叉按同一条规则走，三份配置用同一个值（发布的配置都用默认值）：分叉的前缀回放重新执行录下的点击，焦点在同一次观测之前再跟过去一次，恢复校验比较的就是跟过去之后的那个 tab；两边的值不一样时，第一处跟随就以 `url_mismatch` 发散。焦点移过的那次观测，每个 fragment 都记着 `focus_moved`（原因、从哪个 tab 到哪个 tab），查 trace 时看这里。
+
+实际输入平台是另一项运行事实：setup 从 Chrome 内部版本页测量 `macos` / `windows` / `linux`，保存为 run 指纹的 `input_platform`，并通过独立 `browser.platform` 观测告诉 Agent。browser 块的 `expected_platform` 是可选断言，默认 `null` 仍要求测量成功，不模拟平台。回放源字段缺失或非法在 prepare 拒绝；当前浏览器启动后实测平台不同也拒绝。旧归档可离线读，但不得填入猜测平台或改写旧文件来恢复执行。云 CDP 若禁止内部页，当前实现明确报测量失败，不回退到 Agent 宿主平台；本轮没有云服务实测。
 
 ## 读回 env/ 里的证据
 
@@ -363,9 +367,28 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 
 空分叉是从检查点起一个动作也没执行的分叉：teacher 的模型调用失败、回复没有动作（解析失败和解析出零个动作在记录里看起来一样），或者 teacher 决定之前 run 就结束了（恢复失败、观测失败）。它说明不了 teacher 的选择会走到哪里，所以不计入 `branch_coverage` 的占比和 miss、也不计入 `miss_policy` 与 `recording_coverage` 依据的数，按原因记在 `metrics.branch_coverage.empty`；重复分叉率不比较检查点步没有动作的分叉（`sections.duplicate_branches.not_compared`）。
 
-每条建议是 `{status, verdict, rule, evidence, basis, sites, status_reason}`。`sites` 是证据来自几个不同的站点。只有 live 证据、而且来自至少 10 个站点（`SUPPORTED_MIN_SITES`），建议才是 `supported`；不到 10 个站点最多是 `partial`，原因写 "insufficient sample"；演练最多是 `partial`；没有数据时是 `insufficient`、`verdict` 为空。低于 `supported` 的原因都写在 `status_reason` 里。所以 2 到 3 个任务的 live run 只是冒烟测试：它证明整条链能跑通，不拿来定阈值和上面四个决定。`rule` 写出所用的阈值常量和它的值。阈值是 live 之前定的起点，留在 `spectragent/flywheel/report.py` 里，等一次覆盖足够多站点的 live run 校准；每步归档开销的上限 300 ms 例外，它在 `spectragent/core/archive/budget.py`，归档开销基准用的也是它。`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。报告格式是 `af-flywheel-report-6`。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，也列出各项度量自己的 `skipped`（某项读不到证据而略过的 run）。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
+每条建议是 `{status, verdict, rule, evidence, basis, sites, status_reason}`。`sites` 是证据来自几个不同的站点。只有 live 证据、而且来自至少 10 个站点（`SUPPORTED_MIN_SITES`），建议才是 `supported`；不到 10 个站点最多是 `partial`，原因写 "insufficient sample"；演练最多是 `partial`；没有数据时是 `insufficient`、`verdict` 为空。低于 `supported` 的原因都写在 `status_reason` 里。所以 2 到 3 个任务的 live run 只是冒烟测试：它证明整条链能跑通，不拿来定阈值和上面四个决定。`rule` 写出所用的阈值常量和它的值。阈值是 live 之前定的起点，留在 `spectragent/flywheel/report.py` 里，等一次覆盖足够多站点的 live run 校准；每步归档开销的上限 300 ms 例外，它在 `spectragent/core/archive/budget.py`，归档开销基准用的也是它。`evidence` 是指向 `report.json` 里具体值的 JSON pointer 和分母。报告格式是 `af-flywheel-report-7`。`report.md` 由同一个模型渲染，列出每个角色被跳过的 run，也列出各项度量自己的 `skipped`（某项读不到证据而略过的 run）。报告只读链根下已提交的 trace 和数据集，同样的输入算两次逐字节相同。
 
 链在报告之前导出，不会套用报告给出的剔除名单。`sections.sites.yaml` 是 `filters.exclude_sites` 形状的片段：把它放进导出 YAML，换一个 `output_dir`，手动再导一次。
+
+## 离线截图差异诊断
+
+```bash
+uv run spectragent-flywheel diagnose \
+  --recordings traces/chains/first-live/traces/record \
+  --replays traces/chains/first-live/traces/same_path \
+  --out tmp/replay-diagnostics
+```
+
+打开输出里的 `index.html`，无需服务端或网络。`diagnostics.json` 保存同一份完整证据，`assets/` 保存原截图字节、预览、像素差图与区域框；原图按内容摘要去重。输出目录必须是新的，且不能位于两个输入目录内。参数错误退出 2，输出写入失败退出 1；已有目录不会覆盖。
+
+诊断只经 RunTrace 读已提交的观测和来源关系，不启动浏览器或模型，不访问 `env/`，也不修改 trace。回放的 `branch.source_trace` 相对于 `--recordings` 匹配源 run；仅比较检查点及以前的源策略步，缺步会显示为“未提交”，分叉后新动作和终止图不混入这项比较。来源不匹配、trace 或图读不回来、截图缺失和尺寸不等都单独显示，尺寸不等不会通过缩放伪造可比性。
+
+页面分开显示“录制与回放不同”和“重复回放之间的候选变化”。只有同源同步骤至少两张可读且尺寸一致的回放图，才能给出后者；只有一次回放时明确说证据不足。原始全图 SHA、dHash、同观测轮次的 URL 是否可比、已有恢复判定和缺失原因全部保留。缺失 URL 不算相同；旧截图未记 URL 时仍能做纯图像诊断。
+
+默认以最大 RGB 通道差大于 16 认定像素变化，在 32 像素网格里变化比例至少 0.01 的格子被标出，再按四邻接合并区域框。可以用 `--pixel-threshold`（0–255）、`--grid-size`（正整数）、`--cell-fraction`（大于 0 至 1）调整；具体方法与参数写进产物。同源同步骤重复图的候选区域来自所有可比图对的变化网格并集，不来自源图与回放的单次偏离。
+
+**候选不代表与任务无关。** 价格、新闻列表、搜索结果、当前选项和错误提示也可能变化。诊断不生成用于忽略差异的遮罩，不改变恢复 verdict、strict 分叉放行或站点剔除，也不报告遮盖后变好的通过率。先检查这些差异是什么，再讨论未来的比较策略。
 
 ## 隐私
 

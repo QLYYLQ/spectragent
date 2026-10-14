@@ -50,6 +50,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
 from spectragent.agents._action_union import _create_model, action_union
+from spectragent.agents._browser_platform import render_browser_platform
 from spectragent.agents._output_models import reasoning_fields
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompts import load_prompt_fragment
@@ -276,7 +277,7 @@ class BrowserUseAgent(AgentBase):
         # read it out of the trace, not because the model always sees it.
         "observation": (
             "observation",
-            ["screenshot", "task"],
+            ["screenshot", "platform", "task"],
             ["dom", "browser_meta", "step_info", "history"],
         ),
         "action": (
@@ -939,6 +940,7 @@ class BrowserUseAgent(AgentBase):
         return (
             f"<agent_history>\n{history_xml}\n</agent_history>\n"
             f"{state_xml}\n"
+            f"{render_browser_platform(observation)}\n"
             f"<browser_state>\n{browser_xml}\n</browser_state>"
         )
 

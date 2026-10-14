@@ -38,7 +38,7 @@ from PIL import Image
 from spectragent.agents._registrar import AgentRegistrar
 from spectragent.core.action_guard import resolve_action_name
 from spectragent.core.actions._registrar import ActionRegistrar
-from spectragent.core.capabilities.browser.observations import ScreenshotObs
+from spectragent.core.capabilities.browser.observations import BrowserPlatformObs, ScreenshotObs
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.loops.errors import UnrepresentableActionError
 from spectragent.core.runtime import AgentRuntime
@@ -121,6 +121,7 @@ def _observation(runtime: AgentRuntime, dpr: int) -> Any:
     assert negotiated is not None, "prepare() negotiates the observation"
     image = (_VIEWPORT[0] * dpr, _VIEWPORT[1] * dpr)
     synthetic: dict[str, Any] = {
+        "browser.platform": BrowserPlatformObs(operating_system="macos"),
         "browser.screenshot": ScreenshotObs(
             image_bytes=_png(*image),
             viewport_width=_VIEWPORT[0],

@@ -105,11 +105,11 @@ _EXPECTED_ACTIONS: dict[str, set[str]] = {
 }
 
 _EXPECTED_FRAGMENTS: dict[str, set[str]] = {
-    "dom": {"browser.dom", "browser.screenshot", "browser.browser_meta"},
-    "dom_vision": {"browser.dom", "browser.screenshot", "browser.browser_meta"},
+    "dom": {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"},
+    "dom_vision": {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"},
     # No ``browser.dom``: the DOMWatchdog is never asked, so no DOM is
     # extracted at all — not extracted and then hidden.
-    "vision": {"browser.screenshot", "browser.browser_meta"},
+    "vision": {"browser.screenshot", "browser.browser_meta", "browser.platform"},
 }
 
 
@@ -131,6 +131,7 @@ def _observation(*, with_dom: bool = True) -> Any:
     a DOM it was handed, not merely fail to find one.
     """
     return SimpleNamespace(
+        platform=SimpleNamespace(operating_system="macos"),
         task=SimpleNamespace(user_request="tick the checkbox", follow_ups=[]),
         screenshot=ScreenshotObs(
             image_bytes=_png(),

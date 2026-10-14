@@ -2,6 +2,49 @@
 
 从仓库根目录执行下列命令。当前执行链是 `YAML → ConfigComposer → AgentRuntime.execute()`；单任务入口是 `spectragent-run`，数据集入口是 `spectragent-bench`。`agent_id` 选模型理解页面和输出动作的方式，`capability_id: browser` 提供浏览器动作与观察，`backend.provider_id` 选 Chrome 会话的来源。这三项可以分别配置。
 
+## 独立评测已录下的任务
+
+`spectragent-eval` 只读已保存的 RunTrace，调用独立 judge 判断任务正确性，不启动浏览器或重跑 agent；它不改变回放保真、恢复校验或分叉放行条件。先完成 judge 路由和图像输入验证，再把验证过的 `llm` 配置放进 YAML。例如保存为本地 `tmp/evaluation.yaml`：
+
+```yaml
+evaluator:
+  - evaluator_id: lexbench_browser
+    eval_strategy: stepwise
+    image_scale_factor: 1.0
+    max_screenshots: 30
+    llm:
+      model_type: openai
+      model: 替换为已验证支持图像的型号
+      provider: {name: direct}
+      # base_url: 已验证的兼容接口地址
+eval_loader:
+  - benchmark_name: lexbench_browser
+    subset: All
+    # data_dir: 本地含 data_info.json 的参考数据目录
+```
+
+这里的 `openai/direct` 是配置形状示例，型号或网关采用别的协议时，整体替换为验证过的 `llm` 块。密钥从相应环境变量读取；入口也加载 `.env`。参考数据默认由 `SPECTRAGENT_BENCHMARK_DATA` 指定的根目录定位。每次只组合一个 evaluator 和一个 eval_loader；不接受 agent、environment 或 hook 块。
+
+```bash
+uv run spectragent-eval --config tmp/evaluation.yaml \
+  --traces traces/chains/example/traces/record \
+  --out evals/example-first --dry-run
+
+uv run spectragent-eval --config tmp/evaluation.yaml \
+  --traces traces/chains/example/traces/record traces/chains/example/traces/branch \
+  --out evals/example-first
+```
+
+`--dry-run` 验证配置与输入选择，不调用模型、不写文件。`--traces` 可接单个 run 或直接包含多个 run 的目录；不递归搜索，重复路径只算一次。分叉通过自身 provenance 查找源 benchmark/subset/task 的参考，结果仍保留分叉 task/run 身份。`--out` 必须是新目录，防止新批次盖掉之前的证据。默认还在每份 trace 的 `evals/` 写当前配置的最新判定；加 `--read-only-traces` 只写独立批次，不修改源 trace。
+
+主要结果是 `report.json` 与中文 `report.md`：输入轨迹数、有效判定数、判对、判错、无法判定分别列出，正确率是“判对 / 有效判定”，覆盖率是“有效判定 / 提供的轨迹”。没有有效判定时正确率为 `null`。没有提供的其他 benchmark 任务不进入分母；同一任务的不同轨迹分别计数，所以这是本批轨迹的任务正确性，不应称为整个 benchmark 的任务成功率。旧 runner 同时产生的 `*_summary.json` 保留覆盖策略下的旧统计口径；本阶段使用新的 `report.*` 作为主要报告，不混用两种分母。
+
+缺少参考、任务文字、可用截图、损坏的 trace、judge 调用失败或无有效总分，都记无法判定，不算任务判错。已知的提示快照、录制时间、模型与路由身份、响应及 `eval_usage` 随判定或错误保存；endpoint 只保留摘要，脱敏配置不存密钥。没有报告用量的请求单列，不能当成免费。输出目录保存本批副本；同配置重复评测时，源 trace 的同 slug 文件仍采用既有的最新判定语义。
+
+“今日”“明天”和时效数值按录制时点、录下的任务日期及页面证据解释。评测器不访问当前网站，不以模型的当前知识替代历史事实。参考资料自身过时或轨迹无法支持事实时，应无法判定。`stepwise` 会按配置筛选与缩放截图；`final` 只看最后一帧。需要判断最后动作后的结果时，新录制应开启 `terminal_observation: true`；旧 trace 没有该帧不能补造。
+
+退出码：0 表示每份输入都有有效判定（任务判错也返回 0）；1 表示至少一份无法判定或本次评测运行失败；2 表示配置、输入路径或输出目录被拒绝。本入口没有额外 token 上限；正式运行前先用明确的小批次核算 judge 用量，再决定扩展规模。
+
 ## 第一次运行
 
 ```bash
@@ -48,6 +91,28 @@ BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
 
 `skyvern_agent_local.yaml` 用的 `skyvern` cleaner 不看绘制顺序，被吸顶栏盖住的链接照样有编号。把 `dom_cleaner` 换成 `{ cleaner_type: skyvern_hit_test }` 后，页面会对每个编号元素做点击命中测试，默认（`covered_elements: drop`）所有探测点都点不到的元素不编号；视口外的元素不测，保留编号。见 [configs/README.md](../configs/README.md#dom-cleaners)。
 
+### 浏览器实际平台与预期断言
+
+每次 setup 都在首个业务页面和模型调用前，从 Chrome 内部版本页测量实际桌面平台（`macos` / `windows` / `linux`），不从 UA、网页 navigator 字段或 Agent 宿主猜测。`browser.platform` 是独立观测，三个浏览器 Agent 都读取同一事实；纯视觉 Agent 不增加 DOM，也不会因此看到截图的来源 URL。平台观测在各内置 profile 下可用，按 run 缓存，不每步重新测量。
+
+可在 browser capability 块中写 `expected_platform: macos`（或 `windows` / `linux`），默认 `null` 表示不限定某一平台，但仍必须测量成功。不符、检测失败或不支持的平台都在 setup 拒绝；这个字段不会模拟操作系统，也不改变 `send_keys` 的字面键含义。实际浏览器尚未启动时，`--dry-run` 只能检查配置与源证据，不能声称实测已通过。云 CDP 若不允许读取内部版本页也会明确拒绝；本轮没有真实云服务平台验收，不将 UA 伪装当作跨平台测试。
+
+归档指纹的 `input_platform` 记录实际值。回放先检查源字段存在且合法，启动后再测当前浏览器并比较；源平台与配置预期已冲突时可在 prepare 提前拒绝。缺少新平台证据的旧 run 保留供离线分析，但不能猜一个平台继续执行，也不回写旧归档。
+
+### 只通过页面交互完成任务
+
+需要禁止构造搜索页、详情页或接口 URL 的实验，在原 YAML 的 `hook` 列表中追加：
+
+```yaml
+hook:
+  - hook_id: ui_navigation_guard
+  # 保留原有 trace_writer（及其 archive 配置）、metrics 等 hook
+```
+
+守卫在 `env.act` 执行前检查动作，拒绝策略直接 `browser.navigate` / `browser.create_tab`、地址栏/新空白 tab/新窗口快捷键（包括 Ctrl/Cmd/Meta+L、Alt+D、F6、Ctrl/Cmd+T/N 及常见别名，搜索地址栏的 Ctrl/Cmd+K/E 也拒绝），以及 `browser.type` / `browser.type_coordinate` 的整段 URL 或主机路径输入。给定起始 URL 由 setup 打开，不经过这个 hook，所以仍可启动；页面链接点击、后退/前进、切换已有 tab、普通编辑键（Ctrl+A/C/V 等）、选择、滚动、拖动和页面内普通输入继续允许。没有该 hook 的配置保持原行为。
+
+拒绝通过 `RunAbort` 作为协议否决终止，`result.agent_done=vetoed`，trace 保留原回复、被拒动作和原因；不是动作尝试后的失败，底层 `env.act` 不会执行。所有模型的提示仍应写明同一协议，旧 trace 仅审计，不回写。这个守卫不读 DOM，也不推断任意文本中的拼 URL 意图：包含链接的整句话不会仅因有点号被拒；完整的域名形状 token 会按地址处理，因此域名形状的文件名可能有歧义。应结合原回复与轨迹审计协议遵守情况。
+
 ## 选择浏览器后端
 
 切换的是 `environment[0].capabilities[0].backend`，与 `agent_id` 无关。例如直接使用现成的云浏览器配置：
@@ -92,6 +157,8 @@ network_source: { source_id: live }
 `replayability: pinned`、`network_source: archive` 和 trace hook 绑定的归档器用于录制与回放，只支持 `local_chrome`。归档器或 `pinned` 配云后端，都在 `--dry-run` 就报错（`prepare()` 的 setup 检查；正式运行时同样在打开 trace、打开浏览器会话之前报）。评测和 anti-bot 实验保持 `none`，因为 `pinned` 会改变线上站点的行为，它本身也是能被检测到的特征。
 
 `pinned` 启动 Chrome 时设环境变量 `TZ=<pinned 的时区>`：一个 iframe 或弹窗在同进程里设时区的那个页面走了之后，读到的仍是这个时区。语言做不到这一点（macOS 上 Chrome 取系统语言），所以录制把浏览器的默认时区与语言记进指纹，回放只在默认值相同的机器上进行：不同就在 `--dry-run` 报错，系统设置在启动前说不出的那一项在浏览器启动之后报，消息点名两边的值。页面自己打开的新 tab（`target=_blank` 链接、`window.open`）从第一个请求起就被录下、pin 住，开 tab 不再多等。
+
+颜色主题由 pinned 在录制启动时实测，不默认设成浅色：测到的 `light` / `dark` 固定在本 run 的所有 tab 和进程外 iframe，并写进 `replayability.color_scheme`。回放沿用这个源值，宿主机主题不同也可以回放；源值缺失或非法则在 `--dry-run` 拒绝，必须重录。测量失败会拒绝录制。现有 `reduced_motion` 仍同时生效，`none` 不改变主题，网站自己保存的主题偏好仍由网站决定。
 
 `pinned` 的 `user_agent` 可以写普通 Chrome 标识，即 Chrome 自己的写法，后面不跟 `Edg/` 之类，例如 `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36`。这时页面读到的 `navigator.userAgentData`（brands、平台、是否移动端）和请求带的 `Sec-CH-UA` 取自浏览器自己：浏览器启动之后先读出来，再随标识一起发给每个页面，页面新开的 tab 的第一个请求也一样。所以版本要写本机 Chrome 的大版本（Chrome 可执行文件加 `--version` 就能看到），平台要与本机相同：不符时浏览器启动之后、打开任何页面之前报 `BrowserCooperationError`，点名两边的版本或平台。这一项 `--dry-run` 查不出来，要启动浏览器才知道；Chrome 自动更新之后，改标识里的版本号就行。不写 `user_agent` 时页面读到的也是浏览器自己的。写别的形式的字符串时不带这些：brands 为空，不发 `Sec-CH-UA`。回放要求与录制带的相同，不同就拒绝。
 

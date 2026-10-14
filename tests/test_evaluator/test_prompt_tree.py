@@ -38,6 +38,7 @@ _EXPECTED: dict[str, dict[str, set[str]]] = {
     "lexbench_browser": {
         "system_en": set(),
         "system_zh": set(),
+        "recorded_evidence_context": {"recorded_at", "task_dates"},
     },
 }
 

@@ -46,6 +46,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
 def _watchdog(cdp: FakeCDP, rhythm: object | None) -> ActionWatchdog:
     node = _make_node(42, DOMRect(x=400.0, y=300.0, width=100.0, height=40.0))
     return ActionWatchdog(
+        input_platform="linux",
         cdp=cdp,  # type: ignore[arg-type]
         selector_map_getter=lambda: {42: node},
         typing_rhythm=rhythm,  # type: ignore[arg-type]
@@ -119,18 +120,28 @@ class TestTheStrategyReachesTheWatchdog:
 
     def test_the_watchdog_follows_the_strategy(self) -> None:
         cdp = FakeCDP()
-        assert ActionWatchdog(cdp=cdp, typing_rhythm=HumanRhythm())._keyboard.humanized  # type: ignore[arg-type]
-        assert not ActionWatchdog(cdp=cdp, typing_rhythm=InstantRhythm())._keyboard.humanized  # type: ignore[arg-type]
-        assert not ActionWatchdog(cdp=cdp)._keyboard.humanized  # type: ignore[arg-type]
+        assert ActionWatchdog(
+            input_platform="linux",
+            cdp=cdp,  # type: ignore[arg-type]
+            typing_rhythm=HumanRhythm(),
+        )._keyboard.humanized
+        assert not ActionWatchdog(
+            input_platform="linux",
+            cdp=cdp,  # type: ignore[arg-type]
+            typing_rhythm=InstantRhythm(),
+        )._keyboard.humanized
+        assert not ActionWatchdog(input_platform="linux", cdp=cdp)._keyboard.humanized  # type: ignore[arg-type]
 
     def test_the_capability_hands_its_rhythm_to_the_context(self) -> None:
         cap = BrowserCapability()
         cap._cdp = FakeCDP()  # type: ignore[assignment]
+        cap._input_platform = "linux"  # Explicit measured fact of this simulated environment.
         assert isinstance(cap.typing_rhythm, InstantRhythm)
         assert isinstance(cap._watchdog_context("sid").typing_rhythm, InstantRhythm)
 
         cap.typing_rhythm = HumanRhythm(seed=5)
         watchdog = ActionWatchdog.build(cap._watchdog_context("sid"))
+        assert watchdog._keyboard.input_platform == "linux"
         assert watchdog._keyboard.humanized is True
 
     def test_the_two_axes_are_independent(self) -> None:
@@ -143,6 +154,7 @@ class TestTheStrategyReachesTheWatchdog:
 
         cdp = FakeCDP()
         watchdog = ActionWatchdog(
+            input_platform="linux",
             cdp=cdp,  # type: ignore[arg-type]
             mouse_trajectory=WindMouseTrajectory(seed=1),
             typing_rhythm=InstantRhythm(),

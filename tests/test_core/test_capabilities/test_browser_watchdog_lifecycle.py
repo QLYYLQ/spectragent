@@ -102,6 +102,7 @@ def _make_cap(profile: str = "standard") -> tuple[BrowserCapability, _CDP]:
     cdp = _CDP()
     cap._inject_cdp_client(cdp)  # type: ignore[arg-type]
     cap._cdp = cdp  # type: ignore[assignment]
+    cap._input_platform = "macos"  # lifecycle fixture begins after platform measurement
     cap._scope_group = _ScopeGroup()  # type: ignore[assignment]
     cap._resolved_profile = resolve_profile(profile)
     return cap, cdp

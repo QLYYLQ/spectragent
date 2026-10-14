@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 from agent_cdp import EventScope, WatchdogBase, WatchdogRegistrar
 
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget
+from spectragent.core.capabilities.browser.platform import InputPlatform
 
 if TYPE_CHECKING:
     from agent_cdp import CDPCommandProtocol
@@ -121,6 +122,8 @@ class WatchdogContext:
     cdp: CDPCommandProtocol
     profile: BrowserProfileConfig
     viewport: tuple[int, int] = (1280, 720)
+    #: Measured by capability setup; None only before setup or in isolated tests.
+    input_platform: InputPlatform | None = None
 
     #: CDP session id of the tab this watchdog serves. ``None`` for
     #: browser-level watchdogs.

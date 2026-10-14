@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -33,6 +34,7 @@ class _FakeScreenshot:
     viewport_height: int = 0
     image_width: int = 0
     image_height: int = 0
+    source_url: str | None = None
 
 
 @dataclass
@@ -46,7 +48,7 @@ class _FakeTask:
 
 
 class _FakeObservation:
-    """UITars only ever consumes ``screenshot`` + the loop ``task`` fragment."""
+    """Visual page content plus measured platform and the loop task."""
 
     def __init__(
         self,
@@ -56,6 +58,7 @@ class _FakeObservation:
     ) -> None:
         self.screenshot = screenshot
         self.task = task or _FakeTask()
+        self.platform = SimpleNamespace(operating_system="macos")
 
 
 def _make_agent(**overrides: Any) -> UITarsAgent:
@@ -91,6 +94,15 @@ def _looking_at_screen(**overrides: Any) -> UITarsAgent:
 
 
 class TestSlotConformance:
+    def test_screenshot_provenance_does_not_reach_the_model(self) -> None:
+        before = _FakeObservation(screenshot=_FakeScreenshot(image_bytes=b"\x89PNG"))
+        after = _FakeObservation(
+            screenshot=_FakeScreenshot(
+                image_bytes=b"\x89PNG", source_url="https://private.test/only-for-restoration"
+            )
+        )
+        assert _make_agent().build_react_prompt(before) == _make_agent().build_react_prompt(after)
+
     def test_has_required_react_slots(self) -> None:
         agent = _make_agent()
         ReactLoop()._validate_slots(agent)  # Should not raise
@@ -114,7 +126,7 @@ class TestWiring:
         wiring = UITarsAgent.__wiring__
         assert wiring["observation"] == (
             "observation",
-            ["screenshot", "task"],
+            ["screenshot", "platform", "task"],
             ["step_info"],
         )
 

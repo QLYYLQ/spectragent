@@ -66,6 +66,7 @@ from spectragent.core.capabilities.browser.client_hints import (
     chrome_identifier,
     identifier_problems,
 )
+from spectragent.core.capabilities.browser.color_scheme import ColorScheme, color_scheme_from_record
 from spectragent.core.capabilities.browser.recorder import CDPCommand
 from spectragent.core.capabilities.browser.replay.replayability import (
     ReplayabilityBase,
@@ -205,9 +206,20 @@ class PinnedReplayability(ReplayabilityBase):
         """``TZ``: the zone a frame without an override owner falls back to (module docstring)."""
         return {"TZ": self.timezone}
 
+    @property
+    def needs_color_scheme(self) -> bool:
+        return True
+
     def plan(
-        self, *, t0_ms: int, browser_user_agent: str, client_hints: ClientHints | None = None
+        self,
+        *,
+        t0_ms: int,
+        browser_user_agent: str,
+        client_hints: ClientHints | None = None,
+        color_scheme: ColorScheme | None = None,
     ) -> ReplayabilityPlan:
+        if color_scheme is not None and color_scheme_from_record(color_scheme) is None:
+            raise ValueError(f"pinned: invalid measured color scheme {color_scheme!r}")
         shim = render_shim(t0_ms=t0_ms, seed=self.random_seed)
         hints, problems = self._client_hints(client_hints)
         user_agent: dict[str, Any] = {
@@ -227,11 +239,16 @@ class PinnedReplayability(ReplayabilityBase):
             CDPCommand("Emulation.setLocaleOverride", {"locale": self.locale}),
             CDPCommand("Emulation.setUserAgentOverride", user_agent),
         ]
+        media_features = []
+        if color_scheme is not None:
+            media_features.append({"name": "prefers-color-scheme", "value": color_scheme})
         if self.reduced_motion:
+            media_features.append({"name": "prefers-reduced-motion", "value": "reduce"})
+        if media_features:
             frame.append(
                 CDPCommand(
                     "Emulation.setEmulatedMedia",
-                    {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]},
+                    {"features": media_features},
                 )
             )
         # ``setCacheDisabled`` / ``setBypassServiceWorker`` take effect only on
@@ -271,6 +288,7 @@ class PinnedReplayability(ReplayabilityBase):
             replayability_args=self.launch_args(),
             replayability_env=self.launch_env(),
             client_hints=hints,
+            color_scheme=color_scheme,
             problems=tuple(problems),
             frame_commands=tuple(frame),
             worker_commands=worker,

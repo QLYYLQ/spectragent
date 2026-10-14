@@ -80,21 +80,23 @@ here. **A page that gates on ``keydown`` sees nothing for CJK text.**
 from __future__ import annotations
 
 import logging
-import sys
-from typing import Any
+from asyncio import CancelledError, create_task, shield, wait_for
+from typing import Any, get_args
 
 from agent_cdp import CDPCommandProtocol
 
 from spectragent.core.capabilities.browser.input._schedule import play_on_deadline
 from spectragent.core.capabilities.browser.input.instant_rhythm import InstantRhythm
 from spectragent.core.capabilities.browser.input.rhythm import Keystroke, TypingRhythmProtocol
+from spectragent.core.capabilities.browser.platform import InputPlatform
 
 logger = logging.getLogger(__name__)
-
-#: CDP ``modifiers`` bit for Shift.
-_SHIFT = 8
-_CONTROL = 2
-_META = 4
+_KEY_RELEASE_TIMEOUT_S = 2.0
+#: CDP modifier bits, shared by typed characters and named-key chords.
+ALT_MODIFIER = 1
+CONTROL_MODIFIER = 2
+META_MODIFIER = 4
+SHIFT_MODIFIER = 8
 
 #: US-layout punctuation reachable without Shift: char → (code, virtual key).
 _PUNCTUATION_KEYS: dict[str, tuple[str, int]] = {
@@ -170,14 +172,14 @@ def _key_event(ch: str) -> tuple[dict[str, Any], str] | None:
         upper = ch.upper()
         code, vk = f"Key{upper}", ord(upper)
         if ch.isupper():
-            modifiers = _SHIFT
+            modifiers = SHIFT_MODIFIER
     elif ch.isdigit():
         code, vk = f"Digit{ch}", ord(ch)
     elif ch in _PUNCTUATION_KEYS:
         code, vk = _PUNCTUATION_KEYS[ch]
     elif ch in _SHIFT_PAIRS:
         base = _SHIFT_PAIRS[ch]
-        modifiers = _SHIFT
+        modifiers = SHIFT_MODIFIER
         if base.isdigit():
             code, vk = f"Digit{base}", ord(base)
         else:
@@ -208,60 +210,107 @@ class HumanKeyboard:
         self,
         cdp: CDPCommandProtocol,
         *,
+        input_platform: InputPlatform,
         rhythm: TypingRhythmProtocol | None = None,
     ) -> None:
+        if input_platform not in get_args(InputPlatform):
+            raise ValueError("HumanKeyboard requires the measured browser input_platform")
         self._cdp = cdp
+        self.input_platform = input_platform
         # Nothing configured → the no-op strategy, exactly the legacy bulk
         # insert. The strategy alone decides whether we humanize.
         self._rhythm: TypingRhythmProtocol = rhythm if rhythm is not None else InstantRhythm()
         self._humanized = self._rhythm.humanized
-        self._select_all_modifier: tuple[str, str, int, int] | None = None
 
     @property
     def humanized(self) -> bool:
         return self._humanized
 
-    async def _modifier_for_select_all(self, session_id: str | None) -> tuple[str, str, int, int]:
-        """Choose the shortcut for the browser's OS, not the agent host's.
+    @property
+    def select_all_modifier(self) -> tuple[str, str, int, int]:
+        """The native select-all modifier of the already measured browser platform."""
+        return (
+            ("Meta", "MetaLeft", 91, META_MODIFIER)
+            if self.input_platform == "macos"
+            else ("Control", "ControlLeft", 17, CONTROL_MODIFIER)
+        )
 
-        A macOS runner may control a Linux cloud browser. ``Browser.getVersion``
-        reports the browser's own user agent even when a tab has overridden
-        ``navigator.userAgent``; the page's platform and then the host are
-        fallbacks for CDP gateways that do not expose that browser command.
+    def editing_commands(self, key: str, modifiers: int) -> list[str]:
+        """Only the measured platform's exact native select-all chord gets a command.
+
+        Extra modifiers or the other platform's chord retain their literal
+        meaning. CDP carries the command on keydown, where the page can cancel
+        its default handling; this never selects a DOM range from JavaScript.
         """
-        if self._select_all_modifier is not None:
-            return self._select_all_modifier
+        native_mask = self.select_all_modifier[3]
+        return ["selectAll"] if key.lower() == "a" and modifiers == native_mask else []
 
-        platform = ""
+    async def press_key(
+        self,
+        payload: dict[str, Any],
+        *,
+        modifiers: int,
+        char_text: str | None,
+        session_id: str | None = None,
+    ) -> None:
+        """Send a resolved literal key/chord, with only its native editing command.
+
+        The command rides on keydown, so Chrome honours preventDefault. A
+        cancelled or failed press still attempts a bounded keyup; no renderer
+        probe or host-platform fallback enters this path.
+        """
+        commands = self.editing_commands(str(payload["key"]), modifiers)
+        down = {**payload, "type": "keyDown", "modifiers": modifiers}
+        if commands:
+            down["commands"] = commands
+            char_text = None
+        up = {**payload, "type": "keyUp", "modifiers": modifiers}
         try:
-            version = await self._cdp.send("Browser.getVersion", {})
-            platform = str((version or {}).get("userAgent", ""))
-        except Exception as exc:
-            logger.debug("Browser.getVersion unavailable for select-all: %s", exc)
-
-        if not platform:
-            try:
-                result = await self._cdp.send(
-                    "Runtime.evaluate",
-                    {"expression": "navigator.platform", "returnByValue": True},
+            await self._cdp.send("Input.dispatchKeyEvent", down, session_id=session_id)
+            if char_text is not None:
+                await self._cdp.send(
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": "char",
+                        "text": char_text,
+                        "key": payload["key"],
+                        "modifiers": modifiers,
+                    },
                     session_id=session_id,
                 )
-                platform = str((result or {}).get("result", {}).get("value") or "")
-            except Exception as exc:
-                logger.debug("navigator.platform unavailable for select-all: %s", exc)
+        except BaseException:
+            try:
+                await self._release_key(up, session_id)
+            except CancelledError:
+                raise  # An external cancellation during cleanup outranks an input error.
+            except Exception:
+                logger.warning("Could not release interrupted key", exc_info=True)
+            raise
+        else:
+            await self._release_key(up, session_id)
 
-        if not platform:
-            logger.warning(
-                "Browser platform unavailable for select-all; using agent host %s",
-                sys.platform,
+    async def _release_key(self, params: dict[str, Any], session_id: str | None) -> None:
+        release = create_task(
+            wait_for(
+                self._cdp.send("Input.dispatchKeyEvent", params, session_id=session_id),
+                timeout=_KEY_RELEASE_TIMEOUT_S,
             )
-            platform = sys.platform
-
-        is_mac = "mac" in platform.lower() or platform == "darwin"
-        self._select_all_modifier = (
-            ("Meta", "MetaLeft", 91, _META) if is_mac else ("Control", "ControlLeft", 17, _CONTROL)
         )
-        return self._select_all_modifier
+        cancellation: CancelledError | None = None
+        while not release.done():
+            try:
+                await shield(release)
+            except CancelledError as exc:
+                cancellation = cancellation or exc
+            except Exception:
+                break
+        if cancellation is not None:
+            try:
+                release.result()
+            except BaseException:
+                logger.warning("Could not release cancelled key", exc_info=True)
+            raise cancellation
+        release.result()
 
     def _keystrokes(self, text: str) -> list[Keystroke]:
         """Check the strategy's promise before using its timing."""
@@ -303,7 +352,7 @@ class HumanKeyboard:
         Ctrl/Meta+A keydown; the page still sees the complete modifier, A,
         and Backspace press/release sequence with proper code and keyCode.
         """
-        key, code, vk, mask = await self._modifier_for_select_all(session_id)
+        key, code, vk, mask = self.select_all_modifier
         modifier = {"key": key, "code": code, "windowsVirtualKeyCode": vk}
         letter = {"key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65}
         backspace = {"key": "Backspace", "code": "Backspace", "windowsVirtualKeyCode": 8}
@@ -311,7 +360,12 @@ class HumanKeyboard:
             ("Input.dispatchKeyEvent", {**modifier, "type": "keyDown", "modifiers": mask}),
             (
                 "Input.dispatchKeyEvent",
-                {**letter, "type": "keyDown", "modifiers": mask, "commands": ["selectAll"]},
+                {
+                    **letter,
+                    "type": "keyDown",
+                    "modifiers": mask,
+                    "commands": self.editing_commands("a", mask),
+                },
             ),
             ("Input.dispatchKeyEvent", {**letter, "type": "keyUp", "modifiers": mask}),
             ("Input.dispatchKeyEvent", {**modifier, "type": "keyUp", "modifiers": 0}),

@@ -58,6 +58,8 @@ from spectragent.core.capabilities.browser.archive.fingerprint import flags_dige
 from spectragent.core.capabilities.browser.archive.redaction import BROWSER_REDACTION_POLICY
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.client_hints import ClientHints
+from spectragent.core.capabilities.browser.color_scheme import ColorScheme, color_scheme_from_record
+from spectragent.core.capabilities.browser.platform import InputPlatform, input_platform_from_record
 from spectragent.core.capabilities.browser.replay.archive_index import (
     NETWORK_ARCHIVER,
     RecordedArchive,
@@ -85,8 +87,39 @@ def replay_t0(recorded: RecordedArchive, replayability: ReplayabilityProtocol, n
     return recorded.t0_ms
 
 
+def replay_color_scheme(recorded: RecordedArchive) -> ColorScheme:
+    """The source recording's media theme; a missing fact is never a light default."""
+    then = (recorded.fingerprint or {}).get("replayability") or {}
+    value = then.get("color_scheme")
+    scheme = color_scheme_from_record(value)
+    if scheme is None:
+        raise ValueError(
+            f"source run {recorded.run_id!r} replayability.color_scheme={value!r} ↔ "
+            "pinned replay: the source must record a measured 'light' or 'dark' theme; "
+            "record the run again"
+        )
+    return scheme
+
+
 def _source(recorded: RecordedArchive) -> str:
     return f"source run {recorded.run_id!r}"
+
+
+def input_platform_problems(
+    recorded: RecordedArchive, measured: InputPlatform | None = None
+) -> list[str]:
+    """A missing source platform is refused; a measured replay must match it."""
+    value = (recorded.fingerprint or {}).get("input_platform")
+    platform = input_platform_from_record(value)
+    if platform is None:
+        return [
+            f"{_source(recorded)} input_platform={value!r} ↔ browser replay: no supported measured input platform was recorded; record the run again"
+        ]
+    if measured is not None and measured != platform:
+        return [
+            f"{_source(recorded)} input_platform={platform!r} ↔ this browser input_platform={measured!r}: recorded key actions require the same actual platform"
+        ]
+    return []
 
 
 def _current_plan(replayability: ReplayabilityProtocol) -> dict[str, Any]:
@@ -182,6 +215,7 @@ def consistency_problems(
     viewport: tuple[int, int],
     planned_launch_flags: Sequence[str] | None,
     browser_defaults: BrowserDefaults | None = None,
+    expected_platform: InputPlatform | None = None,
 ) -> list[str]:
     """Every way the source run's fingerprint and this configuration disagree, at once.
 
@@ -197,6 +231,16 @@ def consistency_problems(
             f"(the browser's run record), so nothing says what environment it recorded"
         ]
     problems: list[str] = []
+    problems.extend(input_platform_problems(recorded))
+    source_platform = input_platform_from_record(fingerprint.get("input_platform"))
+    if (
+        expected_platform is not None
+        and source_platform is not None
+        and source_platform != expected_platform
+    ):
+        problems.append(
+            f"{source} input_platform={source_platform!r} ↔ expected_platform={expected_platform!r}: the configured expectation contradicts the recording"
+        )
     archivers = (fingerprint.get("redaction") or {}).get("archivers") or {}
     if recorded.network_files == 0 or (
         isinstance(archivers, Mapping) and NETWORK_ARCHIVER not in archivers
@@ -283,6 +327,11 @@ def consistency_problems(
             f"carried the browser's own) ↔ replayability {now.get('tier')!r}: this run's pages "
             f"would read other client hints than the recording's; record the run again"
         )
+    if replayability.needs_color_scheme and then.get("tier") == now.get("tier"):
+        try:
+            replay_color_scheme(recorded)
+        except ValueError as exc:
+            problems.append(str(exc))
     return problems
 
 

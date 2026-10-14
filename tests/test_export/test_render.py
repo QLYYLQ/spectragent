@@ -192,7 +192,7 @@ class TestAssembly:
         )
         assert renderer.guarded == frozenset(descriptors)
         assert renderer.bindings["click_coordinate"] == "browser.click_coordinate"
-        assert renderer.env_fragments == frozenset({"browser.screenshot"})
+        assert renderer.env_fragments == frozenset({"browser.screenshot", "browser.platform"})
 
     def test_missing_format_slot_names_training_export(self, composer: ConfigComposer) -> None:
         root = student_root(agent_id="browser_use", observation_mode="vision")
@@ -234,8 +234,8 @@ class TestWhatTheStudentNeeds:
         self, composer: ConfigComposer, tmp_path: Path
     ) -> None:
         dom_only = TraceNegotiation(
-            active_fragments=["browser.dom", "loop.task"],
-            env_sourced_fragments=["browser.dom"],
+            active_fragments=["browser.dom", "browser.platform", "loop.task"],
+            env_sourced_fragments=["browser.dom", "browser.platform"],
             loop_sourced_fragments=["loop.task"],
         )
         trace = RunTrace(

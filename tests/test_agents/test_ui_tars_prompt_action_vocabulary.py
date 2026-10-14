@@ -144,6 +144,7 @@ def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) -> str:
     assert isinstance(prompt, str)
     agent.build_react_prompt(
         SimpleNamespace(
+            platform=SimpleNamespace(operating_system="macos"),
             task=SimpleNamespace(user_request="t"),
             screenshot=ScreenshotObs(
                 image_bytes=b"\x89PNG\r\n\x1a\n",

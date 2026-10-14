@@ -37,6 +37,7 @@ from spectragent.core.capabilities.browser.dom.models import (
     omitted_when_none,
     traced_fields,
 )
+from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.capabilities.browser.tabs import FocusMove
 from spectragent.schemas.observation._registrar import FragmentBase
@@ -573,6 +574,17 @@ def _decode_entry(decoder: _GraphDecoder, key: str, value: Any) -> Any:
     return node
 
 
+class BrowserPlatformObs(FragmentBase):
+    """The measured operating system of the browser receiving input events."""
+
+    __registry_key__ = "browser.platform"
+    __source__: ClassVar[Literal["env", "loop"]] = "env"
+    operating_system: InputPlatform
+
+    def summary(self) -> str:
+        return self.operating_system
+
+
 class ScreenshotObs(BrowserCaptureFragment):
     """Screenshot of the browser viewport.
 
@@ -610,6 +622,10 @@ class ScreenshotObs(BrowserCaptureFragment):
     viewport_height: int = 0
     image_width: int = 0
     image_height: int = 0
+    source_url: str | None = Field(
+        default=None,
+        description="The document URL read in the same capture cycle; None when unavailable.",
+    )
 
     @field_serializer("image_bytes")
     def _serialize_image_bytes(self, value: bytes | None) -> str | None:

@@ -882,12 +882,20 @@ class Fidelity(_Model):
     verified_steps: int
     #: The restorer's verdict: checks that were ``ok``.
     restorer: Ratio
-    #: URL not mismatched and the screenshot's sha256 equal to the source run's same step.
+    #: URL compared and equal, and the screenshot's sha256 equal to the source run's same step.
     strict: Ratio
-    #: Runs whose every verified step passed.
+    #: Screenshot bytes equal, independent of whether URL evidence was collected.
+    exact_screenshot: Ratio
+    #: Verified steps with an actual URL comparison, not an absent measurement.
+    url_coverage: Ratio
+    #: Verified steps with an actual element-signature comparison.
+    signature_coverage: Ratio
+    #: Runs with a restoration check at every step from zero through the checkpoint.
+    runs_reaching_checkpoint: Ratio
+    #: Runs with complete checkpoint coverage and every check passed.
     runs_passing: Ratio
     first_failures: list[FirstFailure] = []
-    #: Runs left out of the strict measure, and why: a screenshot it compares does not read back.
+    #: Runs left out of the image equality measures, and why: a screenshot it compares does not read back.
     skipped: dict[str, str] = {}
 
 
@@ -936,6 +944,11 @@ class _FidelityTally:
     ok: int = 0
     strict_ok: int = 0
     strict_compared: int = 0
+    exact_ok: int = 0
+    exact_compared: int = 0
+    urls: int = 0
+    signatures: int = 0
+    reaching: int = 0
     passing: int = 0
     failures: list[FirstFailure] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
@@ -947,25 +960,35 @@ class _FidelityTally:
             verified_steps=self.verified,
             restorer=ratio(self.ok, self.verified, empty="no verified step"),
             strict=ratio(
-                self.strict_ok, self.strict_compared, empty="no step with both screenshots"
+                self.strict_ok,
+                self.strict_compared,
+                empty="no step with both screenshots and URL comparison evidence",
             ),
+            exact_screenshot=ratio(
+                self.exact_ok, self.exact_compared, empty="no step with both screenshots"
+            ),
+            url_coverage=ratio(self.urls, self.verified, empty="no verified step"),
+            signature_coverage=ratio(self.signatures, self.verified, empty="no verified step"),
+            runs_reaching_checkpoint=ratio(self.reaching, self.runs, empty="no same-path run"),
             runs_passing=ratio(self.passing, self.runs, empty="no same-path run"),
             first_failures=sorted(self.failures, key=lambda item: item.run),
             skipped=dict(sorted(self.skipped.items())),
         )
 
 
-def _strict(run: Run, source: Run, checked: Sequence[StepRecord]) -> tuple[int, int]:
-    """The strict measure over *run*'s verified steps: ``(passed, compared)``.
+def _exact_screenshots(
+    run: Run, source: Run, checked: Sequence[StepRecord]
+) -> tuple[int, int, int, int]:
+    """Screenshot and URL-plus-screenshot equality: two ``(passed, compared)`` pairs.
 
     A step is compared when it and its source run's same step both have a
-    screenshot; it passes when no evidence says the URL differs and the two
-    sha256 are equal.
+    screenshot. The second pair additionally requires URL comparison evidence;
+    an absent URL measurement never counts as a match.
 
     Raises:
         _UnreadableScreenshot: A screenshot it compares does not read back.
     """
-    passed = compared = 0
+    passed = compared = strict_passed = strict_compared = 0
     for record in checked:
         ours = _screenshot_sha256(run, record.step)
         theirs = _screenshot_sha256(source, record.step, whose=f"its source {source.pointer}: ")
@@ -973,10 +996,13 @@ def _strict(run: Run, source: Run, checked: Sequence[StepRecord]) -> tuple[int, 
             continue
         compared += 1
         check = record.restoration
-        url_differs = check is not None and any(e.url_match is False for e in check.evidence)
-        if not url_differs and ours == theirs:
+        urls = [e.url_match for e in check.evidence if e.url_match is not None] if check else []
+        if ours == theirs:
             passed += 1
-    return passed, compared
+        if urls:
+            strict_compared += 1
+            strict_passed += int(all(urls) and ours == theirs)
+    return passed, compared, strict_passed, strict_compared
 
 
 def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
@@ -984,13 +1010,13 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
 
     Every verified step (each restored step and the checkpoint step, each
     with a ``restoration`` check): the restorer's verdict, and the strict
-    measure — no evidence says the URL differs, and the screenshot's sha256
+    measure — URL evidence says it is equal, and the screenshot's sha256
     equals the source run's at the same step (the source resolved by
     ``source_trace`` under ``traces/record``). Every run counts, one that did
     not end cleanly included (``errored_runs``: :func:`ended_unclean`); a run
     with no verified step does not pass. A run
     one of whose compared screenshots (or its source's) does not read back is
-    left out of the strict measure only, with the reason in ``skipped``: the
+    left out of the image equality measures only, with the reason in ``skipped``: the
     restorer's verdicts are in its step records.
     """
     overall = _FidelityTally()
@@ -1004,11 +1030,14 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
         errored = ended_unclean(run)
         checked = [record for record in run.steps if record.restoration is not None]
         first: FirstFailure | None = None
-        verified = ok = strict_ok = strict_compared = 0
+        verified = ok = strict_ok = strict_compared = exact_ok = exact_compared = 0
+        urls = signatures = 0
         for record in checked:
             check = record.restoration
             assert check is not None
             verified += 1
+            urls += int(any(e.url_match is not None for e in check.evidence))
+            signatures += int(any(e.signature_match is not None for e in check.evidence))
             if check.verdict == "ok":
                 ok += 1
             elif first is None:
@@ -1017,12 +1046,30 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
             first = FirstFailure(
                 run=run.pointer, step=None, note="no verified step (the run ended before it)"
             )
+        branch = run.config.branch
+        next_unchecked = 0
+        if branch is not None:
+            for step in sorted({r.step for r in checked if r.step <= branch.checkpoint_step}):
+                if step != next_unchecked:
+                    break
+                next_unchecked += 1
+        reaching = branch is not None and next_unchecked > branch.checkpoint_step
+        if first is None and not reaching:
+            first = FirstFailure(
+                run=run.pointer,
+                step=next_unchecked if branch is not None else None,
+                note="no restoration check at this step before the checkpoint"
+                if branch is not None
+                else "no checkpoint provenance to establish complete path coverage",
+            )
         unreadable: str | None = None
         if source is not None:
             try:
-                strict_ok, strict_compared = _strict(run, source, checked)
+                exact_ok, exact_compared, strict_ok, strict_compared = _exact_screenshots(
+                    run, source, checked
+                )
             except _UnreadableScreenshot as exc:
-                unreadable = f"{exc}: left out of the strict measure"
+                unreadable = f"{exc}: left out of the image equality measures"
         for tally in tallies:
             tally.runs += 1
             tally.errored += int(errored)
@@ -1030,6 +1077,11 @@ def same_path_fidelity(chain: ChainRuns) -> SamePathFidelity:
             tally.ok += ok
             tally.strict_ok += strict_ok
             tally.strict_compared += strict_compared
+            tally.exact_ok += exact_ok
+            tally.exact_compared += exact_compared
+            tally.urls += urls
+            tally.signatures += signatures
+            tally.reaching += int(reaching)
             if unreadable is not None:
                 tally.skipped[run.rel] = unreadable
             if first is None:

@@ -123,10 +123,18 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     reasons = {
         tuple(f["reasons"]) for f in metrics["same_path_fidelity"]["overall"]["first_failures"]
     }
-    # A document miss every time. Whether the screenshot check fails too depends on the
-    # dHash distance between Chrome's error page and the recorded story page: it sits at
-    # the 5-bit threshold and moves with the time-origin digits the error page names.
-    assert reasons and reasons <= {("document_miss",), ("document_miss", "screenshot_distance")}
+    # The screenshot's same-capture source URL now proves that Chrome's error page
+    # is not the recorded story. A document miss and URL mismatch are required;
+    # the dHash distance may sit on either side of the 5-bit threshold as the
+    # error page's time-origin digits change.
+    assert reasons and reasons <= {
+        ("document_miss", "url_mismatch"),
+        ("document_miss", "url_mismatch", "screenshot_distance"),
+    }
+    overall = metrics["same_path_fidelity"]["overall"]
+    assert overall["url_coverage"]["value"] == 1.0
+    assert overall["runs_reaching_checkpoint"]["numerator"] == 8
+    assert overall["runs_passing"]["numerator"] == 6, "the two drift paths fail restoration"
     chain = open_chain(rehearsal.layout)
     # Each replay misses the one URL its own time origin names. Chrome reloads its error page
     # once on its own, about a second later: the observation waits for the page to settle, so

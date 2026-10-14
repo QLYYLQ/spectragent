@@ -32,7 +32,7 @@ from spectragent.core.capabilities.browser.replay import (
     PinnedReplayability,
 )
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser, settle
-from tests._helpers.fake_cdp import FakeBrowser
+from tests._helpers.fake_cdp import FakeBrowser, FakeClient
 from tests._helpers.replay_archive import RECORDED_T0_MS, RecordingScript
 
 PINNED_ARGS = tuple(PinnedReplayability(random_seed=7).launch_args())
@@ -156,12 +156,25 @@ class TestBrowserDefaults:
         finally:
             await cap.teardown()
 
-    async def test_a_failed_measurement_refuses_the_replay(self, source_run: Path) -> None:
+    async def test_a_failed_measurement_refuses_the_replay(
+        self, source_run: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         cap, browser = _replaying(IsolatingBrowser())
-        browser.fail("Page.getFrameTree", RuntimeError("CDP error: no frame"))
+        handle = browser.handle
+
+        async def fail_default_measurement(
+            client: FakeClient, method: str, params: dict[str, Any], session_id: str | None
+        ) -> Any:
+            # Fail the recorder's defaults measurement, after the control-side OS probe.
+            if method == "Page.getFrameTree" and client is not browser.control:
+                raise RuntimeError("CDP error: no frame")
+            return await handle(client, method, params, session_id)
+
+        monkeypatch.setattr(browser, "handle", fail_default_measurement)
         try:
             with pytest.raises(BrowserCooperationError, match="could not be measured after launch"):
                 await cap.setup(replay_archive=str(source_run))
+            assert cap._input_platform == "macos"
         finally:
             await cap.teardown()
 

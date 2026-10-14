@@ -96,6 +96,7 @@ class _CaptureCDP:
 async def _attach(cap: BrowserCapability, cdp: _CaptureCDP) -> ScopeGroup:
     """The capability's tab watchdogs on a real EventScope, negotiated for ``browser.screenshot``."""
     cap._cdp = cdp  # type: ignore[assignment]
+    cap._input_platform = "macos"  # This observation-only fixture starts after simulated setup.
     cap.apply_negotiation({"browser.screenshot"})
     group = ScopeGroup("test")
     scope: EventScope = await group.create_scope("tab1", target_id="tab1")
@@ -116,6 +117,32 @@ async def _observe(cap: BrowserCapability, cdp: _CaptureCDP) -> tuple[Any, Scope
 
 
 class TestDefaultIsUnchanged:
+    async def test_source_url_reuses_the_document_stamp_read(self) -> None:
+        class StampedCDP(_CaptureCDP):
+            async def send(
+                self,
+                method: str,
+                params: dict[str, Any] | None = None,
+                session_id: str | None = None,
+            ) -> Any:
+                result = await super().send(method, params, session_id)
+                if method == "Page.getFrameTree":
+                    return {
+                        "frameTree": {
+                            "frame": {"loaderId": "doc", "url": "https://page.test/#result"}
+                        }
+                    }
+                return result
+
+        cap = BrowserCapability(profile="vision_only")
+        cdp = StampedCDP(_png(1280, 720))
+        fragment, group = await _observe(cap, cdp)
+        try:
+            assert fragment.source_url == "https://page.test/#result"
+            assert [m for m, _ in cdp.calls] == ["Page.captureScreenshot", "Page.getFrameTree"]
+        finally:
+            await group.close_all()
+
     async def test_one_call_with_exactly_the_legacy_params(self) -> None:
         cap = BrowserCapability(profile="vision_only")
         cdp = _CaptureCDP(_png(1280, 720))

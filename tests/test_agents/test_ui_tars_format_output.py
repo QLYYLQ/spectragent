@@ -54,6 +54,7 @@ def _png(width: int, height: int) -> bytes:
 def _observation(dpr: int) -> Any:
     image = (1280 * dpr, 720 * dpr)
     return SimpleNamespace(
+        platform=SimpleNamespace(operating_system="macos"),
         task=SimpleNamespace(user_request="tick the box"),
         screenshot=ScreenshotObs(
             image_bytes=_png(*image),
@@ -341,7 +342,11 @@ class TestUnrepresentable:
             action_descriptors=[ActionRegistrar.get("browser.click_coordinate")().descriptor()],
         )
         agent.build_react_prompt(
-            SimpleNamespace(task=SimpleNamespace(user_request="t"), screenshot=None)
+            SimpleNamespace(
+                platform=SimpleNamespace(operating_system="macos"),
+                task=SimpleNamespace(user_request="t"),
+                screenshot=None,
+            )
         )
         with pytest.raises(UnrepresentableActionError) as excinfo:
             agent.format_react_output(

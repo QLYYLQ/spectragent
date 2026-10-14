@@ -52,10 +52,14 @@ trajectories: record, replay, branch. The student side (how its messages are ass
 export package is frozen: `spectragent/export/`, `spectragent-export`,
 `configs/flywheel/export_sft.yaml` and `configs/flywheel/ui_tars_student.yaml` get no new
 features and no new design decisions, only the adaptations a cross-cutting change needs to
-keep their tests green (architecture §4.15). The evaluator is dormant, neither deleted nor
-improved, and no stage needs a verdict: every verdict filter is optional and off by
-default (the shipped export too), and decontamination checks only an explicit benchmark
-list, empty by default (architecture §4.11).
+keep their tests green (architecture §4.15). Independent task judging was re-enabled by the user on
+2026-10-14 as a separate stage (`spectragent-eval`, architecture §4.11). It reads committed
+traces and explicit references, reports valid-verdict coverage separately from task
+correctness, and never changes restoration checks. No flywheel stage requires a verdict:
+filters remain optional and off by default, and decontamination checks only an explicit
+benchmark list, empty by default. Judge errors and missing evidence are unevaluable,
+not graded task failures. Time-sensitive tasks are judged against their recorded date
+and evidence, never today's website or the model's current knowledge.
 
 ### The layering rule
 
@@ -207,6 +211,15 @@ uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
   is its low-entropy part), and a replay compares it after launch: refused when the tier pins
   an identifier, a warning when it does not; a pinned source recorded before the field
   existed is refused at `prepare()`.
+- `pinned` measures the browser's current media theme after launch, before any business
+  target is prepared (`color_scheme.measure_color_scheme`, an isolated world). It pins
+  that `light` or `dark` value on every frame target, including new tabs and OOPIFs, in the
+  same `Emulation.setEmulatedMedia` command as reduced motion. The run plan records it as
+  `replayability.color_scheme`, not a YAML knob. Replay takes that source value before
+  launch and never compares or re-measures its host's theme. A missing or invalid source
+  value is refused at `prepare()`; a failed live measurement refuses recording. Do not
+  invent a light default, edit old archives, or put this state on a Loop or TraceWriter.
+  `none` reads and changes nothing; a site's own account or cookie theme remains its own.
 - Key events carry no `nativeVirtualKeyCode` (architecture §4.13): on macOS a key the page
   left unhandled (Enter submitting a form natively, most often) made Chrome open
   `chrome://settings/help` in front of the agent's tab, which then stayed a background page
@@ -457,7 +470,7 @@ split and the drops by reason, and exits non-zero on any failure.
 - A branch run takes its source run's verdicts and context prefix, so the source run must be
   among the matched sources, or the branch is filtered out. Branches of one checkpoint with
   identical targets are flagged `duplicate_of`, not removed.
-- The evaluator is dormant and the export does not need it: `filters.require_eval`
+- Independent evaluation is optional and the export does not need it: `filters.require_eval`
   defaults to `null` (the shipped export too), so a run the teacher failed is exported as
   well, labelled by `labels.step_status` and any verdicts.
 - `decontamination.against` is an explicit list of `{benchmark, subset}` refs and nothing is
@@ -563,7 +576,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   `ARCHIVE_MAX_P50_OVERHEAD_MS` (300 ms), is defined once in `core/archive/budget.py` and read
   by both the report and the browser's overhead benchmark.
 - The decisions are `miss_policy`, `recording_coverage`, `site_rules` and `retention`; the
-  report format is `af-flywheel-report-6` (`-4` added `archive_overhead.settle_wait`: per
+  report format is `af-flywheel-report-7` (`-4` added `archive_overhead.settle_wait`: per
   role, the p50 / p95 of the settle wait before each observation, the share the cap ended
   and the observations whose page state was unknown, read from the `settle` record on every
   browser fragment through `settle.py::recorded_settle`; `-5` added `token_use`: the limit

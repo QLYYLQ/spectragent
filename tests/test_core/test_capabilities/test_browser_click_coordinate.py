@@ -107,7 +107,7 @@ class TestCoordinateSpaceIsDeclared:
 class TestTargetBox:
     async def test_instant_click_sends_no_hit_test(self) -> None:
         cdp = _HitTestCDP(border=[0, 0, 100, 0, 100, 40, 0, 40])
-        wd = ActionWatchdog(cdp=cdp)  # type: ignore[arg-type]
+        wd = ActionWatchdog(input_platform="linux", cdp=cdp)  # type: ignore[arg-type]
         result = await wd._on_click_coordinate(
             ClickCoordinateEvent(coordinate_x=30, coordinate_y=20)
         )
@@ -120,7 +120,11 @@ class TestTargetBox:
         # Element spans x 0..100, y 0..40; the point (30, 20) is 30 px from
         # the left edge and 20 px from top and bottom → a 60 x 40 box.
         cdp = _HitTestCDP(border=[0, 0, 100, 0, 100, 40, 0, 40])
-        wd = ActionWatchdog(cdp=cdp, mouse_trajectory=WindMouseTrajectory(seed=1))  # type: ignore[arg-type]
+        wd = ActionWatchdog(
+            input_platform="linux",
+            cdp=cdp,  # type: ignore[arg-type]
+            mouse_trajectory=WindMouseTrajectory(seed=1),
+        )
         seen: dict[str, float] = {}
         original = wd._mouse.click
 
@@ -139,7 +143,11 @@ class TestTargetBox:
         self, no_sleep: None
     ) -> None:
         cdp = FakeCDP(raise_on={"DOM.getNodeForLocation"})
-        wd = ActionWatchdog(cdp=cdp, mouse_trajectory=WindMouseTrajectory(seed=1))  # type: ignore[arg-type]
+        wd = ActionWatchdog(
+            input_platform="linux",
+            cdp=cdp,  # type: ignore[arg-type]
+            mouse_trajectory=WindMouseTrajectory(seed=1),
+        )
         assert await wd._target_box_at(5, 5) == (0.0, 0.0)
         result = await wd._on_click_coordinate(ClickCoordinateEvent(coordinate_x=5, coordinate_y=5))
         assert result == {"clicked": True, "x": 5, "y": 5}

@@ -25,6 +25,8 @@ from spectragent.core.capabilities.browser.input import (
     InstantRhythm,
     Keystroke,
 )
+from spectragent.core.capabilities.browser.input.rhythm import TypingRhythmProtocol
+from spectragent.core.capabilities.browser.platform import InputPlatform
 
 from .conftest import RecordCDP, VirtualClock
 
@@ -71,7 +73,7 @@ class TestInstantRhythmEquivalence:
 
     async def test_typing_is_one_insert_text_and_nothing_else(self, no_sleep: list[float]) -> None:
         cdp = RecordCDP()
-        keyboard = HumanKeyboard(cdp)  # instant by default
+        keyboard = HumanKeyboard(cdp, input_platform="linux")  # instant by default
         await keyboard.type_text("hello world", session_id="sid")
 
         assert [m for m, _ in cdp.calls] == ["Input.insertText"]
@@ -81,7 +83,7 @@ class TestInstantRhythmEquivalence:
 
     async def test_an_explicit_instant_rhythm_is_the_same(self, no_sleep: list[float]) -> None:
         cdp = RecordCDP()
-        keyboard = HumanKeyboard(cdp, rhythm=InstantRhythm())
+        keyboard = HumanKeyboard(cdp, input_platform="linux", rhythm=InstantRhythm())
         assert keyboard.humanized is False
         await keyboard.type_text("abc")
         assert cdp.inserts() == ["abc"]
@@ -89,7 +91,7 @@ class TestInstantRhythmEquivalence:
 
     @pytest.mark.parametrize("rhythm", [None, _ScriptedRhythm()], ids=["instant", "human"])
     async def test_the_session_is_per_call_so_a_frame_gets_the_keys(
-        self, no_sleep: list[float], rhythm: object
+        self, no_sleep: list[float], rhythm: TypingRhythmProtocol | None
     ) -> None:
         """Keystrokes follow focus, and focus can be in an out-of-process frame.
 
@@ -105,40 +107,43 @@ class TestInstantRhythmEquivalence:
                 return await super().send(method, params, session_id)
 
         cdp = _SessionCDP()
-        await HumanKeyboard(cdp, rhythm=rhythm).type_text("x", session_id="frame-42")  # type: ignore[arg-type]
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=rhythm).type_text(
+            "x", session_id="frame-42"
+        )
         assert sessions and set(sessions) == {"frame-42"}
 
     async def test_empty_text_still_goes_through_the_bulk_path(self, no_sleep: list[float]) -> None:
         # Nothing to time, and the legacy call is what downstream code (and
         # a page's own ``input`` handler for a cleared field) has seen.
         cdp = RecordCDP()
-        await HumanKeyboard(cdp, rhythm=HumanRhythm(seed=1)).type_text("")
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=HumanRhythm(seed=1)).type_text("")
         assert cdp.inserts() == [""]
 
 
 class TestClearFocused:
     @pytest.mark.parametrize(
-        ("user_agent", "modifier", "code", "vk", "mask"),
+        ("input_platform", "modifier", "code", "vk", "mask"),
         [
-            ("Chrome (Macintosh; Intel Mac OS X)", "Meta", "MetaLeft", 91, 4),
-            ("Chrome (X11; Linux x86_64)", "Control", "ControlLeft", 17, 2),
+            ("macos", "Meta", "MetaLeft", 91, 4),
+            ("linux", "Control", "ControlLeft", 17, 2),
+            ("windows", "Control", "ControlLeft", 17, 2),
         ],
-        ids=["mac-browser", "linux-cloud-browser"],
+        ids=["macos-transport", "linux-transport", "windows-transport"],
     )
     async def test_the_browser_os_gets_a_physical_select_all_and_backspace(
         self,
         no_sleep: list[float],
-        user_agent: str,
+        input_platform: InputPlatform,
         modifier: str,
         code: str,
         vk: int,
         mask: int,
     ) -> None:
-        cdp = _VersionCDP(user_agent)
-        keyboard = HumanKeyboard(cdp, rhythm=InstantRhythm())
+        cdp = _VersionCDP("The user agent is deliberately not platform evidence")
+        keyboard = HumanKeyboard(cdp, input_platform=input_platform, rhythm=InstantRhythm())
         await keyboard.clear_focused(session_id="focused-frame")
 
-        assert cdp.calls[0][0] == "Browser.getVersion"
+        assert all(method == "Input.dispatchKeyEvent" for method, _ in cdp.calls)
         events = cdp.key_events()
         assert [(e["type"], e["key"], e["code"], e["windowsVirtualKeyCode"]) for e in events] == [
             ("keyDown", modifier, code, vk),
@@ -166,10 +171,10 @@ class TestClearFocused:
         self, no_sleep: list[float]
     ) -> None:
         cdp = _VersionCDP("Chrome (X11; Linux x86_64)")
-        keyboard = HumanKeyboard(cdp)
+        keyboard = HumanKeyboard(cdp, input_platform="linux")
         await keyboard.clear_focused()
         await keyboard.clear_focused()
-        assert [method for method, _ in cdp.calls].count("Browser.getVersion") == 1
+        assert [method for method, _ in cdp.calls].count("Browser.getVersion") == 0
         assert [e["key"] for e in cdp.key_events() if e["type"] == "keyDown"] == [
             "Control",
             "a",
@@ -200,7 +205,7 @@ class TestClearFocused:
                 return await super().send(method, params, session_id)
 
         cdp = _TimedCDP()
-        await HumanKeyboard(cdp, rhythm=_ClearRhythm()).clear_focused()  # type: ignore[arg-type]
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=_ClearRhythm()).clear_focused()  # type: ignore[arg-type]
         assert len(cdp.key_times) == 6
         # The flight is measured from A's release; the modifier's own
         # release consumes one CDP round trip inside that same interval.
@@ -237,7 +242,10 @@ class TestClearFocused:
                 },
                 session_id=sid,
             )
-            await HumanKeyboard(cap.cdp).clear_focused(session_id=sid)
+            assert cap._input_platform is not None
+            await HumanKeyboard(cap.cdp, input_platform=cap._input_platform).clear_focused(
+                session_id=sid
+            )
             result = await cap.cdp.send(
                 "Runtime.evaluate",
                 {
@@ -266,7 +274,7 @@ class TestClearFocused:
 class TestHumanizedKeyEvents:
     async def test_one_keydown_keyup_pair_per_character(self, no_sleep: list[float]) -> None:
         cdp = RecordCDP()
-        keyboard = HumanKeyboard(cdp, rhythm=_ScriptedRhythm())
+        keyboard = HumanKeyboard(cdp, input_platform="linux", rhythm=_ScriptedRhythm())
         assert keyboard.humanized is True
         await keyboard.type_text("ab")
 
@@ -284,7 +292,7 @@ class TestHumanizedKeyEvents:
         """Measured: without ``text`` on the keyDown, Chrome fires no keypress
         and no input, so the character is never entered at all."""
         cdp = RecordCDP()
-        await HumanKeyboard(cdp, rhythm=_ScriptedRhythm()).type_text("a")
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=_ScriptedRhythm()).type_text("a")
         down, up = cdp.key_events()
         assert down == {
             "type": "keyDown",
@@ -314,7 +322,7 @@ class TestHumanizedKeyEvents:
         self, no_sleep: list[float], char: str, code: str, vk: int, shift: bool
     ) -> None:
         cdp = RecordCDP()
-        await HumanKeyboard(cdp, rhythm=_ScriptedRhythm()).type_text(char)
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=_ScriptedRhythm()).type_text(char)
         down = cdp.key_events()[0]
         assert (down["code"], down["windowsVirtualKeyCode"]) == (code, vk)
         assert down.get("modifiers", 0) == (8 if shift else 0)
@@ -322,7 +330,7 @@ class TestHumanizedKeyEvents:
     async def test_the_modifier_is_on_the_release_too(self, no_sleep: list[float]) -> None:
         # A listener reading ``shiftKey`` off keyup must see it as well.
         cdp = RecordCDP()
-        await HumanKeyboard(cdp, rhythm=_ScriptedRhythm()).type_text("A")
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=_ScriptedRhythm()).type_text("A")
         assert all(e.get("modifiers") == 8 for e in cdp.key_events())
 
     async def test_a_rhythm_that_rewrites_the_text_is_refused(self) -> None:
@@ -333,7 +341,9 @@ class TestHumanizedKeyEvents:
                 return [Keystroke("x", 1.0, 1.0)]
 
         with pytest.raises(ValueError, match="one Keystroke per character"):
-            await HumanKeyboard(RecordCDP(), rhythm=_Liar()).type_text("abc")
+            await HumanKeyboard(RecordCDP(), input_platform="linux", rhythm=_Liar()).type_text(
+                "abc"
+            )
 
 
 # ── 3. the modelled intervals are the ones the page sees ──────────────
@@ -343,7 +353,9 @@ class TestTheScheduleIsTheRhythm:
     async def test_the_gaps_and_holds_are_spent_as_wall_time(self, clock: VirtualClock) -> None:
         cdp = RecordCDP(clock)
         start = clock.now
-        await HumanKeyboard(cdp, rhythm=_ScriptedRhythm(100.0, 80.0)).type_text("abc")
+        await HumanKeyboard(
+            cdp, input_platform="linux", rhythm=_ScriptedRhythm(100.0, 80.0)
+        ).type_text("abc")
 
         # gap, hold, gap, hold, gap, hold — the string's typing duration.
         assert clock.sleeps == pytest.approx([0.100, 0.080] * 3)
@@ -361,7 +373,9 @@ class TestTheScheduleIsTheRhythm:
         """
         cdp = RecordCDP(clock, cost_ms=17.0)
         start = clock.now
-        await HumanKeyboard(cdp, rhythm=_ScriptedRhythm(100.0, 80.0)).type_text("abcd")
+        await HumanKeyboard(
+            cdp, input_platform="linux", rhythm=_ScriptedRhythm(100.0, 80.0)
+        ).type_text("abcd")
 
         assert len(cdp.key_events()) == 8
         # Each slot pays for its own round trip out of its own span; only the
@@ -379,7 +393,9 @@ class TestTheScheduleIsTheRhythm:
         stays exactly one press and one release per character, in order.
         """
         cdp = RecordCDP(clock, cost_ms=400.0)
-        await HumanKeyboard(cdp, rhythm=_ScriptedRhythm(100.0, 80.0)).type_text("abcd")
+        await HumanKeyboard(
+            cdp, input_platform="linux", rhythm=_ScriptedRhythm(100.0, 80.0)
+        ).type_text("abcd")
 
         events = cdp.key_events()
         assert [e["type"] for e in events] == ["keyDown", "keyUp"] * 4
@@ -389,7 +405,9 @@ class TestTheScheduleIsTheRhythm:
         self, clock: VirtualClock
     ) -> None:
         cdp = RecordCDP(clock)
-        await HumanKeyboard(cdp, rhythm=HumanRhythm(seed=21)).type_text("hello there")
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=HumanRhythm(seed=21)).type_text(
+            "hello there"
+        )
         gaps = clock.sleeps[::2]
         assert len(gaps) == 11
         assert len({round(g, 6) for g in gaps}) == 11  # no two alike
@@ -399,7 +417,9 @@ class TestTheScheduleIsTheRhythm:
     ) -> None:
         async def run() -> list[float]:
             before = len(clock.sleeps)
-            keyboard = HumanKeyboard(RecordCDP(clock), rhythm=HumanRhythm(seed=33))
+            keyboard = HumanKeyboard(
+                RecordCDP(clock), input_platform="linux", rhythm=HumanRhythm(seed=33)
+            )
             await keyboard.type_text("replay me")
             return clock.sleeps[before:]
 
@@ -421,7 +441,9 @@ class TestNonAsciiDelivery:
         per character at human intervals and no contradictory key event.
         """
         cdp = RecordCDP(clock)
-        await HumanKeyboard(cdp, rhythm=_ScriptedRhythm(120.0, 60.0)).type_text("你好")
+        await HumanKeyboard(
+            cdp, input_platform="linux", rhythm=_ScriptedRhythm(120.0, 60.0)
+        ).type_text("你好")
 
         assert cdp.key_events() == []
         assert cdp.inserts() == ["你", "好"]
@@ -432,7 +454,7 @@ class TestNonAsciiDelivery:
 
     async def test_a_mixed_string_uses_both_paths_in_order(self, clock: VirtualClock) -> None:
         cdp = RecordCDP(clock)
-        await HumanKeyboard(cdp, rhythm=_ScriptedRhythm()).type_text("a好b")
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=_ScriptedRhythm()).type_text("a好b")
 
         assert [m for m, _ in cdp.calls] == [
             "Input.dispatchKeyEvent",  # a down
@@ -448,7 +470,7 @@ class TestNonAsciiDelivery:
         self, no_sleep: list[float], text: str
     ) -> None:
         cdp = RecordCDP()
-        await HumanKeyboard(cdp, rhythm=_ScriptedRhythm()).type_text(text)
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=_ScriptedRhythm()).type_text(text)
         typed = "".join(
             e["text"] for m, e in cdp.calls if m == "Input.insertText" or e.get("type") == "keyDown"
         )

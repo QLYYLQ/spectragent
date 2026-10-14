@@ -61,6 +61,7 @@ class EvaluationOutcome:
     trace_dir: Path | None = None
     result: EvalResult | None = None
     error: str | None = None
+    details: EvalDetails | None = None
 
     @property
     def ok(self) -> bool:
@@ -128,11 +129,13 @@ class EvaluationRunner:
         eval_loader: Any,
         evals_dir: Path | None = None,
         write_into_trace: bool = True,
+        verify_reference_identity: bool = False,
     ) -> None:
         self._evaluator = evaluator
         self._loader = eval_loader
         self._evals_dir = evals_dir
         self._write_into_trace = write_into_trace
+        self._verify_reference_identity = verify_reference_identity
 
     @property
     def evaluator_id(self) -> str:
@@ -156,7 +159,27 @@ class EvaluationRunner:
     async def evaluate_trace(self, trace_dir: Path) -> EvalResult:
         """Score one trace. Raises on anything that makes it unscorable."""
         trace = RunTrace(trace_dir)
-        task_id = TraceView(trace).task_id
+        view = TraceView(trace)
+        branch = trace.config.branch
+        task_id = branch.source_task_id if branch is not None else view.task_id
+        if branch is not None:
+            for field, expected in (
+                ("benchmark_name", branch.source_benchmark),
+                ("subset", branch.source_subset),
+            ):
+                actual = getattr(self._loader, field, None)
+                if not expected or actual != expected:
+                    raise ValueError(
+                        f"Branch reference {field}={expected!r} does not match "
+                        f"eval loader {actual!r}"
+                    )
+        elif self._verify_reference_identity:
+            for field, expected in (("benchmark_name", view.benchmark), ("subset", view.subset)):
+                actual = getattr(self._loader, field, None)
+                if not expected or actual != expected:
+                    raise ValueError(
+                        f"Trace reference {field}={expected!r} does not match eval loader {actual!r}"
+                    )
         reference = self._loader.get(task_id)
         if reference is None:
             raise KeyError(
@@ -166,6 +189,12 @@ class EvaluationRunner:
                 f"and the reference set disagree about which split ran."
             )
         result = await self._evaluator.evaluate(trace, reference)
+        if branch is not None:
+            result.evaluation_details.benchmark_details["source_reference"] = {
+                "benchmark": branch.source_benchmark,
+                "subset": branch.source_subset,
+                "task_id": branch.source_task_id,
+            }
         self._persist(trace_dir, result)
         return result
 
@@ -196,6 +225,7 @@ class EvaluationRunner:
         """
         outcomes: list[EvaluationOutcome] = []
         failures: dict[str, str] = {}
+        failure_details: dict[str, EvalDetails] = {}
         for trace_dir in trace_dirs:
             try:
                 result = await self.evaluate_trace(trace_dir)
@@ -207,8 +237,15 @@ class EvaluationRunner:
                 task_id = _task_id_or_dirname(trace_dir)
                 message = f"{type(exc).__name__}: {exc}"
                 failures[task_id] = message
+                details = getattr(exc, "details", None)
+                if isinstance(details, EvalDetails):
+                    failure_details[task_id] = details
+                else:
+                    details = None
                 outcomes.append(
-                    EvaluationOutcome(task_id=task_id, trace_dir=trace_dir, error=message)
+                    EvaluationOutcome(
+                        task_id=task_id, trace_dir=trace_dir, error=message, details=details
+                    )
                 )
 
         # Which tasks owe a verdict and have none. With a declared split
@@ -218,15 +255,25 @@ class EvaluationRunner:
         expected = list(expected_task_ids or [])
         scored = {o.task_id for o in outcomes if o.result is not None}
         owed = (
-            [task_id for task_id in expected if task_id not in scored]
+            [
+                (task_id, failures.get(task_id), failure_details.get(task_id))
+                for task_id in expected
+                if task_id not in scored
+            ]
             if expected
-            else [o.task_id for o in outcomes if o.result is None]
+            else [(o.task_id, o.error, o.details) for o in outcomes if o.result is None]
         )
-        for task_id in owed:
+        for task_id, reason, evidence in owed:
             outcomes.append(
                 EvaluationOutcome(
                     task_id=task_id,
-                    result=self._unscored(task_id, benchmark, subset, reason=failures.get(task_id)),
+                    result=self._unscored(
+                        task_id,
+                        benchmark,
+                        subset,
+                        reason=reason,
+                        evidence=evidence,
+                    ),
                 )
             )
 
@@ -243,7 +290,13 @@ class EvaluationRunner:
     # ── internals ───────────────────────────────────────────────────
 
     def _unscored(
-        self, task_id: str, benchmark: str, subset: str, *, reason: str | None
+        self,
+        task_id: str,
+        benchmark: str,
+        subset: str,
+        *,
+        reason: str | None,
+        evidence: EvalDetails | None = None,
     ) -> EvalResult:
         """The coverage-policy record for a task with no verdict.
 
@@ -274,6 +327,11 @@ class EvaluationRunner:
             verdict_source=source,
             failure_category=source,
             evaluation_details=EvalDetails(
+                **(
+                    evidence.model_dump(exclude={"reasoning", "benchmark_details"})
+                    if evidence is not None
+                    else {}
+                ),
                 reasoning=(
                     f"Scoring this trace failed ({reason}). No grader ever "
                     f"judged the answer, so this label is a placeholder held "
@@ -283,7 +341,10 @@ class EvaluationRunner:
                     else "No trace produced a verdict for this task; counted "
                     "as failed by coverage policy."
                 ),
-                benchmark_details=details,
+                benchmark_details={
+                    **(evidence.benchmark_details if evidence is not None else {}),
+                    **details,
+                },
             ),
         )
 

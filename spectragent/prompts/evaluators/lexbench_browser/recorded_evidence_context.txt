@@ -1,0 +1,5 @@
+Evaluate only the supplied recorded evidence and task reference.
+The trace was created at {recorded_at}; recorded task dates: {task_dates}.
+For a branch, recorded task dates refer to its source task; the trace creation time is the branch run time, not necessarily the source date.
+Interpret today and tomorrow using recorded task dates and visible page dates. Do not substitute current website content or present-day knowledge.
+If the evidence cannot support a verdict, reply EVIDENCE_INSUFFICIENT without a total score.

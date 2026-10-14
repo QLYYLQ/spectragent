@@ -1,6 +1,8 @@
 """Browser profile presets — what a run captures, and at what cost.
 
 A profile says which watchdogs to **leave out**, not which to install.
+The platform resolver joins every built-in profile, including vision-only;
+it reads the setup fact and does not require DOM capture.
 Enumerating them was one of the nine places a new observation fragment
 had to be registered by hand: every ``BUILTIN_PROFILES`` entry listed
 watchdog names, so a newly registered watchdog was silently absent from

@@ -18,6 +18,7 @@ from spectragent.core.llm.exceptions import ModelOutputTruncatedError, ModelProv
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.model_families import ModelFamily, detect_model_family
+from spectragent.core.llm.model_families.gemini import gemini_thinking_policy
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.google_format import GoogleMessageSerializer
@@ -329,30 +330,33 @@ class ChatGoogle(ChatModelBase):
             config["seed"] = self.seed
 
         # Thinking configuration
-        is_gemini_3_pro = "gemini-3-pro" in self.model
-        is_gemini_3_flash = "gemini-3-flash" in self.model
-
-        if is_gemini_3_pro:
-            if self.thinking_budget is not None:
+        policy = gemini_thinking_policy(self.model)
+        if policy.supports_level:
+            if policy.ignores_budget and self.thinking_budget is not None:
                 self.logger.warning(
-                    f"thinking_budget={self.thinking_budget} is deprecated for Gemini 3 Pro. Use thinking_level."
+                    f"thinking_budget={self.thinking_budget} is ignored for {self.model}. Use thinking_level."
                 )
-            if self.thinking_level in ("minimal", "medium"):
+            if self.thinking_level in policy.fallback_to_low:
                 self.logger.warning(
-                    f'thinking_level="{self.thinking_level}" not supported for Gemini 3 Pro. Falling back to "low".'
+                    f'thinking_level="{self.thinking_level}" not supported for {self.model}. Falling back to "low".'
                 )
                 self.thinking_level = "low"
             if self.thinking_level is None:
-                self.thinking_level = "low"
-            level = types.ThinkingLevel(self.thinking_level.upper())
-            config["thinking_config"] = types.ThinkingConfigDict(thinking_level=level)
-        elif is_gemini_3_flash:
+                self.thinking_level = policy.default_level
             if self.thinking_level is not None:
+                if (
+                    policy.accepted_levels is not None
+                    and self.thinking_level.lower() not in policy.accepted_levels
+                ):
+                    raise ValueError(
+                        f"thinking_level={self.thinking_level!r} is not supported for {self.model}; "
+                        f"choose one of {', '.join(policy.accepted_levels)}."
+                    )
                 level = types.ThinkingLevel(self.thinking_level.upper())
                 config["thinking_config"] = types.ThinkingConfigDict(thinking_level=level)
-            else:
+            elif self.thinking_budget is not None or policy.default_budget is not None:
                 if self.thinking_budget is None:
-                    self.thinking_budget = -1
+                    self.thinking_budget = policy.default_budget
                 config["thinking_config"] = types.ThinkingConfigDict(
                     thinking_budget=self.thinking_budget
                 )
@@ -361,10 +365,8 @@ class ChatGoogle(ChatModelBase):
                 self.logger.warning(
                     f'thinking_level="{self.thinking_level}" not supported for this model. Use thinking_budget.'
                 )
-            if self.thinking_budget is None and (
-                "gemini-2.5" in self.model or "gemini-flash" in self.model
-            ):
-                self.thinking_budget = -1
+            if self.thinking_budget is None:
+                self.thinking_budget = policy.default_budget
             if self.thinking_budget is not None:
                 config["thinking_config"] = types.ThinkingConfigDict(
                     thinking_budget=self.thinking_budget

@@ -171,7 +171,12 @@ class _Scope:
 
 
 def watchdog(cdp: FrameCDP, selector_map: DOMSelectorMap, **kwargs: Any) -> ActionWatchdog:
-    wd = ActionWatchdog(cdp, selector_map_getter=lambda: selector_map, **kwargs)  # type: ignore[arg-type]
+    wd = ActionWatchdog(
+        cdp,  # type: ignore[arg-type]
+        input_platform="linux",
+        selector_map_getter=lambda: selector_map,
+        **kwargs,
+    )
     wd.attach(_Scope(), session_id="tab")  # type: ignore[arg-type]
     return wd
 
@@ -571,7 +576,6 @@ class TestKeyboardAndDom:
         ]
         assert keyboard == [
             ("DOM.focus", "cross"),
-            ("Browser.getVersion", None),
             ("Input.dispatchKeyEvent", "cross"),
             ("Input.dispatchKeyEvent", "cross"),
             ("Input.dispatchKeyEvent", "cross"),

@@ -13,6 +13,7 @@ from spectragent.core.data_loader.eval.lexbench_browser import LexBenchBrowserEv
 from spectragent.core.trace.reader import RunTrace
 from spectragent.evaluator import LexBenchBrowserEvaluator
 from spectragent.evaluator._screenshots import clean_screenshots, sample_evenly
+from spectragent.evaluator.errors import EvaluationError, TraceIncompleteError
 from spectragent.evaluator.lexbench_browser import (
     _template_name,
     detect_language,
@@ -27,8 +28,16 @@ from tests.test_evaluator.conftest import (
     FakeJudge,
     blank_png_bytes,
     png_bytes,
-    write_trace,
 )
+from tests.test_evaluator.conftest import (
+    write_trace as _write_trace,
+)
+
+
+def write_trace(*args, **kwargs):
+    kwargs.setdefault("screenshots", [png_bytes()])
+    return _write_trace(*args, **kwargs)
+
 
 _ZH_PASS = "### 总分: 85分\n\n### 判定: 成功\n\n### 总结: Agent 完成了全部关键步骤。"
 _ZH_FAIL = "### 总分: 30分\n\n### 判定: 失败\n\n### 总结: 未执行搜索。"
@@ -115,11 +124,11 @@ async def test_unscorable_reply_is_distinguished_from_a_low_score(traces_dir):
     trace = RunTrace(write_trace(traces_dir, task="打开网站"))
     judge = FakeJudge(replies=["The judge forgot to emit a total."])
 
-    result = await _evaluator(judge).evaluate(trace, _rubric_reference())
-
-    assert result.predicted_label == 0
-    assert result.evaluation_details.score is None
-    assert result.failure_category == "unparseable_score"
+    with pytest.raises(EvaluationError, match="no valid supported score") as error:
+        await _evaluator(judge).evaluate(trace, _rubric_reference())
+    assert error.value.details is not None
+    assert error.value.details.response == "The judge forgot to emit a total."
+    assert error.value.details.eval_usage is not None
 
 
 async def test_summary_block_is_captured_as_reasoning(traces_dir):
@@ -149,7 +158,10 @@ async def test_language_follows_the_task_script(traces_dir, task, expected_lang)
     assert details["language"] == expected_lang
     assert details["template"].endswith(f"_{expected_lang}")
     assert result.evaluation_details.system_prompt is not None
-    assert result.evaluation_details.system_prompt.ref.path.endswith(f"system_{expected_lang}.txt")
+    assert result.evaluation_details.additional_prompts is not None
+    assert result.evaluation_details.additional_prompts["base_system"].ref.path.endswith(
+        f"system_{expected_lang}.txt"
+    )
 
 
 async def test_reference_metadata_language_wins_over_the_script(traces_dir):
@@ -382,14 +394,62 @@ async def test_stepwise_sampling_is_reported_as_elision_too(traces_dir):
     assert stats["kept"] == details["images_forwarded"] == 3
 
 
-async def test_a_trace_with_no_screenshots_still_scores(traces_dir):
+async def test_a_trace_with_no_screenshots_is_not_judged(traces_dir):
     trace = RunTrace(write_trace(traces_dir, task="打开网站", screenshots=[]))
     judge = FakeJudge(replies=[_ZH_PASS])
 
-    result = await _evaluator(judge).evaluate(trace, _rubric_reference())
+    with pytest.raises(TraceIncompleteError, match="no usable screenshots"):
+        await _evaluator(judge).evaluate(trace, _rubric_reference())
+    assert judge.calls == []
 
-    assert result.predicted_label == 1
-    assert judge.calls[0].image_parts == []
+
+@pytest.mark.parametrize(
+    "reply", ["### Total Score: 101", "EVIDENCE_INSUFFICIENT\n### Total Score: 85"]
+)
+async def test_invalid_or_unsupported_verdict_does_not_become_a_task_label(traces_dir, reply):
+    trace = RunTrace(write_trace(traces_dir))
+    with pytest.raises(EvaluationError, match="no valid supported score"):
+        await _evaluator(FakeJudge(replies=[reply])).evaluate(trace, _rubric_reference())
+
+
+async def test_recorded_time_instruction_and_prompt_snapshot_are_the_actual_request(traces_dir):
+    trace = RunTrace(write_trace(traces_dir))
+    judge = FakeJudge(replies=[_ZH_PASS])
+    result = await _evaluator(judge).evaluate(trace, _rubric_reference())
+    snapshot = result.evaluation_details.system_prompt
+    assert snapshot is not None and snapshot.kind == "template"
+    assert snapshot.template.format(**snapshot.params) == judge.calls[0].system_text
+    assert str(trace.manifest.created_at) in judge.calls[0].system_text
+    assert "Do not substitute current website content" in judge.calls[0].system_text
+
+
+async def test_failed_judge_preserves_known_usage_and_prompt_evidence(traces_dir):
+    from spectragent.core.llm.exceptions import ModelOutputTruncatedError
+    from spectragent.core.llm.views import ChatInvokeUsage
+
+    class TruncatedJudge(FakeJudge):
+        async def ainvoke(self, messages, output_format=None, **kwargs):
+            raise ModelOutputTruncatedError(
+                model="test",
+                usage=ChatInvokeUsage(
+                    prompt_tokens=40,
+                    completion_tokens=20,
+                    total_tokens=60,
+                    prompt_cached_tokens=0,
+                    prompt_cache_creation_tokens=0,
+                    prompt_image_tokens=0,
+                ),
+                partial_output="unfinished judgement",
+            )
+
+    trace = RunTrace(write_trace(traces_dir))
+    with pytest.raises(EvaluationError) as raised:
+        await _evaluator(TruncatedJudge()).evaluate(trace, _rubric_reference())
+    details = raised.value.details
+    assert details is not None and details.eval_usage is not None
+    assert details.eval_usage.prompt_tokens == 40
+    assert details.response == "unfinished judgement"
+    assert details.system_prompt is not None and details.user_prompt is not None
 
 
 # ── Real shipped data ───────────────────────────────────────────────

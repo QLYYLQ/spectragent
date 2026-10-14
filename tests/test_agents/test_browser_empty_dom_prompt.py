@@ -14,7 +14,9 @@ def test_empty_dom_string_does_not_render_tree_repr() -> None:
         dom_tree=DOMElementNode(tag_name="input", attributes={"value": "private-value"}),
         serialized_dom="",
     )
-    observation = SimpleNamespace(dom=SimpleNamespace(element_tree=state))
+    observation = SimpleNamespace(
+        platform=SimpleNamespace(operating_system="macos"), dom=SimpleNamespace(element_tree=state)
+    )
 
     browser_use = BrowserUseAgent.__new__(BrowserUseAgent)
     browser_use.observation_mode = "dom"

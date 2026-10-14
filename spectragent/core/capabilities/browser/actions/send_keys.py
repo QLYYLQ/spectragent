@@ -1,4 +1,4 @@
-"""SendKeysAction — send keyboard keys (e.g. Enter, Escape, Ctrl+A)."""
+"""SendKeysAction — literal keys and native chords on the measured browser platform."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
+    handler_error,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
 from spectragent.core.capabilities.browser.watchdogs.events import SendKeysEvent
@@ -31,7 +32,12 @@ class SendKeysAction(SettleableAction, ActionBase):
         keys: str
 
     def descriptor(self, **context: Any) -> ActionDescriptor:
-        return self.describe("Send keyboard keys (e.g. Enter, Escape, Ctrl+A).", **context)
+        return self.describe(
+            "Send literal keys or chords on the observed browser platform. "
+            "For select-all use Meta/Cmd/Command+A on macOS or Ctrl/Control+A on Windows/Linux; "
+            "other chords retain their literal modifiers.",
+            **context,
+        )
 
     async def execute(
         self,
@@ -44,6 +50,9 @@ class SendKeysAction(SettleableAction, ActionBase):
             event = SendKeysEvent(keys=params["keys"])
             scope.emit(event)
             await event
+            error = handler_error(event)
+            if error is not None:
+                return ActionResult(success=False, error=error)
             await self.settle()
             return ActionResult(success=True)
         except KeyError as exc:

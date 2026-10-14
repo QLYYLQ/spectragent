@@ -58,6 +58,7 @@ def _observation(*, image: tuple[int, int], viewport: tuple[int, int] = (1280, 7
         image_height=image[1],
     )
     return SimpleNamespace(
+        platform=SimpleNamespace(operating_system="macos"),
         task=SimpleNamespace(user_request="tick the checkbox", follow_ups=[]),
         screenshot=shot,
     )
@@ -218,7 +219,10 @@ class TestRefusals:
     def test_no_screenshot_this_step_is_a_parse_error(self, harness) -> None:
         agent = harness["agent"]
         agent.build_react_prompt(
-            SimpleNamespace(task=SimpleNamespace(user_request="t", follow_ups=[]))
+            SimpleNamespace(
+                platform=SimpleNamespace(operating_system="macos"),
+                task=SimpleNamespace(user_request="t", follow_ups=[]),
+            )
         )
         with pytest.raises(ParseError, match="no screenshot"):
             agent.parse_react_output(
@@ -254,6 +258,7 @@ class TestScreenshotGeometry:
     def test_fragment_without_image_size_refuses_to_guess(self, harness) -> None:
         agent = harness["agent"]
         obs = SimpleNamespace(
+            platform=SimpleNamespace(operating_system="macos"),
             task=SimpleNamespace(user_request="t", follow_ups=[]),
             screenshot=ScreenshotObs(
                 image_bytes=_png(1280, 720), viewport_width=1280, viewport_height=720

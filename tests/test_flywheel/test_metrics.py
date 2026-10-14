@@ -354,18 +354,138 @@ class TestBodyCompleteness:
 
 
 class TestSamePathFidelity:
+    @pytest.mark.parametrize("checked_count", [1, 5, 6])
+    def test_complete_checkpoint_coverage_is_separate_from_the_agent_outcome(
+        self, tmp_path: Path, checked_count: int
+    ) -> None:
+        root = tmp_path / "coverage"
+        write_plain(
+            root / "traces" / "record",
+            "source",
+            [Step(color=10) for _ in range(6)],
+            task_id="task",
+            site="shop.test",
+        )
+        wal = WALWriter(root / "traces" / "same_path", "replay")
+        wal.init_run(
+            config(
+                task_id="branch",
+                site="shop.test",
+                loop="branch",
+                branch=provenance("source", 5, 0, "task"),
+            )
+        )
+        for index in range(checked_count):
+            spec = Step(
+                origin="policy" if index == 5 else "restored",
+                color=10,
+                restoration=check(index),
+                error_phase="llm" if index == 5 else "",
+            )
+            wal.commit_step(index, spec.record(index), fragments=spec.fragments(index))
+        if checked_count < 6:
+            wal.commit_step(
+                checked_count,
+                StepRecord(
+                    step=checked_count,
+                    error_phase="observe",
+                    error="browser stopped responding",
+                ),
+            )
+        wal.write_result(agent_result(agent_done="error", agent_reported_success=None))
+        wal.finalize(TraceStatus.COMPLETE)
+
+        result = same_path_fidelity(open_chain(ChainLayout(root))).overall
+        assert result.errored_runs == 1
+        assert result.restorer.value == 1
+        assert result.runs_reaching_checkpoint.numerator == int(checked_count == 6)
+        assert result.runs_passing.numerator == int(checked_count == 6)
+        if checked_count < 6:
+            assert result.first_failures[0].step == checked_count
+            assert "no restoration check" in (result.first_failures[0].note or "")
+        else:
+            assert result.first_failures == [], (
+                "a later model failure does not undo restored states"
+            )
+
+    @pytest.mark.parametrize("url_match, numerator", [(True, 5), (False, 0)])
+    def test_url_and_image_equality_requires_a_measured_match(
+        self, chain: ChainRuns, url_match: bool, numerator: int
+    ) -> None:
+        measured = open_chain(chain.layout)
+        for run in measured.role("same_path").runs:
+            run.steps = tuple(
+                record.model_copy(
+                    update={
+                        "restoration": record.restoration.model_copy(
+                            update={
+                                "evidence": [
+                                    e.model_copy(update={"url_match": url_match})
+                                    for e in record.restoration.evidence
+                                ]
+                            }
+                        )
+                    }
+                )
+                if record.restoration
+                else record
+                for record in run.steps
+            )
+        result = same_path_fidelity(measured).overall
+        assert (result.strict.numerator, result.strict.denominator) == (numerator, 7)
+        assert result.url_coverage.value == 1
+        assert result.exact_screenshot.numerator == 5
+
+    def test_unknown_urls_do_not_pass_the_strict_measure(self, chain: ChainRuns) -> None:
+        measured = open_chain(chain.layout)
+        for run in measured.role("same_path").runs:
+            run.steps = tuple(
+                record.model_copy(
+                    update={
+                        "restoration": record.restoration.model_copy(
+                            update={
+                                "evidence": [
+                                    e.model_copy(
+                                        update={"url_match": None, "signature_match": None}
+                                    )
+                                    for e in record.restoration.evidence
+                                ]
+                            }
+                        )
+                    }
+                )
+                if record.restoration is not None
+                else record
+                for record in run.steps
+            )
+        result = same_path_fidelity(measured).overall
+        assert result.strict.value is None
+        assert result.strict.denominator == 0
+        assert (result.exact_screenshot.numerator, result.exact_screenshot.denominator) == (5, 7)
+        assert result.url_coverage.value == 0
+        assert result.signature_coverage.value == 0
+        assert result.restorer.numerator == 6
+
     def test_overall_and_by_site(self, chain: ChainRuns) -> None:
         found = same_path_fidelity(chain)
         overall = found.overall
         assert (overall.runs, overall.verified_steps) == (3, 7)
         assert (overall.restorer.numerator, overall.restorer.denominator) == (6, 7)
-        assert (overall.strict.numerator, overall.strict.denominator) == (5, 7), (
+        assert (overall.exact_screenshot.numerator, overall.exact_screenshot.denominator) == (
+            5,
+            7,
+        ), (
             "sp-shop-b1's step 1 passed the restorer (within the dHash bound) yet its "
             "screenshot is not the source's byte for byte"
         )
         assert (overall.runs_passing.numerator, overall.runs_passing.denominator) == (2, 3)
         shop, blocked = found.by_site["shop.test"], found.by_site["blocked.test"]
-        assert (shop.restorer.value, shop.strict.numerator, shop.strict.denominator) == (1.0, 5, 6)
+        assert (
+            shop.restorer.value,
+            shop.exact_screenshot.numerator,
+            shop.exact_screenshot.denominator,
+        ) == (1.0, 5, 6)
+        assert overall.strict.value is None, "this fixture records no URL comparisons"
         assert blocked.restorer.value == 0.0
         assert [f.model_dump() for f in overall.first_failures] == [
             {
@@ -416,13 +536,13 @@ class TestSamePathFidelity:
         found = same_path_fidelity(open_chain(ChainLayout(root)))
         reason = (
             "its step 1 screenshot does not read back (TraceSchemaError): left out of the "
-            "strict measure"
+            "image equality measures"
         )
         assert found.overall.skipped == {"sp-shop-b1": reason}
         assert found.by_site["shop.test"].skipped == {"sp-shop-b1": reason}
         assert found.by_site["blocked.test"].skipped == {}
-        strict = found.overall.strict
-        assert (strict.numerator, strict.denominator) == (3, 4), "sp-shop-b0's 3 + blocked's 1"
+        exact = found.overall.exact_screenshot
+        assert (exact.numerator, exact.denominator) == (3, 4), "sp-shop-b0's 3 + blocked's 1"
         restorer = found.overall.restorer
         assert (restorer.numerator, restorer.denominator) == (6, 7), "step records still count"
         assert (found.overall.runs, found.overall.runs_passing.numerator) == (3, 2)
@@ -435,11 +555,11 @@ class TestSamePathFidelity:
         found = same_path_fidelity(open_chain(ChainLayout(root)))
         reason = (
             "its source traces/record/rec-shop: step 2 screenshot does not read back "
-            "(TraceSchemaError): left out of the strict measure"
+            "(TraceSchemaError): left out of the image equality measures"
         )
         assert found.overall.skipped == {"sp-shop-b0": reason, "sp-shop-b1": reason}
-        strict = found.overall.strict
-        assert (strict.numerator, strict.denominator) == (0, 1), "only sp-blocked-b0 is compared"
+        exact = found.overall.exact_screenshot
+        assert (exact.numerator, exact.denominator) == (0, 1), "only sp-blocked-b0 is compared"
 
 
 class TestRestoration:
@@ -562,7 +682,7 @@ class TestDamagedEvidence:
         fidelity = document["metrics"]["same_path_fidelity"]["overall"]
         assert fidelity["skipped"] == {
             "sp-blocked-b0": "its step 0 screenshot does not read back (TraceSchemaError): left "
-            "out of the strict measure"
+            "out of the image equality measures"
         }
         determinism = document["metrics"]["replay_determinism"]["by_role"]
         assert determinism["same_path"]["skipped"] == {

@@ -105,6 +105,7 @@ def _watchdog(
     node = _make_node(42, DOMRect(x=0.0, y=0.0, width=100.0, height=40.0))
     cdp = FakeCDP(rect=dict(rect or BOX))
     return ActionWatchdog(
+        input_platform="linux",
         cdp=cdp,  # type: ignore[arg-type]
         selector_map_getter=lambda: {42: node},
         mouse_trajectory=strategy,
@@ -235,14 +236,14 @@ class TestWhatKeepsItsExactPoint:
     async def test_no_strategy_at_all_lands_dead_centre(self) -> None:
         node = _make_node(42, DOMRect(x=0.0, y=0.0, width=100.0, height=40.0))
         cdp = FakeCDP(rect=dict(BOX))
-        wd = ActionWatchdog(cdp=cdp, selector_map_getter=lambda: {42: node})  # type: ignore[arg-type]
+        wd = ActionWatchdog(input_platform="linux", cdp=cdp, selector_map_getter=lambda: {42: node})  # type: ignore[arg-type]
         assert await _land(wd, times=5) == [CENTRE] * 5
 
     async def test_a_coordinate_click_is_the_models_own_aim(self) -> None:
         """``click_coordinate`` carries the model's intent; we do not overrule it."""
         strategy = _Aimless(seed=7)
         cdp = FakeCDP()
-        wd = ActionWatchdog(cdp=cdp, mouse_trajectory=strategy)  # type: ignore[arg-type]
+        wd = ActionWatchdog(input_platform="linux", cdp=cdp, mouse_trajectory=strategy)  # type: ignore[arg-type]
         for _ in range(20):
             result = await wd._on_click_coordinate(
                 ClickCoordinateEvent(coordinate_x=311, coordinate_y=207)

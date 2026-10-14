@@ -73,6 +73,7 @@ def _watchdog(
     selector_map: DOMSelectorMap,
 ) -> ActionWatchdog:
     return ActionWatchdog(
+        input_platform="linux",
         cdp=cdp,  # type: ignore[arg-type]
         selector_map_getter=lambda: selector_map,
     )

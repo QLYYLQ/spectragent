@@ -142,11 +142,13 @@ class TestReferencesAndLabels:
         (sample,) = _samples(run)
         assert [(ref.key, ref.failed) for ref in sample.observations] == [
             ("browser.dom", True),
+            ("browser.platform", False),
             ("browser.screenshot", False),
         ]  # loop-sourced fragments are not observations
         assert shot.image_bytes is not None
         digest = hashlib.sha256(shot.image_bytes).hexdigest()
-        assert sample.observations[1].artifact_sha256 == digest
+        screenshot_ref = next(ref for ref in sample.observations if ref.key == "browser.screenshot")
+        assert screenshot_ref.artifact_sha256 == digest
         assert sample.image is not None
         assert sample.image.model_dump() == {
             "fragment": "browser.screenshot",

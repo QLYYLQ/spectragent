@@ -388,10 +388,24 @@ class TestCaptureWaitsForTheNavigation:
             await cap.teardown()
 
     async def test_an_unknown_main_frame_captures_as_before(self) -> None:
-        browser = FakeBrowser()
-        browser.fail("Page.getFrameTree", RuntimeError("CDP error: no frame tree"))
+        class UnknownMainFrameBrowser(FakeBrowser):
+            async def handle(
+                self,
+                client: FakeClient,
+                method: str,
+                params: dict[str, Any],
+                session_id: str | None,
+            ) -> Any:
+                target = self._target_of(session_id)
+                # Startup's internal platform probe still has a measurable frame.
+                if method == "Page.getFrameTree" and target and target.target_id == "page-1":
+                    raise RuntimeError("CDP error: no frame tree")
+                return await super().handle(client, method, params, session_id)
+
+        browser = UnknownMainFrameBrowser()
         cap = await _capability(browser)
         try:
+            assert cap._input_platform == "macos"
             sid = cap._default_session_id
             assert sid is not None
             assert sid not in cap._main_frame_ids and sid not in cap._navigation_feeds

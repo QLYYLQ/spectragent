@@ -28,6 +28,8 @@ from spectragent.core.capabilities.browser.archive import NetworkArchiver
 from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFingerprint
 from spectragent.core.capabilities.browser.archive.network import MAX_BODY_BYTES, NetworkSession
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
+from spectragent.core.capabilities.browser.color_scheme import ColorScheme
+from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.core.capabilities.browser.replay import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord
@@ -70,6 +72,8 @@ class RecordingScript:
         launch_flags: list[str] | None = None,
         replayability: Any = None,
         browser_defaults: BrowserDefaults | None = RECORDED_DEFAULTS,
+        color_scheme: ColorScheme | None = "light",
+        input_platform: InputPlatform | None = "macos",
         config: TraceConfig | None = None,
         **archiver_knobs: Any,
     ) -> None:
@@ -96,7 +100,10 @@ class RecordingScript:
         self.launch_flags = list(launch_flags) if launch_flags is not None else ["--headless=new"]
         #: What the recording's browser fell back to (``None``: a recording that measured none).
         self.browser_defaults = browser_defaults
-        self._plan = self.replayability.plan(t0_ms=t0_ms, browser_user_agent="ScriptedChrome/1.0")
+        self.input_platform: InputPlatform | None = input_platform
+        self._plan = self.replayability.plan(
+            t0_ms=t0_ms, browser_user_agent="ScriptedChrome/1.0", color_scheme=color_scheme
+        )
         self._n = 0
         self._wall = 1_700_000_000.0
         self._run_version = 0
@@ -378,6 +385,7 @@ class RecordingScript:
                 fresh_profile=True,
                 clock=lambda: self._wall,
                 browser_defaults=self.browser_defaults,
+                input_platform=self.input_platform,
             )
             if record is not None:
                 files.append(record)

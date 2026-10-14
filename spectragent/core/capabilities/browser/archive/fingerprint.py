@@ -66,6 +66,7 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
     without_routing_switches,
 )
 from spectragent.core.capabilities.browser.client_hints import ClientHints
+from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,7 @@ class BrowserFingerprint:
         clock: Callable[[], float],
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
+        input_platform: InputPlatform | None = None,
         timeout: float = 1.0,
     ) -> ArchiveFile | None:
         """The fingerprint as a run record, or ``None`` when it did not change."""
@@ -148,6 +150,7 @@ class BrowserFingerprint:
             fresh_profile=fresh_profile,
             network_fingerprint=network_fingerprint,
             browser_defaults=browser_defaults,
+            input_platform=input_platform,
             timeout=timeout,
         )
         data = canonical_json(document)
@@ -175,6 +178,7 @@ class BrowserFingerprint:
         fresh_profile: bool,
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
+        input_platform: InputPlatform | None = None,
         timeout: float = 1.0,
     ) -> dict[str, Any]:
         version = await recorder.browser_version()
@@ -207,6 +211,7 @@ class BrowserFingerprint:
             },
             "page": page,
             "browser_defaults": browser_defaults.as_record() if browser_defaults else None,
+            "input_platform": input_platform,
             "viewport": {"width": viewport[0], "height": viewport[1]},
             "replayability": dict(plan_fingerprint),
             "launch_flags_sha256": launch_flags_digest(session_metadata),

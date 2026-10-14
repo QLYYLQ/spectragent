@@ -27,6 +27,7 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
+from spectragent.agents._browser_platform import render_browser_platform
 from spectragent.agents._output_models import SkyvernOutput
 from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompts import PromptEngine
@@ -54,7 +55,7 @@ class SkyvernAgent(AgentBase):
         # element-tree based but can use vision when available).
         "observation": (
             "observation",
-            ["dom", "task"],
+            ["dom", "platform", "task"],
             [
                 "screenshot",
                 "browser_meta",
@@ -221,7 +222,10 @@ class SkyvernAgent(AgentBase):
         the page, try something else" rule reads this block.
         """
         task = observation.task.user_request
-        prefix_parts = [f"<user_request>\n{task}\n</user_request>"]
+        prefix_parts = [
+            f"<user_request>\n{task}\n</user_request>",
+            render_browser_platform(observation),
+        ]
         step_info = getattr(observation, "step_info", None)
         if step_info is not None:
             prefix_parts.append(

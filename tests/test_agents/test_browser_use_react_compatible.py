@@ -15,6 +15,7 @@ Tests do not exercise live LLM/CDP paths.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -108,6 +109,7 @@ class _FakeObservation:
         self.screenshot = screenshot
         self.browser_meta = browser_meta
         self.task = task or _FakeTask()
+        self.platform = SimpleNamespace(operating_system="macos")
         self.step_info = step_info
         self.history = history
 
@@ -198,7 +200,7 @@ class TestWiring:
         # both DOM modes — see ``_MODE_DEMAND``.
         assert wiring["observation"] == (
             "observation",
-            ["screenshot", "task"],
+            ["screenshot", "platform", "task"],
             ["dom", "browser_meta", "step_info", "history"],
         )
 

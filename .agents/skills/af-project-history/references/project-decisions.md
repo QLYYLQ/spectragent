@@ -3,6 +3,23 @@
 These notes preserve explicit user intent. Confirm that the current architecture docs
 have not superseded them before implementing a change.
 
+## Current generated data is disposable test data
+
+Explicit user ruling, 2026-10-14: all data generated so far is test data and can be
+discarded or regenerated at low cost. Framework consistency takes priority over
+keeping these artifacts usable. This includes current recordings, traces, environment
+archives, branches, exported samples, evaluation outputs and experiment results.
+
+Do not introduce adapters, compatibility branches, parallel old/new paths, migration
+machinery or extra design concepts merely to preserve these data. When a contract or
+schema changes, update the test fixtures or generate fresh data to match the coherent
+new design; do not bend the framework around existing artifacts. A future requirement
+to support durable production data or external consumers must be established explicitly,
+not inferred from the mere existence or volume of today's test data.
+
+This ruling removes a compatibility constraint; it is not a request to clean files now.
+User-owned source artwork and other protected assets remain governed by their own rules.
+
 ## Research workflow is the product
 
 AF/Spectragent targets agent researchers, especially two workflows:

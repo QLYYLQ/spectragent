@@ -1252,19 +1252,24 @@ class TestCreateTab:
     async def test_the_new_tab_is_navigated_only_after_the_recorder_prepared_it(self) -> None:
         cap, browser, _ = await _capability(PinnedReplayability())
         try:
+            mark = len(browser.control.sent)
             # Only the recorder's pinned plan sends this: hold the new tab's preparation.
             gate = browser.hold("Emulation.setTimezoneOverride")
             creating = asyncio.create_task(cap.create_tab("http://shop.test/next"))
             await _settle()
-            created = [s.params for s in browser.control.sent if s.method == "Target.createTarget"]
+            created = [
+                s.params for s in browser.control.sent[mark:] if s.method == "Target.createTarget"
+            ]
             assert created == [{"url": "about:blank"}]
             assert not creating.done()
-            assert "Page.navigate" not in browser.control.methods(), "not before it is prepared"
+            assert not any(s.method == "Page.navigate" for s in browser.control.sent[mark:]), (
+                "not before it is prepared"
+            )
             gate.set()
             sid = await asyncio.wait_for(creating, 5.0)
             navigations = [
                 (s.params["url"], s.session_id)
-                for s in browser.control.sent
+                for s in browser.control.sent[mark:]
                 if s.method == "Page.navigate"
             ]
             assert navigations == [("http://shop.test/next", sid)]
@@ -1274,14 +1279,17 @@ class TestCreateTab:
     async def test_a_blank_tab_is_not_navigated_and_needs_no_recorder(self) -> None:
         cap, browser, _ = await _capability()
         try:
+            mark = len(browser.control.sent)
             await cap.create_tab()
-            assert "Page.navigate" not in browser.control.methods()
+            assert not any(s.method == "Page.navigate" for s in browser.control.sent[mark:])
             sid = await cap.create_tab("http://shop.test/next")
-            created = [s.params for s in browser.control.sent if s.method == "Target.createTarget"]
-            assert created == [{"url": "about:blank"}, {"url": "about:blank"}]
-            assert [s.session_id for s in browser.control.sent if s.method == "Page.navigate"] == [
-                sid
+            created = [
+                s.params for s in browser.control.sent[mark:] if s.method == "Target.createTarget"
             ]
+            assert created == [{"url": "about:blank"}, {"url": "about:blank"}]
+            assert [
+                s.session_id for s in browser.control.sent[mark:] if s.method == "Page.navigate"
+            ] == [sid]
         finally:
             await cap.teardown()
 

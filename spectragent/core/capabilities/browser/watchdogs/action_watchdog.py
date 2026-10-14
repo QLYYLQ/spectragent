@@ -65,6 +65,13 @@ from spectragent.core.capabilities.browser.input import (
     MouseTrajectoryProtocol,
     TypingRhythmProtocol,
 )
+from spectragent.core.capabilities.browser.input.keyboard import (
+    ALT_MODIFIER,
+    CONTROL_MODIFIER,
+    META_MODIFIER,
+    SHIFT_MODIFIER,
+)
+from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
     WatchdogContext,
@@ -406,8 +413,11 @@ class ActionWatchdog(BrowserWatchdog):
 
     @classmethod
     def build(cls, ctx: WatchdogContext) -> ActionWatchdog:
+        if ctx.input_platform is None:
+            raise ValueError("ActionWatchdog requires the measured browser input_platform")
         return cls(
             ctx.cdp,
+            input_platform=ctx.input_platform,
             selector_map_getter=ctx.selector_map_getter,
             main_frame_id_getter=ctx.main_frame_id_getter,
             debug_highlight=ctx.debug_highlight,
@@ -420,6 +430,7 @@ class ActionWatchdog(BrowserWatchdog):
         self,
         cdp: CDPCommandProtocol,
         *,
+        input_platform: InputPlatform,
         selector_map_getter: Callable[[], DOMSelectorMap | None] | None = None,
         main_frame_id_getter: Callable[[], str | None] | None = None,
         debug_highlight: bool = False,
@@ -451,7 +462,7 @@ class ActionWatchdog(BrowserWatchdog):
         # text entry. Same shape and same reason as the mouse: the ``instant``
         # rhythm (also the fallback when none is configured) is the legacy
         # single bulk ``Input.insertText``.
-        self._keyboard = HumanKeyboard(cdp, rhythm=typing_rhythm)
+        self._keyboard = HumanKeyboard(cdp, input_platform=input_platform, rhythm=typing_rhythm)
 
         # The window a dispatched point has to land in — the only thing
         # ``_aim_inside`` knows that the strategy deciding the offset does not.
@@ -829,7 +840,9 @@ class ActionWatchdog(BrowserWatchdog):
                 event.end_y,
                 e,
             )
-            return {"error": str(e)}
+            # TimeoutError may have an empty message. An empty error is read as
+            # success by action result consumers, despite the failed gesture.
+            return {"error": f"{type(e).__name__}: {e}"}
 
     # -----------------------------------------------------------------------
     # Scroll
@@ -1118,7 +1131,7 @@ class ActionWatchdog(BrowserWatchdog):
     # Send keys
     # -----------------------------------------------------------------------
 
-    async def _on_send_keys(self, event: SendKeysEvent) -> None:
+    async def _on_send_keys(self, event: SendKeysEvent) -> dict[str, str] | None:
         """Send keyboard keys, supports modifiers (e.g. 'Ctrl+a', 'Enter').
 
         Uses ``_resolve_key_event`` to fill ``code`` and
@@ -1131,47 +1144,39 @@ class ActionWatchdog(BrowserWatchdog):
         (the ``input/keyboard.py`` module docstring, "No native key code").
         """
         try:
-            parts = event.keys.split("+")
-            key = parts[-1].strip()
-            modifiers = [p.strip().lower() for p in parts[:-1]]
+            parts = [part.strip() for part in event.keys.split("+")]
+            if not all(parts):
+                raise ValueError("Key names and chord components must not be empty")
+            key = parts[-1]
+            modifiers = [part.lower() for part in parts[:-1]]
 
             # Build modifier bitmask.
             mod_mask = 0
-            if "ctrl" in modifiers or "control" in modifiers:
-                mod_mask |= 1
-            if "alt" in modifiers:
-                mod_mask |= 2
-            if "shift" in modifiers:
-                mod_mask |= 8
-            if "meta" in modifiers or "cmd" in modifiers:
-                mod_mask |= 4
+            aliases = {
+                "ctrl": CONTROL_MODIFIER,
+                "control": CONTROL_MODIFIER,
+                "alt": ALT_MODIFIER,
+                "option": ALT_MODIFIER,
+                "shift": SHIFT_MODIFIER,
+                "meta": META_MODIFIER,
+                "cmd": META_MODIFIER,
+                "command": META_MODIFIER,
+            }
+            for modifier in modifiers:
+                if modifier not in aliases:
+                    raise ValueError(f"Unknown modifier {modifier!r}; expected {sorted(aliases)}")
+                mod_mask |= aliases[modifier]
 
             payload: dict[str, Any]
             char_text: str | None
             payload, char_text = _resolve_key_event(key)
-            await self._cdp.send(
-                "Input.dispatchKeyEvent",
-                {**payload, "type": "keyDown", "modifiers": mod_mask},
-                session_id=self._session_id,
-            )
-            if char_text is not None:
-                await self._cdp.send(
-                    "Input.dispatchKeyEvent",
-                    {
-                        "type": "char",
-                        "text": char_text,
-                        "key": payload.get("key", char_text),
-                        "modifiers": mod_mask,
-                    },
-                    session_id=self._session_id,
-                )
-            await self._cdp.send(
-                "Input.dispatchKeyEvent",
-                {**payload, "type": "keyUp", "modifiers": mod_mask},
-                session_id=self._session_id,
+            await self._keyboard.press_key(
+                payload, modifiers=mod_mask, char_text=char_text, session_id=self._session_id
             )
         except Exception as e:
             logger.error("SendKeys failed: %s", e)
+            return {"error": f"{type(e).__name__}: {e}"}
+        return None
 
     # -----------------------------------------------------------------------
     # Select dropdown — uses DOM.resolveNode + Runtime.callFunctionOn

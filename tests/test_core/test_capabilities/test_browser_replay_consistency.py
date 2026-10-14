@@ -70,7 +70,9 @@ def _source(
 ) -> RecordedArchive:
     """A source run's archive (in memory) carrying a real fingerprint document."""
     tier = tier if tier is not None else PinnedReplayability(random_seed=7)
-    plan = tier.plan(t0_ms=T0, browser_user_agent=VERSION["userAgent"], client_hints=hints)
+    plan = tier.plan(
+        t0_ms=T0, browser_user_agent=VERSION["userAgent"], client_hints=hints, color_scheme="dark"
+    )
     document = asyncio.run(
         BrowserFingerprint().measure(
             recorder=_Version(),
@@ -82,6 +84,7 @@ def _source(
             fresh_profile=True,
             network_fingerprint=network,
             browser_defaults=defaults,
+            input_platform="macos",
         )
     )
     if edit is not None:

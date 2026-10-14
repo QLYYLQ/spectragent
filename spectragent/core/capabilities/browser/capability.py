@@ -96,6 +96,7 @@ from spectragent.core.capabilities.browser.backends.capabilities import LAUNCH_A
 from spectragent.core.capabilities.browser.capture_check import compare_capture
 from spectragent.core.capabilities.browser.cdp_client import CDPClient, transport_options
 from spectragent.core.capabilities.browser.client_hints import ClientHints, measure_client_hints
+from spectragent.core.capabilities.browser.color_scheme import ColorScheme, measure_color_scheme
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     binding_problems,
@@ -145,6 +146,7 @@ from spectragent.core.capabilities.browser.navigation import (
     NavigationFeed,
 )
 from spectragent.core.capabilities.browser.observations import BrowserCaptureFragment
+from spectragent.core.capabilities.browser.platform import InputPlatform, measure_input_platform
 from spectragent.core.capabilities.browser.profiles import (
     BrowserProfileConfig,
     resolve_profile,
@@ -176,6 +178,8 @@ from spectragent.core.capabilities.browser.replay.consistency import (
     client_hint_problems,
     consistency_notes,
     consistency_problems,
+    input_platform_problems,
+    replay_color_scheme,
     replay_t0,
     version_warnings,
 )
@@ -258,6 +262,9 @@ _BROWSER_DEFAULTS_TIMEOUT_S = 5.0
 # How long reading the browser's own client hints right after launch may take
 # (§4.14, ``client_hints.py``): a temporary tab, its renderer started for it.
 _CLIENT_HINTS_TIMEOUT_S = 5.0
+
+# The initial page's media theme, before any target receives an override.
+_COLOR_SCHEME_TIMEOUT_S = 5.0
 
 # How long ``create_tab`` waits for the recorder connection to prepare the
 # tab it created before navigating it (§4.14). An ``about:blank`` tab is
@@ -570,6 +577,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     settle_max_wait_s: float
     retarget_tolerance_px: float
     new_tabs: Literal["follow", "stay"]
+    expected_platform: InputPlatform | None
 
     # ── internal state, never config (assigned in __init__) ──────────
     # Declared here as type-only annotations so both pyright and the
@@ -623,6 +631,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     #: The time zone and locale a frame no override reaches falls back to,
     #: measured right after launch when archivers are bound (§4.14).
     _browser_defaults: BrowserDefaults | None
+    _input_platform: InputPlatform | None
     #: Every tab, in the order they opened, from the control connection's
     #: target discovery (``tabs.py``) — between setup and teardown, when the
     #: browser accepted the discovery.
@@ -667,6 +676,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             str,
             PydanticField(description="Browser profile name (resolved via resolve_profile)"),
         ] = "standard",
+        expected_platform: Annotated[
+            InputPlatform | None,
+            PydanticField(
+                description="Expected actual browser input platform. None accepts any measured supported platform; a mismatch is refused, never emulated."
+            ),
+        ] = None,
         viewport_width: Annotated[
             int, PydanticField(description="Viewport width in pixels")
         ] = 1280,
@@ -864,6 +879,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         self.cdp_url = cdp_url
         self.profile = profile
+        self.expected_platform = expected_platform
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
         self.debug_highlight = debug_highlight
@@ -934,6 +950,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._archive = None
         self._diverged_seen = 0
         self._browser_defaults = None
+        self._input_platform = None
         self._tabs = None
         self._tab_callbacks = []
         self._follow_window = None
@@ -1234,6 +1251,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 server.fingerprint() if server is not None else self.network_source.fingerprint()
             ),
             browser_defaults=self._browser_defaults,
+            input_platform=self._input_platform,
         )
 
     def _fresh_profile(self) -> bool:
@@ -1370,6 +1388,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     browser_defaults=planned_browser_defaults(
                         self, cdp_url=cdp_url, injected_client=injected
                     ),
+                    expected_platform=self.expected_platform,
                 )
             )
         if problems:
@@ -1531,6 +1550,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # under base_time: from_archive, resolved before any shim is built.
         now_ms = int(time.time() * 1000)
         t0_ms = replay_t0(recorded, self.replayability, now_ms) if recorded else now_ms
+        color_scheme = (
+            replay_color_scheme(recorded)
+            if recorded is not None and self.replayability.needs_color_scheme
+            else None
+        )
 
         self._scope_group = ScopeGroup("browser-capability")
 
@@ -1581,6 +1605,28 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             )
             await self._cdp.start()
 
+        # The browser's own internal OS fact, before any business tab or input
+        # controller is prepared. This uses the control connection even without
+        # an archive or a recorder, so it applies to plain and cloud CDP too.
+        try:
+            self._input_platform = await measure_input_platform(self._cdp)
+        except Exception as exc:
+            raise BrowserCooperationError(
+                [
+                    f"browser input platform could not be measured ({exc!r}); no UA or agent-host fallback is permitted"
+                ]
+            ) from exc
+        if self.expected_platform is not None and self._input_platform != self.expected_platform:
+            raise BrowserCooperationError(
+                [
+                    f"expected_platform={self.expected_platform!r} ↔ measured browser input platform={self._input_platform!r}"
+                ]
+            )
+        if recorded is not None:
+            platform_problems = input_platform_problems(recorded, self._input_platform)
+            if platform_problems:
+                raise BrowserCooperationError(platform_problems)
+
         # 1a. Every tab, in the order it opens, and which tab opened it (§4.14
         # "页面新开的标签页"): what following a new tab and leaving a closed one
         # read. Before the first tab is adopted — discovery reports the tabs
@@ -1600,6 +1646,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 if recorded is not None
                 else [],
                 expected_defaults=expected_defaults,
+                color_scheme=color_scheme,
             )
 
         # 2. Global scope — browser-level watchdogs. Before the recorder
@@ -1664,6 +1711,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         recorded: RecordedArchive | None = None,
         notes: Sequence[str] = (),
         expected_defaults: BrowserDefaults | None = None,
+        color_scheme: ColorScheme | None = None,
     ) -> None:
         """Build the recorder connection; :meth:`setup` opens it after the watchdogs.
 
@@ -1720,10 +1768,17 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             if self.replayability.needs_client_hints
             else None
         )
+        if self.replayability.needs_color_scheme and color_scheme is None:
+            color_scheme = (
+                replay_color_scheme(recorded)
+                if recorded is not None
+                else await self._measure_color_scheme(recorder)
+            )
         plan = self.replayability.plan(
             t0_ms=t0_ms,
             browser_user_agent=str(version.get("userAgent", "")),
             client_hints=hints,
+            color_scheme=color_scheme,
         )
         problems = [*plan.problems]
         if recorded is not None:
@@ -1767,6 +1822,21 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
                 self._archivers,
             )
+
+    async def _measure_color_scheme(self, recorder: RecorderConnection) -> ColorScheme:
+        """The live recording's theme, measured once before any target is prepared."""
+        try:
+            return await measure_color_scheme(recorder, timeout=_COLOR_SCHEME_TIMEOUT_S)
+        except Exception as exc:
+            tier = getattr(
+                self.replayability, "replayability_id", type(self.replayability).__name__
+            )
+            raise BrowserCooperationError(
+                [
+                    f"replayability {tier!r} ↔ this browser: its prefers-color-scheme could not "
+                    f"be measured after launch ({exc!r}); no recording theme can be pinned"
+                ]
+            ) from exc
 
     async def _measure_client_hints(self, recorder: RecorderConnection) -> ClientHints:
         """The browser's own client hints, read right after launch (§4.14, ``client_hints.py``).
@@ -1926,6 +1996,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 logger.warning("Recorder close failed: %s", exc)
         self._replay_plan = None
         self._browser_defaults = None
+        self._input_platform = None
         # The replay server after the recorder (which failed every request
         # still held — never continued it): stop answering, drop its state.
         server, self._replay_server = self._replay_server, None
@@ -3164,6 +3235,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             cdp=cdp,
             profile=self.profile_config,
             viewport=(self.viewport_width, self.viewport_height),
+            input_platform=self._input_platform,
             cdp_session_id=cdp_session_id,
             js_scope=self._js_scopes.get(cdp_session_id) if cdp_session_id is not None else None,
             debug_highlight=self.debug_highlight,

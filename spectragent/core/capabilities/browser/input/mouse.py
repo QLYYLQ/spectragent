@@ -16,7 +16,7 @@ The strategy is the only humanization switch. ``instant`` (also the fallback
 when no strategy is given) is one waypoint at the destination and reports
 ``humanized == False``, so ``click`` emits exactly ``mouseMoved → mousePressed
 → mouseReleased`` at the target, ``wheel`` emits a single ``mouseWheel`` and the
-cursor cold-starts at ``(0, 0)`` — byte-for-byte the pre-humanization behavior.
+cursor cold-starts at ``(0, 0)``.
 Any other strategy reports ``humanized == True``, which also switches on the
 behaviour around the path: centre cold start and eased, segmented wheel (here)
 and the cursor approach before type/select (``ActionWatchdog``). There used to
@@ -70,6 +70,7 @@ Both failure modes are now Pydantic validation errors before anything launches.
 from __future__ import annotations
 
 import logging
+from asyncio import CancelledError, create_task, shield, wait_for
 from collections.abc import Callable
 from typing import Any
 
@@ -86,6 +87,10 @@ from spectragent.core.capabilities.browser.input.trajectory import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Release is cleanup, not trajectory pacing. It must finish before teardown
+#: closes the input scope, even when the CDP transport never answers.
+_DRAG_RELEASE_TIMEOUT_S = 2.0
 
 
 class HumanMouse:
@@ -153,10 +158,23 @@ class HumanMouse:
     def _clamp(self, x: int, y: int) -> tuple[int, int]:
         return (max(0, min(x, self._vw - 1)), max(0, min(y, self._vh - 1)))
 
-    async def _dispatch_move(self, x: int, y: int) -> None:
+    @staticmethod
+    def _button_mask(button: str) -> int:
+        masks = {"none": 0, "left": 1, "right": 2, "middle": 4, "back": 8, "forward": 16}
+        if button not in masks:
+            raise ValueError(f"Unknown mouse button {button!r}")
+        return masks[button]
+
+    async def _dispatch_move(self, x: int, y: int, *, button: str = "none") -> None:
         await self._cdp.send(
             "Input.dispatchMouseEvent",
-            {"type": "mouseMoved", "x": x, "y": y},
+            {
+                "type": "mouseMoved",
+                "x": x,
+                "y": y,
+                "button": button,
+                "buttons": self._button_mask(button),
+            },
             session_id=self._sid(),
         )
         self._x, self._y = x, y
@@ -168,9 +186,19 @@ class HumanMouse:
 
     # ── primitives ────────────────────────────────────────────────────────
     async def move_to(
-        self, x: float, y: float, *, target_w: float = 0.0, target_h: float = 0.0
+        self,
+        x: float,
+        y: float,
+        *,
+        target_w: float = 0.0,
+        target_h: float = 0.0,
+        button: str = "none",
     ) -> None:
         """Move the cursor to (x, y) along the active trajectory strategy.
+
+        ``button`` is the button held during this movement, local to a drag.
+        Both CDP fields (the name and its bitmask) are derived from it: Chrome
+        needs both to preserve native dragging and pointer capture.
 
         The path is the schedule handed to :func:`play_on_deadline`: waypoint
         ``i`` is due at ``start + sum(dt_ms[:i + 1])``, so the CDP round trip
@@ -209,7 +237,7 @@ class HumanMouse:
             # spent by the schedule, but it dispatches nothing.
             if not jump and (px, py) == (self._x, self._y):
                 continue
-            await self._dispatch_move(px, py)
+            await self._dispatch_move(px, py, button=button)
 
     async def click(
         self,
@@ -233,7 +261,7 @@ class HumanMouse:
         scheduler the moment either was tuned.
 
         With ``instant`` both slots are due immediately, so nothing sleeps and
-        the click is byte-for-byte the legacy three events. Slots are sent in
+        the click uses the same three primitives at the target. Slots are sent in
         order and a slot's events ride along with the next one dispatched, so
         a transport slower than the hold shortens the hold — it can never
         release a button that was never pressed.
@@ -344,28 +372,69 @@ class HumanMouse:
         a humanised run drags along the same path it would have moved
         along.
         """
+        buttons = self._button_mask(button)
+        if not buttons:
+            raise ValueError(f"Cannot drag with mouse button {button!r}")
         sid = self._sid()
         await self.move_to(start_x, start_y)
-        await self._cdp.send(
-            "Input.dispatchMouseEvent",
-            {
-                "type": "mousePressed",
-                "x": self._x,
-                "y": self._y,
-                "button": button,
-                "clickCount": 1,
-            },
-            session_id=sid,
+        try:
+            # Even a failed acknowledgement may have delivered the press. Always
+            # attempt the release once dispatching the press has begun.
+            await self._cdp.send(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": "mousePressed",
+                    "x": self._x,
+                    "y": self._y,
+                    "button": button,
+                    "buttons": buttons,
+                    "clickCount": 1,
+                },
+                session_id=sid,
+            )
+            await self.move_to(end_x, end_y, target_w=target_w, target_h=target_h, button=button)
+        except BaseException:
+            try:
+                await self._release_drag(sid, button)
+            except CancelledError:
+                raise  # An external cancellation during cleanup outranks an input error.
+            except Exception:
+                logger.warning("Could not release interrupted drag", exc_info=True)
+            raise
+        else:
+            await self._release_drag(sid, button)
+
+    async def _release_drag(self, sid: str | None, button: str) -> None:
+        """Finish this gesture before propagating a cancellation of its release."""
+        release = create_task(
+            wait_for(
+                self._cdp.send(
+                    "Input.dispatchMouseEvent",
+                    {
+                        "type": "mouseReleased",
+                        "x": self._x,
+                        "y": self._y,
+                        "button": button,
+                        "buttons": 0,
+                        "clickCount": 1,
+                    },
+                    session_id=sid,
+                ),
+                timeout=_DRAG_RELEASE_TIMEOUT_S,
+            )
         )
-        await self.move_to(end_x, end_y, target_w=target_w, target_h=target_h)
-        await self._cdp.send(
-            "Input.dispatchMouseEvent",
-            {
-                "type": "mouseReleased",
-                "x": self._x,
-                "y": self._y,
-                "button": button,
-                "clickCount": 1,
-            },
-            session_id=sid,
-        )
+        cancellation: CancelledError | None = None
+        while not release.done():
+            try:
+                await shield(release)
+            except CancelledError as exc:
+                cancellation = cancellation or exc
+            except Exception:
+                break  # Retrieve the failure below, preserving an earlier cancellation.
+        if cancellation is not None:
+            try:
+                release.result()
+            except BaseException:
+                logger.warning("Could not release cancelled drag", exc_info=True)
+            raise cancellation
+        release.result()

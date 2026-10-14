@@ -124,6 +124,18 @@ class EvaluatorBase(metaclass=EvaluatorRegistrar.Meta):
         judge = self._judge_id()
         if judge is not None:
             signature["llm"] = judge
+            instance = getattr(self, "llm", None)
+            endpoint = getattr(instance, "base_url", None)
+            provider = getattr(instance, "provider", None)
+            signature["judge_route"] = {
+                "implementation": type(instance).__name__,
+                "provider": type(provider).__name__ if provider is not None else None,
+                # A free-form endpoint can carry credentials. Compare routes without
+                # recording URL credentials, path tokens or query strings.
+                "endpoint_sha256": (
+                    hashlib.sha256(str(endpoint).encode()).hexdigest() if endpoint else None
+                ),
+            }
         return signature
 
     @property
@@ -259,16 +271,20 @@ class UsageTally:
     completion_tokens: int = 0
     cached_tokens: int = 0
     calls: int = 0
+    reported_calls: int = 0
 
     def add(self, usage: Any) -> None:
         self.calls += 1
         if usage is None:
             return
+        self.reported_calls += 1
         self.prompt_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
         self.completion_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
         self.cached_tokens += int(getattr(usage, "prompt_cached_tokens", 0) or 0)
 
-    def to_eval_usage(self) -> EvalUsage:
+    def to_eval_usage(self) -> EvalUsage | None:
+        if not self.reported_calls:
+            return None
         return EvalUsage(
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,

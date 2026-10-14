@@ -110,6 +110,7 @@ def _screenshot(
     image: tuple[int, int] = (1000, 1000), viewport: tuple[int, int] = (1000, 1000)
 ) -> Any:
     return SimpleNamespace(
+        platform=SimpleNamespace(operating_system="macos"),
         task=SimpleNamespace(user_request="tick the checkbox"),
         screenshot=ScreenshotObs(
             image_bytes=b"\x89PNG\r\n\x1a\n",

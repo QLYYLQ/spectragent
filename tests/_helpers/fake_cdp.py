@@ -68,6 +68,8 @@ from typing import Any
 
 from spectragent.core.capabilities.browser.backends.browser_defaults import DEFAULTS_WORLD
 from spectragent.core.capabilities.browser.client_hints import CLIENT_HINTS_WORLD
+from spectragent.core.capabilities.browser.color_scheme import COLOR_SCHEME_WORLD
+from spectragent.core.capabilities.browser.platform import PLATFORM_WORLD
 from spectragent.core.capabilities.browser.settle import SETTLE_WORLD
 
 #: What a target without a page process answers only once it runs and commits.
@@ -369,6 +371,12 @@ class FakeBrowser:
         self.client_hints: dict[str, Any] | None = dict(FAKE_CLIENT_HINTS)
         #: Execution contexts of the client-hints read's world.
         self.client_hints_contexts: set[int] = set()
+        #: The startup theme, before a replayability plan overrides it.
+        self.color_scheme: str | None = "light"
+        self.color_scheme_contexts: set[int] = set()
+        #: Chrome's internal OS cell, independent of its simulated UA fields.
+        self.browser_os: str | None = "macOS"
+        self.platform_contexts: set[int] = set()
         self.device_pixel_ratio = 1.0
         #: The value attribute of the document's one password input.
         self.password_value = "planted-secret"
@@ -624,6 +632,14 @@ class FakeBrowser:
             items = store.get(str(storage_id.get("securityOrigin")), {})
             return {"entries": [[key, value] for key, value in items.items()]}
         if method == "Page.createIsolatedWorld":
+            if params.get("worldName") == PLATFORM_WORLD:
+                context = 13000 + len(self.platform_contexts) + 1
+                self.platform_contexts.add(context)
+                return {"executionContextId": context}
+            if params.get("worldName") == COLOR_SCHEME_WORLD:
+                context = 11000 + len(self.color_scheme_contexts) + 1
+                self.color_scheme_contexts.add(context)
+                return {"executionContextId": context}
             if params.get("worldName") == CLIENT_HINTS_WORLD:
                 context = 9000 + len(self.client_hints_contexts) + 1
                 self.client_hints_contexts.add(context)
@@ -639,6 +655,10 @@ class FakeBrowser:
             self.isolated_worlds += 1
             return {"executionContextId": 1000 + self.isolated_worlds}
         if method == "Runtime.evaluate":
+            if params.get("contextId") in self.platform_contexts:
+                return {"result": {"type": "string", "value": self.browser_os}}
+            if params.get("contextId") in self.color_scheme_contexts:
+                return {"result": {"type": "string", "value": self.color_scheme}}
             if params.get("contextId") in self.client_hints_contexts:
                 return {"result": {"type": "string", "value": json.dumps(self.client_hints)}}
             if params.get("contextId") in self.defaults_contexts:

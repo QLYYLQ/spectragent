@@ -121,6 +121,7 @@ def _watchdog(cdp: _FakeCDP) -> tuple[ActionWatchdog, _FakeScope]:
     scope = _FakeScope()
     wd = ActionWatchdog(
         cdp,  # type: ignore[arg-type]
+        input_platform="linux",
         main_frame_id_getter=lambda: "MAIN",
     )
     wd._scope = scope  # type: ignore[assignment]
@@ -134,6 +135,7 @@ class TestOnNavigateLifecycleWiring:
         cdp = _FakeCDP()
         wd = ActionWatchdog(
             cdp,  # type: ignore[arg-type]
+            input_platform="linux",
             main_frame_id_getter=lambda: "MAIN",
         )
         wd._scope = scope  # type: ignore[assignment]
@@ -183,6 +185,7 @@ class TestOnNavigateLifecycleWiring:
         cdp = _FakeCDP(loader_id="L1")
         wd = ActionWatchdog(
             cdp,  # type: ignore[arg-type]
+            input_platform="linux",
             main_frame_id_getter=lambda: "MAIN",
         )
         wd._scope = scope  # type: ignore[assignment]
@@ -227,7 +230,7 @@ class TestOnNavigateLifecycleWiring:
         """Empty/unknown wait_until → no waiter, no lifecycle hookup."""
         scope = _FakeScope()
         cdp = _FakeCDP()
-        wd = ActionWatchdog(cdp)  # type: ignore[arg-type]
+        wd = ActionWatchdog(cdp, input_platform="linux")  # type: ignore[arg-type]
         wd._scope = scope  # type: ignore[assignment]
         wd._session_id = "sid"
 
@@ -248,6 +251,7 @@ class TestOnNavigateLifecycleWiring:
         cdp = _FakeCDP()
         wd = ActionWatchdog(
             cdp,  # type: ignore[arg-type]
+            input_platform="linux",
             main_frame_id_getter=lambda: "MAIN",
         )
         wd._scope = scope  # type: ignore[assignment]
@@ -284,6 +288,7 @@ class TestOnNavigateLifecycleWiring:
     async def test_lifecycle_target_unknown_returns_none(self) -> None:
         wd = ActionWatchdog(
             _FakeCDP(),  # type: ignore[arg-type]
+            input_platform="linux",
         )
         assert wd._lifecycle_target("nonsense") is None
         assert wd._lifecycle_target("") is None
@@ -291,6 +296,7 @@ class TestOnNavigateLifecycleWiring:
     async def test_lifecycle_target_load(self) -> None:
         wd = ActionWatchdog(
             _FakeCDP(),  # type: ignore[arg-type]
+            input_platform="linux",
         )
         target = wd._lifecycle_target("load")
         assert target is not None
@@ -301,6 +307,7 @@ class TestOnNavigateLifecycleWiring:
     async def test_lifecycle_target_domcontentloaded(self) -> None:
         wd = ActionWatchdog(
             _FakeCDP(),  # type: ignore[arg-type]
+            input_platform="linux",
         )
         target = wd._lifecycle_target("domcontentloaded")
         assert target is not None
@@ -410,7 +417,11 @@ async def test_through_a_real_scope_a_late_load_is_answered_before_the_caller_gi
     """
     group = ScopeGroup("test-navigate")
     scope = await group.create_scope("tab")
-    watchdog = ActionWatchdog(_FakeCDP(), main_frame_id_getter=lambda: "MAIN")  # type: ignore[arg-type]
+    watchdog = ActionWatchdog(
+        _FakeCDP(),  # type: ignore[arg-type]
+        input_platform="linux",
+        main_frame_id_getter=lambda: "MAIN",
+    )
     watchdog.attach(scope, session_id="sid")
     try:
         event = NavigateToUrlEvent(

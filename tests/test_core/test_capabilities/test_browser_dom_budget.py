@@ -183,6 +183,7 @@ class TestDomSerializerIsAWiredReceptor:
         """Identity, not equality — a second default-constructed one is the bug."""
         cap = _compose(dom_serializer={"serializer_type": "text", "max_text_length": 42})
         cap._cdp = object()  # type: ignore[assignment]
+        cap._input_platform = "macos"  # This fixture begins after setup's measurement.
         watchdog = next(
             wd
             for wd in cap._create_watchdogs_for_scope(level="tab", cdp_session_id="sid1")
@@ -576,6 +577,7 @@ def test_every_knob_reaches_the_resolver_from_yaml(knobs: dict[str, Any]) -> Non
     """The config surface is scalars on the capability, like the screenshot half."""
     cap = _compose(**knobs)
     cap._cdp = object()  # type: ignore[assignment]
+    cap._input_platform = "macos"  # This fixture begins after setup's measurement.
     ctx = cap._watchdog_context("sid1")
     watchdog = next(
         wd

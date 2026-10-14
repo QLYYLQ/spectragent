@@ -101,7 +101,7 @@ class _FocusCDP(FakeCDP):
 
 def _watchdog(cdp: FakeCDP) -> ActionWatchdog:
     node = _make_node(42, DOMRect(x=400.0, y=300.0, width=100.0, height=40.0))
-    return ActionWatchdog(cdp=cdp, selector_map_getter=lambda: {42: node})  # type: ignore[arg-type]
+    return ActionWatchdog(input_platform="linux", cdp=cdp, selector_map_getter=lambda: {42: node})  # type: ignore[arg-type]
 
 
 class TestTheHandlerReportsIt:

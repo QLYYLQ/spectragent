@@ -53,9 +53,12 @@ from spectragent.evaluator._screenshots import (
     clean_screenshots,
     sample_evenly,
 )
+from spectragent.evaluator.errors import EvaluationError, TraceIncompleteError
 from spectragent.evaluator.trace_view import TraceView
+from spectragent.prompts import hash_text, template_snapshot
 from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.eval_result import EvalDetails, EvalResult
+from spectragent.schemas.prompt import PromptRef
 from spectragent.schemas.task import TaskReference
 
 _TOTAL_SCORE = re.compile(r"(?:Total\s+Score|总分)\s*[:：]\s*(\d+)", re.IGNORECASE)
@@ -144,11 +147,15 @@ class LexBenchBrowserEvaluator(LLMJudgeEvaluator):
     async def evaluate(self, trace: RunTrace, reference: EvalReference) -> EvalResult:
         view = TraceView(trace)
         task_text = view.task_text
+        if not task_text.strip():
+            raise TraceIncompleteError(f"{trace.trace_dir} has no recorded task text")
         lang = self._resolve_language(reference, task_text)
         reverse, scoring_source = self._resolve_reverse(reference)
         threshold = self._resolve_threshold(reference)
 
         images, stats, frame_count = self._select_images(view)
+        if not images:
+            raise TraceIncompleteError(f"{trace.trace_dir} has no usable screenshots")
         params = self._build_params(
             view=view,
             reference=reference,
@@ -156,37 +163,90 @@ class LexBenchBrowserEvaluator(LLMJudgeEvaluator):
             screenshot_count=frame_count,
         )
 
-        system, system_snapshot = self.text_prompt(f"system_{lang}")
+        system, base_system_snapshot = self.text_prompt(f"system_{lang}")
+        dates = sorted(
+            {
+                str(fragment.today)
+                for step in trace.step_records
+                for fragment in [trace.observation_fragment(step.step, "loop.step_info")]
+                if fragment is not None and getattr(fragment, "today", None)
+            }
+        )
+        context, context_ref = self.prompt("recorded_evidence_context")
+        recording_context: dict[str, Any] = {
+            "recorded_at": str(trace.manifest.created_at),
+            "task_dates": ", ".join(dates) or "not recorded; do not infer from the current date",
+        }
+        # Keep the shipped prompt literal: only the appended context is formatted.
+        system = system + "\n\n" + context.format(**recording_context)
+        system_template = (
+            base_system_snapshot.text.replace("{", "{{").replace("}", "}}") + "\n\n" + context
+        )
+        system_snapshot = template_snapshot(
+            system_template,
+            PromptRef(
+                path=base_system_snapshot.ref.path + "+recorded_evidence_context",
+                content_hash=hash_text(system_template),
+            ),
+            recording_context,
+        )
         template = _template_name(reverse=reverse, strategy=self.eval_strategy, lang=lang)
         text, user_snapshot = self.render(template, params)
 
         tally = UsageTally()
-        response = await self.ask(system=system, text=text, images=images, tally=tally)
-
-        score = extract_score(response)
-        is_success = score is not None and score >= threshold
-
         details = EvalDetails(
             system_prompt=system_snapshot,
             user_prompt=user_snapshot,
-            response=response,
-            score=score,
-            is_correct=is_success,
-            reasoning=extract_summary(response),
-            eval_usage=tally.to_eval_usage(),
+            additional_prompts={
+                "base_system": base_system_snapshot,
+                "recorded_context": template_snapshot(context, context_ref, recording_context),
+            },
             benchmark_details={
+                **recording_context,
                 "template": template,
                 "language": lang,
                 "eval_strategy": self.eval_strategy,
                 "scoring_type": "reverse" if reverse else "normal",
                 "scoring_type_source": scoring_source,
                 "score_threshold": threshold,
-                "verdict_line": extract_verdict(response),
                 "screenshots": stats.as_dict(),
                 "images_forwarded": len(images),
+                "image_inputs": [
+                    {
+                        "data_url_sha256": hash_text(image.image_url.url),
+                        "media_type": image.image_url.media_type,
+                        "detail": image.image_url.detail,
+                    }
+                    for image in images
+                ],
                 "agent_done": view.agent_done,
             },
         )
+        try:
+            response = await self.ask(system=system, text=text, images=images, tally=tally)
+        except Exception as exc:
+            reported_usage = getattr(exc, "usage", None)
+            if reported_usage is not None:
+                tally.add(reported_usage)
+            details.eval_usage = tally.to_eval_usage()
+            details.response = str(
+                getattr(exc, "partial_output", None) or getattr(exc, "raw_output", None) or ""
+            )
+            raise EvaluationError(
+                f"Judge call failed: {type(exc).__name__}: {exc}", details=details
+            ) from exc
+        details.response = response
+        details.eval_usage = tally.to_eval_usage()
+        score = extract_score(response)
+        if score is None or not 0 <= score <= 100 or "EVIDENCE_INSUFFICIENT" in response:
+            raise EvaluationError(
+                "Judge returned no valid supported score (0–100)", details=details
+            )
+        is_success = score >= threshold
+        details.score = score
+        details.is_correct = is_success
+        details.reasoning = extract_summary(response)
+        details.benchmark_details["verdict_line"] = extract_verdict(response)
 
         return self.build_result(
             view,

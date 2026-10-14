@@ -51,6 +51,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserStateSummary,
 )
 from spectragent.schemas.observation._registrar import FragmentBase, ObservationRegistrar
+from tests._helpers.browser_platform import PlatformProbe
 
 # CDP methods that only a DOM extraction issues. Presence of any of these
 # is the measurable signal that the expensive path ran.
@@ -69,14 +70,20 @@ class _RecordingCDP:
     def __init__(self) -> None:
         self.is_connected = True
         self.sent: list[str] = []
+        self.platform_probe = PlatformProbe()
 
     async def send(
         self,
         method: str,
         params: dict[str, Any] | None = None,
         session_id: str | None = None,
+        *,
+        timeout: float | None = None,
     ) -> Any:
         self.sent.append(method)
+        platform = self.platform_probe.reply(method, params, session_id)
+        if platform is not None:
+            return platform
         if method == "Page.captureScreenshot":
             return {"data": "aGk="}  # b"hi"
         if method == "Target.getTargets":
@@ -115,6 +122,7 @@ async def _observe_once(
     socket, which is what lets us count round trips.
     """
     cap._cdp = cdp  # type: ignore[assignment]
+    cap._input_platform = "macos"  # this helper starts after the setup measurement
     group = ScopeGroup("test")
     scope: EventScope = await group.create_scope("tab1", target_id="tab1")
     for wd in cap._create_watchdogs_for_scope(level="tab", cdp_session_id="sid1"):
@@ -313,7 +321,7 @@ class TestNegotiationDrivenCost:
         env = _ProbeEnv(capabilities={"browser#0": cap})
 
         assert env.provided_fragments == frozenset(
-            {"browser.dom", "browser.screenshot", "browser.browser_meta"}
+            {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"}
         )
 
         class _Negotiated:
@@ -362,6 +370,7 @@ class TestWatchdogContract:
     def test_every_registered_watchdog_is_buildable_from_context(self) -> None:
         cap = BrowserCapability()
         cap._cdp = _RecordingCDP()  # type: ignore[assignment]
+        cap._input_platform = "macos"
         ctx = cap._watchdog_context("sid1")
         for name, cls in browser_watchdog_classes().items():
             assert isinstance(cls.build(ctx), cls), name
@@ -372,6 +381,7 @@ class TestWatchdogContract:
         assert CrashWatchdog.level == "browser"
         cap = BrowserCapability()
         cap._cdp = _RecordingCDP()  # type: ignore[assignment]
+        cap._input_platform = "macos"
         built = cap._create_watchdogs_for_scope(level="browser")
         assert [type(w) for w in built] == [CrashWatchdog]
 
@@ -627,6 +637,7 @@ class TestDomCleanerIsAWiredReceptor:
     def test_the_configured_instance_is_the_one_that_cleans(self) -> None:
         cap = self._compose({"cleaner_type": "browser_use", "descendants_occlude": True})
         cap._cdp = _RecordingCDP()  # type: ignore[assignment]
+        cap._input_platform = "macos"
         watchdog = next(
             wd
             for wd in cap._create_watchdogs_for_scope(level="tab", cdp_session_id="sid1")

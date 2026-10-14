@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from spectragent.core.capabilities.browser.input import HumanKeyboard, InstantRhythm, Keystroke
+from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.watchdogs.action_watchdog import (
     _KEY_INFO,
     ActionWatchdog,
@@ -73,7 +74,7 @@ def test_enter_is_a_real_enter() -> None:
 @pytest.mark.parametrize("keys", [*SEND_KEYS, *CHORDS])
 async def test_send_keys_sends_no_native_code(keys: str) -> None:
     cdp = FakeCDP()
-    watchdog = ActionWatchdog(cdp=cdp, selector_map_getter=dict)  # type: ignore[arg-type]
+    watchdog = ActionWatchdog(input_platform="linux", cdp=cdp, selector_map_getter=dict)  # type: ignore[arg-type]
     await watchdog._on_send_keys(SendKeysEvent(keys=keys))
     events = _key_events(cdp)
     assert [event["type"] for event in events if event["type"] != "char"] == ["keyDown", "keyUp"]
@@ -82,17 +83,86 @@ async def test_send_keys_sends_no_native_code(keys: str) -> None:
 
 async def test_a_chord_keeps_its_modifiers() -> None:
     cdp = FakeCDP()
-    watchdog = ActionWatchdog(cdp=cdp, selector_map_getter=dict)  # type: ignore[arg-type]
+    watchdog = ActionWatchdog(input_platform="linux", cdp=cdp, selector_map_getter=dict)  # type: ignore[arg-type]
     await watchdog._on_send_keys(SendKeysEvent(keys="ctrl+shift+a"))
     down, char, up = _key_events(cdp)
     assert (down["key"], down["code"], down["windowsVirtualKeyCode"]) == ("a", "KeyA", 65)
-    assert down["modifiers"] == char["modifiers"] == up["modifiers"] == 1 | 8
-    assert char == {"type": "char", "text": "a", "key": "a", "modifiers": 9}
+    assert down["modifiers"] == char["modifiers"] == up["modifiers"] == 2 | 8
+    assert char == {"type": "char", "text": "a", "key": "a", "modifiers": 10}
+
+
+@pytest.mark.parametrize(
+    "chord,expected",
+    [
+        ("ctrl+a", 2),
+        ("Control+a", 2),
+        ("alt+a", 1),
+        ("Option+a", 1),
+        ("meta+a", 4),
+        ("cmd+a", 4),
+        ("Command+a", 4),
+        ("shift+a", 8),
+    ],
+)
+async def test_named_chords_use_the_cdp_modifier_bits(chord, expected):
+    cdp = FakeCDP()
+    watchdog = ActionWatchdog(input_platform="linux", cdp=cdp, selector_map_getter=dict)  # type: ignore[arg-type]
+    await watchdog._on_send_keys(SendKeysEvent(keys=chord))
+    assert all(event["modifiers"] == expected for event in _key_events(cdp))
+
+
+@pytest.mark.parametrize("platform", ["macos", "windows", "linux"])
+@pytest.mark.parametrize(
+    "chord",
+    [
+        "ctrl+a",
+        "Control+A",
+        "meta+a",
+        "cmd+a",
+        "Command+A",
+        "ctrl+shift+a",
+        "meta+shift+a",
+        "alt+ctrl+a",
+        "ctrl+meta+a",
+        "ctrl+c",
+        "cmd+x",
+    ],
+)
+async def test_only_the_measured_platforms_native_select_all_gets_an_editing_command(
+    platform: InputPlatform,
+    chord: str,
+):
+    cdp = FakeCDP()
+    watchdog = ActionWatchdog(cdp=cdp, input_platform=platform, selector_map_getter=dict)  # type: ignore[arg-type]
+    await watchdog._on_send_keys(SendKeysEvent(keys=chord))
+    events = _key_events(cdp)
+    native = chord.lower() in (
+        ("meta+a", "cmd+a", "command+a") if platform == "macos" else ("ctrl+a", "control+a")
+    )
+    assert events[0].get("commands", []) == (["selectAll"] if native else [])
+    assert all("commands" not in event for event in events[1:])
+    if native:
+        assert [event["type"] for event in events] == ["keyDown", "keyUp"]
+
+
+@pytest.mark.parametrize("chord", ["", " ", "ctrl+", "+a", "ctrl++a", "hyper+a", "commnad+a"])
+async def test_empty_keys_and_unknown_modifiers_are_refused_before_dispatch(chord):
+    cdp = FakeCDP()
+    watchdog = ActionWatchdog(cdp=cdp, input_platform="macos", selector_map_getter=dict)  # type: ignore[arg-type]
+    result = await watchdog._on_send_keys(SendKeysEvent(keys=chord))
+    assert result is not None and result["error"]
+    assert _key_events(cdp) == []
+
+
+@pytest.mark.parametrize("platform", [None, "unknown"])
+def test_keyboard_requires_a_measured_platform(platform):
+    with pytest.raises(ValueError, match="measured browser input_platform"):
+        HumanKeyboard(RecordCDP(), input_platform=platform)
 
 
 async def test_typing_sends_no_native_code(no_sleep: list[float]) -> None:
     cdp = RecordCDP()
-    keyboard = HumanKeyboard(cdp, rhythm=_Rhythm())
+    keyboard = HumanKeyboard(cdp, input_platform="linux", rhythm=_Rhythm())
     text = string.printable  # letters, digits, punctuation, space, \t\n\r\x0b\x0c
     await keyboard.type_text(text)
     events = cdp.key_events()
@@ -107,7 +177,7 @@ async def test_typing_sends_no_native_code(no_sleep: list[float]) -> None:
 async def test_clearing_sends_no_native_code(no_sleep: list[float]) -> None:
     for rhythm in (InstantRhythm(), _Rhythm()):
         cdp = RecordCDP()
-        await HumanKeyboard(cdp, rhythm=rhythm).clear_focused()  # type: ignore[arg-type]
+        await HumanKeyboard(cdp, input_platform="linux", rhythm=rhythm).clear_focused()  # type: ignore[arg-type]
         events = cdp.key_events()
         assert [event["key"] for event in events if event["type"] == "keyDown"][1:] == [
             "a",

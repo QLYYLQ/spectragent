@@ -37,6 +37,7 @@ async def test_humanized_click_emits_curved_path(no_sleep: None) -> None:
     # Live rect center = (600 + 40/2, 400 + 20/2) = (620, 410).
     cdp = FakeCDP(rect={"x": 600.0, "y": 400.0, "w": 40.0, "h": 20.0})
     wd = ActionWatchdog(
+        input_platform="linux",
         cdp=cdp,  # type: ignore[arg-type]
         selector_map_getter=lambda: {42: node},
         mouse_trajectory=WindMouseTrajectory(seed=1),
@@ -69,6 +70,7 @@ async def test_default_watchdog_click_is_single_jump() -> None:
     node = _make_node(42, DOMRect(x=400.0, y=300.0, width=100.0, height=40.0))
     cdp = FakeCDP(rect={"x": 600.0, "y": 400.0, "w": 40.0, "h": 20.0})
     wd = ActionWatchdog(
+        input_platform="linux",
         cdp=cdp,  # type: ignore[arg-type]
         selector_map_getter=lambda: {42: node},
     )
@@ -85,9 +87,13 @@ async def test_default_watchdog_click_is_single_jump() -> None:
 
 async def test_humanized_follows_the_strategy() -> None:
     cdp = FakeCDP()
-    windmouse = ActionWatchdog(cdp=cdp, mouse_trajectory=WindMouseTrajectory())  # type: ignore[arg-type]
-    instant = ActionWatchdog(cdp=cdp, mouse_trajectory=InstantTrajectory())  # type: ignore[arg-type]
-    unset = ActionWatchdog(cdp=cdp)  # type: ignore[arg-type]
+    windmouse = ActionWatchdog(
+        input_platform="linux",
+        cdp=cdp,  # type: ignore[arg-type]
+        mouse_trajectory=WindMouseTrajectory(),
+    )
+    instant = ActionWatchdog(input_platform="linux", cdp=cdp, mouse_trajectory=InstantTrajectory())  # type: ignore[arg-type]
+    unset = ActionWatchdog(input_platform="linux", cdp=cdp)  # type: ignore[arg-type]
     assert windmouse._mouse.humanized is True
     assert instant._mouse.humanized is False
     assert unset._mouse.humanized is False
@@ -103,7 +109,7 @@ async def test_cursor_approach_before_type_follows_the_strategy(
 ) -> None:
     """type/select only move the cursor first when the strategy is humanized."""
     cdp = FakeCDP(rect={"x": 600.0, "y": 400.0, "w": 40.0, "h": 20.0})
-    wd = ActionWatchdog(cdp=cdp, mouse_trajectory=strategy)  # type: ignore[arg-type]
+    wd = ActionWatchdog(input_platform="linux", cdp=cdp, mouse_trajectory=strategy)  # type: ignore[arg-type]
     await wd._approach_node(42)
     moves = [
         c

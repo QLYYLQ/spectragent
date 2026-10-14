@@ -24,6 +24,7 @@ from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
+    BrowserPlatformObs,
     DOMObs,
     ScreenshotObs,
 )
@@ -71,6 +72,7 @@ class TestObservationNegotiation:
     def test_ui_tars_does_not_activate_dom(self) -> None:
         # Env provides everything (browser capability default).
         env_provides = {
+            "browser.platform",
             "browser.dom",
             "browser.screenshot",
             "browser.browser_meta",
@@ -90,6 +92,7 @@ class TestObservationNegotiation:
 
     def test_browser_use_activates_dom_screenshot_and_meta(self) -> None:
         env_provides = {
+            "browser.platform",
             "browser.dom",
             "browser.screenshot",
             "browser.browser_meta",
@@ -113,7 +116,7 @@ class TestObservationNegotiation:
         result = _observation_rules(
             agent=extract_wiring(SkyvernAgent, "observation"),
             loop=extract_wiring(ReactLoop, "observation"),
-            env_provides={"browser.dom"},
+            env_provides={"browser.dom", "browser.platform"},
         )
         assert "browser.dom" in result.active_fragments
         assert "browser.screenshot" not in result.active_fragments
@@ -295,6 +298,7 @@ class TestAgentToCapabilityActionVocabulary:
                 "Obs",
                 (),
                 {
+                    "platform": BrowserPlatformObs(operating_system="macos"),
                     "task": type("Task", (), {"user_request": "t"})(),
                     "screenshot": ScreenshotObs(
                         image_bytes=b"\x89PNG\r\n\x1a\n",
@@ -373,6 +377,7 @@ class TestReactLoopDriveBrowserUse:
             "Obs",
             (),
             {
+                "platform": BrowserPlatformObs(operating_system="macos"),
                 "dom": DOMObs(),
                 "screenshot": ScreenshotObs(image_bytes=b"\x89PNG\r\n\x1a\n"),
                 "browser_meta": BrowserMetaObs(

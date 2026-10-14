@@ -30,6 +30,7 @@ from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
+    BrowserPlatformObs,
     DOMObs,
     ScreenshotObs,
 )
@@ -231,8 +232,8 @@ class _Env2:
 class _Negotiated:
     """The observation is a plain object, so no loop fragment is populated onto it."""
 
-    active_fragments = {"dom", "screenshot", "browser_meta", "loop.task"}
-    env_sourced = {"dom", "screenshot", "browser_meta"}
+    active_fragments = {"dom", "screenshot", "browser_meta", "platform", "loop.task"}
+    env_sourced = {"dom", "screenshot", "browser_meta", "platform"}
     loop_sourced: set[str] = set()
 
 
@@ -241,6 +242,7 @@ def _observation() -> Any:
         "Obs",
         (),
         {
+            "platform": BrowserPlatformObs(operating_system="macos"),
             "dom": DOMObs(),
             "screenshot": ScreenshotObs(
                 image_bytes=_PNG,

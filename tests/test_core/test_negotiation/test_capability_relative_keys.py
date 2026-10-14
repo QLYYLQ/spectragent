@@ -145,6 +145,15 @@ class DesktopScreenshotObs(FragmentBase):
     viewport_height: int = 0
 
 
+class DesktopPlatformObs(FragmentBase):
+    """The same platform fact can be offered by a desktop capability."""
+
+    __registry_key__ = "desktop.platform"
+    __source__: ClassVar[Literal["env", "loop"]] = "env"
+
+    operating_system: Literal["macos", "windows", "linux"]
+
+
 @dataclass
 class MockDesktopCapability(CapabilityBase):
     """A desktop VM: the same domain verbs, a different provider.
@@ -541,12 +550,12 @@ class _BrowserActionsAndFragments:
             "browser.wait",
         }
     )
-    provided_fragments = frozenset({"browser.screenshot", "browser.dom"})
+    provided_fragments = frozenset({"browser.screenshot", "browser.dom", "browser.platform"})
 
 
 class _DesktopActionsAndFragments:
     provided_actions = MockDesktopCapability().provided_actions
-    provided_fragments = frozenset({"desktop.screenshot"})
+    provided_fragments = frozenset({"desktop.screenshot", "desktop.platform"})
 
 
 class TestUITarsRunsWhereverItsVerbsExist:
@@ -587,13 +596,14 @@ class TestUITarsRunsWhereverItsVerbsExist:
         assert all(a.startswith("desktop.") for a in result.active_actions)
 
     def test_observation_negotiates_against_both(self) -> None:
-        for env, expected in (
-            (_BrowserActionsAndFragments(), "browser.screenshot"),
-            (_DesktopActionsAndFragments(), "desktop.screenshot"),
+        for env, prefix in (
+            (_BrowserActionsAndFragments(), "browser"),
+            (_DesktopActionsAndFragments(), "desktop"),
         ):
             result = negotiate_observation(UITarsAgent(), ReactLoop(), env)
-            assert result.env_sourced == frozenset({expected})
-            assert result.fragment_bindings["screenshot"] == expected
+            assert result.env_sourced == frozenset({f"{prefix}.screenshot", f"{prefix}.platform"})
+            assert result.fragment_bindings["screenshot"] == f"{prefix}.screenshot"
+            assert result.fragment_bindings["platform"] == f"{prefix}.platform"
             # The loop-source half resolves the same relative way.
             assert "loop.task" in result.loop_sourced
 
@@ -639,7 +649,7 @@ class TestUITarsRunsWhereverItsVerbsExist:
                 ),
                 "observation": (
                     "observation",
-                    ["desktop.screenshot", "task"],
+                    ["desktop.screenshot", "desktop.platform", "task"],
                     [],
                 ),
             }
@@ -658,7 +668,14 @@ class TestUITarsRunsWhereverItsVerbsExist:
         )
 
         class _CompositeFragments:
-            provided_fragments = frozenset({"browser.screenshot", "desktop.screenshot"})
+            provided_fragments = frozenset(
+                {
+                    "browser.screenshot",
+                    "browser.platform",
+                    "desktop.screenshot",
+                    "desktop.platform",
+                }
+            )
 
         observed = negotiate_observation(_PinnedUITars(), ReactLoop(), _CompositeFragments())
-        assert observed.env_sourced == frozenset({"desktop.screenshot"})
+        assert observed.env_sourced == frozenset({"desktop.screenshot", "desktop.platform"})

@@ -32,6 +32,7 @@ from pydantic import BaseModel, ValidationError
 import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers them
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.capabilities.browser.observations import BrowserPlatformObs
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.react import ReactLoop, _serialize_llm_output
@@ -192,6 +193,7 @@ class _FakeEnv:
     async def observe(self, *_a: Any, **_kw: Any) -> Any:
         return SimpleNamespace(
             task=SimpleNamespace(user_request="task", follow_ups=[]),
+            platform=BrowserPlatformObs(operating_system="macos"),
             history=None,
             browser_meta=None,
             dom=None,

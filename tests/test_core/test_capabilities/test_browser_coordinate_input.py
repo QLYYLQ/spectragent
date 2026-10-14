@@ -48,7 +48,7 @@ class _FakeCDP:
 
 def _watchdog(cdp: _FakeCDP) -> ActionWatchdog:
     # Empty selector map: exactly what a vision-only run has.
-    return ActionWatchdog(cdp=cdp, selector_map_getter=dict)  # type: ignore[arg-type]
+    return ActionWatchdog(input_platform="linux", cdp=cdp, selector_map_getter=dict)  # type: ignore[arg-type]
 
 
 class TestTypeAtCoordinate:

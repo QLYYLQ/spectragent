@@ -50,6 +50,53 @@ the local append-only ledger, without changing that upstream repository; do not 
 the local commits without current authorization. Preserve failed experimental traces
 and compare completed-run counts as well as per-step fidelity.
 
+### Subsequent approved work (2026-10-14)
+
+The user then authorized the next replay/model-validation phase. Its current report
+is `tmp/flywheel/followup/replay_next/report.md`; the associated `session_status.md`
+is a continuation ledger, whose later entries supersede its earlier progress notes.
+Read the report's final verification status before treating the work as accepted.
+
+Decided and implemented in this phase: measure the recording's current color theme
+and pin it for replay; retain same-capture screenshot source URLs as restoration
+evidence without showing them to pure-vision agents; enable an independent offline
+judge stage; provide candidate dynamic-region diagnostics without extra captures,
+masking, or changed strict checks. A UI navigation guard implements the user's
+no-constructed-URL task protocol. The export side remains frozen.
+
+The user explicitly revoked the interim proposal to treat Ctrl+A and Cmd+A as the
+same intent. The final contract measures the actual browser input platform, exposes
+it through the required `browser.platform` observation, and optionally asserts
+`expected_platform`; mismatch or failed measurement refuses setup. Literal key
+modifiers are preserved. Only a platform's native select-all chord may carry the CDP
+editing command; the page can still cancel its default behavior. The same measured
+fact drives semantic `clear=True` and the replay fingerprint. Old traces without
+platform evidence are retained for offline analysis, not silently repaired.
+
+Real local Chrome controls exposed two execution defects: held mouse moves needed
+both `button` and `buttons`, and `send_keys` reversed the Ctrl/Alt modifier masks.
+Both are fixed, and drag release cleanup is bounded. The zero-model three-strategy
+control baseline improved from 6/12 to 12/12. Of 15 single model mouse predictions,
+14 reached the requested controls through all three strategies; Qwen's remaining
+failure was a roughly 109-pixel y-coordinate error. This is a small ordinary-UI
+fixture, not a CAPTCHA or complex-site success claim.
+
+LongCat-Flash-Chat and LongCat-Flash-Thinking exact routes both returned 503; no
+substitute name was used. Gemini 3.8 Flash, GPT-6 Luna, Qwen 3.8 Flash and the two
+specified Doubao Seed 2.0 variants completed single-image mouse trials, but routing,
+latency, truncation and task-level limitations remain separately documented. The
+new L1 recordings passed 18/36 restoration checks and 2/8 whole paths; unlike the
+old 79.7% result, all these checks had URL evidence, and the tasks differ. Xiaohongshu
+was a separately labelled login-blocked L2 entry, not a completed complex task.
+Four independent judge calls yielded one valid verdict and three timeouts; judge
+coverage is not task correctness. Eight strict branch attempts yielded five restore
+refusals and three teacher calls, of which two produced actions.
+
+The local `agentcdp_current_status.md` confirms that the upstream proposal exists:
+items 1–9 were decided, while 10–23 still contain undecided scope/API semantics.
+The installed upstream remains 0.4.0; it was not edited or published. Preserve the
+append-only requirements ledger and distinguish AF-side fixes from upstream work.
+
 ### Earlier snapshot
 
 Done: eight commits on `main` after `661c924`, `422b006` to `1ad8e47`, covering typed

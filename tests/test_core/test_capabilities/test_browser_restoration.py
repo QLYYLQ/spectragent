@@ -462,6 +462,29 @@ def restored_view(fragments: dict[str, Any]) -> Any:
 
 
 class TestMeasure:
+    @pytest.mark.parametrize(
+        "restored_url, expected",
+        [("https://shop.test/a", True), ("https://shop.test/b", False), (None, None)],
+    )
+    def test_visual_observations_compare_the_screenshot_source_url(
+        self, restored_url: str | None, expected: bool | None
+    ) -> None:
+        before = shot(png())
+        before.source_url = "https://shop.test/a"
+        after = shot(png())
+        after.source_url = restored_url
+        evidence = measure(
+            recorded_view({"screenshot": before}),
+            observation(screenshot=after),
+            capability_id="browser",
+            document_misses=0,
+        )
+        assert evidence.url_match is expected
+        assert evidence.recorded_url == before.source_url
+        assert evidence.restored_url == restored_url
+        assert evidence.signature_match is None
+        assert evidence.screenshot_distance == 0
+
     def test_a_faithful_restoration_measures_clean(self) -> None:
         fragments = full()
         evidence = measure(

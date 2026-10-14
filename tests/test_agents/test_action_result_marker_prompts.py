@@ -73,6 +73,7 @@ def _observation(marker: bool | None) -> Any:
         prev_step=step,
     )
     return SimpleNamespace(
+        platform=SimpleNamespace(operating_system="macos"),
         **{fragment_field_name(key): build() for key, build in builders.items()},
         screenshot=ScreenshotObs(
             image_bytes=_png(),

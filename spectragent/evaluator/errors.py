@@ -16,9 +16,18 @@ classes depending on who happened to ask.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from spectragent.schemas.eval_result import EvalDetails
+
 
 class EvaluationError(RuntimeError):
     """Base class for evaluator failures."""
+
+    def __init__(self, message: str, *, details: EvalDetails | None = None) -> None:
+        super().__init__(message)
+        self.details = details
 
 
 class TraceIncompleteError(EvaluationError):

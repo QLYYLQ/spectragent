@@ -13,6 +13,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import ExecuteJavaSc
 from spectragent.core.capabilities.browser.watchdogs.js_execution import (
     JavaScriptExecutionWatchdog,
 )
+from tests._helpers.browser_platform import PlatformProbe
 
 
 class _ObserveRequest(BaseEvent[dict[str, Any]]):
@@ -25,15 +26,21 @@ class _CDP:
         self.sent: list[tuple[str, dict[str, Any], str | None]] = []
         self.callbacks: dict[str, list[Any]] = {}
         self.targets = {"a"}
+        self.platform_probe = PlatformProbe()
 
     async def send(
         self,
         method: str,
         params: dict[str, Any] | None = None,
         session_id: str | None = None,
+        *,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         params = dict(params or {})
         self.sent.append((method, params, session_id))
+        platform = self.platform_probe.reply(method, params, session_id)
+        if platform is not None:
+            return platform
         if method == "Target.attachToTarget":
             return {"sessionId": f"sid-{params['targetId']}"}
         if method == "Target.getTargets":

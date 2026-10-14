@@ -30,11 +30,11 @@ class TestStaticContract:
     def test_provided_fragments(self) -> None:
         cap = BrowserCapability()
         assert cap.provided_fragments == frozenset(
-            {"browser.dom", "browser.screenshot", "browser.browser_meta"}
+            {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"}
         )
 
     def test_wiring_observation(self) -> None:
-        # Wiring declares the three fragments under the "observation" registry
+        # Wiring derives all four fragments from the registered resolvers.
         wiring = BrowserCapability.__wiring__
         assert "observation" in wiring
         registry, frags = wiring["observation"]
@@ -43,6 +43,7 @@ class TestStaticContract:
             "browser.dom",
             "browser.screenshot",
             "browser.browser_meta",
+            "browser.platform",
         }
 
     def test_wiring_backend(self) -> None:
@@ -331,6 +332,9 @@ class TestBackendIoC:
 
         class _StubCDPClient:
             def __init__(self, url: str, **kwargs) -> None:
+                from tests._helpers.browser_platform import PlatformProbe
+
+                self.platform_probe = PlatformProbe()
                 cdp_clients_constructed.append(url)
                 recorded_kwargs.append(kwargs)
                 self.callbacks: dict[str, list[Any]] = {}
@@ -348,6 +352,13 @@ class TestBackendIoC:
                 return None
 
             async def send(self, *args, **kwargs):  # noqa: ARG002
+                platform = self.platform_probe.reply(
+                    args[0],
+                    args[1] if len(args) > 1 else kwargs.get("params"),
+                    args[2] if len(args) > 2 else kwargs.get("session_id"),
+                )
+                if platform is not None:
+                    return platform
                 return {"targetInfos": [{"type": "page", "targetId": "t0", "url": ""}]}
 
         class _StubScopeGroup:

@@ -11,6 +11,7 @@ Spelled ``none``, the configuration surface's word for "not enabled": a bare
 """
 
 from spectragent.core.capabilities.browser.client_hints import ClientHints
+from spectragent.core.capabilities.browser.color_scheme import ColorScheme
 from spectragent.core.capabilities.browser.replay.replayability import (
     ReplayabilityBase,
     ReplayabilityPlan,
@@ -37,6 +38,11 @@ class NoneReplayability(ReplayabilityBase):
         return 0.0
 
     def plan(
-        self, *, t0_ms: int, browser_user_agent: str, client_hints: ClientHints | None = None
+        self,
+        *,
+        t0_ms: int,
+        browser_user_agent: str,
+        client_hints: ClientHints | None = None,
+        color_scheme: ColorScheme | None = None,
     ) -> ReplayabilityPlan:
         return ReplayabilityPlan(tier=self.replayability_id)

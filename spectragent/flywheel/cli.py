@@ -5,6 +5,7 @@
     spectragent-flywheel run --spec chain.yaml [--stages record,same_path,report]
     spectragent-flywheel report --spec chain.yaml [--out DIR]
     spectragent-flywheel report --root traces/chains/first-live --evidence live|rehearsal [--out DIR]
+    spectragent-flywheel diagnose --recordings DIR --replays DIR --out NEW_DIR
 
 ``run`` runs the spec's stages in order (``chain.py``); ``report`` reads
 the chain root only — committed runs and published datasets — and can be
@@ -30,6 +31,8 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from spectragent.flywheel.chain import (
     ChainConfigError,
     ChainSpec,
@@ -37,6 +40,7 @@ from spectragent.flywheel.chain import (
     build_spec_report,
     run_chain,
 )
+from spectragent.flywheel.diagnostics import DiagnosticInputError, DifferenceMethod, diagnose
 from spectragent.flywheel.metrics import ChainLayout, DatasetFormatError
 from spectragent.flywheel.report import FlywheelReport, build_report, write_report
 
@@ -73,6 +77,43 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument(
         "--out", type=Path, help="Where to write the report (default <root>/report)."
     )
+    diagnostic = commands.add_parser(
+        "diagnose",
+        help="Inspect recorded screenshots and repeat differences offline; no verdict changes.",
+    )
+    diagnostic.add_argument(
+        "--recordings", required=True, type=Path, help="Directory of source recording runs."
+    )
+    diagnostic.add_argument(
+        "--replays",
+        required=True,
+        type=Path,
+        help="Directory of replay runs with branch provenance.",
+    )
+    diagnostic.add_argument(
+        "--out",
+        required=True,
+        type=Path,
+        help="New output directory outside the input directories.",
+    )
+    diagnostic.add_argument(
+        "--pixel-threshold",
+        type=int,
+        default=16,
+        help="A changed pixel exceeds this RGB channel difference (0–255; default 16).",
+    )
+    diagnostic.add_argument(
+        "--grid-size",
+        type=int,
+        default=32,
+        help="Grid cell side length in pixels (positive; default 32).",
+    )
+    diagnostic.add_argument(
+        "--cell-fraction",
+        type=float,
+        default=0.01,
+        help="Changed pixel fraction needed to mark a cell (0 < value <= 1; default 0.01).",
+    )
     return parser
 
 
@@ -84,6 +125,28 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     try:
+        if args.command == "diagnose":
+            try:
+                method = DifferenceMethod(
+                    pixel_threshold=args.pixel_threshold,
+                    grid_size=args.grid_size,
+                    cell_fraction=args.cell_fraction,
+                )
+                diagnostic = diagnose(args.recordings, args.replays, args.out, method=method)
+            except (DiagnosticInputError, ValidationError) as exc:
+                raise ChainConfigError(str(exc)) from exc
+            except OSError as exc:
+                raise ChainStageError(
+                    "diagnose", f"cannot read inputs or write diagnostics to {args.out}: {exc}"
+                ) from exc
+            print(
+                f"diagnostics: {args.out / 'index.html'}\ndiagnostics: {args.out / 'diagnostics.json'}"
+            )
+            print(
+                f"comparisons: {diagnostic.summary['recording_pairs_compared']} recording/replay, "
+                f"{diagnostic.summary['repeat_pairs_compared']} replay/replay"
+            )
+            return 0
         if args.command == "run":
             spec = ChainSpec.load(args.spec)
             stages = (

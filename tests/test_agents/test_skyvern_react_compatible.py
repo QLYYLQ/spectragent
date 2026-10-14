@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from spectragent.agents._output_models import SkyvernActionItem, SkyvernOutput
@@ -81,6 +82,7 @@ class _FakeObservation:
         self.dom = dom
         self.browser_meta = browser_meta
         self.task = task or _FakeTask()
+        self.platform = SimpleNamespace(operating_system="macos")
         self.step_info = step_info
 
 
@@ -127,7 +129,7 @@ class TestWiring:
         wiring = SkyvernAgent.__wiring__
         assert wiring["observation"] == (
             "observation",
-            ["dom", "task"],
+            ["dom", "platform", "task"],
             [
                 "screenshot",
                 "browser_meta",

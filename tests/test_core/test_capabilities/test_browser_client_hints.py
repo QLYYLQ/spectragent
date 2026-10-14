@@ -269,12 +269,14 @@ class TestSetup:
             await cap.setup()
         await cap.teardown()
 
-    async def test_the_none_tier_reads_nothing(self) -> None:
+    async def test_the_none_tier_reads_no_client_hints(self) -> None:
         cap, browser = await _setup(NoneReplayability())
         await cap.setup()
         try:
             assert cap._recorder is None
-            sent = [s.method for client in browser.clients for s in client.sent]
-            assert "Target.createTarget" not in sent
+            assert not browser.client_hints_contexts
+            # Actual input platform is now an independent requirement on every
+            # browser, including none; it does not turn on UA emulation.
+            assert browser.platform_contexts
         finally:
             await cap.teardown()

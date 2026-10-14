@@ -28,6 +28,7 @@ from typing import Any, Protocol, runtime_checkable
 from conscribe import create_registrar
 
 from spectragent.core.capabilities.browser.client_hints import ClientHints
+from spectragent.core.capabilities.browser.color_scheme import ColorScheme
 from spectragent.core.capabilities.browser.recorder import (
     FRAME_TARGET_TYPES,
     WORKER_TARGET_TYPES,
@@ -60,6 +61,8 @@ class ReplayabilityPlan(RecorderParticipantBase):
     #: The client hints the tier's user-agent override carries (the browser's
     #: own, ``client_hints.py``); ``None`` when it carries none.
     client_hints: ClientHints | None = None
+    #: The measured recording theme, or the theme inherited from its archive.
+    color_scheme: ColorScheme | None = None
     #: Why this plan cannot be honoured in this browser (a Chrome identifier
     #: its own client hints contradict), one line each naming both sides. Not
     #: fingerprinted: setup refuses the run before the recorder prepares any
@@ -77,7 +80,7 @@ class ReplayabilityPlan(RecorderParticipantBase):
 
     def fingerprint(self) -> dict[str, Any]:
         """The tier as the environment fingerprint records it."""
-        return {
+        record = {
             "tier": self.tier,
             "params": dict(self.params),
             "t0_ms": self.t0_ms,
@@ -86,6 +89,9 @@ class ReplayabilityPlan(RecorderParticipantBase):
             "replayability_env": dict(self.replayability_env),
             "client_hints": self.client_hints.as_metadata() if self.client_hints else None,
         }
+        if self.color_scheme is not None:
+            record["color_scheme"] = self.color_scheme
+        return record
 
 
 @runtime_checkable
@@ -126,6 +132,15 @@ class ReplayabilityProtocol(Protocol):
         """
         ...
 
+    @property
+    def needs_color_scheme(self) -> bool:
+        """Whether the plan pins the recording's measured media theme.
+
+        Read after launch for a live run; read from the source fingerprint
+        before launch for an archive replay. Never inferred from a default.
+        """
+        ...
+
     def launch_args(self) -> tuple[str, ...]:
         """Chrome switches this tier owns; ``()`` for ``none``."""
         ...
@@ -140,13 +155,21 @@ class ReplayabilityProtocol(Protocol):
         ...
 
     def plan(
-        self, *, t0_ms: int, browser_user_agent: str, client_hints: ClientHints | None = None
+        self,
+        *,
+        t0_ms: int,
+        browser_user_agent: str,
+        client_hints: ClientHints | None = None,
+        color_scheme: ColorScheme | None = None,
     ) -> ReplayabilityPlan:
         """This run's plan. The configured instance keeps no run state.
 
         *client_hints* are the browser's own, read after launch when
         :attr:`needs_client_hints`; ``None`` when not read (the consistency
         check plans with none, for the parameters only).
+        *color_scheme* is the recording's measured theme, inherited from the
+        archive when replaying; ``None`` only for an unpinned tier or a plan
+        built before launch to compare configuration parameters.
         """
         ...
 
@@ -190,6 +213,10 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
     def needs_client_hints(self) -> bool:
         return False
 
+    @property
+    def needs_color_scheme(self) -> bool:
+        return False
+
     def launch_args(self) -> tuple[str, ...]:
         raise NotImplementedError(
             f"replayability tier {self.replayability_id!r} must say which launch switches it owns"
@@ -202,7 +229,12 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
         )
 
     def plan(
-        self, *, t0_ms: int, browser_user_agent: str, client_hints: ClientHints | None = None
+        self,
+        *,
+        t0_ms: int,
+        browser_user_agent: str,
+        client_hints: ClientHints | None = None,
+        color_scheme: ColorScheme | None = None,
     ) -> ReplayabilityPlan:
         raise NotImplementedError(
             f"replayability tier {self.replayability_id!r} must build a ReplayabilityPlan"

@@ -4,9 +4,8 @@ When the browser follows a tab the page opened, every fragment of the next
 capture carries ``focus_moved``. The agents render what the page shows — the
 screenshot, the URL, the tab list, the DOM — and nothing of that record, so a
 prompt changes only because the observation shows another page, never because
-of the record itself. And an observation without a move builds the prompt it
-always built: UI-TARS's is pinned below by its digest, recorded from the
-commit before focus moves existed.
+of the record itself. UI-TARS's no-move baseline also includes the required
+measured platform fact, pinned below by its digest.
 """
 
 from __future__ import annotations
@@ -41,9 +40,9 @@ _AGENTS: dict[str, type[Any]] = {
 }
 _MOVE = FocusMove(reason="new_tab", from_tab="OPENER", to_tab="FOLLOWED")
 #: sha256 of UI-TARS's messages (system prompt, then this step's) for :func:`_observation`
-#: with no move, measured on the commit before focus moves existed. A deliberate change to
+#: with no move and the measured macOS platform. A deliberate change to
 #: UI-TARS's prompt updates it; nothing in this package may.
-UI_TARS_PROMPT_SHA256 = "9ab41f5fa089188435f3057f8272642161710eadc9f25defad6ae5ac96be05b4"
+UI_TARS_PROMPT_SHA256 = "27d2d4636432b03e682fbc3b3a3f0f1be2e08fe985c0587e7a98e79a3d7a9cc1"
 
 
 def _png(width: int = 1280, height: int = 720) -> bytes:
@@ -77,6 +76,7 @@ def _observation(move: FocusMove | None) -> Any:
         },
     ]
     return SimpleNamespace(
+        platform=SimpleNamespace(operating_system="macos"),
         **{fragment_field_name(key): build() for key, build in builders.items()},
         screenshot=ScreenshotObs(
             image_bytes=_png(),
@@ -130,6 +130,6 @@ def test_the_tab_list_the_comparison_relies_on_is_rendered() -> None:
     assert "https://news.test/a/1" in text and "FOLLOWED" in text
 
 
-def test_ui_tars_builds_the_prompt_it_built_before() -> None:
+def test_ui_tars_no_focus_move_prompt_is_stable() -> None:
     encoded = json.dumps(_messages("ui_tars", None), sort_keys=True, default=repr).encode()
     assert hashlib.sha256(encoded).hexdigest() == UI_TARS_PROMPT_SHA256

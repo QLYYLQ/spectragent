@@ -38,6 +38,7 @@ from spectragent.core.capabilities.browser.dom.models import (
 )
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
+    BrowserPlatformObs,
     DOMObs,
     ScreenshotObs,
 )
@@ -127,7 +128,9 @@ class FakeBrowserCap(CapabilityBase):
 
     @property
     def declared_fragments(self) -> frozenset[str]:
-        return frozenset({"browser.dom", "browser.screenshot", "browser.browser_meta"})
+        return frozenset(
+            {"browser.dom", "browser.screenshot", "browser.browser_meta", "browser.platform"}
+        )
 
     @property
     def provided_actions(self) -> frozenset[str]:
@@ -140,6 +143,8 @@ class FakeBrowserCap(CapabilityBase):
         self.cycle = cycle
 
     async def resolve_fragment(self, fragment_key: str) -> Any:
+        if fragment_key == "browser.platform":
+            return BrowserPlatformObs(operating_system="macos")
         if fragment_key == "browser.dom":
             return page_dom(self.clicks, self.id_offset)
         if fragment_key == "browser.screenshot":

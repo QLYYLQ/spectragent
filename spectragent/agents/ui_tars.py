@@ -57,6 +57,7 @@ from typing import Annotated, Any, ClassVar, Literal
 from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
+from spectragent.agents._browser_platform import render_browser_platform
 from spectragent.agents._registrar import AgentBase
 from spectragent.core.llm.messages import (
     BaseMessage,
@@ -625,7 +626,7 @@ class UITarsAgent(AgentBase):
         "agent_loop": ("agent_loop", ["react", "branch"]),
         "observation": (
             "observation",
-            ["screenshot", "task"],
+            ["screenshot", "platform", "task"],
             ["step_info"],
         ),
         "action": (
@@ -760,6 +761,7 @@ class UITarsAgent(AgentBase):
                 that it has no way to fix.
         """
         task_text = observation.task.user_request
+        platform_text = render_browser_platform(observation)
         screenshot = getattr(observation, "screenshot", None)
         if screenshot is not None and not isinstance(screenshot, ScreenshotGeometry):
             raise TypeError(
@@ -780,10 +782,14 @@ class UITarsAgent(AgentBase):
 
         if screenshot is None or image_bytes is None:
             self._grid = None
-            return [UserMessage(content=f"Task: {task_text}\n(no screenshot available)")]
+            return [
+                UserMessage(
+                    content=f"Task: {task_text}\n{platform_text}\n(no screenshot available)"
+                )
+            ]
 
         self._grid = point_grid(self.coordinate_space, screenshot)
-        text = f"Task: {task_text}"
+        text = f"Task: {task_text}\n{platform_text}"
         if self._grid is not None and self._grid.space == "screenshot_pixels":
             text += f"\nScreenshot: {self._grid.width}x{self._grid.height} pixels."
         # Labelled from the bytes, not assumed: the capability can be

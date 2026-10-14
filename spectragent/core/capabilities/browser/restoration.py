@@ -321,6 +321,15 @@ def signature_multiset(dom: DOMObs) -> Counter[ElementSignature]:
     )
 
 
+def observation_url(observation: Any) -> str | None:
+    """The captured image's document, or the same cycle's metadata when no image URL exists."""
+    screenshot = screenshot_fragment(observation)
+    if screenshot is not None and screenshot.source_url:
+        return screenshot.source_url
+    meta = meta_fragment(observation)
+    return meta.url if meta is not None and meta.url else None
+
+
 def measure(
     recorded: Any, restored: Any, *, capability_id: str, document_misses: int | None
 ) -> RestorationEvidence:
@@ -330,10 +339,10 @@ def measure(
     misses since its last measurement (``None`` when the network is live);
     the rest is read from the two observations.
     """
-    recorded_meta, restored_meta = meta_fragment(recorded), meta_fragment(restored)
+    recorded_url, restored_url = observation_url(recorded), observation_url(restored)
     url_match: bool | None = None
-    if recorded_meta is not None and restored_meta is not None:
-        url_match = recorded_meta.url == restored_meta.url
+    if recorded_url is not None and restored_url is not None:
+        url_match = recorded_url == restored_url
 
     signature_match: bool | None = None
     missing = extra = 0
@@ -346,8 +355,8 @@ def measure(
     return RestorationEvidence(
         capability_id=capability_id,
         url_match=url_match,
-        recorded_url=recorded_meta.url if recorded_meta is not None else None,
-        restored_url=restored_meta.url if restored_meta is not None else None,
+        recorded_url=recorded_url,
+        restored_url=restored_url,
         signature_match=signature_match,
         signature_missing=missing,
         signature_extra=extra,
@@ -369,6 +378,7 @@ __all__ = [
     "hamming",
     "measure",
     "meta_fragment",
+    "observation_url",
     "retarget_action",
     "screenshot_distance",
     "screenshot_fragment",

@@ -137,6 +137,7 @@ class ScreenshotWatchdog(BrowserWatchdog):
             screenshot = await self._capture(timeout=_SCREENSHOT_COMMAND_TIMEOUT_S)
             width, height = self._viewport
             image_width, image_height = image_size(screenshot)
+            document = await self._document_after_capture()
             return BrowserStateSummary(
                 fragments={
                     "browser.screenshot": ScreenshotObs(
@@ -145,9 +146,10 @@ class ScreenshotWatchdog(BrowserWatchdog):
                         viewport_height=height,
                         image_width=image_width,
                         image_height=image_height,
+                        source_url=document.url if document and document.url else None,
                     ),
                 },
-                document=await self._document_after_capture(),
+                document=document,
             )
         except Exception as exc:
             logger.error("Screenshot capture failed: %s", exc)

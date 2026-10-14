@@ -69,6 +69,7 @@ def _observation(
     viewport: tuple[int, int] = (1280, 720),
 ) -> Any:
     return SimpleNamespace(
+        platform=SimpleNamespace(operating_system="macos"),
         task=SimpleNamespace(user_request="tick the checkbox"),
         screenshot=ScreenshotObs(
             image_bytes=b"\x89PNG\r\n\x1a\n",
@@ -162,6 +163,7 @@ class TestTheFieldIsTheSharedGrid:
         """An assembly error, not something the model can fix one step at a time."""
         agent = _agent()
         observation = SimpleNamespace(
+            platform=SimpleNamespace(operating_system="macos"),
             task=SimpleNamespace(user_request="t"),
             screenshot=SimpleNamespace(image_bytes=b"\x89PNG\r\n\x1a\n"),
         )
@@ -279,7 +281,12 @@ class TestTheFrameIsPerStep:
     def test_a_step_without_a_screenshot_places_no_point(self) -> None:
         agent = _agent()
         agent.build_react_prompt(_observation(image=(1280, 720)))
-        agent.build_react_prompt(SimpleNamespace(task=SimpleNamespace(user_request="t")))
+        agent.build_react_prompt(
+            SimpleNamespace(
+                platform=SimpleNamespace(operating_system="macos"),
+                task=SimpleNamespace(user_request="t"),
+            )
+        )
         with pytest.raises(ParseError, match="screenshot has no known size"):
             agent.parse_react_output("Action: click(point='(10, 20)')")
 

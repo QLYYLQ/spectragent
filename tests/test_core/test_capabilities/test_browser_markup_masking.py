@@ -192,6 +192,7 @@ def _option_in(select_attrs: dict[str, str]) -> tuple[DOMElementNode, DOMElement
 
 async def _extract(markup: str, selector_map: dict[int, DOMElementNode], backend_id: int) -> Any:
     watchdog = ActionWatchdog(
+        input_platform="linux",
         cdp=_OuterHTMLCDP(markup),  # type: ignore[arg-type]
         selector_map_getter=lambda: selector_map,
     )
@@ -216,5 +217,8 @@ class TestTheExtractHandler:
         assert await _extract(markup, {11: option}, backend_id=11) == markup
 
     async def test_the_page_text_is_returned_as_read(self) -> None:
-        watchdog = ActionWatchdog(cdp=_OuterHTMLCDP("", text="Welcome back"))  # type: ignore[arg-type]
+        watchdog = ActionWatchdog(
+            input_platform="linux",
+            cdp=_OuterHTMLCDP("", text="Welcome back"),  # type: ignore[arg-type]
+        )
         assert await watchdog._on_extract_content(ExtractContentEvent()) == "Welcome back"

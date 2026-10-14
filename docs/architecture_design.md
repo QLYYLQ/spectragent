@@ -2337,7 +2337,7 @@ class BaseEvaluator(Protocol):
 
 Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可以访问任意深度的运行数据。
 
-**现状：休眠，与数据飞轮解耦（用户 2026-10-13 的裁决）。** 评测器不删除，也不改进。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`，发布的 `export_sft.yaml` 也写 `null`），度量报告从不读判定；去污染只认导出配置里明确列出的 benchmark（默认 `[]`：不去污染，数据集 manifest 记 `decontaminated: false`），不再从判定推断（§4.15 "切分与去污染"）；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。剩下的一处依赖在数据一侧、不在判分器：导出的参考答案泄漏扫描读 benchmark 的评测数据加载器（§4.15 "校验"）。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
+**现状：独立评测阶段可启用 judge，与数据飞轮的回放保真判定解耦（用户 2026-10-14 的裁决，取代 2026-10-13 的休眠约定）。** judge 只读取已提交的轨迹和明确提供的任务评测材料，在独立阶段判断任务正确性；它的模型、判定依据和运行失败必须可追溯，报告单独展示任务正确率与有效判定覆盖率，不把模型错误、证据不足或未评测算成任务失败，也不把 agent 的 `done` 当作答对。恢复与分叉阶段不调用 judge、不用 judge 覆盖恢复校验的结论。时效任务的判定以录制时点与轨迹中的证据为准，不拿当前网站内容或模型的当前知识替代录制事实。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`，发布的 `export_sft.yaml` 也写 `null`），度量报告从不读判定；去污染只认导出配置里明确列出的 benchmark（默认 `[]`：不去污染，数据集 manifest 记 `decontaminated: false`），不再从判定推断（§4.15 "切分与去污染"）；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。剩下的一处依赖在数据一侧、不在判分器：导出的参考答案泄漏扫描读 benchmark 的评测数据加载器（§4.15 "校验"）。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
 
 | evaluator_id | 评测方式 | 适用 benchmark |
 |-------------|---------|---------------|
@@ -2347,6 +2347,10 @@ Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可
 | `tool_trace` | 工具调用序列匹配 | ToolBench, BFCL |
 | `visual_diff` | 截图对比 | OSWorld |
 | `multi_criteria` | 多维度打分 | WebArena |
+
+**独立入口**：`spectragent-eval --config <yaml> --traces <run或父目录> [...] --out <新目录>` 只组合一个 `evaluator` 和一个 `eval_loader`（judge 仍经 evaluator 的 `llm` 受体），复用 `EvaluationRunner`。它只把显式提供的 trace 作为分母，不自动把整个 benchmark 未提供的任务补成失败；原 runner 显式 `expected_task_ids` 的覆盖策略保留。分叉的参考按 `BranchProvenance.source_benchmark/source_subset/source_task_id` 找，判定身份仍是被评的分叉 run。一个批次的报告分别列输入 run、有效判定、判对、判错、评测失败；任务正确率只用有效判定作分母，同时显示有效判定覆盖，零有效判定为 `null`。新输出目录保留该批的判定副本、失败与脱敏配置；trace 内的同 slug 判定沿用现有最新结果语义。退出码 0 表示本批全部输入得到有效判定（任务判错不使进程失败），1 表示至少一份无法判定，2 表示配置或输入拒绝。
+
+LexBench 图像 judge 没有任务文字、没有可用截图、回复没有有效的 0–100 总分，都属于评测错误，不制造任务失败。请求使用录制时间与已录下的 `loop.step_info.today` 解释时效文字；这些是提示中的可追溯证据，不是当前网站事实。实际 judge 模型与路由身份、模板快照、录制时间及已报告的 `eval_usage` 随独立结果保存；模型失败时已知的提示与用量也保留，未知用量不声称为零。此入口不启动浏览器、不访问当前页面、不修改恢复保真指标或训练导出。
 
 **评测器经 `TraceView` 读 trace，`TraceView` 认得步的来源（M31）**（`evaluator/trace_view.py`）。一个 trace 的步有三种来源（`StepRecord.origin`，§5.3）：
 
@@ -2467,6 +2471,20 @@ agent 的一次 type  ─→ ActionWatchdog ─→ HumanKeyboard ─→ CDP Inpu
 
 **两个注册表而不是一个**，因为它们是互相独立的轴：一次 run 完全可能要曲线光标 + bulk insert，或者反过来；而且两者产出的东西不同（waypoints vs keystrokes）。合成一个「humanization level」枚举会让两根轴不可分离，也让第三根轴（滚轮节奏、触屏手势）加不进来。这就是 §1.1「每个变化轴一个注册表」在这一层的落地。
 
+#### 实际输入平台与按键原义
+
+用户 2026-10-14 裁决：检测实际浏览器平台并告知 Agent；可以配置预期平台，不符就拒绝运行。撤回将 Ctrl/Cmd+A 不分平台统一成全选的方案。平台是浏览器所在环境的事实，不是模型品牌或 Agent 宿主机的事实，也不是 UA 伪装的一部分。
+
+Browser capability 在 setup 时、模型做任何决定之前测量实际桌面输入平台（`macos` / `windows` / `linux`）。Chrome 的内部版本页所报告的操作系统可作为当前实现的事实来源；`Browser.getVersion.userAgent`、页面的 `navigator.platform` / 可覆盖的 client hints，以及 Agent 宿主机 `sys.platform` 都不能在测量失败时偷偷代替它。检测失败或不支持的结果要明确拒绝，不能把 unknown 当 Linux。可选配置 `expected_platform`（默认 `null`，未要求某个平台）是断言，不是模拟开关；配置值与实测不同时在 setup 拒绝，点名二者，不能让真实 macOS 冒充 Windows。
+
+同一份实测结果供输入控制器使用，也作为独立的环境观测 `browser.platform` 交给三个浏览器 Agent：UI-TARS 仍不需要 DOM，模型看到截图与明确的平台说明；截图来源 URL 仍不渲染进视觉提示。平台字段由现有 fragment/resolver/三方协商通路提供，不另建第四条配置或观测通道。平台不能仅写进 trace 而不告诉决策模型，也不能只放进 prompt 而不记录。该事实写入 browser 的 run 指纹，归档回放须与源平台相同；缺少平台证据的源不能按新契约猜测执行，旧文件保留作历史分析，不回写。
+
+`send_keys` 是字面键名和组合键：Ctrl 保持 Control，Meta/Cmd/Command 保持 Meta/Command（Alt/Option 保持 Alt），修饰位与页面收到的 DOM 键事件必须一致，执行器不把错误平台的 Ctrl+A 改成 Meta+A。不认识的修饰键、空键名或空组合分段在派发前拒绝，动作结果明确失败，不能只写日志后报告成功。对于浏览器 CDP 不自行执行的原生编辑快捷键，只有与实测平台匹配、且不带其他修饰的组合才能补对应编辑命令：macOS 的 Meta+A、Windows/Linux 的 Control+A 可带 `selectAll`；另一平台的组合不强制全选，也不改写修饰键。命令只附在真实 `keyDown` 上，不再发送可打印的 `char`；由 Chrome 的默认行为执行，因此页面的 `keydown.preventDefault()` 仍能取消它，不另用 JS 选择范围绕过页面。这里不扩展成任意快捷键意图推断，也不顺带扩展复制、粘贴、剪切。
+
+`type` / `type_coordinate` 的 `clear=True` 则是明确的语义操作“清空这个字段”，不是模型提供的原始组合键；它可以根据同一份实际平台事实发正确的全选与删除序列，不再自行从 UA 或宿主机猜平台。回归要分别证明平台检测抗 UA 伪装、预期值不符/未知拒绝、模型确实收到平台、同平台正确快捷键与另一平台组合保持区分，以及回放平台不一致拒绝。云 CDP 是否允许读取内部平台事实必须实测；不支持时如实失败，不能用本机平台兜底。
+
+输入端由 `WatchdogContext.input_platform` 注入 `ActionWatchdog` 和 `HumanKeyboard`，缺值直接拒绝；键盘控制器不再自行查询 UA、`navigator.platform` 或宿主机。named-key 的按下失败或取消后仍尝试有界 `keyUp`（2 秒），重复取消不使清理永等，外部取消（清理期间才到来也一样）优先于普通输入错误；其余清理失败不替代原输入异常。`send_keys` 的 handler 错误交回 ActionResult，空错误消息也必须带异常类型，不报告成成功。
+
 #### 策略本身就是开关
 
 `humanized` 是**策略的属性**，不是配置项：`MouseTrajectoryBase` / `TypingRhythmBase` 默认返回 `True`（会生成路径 / 会建模时序的策略，按构造就是拟人的），只有 `instant` 覆盖成 `False`。消费者读这一个布尔来决定路径之外的行为——冷启动位置、滚轮是否分段缓动、键入 / 选择前是否先把光标移过去，以及 `instant` 下整串一次 `insertText`。
@@ -2539,6 +2557,8 @@ class Keystroke:
 
 #### 一个时钟：`play_on_deadline`
 
+**拖动的按钮状态属于一次手势。** `HumanMouse.drag` 从按下到松开之间的每个 `mouseMoved` 必须显式携带实际按住的 `button` 名字及 `buttons` 位掩码（左键 `left` / 1、右键 `right` / 2、中键 `middle` / 4）；普通移动为 `none` / 0。两个字段从同一个手势参数推导，不能各自配置。仅补位掩码也不够：真实 Chrome 中事件虽显示 `buttons=1`，缺少 `button=left` 的原生 range 和 pointer capture 仍不能完成拖动。仅发出过 `mousePressed` 不够：未带位掩码的移动会让页面读到 `buttons=0`，原生 range 和 pointer-capture 拖动可能停在中途，而 CDP 命令仍全部成功。按钮状态沿这次拖动的移动调用传递，不是全局开关；按下或移动异常、取消时也尝试松开；释放命令有独立的 2 秒清理上限，重复取消不取消这次有界清理，超时后取消未应答的 CDP 调用，避免 scope 的 teardown 一直等释放。清理期间到来的外部取消优先于普通输入错误；其余清理失败不得覆盖原输入异常或取消，正常路径释放失败则动作失败。这个上限不是轨迹节奏的第二个时钟。输入 tick 仍不写进 agent WAL。
+
 `dt_ms` / `gap_ms` / `hold_ms` 是**计划，不是 sleep 时长**。`input/_schedule.py::play_on_deadline` 是这一层唯一的调度器：它在发出任何东西之前就把全部间隔折算成**绝对 deadline**（slot *i* 到期于 `start + sum(dt[: i + 1])`），然后逐个 yield。调用方在两次 yield 之间 await 的东西（一次 CDP 往返，headless Chrome 实测 ~17 ms/`mouseMoved`、~12 ms/`mouseWheel`）因此花在它所属的 slot **里面**，而不是加在它**上面**。
 
 先 sleep 间隔、再 await 派发，等于给每个 tick 加一次传输成本。实测后果：50 Hz 的 learned 路径被放成 32.6 Hz，windmouse（ease-out 尾巴每几毫秒就要一个 waypoint）被放慢到 **5.06 倍**，12 ms 的滚轮步被拉到 28 ms。改成绝对截止时间后 windmouse 1.10×、learned 1.01× @ 49.7 Hz（defect F14）。**这一层的时间就是它的全部意义**——learned 模型是按「在录制速率下匹配人类速度」挑出来的，滚动的步进节奏正是 anti-bot 系统读的东西——所以 wall time 必须跟着 schedule 走，不能跟着 transport 走。
@@ -2548,6 +2568,8 @@ class Keystroke:
 被 yield 而调用方选择不动作的 slot 依然花掉了它的时间——这就是「重复 waypoint」表达静止的方式：路径里一个与前点相同的坐标，调度器等它、`move_to` 不派发事件，于是 learned 模型里「点击前停在目标上」的那段留白按原样保留，而不被摊成 1 px 的微动。
 
 #### 按键事件不带原生按键码
+
+`send_keys` 与 `HumanKeyboard` 共用 CDP 修饰键位常量（Alt=1、Control=2、Meta=4、Shift=8），不在 watchdog 重写一份映射。`ctrl`/`control`、`meta`/`cmd` 的别名不改变真实修饰键含义；页面收到的 `ctrlKey`/`altKey`/`metaKey`/`shiftKey` 必须与请求一致，后一条普通按键没有修饰键污染。
 
 af 发出的每一个 `Input.dispatchKeyEvent`——`browser.send_keys`（`ActionWatchdog._on_send_keys`）、`human` 节奏的逐字键入与 `type` / `type_coordinate` 的清空（`HumanKeyboard.type_text` / `clear_focused`）——都只带 `key`、`code`、`windowsVirtualKeyCode`、`modifiers` 与 `text`（`commands` 照旧），**不带 `nativeVirtualKeyCode`**。以前三处都把 Windows 按键码同时填成原生按键码。
 
@@ -2679,7 +2701,7 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 | viewport + DPR | 控制连接 | `Emulation.setDeviceMetricsOverride`（`deviceScaleFactor` = `replayability.device_scale_factor`（属性）；`none` 是 0，保留平台 DPR） |
 | 时区、语言 | recorder | `Emulation.setTimezoneOverride` / `setLocaleOverride`（每个 frame target，含 OOPIF）。一个渲染进程里只有最先设的那个 frame 是所有者，其余 frame 在它离开后落回浏览器的默认值（上面的事实表）：默认时区由 `replayability.launch_env()` 的 `TZ` 定成 pin 的时区；默认语言是宿主机的，记进指纹（`browser_defaults`）、回放时比较 |
 | UA、UA metadata（client hints）、`Accept-Language` | recorder | frame：`Emulation.setUserAgentOverride`；worker：`Network.setUserAgentOverride`（worker 继承页面的 UA，但不继承 `Accept-Language`：不单独设，worker 里的 `navigator.language` 是宿主机的；macOS 上 `--lang` 对 worker 不起作用）。标识是 Chrome 自己的形式时（`user_agent: null`，即浏览器自己的 UA；或普通的 Chrome 标识，`client_hints.py` 的 `chrome_identifier`），两条 override 都带 `userAgentMetadata`：浏览器自己的 client hints，setup 在启动之后、recorder 准备任何 target 之前读（下面"`replayability`"）。页面里的 `navigator.userAgentData` 与 `Sec-CH-UA*` 因此就是这个 Chrome 在同样的启动下自己给的：低熵的 brands（它自己版本的，带它自己的 GREASE brand）、平台与移动端，以及给了 `--user-agent` 启动的 Chrome 自己报的空的高熵值（架构、位数、完整版本列表、平台版本、形态；实测）；每个请求都一样，打不到 opener 的 tab 的第一个请求也一样（它带的本来就是 Chrome 自己的），录制与回放相同。别的形式的标识（自定义字符串、Edge、Firefox……）不带：`navigator.userAgentData.brands` 为空、不发 `Sec-CH-UA`，例外是打不到 opener 的 tab 的第一个请求，它带着 Chrome 自己的 brands（这个头在 tab attach 之前就算好了，任何 per-tab 命令都改不了），录制与回放相同，回放时这个请求也不出浏览器（2026-10-14 实测，Chrome 155；已知限制） |
-| 媒体特性（减少动画） | recorder | `Emulation.setEmulatedMedia` |
+| 媒体特性（减少动画、录制时测出的颜色主题） | recorder | `Emulation.setEmulatedMedia`；颜色主题录回沿用同一值（下文） |
 | 注入脚本（shim） | recorder | frame：`Page.enable` 之后 `Page.addScriptToEvaluateOnNewDocument{runImmediately: true}`（准备时已经在的文档，比如初始 tab 的 about:blank，也被 pin）；worker：resume 之前 `Runtime.evaluate` |
 | 缓存、SW 旁路 | recorder | `Network.enable` 之后的 `Network.setCacheDisabled(true)`、`Network.setBypassServiceWorker(true)`（M29 实测：没有 `Network.enable` 的 session 上这两条返回成功却不生效）；pinned 档位发，回放服务不论档位也发（M30：回放时 SW 一律拦住，否则 SW 代理的导航以 `XHR` 暂停在 SW 的 session 上，主 frame 文档 miss 就分不出来）。不做每 run 一次的 `Network.clearBrowserCache`：pinned 的 profile 每 run 新建（协作检查拒绝别的），缓存本来就是空的，而清空一个空缓存实测每次 setup 要 3.9–9.3 s |
 | V8 随机种子、`--lang`、`--force-device-scale-factor` 等启动开关；浏览器进程的默认时区（`TZ`） | `replayability.launch_args()` / `launch_env()` | 经 `LAUNCH_ARGS` 交给 provider（§4.9.x）；两者都进启动开关表（`launch_flags`），回放在启动之前比较 |
@@ -2703,8 +2725,11 @@ class ReplayabilityProtocol(Protocol):
     def launch_env(self) -> Mapping[str, str]: ...   # 这个档位给浏览器进程设的环境变量；none → {}
     @property
     def needs_client_hints(self) -> bool: ...      # plan 要不要浏览器自己的 client hints；pinned → True
+    @property
+    def needs_color_scheme(self) -> bool: ...      # plan 要不要录制时测得的媒体主题；pinned → True
     def plan(self, *, t0_ms: int, browser_user_agent: str,
-             client_hints: ClientHints | None = None) -> ReplayabilityPlan: ...
+             client_hints: ClientHints | None = None,
+             color_scheme: ColorScheme | None = None) -> ReplayabilityPlan: ...
         # 本 run 的计划（也是一个 recorder 贡献者）：逐 target 的命令、指纹字段、
         # override 带的 client hints 与用不了它们的原因（problems）；配置实例不持有 run 状态
 ```
@@ -2718,6 +2743,16 @@ class ReplayabilityProtocol(Protocol):
   - 协作检查（`prepare()` 时，setup 再查一遍；点名双方，一次报全）：provider 没有声明 `LAUNCH_ARGS` 或 `NETWORK_CAPTURE`；显式 `cdp_url`；注入的控制客户端；provider 报告的旋钮冲突（`local_chrome`：`deterministic_rendering=true` 的 V8 种子与 pinned 的 `random_seed` 不同、`force_device_scale_factor` 与 pinned 的 DPR 不同、`user_agent` 与 pinned 的不同、`extra_args` 另设了 pinned 拥有的开关；每一行都是值相同就放行，`deterministic_rendering` 也一样（用户 2026-10-13 的裁决），它的 `--deterministic-mode` 与 `--font-render-hinting=none` 不是 pinned 拥有的开关）；profile 不是新建的（`persistent_profile()` 非空：`user_data_dir`、非默认的 `profile_directory`、`extra_args` 里的 `--user-data-dir`；profile 目录只由 YAML 决定，以前的环境变量 `CHROME_USER_DATA_DIR` 已删掉（同一次裁决），因为它让 run 是否从新建的 profile 启动在 YAML 和 `config.json` 里都看不出来）；`base_time: from_archive` 而网络来源是 `live`。
   - **client hints**（`core/capabilities/browser/client_hints.py`，用户 2026-10-14 的裁决）：pinned 的 UA override 不带 `userAgentMetadata` 时，页面读到的 `navigator.userAgentData.brands` 是空的、请求不带 `Sec-CH-UA`，而同版本的真实 Chrome 会列出 brands，网站看得出标识不一致（2026-10-14 复筛实测，Chrome 155）。所以 `needs_client_hints` 为真：setup 在启动之后、recorder 准备任何 target 之前读浏览器自己的 client hints（`measure_client_hints`：`navigator.userAgentData` 只在 secure context 里有，初始 tab 的 `about:blank` 不是（实测），所以在一个后台的临时 `chrome://version` tab 里，从 isolated world 读 `getHighEntropyValues`，读完关掉，等 Chrome 不再列出它才返回，那时还没有接管任何 tab），交给 `plan()`。标识是 Chrome 自己的形式时（`user_agent: null`，或 `Mozilla/5.0 (<平台>) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<版本> [Mobile ]Safari/537.36`，后面什么都不跟；Edge、Opera、`HeadlessChrome` 都不算），frame 与 worker 的 override 都带上读到的值，原样；普通 Chrome 标识的大版本、平台（`Macintosh` → `macOS` 等）或移动端与读到的不符时，计划带着 `problems`（每条点名两边），setup 以 `BrowserCooperationError` 拒绝这个 run，准备任何 target 之前；读失败也拒绝（override 否则什么都不带）。别的形式的标识不带。实测（Chrome 155，macOS）：headless Chrome 自己的 brands 是 `"Google Chrome";v="155", "Chromium";v="155", "Not(A:Brand";v="24"`（不是 `HeadlessChrome`），平台 `macOS`，不是移动端；不给 `--user-agent` 启动时高熵值是真实的（`arm`、`64`、`155.0.8059.80`、`27.0.0`、`Desktop`），给了 `--user-agent` 启动（写了 `user_agent` 的 pinned）时 Chrome 自己就把高熵值报成空的，带上它们的 override 与 Chrome 不带 override 时的头和页面读数逐项相同；带着 Chrome 自己 hints 的 override 下，Fetch 在 Request 阶段送出的请求（回放）也带着同样的 `Sec-CH-UA*`。计划的指纹多一个 `client_hints`（override 带的值，CDP `UserAgentMetadata` 的形状；不带时是 `null`），环境指纹的 `page.userAgentData` 是它的低熵部分；回放比较它们（下面"一致性检查与回放指纹"）。
   - 已知取舍：pinned 会改变活站点的行为，本身也是 anti-bot 能抓到的特征（用户已接受）；评测 run 与 anti-bot run 保持 `none`。
+
+#### 颜色主题：录制时测量，录回沿用同一值
+
+用户 2026-10-14 裁决：不默认指定浅色。`pinned` 在录制启动后、准备任何业务 target 之前，测出这个浏览器当前的 `prefers-color-scheme`（`light` 或 `dark`），随后在本次运行的每个 frame target 上固定该值；这样即使宿主机中途切换外观，录制期间也不会换主题。它是本 run 测到的事实，不是一个从宿主机变化中重新读取的每步配置。
+
+该值作为 `replayability.color_scheme` 写进环境指纹。回放在启动前从源归档读出它，所有 frame target（含新标签页与进程外 iframe）都用源值进行媒体模拟，保留现有减少动画的设置。回放宿主机的当前主题可以不同，不因此拒绝回放；回放自身的指纹记录实际沿用的源值。测量失败时明确拒绝 pinned 录制，源归档没有该字段或值非法时明确拒绝 pinned 回放，不能把缺失猜成浅色，也不回写旧归档。`none` 档位保持宿主机行为。
+
+这只固定浏览器的媒体主题；站点自己存在 Cookie、账户偏好或页面按钮里的主题选择仍由站点状态决定，不声称所有网页都强制成同一种颜色。主题测量与准备由 browser capability 和 replayability 的现有准备通路负责，不放进 Loop 或 TraceWriter。真实 Chrome 回归须覆盖录制测量、异主题宿主上的回放、新 tab / iframe，以及媒体主题与已有 reduced-motion 设置同时生效。
+
+实现：`color_scheme.py::measure_color_scheme` 在启动时第一个页面的 `af-color-scheme` isolated world 中分别查询深色、浅色媒体条件，只接受恰好一个匹配；随后 detach 测量 session。`ReplayabilityProtocol.needs_color_scheme` 声明计划是否需要这个事实，capability 在录制时测量，在回放启动前经 `replay/consistency.py::replay_color_scheme` 从已加载的源指纹取值。它作为 `plan(color_scheme=...)` 的本 run 参数进入 `ReplayabilityPlan`，不进入 YAML 参数。`pinned` 将主题和现有 reduced-motion 特性合成同一条 `Emulation.setEmulatedMedia`，由 recorder 的准备链发送到每个 frame target；`none` 不测、不发、不新增主题指纹。
 
 #### Browser 归档器：配置实例与运行期会话
 
@@ -2886,6 +2921,12 @@ M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚
 - **实测**（2026-10-14，Chrome 155 headless；探针在本地的 `tmp/flywheel/followup/follow_tabs/`）：不带 `rel`、`rel=noopener`、`rel=opener` 的 `target=_blank` 链接，`window.open` 带不带 `noopener`，`target=_blank` 的表单，同站与跨站 iframe 里的链接，`targetCreated` 的 `openerId` 都是打开它的 tab（iframe 里的链接另有 `openerFrameId`），都在点击的回复之前到；`Page.windowOpen` 在打开它的 tab 的 session 上，早 7–13 ms，`userGesture` 对点击是 `true`（处理函数 800 ms 之后、或等一个 fetch 回来再开的也是），对页面加载时自己弹的与一次点击开的第二个窗口是 `false`，跨站 iframe 里的链接没有；下载开的 tab 约 75 ms 后被 Chrome 关掉；204 开的 tab 留在空白页；接管自己关掉的 tab 之后，`Target.detachedFromTarget` 与 `targetDestroyed` 同时到，之后发到它 session 的命令立即报 "Session with given id not found"。
 - **残余**：跟过去的 tab 第一次布局用的是窗口大小，接管时才收到 viewport 的 override（`local_chrome` 默认窗口 1280×720，与默认 viewport 相同）；接管超过 10 s 的 tab（第一个文档一直不回）不跟，agent 看到的是没有变化的原页面；204 开的空白 tab 也会被跟过去（真实浏览器同样显示它），没有 `switch_tab` 的 agent 只能等它自己关掉；同一个点击开的多个 tab，后到的 `Page.windowOpen` 与先到的 tab 不再配对（2 s 之后过期），极少见的乱序会让一个没有激活的 tab 被当成"不知道"而跟过去。
 - **回归**：`test_browser_tabs.py`（纯函数：打开的先后、配对与过期、窗口、opener、已关、没有激活、关掉之后去哪、trace 往返）；`test_browser_follow_tab.py`（fake CDP：跟过去并记下、多个取最后、没有激活不跟、不知道照跟、窗口外不跟、别的 tab 开的不跟、起始页不开窗口、`stay`、等待中才开的、`switch_tab` 重开窗口、接管超时换上一个、关掉回 opener / 最近的、`stay` 也离开关掉的 tab、对关掉的 tab 动作失败、一个 tab 都不剩、tab 列表的顺序、浏览器拒绝 discovery、teardown 放开回调）；`test_browser_follow_tab_live.py`（真实 Chrome，fixture 的 `new_tab` 页：四种打开方式都跟过去、`stay`、跟过去的 tab 自己关掉、计时器与加载时弹的不跟、`switch_tab` 照旧；录一个跟过新 tab 的 run，离线回放沿同一路径、分叉的前缀恢复逐步校验通过且焦点的移动被重现）；`tests/test_agents/test_focus_moved_prompts.py`（三个 agent 的提示词不受这条记录影响，UI-TARS 的提示词按这之前的摘要钉住）。
+
+#### 任务通过页面交互完成，不构造 URL 捷径
+
+用户 2026-10-14 补充本轮浏览器任务约束：不能通过拼接搜索页、详情页或接口 URL 完成任务。给定的起始页仍由 setup 打开；策略通过页面已有控件完成搜索、筛选与导航。模型提示明确这条协议，执行前的 browser 专用 `ui_navigation_guard` hook 通过既有 AOP `before act` 与 `RunAbort` 拒绝 URL 捷径，记录为协议否决，不伪装成任务执行错误或任务答错。
+
+该 hook 是实验 YAML 显式选择的策略，不全局改变其他任务：拒绝策略的直接 `browser.navigate` / `browser.create_tab`；拒绝地址栏、新空白标签页和新窗口的输入快捷键；拒绝输入动作把一个完整 URL 或裸主机路径作为输入值。点击页面链接、浏览器已有页面的后退/前进、页面内普通输入、选择、滚动与拖动仍允许。可见链接自己开新页仍按既有 `new_tabs` 规则跟随。守卫识别的是动作的名字与参数，不另读 DOM，也不驱动动作；不声称能理解任意文本中的 URL 拼接意图，无法由动作判定的协议遵守情况仍需检查原回复与轨迹。已运行的旧轨迹只补做审计，不改写原始任务和证据。
 
 #### 回放：网络来源与 miss 策略（M30）
 
@@ -3070,9 +3111,11 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 
 几何再签名：(1) 取录下观测 `selector_map[index]` 的条目：它的 `bounds`（页面坐标的 border box，已计入 iframe 偏移）、`tag_name`、`attributes` 与子树文本；(2) 在恢复出的 `selector_map` 里找 `bounds` 的四个量都在 `retarget_tolerance_px`（`BrowserCapability` 的旋钮，默认 2.0 CSS px）之内的候选；(3) 用签名确认：`tag_name`，`id` / `name` / `aria-label` / `role`（属性，或 AX role）各自相等，子树文本规范化（空白折叠）后的 sha256 相等；(4) 恰好一个候选时把 `params["index"]` 改写成它的 handle（可以在别的 OOPIF 命名空间里），其余参数不动；(5) 没有候选是 `failure="not_found"`，多于一个是 `failure="ambiguous"`，`detail` 写候选数。录下的条目缺 `bounds`、本 run 没有激活 `browser.dom`（或这一次的 `browser.dom` 采集失败），或者录下的 `selector_map` 里根本没有这个 index（源 run 的这个动作当时就找不到目标），都是 `not_found`（`detail` 说明原因）。子树文本只读到条目根以下 64 层（`TEXT_DEPTH_LIMIT`）：trace 的编码大约在第 100 层截断条目的子树，活的节点没有截断，两边读到同样的层数，同一个元素的签名才相同；实测的页面最深约 40 层。
 
+**截图的页面出处（用户 2026-10-14 裁决）。** `ScreenshotObs.source_url` 保存截图观测同一次采集已有的文档 URL：复用截图之后用于 cycle 一致性检查的 `DocumentStamp`，不额外截图、不额外发一次 URL 查询。字段随截图 sidecar 写入、由 fragment 自己读回；模型输入仍只使用截图，不把这个字段渲染进视觉 agent 的 prompt。文档身份读取失败或旧证据没有 URL 时为 `None`，明确表示未测到，不猜地址。恢复测量优先使用截图出处，缺失时可读同 cycle 的 `browser_meta.url`；两边都有非空地址才比较，任一边缺失时 `url_match` 为 `None`，不是相等。报告必须单列 URL 证据覆盖率，不把缺失读成 URL 校验通过。
+
 **校验**（`verify_restoration`）交回一份 `RestorationEvidence`：
 
-- `url_match`：两边 `browser_meta.url` 逐字相等（任一边没有 `browser_meta` 时为 `None`）；
+- `url_match`：两边的截图出处 URL（或同 cycle 的 `browser_meta.url`）逐字相等；任一边没有地址时为 `None`；
 - `signature_match` / `signature_missing` / `signature_extra`：两边 `selector_map` 每个条目的签名（同上：tag、四个标识属性、文本哈希；不含 index 与 `bounds`）组成的多重集是否相等，以及录下有而恢复出没有、恢复出多出来的个数（没有 `browser.dom` 时为 `None`）；
 - `screenshot_distance`：两张截图的 64 位 dHash（Pillow：转灰度、Lanczos 缩到 9×8、相邻像素比较）的汉明距离（任一边没有截图字节、或字节解不开时为 `None`，后者记 WARNING）；
 - `document_misses`：自上一次 `verify_restoration` 以来回放服务记下的主 frame 文档 miss 数（`ReplayLog` 的单调计数 `diverged_total`，带 `diverged` 的条目（折叠进 `summary` 的也算）每条加一；回放日志照常被 `browser.replay_log` 逐步取走，不影响这个计数）。capability 记着上一次读到的总数，建回放服务时与 teardown 时归零。`network_source` 是 `live` 时为 `None`。
@@ -3328,6 +3371,16 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 | 导出确定性 | `datasets/first`、`datasets/second` | 两棵目录树的摘要（相对路径与每个文件的 sha256，按路径排序；`core/trace/digest.py::tree_digest`）相同；`repeat: 1` 时为 `null` |
 | 隐私 | 只看两道门（威胁模型"只有我"，§5.6；用户 2026-10-13 裁决）：**发给模型的**——每个角色每个读得回的 run 录下的每一次请求（`RunTrace.llm_messages` 与 `trailing_calls`，`core/trace/usage.py::recorded_calls`，token 上限数用量读的是同一份），搜它的 messages 里的每一段文字（`metrics.request_texts`：内联图片的 base64 `data:` URL 不是文字，不搜，base64 的字母表里也拼不出任何凭证形状；按 URL 发的图片照搜）；**导出的数据集**——`<root>/datasets` 下的每个文件（gzip 解开，`core/trace/secret_patterns.py::iter_readable`；导出的产物就是它的文件）。`env/` 与 trace 的其余文件（步记录、观测、配置）留在录制它的机器上，不搜：站点页面里自带的公开 key（例如 Google Maps 的浏览器 key，在 WARC 与回放日志里）因此不算泄漏 | 按门分开计数（`model_requests` / `datasets`，各一个 `PrivacyGate{items, planted, shapes, shape_items}`）：每个植入的凭证出现的次数（必须是 0）与含有它的请求数 / 文件数；`SECRET_PATTERNS` 每个形状的命中数与含有它的请求数 / 文件数；另记读到的 run 数与站点数（建议的站点数）与 `skipped`（读不回来的 trace、某次录下的请求读不回来的 run：整个 run 不计，`traces/<角色>/<run>` 加原因）。植入值来自链规格：演练写字面量，live 只写环境变量名、值从进程环境读；报告只写标签与次数，从不写值。"没有泄漏"要每个植入值都搜过：有一个没搜（环境变量没设、`report --root` 没有规格也就没有植入值），建议是 `insufficient`、没有结论；搜到的植入值或凭证形状照样是"泄漏"的结论，并点名是哪一道门；有 run 没读到时结论后面写明几个 |
 
+**检查证据与精确复现分开。** 原路径报告同时给出：已有恢复判据通过的步数、全部检查通过的 run 数、截图字节完全相等的比例、URL 已知且相等并且截图字节完全相等的比例，以及 URL / 元素签名的证据覆盖率。后一个精确比例仅比较两边截图都可读、且有 URL 比较证据的步；无 URL 证据的步不进它的分母，分母为零是未测到。图像相同但 URL 未知可以计入纯截图相同率，不能计入 URL 与截图都相同。原路径的边界仍是最后可分叉检查点，不能把该 run 的 `done` 写成源末动作后的业务成功。
+
+`runs_reaching_checkpoint` 必须具有分叉检查点的来源信息，且第 0 步至检查点步每一步都有恢复检查；`runs_passing` 还要求这些检查全部通过。中途观察失败、只留下全部通过的短前缀，不能算完整路径通过，报告列出首个缺检查的步。到检查点之后的模型失败另计 `errored_runs`，不抹掉已经证明的状态恢复；任务正确性仍独立判断。
+
+**动态区域首轮只诊断（用户 2026-10-14 裁决）。** 离线读取已有录制与重复回放的对应截图，显示原图、差异与候选变化区域，区分录回差异和重复回放之间的变化。保留原图及全图判据，不额外驱动观测，不改 `RestorationCheck.verdict`、strict 分叉放行或站点排除；有变化的区域不自动认定为与任务无关，不制作可直接用于放行的遮罩。任务关键内容的保护范围和遮罩验收留待后续设计。
+
+`spectragent-flywheel diagnose --recordings DIR --replays DIR --out NEW_DIR` 是这项诊断的产品入口（`flywheel/diagnostics.py`）。两侧目录经现有 `open_role` / `RunTrace` 读取，回放通过 `TraceConfig.branch.source_trace` 对应录制，只比较检查点及以前的源策略步，不把分叉后的新动作或终止观测冒充原路径。它不启动浏览器或模型，不读取原始 `env/`，不改源 trace；输出目录必须尚不存在且不能放进输入目录。输出 `diagnostics.json`（格式 `af-replay-diagnostics-1`）、可直接离线打开的 `index.html` 与生成器命名的 `assets/`：原截图字节按 SHA 去重保留、PNG 预览、录回像素差图和区域框、同源同步骤重复回放的候选区域。HTML 中的任务、路径、URL 和错误文本全部转义，不加载外部资源。
+
+诊断方法明确写入 JSON 和 HTML：RGB 每像素最大通道差大于 `pixel_threshold`（CLI 默认 16，范围 0–255）才算变化；按 `grid_size`（默认 32，正整数）分格，格内变化像素比例至少 `cell_fraction`（默认 0.01，范围大于 0 至 1）即标记；用四邻接合并成区域框。尺寸不等不缩放比较，记为不可比较；原始全图 SHA、dHash（与恢复测量共用算法）与录制时已有的 URL 比较证据保留，缺图、坏图、缺步、来源无法匹配、trace 读不回等均逐项列原因。相同源步骤至少有两个尺寸一致、可读的回放截图，才可由其两两差异的并集得到“重复回放候选变化区域”；只有一次回放明确写证据不足。候选可能是业务文字、错误提示或配置差异，不等于动态装饰、不等于可忽略；输出不含可用于 strict 放行的遮罩，也不输出遮盖后提高的保真率。相同输入和参数重复诊断产物逐字节相同，诊断的各类可比较数与不可比较数在摘要中分开。
+
 #### 各节与建议（`report.py`）
 
 - **站点**：每个站点（任务 `start_url` 的主机，`core/trace/sources.py::task_identity(config).site`，与导出 `split.by: site` 和 `exclude_sites` 用的是同一个键；分叉 run 用它的源任务）的任务数、录制的两本账（`record_status`：trace 的状态 `complete` / `incomplete` / `writing`；`record_outcome`：agent 的 `agent_done`，没写 `result.json` 是 `(no result)`，读不回来是 `(unreadable result)`）、原路径保真、恢复校验率、分叉覆盖（空分叉不计）、miss 数、回放改写了 JSONP 回调名的应答数（`callback_rewrites`：原路径回放与分叉合计，从回放日志的 `callback_rewrite` 数，折叠的条目按它代表的条数计，§4.14 "JSONP 回调名"）；回放日志读不回来的 run 不进 miss 数、改写数与分叉占比，记在 `sections.sites.skipped`。**剔除名单**：被拦截（下一条）、或原路径保真低于 `SITE_MIN_FIDELITY`（0.8）、或录制的环境在第 0 步就失败（观测或动作失败，即循环以 `env_status: failed` 结束的那两个阶段；或一步都没提交）的站点；模型调用失败（`error_phase: llm`：429、超时、被拒的 schema）是路由的失败，从不剔除站点，按站点单独计数（`record_model_failures`）；输出成 `ExportFilters.exclude_sites` 的形状（主机名，后缀匹配）并附 YAML 片段。链不自动套用（导出在报告之前）：人把它放进导出配置再导一次。
@@ -3345,7 +3398,7 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}   # 演练
 
 #### 报告
 
-- `report.json`：格式 `af-flywheel-report-6`（pydantic `FlywheelReport{format, chain{name, evidence}, token_use, inputs, metrics, sections, decision_inputs, recommendations{metrics, sections}, decisions{miss_policy, recording_coverage, site_rules, retention}}`；`-2` 起：建议带 `sites` 与 `status_reason`，决定改用语义名，度量带 `sites`、空分叉与 `skipped`；`-3` 起：隐私一项只看两道门，按门分开计数，带 `runs`、`sites` 与 `skipped`；`-4` 起：归档开销带每个角色观测前的落定等待 `settle_wait`；`-5` 起：每个角色记下的 token 用量与链的 token 上限 `token_use`，见上面"token 上限"；`-6` 起：每个站点回放改写了 JSONP 回调名的应答数 `sections.sites.by_site.<站点>.callback_rewrites`），键排序、缩进 2，**没有墙钟字段、绝对路径或主机信息**（run 写成相对链根的 `traces/<角色>/<run>`），同样的输入算两次逐字节相同；`inputs` 按角色记 run 数、跳过的 trace 与原因、以模型调用失败结束的 run（`model_failures`：路由的失败，不是站点的证据；它们照样计入各项度量，live 计划写了怎么处理），以及 trace 里实际运行的组件（agent、loop、恢复器、cleaner、serializer、backend、网络来源、模型路由；由 `metrics.components(trace)` 读脱敏后的 `TraceConfig.resolved`，没标 trace-safe 的自由字符串读作 `<omitted>`：验证要点名所用的配置），数据集记在不在与格式。每条证据的 `pointer` 都能在 `report.json` 里解析到它的 `value`（测试钉住）。
+- `report.json`：格式 `af-flywheel-report-7`（pydantic `FlywheelReport{format, chain{name, evidence}, token_use, inputs, metrics, sections, decision_inputs, recommendations{metrics, sections}, decisions{miss_policy, recording_coverage, site_rules, retention}}`；`-2` 起：建议带 `sites` 与 `status_reason`，决定改用语义名，度量带 `sites`、空分叉与 `skipped`；`-3` 起：隐私一项只看两道门，按门分开计数，带 `runs`、`sites` 与 `skipped`；`-4` 起：归档开销带每个角色观测前的落定等待 `settle_wait`；`-5` 起：每个角色记下的 token 用量与链的 token 上限 `token_use`，见上面"token 上限"；`-6` 起：每个站点回放改写了 JSONP 回调名的应答数 `sections.sites.by_site.<站点>.callback_rewrites`；`-7` 起分别给出纯截图字节一致、已测 URL 与截图一致、URL / 元素签名的证据覆盖），键排序、缩进 2，**没有墙钟字段、绝对路径或主机信息**（run 写成相对链根的 `traces/<角色>/<run>`），同样的输入算两次逐字节相同；`inputs` 按角色记 run 数、跳过的 trace 与原因、以模型调用失败结束的 run（`model_failures`：路由的失败，不是站点的证据；它们照样计入各项度量，live 计划写了怎么处理），以及 trace 里实际运行的组件（agent、loop、恢复器、cleaner、serializer、backend、网络来源、模型路由；由 `metrics.components(trace)` 读脱敏后的 `TraceConfig.resolved`，没标 trace-safe 的自由字符串读作 `<omitted>`：验证要点名所用的配置），数据集记在不在与格式。每条证据的 `pointer` 都能在 `report.json` 里解析到它的 `value`（测试钉住）。
 - `report.md`：同一个模型渲染，标题是 `Token use` / `Metrics` / `Sections` / `Pending decisions`（链在 token 上限处停下时，`Token use` 一节开头写明，见上面"token 上限"），每项度量、每一节、每个决定各占一节，各项跳过的 run 与原因逐条列出，每节末尾是建议、证据、站点数、基础，以及低于 `supported` 的原因。报告里的名字、标题与规则文字不用规划编号（AGENTS.md §3.6；`test_report_schema.py` 钉住）。
 - `spectragent-flywheel report --spec <chain.yaml>`（或 `--root <dir> --evidence live|rehearsal`）只读、可重复；`run` 的最后一段就是它。
 

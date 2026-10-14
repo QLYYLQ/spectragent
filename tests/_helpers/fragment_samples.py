@@ -35,6 +35,7 @@ from spectragent.core.capabilities.browser.dom.models import (
 )
 from spectragent.core.capabilities.browser.observations import (
     BrowserMetaObs,
+    BrowserPlatformObs,
     DOMObs,
     ScreenshotObs,
 )
@@ -231,6 +232,11 @@ def _history() -> HistoryObs:
 
 
 SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
+    "browser.platform": {
+        "macos": lambda: BrowserPlatformObs(operating_system="macos"),
+        "windows": lambda: BrowserPlatformObs(operating_system="windows"),
+        "linux": lambda: BrowserPlatformObs(operating_system="linux"),
+    },
     "browser.dom": {
         "page": _dom_page_fragment,
         "empty": DOMObs,
@@ -242,6 +248,7 @@ SAMPLES: dict[str, dict[str, Callable[[], FragmentBase]]] = {
             viewport_height=720,
             image_width=2560,
             image_height=1440,
+            source_url="https://example.test/page#details",
         ),
         "jpeg": lambda: ScreenshotObs(image_bytes=JPEG_BYTES, viewport_width=800),
         "path_only": lambda: ScreenshotObs(image_path="/tmp/shot.png", viewport_width=1280),

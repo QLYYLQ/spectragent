@@ -55,6 +55,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 from spectragent.core.capabilities.browser.watchdogs.js_execution import (
     JavaScriptExecutionWatchdog,
 )
+from spectragent.core.capabilities.browser.watchdogs.platform_watchdog import PlatformWatchdog
 from spectragent.core.capabilities.browser.watchdogs.popups_watchdog import (
     PopupsWatchdog,
 )
@@ -81,6 +82,7 @@ __all__ = [
     "DOMWatchdog",
     "JavaScriptExecutionWatchdog",
     "PopupsWatchdog",
+    "PlatformWatchdog",
     "ScreenshotWatchdog",
     "SecurityWatchdog",
     # Action request events
