@@ -35,6 +35,28 @@ took ~15 ms. That is the trade, and it is why ``instant`` remains the default.
 its ``keypress`` arrives with ``key`` and ``code`` **empty**, which no
 physical keyboard produces.)
 
+No native key code
+------------------
+No key event af sends — here, or ``ActionWatchdog._on_send_keys`` — carries
+``nativeVirtualKeyCode``. On macOS, Chrome matched a key event that had one
+and that the page left unhandled against its own menu shortcuts, and opened
+``chrome://settings/help`` ("About Chrome"), a tab with no opener, in front of
+the agent's tab: the page then reads ``document.hidden``, its animation frames
+drop from about 38 to 1 per 600 ms, and it stays a background page for the
+rest of the run. Measured 2026-10-14, Chrome 155 headless, 73 key sequences
+(every key ``send_keys`` names, letters, digits, punctuation, modifier chords,
+the typing and clearing sequences), each with an input and with nothing
+editable focused: with the native code af sent (the Windows code; for Enter,
+macOS's own Return code 36 did the same) 29 opened it — Enter submitting a
+form natively, Space, Escape, a letter, a digit and Page Up/Down anywhere;
+Backspace, Delete, the arrows, Home and End with nothing editable focused,
+so also ``clear_focused`` on a page whose focus had moved off the field.
+Without it none did, under the plain and the pinned launch, and the page saw
+the same ``key``, ``code``, ``keyCode``, ``which`` and ``charCode`` on every
+keydown, keypress and keyup, the same field values and the same navigations:
+what a page reads comes from ``key``, ``code``, ``windowsVirtualKeyCode`` and
+``text``.
+
 Non-ASCII, and why CJK is explicitly different
 ----------------------------------------------
 A Chinese character is not typed by pressing a key that bears it: it is
@@ -137,10 +159,7 @@ def _key_event(ch: str) -> tuple[dict[str, Any], str] | None:
     control = _CONTROL_KEYS.get(ch)
     if control is not None:
         key, code, vk, text = control
-        return (
-            {"key": key, "code": code, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk},
-            text,
-        )
+        return {"key": key, "code": code, "windowsVirtualKeyCode": vk}, text
     if len(ch) != 1 or not (" " <= ch <= "~"):
         return None
 
@@ -166,12 +185,7 @@ def _key_event(ch: str) -> tuple[dict[str, Any], str] | None:
     else:  # pragma: no cover — the printable ASCII range is covered above
         return None
 
-    payload: dict[str, Any] = {
-        "key": ch,
-        "code": code,
-        "windowsVirtualKeyCode": vk,
-        "nativeVirtualKeyCode": vk,
-    }
+    payload: dict[str, Any] = {"key": ch, "code": code, "windowsVirtualKeyCode": vk}
     if modifiers:
         # The Shift *key* is not dispatched as its own event: the rhythm
         # models one press per character, and a listener reads shiftKey off
@@ -290,24 +304,9 @@ class HumanKeyboard:
         and Backspace press/release sequence with proper code and keyCode.
         """
         key, code, vk, mask = await self._modifier_for_select_all(session_id)
-        modifier = {
-            "key": key,
-            "code": code,
-            "windowsVirtualKeyCode": vk,
-            "nativeVirtualKeyCode": vk,
-        }
-        letter = {
-            "key": "a",
-            "code": "KeyA",
-            "windowsVirtualKeyCode": 65,
-            "nativeVirtualKeyCode": 65,
-        }
-        backspace = {
-            "key": "Backspace",
-            "code": "Backspace",
-            "windowsVirtualKeyCode": 8,
-            "nativeVirtualKeyCode": 8,
-        }
+        modifier = {"key": key, "code": code, "windowsVirtualKeyCode": vk}
+        letter = {"key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65}
+        backspace = {"key": "Backspace", "code": "Backspace", "windowsVirtualKeyCode": 8}
         events: list[tuple[str, dict[str, Any]] | None] = [
             ("Input.dispatchKeyEvent", {**modifier, "type": "keyDown", "modifiers": mask}),
             (

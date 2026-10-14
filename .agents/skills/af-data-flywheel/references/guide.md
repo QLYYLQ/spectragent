@@ -127,7 +127,7 @@ hook:
 
 | Block | Knobs (default) |
 |---|---|
-| `pinned` | `base_time` (`run_start`; `from_archive` is for replays), `random_seed` (1, at least 1), `timezone` (`UTC`), `locale` (`en-US`), `device_scale_factor` (1.0), `user_agent` (null: keep the browser's own and pin only `Accept-Language`), `reduced_motion` (true) |
+| `pinned` | `base_time` (`run_start`; `from_archive` is for replays), `random_seed` (1, at least 1), `timezone` (`UTC`), `locale` (`en-US`), `device_scale_factor` (1.0), `user_agent` (null: keep the browser's own and pin only `Accept-Language`; a normal Chrome identifier must name the installed Chrome's major version), `reduced_motion` (true) |
 | `browser.network` | `max_inline_body_bytes` (5 000 000, at most 64 MiB: a larger body streams while the page reads it, any type except a document; over 64 MiB is `too_large`), `body_read_timeout_s` (10), `command_timeout_s` (1), `drain_timeout_s` (2), `max_post_data_size` (65536), `strip_request_headers` (null; added to `Cookie`, `Authorization`, `Proxy-Authorization`), `require_replayable` (true), `allow_session_state` (false) |
 | `browser.storage` | `allow_session_state` (false: refuse a non-fresh profile; values are stored as they are either way), `command_timeout_s` (1) |
 | `browser.dom_raw` | `allow_session_state` (false), `self_capture_timeout_s` (10) |
@@ -190,6 +190,27 @@ uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
   host's (on macOS neither `--lang` nor `LANG` changes it), so with archivers bound setup
   measures both defaults right after launch, before any override, and the fingerprint
   records them as `browser_defaults`.
+- `pinned`'s user agent override carries the browser's own client hints
+  (`client_hints.py`): setup reads them right after launch, before the recorder prepares
+  any target, in a temporary background `chrome://version` tab (`navigator.userAgentData`
+  exists in secure contexts only; the first tab's `about:blank` is not one), whenever the
+  identifier is Chrome's own form (`user_agent: null`, or `Mozilla/5.0 (<platform>)
+  AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<version> Safari/537.36` with nothing after
+  it). Pages then read the brands, platform and form this Chrome reports by itself, on every
+  request, the first request of a tab that cannot reach its opener included. A Chrome
+  identifier naming another major version, platform or form than the browser is refused at
+  setup (`BrowserCooperationError`, naming both; not at `prepare()`: it depends on the
+  launched browser), and so is a read that fails. Any other string carries none (brands
+  empty, no `Sec-CH-UA`). With `--user-agent` at launch (a set `user_agent`) Chrome itself
+  reports empty high-entropy values, and the override carries them as Chrome reports them.
+  The fingerprint records what was sent (`replayability.client_hints`; `page.userAgentData`
+  is its low-entropy part), and a replay compares it after launch: refused when the tier pins
+  an identifier, a warning when it does not; a pinned source recorded before the field
+  existed is refused at `prepare()`.
+- Key events carry no `nativeVirtualKeyCode` (architecture §4.13): on macOS a key the page
+  left unhandled (Enter submitting a form natively, most often) made Chrome open
+  `chrome://settings/help` in front of the agent's tab, which then stayed a background page
+  for the rest of the recording.
 - Tabs a page opens are prepared before their first request whatever opened them: the
   recorder writes a waiting target's whole batch and then its resume, and only then waits
   for the replies (a tab its opener cannot reach — `target=_blank` without `rel`,
@@ -742,9 +763,9 @@ already collected; regenerate all the same.
 |---|---|
 | Registrar | `ReplayabilityRegistrar` (`replayability_id`), `replay/replayability.py`; collected as `replayability` |
 | Design section | Architecture §4.14 ("`replayability`：回放档位"; "协作检查一览") |
-| Protocol, base | `ReplayabilityProtocol`: `replayable`, `needs_archive_clock`, the `device_scale_factor` property, `launch_args()`, `launch_env()`, `plan(*, t0_ms, browser_user_agent) -> ReplayabilityPlan`. `ReplayabilityBase`; `default_replayability()` is `none` |
+| Protocol, base | `ReplayabilityProtocol`: `replayable`, `needs_archive_clock`, `needs_client_hints`, the `device_scale_factor` property, `launch_args()`, `launch_env()`, `plan(*, t0_ms, browser_user_agent, client_hints=None) -> ReplayabilityPlan`. `ReplayabilityBase`; `default_replayability()` is `none` |
 | Owner | `BrowserCapability.__wiring__["replayability"]`, a required single-instance receptor |
-| Tests to copy | `test_browser_replayability.py` (`TestRegistryAndGeneratedConfig`, `TestPinnedSwitches`, `TestPinnedPlan`, `TestShim`, `TestCooperation`), `test_browser_replay_consistency.py` |
+| Tests to copy | `test_browser_replayability.py` (`TestRegistryAndGeneratedConfig`, `TestPinnedSwitches`, `TestPinnedPlan`, `TestShim`, `TestCooperation`), `test_browser_client_hints.py`, `test_browser_replay_consistency.py` |
 
 - The tier is the only source of its Chrome switches and launch environment (both through
   `LAUNCH_ARGS`; `pinned`'s environment is `TZ`) and of its shim. Its run plan
@@ -752,10 +773,13 @@ already collected; regenerate all the same.
   fingerprint fields (`replayability_args`, `replayability_env`); the configured instance
   keeps no run state. A participant's commands go out before the target runs but their
   replies may come after it does; never make a later command depend on an earlier reply.
-- Record and replay must use the same tier, switches, seed, user agent and viewport. The
-  consistency check compares the tier, the parameters its plan fingerprints (all but
-  `base_time`) and `shim_sha256`, so a new tier fingerprints every parameter that changes
-  what a page sees.
+- Record and replay must use the same tier, switches, seed, user agent, client hints and
+  viewport. The consistency check compares the tier, the parameters its plan fingerprints
+  (all but `base_time`) and `shim_sha256` before launch, and the client hints the plan's
+  user agent override carries after launch (`client_hint_problems`), so a new tier
+  fingerprints every parameter that changes what a page sees. A tier whose plan overrides
+  the user agent says `needs_client_hints` and puts what it cannot honour in the plan's
+  `problems`; setup refuses those before any target is prepared.
 - Provider conflicts and the fresh-profile rule live in `cooperation.py`.
 
 ### 3.5 Restorer

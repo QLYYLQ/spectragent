@@ -35,12 +35,18 @@ seed, user agent and viewport. This tier is the **only** source of each:
   per-run ``Network.clearBrowserCache``: the profile is fresh for every run
   (the cooperation check refuses any other), so the cache starts empty, and
   clearing an empty cache measured 3.9–9.3 s on Chrome 153 at every setup.
-  The user agent is overridden without
-  ``userAgentMetadata``, so ``navigator.userAgentData.brands`` is empty and no
-  ``Sec-CH-UA`` header is sent — identically at record and replay — except on
-  the first request of a tab that cannot reach its opener, which carries
-  Chrome's default brands even with ``--user-agent`` at launch (the header is
-  computed before the tab is attached; measured, Chrome 155).
+- **The client hints the user agent override carries** (``userAgentMetadata``,
+  :meth:`PinnedReplayability._client_hints`): the browser's own, read right
+  after launch (``client_hints.py``), when the identifier is Chrome's own
+  form — ``user_agent: None`` (the browser's own string) or a normal Chrome
+  identifier — so ``navigator.userAgentData`` and ``Sec-CH-UA`` say what that
+  Chrome says by itself under this launch, on every request, the first
+  request of a tab that cannot reach its opener included (Chrome sends its
+  own hints there before the tab is attached; measured, Chrome 155). A
+  Chrome identifier naming another version, platform or form than the
+  browser's own hints is a plan problem: setup refuses the run. Any other
+  identifier carries none: brands empty, no ``Sec-CH-UA`` — except on that
+  first request, which carries Chrome's own.
 - **The viewport DPR** (the ``device_scale_factor`` knob itself),
   which the control connection applies with ``setDeviceMetricsOverride``.
 
@@ -55,6 +61,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field as PydanticField
 
+from spectragent.core.capabilities.browser.client_hints import (
+    ClientHints,
+    chrome_identifier,
+    identifier_problems,
+)
 from spectragent.core.capabilities.browser.recorder import CDPCommand
 from spectragent.core.capabilities.browser.replay.replayability import (
     ReplayabilityBase,
@@ -131,7 +142,11 @@ class PinnedReplayability(ReplayabilityBase):
             PydanticField(
                 description=(
                     "User agent to pin. None keeps the browser's own user "
-                    "agent and pins only Accept-Language."
+                    "agent and pins only Accept-Language. Either way, when "
+                    "the identifier is in Chrome's own form, pages also get "
+                    "the browser's own client hints (navigator.userAgentData, "
+                    "Sec-CH-UA); a Chrome identifier naming another version, "
+                    "platform or form than the browser is refused at setup."
                 ),
             ),
         ] = None,
@@ -166,6 +181,11 @@ class PinnedReplayability(ReplayabilityBase):
     def needs_archive_clock(self) -> bool:
         return self.base_time == "from_archive"
 
+    @property
+    def needs_client_hints(self) -> bool:
+        """``True``: every frame and worker gets a user agent override (module docstring)."""
+        return True
+
     def launch_args(self) -> tuple[str, ...]:
         args = [
             f"--js-flags=--random-seed={self.random_seed}",
@@ -185,12 +205,17 @@ class PinnedReplayability(ReplayabilityBase):
         """``TZ``: the zone a frame without an override owner falls back to (module docstring)."""
         return {"TZ": self.timezone}
 
-    def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan:
+    def plan(
+        self, *, t0_ms: int, browser_user_agent: str, client_hints: ClientHints | None = None
+    ) -> ReplayabilityPlan:
         shim = render_shim(t0_ms=t0_ms, seed=self.random_seed)
+        hints, problems = self._client_hints(client_hints)
         user_agent: dict[str, Any] = {
             "userAgent": self.user_agent or browser_user_agent,
             "acceptLanguage": self.accept_language(),
         }
+        if hints is not None:
+            user_agent["userAgentMetadata"] = hints.as_metadata()
         frame = [
             CDPCommand("Page.enable"),
             # ``runImmediately``: the document already there when the target
@@ -223,6 +248,7 @@ class PinnedReplayability(ReplayabilityBase):
         # A worker inherits the page's time zone and locale (renderer-wide
         # overrides) and its user agent, but not its Accept-Language: without
         # its own override ``navigator.language`` in a worker is the host's.
+        # Its override carries the same client hints as the frames'.
         worker = (
             CDPCommand("Runtime.evaluate", {"expression": shim}),
             CDPCommand("Network.enable"),
@@ -244,9 +270,29 @@ class PinnedReplayability(ReplayabilityBase):
             shim_sha256=SHIM_SHA256,
             replayability_args=self.launch_args(),
             replayability_env=self.launch_env(),
+            client_hints=hints,
+            problems=tuple(problems),
             frame_commands=tuple(frame),
             worker_commands=worker,
         )
+
+    def _client_hints(self, own: ClientHints | None) -> tuple[ClientHints | None, list[str]]:
+        """Which client hints the override carries, and why it cannot carry the browser's own.
+
+        The browser's own (*own*, read after launch) for an identifier in
+        Chrome's form: the browser's own string (``user_agent: None``), or a
+        Chrome identifier whose version, platform and form they match — one
+        they contradict is a problem and carries none. Any other identifier
+        carries none. Not read (*own* ``None``): none, and no problem.
+        """
+        if own is None:
+            return None, []
+        if self.user_agent is None:
+            return own, []
+        if chrome_identifier(self.user_agent) is None:
+            return None, []
+        problems = identifier_problems(self.user_agent, own)
+        return (None if problems else own), problems
 
     def accept_language(self) -> str:
         """``en-US`` → ``en-US,en``; ``en`` → ``en``.

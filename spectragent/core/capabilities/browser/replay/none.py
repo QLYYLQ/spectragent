@@ -10,6 +10,7 @@ Spelled ``none``, the configuration surface's word for "not enabled": a bare
 ``off`` is a boolean to YAML 1.1 (``docs/architecture_design.md`` §4.14).
 """
 
+from spectragent.core.capabilities.browser.client_hints import ClientHints
 from spectragent.core.capabilities.browser.replay.replayability import (
     ReplayabilityBase,
     ReplayabilityPlan,
@@ -35,5 +36,7 @@ class NoneReplayability(ReplayabilityBase):
     def device_scale_factor(self) -> float:
         return 0.0
 
-    def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan:
+    def plan(
+        self, *, t0_ms: int, browser_user_agent: str, client_hints: ClientHints | None = None
+    ) -> ReplayabilityPlan:
         return ReplayabilityPlan(tier=self.replayability_id)

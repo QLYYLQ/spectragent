@@ -76,14 +76,16 @@ hook:
 | `env/steps/NNN/browser.network/websocket.jsonl` | WebSocket 帧（方向、opcode、时间、内容），有帧时才有 |
 | `env/steps/NNN/browser.storage/storage.json` | cookie 和每个 origin 的 local / session storage，值原样保存；状态变了才写，某一步的状态是那一步及之前最近的一份 |
 | `env/blobs/sha256/<ab>/<rest>` | 内容寻址的文件，run 内只存一份：`browser.dom_raw` 的 `dom-<cycle>-<tab>.json.gz`，边下边收的大 body `body-<sha>.bin` |
-| `env/run.browser.json`，之后的 `env/run.browser.1.json`…… | 环境指纹：Chrome 版本、浏览器的默认时区与语言（`browser_defaults`：没有 override 够得着的 frame 读到的值，启动后实测）、UA、viewport、DPR、时区、语言、档位与参数（含 T0 和种子）、shim 摘要、启动开关摘要（含启动设的 `TZ`）、网络来源、脱敏策略与隐私标记；内容变了才写新的一版 |
+| `env/run.browser.json`，之后的 `env/run.browser.1.json`…… | 环境指纹：Chrome 版本、浏览器的默认时区与语言（`browser_defaults`：没有 override 够得着的 frame 读到的值，启动后实测）、UA 与 pinned 带的 client hints、viewport、DPR、时区、语言、档位与参数（含 T0 和种子）、shim 摘要、启动开关摘要（含启动设的 `TZ`）、网络来源、脱敏策略与隐私标记；内容变了才写新的一版 |
 | `env/trailing/KK/<archiver_id>/<name>` | run 结束时那次收集的证据，不归任何一步 |
 
 `body_status` 的取值：`ok`、`redirect`、`too_large`（超过 64 MiB，回放默认能送出的上限，不论类型都不存）、`streamed_later`（声明的长度超过 `max_inline_body_bytes`，默认 5 MB：页面下载的同时边下边收，不扣响应；请求结束时 `kind: body` 行说收没收全）、`websocket`、`incomplete`（超时、请求中断，或 run 结束时没收完）。超过 5 MB 的文档例外，照样在暂停里读完（导航的 body 提交之后才开得了流）。UI-TARS 是纯视觉 agent，不协商 DOM，`browser.dom_raw` 会在每个观测 cycle 自己多采一次 DOM。各归档器的其余旋钮（`body_read_timeout_s`、`drain_timeout_s`、`strip_request_headers`、`self_capture_timeout_s` 等）见生成的 schema，拼错的键在校验时被拒。
 
-pinned 的旋钮：`base_time`（录制用默认的 `run_start`，回放和分叉用 `from_archive`）、`random_seed`、`timezone`（默认 `UTC`）、`locale`（默认 `en-US`）、`device_scale_factor`（默认 1.0）、`user_agent`（默认不固定，只固定 `Accept-Language`）、`reduced_motion`（默认 `true`）。回放会把这些参数、viewport 和 Chrome 启动命令行的摘要（调试端口、profile 目录和网络路由开关除外）与录制逐项比较，所以录制、回放、分叉三份配置的档位参数、`viewport_width` / `viewport_height` 和 backend 块（`headless`、窗口大小、`extra_args`……）都要相同。
+pinned 的旋钮：`base_time`（录制用默认的 `run_start`，回放和分叉用 `from_archive`）、`random_seed`、`timezone`（默认 `UTC`）、`locale`（默认 `en-US`）、`device_scale_factor`（默认 1.0）、`user_agent`（默认不固定，只固定 `Accept-Language`；写普通 Chrome 标识时版本要写本机 Chrome 的大版本，见下）、`reduced_motion`（默认 `true`）。回放会把这些参数、viewport 和 Chrome 启动命令行的摘要（调试端口、profile 目录和网络路由开关除外）与录制逐项比较，所以录制、回放、分叉三份配置的档位参数、`viewport_width` / `viewport_height` 和 backend 块（`headless`、窗口大小、`extra_args`……）都要相同。
 
 pinned 启动的 Chrome 带着环境变量 `TZ=<timezone>`。Chrome 的时区与语言 override 在一个渲染进程里只认最先设它的那个 frame，这个 frame 走了（iframe 被移除、打开弹窗的页面跳到别的站点），同进程的其余 frame 就落回浏览器的默认值；`TZ` 让默认时区就是 pin 的时区。默认语言定不下来（macOS 上 Chrome 取系统语言，`--lang` 和 `LANG` 都不起作用），所以录制把浏览器的默认时区与语言记进指纹，回放在默认值与录制不同的机器上被拒绝：`prepare()` 时比较本机系统设置读得出的（时区；macOS 上还有语言），启动浏览器之后、准备任何 tab 之前再按 Chrome 实测的比较一次。录制和回放在同一台机器上，或者系统语言相同的机器上，就不会碰到这一条。
+
+浏览器标识与 client hints：页面读两处浏览器身份，UA 字符串，和 `navigator.userAgentData` 与请求头 `Sec-CH-UA*` 里的 client hints（brands、平台、是否移动端）。pinned 在浏览器启动之后、准备任何 tab 之前，先在一个后台的临时 `chrome://version` 页里读出浏览器自己的 client hints，再随 UA override 一起发给每个 tab 和 worker。条件是标识是 Chrome 自己的写法：不写 `user_agent`，或写普通 Chrome 标识，例如 live 配置用的 `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36`。这样页面读到的就是这个 Chrome 自己给的，打不到 opener 的新 tab 的第一个请求也一样。普通 Chrome 标识的大版本、平台或移动端与浏览器自己的不符时，setup 以 `BrowserCooperationError` 拒绝这个 run，点名两边；要启动浏览器才知道，所以 `--dry-run` 和链的开跑前检查都查不出。Chrome 自动更新之后改标识里的版本号就行。别的写法的标识不带 client hints：brands 为空，不发 `Sec-CH-UA`。指纹的 `replayability.client_hints` 记着发出去的值，`page.userAgentData` 是其中页面不问就读得到的那部分。回放在启动之后比较：pin 了标识时与录制的不同就拒绝，没 pin 时只记一条警告。在 override 带上 client hints 之前录的 pinned run，回放一律拒绝（那时页面读到的 brands 是空的），要重录。
 
 页面打开的新 tab（`target=_blank` 链接、`window.open`）从第一个请求起就被扣住、录下、pin 住，不论它能不能访问打开它的页面；`create_tab(url)` 打开的 tab 先建成 `about:blank`，recorder 准备好之后再导航。
 
@@ -472,7 +474,8 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - pinned 不固定 `performance.now` 和定时器。没有 `Last-Modified` 头时 `document.lastModified` 读真实时钟，不带参数的 `Intl.DateTimeFormat().format()` 也读真实时钟。`base_time: from_archive` 下，页面 JS 设的绝对过期时间的 cookie 可能被 Chrome 丢掉。
 - 回放 `none` 档位的录制时，DPR 不比较（时区与语言就是浏览器的默认值，按上面的规则比较），HTTPS 升级的试探可能显示为主 frame 文档 miss。
 - 时区与语言 override 的所有者：同一个渲染进程里只有最先设它的 frame 是所有者。所有者走了之后，同进程的其余 frame（同一个站点的第二个跨源 iframe、保留 opener 的同站弹窗）在 0.2–0.3 s 内落回浏览器的默认值；保留 opener 的跨站弹窗从第一个文档起就读默认语言。时区因为 `TZ` 仍是 pin 的；语言是机器的系统语言，录在指纹里，回放要求它相同，但落回发生在哪一次观测之前，录制和回放之间可能不同。
-- 打不到 opener 的新 tab（不带 `rel` 的 `target=_blank`、`rel=noopener`、`window.open(..., 'noopener')`）的第一个请求带着 Chrome 默认的 `Sec-CH-UA`，录制和回放相同，回放时这个请求不出浏览器；之后的请求都不带。
+- `user_agent` 写的不是 Chrome 自己的写法时（自定义字符串、Edge、Firefox 的标识），pinned 不带 client hints：打不到 opener 的新 tab（不带 `rel` 的 `target=_blank`、`rel=noopener`、`window.open(..., 'noopener')`）的第一个请求带着 Chrome 自己的 `Sec-CH-UA`，之后的请求都不带，录制和回放相同，回放时这个请求不出浏览器。不写 `user_agent` 或写普通 Chrome 标识时没有这个问题。
+- 写了 `user_agent` 的 pinned 用 `--user-agent` 启动 Chrome，Chrome 这时自己就把 client hints 的高熵值（架构、位数、完整版本列表、平台版本、形态）报成空的，override 带的也是空的。调用 `getHighEntropyValues` 或用 `Accept-CH` 要这些头的站点看得出它与真实的 Chrome 不同；brands、平台、是否移动端是一致的。
 - 模糊匹配可能送错资源，日志里记着 `level: fuzzy` 和得分；用完的记录重复最后一条（`exhausted`）是有意的。
 - 回放停在 Chrome 的错误页上时，错误页上写着没送到的 URL；URL 每次都变的站点，按截图比较的回放确定性必然不同。
 - 页面落定的等待看不到窗口里只在途、还没完成的请求：点击之后一次慢的接口调用，页面又没有加载提示，不等它，下一步才看到结果。CSS 过渡与动画、canvas、进程外 iframe 里的变化不经过主文档的 DOM，不算变化。

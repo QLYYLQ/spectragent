@@ -135,6 +135,11 @@ class TestFormSubmission:
             query="query=blue+kettle",
             echoed="query=blue kettle",
         )
+        # The Enter opened no page of Chrome's own: on macOS a key event carrying a native key
+        # code put chrome://settings/help in front of the agent's tab (input/keyboard.py).
+        meta = outcome.trace.observation_fragment(2, "browser.browser_meta")
+        assert meta is not None
+        assert [tab["url"] for tab in meta.tabs] == [meta.url]
 
     def test_the_none_tier_without_archivers_submits_alike(
         self, site: FixtureSite, tmp_path: Path

@@ -14,7 +14,8 @@ site only (``tests/_helpers/fixture_site.py``, scenario ``new_tab``):
 - ``replayability: pinned`` reaches a page-opened tab's first document,
   whatever opened it (and a tab ``create_tab`` opened): the shim before any
   page script, the clock at T0, the seeded randomness, time zone, locale,
-  language, user agent, no brands, reduced motion — in both documents, the
+  language, user agent (not in Chrome's own form, so no client hints: no
+  brands), reduced motion — in both documents, the
   worker and the cross-site frame; the document requests carry the pinned
   ``Accept-Language`` and user agent and ``no-cache``, and are paused and
   archived. The one exception is a known limitation: a cross-site popup that
@@ -22,8 +23,10 @@ site only (``tests/_helpers/fixture_site.py``, scenario ``new_tab``):
 - the tab is not held by its preparation (its document is requested within
   300 ms of the click) and leaves no failed command behind, and a first
   response that takes 2 s is no failure either;
-- ``Sec-CH-UA`` appears on a no-opener tab's first request only (a known
-  limitation, the same at record and replay);
+- with that identifier, ``Sec-CH-UA`` appears on a no-opener tab's first
+  request only (a known limitation, the same at record and replay; a Chrome
+  identifier carries the browser's own hints on every request,
+  ``test_browser_client_hints_live.py``);
 - a frame whose process lost the frame that set the overrides keeps the
   pinned time zone (``TZ`` at launch) and reads the browser's default locale,
   which the environment fingerprint records;
@@ -313,7 +316,10 @@ def test_a_slow_first_response_is_not_a_preparation_failure(session: Session) ->
 
 
 def test_sec_ch_ua_only_on_a_no_opener_tabs_first_request(session: Session) -> None:
-    """A known limitation (§4.14): computed before the tab is attached, the same at record and replay."""
+    """A known limitation (§4.14) for an identifier not in Chrome's form, which carries no client hints.
+
+    Computed before the tab is attached, the same at record and replay.
+    """
     for how in OPENERS:
         first, second = session.opened[how].documents
         assert second.header("sec-ch-ua") is None, how

@@ -148,7 +148,8 @@ class TestClearFocused:
             ("keyDown", "Backspace", "Backspace", 8),
             ("keyUp", "Backspace", "Backspace", 8),
         ]
-        assert [e["nativeVirtualKeyCode"] for e in events] == [vk, 65, 65, vk, 8, 8]
+        # No native key code: on macOS one opened chrome://settings/help (keyboard.py).
+        assert all("nativeVirtualKeyCode" not in event for event in events)
         assert [e.get("modifiers", 0) for e in events] == [mask, mask, mask, 0, 0, 0]
         assert [e.get("commands") for e in events] == [
             None,
@@ -291,15 +292,8 @@ class TestHumanizedKeyEvents:
             "key": "a",
             "code": "KeyA",
             "windowsVirtualKeyCode": 65,
-            "nativeVirtualKeyCode": 65,
         }
-        assert up == {
-            "type": "keyUp",
-            "key": "a",
-            "code": "KeyA",
-            "windowsVirtualKeyCode": 65,
-            "nativeVirtualKeyCode": 65,
-        }
+        assert up == {"type": "keyUp", "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65}
 
     @pytest.mark.parametrize(
         ("char", "code", "vk", "shift"),

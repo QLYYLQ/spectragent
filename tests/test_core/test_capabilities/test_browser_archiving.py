@@ -313,7 +313,9 @@ class TestBrowserDefaults:
         await cap.setup()
         try:
             assert cap._recorder is not None, "shim-only: the recorder runs"
-            assert "Page.createIsolatedWorld" not in browser.recorder.methods()
+            # The client hints are read (the tier overrides the user agent); the defaults are not.
+            assert browser.defaults_contexts == set()
+            assert browser.client_hints_contexts
             assert cap._browser_defaults is None
         finally:
             await cap.teardown()

@@ -15,7 +15,8 @@ boolean beside it. A tier owns three things and nothing else:
   fingerprint fields describing the tier.
 
 The configured instance holds knobs only; everything run-specific (T0, the
-browser's own user agent) arrives as :meth:`plan` arguments and lives on the
+browser's own user agent and, for a tier that overrides the user agent, the
+browser's own client hints) arrives as :meth:`plan` arguments and lives on the
 plan. No ``from __future__ import annotations`` here or in the tier modules:
 conscribe reads the knobs' ``Annotated`` metadata at class creation.
 """
@@ -26,6 +27,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from conscribe import create_registrar
 
+from spectragent.core.capabilities.browser.client_hints import ClientHints
 from spectragent.core.capabilities.browser.recorder import (
     FRAME_TARGET_TYPES,
     WORKER_TARGET_TYPES,
@@ -55,6 +57,14 @@ class ReplayabilityPlan(RecorderParticipantBase):
     replayability_args: tuple[str, ...] = ()
     #: The launch environment the tier owns (its :meth:`launch_env`).
     replayability_env: Mapping[str, str] = field(default_factory=dict)
+    #: The client hints the tier's user-agent override carries (the browser's
+    #: own, ``client_hints.py``); ``None`` when it carries none.
+    client_hints: ClientHints | None = None
+    #: Why this plan cannot be honoured in this browser (a Chrome identifier
+    #: its own client hints contradict), one line each naming both sides. Not
+    #: fingerprinted: setup refuses the run before the recorder prepares any
+    #: target.
+    problems: tuple[str, ...] = ()
     frame_commands: tuple[CDPCommand, ...] = ()
     worker_commands: tuple[CDPCommand, ...] = ()
 
@@ -74,6 +84,7 @@ class ReplayabilityPlan(RecorderParticipantBase):
             "shim_sha256": self.shim_sha256,
             "replayability_args": list(self.replayability_args),
             "replayability_env": dict(self.replayability_env),
+            "client_hints": self.client_hints.as_metadata() if self.client_hints else None,
         }
 
 
@@ -104,6 +115,17 @@ class ReplayabilityProtocol(Protocol):
         """
         ...
 
+    @property
+    def needs_client_hints(self) -> bool:
+        """Whether :meth:`plan` needs the browser's own client hints.
+
+        ``True`` for a tier whose plan overrides the user agent: without them
+        the override would empty ``navigator.userAgentData`` and send no
+        ``Sec-CH-UA``. The capability reads them right after launch
+        (``client_hints.measure_client_hints``) and passes them to :meth:`plan`.
+        """
+        ...
+
     def launch_args(self) -> tuple[str, ...]:
         """Chrome switches this tier owns; ``()`` for ``none``."""
         ...
@@ -117,8 +139,15 @@ class ReplayabilityProtocol(Protocol):
         """
         ...
 
-    def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan:
-        """This run's plan. The configured instance keeps no run state."""
+    def plan(
+        self, *, t0_ms: int, browser_user_agent: str, client_hints: ClientHints | None = None
+    ) -> ReplayabilityPlan:
+        """This run's plan. The configured instance keeps no run state.
+
+        *client_hints* are the browser's own, read after launch when
+        :attr:`needs_client_hints`; ``None`` when not read (the consistency
+        check plans with none, for the parameters only).
+        """
         ...
 
 
@@ -136,7 +165,8 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
     ``replayability_id``) and takes its knobs as ``__init__`` keyword
     parameters. Only genuinely safe defaults live here: a tier is replayable
     unless it is ``none``, and its clock starts at the run unless it says
-    otherwise. The launch switches and environment, the DPR
+    otherwise, and it needs no client hints unless its plan overrides the
+    user agent. The launch switches and environment, the DPR
     (``device_scale_factor``, a property or a knob attribute) and the plan
     have no safe default and must be written by every tier.
     """
@@ -156,6 +186,10 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
     def needs_archive_clock(self) -> bool:
         return False
 
+    @property
+    def needs_client_hints(self) -> bool:
+        return False
+
     def launch_args(self) -> tuple[str, ...]:
         raise NotImplementedError(
             f"replayability tier {self.replayability_id!r} must say which launch switches it owns"
@@ -167,7 +201,9 @@ class ReplayabilityBase(metaclass=ReplayabilityRegistrar.Meta):
             f"it owns"
         )
 
-    def plan(self, *, t0_ms: int, browser_user_agent: str) -> ReplayabilityPlan:
+    def plan(
+        self, *, t0_ms: int, browser_user_agent: str, client_hints: ClientHints | None = None
+    ) -> ReplayabilityPlan:
         raise NotImplementedError(
             f"replayability tier {self.replayability_id!r} must build a ReplayabilityPlan"
         )

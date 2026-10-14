@@ -95,6 +95,7 @@ from spectragent.core.capabilities.browser.backends.browser_defaults import (
 from spectragent.core.capabilities.browser.backends.capabilities import LAUNCH_ARGS
 from spectragent.core.capabilities.browser.capture_check import compare_capture
 from spectragent.core.capabilities.browser.cdp_client import CDPClient, transport_options
+from spectragent.core.capabilities.browser.client_hints import ClientHints, measure_client_hints
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     binding_problems,
@@ -172,6 +173,7 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
 )
 from spectragent.core.capabilities.browser.replay.consistency import (
     browser_default_problems,
+    client_hint_problems,
     consistency_notes,
     consistency_problems,
     replay_t0,
@@ -252,6 +254,10 @@ _NAVIGATION_SETTLE_TIMEOUT_S = 10.0
 # How long each command measuring the browser's defaults right after launch
 # may take (§4.14): the first tab's renderer may still be starting.
 _BROWSER_DEFAULTS_TIMEOUT_S = 5.0
+
+# How long reading the browser's own client hints right after launch may take
+# (§4.14, ``client_hints.py``): a temporary tab, its renderer started for it.
+_CLIENT_HINTS_TIMEOUT_S = 5.0
 
 # How long ``create_tab`` waits for the recorder connection to prepare the
 # tab it created before navigating it (§4.14). An ``about:blank`` tab is
@@ -1669,6 +1675,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
         With archivers bound, the browser's defaults are measured here, before
         the recorder prepares any target (:meth:`_measure_browser_defaults`).
+        A tier whose plan overrides the user agent gets the browser's own
+        client hints, read here too (:meth:`_measure_client_hints`); a plan
+        that cannot use them (a Chrome identifier they contradict), or a
+        replay whose plan carries other ones than the recording's, is refused
+        here, before any target is prepared.
 
         Replaying *recorded* (M30), the network source's server is built here
         — pure construction, before the archive sessions, whose context
@@ -1704,9 +1715,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             self._browser_defaults = await self._measure_browser_defaults(
                 recorder, expected=expected_defaults, recorded=recorded
             )
-        self._replay_plan = self.replayability.plan(
-            t0_ms=t0_ms, browser_user_agent=str(version.get("userAgent", ""))
+        hints = (
+            await self._measure_client_hints(recorder)
+            if self.replayability.needs_client_hints
+            else None
         )
+        plan = self.replayability.plan(
+            t0_ms=t0_ms,
+            browser_user_agent=str(version.get("userAgent", "")),
+            client_hints=hints,
+        )
+        problems = [*plan.problems]
+        if recorded is not None:
+            problems.extend(client_hint_problems(recorded, plan))
+        if problems:
+            raise BrowserCooperationError(problems)
+        self._replay_plan = plan
         if recorded is not None:
             server = self.network_source.serve(
                 recorded,
@@ -1715,7 +1739,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             for warning in [
                 *notes,
                 *version_warnings(
-                    recorded, browser_version=version, replayability=self.replayability
+                    recorded,
+                    browser_version=version,
+                    replayability=self.replayability,
+                    client_hints=plan.client_hints,
                 ),
             ]:
                 server.warn(warning)
@@ -1740,6 +1767,28 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
                 self._archivers,
             )
+
+    async def _measure_client_hints(self, recorder: RecorderConnection) -> ClientHints:
+        """The browser's own client hints, read right after launch (§4.14, ``client_hints.py``).
+
+        In a temporary background tab, closed again before any tab is
+        adopted. A read that fails refuses the run: the tier's user agent
+        override would otherwise empty ``navigator.userAgentData`` and send
+        no ``Sec-CH-UA``, which no real Chrome does.
+        """
+        try:
+            return await measure_client_hints(recorder, timeout=_CLIENT_HINTS_TIMEOUT_S)
+        except Exception as exc:
+            tier = getattr(
+                self.replayability, "replayability_id", type(self.replayability).__name__
+            )
+            raise BrowserCooperationError(
+                [
+                    f"replayability {tier!r} ↔ this browser: its own client hints could not be "
+                    f"read after launch ({exc!r}), so the user agent override would carry none "
+                    f"(no brands, no Sec-CH-UA)"
+                ]
+            ) from exc
 
     async def _measure_browser_defaults(
         self,

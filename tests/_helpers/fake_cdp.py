@@ -42,6 +42,11 @@ in-page probe, which reports the page quiet at once
 And the measurement of the browser's defaults right after launch
 (``backends/browser_defaults.py``): its isolated world and its probe, answered
 with :attr:`FakeBrowser.default_timezone` / :attr:`FakeBrowser.default_locale`.
+And the read of the browser's own client hints (``client_hints.py``): its
+temporary ``chrome://version`` tab (``Target.createTarget`` / ``closeTarget``),
+its isolated world and its probe, answered with
+:attr:`FakeBrowser.client_hints` (``None``: the page reports no
+``navigator.userAgentData``).
 
 And target discovery, as following a new tab reads it (``tabs.py``, §4.14
 "页面新开的标签页"): ``Target.setDiscoverTargets`` reports every existing tab
@@ -62,10 +67,29 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from spectragent.core.capabilities.browser.backends.browser_defaults import DEFAULTS_WORLD
+from spectragent.core.capabilities.browser.client_hints import CLIENT_HINTS_WORLD
 from spectragent.core.capabilities.browser.settle import SETTLE_WORLD
 
 #: What a target without a page process answers only once it runs and commits.
 PAGE_SIDE_DOMAINS = ("Page.", "Emulation.", "Network.", "Runtime.")
+#: Chrome 155's own client hints when launched with ``--user-agent`` (measured, macOS).
+FAKE_CLIENT_HINTS: dict[str, Any] = {
+    "brands": [
+        {"brand": "Google Chrome", "version": "155"},
+        {"brand": "Chromium", "version": "155"},
+        {"brand": "Not(A:Brand", "version": "24"},
+    ],
+    "mobile": False,
+    "platform": "macOS",
+    "architecture": "",
+    "bitness": "",
+    "formFactors": [],
+    "fullVersionList": [],
+    "model": "",
+    "platformVersion": "",
+    "uaFullVersion": "",
+    "wow64": False,
+}
 RESUME = "Runtime.runIfWaitingForDebugger"
 
 
@@ -340,6 +364,11 @@ class FakeBrowser:
         self.default_locale: str | None = "en-US"
         #: Execution contexts of the browser-defaults measurement's world.
         self.defaults_contexts: set[int] = set()
+        #: What ``getHighEntropyValues`` resolves to in the client-hints read: Chrome 155's own
+        #: under ``--user-agent`` (measured: no high-entropy values). ``None``: no userAgentData.
+        self.client_hints: dict[str, Any] | None = dict(FAKE_CLIENT_HINTS)
+        #: Execution contexts of the client-hints read's world.
+        self.client_hints_contexts: set[int] = set()
         self.device_pixel_ratio = 1.0
         #: The value attribute of the document's one password input.
         self.password_value = "planted-secret"
@@ -595,6 +624,10 @@ class FakeBrowser:
             items = store.get(str(storage_id.get("securityOrigin")), {})
             return {"entries": [[key, value] for key, value in items.items()]}
         if method == "Page.createIsolatedWorld":
+            if params.get("worldName") == CLIENT_HINTS_WORLD:
+                context = 9000 + len(self.client_hints_contexts) + 1
+                self.client_hints_contexts.add(context)
+                return {"executionContextId": context}
             if params.get("worldName") == DEFAULTS_WORLD:
                 context = 7000 + len(self.defaults_contexts) + 1
                 self.defaults_contexts.add(context)
@@ -606,6 +639,8 @@ class FakeBrowser:
             self.isolated_worlds += 1
             return {"executionContextId": 1000 + self.isolated_worlds}
         if method == "Runtime.evaluate":
+            if params.get("contextId") in self.client_hints_contexts:
+                return {"result": {"type": "string", "value": json.dumps(self.client_hints)}}
             if params.get("contextId") in self.defaults_contexts:
                 defaults = {"timezone": self.default_timezone, "locale": self.default_locale}
                 return {"result": {"type": "string", "value": json.dumps(defaults)}}

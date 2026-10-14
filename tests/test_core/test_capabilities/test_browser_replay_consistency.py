@@ -19,6 +19,7 @@ from spectragent.core.capabilities.browser.backends.browser_defaults import Brow
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
     NETWORK_ISOLATION_ARGS,
 )
+from spectragent.core.capabilities.browser.client_hints import ClientHints
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 from spectragent.core.capabilities.browser.replay import NoneReplayability, PinnedReplayability
 from spectragent.core.capabilities.browser.replay.archive_index import (
@@ -27,12 +28,14 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
 )
 from spectragent.core.capabilities.browser.replay.consistency import (
     browser_default_problems,
+    client_hint_problems,
     consistency_notes,
     consistency_problems,
     replay_t0,
     version_warnings,
 )
 from tests._helpers.archive_recorder import ScriptedRecorder
+from tests._helpers.fake_cdp import FAKE_CLIENT_HINTS
 
 T0 = 1_760_000_000_000
 BASE_FLAGS = ["--headless=new", "--user-data-dir=<user-data-dir>"]
@@ -40,6 +43,12 @@ FIXTURE_MAP = "--host-resolver-rules=MAP shop.test 127.0.0.1:9000, MAP * ~NOTFOU
 VERSION = {"product": "Chrome/155.0", "revision": "@abc", "userAgent": "ScriptedChrome/1.0"}
 #: What the recording's browser fell back to (measured right after its launch).
 DEFAULTS = BrowserDefaults(timezone="UTC", locale="zh-CN")
+#: The recording browser's own client hints (Chrome 155), and a Chrome identifier they match.
+HINTS = ClientHints.from_page(FAKE_CLIENT_HINTS)
+IDENTIFIER = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/155.0.0.0 Safari/537.36"
+)
 
 
 class _Version(ScriptedRecorder):
@@ -56,11 +65,12 @@ def _source(
     network_files: int = 1,
     archivers: tuple[Any, ...] = (NetworkArchiver(require_replayable=False),),
     defaults: BrowserDefaults | None = DEFAULTS,
+    hints: ClientHints | None = None,
     edit: Any = None,
 ) -> RecordedArchive:
     """A source run's archive (in memory) carrying a real fingerprint document."""
     tier = tier if tier is not None else PinnedReplayability(random_seed=7)
-    plan = tier.plan(t0_ms=T0, browser_user_agent=VERSION["userAgent"])
+    plan = tier.plan(t0_ms=T0, browser_user_agent=VERSION["userAgent"], client_hints=hints)
     document = asyncio.run(
         BrowserFingerprint().measure(
             recorder=_Version(),
@@ -226,6 +236,61 @@ def test_a_source_that_recorded_no_defaults_is_refused() -> None:
     assert _names_both_sides(problem) and "recorded no browser defaults" in problem
     assert _problems(_source(defaults=None)) == [problem], "refused whatever this host says"
     assert browser_default_problems(_source(defaults=None), DEFAULTS) == []
+
+
+# ── the client hints behind the user agent ────────────────────────────
+
+
+def test_a_pinned_source_recorded_before_the_client_hints_is_refused() -> None:
+    def _old(document: dict[str, Any]) -> None:
+        del document["replayability"]["client_hints"]
+
+    (problem,) = _problems(_source(edit=_old))
+    assert _names_both_sides(problem) and "recorded no client hints" in problem
+    assert _problems(_source(NoneReplayability(), edit=_old), NoneReplayability()) == []
+
+
+def test_a_pinned_identifier_s_hints_are_compared_after_launch() -> None:
+    tier = PinnedReplayability(random_seed=7, user_agent=IDENTIFIER)
+    recorded = _source(tier, hints=HINTS)
+    document = recorded.fingerprint
+    assert document is not None
+    assert document["replayability"]["client_hints"] == HINTS.as_metadata()
+    assert document["page"]["userAgentData"] == HINTS.low_entropy()
+    assert _problems(recorded, tier) == []
+    same = tier.plan(t0_ms=T0, browser_user_agent="B", client_hints=HINTS)
+    assert client_hint_problems(recorded, same) == []
+    chromium = ClientHints.from_page(
+        {
+            **FAKE_CLIENT_HINTS,
+            "brands": [b for b in FAKE_CLIENT_HINTS["brands"] if "Google" not in b["brand"]],
+        }
+    )
+    other = tier.plan(t0_ms=T0, browser_user_agent="B", client_hints=chromium)
+    (problem,) = client_hint_problems(recorded, other)
+    assert _names_both_sides(problem)
+    assert '"Google Chrome";v="155"' in problem.split("↔")[0]
+    assert '"Google Chrome"' not in problem.split("↔")[1]
+
+
+def test_the_browser_s_own_identifier_s_hints_only_warn() -> None:
+    tier = PinnedReplayability(random_seed=7)
+    recorded = _source(tier, hints=HINTS)
+    newer = ClientHints.from_page(
+        {**FAKE_CLIENT_HINTS, "brands": [{"brand": "Chromium", "version": "156"}]}
+    )
+    plan = tier.plan(t0_ms=T0, browser_user_agent="B", client_hints=newer)
+    assert client_hint_problems(recorded, plan) == []
+    warnings = version_warnings(
+        recorded, browser_version=VERSION, replayability=tier, client_hints=newer
+    )
+    assert [w.split(":")[0] for w in warnings] == [
+        "browser client hints differ (the tier does not pin a user agent)"
+    ]
+    assert (
+        version_warnings(recorded, browser_version=VERSION, replayability=tier, client_hints=HINTS)
+        == []
+    )
 
 
 # ── what is only noted or warned ──────────────────────────────────────

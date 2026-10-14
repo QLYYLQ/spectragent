@@ -38,6 +38,8 @@ BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
 
 动作引起的主 frame 跨文档导航不需要这个延迟，比如提交表单、在文本框里回车、点链接、设置 `location.href`。观测在每次采集尝试之前先等在途的导航提交或停止加载，每次最多 10 s，到时仍未结束就照常采集并记一条警告；没有在途导航时不等。所以提交表单后，下一次观测看到的是结果页。观测截图另有 10 s 上限：Chrome 不回应时，这次尝试算缺截图，再采一次（每次观测最多尝试两次）。页面定时器在观测开始采集之后才发起的导航不在这个等待之内，只受截图上限约束。
 
+按键发给 Chrome 时只带 `key`、`code`、Windows 按键码和文字，不带系统原生按键码：`browser.send_keys`（UI-TARS 的 `hotkey` 也是它）、`human` 节奏的逐字键入，以及 `browser.type` / `browser.type_coordinate` 写字之前的清空（全选加 Backspace）都是这样。以前带着原生按键码，在 macOS 上页面自己不处理的按键（最常见的是在搜索框里回车、表单原生提交，焦点被弹窗抢走时的清空也会）让 Chrome 打开它自己的"关于 Chrome"页（`chrome://settings/help`）并提到前台，agent 的页面从此是后台页面：页面脚本读到 `document.hidden`，动画帧停了，截图照常，靠动画帧绘制的页面却画不出来。页面的按键处理函数读到的 `key`、`code`、`keyCode` 不变，React 式的回车处理照常收到回车。带修饰键的回车照真实浏览器的规矩：表单里 `meta+enter` 把结果开在新标签页，`shift+enter` 开在新窗口。见 [architecture_design.md](architecture_design.md) §4.13 "按键事件不带原生按键码"。
+
 `browser.navigate`（setup 打开起始页用的也是它）分两段等：先等页面提交，即 Chrome 回应这次导航，最多 `timeout_ms`（默认 30 s）；再等 `wait_until`（默认 `load`），最多 `lifecycle_timeout_ms`（不写时同 `timeout_ms`）。页面提交了而 `load` 没按时到（常见于有资源一直加载不完的页面，页面其实已经画出来了），记一条 WARNING，导航照常算成功。服务器一直不回应、Chrome 拒绝这个 URL、Chrome 报导航失败（主机连不上、204、下载），导航都失败；setup 打开起始页失败时报 `could not open start_url '<URL>' — <原因>`，run 以环境失败结束，不调用模型。这样的页面之后第一次观测还会在落定上限处等一次 `load`（见下一段），之后的观测不再等它。
 
 导航等完之后、采集之前，观测还会等页面落定：主 frame 的文档加载完，再连续 `settle_quiet_ms`（默认 500 ms）没有 DOM 变化、也没有资源加载完成，最多 `settle_max_wait_s`（默认 5 s），到了就按当时的样子采集（`0` 关掉）。两个旋钮写在 capability 块上，DOM、截图与元数据共用这一次等待，只看页面状态，不比截图；每个观测 fragment 的 `settle` 记录写着这次等了多久、是不是被上限截断。代价是每次观测至少多等一个静默窗口，一直在变的页面（轮播、视频）每一步等满上限。点击之后页面的变化要等一个比窗口长、期间又什么都不发生的请求时，仍然看不到它，这时再给 `browser.click_coordinate` 配 `post_delay_ms`。设计与实测见 [architecture_design.md](architecture_design.md) §4.14 "观测之前等页面落定"。
@@ -90,6 +92,8 @@ network_source: { source_id: live }
 `replayability: pinned`、`network_source: archive` 和 trace hook 绑定的归档器用于录制与回放，只支持 `local_chrome`。归档器或 `pinned` 配云后端，都在 `--dry-run` 就报错（`prepare()` 的 setup 检查；正式运行时同样在打开 trace、打开浏览器会话之前报）。评测和 anti-bot 实验保持 `none`，因为 `pinned` 会改变线上站点的行为，它本身也是能被检测到的特征。
 
 `pinned` 启动 Chrome 时设环境变量 `TZ=<pinned 的时区>`：一个 iframe 或弹窗在同进程里设时区的那个页面走了之后，读到的仍是这个时区。语言做不到这一点（macOS 上 Chrome 取系统语言），所以录制把浏览器的默认时区与语言记进指纹，回放只在默认值相同的机器上进行：不同就在 `--dry-run` 报错，系统设置在启动前说不出的那一项在浏览器启动之后报，消息点名两边的值。页面自己打开的新 tab（`target=_blank` 链接、`window.open`）从第一个请求起就被录下、pin 住，开 tab 不再多等。
+
+`pinned` 的 `user_agent` 可以写普通 Chrome 标识，即 Chrome 自己的写法，后面不跟 `Edg/` 之类，例如 `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36`。这时页面读到的 `navigator.userAgentData`（brands、平台、是否移动端）和请求带的 `Sec-CH-UA` 取自浏览器自己：浏览器启动之后先读出来，再随标识一起发给每个页面，页面新开的 tab 的第一个请求也一样。所以版本要写本机 Chrome 的大版本（Chrome 可执行文件加 `--version` 就能看到），平台要与本机相同：不符时浏览器启动之后、打开任何页面之前报 `BrowserCooperationError`，点名两边的版本或平台。这一项 `--dry-run` 查不出来，要启动浏览器才知道；Chrome 自动更新之后，改标识里的版本号就行。不写 `user_agent` 时页面读到的也是浏览器自己的。写别的形式的字符串时不带这些：brands 为空，不发 `Sec-CH-UA`。回放要求与录制带的相同，不同就拒绝。
 
 连到本机 CDP 端点（`localhost`、`127.0.0.0/8`、`::1`，`local_chrome` 启动的浏览器就在这里）的连接直连、不压缩，不读 `http_proxy` 等代理环境变量，本机开着代理（如 Clash）时 CDP 流量也不经过它。远端端点（云后端）仍按 websockets 的默认读环境代理、协商压缩。
 

@@ -167,6 +167,7 @@ class TestNoneIsInert:
             "shim_sha256": None,
             "replayability_args": [],
             "replayability_env": {},
+            "client_hints": None,
         }
 
 

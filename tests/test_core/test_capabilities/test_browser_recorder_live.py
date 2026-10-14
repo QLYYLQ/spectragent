@@ -529,6 +529,8 @@ class TestPinnedShims:
         page, worker = runs["first"]["page"], runs["first"]["worker"]
         assert page["ua"] == worker["ua"]
         assert page["brands"] == worker["brands"]
+        # The browser's own identifier carries the browser's own client hints (client_hints.py).
+        assert page["brands"] and "Chromium" in page["brands"]
         assert runs["first"]["page"]["ua"] == runs["again"]["page"]["ua"]
 
     def test_a_pinned_user_agent_is_visible_in_page_and_worker(self) -> None:
@@ -539,6 +541,8 @@ class TestPinnedShims:
         result = asyncio.run(asyncio.wait_for(_run(), _TIMEOUT_S))
         assert result["page"]["ua"] == "PinnedAgent/1.0 (fixture)"
         assert result["worker"]["ua"] == "PinnedAgent/1.0 (fixture)"
+        # Not in Chrome's own form: the override carries no client hints.
+        assert result["page"]["brands"] == result["worker"]["brands"] == []
 
 
 async def test_pinned_capability_observes_through_the_recorder() -> None:

@@ -169,15 +169,17 @@ def _inside_sensitive_control(node: DOMElementNode | None) -> bool:
     return False
 
 
-# Key name → (DOM `key`, DOM `code`, virtual key code, optional `char`
-# text) for CDP Input.dispatchKeyEvent. The 4th element, when not None,
-# means this key has a text interpretation and a separate ``type=char``
-# event should be sandwiched between keyDown and keyUp; without that
-# event Chrome won't fire ``keypress`` and many JS handlers (Amazon's
-# search-on-Enter, autosuggest selectors, contenteditable inputs) treat
-# the press as half-hearted and skip their reaction. Two-event keyDown
-# + keyUp is enough for navigation keys (arrows, Esc, Home/End, Pg*).
-# Reference: ref/browser-use/browser_use/actor/element.py:423-501.
+# Key name → (DOM `key`, DOM `code`, Windows virtual key code, optional
+# `char` text) for CDP Input.dispatchKeyEvent. The 4th element, when not
+# None, means this key has a text interpretation and a separate
+# ``type=char`` event should be sandwiched between keyDown and keyUp;
+# without that event Chrome won't fire ``keypress`` and many JS handlers
+# (Amazon's search-on-Enter, autosuggest selectors, contenteditable
+# inputs) treat the press as half-hearted and skip their reaction.
+# Two-event keyDown + keyUp is enough for navigation keys (arrows, Esc,
+# Home/End, Pg*). Reference: ref/browser-use/browser_use/actor/element.py:423-501.
+# No key event carries a ``nativeVirtualKeyCode``: the ``input/keyboard.py``
+# module docstring ("No native key code") says what it did on macOS.
 _KEY_INFO: dict[str, tuple[str, str, int, str | None]] = {
     "enter": ("Enter", "Enter", 13, "\r"),
     "tab": ("Tab", "Tab", 9, "\t"),
@@ -240,8 +242,9 @@ def _resolve_key_event(raw: str) -> tuple[dict[str, Any], str | None]:
     Returns ``(base_payload, char_text)``:
 
     - ``base_payload`` is the shared subset (key, code,
-      windowsVirtualKeyCode, nativeVirtualKeyCode) that the caller wraps
-      with ``type=keyDown`` / ``type=keyUp`` and any ``modifiers``.
+      windowsVirtualKeyCode) that the caller wraps with ``type=keyDown`` /
+      ``type=keyUp`` and any ``modifiers``. Never a ``nativeVirtualKeyCode``
+      (the ``input/keyboard.py`` module docstring, "No native key code").
     - ``char_text`` is the text to dispatch as a ``type=char`` event
       between keyDown and keyUp; ``None`` skips the char event.
 
@@ -253,15 +256,7 @@ def _resolve_key_event(raw: str) -> tuple[dict[str, Any], str | None]:
     info = _KEY_INFO.get(raw.lower())
     if info is not None:
         key, code, vk, char = info
-        return (
-            {
-                "key": key,
-                "code": code,
-                "windowsVirtualKeyCode": vk,
-                "nativeVirtualKeyCode": vk,
-            },
-            char,
-        )
+        return ({"key": key, "code": code, "windowsVirtualKeyCode": vk}, char)
     if len(raw) == 1:
         ch = raw
         upper = ch.upper()
@@ -271,15 +266,7 @@ def _resolve_key_event(raw: str) -> tuple[dict[str, Any], str | None]:
             code = f"Digit{ch}"
         else:
             code = upper
-        return (
-            {
-                "key": ch,
-                "code": code,
-                "windowsVirtualKeyCode": ord(upper),
-                "nativeVirtualKeyCode": ord(upper),
-            },
-            ch,
-        )
+        return ({"key": ch, "code": code, "windowsVirtualKeyCode": ord(upper)}, ch)
     # Unknown multi-char key — pass through key-only.
     return ({"key": raw}, None)
 
@@ -1134,11 +1121,14 @@ class ActionWatchdog(BrowserWatchdog):
     async def _on_send_keys(self, event: SendKeysEvent) -> None:
         """Send keyboard keys, supports modifiers (e.g. 'Ctrl+a', 'Enter').
 
-        Uses ``_resolve_key_event`` to fill ``code`` /
-        ``windowsVirtualKeyCode`` / ``nativeVirtualKeyCode`` so the
-        synthesized DOM ``KeyboardEvent`` has a non-zero ``keyCode`` and
-        a real ``code`` string — both of which JS handlers (especially
-        React's onKeyDown) check before treating the press as Enter.
+        Uses ``_resolve_key_event`` to fill ``code`` and
+        ``windowsVirtualKeyCode`` so the synthesized DOM ``KeyboardEvent``
+        has a non-zero ``keyCode`` and a real ``code`` string — both of
+        which JS handlers (especially React's onKeyDown) check before
+        treating the press as Enter. No ``nativeVirtualKeyCode``: on macOS
+        Chrome matched an unhandled key carrying one against its own menu
+        and opened ``chrome://settings/help`` in front of the agent's tab
+        (the ``input/keyboard.py`` module docstring, "No native key code").
         """
         try:
             parts = event.keys.split("+")

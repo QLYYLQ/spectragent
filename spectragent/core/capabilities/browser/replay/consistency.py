@@ -28,16 +28,23 @@ Refused (before launch):
   the recorder prepares any target) Chrome's own answer is compared, which
   covers what the OS could not say (the locale off macOS). A source that
   recorded no defaults is refused;
-- ``base_time: from_archive`` and the source recorded no T0.
+- ``base_time: from_archive`` and the source recorded no T0;
+- a ``pinned`` source that recorded no client hints (recorded before the
+  user agent override carried the browser's own); and, after launch
+  (:func:`client_hint_problems`, in setup before the recorder prepares any
+  target), when the tier pins a user agent, client hints other than the
+  recording's — the identifier is compared before launch as a parameter, the
+  hints the browser stands behind it with only once it runs.
 
 Tolerated, recorded as warnings in the replay fingerprint (after launch,
 :func:`version_warnings`): another Chrome version (product or revision),
-another browser user agent when the tier does not pin one (it carries the
-version), another redaction policy (POSTs with credential fields may not key
-alike). What could not be compared at all — a side without a launch-flag
-digest — is a note (:func:`consistency_notes`). A ``none`` recording's DPR
-is a measured host fact and is not compared; its time zone and locale are the
-browser's defaults and are.
+another browser user agent, and other client hints, when the tier does not
+pin a user agent (both carry the version), another redaction policy (POSTs
+with credential fields may not key alike). What could not be compared at
+all — a side without a launch-flag digest — is a note
+(:func:`consistency_notes`). A ``none`` recording's DPR is a measured host
+fact and is not compared; its time zone and locale are the browser's
+defaults and are.
 
 .. note::
    No ``from __future__ import annotations`` — the browser replay package
@@ -50,11 +57,15 @@ from typing import Any
 from spectragent.core.capabilities.browser.archive.fingerprint import flags_digest
 from spectragent.core.capabilities.browser.archive.redaction import BROWSER_REDACTION_POLICY
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
+from spectragent.core.capabilities.browser.client_hints import ClientHints
 from spectragent.core.capabilities.browser.replay.archive_index import (
     NETWORK_ARCHIVER,
     RecordedArchive,
 )
-from spectragent.core.capabilities.browser.replay.replayability import ReplayabilityProtocol
+from spectragent.core.capabilities.browser.replay.replayability import (
+    ReplayabilityPlan,
+    ReplayabilityProtocol,
+)
 
 #: Tier parameters a replay may change: the clock's origin.
 REPLAY_MAY_CHANGE = frozenset({"base_time"})
@@ -126,6 +137,42 @@ def browser_default_problems(recorded: RecordedArchive, measured: BrowserDefault
     return _defaults_problems(
         _source(recorded), then, measured, how="measured after launch", every_value=True
     )
+
+
+def _hints_text(record: Any) -> str:
+    """Recorded client hints, briefly: the ``Sec-CH-UA`` brands, platform and form."""
+    hints = ClientHints.from_record(record)
+    if hints is None:
+        return "none"
+    return (
+        f"{hints.header() or 'no brands'} (platform {hints.platform!r}, "
+        f"mobile {str(hints.mobile).lower()})"
+    )
+
+
+def client_hint_problems(recorded: RecordedArchive, plan: ReplayabilityPlan) -> list[str]:
+    """The client hints this replay's user agent override carries, against the recording's.
+
+    Run by setup right after it read the browser's own client hints, before
+    the recorder prepares any target. Only when the tier pins a user agent:
+    the browser's own identifier and hints may differ with its version, and
+    :func:`version_warnings` records that. A source without the record was
+    refused before launch (:func:`consistency_problems`).
+    """
+    replayability = (recorded.fingerprint or {}).get("replayability") or {}
+    if "client_hints" not in replayability:
+        return []
+    if not (replayability.get("params") or {}).get("user_agent"):
+        return []
+    then = replayability.get("client_hints")
+    now = plan.client_hints.as_metadata() if plan.client_hints is not None else None
+    if then == now:
+        return []
+    return [
+        f"{_source(recorded)} client hints {_hints_text(then)} ↔ this run's client hints "
+        f"{_hints_text(now)}: the pinned user agent would stand behind other client hints than "
+        f"the recording's (navigator.userAgentData, Sec-CH-UA)"
+    ]
 
 
 def consistency_problems(
@@ -230,6 +277,12 @@ def consistency_problems(
             f"{source} recorded no T0 (replayability {then.get('tier')!r}) ↔ this run's "
             f"base_time=from_archive"
         )
+    if then.get("tier") == now.get("tier") != "none" and "client_hints" not in then:
+        problems.append(
+            f"{source} recorded no client hints (recorded before the user agent override "
+            f"carried the browser's own) ↔ replayability {now.get('tier')!r}: this run's pages "
+            f"would read other client hints than the recording's; record the run again"
+        )
     return problems
 
 
@@ -252,8 +305,12 @@ def version_warnings(
     *,
     browser_version: Mapping[str, Any],
     replayability: ReplayabilityProtocol,
+    client_hints: ClientHints | None = None,
 ) -> list[str]:
-    """Mismatches a replay tolerates and records: Chrome version, unpinned UA, redaction policy."""
+    """Mismatches a replay tolerates and records: Chrome version, unpinned UA and hints, redaction policy.
+
+    *client_hints* are the ones this run's plan carries.
+    """
     fingerprint = recorded.fingerprint or {}
     if not fingerprint:
         return []
@@ -273,6 +330,15 @@ def version_warnings(
                 f"browser user agent differs (the tier does not pin one): {source} {then!r}, "
                 f"this run {now!r}"
             )
+        recorded_tier = fingerprint.get("replayability") or {}
+        if "client_hints" in recorded_tier:
+            then_hints = recorded_tier.get("client_hints")
+            now_hints = client_hints.as_metadata() if client_hints is not None else None
+            if then_hints != now_hints:
+                warnings.append(
+                    f"browser client hints differ (the tier does not pin a user agent): "
+                    f"{source} {_hints_text(then_hints)}, this run {_hints_text(now_hints)}"
+                )
     policy = (fingerprint.get("redaction") or {}).get("policy")
     if policy is not None and policy != BROWSER_REDACTION_POLICY:
         warnings.append(

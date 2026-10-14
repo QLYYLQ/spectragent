@@ -11,9 +11,11 @@ It holds:
 - **Chrome** — ``Browser.getVersion`` (product, revision, protocol, JS
   version).
 - **What the page sees** — user agent and UA client hints metadata, time zone,
-  locale and languages, DPR: the ``pinned`` tier's own parameters, or, at
-  ``off``, measured in the first tab on the recorder connection (the control
-  connection is never used for evidence) — in an isolated world of the tab's
+  locale and languages, DPR: the ``pinned`` tier's own parameters and the
+  client hints its override carries (the browser's own, read after launch;
+  ``None`` when it carries none), or, at ``none``, measured in the first tab
+  on the recorder connection (the control connection is never used for
+  evidence) — in an isolated world of the tab's
   main frame (:data:`PROBE_WORLD`), so the page's scripts can neither observe
   the probe nor change what it reads, and once per document (``loaderId``):
   a collection on a document already measured costs one ``Page.getFrameTree``.
@@ -63,16 +65,17 @@ from spectragent.core.capabilities.browser.backends.browser_defaults import Brow
 from spectragent.core.capabilities.browser.backends.chrome_switches import (
     without_routing_switches,
 )
+from spectragent.core.capabilities.browser.client_hints import ClientHints
 from spectragent.core.capabilities.browser.recorder import RecorderTarget
 
 logger = logging.getLogger(__name__)
 
 FINGERPRINT_NAME = "fingerprint.json"
 
-#: The isolated world the ``off`` probe runs in (``Page.createIsolatedWorld``).
+#: The isolated world the ``none`` probe runs in (``Page.createIsolatedWorld``).
 PROBE_WORLD = "af-fingerprint"
 
-#: Measured in a page at ``off``: what that page's scripts see.
+#: Measured in a page at ``none``: what that page's scripts see.
 PAGE_PROBE = (
     "JSON.stringify({"
     "userAgent: navigator.userAgent,"
@@ -178,10 +181,11 @@ class BrowserFingerprint:
         params = dict(plan_fingerprint.get("params") or {})
         pinned = plan_fingerprint.get("tier") not in (None, "none")
         if pinned:
+            hints = ClientHints.from_record(plan_fingerprint.get("client_hints"))
             page: dict[str, Any] = {
                 "source": "replayability",
                 "userAgent": params.get("user_agent") or version.get("userAgent"),
-                "userAgentData": None,
+                "userAgentData": hints.low_entropy() if hints is not None else None,
                 "timezone": params.get("timezone"),
                 "locale": params.get("locale"),
                 "devicePixelRatio": params.get("device_scale_factor"),

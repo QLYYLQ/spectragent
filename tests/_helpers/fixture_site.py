@@ -189,6 +189,28 @@ NEW_TAB_BOXES: dict[str, tuple[int, int, int, int]] = {
         )
     )
 }
+#: Keys af sends (architecture §4.13), kept apart for the same reason. ``page.html``
+#: holds a text field in a GET form with no button (``query``: Enter submits it
+#: natively, implicit submission, to ``result.html``), a text field whose own
+#: keydown handler acts on Enter the way a React search box does (``react``: it
+#: checks ``key`` and ``keyCode`` and prevents the submission) and a textarea
+#: (``notes``), at :data:`KEYS_BOXES`; a capture-phase listener keeps every
+#: keydown, keypress and keyup in ``window.__keys``. ``result.html`` echoes the
+#: query.
+KEYS_SCENARIOS: tuple[str, ...] = ("keys",)
+#: Where ``keys/page.html`` puts its fields: ``(left, top, width, height)`` in CSS px.
+KEYS_BOXES: dict[str, tuple[int, int, int, int]] = {
+    "query": (20, 20, 320, 32),
+    "react": (20, 80, 320, 32),
+    "notes": (20, 140, 320, 64),
+}
+#: The browser's client hints (architecture §4.14), kept apart for the same
+#: reason: ``page.html``'s script writes what ``navigator.userAgentData`` says
+#: (brands with versions, platform, mobile) into the page and reports it to
+#: ``/client_hints/report``. ``navigator.userAgentData`` exists in secure
+#: contexts only, and Chrome sends ``Sec-CH-UA`` to them only: serve it from an
+#: unmapped site (``127.0.0.1``).
+CLIENT_HINTS_SCENARIOS: tuple[str, ...] = ("client_hints",)
 #: What the first script of every ``new_tab`` document, worker and frame
 #: reports: the shim's mark, the clock, the seeded randomness, time zone,
 #: locale, language, user agent and brands, reduced motion — and whether any
@@ -210,7 +232,14 @@ NEW_TAB_PROBE = (
     " }; })()"
 )
 #: Request headers whose values the log keeps (:attr:`LoggedRequest.headers`).
-LOGGED_HEADER_VALUES = ("accept-language", "user-agent", "cache-control", "sec-ch-ua")
+LOGGED_HEADER_VALUES = (
+    "accept-language",
+    "user-agent",
+    "cache-control",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+)
 #: Where the flywheel pages put their controls: ``(left, top, width, height)`` in CSS px.
 FLYWHEEL_BOXES: dict[str, tuple[int, int, int, int]] = {
     "query": (40, 100, 300, 32),
@@ -292,6 +321,8 @@ class LoggedRequest:
             or head in FORM_SCENARIOS
             or head in FLYWHEEL_SCENARIOS
             or head in NEW_TAB_SCENARIOS
+            or head in KEYS_SCENARIOS
+            or head in CLIENT_HINTS_SCENARIOS
         )
         return head if known else None
 
@@ -523,6 +554,8 @@ class FixtureSite:
             + FORM_SCENARIOS
             + FLYWHEEL_SCENARIOS
             + NEW_TAB_SCENARIOS
+            + KEYS_SCENARIOS
+            + CLIENT_HINTS_SCENARIOS
         )
         if scenario not in known:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {known}")
@@ -587,6 +620,9 @@ class FixtureSite:
             "flywheel_blocked": ["/flywheel_blocked/start.html"],
             # its entry page (no tab opens without an input event)
             "new_tab": ["/new_tab/page.html"],
+            # its entry page (nothing is submitted without a key)
+            "keys": ["/keys/page.html"],
+            "client_hints": ["/client_hints/page.html", "/client_hints/report"],
         }
         if scenario not in paths:
             raise KeyError(f"unknown fixture scenario {scenario!r}; known: {sorted(paths)}")
@@ -1048,7 +1084,62 @@ class FixtureSite:
             **self._flywheel_routes(static),
             # ── tabs a page opens ──
             **self._new_tab_routes(static),
+            # ── keys af sends ──
+            "/keys/page.html": static(self._keys_page(), _HTML),
+            "/keys/result.html": self._keys_result,
+            # ── the browser's client hints ──
+            "/client_hints/page.html": static(self._client_hints_page(), _HTML),
+            "/client_hints/report": static(b"{}", _JSON),
         }
+
+    def _keys_page(self) -> bytes:
+        def box(name: str) -> str:
+            left, top, width, height = KEYS_BOXES[name]
+            return (
+                f"position:absolute;left:{left}px;top:{top}px;width:{width}px;"
+                f"height:{height}px;box-sizing:border-box"
+            )
+
+        return self._page(
+            "keys",
+            '<form method="GET" action="/keys/result.html">'
+            f'<input id="query" name="query" type="text" style="{box("query")}"></form>'
+            f'<input id="react" type="text" style="{box("react")}">'
+            f'<textarea id="notes" style="{box("notes")}"></textarea>'
+            "<script>"
+            "window.__keys = [];"
+            "for (const type of ['keydown', 'keypress', 'keyup']) {"
+            " addEventListener(type, e => window.__keys.push({type, key: e.key, code: e.code,"
+            " keyCode: e.keyCode, which: e.which, charCode: e.charCode,"
+            " target: e.target.id || e.target.tagName}), true); }"
+            "document.getElementById('react').addEventListener('keydown', e => {"
+            " if (e.key === 'Enter' && e.keyCode === 13) { e.preventDefault();"
+            " window.__reactEnter = {key: e.key, keyCode: e.keyCode, code: e.code,"
+            " which: e.which, value: e.target.value}; } });"
+            "</script>",
+        )
+
+    def _keys_result(self, handler: _Handler, _body: bytes) -> None:
+        query = dict(parse_qsl(handler.path.partition("?")[2], keep_blank_values=True))
+        page = self._page(
+            "keys result",
+            f'<p>Searched for <span id="query">{escape(query.get("query", ""))}</span></p>',
+        )
+        self._send(handler, 200, page, _HTML)
+
+    def _client_hints_page(self) -> bytes:
+        return self._page(
+            "client hints",
+            '<p id="hints">reading</p><script>'
+            "const d = navigator.userAgentData;"
+            "const seen = d ? {brands: d.brands.map(b => b.brand + '/' + b.version),"
+            " mobile: d.mobile, platform: d.platform} : null;"
+            "document.getElementById('hints').textContent = seen"
+            " ? 'brands: ' + seen.brands.join(', ') + '; platform: ' + seen.platform"
+            " + '; mobile: ' + seen.mobile : 'no userAgentData';"
+            "fetch('/client_hints/report?d=' + encodeURIComponent(JSON.stringify(seen)));"
+            "</script>",
+        )
 
     def _new_tab_routes(
         self, static: Callable[[bytes, str], Callable[[_Handler, bytes], None]]
@@ -1481,6 +1572,12 @@ def _box_link(name: str, href: str, label: str) -> str:
 def flywheel_point(name: str) -> tuple[int, int]:
     """The centre of a flywheel control (:data:`FLYWHEEL_BOXES`) — where UI-TARS clicks it."""
     left, top, width, height = FLYWHEEL_BOXES[name]
+    return left + width // 2, top + height // 2
+
+
+def keys_point(name: str) -> tuple[int, int]:
+    """The centre of a ``keys`` field (:data:`KEYS_BOXES`)."""
+    left, top, width, height = KEYS_BOXES[name]
     return left + width // 2, top + height // 2
 
 
