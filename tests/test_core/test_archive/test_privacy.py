@@ -102,11 +102,7 @@ class TestFieldNamePatterns:
         ],
     )
     def test_not_credential_shaped(self, name: str) -> None:
-        """A segment boundary is required: ``keyword`` and ``monkey`` stay readable.
-
-        ``credentials_ref`` is the task schema's pointer into a credential
-        store — a reference, never the secret — and is recorded as is.
-        """
+        """A segment boundary is required: ``keyword`` and ``monkey`` stay readable."""
         assert not is_credential_name(name)
 
 

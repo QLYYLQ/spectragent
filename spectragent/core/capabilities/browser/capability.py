@@ -46,9 +46,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal, cast
 
@@ -60,7 +62,7 @@ from spectragent.core.actions.base import BaseAction
 from spectragent.core.archive import ArchiveBatch, ArchiverBase
 from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities._registrar import CapabilityBase, negotiated_fragment_keys
-from spectragent.core.capabilities.base import CaptureComparison
+from spectragent.core.capabilities.base import CaptureComparison, PreparedSetupContext
 from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — registration
     ClickAction,
     ClickCoordinateAction,
@@ -89,6 +91,7 @@ from spectragent.core.capabilities.browser.archive import (  # noqa: F401 — re
     ReplayLogArchiver,
     StorageArchiver,
 )
+from spectragent.core.capabilities.browser.archive.encoding import canonical_json
 from spectragent.core.capabilities.browser.backends.base import (
     BaseBrowserProvider,
     SharedBrowserProvider,
@@ -204,6 +207,12 @@ from spectragent.core.capabilities.browser.settle import (
 )
 from spectragent.core.capabilities.browser.shared_browser import BrowserContextLease
 from spectragent.core.capabilities.browser.start_page import start_page_problem
+from spectragent.core.capabilities.browser.storage_seed import (
+    StorageSeed,
+    capture_profile_initial,
+    hydrate_storage,
+    read_initial_seed,
+)
 from spectragent.core.capabilities.browser.tabs import (
     FocusMove,
     FocusMoveReason,
@@ -239,6 +248,7 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 )
 from spectragent.schemas._types import UNLIMITED, Unlimited, limit_value
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.browser_storage import BrowserStorageState
 from spectragent.schemas.provider_session import ProviderSession
 from spectragent.schemas.restoration import RestorationEvidence, Retarget
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
@@ -950,6 +960,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._alive = False
         self._cycle_cache = {}
         self._observation_cycle = 0
+        self._initial_storage: StorageSeed | None = None
+        self._storage_tabs: dict[str, str] = {}
         self._injected_client = None
         self._cdp_factory = None
         self._recorder = None
@@ -1288,6 +1300,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             ),
             browser_defaults=self._browser_defaults,
             input_platform=self._input_platform,
+            initial_storage=self._initial_storage.fingerprint() if self._initial_storage else None,
         )
 
     def _fresh_profile(self) -> bool:
@@ -1354,6 +1367,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
     # ── What setup would refuse, refused at prepare() (SetupCheck, §4.14) ──
 
+    def prepare_setup_context(self, context: Mapping[str, Any]) -> PreparedSetupContext:
+        """Freeze browser-owned input files and keep seed evidence out of task provenance."""
+        execution = dict(context)
+        source = execution.get("storage_state")
+        if source is not None:
+            if isinstance(source, os.PathLike):
+                source = os.fspath(source)
+            if isinstance(source, Mapping):
+                source = BrowserStorageState.model_validate(source)
+            execution["storage_state"] = StorageSeed.freeze(source).state
+        archive = execution.get(REPLAY_ARCHIVE_KEY)
+        if isinstance(archive, (str, os.PathLike)) and os.fspath(archive):
+            execution[REPLAY_ARCHIVE_KEY] = str(Path(archive).expanduser().resolve())
+        recordable = {key: value for key, value in execution.items() if key != "storage_state"}
+        return PreparedSetupContext(execution, recordable)
+
     def check_setup(
         self,
         context: Mapping[str, Any],
@@ -1418,6 +1447,24 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             if self.network_source.intercepts and replay_archive
             else None
         )
+        seed_source = context.get("storage_state")
+        seed = StorageSeed.freeze(seed_source) if seed_source is not None else None
+        if seed is not None and (cdp_url is not None or injected):
+            problems.append(
+                "storage_state requires an owned fresh browser context; external CDP state is unknown"
+            )
+        if seed is not None and not self._fresh_profile():
+            problems.append(
+                "storage_state requires a fresh profile; persistent-profile state cannot be replaced completely"
+            )
+        if seed is not None and self.network_source.intercepts and source_reader is not None:
+            recorded_seed = read_initial_seed(source_reader)
+            if seed.data != recorded_seed.data:
+                problems.append(
+                    "explicit storage_state conflicts with the replay archive initial storage seed"
+                )
+        elif source_reader is not None:
+            read_initial_seed(source_reader)
         self.network_source.check_config(source_reader)
         if source_reader is not None:
             problems.extend(
@@ -1488,9 +1535,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         cdp_url: str | None = None,
         start_url: str | None = None,
         replay_archive: str | None = None,
-        login_required: bool | None = None,
-        login_type: str | None = None,
-        credentials_ref: str | None = None,
+        storage_state: BrowserStorageState | str | None = None,
         risk_control: bool | None = None,
         risk_control_types: list[str] | None = None,
     ) -> None:
@@ -1526,10 +1571,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         intercepting ``network_source`` (``archive``, M30) replays: opened
         through ``core/archive``'s ``open_archive`` and loaded whole, to be
         served, before anything is launched (§4.14).
-        The remaining keys are the rest of :class:`BrowserSetup`'s
-        vocabulary; they are accepted so a task carrying them routes
-        cleanly, and reported at WARNING because this capability does not
-        act on them yet.
+        ``storage_state`` freezes a typed cookie / Web Storage seed or JSON
+        source before business navigation; replay uses committed initial-state
+        evidence and refuses a conflicting explicit seed. Risk-control metadata
+        is accepted and reported at WARNING because it is not automated.
 
         Before anything is acquired, :meth:`check_setup` — the check
         ``prepare()`` ran — runs again with the archivers bound by now: a
@@ -1550,8 +1595,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # the source run match this configuration? The check ``prepare()``
         # ran, again, before anything is launched: every problem reported at
         # once, each naming both parties (§4.14).
+        explicit_seed = StorageSeed.freeze(storage_state) if storage_state is not None else None
         self.check_setup(
-            {"cdp_url": cdp_url, REPLAY_ARCHIVE_KEY: replay_archive, "start_url": start_url},
+            {
+                "cdp_url": cdp_url,
+                REPLAY_ARCHIVE_KEY: replay_archive,
+                "start_url": start_url,
+                "storage_state": explicit_seed.state if explicit_seed is not None else None,
+            },
             negotiation=negotiation,
             archivers=self.bound_archivers,
         )
@@ -1559,9 +1610,6 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         unhandled = sorted(
             name
             for name, value in (
-                ("login_required", login_required),
-                ("login_type", login_type),
-                ("credentials_ref", credentials_ref),
                 ("risk_control", risk_control),
                 ("risk_control_types", risk_control_types),
             )
@@ -1666,6 +1714,28 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             )
             await self._cdp.start()
 
+        # Seed before discovery, recorder attachment, business requests or scripts.
+        # Replay always reads the pre-navigation evidence rather than step zero.
+        if self.network_source.intercepts and replay_archive:
+            self._initial_storage = read_initial_seed(open_archive(replay_archive))
+        elif explicit_seed is not None:
+            self._initial_storage = explicit_seed
+        elif self._fresh_profile():
+            self._initial_storage = StorageSeed(
+                canonical_json(BrowserStorageState().model_dump(mode="json")), "fresh"
+            )
+        else:
+            self._initial_storage = await capture_profile_initial(
+                self._cdp, self.browser_context_id
+            )
+        if (
+            explicit_seed is not None or self.network_source.intercepts
+        ) and self._initial_storage.fingerprint()["nonempty"]:
+            seeded_tabs = await hydrate_storage(
+                self._cdp, self._initial_storage, self.browser_context_id
+            )
+            self._storage_tabs = {target: tab for tab, target in seeded_tabs.items()}
+
         # The browser's own internal OS fact, before any business tab or input
         # controller is prepared. This uses the control connection even without
         # an archive or a recorder, so it applies to plain and cloud CDP too.
@@ -1739,7 +1809,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # 3. Initial tab.
         result = await self._cdp.send("Target.getTargets", {})
         targets = (result or {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
+        initial_target = next(iter(self._storage_tabs), None)
+        page_target = next((t for t in targets if t.get("targetId") == initial_target), None)
+        if page_target is None:
+            page_target = next((t for t in targets if t.get("type") == "page"), None)
 
         if page_target:
             sid = await self._attach_tab(page_target["targetId"], page_target.get("url", ""))
@@ -1891,13 +1964,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 BrowserArchiveContext(
                     recorder=recorder,
                     channel=channel,
+                    browser_context_id=self.browser_context_id,
+                    initial_storage=self._initial_storage,
+                    storage_tabs=dict(self._storage_tabs),
                     raw_captures=self._archive.raw_captures,
                     park_raw=self._park_self_capture,
                     fragments=self.provided_fragments,
                     viewport=(self.viewport_width, self.viewport_height),
                     cycle=lambda: self._observation_cycle,
                     fresh_profile=self._fresh_profile(),
-                    browser_context_id=self.browser_context_id,
                     replay_log=(
                         self._replay_server.log if self._replay_server is not None else None
                     ),
@@ -2177,6 +2252,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         if self._global_scope is not None and self._global_scope.is_closed:
             self._global_scope = None
         self._default_session_id = None
+        self._initial_storage = None
+        self._storage_tabs.clear()
         self._replay_plan = None
         self._browser_defaults = None
         self._input_platform = None

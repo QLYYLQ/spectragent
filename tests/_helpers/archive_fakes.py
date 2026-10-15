@@ -599,6 +599,9 @@ class SurfacelessEnv:
     def get_action_space(self, **kwargs: Any) -> Any:
         return self._inner.get_action_space(**kwargs)
 
+    def prepare_setup_context(self, context: Mapping[str, Any] | None = None) -> Any:
+        return self._inner.prepare_setup_context(context)
+
     def check_setup(
         self,
         context: Mapping[str, Any] | None = None,

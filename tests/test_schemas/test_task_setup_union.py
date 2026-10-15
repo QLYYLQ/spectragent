@@ -101,13 +101,9 @@ class TestToContext:
             start_url="https://example.com",
             login_required=True,
             login_type="sso",
-            credentials_ref="creds_a",
         ).to_context()
         assert ctx == {
             "start_url": "https://example.com",
-            "login_required": True,
-            "login_type": "sso",
-            "credentials_ref": "creds_a",
         }
 
     def test_docker_surfaces_image_commit_and_test_ids(self) -> None:

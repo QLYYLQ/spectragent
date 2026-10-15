@@ -27,7 +27,7 @@ branching on an archiver id or looking one up (receptor hygiene Rule 2).
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
 
 from spectragent.core.archive import ArchiveFile, ArchiverBase
 from spectragent.core.capabilities.browser.archive.redaction import MARKER_BROWSER_REDACTED
@@ -37,6 +37,9 @@ from spectragent.core.capabilities.browser.recorder import (
     RecorderParticipantBase,
     RecorderTarget,
 )
+
+if TYPE_CHECKING:
+    from spectragent.core.capabilities.browser.storage_seed import StorageSeed
 
 #: A capture channel an archiver needs opened at setup.
 #:
@@ -185,6 +188,9 @@ class BrowserArchiveContext:
     #: The replay server's log when the run replays an archive (M30), else
     #: ``None``; the archiver needing ``replay_log`` records it.
     replay_log: ReplayLogFeed | None = None
+
+    initial_storage: "StorageSeed | None" = None
+    storage_tabs: Mapping[str, str] | None = None
 
     def tabs(self) -> list[RecorderTarget]:
         """The page targets the recorder prepared, one per target, in attach order."""

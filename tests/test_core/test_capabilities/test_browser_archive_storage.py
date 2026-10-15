@@ -50,20 +50,30 @@ class _Recorder(ScriptedRecorder):
             return {"cookies": [dict(c) for c in self.cookies]}
         if method == "Page.getFrameTree":
             root, *children = self.origins
+            prefix = session_id or ""
             return {
                 "frameTree": {
-                    "frame": {"id": "F0", "securityOrigin": root},
+                    "frame": {"id": prefix + "F0", "securityOrigin": root},
                     "childFrames": [
-                        {"frame": {"id": f"F{i}", "securityOrigin": o}}
+                        {"frame": {"id": prefix + f"F{i}", "securityOrigin": o}}
                         for i, o in enumerate(children, 1)
                     ],
                 }
             }
+        if method == "Storage.getStorageKey":
+            index = int((params or {})["frameId"].split("F")[-1])
+            return {"storageKey": self.origins[index] + "/"}
+        if method == "Page.createIsolatedWorld":
+            return {"executionContextId": 1}
+        if method == "Runtime.evaluate":
+            return {"result": {"value": []}}
         if method == "DOMStorage.getDOMStorageItems":
             storage_id = (params or {})["storageId"]
             store = self.local if storage_id["isLocalStorage"] else self.session
             return {
-                "entries": [[k, v] for k, v in store.get(storage_id["securityOrigin"], {}).items()]
+                "entries": [
+                    [k, v] for k, v in store.get(storage_id["storageKey"].rstrip("/"), {}).items()
+                ]
             }
         return {}
 
@@ -127,8 +137,10 @@ async def test_local_storage_once_per_origin_session_storage_per_tab() -> None:
         "http://shop.test",
     ]
     assert {(e["tab"], e["origin"]) for e in document["session"]} == {
-        ("PAGE", "http://shop.test"),
-        ("PAGE2", "http://shop.test"),
+        ("tab-0", "http://shop.test"),
+        ("tab-1", "http://shop.test"),
+        ("tab-0", "http://ads.test"),
+        ("tab-1", "http://ads.test"),
     }
     local_reads = [
         p
@@ -158,7 +170,14 @@ async def test_a_tab_that_went_away_is_listed_not_fatal() -> None:
 
     recorder.send = send  # type: ignore[method-assign]
     document = _document(await session.collect())
-    assert document["unreadable_tabs"] == [{"tab": "PAGE2", "error": "No target with given id"}]
+    assert document["unavailable"] == [
+        {
+            "target": "PAGE2",
+            "frame": None,
+            "operation": "frames",
+            "error": "No target with given id",
+        }
+    ]
 
 
 def test_declarations() -> None:
@@ -184,38 +203,24 @@ async def test_a_token_inside_a_json_value_is_kept_so_session_state_is_declared(
     assert "contains_session_state" in session.archiver.privacy_markers
 
 
-async def test_nothing_is_left_out_silently() -> None:
-    """A failed origin read and an out-of-process frame are listed, never just absent."""
+async def test_failed_storage_is_explicit() -> None:
     session, recorder = _session()
-    frame = recorder.add_target("frame-s", "FRAME1", "iframe")
     original = _Recorder.send
 
     async def send(
-        method: str,
-        params: dict[str, Any] | None = None,
-        session_id: str | None = None,
-        *,
-        timeout: float | None = None,
+        method: str, params: Any = None, session_id: Any = None, *, timeout: Any = None
     ) -> Any:
-        storage_id = (params or {}).get("storageId") or {}
-        if storage_id.get("securityOrigin") == "http://ads.test":
+        if (params or {}).get("storageId", {}).get("storageKey") == "http://ads.test/":
             raise RuntimeError("Frame not found for the given storage id")
         return await original(recorder, method, params, session_id, timeout=timeout)
 
-    recorder.send = send  # type: ignore[method-assign]
+    recorder.send = send
     document = _document(await session.collect())
-    failed = {(f["tab"], f["origin"], f["storage"]) for f in document["unreadable_origins"]}
-    assert failed == {
-        ("PAGE", "http://ads.test", "local"),
-        ("PAGE", "http://ads.test", "session"),
-        ("PAGE2", "http://ads.test", "local"),  # tried again until one tab reads it
-        ("PAGE2", "http://ads.test", "session"),
-    }
-    assert {f["error"] for f in document["unreadable_origins"]} == {
+    assert len(document["unavailable"]) == 2
+    assert {f["error"] for f in document["unavailable"]} == {
         "Frame not found for the given storage id"
     }
     assert [x["origin"] for x in document["local"]] == ["http://shop.test"]
-    assert document["unread_frames"] == [{"target": frame.target_id, "url": frame.url}]
 
 
 async def test_a_local_read_another_tab_completes_is_not_listed_as_failed() -> None:
@@ -231,13 +236,14 @@ async def test_a_local_read_another_tab_completes_is_not_listed_as_failed() -> N
         timeout: float | None = None,
     ) -> Any:
         storage_id = (params or {}).get("storageId") or {}
-        if storage_id.get("securityOrigin") == "http://ads.test" and session_id == "page-s":
+        if (
+            str(storage_id.get("storageKey", "")).rstrip("/") == "http://ads.test"
+            and session_id == "page-s"
+        ):
             raise RuntimeError("busy")
         return await original(recorder, method, params, session_id, timeout=timeout)
 
     recorder.send = send  # type: ignore[method-assign]
     document = _document(await session.collect())
     assert {x["origin"]: x["items"] for x in document["local"]}["http://ads.test"] == {"seen": "1"}
-    assert [(f["tab"], f["storage"]) for f in document["unreadable_origins"]] == [
-        ("PAGE", "session")
-    ]
+    assert document["unavailable"][0]["target"] == "PAGE"

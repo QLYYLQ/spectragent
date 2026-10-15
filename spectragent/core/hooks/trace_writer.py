@@ -1110,7 +1110,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
 
 
 def _task_setup_record(context: Any, *, record_secrets: bool) -> TaskSetupRecord | None:
-    """The setup context as the trace records it: snapshotted, then redacted.
+    """The owners' recordable setup projection: snapshotted, then redacted.
 
     The record must not be what fails a run: ``encoding.snapshot`` never
     raises and turns anything into plain JSON (stringifying keys and

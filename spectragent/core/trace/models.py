@@ -582,9 +582,11 @@ class TraceNegotiation(BaseModel):
 class TaskSetupRecord(BaseModel):
     """The environment setup context a task was started with — redacted.
 
-    What ``AgentRuntime.execute`` handed ``setup_environment`` (``start_url``
-    and the like). A branch task (M31) re-creates its source environment
-    from this, without the source benchmark's data.
+    The recordable projection prepared by the actual capability owners
+    (``start_url`` and the like). Owner-declared environment evidence may
+    carry inputs omitted here, such as the browser's immutable initial seed.
+    A branch task (M31) combines this provenance with committed evidence to
+    re-create its source environment without the source benchmark's data.
 
     Redacted **by value**, not by declaration: it is free-form per-task data
     with no field declarations, so the config redaction's deny-by-default

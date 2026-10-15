@@ -28,8 +28,6 @@ See docs/architecture_design.md §4.10 and docs/execution_dag.md M15.
 from __future__ import annotations
 
 import json
-import os
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Final, Literal
 
@@ -39,8 +37,10 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
+from spectragent.schemas.browser_storage import BrowserStorageState
 from spectragent.schemas.restoration import BranchProvenance
 
 # ── Setup variants ────────────────────────────────────────────────────
@@ -89,24 +89,36 @@ class BrowserSetup(SetupBase):
     """Browser session requirements for a task."""
 
     __env_types__: ClassVar[tuple[str, ...]] = ("browser",)
-    __raw_keys__: ClassVar[tuple[str, ...]] = ("start_url",)
+    __raw_keys__: ClassVar[tuple[str, ...]] = ("start_url", "storage_state")
 
     setup_type: Literal["browser"] = "browser"
 
     start_url: str | None = None
     login_required: bool = False
     login_type: str | None = None  # "account_password", "sso", "oauth"
-    credentials_ref: str | None = None  # key into credential store, never plaintext
+    storage_state: BrowserStorageState | str | None = None
     risk_control: bool = False
     risk_control_types: list[str] = Field(default_factory=list)
+
+    @field_validator("storage_state", mode="before")
+    @classmethod
+    def storage_source(cls, value: Any) -> Any:
+        return str(value) if isinstance(value, Path) else value
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_credentials_ref(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "credentials_ref" in value:
+            raise ValueError(
+                "credentials_ref is unsupported; include login instructions and credentials in task_text"
+            )
+        return value
 
     def to_context(self) -> dict[str, Any]:
         return _prune(
             {
                 "start_url": self.start_url,
-                "login_required": self.login_required or None,
-                "login_type": self.login_type,
-                "credentials_ref": self.credentials_ref,
+                "storage_state": self.storage_state,
                 "risk_control": self.risk_control or None,
                 "risk_control_types": self.risk_control_types,
             }
@@ -372,42 +384,6 @@ class TaskContext(BaseModel):
 REPLAY_ARCHIVE_KEY: Final = "replay_archive"
 
 
-def resolve_env_context_paths(env: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """*env* with its ``replay_archive`` made absolute against the current directory.
-
-    ``replay_archive`` is the one setup context key that names a filesystem
-    path. A relative one is relative to the directory the process was
-    launched from (nothing in af changes the working directory, so that is
-    the current one), with ``~`` expanded first as for every other path
-    knob. ``AgentRuntime.execute`` resolves it here for every caller alike —
-    the CLI, a task loader, a Python caller — before the context is recorded
-    as ``TraceConfig.task_setup`` and before setup opens it
-    (``docs/architecture_design.md`` §4.10). A capability-scoped block
-    (``{"browser": {...}}``) is resolved the same way.
-
-    Returns:
-        A new mapping (*env* is never mutated), or ``None`` for ``None``. A
-        value that is not a non-empty path is left as it is, for setup to
-        refuse by name.
-    """
-    if env is None:
-        return None
-    resolved: dict[str, Any] = {}
-    for key, value in env.items():
-        if key == REPLAY_ARCHIVE_KEY:
-            value = _absolute_path(value)
-        elif isinstance(value, Mapping) and REPLAY_ARCHIVE_KEY in value:
-            value = {**value, REPLAY_ARCHIVE_KEY: _absolute_path(value[REPLAY_ARCHIVE_KEY])}
-        resolved[key] = value
-    return resolved
-
-
-def _absolute_path(value: Any) -> Any:
-    if isinstance(value, str | os.PathLike) and os.fspath(value):
-        return str(Path(value).expanduser().resolve())
-    return value
-
-
 __all__ = [
     "SetupBase",
     "BrowserSetup",
@@ -422,5 +398,4 @@ __all__ = [
     "TaskDefinition",
     "TaskContext",
     "REPLAY_ARCHIVE_KEY",
-    "resolve_env_context_paths",
 ]

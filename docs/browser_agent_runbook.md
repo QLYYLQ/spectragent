@@ -329,3 +329,12 @@ trace.screenshot(0)          # 第 0 步截图的字节
 | 跑整条链并出度量报告 | `uv run spectragent flywheel run --spec chain.yaml`；只重算报告用 `uv run spectragent flywheel report --spec chain.yaml` |
 
 `--replay-archive` 只能配 `network_source: archive`，YAML 写的是 `live` 时 setup 会拒绝。`spectragent export` 只读 trace，不启动浏览器，也不调用模型。`chain.yaml` 要自己写，格式见 [configs/README.md](../configs/README.md#measuring-the-flywheel)。`spectragent flywheel` 和 `spectragent bench` 一样不读 `.env`，跑之前先在 shell 里导出密钥（`set -a; . ./.env; set +a`）。
+
+
+## 使用登录态
+
+预置登录态在任务的 `setup` 中设置 `storage_state`：可用 `BrowserStorageState` 文档或其 JSON 路径。Python 调用者传 `BrowserSetup(storage_state="/path/to/state.json", start_url="https://example.com").to_context()` 给 `AgentRuntime.execute(env_context=...)`。路径在 Runtime 入口读取为文档，setup 冻结 canonical bytes；首请求与首个业务脚本前写入 cookie、按真实 storageKey 的 localStorage，以及按 logical tab + storageKey 的 sessionStorage。seed 只接受 owned fresh context，持久 profile / 外部 CDP 不能与 seed 混用。保留的 tabs 初始停在 about:blank，只有 `start_url` 自动打开业务页面；快照的 tab URL 只是来源信息。
+
+要让 Agent 自己在网页输入账号密码，把登录步骤与凭据放进现有 `task_text`，使用既有 prompt 和 type / click 动作。`login_required` / `login_type` 仅保留数据集信息；`credentials_ref` 不受支持并明确报错。框架没有自动登录、credential store 或额外加密机制。
+
+要保存可恢复初态，在 `trace_writer.archive` 选择 `browser.storage`，与网络 / DOM 证据一同录制。初态写成 immutable `initial_state.json`，动作后状态另写 `storage.json`；回放只认前者。task setup 记录不复制 seed / 原路径，源文件后来删改不影响回放与分叉。未录 storage 的非空 seed 可以正常执行，但之后不能假作空初态回放。seed 覆盖 cookies、local / session storage（含 CHIPS、第三方分区及 OOPIF），不包含 IndexedDB、SW、cache 或完整 profile；持久 profile 的未知 origin 覆盖不完整，只用于 `none`，不能据此离线恢复。

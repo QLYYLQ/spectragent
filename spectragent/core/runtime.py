@@ -32,6 +32,7 @@ from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.aop.tasks import BackgroundTasks
 from spectragent.core.aop.weaver import Weaver
 from spectragent.core.archive.protocols import ArchiveConsumer
+from spectragent.core.capabilities.base import PreparedSetupContext
 from spectragent.core.composer import ComposedRun, ComposeError
 from spectragent.core.hooks.base import PromptModelOwner, RuntimeHook
 from spectragent.core.llm.call_context import RunCallContext
@@ -52,7 +53,6 @@ from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.config_source import ConfigSource
-from spectragent.schemas.task import resolve_env_context_paths
 
 if TYPE_CHECKING:
     from spectragent.core.llm.base import BaseChatModel
@@ -132,6 +132,7 @@ class AgentRuntime:
         # declare (``None`` with it) — both handed to ``on_run_start`` by name.
         self._negotiated_archive: Any = None
         self._env_evidence_privacy: list[str] | None = None
+        self._prepared_setup = PreparedSetupContext({}, {})
         self._action_space = ActionSpace()
         self._memory: Any = None
         # The woven agent :meth:`prepare` returned — whose optional ``prepare``
@@ -318,8 +319,9 @@ class AgentRuntime:
         nobody reads.
 
         *env_context* is this task's environment setup context
-        (``TaskContext.env``, a relative ``replay_archive`` resolved first):
-        after the negotiations, ``Environment.check_setup`` refuses with it
+        (``TaskContext.env``). After negotiations, the environment routes
+        keys to their owners and prepares execution / recordable projections;
+        setup and recording reuse this one preparation. Then ``Environment.check_setup`` refuses with it
         everything setup would refuse — a key no capability accepts, and
         each capability's own checks (browser: the cooperation rows and a
         replay's consistency with its source run, §4.14). A configuration
@@ -421,12 +423,15 @@ class AgentRuntime:
         # before anything is launched (a dry run sees it too); setup checks
         # again before it acquires anything. Validation only: nothing is
         # set up, bound or narrowed.
-        context = resolve_env_context_paths(env_context)
+        self._prepared_setup = PreparedSetupContext({}, {})
         if env is not None:
-            env.check_setup(context, negotiation=negotiated_obs, archivers=archivers)
-        elif context:
+            self._prepared_setup = env.prepare_setup_context(env_context)
+            env.check_setup(
+                self._prepared_setup.execution, negotiation=negotiated_obs, archivers=archivers
+            )
+        elif env_context:
             raise ValueError(
-                f"setup key(s) {sorted(context)} were given, but this run has no environment "
+                f"setup key(s) {sorted(env_context)} were given, but this run has no environment "
                 f"to set up."
             )
 
@@ -645,12 +650,10 @@ class AgentRuntime:
                 omitted.
             env_context: Task context handed to ``Environment.setup``
                 — typically ``TaskLoader.get_task_context(task_id).env``.
-                The environment routes each key to the capabilities whose
-                ``setup()`` declares it. A relative ``replay_archive`` is
-                resolved against the current directory first
-                (``resolve_env_context_paths``), so ``prepare()`` checks, the
-                trace's ``task_setup`` records and setup opens the same
-                directory. ``prepare()`` checks it before anything else
+                The environment routes each key to capabilities whose
+                ``setup()`` declares it, then prepares their execution and
+                recordable projections once. File inputs are interpreted by
+                their owner; Runtime knows no domain-specific field names. ``prepare()`` checks it before anything else
                 happens (``Environment.check_setup``): a key nobody declares,
                 or a configuration this task cannot run with, raises before
                 the trace is opened, whatever ``raise_on_error`` says.
@@ -669,18 +672,13 @@ class AgentRuntime:
                 trace is closed out. Benchmark drivers pass ``False`` to
                 get the failed ``AgentResult`` back and keep going.
         """
-        # A relative ``replay_archive`` is relative to the launch directory,
-        # whoever passed it — the CLI, a task loader, a Python caller. Made
-        # absolute once, here, so ``prepare()`` checks, the trace records and
-        # setup opens the same directory (§4.10).
-        env_context = resolve_env_context_paths(env_context)
-
         prepared_agent = self.prepare(
             task_id=task_id,
             action_filter=action_filter,
             loop_inputs=loop_inputs,
             env_context=env_context,
         )
+        env_context = self._prepared_setup.execution
 
         # Startup hooks may use owned models or spawn background handlers before
         # environment setup. Their failures keep the same propagation semantics,
@@ -715,8 +713,8 @@ class AgentRuntime:
             # dropping the configuration entirely. The same goes for the
             # archive facts: whether evidence is recorded and what its
             # archivers declare, and the setup context this task's environment
-            # is started from (``task_setup`` — exactly what is routed to
-            # ``setup_environment`` below; ``None`` when there is none). A
+            # is started from (``task_setup`` is the owner-prepared recording
+            # projection; execution receives its separate prepared input). A
             # branch task's provenance (``branch``) rides along by name for the
             # trace; nothing here interprets it.
             await self._dispatch_lifecycle(
@@ -747,7 +745,7 @@ class AgentRuntime:
                     if self._env_evidence_privacy is not None
                     else None
                 ),
-                task_setup=env_context,
+                task_setup=self._prepared_setup.recordable if env_context else None,
                 branch=branch,
                 config_source=config_source,
             )

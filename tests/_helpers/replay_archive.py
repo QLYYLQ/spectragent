@@ -25,6 +25,7 @@ from typing import Any
 
 from spectragent.core.archive import ArchiveFile
 from spectragent.core.capabilities.browser.archive import NetworkArchiver
+from spectragent.core.capabilities.browser.archive.encoding import canonical_json
 from spectragent.core.capabilities.browser.archive.fingerprint import BrowserFingerprint
 from spectragent.core.capabilities.browser.archive.network import MAX_BODY_BYTES, NetworkSession
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
@@ -35,10 +36,12 @@ from spectragent.core.capabilities.browser.replay import PinnedReplayability
 from spectragent.core.capabilities.browser.replay.archive_index import IndexedRecord
 from spectragent.core.capabilities.browser.replay.canonical import request_keys
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
+from spectragent.core.capabilities.browser.storage_seed import StorageSeed
 from spectragent.core.trace.encoding import EncodedFragment, encode_archive_file
 from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.agent_result import AgentResult
+from spectragent.schemas.browser_storage import BrowserStorageState
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.archive_recorder import (
     ScriptedRecorder,
@@ -383,6 +386,9 @@ class RecordingScript:
                 session_metadata={"launch_flags": self.launch_flags},
                 archivers=[self.archiver],
                 fresh_profile=True,
+                initial_storage=StorageSeed(
+                    canonical_json(BrowserStorageState().model_dump(mode="json")), "fresh"
+                ).fingerprint(),
                 clock=lambda: self._wall,
                 browser_defaults=self.browser_defaults,
                 input_platform=self.input_platform,

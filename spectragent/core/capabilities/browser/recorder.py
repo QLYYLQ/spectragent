@@ -66,6 +66,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from agent_cdp import BaseEvent, EventScope, PausedTarget, RequestContract
 from pydantic import Field
 
+from spectragent.core.capabilities.browser.commands import BrowserConnection, PendingCommand
+
 logger = logging.getLogger(__name__)
 
 #: Target types the recorder prepares. Anything else (``browser_ui``,
@@ -431,45 +433,6 @@ class ArchiveChannel:
 # ── The connection ────────────────────────────────────────────────────
 
 
-class PendingCommand(Protocol):
-    """A command already on the wire (``cdp_client.PendingReply``)."""
-
-    async def wait(self, timeout: float | None = None) -> Any: ...
-
-    def abandon(self) -> None: ...
-
-
-class RecorderClient(Protocol):
-    """The slice of :class:`CDPClient` the recorder uses."""
-
-    @property
-    def is_connected(self) -> bool: ...
-
-    async def send(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-        session_id: str | None = None,
-        *,
-        timeout: float | None = None,
-    ) -> Any: ...
-
-    async def post(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-        session_id: str | None = None,
-    ) -> PendingCommand: ...
-
-    def on_event(self, method: str, callback: Callable[..., Any]) -> None: ...
-
-    def off_event(self, method: str, callback: Callable[..., Any]) -> None: ...
-
-    def add_close_callback(self, callback: Callable[[BaseException | None], None]) -> None: ...
-
-    async def stop(self) -> None: ...
-
-
 class RecorderConnection:
     """Browser-level early attach on its own client; see the module docstring.
 
@@ -481,7 +444,7 @@ class RecorderConnection:
 
     def __init__(
         self,
-        client: RecorderClient,
+        client: BrowserConnection,
         *,
         participants: ParticipantsAccessor,
         channel: ArchiveChannel | None,

@@ -18,11 +18,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
+from spectragent.core.capabilities.browser.commands import PendingCommand
 from spectragent.core.capabilities.browser.context_access import BrowserContextAccess
 from spectragent.core.capabilities.browser.recorder import (
     AUTO_ATTACH_PARAMS,
     RELEASE_AUTO_ATTACH_PARAMS,
-    PendingCommand,
 )
 
 logger = logging.getLogger(__name__)
@@ -356,7 +356,7 @@ class RecorderBroker:
 
 
 class ContextRecorderClient:
-    """The existing RecorderClient contract, scoped to one BrowserContext."""
+    """The shared BrowserConnection contract, scoped to one BrowserContext."""
 
     def __init__(self, broker: RecorderBroker, context_id: str) -> None:
         self.context_id = context_id

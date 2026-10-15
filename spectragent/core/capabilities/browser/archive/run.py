@@ -137,6 +137,7 @@ class BrowserArchiveRun:
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
         input_platform: InputPlatform | None = None,
+        initial_storage: Mapping[str, Any] | None = None,
     ) -> ArchiveBatch:
         """Flush → each session in binding order → fingerprint → one batch.
 
@@ -174,6 +175,7 @@ class BrowserArchiveRun:
             network_fingerprint=network_fingerprint,
             browser_defaults=browser_defaults,
             input_platform=input_platform,
+            initial_storage=initial_storage,
             include_unchanged=bool(files),
         )
         if record is not None:

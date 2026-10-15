@@ -17,6 +17,7 @@ from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 if TYPE_CHECKING:
     from spectragent.core.archive._registrar import ArchiverBase
     from spectragent.core.archive.types import ArchiveBatch
+    from spectragent.core.capabilities.base import PreparedSetupContext
     from spectragent.schemas.restoration import RestorationEvidence, Retarget
 
 
@@ -234,6 +235,17 @@ class Environment(Protocol):
         ...
 
     # ── Lifecycle ─────────────────────────────────────────────
+
+    def prepare_setup_context(
+        self, context: Mapping[str, Any] | None = None
+    ) -> PreparedSetupContext:
+        """Route setup keys to their owners before preparing execution and provenance.
+
+        Calls each capability's optional SetupContextPreparation operation on
+        its effective slice. Runtime reuses the execution result for validation
+        and setup, and sends only the recordable result to lifecycle recording.
+        """
+        ...
 
     def check_setup(
         self,

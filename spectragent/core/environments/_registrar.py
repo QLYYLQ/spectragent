@@ -28,8 +28,10 @@ from spectragent.core.capabilities.base import (
     BaseCapability,
     CaptureCheck,
     CaptureComparison,
+    PreparedSetupContext,
     RestorationSupport,
     SetupCheck,
+    SetupContextPreparation,
 )
 from spectragent.core.environments.base import Environment
 from spectragent.core.environments.errors import (
@@ -814,6 +816,73 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
 
     # ── Lifecycle ─────────────────────────────────────────────
 
+    def prepare_setup_context(
+        self, context: Mapping[str, Any] | None = None
+    ) -> PreparedSetupContext:
+        """Prepare only after the same owner routing validation setup uses.
+
+        Flat shared keys still broadcast. If an owner changes or omits such a
+        key, only that key is expanded into individual instance namespaces;
+        neighboring owners retain their own values. Existing namespace aliases
+        are preserved, with effective routed overrides already applied.
+        """
+        self._by_capability_id()
+        original = context or {}
+        routed = self.route_setup_context(original)
+        prepared = {
+            inst_id: (
+                cap.prepare_setup_context(routed[inst_id])
+                if isinstance(cap, SetupContextPreparation)
+                else PreparedSetupContext(dict(routed[inst_id]), dict(routed[inst_id]))
+            )
+            for inst_id, cap in self.capabilities.items()
+        }
+        return PreparedSetupContext(
+            self._project_setup_context(
+                original, routed, {i: p.execution for i, p in prepared.items()}
+            ),
+            self._project_setup_context(
+                original, routed, {i: p.recordable for i, p in prepared.items()}
+            ),
+        )
+
+    def _setup_namespace(self, key: str, value: Any) -> list[str] | None:
+        if not isinstance(value, Mapping):
+            return None
+        if key in self.capabilities:
+            return [key]
+        matches = [i for i, cap in self.capabilities.items() if cap.capability_id == key]
+        return matches or None
+
+    def _project_setup_context(
+        self,
+        original: Mapping[str, Any],
+        routed: Mapping[str, Mapping[str, Any]],
+        projection: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        scoped: dict[str, dict[str, Any]] = {}
+        aliases: dict[str, str] = {}
+        for key, value in original.items():
+            namespace = self._setup_namespace(key, value)
+            if namespace is not None:
+                for owner in namespace:
+                    aliases[owner] = key
+                    scoped[owner] = dict(projection[owner])
+                continue
+            owners = [i for i, values in routed.items() if key in values]
+            if len(owners) == 1 and key in projection[owners[0]]:
+                result[key] = projection[owners[0]][key]
+            elif all(key in projection[i] and projection[i][key] is value for i in owners):
+                result[key] = value
+            else:
+                for owner in owners:
+                    if key in projection[owner]:
+                        scoped.setdefault(owner, {})[key] = projection[owner][key]
+        # Namespaces follow flat values, so their effective routed values win.
+        result.update({aliases.get(owner, owner): values for owner, values in scoped.items()})
+        return result
+
     def check_setup(
         self,
         context: Mapping[str, Any] | None = None,
@@ -914,14 +983,10 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         where = getattr(type(self), "__name__", "Environment")
         accepted = {inst_id: _setup_keys(cap) for inst_id, cap in self.capabilities.items()}
         routed: dict[str, dict[str, Any]] = {inst_id: {} for inst_id in self.capabilities}
-        by_cap_id: dict[str, list[str]] = {}
-        for inst_id, cap in self.capabilities.items():
-            by_cap_id.setdefault(cap.capability_id, []).append(inst_id)
-
         unclaimed: list[str] = []
         for key, value in context.items():
-            targets = [key] if key in self.capabilities else by_cap_id.get(key)
-            if targets is not None and isinstance(value, Mapping):
+            targets = self._setup_namespace(key, value)
+            if targets is not None:
                 for inst_id in targets:
                     unknown = sorted(set(value) - accepted[inst_id])
                     if unknown:
