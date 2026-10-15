@@ -3461,9 +3461,15 @@ browser 证据的格式知识留在 browser 的包里：纯函数，只经 `Arch
 
 ### 4.17 实验命令、终端监控与本地结果查看器
 
-用户 2026-10-15 确认的使用方式是本机或 SSH 启动实验、终端看进度、浏览器复盘。公开操作入口收敛为 `spectragent`：`config check|explain|generate`、`components list`、`run`、`bench`、`eval`、`export`、`flywheel`、`runs list|show|compare|compare-groups`、`tui` 与 `view`。YAML/conscribe 仍是实验配置的唯一完整表达；CLI 参数选择任务与展示方式，不另造一份组件配置。原有运行、评测、导出和飞轮的执行函数继续是唯一业务路径，旧的独立 console scripts 删除，不保留兼容别名。构建工具仍为 `spectragent-build`。
+用户 2026-10-15 确认的使用方式是本机或 SSH 启动实验、终端看进度、浏览器复盘。公开操作入口收敛为 `spectragent`：`config check|explain|generate|template`、`components list`、`run`、`bench`、`eval`、`export`、`flywheel`、`runs list|show|compare|compare-groups`、`tui` 与 `view`。YAML/conscribe 仍是实验配置的唯一完整表达；执行 CLI 参数选择任务与展示方式，模板命令的选择参数只产出普通 YAML，不另造运行配置路径。原有运行、评测、导出和飞轮的执行函数继续是唯一业务路径，旧的独立 console scripts 删除，不保留兼容别名。构建工具仍为 `spectragent-build`。
 
 **配置解释。** `check` 和 `explain` 只 compose/prepare，不 setup、不调用模型。显示实例图、生效 action/fragment/archive 协商、AOP 拦截与生成配置新鲜度；配置按 trace 同一规则脱敏，校验错误只显示字段位置与问题类型，不回显秘密值。实际 Chrome 平台、外部服务可用性等只能 setup 后检查的事实不声称已通过。运行的环境变量规则保持现状：run/eval 读 `.env`，bench/flywheel 要求 shell 导出。
+
+**带注释配置模板。** `config template` 从组件选择或 `--from CONFIG` 的选型骨架产生普通 YAML，默认展开所选组件、受体和 Browser 默认动作的全部配置字段；未选的可选组件不展开。字段说明、约束和默认值来自实时 Conscribe schema；声明为 `declare_only` 或没有接收槽的协商项不写成配置块，已填写的非法协商项仍由 Composer 拒绝。模板消费公开 `ConfigurationCatalog` 和 `conscribe.introspect`，不读取 Composer 或 Conscribe 的私有解析状态。通用 schema 元数据属于 Conscribe，浏览器选型、记录通道和动作默认集合的含义属于 AF；不为模板新增 registrar、兼容性 Protocol 或第二个 Composer。
+
+无骨架的新模板明确选择 BrowserUse、ReAct、`openai.direct`、simple memory、browser environment、local Chrome、instant mouse/typing、BrowserUse cleaner、text serializer、`replayability: none`、`network_source: live`；trace writer 只打开 metrics，并显式 `archive: []`。这些是模板选型默认，注释与 schema 字段默认区分，不是注册表首项；`--model` 必填，不猜模型型号。`--agent`、`--loop`、`--llm`、`--environment`、`--backend`、`--model` 和 `--replayability` 可替换相应选择；多实例骨架若无法唯一定位则要求直接编辑 YAML，不任取一个。变更实现时清除旧实现的标量旋钮，保留同名受体及实例 id；选择同一实现保留原值。重复 `--record metrics|errors|trajectory|observations` 显式选择这四条记录通道，`all` / `none` 是四通道的全开 / 全关，不能与其它通道并列；不增设 tokens 或 cost 开关。`--replayability` 只选 none/pinned，既不改网络来源也不改归档；archive 网络与归档器可从已有回放骨架保留。
+
+Browser 的 `actions: null`（含省略）在没有顶层 action 实例池时展开其声明的默认动作及参数，`actions: []` 和显式子集原义不变；有顶层 action 池则保留受体的 null/adoption 语义并完整展开池中实例，不复制成第二套动作。trace writer 的默认 `RecordingPlan` 也显式展开。模板前后均经同一 Composer 校验；生成不启动环境、不调用模型、不打开任务的回放证据，任务相关 prepare 继续交给 `config check` / `run --dry-run`。缺少必填字段时点名路径，失败不写输出。默认 stdout 仅为 YAML，`--json` 包含 YAML 字符串；`--output PATH` 只创建新文件，拒绝覆盖已有文件。`--from` 保留用户明确填写的值，不修改源文件；模板是可执行配置，不是 explain 的脱敏报告。
 
 **一个读侧，多个界面。** `spectragent/inspection/` 提供结构化查询 Protocol，CLI、Textual 和 FastAPI/React 本地查看器共用它。运行目录发现可以列目录；一个 run 的全部记录与附件只经 `RunTrace`，不绕过 manifest。每次刷新建立新的 reader 快照，不复用缓存的 manifest。路径必须在用户指定根目录之内，损坏或不支持的 trace 在列表中显示原因，不静默消失。网页只读，默认监听回环地址；远端使用 SSH 转发。前端资源随 Python 包分发，不依赖运行时 CDN 或 Node。
 

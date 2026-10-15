@@ -6,6 +6,24 @@
 
 安装或更新工作区后执行 `uv sync --extra dev`。统一入口为 `uv run spectragent --help`；模型、浏览器与实验参数继续写在 YAML，不需要在界面里重新配置一遍。
 
+需要新的配置文件时，可以直接生成完整的注释模板：
+
+```bash
+uv run spectragent config template \
+  --agent browser_use --loop react --llm openai.direct --model YOUR_MODEL \
+  --environment browser --backend local_chrome \
+  --record metrics --replayability none --output experiment.yaml
+uv run spectragent config check experiment.yaml
+# 将已有选型和参数补全为带注释的配置；不会修改原文件
+uv run spectragent config template --from configs/browser_use_local.yaml --output expanded.yaml
+```
+
+新模板的默认选型是 BrowserUse＋ReAct、`openai.direct`、simple memory、local Chrome、instant 输入、BrowserUse cleaner、text serializer、live 网络、无回放固定；型号必须用 `--model` 提供。所选组件和受体的配置字段、默认动作及各自参数全部展开，说明与约束来自当前 schema；未选的可选组件不展开。注释标明来自模板选型、用户参数、骨架或 schema 的默认值。新模板只启用 metrics，含模型报告的 token、调用次数和计时；可以重复 `--record metrics --record errors`，也可以用 `--record all` / `--record none` 全开或全关四个内容通道。`none` 不删除 trace writer，也不关闭骨架中独立选择的 archive。
+
+`--replayability none|pinned` 只控制回放固定，`network_source: live|archive` 与 `trace_writer.archive` 独立；新模板为 live 和 `archive: []`，离线回放用 `--from configs/flywheel/replay_ui_tars_archive.yaml` 保留其网络与归档选择。生成只校验配置和装配，不启动 Chrome、不调用模型、不打开回放任务证据；任务相关输入仍在 `config check` 或 `run --dry-run` 中验证。必填项缺失会列出字段位置，框架不编造型号或路径。没有 `--output` 时 stdout 是纯 YAML；输出路径存在会拒绝覆盖。
+
+`--from` 保留已有值，包括明确填写的凭据，它是生成可运行配置的工具；查看脱敏报告使用 `config explain`。选择同一实现保留其参数；用选择 flag 更换实现会重置该实现的标量参数，保留同名受体与实例 id。多实例骨架可直接展开；若选择 flag 无法唯一定位要修改的组件，编辑骨架后再生成。
+
 ```bash
 # 只检查配置、协商和可静态判断的 setup 条件
 uv run spectragent config check configs/browser_use_local.yaml
