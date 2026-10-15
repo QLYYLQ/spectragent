@@ -20,9 +20,11 @@ from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks._registrar import HookBase
 from spectragent.core.loops import ReactLoop
 from spectragent.core.loops.errors import RunAbort, carry_outcome
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 from tests._helpers.trace_builder import agent_result
@@ -138,8 +140,12 @@ class _FailingAcquiringCap(_AcquiringCap):
     __registry_key__ = "lifecycle_failing_cap"
     boom = True
 
+    def get_action_descriptors(self, **ctx):
+        return []
+
 
 class _Agent:
+    __execution_limit_fields__ = frozenset()
     __wiring__ = {"action": ("action", ["lifecycle_done_cap.done"])}
 
     def __init__(self):
@@ -149,7 +155,7 @@ class _Agent:
         self.prepare_calls += 1
         return [{"role": "system", "content": "sys"}]
 
-    def build_react_prompt(self, obs):
+    async def build_react_prompt(self, obs, *, context: ReactPromptContext):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out):
@@ -169,6 +175,11 @@ class _LLM:
 
     async def ainvoke(self, messages, **kwargs):
         return _Completion()
+
+    name = "test-model"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
 
 
 class _Memory:
@@ -198,7 +209,7 @@ class _SlowLoop:
     __optional_slots__: set[str] = set()
     __requires_env__ = True
 
-    def _validate_slots(self, agent):
+    def validate_slots(self, agent):
         pass
 
     def check_loop_inputs(self, inputs):
@@ -210,6 +221,9 @@ class _SlowLoop:
 
         agent.run = run
         return agent
+
+    def execution_limits(self):
+        return ExecutionLimits()
 
 
 class _BoomLoop(_SlowLoop):
@@ -371,7 +385,7 @@ class _SecondRunHangsLoop(_SlowLoop):
         async def run(task, **kw):
             self.runs += 1
             if self.runs == 1:
-                return None
+                return agent_result(task_id="first")
             self.hanging.set()
             await asyncio.sleep(100)
 
@@ -542,6 +556,9 @@ class TestEnvLifecycle:
 
         class _BadTeardownCap(_AcquiringCap):
             __registry_key__ = "lifecycle_bad_teardown_cap"
+
+            def get_action_descriptors(self, **ctx):
+                return []
 
             async def teardown(self):
                 raise RuntimeError("cdp websocket already gone")
@@ -1181,3 +1198,163 @@ class TestPartialSteps:
         assert [r.step for r in partial] == [0, 1]
         assert result.metrics.steps == 2
         assert runtime.step_records == partial
+
+
+class TestExecutionTiming:
+    @pytest.mark.parametrize("ending", ["done", "error", "timeout", "carried", "veto", "cancel"])
+    async def test_one_clock_includes_setup_and_execution_excludes_close_out(
+        self, monkeypatch, ending
+    ):
+        from types import SimpleNamespace
+
+        import spectragent.core.runtime as runtime_module
+
+        clock = SimpleNamespace(now=10.0)
+        monkeypatch.setattr(runtime_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+
+        class TimedEnv(_Env):
+            async def setup(self, context=None, *, negotiation=None):
+                clock.now += 2.0
+                await super().setup(context, negotiation=negotiation)
+
+            async def teardown(self):
+                clock.now += 17.0
+                await super().teardown()
+
+        class TimedHook(_RecordingHook):
+            async def on_run_end(self, **kwargs):
+                assert kwargs["result"].metrics.execution_ms == 5000
+                clock.now += 11.0
+                await super().on_run_end(**kwargs)
+
+        class TimedLoop(_SlowLoop):
+            def weave(self, agent, **deps):
+                async def run(task):
+                    clock.now += 3.0
+                    result = agent_result(task_id="timed")
+                    if ending == "done":
+                        return result
+                    if ending == "error":
+                        raise ValueError("execution broke")
+                    if ending == "veto":
+                        raise _veto()
+                    if ending == "cancel":
+                        raise asyncio.CancelledError
+                    try:
+                        await asyncio.sleep(100)
+                    except asyncio.CancelledError as cancelled:
+                        if ending == "carried":
+                            carry_outcome(cancelled, result)
+                        raise
+
+                agent.run = run
+                return agent
+
+        hook = TimedHook([])
+        runtime = AgentRuntime.for_agent(
+            _mk(_Agent(), TimedLoop(), _make_env(TimedEnv), hooks=[hook]), AGENT_ID
+        )
+        if ending in {"veto", "cancel"}:
+            with pytest.raises(RunAbort if ending == "veto" else asyncio.CancelledError):
+                await runtime.execute("t", timeout=0.001, raise_on_error=False)
+        else:
+            result = await runtime.execute("t", timeout=0.001, raise_on_error=False)
+            assert result.metrics.execution_ms == 5000
+        assert hook.end_kwargs["result"].metrics.execution_ms == 5000
+        assert clock.now == 43.0
+
+
+async def test_execution_time_includes_terminal_observation_and_step_handover(monkeypatch):
+    from types import SimpleNamespace
+
+    import spectragent.core.runtime as runtime_module
+
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(runtime_module, "time", SimpleNamespace(monotonic=lambda: clock.now))
+
+    class TimedEnv(_Env):
+        observations = 0
+
+        async def setup(self, context=None, *, negotiation=None):
+            clock.now += 2.0
+            await super().setup(context, negotiation=negotiation)
+
+        async def observe(self, *args, **kwargs):
+            self.observations += 1
+            clock.now += 1.0 if self.observations == 1 else 3.0
+            return await super().observe(*args, **kwargs)
+
+    class TimedSink(_RecordingHook):
+        __intercepts__ = [Intercept("record_step", role="loop", advice="after")]
+
+        async def after_record_step(self, result, *args, **kwargs):
+            clock.now += 5.0
+
+        async def on_run_end(self, **kwargs):
+            clock.now += 7.0
+            await super().on_run_end(**kwargs)
+
+    hook = TimedSink([])
+    env = _make_env(TimedEnv)
+    runtime = AgentRuntime.for_agent(
+        _mk(_Agent(), ReactLoop(terminal_observation=True), env, hooks=[hook]), AGENT_ID
+    )
+    result = await runtime.execute("t")
+    assert isinstance(env, TimedEnv)
+    assert env.observations == 2
+    assert result.metrics.execution_ms == 16000
+    assert clock.now == 23.0
+
+
+@pytest.mark.parametrize("ending", ["done", "error", "timeout", "veto", "cancel"])
+async def test_owned_model_is_closed_after_each_execution_without_recording(ending):
+    class OwnedModel(_LLM):
+        closes = 0
+
+        async def aclose(self, *, timeout=5.0):
+            self.closes += 1
+            assert env.events[-1] == "teardown"
+            return ()
+
+    class EndingLoop(_SlowLoop):
+        def weave(self, agent, **deps):
+            async def run(task):
+                if ending == "done":
+                    return agent_result(task_id="t")
+                if ending == "error":
+                    raise ValueError("execution error")
+                if ending == "veto":
+                    raise _veto()
+                if ending == "cancel":
+                    raise asyncio.CancelledError
+                await asyncio.sleep(100)
+
+            agent.run = run
+            return agent
+
+    env = _make_env()
+    model = OwnedModel()
+    run = make_run(agent=_Agent(), loop=EndingLoop(), env=env, llm=model, memory=_Memory())
+    runtime = AgentRuntime.for_agent(run, AGENT_ID)
+    runtime.prepare()
+    assert model.closes == 0
+    if ending in {"veto", "cancel"}:
+        with pytest.raises(RunAbort if ending == "veto" else asyncio.CancelledError):
+            await runtime.execute("t", timeout=0.001, raise_on_error=False)
+    else:
+        result = await runtime.execute("t", timeout=0.001, raise_on_error=False)
+        assert result.agent_done.value == ending
+    assert model.closes == 1
+
+
+async def test_model_cleanup_failure_preserves_execution_result_without_recording(caplog):
+    class FailingCleanup(_LLM):
+        async def aclose(self, *, timeout=5.0):
+            raise OSError("client close failed")
+
+    run = make_run(
+        agent=_Agent(), loop=ReactLoop(), env=_make_env(), llm=FailingCleanup(), memory=_Memory()
+    )
+    result = await AgentRuntime.for_agent(run, AGENT_ID).execute("t")
+    assert result.agent_done == AgentDoneStatus.DONE
+    assert "client close failed" in caplog.text

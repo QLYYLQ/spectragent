@@ -75,6 +75,7 @@ class TestNegotiateMemory:
 
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
+from spectragent.schemas.prompt import ReactPromptContext
 
 
 class _DoneCap(CapabilityBase):
@@ -95,9 +96,10 @@ class _Env(EnvironmentBase):
 
 
 class _Agent:
+    __execution_limit_fields__ = frozenset()
     __wiring__ = {"action": ("action", ["rt_memnego_cap.done"])}
 
-    def build_react_prompt(self, obs):
+    async def build_react_prompt(self, obs, *, context: ReactPromptContext):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, llm_output):
@@ -117,6 +119,11 @@ class _LLM:
 
     async def ainvoke(self, messages, **kwargs):
         return _Completion()
+
+    name = "test-model"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
 
 
 class TestPrepareRunsMemoryNegotiation:

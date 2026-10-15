@@ -21,7 +21,6 @@ See docs/architecture_design.md §4.2 and docs/execution_dag.md M08.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import time
 from collections.abc import Mapping
@@ -34,8 +33,13 @@ from spectragent.core.aop.tasks import BackgroundTasks
 from spectragent.core.aop.weaver import Weaver
 from spectragent.core.archive.protocols import ArchiveConsumer
 from spectragent.core.composer import ComposedRun, ComposeError
-from spectragent.core.hooks.base import RuntimeHook
+from spectragent.core.hooks.base import PromptModelOwner, RuntimeHook
+from spectragent.core.llm.call_context import RunCallContext
+from spectragent.core.llm.lifecycle import close_models
+from spectragent.core.loops.base import AgentLoop
 from spectragent.core.loops.errors import RunAbort, carried_outcome
+from spectragent.core.loops.identity import RunIdentity
+from spectragent.core.loops.limits import ExecutionLimits, validate_execution_limits
 from spectragent.core.loops.validation import MissingEnvironmentError
 from spectragent.core.negotiation import (
     negotiate_action,
@@ -43,8 +47,9 @@ from spectragent.core.negotiation import (
     negotiate_memory,
     negotiate_observation,
 )
-from spectragent.core.step_recorder import RecordingFailedError, StepRecorder
+from spectragent.core.step_recorder import StepRecorder, StepSink
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.task import resolve_env_context_paths
@@ -55,34 +60,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HOOK_PRIORITY = 100
-
-
-def _model_name(agent: Any) -> str:
-    """Model identifier of an agent's LLM, for result attribution."""
-    llm = getattr(agent, "llm", None)
-    for attr in ("model", "model_name", "name"):
-        value = getattr(llm, attr, None)
-        if isinstance(value, str) and value:
-            return value
-    return ""
-
-
-def _component_id(obj: Any, accessor: str) -> str:
-    """Registry key of one composed component (``agent_id``, ``loop_id``…).
-
-    Every registrar base exposes it as a property returning
-    ``__registry_key__`` (see ``agents/_registrar.py``,
-    ``core/loops/_registrar.py``, ``core/environments/_registrar.py``), so
-    this reads the declared accessor rather than reaching for the ClassVar
-    — a Loop assembled for a test, or any object satisfying the Protocol
-    without subclassing the base, answers the same question the same way.
-
-    Resolved **here**, once, because AgentRuntime is what knows the run.
-    It used to be redone inside every persistence hook, which made each
-    hook responsible for discovering facts it should have been handed.
-    """
-    value = getattr(obj, accessor, "") if obj is not None else ""
-    return value if isinstance(value, str) else ""
 
 
 async def _no_environment_act(action: Any, **_kwargs: Any) -> Any:
@@ -154,12 +131,17 @@ class AgentRuntime:
         # declare (``None`` with it) — both handed to ``on_run_start`` by name.
         self._negotiated_archive: Any = None
         self._env_evidence_privacy: list[str] | None = None
-        self._active_descriptors: list[Any] = []
+        self._action_space = ActionSpace()
         self._memory: Any = None
         # The woven agent :meth:`prepare` returned — whose optional ``prepare``
         # slot :meth:`seed_messages` calls.
         self._prepared_agent: Any = None
-        self._recorder = StepRecorder()
+        self._identity = RunIdentity()
+        self._call_context = RunCallContext()
+        self._execution_limits = ExecutionLimits()
+        self._agent_consumes_limits = False
+        self._execution_started: float | None = None
+        self._recorder: StepSink = StepRecorder()
         self._env_needs_teardown = False
         # Set the moment :meth:`_finish` starts closing out the current
         # ``execute``; reset per run. It is what stops a cancellation that
@@ -248,7 +230,12 @@ class AgentRuntime:
         writing framework bookkeeping onto a domain object is how
         ``__active_descriptors__`` ended up shadowing a proxy method.
         """
-        return self._active_descriptors
+        return self._action_space.model_copy(deep=True).descriptors
+
+    @property
+    def action_space(self) -> ActionSpace:
+        """The exact effective action contract shared by prompts and execution."""
+        return self._action_space.model_copy(deep=True)
 
     @property
     def step_records(self) -> list[Any]:
@@ -305,31 +292,6 @@ class AgentRuntime:
         await self._env.teardown()
 
     # -- prepare: assembly phase -------------------------------
-
-    def _loop_policy_for(self, agent_prepare: Any) -> dict[str, Any]:
-        """Loop execution limits the agent must advertise in its prompt.
-
-        The Loop is the single source of truth for how many actions a step
-        may contain — it is what actually truncates. An agent that also
-        owned the number would tell the model one thing while the loop
-        enforced another: the shipped config advertised ``max_actions=3``
-        while ``ReactLoop.max_actions_per_step`` dropped everything past
-        the first, silently, so the model kept re-issuing steps it
-        believed had run.
-
-        Passed only to agents whose ``prepare`` names the parameter, so an
-        agent that has no use for it keeps a narrow signature rather than
-        growing a ``**kwargs`` sink.
-        """
-        loop = getattr(self._agent, "agent_loop", None)
-        if loop is None:
-            return {}
-        try:
-            accepted = inspect.signature(agent_prepare).parameters
-        except (TypeError, ValueError):
-            return {}
-        policy = {"max_actions_per_step": getattr(loop, "max_actions_per_step", None)}
-        return {k: v for k, v in policy.items() if k in accepted and v is not None}
 
     def prepare(
         self,
@@ -391,12 +353,18 @@ class AgentRuntime:
                 from ``Environment.check_setup``.
         """
         agent = self._agent
-        loop = agent.agent_loop
+        loop: AgentLoop = agent.agent_loop
         env = self._env
         llm = agent.llm
         memory = agent.memory
         # Step 1: Slot validation
-        loop._validate_slots(agent)
+        loop.validate_slots(agent)
+        self._call_context = RunCallContext()
+        self._identity = RunIdentity.resolve(agent=agent, loop=loop, env=env, task_id=task_id)
+        self._execution_limits = loop.execution_limits()
+        self._agent_consumes_limits = validate_execution_limits(
+            agent, self._identity.loop_id, self._execution_limits
+        )
         # Step 1b: The task's inputs to the Loop, refused before anything
         # else is negotiated: a checkpoint handed to a Loop that does not
         # declare one must fail here, not run the task from scratch.
@@ -406,7 +374,7 @@ class AgentRuntime:
         # one used to die in observation negotiation with an AttributeError
         # on ``None``; an env-less Loop's run negotiates against nothing.
         if env is None and getattr(type(loop), "__requires_env__", True):
-            raise MissingEnvironmentError(_component_id(loop, "loop_id") or type(loop).__name__)
+            raise MissingEnvironmentError(self._identity.loop_id or type(loop).__name__)
 
         # Step 2: Observation three-party negotiation
         negotiated_obs = negotiate_observation(agent, loop, env)
@@ -466,9 +434,16 @@ class AgentRuntime:
         wrapped_agent = weaver.wrap(agent, role="agent")
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
+        for hook in self._hooks:
+            if isinstance(hook, PromptModelOwner):
+                hook.bind_prompt_models(
+                    [weaver.wrap(model, role="llm") for model in hook.helper_llms],
+                    self._call_context,
+                )
         # The Loop's step sink. Wrapped like any other role, so a hook
         # observes finished steps through an ordinary method call.
         wrapped_recorder = weaver.wrap(self._recorder, role="loop")
+        wrapped_loop = weaver.wrap(loop, role="loop")
         # Anything left declaring a role nobody wrapped is a config bug,
         # and used to be a silent no-op.
         weaver.raise_for_unclaimed_roles()
@@ -495,7 +470,7 @@ class AgentRuntime:
                 fragments=negotiated_obs.active_fragments,
             )
             execute_action = wrapped_env.act
-        active_descriptors, act_fn = build_guarded_act(
+        action_space, act_fn = build_guarded_act(
             execute_action,
             narrowed_descriptors,
             action_filter,
@@ -514,9 +489,11 @@ class AgentRuntime:
             act_fn=act_fn,
             negotiated_obs=negotiated_obs,
             negotiated_actions=negotiated_actions,
-            active_descriptors=active_descriptors,
+            active_descriptors=action_space.model_copy(deep=True).descriptors,
+            action_space=action_space.model_copy(deep=True),
             step_recorder=wrapped_recorder,
-            task_id=task_id,
+            step_executor=wrapped_loop,
+            identity=self._identity,
             loop_inputs=inputs,
         )
 
@@ -529,7 +506,7 @@ class AgentRuntime:
 
         # Negotiation outputs stay on the runtime — see
         # :attr:`active_descriptors`.
-        self._active_descriptors = active_descriptors
+        self._action_space = action_space
         self._memory = memory
         self._prepared_agent = wrapped_agent
 
@@ -551,7 +528,7 @@ class AgentRuntime:
 
         Calls the prepared agent's optional ``prepare`` slot with the
         negotiated, guarded descriptors this assembly advertises and the
-        Loop's execution limits its signature names (:meth:`_loop_policy_for`);
+        Loop's typed execution limits when the agent declares consumption;
         ``[]`` when the agent has no ``prepare``. Writes no memory, touches no
         environment: :meth:`execute` clears the memory and writes these, and
         the training export's student renderer seeds each context segment
@@ -566,11 +543,15 @@ class AgentRuntime:
         agent_prepare = getattr(agent, "prepare", None)
         if not callable(agent_prepare):
             return []
-        seeds: Any = agent_prepare(
-            task=task,
-            action_descriptors=self._active_descriptors,
-            **self._loop_policy_for(agent_prepare),
-        )
+        seeds: Any
+        if self._agent_consumes_limits:
+            seeds = agent_prepare(
+                task=task,
+                action_descriptors=self.active_descriptors,
+                execution_limits=self._execution_limits,
+            )
+        else:
+            seeds = agent_prepare(task=task, action_descriptors=self.active_descriptors)
         return list(seeds or [])
 
     # -- execute: convenience one-shot -------------------------
@@ -626,12 +607,9 @@ class AgentRuntime:
         attached to the veto as a note, or a vetoed sweep would record one
         task as failed and go on to the next.
 
-        A step the recorder could not record stops the run
-        (``RecordingFailedError`` out of the Loop): its result is
-        ``agent_done=error`` with ``error`` reading ``recording failed at
-        step t: …``, and the trace says it is incomplete. A recording failure
-        never replaces an outcome the run had already reached — the Loop and
-        the recorder keep it (``docs/architecture_design.md`` §4.6).
+        Recording health is separate from the execution outcome. Recorders
+        isolate their failures and report incomplete evidence without
+        terminating the agent or changing the result decided by the Loop.
 
         The run's own ``timeout`` is not an external cancellation, and it
         does not outrank an outcome the run had already reached. When it
@@ -742,13 +720,16 @@ class AgentRuntime:
             subset=subset,
             run_id=run_id,
             config=config or {},
-            agent_id=_component_id(self._agent, "agent_id"),
-            loop_id=_component_id(self._agent.agent_loop, "loop_id"),
-            env_type=_component_id(self._env, "env_type"),
-            llm_model=_model_name(self._agent),
+            identity=self._identity,
+            call_context=self._call_context,
+            agent_id=self._identity.agent_id,
+            loop_id=self._identity.loop_id,
+            env_type=self._identity.environment_id,
+            llm_model=self._identity.model_id,
             resolved_config=self._run.top_level_cfg,
             observation_negotiation=self._negotiated_obs,
             action_negotiation=self._negotiated_actions,
+            action_space=self.action_space,
             archive_negotiation=self._negotiated_archive,
             env_evidence_privacy=(
                 list(self._env_evidence_privacy) if self._env_evidence_privacy is not None else None
@@ -758,7 +739,7 @@ class AgentRuntime:
             config_source=config_source,
         )
 
-        started = time.monotonic()
+        self._execution_started = time.monotonic()
         self._finish_started = False
         try:
             try:
@@ -777,7 +758,6 @@ class AgentRuntime:
                         agent_done=AgentDoneStatus.VETOED,
                         env_status=self._probe_env_status(),
                         error=f"{type(exc).__name__}: {exc}",
-                        elapsed_ms=int((time.monotonic() - started) * 1000),
                     )
                     await self._close_out_vetoed(result, exc)
                     raise
@@ -788,7 +768,6 @@ class AgentRuntime:
                     agent_done=AgentDoneStatus.ERROR,
                     env_status=EnvironmentStatus.FAILED,
                     error=f"Environment setup failed: {type(exc).__name__}: {exc}",
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
                 )
                 await self._finish(result, error=exc)
                 if raise_on_error:
@@ -833,7 +812,6 @@ class AgentRuntime:
                             f"{type(ended).__name__}: {ended} (the run's timeout of {timeout}s "
                             "expired while the vetoed step was being recorded)"
                         ),
-                        elapsed_ms=int((time.monotonic() - started) * 1000),
                     )
                     await self._close_out_vetoed(result, ended)
                     # From the timeout: it is why the veto leaves from here
@@ -861,7 +839,6 @@ class AgentRuntime:
                     agent_done=AgentDoneStatus.TIMEOUT,
                     env_status=self._probe_env_status(),
                     error=f"Execution timed out after {timeout}s",
-                    elapsed_ms=int(timeout * 1000),
                 )
                 await self._finish(result, error=TimeoutError(result.error))
                 return result
@@ -884,7 +861,6 @@ class AgentRuntime:
                         agent_done=AgentDoneStatus.VETOED,
                         env_status=self._probe_env_status(),
                         error=f"{type(exc).__name__}: {exc}",
-                        elapsed_ms=int((time.monotonic() - started) * 1000),
                     )
                     await self._close_out_vetoed(result, exc)
                     raise
@@ -897,14 +873,7 @@ class AgentRuntime:
                     # environment keeps ``env_status`` meaning what it says
                     # — a crashed browser, not just a crashed run.
                     env_status=self._probe_env_status(),
-                    # A step that could not be recorded stopped the run: its
-                    # message already reads "recording failed at step t: …".
-                    error=(
-                        str(exc)
-                        if isinstance(exc, RecordingFailedError)
-                        else f"{type(exc).__name__}: {exc}"
-                    ),
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    error=f"{type(exc).__name__}: {exc}",
                 )
                 await self._finish(result, error=exc)
                 if raise_on_error:
@@ -934,7 +903,6 @@ class AgentRuntime:
                     agent_done=AgentDoneStatus.ERROR,
                     env_status=self._probe_env_status(),
                     error="Execution cancelled",
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
                 )
                 try:
                     await self._finish(result, error=exc)
@@ -965,11 +933,18 @@ class AgentRuntime:
                     await self.teardown_environment()
                 except Exception:
                     logger.exception("AgentRuntime: environment teardown failed")
+                finally:
+                    try:
+                        await close_models((self._agent.llm,))
+                    except Exception:
+                        logger.exception("AgentRuntime: model client cleanup failed")
 
     # -- Private helpers ---------------------------------------
 
-    async def _finish(self, result: Any, error: BaseException | None = None) -> None:
+    async def _finish(self, result: AgentResult, error: BaseException | None = None) -> None:
         """Close a run out: ``on_run_end`` first, then error detail, then drain."""
+        if not self._finish_started and self._execution_started is not None:
+            result.metrics.execution_ms = int((time.monotonic() - self._execution_started) * 1000)
         self._finish_started = True
         await self._dispatch_lifecycle("on_run_end", result=result, env=self._env)
         if error is not None:
@@ -987,7 +962,7 @@ class AgentRuntime:
         # could be spawned and simply never execute.
         await self._drain_background()
 
-    async def _close_out_vetoed(self, result: Any, veto: RunAbort) -> None:
+    async def _close_out_vetoed(self, result: AgentResult, veto: RunAbort) -> None:
         """Close a vetoed run out; a failure doing so is noted on the veto, never raised.
 
         The caller re-raises *veto* afterwards. Nothing the close-out raises
@@ -1023,13 +998,11 @@ class AgentRuntime:
         agent_done: AgentDoneStatus,
         env_status: EnvironmentStatus,
         error: str,
-        elapsed_ms: int,
     ) -> AgentResult:
         """Build the result for a run the Loop never got to finish.
 
-        ``usage=None`` is the honest value: the Loop is the only component
-        that sees completions, and it did not return one. A zero-filled
-        ``AgentUsage`` here would claim the run was measured.
+        Usage and call counts remain unmeasured here. The recording layer
+        enriches results from the calls it observed, when one is enabled.
         """
         return AgentResult(
             task_id=task_id,
@@ -1038,9 +1011,8 @@ class AgentRuntime:
             env_status=env_status,
             agent_done=agent_done,
             error=error,
-            model_id=_model_name(self._agent),
+            model_id=self._identity.model_id,
             metrics=AgentMetrics(
-                end_to_end_ms=elapsed_ms,
                 steps=self._recorder.policy_step_count,
                 usage=None,
             ),

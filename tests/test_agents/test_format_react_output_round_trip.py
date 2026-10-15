@@ -52,6 +52,7 @@ from spectragent.schemas.observation.fragments import (
     TaskObs,
 )
 from spectragent.schemas.observation.geometry import CoordinateSpace, PointGrid, point_grid
+from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.action_params import variant_params
 
@@ -228,7 +229,7 @@ def _check(
     return True
 
 
-def test_every_formatting_agent_round_trips() -> None:
+async def test_every_formatting_agent_round_trips() -> None:
     agents = _formatting_agents()
     assert "ui_tars" in [cls.__registry_key__ for cls in agents]
     for cls in agents:
@@ -243,7 +244,11 @@ def test_every_formatting_agent_round_trips() -> None:
             written = refused = 0
             for dpr in (1, 2):
                 observation = _observation(runtime, dpr)
-                agent.build_react_prompt(observation)
+                (
+                    await agent.build_react_prompt(
+                        observation, context=ReactPromptContext(step=0, phase="policy")
+                    )
+                )
                 grid = point_grid(space or "screenshot_pixels", observation.screenshot)
                 assert grid is not None
                 for descriptor in runtime.active_descriptors:

@@ -27,9 +27,11 @@ from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.events import ClickCoordinateEvent
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.loops.errors import ParseError
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.image import image_size
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import make_agent, make_env
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -87,7 +89,11 @@ def _harness(agent: BrowserUseAgent) -> dict[str, Any]:
         return await impl.execute(action.params, capability=fake)  # type: ignore[arg-type]
 
     _kept, guard = build_guarded_act(_execute, descriptors, bindings=negotiated.action_bindings)
-    agent.prepare(task="t", action_descriptors=descriptors)
+    agent.prepare(
+        task="t",
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+        action_descriptors=descriptors,
+    )
     return {
         "negotiated": negotiated,
         "descriptors": descriptors,
@@ -115,7 +121,11 @@ def harness() -> dict[str, Any]:
 
 
 def _prompt(agent: BrowserUseAgent, descriptors: list[Any]) -> str:
-    content = agent.prepare(task="t", action_descriptors=descriptors)[0].content
+    content = agent.prepare(
+        task="t",
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+        action_descriptors=descriptors,
+    )[0].content
     assert isinstance(content, str)
     return content
 
@@ -159,9 +169,13 @@ class TestNegotiation:
 class TestParamSeam:
     """What the parser emits is what ``descriptor().params`` declares."""
 
-    def test_emitted_params_are_exactly_the_declared_ones(self, harness) -> None:
+    async def test_emitted_params_are_exactly_the_declared_ones(self, harness) -> None:
         agent = harness["agent"]
-        agent.build_react_prompt(_observation(image=(1280, 720)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(1280, 720)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         (action,) = agent.parse_react_output(
             _reply({"browser.click_coordinate": {"coordinate_x": 10, "coordinate_y": 20}})
         )
@@ -174,7 +188,9 @@ class TestParamSeam:
     async def test_reply_parses_guards_and_executes_at_the_converted_point(self, harness) -> None:
         """DPR 2: a 2560x1440 image of a 1280x720 viewport halves every point."""
         agent = harness["agent"]
-        messages = agent.build_react_prompt(_observation(image=(2560, 1440)))
+        messages = await agent.build_react_prompt(
+            _observation(image=(2560, 1440)), context=ReactPromptContext(step=0, phase="policy")
+        )
         content = messages[0].content
         assert isinstance(content, list)
         body = getattr(content[0], "text", "")
@@ -189,18 +205,26 @@ class TestParamSeam:
         assert isinstance(event, ClickCoordinateEvent)
         assert (event.coordinate_x, event.coordinate_y) == (50, 200)
 
-    def test_dpr_one_is_the_identity(self, harness) -> None:
+    async def test_dpr_one_is_the_identity(self, harness) -> None:
         agent = harness["agent"]
-        agent.build_react_prompt(_observation(image=(1280, 720)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(1280, 720)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         (action,) = agent.parse_react_output(
             _reply({"browser.click_coordinate": {"coordinate_x": 61, "coordinate_y": 377}})
         )
         assert action.params == {"coordinate_x": 61, "coordinate_y": 377}
 
-    def test_a_normalized_point_lands_on_the_viewport(self) -> None:
+    async def test_a_normalized_point_lands_on_the_viewport(self) -> None:
         agent = _agent(coordinate_space="normalized_1000")
         _harness(agent)
-        agent.build_react_prompt(_observation(image=(2560, 1440)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(2560, 1440)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         (action,) = agent.parse_react_output(
             _reply({"browser.click_coordinate": {"coordinate_x": 500, "coordinate_y": 500}})
         )
@@ -208,20 +232,27 @@ class TestParamSeam:
         # image size does not enter the conversion at all.
         assert action.params == {"coordinate_x": 640, "coordinate_y": 360}
 
-    def test_index_click_is_untouched(self, harness) -> None:
+    async def test_index_click_is_untouched(self, harness) -> None:
         agent = harness["agent"]
-        agent.build_react_prompt(_observation(image=(2560, 1440)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(2560, 1440)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         (action,) = agent.parse_react_output(_reply({"browser.click": {"index": 42}}))
         assert action == Action(name="browser.click", params={"index": 42})
 
 
 class TestRefusals:
-    def test_no_screenshot_this_step_is_a_parse_error(self, harness) -> None:
+    async def test_no_screenshot_this_step_is_a_parse_error(self, harness) -> None:
         agent = harness["agent"]
-        agent.build_react_prompt(
-            SimpleNamespace(
-                platform=SimpleNamespace(operating_system="macos"),
-                task=SimpleNamespace(user_request="t", follow_ups=[]),
+        (
+            await agent.build_react_prompt(
+                SimpleNamespace(
+                    platform=SimpleNamespace(operating_system="macos"),
+                    task=SimpleNamespace(user_request="t", follow_ups=[]),
+                ),
+                context=ReactPromptContext(step=0, phase="policy"),
             )
         )
         with pytest.raises(ParseError, match="no screenshot"):
@@ -229,10 +260,14 @@ class TestRefusals:
                 _reply({"browser.click_coordinate": {"coordinate_x": 1, "coordinate_y": 2}})
             )
 
-    def test_non_numeric_coordinate_is_refused_by_the_schema(self, harness) -> None:
+    async def test_non_numeric_coordinate_is_refused_by_the_schema(self, harness) -> None:
         """Now caught one layer earlier, by the closed union's own types."""
         agent = harness["agent"]
-        agent.build_react_prompt(_observation(image=(1280, 720)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(1280, 720)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         with pytest.raises(ParseError, match="browser.click_coordinate: coordinate_x"):
             agent.parse_react_output(
                 _reply({"browser.click_coordinate": {"coordinate_x": "left", "coordinate_y": 2}})
@@ -255,7 +290,7 @@ class TestScreenshotGeometry:
         assert image_size(_png(2560, 1440)) == (2560, 1440)
         assert image_size(b"not an image") == (0, 0)
 
-    def test_fragment_without_image_size_refuses_to_guess(self, harness) -> None:
+    async def test_fragment_without_image_size_refuses_to_guess(self, harness) -> None:
         agent = harness["agent"]
         obs = SimpleNamespace(
             platform=SimpleNamespace(operating_system="macos"),
@@ -264,7 +299,7 @@ class TestScreenshotGeometry:
                 image_bytes=_png(1280, 720), viewport_width=1280, viewport_height=720
             ),
         )
-        agent.build_react_prompt(obs)
+        (await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy")))
         with pytest.raises(ParseError):
             agent.parse_react_output(
                 _reply({"browser.click_coordinate": {"coordinate_x": 1, "coordinate_y": 2}})

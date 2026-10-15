@@ -11,9 +11,13 @@ See docs/architecture_design.md §4.6 for the full Hook design.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
+from spectragent.core.llm.base import BaseChatModel
+from spectragent.core.llm.call_context import RunCallContext
+from spectragent.core.loops.identity import RunIdentity
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.config_source import ConfigSource
 
 
@@ -47,8 +51,8 @@ class RuntimeHook(Protocol):
 
         Error isolation is a *consequence*, not a second meaning. A
         blocking handler's exception propagates into the call it fired on
-        — the call is still on the stack, and a ``TraceWriter`` that
-        cannot write is a run that must stop. A non-blocking handler's
+        — the call is still on the stack. Recorders isolate their own
+        failures before that boundary. A non-blocking handler's
         cannot: by the time it raises, the call it decorated has already
         returned, so there is nothing to propagate to and the exception
         is logged.
@@ -89,6 +93,9 @@ class RuntimeHook(Protocol):
         subset: str,
         run_id: str | None,
         config: dict[str, Any],
+        identity: RunIdentity,
+        call_context: RunCallContext,
+        action_space: ActionSpace,
         agent_id: str,
         loop_id: str,
         env_type: str,
@@ -220,3 +227,19 @@ class RuntimeHook(Protocol):
         without this callback.
         """
         ...
+
+
+@runtime_checkable
+class PromptModelOwner(Protocol):
+    """A hook with helper models requiring the run's common model interception.
+
+    The original wired models remain owned by the hook for cleanup. Runtime
+    supplies proxies and a run-owned attribution context through the public
+    binding method, before any helper can be invoked.
+    """
+
+    helper_llms: list[BaseChatModel]
+
+    def bind_prompt_models(
+        self, models: Sequence[BaseChatModel], call_context: RunCallContext
+    ) -> None: ...

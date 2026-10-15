@@ -56,6 +56,7 @@ from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompts import load_prompt_fragment
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import bounded_demand
 from spectragent.prompts import hash_text, text_snapshot
 from spectragent.schemas.action import Action, ActionDescriptor
@@ -66,7 +67,7 @@ from spectragent.schemas.observation.geometry import (
     point_grid,
 )
 from spectragent.schemas.observation.image import image_media_type
-from spectragent.schemas.prompt import PromptRef, PromptSnapshot
+from spectragent.schemas.prompt import PromptRef, PromptSnapshot, ReactPromptContext
 
 #: ``PromptRef.path`` for a prompt that came from YAML rather than the
 #: tree. It is not a path, and it deliberately cannot be mistaken for
@@ -271,6 +272,8 @@ class BrowserUseAgent(AgentBase):
     # There is no ``capability`` entry for the same reason — naming one
     # constrained the generated config to a provider without any runtime
     # effect.
+    __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react", "branch"]),
         # ``screenshot`` is required in every mode because the evaluators
@@ -469,7 +472,7 @@ class BrowserUseAgent(AgentBase):
         self,
         task: str,
         action_descriptors: list[ActionDescriptor],
-        max_actions_per_step: int = 1,
+        execution_limits: ExecutionLimits,
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
 
@@ -492,6 +495,9 @@ class BrowserUseAgent(AgentBase):
             UnsupportedParamsSchema: an action's params are outside the
                 closed-union subset — before the first LLM call, not at it.
         """
+        max_actions_per_step = execution_limits.max_actions_per_step
+        if max_actions_per_step is None:
+            raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
         self._action_descriptors = list(action_descriptors)
         self._grid = None
         variant = self.select_prompt_variant()
@@ -515,7 +521,9 @@ class BrowserUseAgent(AgentBase):
 
     # ── ReactLoop slots ────────────────────────────────────────
 
-    def build_react_prompt(self, observation: Any) -> list[BaseMessage]:
+    async def build_react_prompt(
+        self, observation: Any, *, context: ReactPromptContext
+    ) -> list[BaseMessage]:
         """Pure builder: return the messages to append for this step.
 
         Emits an upstream-browser-use-style structured user message:
@@ -846,7 +854,7 @@ class BrowserUseAgent(AgentBase):
         task: str,  # noqa: ARG002 — reserved; some prompt templates may consume it later
         variant: str,
         relabel: Mapping[str, Mapping[str, str]],
-        max_actions_per_step: int = 1,
+        max_actions_per_step: int,
     ) -> tuple[str, PromptSnapshot]:
         """Return the system prompt and the snapshot that explains it."""
         snapshot: PromptSnapshot

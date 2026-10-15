@@ -35,6 +35,7 @@ from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import UserMessage
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
@@ -60,7 +61,9 @@ def _prompt(variant: Any, max_actions_per_step: int) -> str:
     # its members are the field's Literal (``test_prompt_tree`` asserts it).
     agent = UITarsAgent(prompt_template=variant)
     content = agent.prepare(
-        task="t", action_descriptors=_NEGOTIATED, max_actions_per_step=max_actions_per_step
+        task="t",
+        action_descriptors=_NEGOTIATED,
+        execution_limits=ExecutionLimits(max_actions_per_step=max_actions_per_step),
     )[0].content
     assert isinstance(content, str)
     return content
@@ -105,16 +108,22 @@ def test_the_budget_is_whatever_the_agent_is_handed(n: int) -> None:
 def test_no_finish_verb_no_promise_about_it() -> None:
     agent = UITarsAgent()
     descriptors = [ActionDescriptor(name="browser.click_coordinate", description="c")]
-    content = agent.prepare(task="t", action_descriptors=descriptors, max_actions_per_step=3)[
-        0
-    ].content
+    content = agent.prepare(
+        task="t",
+        action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=3),
+    )[0].content
     assert isinstance(content, str)
     assert "finished()" not in content
 
 
 def test_a_budget_below_one_is_a_config_error_not_a_prompt() -> None:
     with pytest.raises(ValueError, match="max_actions_per_step=0"):
-        UITarsAgent().prepare(task="t", action_descriptors=_NEGOTIATED, max_actions_per_step=0)
+        UITarsAgent().prepare(
+            task="t",
+            action_descriptors=_NEGOTIATED,
+            execution_limits=ExecutionLimits(max_actions_per_step=0),
+        )
 
 
 def test_the_agent_owns_no_copy_of_the_limit() -> None:
@@ -226,7 +235,7 @@ async def test_an_over_budget_reply_runs_the_first_n_in_order_and_reports_the_re
         agent.prepare(
             task="t",
             action_descriptors=_NEGOTIATED,
-            max_actions_per_step=loop.max_actions_per_step,
+            execution_limits=ExecutionLimits(max_actions_per_step=loop.max_actions_per_step),
         )
     )
     assert "maximum of 2 actions" in memory.messages[0].content
@@ -259,6 +268,11 @@ async def test_an_over_budget_reply_runs_the_first_n_in_order_and_reports_the_re
                 usage=None,
             )
 
+        name = "test-model"
+
+        async def aclose(self, *, timeout=5.0):
+            return ()
+
     ran: list[Action] = []
 
     async def _act(action: Action) -> ActionResult:
@@ -266,7 +280,7 @@ async def test_an_over_budget_reply_runs_the_first_n_in_order_and_reports_the_re
         return ActionResult(success=True)
 
     ctx = {"env": _Env(), "llm": _LLM(), "memory": memory, "act_fn": _act}
-    await loop._execute(agent, "t", ctx=ctx)
+    await loop._execute(agent, "t", ctx={**ctx, "step_executor": loop})
 
     assert [(a.params["coordinate_x"], a.params["coordinate_y"]) for a in ran] == [
         (10, 20),

@@ -33,6 +33,7 @@ from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import AgentLoopRegistrar, MissingEnvironmentError, ReactLoop
 from spectragent.core.negotiation import IncompatibleArchiveError
 from spectragent.core.runtime import AgentRuntime
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.archive_fakes import (
     BLOBS_KEY,
     CAPABILITY_ID,
@@ -235,9 +236,13 @@ def teardown_module() -> None:
 class _EnvlessAgent:
     """Asks an environment for nothing: only the task, which the Loop builds."""
 
+    __execution_limit_fields__ = frozenset()
+
     __wiring__ = {"observation": ("observation", ["loop.task"])}
 
-    def build_react_prompt(self, obs: Any) -> list[dict[str, str]]:
+    async def build_react_prompt(
+        self, obs: Any, *, context: ReactPromptContext
+    ) -> list[dict[str, str]]:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out: Any) -> list[Any]:

@@ -695,7 +695,9 @@ class ContractArchiveAgent:
         self.keep_going_steps = keep_going_steps
         self.parsed = 0
 
-    def build_react_prompt(self, obs: Any) -> list[dict[str, str]]:
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list[dict[str, str]]:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out: Any) -> list[Action]:
@@ -717,6 +719,11 @@ class ContractArchiveLLM:
 
     async def ainvoke(self, messages: Any, **kwargs: Any) -> _Completion:
         return _Completion()
+
+    name = "test-model"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
 
 
 class ContractArchiveMemory:
