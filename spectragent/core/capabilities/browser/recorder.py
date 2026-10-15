@@ -16,8 +16,8 @@ what to send to a target and who owns a paused request:
 
 - **Pause-bearing events** (``Target.attachedToTarget`` of a waiting target,
   ``Fetch.requestPaused``) are handled in tasks spawned straight from the
-  client callback — never through an agent-cdp scope queue, which drops the
-  newest event at 1024 and a dropped pause wedges the page. Every waiting
+  client callback — never through an agent-cdp scope queue, whose bounded
+  admission may reject an event and a rejected pause wedges the page. Every waiting
   target is resumed and every paused request settled in ``finally``, by
   this module, whatever the participant did: continued while recording;
   failed, **never continued**, at the Request stage while a participant
@@ -32,7 +32,7 @@ what to send to a target and who owns a paused request:
   (:meth:`RecorderParticipant.event_methods`); the recorder subscribes to
   their union and knows no event of its own beyond target bookkeeping. There
   is no channel in shim-only mode, so no metadata handler at all.
-- **Bytes never travel in events** (scope history keeps the last 1000): the
+- **Bytes never travel in events** (archive scope retains no history): the
   dispatcher hands each raw event to the participants that declared it
   (:meth:`RecorderParticipant.admit_event`, synchronous, in the receive loop)
   and emits only what each one admits — small metadata, addressed to that
@@ -50,10 +50,10 @@ what to send to a target and who owns a paused request:
   record every page-side command as failed. A reply that never arrives is
   recorded on the target, never raised.
 
-Resume is agent-cdp ``PausedTarget`` mode B: our own callback sends
-``Runtime.runIfWaitingForDebugger`` on the target's session. Mode A sends it
-without a session on af's flattened client and silently resumes the wrong
-target (measured, arch §4.14).
+Resume uses agent-cdp ``PausedTarget`` mode B so preparation commands are
+written before the session-routed resume. The callback awaits acknowledgement
+before clearing the waiting marker. In agent-cdp 0.5 mode A also routes the
+command correctly; the previous browser-level command left this target paused.
 """
 
 import asyncio
@@ -63,7 +63,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from agent_cdp import BaseEvent, ConnectionType, EventScope, PausedTarget
+from agent_cdp import BaseEvent, EventScope, PausedTarget, RequestContract
 from pydantic import Field
 
 logger = logging.getLogger(__name__)
@@ -124,9 +124,9 @@ TARGET_BOOKKEEPING = frozenset({"Target.attachedToTarget", "Target.detachedFromT
 class RecorderLostError(RuntimeError):
     """The recorder connection ended while the run still needed it.
 
-    Raised (and used to fail the control connection's waiters) the moment
-    the loss is pushed: a recording never continues unrecorded, and a
-    browser whose recorder vanished mid-pause is wedged anyway (§4.14).
+    Reported the moment
+    the loss is pushed: archive collection must report the gap. Execution decides separately
+    whether this connection also enforced replay or fixed target configuration.
     """
 
 
@@ -199,8 +199,9 @@ class PausedRequest:
     params: dict[str, Any]
     target: RecorderTarget | None = None
     answered: bool = False
-    #: Claimed by whoever settles it first (task or cleanup).
+    #: The response/failure/continuation was acknowledged by Chrome.
     settled: bool = False
+    _settlement_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @property
     def network_id(self) -> str | None:
@@ -226,13 +227,14 @@ class CycleRequest:
     control_session_id: str
     #: The fragments this cycle negotiated.
     fragments: frozenset[str] = frozenset()
+    #: Observation request identity, retained across asynchronous self-capture.
+    request_id: str = ""
 
 
 class RecorderEvent(BaseEvent[None]):
     """A metadata event from the recorder connection, with its session id.
 
-    Small by contract — the archive scope's history keeps its last 1000
-    events: what a participant admitted (:meth:`RecorderParticipant.admit_event`),
+    Small by contract — the archive scope keeps no event history: what a participant admitted (:meth:`RecorderParticipant.admit_event`),
     never a body, a frame payload or a credential.
     """
 
@@ -243,12 +245,6 @@ class RecorderEvent(BaseEvent[None]):
     #: ``None`` for the recorder's own target bookkeeping, which every
     #: participant receives.
     consumer: Any = Field(default=None, exclude=True, repr=False)
-
-
-class ArchiveBarrierEvent(BaseEvent[None]):
-    """Queued behind every metadata event emitted before it (FIFO)."""
-
-    emitted_before: int = 0
 
 
 # ── Participants ──────────────────────────────────────────────────────
@@ -293,8 +289,7 @@ class RecorderParticipant(Protocol):
 
         Called by the recorder's local dispatcher for every event in
         :meth:`event_methods` — synchronously, in the client's receive loop,
-        before anything is emitted. The scope's history keeps its last 1000
-        events, so the returned event carries small metadata only: bytes
+        before anything is emitted. Archive scopes retain no event history, so the returned event carries small metadata only: bytes
         (bodies, frame payloads) go to this participant's own side store,
         keyed by the returned event's ``event_id``, and values it never
         stores (credentials) are left out. ``None`` admits nothing. *params*
@@ -381,14 +376,11 @@ ParticipantsAccessor = Callable[[], Sequence[RecorderParticipant]]
 
 
 class ArchiveChannel:
-    """What the recorder hands the archive-scope side.
+    """The archive scope's public completion and completeness boundary.
 
-    Exists only when archivers are bound. ``emitted`` counts metadata events
-    put into the scope, ``handled`` what the scope's consumer
-    (``ArchiveWatchdog``) actually received; :meth:`barrier` waits for every
-    event emitted before it and raises if the counts disagree — the queue
-    dropped something, and a collection must then fail rather than look
-    complete.
+    Native flush fixes the admitted prefix without occupying a queue slot.
+    Delivery outcomes distinguish refusal, cancellation and handler failure;
+    AF additionally counts metadata and participant failures.
     """
 
     def __init__(self, scope: EventScope, participants: ParticipantsAccessor) -> None:
@@ -396,45 +388,41 @@ class ArchiveChannel:
         self._participants = participants
         self.emitted = 0
         self.handled = 0
-        #: Participant callbacks that raised while admitting or handling an event.
         self.errors = 0
-        # The barrier's own queued no-op: it is what makes ``await barrier``
-        # wait behind every event already in the (FIFO) scope queue, whoever
-        # else listens on the scope.
-        scope.connect(ArchiveBarrierEvent, self._on_barrier, mode=ConnectionType.QUEUED)
-
-    @staticmethod
-    async def _on_barrier(_event: ArchiveBarrierEvent) -> None:
-        return None
 
     def participants(self) -> tuple[RecorderParticipant, ...]:
         return tuple(self._participants())
 
     def emit(self, event: RecorderEvent) -> None:
         self.emitted += 1
-        self.scope.emit(event)
+        event.request_contract = RequestContract(min_receivers=1)
+        try:
+            self.scope.emit(event)
+        except Exception:
+            self.errors += 1
+            raise
 
     def mark_handled(self) -> None:
         self.handled += 1
 
-    async def barrier(self, timeout: float = 5.0) -> None:
-        """Wait until everything emitted so far was handled, or raise."""
-        target = self.emitted
-        event = ArchiveBarrierEvent(emitted_before=target, event_timeout=timeout)
-        self.scope.emit(event)
+    async def flush(self, timeout: float = 5.0) -> None:
+        """Settle the accepted prefix and report every missing delivery."""
         try:
-            await event
+            prefix = await self.scope.flush(timeout=timeout)
         except TimeoutError as exc:
+            stats = self.scope.stats
             raise ArchiveChannelError(
-                f"archive scope barrier did not complete within {timeout:g}s "
-                f"({self.handled} of {target} metadata events handled)"
+                f"archive scope flush did not complete within {timeout:g}s "
+                f"(queued={stats.queued}, running={stats.running}, "
+                f"rejected={stats.rejected}, cancelled={stats.cancelled})"
             ) from exc
-        if self.handled < target:
-            raise ArchiveChannelError(
-                f"archive scope dropped {target - self.handled} of {target} metadata "
-                f"events (agent-cdp's scope queue is bounded); this collection would "
-                f"be incomplete"
+        if prefix.failures:
+            details = "; ".join(
+                f"{delivery.event_type}/{delivery.connection_id}: {delivery.status}"
+                + (f" ({delivery.error_message})" if delivery.error_message else "")
+                for delivery in prefix.failures
             )
+            raise ArchiveChannelError(f"archive deliveries incomplete: {details}")
 
 
 # ── The connection ────────────────────────────────────────────────────
@@ -517,6 +505,8 @@ class RecorderConnection:
         self._sessions: set[str] = set()
         #: Sessions attached waiting and not yet resumed.
         self._waiting: set[str] = set()
+        self._cleanup_failures: list[str] = []
+        self._close_task: asyncio.Task[None] | None = None
         #: Sessions a ``Fetch.enable`` was sent to.
         self._fetch_sessions: set[str] = set()
         #: Failed commands, per session (diagnostics; never fatal by itself).
@@ -638,7 +628,34 @@ class RecorderConnection:
                 f"{self._ready_timeout_s:g}s"
             )
 
+    @property
+    def cleanup_failures(self) -> tuple[str, ...]:
+        """Unconfirmed cleanup operations, without claiming they rolled back."""
+        return tuple(self._cleanup_failures)
+
     async def close(self) -> None:
+        """Finish owned cleanup before propagating cancellation of its caller."""
+        if self._closed:
+            return
+        if self._close_task is None or self._close_task.done():
+            self._close_task = asyncio.create_task(self._close_resources())
+        try:
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError as cancellation:
+            while not self._close_task.done():
+                try:
+                    await asyncio.shield(self._close_task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            try:
+                self._close_task.result()
+            except BaseException as failure:
+                cancellation.add_note(f"Recorder cleanup also failed: {failure!r}")
+            raise
+
+    async def _close_resources(self) -> None:
         """Release the browser in a fixed order; idempotent; tolerant of each step.
 
         1. stop pausing new targets (``setAutoAttach{false, false}``);
@@ -657,7 +674,6 @@ class RecorderConnection:
         """
         if self._closed:
             return
-        self._closed = True
         self._closing = True
         t = self._command_timeout_s
 
@@ -672,8 +688,8 @@ class RecorderConnection:
             # Tolerant like every other step: a target that went away, or a
             # browser too busy to answer in time, must not leave the rest of
             # the browser paused, Fetch-enabled and attached.
-            self._waiting.discard(sid)
-            await self._quietly(RESUME_METHOD, None, sid, timeout=t)
+            if await self._quietly(RESUME_METHOD, None, sid, timeout=t):
+                self._waiting.discard(sid)
 
         for sid in list(self._fetch_sessions):
             await self._quietly("Fetch.disable", {}, sid, timeout=t)
@@ -687,17 +703,33 @@ class RecorderConnection:
         for task in tasks:
             task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.wait(tasks, timeout=t)
 
         for method, callback in self._registrations:
-            with contextlib.suppress(Exception):
+            try:
                 self._client.off_event(method, callback)
+            except Exception as exc:
+                self._cleanup_failures.append(f"unsubscribe {method}: {exc}")
         self._registrations.clear()
 
         try:
             await self._client.stop()
         except Exception as exc:  # pragma: no cover — defensive
-            logger.warning("recorder: client stop failed: %s", exc)
+            self._cleanup_failures.append(f"client stop: {exc}")
+            raise RecorderError("recorder client cleanup failed") from exc
+        finally:
+            if self._cleanup_failures:
+                logger.warning(
+                    "recorder cleanup unconfirmed: %s", "; ".join(self._cleanup_failures)
+                )
+        pending = [task for task in tasks if not task.done()]
+        if pending:
+            _, pending_set = await asyncio.wait(pending, timeout=t)
+            if pending_set:
+                raise RecorderError(
+                    f"recorder cleanup has {len(pending_set)} unfinished task(s) after cancellation"
+                )
+        self._closed = True
 
     # ── callbacks (sync: they run in the client's receive loop) ───────
 
@@ -768,6 +800,9 @@ class RecorderConnection:
         self._sessions.discard(sid)
         self._waiting.discard(sid)
         self._fetch_sessions.discard(sid)
+        for key in tuple(self._held):
+            if key[0] == sid:
+                self._held.pop(key, None)
         target = self._targets.pop(sid, None)
         if target is None:
             return
@@ -844,9 +879,18 @@ class RecorderConnection:
         async def resume() -> None:
             reply = await self._write_resume(sid)
             if reply is not None:
-                written.append((RESUME_METHOD, reply))
+                try:
+                    await reply.wait(self._resumed_reply_timeout())
+                except BaseException:
+                    reply.abandon()
+                    raise
+                self._waiting.discard(sid)
 
-        paused = PausedTarget(resume=resume) if target.waiting else contextlib.nullcontext()
+        paused = (
+            PausedTarget(resume=resume, resume_timeout=self._resumed_reply_timeout())
+            if target.waiting
+            else contextlib.nullcontext()
+        )
         try:
             try:
                 async with paused:
@@ -899,7 +943,6 @@ class RecorderConnection:
         """Write the resume of a still-waiting session; ``None`` when it was resumed already."""
         if session_id not in self._waiting:
             return None
-        self._waiting.discard(session_id)
         return await self._client.post(RESUME_METHOD, None, session_id)
 
     def _resumed_reply_timeout(self) -> float:
@@ -998,29 +1041,28 @@ class RecorderConnection:
         continue: the request would go to the network). Anything else →
         continued, as a recording always does.
         """
-        self._held.pop((paused.session_id, paused.request_id), None)
-        if paused.settled or paused.answered:
-            return
-        paused.settled = True
-        if paused.stage == "Request" and self._serving:
-            await self._quietly(
-                "Fetch.failRequest",
-                {"requestId": paused.request_id, "errorReason": UNANSWERED_ERROR_REASON},
-                paused.session_id,
-                timeout=self._command_timeout_s,
+        key = (paused.session_id, paused.request_id)
+        async with paused._settlement_lock:
+            if paused.settled or paused.answered:
+                paused.settled = True
+                self._held.pop(key, None)
+                return
+            if paused.stage == "Request" and self._serving:
+                method = "Fetch.failRequest"
+                params = {"requestId": paused.request_id, "errorReason": UNANSWERED_ERROR_REASON}
+            else:
+                method = (
+                    "Fetch.continueResponse"
+                    if paused.stage == "Response" and "responseStatusCode" in paused.params
+                    else "Fetch.continueRequest"
+                )
+                params = {"requestId": paused.request_id}
+            confirmed = await self._quietly(
+                method, params, paused.session_id, timeout=self._command_timeout_s
             )
-            return
-        method = (
-            "Fetch.continueResponse"
-            if paused.stage == "Response" and "responseStatusCode" in paused.params
-            else "Fetch.continueRequest"
-        )
-        await self._quietly(
-            method,
-            {"requestId": paused.request_id},
-            paused.session_id,
-            timeout=self._command_timeout_s,
-        )
+            if confirmed:
+                paused.settled = True
+                self._held.pop(key, None)
 
     async def _quietly(
         self,
@@ -1029,10 +1071,14 @@ class RecorderConnection:
         session_id: str | None,
         *,
         timeout: float,
-    ) -> None:
+    ) -> bool:
         if not self._client.is_connected:
-            return
+            return False
         try:
             await self._client.send(method, params, session_id, timeout=timeout)
         except Exception as exc:
             logger.debug("recorder: %s on %s failed: %s", method, session_id, exc)
+            if self._closing:
+                self._cleanup_failures.append(f"{method} on {session_id}: {exc}")
+            return False
+        return True

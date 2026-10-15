@@ -242,7 +242,7 @@ class TestLaunchArgsReachChrome:
             record["env"] = kw.get("env")
             return _FakeProcess()
 
-        async def _fake_wait(_self: Any, _port: int) -> str:
+        async def _fake_wait(_self: Any, _port: int, _process: Any, _profile: str) -> str:
             return "ws://127.0.0.1:9222/devtools/browser/x"
 
         monkeypatch.setattr(local_chrome.asyncio, "create_subprocess_exec", _fake_exec)

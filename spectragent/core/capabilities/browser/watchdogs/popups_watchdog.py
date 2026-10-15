@@ -14,6 +14,8 @@ from agent_cdp import (
     CDPEventBridge,
     ConnectionType,
     EventScope,
+    Participation,
+    ResultContract,
 )
 
 from spectragent.core.capabilities.browser.watchdogs.base import (
@@ -39,43 +41,28 @@ class PopupsWatchdog(BrowserWatchdog):
     ) -> None:
         self._cdp = cdp
         self._auto_accept = auto_accept
-        self._scope: EventScope | None = None
-        self._bridge: CDPEventBridge | None = None
 
     @classmethod
     def build(cls, ctx: WatchdogContext) -> PopupsWatchdog:
         return cls(ctx.cdp)
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
-        self._scope = scope
-        self._session_id = session_id
+        bridge = CDPEventBridge(self._cdp, scope, session_id=session_id)
+        bridge.bridge("Page.javascriptDialogOpening", self._make_dialog_event)
 
-        self._bridge = CDPEventBridge(self._cdp, scope, session_id=session_id)
-        self._bridge.bridge(
-            "Page.javascriptDialogOpening",
-            self._make_dialog_event,
-        )
+        async def handle(event: DialogOpenedEvent) -> None:
+            await self._on_dialog_opened(event, session_id=session_id)
 
-        # Handle the event to auto-dismiss.
-        scope.connect(
+        connection = scope.connect(
             DialogOpenedEvent,
-            self._on_dialog_opened,
+            handle,
             mode=ConnectionType.QUEUED,
+            participation=Participation.HANDLER,
+            result_contract=ResultContract(lambda value: value is None),
         )
-
-    def detach(self) -> None:
-        """Unregister this watchdog's CDP callbacks. Idempotent.
-
-        Without this the bridge outlives its scope: ``close_tab`` /
-        ``teardown`` close the EventScope but the CDP client still holds
-        the bridge callback, and ``EventScope.emit`` raises RuntimeError
-        on a closed scope — swallowed by CDPClient's dispatch loop, so
-        the leak shows up only as recurring exception spam.
-        """
-        if self._bridge is not None:
-            self._bridge.close()
-            self._bridge = None
-        self._scope = None
+        self.track_binding(
+            scope, session_id, connections=[connection], close_callbacks=[bridge.close]
+        )
 
     def _make_dialog_event(self, params: dict[str, Any]) -> DialogOpenedEvent:
         return DialogOpenedEvent(
@@ -85,7 +72,7 @@ class PopupsWatchdog(BrowserWatchdog):
             default_prompt=params.get("defaultPrompt", ""),
         )
 
-    async def _on_dialog_opened(self, event: DialogOpenedEvent) -> None:
+    async def _on_dialog_opened(self, event: DialogOpenedEvent, *, session_id: str | None) -> None:
         """Auto-dismiss JavaScript dialog."""
         if not self._auto_accept:
             return
@@ -103,7 +90,8 @@ class PopupsWatchdog(BrowserWatchdog):
                 {
                     "accept": accept,
                 },
-                session_id=self._session_id,
+                session_id=session_id,
             )
         except Exception as exc:
             logger.error("Failed to handle dialog: %s", exc)
+            raise

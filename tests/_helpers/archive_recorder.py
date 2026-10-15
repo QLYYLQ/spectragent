@@ -122,7 +122,7 @@ def scripted_context(
         recorder=recorder,
         channel=None,  # type: ignore[arg-type] — sessions under test never use it
         raw_captures=RawCaptureStore(),
-        park_raw=lambda sid, capture, dpr: sink.append((sid, capture, dpr)),
+        park_raw=lambda sid, capture, dpr, request_id: sink.append((sid, capture, dpr)),
         fragments=fragments,
         viewport=(1280, 720),
         cycle=lambda: cycle,

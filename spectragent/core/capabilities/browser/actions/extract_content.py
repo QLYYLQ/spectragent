@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
+from agent_cdp import Participation
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
@@ -29,6 +30,7 @@ from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
     resolve_index,
 )
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ExtractContentEvent,
 )
@@ -75,15 +77,21 @@ class ExtractContentAction(ActionBase):
                 backend_node_id=element.backend_node_id if element else None,
                 session_id=element.session_id if element else None,
             )
-            scope.emit(event)
-            await event
+            await dispatch_request(scope, event)
 
             # Harvest extracted text from the first successful result.
             extracted: str | None = None
-            for result_obj in event.event_results.values():
-                if result_obj.is_success and isinstance(result_obj.result, str):
+            for result_obj in event.results.values():
+                if (
+                    result_obj.is_success
+                    and result_obj.participation is Participation.HANDLER
+                    and result_obj.receiver_key == "browser.action"
+                    and isinstance(result_obj.result, str)
+                ):
                     extracted = result_obj.result
                     break
+            if extracted is None:
+                raise RuntimeError("Extraction executor returned no text")
             return ActionResult(success=True, extracted_content=extracted)
         except ValueError as exc:
             return ActionResult(success=False, error=str(exc))

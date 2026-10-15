@@ -30,7 +30,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, ClassVar
 
-from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
+from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, Participation, ResultContract
 
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget, DOMBudgetPass
 from spectragent.core.capabilities.browser.dom.capture import FRAME_CAPTURE_TIMEOUT_S, FrameTargets
@@ -50,6 +50,7 @@ from spectragent.core.capabilities.browser.watchdogs.base import (
     WatchdogContext,
     WatchdogLevel,
 )
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     BrowserErrorEvent,
     BrowserStateRequestEvent,
@@ -166,16 +167,24 @@ class DOMWatchdog(BrowserWatchdog):
             # Never for the browser-level session: auto-attach there would
             # adopt every tab in the browser.
             self._frames.watch(session_id)
-        scope.connect(
+        connection = scope.connect(
             BrowserStateRequestEvent,
             self._on_browser_state_request,
             mode=ConnectionType.QUEUED,
+            participation=Participation.HANDLER,
+            filter=lambda event: (
+                isinstance(event, BrowserStateRequestEvent)
+                and bool(event.fragments & self.provides)
+            ),
+            receiver_key="browser.dom",
+            result_contract=ResultContract(lambda value: isinstance(value, BrowserStateSummary)),
         )
-
-    def detach(self) -> None:
-        """Release the frame-target event callbacks. Idempotent."""
-        if self._frames is not None:
-            self._frames.close()
+        self.track_binding(
+            scope,
+            session_id,
+            connections=[connection],
+            close_callbacks=[self._frames.close] if self._frames is not None else (),
+        )
 
     async def _on_browser_state_request(
         self, event: BrowserStateRequestEvent
@@ -244,7 +253,7 @@ class DOMWatchdog(BrowserWatchdog):
                         message=str(exc),
                     )
                 )
-            return None
+            raise
 
     async def _capture_cdp_data(self) -> tuple[TargetCapture, float]:
         """Let the configured cleaner select capture calls for this tab, within the bound.
@@ -282,9 +291,13 @@ class DOMWatchdog(BrowserWatchdog):
             session_id=self._session_id,
             target_session_id=session_id if session_id != self._session_id else None,
         )
-        self._scope.emit(event)
-        await event
-        results = list(event.event_results.values())
+        await dispatch_request(self._scope, event, receiver="browser.javascript")
+        results = [
+            result
+            for result in event.results.values()
+            if result.participation is Participation.HANDLER
+            and result.receiver_key == "browser.javascript"
+        ]
         if len(results) != 1:
             raise RuntimeError(f"JS execution expected one handler, got {len(results)}")
         result = results[0]

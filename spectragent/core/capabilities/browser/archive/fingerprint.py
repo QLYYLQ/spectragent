@@ -135,8 +135,14 @@ class BrowserFingerprint:
         browser_defaults: BrowserDefaults | None = None,
         input_platform: InputPlatform | None = None,
         timeout: float = 1.0,
+        include_unchanged: bool = False,
     ) -> ArchiveFile | None:
-        """The fingerprint as a run record, or ``None`` when it did not change."""
+        """The run record, repeated when a batch needs its own environment identity.
+
+        A prior collection may never have been committed. A nonempty evidence
+        batch therefore requests its fingerprint again; persisted deduplication
+        belongs to the recorder/WAL, which knows what actually committed.
+        """
         document = await self.measure(
             recorder=recorder,
             tabs=tabs,
@@ -151,7 +157,7 @@ class BrowserFingerprint:
             timeout=timeout,
         )
         data = canonical_json(document)
-        if data == self._last:
+        if data == self._last and not include_unchanged:
             return None
         self._last = data
         return ArchiveFile(

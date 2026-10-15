@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
-    handler_error,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import SendKeysEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
@@ -48,11 +48,7 @@ class SendKeysAction(SettleableAction, ActionBase):
         try:
             scope = focused_scope(capability)
             event = SendKeysEvent(keys=params["keys"])
-            scope.emit(event)
-            await event
-            error = handler_error(event)
-            if error is not None:
-                return ActionResult(success=False, error=error)
+            await dispatch_request(scope, event)
             await self.settle()
             return ActionResult(success=True)
         except KeyError as exc:

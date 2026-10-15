@@ -12,13 +12,13 @@ the sessions:
   collected; it opens no capture channel that setup did not (the runtime
   binds before setup).
 - :meth:`BrowserArchiveRun.collect` is ``collect_archive`` after the
-  capability's liveness check: the channel barrier (every metadata event
+  capability's liveness check: the channel flush (every metadata event
   emitted so far was handled, or the collection fails), then each session in
   binding order, then the fingerprint run record. Every step is bounded; a
   step that cannot collect raises.
 """
 
-import logging
+import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -39,10 +39,8 @@ from spectragent.core.capabilities.browser.backends.browser_defaults import Brow
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.recorder import ArchiveChannel, ArchiveChannelError
 
-logger = logging.getLogger(__name__)
-
-#: Seconds the collection barrier may wait for the archive scope to drain.
-BARRIER_TIMEOUT_S = 5.0
+#: Seconds the collection flush may wait for the archive scope to drain.
+FLUSH_TIMEOUT_S = 5.0
 
 
 class BrowserArchiveRun:
@@ -64,6 +62,7 @@ class BrowserArchiveRun:
         #: Sessions unbound mid-run; closed with the run.
         self._retired: list[BrowserArchiveSession] = []
         self._errors_seen = 0
+        self._raw_failures: list[str] = []
         self._closed = False
 
     # ── binding ───────────────────────────────────────────────────────
@@ -109,6 +108,9 @@ class BrowserArchiveRun:
         """Commit a successful cycle's parked raw captures, with what the cycle knows (§4.12)."""
         if not self.wants("raw_dom"):
             return
+        if not parked:
+            self._raw_failures.append(f"cycle {cycle} of tab {tab!r} has no raw DOM capture")
+            return
         self.raw_captures.commit(
             RawCapture(
                 capture=item.capture,
@@ -136,7 +138,7 @@ class BrowserArchiveRun:
         browser_defaults: BrowserDefaults | None = None,
         input_platform: InputPlatform | None = None,
     ) -> ArchiveBatch:
-        """Barrier → each session in binding order → fingerprint → one batch.
+        """Flush → each session in binding order → fingerprint → one batch.
 
         *network_fingerprint* is the network source's block (``None``: live);
         *browser_defaults* what the capability measured right after launch.
@@ -144,7 +146,12 @@ class BrowserArchiveRun:
         ctx = self._ctx
         if ctx is None or not self._sessions:
             return ArchiveBatch()
-        await self.channel.barrier(timeout=BARRIER_TIMEOUT_S)
+        await self.channel.flush(timeout=FLUSH_TIMEOUT_S)
+        if self._raw_failures:
+            failures, self._raw_failures = self._raw_failures, []
+            raise ArchiveChannelError(
+                "raw DOM missing for committed cycles: " + "; ".join(failures)
+            )
         if self.channel.errors > self._errors_seen:
             failed = self.channel.errors - self._errors_seen
             self._errors_seen = self.channel.errors
@@ -167,20 +174,35 @@ class BrowserArchiveRun:
             network_fingerprint=network_fingerprint,
             browser_defaults=browser_defaults,
             input_platform=input_platform,
+            include_unchanged=bool(files),
         )
         if record is not None:
             files.append(record)
         return ArchiveBatch(tuple(files))
 
     async def aclose(self) -> None:
-        """Close every session, bound or retired. Idempotent."""
+        """Attempt every session; keep failed resources reachable for a retry."""
         if self._closed:
             return
-        self._closed = True
+        errors: list[BaseException] = []
+        unfinished: list[BrowserArchiveSession] = []
         for session in [*self.sessions, *self._retired]:
             try:
                 await session.aclose()
-            except Exception as exc:  # pragma: no cover — sessions close tolerantly
-                logger.warning("archive: closing %s failed: %s", type(session).__name__, exc)
+            except (Exception, asyncio.CancelledError) as exc:
+                exc.add_note(f"closing browser archive session {type(session).__name__}")
+                errors.append(exc)
+                unfinished.append(session)
         self._sessions.clear()
-        self._retired.clear()
+        self._retired = unfinished
+        self._closed = not unfinished
+        cancellation = next(
+            (error for error in errors if isinstance(error, asyncio.CancelledError)), None
+        )
+        if cancellation is not None:
+            for error in errors:
+                if error is not cancellation:
+                    cancellation.add_note(f"Archive cleanup also failed: {error!r}")
+            raise cancellation
+        if errors:
+            raise BaseExceptionGroup("Browser archive cleanup failed", errors)

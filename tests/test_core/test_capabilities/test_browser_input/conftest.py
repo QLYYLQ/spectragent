@@ -331,6 +331,7 @@ class RecordCDP:
         method: str,
         params: dict[str, Any] | None = None,
         session_id: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         self.calls.append((method, params or {}))
         if self._clock is not None and self._cost_ms:

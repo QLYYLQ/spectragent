@@ -99,7 +99,7 @@ async def _attach(cap: BrowserCapability, cdp: _CaptureCDP) -> ScopeGroup:
     cap._input_platform = "macos"  # This observation-only fixture starts after simulated setup.
     cap.apply_negotiation({"browser.screenshot"})
     group = ScopeGroup("test")
-    scope: EventScope = await group.create_scope("tab1", target_id="tab1")
+    scope: EventScope = await group.create_scope("tab1", metadata={"target_id": "tab1"})
     for wd in cap._create_watchdogs_for_scope(level="tab", cdp_session_id="sid1"):
         wd.attach(scope, session_id="sid1")
     cap._scopes["sid1"] = scope

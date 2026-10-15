@@ -61,6 +61,15 @@ class _FakeScope:
         self.emitted: list[Any] = []
         self.handlers: list[tuple[type, Any]] = []
         self._conns: list[_FakeConnection] = []
+        self.scope_id = "navigation-fixture"
+        self.close_callbacks: list[Any] = []
+
+    def add_close_callback(self, callback: Any) -> None:
+        self.close_callbacks.append(callback)
+
+    def remove_close_callback(self, callback: Any) -> None:
+        if callback in self.close_callbacks:
+            self.close_callbacks.remove(callback)
 
     def emit(self, event: Any) -> None:
         self.emitted.append(event)

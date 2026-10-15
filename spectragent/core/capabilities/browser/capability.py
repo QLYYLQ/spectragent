@@ -47,11 +47,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
 
-from agent_cdp import CDPEventBridge, EventScope, ScopeGroup
+from agent_cdp import CDPEventBridge, EventScope, Participation, ScopeGroup
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
@@ -123,7 +124,11 @@ from spectragent.core.capabilities.browser.dom.cleaning.skyvern import (  # noqa
 from spectragent.core.capabilities.browser.dom.cleaning.skyvern_hit_test import (  # noqa: F401 — registration
     SkyvernHitTestCleaner,
 )
-from spectragent.core.capabilities.browser.dom.models import DOMSelectorMap, TargetCapture
+from spectragent.core.capabilities.browser.dom.models import (
+    DOMElementNode,
+    DOMSelectorMap,
+    TargetCapture,
+)
 from spectragent.core.capabilities.browser.dom.serializers import (
     DOMSerializerProtocol,
     default_serializer,
@@ -185,6 +190,7 @@ from spectragent.core.capabilities.browser.replay.consistency import (
 )
 from spectragent.core.capabilities.browser.replay.server import ReplayContext, ReplayServer
 from spectragent.core.capabilities.browser.restoration import measure, retarget_action
+from spectragent.core.capabilities.browser.sessions import TabSessions
 from spectragent.core.capabilities.browser.settle import (
     DEFAULT_SETTLE_MAX_WAIT_S,
     DEFAULT_SETTLE_QUIET_MS,
@@ -358,6 +364,7 @@ class _ObserveCycleCache:
     #: Emptied when an attempt starts; committed to the archive only when the
     #: cycle succeeds, so the archive holds exactly what the agent was served.
     raw: list[ParkedRaw] = field(default_factory=list)
+    active_request_id: str | None = None
 
 
 def _build_wired_action(name: str) -> ActionBase:
@@ -926,6 +933,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._selector_maps = {}
         self._target_to_session = {}
         self._session_to_target = {}
+        self._tab_sessions = TabSessions()
         self._watchdogs = {}
         self._shared_watchdogs = []
         self._global_scope = None
@@ -999,6 +1007,16 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._actions_by_name = {a.action_id: a for a in resolved}
 
     # ── Properties ────────────────────────────────────────────────────
+
+    @property
+    def action_scope(self) -> EventScope:
+        """The focused tab's event endpoint, used by its browser actions."""
+        return self._scopes[self.default_session_id]
+
+    @property
+    def selector_map(self) -> Mapping[int, DOMElementNode]:
+        """Read-only indexed elements from the focused tab's latest observation."""
+        return MappingProxyType(self._selector_maps.get(self.default_session_id, {}))
 
     @property
     def dom_budget(self) -> DOMBudget:
@@ -1646,7 +1664,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # attaches: the ArchiveWatchdog (a shared watchdog, installed by
         # binding) must consume the archive scope from the recorder's first
         # event on, or the collection barrier counts those events as dropped.
-        self._global_scope = await self._scope_group.create_scope(_GLOBAL_SCOPE_ID)
+        self._global_scope = await self._scope_group.create_scope(
+            _GLOBAL_SCOPE_ID, max_history_size=0, metadata={"purpose": "browser"}
+        )
         self._attach_browser_level_watchdogs(self._global_scope)
         self._shared_watchdogs = self._create_watchdogs_for_scope(level="shared")
         for wd in self._shared_watchdogs:
@@ -1741,7 +1761,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         channel: ArchiveChannel | None = None
         if self._archivers:
             assert self._scope_group is not None
-            scope = await self._scope_group.create_scope(_ARCHIVE_SCOPE_ID)
+            scope = await self._scope_group.create_scope(
+                _ARCHIVE_SCOPE_ID,
+                queue_maxsize=65536,
+                max_history_size=0,
+                metadata={"purpose": "archive"},
+            )
             channel = ArchiveChannel(scope, self._recorder_participants)
             self._archive = BrowserArchiveRun(channel=channel, archivers=self._archivers)
         recorder = RecorderConnection(
@@ -1932,9 +1957,12 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         return sink
 
     def _park_self_capture(
-        self, sid: str, capture: TargetCapture, device_pixel_ratio: float
+        self, sid: str, capture: TargetCapture, device_pixel_ratio: float, request_id: str
     ) -> None:
-        """``browser.dom_raw``'s self-capture of tab *sid*, parked the same way."""
+        """Accept a self-capture only for the exact request that is still active."""
+        cache = self._cycle_cache.get(sid)
+        if cache is None or cache.active_request_id != request_id:
+            return
         self._park_raw(sid, capture, device_pixel_ratio, "archive")
 
     def _park_raw(
@@ -1951,127 +1979,146 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         cache.raw.append(ParkedRaw(capture, device_pixel_ratio, time.time(), source))
 
     def _recorder_lost(self, error: RecorderLostError) -> None:
-        """The recorder connection died on its own: fail closed, now.
-
-        Pushed by the recorder client's close callback. The capability stops
-        being alive, every command still waiting on the control connection
-        fails with the same error, and every later observation or action
-        raises it (:meth:`_ensure_recording`). A recording never continues
-        unrecorded; teardown still kills the browser, which is ours.
-        """
+        """Keep capture failure for archive health without poisoning control calls."""
         if self._recorder_error is None:
             self._recorder_error = error
-        self._alive = False
+        if self._recorder_runs_environment():
+            self._alive = False
         logger.error("BrowserCapability: %s", error)
-        if self._cdp is not None:
-            self._cdp.fail_pending(error)
+
+    def _recorder_runs_environment(self) -> bool:
+        plan = self._replay_plan
+        return self._replay_server is not None or (
+            plan is not None and bool(plan.frame_commands or plan.worker_commands)
+        )
 
     def _ensure_recording(self) -> None:
-        """Raise the recorder loss, if there was one."""
+        """Archive consumers see the original recording failure."""
         if self._recorder_error is not None:
             raise self._recorder_error
 
-    async def teardown(self) -> None:
-        """Tear down all scopes, close CDPClient, and release backend session.
+    def _ensure_environment(self) -> None:
+        """A lost replay server or target-configuration channel invalidates execution."""
+        if self._recorder_error is not None and self._recorder_runs_environment():
+            raise RuntimeError(
+                "Browser environment lost its recorder connection while enforcing "
+                f"replay or fixed target configuration: {self._recorder_error}"
+            ) from self._recorder_error
 
-        The recorder connection goes first, with its fixed cleanup order
-        (§4.14): a recorder that disconnects while still holding paused
-        targets or requests wedges the browser, so nothing below may run
-        before it has let go.
+    async def teardown(self) -> None:
+        """Attempt every owned resource, then report cleanup failures together.
+
+        Recorder cleanup precedes scopes and control transport. A user-supplied
+        CDP endpoint gives us no ownership of its process, profile or existing
+        tabs; only a ProviderSession opened by this capability is closed.
+        Incomplete scopes and failed resources remain reachable for retry.
         """
         self._alive = False
+        self._tab_sessions.clear()
+        errors: list[BaseException] = []
 
-        recorder, self._recorder = self._recorder, None
-        if recorder is not None:
+        def clean(label: str, close: Callable[[], Any]) -> bool:
             try:
-                await recorder.close()
-            except Exception as exc:  # pragma: no cover — close() is tolerant itself
-                logger.warning("Recorder close failed: %s", exc)
-        self._replay_plan = None
-        self._browser_defaults = None
-        self._input_platform = None
-        # The replay server after the recorder (which failed every request
-        # still held — never continued it): stop answering, drop its state.
-        server, self._replay_server = self._replay_server, None
-        self._diverged_seen = 0
-        if server is not None:
-            server.close()
-        # The archive sessions next (their scope closes with the scope group).
-        archive, self._archive = self._archive, None
-        if archive is not None:
-            await archive.aclose()
-
-        # The tab discovery's callbacks and the focus state go with the run.
-        self._stop_tab_discovery()
-
-        # Close all CDP→scope bridges BEFORE closing scope_group, so late
-        # CDP events don't try to dispatch into a half-torn-down scope.
-        for sid, bridge in list(self._bridges.items()):
-            try:
-                bridge.close()
+                close()
+                return True
             except Exception as exc:
-                logger.debug("Bridge close failed for %s: %s", sid, exc)
-        self._bridges.clear()
-        for feed in self._navigation_feeds.values():
-            feed.close()
-        self._navigation_feeds.clear()
+                exc.add_note(label)
+                errors.append(exc)
+                return False
 
-        # Watchdogs own bridges too (PopupsWatchdog, CrashWatchdog). Those
-        # live outside ``self._bridges``, so closing only the page-lifecycle
-        # bridges above left their callbacks bound to a scope that is about
-        # to close.
-        for wd_list in list(self._watchdogs.values()):
-            self._detach_watchdogs(wd_list)
-        self._detach_watchdogs(self._shared_watchdogs)
+        async def aclean(label: str, close: Callable[[], Awaitable[Any]]) -> bool:
+            try:
+                await close()
+                return True
+            except (Exception, asyncio.CancelledError) as exc:
+                exc.add_note(label)
+                errors.append(exc)
+                return False
 
+        if self._recorder is not None and await aclean("recorder close", self._recorder.close):
+            self._recorder = None
+        if self._replay_server is not None and clean(
+            "replay server close", self._replay_server.close
+        ):
+            self._replay_server = None
+        if self._archive is not None and await aclean("archive close", self._archive.aclose):
+            self._archive = None
+        clean("tab discovery close", self._stop_tab_discovery)
+        for sid, bridge in list(self._bridges.items()):
+            if clean(f"bridge close for {sid}", bridge.close):
+                self._bridges.pop(sid, None)
+        for sid, feed in list(self._navigation_feeds.items()):
+            if clean(f"navigation feed close for {sid}", feed.close):
+                self._navigation_feeds.pop(sid, None)
+
+        watchdogs = [wd for group in self._watchdogs.values() for wd in group]
+        for wd in [*watchdogs, *self._shared_watchdogs]:
+            for binding in wd.bindings:
+                clean(
+                    f"{type(wd).__name__} detach for {binding.scope.scope_id}",
+                    lambda wd=wd, binding=binding: wd.detach(binding.scope, binding.session_id),
+                )
         if self._scope_group is not None:
-            await self._scope_group.close_all()
-        self._scopes.clear()
-        self._js_scopes.clear()
+            await aclean("scope group close", self._scope_group.close_all)
+            if self._scope_group.scope_count:
+                errors.append(
+                    RuntimeError(f"Browser scopes remain unfinished: {self._scope_group.scope_ids}")
+                )
+            else:
+                self._scope_group = None
+
+        # Injected transports belong to their caller. Release the sessions
+        # this capability attached, without stopping that transport or tabs.
+        if self._cdp is not None and self._injected_client is not None:
+            control = self._cdp
+            for sid in tuple(self._session_to_target):
+                await aclean(
+                    f"control session detach for {sid}",
+                    lambda sid=sid: control.send("Target.detachFromTarget", {"sessionId": sid}),
+                )
+            self._cdp = None
+        elif self._cdp is not None and await aclean("control CDP close", self._cdp.stop):
+            self._cdp = None
+
+        backend = self.resolved_backend()
+        if self._session is not None and backend is not None:
+            session = self._session
+            if await aclean("provider session close", lambda: backend.close(session)):
+                self._session = None
+
+        self._scopes = {sid: scope for sid, scope in self._scopes.items() if not scope.is_closed}
+        self._js_scopes = {
+            sid: scope for sid, scope in self._js_scopes.items() if not scope.is_closed
+        }
+        self._watchdogs = {
+            key: [wd for wd in group if wd.bindings]
+            for key, group in self._watchdogs.items()
+            if any(wd.bindings for wd in group)
+        }
+        self._shared_watchdogs = [wd for wd in self._shared_watchdogs if wd.bindings]
         self._selector_maps.clear()
-        self._watchdogs.clear()
-        self._shared_watchdogs.clear()
         self._target_to_session.clear()
         self._session_to_target.clear()
         self._cycle_cache.clear()
         self._main_frame_ids.clear()
-        self._global_scope = None
+        if self._global_scope is not None and self._global_scope.is_closed:
+            self._global_scope = None
         self._default_session_id = None
-
-        if self._cdp is not None and self._injected_client is None:
-            await self._cdp.stop()
-        self._cdp = None
-        self._scope_group = None
-
-        # Release the backend session if we opened one in setup().
-        backend = self.resolved_backend()
-        if self._session is not None and backend is not None:
-            try:
-                await backend.close(self._session)
-            except Exception as exc:  # pragma: no cover — defensive
-                logger.warning(
-                    "Backend %s close() failed: %s",
-                    backend.provider_id,
-                    exc,
-                )
-        self._session = None
-
+        self._replay_plan = None
+        self._browser_defaults = None
+        self._input_platform = None
+        self._diverged_seen = 0
+        for error in errors:
+            if isinstance(error, asyncio.CancelledError):
+                for other in errors:
+                    if other is not error:
+                        error.add_note(f"Browser cleanup also failed: {other!r}")
+                raise error
+        if errors:
+            raise ExceptionGroup(
+                "Browser resource cleanup failed", [e for e in errors if isinstance(e, Exception)]
+            )
         logger.info("BrowserCapability teardown complete")
-
-    @staticmethod
-    def _detach_watchdogs(watchdogs: list[BrowserWatchdog]) -> None:
-        """Release CDP callbacks held by watchdogs that opened their own bridge.
-
-        ``detach()`` is part of :class:`BrowserWatchdog` (a no-op unless
-        the watchdog opened a ``CDPEventBridge``), so this calls it
-        unconditionally. It used to be probed for with ``getattr``
-        because agent-cdp's ``WatchdogProtocol`` only requires ``attach``.
-        """
-        for wd in watchdogs:
-            try:
-                wd.detach()
-            except Exception as exc:  # pragma: no cover — defensive
-                logger.debug("Watchdog %s detach failed: %s", type(wd).__name__, exc)
 
     async def execute_action(self, action: Action) -> ActionResult:
         """Run one of the agent's actions on the focused tab (:meth:`_run_action`).
@@ -2082,7 +2129,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         follow``). An action on a focused tab that has closed itself fails at
         once, naming the tab; the next observation moves the focus off it.
         """
-        self._ensure_recording()
+        self._ensure_environment()
         self._open_follow_window()
         closed = self._focused_tab_closed()
         if closed is not None:
@@ -2108,7 +2155,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         Setup opens the start page through here directly: not an action of
         the agent's, so no follow window.
         """
-        self._ensure_recording()
+        self._ensure_environment()
         sid = self._default_session_id
         if sid is None:
             return ActionResult(success=False, error="No active browser session")
@@ -2132,11 +2179,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         except RecorderLostError:
             raise
         except Exception as exc:
-            self._ensure_recording()
+            self._ensure_environment()
             logger.error("Action %s failed: %s", action.name, exc, exc_info=True)
             return ActionResult(success=False, error=str(exc))
-        # An action that completed while the recorder died acted unrecorded.
-        self._ensure_recording()
         return result
 
     async def begin_observation(self, cycle: int) -> None:
@@ -2148,12 +2193,10 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         is actually asked for, and a tab nobody observes this cycle is not
         scraped at all.
 
-        No CDP call. The one thing that can fail here is the recorder: once
-        its connection was lost, no observation of this run is served
-        (§4.14), and the environment treats the raise as this capability's
-        whole slice failing.
+        No CDP call. A recorder failure affects capture health; only a lost
+        replay or target-configuration channel invalidates the environment.
         """
-        self._ensure_recording()
+        self._ensure_environment()
         self._observation_cycle = cycle
 
     async def resolve_fragment(self, fragment_key: str) -> Any:
@@ -2298,7 +2341,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         cache = self._cycle_entry(sid)
         cache.fragments.update(outcome.fragments)
         cache.fired = True
-        if cache.raw and self._archive is not None:
+        if self._archive is not None:
             # Only a successful cycle's capture reaches the archive (§4.12).
             self._archive.commit_raw(
                 cache.raw,
@@ -2381,7 +2424,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             outcome = await self._fire_state_event(sid, scope, wanted)
             # A recorder lost during the capture: nothing of it is served,
             # and the error says why rather than "no watchdog produced …".
-            self._ensure_recording()
+            self._ensure_environment()
             if wanted <= outcome.fragments.keys():
                 if not documents_disagree(outcome.stamps):
                     for fragment in outcome.fragments.values():
@@ -2480,6 +2523,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         step and negotiation saved nothing.
         """
         event = BrowserStateRequestEvent(fragments=wanted)
+        self._cycle_entry(sid).active_request_id = event.event_id
 
         # Hide the debug-highlight overlay (cursor / click marker /
         # label) before the watchdogs scrape DOM + screenshot, so it
@@ -2492,7 +2536,21 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             await action_wd.set_overlay_visible(False)
         try:
             scope.emit(event)
-            await event
+            try:
+                await event.wait()
+            except TimeoutError:
+                unfinished_handlers = any(
+                    result.participation is Participation.HANDLER and not result.is_terminal
+                    for result in event.results.values()
+                )
+                event.cancel_execution(include_running=False)
+                if unfinished_handlers:
+                    raise
+                # Capture-only observers may time out independently. Their
+                # missing evidence is reported by archive completeness.
+            except asyncio.CancelledError:
+                event.cancel_execution(include_running=False)
+                raise
         finally:
             if action_wd is not None:
                 await action_wd.set_overlay_visible(True)
@@ -2500,9 +2558,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # Merge every responding watchdog's fragments. The capability has
         # no idea what any of them mean — that is the point.
         outcome = _StateEventOutcome()
-        for result_obj in event.event_results.values():
+        for result_obj in event.results.values():
+            if result_obj.participation is Participation.OBSERVER:
+                continue
             outcome.handler_count += 1
-            error = getattr(result_obj, "error", None)
+            error = result_obj.business_error or result_obj.error
             if error is not None:
                 outcome.errors.append(f"{result_obj.handler_name}: {error}")
             if result_obj.is_success and isinstance(result_obj.result, BrowserStateSummary):
@@ -2894,76 +2954,117 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     async def _release_closed_tabs(self) -> None:
         """Release what the capability holds for tabs the page closed — never the focused one.
 
-        Their two scopes stay open, idle, until teardown closes every scope:
-        closing a scope takes agent-cdp about 250 ms (measured), which would
-        land on the observation that noticed the tab was gone.
+        Closing idle agent-cdp scopes is immediate; their bindings must not
+        survive until the end of the run.
         """
         if self._tabs is None:
             return
         for target_id, sid in list(self._target_to_session.items()):
             if sid != self._default_session_id and self._tabs.is_closed(target_id):
-                await self._release_tab(sid, close_scopes=False)
+                await self._release_tab(sid)
 
     async def close_tab(self, session_id: str) -> None:
-        """Close a tab by its CDP session_id."""
+        """Close one requested tab, attempting target closure even if its bindings fail."""
         if session_id == self._default_session_id:
             raise ValueError(
                 "Cannot close the default session tab. "
                 "Create a new tab and reassign before closing."
             )
-        target_id = await self._release_tab(session_id)
+        target_id = self._session_to_target.get(session_id)
         if target_id is None:
             return
-
+        errors: list[BaseException] = []
+        try:
+            await self._release_tab(session_id)
+        except (Exception, asyncio.CancelledError) as exc:
+            errors.append(exc)
         if self._cdp is not None:
             try:
                 await self._cdp.send("Target.closeTarget", {"targetId": target_id})
-            except Exception as exc:
-                logger.debug("Failed to close target %s: %s", target_id, exc)
+            except (Exception, asyncio.CancelledError) as exc:
+                # Keep the identity needed for an explicit retry even if the
+                # scopes already closed. Session authority remains revoked.
+                self._session_to_target[session_id] = target_id
+                self._target_to_session[target_id] = session_id
+                errors.append(exc)
+        for error in errors:
+            if isinstance(error, asyncio.CancelledError):
+                for other in errors:
+                    if other is not error:
+                        error.add_note(f"Tab cleanup also failed: {other!r}")
+                raise error
+        if errors:
+            raise ExceptionGroup(
+                f"Tab {target_id!r} close failed", [e for e in errors if isinstance(e, Exception)]
+            )
 
-    async def _release_tab(self, session_id: str, *, close_scopes: bool = True) -> str | None:
-        """Release one adopted tab's bridges, feed, watchdogs and scopes; return its target id.
-
-        :meth:`close_tab` closes the tab afterwards; a tab the page closed
-        itself is only released (:meth:`_release_closed_tabs`), its scopes
-        left to teardown (*close_scopes* false).
-        """
+    async def _release_tab(self, session_id: str) -> str | None:
+        """Release only this tab's bindings and both scopes, even if cleanup fails."""
         target_id = self._session_to_target.get(session_id)
         if target_id is None:
             return None
-
-        # Close the CDP→scope bridge BEFORE the scope so late CDP events
-        # don't hit a half-torn-down scope.
-        bridge = self._bridges.pop(session_id, None)
+        errors: list[BaseException] = []
+        self._tab_sessions.unbind(session_id)
+        bridge = self._bridges.get(session_id)
         if bridge is not None:
             try:
                 bridge.close()
             except Exception as exc:
-                logger.debug("Bridge close failed for %s: %s", session_id, exc)
-        feed = self._navigation_feeds.pop(session_id, None)
+                errors.append(exc)
+            else:
+                self._bridges.pop(session_id, None)
+        feed = self._navigation_feeds.get(session_id)
         if feed is not None:
-            feed.close()
+            try:
+                feed.close()
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                self._navigation_feeds.pop(session_id, None)
+        scope = self._scopes.get(session_id)
+        if scope is not None:
+            for wd in [*self._watchdogs.get(target_id, []), *self._shared_watchdogs]:
+                try:
+                    wd.detach(scope, session_id)
+                except Exception as exc:
+                    errors.append(exc)
+        if self._scope_group is not None:
+            for scope_id in (target_id, f"{target_id}:js"):
+                if scope_id not in self._scope_group.scope_ids:
+                    continue
+                try:
+                    result = await self._scope_group.close_scope(scope_id)
+                    if not result.complete:
+                        errors.append(
+                            RuntimeError(f"Browser scope {scope_id!r} remains unfinished: {result}")
+                        )
+                except (Exception, asyncio.CancelledError) as exc:
+                    errors.append(exc)
 
-        # Same for the bridges the tab's own watchdogs opened.
-        self._detach_watchdogs(self._watchdogs.get(target_id, []))
-
-        # A shared watchdog may hold session ownership for this tab and its
-        # child targets. Revoke that authority before closing either scope.
-        for wd in self._shared_watchdogs:
-            wd.unbind_tab(session_id)
-
-        if self._scope_group is not None and close_scopes:
-            await self._scope_group.close_scope(target_id)
-            await self._scope_group.close_scope(f"{target_id}:js")
-
-        self._scopes.pop(session_id, None)
-        self._js_scopes.pop(session_id, None)
+        for scopes in (self._scopes, self._js_scopes):
+            bound_scope = scopes.get(session_id)
+            if bound_scope is not None and bound_scope.is_closed:
+                scopes.pop(session_id, None)
         self._selector_maps.pop(session_id, None)
-        self._watchdogs.pop(target_id, None)
-        self._target_to_session.pop(target_id, None)
-        self._session_to_target.pop(session_id, None)
+        remaining = [wd for wd in self._watchdogs.get(target_id, []) if wd.bindings]
+        if remaining:
+            self._watchdogs[target_id] = remaining
+        else:
+            self._watchdogs.pop(target_id, None)
         self._cycle_cache.pop(session_id, None)
         self._main_frame_ids.pop(session_id, None)
+        for error in errors:
+            if isinstance(error, asyncio.CancelledError):
+                for other in errors:
+                    if other is not error:
+                        error.add_note(f"Tab cleanup also failed: {other!r}")
+                raise error
+        if errors:
+            raise ExceptionGroup(
+                f"Tab {target_id!r} cleanup failed", [e for e in errors if isinstance(e, Exception)]
+            )
+        self._target_to_session.pop(target_id, None)
+        self._session_to_target.pop(session_id, None)
         return target_id
 
     async def _attach_tab(self, target_id: str, url: str = "") -> str:
@@ -3084,16 +3185,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # listens to it but runs its handler in the separate JS queue.
         scope = await self._scope_group.create_scope(
             target_id,
-            target_id=target_id,
-            url=url,
-            cdp_session_id=cdp_session_id,
+            max_history_size=0,
+            metadata={"target_id": target_id, "url": url, "cdp_session_id": cdp_session_id},
         )
         created_scope_ids.append(target_id)
         js_scope = await self._scope_group.create_scope(
             f"{target_id}:js",
-            target_id=target_id,
-            url=url,
-            cdp_session_id=cdp_session_id,
+            max_history_size=0,
+            metadata={"target_id": target_id, "url": url, "cdp_session_id": cdp_session_id},
         )
         created_scope_ids.append(f"{target_id}:js")
         self._js_scopes[cdp_session_id] = js_scope
@@ -3124,6 +3223,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 timestamp=p.get("timestamp"),
             ),
         )
+        self._tab_sessions.bind(cdp_session_id)
+
         # 7. Per-tab watchdogs.
         watchdogs = self._create_watchdogs_for_scope(
             level="tab",
@@ -3159,18 +3260,23 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 logger.debug("Attach rollback: bridge close failed for %s: %s", cdp_session_id, exc)
         feed = self._navigation_feeds.pop(cdp_session_id, None)
         if feed is not None:
-            feed.close()
+            try:
+                feed.close()
+            except Exception as exc:
+                logger.warning(
+                    "Attach rollback: navigation feed close failed for %s: %s", cdp_session_id, exc
+                )
 
-        for wd in self._watchdogs.pop(target_id, []):
-            try:
-                wd.detach()
-            except Exception as exc:
-                logger.debug("Attach rollback: watchdog detach failed for %s: %s", target_id, exc)
-        for wd in self._shared_watchdogs:
-            try:
-                wd.unbind_tab(cdp_session_id)
-            except Exception as exc:
-                logger.debug("Attach rollback: shared unbind failed for %s: %s", target_id, exc)
+        self._tab_sessions.unbind(cdp_session_id)
+        if self._scope_group is not None and target_id in self._scope_group.scope_ids:
+            scope = self._scope_group.get_scope(target_id)
+            for wd in [*self._watchdogs.pop(target_id, []), *self._shared_watchdogs]:
+                try:
+                    wd.detach(scope, cdp_session_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Attach rollback: watchdog detach failed for %s: %s", target_id, exc
+                    )
 
         if self._scope_group is not None:
             for scope_id in created_scope_ids:
@@ -3213,7 +3319,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             return {}
 
         def _selector_map_setter(selector_map: DOMSelectorMap) -> None:
-            if cdp_session_id is not None:
+            if cdp_session_id is not None and self._tab_sessions.owns(
+                cdp_session_id, cdp_session_id
+            ):
                 self._selector_maps[cdp_session_id] = selector_map
 
         # Per-tab main_frame_id getter — ``_on_navigate`` uses it to
@@ -3243,6 +3351,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,
             tabs_getter=self._get_tabs_safe,
+            target_sessions_getter=lambda: dict(self._session_to_target),
+            tab_sessions=self._tab_sessions,
             archive=self._recorder.channel if self._recorder is not None else None,
             # A real sink only when setup opened the raw-DOM channel (§4.12);
             # otherwise the default no-op, and the resolver never knows.

@@ -13,7 +13,7 @@ import logging
 from typing import ClassVar, NoReturn
 from urllib.parse import urlparse
 
-from agent_cdp import ConnectionType, EventScope
+from agent_cdp import ConnectionType, EventScope, Participation
 
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
@@ -53,12 +53,15 @@ class SecurityWatchdog(BrowserWatchdog):
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._scope = scope
         # High priority — runs before ActionWatchdog's navigation handler.
-        scope.connect(
+        connection = scope.connect(
             NavigateToUrlEvent,
             self._check_navigation,
             mode=ConnectionType.DIRECT,
             priority=100,
+            participation=Participation.OBSERVER,
         )
+
+        self.track_binding(scope, session_id, connections=[connection])
 
     def _check_navigation(self, event: NavigateToUrlEvent) -> None:
         """Block a navigation to a URL with no scheme, an unsafe scheme or a disallowed domain.

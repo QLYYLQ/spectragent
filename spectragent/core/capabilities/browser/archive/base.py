@@ -148,10 +148,10 @@ class RawCaptureStore:
         return len(self._committed)
 
 
-#: ``park_raw(control_session_id, capture, device_pixel_ratio)``: put a capture
+#: ``park_raw(control_session_id, capture, device_pixel_ratio, request_id)``: put a capture
 #: into that tab's current observe-cycle slot (committed only if the cycle
 #: succeeds).
-ParkRawCapture = Callable[[str, TargetCapture, float], None]
+ParkRawCapture = Callable[[str, TargetCapture, float, str], None]
 
 
 @dataclass(frozen=True)
@@ -164,7 +164,7 @@ class BrowserArchiveContext:
 
     #: The recorder connection (send per session, the target map, the version).
     recorder: RecorderHandle
-    #: The browser-level archive channel (scope, counters, barrier).
+    #: The browser-level archive channel (scope, counters, flush).
     channel: ArchiveChannel
     #: Committed raw DOM captures (drained by ``browser.dom_raw``).
     raw_captures: RawCaptureStore

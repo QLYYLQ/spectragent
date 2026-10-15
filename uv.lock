@@ -8,17 +8,18 @@ resolution-markers = [
 
 [[package]]
 name = "agent-cdp"
-version = "0.4.0"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "anyio" },
     { name = "conscribe" },
     { name = "orjson" },
     { name = "pydantic" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/93/70/3ea5e665bcaf95a0375e5aefe1e085a2bd60fce947726b623d338b112f92/agent_cdp-0.4.0.tar.gz", hash = "sha256:cd06b69f59852d13be1ab34c7ee83e6adf775a03c4bbfee7c429da4565231071", size = 43985, upload-time = "2026-03-21T21:57:11.913Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cb/5e/358c9c8bd9e0a1aca69e2ca35ba19421f2e9d372d13dd383f2ad871cd36c/agent_cdp-0.5.0.tar.gz", hash = "sha256:ad40535f7587ae7c53f2ad2ee226c4f19b84fc885cf50326c04ad111d1ecedf7", size = 73469, upload-time = "2026-10-15T10:57:20.944Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/ae/1f026008e961c2e8ac8732e16c4a5b91327aee06ce87aa35b3035143a11e/agent_cdp-0.4.0-py3-none-any.whl", hash = "sha256:29190ddf91d3f32e47ef4e7d3fd97d171cf808dc61197d149e68763fac61161f", size = 41415, upload-time = "2026-03-21T21:57:10.56Z" },
+    { url = "https://files.pythonhosted.org/packages/43/8a/26b8093d3c8c398a2b61b1d982ed33545a289c703ce49475e19e6cc005c8/agent_cdp-0.5.0-py3-none-any.whl", hash = "sha256:c36318120b3b3777b783cb923f77289049e93785fd4bfb62f50c9efaa9a188ef", size = 55958, upload-time = "2026-10-15T10:57:19.276Z" },
 ]
 
 [[package]]
@@ -1838,7 +1839,7 @@ learned-mouse = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-cdp", specifier = ">=0.4.0" },
+    { name = "agent-cdp", specifier = "==0.5.0" },
     { name = "agentbay-lite", specifier = ">=1.0.1" },
     { name = "airtop-lite" },
     { name = "anthropic", specifier = ">=0.76" },

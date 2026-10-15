@@ -565,7 +565,7 @@ class AgentRuntime:
         narrowed = wrapped_env.get_action_space(
             active_actions=negotiated_actions.active_actions
         )
-        active_descriptors, act_fn = build_guarded_act(
+        action_space, act_fn = build_guarded_act(
             wrapped_env.act, narrowed, action_filter,
         )
 
@@ -1599,10 +1599,10 @@ active_descriptors = [
     d for d in all_descriptors
     if d.name in negotiated_actions.active_actions
 ]
-active_descriptors, act_fn = build_guarded_act(
+action_space, act_fn = build_guarded_act(
     wrapped_env.act, active_descriptors, action_filter=None,
 )
-# active_descriptors 用于 prompt 构建，act_fn 是 guarded 的执行闭包
+# action_space.descriptors 的独立快照用于 prompt，act_fn 是 guarded 的执行闭包
 ```
 
 `build_guarded_act` 的闭包在每次调用时用 `resolve_action_name` 给 `action.name` 定名：在 active set 里就是它自己；短名经绑定表解析到仍在 active set 里的全限定名，就地改写；其余直接返回 `ActionResult(success=False, error=...)`，名字保持 agent 写的样子。
@@ -1610,6 +1610,8 @@ active_descriptors, act_fn = build_guarded_act(
 **结果：prompt 说有什么 action，实际就能用什么 action。配置错误在 `AgentRuntime._negotiate_actions` 阶段就会 raise `IncompatibleActionError`，而不是等到 LLM 第一次输出之后才暴露。**
 
 > **Historical note**：`action_filter` 作为顶层 YAML 键曾经是这里的主 ablation 机制。在对称协商方案下，ablation 的首选路径是 agent wiring 的 `required/optional` 二分 + capability 的 `actions` 列表收窄；`action_filter` 仅作为可选的额外 override 保留，不是主设计。
+
+**有效动作空间是实验身份。** `ActionSpace`（`schemas/action_space.py`）记录原始 `action_filter`（`None` 与 `[]` 严格区分）、经过协商和 capability 参数收窄后最终交给 prompt 的 `descriptors`、guard 允许的全限定 `allowed_actions` 和 `action_bindings`。`build_guarded_act` 返回这一个对象与执行闭包；prompt 与 guard 使用同一结果。Runtime 在准备阶段公开它，经运行开始合同交给记录组件，`TraceConfig.action_space` 与配置摘要纳入这份事实；来源 YAML 的身份单独保留。source 历史分叉比较这些真实约束，不能只比过滤前协商结果或因为字段缺失跳过校验。
 
 #### Function-Calling 集成
 
@@ -2090,6 +2092,14 @@ BrowserCapability.teardown()
 ├── close watchdogs / scopes / 控制 CDPClient
 └── if self._session is not None: await self.backend.close(self._session)
 ```
+
+**本地启动的资源所有权。** `local_chrome` 在业务 CDP 操作前验证本次 subprocess、连接端点、有效 profile 与 `ProviderSession` 是同一份启动事实。端口返回 `/json/version` 不是所有权证明：占用端口、子进程提前退出、profile 将启动转交旧进程、并发抢端口都必须明确失败。provider 核验实际 browser 进程身份，保留创建时的 process handle；关闭只终止该 handle 对应实例，不能按端口、进程名或复用 PID 猜所有权。失败、取消和正常结束均尝试回收本次拥有的进程与临时 profile，用户指定的持久 profile 从不删除。证明与资源账归本地 provider，不进入通用 Environment 协议。
+
+**外部端点是借用连接。** 显式 `cdp_url` 继续受支持；选了 `local_chrome` backend 不代表端点由它创建。没有本次 `ProviderSession` 就只释放 AF 的连接、scope、bridge 与订阅，不关整个浏览器、不杀外部进程、不删 profile、不批量关闭已有 tab。录制、pinned、archive replay 仍按 provider 能力与 setup 合同检查，不为外部端点伪造能力。共享 Chrome 的多 run BrowserContext 仍延期。
+
+**浏览器内部 agent-cdp 合同。** AF 使用已发布的 agent-cdp 0.5.0 公共接口，不保留旧版兼容分支。scope 是调度范围：tab 观测调用同 tab JS scope、共享 watchdog 按绑定服务多个 tab、当前 tab 的 OOPIF 映射均合法；跨 tab 或失效 session 的元素/JS 在派发前拒绝。watchdog 按 `(scope, session_id)` 绑定与解绑，关闭一个 tab 仅清它自己的连接、bridge、状态；迟到事件不能复活已关闭 tab。session-bound bridge 只认信封路由，需父 session 的工厂显式 `with_session=True`。tab/JS scope 不保留事件历史，避免 DOM/截图被历史引用。
+
+事件到方法的连接显式声明 handler/observer 参与与业务结果合同；动作要求实际执行者，日志、guard、expect 观察者不算执行者。`wait()` 只表示结算，动作成功还需 `raise_for_status()` 与 AF 结果校验；合法 `None` 必须由该动作合同明确允许，含 error 的结果明确失败。动作发起者退出等待时调用 `cancel_execution(include_running=False)` 撤销未开始的处理，普通等待者退出不撤销共享执行；已经开始的副作用不能声称回滚。关闭中一个资源失败也继续尝试其它资源，最后汇总清理失败。
 
 **`__wiring__["backend"]` 字段类型**：Mode 1 字符串（`"browser_provider"`），表示"任意已注册到这个 registry 的 provider"。如果某个 capability 想限制 backend 子集，可改 Mode 2/3 的 tuple 形式（如 `("browser_provider", ["local_chrome", "skyvern"])`）——conscribe 把 backend 字段约束为对应的 discriminated union 子集。
 
@@ -2626,7 +2636,7 @@ recorder 连接的 `CDPClient` 用 `compression=None`（websockets 默认与 Chr
 | recorder 的 Response 阶段 Fetch 在 site isolation **开着**时覆盖了 fixture 的全部请求：文档、子资源、302 跳转、带 body 的 POST、OOPIF 的文档（暂停在父页面 session）与子资源（iframe session）、dedicated worker 的请求（暂停在父页面 session）、SW 脚本与它的 fetch、控制连接接管之前的 `window.open` 弹窗 | 不用 `--disable-site-isolation-trials`（它还会改变 OOPIF 的观测）。原先要求加这个开关的那条规则已删除，待用户确认 |
 | 持有 browser 级 `waitForDebuggerOnStart` 的客户端**还连着却不再应答**（挂住的 recorder）时，已暂停的 target、Fetch 扣着的响应、**此后浏览器里的每一个新 target**（任何客户端、任何站点）都卡死；被暂停的 target 要等所有等待它的客户端都 resume 才运行，控制连接放不开 recorder 的暂停。socket 真正关闭（即使没做 CDP 清理），Chrome 就 detach 它的 session、新 target 照常运行（M29 复测；S1 记成"不干净的断开"的那次，其实是当时的 `CDPClient.stop()` 从未关闭 socket） | **fail closed**：存活靠推送，丢失即失败；接收循环自己出错时关闭 socket，不留一个不应答的客户端；teardown 先显式清理；只在 capability 自己拥有的浏览器上打开（`NETWORK_CAPTURE`，§4.9.x） |
 | 显式清理（关 auto-attach → 放行扣着的请求 → 每个 session `Fetch.disable` → `Target.detachFromTarget` → 关连接）之后，新 tab 正常加载 | teardown 的固定顺序；幂等；在建了一半的实例上也安全 |
-| agent-cdp 0.4.0 的 `PausedTarget` 模式 A 在 af 的 flatten 客户端上静默 resume 错 session | 只用模式 B：自带的 resume 回调，按 session 路由 `Runtime.runIfWaitingForDebugger` |
+| agent-cdp 0.5.0 的 `PausedTarget` 模式 A 按信封 session 正确恢复目标；旧版 browser 级命令会让目标继续暂停，没有恢复另一个 target | recorder 采用模式 B 保持整批准备先写出、再发 resume 的顺序；callback 收到 resume 应答后才清待恢复标记，失败保留供 cleanup 重试 |
 | browser 级 auto-attach 也接上 Chrome 内部 target（`browser_ui`、`background_page`、扩展的 `service_worker`）；同一个 SW 会被接上两次（browser 级、注册它的页面之下），而 SW 主脚本的请求**只**在页面之下那个 session 上被拦截（M29 实测：那个 session 没开 Fetch 或被 detach，主脚本就哪儿也不暂停） | 只准备 `page` / `iframe` / `worker` / `shared_worker` / `service_worker` 且 URL 不是 `chrome:` / `chrome-extension:` / `devtools:` 的 target，其余只 resume 再 detach；同一 target 的第二个 session **照样准备**，不丢；于是它的请求可能每个 session 各暂停一次，由贡献者按 target 与请求去重记录（`RecorderConnection.sessions_for_target`） |
 | 等待中、还没有页面进程的 target 只立即应答 Chrome 自己处理的命令（`Fetch.enable`、`Target.setAutoAttach`）；`Page.*`、`Emulation.*`、`Network.*`、`Runtime.*` 要等它 resume、第一个文档提交之后才按顺序应答，resume 自己的回复最后到；排着的命令却在那个文档的第一个脚本之前全部生效。这样的 target 是打不到 opener 的 tab（不带 `rel` 的 `target=_blank`（Chrome 88 起默认 noopener）、`rel=noopener`、`window.open(url, '_blank', 'noopener')`）和等待中的 SW；保留 opener 的弹窗先在 opener 的进程里有一个活的 `about:blank`，10–30 ms 内全部应答（2026-10-14 实测，Chrome 155：等 6 s 也只有那两条应答；文档晚 2 s 到，回复就晚 2 s；两个文档、dedicated worker、跨站 iframe 上 shim、时钟、种子、时区、语言、UA、减少动画、缓存禁用都在第一个脚本之前生效，录到的网络完整；探针在本地的 `tmp/flywheel/followup/newtab/`） | 等待中的 target：整批命令按序写出，紧接着写 `Runtime.runIfWaitingForDebugger`，之后才等回复，resume 的也在内（下面"逐 target 的准备流水线"第 3 步）；没有为 SW 单设的规则。以前先等回复（逐条 1 s）再 resume：每个打不到 opener 的 tab 白等 1 s、记 10 条假失败 |
 | `Target.createTarget{url}` 在 recorder attach 之前就发出了文档请求：Fetch 没扣住、Network 事件里没有，带着宿主机的 `Accept-Language`、默认 UA、没有 `no-cache`；页面一侧的设置只是碰巧赶上了解析器（2026-10-14 实测，Chrome 155） | capability 自己开的 tab 一律在 `about:blank` 建，recorder 准备好它（`RecorderConnection.wait_prepared`）之后再导航：`create_tab(url)`；setup 的初始 tab 本来就是已存在的或 `about:blank` 的 |
@@ -2639,12 +2649,12 @@ recorder 连接的 `CDPClient` 用 `compression=None`（websockets 默认与 Chr
 #### 所有权与存活
 
 - **只在自己的浏览器上**：需要 recorder 连接的配置要求 provider 声明 `NETWORK_CAPTURE`（§4.9.x）。显式 `cdp_url`、注入的控制客户端、六个云 lite provider，都在 `prepare()` 报错（`check_setup`；`bind_archivers` 绑定前再查与绑定有关的那部分，setup 启动前再查全部），点名双方，一次报全。云 provider 的录制可用性并入 lite SDK 审计，不在 v1。
-- **存活是推送的**：`CDPClient` 在接收循环的 `finally` 里调用关闭回调（`add_close_callback`，回调拿到原因；`stop()` 主动关闭不算丢失）。recorder 连接意外断开时，capability 立刻标记自己不存活，用点名 recorder 的 `RecorderLostError` 让控制连接上还在等待的命令失败（`CDPClient.fail_pending`）；`begin_observation`、`execute_action`、`collect_archive` 入口检查并抛同一个错误；进行中的一次采集或一个动作结束时也再查一次——recorder 在途中丢了，这次采集不交出、这个动作不算成功。录制永远不会在没有记录的情况下继续；浏览器是 capability 自己的，teardown 照常杀掉它。
+- **存活是推送的**：recorder 客户端丢失时保留原始 `RecorderLostError` 供 `collect_archive` 报告，普通录制不使控制连接的命令失败，也不改写正在完成的动作结果。recorder 同时承担 archive replay 或固定 target 配置时，下一次环境操作明确拒绝已失效的执行合同；这属于环境执行不可用，与单纯采集/落盘失败的记录健康分别表达。清理仍释放本次拥有的资源。
 - **控制连接永不设置 `waitForDebuggerOnStart: true`**（它的 iframe auto-attach 一直是 `false`），所以 recorder 是唯一需要 resume 的一方。
 
 #### setup 与 teardown
 
-setup：协作检查（`check_setup`，`prepare()` 查过的同一个函数，再查一遍）→ 回放时加载整个源归档（`open_replay`）→ `backend.open(launch_args=..., launch_env=...)`（只对声明了 `LAUNCH_ARGS` 的 provider）→ 控制连接 → 需要时建好 recorder 连接（还不 attach）：它的客户端、archive scope（`__archive__`，与 `__browser__` 平级，归 recorder 的生命周期）与 `ArchiveChannel`；绑定了归档器时，在第一个 tab 主 frame 的 isolated world 里量浏览器的默认时区与语言（任何 override 都还没到，`backends/browser_defaults.py`；回放时在这里与源 run 的比较，不同就拒绝，下面"一致性检查与回放指纹"）；档位要 client hints 时（pinned），在一个后台的临时 `chrome://version` tab 里读浏览器自己的 client hints（上面"`replayability`"）；`replayability` 的本 run 计划（计划用不了读到的 hints，或回放时与源 run 的不同，就在这里拒绝）、已绑定归档器的运行期会话（`archive/run.py` 的 `BrowserArchiveRun`）→ global scope 与 watchdog（ArchiveWatchdog 按绑定安装）→ `RecorderConnection.open()`：设 browser 级 auto-attach，等已存在的 target 准备完（ready barrier）→ 初始 tab → `start_url`。watchdog 在 `open()` **之前**：ArchiveWatchdog 必须从 recorder 的第一个事件起就消费 archive scope，因为 `open()` 期间已存在 target 的 attach 事件若没人接，收集屏障会把它们算成丢失（M29 实测：fake CDP 下第一次收集就以"dropped 1 of 5"失败）。
+setup：协作检查（`check_setup`，`prepare()` 查过的同一个函数，再查一遍）→ 回放时加载整个源归档（`open_replay`）→ `backend.open(launch_args=..., launch_env=...)`（只对声明了 `LAUNCH_ARGS` 的 provider）→ 控制连接 → 需要时建好 recorder 连接（还不 attach）：它的客户端、archive scope（`__archive__`，与 `__browser__` 平级，归 recorder 的生命周期）与 `ArchiveChannel`；绑定了归档器时，在第一个 tab 主 frame 的 isolated world 里量浏览器的默认时区与语言（任何 override 都还没到，`backends/browser_defaults.py`；回放时在这里与源 run 的比较，不同就拒绝，下面"一致性检查与回放指纹"）；档位要 client hints 时（pinned），在一个后台的临时 `chrome://version` tab 里读浏览器自己的 client hints（上面"`replayability`"）；`replayability` 的本 run 计划（计划用不了读到的 hints，或回放时与源 run 的不同，就在这里拒绝）、已绑定归档器的运行期会话（`archive/run.py` 的 `BrowserArchiveRun`）→ global scope 与 watchdog（ArchiveWatchdog 按绑定安装）→ `RecorderConnection.open()`：设 browser 级 auto-attach，等已存在的 target 准备完（ready barrier）→ 初始 tab → `start_url`。watchdog 在 `open()` **之前**：ArchiveWatchdog 必须从 recorder 的第一个事件起就消费 archive scope，因为 `open()` 期间已存在 target 的 attach 事件必须有实际接收者；缺少处理者是归档缺口，不能被成功 flush 掩盖。
 
 teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{autoAttach:false, waitForDebuggerOnStart:false}` → 继续所有还扣着的请求 → 每个 session `Fetch.disable` → `Target.detachFromTarget` → 停掉 recorder 客户端）→ 关闭归档会话与 archive scope → 原有的 bridge / watchdog / scope / 控制连接 → `backend.close()`。每一步都容错地往下走，第二次调用什么也不做。
 
@@ -2687,10 +2697,10 @@ teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{aut
 
 #### 事件：暂停的进 task，元数据进 scope，字节进侧存储
 
-- **暂停类事件**（`Fetch.requestPaused`、`waitingForDebugger` 的 `Target.attachedToTarget`）在 recorder 的回调里直接派生受跟踪的 task，**绝不进 scope 队列**：agent-cdp 的 scope 队列满 1024 时丢最新的事件，丢掉一个 `requestPaused`，页面就卡死。暂停的主人（Response 阶段是 `browser.network` 的会话）在超时之内读 body。超时是主人自报的预算（`pause_budget_s`，`browser.network` 是 `command_timeout_s + body_read_timeout_s`）再加 1 s；不报预算的主人用 recorder 的默认 15 s，旋钮因此不会被一个更短的全局上限悄悄截断；**continue 由 recorder 在 `finally` 里发**，不依赖主人记得。回放时规则相反（M30）：只要有一个贡献者声明 `serves_requests`（回放服务），recorder 对 Request 阶段任何没有被应答的暂停（主人超时、主人抛错、找不到主人、teardown 时还扣着的）一律发 `Fetch.failRequest{errorReason: "Failed"}`，**从不 continue**：今天唯一的回放服务属于 `archive` 网络来源，它不把请求放到线上（不同于 mitmproxy 的默认 `forward` 与 WARC-Bench 对 Sentry / Datadog 的 `route.continue()`）。这是 `archive` 来源自己的规则，不是框架的定律（下面"回放：网络来源与 miss 策略"）。主人自己发出 fulfill / fail 并成功之后才把 `PausedRequest.answered` 置位，所以发送失败的那个仍由 recorder 兜底失败。
+- **暂停类事件**（`Fetch.requestPaused`、`waitingForDebugger` 的 `Target.attachedToTarget`）在 recorder 的回调里直接派生受跟踪的 task，**绝不进 scope 队列**：普通 scope 队列有容量限制，拒收一个 `requestPaused` 就可能让页面卡住。暂停的主人（Response 阶段是 `browser.network` 的会话）在超时之内读 body。超时是主人自报的预算（`pause_budget_s`，`browser.network` 是 `command_timeout_s + body_read_timeout_s`）再加 1 s；不报预算的主人用 recorder 的默认 15 s，旋钮因此不会被一个更短的全局上限悄悄截断；**continue 由 recorder 在 `finally` 里发**，不依赖主人记得。回放时规则相反（M30）：只要有一个贡献者声明 `serves_requests`（回放服务），recorder 对 Request 阶段任何没有被应答的暂停（主人超时、主人抛错、找不到主人、teardown 时还扣着的）一律发 `Fetch.failRequest{errorReason: "Failed"}`，**从不 continue**：今天唯一的回放服务属于 `archive` 网络来源，它不把请求放到线上（不同于 mitmproxy 的默认 `forward` 与 WARC-Bench 对 Sentry / Datadog 的 `route.continue()`）。这是 `archive` 来源自己的规则，不是框架的定律（下面"回放：网络来源与 miss 策略"）。主人自己发出 fulfill / fail 并成功之后才把 `PausedRequest.answered` 置位，所以发送失败的那个仍由 recorder 兜底失败。
 - **元数据事件**：哪些 CDP 事件进 archive scope，由贡献者自己声明（`event_methods()`；`browser.network` 声明 `Network.*` 的请求 / 响应 / ExtraInfo / 结束 / 失败与 `webSocket*`），recorder 在 `open()` 时订阅当时贡献者声明的并集。和 Fetch pattern 一样，采什么在 recorder 打开时定下；它自己只认 target 的 attach / detach 簿记。recorder 模块里的本地分发器在客户端的接收循环里把每个原始事件交给声明了它的贡献者准入（`admit_event(method, params, session_id)`，同步）：贡献者返回要交给自己的小事件（带 session id），或 `None`；分发器在事件上记下它的 `consumer`，发进 archive scope。ArchiveWatchdog 在 scope 的循环里把准入的事件只交给准入它的那个贡献者（它可能指向那个贡献者的侧存储），target 簿记交给每个贡献者。准入时抛错与处理时抛错一样记进 `ArchiveChannel.errors`，下一次收集因此抛错。不用 `CDPEventBridge`：它的事件工厂拿不到 session id（让 agent-cdp 的 bridge 带上 session id 是以后的增强，M29 不给它打补丁）。
-- **字节从不随事件走**（scope 的历史保留最近 1000 个事件）：响应体、POST body、WebSocket 帧的内容、原始 DOM 采集放在会话自己的侧存储里。流式 body 的块（`Network.dataReceived` 的 `data`）在准入时直接追加进它所属的流，准入什么也不交出，块从不进 scope；Chrome 对每个请求都发 `dataReceived`（没开流的不带 `data`），不属于任何流的在准入时丢掉。准入就是分界：`browser.network` 的准入（`archive/network_model.py` 的 `admit_network_event`）把 `requestWillBeSent` 的 `postData` / `postDataEntries` 与帧的 `payloadData` 留在会话的侧存储里（按准入事件的 `event_id`，事件处理时取回），归档从不保存的值根本不进 scope：剥离的请求头只留名字、值置空（名字照样进台账），ExtraInfo 只留 `requestId`、`headers`（与 `statusCode`），`associatedCookies` / `blockedCookies` / `exemptedCookies` 都不带，响应里重复的原始请求头（`requestHeaders` / `requestHeadersText`）去掉。原始事件本身不被修改（多个贡献者共用它）。
-- **收集屏障**：`collect_archive` 先往 archive scope 发一个屏障事件并等它（`ArchiveChannel.barrier()`；应答它的排队处理器是 `ArchiveChannel` 自己挂的，所以屏障总排在之前的每个事件后面，不依赖谁在 scope 上监听）。队列是 FIFO，所以之前发出的元数据都已处理；分发器数着发出与处理的条数，对不上（队列丢过事件）就让这次收集抛错，归档不假装完整。
+- **字节从不随事件走**（archive scope 不保留事件历史）：响应体、POST body、WebSocket 帧的内容、原始 DOM 采集放在会话自己的侧存储里。流式 body 的块（`Network.dataReceived` 的 `data`）在准入时直接追加进它所属的流，准入什么也不交出，块从不进 scope；Chrome 对每个请求都发 `dataReceived`（没开流的不带 `data`），不属于任何流的在准入时丢掉。准入就是分界：`browser.network` 的准入（`archive/network_model.py` 的 `admit_network_event`）把 `requestWillBeSent` 的 `postData` / `postDataEntries` 与帧的 `payloadData` 留在会话的侧存储里（按准入事件的 `event_id`，事件处理时取回），归档从不保存的值根本不进 scope：剥离的请求头只留名字、值置空（名字照样进台账），ExtraInfo 只留 `requestId`、`headers`（与 `statusCode`），`associatedCookies` / `blockedCookies` / `exemptedCookies` 都不带，响应里重复的原始请求头（`requestHeaders` / `requestHeadersText`）去掉。原始事件本身不被修改（多个贡献者共用它）。
+- **收集前缀**：archive scope 显式配置 `queue_maxsize=65536`、`max_history_size=0`，业务标签通过 `metadata` 传入，未知参数直接拒绝。`ArchiveChannel.flush()` 使用 agent-cdp 原生 `scope.flush()` 固定已接收前缀，不发占队列名额的空事件。公开 `scope.stats` 与 flush 的逐投递结果区分完成、失败、取消、拒收、未完成；同时核对 AF 实际发出/处理的元数据与原始 DOM 轮次，收集失败不能伪装成成功空归档。它只报告记录健康/缺口，不把采集或落盘故障写成动作失败。
 
 #### override 的所有者
 
@@ -2788,7 +2798,7 @@ class ReplayabilityProtocol(Protocol):
 - **WebSocket**：握手记成一条交换（`body_status: websocket`），帧写进本步的 `websocket.jsonl`（方向、opcode、时间、内容）。
 - **304 永远不覆盖 200**：304 原样记录（空 body）；回放只把它当作带条件头（`If-None-Match` / `If-Modified-Since`）的请求的候选，从不拿它顶替 200（M30）。
 - **Range**：206 按收到的样子记录：部分 body、`Content-Range` 原样保留、索引里解析出 `content_range`；超过内联上限的 206 与别的 body 一样边下边收。从不为 206 另取整个资源；回放用全部 206 记录拼出每个 URL 的字节区间，没覆盖的区间是 miss。
-- **格式**：每步一个 WARC/1.1 `exchanges.warc.gz`（warcio，核心依赖，Apache-2.0；每条记录一个 gzip member）。request 与 response 记录以 `WARC-Concurrent-To` 关联；body 存解码后的字节，HTTP 头里去掉 `Content-Encoding` / `Transfer-Encoding`、按解码长度写 `Content-Length`（原值记在索引里）；同一 run 里重复的 payload 写成 `revisit` 记录（`identical-payload-digest`，指向第一次的 response 记录）。另配一个步索引 `index.jsonl`：
+- **格式**：每步一个 WARC/1.1 `exchanges.warc.gz`（warcio，核心依赖，Apache-2.0；每条记录一个 gzip member）。request 与 response 记录以 `WARC-Concurrent-To` 关联；body 存解码后的字节，HTTP 头里去掉 `Content-Encoding` / `Transfer-Encoding`、按解码长度写 `Content-Length`（原值记在索引里）；同一收集批次里重复的 payload 写成 `revisit` 记录（`identical-payload-digest`，指向第一次的 response 记录）。另配一个步索引 `index.jsonl`：
   - `kind: exchange`：每个交换恰好一次，在它定下来的那次收集里。字段：`record_id`、`response_record_id`、两条 WARC 记录的 `offset` / `length`、`redirected_from`、method、url、status、resourceType、frameId、loaderId、session / target、initiator、时间、**原始请求事实**（剥离后的请求头、POST body 的 sha256 与长度、content-type；脱敏后的 body 在 WARC 的 request 记录里）、`payload_sha256`、`revisit_of`、`content_range`、`body_status`（`ok` / `redirect` / `too_large` / `streamed_later` / `websocket` / `incomplete`）、脱敏台账。
   - **不写规范匹配键**：匹配键由 M30 在加载时用唯一的规范化实现从原始事实算出，规则变了也没有过期的键。
   - `kind: body`：一个 `streamed_later` 的 body 流完（它的请求结束时），指回 `record_id`：`ok` 带 `payload_sha256` / `payload_length`（body 是那个内容寻址的 blob），否则 `incomplete` / `too_large` 带 `note`。
@@ -2799,6 +2809,8 @@ class ReplayabilityProtocol(Protocol):
 - `require_replayable: bool = True`：与 `replayability: none` 一起绑定 → `prepare()` 报错（`check_setup`；`bind_archivers` 与 setup 再查一遍），点名归档器与档位。
 - **只录线上流量**：`browser.network` 永远是"录流量"（用户 2026-10-13 的裁决），不随网络来源换意思。回放（`network_source: archive`）没有自己的线上流量，送出的每个字节都已经在源归档里，所以绑定它被协作检查拒绝（按 `fetch_response` 需求，`prepare()` 就报），报错点名回放要绑定的 `browser.replay_log`（下面）。
 - 其他旋钮：`strip_request_headers`（大小写不敏感，追加在默认三个之后）、`max_post_data_size`、`allow_session_state`。原先补取大 body 的上限 `max_streamed_body_bytes` 与补取本身（`Network.loadNetworkResource` 再下载一遍，只对静态 GET）一起删掉：边下边收覆盖所有类型，64 MiB 以上一律 `too_large`。
+
+**WARC 引用限于一次交出批次。** 相同 payload 的 revisit 只引用同一 collection 的 response；每次 collection 建独立 payload 索引。记录组件可能丢失某一批后继续运行，后续批次不能依赖它未提交的 WARC。跨批内容寻址 blob 的持久化去重仍由 WAL 对已提交内容负责，归档器不维护第二份提交账。有步级证据的每批同时交出当前环境指纹，即使内容未变；WAL 对已提交的 run 记录去重。空且未变化的收集仍为空。流式 body 后到而原 exchange 未提交时，读侧明确拒绝缺失关联，不补造完整交换。
 
 #### `browser.storage`
 
@@ -2976,7 +2988,7 @@ class ArchiveReader(Protocol):
 
 **加载（`archive_index.py`，setup 时、启动浏览器之前）**：`ArchiveNetworkSource.open_replay(reader) -> RecordedArchive`：源 run 的环境指纹（`archive_run_file("browser")`，连同它的 sha256）、`browser.network` 的每一份 `index.jsonl`（步与 trailing，`archive_lines`）与它们的 WARC、站点规则。索引只有原始请求事实（M29），**匹配键在加载时用唯一的规范化实现重算**，规则改了也没有过期的键。每条可服务的记录带 `run_id`（源 run），按录制顺序编号（请求开始的墙钟时间 `started_at`，同时间按索引行的顺序；没有开始时间的（只留下 `pending` 行的）排在最后）。同一次提交的 `index.jsonl` 与 `exchanges.warc.gz` 按 `iter_archive` 的迭代结构配对（同一次提交的文件连续给出、名字不重复），不看路径：
 
-- `ok` / `redirect`：response（或 revisit）记录在同一步的 `exchanges.warc.gz` 里（索引给 offset / length）；revisit 的 payload 按 `revisit_of`（第一条 response 的 `WARC-Record-ID`，可能在更早一步的 WARC 里）取，HTTP 头仍用 revisit 自己的。WARC 里存的是解码后的 body，响应头已去掉 CE / TE、`Content-Length` 是解码长度。
+- `ok` / `redirect`：response（或 revisit）记录在同一步的 `exchanges.warc.gz` 里（索引给 offset / length）；revisit 的 payload 按 `revisit_of`（第一条 response 的 `WARC-Record-ID`，位于同一收集批次的 WARC 里）取，HTTP 头仍用 revisit 自己的。WARC 里存的是解码后的 body，响应头已去掉 CE / TE、`Content-Length` 是解码长度。
 - `streamed_later`：只有 request 记录，状态与响应头在索引行里；body 是之后某次收集的 `kind: body` 行指向的内容寻址 blob（`blob(payload_sha256)`）。没有 `ok` 的 body 行就按 `body_unavailable` 处理。
 - `too_large`、`incomplete`、最后一行是 `pending` 的：有记录、没有 body，命中它们按 miss 处理（原因 `too_large` / `body_unavailable`）。`websocket` 的握手从不当作候选（WebSocket 不经 Fetch 暂停）。
 - 206（`content_range`）：同一 URL 的全部 206 记录与 200 记录拼成字节区间图；304 只给带条件头的请求当候选。

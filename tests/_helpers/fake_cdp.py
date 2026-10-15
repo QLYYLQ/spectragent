@@ -15,7 +15,7 @@ It models the session facts the recorder depends on (measured, ``docs/architectu
 - a target created later is attached to every client with auto-attach on,
   ``waitingForDebugger: true`` for those that asked to wait;
 - ``Runtime.runIfWaitingForDebugger`` must arrive on the target's own
-  session (a session-less one — PausedTarget mode A — resumes nothing);
+  session (a browser-level command with sessionId only in params resumes nothing);
 - a target without a page process (:attr:`FakeTarget.page_process`: a tab
   its opener cannot reach, a waiting service worker — the default for
   service workers) answers ``Page.*``, ``Emulation.*``, ``Network.*`` and
@@ -221,7 +221,6 @@ class FakeClient:
         method: str,
         params: dict[str, Any] | None = None,
         session_id: str | None = None,
-        *,
         timeout: float | None = None,
     ) -> Any:
         reply = await self._write(method, params, session_id, timeout)

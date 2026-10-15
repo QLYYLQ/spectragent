@@ -2,7 +2,7 @@
 
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from spectragent.schemas.action import ActionDescriptor
 
@@ -22,6 +22,11 @@ class ActionSpace(BaseModel):
     descriptors: list[ActionDescriptor] = Field(default_factory=list)
     allowed_actions: frozenset[str] = frozenset()
     action_bindings: dict[str, str] = Field(default_factory=dict)
+
+    @field_serializer("allowed_actions")
+    def serialize_allowed_actions(self, value: frozenset[str]) -> list[str]:
+        """Set membership has a deterministic representation in experiment hashes."""
+        return sorted(value)
 
     @model_validator(mode="after")
     def validate_prompt_and_guard(self) -> Self:

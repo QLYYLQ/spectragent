@@ -90,6 +90,16 @@ def _js_request(session_id: str, expression: str = "document.title") -> ExecuteJ
     )
 
 
+def _fresh_js(event: ExecuteJavaScriptEvent) -> ExecuteJavaScriptEvent:
+    return ExecuteJavaScriptEvent(
+        method=event.method,
+        params=dict(event.params),
+        session_id=event.session_id,
+        target_session_id=event.target_session_id,
+        event_timeout=event.event_timeout,
+    )
+
+
 async def test_queued_observation_can_await_js_on_another_scope() -> None:
     cdp = _CDP()
     group = ScopeGroup("test-js")
@@ -125,7 +135,8 @@ async def test_shared_js_watchdog_routes_two_tabs_and_rejects_wrong_session() ->
     obs_b = await group.create_scope("b-observation")
     js_b = await group.create_scope("b-js")
     watchdog = JavaScriptExecutionWatchdog(cdp)  # type: ignore[arg-type]
-    watchdog.attach(obs_a)
+    global_scope = await group.create_scope("browser")
+    watchdog.attach(global_scope)
     watchdog.bind_tab_scopes(obs_a, js_a, session_id="sid-a")
     watchdog.bind_tab_scopes(obs_b, js_b, session_id="sid-b")
 
@@ -138,38 +149,38 @@ async def test_shared_js_watchdog_routes_two_tabs_and_rejects_wrong_session() ->
         frame_request = _js_request("sid-a", "frame")
         frame_request.target_session_id = "iframe-a"
         with pytest.raises(HandlerError, match="does not belong"):
-            await event_result(obs_a.emit(frame_request))
+            await event_result(obs_a.emit(_fresh_js(frame_request)))
         assert not any(params.get("expression") == "frame" for _, params, _ in cdp.sent)
 
         _attach_frame(cdp, "iframe-a", "unknown-parent")
         _attach_frame(cdp, "iframe-a", "sid-a", target_type="page")
         with pytest.raises(HandlerError, match="does not belong"):
-            await event_result(obs_a.emit(frame_request))
+            await event_result(obs_a.emit(_fresh_js(frame_request)))
 
         _attach_frame(cdp, "iframe-a", "sid-a")
         _attach_frame(cdp, "nested-a", "iframe-a")
         _attach_frame(cdp, "iframe-b", "sid-b")
-        assert await event_result(obs_a.emit(frame_request)) == {
+        assert await event_result(obs_a.emit(_fresh_js(frame_request))) == {
             "result": {"type": "string", "value": "iframe-a:frame"}
         }
         nested_request = _js_request("sid-a", "nested")
         nested_request.target_session_id = "nested-a"
-        assert await event_result(obs_a.emit(nested_request)) == {
+        assert await event_result(obs_a.emit(_fresh_js(nested_request))) == {
             "result": {"type": "string", "value": "nested-a:nested"}
         }
 
         cross_tab_request = _js_request("sid-a", "cross-tab")
         cross_tab_request.target_session_id = "iframe-b"
         with pytest.raises(HandlerError, match="does not belong"):
-            await event_result(obs_a.emit(cross_tab_request))
+            await event_result(obs_a.emit(_fresh_js(cross_tab_request)))
         cross_tab_request.target_session_id = "sid-b"
         with pytest.raises(HandlerError, match="does not belong"):
-            await event_result(obs_a.emit(cross_tab_request))
+            await event_result(obs_a.emit(_fresh_js(cross_tab_request)))
         assert not any(params.get("expression") == "cross-tab" for _, params, _ in cdp.sent)
 
         cdp.fire("Target.detachedFromTarget", {"sessionId": "iframe-a"}, "sid-a")
         with pytest.raises(HandlerError, match="does not belong"):
-            await event_result(obs_a.emit(nested_request))
+            await event_result(obs_a.emit(_fresh_js(nested_request)))
 
         with pytest.raises(HandlerError, match="session mismatch"):
             await event_result(obs_a.emit(_js_request("sid-b", "wrong")))
@@ -177,12 +188,11 @@ async def test_shared_js_watchdog_routes_two_tabs_and_rejects_wrong_session() ->
 
         await group.close_scope("a-observation")
         await group.close_scope("a-js")
-        watchdog.unbind_tab("sid-a")
         assert await event_result(obs_b.emit(_js_request("sid-b", "still-live"))) == {
             "result": {"type": "string", "value": "sid-b:still-live"}
         }
     finally:
-        watchdog.detach()
+        watchdog.detach(global_scope)
         await group.close_all()
 
     assert not any(cdp.callbacks.values())
@@ -296,7 +306,7 @@ async def test_failed_tab_attach_rolls_back_every_scope_and_can_retry(
         assert "b" not in cap._watchdogs
         assert "b" not in cap._target_to_session
         assert "sid-b" not in cap._session_to_target
-        assert "sid-b" not in js_watchdog._tabs
+        assert not cap._tab_sessions.owns("sid-b", "sid-b")
         assert {name: len(callbacks) for name, callbacks in cdp.callbacks.items()} == (
             before_callbacks
         )

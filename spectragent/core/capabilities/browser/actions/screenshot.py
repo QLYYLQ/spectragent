@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+from agent_cdp import Participation
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
@@ -34,6 +35,7 @@ from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
 )
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ScreenshotRequestEvent,
 )
@@ -138,12 +140,16 @@ class ScreenshotAction(ActionBase):
                 format=fmt,
                 quality=quality_int,
             )
-            scope.emit(event)
-            await event
+            await dispatch_request(scope, event)
 
             png_bytes: bytes | None = None
-            for r in event.event_results.values():
-                if r.is_success and isinstance(r.result, (bytes, bytearray)):
+            for r in event.results.values():
+                if (
+                    r.is_success
+                    and r.participation is Participation.HANDLER
+                    and r.receiver_key == "browser.action"
+                    and isinstance(r.result, (bytes, bytearray))
+                ):
                     png_bytes = bytes(r.result)
                     break
             if png_bytes is None:

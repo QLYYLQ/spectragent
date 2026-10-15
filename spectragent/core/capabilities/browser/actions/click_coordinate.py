@@ -11,9 +11,9 @@ from pydantic import Field as PydanticField
 from spectragent.core.actions._registrar import ActionBase
 from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
-    handler_error,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import (
     ClickCoordinateEvent,
 )
@@ -64,13 +64,9 @@ class ClickCoordinateAction(SettleableAction, ActionBase):
                 coordinate_x=int(params["coordinate_x"]),
                 coordinate_y=int(params["coordinate_y"]),
             )
-            scope.emit(event)
-            await event
+            await dispatch_request(scope, event)
             # The handler answers with an ``error`` when the mouse input was not
             # sent: the click never happened, so the action failed.
-            error = handler_error(event)
-            if error is not None:
-                return ActionResult(success=False, error=error)
             await self.settle()
             return ActionResult(success=True)
         except KeyError as exc:

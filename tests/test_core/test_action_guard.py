@@ -1,7 +1,5 @@
 """Tests for build_guarded_act — prompt-capability consistency guarantee."""
 
-import asyncio
-
 import pytest
 
 from spectragent.core.action_guard import build_guarded_act, resolve_action_name
@@ -24,17 +22,17 @@ class TestGuardedAct:
         filtered, _ = build_guarded_act(_mock_act, _DESCRIPTORS)
         assert len(filtered.descriptors) == 3
 
-    def test_valid_action_passes(self) -> None:
+    async def test_valid_action_passes(self) -> None:
         _, guard = build_guarded_act(_mock_act, _DESCRIPTORS)
-        result = asyncio.run(guard(Action(name="click")))
+        result = await guard(Action(name="click"))
         assert result.success
         assert result.extracted_content == "click"
 
-    def test_invalid_action_rejected(self) -> None:
+    async def test_invalid_action_rejected(self) -> None:
         _, guard = build_guarded_act(_mock_act, _DESCRIPTORS)
-        result = asyncio.run(guard(Action(name="invalid")))
+        result = await guard(Action(name="invalid"))
         assert not result.success
-        assert "invalid" in result.error
+        assert result.error is not None and "invalid" in result.error
 
     def test_filter_narrows_set(self) -> None:
         filtered, _ = build_guarded_act(
@@ -44,13 +42,13 @@ class TestGuardedAct:
         )
         assert {d.name for d in filtered.descriptors} == {"click", "done"}
 
-    def test_filter_rejects_excluded(self) -> None:
+    async def test_filter_rejects_excluded(self) -> None:
         _, guard = build_guarded_act(
             _mock_act,
             _DESCRIPTORS,
             action_filter=["click"],
         )
-        result = asyncio.run(guard(Action(name="type")))
+        result = await guard(Action(name="type"))
         assert not result.success
 
     def test_empty_filter_returns_empty(self) -> None:
@@ -58,7 +56,9 @@ class TestGuardedAct:
         assert len(filtered.descriptors) == 0
 
     @pytest.mark.parametrize("selection", [None, [], ["click"]])
-    async def test_recorded_space_matches_prompt_and_execution(self, selection) -> None:
+    async def test_recorded_space_matches_prompt_and_execution(
+        self, selection: list[str] | None
+    ) -> None:
         space, guard = build_guarded_act(_mock_act, _DESCRIPTORS, action_filter=selection)
         restored = ActionSpace.model_validate_json(space.model_dump_json())
         assert restored.action_filter == selection
@@ -74,6 +74,19 @@ class TestGuardedAct:
         bindings.clear()
         assert space.action_filter == ["click"]
         assert space.action_bindings == {"alias": "click"}
+
+    async def test_public_snapshot_mutation_cannot_change_guard_execution(self) -> None:
+        space, guard = build_guarded_act(
+            _mock_act, _DESCRIPTORS, ["click"], bindings={"alias": "click"}
+        )
+        space.action_bindings["alias"] = "done"
+        space.descriptors.clear()
+        assert (await guard(Action(name="alias"))).extracted_content == "click"
+        assert not (await guard(Action(name="done"))).success
+
+    def test_serialized_allowed_names_have_stable_order(self) -> None:
+        space, _ = build_guarded_act(_mock_act, list(reversed(_DESCRIPTORS)))
+        assert space.model_dump(mode="json")["allowed_actions"] == ["click", "done", "type"]
 
     def test_mismatched_recorded_prompt_and_guard_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="must agree"):

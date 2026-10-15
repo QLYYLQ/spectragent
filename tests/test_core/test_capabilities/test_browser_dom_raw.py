@@ -11,6 +11,7 @@ observation back.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -138,7 +139,7 @@ class TestTheSinkPath:
                 (watchdog,) = [
                     w for w in cap._shared_watchdogs if type(w).__name__ == "ArchiveWatchdog"
                 ]
-                return len(watchdog._tab_connections)  # type: ignore[attr-defined]
+                return sum(binding.session_id is not None for binding in watchdog.bindings)
             finally:
                 await cap.teardown()
 
@@ -157,6 +158,38 @@ class TestTheSinkPath:
 
 
 class TestTheVisionSelfCapture:
+    async def test_cancelled_self_capture_leaves_a_visible_gap(self) -> None:
+        from spectragent.core.capabilities.browser.recorder import CycleRequest
+        from tests._helpers.archive_recorder import ScriptedRecorder, scripted_context
+
+        recorder = ScriptedRecorder()
+        recorder.add_target("recorder-session", "tab")
+        recorder.holds["DOM.getDocument"] = asyncio.Event()
+        session = DomRawArchiver().open(scripted_context(recorder, fragments=frozenset()))
+        capturing = asyncio.create_task(session.on_cycle(CycleRequest("tab", "control")))
+        await asyncio.sleep(0)
+        capturing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await capturing
+        with pytest.raises(RuntimeError, match="self-capture.*cancelled"):
+            await session.collect()
+
+    async def test_late_self_capture_does_not_enter_a_new_observation(self) -> None:
+        cap, driver = await _dom_raw_capability(fragments=frozenset({"browser.screenshot"}))
+        await driver.start()
+        try:
+            await cap.begin_observation(1)
+            cache = cap._cycle_entry(cap.default_session_id)
+            cache.active_request_id = "current-request"
+            cap._park_self_capture(
+                cap.default_session_id, reference_page(), 1.0, "previous-request"
+            )
+            assert cache.raw == []
+            cap._park_self_capture(cap.default_session_id, reference_page(), 1.0, "current-request")
+            assert len(cache.raw) == 1
+        finally:
+            await cap.teardown()
+
     async def test_a_vision_only_cycle_self_captures_on_the_recorder(self) -> None:
         cap, driver = await _dom_raw_capability(fragments=frozenset({"browser.screenshot"}))
         await driver.start()

@@ -6,7 +6,7 @@ with their session ids, into one **browser-level** archive ``EventScope``.
 This watchdog is what drains it: in the scope's own loop it hands every
 :class:`RecorderEvent` to the participant that admitted it — target
 bookkeeping to every bound archiver's session — and counts it as handled, so
-the channel's barrier can tell a dropped event from a quiet browser.
+the channel's flush can tell a dropped event from a quiet browser.
 
 It provides no fragment (precedent: ``JavaScriptExecutionWatchdog``) and is
 installed **by binding, not by profile**: :meth:`should_install` answers
@@ -27,9 +27,9 @@ there is no per-tab archive scope.
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from typing import ClassVar
 
-from agent_cdp import ConnectionType, EventScope
+from agent_cdp import ConnectionType, EventScope, Participation, ResultContract
 
 from spectragent.core.capabilities.browser.recorder import (
     ArchiveChannel,
@@ -54,8 +54,6 @@ class ArchiveWatchdog(BrowserWatchdog):
 
     def __init__(self, channel: ArchiveChannel | None) -> None:
         self._channel = channel
-        self._connections: list[Any] = []
-        self._tab_connections: dict[str, Any] = {}
 
     @classmethod
     def should_install(cls, ctx: WatchdogContext) -> bool:
@@ -67,11 +65,17 @@ class ArchiveWatchdog(BrowserWatchdog):
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         """Listen on the archive scope (not the global scope it is handed)."""
-        if self._channel is None or self._connections:
+        if self._channel is None or any(binding.scope is scope for binding in self.bindings):
             return
-        self._connections.append(
-            self._channel.scope.connect(RecorderEvent, self._on_event, mode=ConnectionType.QUEUED)
+        connection = self._channel.scope.connect(
+            RecorderEvent,
+            self._on_event,
+            mode=ConnectionType.QUEUED,
+            participation=Participation.HANDLER,
+            receiver_key="archive.metadata",
+            result_contract=ResultContract(lambda value: value is None),
         )
+        self.track_binding(scope, session_id, connections=[connection])
 
     async def _on_event(self, event: RecorderEvent) -> None:
         channel = self._channel
@@ -111,6 +115,7 @@ class ArchiveWatchdog(BrowserWatchdog):
                 target_id=str(target_id) if target_id is not None else None,
                 control_session_id=session_id,
                 fragments=frozenset(event.fragments),
+                request_id=event.event_id,
             )
             for participant in channel.participants():
                 if not participant.wants_cycles:
@@ -126,20 +131,18 @@ class ArchiveWatchdog(BrowserWatchdog):
                     )
             return None
 
-        self._tab_connections[session_id] = observation_scope.connect(
+        self.unbind_tab(session_id)
+        connection = observation_scope.connect(
             BrowserStateRequestEvent,
             archive_cycle,
             mode=ConnectionType.QUEUED,
             target_scope=channel.scope,
+            participation=Participation.OBSERVER,
+            result_contract=ResultContract(lambda value: value is None),
         )
+        self.track_binding(observation_scope, session_id, connections=[connection])
 
     def unbind_tab(self, session_id: str) -> None:
-        connection = self._tab_connections.pop(session_id, None)
-        if connection is not None:
-            connection.disconnect()
-
-    def detach(self) -> None:
-        for connection in [*self._connections, *self._tab_connections.values()]:
-            connection.disconnect()
-        self._connections.clear()
-        self._tab_connections.clear()
+        for binding in self.bindings:
+            if binding.session_id == session_id:
+                self.detach(binding.scope, session_id)

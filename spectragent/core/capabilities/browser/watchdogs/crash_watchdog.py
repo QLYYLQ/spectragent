@@ -1,12 +1,13 @@
 """CrashWatchdog — browser target crash detection and focus recovery.
 
 Bridges CDP ``Target.targetCrashed`` events and emits ``TargetCrashedEvent``.
-Works with SessionManager for automatic agent focus recovery.
+Resolves Inspector envelope sessions through capability-owned target mappings.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from typing import ClassVar
 
 from agent_cdp import (
@@ -14,6 +15,7 @@ from agent_cdp import (
     CDPEventBridge,
     ConnectionType,
     EventScope,
+    Participation,
 )
 
 from spectragent.core.capabilities.browser.watchdogs.base import (
@@ -34,56 +36,56 @@ class CrashWatchdog(BrowserWatchdog):
 
     level: ClassVar[WatchdogLevel] = "browser"
 
-    def __init__(self, cdp: CDPCommandProtocol) -> None:
+    def __init__(
+        self, cdp: CDPCommandProtocol, *, target_sessions_getter: Callable[[], Mapping[str, str]]
+    ) -> None:
         self._cdp = cdp
-        self._scope: EventScope | None = None
-        self._session_id: str | None = None
-        self._bridge: CDPEventBridge | None = None
+        self._target_sessions = target_sessions_getter
 
     @classmethod
     def build(cls, ctx: WatchdogContext) -> CrashWatchdog:
-        return cls(ctx.cdp)
+        return cls(ctx.cdp, target_sessions_getter=ctx.target_sessions_getter)
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
-        self._scope = scope
-        self._session_id = session_id
-
-        # Bridge CDP crash events into the scope.
-        self._bridge = CDPEventBridge(self._cdp, scope, session_id=session_id)
-        self._bridge.bridge(
+        # Inspector events identify the target through the envelope session;
+        # Target.targetCrashed is browser-level and names the target in params.
+        bridge = CDPEventBridge(self._cdp, scope, session_id=session_id)
+        bridge.bridge(
             "Inspector.targetCrashed",
-            lambda params: TargetCrashedEvent(
-                target_id=session_id or "",
+            lambda params, route: TargetCrashedEvent(
+                target_id=self._target_sessions().get(route or "", ""),
                 error=params.get("reason", "target crashed"),
             ),
+            with_session=True,
         )
-
-        # Also listen for network-level errors that may indicate issues.
-        self._bridge.bridge(
+        bridge.bridge(
+            "Target.targetCrashed",
+            lambda params: TargetCrashedEvent(
+                target_id=params.get("targetId", ""),
+                error=params.get("status", "target crashed"),
+            ),
+        )
+        bridge.bridge(
             "Inspector.detached",
             lambda params: BrowserErrorEvent(
                 error_type="inspector_detached",
                 message=params.get("reason", ""),
             ),
         )
-
-        # Listen to our own TargetCrashedEvent to log it.
-        scope.connect(
+        connection = scope.connect(
             TargetCrashedEvent,
             self._on_target_crashed,
-            mode=ConnectionType.DIRECT,
+            mode=ConnectionType.QUEUED,
+            participation=Participation.OBSERVER,
+            filter=lambda event: (
+                isinstance(event, TargetCrashedEvent)
+                and bool(event.target_id)
+                and event.target_id in self._target_sessions().values()
+            ),
         )
-
-    def detach(self) -> None:
-        """Unregister this watchdog's CDP callbacks. Idempotent.
-
-        See :meth:`PopupsWatchdog.detach` — same leak, browser-level
-        scope instead of per-tab.
-        """
-        if self._bridge is not None:
-            self._bridge.close()
-            self._bridge = None
-        self._scope = None
+        self.track_binding(
+            scope, session_id, connections=[connection], close_callbacks=[bridge.close]
+        )
 
     async def _on_target_crashed(self, event: TargetCrashedEvent) -> None:
         logger.error(

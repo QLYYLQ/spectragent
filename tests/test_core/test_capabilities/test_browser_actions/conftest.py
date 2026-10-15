@@ -12,45 +12,51 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from agent_cdp import ConnectionType, EventScope, ResultContract
+
+from spectragent.core.capabilities.browser.watchdogs.events import (
+    ExtractContentEvent,
+    ScreenshotRequestEvent,
+)
 
 
-class FakeScope:
-    """A minimal EventScope replacement that captures emitted events."""
+class FakeScope(EventScope):
+    """Real request dispatch with a direct fixture executor and emitted payloads."""
 
     def __init__(self) -> None:
+        super().__init__("action-fixture", max_history_size=0)
         self.emitted: list[Any] = []
+        self.connect_all(
+            self.respond,
+            mode=ConnectionType.DIRECT,
+            receiver_key="browser.action",
+            filter=lambda event: not isinstance(event, ScreenshotRequestEvent),
+            result_contract=ResultContract(self.validate),
+        )
 
-    def emit(self, event: Any) -> None:
+    def respond(self, event: Any) -> Any:
+        return "fixture text" if isinstance(event, ExtractContentEvent) else None
+
+    @staticmethod
+    def validate(value: Any) -> bool:
+        if isinstance(value, dict) and value.get("error"):
+            raise RuntimeError(value["error"])
+        return True
+
+    def emit(self, event: Any) -> Any:
         self.emitted.append(event)
+        return super().emit(event)
 
 
 class AnsweringScope(FakeScope):
-    """Answers every emitted event the way the action watchdog's handler would."""
+    """Answers through a declared executor; business errors retain their cause."""
 
     def __init__(self, answer: dict[str, Any]) -> None:
-        super().__init__()
         self.answer = answer
+        super().__init__()
 
-    def emit(self, event: Any) -> None:
-        super().emit(event)
-        event.record_result(connection_id="c1", handler_name="ActionWatchdog", result=self.answer)
-
-
-class AwaitableEvent:
-    """Wraps a CDP event so the action can ``await event`` without a scope.
-
-    Actions call ``scope.emit(event); await event`` where the real
-    ``agent_cdp`` event is a Future-like object that the watchdog
-    fulfills. For tests we just make it a no-op awaitable.
-    """
-
-    def __init__(self, wrapped: Any) -> None:
-        self.wrapped = wrapped
-
-    def __await__(self):  # pragma: no cover — trivial
-        if False:
-            yield None
-        return None
+    def respond(self, event: Any) -> Any:
+        return self.answer
 
 
 @dataclass
@@ -79,6 +85,14 @@ class FakeCapability:
     _selector_maps: dict[str, dict[int, FakeElementNode]] = field(default_factory=dict)
     _cdp: Any = None
     _default_session_id: str | None = None
+
+    @property
+    def action_scope(self) -> FakeScope:
+        return self._scopes[self.default_session_id]
+
+    @property
+    def selector_map(self) -> dict[int, FakeElementNode]:
+        return self._selector_maps.get(self.default_session_id, {})
 
     @property
     def default_session_id(self) -> str:

@@ -227,7 +227,7 @@ class TestPipeline:
         await recorder.close()
 
     async def test_resume_is_routed_to_the_targets_own_session(self) -> None:
-        """Mode B: never the session-less resume of agent-cdp's mode A."""
+        """The callback routes resume to the waiting session."""
         browser = FakeBrowser()
         recorder, client = await _recorder(browser, [])
         await recorder.open()
@@ -352,11 +352,10 @@ class TestPipeline:
         failures = recorder.failures[sid]
         # The page-side command and the resume (which answers last); the
         # browser-side ``Target.setAutoAttach`` answered at once.
-        assert [f.split(":")[0] for f in failures] == [
-            "Page.enable",
-            "Runtime.runIfWaitingForDebugger",
-        ]
-        assert all("no reply within 0.1s" in f for f in failures)
+        assert [f.split(":")[0] for f in failures] == ["preparation", "Page.enable"]
+        assert "resume not confirmed" in failures[0]
+        assert "no reply within 0.1s" in failures[1]
+        assert sid in recorder._waiting, "an unconfirmed resume remains owned for cleanup"
         browser.commit("pop-1")  # the first document commits late: the replies are dropped
         await _settle()
         assert len(recorder.failures[sid]) == len(failures)
@@ -688,6 +687,31 @@ def _answers(client: FakeClient) -> list[tuple[str, str, str | None, Any]]:
 
 
 class TestServingParticipant:
+    @pytest.mark.parametrize("serving", [False, True])
+    async def test_unconfirmed_request_release_remains_owned_until_cleanup_retries(
+        self, serving: bool
+    ) -> None:
+        owner = (
+            _Server("server", patterns=REQUEST_STAGE)
+            if serving
+            else _Participant("recorder", patterns=REQUEST_STAGE)
+        )
+        browser, recorder, client, sid = await self._ready([owner])
+        method = "Fetch.failRequest" if serving else "Fetch.continueRequest"
+        browser.fail(method, TimeoutError("response unconfirmed"), session_id=sid)
+        _pause(client, sid, "retry", status=None)
+        await _settle()
+        paused = recorder._held[(sid, "retry")]
+        assert not paused.settled
+        browser.failures.pop((method, sid))
+        await recorder.close()
+        assert paused.settled
+        assert (sid, "retry") not in recorder._held
+        attempts = [sent for sent in client.sent if sent.method == method]
+        assert len(attempts) == 2
+        if serving:
+            assert not [sent for sent in client.sent if sent.method.startswith("Fetch.continue")]
+
     """While a participant serves requests, an unanswered Request pause fails — never continues.
 
     §4.14 "事件": the replay server answers on the pausing session and sets
@@ -837,6 +861,26 @@ class TestServingParticipant:
 
 
 class TestCleanup:
+    async def test_cancelled_close_finishes_every_owned_resource_before_propagating(self) -> None:
+        browser = FakeBrowser()
+        plan = _Participant("plan", patterns=RESPONSE_STAGE)
+        recorder, client = await _recorder(browser, [plan])
+        await recorder.open()
+        release = browser.hold("Target.setAutoAttach")
+        closing = asyncio.create_task(recorder.close())
+        await _settle()
+        closing.cancel()
+        await _settle()
+        assert not closing.done()
+        closing.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(closing, 2)
+        assert client.stopped
+        assert "Fetch.disable" in client.methods()
+        assert "Target.detachFromTarget" in client.methods()
+        await recorder.close()
+
     async def test_fixed_order(self) -> None:
         async def _hold(_p: PausedRequest) -> None:
             await asyncio.Event().wait()
@@ -904,6 +948,8 @@ class TestCleanup:
         mark = len(client.sent)
 
         await recorder.close()  # does not raise
+        assert any("Runtime.runIfWaitingForDebugger" in item for item in recorder.cleanup_failures)
+        assert sid in recorder._waiting, "failed acknowledgement retains the pending fact"
 
         tail = [(s.method, s.session_id) for s in client.sent[mark:]]
         assert ("Runtime.runIfWaitingForDebugger", sid) in tail
@@ -971,6 +1017,58 @@ class TestLiveness:
 
 
 class TestArchiveChannel:
+    async def test_flush_reports_cancelled_prefix_and_acknowledges_it_once(self) -> None:
+        from agent_cdp import ConnectionType
+
+        group = ScopeGroup("archive-cancellation")
+        scope = await group.create_scope("archive", queue_maxsize=1, max_history_size=0)
+        channel = ArchiveChannel(scope, lambda: [])
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def consume(event: RecorderEvent) -> None:
+            if event.method == "first":
+                entered.set()
+                await release.wait()
+            channel.mark_handled()
+
+        scope.connect(RecorderEvent, consume, mode=ConnectionType.QUEUED)
+        try:
+            channel.emit(RecorderEvent(method="first"))
+            await entered.wait()
+            pending = RecorderEvent(method="withdrawn")
+            channel.emit(pending)
+            pending.cancel_execution(include_running=False)
+            release.set()
+            with pytest.raises(ArchiveChannelError, match="cancelled"):
+                await channel.flush(timeout=1)
+            assert scope.stats.cancelled == 1
+            assert channel.handled == 1
+            assert scope.event_history == []
+            await channel.flush(timeout=1)
+        finally:
+            release.set()
+            await group.close_all()
+
+    async def test_flush_reports_handler_failure_without_losing_its_identity(self) -> None:
+        from agent_cdp import ConnectionType
+
+        group = ScopeGroup("archive-failure")
+        scope = await group.create_scope("archive")
+        channel = ArchiveChannel(scope, lambda: [])
+
+        async def consume(_event: RecorderEvent) -> None:
+            raise ValueError("metadata rejected by parser")
+
+        connection = scope.connect(RecorderEvent, consume, mode=ConnectionType.QUEUED)
+        try:
+            channel.emit(RecorderEvent(method="broken"))
+            with pytest.raises(ArchiveChannelError, match="metadata rejected by parser") as raised:
+                await channel.flush(timeout=1)
+            assert connection.id in str(raised.value)
+            assert scope.stats.failed == 1
+        finally:
+            await group.close_all()
+
     async def test_shim_only_registers_no_metadata_handler(self) -> None:
         browser = FakeBrowser()
         declares = _Participant("would-be", events={"Network.requestWillBeSent"})
@@ -997,7 +1095,7 @@ class TestArchiveChannel:
         recorder, client = await _recorder(browser, [network], channel=channel)
         await recorder.open()
         client.fire("Network.requestWillBeSent", {"requestId": "n1"}, "sess-9")
-        await channel.barrier(timeout=1.0)
+        await channel.flush(timeout=1.0)
         admitted = [e for e in seen if e.method == "Network.requestWillBeSent"]
         assert [(e.session_id, e.params, e.consumer) for e in admitted] == [
             ("sess-9", {"requestId": "n1", "by": "network"}, network)
@@ -1034,13 +1132,14 @@ class TestArchiveChannel:
         bystander = _Participant("c")
         channel = ArchiveChannel(scope, lambda: [first, second, bystander])
         watchdog = ArchiveWatchdog(channel)
-        watchdog.attach(EventScope("global-unused"))
+        global_scope = EventScope("global-unused")
+        watchdog.attach(global_scope)
         browser = FakeBrowser()
         recorder, client = await _recorder(browser, [first, second, bystander], channel=channel)
         await recorder.open()
         raw = {"requestId": "n1", "body": "x" * 1000}
         client.fire("Network.requestWillBeSent", raw, "sess-1")
-        await channel.barrier(timeout=1.0)
+        await channel.flush(timeout=1.0)
 
         def _network(p: _Participant) -> list[dict[str, Any]]:
             return [e.params for e in p.events if e.method == "Network.requestWillBeSent"]
@@ -1051,7 +1150,7 @@ class TestArchiveChannel:
         assert raw == {"requestId": "n1", "body": "x" * 1000}, "the raw event is not modified"
         history = [e for e in scope.event_history if isinstance(e, RecorderEvent)]
         assert all("body" not in e.params for e in history), "only what was admitted travels"
-        watchdog.detach()
+        watchdog.detach(global_scope)
         await recorder.close()
         await group.close_all()
 
@@ -1064,6 +1163,11 @@ class TestArchiveChannel:
         broken = _Broken("broken", events={"Network.loadingFailed"})
         good = _Participant("good", events={"Network.loadingFailed"})
         channel = ArchiveChannel(scope, lambda: [broken, good])
+        from spectragent.core.capabilities.browser.watchdogs import ArchiveWatchdog
+
+        watchdog = ArchiveWatchdog(channel)
+        watchdog.attach(scope)
+        await scope.start()
         browser = FakeBrowser()
         recorder, client = await _recorder(browser, [broken, good], channel=channel)
         await recorder.open()
@@ -1073,7 +1177,7 @@ class TestArchiveChannel:
         assert channel.emitted == before + 1 and len(good.offered) == 1
         await recorder.close()
 
-    async def test_the_barrier_detects_dropped_events(self) -> None:
+    async def test_flush_reports_rejected_deliveries(self) -> None:
         group = ScopeGroup("t")
         scope = await group.create_scope("__archive__")
         channel = ArchiveChannel(scope, lambda: [])
@@ -1089,11 +1193,11 @@ class TestArchiveChannel:
             channel.emit(
                 RecorderEvent(session_id="s", method="Network.loadingFinished", params={"i": i})
             )
-        with pytest.raises(ArchiveChannelError, match="dropped"):
-            await channel.barrier(timeout=2.0)
+        with pytest.raises(ArchiveChannelError, match="rejected"):
+            await channel.flush(timeout=2.0)
         await group.close_all()
 
-    async def test_the_barrier_passes_when_everything_was_handled(self) -> None:
+    async def test_flush_passes_when_everything_was_handled(self) -> None:
         group = ScopeGroup("t")
         scope = await group.create_scope("__archive__")
         channel = ArchiveChannel(scope, lambda: [])
@@ -1108,7 +1212,7 @@ class TestArchiveChannel:
             channel.emit(
                 RecorderEvent(session_id="s", method="Network.loadingFinished", params={"i": i})
             )
-        await channel.barrier(timeout=2.0)
+        await channel.flush(timeout=2.0)
         assert channel.handled == channel.emitted == 10
         await group.close_all()
 
@@ -1345,7 +1449,7 @@ class TestOverrideOwnership:
 
 
 class TestCapabilityLiveness:
-    async def test_recorder_loss_fails_closed(self) -> None:
+    async def test_replay_channel_loss_refuses_the_next_environment_operation(self) -> None:
         cap, browser, _ = await _capability(PinnedReplayability())
         browser.hold("Page.captureScreenshot")
         waiting = asyncio.create_task(
@@ -1353,33 +1457,31 @@ class TestCapabilityLiveness:
         )
         await _settle()
         browser.recorder.lose(ConnectionError("recorder socket dropped"))
-        # Bounded: a capability that forgot to fail the control client's
-        # waiters would otherwise leave this test (and the run) hanging.
-        with pytest.raises(RecorderLostError):
-            await asyncio.wait_for(waiting, 2.0)
+        assert not waiting.done(), "recording loss must not rewrite a control command"
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
         assert cap.is_alive is False
-        with pytest.raises(RecorderLostError, match="recorder connection lost"):
+        with pytest.raises(RuntimeError, match="enforcing replay or fixed target configuration"):
             await cap.begin_observation(1)
-        with pytest.raises(RecorderLostError):
+        with pytest.raises(RuntimeError, match="enforcing replay or fixed target configuration"):
             await cap.execute_action(Action(name="browser.wait", params={"seconds": 0}))
         await cap.teardown()
 
-    async def test_an_action_that_completes_after_the_loss_is_not_a_success(self) -> None:
-        """§4.14: an action that finishes while the recorder was lost acted unrecorded."""
+    async def test_an_action_that_completes_after_recording_loss_keeps_its_result(self) -> None:
         cap, browser, _ = await _capability(PinnedReplayability())
         try:
             acting = asyncio.create_task(
                 cap.execute_action(Action(name="browser.wait", params={"seconds": 0.2}))
             )
             await _settle()
-            assert not acting.done(), "the action is still in flight"
+            assert not acting.done()
             browser.recorder.lose(ConnectionError("recorder socket dropped"))
-            with pytest.raises(RecorderLostError, match="recorder connection lost"):
-                await asyncio.wait_for(acting, 2.0)
+            assert (await asyncio.wait_for(acting, 2.0)).success
         finally:
             await cap.teardown()
 
-    async def test_a_capture_cut_by_recorder_loss_reports_the_loss(self) -> None:
+    async def test_a_capture_refuses_a_lost_fixed_environment_contract(self) -> None:
         cap, browser, _ = await _capability(PinnedReplayability())
         try:
             cap.apply_negotiation({"browser.browser_meta"})
@@ -1388,7 +1490,9 @@ class TestCapabilityLiveness:
             reading = asyncio.create_task(cap.resolve_fragment("browser.browser_meta"))
             await _settle()
             browser.recorder.lose(ConnectionError("recorder socket dropped"))
-            with pytest.raises(RecorderLostError):
+            with pytest.raises(
+                RuntimeError, match="enforcing replay or fixed target configuration"
+            ):
                 await asyncio.wait_for(reading, 5.0)
         finally:
             await cap.teardown()
@@ -1439,10 +1543,11 @@ class TestArchiveWatchdog:
         ]
         # Built from a recorder-less context it is inert.
         inert = ArchiveWatchdog.build(cap._watchdog_context("sid1"))
-        inert.attach(EventScope("global"))
+        global_scope = EventScope("global")
+        inert.attach(global_scope)
         inert.bind_tab_scopes(EventScope("o"), EventScope("j"), session_id="sid1")
         inert.unbind_tab("sid1")
-        inert.detach()
+        inert.detach(global_scope)
 
     async def test_installed_when_the_recorder_carries_a_channel(self) -> None:
         from spectragent.core.capabilities.browser.watchdogs import ArchiveWatchdog
@@ -1470,13 +1575,14 @@ class TestArchiveWatchdog:
         first, second = _Participant("a"), _Participant("b")
         group, channel = await self._channel([first, second])
         watchdog = ArchiveWatchdog(channel)
-        watchdog.attach(EventScope("global-unused"))
+        global_scope = EventScope("global-unused")
+        watchdog.attach(global_scope)
         channel.emit(RecorderEvent(session_id="s1", method="Network.loadingFinished", params={}))
-        await channel.barrier(timeout=1.0)
+        await channel.flush(timeout=1.0)
         assert [e.method for e in first.events] == ["Network.loadingFinished"]
         assert [e.session_id for e in second.events] == ["s1"]
         assert channel.handled == channel.emitted == 1
-        watchdog.detach()
+        watchdog.detach(global_scope)
         await group.close_all()
 
     async def test_an_admitted_event_reaches_only_its_consumer(self) -> None:
@@ -1485,18 +1591,19 @@ class TestArchiveWatchdog:
         first, second = _Participant("a"), _Participant("b")
         group, channel = await self._channel([first, second])
         watchdog = ArchiveWatchdog(channel)
-        watchdog.attach(EventScope("global-unused"))
+        global_scope = EventScope("global-unused")
+        watchdog.attach(global_scope)
         channel.emit(
             RecorderEvent(
                 session_id="s1", method="Network.loadingFinished", params={}, consumer=second
             )
         )
-        await channel.barrier(timeout=1.0)
+        await channel.flush(timeout=1.0)
         assert first.events == [] and [e.method for e in second.events] == [
             "Network.loadingFinished"
         ]
         assert channel.handled == channel.emitted == 1
-        watchdog.detach()
+        watchdog.detach(global_scope)
         await group.close_all()
 
     async def test_a_failing_participant_is_counted_not_fatal(self) -> None:
@@ -1509,11 +1616,12 @@ class TestArchiveWatchdog:
         good = _Participant("good")
         group, channel = await self._channel([_Bad("bad"), good])
         watchdog = ArchiveWatchdog(channel)
-        watchdog.attach(EventScope("g"))
+        global_scope = EventScope("g")
+        watchdog.attach(global_scope)
         channel.emit(RecorderEvent(session_id="s1", method="Network.loadingFailed", params={}))
-        await channel.barrier(timeout=1.0)
+        await channel.flush(timeout=1.0)
         assert channel.errors == 1 and len(good.events) == 1
-        watchdog.detach()
+        watchdog.detach(global_scope)
         await group.close_all()
 
     async def test_cycles_reach_only_participants_that_want_them(self) -> None:
@@ -1524,8 +1632,8 @@ class TestArchiveWatchdog:
 
         cycler, plain = _CycleParticipant("dom_raw"), _Participant("network")
         group, channel = await self._channel([cycler, plain])
-        obs = await group.create_scope("T1", target_id="T1")
-        js = await group.create_scope("T1:js", target_id="T1")
+        obs = await group.create_scope("T1", metadata={"target_id": "T1"})
+        js = await group.create_scope("T1:js", metadata={"target_id": "T1"})
         watchdog = ArchiveWatchdog(channel)
         watchdog.bind_tab_scopes(obs, js, session_id="ctl-1")
 
@@ -1555,8 +1663,8 @@ class TestArchiveWatchdog:
         )
 
         group, channel = await self._channel([_Participant("network")])
-        obs = await group.create_scope("T1", target_id="T1")
-        js = await group.create_scope("T1:js", target_id="T1")
+        obs = await group.create_scope("T1", metadata={"target_id": "T1"})
+        js = await group.create_scope("T1:js", metadata={"target_id": "T1"})
         watchdog = ArchiveWatchdog(channel)
         watchdog.bind_tab_scopes(obs, js, session_id="ctl-1")
         event = BrowserStateRequestEvent(fragments=frozenset({"browser.dom"}))

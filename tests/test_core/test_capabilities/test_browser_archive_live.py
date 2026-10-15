@@ -279,6 +279,73 @@ def test_renumbering_keeps_every_other_byte() -> None:
     assert same != _renumbered({"serialized_dom": "a\n[13]<iframe />\n[19]<a>y</a>"})
 
 
+# ── each collection owns its revisit payloads ──────────────────────────
+
+
+def _network_lines(batch: ArchiveBatch) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for item in batch.files
+        if item.archiver_id == "browser.network" and item.name == "index.jsonl"
+        for line in item.data.decode().splitlines()
+    ]
+
+
+def _assert_batch_local_revisits(recording: LiveRecording) -> None:
+    for batch in recording.batches:
+        lines = _network_lines(batch)
+        responses = {line["response_record_id"] for line in lines if line.get("response_record_id")}
+        references = {line["revisit_of"] for line in lines if line.get("revisit_of")}
+        assert references <= responses, "a collection depends on an earlier uncommitted payload"
+
+
+def test_revisit_payloads_are_owned_by_the_collection_that_will_commit_them() -> None:
+    async def record() -> None:
+        with FixtureSite() as site:
+            async with LiveRecording(
+                site,
+                archivers=(NetworkArchiver(require_replayable=False),),
+                fragments=VISION_FRAGMENTS,
+            ) as rec:
+                await rec.step(site.url("beacon"), wait_for=site.expected("beacon"))
+                prior_response_ids: set[str] = set()
+                for batch_number in (1, 2):
+                    urls = [
+                        site.url("beacon") + f"?duplicate={batch_number}-{visit}"
+                        for visit in (1, 2)
+                    ]
+                    result = await rec.capability.cdp.send(
+                        "Runtime.evaluate",
+                        {
+                            "expression": "Promise.all("
+                            + json.dumps(urls)
+                            + ".map(url => fetch(url, {cache: 'no-store'}).then(reply => reply.text())))",
+                            "awaitPromise": True,
+                            "returnByValue": True,
+                        },
+                        session_id=rec.capability.default_session_id,
+                        timeout=5,
+                    )
+                    bodies = result["result"]["value"]
+                    assert len(bodies) == 2 and bodies[0] == bodies[1] and bodies[0]
+                    await asyncio.sleep(0.1)
+                    await rec.final_collect()
+                    first, second = [
+                        line for line in _network_lines(rec.batches[-1]) if line.get("url") in urls
+                    ]
+                    assert first["revisit_of"] is None, (
+                        "a new batch must carry its own complete response"
+                    )
+                    assert second["revisit_of"] == first["response_record_id"]
+                    assert second["revisit_of"] not in prior_response_ids
+                    prior_response_ids.update(
+                        (first["response_record_id"], second["response_record_id"])
+                    )
+                _assert_batch_local_revisits(rec)
+
+    _run(record())
+
+
 # ── overhead ──────────────────────────────────────────────────────────
 
 #: Every fixture scenario but the nested worker, a known limitation whose
@@ -359,10 +426,11 @@ def test_overhead_benchmark(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     out = Path(os.environ.get("SPECTRAGENT_ARCHIVE_BENCH_OUT") or tmp_path)
     path = write_report(report, out)
     assert ArchiveOverheadReport.model_validate_json(path.read_text("utf-8")) == report
-    # Both deduplications ran on this traffic, so the two figures differ for a
-    # reason: second visits wrote revisit records, and each large body streamed
-    # on both visits was stored once.
-    assert any(line.get("revisit_of") for line in on.index_lines()), "no revisit record written"
+    # Large bodies remain content-addressed across collections. WARC revisits
+    # are collection-local: repeating a visit in a later step carries its own
+    # inline response, and any savings here must come from duplicates in that batch.
+    _assert_batch_local_revisits(on)
+    _assert_batch_local_revisits(vision)
     assert dedup.saved_by_content_addressing > 6_000_000, "the large body was stored twice"
     assert report.bytes_per_step_after_dedup < report.bytes_per_step_before_dedup
     assert report.p50_overhead_ms <= bound, (

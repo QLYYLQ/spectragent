@@ -12,8 +12,8 @@ against the local fixture site only, with short timeouts:
   ever adopts it — except the nested worker's script, a documented gap;
 - explicit cleanup releases the browser; an unclean drop wedges every new
   target (the reason teardown cleans up first);
-- ``PausedTarget`` mode B resumes the right session; mode A on af's
-  flattened client does not;
+- ``PausedTarget`` built-in and callback modes resume only the selected
+  flattened session through AF's client; sibling workers remain paused;
 - ``replayability: pinned`` makes randomness, the clock, time zone, locale
   and user agent identical across runs, in the page **and** in a worker.
 """
@@ -290,72 +290,119 @@ async def test_a_closed_socket_releases_the_browser_without_cleanup() -> None:
     await asyncio.wait_for(_run(), _TIMEOUT_S)
 
 
-async def test_mode_b_resume_and_mode_a_canary() -> None:
-    """Mode B resumes the target's own session; mode A resumes nothing here."""
+@pytest.mark.parametrize("resume_mode", ["builtin", "callback"])
+async def test_paused_target_resume_unblocks_only_its_session(resume_mode: str) -> None:
+    """The acknowledged envelope route resumes this worker, never its paused sibling."""
 
-    async def _run() -> None:
+    async def run() -> None:
         with FixtureSite() as site:
             async with _chrome() as url:
-                waiter = await _client(url, max_frame_size=None, compression=None)
-                attached: list[str] = []
-                waiter.on_event(
-                    "Target.attachedToTarget",
-                    lambda params, _sid: (
-                        attached.append(params["sessionId"])
-                        if params.get("waitingForDebugger")
-                        else None
-                    ),
-                )
-                await waiter.send("Target.setAutoAttach", dict(AUTO_ATTACH_PARAMS), timeout=5)
-                control = await _client(url)
+                client = await _client(url, max_frame_size=None, compression=None)
+                attached: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+                worker_sessions: dict[str, str] = {}
+                ran: set[str] = set()
+                tab = await _Tab(client).open()
+
+                def on_attached(params: dict[str, Any], parent_sid: str | None) -> None:
+                    if params.get("targetInfo", {}).get("type") == "worker":
+                        assert parent_sid == tab.sid
+                        attached.put_nowait(params)
+
+                def on_console(params: dict[str, Any], session_id: str | None) -> None:
+                    for argument in params.get("args", []):
+                        value = argument.get("value")
+                        if isinstance(value, str) and value.startswith("fixture-worker:"):
+                            label = value.split(":", 1)[1]
+                            assert worker_sessions[label] == session_id
+                            ran.add(label)
+
+                client.on_event("Target.attachedToTarget", on_attached)
+                client.on_event("Runtime.consoleAPICalled", on_console)
                 try:
-                    # Mode A: agent-cdp sends the resume without a session.
-                    tab_a = _Tab(control)
-                    opening = asyncio.create_task(tab_a.open())
-                    for _ in range(100):
-                        if attached:
-                            break
-                        await asyncio.sleep(0.02)
-                    sid_a = attached.pop(0)
-                    async with PausedTarget(cdp=waiter, session_id=sid_a):
-                        pass
-                    await opening
-                    mode_a_loaded = await _loads_within(tab_a, site.url("beacon"), 2)
-                    assert not mode_a_loaded, "PausedTarget mode A now resumes flattened sessions"
-
-                    # Mode B: our callback, routed to the session.
-                    tab_b = _Tab(control)
-                    opening = asyncio.create_task(tab_b.open())
-                    for _ in range(100):
-                        if attached:
-                            break
-                        await asyncio.sleep(0.02)
-                    sid_b = attached.pop(0)
-
-                    async def _resume() -> None:
-                        await waiter.send("Runtime.runIfWaitingForDebugger", None, sid_b, timeout=2)
-
-                    async with PausedTarget(resume=_resume):
-                        pass
-                    await opening
-                    assert await _loads_within(tab_b, site.url("worker"), 5)
-                finally:
-                    # Release the mode-A target before leaving.
-                    await waiter.send(
-                        "Target.setAutoAttach",
-                        {"autoAttach": False, "waitForDebuggerOnStart": False, "flatten": True},
-                        timeout=2,
+                    assert await _loads_within(tab, site.url("beacon"), 5)
+                    await client.send(
+                        "Target.setAutoAttach", dict(AUTO_ATTACH_PARAMS), tab.sid, timeout=5
                     )
-                    for sid in [*attached, locals().get("sid_a", "")]:
-                        if sid:
-                            with contextlib.suppress(Exception):
-                                await waiter.send(
-                                    "Runtime.runIfWaitingForDebugger", None, sid, timeout=1
-                                )
-                    await waiter.stop()
-                    await control.stop()
+                    for label in ("first", "second"):
+                        await tab.evaluate(
+                            "window.fixtureWorkers ??= [];"
+                            "window.fixtureWorkers.push(new Worker(URL.createObjectURL(new Blob(["
+                            + json.dumps(
+                                f"self.fixtureLabel={label!r};console.log('fixture-worker:{label}')"
+                            )
+                            + "], {type: 'text/javascript'}))))"
+                        )
+                        attachment = await asyncio.wait_for(attached.get(), 5)
+                        assert attachment["waitingForDebugger"] is True
+                        worker_sessions[label] = attachment["sessionId"]
+                        await client.send(
+                            "Runtime.enable", session_id=attachment["sessionId"], timeout=5
+                        )
+                    assert worker_sessions["first"] != worker_sessions["second"]
 
-    await asyncio.wait_for(_run(), _TIMEOUT_S)
+                    # The previous implementation put sessionId in params. This
+                    # addresses the browser and leaves both worker targets paused.
+                    with contextlib.suppress(RuntimeError):
+                        await client.send(
+                            "Runtime.runIfWaitingForDebugger",
+                            {"sessionId": worker_sessions["first"]},
+                            timeout=2,
+                        )
+                    await asyncio.sleep(0.1)
+                    assert ran == set()
+
+                    async def resume_first() -> None:
+                        await client.send(
+                            "Runtime.runIfWaitingForDebugger",
+                            session_id=worker_sessions["first"],
+                            timeout=2,
+                        )
+
+                    target = (
+                        PausedTarget(cdp=client, session_id=worker_sessions["first"])
+                        if resume_mode == "builtin"
+                        else PausedTarget(resume=resume_first)
+                    )
+                    async with target:
+                        assert not target.resumed and ran == set()
+                    assert target.resumed
+                    async with asyncio.timeout(5):
+                        while "first" not in ran:
+                            await asyncio.sleep(0.01)
+                    await asyncio.sleep(0.1)
+                    assert ran == {"first"}, "the sibling worker must still be paused"
+                    async with PausedTarget(
+                        cdp=client, session_id=worker_sessions["second"]
+                    ) as second:
+                        assert not second.resumed
+                    assert second.resumed
+                    async with asyncio.timeout(5):
+                        while ran != {"first", "second"}:
+                            await asyncio.sleep(0.01)
+                    for label, session_id in worker_sessions.items():
+                        reply = await client.send(
+                            "Runtime.evaluate",
+                            {"expression": "self.fixtureLabel", "returnByValue": True},
+                            session_id=session_id,
+                            timeout=2,
+                        )
+                        assert reply["result"]["value"] == label
+                finally:
+                    for session_id in worker_sessions.values():
+                        with contextlib.suppress(Exception):
+                            await client.send(
+                                "Runtime.runIfWaitingForDebugger", session_id=session_id, timeout=1
+                            )
+                    with contextlib.suppress(Exception):
+                        await client.send(
+                            "Target.setAutoAttach",
+                            {"autoAttach": False, "waitForDebuggerOnStart": False, "flatten": True},
+                            tab.sid,
+                            timeout=2,
+                        )
+                    await client.stop()
+
+    await asyncio.wait_for(run(), _TIMEOUT_S)
 
 
 async def test_no_target_left_waiting() -> None:

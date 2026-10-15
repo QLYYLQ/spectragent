@@ -389,8 +389,15 @@ class TestBodies:
         (line,) = _index(files)
         assert line["original_encoding"] == {"content-encoding": "gzip", "content-length": "5"}
 
-    async def test_a_repeated_payload_is_a_revisit(self) -> None:
+    @pytest.mark.parametrize(
+        "collect_between", [False, True], ids=["same-batch", "separate-batches"]
+    )
+    async def test_repeated_payloads_revisit_only_within_their_collection(
+        self,
+        collect_between: bool,
+    ) -> None:
         session, recorder = _session()
+        first = None
         for n in (1, 2):
             recorder.bodies[f"i{n}"] = b"same bytes"
             deliver(session, _request_event(f"n{n}", f"http://shop.test/{n}"))
@@ -399,15 +406,25 @@ class TestBodies:
             )
             deliver(session, _response_event(f"n{n}"))
             deliver(session, _finished(f"n{n}"))
-            if n == 1:
+            if collect_between and n == 1:
                 first = _index(await session.collect())[0]
         files = await session.collect()
-        (second,) = _index(files)
-        assert second["revisit_of"] == first["response_record_id"]
-        rec_type, headers, _http, payload = _warc(files)[1]
-        assert rec_type == "revisit" and payload == b""
-        assert headers["WARC-Refers-To"] == f"<{first['response_record_id']}>"
-        assert headers["WARC-Profile"].endswith("identical-payload-digest")
+        if collect_between:
+            (second,) = _index(files)
+        else:
+            first, second = _index(files)
+        assert first is not None
+        rec_type, headers, _http, payload = _warc(files)[-1]
+        if collect_between:
+            assert second["revisit_of"] is None
+            assert second["response_record_id"] != first["response_record_id"]
+            assert rec_type == "response" and payload == b"same bytes"
+            assert "WARC-Refers-To" not in headers
+        else:
+            assert second["revisit_of"] == first["response_record_id"]
+            assert rec_type == "revisit" and payload == b""
+            assert headers["WARC-Refers-To"] == f"<{first['response_record_id']}>"
+            assert headers["WARC-Profile"].endswith("identical-payload-digest")
 
     async def test_304_is_recorded_as_it_is(self) -> None:
         session, recorder = _session()

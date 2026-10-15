@@ -429,7 +429,13 @@ class _SlowCDP:
     def is_connected(self) -> bool:
         return True
 
-    async def send(self, method: str, params: Any = None, session_id: Any = None) -> Any:
+    async def send(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        timeout: float | None = None,
+    ) -> Any:
         if method == "Page.captureScreenshot":
             await asyncio.sleep(self.delay)
             return {"data": base64.b64encode(PNG_BYTES).decode()}
@@ -451,7 +457,8 @@ class TestScreenshotCommandBound:
         monkeypatch.setattr(screenshot_watchdog, "_SCREENSHOT_COMMAND_TIMEOUT_S", 0.05)
         watchdog = ScreenshotWatchdog(_SlowCDP(0.3))
         event = BrowserStateRequestEvent(fragments=frozenset({"browser.screenshot"}))
-        assert await watchdog._on_browser_state_request(event) is None
+        with pytest.raises(TimeoutError, match="captureScreenshot"):
+            await watchdog._on_browser_state_request(event)
 
     async def test_the_action_path_is_not(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``browser.screenshot`` (the action) keeps waiting as long as its event does."""

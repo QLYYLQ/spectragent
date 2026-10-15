@@ -12,6 +12,7 @@ from spectragent.core.capabilities.browser.actions._common import (
     focused_scope,
 )
 from spectragent.core.capabilities.browser.actions._mixins import SettleableAction
+from spectragent.core.capabilities.browser.watchdogs.contracts import dispatch_request
 from spectragent.core.capabilities.browser.watchdogs.events import GoBackEvent
 from spectragent.schemas.action import ActionDescriptor, ActionResult
 
@@ -44,8 +45,7 @@ class GoBackAction(SettleableAction, ActionBase):
         try:
             scope = focused_scope(capability)
             event = GoBackEvent()
-            scope.emit(event)
-            await event
+            await dispatch_request(scope, event)
             await self.settle()
             return ActionResult(success=True)
         except Exception as exc:  # pragma: no cover

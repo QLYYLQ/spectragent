@@ -40,6 +40,49 @@ from tests._helpers.fake_cdp import FakeBrowser
 pytestmark = pytest.mark.usefixtures("archive_fakes")
 
 
+async def test_archive_scope_uses_explicit_capacity_without_retaining_payload_history() -> None:
+    cap, driver = archiving_capability(archivers=(NetworkArchiver(require_replayable=False),))
+    await driver.start()
+    try:
+        recorder = cap._recorder
+        assert recorder is not None and recorder.channel is not None
+        scope = recorder.channel.scope
+        assert scope.queue_maxsize == 65536
+        assert scope.max_history_size == 0
+        assert "queue_maxsize" not in scope.metadata
+    finally:
+        await cap.teardown()
+
+
+async def test_archive_cleanup_attempts_every_session_and_retains_failed_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap, driver = archiving_capability(archivers=(DomRawArchiver(), StorageArchiver()))
+    await driver.start()
+    archive = cap._archive
+    assert archive is not None
+    first, second = archive.sessions
+    attempts: list[str] = []
+
+    async def fail() -> None:
+        attempts.append("first")
+        raise RuntimeError("archive close failed")
+
+    async def succeed() -> None:
+        attempts.append("second")
+
+    monkeypatch.setattr(first, "aclose", fail)
+    monkeypatch.setattr(second, "aclose", succeed)
+    with pytest.raises(BaseExceptionGroup, match="Browser resource cleanup"):
+        await cap.teardown()
+    assert attempts == ["first", "second"]
+    assert driver.browser.control.stopped and driver.browser.recorder.stopped
+    assert cap._archive is archive
+    monkeypatch.setattr(first, "aclose", succeed)
+    await cap.teardown()
+    assert cap._archive is None
+
+
 def _index(batch: Any) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
     for item in batch.files:
@@ -450,7 +493,7 @@ _FRAME = "frame-payload-W3"
 
 class TestNoBytesInTheArchiveScope:
     async def test_bodies_payloads_and_credentials_never_enter_the_scope(self) -> None:
-        """The scope's history keeps its last 1000 events: what is in them must be small and safe.
+        """Archive scopes retain no history; dispatched events must still be small and safe.
 
         One POST with a body (both shapes Chrome sends), credential headers,
         ExtraInfo cookie lists and a WebSocket frame go through the recorder's
@@ -466,6 +509,19 @@ class TestNoBytesInTheArchiveScope:
         )
         await driver.start()
         try:
+            from agent_cdp import ConnectionType, Participation
+
+            from spectragent.core.capabilities.browser.recorder import RecorderEvent
+
+            recorder = cap._recorder
+            assert recorder is not None and recorder.channel is not None
+            dispatched: list[tuple[str, dict[str, Any]]] = []
+            recorder.channel.scope.connect(
+                RecorderEvent,
+                lambda event: dispatched.append((event.method, dict(event.params))),
+                mode=ConnectionType.DIRECT,
+                participation=Participation.OBSERVER,
+            )
             session = driver.page_session()
             fire = driver.recorder.fire
             body = f"user=alice&password={_SECRET}&note=hello"
@@ -545,17 +601,9 @@ class TestNoBytesInTheArchiveScope:
             )
             batch = await cap.collect_archive()
 
-            recorder = cap._recorder
-            assert recorder is not None and recorder.channel is not None
-            from spectragent.core.capabilities.browser.recorder import RecorderEvent
-
-            travelled = json.dumps(
-                [
-                    (e.method, e.params)
-                    for e in recorder.channel.scope.event_history
-                    if isinstance(e, RecorderEvent)
-                ]
-            )
+            assert recorder.channel.scope.max_history_size == 0
+            assert not recorder.channel.scope.event_history
+            travelled = json.dumps(dispatched)
             assert "Network.requestWillBeSent" in travelled, "the events did travel"
             for absent in (_SECRET, _FRAME, "postData", "payloadData", "Cookies"):
                 assert absent not in travelled, f"{absent!r} entered the archive scope"

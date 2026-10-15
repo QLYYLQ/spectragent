@@ -35,7 +35,7 @@ import base64
 import logging
 from typing import ClassVar, Literal
 
-from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope
+from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, Participation, ResultContract
 
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.base import (
@@ -102,16 +102,30 @@ class ScreenshotWatchdog(BrowserWatchdog):
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
         self._session_id = session_id
-        scope.connect(
+        screenshot_connection = scope.connect(
             ScreenshotRequestEvent,
             self._on_screenshot_request,
             mode=ConnectionType.QUEUED,
+            participation=Participation.HANDLER,
+            receiver_key="browser.action",
+            result_contract=ResultContract(
+                lambda value: isinstance(value, bytes) and bool(value),
+                "Screenshot executor returned no image",
+            ),
         )
-        scope.connect(
+        connection = scope.connect(
             BrowserStateRequestEvent,
             self._on_browser_state_request,
             mode=ConnectionType.QUEUED,
+            participation=Participation.HANDLER,
+            filter=lambda event: (
+                isinstance(event, BrowserStateRequestEvent)
+                and bool(event.fragments & self.provides)
+            ),
+            receiver_key="browser.screenshot",
+            result_contract=ResultContract(lambda value: isinstance(value, BrowserStateSummary)),
         )
+        self.track_binding(scope, session_id, connections=[screenshot_connection, connection])
 
     async def _on_screenshot_request(self, event: ScreenshotRequestEvent) -> bytes:
         """Capture screenshot and return the raw encoded bytes.
@@ -153,7 +167,7 @@ class ScreenshotWatchdog(BrowserWatchdog):
             )
         except Exception as exc:
             logger.error("Screenshot capture failed: %s", exc)
-            return None
+            raise
 
     async def _document_after_capture(self) -> DocumentStamp | None:
         """The main frame's loader and URL, read right after the capture.

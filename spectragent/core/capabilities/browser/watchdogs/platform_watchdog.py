@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from agent_cdp import ConnectionType, EventScope
+from agent_cdp import ConnectionType, EventScope, Participation, ResultContract
 
 from spectragent.core.capabilities.browser.observations import BrowserPlatformObs
 from spectragent.core.capabilities.browser.platform import InputPlatform
@@ -33,9 +33,19 @@ class PlatformWatchdog(BrowserWatchdog):
         return cls(ctx.input_platform)
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
-        scope.connect(
-            BrowserStateRequestEvent, self._on_browser_state_request, mode=ConnectionType.QUEUED
+        connection = scope.connect(
+            BrowserStateRequestEvent,
+            self._on_browser_state_request,
+            mode=ConnectionType.QUEUED,
+            participation=Participation.HANDLER,
+            filter=lambda event: (
+                isinstance(event, BrowserStateRequestEvent)
+                and bool(event.fragments & self.provides)
+            ),
+            receiver_key="browser.platform",
+            result_contract=ResultContract(lambda value: isinstance(value, BrowserStateSummary)),
         )
+        self.track_binding(scope, session_id, connections=[connection])
 
     async def _on_browser_state_request(
         self, event: BrowserStateRequestEvent

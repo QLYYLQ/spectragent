@@ -107,7 +107,7 @@ def build_guarded_act(
         action_filter=list(action_filter) if action_filter is not None else None,
         descriptors=[descriptor.model_copy(deep=True) for descriptor in filtered],
         allowed_actions=active_names,
-        action_bindings=bound,
+        action_bindings=dict(bound),
     )
 
     async def guarded_act(action: Action, **kwargs: Any) -> ActionResult:
