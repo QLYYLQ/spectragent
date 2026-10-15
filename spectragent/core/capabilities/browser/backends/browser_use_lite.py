@@ -6,6 +6,7 @@ Env var: ``BROWSER_USE_API_KEY``.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar
 
@@ -128,12 +129,26 @@ class BrowserUseProvider(BrowserProviderBase):
             raise
 
     async def close(self, session: ProviderSession | None = None) -> None:
-        client = self._get_client()
-        if session is not None:
-            sid = self._sessions.pop(session.session_id, None)
-            if sid is not None:
-                await client.sessions.delete(sid)
+        """Release owned sessions, retaining failed cleanup for a later retry."""
+        if session is not None and session.provider_id != self.provider_id:
             return
-        for sid in list(self._sessions.values()):
-            await client.sessions.delete(sid)
-        self._sessions.clear()
+        session_ids = [session.session_id] if session is not None else list(self._sessions)
+        failures: list[Exception] = []
+        for session_id in session_ids:
+            owned_session = self._sessions.get(session_id)
+            if owned_session is None:
+                continue
+            try:
+                await self._get_client().sessions.delete(owned_session)
+            except asyncio.CancelledError as cancellation:
+                for failure in failures:
+                    cancellation.add_note(f"Session cleanup also failed: {failure}")
+                raise
+            except Exception as exc:
+                failures.append(exc)
+            else:
+                self._sessions.pop(session_id, None)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise ExceptionGroup("Browser session cleanup failed", failures)
