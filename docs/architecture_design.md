@@ -478,28 +478,31 @@ class RestorationContext:            # 窄的：没有 LLM、没有 memory、没
 
 ### 4.2 AgentRuntime（通用编排）
 
-**设计决策**：从原 `BaseReactAgent.run()` 提取与 loop 范式无关的逻辑（约 90%）为独立 AgentRuntime。AgentRuntime 负责协商、AOP 织入、Loop weave、超时、错误处理，Loop 只负责编排。**API 是两段式**：`prepare()` 装配并返回 wrapped agent；`execute(task)` 加 lifecycle/timeout 包装 `agent.run(task)`。所有 deps 来自 `ComposedRun`（见 §4.2.1）。
+**设计决策**：从原 `BaseReactAgent.run()` 提取与 loop 范式无关的逻辑（约 90%）为独立 AgentRuntime。AgentRuntime 负责协商、AOP 织入、Loop weave、超时、错误处理，Loop 只负责编排。**API 是两段式**：`prepare()` 装配并返回 wrapped agent；`execute(task)` 加 lifecycle/timeout 包装 `agent.run(task)`。`ComposedRun` 是多实例图；调用方用 `AgentRuntime.for_agent(run, agent_id, env_id=...)` 选定 Agent 与环境，Loop、LLM 和 Memory 则来自该 Agent 的受体（见 §4.2.1）。
 
 ```python
 class AgentRuntime:
     """与 loop 范式无关的通用编排。每次 prepare/execute 是独立 run 上下文。"""
 
-    def __init__(self, run: ComposedRun) -> None:
+    def __init__(self, run: ComposedRun, agent: Any, *, env: Any | None = None) -> None:
         self._run = run
+        self._agent = agent
+        self._env = env
         self._hooks: list[RuntimeHook] = list(run.hooks)
 
     @classmethod
-    def from_composed(cls, run: ComposedRun) -> "AgentRuntime":
-        return cls(run)
+    def for_agent(cls, run: ComposedRun, agent_id: str,
+                  *, env_id: str | None = None) -> "AgentRuntime":
+        # 多个 environment 时 env_id 必填；只有一个时可省略。
+        return cls(run, run.instance("agent", agent_id),
+                   env=run.instance("environment", env_id) if env_id else run.optional_single("environment"))
 
     # ── prepare(): 装配阶段 ─────────────────────────────────────────
     def prepare(self, *, task_id="unknown", action_filter=None,
                 loop_inputs=None,                  # 没有 **kwargs：Loop 的每任务输入走有类型的 loop_inputs
                 env_context=None) -> Any:          # 本任务的环境 setup context（TaskContext.env），给 3d 的检查
-        run = self._run
-        agent, loop, env, llm, memory = (
-            run.agent, run.loop, run.env, run.llm, run.memory
-        )
+        agent, env = self._agent, self._env
+        loop, llm, memory = agent.agent_loop, agent.llm, agent.memory
 
         # 1. Slot 校验：loop.__required_slots__ ⊆ agent 的 callable 方法
         loop.validate_slots(agent)
@@ -584,12 +587,12 @@ class AgentRuntime:
 
         prepared_agent = self.prepare(task_id=task_id, action_filter=action_filter,
                                       loop_inputs=loop_inputs, env_context=env_context)
-        memory.clear(); self._recorder.clear()                 # 一个 ComposedRun 可以跑多个任务
-        memory.add_messages(self.seed_messages(task))          # M32：种子消息是公开方法，见下
+        self._agent.memory.clear(); self._recorder.clear()       # 一个 ComposedRun 可以跑多个任务
+        self._agent.memory.add_messages(self.seed_messages(task))  # M32：种子消息是公开方法，见下
 
         # 在 env setup 之前打开 trace：setup 失败也要落进 trace
         await self._dispatch_lifecycle("on_run_start",
-            agent=self._run.agent, env=self._run.env,          # env：原始环境，不是 AOP 代理
+            agent=self._agent, env=self._env,                    # env：原始环境，不是 AOP 代理
             task=task, config=config or {}, ...,
             archive_negotiation=self._negotiated_archive,      # 没有归档消费者时为 None
             env_evidence_privacy=self._env_evidence_privacy,   # 有序、去重的隐私标记；没绑定归档器时为 None
@@ -2350,10 +2353,14 @@ EvaluatorRegistrar = create_registrar("evaluator", BaseEvaluator, discriminator_
 class BaseEvaluator(Protocol):
     @property
     def evaluator_id(self) -> str: ...
+    def config_signature(self) -> dict[str, Any]: ...
+    @property
+    def verdict_slug(self) -> str: ...
     async def evaluate(self, trace: RunTrace, reference: Any, **kwargs) -> EvalResult: ...
 ```
 
 Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可以访问任意深度的运行数据。
+每个 evaluator（包括仅结构化满足 Protocol 的实现）公开 `config_signature()` 与稳定的 `verdict_slug`：无旋钮时签名显式返回 `{}`，有旋钮时写出影响判定的可复现设置，slug 随之变化。Runner 不猜测缺失身份，也不把读取签名的异常吞掉后记成空签名。落盘的 `EvalResult` 只接受当前 `schema_version: "2.1"`；构造新判定时 `verdict_source` 默认 `graded`，读回已存判定时该字段与 `evaluator_config` 必须实际存在，旧数据不能被默认值伪装成已评分。
 
 **现状：独立评测阶段可启用 judge，与数据飞轮的回放保真判定解耦（用户 2026-10-14 的裁决，取代 2026-10-13 的休眠约定）。** judge 只读取已提交的轨迹和明确提供的任务评测材料，在独立阶段判断任务正确性；它的模型、判定依据和运行失败必须可追溯，报告单独展示任务正确率与有效判定覆盖率，不把模型错误、证据不足或未评测算成任务失败，也不把 agent 的 `done` 当作答对。恢复与分叉阶段不调用 judge、不用 judge 覆盖恢复校验的结论。时效任务的判定以录制时点与轨迹中的证据为准，不拿当前网站内容或模型的当前知识替代录制事实。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`，发布的 `export_sft.yaml` 也写 `null`），度量报告从不读判定；去污染只认导出配置里明确列出的 benchmark（默认 `[]`：不去污染，数据集 manifest 记 `decontaminated: false`），不再从判定推断（§4.15 "切分与去污染"）；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。剩下的一处依赖在数据一侧、不在判分器：导出的参考答案泄漏扫描读 benchmark 的评测数据加载器（§4.15 "校验"）。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
 

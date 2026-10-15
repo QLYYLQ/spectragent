@@ -528,8 +528,8 @@ class EnvironmentBase(metaclass=EnvironmentRegistrar.Meta):
         (:class:`~spectragent.core.archive.types.ArchiveContractError`).
         Any failure raises :class:`ArchiveCollectionError` naming every one,
         in capability order, chained from the first; the healthy batches
-        are discarded with it — the run is about to fail anyway, because an
-        explicitly requested archive is now incomplete.
+        are discarded with it. The archive consumer records this as a
+        recording-health failure, independently of the agent's outcome.
 
         No argument, ever: the environment never hands a step number or a
         cycle to a capability.
