@@ -112,18 +112,13 @@ class TestFailableSlots:
         with pytest.raises(ValidationError):
             Model(terminal=FragmentFailure(fragment_id="docker.terminal", error="RuntimeError"))
 
-    def test_failability_is_part_of_the_cache_key(self) -> None:
-        """Same fragments, different contract — not the same model.
-
-        The builder is ``lru_cache``d; if failability were applied outside
-        the cache, whichever run negotiated first would decide the shape
-        for every later one in the process.
-        """
+    def test_failability_stays_local_to_each_model(self) -> None:
+        """One caller allowing failure cannot widen another caller's slots."""
         keys = frozenset({"docker.terminal"})
         strict = build_observation_model(keys)
         lenient = build_observation_model(keys, failable=keys)
         assert strict is not lenient
-        assert strict is build_observation_model(keys)
+        assert strict is not build_observation_model(keys)
 
     def test_from_result_derives_failability_from_the_negotiation(self) -> None:
         from spectragent.schemas.observation.failure import FragmentFailure

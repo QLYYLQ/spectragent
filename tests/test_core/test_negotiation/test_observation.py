@@ -324,14 +324,20 @@ class TestLocalNameCollision:
         assert result.active_fragments == frozenset({"swe.terminal"})
 
 
-class TestObservationModelCaching:
-    """The model is rebuilt once per fragment set, not once per step."""
+class TestObservationModelIsolation:
+    """Mutable Pydantic class state belongs only to the constructing caller."""
 
-    def test_same_fragment_set_returns_the_same_class(self) -> None:
+    def test_same_fragment_set_has_independent_model_state(self) -> None:
         from spectragent.schemas.observation.dynamic_model import build_observation_model
 
         keys = frozenset({"browser.dom", "browser.screenshot"})
-        assert build_observation_model(keys) is build_observation_model(keys)
+        first = build_observation_model(keys)
+        second = build_observation_model(keys)
+        first.model_fields["dom"].description = "changed by the first caller"
+        first.model_config["title"] = "first caller"
+        assert first is not second
+        assert second.model_fields["dom"].description is None
+        assert "title" not in second.model_config
 
     def test_different_fragment_sets_get_different_classes(self) -> None:
         from spectragent.schemas.observation.dynamic_model import build_observation_model
@@ -340,22 +346,15 @@ class TestObservationModelCaching:
         b = build_observation_model(frozenset({"browser.dom", "browser.screenshot"}))
         assert a is not b
 
-    def test_replacing_a_fragment_class_invalidates_the_cached_model(self) -> None:
-        """Cache on the resolved classes, not on the key set alone.
-
-        Keying only on fragment *keys* handed back a model still
-        annotated with the previous class after a re-registration, so the
-        next ``observe()`` died with ``Input should be ... an instance of
-        NetA`` naming a class the registry no longer held — and nothing
-        in the repo ever called ``cache_clear()``.
-        """
+    def test_replacing_a_fragment_class_uses_the_current_registration(self) -> None:
+        """Each construction resolves the live registry, without retained classes."""
         from spectragent.schemas.observation._registrar import (
             FragmentBase,
             ObservationRegistrar,
         )
         from spectragent.schemas.observation.dynamic_model import build_observation_model
 
-        key = "cachebust.network"
+        key = "freshmodel.network"
         keys = frozenset({key})
 
         class NetA(FragmentBase):
@@ -364,7 +363,7 @@ class TestObservationModelCaching:
 
         try:
             first = build_observation_model(keys)
-            assert first is build_observation_model(keys)
+            assert first is not build_observation_model(keys)
 
             ObservationRegistrar.unregister(key)
 

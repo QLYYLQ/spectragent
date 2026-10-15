@@ -23,6 +23,8 @@ caller decides for itself rather than being handed a plausible-looking lie.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Literal
 
 ImageMediaType = Literal["image/png", "image/jpeg", "image/gif", "image/webp"]
@@ -44,12 +46,14 @@ _JPEG_SOF_MARKERS = frozenset(set(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC})
 #: Extension each media type is persisted under. ``.jpg`` rather than
 #: ``.jpeg`` to match what ``browser.screenshot`` (the action) already
 #: writes for its own artifacts.
-_SUFFIXES: dict[ImageMediaType, str] = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/gif": ".gif",
-    "image/webp": ".webp",
-}
+_SUFFIXES: Mapping[ImageMediaType, str] = MappingProxyType(
+    {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+    }
+)
 
 
 def image_media_type(data: bytes) -> ImageMediaType | None:

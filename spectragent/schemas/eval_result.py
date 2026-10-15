@@ -110,9 +110,9 @@ class EvalResult(BaseModel):
     # made a stored verdict unreadable on its own: a 2.0 record cannot
     # say whether its predicted_label was measured or manufactured, and
     # cannot say which configuration of the named evaluator produced it.
-    # Reading a 2.0 record back defaults verdict_source to "graded",
-    # which is why this is a version bump and not a silent field add.
-    schema_version: Literal["1.0", "1.1", "2.0", "2.1"] = "2.1"
+    # Persisted records accept only this version; old data cannot supply
+    # the verdict source or configuration needed to interpret a score.
+    schema_version: Literal["2.1"] = "2.1"
 
     # Identity
     task_id: str

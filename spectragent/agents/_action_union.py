@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError, create_model
@@ -53,12 +54,14 @@ __all__ = [
 #: JSON Schema scalar types this converter understands. Anything else is a
 #: params schema no closed union can express — see
 #: :class:`UnsupportedParamsSchema`.
-_SCALARS: dict[str, type] = {
-    "string": str,
-    "integer": int,
-    "number": float,
-    "boolean": bool,
-}
+_SCALARS: Mapping[str, type] = MappingProxyType(
+    {
+        "string": str,
+        "integer": int,
+        "number": float,
+        "boolean": bool,
+    }
+)
 
 _UNSAFE = re.compile(r"[\W_]+")
 
@@ -105,7 +108,7 @@ def _branch_type(action: str, param: str, schema: Mapping[str, Any]) -> Any:
             raise UnsupportedParamsSchema(action, param, "has a non-string enum")
         return Literal[tuple(enum)]  # type: ignore[valid-type]
     kind = schema.get("type")
-    if kind in _SCALARS:
+    if isinstance(kind, str) and kind in _SCALARS:
         return _SCALARS[kind]
     raise UnsupportedParamsSchema(action, param, f"has unsupported type {kind!r}")
 

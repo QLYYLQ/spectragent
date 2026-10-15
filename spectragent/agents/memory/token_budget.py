@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Annotated, ClassVar
 
 from pydantic import Field as PydanticField
@@ -31,10 +32,12 @@ def _estimate_tokens_word_ratio(text: str) -> int:
 
 
 #: Registry of text token estimators, selected by the ``token_estimator`` field.
-TEXT_TOKEN_ESTIMATORS: dict[str, Callable[[str], int]] = {
-    "char_ratio": _estimate_tokens_char_ratio,
-    "word_ratio": _estimate_tokens_word_ratio,
-}
+TEXT_TOKEN_ESTIMATORS: Mapping[str, Callable[[str], int]] = MappingProxyType(
+    {
+        "char_ratio": _estimate_tokens_char_ratio,
+        "word_ratio": _estimate_tokens_word_ratio,
+    }
+)
 
 #: Default per-image token cost.  A 1024x768 screenshot costs ~1105 tokens on
 #: OpenAI (85 base + 170 per 512x512 tile) and ~1049 on Anthropic (w*h/750).

@@ -9,7 +9,6 @@ See docs/architecture_design.md §4.4 "动态生成 Observation Model".
 from __future__ import annotations
 
 from collections.abc import Iterator
-from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, create_model
@@ -42,17 +41,10 @@ def build_observation_model(
     on purpose: a required fragment that failed must not be representable
     here, because the environment's answer to that is to raise.
 
-    The result is cached: the sole production caller is
-    ``EnvironmentBase.observe``, which runs **once per step**, and the set
-    is frozen by negotiation before the run starts — so rebuilding the
-    class every step was pure waste.
-
-    Registry lookup happens *here*, outside the cache, so the cache key is
-    the resolved fragment **classes**, not just their keys. Keying on the
-    key set alone meant re-registering a fragment under an existing key
-    handed back a model still annotated with the old class, and the next
-    ``observe()`` failed with ``Input should be ... an instance of NetA``
-    pointing at a class the registry no longer holds.
+    Each call builds a fresh class from the currently registered fragments.
+    Model fields and Pydantic configuration are mutable class state; sharing
+    a process-wide class would let one run change another run's contract.
+    The builder therefore retains no model classes between calls.
 
     Args:
         active_fragments: Fragment keys to include (from ObservationNegotiationResult).
@@ -62,31 +54,12 @@ def build_observation_model(
 
     Example::
 
-        Model = build_observation_model(frozenset({"terminal", "action_result"}))
+        Model = build_observation_model(frozenset({"docker.terminal", "loop.action_result"}))
         obs = Model(
             terminal=TerminalObs(stdout="hello", cwd="/tmp"),
             action_result=ActionResultObs(last_action="bash", success=True),
         )
         assert obs.terminal.stdout == "hello"
-    """
-    return _build_observation_model(
-        tuple(
-            (key, ObservationRegistrar.get(key), key in failable)
-            for key in sorted(active_fragments)
-        )
-    )
-
-
-@lru_cache(maxsize=64)
-def _build_observation_model(
-    resolved: tuple[tuple[str, type, bool], ...],
-) -> type[BaseModel]:
-    """Cached constructor keyed on ``(key, class, may_fail)`` triples.
-
-    ``may_fail`` is part of the cache key, not a detail applied after:
-    the same fragment set is a *different model* when one of its slots is
-    allowed to carry a :class:`FragmentFailure`, and two runs of one
-    process can legitimately negotiate both.
     """
     # No synthetic ``timestamp`` field: nothing ever assigned it, so every
     # step wrote a junk ``NNN_timestamp.json`` containing ``0.0``. Step
@@ -101,7 +74,9 @@ def _build_observation_model(
     # function is reached only with a set that already survived it, and a
     # second copy of the rule here could only ever disagree with the
     # first.
-    for key, frag_cls, may_fail in resolved:
+    for key in sorted(active_fragments):
+        frag_cls = ObservationRegistrar.get(key)
+        may_fail = key in failable
         field_name = fragment_field_name(key)
         # Loop-source fragments are filled by the Loop *after* env.observe()
         # via populate_loop_fragments. Make them Optional with default=None
