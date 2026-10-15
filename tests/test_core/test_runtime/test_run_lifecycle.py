@@ -1358,3 +1358,76 @@ async def test_model_cleanup_failure_preserves_execution_result_without_recordin
     result = await AgentRuntime.for_agent(run, AGENT_ID).execute("t")
     assert result.agent_done == AgentDoneStatus.DONE
     assert "client close failed" in caplog.text
+
+
+async def test_task_elapsed_time_includes_loading_cleanup_and_result_readback(monkeypatch):
+    from types import SimpleNamespace
+
+    import spectragent.core.benchmark_runner as benchmark_module
+    import spectragent.core.runtime as runtime_module
+    from spectragent.schemas.task import TaskContext
+
+    clock = SimpleNamespace(now=0.0)
+    measured_time = SimpleNamespace(monotonic=lambda: clock.now)
+    monkeypatch.setattr(runtime_module, "time", measured_time)
+    monkeypatch.setattr(benchmark_module, "time", measured_time)
+
+    class Loader:
+        def __getitem__(self, task_id):
+            clock.now += 1
+            return SimpleNamespace(task_text="task")
+
+        def get_task_context(self, task_id):
+            return TaskContext()
+
+    class TimedEnv(_Env):
+        async def setup(self, context=None, *, negotiation=None):
+            clock.now += 2
+            await super().setup(context, negotiation=negotiation)
+
+        async def teardown(self):
+            clock.now += 17
+            await super().teardown()
+
+    class TimedLoop(_SlowLoop):
+        def weave(self, agent, **deps):
+            async def run(task):
+                clock.now += 3
+                return agent_result(task_id="timed")
+
+            agent.run = run
+            return agent
+
+    class TimedHook(HookBase):
+        async def on_run_end(self, *, result, **kwargs):
+            assert result.metrics.execution_ms == 5000
+            clock.now += 11
+
+    class TimedModel(_LLM):
+        async def aclose(self, *, timeout=5.0):
+            clock.now += 13
+            return ()
+
+    def compose():
+        clock.now += 4
+        return make_run(
+            agent=_Agent(),
+            loop=TimedLoop(),
+            env=_make_env(TimedEnv),
+            llm=TimedModel(),
+            memory=_Memory(),
+            hooks=[TimedHook()],
+        )
+
+    read_ledger = benchmark_module._trace_ledger
+
+    def readback(*args, **kwargs):
+        result = read_ledger(*args, **kwargs)
+        clock.now += 7
+        return result
+
+    monkeypatch.setattr(benchmark_module, "_trace_ledger", readback)
+    outcome = await benchmark_module.BenchmarkRunner(loader=Loader(), compose=compose).run_task("t")
+    assert outcome.result is not None
+    assert outcome.result.metrics.execution_ms == 5000
+    assert outcome.elapsed_ms == 58000
