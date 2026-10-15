@@ -24,10 +24,12 @@ compromise or silently refresh the historical claim.
 
 - Current accepted implementation, the new local handoff, genuinely deferred work and
   retired continuation routes: [unfinished-work.md](references/unfinished-work.md).
-  The six review-change packages were accepted at `a6a36d0`; their current local entry
-  is `tmp/flywheel/followup/implementation/README.md`. The review specifications are
-  requirement history, not a new implementation queue. If local evidence is absent,
-  use the tracked summary and re-check the current architecture/code/tests.
+  Current local evidence starts at `tmp/framework_expansion/delivery.json`, with
+  `review/final.json`, `review/cursor.json` and `final/626612a/summary.json` beside it.
+  The five framework extensions plus cursor presentation are merged and frozen-tested;
+  the earlier `a6a36d0` six-package handoff remains completed history. Real-site
+  acceptance is separate. If local evidence is absent, use the tracked summary and
+  re-check the current architecture/code/tests, not old pending labels.
 - Project purpose, user-set design boundaries, and naming preferences:
   [project-decisions.md](references/project-decisions.md)
 - The 2026-09-17 ordered roadmap snapshot and its invalidated assumptions:
@@ -43,7 +45,7 @@ compromise or silently refresh the historical claim.
   Its old pending labels and temporary freezes are superseded, not active instructions.
 - The dated Jev/System One feasibility study and unresolved registrar/attribution choice:
   [jev-system-one-study.md](references/jev-system-one-study.md)
-- Human–code-agent development rationale, current config explanation and deferred tooling:
+- Human–code-agent development rationale and implemented config explanation/template tooling:
   [developer-experience.md](references/developer-experience.md)
 
 ## Use the history safely
