@@ -5,7 +5,9 @@ recorded value. It is not a configuration default or an OS setting to compare.
 """
 
 import logging
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
+
+from spectragent.core.capabilities.browser.commands import BrowserCommands
 
 ColorScheme = Literal["light", "dark"]
 COLOR_SCHEME_WORLD = "af-color-scheme"
@@ -18,25 +20,12 @@ COLOR_SCHEME_PROBE = """(() => {
 logger = logging.getLogger(__name__)
 
 
-class ColorSchemeClient(Protocol):
-    """The CDP operations needed before the recorder starts target preparation."""
-
-    async def send(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-        session_id: str | None = None,
-        *,
-        timeout: float | None = None,
-    ) -> Any: ...
-
-
 def color_scheme_from_record(value: Any) -> ColorScheme | None:
     """A known media theme, or no valid evidence; never infer a light default."""
     return value if isinstance(value, str) and value in ("light", "dark") else None
 
 
-async def measure_color_scheme(client: ColorSchemeClient, *, timeout: float) -> ColorScheme:
+async def measure_color_scheme(client: BrowserCommands, *, timeout: float) -> ColorScheme:
     """Read the initial page in an isolated world, before any media override.
 
     The fresh browser already has an initial page. Attach only for this read,
