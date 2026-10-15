@@ -31,6 +31,19 @@ Cursor-on real-site acceptance is tracked separately in
 `tmp/framework_expansion/live/acceptance.json`; do not infer task/login success from
 complete recording. These local artifacts are continuation evidence, not design authority.
 
+The 2026-10-16 cursor-on live run ended Bilibili at `CHALLENGE_BLOCKED`; account/password
+validity remains unconfirmed. All five site recordings and five same-path recordings
+are complete; all 35 call images match their fragment model views. Four replays reached
+the checkpoint; one errored at startup. Actual restoration checks passed **19/33**
+(35 planned, two unreached); exact screenshot plus URL matched **5/33**. No independent
+judge was run. See `live/acceptance.json` under the current handoff directory.
+
+Qidian first reported `Not attached to an active page`; its retry timed out capturing
+the screenshot after 10 seconds, and source/replay search documents repeatedly returned
+202. Read-only diagnosis did not confirm a new framework defect; the cause remains
+unresolved, not established as site noise (`live/miss_diagnosis.json`). Eastmoney showed
+a slider, but Luna did not drag it; this run does not establish slider rebound.
+
 ## Prior six-package acceptance (2026-10-15)
 
 The earlier implementation handoff is
