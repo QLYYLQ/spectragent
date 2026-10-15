@@ -59,6 +59,7 @@ class SourceRun:
         path = Path(checkpoint.trace_dir)
         try:
             trace = RunTrace(path)
+            trace.require_recording("trajectory", "observations", consumer="branch restoration")
         except (TraceSchemaError, OSError) as exc:
             raise IncompatibleCheckpointError(
                 str(path), [f"no readable trace at {path}: {type(exc).__name__}: {exc}"]
@@ -105,14 +106,26 @@ class SourceRun:
             IncompatibleCheckpointError: The step never committed, or its file
                 is unreadable.
         """
+        if (
+            self._trace.manifest.complete_through is None
+            or step > self._trace.manifest.complete_through
+        ):
+            raise IncompatibleCheckpointError(
+                self.name, [f"step {step} is beyond the complete source prefix"]
+            )
         record = self._read(lambda: self._trace.step(step), f"step {step}")
         if record is None:
             raise IncompatibleCheckpointError(self.name, [f"step {step} is not committed"])
         return record
 
     def calls(self, step: int) -> list[RecordedLLMCall]:
-        """Every recorded LLM call of *step*, in start order."""
-        return self._read(lambda: self._trace.llm_messages(step), f"the calls of step {step}")
+        """Recorded Agent decisions and parse retries, excluding helper calls."""
+        return self._read(
+            lambda: [
+                call for call in self._trace.llm_messages(step) if call.purpose == "agent_decision"
+            ],
+            f"the decision calls of step {step}",
+        )
 
     def observation(self, step: int, negotiated: Any) -> Any:
         """The observation *step* recorded, as this run's ``NegotiatedObservation``.

@@ -91,8 +91,8 @@ def _harness(agent: BrowserUseAgent) -> dict[str, Any]:
     _kept, guard = build_guarded_act(_execute, descriptors, bindings=negotiated.action_bindings)
     agent.prepare(
         task="t",
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
         action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     return {
         "negotiated": negotiated,
@@ -123,8 +123,8 @@ def harness() -> dict[str, Any]:
 def _prompt(agent: BrowserUseAgent, descriptors: list[Any]) -> str:
     content = agent.prepare(
         task="t",
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
         action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
     )[0].content
     assert isinstance(content, str)
     return content

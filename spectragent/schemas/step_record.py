@@ -71,6 +71,9 @@ class StepRecord(BaseModel):
     step: int
     observation_summary: str = ""
     llm_output: str = ""
+    # Restored steps contain exact action/returned-result pairs here. Attempts
+    # that raised without returning remain in restoration.actions, including
+    # their original order and exception; never shift a later result backward.
     actions: list[Action] = Field(default_factory=list)
     action_results: list[ActionResult] = Field(default_factory=list)
     timestamp: float = 0.0

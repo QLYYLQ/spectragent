@@ -91,8 +91,8 @@ def prepared() -> tuple[SkyvernAgent, str, list[ActionDescriptor], Any]:
     agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=100))
     prompt = agent.prepare(
         task="t",
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
         action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
     )[0].content
     assert isinstance(prompt, str)
 
@@ -190,8 +190,8 @@ class TestPromptVocabulary:
         ]
         prompt = agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=elsewhere,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )[0].content
         assert isinstance(prompt, str)
 

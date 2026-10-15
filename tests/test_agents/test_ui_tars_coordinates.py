@@ -109,8 +109,8 @@ class TestThePromptNamesTheGrid:
         agent = _agent()
         prompt = agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )[0].content
         assert isinstance(prompt, str)
         assert "# Coordinates" in prompt
@@ -126,8 +126,8 @@ class TestThePromptNamesTheGrid:
         agent = _agent(coordinate_space="normalized_1000")
         prompt = agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )[0].content
         assert isinstance(prompt, str)
         assert "0-1000 grid" in prompt
@@ -146,8 +146,8 @@ class TestThePromptNamesTheGrid:
         agent = _agent(coordinate_space=space)
         prompt = agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )[0].content
         assert isinstance(prompt, str)
         assert "the two numbers alone" in prompt
@@ -158,8 +158,8 @@ class TestThePromptNamesTheGrid:
         agent = _agent(coordinate_space="normalized_1000")
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         snapshot = agent.system_prompt
         assert snapshot is not None

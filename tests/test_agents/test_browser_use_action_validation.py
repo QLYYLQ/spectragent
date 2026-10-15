@@ -48,8 +48,8 @@ class TestClosedUnion:
         agent = BrowserUseAgent(flash_mode=True)
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_descriptors(*keys),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         return agent.get_react_output_model()
 
@@ -158,8 +158,8 @@ class TestClosedUnion:
         with pytest.raises(ValueError, match="at least one negotiated action"):
             agent.prepare(
                 task="t",
-                execution_limits=ExecutionLimits(max_actions_per_step=1),
                 action_descriptors=[],
+                execution_limits=ExecutionLimits(max_actions_per_step=1),
             )
 
     def test_a_params_schema_outside_the_subset_fails_at_prepare(self) -> None:
@@ -186,8 +186,8 @@ class TestReasoningFieldsFollowTheVariant:
         agent = BrowserUseAgent(flash_mode=True)
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_descriptors("browser.done"),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert list(agent.get_react_output_model().model_fields) == ["memory", "action"]
 
@@ -195,8 +195,8 @@ class TestReasoningFieldsFollowTheVariant:
         agent = BrowserUseAgent(flash_mode=False, use_thinking=True)
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_descriptors("browser.done"),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert list(agent.get_react_output_model().model_fields) == [
             "thinking",
@@ -212,8 +212,8 @@ class TestReasoningFieldsFollowTheVariant:
         agent = BrowserUseAgent(flash_mode=False, use_thinking=False)
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_descriptors("browser.done"),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert "thinking" not in agent.get_react_output_model().model_fields
 
@@ -225,8 +225,8 @@ class TestRenderActionList:
     def _render(self, agent: BrowserUseAgent, *keys: str) -> str:
         seed = agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_descriptors(*keys),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         return str(seed[0].content)
 

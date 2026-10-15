@@ -16,7 +16,7 @@ provider refused (the structured agents) and a multi-action reply cut to one:
   last still equals the source's, and the last is what the agent built from
   the live observation — which, for an agent that reads the DOM, is not the
   recorded one;
-- Skyvern's ``_action_history`` (agent state no memory holds) is rebuilt.
+- Skyvern's rendered action history (agent-owned state) is rebuilt.
 """
 
 from __future__ import annotations
@@ -92,6 +92,7 @@ async def _source(tmp_path: Path, kind: AgentKind, memory: str) -> tuple[Outcome
         run_id="src",
     )
     assert outcome.result is not None and outcome.result.agent_done.value == "done"
+    assert outcome.run_dir is not None
     assert outcome.run_dir is not None
     trace = RunTrace(outcome.run_dir)
     # The source has what the replay must reproduce: a re-ask, a refused
@@ -181,3 +182,42 @@ async def test_skyvern_action_history_rebuilt(tmp_path: Path, memory: str) -> No
         assert at_policy_step == recorded_history[step]
     # Not vacuous: by step 2 the history holds both actions of the cut reply.
     assert len(recorded_history[2]) == 3
+
+
+@pytest.mark.parametrize("kind", AGENTS)
+@pytest.mark.parametrize("memory", MEMORIES)
+async def test_shipped_agent_restored_history_uses_live_execution(
+    tmp_path: Path, kind: AgentKind, memory: str
+) -> None:
+    _, source = await _source(tmp_path, kind, memory)
+    loop = branch_loop()
+    loop.history_source = "restored"
+    outcome = await drive(
+        tmp_path / "restored-branches",
+        kind=kind,
+        memory=memory,
+        loop=loop,
+        replies=[SCRIPTS[kind]()[-1]],
+        run_id="restored",
+        id_offset=500,
+        checkpoint=Checkpoint(trace_dir=str(source.trace_dir.resolve()), step=2),
+    )
+    assert outcome.result is not None and outcome.result.agent_done.value == "done"
+    assert outcome.run_dir is not None
+    trace = RunTrace(outcome.run_dir)
+    assert [record.origin for record in trace.step_records] == [
+        "restored",
+        "restored",
+        "policy",
+        "terminal",
+    ]
+    assert trace.llm_messages(0) == trace.llm_messages(1) == []
+    text = str(recorded_form(outcome.teacher.prompts[0]))
+    assert "actual_restored_execution" in text and "source_material" in text
+    assert "not a new reply or thought" in text
+    if kind != "ui_tars":
+        first = trace.step(0)
+        assert first is not None and first.source_history is not None
+        assert first.actions[0].params["index"] == 501
+        assert first.source_history.source_actions[0].params["index"] == 101
+    assert all(record.llm_output == "" for record in trace.step_records[:2])

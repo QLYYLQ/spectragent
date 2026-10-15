@@ -2,7 +2,7 @@
 
 Verifies that all three adapted agents:
 
-- Pass ``AgentRuntime``'s ``validate_slots`` against ``ReactLoop``
+- Pass ``ReactLoop.validate_slots`` for each browser Agent
 - Have the right observation negotiation behaviour (UITars must NOT
   trigger DOM resolution)
 - Successfully complete one mocked observe → think → act step driven
@@ -241,10 +241,7 @@ async def _resolve(agent: Any, action: Any, capability: Any) -> str:
 
     _kept, guard = build_guarded_act(_act, descriptors, bindings=negotiated.action_bindings)
 
-    async def _drive() -> ActionResult:
-        return await guard(action)
-
-    result = await _drive()
+    result = await guard(action)
     assert result.success, result.error
     return routed[0].name
 
@@ -280,8 +277,8 @@ class TestAgentToCapabilityActionVocabulary:
         ]
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=descriptors,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         model = agent.get_react_output_model()
 
@@ -327,7 +324,7 @@ class TestAgentToCapabilityActionVocabulary:
         assert len(actions) == 1
         assert actions[0].name == "click_coordinate"
         capability = BrowserCapability()
-        assert (await _resolve(agent, actions[0], capability)) == "browser.click_coordinate"
+        assert await _resolve(agent, actions[0], capability) == "browser.click_coordinate"
 
     async def test_all_three_agents_done_uses_extracted_content(self) -> None:
         # Regression: every adapted agent must emit its done action
@@ -347,10 +344,10 @@ class TestAgentToCapabilityActionVocabulary:
         bu = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
         bu.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[
                 a.descriptor() for a in capability.actions if a.action_id == "browser.done"
             ],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         bu_out = bu.get_react_output_model().model_validate(
             {
@@ -359,7 +356,7 @@ class TestAgentToCapabilityActionVocabulary:
             }
         )
         bu_actions = bu.parse_react_output(bu_out)
-        assert (await _resolve(bu, bu_actions[0], capability)) == "browser.done"
+        assert await _resolve(bu, bu_actions[0], capability) == "browser.done"
         assert bu_actions[0].params["extracted_content"] == "answer bu"
 
         # SkyvernAgent
@@ -370,13 +367,13 @@ class TestAgentToCapabilityActionVocabulary:
             extracted_content="answer sk",
         )
         sk_actions = sk.parse_react_output(sk_out)
-        assert (await _resolve(sk, sk_actions[0], capability)) == "browser.done"
+        assert await _resolve(sk, sk_actions[0], capability) == "browser.done"
         assert sk_actions[0].params["extracted_content"] == "answer sk"
 
         # UITarsAgent
         ut = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         ut_actions = ut.parse_react_output("Action: finished(content='answer ut')")
-        assert (await _resolve(ut, ut_actions[0], capability)) == "browser.done"
+        assert await _resolve(ut, ut_actions[0], capability) == "browser.done"
         assert ut_actions[0].params["extracted_content"] == "answer ut"
 
 
@@ -450,8 +447,8 @@ class TestReactLoopDriveBrowserUse:
         ]
         seed = agent.prepare(
             task="Find the answer",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=descriptors,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         agent.memory.add_messages(seed)
         llm = _MockLLM(

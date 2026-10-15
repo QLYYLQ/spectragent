@@ -104,8 +104,8 @@ def _prepared(agent_id: str) -> Any:
     ]
     agent.prepare(
         task="log in",
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
         action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     return agent
 

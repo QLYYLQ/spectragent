@@ -59,6 +59,10 @@ from pydantic import Field as PydanticField
 
 from spectragent.agents._browser_platform import render_browser_platform
 from spectragent.agents._registrar import AgentBase
+from spectragent.agents.prompt_context import (
+    place_prompt_contributions,
+    restored_history_message,
+)
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -77,7 +81,7 @@ from spectragent.schemas.observation.geometry import (
     point_grid,
 )
 from spectragent.schemas.observation.image import image_media_type
-from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext
+from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, RestoredHistory
 
 # ── The verb vocabulary ──────────────────────────────────────
 
@@ -788,11 +792,14 @@ class UITarsAgent(AgentBase):
 
         if screenshot is None or image_bytes is None:
             self._grid = None
-            return [
-                UserMessage(
-                    content=f"Task: {task_text}\n{platform_text}\n(no screenshot available)"
-                )
-            ]
+            return place_prompt_contributions(
+                [
+                    UserMessage(
+                        content=f"Task: {task_text}\n{platform_text}\n(no screenshot available)"
+                    )
+                ],
+                context=context,
+            )
 
         self._grid = point_grid(self.coordinate_space, screenshot)
         text = f"Task: {task_text}\n{platform_text}"
@@ -813,7 +820,25 @@ class UITarsAgent(AgentBase):
                 ),
             ),
         ]
-        return [UserMessage(content=content)]
+        return place_prompt_contributions([UserMessage(content=content)], context=context)
+
+    async def build_restored_history(
+        self,
+        observation: Any,
+        *,
+        history: RestoredHistory,
+        context: ReactPromptContext,
+    ) -> list[BaseMessage]:
+        """Keep the live screenshot grid and label restored CSS-pixel actions as facts."""
+        history.validate_execution()
+        messages = await self.build_react_prompt(observation, context=context)
+        restored = restored_history_message(history)
+        return [
+            *messages,
+            UserMessage(
+                content="Executed coordinate parameters use CSS viewport pixels. " + restored.text
+            ),
+        ]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
         """Read every ``Action:`` line of a reply into an executable Action.

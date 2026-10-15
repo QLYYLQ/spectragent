@@ -30,12 +30,16 @@ from pydantic import Field as PydanticField
 from spectragent.agents._browser_platform import render_browser_platform
 from spectragent.agents._output_models import SkyvernOutput
 from spectragent.agents._registrar import AgentBase
+from spectragent.agents.prompt_context import (
+    place_prompt_contributions,
+    restored_history_message,
+)
 from spectragent.agents.prompts import PromptEngine
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionDescriptor
-from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext
+from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, RestoredHistory
 
 
 @dataclass
@@ -244,7 +248,26 @@ class SkyvernAgent(AgentBase):
             )
         prefix_parts.append(f"<action_history>\n{self._render_action_history()}\n</action_history>")
         body = "\n".join(prefix_parts) + "\n\n" + self._render_browser_state(observation)
-        return [UserMessage(content=body, cache=True)]
+        return place_prompt_contributions([UserMessage(content=body, cache=True)], context=context)
+
+    async def build_restored_history(
+        self,
+        observation: Any,
+        *,
+        history: RestoredHistory,
+        context: ReactPromptContext,
+    ) -> list[BaseMessage]:
+        """Render actual restored facts and advance this Agent's action history.
+
+        Rendering happens before this step's executed actions enter the window,
+        just as a policy prompt precedes its decision. The source reply is never
+        parsed and cannot populate the history with obsolete target identifiers.
+        """
+        history.validate_execution()
+        messages = await self.build_react_prompt(observation, context=context)
+        restored = restored_history_message(history)
+        self._action_history.extend(f"{action.name}({action.params})" for action in history.actions)
+        return [*messages, restored]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
         if isinstance(llm_output, SkyvernOutput):

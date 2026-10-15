@@ -79,8 +79,8 @@ async def _agent(space: str = "screenshot_pixels", *, dpr: int = 1, **config: An
     ]
     agent.prepare(
         task="tick the box",
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
         action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     (
         await agent.build_react_prompt(
@@ -326,8 +326,8 @@ class TestUnrepresentable:
         ]
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=descriptors,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         (
             await agent.build_react_prompt(
@@ -359,8 +359,8 @@ class TestUnrepresentable:
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[ActionRegistrar.get("browser.click_coordinate")().descriptor()],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         (
             await agent.build_react_prompt(

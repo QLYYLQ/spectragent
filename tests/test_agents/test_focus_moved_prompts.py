@@ -113,8 +113,8 @@ def _prepared(agent_id: str) -> Any:
     ]
     seed = agent.prepare(
         task="read the article",
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
         action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     return agent, seed
 

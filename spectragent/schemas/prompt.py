@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.schemas._types import UTCDatetime
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.restoration import RestoredAction
+
+if TYPE_CHECKING:
+    from spectragent.core.llm.base import BaseChatModel
 
 
 class PromptRef(BaseModel):
@@ -75,7 +79,7 @@ class ReactPromptContext:
     contributions: list[PromptContribution] = field(default_factory=list)
     source_run_id: str | None = None
     source_reply: str | None = None
-    generated: set[str] = field(default_factory=set, repr=False)
+    generated: set[object] = field(default_factory=set, repr=False)
 
 
 class RestoredHistory(BaseModel):
@@ -89,18 +93,37 @@ class RestoredHistory(BaseModel):
     source_actions: list[Action] = Field(default_factory=list)
     actions: list[Action] = Field(default_factory=list)
     results: list[ActionResult] = Field(default_factory=list)
+    executions: list[RestoredAction] = Field(default_factory=list)
 
     def validate_execution(self) -> None:
         """Refuse incomplete or mismatched execution before an Agent renders it."""
         if len(self.actions) != len(self.results):
             raise ValueError("restored history needs one actual result for each executed action")
+        if len(self.executions) != len(self.source_actions):
+            raise ValueError("restored history execution order does not cover the source actions")
+        if len(self.executions) != len(self.actions):
+            raise ValueError(
+                "restored history needs one actual result and target for each execution"
+            )
+        for index, execution in enumerate(self.executions):
+            if execution.recorded != self.source_actions[index]:
+                raise ValueError(f"restored history source action {index} is out of order")
+            if execution.executed != self.actions[index]:
+                raise ValueError(f"restored history target identity differs at action {index}")
+            if execution.result is None or execution.result != self.results[index]:
+                raise ValueError(f"restored history actual result differs at action {index}")
+            if execution.live_success != execution.result.success:
+                raise ValueError(f"restored history result success differs at action {index}")
+            if execution.live_error is not None:
+                raise ValueError(f"restored history action {index} has no completed result")
 
 
 @dataclass(frozen=True, kw_only=True)
 class PromptRequest:
     """The stable Python contribution function's single keyword-only input."""
 
+    # NegotiatedObservation is built dynamically from each run's fragment union.
     observation: Any
     context: ReactPromptContext
     parameters: dict[str, Any]
-    helper: Any = None
+    helper: BaseChatModel | None = None

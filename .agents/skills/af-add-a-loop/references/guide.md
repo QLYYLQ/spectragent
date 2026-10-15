@@ -288,9 +288,20 @@ a guard's veto still propagates. Runtime's execution clock includes the observat
 `BranchLoop` remains a ReAct branch. Its restored prefix and terminal observation do not
 consume the policy-step budget, enter the run's policy action history, or inherit source
 model usage. Source history reconstruction replays only Agent decision/retry calls, not
-auxiliary model replies. The configured history policy must keep source material and
-actual restored execution distinguishable; consult the current architecture before
-changing that policy or its Agent contract.
+auxiliary model replies. `history_source: source` reconstructs and exactly checks recorded prompts, replaying only
+main decision calls and recorded contributions. `restored` asks the Agent's public
+`build_restored_history` slot to express live restoration observations, actual retargeted
+actions and results, and separately labelled source material. It does not rewrite source
+thoughts or touch Agent-private history. Both use the same live checkpoint observation;
+environment `strict`/`warn` never waives history-contract errors.
+
+`BranchLoop.execute_step` drives each restoration iteration while a run-owned iterator
+is active, then delegates policy steps to ReAct. The checkpoint capture and first policy
+step have one step identity and one handoff; recording keeps that step's existing start
+time. Restored failures and cancellation retain their actual step timing. Prompt
+contributions use a Hook around the asynchronous builder with explicit
+`ReactPromptContext`: generate once per selected policy step, reuse on retries, read
+recorded contributions without calling helpers during history reconstruction.
 
 A restorer receives a narrow `RestorationContext` with environment, action function,
 negotiated observation, source accessor and checkpoint. It has no model, memory or

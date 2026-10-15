@@ -209,8 +209,8 @@ class TestPrepare:
         agent = _make_agent()
         seed = agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert isinstance(seed, list)
         assert len(seed) == 1
@@ -224,8 +224,8 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="click the search box",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=b"\x89PNG\r\n\x1a\nFAKE"),
@@ -262,8 +262,8 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=buffer.getvalue()),
@@ -281,8 +281,8 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="ignored-old-value",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=b"\x89PNG"),
@@ -302,8 +302,8 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(task=_FakeTask(user_request="some task"))
         messages = await agent.build_react_prompt(

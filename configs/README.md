@@ -390,7 +390,7 @@ agent_loop:
   max_actions_per_step: 1           # must be the source run's (checked at assembly)
   continue_steps: 0                 # 0: decide step t only; N: N more ReAct steps after it
   terminal_observation: true        # default: one more observation after the run ends
-  branch_instruction: none          # prefer_different_action: one fixed message at step t (below)
+  history_source: source            # exact source history, or restored execution history
   restorer:
     restorer_id: prefix_replay
     verify: strict                  # warn: record a failed check and go on
@@ -446,12 +446,13 @@ task_loader:
 - **Teacher sampling.** The branches of one checkpoint get identical inputs, so only the
   teacher's sampling makes them differ: the shipped file sets the teacher's
   `temperature: 0.8` (the recording ran at the openai default, 0.2) and
-  `branches_per_step: 3`. `branch_instruction: prefer_different_action` adds one message at
-  step *t* only, after the prefix is rebuilt and the environment restored: it quotes the
-  reply the source gave at that step and asks for a different action that also moves the
-  task forward (none when the source recorded no action there). The option is recorded
-  raw in `config.json`; the text is in step *t*'s recorded model call
-  (`docs/data_flywheel_runbook.md`, "teacher 采样").
+  `branches_per_step: 3`. An explicit `prompt_contribution` hook can generate an
+  additional instruction after restoration. Its stable Python function receives
+  `PromptRequest` and may return text or structured `PromptContribution`; the Agent
+  decides where it belongs. Default scope generates once at the first branch policy
+  step; each-policy-step scope still reuses contributions for parse retries. Source
+  reconstruction reads recorded contributions without regenerating them. Helper calls
+  are recorded separately from Agent decisions (`docs/data_flywheel_runbook.md`).
 - **No scoring yet**: `trace_branches` has no eval loader, so a configured evaluator is
   refused before the sweep starts — pass `--no-eval`.
 

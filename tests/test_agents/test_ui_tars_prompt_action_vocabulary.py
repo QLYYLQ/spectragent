@@ -144,8 +144,8 @@ async def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) ->
     agent.prompt_template = variant
     prompt = agent.prepare(
         task="t",
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
         action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
     )[0].content
     assert isinstance(prompt, str)
     (

@@ -157,8 +157,8 @@ class TestPrepare:
         agent = _make_agent()
         seed = agent.prepare(
             task="Find the cheapest flight",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert isinstance(seed, list)
         assert len(seed) == 1
@@ -179,8 +179,8 @@ class TestPrepare:
         agent = _make_agent()
         seed = agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         text = seed[0].content
         assert isinstance(text, str)
@@ -205,8 +205,8 @@ class TestPrepare:
             _make_agent()
             .prepare(
                 task="t",
-                execution_limits=ExecutionLimits(max_actions_per_step=1),
                 action_descriptors=[],
+                execution_limits=ExecutionLimits(max_actions_per_step=1),
             )[0]
             .content
         )
@@ -224,8 +224,8 @@ class TestPrepare:
             )
             .prepare(
                 task="t",
-                execution_limits=ExecutionLimits(max_actions_per_step=1),
                 action_descriptors=[],
+                execution_limits=ExecutionLimits(max_actions_per_step=1),
             )[0]
             .content
         )
@@ -235,15 +235,25 @@ class TestPrepare:
         assert "verification code" in on
         assert "username=bob" in on
 
-    def test_resets_action_history(self) -> None:
+    async def test_resets_action_history(self) -> None:
         agent = _make_agent()
-        agent._action_history.append("stale")
+        agent.parse_react_output(
+            SkyvernOutput(actions=[SkyvernActionItem(action_type="browser.click", index=7)])
+        )
+        (before,) = await agent.build_react_prompt(
+            _FakeObservation(), context=ReactPromptContext(step=1, phase="policy")
+        )
+        assert "browser.click(" in before.text
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
-        assert agent._action_history == []
+        (after,) = await agent.build_react_prompt(
+            _FakeObservation(), context=ReactPromptContext(step=0, phase="policy")
+        )
+        assert "(no actions yet)" in after.text
+        assert "browser.click(" not in after.text
 
 
 class TestBuildReactPrompt:
@@ -259,8 +269,8 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         state = DOMState(
             serialized_dom="[1]<button>Submit</button>\n[2]<input placeholder='q'/>",
@@ -288,8 +298,8 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         tail = "[173]<button>Reachable at the end</button>"
         state = DOMState(serialized_dom="x" * 10_100 + tail)
@@ -316,8 +326,8 @@ class TestBuildReactPrompt:
         agent = _make_agent(action_history_window=2)
         seed = agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         assert isinstance(seed[0].content, str)
         assert "<action_history>" not in seed[0].content
@@ -356,8 +366,8 @@ class TestBuildReactPrompt:
         agent = _make_agent(action_history_window=0)
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         for i in range(3):
             agent.parse_react_output(
@@ -378,8 +388,8 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<x/>"),
@@ -396,8 +406,8 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<x/>"),
@@ -415,8 +425,8 @@ class TestBuildReactPrompt:
         agent = _make_agent()
         agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         obs = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
         messages = await agent.build_react_prompt(
@@ -542,7 +552,7 @@ class TestParseReactOutput:
         assert actions[0].params["extracted_content"] == "answer text"
         assert "text" not in actions[0].params
 
-    def test_action_history_populated_for_prompt_window(self) -> None:
+    async def test_action_history_populated_for_prompt_window(self) -> None:
         agent = _make_agent()
         out = SkyvernOutput(
             actions=[
@@ -555,7 +565,11 @@ class TestParseReactOutput:
             ]
         )
         agent.parse_react_output(out)
-        assert any(entry.startswith("browser.type(") for entry in agent._action_history)
+        (message,) = await agent.build_react_prompt(
+            _FakeObservation(), context=ReactPromptContext(step=1, phase="policy")
+        )
+        assert "browser.type(" in message.text
+        assert "'text': 'hello'" in message.text
 
     def test_a_bare_name_is_left_for_the_guard_to_bind(self) -> None:
         """The agent must not invent a provider for a bare verb.

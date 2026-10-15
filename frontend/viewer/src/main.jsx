@@ -697,7 +697,7 @@ function Calls({ calls, schemas = {} }) {
         >
           <div className="section-heading">
             <h3>
-              Call {call.call ?? index}
+              {call.purpose === "prompt_helper" ? "Prompt helper" : "Agent decision"} {call.call ?? index}
               <span className="muted small"> · step {call.step}</span>
             </h3>
             <div className="inline">
@@ -705,6 +705,10 @@ function Calls({ calls, schemas = {} }) {
               <span className="small mono">{duration(call.latency_ms)}</span>
             </div>
           </div>
+          <p className="muted small">
+            Caller: {call.caller || "Unknown"} · Model: {call.model || "Unknown"}
+            {call.purpose === "prompt_helper" && " · External prompt generation; this is not the Agent's thought."}
+          </p>
           {call.failure && (
             <div className="notice error">
               <strong>{call.failure.error || "Model call failed"}</strong>
@@ -790,10 +794,14 @@ function StepActions({ record }) {
           <div className="notice">
             <strong>Restored step</strong>
             <p>
-              Current execution is recorded by the restoration check. The source
-              actions, results, and model output below are copied history.
+              These actions and results describe this run's restored execution.
+              The source material below retains the earlier decision separately;
+              restoration did not generate a new Agent reply or thought.
             </p>
           </div>
+          {record.source_history && (
+            <JsonPanel title="Source material and restoration correspondence" value={record.source_history} />
+          )}
           {check ? (
             <section>
               <div className="section-heading">
@@ -861,16 +869,16 @@ function StepActions({ record }) {
       {record.truncated_actions > 0 && (
         <div className="notice">
           {record.truncated_actions} model-emitted actions were discarded{" "}
-          {restored ? "in the copied source step" : "by the action limit"}.
+          by the action limit.
         </div>
       )}
       <JsonPanel
-        title={restored ? "Source actions (copied)" : "Actions"}
+        title={restored ? "Executed restored actions" : "Actions"}
         value={record.actions}
         initialOpen={!restored}
       />
       <JsonPanel
-        title={restored ? "Source action results (copied)" : "Action results"}
+        title={restored ? "Actual restored results" : "Action results"}
         value={record.action_results}
         initialOpen={!restored}
       />
@@ -951,7 +959,7 @@ function StepDetail({ runKey, index, revision }) {
               )}
               <p className="observation-summary">
                 {step.record.origin === "restored" && (
-                  <strong>Source observation summary (copied): </strong>
+                  <strong>Restored observation: </strong>
                 )}
                 {step.record.observation_summary}
               </p>

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import re
 from collections.abc import Sequence
 from functools import cache
 from pathlib import Path
@@ -223,6 +224,12 @@ class ScriptedTeacher:
     """Replies from a script; a dict is validated into the call's output model."""
 
     model = "scripted-teacher"
+    name = "scripted-teacher"
+    model_type = "test"
+    provider = "test"
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple:
+        return ()
 
     def __init__(self, replies: Sequence[Any]) -> None:
         self.replies = list(replies)
@@ -238,11 +245,6 @@ class ScriptedTeacher:
         if output_format is not None:
             return ChatInvokeCompletion(completion=output_format.model_validate(reply), usage=None)
         return ChatInvokeCompletion(completion=reply, usage=None)
-
-    name = "test-model"
-
-    async def aclose(self, *, timeout=5.0):
-        return ()
 
 
 AgentKind = Literal["browser_use", "skyvern", "ui_tars"]
@@ -309,7 +311,9 @@ async def drive(
 
     async def spy(observation: Any, *, context: Any) -> Any:
         messages = await original(observation, context=context)
-        snapshot = list(getattr(agent, "_action_history", []))
+        text = "\n".join(str(message.content) for message in messages)
+        history = re.search(r"<action_history>\n(.*?)\n</action_history>", text, flags=re.S)
+        snapshot = history.group(1).splitlines() if history else []
         built.append((messages, snapshot))
         return messages
 

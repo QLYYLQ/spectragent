@@ -168,17 +168,17 @@ class _Run:
             active_actions=self.actions.active_actions,
             fragments=self.obs.active_fragments,
         )
-        action_space, self.guard = build_guarded_act(
+        self.action_space, self.guard = build_guarded_act(
             self.env.act,
             descriptors,
             None,
             bindings=self.actions.action_bindings,
         )
-        self.descriptors = action_space.descriptors
+        self.descriptors = self.action_space.descriptors
         self.agent.prepare(
             task="t",
-            execution_limits=ExecutionLimits(max_actions_per_step=1),
             action_descriptors=self.descriptors,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
 
     @property

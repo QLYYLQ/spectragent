@@ -200,14 +200,14 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
     __requires_env__: ClassVar[bool] = True                   # 没有环境的 run：prepare() 报 MissingEnvironmentError（见下）
     __loop_fragments__: ClassVar[frozenset[str]] = LOOP_FRAGMENT_KEYS  # 本 Loop 建得出的 loop 来源 fragment（§4.4）
 
-    def _validate_slots(self, agent: Any) -> None:
+    def validate_slots(self, agent: Any) -> None:
         """callable(getattr(agent, slot)) — 缺 slot 即 raise IncompatibleError"""
 
     def check_loop_inputs(self, inputs: Mapping[str, Any]) -> None:
         """键与类型对照 __loop_inputs__ — 多的、缺的、类型不对的一次报全：IncompatibleLoopInputError"""
 
     def weave(self, agent: Any, **deps: Any) -> Any:
-        self._validate_slots(agent)
+        self.validate_slots(agent)
         self.check_loop_inputs(deps.get("loop_inputs", {}))
         ctx = dict(deps)               # 只活在闭包里：loop 实例上什么都不存（没有 loop.ctx）
         loop = self
@@ -256,7 +256,7 @@ class ReactLoop(AgentLoopBase):
 
 后两个都是 ReAct 的 slot，所以写在 `ReactLoop.__optional_slots__` 里（`BranchLoop` 继承）；不另立 `__inverse_slots__` 之类的新机制，也没有导出专用的错误类型。
 
-- **`format_react_output`** 是 `parse_react_output` 的逆：把一步的（已翻译、全限定名的）动作和可选的 thought 写成本 agent 的回复文本，正是这个 agent 在服务时会被要求写出的那种。它读本步的 agent 状态，所以调用顺序固定：`prepare` → 本步的 `build_react_prompt(obs)` → `format_react_output` → `parse_react_output`（UI-TARS 的点要用本步截图的网格换算）。确定性：同样的输入同样的文本。动作名或某个参数这个格式写不出来时抛 `UnrepresentableActionError(action_name, params, detail)`（`core/loops/errors.py`，`ParseError` 的对偶），绝不静默丢掉；导出器把它当成 `untranslatable` 的原因 `unrepresentable`（§4.15）。round-trip 的定义（§4.15 "round-trip"）对每个实现都成立，`tests/test_agents/test_format_react_output_round_trip.py` 对每个定义了它的已注册 agent 类逐一检查。v1 只有 `ui_tars` 实现它。
+- **`format_react_output`** 是 `parse_react_output` 的逆：把一步的（已翻译、全限定名的）动作和可选的 thought 写成本 agent 的回复文本，正是这个 agent 在服务时会被要求写出的那种。它读本步的 agent 状态，所以调用顺序固定：`prepare` → 本步的 `await build_react_prompt(obs, context=...)` → `format_react_output` → `parse_react_output`（UI-TARS 的点要用本步截图的网格换算）。确定性：同样的输入同样的文本。动作名或某个参数这个格式写不出来时抛 `UnrepresentableActionError(action_name, params, detail)`（`core/loops/errors.py`，`ParseError` 的对偶），绝不静默丢掉；导出器把它当成 `untranslatable` 的原因 `unrepresentable`（§4.15）。round-trip 的定义（§4.15 "round-trip"）对每个实现都成立，`tests/test_agents/test_format_react_output_round_trip.py` 对每个定义了它的已注册 agent 类逐一检查。v1 只有 `ui_tars` 实现它。
 - **`parse_react_thought`** 从一次录下的回复里读出 thought 及其来源字段，读不到返回 `None`。它是纯函数（只读传进来的回复，不读实例状态，所以写成 `@staticmethod`），导出器按源 trace 的 `agent_id` 从 `AgentRegistrar` 取 teacher 的类直接调用，不构造实例。`browser_use`：`thinking` > `next_goal` > `memory`（第一个非空的，记下是哪个字段；flash 模板只教 `memory`）；`ui_tars`：原生的 `Thought:`（到第一个 Action 行为止）；`skyvern`：每个动作的 `reasoning` 按顺序以换行连接。
 - **校验**：导出器组装学生之后先照常 `loop.validate_slots(agent)`（`prepare()` 已做），再查 `callable(getattr(agent, "format_react_output", None))`；`thought_source: teacher` 时对 teacher 的类查 `parse_react_thought`。缺了抛已有的 `IncompatibleError(agent_name, loop_id, missing_slots, needed_for=...)`。`needed_for` 是 M32 加的措辞参数：默认（运行装配）写 "required by loop 'react'"，导出写 "needed for training export (optional slots of loop 'react')"，不让一个可选 slot 的缺失读起来像 Loop 的必需 slot。
 
@@ -308,7 +308,7 @@ class SWEAgent(AgentBase):
     domain: str = "software_engineering"
 
     # 满足 ReactLoop.__required_slots__ 的方法
-    def build_react_prompt(self, obs): ...
+    async def build_react_prompt(self, obs, *, context: ReactPromptContext): ...
     def parse_react_output(self, output): ...
     def get_react_output_model(self): return SWEReactOutput
 
@@ -362,7 +362,8 @@ class ReactLoop(AgentLoopBase):
         for step in range(self.max_steps):
             # AOP hooks 在方法调用时自动触发 — Loop 完全不知道有 hook 存在
             obs = await env.observe(negotiated_obs)
-            memory.add_messages(agent.build_react_prompt(obs))
+            prompt_context = ReactPromptContext(step=step, phase="policy", policy_step=step)
+            memory.add_messages(await agent.build_react_prompt(obs, context=prompt_context))
             completion = await llm.ainvoke(memory.get_context_messages())
             actions = agent.parse_react_output(completion.completion)
             for action in actions:
@@ -380,9 +381,10 @@ class ReactLoop(AgentLoopBase):
 | 拦截点 | advice | 触发时机 | 典型 Hook 用途 |
 |--------|--------|---------|---------------|
 | `env.observe` | after | 每步 observe 返回后 | 可选的环境观测 hook；当前 TraceWriter 不拦截此方法 |
-| `llm.ainvoke` | after | 每次 LLM 成功返回后 | 同一本调用账累计 token |
+| `llm.ainvoke` | after | 每次 LLM 成功返回后 | 可选成功通知；统一调用账由 around 单独负责 |
 | `llm.ainvoke` | around | 每次 LLM 调用：返回、抛异常或被取消 | TraceWriter 在 `proceed()` 之前登记这次调用，按结局记为 completed / failed / cancelled，并测量等待时间；失败回复携带的用量保留在同一本调用账 |
-| `loop.record_step` | after | Loop 交出完整 StepRecord 后 | TraceWriter 一次 `commit_step` 提交本步观测、全部 LLM 调用记录和 step record，manifest 原子重写即提交点 |
+| `loop.execute_step` / `loop.observe_terminal` | around | 进入实际步骤执行或终止观测 | 按稳定步骤身份开始计时；检查点与随后同编号策略步共享起点 |
+| `loop.record_step` | around | Loop 交出完整 StepRecord | 截止步骤执行计时、封存本步调用与所选证据；有界后台任务经 WAL 持久化，manifest 是提交点 |
 | `env.act` | after | 每次 action 执行后 | 可选：action 级别追踪 |
 | `agent.build_react_prompt` | around | prompt 构建时 | 异步提示贡献与审计；`await proceed()`，显式 `ReactPromptContext` 描述历史与策略阶段 |
 
@@ -432,47 +434,25 @@ ReAct 的公开 `cap_actions`、`remember_rejected`、`remember_reply`、`today_
 - **分层**：`AgentLoopBase.observe_terminal(env, negotiated_obs, *, step)` 公开捕获并构造终止记录；`observe_after_result(run, result)` 使用同一公开 `surrender` 完成交接与取消的结果传递。ReAct 的 `with_terminal` 仅决定是否启用。终止观测只填环境 fragment，没有 Agent 读取的 loop fragment。
 
 
-#### `BranchLoop`：从检查点分叉（M31）
+#### `BranchLoop`：从检查点分叉
 
-分叉 = 把环境恢复到源 run 第 t 步之前的状态 + 一个策略步 + 可配置的继续步数。恢复的方式是策略（Loop 的 `restorer` 受体，§4.1 下文与 §6），元素重定位与恢复校验是 capability 的知识（§4.9 `RestorationSupport`），teacher 是被测对象（wired 的 LLM，采样参数在 LLM 配置里，可以与源 run 不同；第 t 步可以多给一条固定指令，见下文"teacher 采样"）。
+`BranchLoop` 本轮限定 ReAct：恢复 `0..t-1`，在本次 live 检查点观测上执行策略步，再执行 `continue_steps` 个 ReAct 步。`history_source: source | restored` 默认 `source`，与恢复器的 `verify: strict | warn` 独立；前者选择 Agent 历史的事实来源，后者判断环境发散是否允许继续。
 
-```python
-@dataclass
-class BranchLoop(_BranchLoopReceptors, ReactLoop):      # restorer 只在普通 mixin 上注解（AgentReceptors 写法）
-    __registry_key__ = "branch"
-    __wiring__ = {"restorer": ("restorer", ["prefix_replay"])}
-    __loop_inputs__ = {"checkpoint": LoopInput(Checkpoint)}
-    continue_steps: int = 0              # ge=0；策略步之后再走几个 ReAct 步
-    terminal_observation: bool = True    # 覆盖 ReactLoop 的默认
-    branch_instruction: Literal["none", "prefer_different_action"] = "none"   # 第 t 步的固定指令（闭集）
-```
+**组装检查**：检查源 trace 已闭合、所需前缀和轨迹/观测证据完整、检查点是 policy 步、源是普通 ReAct run、Agent 与 memory 配置、动作与观测协商和有效动作约束一致。`restored` 还要求 Agent 公开的异步 `build_restored_history(observation, *, history, context)` 槽；不能以 `warn` 放过合同缺失。模型与采样可改变。源来源、检查点及分支序号是任务 provenance；历史来源、恢复策略、提示贡献配置、helper 模型和有效动作约束是实验身份。
 
-**装配期（`weave`，在 `prepare()` 里、任何 setup 之前）**：打开检查点的源 trace，对照当前装配，不符就抛 `IncompatibleCheckpointError`，点名源 run 以及两边的值：
+**source 历史**：先验证 prepare 种子，按源观测、原始提示贡献及其位置重建每步 prompt。只重放 `purpose=agent_decision` 的主决策及解析重试；每次主调用前精确比较 prompt，调用后校验解析动作、截断及回复。helper 的回复不进入 Agent parser。恢复历史不执行贡献函数、不调用 helper；源贡献证据缺失时明确拒绝。种子和重建不符不受环境 `warn` 影响。然后恢复环境，第一策略步始终使用恢复器已经校验的 live 观测，不额外重拍。
 
-- 源 trace 已关闭（manifest 不是 `writing`）、且完整到第 t 步（`t ≤ complete_through`，§5.3）：trace 自己那本账是硬条件，不论检查点是谁选的（`trace_branches` 从不给出这样的步，§4.10）；第 t 步已提交且 `origin == "policy"`、它的观测已记录（`error_phase != "observe"`）、0..t 每一步都已提交；（比当前格式旧的 trace 根本读不出来，`SourceRun.open` 照"没有可读的 trace"拒绝，§5.5）源 run 的 `loop_id` 是 `react`（重放用的是 ReAct 的 memory 协议）；源 run 自己不是分叉 run（`TraceConfig.branch` 为空：分叉 run 的前缀没有 LLM 调用可重放，要分叉就从它的源 run 分叉）。
-- 同一个 agent（默认 teacher 必须是源 run 的 agent 类）：`agent_id` 相同；源 `resolved` 里这个 agent 条目上记下来的每个标量旋钮（闭集值与数字原样记录，§5.6：`observation_mode`、`coordinate_space`、`prompt_template`、Skyvern 的 `action_history_window`……；`"<omitted>"` 的不比）与当前 agent 实例的同名属性相同；memory 的 `memory_id` 与它记下来的标量旋钮（`max_messages`、`window_size`……）相同；loop 那一块只比挑出来的一项：`agent_loop.max_actions_per_step` 与本分叉 Loop 的相同（它写在种子 prompt 里，也决定重放丢掉几个动作；两边 loop 的其余设置本来就不同：`loop_id`、`max_steps`、`terminal_observation`）；`TraceConfig.negotiation` 的观测与动作两部分（激活与必需的 fragment、激活的动作、两张绑定表）与本次协商相同；归档那两个字段不比，分叉记录什么证据是它自己的选择（裁决 D3）。
-- 自由字符串的旋钮（没标 trace-safe 的，如 BrowserUse 设过的 `extend_system_message`）在源 trace 里是 `"<omitted>"`（§5.6），装配期比不了；数字原样记录之前写下的源 trace 里 `max_actions_per_step` 也是 `"<omitted>"`。它们由运行期的种子与重放逐条校验兜住（下一条），在任何动作执行之前。llm 那一块从来不比：teacher 的模型与采样可以与源 run 不同。
+**restored 历史**：恢复器交回本次 live 观测、retarget 后实际执行动作及完整实际结果。每条恢复事实交给 Agent 的公开历史槽；Agent 按自己的消息格式表达并更新自己的状态（例如 Skyvern 的动作历史），Loop 不改私有字段。源回复、thought 和动作作为带来源的材料保留，不能改编号伪造新回复；实际结果不能被源结果覆盖。缺失动作结果、时序或目标身份不一致、Agent 不能表达时明确失败，不能回退 source。所有前缀步骤仍是 `origin=restored`，没有本次模型调用，也不继承源 usage。恢复校验及发散始终保存。恢复步骤的顶层 `actions` / `action_results` 只保存实际返回结果的精确配对；抛异常而无返回值的动作尝试仍完整保留在 `restoration.actions`，不伪造返回结果、不把后一个结果配到前一个动作。
 
-**运行期（`_execute`）**：
+**恢复步骤的公开执行边界**：`BranchLoop.execute_step` 在本 run 的恢复迭代器有效时推进一个恢复步骤，恢复结束后委托 ReAct 策略步；迭代器与检查点结果只保存在 `BranchRun`。两种历史来源、有无记录器都经过同一入口。AOP 在真实步骤开始计时，到 `record_step` 交接为止；恢复失败和取消也交出本步记录。检查点 capture 属于第 t 步，随后 policy 同编号继续，只有一个步骤提交；记录器保留已开启的起点，不能重新起表丢掉 capture，也不能多算一条检查点步。记录采集和持久化开销另归对应步，不滚入下一恢复步。
 
-1. **种子消息**：runtime 已写入的 `agent.prepare` 种子消息（三个 browser agent 都只有一条 system 消息），必须与源 run 第 0 步第 0 次调用的 prompt 开头逐条相同，否则 `IncompatibleCheckpointError`（system prompt 里有任务、动作表与 `max_actions_per_step`）。比较的是 trace 记录的形状（`core/trace/reconstruction.py::recorded_form`：活的消息走记录器同一条路，先做 JSON 快照，再按记录的消息类型读回），所以两边逐条相同当且仅当记录器会为两边写下同样的内容。
-2. **重建上下文（Option A）**：上下文从**源 trace** 重建，不从恢复出的观测重建，因为恢复出的页面里元素 index 是新的 backendNodeId、tab id 是新的 CDP targetId、截图是重拍的，从它们重建的 prompt 不可能与源 run 一致。对每个 k < t：读回录下的观测 obs_k（env 与 loop 来源的 fragment 都读，经 `from_trace` 还原成类型，组装成本次协商的 `NegotiatedObservation`），调 `build_react_prompt`，写进 memory；再按开始顺序重放第 k 步的**每一次**录下的 LLM 调用：取出 live 时交给解析器的那个回复（文本调用是录下的文本；结构化调用用 agent 的 `get_react_output_model()` 把录下的 JSON 还原成实例；被 schema 拒绝的调用是 `failure.raw_output`），经 `parse_react_output` 解析：`ParseError` 走 `remember_rejected`，成功走 `cap_actions` + `remember_reply`。重放自己校验自己：每次调用之前，memory 的上下文必须与这次录下的调用的 `messages` 逐条相同；第 k 步最后一次调用之后，解析出的动作（按 `guarded_act` 的那条规则命名，即 `core/action_guard.py` 的 `resolve_action_name`，用本 run 守卫的动作名集合与绑定表：守卫解析得了的补全前缀，它拒绝的保持 agent 写的名字，源记录里留下的正是守卫给的名字；本 run 的守卫能代表源 run 的，因为 weave 已证明两边协商相同、种子检查已证明带着动作表的种子 prompt 相同）、被丢弃的个数、写进 memory 的回复文本必须等于源 StepRecord 的 `actions`、`truncated_actions`、`llm_output`，解析失败的步必须在源 run 里也是解析失败的步。任何一条不符都是 `IncompatibleCheckpointError`（这个 agent 复现不了这个检查点），发生在恢复环境之前。重放经过 agent 的 slot，所以 Skyvern 的 `_action_history`、browser_use / UI-TARS 的坐标网格这类 agent 自己的状态一并重建；连续解析失败的步数也由重放得出。
-3. **恢复环境**：`async for restored in self.restorer.restore(RestorationContext(...))`：每个 k < t 交回一条 `RestoredStep(step=k, check, observation)`，Loop 把它记成 `origin="restored"` 的 StepRecord：内容是源 run 第 k 步记录的副本（动作、结果、回复、观测摘要照抄，所以策略步看到的 `loop.history` / `loop.action_result` 与源 run 第 t 步看到的相同），`restoration` 是这一步的校验结果，`token_usage` 置空，`duration_ms` / `llm_latency_ms` 由 TraceWriter 照常盖章，`timestamp` 是现在；交给 `record_step` 的是**恢复出的** live 观测（只有 env 来源的 fragment）。最后一条 `step == t`：经校验的 live obs_t 与它的校验结果。
-4. **策略步**：先把配置的 `branch_instruction` 写进 memory（`none` 什么都不写，见下文"teacher 采样"），然后 `_run_step(run, t, observation=obs_t, restoration=<obs_t 的校验结果>)`，即一个 ReAct 步。`loop.step_info` 的 `max_steps` 与 `today` 取自源 run 在第 t 步录下的 `loop.step_info`（设了 `today_override` 时 today 用它），所以 agent 看到的"第几步 / 共几步"与源 run 相同。
-5. **继续步**：再走至多 `continue_steps` 个 ReAct 步（`continue_steps: 0` 就是单步分叉，单步由配置值决定，没有写死在逻辑里）。策略步总数不超过 `max_steps`；预算用尽是 `agent_done=max_steps`。
-6. **终止观测**（默认开）。
+**提示贡献合同**：`schemas/prompt.py` 的 `ReactPromptContext` 显式带 step、phase（history/policy/terminal）、policy_step、is_branch 与该步贡献；每次构建属于本 run，不通过 Hook 实例计数猜阶段。`build_react_prompt(observation, *, context)` 是异步槽，Loop 必须 await。`PromptContribution` 记录 text、placement（system/turn）、稳定来源与代码身份；Agent 决定放入适合自己的系统内容或当前轮次并遵守自身消息协议。贡献的实际内容/位置随 trajectory 保存，轻量计划不强迫保存正文。
 
-**失败语义**：重放与恢复里 agent 与环境的方法都是织过的，guard 照样能否决：否决发生在重放或恢复时，记一条 `origin="restored"`、`error_phase` 为 `"replay"` / `"restore"` 的记录，然后上抛。恢复器在 `verify: strict` 下发现发散，抛 `RestorationDivergedError(check, observation)`：Loop 记一条 `origin="restored"`、`error_phase="restore"`、`restoration=<发散的那次校验>` 的记录，以 `agent_done=error`、`env_status=failed`、`error` 点名 `RestorationDivergedError` 结束（不做终止观测）；恢复时环境的普通异常同样以 `error_phase="restore"` 结束。`verify: warn` 只把失败写进那一步的 `restoration`，照常继续。
+现有 HookRegistrar 注册 `prompt_contribution`，用 blocking `around` 拦截 Agent builder 并将贡献通过公开 context 传入；不是 after 返回值或私改 memory。配置 stable `package.module:function`，组装时解析 callable 并校验显式参数合同及 async 目标。函数同步或异步均可；可用 wired `helper_llms`（零或一个）接收独立 helper。默认只在分叉第一个 policy 步生成一次，可选每个 policy 步。解析重试复用同一步已构建提示；history 阶段只读原贡献，terminal 不生成。缓存归本次 run/step 的 context，不保存在 Hook 计数器。贡献进入 memory 后是否仍出现由明确 Agent/Memory 合同决定。
 
-**隔离**：N 个分叉就是 N 个任务，每个任务新组一套 stack、新起一个浏览器（pinned 档位每 run 新建 profile），各自恢复，第 t_1 个分叉做过的事影响不到第 t_2 个。这是 Zero Global State 的直接结果。
+函数/辅助调用失败或取消是实际执行失败，沿既有执行策略传播；记录器失败不改变它。helper 调用带 caller/purpose/model/step 和成功、失败、取消及未知 usage，实验用量包含所有实际调用并可按用途拆分；helper thinking 和注入文字均不是 Agent thought。Runtime 在准备期通过公开的 `PromptModelOwner.helper_llms` 收集辅助依赖，执行最终收尾统一关闭主模型与这些 helper；不能靠反射寻找模型，也不能因前序 hook 失败跳过清理。Hook 不再并行持有另一套模型关闭时机。
 
-**teacher 采样（用户 2026-10-13 的裁决）**：同一个检查点的 `branches_per_step` 个分叉输入完全相同（同一个源、同一个检查点、同一份任务文本与环境 context；分支序号只进 trace 的 `TraceConfig.branch`，Loop 与模型都看不到），所以它们之间的差别只来自 teacher 的采样。发布的分叉配置因此把 teacher 的温度提到 0.8（录制用的是 openai 的默认 0.2），每步分 3 个（`configs/flywheel/branch_ui_tars_archive.yaml`）；原路径回放那份不变（录制时的模型、默认温度）。温度这类数字原样记进 `config.json`（§5.6）。
-
-- **`branch_instruction`**（闭集，默认 `none`）：第 t 步给 teacher 的一条固定指令。闭集值原样记进 `config.json`（§5.6），指令的原文出现在第 t 步录下的那次模型调用里（TraceWriter 记的就是交给模型的上下文）。`prefer_different_action` 引用源 run 在第 t 步的回复（`StepRecord.llm_output`：agent 自己的写法、自己的坐标网格），请 teacher 在另一个动作同样推进任务时选那个动作。不引用录下的 `Action`：它的参数是 capability 的单位（UI-TARS 把 0–1000 网格上的点换成 CSS px），模型从不写那种单位。文本还写明录下回复里的元素编号属于源 run 的页面（DOM 类 agent 的编号在恢复出的页面上是新的），而且不说"同一个页面"：`verify: warn` 下恢复出的页面可以不同。选项与文本一一对应：`branch.py::BRANCH_INSTRUCTIONS` 是 `none` 之外每个选项的文本，测试把它与字段的 `Literal` 绑在一起。
-- **何时、何处**：前缀重建并逐条校验、环境恢复之后，写进 memory 一次（`BranchLoop._add_branch_instruction`：一条以 `[SYSTEM]` 开头的 user 消息，与截断提示同一种写法），位置在策略步的观测之前，因为文本说的是"接下来给出的页面"。继续步把它当历史看见，不再写第二次。第 t 步的上下文不与任何东西比较，所以它不碰种子与重放的校验，也不需要放松它们。源 run 在第 t 步没有录下动作（回复没解析成，或那次模型调用失败）时没有可引用的动作：不写，记一条 INFO。
-- **隐私**：引用的是源 run 的模型自己写的回复；重建的前缀本来就原样带着更早的每一条回复，所以它不把环境观测或别的新来源放进提示词（§5.6 两道门的第一道）。
-- **不做的**：不规定 teacher 必须与源不同（原路径回放段要用录制时的模型量回放确定性，§4.16）。每个分支一份不同的提示要把分支序号作为 Loop 输入传进来，等 live 数据显示重复的分叉多（度量报告的"重复分叉率"，§4.16）再做。自由文本的指令旋钮不做：它在 `config.json` 里只会是 `"<omitted>"`。
-- **残余，写明**：teacher 在指令下写的 thought 可能提到这条指令或源 run 的回复，`thought_source: teacher` 的导出原样带上它（导出冻结，学生侧怎么用随下一期再定，§4.15）。高温下有的模型会写错坐标网格（运行手册"分叉"一节）。
+查看器、指标和独立 judge 区分 source 材料、restored 执行、policy 决策和 terminal 页面证据；任务正确性、有效判定覆盖、恢复保真分别表达。冻结导出仅适配公开异步入口与调用用途筛选，不增加学生策略。删除旧 `branch_instruction` 枚举及 Loop 内固定文本，不保留兼容入口。
 
 **恢复器**（`RestorerRegistrar`，`restorer_id`，`core/loops/restore/`）：
 
@@ -653,7 +633,7 @@ class AgentRuntime:
                     result = ...   # agent_done=VETOED
                     await self._close_out_vetoed(result, exc)   # guard 的否决：总是上抛，不看 raise_on_error
                     raise
-                result = ...   # agent_done=ERROR；RecordingFailedError 时 error = "recording failed at step t: …"
+                result = ...   # agent_done=ERROR，保留实际执行错误；记录故障由记录器隔离
                 await self._finish(result, error=exc)
                 if raise_on_error:
                     raise
@@ -3298,7 +3278,7 @@ class ActionTranslator(Protocol):
 
 - **组装**：`ConfigComposer` 组装 `student_run_config`（一份普通运行 YAML，不带 hook）；它必须恰好有一个 agent，`AgentRuntime.for_agent(run, <它>).prepare()`，用同一套协商、带 `fragments=` 收窄的 descriptors、绑定表与 weave（§4.2）；学生的 Loop 必须是 `ReactLoop`（含子类），学生配置不得带 hook（学生只装配、从不运行），否则 `ExportConfigError`。然后查导出用的可选 slot（§4.1）：学生没有 `format_react_output`、或 `thought_source: teacher` 而某个源的 teacher 类没有 `parse_react_thought`，抛 `IncompatibleError(..., needed_for="needed for training export ...")`。种子消息只经 `runtime.seed_messages(task)`。从不调 `execute()`、`setup_environment()` 或 LLM。
 - **片段与采集检查**：学生协商出的 env 来源 fragment 必须 ⊆ 源 run 录下的（`TraceConfig.negotiation.env_sourced_fragments`），否则 `IncompatibleFragmentError`（`provider=` 措辞参数写成源 run，点名缺的 fragment，比如学生要 DOM 而源 run 是纯视觉；从原始归档重渲染是以后的事）。每个取样的步把录下的 env 来源 fragment 交给学生环境的 `compare_capture`（§4.3、§4.9）：有 `mismatches` 抛 `StudentCaptureMismatchError(source, mismatches)`，`unchecked` 记进 manifest。
-- **一个轨迹、若干段**：轨迹是一个源 run（分叉 run：源 run 的 0..t-1 加分叉自己的策略步）。段从一个可渲染的步开始：学生的 memory（学生自己的策略实例）清空、写入 `seed_messages(task)`。段内每一步 k：观测 = 学生协商出的 `NegotiatedObservation`，env 来源 fragment 取 `RunTrace.observation_fragment(k, key)`，loop 来源 fragment 由 `loop_fragment_builders(...)`（§4.1）建：`loop.step_info` 的 `step` 是 k+1，`max_steps` / `today` 取源 run 第 k 步录下的 `loop.step_info`（学生 Loop 的 `today_override` 优先；源 run 没录 step_info 时 `today` 取源 manifest 的 `created_at` 的 UTC 日期、`max_steps` 取学生 Loop 的，manifest 记下用了哪个来源），`loop.history` 是这一段里之前的步（源 `StepRecord` 的副本，`actions` 换成翻译后的；`keep_as_text` 的步换成它记成文本的那些动作），`loop.action_result` 取这一段里的上一步（段首没有上一步）；env 来源 fragment 经 `core/loops/restore/source.py::recorded_observation` 读（与 `BranchLoop` 的 `SourceRun.observation` 同一个读法），录下的 step_info 经 `recorded_step_info` 读、按 `_loop_fragments.py::pinned_step_info` 钉住（与 `BranchLoop` 同一条规则）；`build_react_prompt(obs)` 写进 memory；k 是样本时此刻的 `memory.get_context_messages()` 就是它的上下文；然后 `format_react_output(<k 的翻译后动作>, thought=<k 的 thought>)`、立即 `parse_react_output` 那段文本（round-trip，也让 Skyvern 的动作历史这类 agent 自己的状态与服务时一样前进），文本经 `ReactLoop._remember_reply(memory, text, [])` 写进 memory。较早的 assistant 轮 weight 0，目标轮 weight 1。
+- **一个轨迹、若干段**：轨迹是一个源 run（分叉 run：源 run 的 0..t-1 加分叉自己的策略步）。段从一个可渲染的步开始：学生的 memory（学生自己的策略实例）清空、写入 `seed_messages(task)`。段内每一步 k：观测 = 学生协商出的 `NegotiatedObservation`，env 来源 fragment 取 `RunTrace.observation_fragment(k, key)`，loop 来源 fragment 由 `loop_fragment_builders(...)`（§4.1）建：`loop.step_info` 的 `step` 是 k+1，`max_steps` / `today` 取源 run 第 k 步录下的 `loop.step_info`（学生 Loop 的 `today_override` 优先；源 run 没录 step_info 时 `today` 取源 manifest 的 `created_at` 的 UTC 日期、`max_steps` 取学生 Loop 的，manifest 记下用了哪个来源），`loop.history` 是这一段里之前的步（源 `StepRecord` 的副本，`actions` 换成翻译后的；`keep_as_text` 的步换成它记成文本的那些动作），`loop.action_result` 取这一段里的上一步（段首没有上一步）；env 来源 fragment 经 `core/trace/reconstruction.py::recorded_observation` 读（与 `BranchLoop` 的 `SourceRun.observation` 同一个读法），录下的 step_info 经 `recorded_step_info` 读、按 `_loop_fragments.py::pinned_step_info` 钉住（与 `BranchLoop` 同一条规则）；`await build_react_prompt(obs, context=...)` 写进 memory；k 是样本时此刻的 `memory.get_context_messages()` 就是它的上下文；然后 `format_react_output(<k 的翻译后动作>, thought=<k 的 thought>)`、立即 `parse_react_output` 那段文本（round-trip，也让 Skyvern 的动作历史这类 agent 自己的状态与服务时一样前进），文本经 `ReactLoop.remember_reply(memory, text, [])` 写进 memory。较早的 assistant 轮 weight 0，目标轮 weight 1。
 - **缺学生要的 fragment 的步**：某一步没录下学生要的 env 来源 fragment，或在学生必需（`required_fragments`）的 fragment 上录下的是采集失败（teacher 那边它是可选的）：这一步不渲染、结束当前段，manifest 记 `steps.skipped.fragment_unavailable`。
 - **学生写不写得出来**：动作名经 `resolve_action_name(name, <学生守卫过的动作名>, <学生的 action_bindings>)` 解析不出来 → `no_counterpart`；一步的动作数超过学生 Loop 的 `max_actions_per_step` → `exceeds_action_budget`；`format_react_output` 抛 `UnrepresentableActionError` → `unrepresentable`。
 - **thought**：`thought_source: none` 时目标轮与历史轮都没有 thought。`thought_index_refs: drop`（默认）且学生协商出的 fragment 不含源 run 的 index 参数所依赖的 fragment（`param_fragments` 给出的那些，browser 上就是 `browser.dom`）时，含 `[123]` 这类 index 记号的 thought 被丢掉（样本保留、只是没有 thought），manifest 计数。
@@ -3743,7 +3723,7 @@ traces/
 
 归档路径的根是 `ENV_DIR = "env"`，四个函数都在 `encoding.py`。每个归档文件在它所在索引里的 `ExtraFileRecord.meta["archive"]` 是一份 `ArchiveMeta`（下面的记录类型）：读侧靠它知道一个 extra 文件是归档文件、属于哪个归档器、第几版 run 记录。
 
-**manifest（format_version 4）**，以一个在第 2 步超时的 run 为例：agent 超时了（`result.json` 的 `agent_done: timeout`），trace 却是完整的——它记下了这个 run 做过的一切，被切断那一步的调用作为 trailing 落了盘：
+**manifest（format_version 5）**，以一个在第 2 步超时的 run 为例：agent 超时了（`result.json` 的 `agent_done: timeout`），trace 却是完整的——它记下了这个 run 做过的一切，被切断那一步的调用作为 trailing 落了盘：
 
 ```json
 {
@@ -3792,13 +3772,13 @@ traces/
 
 | `status` | 含义 | 谁写 |
 |---|---|---|
-| `writing` | trace 还开着：run 还在跑，或进程死在收尾之前；什么都不作数 | `init_run` |
-| `complete` | 已关闭，run 做过的一切都记下了 | `finalize`（收尾没有记录失败） |
+| `writing` | trace 未关闭；可能仍在运行或进程未完成收尾，已提交索引仍可供查看 | `init_run` |
+| `complete` | 已关闭，在声明记录范围内完整；已恢复的历史故障仍可见 | `finalize` |
 | `incomplete` | 已关闭，但有东西没记下来：某一步选择的内容（run 可继续）、收尾那次收集、收尾补写的某一样欠账、`result.json`；`incomplete_reason` 写明是什么（几样按发生顺序用 `; ` 连起来，第一个洞在前），`complete_through` 说完整到第几步 | `finalize` |
 
-`complete_through` 是"完整到第几步"：0..`complete_through` 每一步都已提交、各自带着自己的证据；-1 表示一步也没有。它由 `commit_step` 维护（从第 0 步起不间断的已提交步的最后一步），记不下来的那一步从不提交，所以它停在第一个洞之前，之后就算还有步提交也不前进；没出过洞时它等于 `last_step_completed`，尾部失败不动它。`writing` 的 trace 里它也一直是当前值。读者各取所需：分叉与导出把"已关闭、且完整到所用的那一步"当硬条件（§4.10、§4.15），agent 怎么结束是另一个筛选；sweep 的汇总分三栏计数（§4.2）；度量按站点分别数两本账（§4.16）。格式 2 的 `error` 两种意思都有，读者分不出来，所以从 format 3 起不读任何更旧的 trace（§5.5），不做兼容 shim。
+`complete_through` 表示声明记录范围内连续完整到哪一步；-1 表示没有完整前缀。已提交步缺少某个所选通道也会截断前缀，不只检查 step 文件是否存在。`missing_steps` 列实际尚未提交的步，后续提交仍保留；成功补齐缺口后前缀可以前进。无步骤归属的 trailing 故障不抹掉已有完整前缀。记录健康与 WAL 共用 `recorded_prefix` 规则，查看器和指标可读取缺口后的已提交内容并显示覆盖不足，分叉和导出则要求声明范围与所用前缀完整。当前只读取 format 5，旧数据和 fixtures 重建，不保留兼容路径。
 
-**记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 4`）：
+**记录类型**（`core/trace/models.py`，`TRACE_FORMAT_VERSION = 5`）：
 
 ```python
 class FragmentFiles(BaseModel):
@@ -3810,11 +3790,13 @@ class StepManifestEntry(BaseModel):
     step: int
     step_file: str                                          # steps/NNN.json
     fragments: dict[str, FragmentFiles] = Field(default_factory=dict)  # 全限定 key → 文件
-    llm_calls: list[str] = Field(default_factory=list)      # 本步每次调用，按开始顺序
+    llm_calls: list[str] = Field(default_factory=list)      # 完整调用内容，按开始顺序
+    call_metrics: list[str] = Field(default_factory=list)    # 不需要还原 prompt 的轻量调用事实
     extra_index: str | None = None                          # steps/NNN.extra.json；无 extra 文件为 None
 
 class TrailingEntry(BaseModel):                             # 每次 commit_trailing 追加一条
     llm_calls: list[str] = Field(default_factory=list)
+    call_metrics: list[str] = Field(default_factory=list)
     extra_index: str | None = None                          # steps/trailing_KK.extra.json
 
 class TraceStatus(StrEnum):            # trace 自己那本账，不是 agent 的
@@ -3823,9 +3805,12 @@ class TraceStatus(StrEnum):            # trace 自己那本账，不是 agent �
     INCOMPLETE = "incomplete"
 
 class TraceManifest(BaseModel):
-    format_version: int = 1            # 缺省 = M27 之前写的 trace；init_run 写 TRACE_FORMAT_VERSION；RunTrace 只读 4
+    format_version: int = 1            # 缺字段仍可识别为旧数据；init_run 写 5，RunTrace 只接受 5
     run_id: str
-    last_step_completed: int = -1
+    last_step_completed: int = -1            # 最大已提交步号，不是计数
+    expected_steps: int = 0
+    missing_steps: list[int] = Field(default_factory=list)
+    recording_problems: list[RecordingProblem] = Field(default_factory=list)
     status: TraceStatus = TraceStatus.WRITING
     incomplete_reason: str | None = None     # 恰在 incomplete 时有值
     complete_through: int = -1               # 完整到第几步；commit_step 维护
@@ -4004,9 +3989,9 @@ class RestorationCheck(BaseModel):
     actions: list[RestoredAction] = []            # 这一步录下的动作；第 t 步（策略步的起点）为空
 ```
 
-- `origin`：`policy` 是 Loop 自己的 agent 决定的一步（包括所有旧 trace 的每一步：读回来就是 `policy`，这对它们是对的）；`restored` 是分叉 run 恢复出来的前缀步（内容抄自源 run 的那一步，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
+- `origin`：`policy` 是 Loop 自己的 agent 决定的一步；`restored` 是分叉 run 恢复出来的前缀步（实际 retarget 后动作及结果，旧回复只在 `source_history` 来源材料中，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
 - `restoration`：恢复出来的第 k 步带它自己的校验；分叉的策略步（第 t 步）带 obs_t 的校验，因为这一步是在那个被校验过的状态上做的决定；`strict` 下发散的那一条（`origin="restored"`、`error_phase="restore"`）带不通过的那次校验。原因的判定：capability 证据里 `document_misses > 0` → `document_miss`；`url_match is False` → `url_mismatch`；重定位 `not_found` / `ambiguous` → `retarget_*`；动作成败与录下的不同、或执行抛错 → `action_failed`；`signature_match is False` → `signature_mismatch`；`screenshot_distance > screenshot_max_distance` → `screenshot_distance`。值为 `None` 的量不参与判定。
-- `AgentResult.schema_version` **不升**（仍是 `2.1`）：`StepRecord` 不在 `result.json` 里，§5.5 的"只认当前版本"守的是 `AgentResult` 自己的形状；升版会让 M29 / M30 录下的、正要拿来分叉的每一个 trace 都读不出 `result`。`manifest.format_version` 也不升：只多了带默认值的字段。
+- 当前 `AgentResult.schema_version` 为 `3.0`，trace `format_version` 为 `5`；执行耗时、未知用量、记录范围与稀疏提交采用同一当前合同。旧数据可重建，不为保留旧 trace 维持格式或别名。
 - 这两个字段都不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_the_stamp_does_not_reach_the_prompt` 同样钉住 `origin` / `restoration`）。
 
 **`TraceConfig.branch`：分叉来源（M31）**。按 §5.4 "记录一个新的 run 级事实" 的步骤：
@@ -4018,9 +4003,9 @@ class TraceConfig(BaseModel):
 ```
 
 - 由 `TaskContext.branch` 而来，`AgentRuntime.execute(branch=...)` 按名字传给 `on_run_start`，`TraceWriter` 按名字接收、原样记录，不推导（§4.2）。
-- **不进 `configuration_digest`**：它是按任务变化的事实（任务 id 本身就是 `<source_run_id>/s<t>/b<i>`），同一次分叉 sweep 的所有任务共享一个 `config_hash`；sweep 级的旋钮（`continue_steps`、`branch_instruction`、teacher 的温度、恢复器的 `verify`）照常经 `resolved` 改变它。字段名不用 "provenance"：那个词已经是 `secrets_recorded` / `env_evidence_privacy` 那一层的名字。
+- **不进 `configuration_digest`**：它是按任务变化的事实（任务 id 本身就是 `<source_run_id>/s<t>/b<i>`），同一次分叉 sweep 的所有任务共享一个 `config_hash`；sweep 级的旋钮（`continue_steps`、`history_source`、提示贡献配置、teacher 的温度、恢复器的 `verify`）照常经 `resolved` 改变它。字段名不用 "provenance"：那个词已经是 `secrets_recorded` / `env_evidence_privacy` 那一层的名字。
 - `source_trace` 是源 run 目录相对 sources 根的路径，加上 `source_run_id`，下游（M32 的样本渲染）才找得到源 trace 去拼第 t 步之前的历史；源 benchmark / subset / task_id 让分叉结果能连回源任务的参考答案。
-- 分叉 trace 的每一步都完整记录观测（§13.4 不变）：恢复步交给 `record_step` 的是恢复出的 live 观测，终止步是最后那次观测；不提供省掉恢复步观测的 `record_observations` 旋钮。
+- 分叉按统一 `RecordingPlan` 选择落盘范围。选择观测时，恢复步保存本次恢复出的 live 观测，终止步保存最后那次观测。轻量计划不强制保存观测；需要后续分叉或导出的消费者检查所需证据，不能把未选择内容当作空观测。
 
 ### 5.4 统一记录组件
 
@@ -4432,7 +4417,7 @@ environment:
 | **新增恢复器（检查点恢复策略）** | 继承 `RestorerBase`（`core/loops/restore/`），设 `__registry_key__`，实现 `restore(ctx) -> AsyncGenerator[RestoredStep, None]`（写成 `async def` + `yield`）：只恢复环境、不碰 memory，k < t 每步交回一条，最后一条是经校验的第 t 步观测；每个恢复出的观测恰好调一次 `env.verify_restoration`（capability 的计数类证据是自上一次调用以来的增量，§4.9）；`strict` 下第一个不通过的校验（观测、重定位或动作成败）就抛 `RestorationDivergedError`，不再执行后面的动作；不吞 `RunAbort`（`test_abort_handler_hygiene.py` 递归扫描 `core/loops/`） | 以后的 `capability_checkpoint`（Docker snapshot、Android 模拟器快照，经新增的 `RestorableCapability` 协议） |
 | **新增分叉选步策略** | 继承 `StepSelectorBase`（`core/data_loader/task/step_selector/`），实现 `select(candidates) -> list[int]` | 按评测器给的关键帧选步 |
 | **新增 Loop 输入** | 在 Loop 的 `__loop_inputs__` 里声明 `LoopInput(type, required)`；由任务加载器在 `TaskContext.loop` 里给出（§4.1、§4.10） | `checkpoint`（`BranchLoop`） |
-| **新增分叉指令** | 在 `BranchLoop.branch_instruction` 的 `Literal` 里加一个值，在 `branch.py::BRANCH_INSTRUCTIONS` 里加它的文本（可用 `{recorded_reply}`；测试要求两者一一对应）；文本只在第 t 步写一次，不进任何校验（§4.1 "teacher 采样"） | `prefer_different_action`；每个分支不同的提示要另加一个 Loop 输入（分支序号），不是新选项 |
+| **新增提示贡献** | 配置 `prompt_contribution` Hook 的稳定 Python 函数引用及可选 wired helper；函数按公开 context 返回贡献，Agent 决定 placement（§4.1） | 首策略步一次或每策略步一次；历史重建只读原贡献 |
 | **新增学生格式（训练导出）** | 一个新的 Agent 类（或已有 agent）实现 ReAct 的可选 slot `format_react_output(actions, *, thought=None)`：`parse_react_output` 的逆，写不出来的动作或参数抛 `UnrepresentableActionError`，满足 §4.15 的 round-trip；`tests/test_agents/test_format_react_output_round_trip.py` 自动覆盖每个定义了它的已注册 agent；学生的运行 YAML 就是服务时的那份 | v1 `ui_tars`；以后 Qwen3-VL 原生工具调用格式、OpenCUA |
 | **新增 teacher 的 thought 读法** | teacher agent 实现可选 slot `parse_react_thought(llm_output) -> (text, source_field) \| None`（`@staticmethod`，只读回复，§4.1） | `browser_use` / `ui_tars` / `skyvern`（M32） |
 | **新增导出格式** | 继承 `ExporterBase`（`spectragent/export/`），设 `__registry_key__`，实现 `format(rendered, images)`；只有自己旋钮的导出器写出完整的 `__init__` 签名（任务字段在基类签名里，conscribe 读子类的 `__init__`） | `llamafactory`、`ms_swift`（`rejected_messages` 做 DPO）、`trl` |

@@ -286,7 +286,7 @@ M31 applied it once more:
 - **`branch`** (`BranchProvenance`: source run id, the source trace relative to the
   sources root, source benchmark / subset / task id, checkpoint step, branch index and
   group) — per task (the task id is `<source_run_id>/s<t>/b<i>`), so not in the digest;
-  the sweep-level knobs (`continue_steps`, `branch_instruction`, the teacher's sampling,
+  the sweep-level knobs (`continue_steps`, `history_source`, prompt contribution configuration, the teacher's sampling,
   the restorer's `verify`) move the hash through `resolved` as usual. It arrives as the third part of
   `TaskLoader.get_task_context(id)` (`TaskContext{env, loop, branch}`), is passed as
   `execute(branch=…)` and on to `on_run_start(branch=…)`, and is recorded as given. Not

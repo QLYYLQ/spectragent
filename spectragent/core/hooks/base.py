@@ -32,9 +32,9 @@ class RuntimeHook(Protocol):
             concurrency, and error isolation follows from it.
         priority: Lifecycle dispatch order, ascending — lower runs first.
             Load-bearing whenever one hook *enriches* the result and
-            another *serializes* it: with ``hook: [trace_writer, metrics]``
-            in YAML and no priority, every ``result.json`` on disk records
-            ``total_tokens: 0``, silently.
+            another *serializes* it: enrichment must finish before persistence.
+            Usage collection and persistence themselves belong to the one
+            recording component, not separate competing hooks.
     """
 
     hook_id: str
@@ -68,11 +68,11 @@ class RuntimeHook(Protocol):
         **``blocking=False`` cannot contribute to the trace.** A
         background handler finishes after the WAL commit point — after
         the step record, possibly after ``on_run_end`` — so anything it
-        computes reaches no artifact. That is why both shipped hooks are
-        blocking: ``trace_writer`` and ``metrics`` produce the run's
-        output. ``blocking=False`` is for genuine side channels that
-        nothing downstream reads, of which the designed one is
-        ``live_monitor`` pushing state over a WebSocket. Its handlers are
+        computes has no ordered segment handoff. ``trace_writer`` therefore
+        seals input synchronously and owns its separately bounded persistence
+        worker; it does not use ``blocking=False`` to hide recording failures.
+        ``LiveMonitor`` also captures transient state through blocking advice
+        and performs no rendering I/O there. Other non-blocking handlers are
         still owned and drained at run end (``BackgroundTasks``), so
         "fire and forget" does not mean "fire and never run".
         """

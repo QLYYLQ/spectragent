@@ -137,13 +137,17 @@ def _run(mode: str, config: dict[str, Any]) -> tuple[BrowserUseAgent, str, set[s
     action_space, guard = build_guarded_act(
         env.act, descriptors, None, bindings=actions.action_bindings
     )
-    descriptors = action_space.descriptors
     agent.prepare(
         task="t",
+        action_descriptors=action_space.descriptors,
         execution_limits=ExecutionLimits(max_actions_per_step=1),
-        action_descriptors=descriptors,
     )
-    return agent, agent._system_prompt_text, {d.name for d in descriptors}, descriptors
+    return (
+        agent,
+        agent._system_prompt_text,
+        {d.name for d in action_space.descriptors},
+        action_space.descriptors,
+    )
 
 
 _IDS = [f"{mode}-{sorted(config.items())}" for mode, config in _CONFIGURATIONS]
@@ -256,10 +260,10 @@ def test_the_coordinate_paragraph_follows_the_configured_grid() -> None:
     actions = negotiate_action(agent, env)
     agent.prepare(
         task="t",
-        execution_limits=ExecutionLimits(max_actions_per_step=1),
         action_descriptors=env.get_action_space(
             active_actions=actions.active_actions, fragments=obs.active_fragments
         ),
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     assert "0-1000 grid" in agent._system_prompt_text
 
