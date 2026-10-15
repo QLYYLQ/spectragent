@@ -57,9 +57,9 @@ def _compose(**capability_block: Any) -> BrowserCapability:
     """Build a BrowserCapability the real way — through the Composer."""
     import spectragent.core.capabilities.browser.backends.local_chrome  # noqa: F401
     from spectragent.core.composer import ConfigComposer
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
-    run = ConfigComposer(registrars=_collect_registrars()).compose(
+    run = ConfigComposer(registrars=collect_registrars()).compose(
         {
             "capability": [
                 {

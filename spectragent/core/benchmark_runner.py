@@ -999,9 +999,9 @@ def _task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
 def build_composer() -> Any:
     """Build a ConfigComposer over every registered layer."""
     from spectragent.core.composer import ConfigComposer
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
-    return ConfigComposer(registrars=_collect_registrars())
+    return ConfigComposer(registrars=collect_registrars())
 
 
 def _resolve_loader(run: ComposedRun, benchmark: str | None, subset: str | None) -> Any:

@@ -157,7 +157,7 @@ class ExportRunner:
     Args:
         exporter: The composed exporter — its job fields and ``translator``.
         composer: Composes the student's run configuration (the CLI's own,
-            built from ``_collect_registrars()``).
+            built from ``collect_registrars()``).
         benchmarks: The benchmark loaders the export document configures
             (decontamination and the leak scan read through them).
     """

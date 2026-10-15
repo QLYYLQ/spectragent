@@ -29,9 +29,9 @@ from spectragent.core.capabilities.browser.observations import (
 from spectragent.core.capabilities.browser.settle import SETTLE_WORLD
 from spectragent.core.capabilities.browser.tabs import FocusMove
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.redaction import redact_config
 from spectragent.schemas.action import Action, ActionResult
-from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.browser_archive import OwnedBrowser
 from tests._helpers.fake_cdp import FakeBrowser
 
@@ -489,7 +489,7 @@ class TestTheOption:
     def _compose(**block: Any) -> tuple[Any, BrowserCapability]:
         raw = yaml.safe_load(CONFIG.read_text("utf-8"))
         raw["environment"][0]["capabilities"][0].update(block)
-        run = ConfigComposer(registrars=_collect_registrars()).compose(raw)
+        run = ConfigComposer(registrars=collect_registrars()).compose(raw)
         (capability,) = run.instances("environment")[0].capabilities.values()
         assert isinstance(capability, BrowserCapability)
         return run, capability

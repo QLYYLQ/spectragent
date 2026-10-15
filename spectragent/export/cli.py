@@ -4,7 +4,7 @@ The YAML is an ordinary run-root document holding one ``exporter:`` block
 (``configs/flywheel/export_sft.yaml``) and, optionally, the ``eval_loader:`` /
 ``task_loader:`` blocks decontamination and the leak scan read benchmark data
 through (``benchmarks.py``), composed by the same
-``ConfigComposer(registrars=_collect_registrars())`` as every other entry
+``ConfigComposer(registrars=collect_registrars())`` as every other entry
 point; it must yield exactly one exporter. Prints, per split, how many samples
 were written and, per reason, how many steps were not; exits non-zero on any
 failure — in which case nothing was written.
@@ -20,9 +20,9 @@ from pathlib import Path
 import yaml
 
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.export.errors import ExportConfigError
 from spectragent.export.runner import ExportReport, ExportRunner
-from spectragent.scripts.generate_all import _collect_registrars
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def export(config_path: Path) -> ExportReport:
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ExportConfigError(f"{config_path} is not a YAML mapping")
-    composer = ConfigComposer(registrars=_collect_registrars())
+    composer = ConfigComposer(registrars=collect_registrars())
     run = composer.compose(raw)
     return ExportRunner.from_run(run, composer=composer, origin=str(config_path)).run()
 

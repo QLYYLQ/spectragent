@@ -14,11 +14,11 @@ import yaml
 from dotenv import load_dotenv
 
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
-from spectragent.scripts.generate_all import _collect_registrars
 
 
 def task_context(
@@ -69,7 +69,7 @@ async def _run(
     source_bytes = canonical.read_bytes()
     raw = yaml.safe_load(source_bytes)
     config_source = ConfigSource.from_path(canonical, data=source_bytes)
-    composer = ConfigComposer(registrars=_collect_registrars())
+    composer = ConfigComposer(registrars=collect_registrars())
     run = composer.compose(raw)
     if progress is not None:
         from spectragent.monitoring import attach_progress

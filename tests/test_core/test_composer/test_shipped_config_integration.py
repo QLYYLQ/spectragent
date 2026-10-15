@@ -45,13 +45,13 @@ from spectragent.core.loops.validation import (
     IncompatibleLoopInputError,
 )
 from spectragent.core.negotiation import IncompatibleActionError
+from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TraceConfig, TraceNegotiation, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.redaction import redact_config
 from spectragent.schemas.restoration import Checkpoint
 from spectragent.schemas.step_record import StepRecord
-from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.replay_archive import RecordingScript
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
@@ -85,7 +85,7 @@ _DIRECT_LLM: dict[str, Any] = {
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:
-    return ConfigComposer(registrars=_collect_registrars())
+    return ConfigComposer(registrars=collect_registrars())
 
 
 def _agent_entry(

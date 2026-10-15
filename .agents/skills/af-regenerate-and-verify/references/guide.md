@@ -21,7 +21,7 @@ own stale generated stubs; it never cleans arbitrary source files or artwork.
 
 ## Collect the registrar
 
-`_collect_registrars()` explicitly pins the registrars, in stable order. A strategy
+`collect_registrars()` explicitly pins the registrars, in stable order. A strategy
 registrar missing from this mapping leaves a key-only field instead of the nested union,
 so its knobs are unreachable. Add it when its first implementation becomes configurable.
 `ObservationRegistrar` and `NegotiationResultRegistrar` are deliberately not config layers.

@@ -16,8 +16,8 @@ import pytest
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMState, HitTest
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.schemas.action import Action
-from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.fixture_site import FixtureSite
 
 pytestmark = pytest.mark.requires_chrome
@@ -30,7 +30,7 @@ def site() -> Iterator[FixtureSite]:
 
 
 def _capability(cleaner: dict[str, Any]) -> BrowserCapability:
-    run = ConfigComposer(registrars=_collect_registrars()).compose(
+    run = ConfigComposer(registrars=collect_registrars()).compose(
         {
             "capability": [
                 {

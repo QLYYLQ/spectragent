@@ -34,7 +34,7 @@ import pytest
 from conscribe import ConfigAnnotationError, discover
 from conscribe.config.extractor import extract_config_schema
 
-from spectragent.scripts.generate_all import _collect_registrars
+from spectragent.core.registries import collect_registrars
 
 
 def _declared_annotated_fields(cls: type) -> dict[str, type]:
@@ -86,7 +86,7 @@ def _registered_classes() -> list[tuple[str, str, type]]:
     discover("spectragent.core")
     discover("spectragent.schemas")
     out: list[tuple[str, str, type]] = []
-    for layer, registrar in _collect_registrars().items():
+    for layer, registrar in collect_registrars().items():
         for key in sorted(registrar.keys()):
             out.append((layer, key, registrar.get(key)))
     return out

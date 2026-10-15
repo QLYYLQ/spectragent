@@ -30,8 +30,8 @@ import yaml
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.loops.limits import ExecutionLimits
+from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
-from spectragent.scripts.generate_all import _collect_registrars
 
 #: Resolved from this file, not from the CWD — ``pytest tests/test_agents``
 #: from anywhere but the repo root used to make these two tests vanish into
@@ -86,7 +86,7 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt(tmp_path: Path) -
     advertise it only if Runtime passes the current typed execution limits.
     """
     traces = tmp_path / "traces"
-    composer = ConfigComposer(registrars=_collect_registrars())
+    composer = ConfigComposer(registrars=collect_registrars())
     run = composer.compose(_shipped_config(trace_dir=traces))
 
     agent_id = run.ids("agent")[0]
@@ -133,7 +133,7 @@ async def test_runtime_carries_the_loops_limit_into_the_prompt(tmp_path: Path) -
 
 def test_agent_renders_whatever_limit_it_is_handed() -> None:
     """The agent half, in isolation: no hidden default of its own."""
-    composer = ConfigComposer(registrars=_collect_registrars())
+    composer = ConfigComposer(registrars=collect_registrars())
     run = composer.compose(_shipped_config())
 
     agent = run.instance("agent", run.ids("agent")[0])

@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.data_loader.task.require_eval import RequireEval
+from spectragent.core.registries import collect_registrars
 from spectragent.export import (
     Exporter,
     ExporterBase,
@@ -34,7 +35,6 @@ from spectragent.export.settings import (
     SplitSettings,
 )
 from spectragent.generated._composed import ComposedConfig
-from spectragent.scripts.generate_all import _collect_registrars
 
 #: The arch §4.15 YAML, as a dict.
 ENTRY: dict[str, Any] = {
@@ -86,7 +86,7 @@ def _compose(composer: ConfigComposer, entry: dict[str, Any]) -> Any:
 
 
 def test_registered_and_collected() -> None:
-    registrars = _collect_registrars()
+    registrars = collect_registrars()
     assert registrars["exporter"] is ExporterRegistrar
     assert sorted(ExporterRegistrar.keys()) == ["openai_messages"]
     order = list(registrars)

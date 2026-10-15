@@ -107,7 +107,7 @@ import spectragent.core.archive as archive_pkg
 import spectragent.core.capabilities as capabilities_pkg
 import spectragent.core.hooks as hooks_pkg
 from spectragent.core.capabilities._registrar import CapabilityRegistrar
-from spectragent.scripts.generate_all import _collect_registrars
+from spectragent.core.registries import collect_registrars
 
 # Importing the concrete capability packages is what populates the
 # registrar; without it this file would assert over an empty set and pass
@@ -456,7 +456,7 @@ def test_no_config_surface_shadows_a_wired_receptor() -> None:
     collection order. The loop runs at test time and the message names
     the offender.
     """
-    registrars = _collect_registrars()
+    registrars = collect_registrars()
     found: list[str] = []
     checked: list[str] = []
 
@@ -504,7 +504,7 @@ def test_the_guard_fails_on_a_reintroduced_defect() -> None:
     to someone who renamed it; ``dom_serializer_type`` is the shape that
     would have lived on ``__init__`` and been invisible until this round.
     """
-    registrars = _collect_registrars()
+    registrars = collect_registrars()
 
     class _Profile(BaseModel):
         output_style: str = "html"
@@ -541,7 +541,7 @@ def test_the_guard_catches_a_switch_beside_the_replayability_receptor() -> None:
     key of the ``replayability`` registry) can catch it. A profile-like model
     field called ``replayability`` is the name-shaped variant.
     """
-    registrars = _collect_registrars()
+    registrars = collect_registrars()
     assert "replayability" in registrars, "the registrar must be collected for Rule 1 to see it"
 
     class _Profile(BaseModel):
@@ -572,7 +572,7 @@ def test_the_guard_catches_a_switch_beside_the_network_source_receptor() -> None
     ``network_source`` registry) can catch it; a model field called
     ``network_source`` is the name-shaped variant.
     """
-    registrars = _collect_registrars()
+    registrars = collect_registrars()
     assert "network_source" in registrars, "the registrar must be collected for Rule 1 to see it"
 
     class _Profile(BaseModel):
@@ -710,7 +710,7 @@ def test_no_receptor_defaults_to_a_wired_placeholder() -> None:
     discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
     checked = {
         cls
-        for registrar in _collect_registrars().values()
+        for registrar in collect_registrars().values()
         for cls in registrar.get_all().values()
         if cls.__module__.startswith("spectragent.")
     }

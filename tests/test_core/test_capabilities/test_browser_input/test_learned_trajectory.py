@@ -197,12 +197,12 @@ def test_shipped_yaml_with_a_learned_block_composes_the_exported_model(
     export_of: Callable[[str], Path], kind: str, label: str
 ) -> None:
     from spectragent.core.composer import ConfigComposer
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
     raw = _shipped_run_config(
         {"trajectory_type": "learned", "weights_dir": str(export_of(kind)), "seed": 1}
     )
-    run = ConfigComposer(registrars=_collect_registrars()).compose(raw)
+    run = ConfigComposer(registrars=collect_registrars()).compose(raw)
     (cap,) = run.instances("environment")[0].capabilities.values()
     assert isinstance(cap.mouse_trajectory, LearnedTrajectory)
     assert cap.mouse_trajectory.model == label
@@ -210,7 +210,7 @@ def test_shipped_yaml_with_a_learned_block_composes_the_exported_model(
 
 def test_compose_fails_on_a_stop_less_knob_for_a_model_that_stops(mdn_export: Path) -> None:
     from spectragent.core.composer import ConfigComposer, InstantiationError
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
     raw = _shipped_run_config(
         {
@@ -220,7 +220,7 @@ def test_compose_fails_on_a_stop_less_knob_for_a_model_that_stops(mdn_export: Pa
         }
     )
     with pytest.raises(InstantiationError, match="truncate_at_arrival"):
-        ConfigComposer(registrars=_collect_registrars()).compose(raw)
+        ConfigComposer(registrars=collect_registrars()).compose(raw)
 
 
 # ── the model is read from meta.json ────────────────────────────────────

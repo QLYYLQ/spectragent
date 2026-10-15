@@ -13,11 +13,11 @@ import yaml
 from spectragent import GENERATED_DIR
 from spectragent.cli.fingerprints import source_fingerprints
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.core.run_cli import task_context
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TraceNegotiation
 from spectragent.core.trace.redaction import redact_config
-from spectragent.scripts.generate_all import _collect_registrars
 
 
 def explain_config(
@@ -29,7 +29,7 @@ def explain_config(
     replay_archive: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
-    registrars = _collect_registrars()
+    registrars = collect_registrars()
     composer = ConfigComposer(registrars=registrars)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -128,7 +128,7 @@ def explain_config(
 
 
 def list_components(layer: str | None = None) -> dict[str, Any]:
-    registrars = _collect_registrars()
+    registrars = collect_registrars()
     composer = ConfigComposer(registrars=registrars)
     if layer is not None and layer not in registrars:
         raise ValueError(f"Unknown component layer {layer!r}; choose {', '.join(registrars)}")
