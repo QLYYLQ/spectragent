@@ -7,10 +7,11 @@ explicit provenance instead of masquerading as new policy output.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import Enum
@@ -31,6 +32,7 @@ from spectragent.core.loops.react import ReactLoop, ReactRun, serialize_llm_outp
 from spectragent.core.loops.restore import (
     RestorationContext,
     RestorationDivergedError,
+    RestoredStep,
     Restorer,
     SourceRun,
     default_restorer,
@@ -97,6 +99,9 @@ class BranchRun(ReactRun):
 
     source: SourceRun
     is_branch: bool = True
+    restoration_iterator: AsyncIterator[RestoredStep] | None = None
+    checkpoint_observation: Any = None
+    checkpoint_check: RestorationCheck | None = None
     step_info: StepInfoObs | None = None
     action_names: frozenset[str] = frozenset()
     action_bindings: Mapping[str, str] = field(default_factory=dict)
@@ -632,12 +637,27 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
 
     # 3. the environment
 
-    async def _restore(self, run: BranchRun) -> tuple[Any, RestorationCheck] | AgentResult:
-        """Run the restorer, recording each restored step as it arrives.
+    async def execute_step(
+        self,
+        run: ReactRun,
+        step_idx: int,
+        *,
+        observation: Any = None,
+        restoration: RestorationCheck | None = None,
+    ) -> AgentResult | None:
+        """Execute one restoration or policy step through the same public boundary."""
+        if isinstance(run, BranchRun) and run.restoration_iterator is not None:
+            return await self._restore_step(run, step_idx)
+        return await super().execute_step(
+            run, step_idx, observation=observation, restoration=restoration
+        )
 
-        Returns the checkpoint step's verified observation and its check, or
-        the terminal result of a restoration that diverged (``strict``) or
-        failed. A veto propagates, after the step it interrupted is recorded.
+    async def _restore(self, run: BranchRun) -> tuple[Any, RestorationCheck] | AgentResult:
+        """Drive each restoration step through the run's woven execution surface.
+
+        The checkpoint capture starts step t; the later policy invocation continues
+        that same step and surrenders its only record. No separate checkpoint step
+        or observation is introduced.
         """
         context = RestorationContext(
             env=run.env,
@@ -646,90 +666,103 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             source=run.source,
             checkpoint_step=run.checkpoint_step,
         )
-        step = 0
         async with aclosing(self.restorer.restore(context)) as restoring:
-            while True:
-                try:
-                    restored = await anext(restoring)
-                except StopAsyncIteration:
-                    break
-                except RestorationDivergedError as exc:
-                    record = self._restore_failure(
-                        run, exc.check.step, str(exc), exc.check, exc.observation
-                    )
-                    return await self.end_step(
-                        run,
-                        record,
-                        exc.observation,
-                        error=f"RestorationDivergedError: {exc}",
-                        agent_done="error",
-                        env_status="failed",
-                        answer=run.last_answer,
-                    )
-                except RunAbort as veto:
-                    logger.warning(
-                        "BranchLoop: run aborted while restoring step %d: %s", step, veto
-                    )
-                    record = self._restore_failure(run, step, str(veto), None)
-                    await self.surrender_vetoed(run.recorder, record, None, veto)
-                    raise
-                except Exception as exc:
-                    logger.exception("BranchLoop: restoring step %d failed", step)
-                    record = self._restore_failure(run, step, f"{type(exc).__name__}: {exc}", None)
-                    return await self.end_step(
-                        run,
-                        record,
-                        None,
-                        error=f"restore failed at step {step}: {type(exc).__name__}: {exc}",
-                        agent_done="error",
-                        env_status="failed",
-                        answer=run.last_answer,
-                    )
-                if restored.step != step or restored.check.step != restored.step:
-                    raise IncompatibleCheckpointError(
-                        run.source.name,
-                        [
-                            f"restorer returned step {restored.step} with check {restored.check.step}; expected {step}"
-                        ],
-                    )
-                if restored.step == run.checkpoint_step:
-                    return restored.observation, restored.check
-                # History rendering is execution; the recorder separately owns
-                # any failure to persist the execution facts handed over below.
-                record = self._restored_record(
-                    run, restored.step, restored.check, restored.observation
-                )
-                if self.history_source == "restored":
-                    try:
-                        await self._append_restored_history(run, record, restored.observation)
-                    except RunAbort as veto:
-                        record.error_phase, record.error = "restored_history", str(veto)
-                        run.step_records.append(record)
-                        await self.surrender_vetoed(
-                            run.recorder, record, restored.observation, veto
-                        )
-                        raise
-                    except Exception as exc:
-                        record.error_phase = "restored_history"
-                        record.error = f"{type(exc).__name__}: {exc}"
-                        run.step_records.append(record)
-                        return await self.end_step(
-                            run,
-                            record,
-                            restored.observation,
-                            error=record.error,
-                            agent_done="error",
-                            env_status="failed",
-                            answer=run.last_answer,
-                        )
+            run.restoration_iterator = restoring
+            try:
+                for step in range(run.checkpoint_step + 1):
+                    result = await run.step_executor.execute_step(run, step)
+                    if result is not None:
+                        return result
+            finally:
+                run.restoration_iterator = None
+        if run.checkpoint_check is None:
+            raise IncompatibleCheckpointError(
+                run.source.name,
+                [f"restorer {self.restorer.restorer_id!r} ended without the checkpoint step"],
+            )
+        return run.checkpoint_observation, run.checkpoint_check
+
+    async def _restore_step(self, run: BranchRun, step: int) -> AgentResult | None:
+        """One actual recovery and its Agent-owned history, ending at step handover."""
+        assert run.restoration_iterator is not None
+        try:
+            restored = await anext(run.restoration_iterator)
+        except RestorationDivergedError as exc:
+            record = self._restore_failure(
+                run, exc.check.step, str(exc), exc.check, exc.observation
+            )
+            return await self.end_step(
+                run,
+                record,
+                exc.observation,
+                error=f"RestorationDivergedError: {exc}",
+                agent_done="error",
+                env_status="failed",
+                answer=run.last_answer,
+            )
+        except RunAbort as veto:
+            logger.warning("BranchLoop: run aborted while restoring step %d: %s", step, veto)
+            record = self._restore_failure(run, step, str(veto), None)
+            await self.surrender_vetoed(run.recorder, record, None, veto)
+            raise
+        except asyncio.CancelledError:
+            record = self._restore_failure(run, step, "Restoration cancelled", None)
+            await self.surrender(run.recorder, record, None)
+            raise
+        except Exception as exc:
+            logger.exception("BranchLoop: restoring step %d failed", step)
+            record = self._restore_failure(run, step, f"{type(exc).__name__}: {exc}", None)
+            return await self.end_step(
+                run,
+                record,
+                None,
+                error=f"restore failed at step {step}: {type(exc).__name__}: {exc}",
+                agent_done="error",
+                env_status="failed",
+                answer=run.last_answer,
+            )
+        if restored.step != step or restored.check.step != restored.step:
+            raise IncompatibleCheckpointError(
+                run.source.name,
+                [
+                    f"restorer returned step {restored.step} with check {restored.check.step}; expected {step}"
+                ],
+            )
+        if step == run.checkpoint_step:
+            run.checkpoint_observation = restored.observation
+            run.checkpoint_check = restored.check
+            return None
+        record = self._restored_record(run, step, restored.check, restored.observation)
+        if self.history_source == "restored":
+            try:
+                await self._append_restored_history(run, record, restored.observation)
+            except RunAbort as veto:
+                record.error_phase, record.error = "restored_history", str(veto)
                 run.step_records.append(record)
-                run.prev_step_record = record
+                await self.surrender_vetoed(run.recorder, record, restored.observation, veto)
+                raise
+            except asyncio.CancelledError:
+                record.error_phase, record.error = "restored_history", "History rendering cancelled"
+                run.step_records.append(record)
                 await self.surrender(run.recorder, record, restored.observation)
-                step = restored.step + 1
-        raise IncompatibleCheckpointError(
-            run.source.name,
-            [f"restorer {self.restorer.restorer_id!r} ended without the checkpoint step"],
-        )
+                raise
+            except Exception as exc:
+                record.error_phase = "restored_history"
+                record.error = f"{type(exc).__name__}: {exc}"
+                run.step_records.append(record)
+                return await self.end_step(
+                    run,
+                    record,
+                    restored.observation,
+                    error=record.error,
+                    agent_done="error",
+                    env_status="failed",
+                    answer=run.last_answer,
+                )
+        run.step_records.append(record)
+        run.prev_step_record = record
+        await self.surrender(run.recorder, record, restored.observation)
+        return None
 
     def _restored_record(
         self, run: BranchRun, step: int, check: RestorationCheck, observation: Any
