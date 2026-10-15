@@ -2,6 +2,7 @@ import base64
 from collections.abc import Sequence
 from dataclasses import dataclass
 from os import getenv
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, Any, TypeVar, overload
 
 from pydantic import BaseModel, Field
@@ -16,10 +17,7 @@ from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 
 #: ``tool_choice`` spelled the Converse way. There is no "none" — Converse
 #: cannot advertise tools while forbidding their use.
-_BEDROCK_TOOL_CHOICE: dict[str, dict[str, dict]] = {
-    "auto": {"auto": {}},
-    "required": {"any": {}},
-}
+_BEDROCK_TOOL_CHOICE = MappingProxyType({"auto": "auto", "required": "any"})
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
 
 if TYPE_CHECKING:
@@ -267,7 +265,7 @@ class ChatBedrock(ChatModelBase):
                     )
                 body["toolConfig"] = {
                     "tools": AWSBedrockMessageSerializer.serialize_tools(tools),
-                    "toolChoice": _BEDROCK_TOOL_CHOICE[tool_choice],
+                    "toolChoice": {_BEDROCK_TOOL_CHOICE[tool_choice]: {}},
                 }
             if self.request_params:
                 body.update(self.request_params)
@@ -303,11 +301,11 @@ class ChatBedrock(ChatModelBase):
                         if "toolUse" in item:
                             # ``input`` is a dict on the normal path and a JSON
                             # string when the model stuffed everything into one
-                            # argument; ``_validate_structured`` takes either,
+                            # argument; ``validate_structured`` takes either,
                             # and raises the recoverable error for both.
                             tool_input = item["toolUse"].get("input", {})
                             return ChatInvokeCompletion(
-                                completion=self._validate_structured(
+                                completion=self.validate_structured(
                                     output_format, tool_input, usage=usage
                                 ),
                                 thinking=thinking,

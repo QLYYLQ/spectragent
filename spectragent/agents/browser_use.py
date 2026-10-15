@@ -46,10 +46,10 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, create_model
 from pydantic import Field as PydanticField
 
-from spectragent.agents._action_union import _create_model, action_union
+from spectragent.agents._action_union import action_union
 from spectragent.agents._browser_platform import render_browser_platform
 from spectragent.agents._output_models import reasoning_fields
 from spectragent.agents._registrar import AgentBase
@@ -741,7 +741,10 @@ class BrowserUseAgent(AgentBase):
         """
         item, _models = action_union(self._action_descriptors, relabel=relabel)
         allowed = ", ".join(d.name for d in self._action_descriptors)
-        return _create_model(
+        # Dynamic field definitions are valid at runtime but exceed Pydantic's
+        # overloads. Keep this typing escape local to the model construction.
+        create_output_model: Any = create_model
+        return create_output_model(
             "BrowserUseOutputForRun",
             # Providers and gateways inject metadata of their own
             # (anthropic's ``thought_signature``); refusing it here would

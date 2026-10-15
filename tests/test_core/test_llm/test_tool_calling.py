@@ -121,6 +121,15 @@ def _fake_openai_client(
 # ── 1. The message model ──────────────────────────────────────────
 
 
+def test_default_tool_parameters_belong_to_each_tool() -> None:
+    first = ToolDefinition(name="first")
+    second = ToolDefinition(name="second")
+    first.parameters["properties"]["location"] = {"type": "string"}
+
+    assert second.parameters == {"type": "object", "properties": {}}
+    assert ToolDefinition(name="later").parameters == {"type": "object", "properties": {}}
+
+
 class TestToolMessageShape:
     def test_tool_message_is_part_of_the_union(self) -> None:
         from spectragent.core.llm.messages import BaseMessage

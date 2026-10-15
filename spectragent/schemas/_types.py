@@ -1,7 +1,9 @@
 """Custom Pydantic types for schema standardization."""
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Annotated, Any, Final, Literal
 
 from pydantic import BeforeValidator
@@ -31,16 +33,18 @@ class AgentDoneStatus(StrEnum):
 
 # --- EnvironmentStatus normalization ---
 
-_ENV_STATUS_ALIASES: dict[str, EnvironmentStatus] = {
-    "completed": EnvironmentStatus.SUCCESS,
-    "complete": EnvironmentStatus.SUCCESS,
-    "ok": EnvironmentStatus.SUCCESS,
-    "pass": EnvironmentStatus.SUCCESS,
-    "error": EnvironmentStatus.FAILED,
-    "fail": EnvironmentStatus.FAILED,
-    "terminated": EnvironmentStatus.FAILED,
-    "cancelled": EnvironmentStatus.FAILED,
-}
+_ENV_STATUS_ALIASES: Mapping[str, EnvironmentStatus] = MappingProxyType(
+    {
+        "completed": EnvironmentStatus.SUCCESS,
+        "complete": EnvironmentStatus.SUCCESS,
+        "ok": EnvironmentStatus.SUCCESS,
+        "pass": EnvironmentStatus.SUCCESS,
+        "error": EnvironmentStatus.FAILED,
+        "fail": EnvironmentStatus.FAILED,
+        "terminated": EnvironmentStatus.FAILED,
+        "cancelled": EnvironmentStatus.FAILED,
+    }
+)
 
 
 def _normalize_env_status(value: Any) -> EnvironmentStatus:
@@ -76,18 +80,20 @@ def _normalize_env_status(value: Any) -> EnvironmentStatus:
 
 # --- AgentDoneStatus normalization ---
 
-_DONE_ALIASES: dict[str, AgentDoneStatus] = {
-    "completed": AgentDoneStatus.DONE,
-    "complete": AgentDoneStatus.DONE,
-    "success": AgentDoneStatus.DONE,
-    "ok": AgentDoneStatus.DONE,
-    "pass": AgentDoneStatus.DONE,
-    "failed": AgentDoneStatus.ERROR,
-    "fail": AgentDoneStatus.ERROR,
-    "timed_out": AgentDoneStatus.TIMEOUT,
-    "terminated": AgentDoneStatus.MAX_STEPS,
-    "cancelled": AgentDoneStatus.ERROR,
-}
+_DONE_ALIASES: Mapping[str, AgentDoneStatus] = MappingProxyType(
+    {
+        "completed": AgentDoneStatus.DONE,
+        "complete": AgentDoneStatus.DONE,
+        "success": AgentDoneStatus.DONE,
+        "ok": AgentDoneStatus.DONE,
+        "pass": AgentDoneStatus.DONE,
+        "failed": AgentDoneStatus.ERROR,
+        "fail": AgentDoneStatus.ERROR,
+        "timed_out": AgentDoneStatus.TIMEOUT,
+        "terminated": AgentDoneStatus.MAX_STEPS,
+        "cancelled": AgentDoneStatus.ERROR,
+    }
+)
 
 
 def _normalize_agent_done(value: Any) -> AgentDoneStatus:

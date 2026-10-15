@@ -197,6 +197,29 @@ async def test_explicit_configuration_source_reaches_every_benchmark_trace(tmp_p
         assert RunTrace(outcome.trace_dir).config.config_source == source
 
 
+async def test_task_context_failure_does_not_stop_later_tasks(tmp_path):
+    class ContextFailureLoader(_Loader):
+        def get_task_context(self, task_id):
+            if task_id == "t-2":
+                raise ValueError("invalid setup data for this task")
+            return super().get_task_context(task_id)
+
+    loader = ContextFailureLoader()
+    loader._tasks["t-3"] = _Task("t-3", "inspect the cart")
+    envs: list[_Env] = []
+    runner = BenchmarkRunner(loader=loader, compose=_make_factory(tmp_path, envs, []))
+
+    summary = await runner.run()
+
+    assert [outcome.task_id for outcome in summary.outcomes] == ["t-1", "t-2", "t-3"]
+    assert summary.completed == 2
+    assert summary.failed == 1
+    assert "invalid setup data" in (summary.outcomes[1].error or "")
+    assert summary.outcomes[1].trace_dir is None
+    assert len(envs) == 2
+    assert all(env.torn_down for env in envs)
+
+
 class TestRunIdSafety:
     def test_unsafe_ids_are_sanitised_but_legible(self):
         run_id = _safe_run_id("Cross-Task/2024 #7")

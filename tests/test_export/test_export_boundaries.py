@@ -2,7 +2,7 @@
 
 1. Nothing under ``spectragent/`` outside ``export/`` imports
    ``spectragent.export`` — the export is a leaf consumer — except the
-   registrar collection in ``scripts/generate_all.py`` and what it generates
+   registrar collection in ``core/registries.py`` and what it generates
    (``generated/_composed.py`` imports the exporter's knob types), and the
    metrics chain (``flywheel/chain.py``, M33), which runs
    ``spectragent export``'s ``main`` in-process — its CLI module and nothing
@@ -32,7 +32,7 @@ from tests.test_core.test_archive.test_archive_boundaries import (
 PACKAGE = Path(spectragent.__file__).resolve().parent
 EXPORT = "spectragent.export"
 #: The one module outside the export that may import it: it collects the registrars.
-COLLECTOR = "spectragent.scripts.generate_all"
+COLLECTOR = "spectragent.core.registries"
 #: Its build output, which imports the knob types it typed the config with.
 GENERATED = "spectragent.generated"
 #: The metrics chain: it may import the export's CLI module, by exact name, and nothing else of it.
@@ -75,7 +75,7 @@ def test_nothing_outside_the_export_imports_it() -> None:
         and not _within(module_name(path), GENERATED)
     }
     assert {module: names for module, names in offenders.items() if names} == {}
-    assert any(_within(name, EXPORT) for name in _imports(PACKAGE / "scripts/generate_all.py"))
+    assert any(_within(name, EXPORT) for name in _imports(PACKAGE / "core/registries.py"))
     chain = _imports(PACKAGE / "flywheel/chain.py")
     assert {name for name in chain if _within(name, EXPORT)} == CHAIN_MAY_IMPORT, (
         "the chain no longer imports the export's CLI — drop the exception with it"

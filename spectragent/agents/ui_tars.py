@@ -52,6 +52,7 @@ import base64
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel
@@ -86,7 +87,7 @@ from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, Resto
 # ── The verb vocabulary ──────────────────────────────────────
 
 
-class VerbError(ValueError):
+class _VerbError(ValueError):
     """A verb was emitted with arguments its action cannot use."""
 
 
@@ -109,7 +110,7 @@ class _Verb:
             ``tests/test_agents/test_ui_tars_prompt_action_vocabulary.py``
             holds this to the descriptor.
         to_params: Translates the verb's kwargs into the action's params.
-            Raises :class:`VerbError` when a required argument is missing
+            Raises :class:`_VerbError` when a required argument is missing
             or malformed — a loud parse failure beats an action that
             reports ``Missing param`` one round trip later.
         accepts: Every argument name the verb reads: the ones
@@ -141,11 +142,13 @@ class _Verb:
 #: taught spelling comes first; ``start_box`` / ``end_box`` are UI-TARS 1.0
 #: and 1.5's, which a model fine-tuned on that format writes whatever the
 #: prompt says.
-_POINT_ARGUMENTS: dict[str, tuple[str, ...]] = {
-    "point": ("point", "start_box"),
-    "start_point": ("start_point", "start_box"),
-    "end_point": ("end_point", "end_box"),
-}
+_POINT_ARGUMENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "point": ("point", "start_box"),
+        "start_point": ("start_point", "start_box"),
+        "end_point": ("end_point", "end_box"),
+    }
+)
 
 #: The tag pairs a UI-TARS-family model wraps a point or a box in. Stripped
 #: only as a *matched* pair spanning the whole value, so a stray opener
@@ -181,7 +184,7 @@ def _argument(kwargs: Mapping[str, Any], names: tuple[str, ...]) -> Any:
     """
     given = [name for name in names if name in kwargs]
     if len(given) > 1:
-        raise VerbError(f"{' and '.join(given)} say the same thing; write only {names[0]}")
+        raise _VerbError(f"{' and '.join(given)} say the same thing; write only {names[0]}")
     return kwargs[given[0]] if given else None
 
 
@@ -260,7 +263,7 @@ def _parse_point(key: str, value: Any) -> tuple[float, float]:
     emits for a click and which means its centre.
 
     Raises:
-        VerbError: *value* spells no coordinates, or spells a count that is
+        _VerbError: *value* spells no coordinates, or spells a count that is
             neither a point nor a box. Either way the detail says what was
             written and what to write instead, because the Loop hands it
             back to the model verbatim — an ambiguous point is refused, never
@@ -268,7 +271,7 @@ def _parse_point(key: str, value: Any) -> tuple[float, float]:
     """
     numbers = _point_coordinates(value)
     if numbers is None:
-        raise VerbError(
+        raise _VerbError(
             f"{key}={value!r} is not a coordinate; expected {key}='(x, y)' — two "
             f"numbers and nothing else, e.g. {key}='(640, 360)'. Describe nothing "
             f"there: no element name, selector or text, only the numbers"
@@ -277,7 +280,7 @@ def _parse_point(key: str, value: Any) -> tuple[float, float]:
         return numbers[0], numbers[1]
     if len(numbers) == 4:
         return (numbers[0] + numbers[2]) / 2, (numbers[1] + numbers[3]) / 2
-    raise VerbError(
+    raise _VerbError(
         f"{key}={value!r} has {len(numbers)} numbers; write two for a point "
         f"({key}='(x, y)') or four for a box ({key}='(x1, y1, x2, y2)')"
     )
@@ -287,7 +290,7 @@ def _point(kwargs: Mapping[str, Any], key: str = "point") -> tuple[float, float]
     names = _POINT_ARGUMENTS[key]
     raw = _argument(kwargs, names)
     if raw is None:
-        raise VerbError(f"a {key} is missing; write {key}='(x, y)'")
+        raise _VerbError(f"a {key} is missing; write {key}='(x, y)'")
     return _parse_point(key, raw)
 
 
@@ -302,7 +305,7 @@ def _type_params(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     # ``clear_by_default`` a missing text would clear the field and type
     # nothing, reported as a success.
     if "content" not in kwargs:
-        raise VerbError("type needs content='text to type'")
+        raise _VerbError("type needs content='text to type'")
     return {"coordinate_x": x, "coordinate_y": y, "text": str(kwargs["content"])}
 
 
@@ -324,7 +327,7 @@ def _scroll_params(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     # declares that it can scroll, not how many pixels.
     direction = str(kwargs.get("direction") or "").strip().lower()
     if direction not in _DIRECTIONS:
-        raise VerbError("scroll needs direction='up'|'down'|'left'|'right'")
+        raise _VerbError("scroll needs direction='up'|'down'|'left'|'right'")
     return {"direction": direction}
 
 
@@ -340,7 +343,7 @@ def _hotkey_params(kwargs: Mapping[str, Any]) -> dict[str, Any]:
         if "+" not in keys and len(keys.split()) > 1:
             keys = "+".join(keys.split())
     if not keys:
-        raise VerbError("hotkey needs key='ctrl+a'")
+        raise _VerbError("hotkey needs key='ctrl+a'")
     return {"keys": keys}
 
 
@@ -457,71 +460,75 @@ def _write_finished(params: Mapping[str, Any]) -> str:
 #: (``long_press``, ``open_app``, ``press_home``, ``press_back``) have no
 #: browser action and no entry here; when an Android capability lands they
 #: arrive as its actions.
-_VERB_TABLE: dict[str, _Verb] = {
-    "click": _Verb(
-        action="click_coordinate",
-        signature="click(point='(x, y)')",
-        fills=("coordinate_x", "coordinate_y"),
-        to_params=_click_params,
-        accepts=_POINT_ARGUMENTS["point"],
-        write=_write_click,
-        points=(("coordinate_x", "coordinate_y"),),
-    ),
-    "type": _Verb(
-        action="type_coordinate",
-        signature="type(content='text to type', point='(x, y)')",
-        fills=("coordinate_x", "coordinate_y", "text"),
-        to_params=_type_params,
-        accepts=("content", *_POINT_ARGUMENTS["point"]),
-        write=_write_type,
-        points=(("coordinate_x", "coordinate_y"),),
-    ),
-    "scroll": _Verb(
-        action="scroll",
-        signature="scroll(direction='up|down|left|right')",
-        fills=("direction",),
-        to_params=_scroll_params,
-        accepts=("direction",),
-        write=_write_scroll,
-    ),
-    "hotkey": _Verb(
-        action="send_keys",
-        signature="hotkey(key='ctrl+a')",
-        fills=("keys",),
-        to_params=_hotkey_params,
-        accepts=("key", "keys"),
-        write=_write_hotkey,
-    ),
-    "drag": _Verb(
-        action="drag",
-        signature="drag(start_point='(x1, y1)', end_point='(x2, y2)')",
-        fills=("start_x", "start_y", "end_x", "end_y"),
-        to_params=_drag_params,
-        accepts=(*_POINT_ARGUMENTS["start_point"], *_POINT_ARGUMENTS["end_point"]),
-        write=_write_drag,
-        points=(("start_x", "start_y"), ("end_x", "end_y")),
-    ),
-    "wait": _Verb(
-        action="wait",
-        signature="wait()",
-        fills=(),
-        to_params=_wait_params,
-        accepts=(),
-        write=_write_wait,
-    ),
-    "finished": _Verb(
-        action="done",
-        signature="finished(content='answer if applicable')",
-        fills=("extracted_content", "success"),
-        to_params=_finished_params,
-        accepts=("content",),
-        write=_write_finished,
-    ),
-}
+_VERB_TABLE: Mapping[str, _Verb] = MappingProxyType(
+    {
+        "click": _Verb(
+            action="click_coordinate",
+            signature="click(point='(x, y)')",
+            fills=("coordinate_x", "coordinate_y"),
+            to_params=_click_params,
+            accepts=_POINT_ARGUMENTS["point"],
+            write=_write_click,
+            points=(("coordinate_x", "coordinate_y"),),
+        ),
+        "type": _Verb(
+            action="type_coordinate",
+            signature="type(content='text to type', point='(x, y)')",
+            fills=("coordinate_x", "coordinate_y", "text"),
+            to_params=_type_params,
+            accepts=("content", *_POINT_ARGUMENTS["point"]),
+            write=_write_type,
+            points=(("coordinate_x", "coordinate_y"),),
+        ),
+        "scroll": _Verb(
+            action="scroll",
+            signature="scroll(direction='up|down|left|right')",
+            fills=("direction",),
+            to_params=_scroll_params,
+            accepts=("direction",),
+            write=_write_scroll,
+        ),
+        "hotkey": _Verb(
+            action="send_keys",
+            signature="hotkey(key='ctrl+a')",
+            fills=("keys",),
+            to_params=_hotkey_params,
+            accepts=("key", "keys"),
+            write=_write_hotkey,
+        ),
+        "drag": _Verb(
+            action="drag",
+            signature="drag(start_point='(x1, y1)', end_point='(x2, y2)')",
+            fills=("start_x", "start_y", "end_x", "end_y"),
+            to_params=_drag_params,
+            accepts=(*_POINT_ARGUMENTS["start_point"], *_POINT_ARGUMENTS["end_point"]),
+            write=_write_drag,
+            points=(("start_x", "start_y"), ("end_x", "end_y")),
+        ),
+        "wait": _Verb(
+            action="wait",
+            signature="wait()",
+            fills=(),
+            to_params=_wait_params,
+            accepts=(),
+            write=_write_wait,
+        ),
+        "finished": _Verb(
+            action="done",
+            signature="finished(content='answer if applicable')",
+            fills=("extracted_content", "success"),
+            to_params=_finished_params,
+            accepts=("content",),
+            write=_write_finished,
+        ),
+    }
+)
 
 #: Action id → the verb that means it. Used to render the prompt from the
 #: *negotiated* descriptors rather than from a hand-written list.
-_ACTION_TO_VERB: dict[str, str] = {v.action: name for name, v in _VERB_TABLE.items()}
+_ACTION_TO_VERB: Mapping[str, str] = MappingProxyType(
+    {v.action: name for name, v in _VERB_TABLE.items()}
+)
 
 
 def _local_id(name: str) -> str:
@@ -534,18 +541,20 @@ def _local_id(name: str) -> str:
 #: every member of :data:`CoordinateSpace`, which is also what the
 #: ``coordinate_space`` field's Literal lists
 #: (``tests/test_agents/test_ui_tars_coordinates.py`` holds the three equal).
-_COORDINATE_PROMPTS: dict[CoordinateSpace, str] = {
-    "screenshot_pixels": (
-        "A point is (x, y) in pixels of the screenshot you are shown: (0, 0) is "
-        "its top-left corner, x grows to the right and y downwards. Every step "
-        "states the screenshot's size in pixels."
-    ),
-    "normalized_1000": (
-        "A point is (x, y) on a 0-1000 grid laid over the screenshot, whatever "
-        "its size in pixels: (0, 0) is the top-left corner, (1000, 1000) the "
-        "bottom-right corner, x grows to the right and y downwards."
-    ),
-}
+_COORDINATE_PROMPTS: Mapping[CoordinateSpace, str] = MappingProxyType(
+    {
+        "screenshot_pixels": (
+            "A point is (x, y) in pixels of the screenshot you are shown: (0, 0) is "
+            "its top-left corner, x grows to the right and y downwards. Every step "
+            "states the screenshot's size in pixels."
+        ),
+        "normalized_1000": (
+            "A point is (x, y) on a 0-1000 grid laid over the screenshot, whatever "
+            "its size in pixels: (0, 0) is the top-left corner, (1000, 1000) the "
+            "bottom-right corner, x grows to the right and y downwards."
+        ),
+    }
+)
 
 #: Said on every grid, because it is about the spelling rather than the
 #: space. The parser reads a point as numbers and nothing else
@@ -852,7 +861,7 @@ class UITarsAgent(AgentBase):
         calls = _action_calls(text, example=self._example_call())
         try:
             return [self._action_for(call) for call in calls]
-        except VerbError as exc:
+        except _VerbError as exc:
             raise ParseError(str(exc), raw_output=text[:500]) from exc
 
     def get_react_output_model(self) -> type[BaseModel] | None:
@@ -998,13 +1007,15 @@ class UITarsAgent(AgentBase):
         verb = self._verbs.get(call.verb)
         if verb is None:
             offered = ", ".join(self._verbs) or "none"
-            raise VerbError(f"{call.label}: unknown verb {call.verb!r}; this run offers: {offered}")
+            raise _VerbError(
+                f"{call.label}: unknown verb {call.verb!r}; this run offers: {offered}"
+            )
         where = f"{call.label}, {_clip(call.source)}"
         if call.positional:
-            raise VerbError(f"{where}: pass arguments by name, as in {verb.signature}")
+            raise _VerbError(f"{where}: pass arguments by name, as in {verb.signature}")
         unexpected = [name for name in call.kwargs if name not in verb.accepts]
         if unexpected:
-            raise VerbError(
+            raise _VerbError(
                 f"{where}: {call.verb}() does not take {', '.join(unexpected)}; "
                 f"write it as {verb.signature}"
             )
@@ -1013,13 +1024,13 @@ class UITarsAgent(AgentBase):
             if verb.points:
                 grid = self._grid
                 if grid is None:
-                    raise VerbError(
+                    raise _VerbError(
                         "a point cannot be placed, because this step's screenshot has no known size"
                     )
                 for x_key, y_key in verb.points:
                     params[x_key], params[y_key] = grid.to_viewport(params[x_key], params[y_key])
-        except VerbError as exc:
-            raise VerbError(f"{where}: {exc}") from exc
+        except _VerbError as exc:
+            raise _VerbError(f"{where}: {exc}") from exc
         return Action(name=verb.action, params=params)
 
     def _build_system_prompt(

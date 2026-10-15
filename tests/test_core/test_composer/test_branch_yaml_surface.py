@@ -28,9 +28,9 @@ from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.prompt_contribution import PromptContributionHook
 from spectragent.core.loops import BranchLoop
 from spectragent.core.loops.restore import PrefixReplayRestorer
+from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.redaction import redact_config
 from spectragent.schemas.prompt import PromptContribution, PromptRequest
-from spectragent.scripts.generate_all import _collect_registrars
 
 CONFIG = Path(__file__).resolve().parents[3] / "configs" / "ui_tars_local.yaml"
 SHIPPED_BRANCH = CONFIG.parent / "flywheel" / "branch_ui_tars_archive.yaml"
@@ -43,7 +43,7 @@ def configured_prompt_hint(*, request: PromptRequest) -> PromptContribution:
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:
-    return ConfigComposer(registrars=_collect_registrars())
+    return ConfigComposer(registrars=collect_registrars())
 
 
 def _branch(**loop: Any) -> dict[str, Any]:

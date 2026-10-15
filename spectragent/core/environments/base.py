@@ -222,14 +222,13 @@ class Environment(Protocol):
     ) -> list[ActionDescriptor]:
         """Aggregate action descriptors from all capabilities.
 
-        Multi-capability environments auto-prefix descriptors.
+        Descriptors already carry fully-qualified registry keys; the
+        environment preserves their names when aggregating them.
 
         Args:
-            active_actions: Optional set of unprefixed action names
-                (from two-party action negotiation). Descriptors are
-                filtered by unprefixed name *before* any prefix is
-                applied, keeping the contract symmetric with
-                :attr:`provided_actions`.
+            active_actions: Optional set of fully-qualified action names
+                from two-party action negotiation. Only descriptors in
+                that set are included; ``None`` disables narrowing.
             **context: Forwarded to each capability.
         """
         ...

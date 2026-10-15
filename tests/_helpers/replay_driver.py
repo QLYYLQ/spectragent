@@ -39,9 +39,9 @@ from typing import Any
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.trace_writer import TraceWriter
+from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
-from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.archive_bench import FIXTURE_SETTLE_QUIET_MS
 from tests._helpers.fixture_site import FixtureSite
 from tests._helpers.scripted_llm import ScriptedLLMServer
@@ -243,7 +243,7 @@ async def run_task(
     timeout: float = 180,
 ) -> Outcome:
     """Compose *raw* with the real Composer and run it with the real runtime."""
-    run = ConfigComposer(registrars=_collect_registrars()).compose(raw)
+    run = ConfigComposer(registrars=collect_registrars()).compose(raw)
     (writer,) = [hook for hook in run.instances("hook") if isinstance(hook, TraceWriter)]
     context: dict[str, Any] = {}
     if start_url:

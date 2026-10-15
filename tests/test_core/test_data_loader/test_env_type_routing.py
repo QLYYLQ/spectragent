@@ -35,7 +35,7 @@ class _DockerLoader(TaskLoaderBase):
 
     def seed(self, raws: list[dict[str, Any]]) -> None:
         for raw in raws:
-            task = self._normalize_raw(raw)
+            task = self.normalize_raw(raw)
             self._tasks[task.task_id] = task
 
 
@@ -52,7 +52,7 @@ class _VMLoader(TaskLoaderBase):
 
     def seed(self, raws: list[dict[str, Any]]) -> None:
         for raw in raws:
-            task = self._normalize_raw(raw)
+            task = self.normalize_raw(raw)
             self._tasks[task.task_id] = task
 
 
@@ -65,7 +65,7 @@ class _BrowserLoader(TaskLoaderBase):
 
     def seed(self, raws: list[dict[str, Any]]) -> None:
         for raw in raws:
-            task = self._normalize_raw(raw)
+            task = self.normalize_raw(raw)
             self._tasks[task.task_id] = task
 
 

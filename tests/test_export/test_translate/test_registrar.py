@@ -7,6 +7,7 @@ import yaml
 from pydantic import ValidationError
 
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.export import (
     ActionTranslator,
     ActionTranslatorRegistrar,
@@ -14,17 +15,16 @@ from spectragent.export import (
     IndexToCoordinateTranslator,
     default_translator,
 )
-from spectragent.scripts.generate_all import _collect_registrars
 
 
 def _compose(block: dict[str, object]) -> object:
-    run = ConfigComposer(registrars=_collect_registrars()).compose({"action_translator": [block]})
+    run = ConfigComposer(registrars=collect_registrars()).compose({"action_translator": [block]})
     return run.single("action_translator")
 
 
 def test_the_shipped_translators() -> None:
     assert sorted(ActionTranslatorRegistrar.keys()) == ["identity", "index_to_coordinate"]
-    assert _collect_registrars()["action_translator"] is ActionTranslatorRegistrar
+    assert collect_registrars()["action_translator"] is ActionTranslatorRegistrar
     assert isinstance(default_translator(), IdentityTranslator)
     assert isinstance(IndexToCoordinateTranslator(), ActionTranslator)
 

@@ -682,249 +682,259 @@ class AgentRuntime:
             env_context=env_context,
         )
 
-        # A ComposedRun may drive many tasks. Without this, task 1's whole
-        # trajectory — plus a second copy of the system prompt — leaks into
-        # task 2's context.
-        memory = self._memory
-        if memory is not None and callable(getattr(memory, "clear", None)):
-            memory.clear()
-        self._recorder.clear()
-
-        # The seed messages (typically the system prompt) come from the
-        # agent's ``prepare`` slot; AgentRuntime owns the memory write.
-        seed_messages = self.seed_messages(task)
-        if seed_messages and memory is not None:
-            memory.add_messages(seed_messages)
-
-        # Hook lifecycle — run_start. Deliberately *before* env setup: a
-        # setup failure must still land in a trace, and that needs the
-        # trace to already exist.
-        #
-        # Dispatched *after* ``prepare()`` so the negotiation results
-        # exist: a trace that cannot say which fragments and actions were
-        # live cannot explain a single step it recorded.
-        #
-        # The identity, the composed config and the negotiation results
-        # are resolved here and passed as values. A hook that had to
-        # rediscover them would be doing the runtime's job with less
-        # information — and did, by ``getattr``-ing ids off the agent and
-        # dropping the configuration entirely. The same goes for the
-        # archive facts: whether evidence is recorded and what its
-        # archivers declare, and the setup context this task's environment
-        # is started from (``task_setup`` — exactly what is routed to
-        # ``setup_environment`` below; ``None`` when there is none). A
-        # branch task's provenance (``branch``) rides along by name for the
-        # trace; nothing here interprets it.
-        await self._dispatch_lifecycle(
-            "on_run_start",
-            agent=self._agent,
-            env=self._env,
-            loop=self._agent.agent_loop,
-            llm=self._agent.llm,
-            task=task,
-            task_id=task_id,
-            benchmark=benchmark,
-            subset=subset,
-            run_id=run_id,
-            config=config or {},
-            identity=self._identity,
-            call_context=self._call_context,
-            agent_id=self._identity.agent_id,
-            loop_id=self._identity.loop_id,
-            env_type=self._identity.environment_id,
-            llm_model=self._identity.model_id,
-            resolved_config=self._run.top_level_cfg,
-            observation_negotiation=self._negotiated_obs,
-            action_negotiation=self._negotiated_actions,
-            action_space=self.action_space,
-            archive_negotiation=self._negotiated_archive,
-            env_evidence_privacy=(
-                list(self._env_evidence_privacy) if self._env_evidence_privacy is not None else None
-            ),
-            task_setup=env_context,
-            branch=branch,
-            config_source=config_source,
-        )
-
-        self._execution_started = time.monotonic()
-        self._finish_started = False
+        # Startup hooks may use owned models or spawn background handlers before
+        # environment setup. Their failures keep the same propagation semantics,
+        # but all execution-owned resources still reach this outer cleanup.
         try:
+            # A ComposedRun may drive many tasks. Without this, task 1's whole
+            # trajectory — plus a second copy of the system prompt — leaks into
+            # task 2's context.
+            memory = self._memory
+            if memory is not None and callable(getattr(memory, "clear", None)):
+                memory.clear()
+            self._recorder.clear()
+
+            # The seed messages (typically the system prompt) come from the
+            # agent's ``prepare`` slot; AgentRuntime owns the memory write.
+            seed_messages = self.seed_messages(task)
+            if seed_messages and memory is not None:
+                memory.add_messages(seed_messages)
+
+            # Hook lifecycle — run_start. Deliberately *before* env setup: a
+            # setup failure must still land in a trace, and that needs the
+            # trace to already exist.
+            #
+            # Dispatched *after* ``prepare()`` so the negotiation results
+            # exist: a trace that cannot say which fragments and actions were
+            # live cannot explain a single step it recorded.
+            #
+            # The identity, the composed config and the negotiation results
+            # are resolved here and passed as values. A hook that had to
+            # rediscover them would be doing the runtime's job with less
+            # information — and did, by ``getattr``-ing ids off the agent and
+            # dropping the configuration entirely. The same goes for the
+            # archive facts: whether evidence is recorded and what its
+            # archivers declare, and the setup context this task's environment
+            # is started from (``task_setup`` — exactly what is routed to
+            # ``setup_environment`` below; ``None`` when there is none). A
+            # branch task's provenance (``branch``) rides along by name for the
+            # trace; nothing here interprets it.
+            await self._dispatch_lifecycle(
+                "on_run_start",
+                agent=self._agent,
+                env=self._env,
+                loop=self._agent.agent_loop,
+                llm=self._agent.llm,
+                task=task,
+                task_id=task_id,
+                benchmark=benchmark,
+                subset=subset,
+                run_id=run_id,
+                config=config or {},
+                identity=self._identity,
+                call_context=self._call_context,
+                agent_id=self._identity.agent_id,
+                loop_id=self._identity.loop_id,
+                env_type=self._identity.environment_id,
+                llm_model=self._identity.model_id,
+                resolved_config=self._run.top_level_cfg,
+                observation_negotiation=self._negotiated_obs,
+                action_negotiation=self._negotiated_actions,
+                action_space=self.action_space,
+                archive_negotiation=self._negotiated_archive,
+                env_evidence_privacy=(
+                    list(self._env_evidence_privacy)
+                    if self._env_evidence_privacy is not None
+                    else None
+                ),
+                task_setup=env_context,
+                branch=branch,
+                config_source=config_source,
+            )
+
+            self._execution_started = time.monotonic()
+            self._finish_started = False
             try:
-                await self.setup_environment(env_context)
-            except Exception as exc:
-                if isinstance(exc, RunAbort):
-                    # A veto raised while the environment was being set up
-                    # is a veto like any other: closed out as vetoed and
-                    # re-raised whatever ``raise_on_error`` says, so a sweep
-                    # stops instead of recording one more failed setup and
-                    # starting the next task.
-                    logger.warning("AgentRuntime: run vetoed during environment setup: %s", exc)
+                try:
+                    await self.setup_environment(env_context)
+                except Exception as exc:
+                    if isinstance(exc, RunAbort):
+                        # A veto raised while the environment was being set up
+                        # is a veto like any other: closed out as vetoed and
+                        # re-raised whatever ``raise_on_error`` says, so a sweep
+                        # stops instead of recording one more failed setup and
+                        # starting the next task.
+                        logger.warning("AgentRuntime: run vetoed during environment setup: %s", exc)
+                        result = self._terminal_result(
+                            task=task,
+                            task_id=task_id,
+                            agent_done=AgentDoneStatus.VETOED,
+                            env_status=self._probe_env_status(),
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        await self._close_out_vetoed(result, exc)
+                        raise
+                    logger.exception("AgentRuntime: environment setup failed")
                     result = self._terminal_result(
                         task=task,
                         task_id=task_id,
-                        agent_done=AgentDoneStatus.VETOED,
+                        agent_done=AgentDoneStatus.ERROR,
+                        env_status=EnvironmentStatus.FAILED,
+                        error=f"Environment setup failed: {type(exc).__name__}: {exc}",
+                    )
+                    await self._finish(result, error=exc)
+                    if raise_on_error:
+                        raise
+                    return result
+
+                try:
+                    result = await asyncio.wait_for(
+                        prepared_agent.run(task),
+                        timeout=timeout,
+                    )
+                except TimeoutError as timed_out:
+                    # The run's own timeout — but the run may already have ended
+                    # by then: the Loop was recording the step a guard vetoed, or
+                    # the step a failure ended the run on (a slow archive
+                    # collection of the very page the guard refused), and the
+                    # cancellation that cut it off carries that outcome
+                    # (``loops.errors.RunEnded``). The outcome came first, so it
+                    # is the run's; the timeout is a remark on it. Reporting a
+                    # timeout instead is how such a veto got lost — returned
+                    # whatever ``raise_on_error`` says, recorded by a sweep as
+                    # one more timed-out task, and followed by the next task
+                    # against the site the guard had just refused.
+                    ended = _outcome_under(timed_out)
+                    if isinstance(ended, RunAbort):
+                        logger.warning(
+                            "AgentRuntime: the run's timeout (%.1fs) expired while its vetoed step "
+                            "was being recorded; the veto stands: %s",
+                            timeout,
+                            ended,
+                        )
+                        ended.add_note(
+                            f"The run's own timeout ({timeout}s) expired while the vetoed step was "
+                            "still being recorded; the veto stands."
+                        )
+                        result = self._terminal_result(
+                            task=task,
+                            task_id=task_id,
+                            agent_done=AgentDoneStatus.VETOED,
+                            env_status=self._probe_env_status(),
+                            error=(
+                                f"{type(ended).__name__}: {ended} (the run's timeout of {timeout}s "
+                                "expired while the vetoed step was being recorded)"
+                            ),
+                        )
+                        await self._close_out_vetoed(result, ended)
+                        # From the timeout: it is why the veto leaves from here
+                        # rather than from the Loop, and its traceback shows
+                        # where the Loop was cut off.
+                        raise ended from timed_out
+                    if isinstance(ended, AgentResult):
+                        logger.warning(
+                            "AgentRuntime: the run's timeout (%.1fs) expired while the step its run "
+                            "ended on was being recorded; the run's own result stands: %s",
+                            timeout,
+                            ended.error,
+                        )
+                        cut_off = (
+                            f"recording this step was cut off by the run's timeout of {timeout}s"
+                        )
+                        result = ended.model_copy(
+                            update={
+                                "error": f"{ended.error} ({cut_off})" if ended.error else cut_off
+                            }
+                        )
+                        # Closed out as the Loop would have returned it.
+                        await self._finish(result)
+                        return result
+                    logger.warning("AgentRuntime: execution timed out after %.1fs", timeout)
+                    result = self._terminal_result(
+                        task=task,
+                        task_id=task_id,
+                        agent_done=AgentDoneStatus.TIMEOUT,
+                        env_status=self._probe_env_status(),
+                        error=f"Execution timed out after {timeout}s",
+                    )
+                    await self._finish(result, error=TimeoutError(result.error))
+                    return result
+
+                except Exception as exc:
+                    if isinstance(exc, RunAbort):
+                        # A veto. ``raise_on_error=False`` means "a task that
+                        # fails must not stop the sweep"; a veto is the opposite
+                        # instruction: a guard inspected this run and said
+                        # *stop*, so collapsing it into a returned
+                        # ``AgentResult`` would make the framework overrule the
+                        # guard it just obeyed inside the loop. It propagates
+                        # either way — after the close-out, so the veto and its
+                        # evidence are in the trace when it does, and even if
+                        # that close-out fails (``_close_out_vetoed``).
+                        logger.warning("AgentRuntime: run vetoed: %s", exc)
+                        result = self._terminal_result(
+                            task=task,
+                            task_id=task_id,
+                            agent_done=AgentDoneStatus.VETOED,
+                            env_status=self._probe_env_status(),
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        await self._close_out_vetoed(result, exc)
+                        raise
+                    logger.exception("AgentRuntime: execution failed")
+                    result = self._terminal_result(
+                        task=task,
+                        task_id=task_id,
+                        agent_done=AgentDoneStatus.ERROR,
+                        # ``agent_done`` already says the run failed. Asking the
+                        # environment keeps ``env_status`` meaning what it says
+                        # — a crashed browser, not just a crashed run.
                         env_status=self._probe_env_status(),
                         error=f"{type(exc).__name__}: {exc}",
                     )
-                    await self._close_out_vetoed(result, exc)
-                    raise
-                logger.exception("AgentRuntime: environment setup failed")
-                result = self._terminal_result(
-                    task=task,
-                    task_id=task_id,
-                    agent_done=AgentDoneStatus.ERROR,
-                    env_status=EnvironmentStatus.FAILED,
-                    error=f"Environment setup failed: {type(exc).__name__}: {exc}",
-                )
-                await self._finish(result, error=exc)
-                if raise_on_error:
-                    raise
-                return result
-
-            try:
-                result = await asyncio.wait_for(
-                    prepared_agent.run(task),
-                    timeout=timeout,
-                )
-            except TimeoutError as timed_out:
-                # The run's own timeout — but the run may already have ended
-                # by then: the Loop was recording the step a guard vetoed, or
-                # the step a failure ended the run on (a slow archive
-                # collection of the very page the guard refused), and the
-                # cancellation that cut it off carries that outcome
-                # (``loops.errors.RunEnded``). The outcome came first, so it
-                # is the run's; the timeout is a remark on it. Reporting a
-                # timeout instead is how such a veto got lost — returned
-                # whatever ``raise_on_error`` says, recorded by a sweep as
-                # one more timed-out task, and followed by the next task
-                # against the site the guard had just refused.
-                ended = _outcome_under(timed_out)
-                if isinstance(ended, RunAbort):
-                    logger.warning(
-                        "AgentRuntime: the run's timeout (%.1fs) expired while its vetoed step "
-                        "was being recorded; the veto stands: %s",
-                        timeout,
-                        ended,
-                    )
-                    ended.add_note(
-                        f"The run's own timeout ({timeout}s) expired while the vetoed step was "
-                        "still being recorded; the veto stands."
-                    )
-                    result = self._terminal_result(
-                        task=task,
-                        task_id=task_id,
-                        agent_done=AgentDoneStatus.VETOED,
-                        env_status=self._probe_env_status(),
-                        error=(
-                            f"{type(ended).__name__}: {ended} (the run's timeout of {timeout}s "
-                            "expired while the vetoed step was being recorded)"
-                        ),
-                    )
-                    await self._close_out_vetoed(result, ended)
-                    # From the timeout: it is why the veto leaves from here
-                    # rather than from the Loop, and its traceback shows
-                    # where the Loop was cut off.
-                    raise ended from timed_out
-                if isinstance(ended, AgentResult):
-                    logger.warning(
-                        "AgentRuntime: the run's timeout (%.1fs) expired while the step its run "
-                        "ended on was being recorded; the run's own result stands: %s",
-                        timeout,
-                        ended.error,
-                    )
-                    cut_off = f"recording this step was cut off by the run's timeout of {timeout}s"
-                    result = ended.model_copy(
-                        update={"error": f"{ended.error} ({cut_off})" if ended.error else cut_off}
-                    )
-                    # Closed out as the Loop would have returned it.
+                    await self._finish(result, error=exc)
+                    if raise_on_error:
+                        raise
+                    return result
+                else:
+                    # Outside the ``try`` above on purpose: a blocking hook that
+                    # raises while closing out a finished run must not land in
+                    # ``except Exception`` and close the same run out a second
+                    # time, as a failure, with every hook seeing ``on_run_end``
+                    # twice.
                     await self._finish(result)
                     return result
-                logger.warning("AgentRuntime: execution timed out after %.1fs", timeout)
-                result = self._terminal_result(
-                    task=task,
-                    task_id=task_id,
-                    agent_done=AgentDoneStatus.TIMEOUT,
-                    env_status=self._probe_env_status(),
-                    error=f"Execution timed out after {timeout}s",
-                )
-                await self._finish(result, error=TimeoutError(result.error))
-                return result
 
-            except Exception as exc:
-                if isinstance(exc, RunAbort):
-                    # A veto. ``raise_on_error=False`` means "a task that
-                    # fails must not stop the sweep"; a veto is the opposite
-                    # instruction: a guard inspected this run and said
-                    # *stop*, so collapsing it into a returned
-                    # ``AgentResult`` would make the framework overrule the
-                    # guard it just obeyed inside the loop. It propagates
-                    # either way — after the close-out, so the veto and its
-                    # evidence are in the trace when it does, and even if
-                    # that close-out fails (``_close_out_vetoed``).
-                    logger.warning("AgentRuntime: run vetoed: %s", exc)
+            except asyncio.CancelledError as exc:
+                # Ctrl-C, a cancelled sweep: not an exception of the run's own
+                # (``CancelledError`` is a ``BaseException``, so neither arm
+                # above sees it), but a termination path all the same. Without
+                # this the trace stayed ``writing`` with no ``result.json``, and
+                # the prompt of the call in flight never reached disk. Not
+                # dispatched again if the cancellation landed inside a close-out
+                # that had already begun.
+                if not self._finish_started:
                     result = self._terminal_result(
                         task=task,
                         task_id=task_id,
-                        agent_done=AgentDoneStatus.VETOED,
+                        agent_done=AgentDoneStatus.ERROR,
                         env_status=self._probe_env_status(),
-                        error=f"{type(exc).__name__}: {exc}",
+                        error="Execution cancelled",
                     )
-                    await self._close_out_vetoed(result, exc)
-                    raise
-                logger.exception("AgentRuntime: execution failed")
-                result = self._terminal_result(
-                    task=task,
-                    task_id=task_id,
-                    agent_done=AgentDoneStatus.ERROR,
-                    # ``agent_done`` already says the run failed. Asking the
-                    # environment keeps ``env_status`` meaning what it says
-                    # — a crashed browser, not just a crashed run.
-                    env_status=self._probe_env_status(),
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-                await self._finish(result, error=exc)
-                if raise_on_error:
-                    raise
-                return result
-            else:
-                # Outside the ``try`` above on purpose: a blocking hook that
-                # raises while closing out a finished run must not land in
-                # ``except Exception`` and close the same run out a second
-                # time, as a failure, with every hook seeing ``on_run_end``
-                # twice.
-                await self._finish(result)
-                return result
-
-        except asyncio.CancelledError as exc:
-            # Ctrl-C, a cancelled sweep: not an exception of the run's own
-            # (``CancelledError`` is a ``BaseException``, so neither arm
-            # above sees it), but a termination path all the same. Without
-            # this the trace stayed ``writing`` with no ``result.json``, and
-            # the prompt of the call in flight never reached disk. Not
-            # dispatched again if the cancellation landed inside a close-out
-            # that had already begun.
-            if not self._finish_started:
-                result = self._terminal_result(
-                    task=task,
-                    task_id=task_id,
-                    agent_done=AgentDoneStatus.ERROR,
-                    env_status=self._probe_env_status(),
-                    error="Execution cancelled",
-                )
-                try:
-                    await self._finish(result, error=exc)
-                except Exception:
-                    # The cancellation outranks a close-out that failed
-                    # under it (a full disk in ``TraceWriter.on_run_end``).
-                    # Raising the hook's error instead would turn Ctrl-C
-                    # into an ordinary task failure — a sweep's
-                    # ``except Exception`` would record it and start the
-                    # next task — and a caller's ``asyncio.timeout`` would
-                    # see an ``OSError`` rather than its ``TimeoutError``.
-                    logger.exception("AgentRuntime: closing out a cancelled run failed")
-            # Unchanged, and regardless of ``raise_on_error``: the
-            # cancellation belongs to whoever asked for it.
-            raise
+                    try:
+                        await self._finish(result, error=exc)
+                    except Exception:
+                        # The cancellation outranks a close-out that failed
+                        # under it (a full disk in ``TraceWriter.on_run_end``).
+                        # Raising the hook's error instead would turn Ctrl-C
+                        # into an ordinary task failure — a sweep's
+                        # ``except Exception`` would record it and start the
+                        # next task — and a caller's ``asyncio.timeout`` would
+                        # see an ``OSError`` rather than its ``TimeoutError``.
+                        logger.exception("AgentRuntime: closing out a cancelled run failed")
+                # Unchanged, and regardless of ``raise_on_error``: the
+                # cancellation belongs to whoever asked for it.
+                raise
         finally:
             # Backstop drain, for a close-out that did not get as far as its
             # own drain (a blocking hook raising in ``on_run_end``, or a

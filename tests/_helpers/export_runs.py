@@ -15,8 +15,8 @@ from typing import Any
 import yaml
 
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.export.runner import ExportReport, ExportRunner
-from spectragent.scripts.generate_all import _collect_registrars
 
 REPO = Path(__file__).resolve().parents[2]
 #: The shipped student (v1: UI-TARS on a 0-1000 grid, pinned DPR 1).
@@ -24,7 +24,7 @@ STUDENT_CONFIG = REPO / "configs" / "flywheel" / "ui_tars_student.yaml"
 
 
 def new_composer() -> ConfigComposer:
-    return ConfigComposer(registrars=_collect_registrars())
+    return ConfigComposer(registrars=collect_registrars())
 
 
 def student_root(**agent_overrides: Any) -> dict[str, Any]:

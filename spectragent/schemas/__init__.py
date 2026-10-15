@@ -10,7 +10,6 @@ from spectragent.schemas.agent_result import (
     AgentResult,
     AgentUsage,
 )
-from spectragent.schemas.config import BenchConfig, RunConfig
 from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.eval_result import (
     AgentResultRef,
@@ -89,9 +88,6 @@ __all__ = [
     "TaskReference",
     "ScoringRubric",
     "ScoringItem",
-    # Config
-    "RunConfig",
-    "BenchConfig",
     # Prompt
     "PromptRef",
     "PromptSnapshot",

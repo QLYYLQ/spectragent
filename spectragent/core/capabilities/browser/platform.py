@@ -6,7 +6,9 @@ all may describe something other than the browser that receives the key events.
 
 import asyncio
 import logging
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
+
+from spectragent.core.capabilities.browser.commands import BrowserCommands
 
 InputPlatform = Literal["macos", "windows", "linux"]
 PLATFORM_URL = "chrome://version/"
@@ -16,17 +18,6 @@ PLATFORM_TIMEOUT_S = 5.0
 _CLOSE_TIMEOUT_S = 2.0
 
 logger = logging.getLogger(__name__)
-
-
-class PlatformClient(Protocol):
-    async def send(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-        session_id: str | None = None,
-        *,
-        timeout: float | None = None,
-    ) -> Any: ...
 
 
 def input_platform_from_record(value: Any) -> InputPlatform | None:
@@ -46,7 +37,7 @@ def platform_from_os_text(value: str) -> InputPlatform:
     raise ValueError(f"unsupported browser operating system {value!r}")
 
 
-async def _close_probe(client: PlatformClient, target_id: str) -> None:
+async def _close_probe(client: BrowserCommands, target_id: str) -> None:
     async def close() -> None:
         await client.send("Target.closeTarget", {"targetId": target_id}, timeout=_CLOSE_TIMEOUT_S)
         while True:
@@ -74,7 +65,7 @@ async def _close_probe(client: PlatformClient, target_id: str) -> None:
 
 
 async def measure_input_platform(
-    client: PlatformClient,
+    client: BrowserCommands,
     *,
     timeout: float = PLATFORM_TIMEOUT_S,
 ) -> InputPlatform:

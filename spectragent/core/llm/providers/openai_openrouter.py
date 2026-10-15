@@ -1,8 +1,5 @@
 """ChatOpenRouter — OpenRouter provider via OpenAI-compatible base."""
 
-# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
-# 的 nested config 类型提取机制（详见 openai_base.py 注释）。
-
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
@@ -86,6 +83,6 @@ class ChatOpenRouter(OpenAICompatBase):
             # merged into the request JSON body. Splatting it as top-level kwargs
             # instead makes the SDK reject every unknown key with a TypeError.
             extra_kwargs["extra_body"] = dict(self.extra_body)
-        return await self._standard_ainvoke(
+        return await self.standard_ainvoke(
             messages, output_format, extra_kwargs, tools=tools, tool_choice=tool_choice
         )

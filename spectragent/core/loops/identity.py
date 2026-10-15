@@ -21,7 +21,7 @@ class RunIdentity:
         """Resolve identity from the composed components at assembly time."""
         model_id = ""
         llm = getattr(agent, "llm", None)
-        for name in ("model", "model_name", "name"):
+        for name in ("model", "name"):
             value = getattr(llm, name, None)
             if isinstance(value, str) and value:
                 model_id = value

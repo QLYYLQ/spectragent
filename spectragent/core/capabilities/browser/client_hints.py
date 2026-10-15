@@ -34,7 +34,9 @@ import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
+
+from spectragent.core.capabilities.browser.commands import BrowserCommands
 
 logger = logging.getLogger(__name__)
 
@@ -237,20 +239,7 @@ def identifier_problems(user_agent: str, hints: ClientHints) -> list[str]:
     return problems
 
 
-class HintsClient(Protocol):
-    """The slice of a CDP client the read uses."""
-
-    async def send(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-        session_id: str | None = None,
-        *,
-        timeout: float | None = None,
-    ) -> Any: ...
-
-
-async def measure_client_hints(client: HintsClient, *, timeout: float) -> ClientHints:
+async def measure_client_hints(client: BrowserCommands, *, timeout: float) -> ClientHints:
     """Chrome's own client hints, read right after launch in a page no override reaches.
 
     A temporary ``chrome://version`` tab (module docstring), opened in the
@@ -298,7 +287,7 @@ async def measure_client_hints(client: HintsClient, *, timeout: float) -> Client
         await _close(client, target_id, timeout)
 
 
-async def _read(client: HintsClient, session_id: str, timeout: float) -> dict[str, Any] | None:
+async def _read(client: BrowserCommands, session_id: str, timeout: float) -> dict[str, Any] | None:
     tree = await client.send("Page.getFrameTree", {}, session_id, timeout=timeout)
     frame = ((tree or {}).get("frameTree") or {}).get("frame") or {}
     world = await client.send(
@@ -323,7 +312,7 @@ async def _read(client: HintsClient, session_id: str, timeout: float) -> dict[st
     return values if isinstance(values, dict) else None
 
 
-async def _close(client: HintsClient, target_id: str, timeout: float) -> None:
+async def _close(client: BrowserCommands, target_id: str, timeout: float) -> None:
     """Close the temporary tab and wait until Chrome no longer lists it (bounded)."""
     loop = asyncio.get_running_loop()
     try:

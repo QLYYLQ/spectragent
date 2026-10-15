@@ -8,6 +8,7 @@ from textual.widgets import DataTable, RichLog, Static, TabbedContent
 
 from spectragent.monitoring import ProgressState
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.prompt import RestoredHistory
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck, RestoredAction
 from spectragent.schemas.step_record import StepRecord
 from spectragent.tui.app import MonitorApp
@@ -172,7 +173,7 @@ async def test_branch_ceiling_and_source_failures_are_explicit():
                 executed=Action(name="browser.click", params={"index": 9}),
                 method="geometry_signature",
                 recorded_success=True,
-                live_success=False,
+                live_success=None,
                 live_error="restored element disappeared",
             )
         ],
@@ -195,9 +196,14 @@ async def test_branch_ceiling_and_source_failures_are_explicit():
             StepRecord(
                 step=0,
                 origin="restored",
-                actions=[Action(name="browser.click")],
-                action_results=[ActionResult(success=True)],
-                llm_output="source reply",
+                actions=[],
+                action_results=[],
+                source_history=RestoredHistory(
+                    source_run_id="source-run",
+                    source_step=0,
+                    source_reply="source reply",
+                    source_actions=[Action(name="browser.click", params={"index": 1})],
+                ),
                 restoration=check,
             )
         )
@@ -219,9 +225,9 @@ async def test_branch_ceiling_and_source_failures_are_explicit():
         await pilot.press("enter")
         await pilot.pause()
         text = "\n".join(line.text for line in app.query_one("#details", RichLog).lines)
-        assert '"source_action_results"' in text
-        assert '"source_model_reply": "source reply"' in text
+        assert '"actual_action_results"' in text
+        assert '"source_reply": "source reply"' in text
         assert '"actual_restoration_actions"' in text
-        assert '"live_success": false' in text
+        assert '"live_success": null' in text
         assert "restored element disappeared" in text
         await pilot.press("q")

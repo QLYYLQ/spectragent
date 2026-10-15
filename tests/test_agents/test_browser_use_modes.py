@@ -713,10 +713,10 @@ def test_strict_is_decided_by_the_family_and_the_payload() -> None:
     from spectragent.core.llm.providers.openai import ChatOpenAI
 
     model = _Run("vision").model
-    assert ChatOpenAI(model="gpt-4o", api_key="t")._use_strict_schema(model) is True
+    assert ChatOpenAI(model="gpt-4o", api_key="t").use_strict_schema(model) is True
     # A Gemini model behind an OpenAI-compatible gateway is not a strict
     # family, so the request stays non-strict whatever the schema can do.
-    assert ChatOpenAI(model="gemini-3.5-flash", api_key="t")._use_strict_schema(model) is False
+    assert ChatOpenAI(model="gemini-3.5-flash", api_key="t").use_strict_schema(model) is False
 
 
 # ── Reasoning fields follow the template that was rendered ────────────

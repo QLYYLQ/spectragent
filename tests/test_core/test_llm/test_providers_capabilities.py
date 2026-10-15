@@ -51,11 +51,11 @@ class TestProvidersExposeFamily:
 
 class TestStrictModeComesFromTable:
     def test_gpt_uses_strict(self) -> None:
-        assert ChatOpenAI(model="gpt-4o")._use_strict_schema() is True
+        assert ChatOpenAI(model="gpt-4o").use_strict_schema() is True
 
     def test_non_gpt_does_not_use_strict(self) -> None:
         """A Llama behind an OpenAI-compatible endpoint has no strict mode."""
-        assert ChatOpenAI(model="meta-llama/Llama-3.3-70B")._use_strict_schema() is False
+        assert ChatOpenAI(model="meta-llama/Llama-3.3-70B").use_strict_schema() is False
 
     def test_response_format_strict_flag_tracks_the_table(self) -> None:
         """The `"strict"` sent to the API and the schema rewrite stay in sync."""
@@ -277,7 +277,7 @@ class TestOpenRouterExtraBody:
             captured.update(extra_kwargs)
             return None
 
-        chat._standard_ainvoke = _fake_standard  # type: ignore[method-assign]
+        chat.standard_ainvoke = _fake_standard  # type: ignore[method-assign]
         await chat.ainvoke([])
 
         assert captured["extra_body"] == {"provider": {"order": ["X"]}}
@@ -292,6 +292,6 @@ class TestOpenRouterExtraBody:
             captured.update(extra_kwargs)
             return None
 
-        chat._standard_ainvoke = _fake_standard  # type: ignore[method-assign]
+        chat.standard_ainvoke = _fake_standard  # type: ignore[method-assign]
         await chat.ainvoke([])
         assert captured["extra_headers"] == {"HTTP-Referer": "https://example.test"}

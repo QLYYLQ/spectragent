@@ -175,6 +175,29 @@ async def test_recovered_initialization_failure_does_not_leave_current_trace_inc
     assert all(problem.recovered for problem in writer.health.problems)
 
 
+async def test_health_snapshot_cannot_erase_a_recording_fault(writer_factory, monkeypatch):
+    def refuse_observation(*args, **kwargs):
+        raise ValueError("capture failed")
+
+    monkeypatch.setattr(hook_module, "encode_observation", refuse_observation)
+    writer = writer_factory()
+    await start(writer)
+    await seal(writer, 0)
+    health = writer.health
+    health.problems[0].recovered = True
+    health.problems.clear()
+    health.expected_steps = 0
+
+    result = await close(writer)
+
+    assert writer.health.status == "incomplete"
+    assert writer.health.missing_steps == [0]
+    assert writer.health.problems[0].recovered is False
+    assert trace_of(writer).manifest.status is TraceStatus.INCOMPLETE
+    assert result.metrics.recording_health is not None
+    assert result.metrics.recording_health.missing_steps == [0]
+
+
 @pytest.mark.parametrize("fault", ["encoding", "commit"])
 async def test_failed_first_segment_is_backfilled_after_second_without_mixing_calls(
     writer_factory, monkeypatch, fault

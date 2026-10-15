@@ -199,7 +199,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self.archive = list(archive or [])
         self.wal: WALWriter | None = None
         self.call_context = RunCallContext()
-        self.health = RecordingHealth()
+        self._health = RecordingHealth()
         self._reset()
 
     def _reset(self) -> None:
@@ -226,7 +226,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self._archive_owners: frozenset[str] = frozenset()
         self._collections = 0
         self._storage: RecordingStorage | None = None
-        self.health = RecordingHealth()
+        self._health = RecordingHealth()
 
     def __repr__(self) -> str:
         return (
@@ -237,6 +237,11 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     @property
     def blocking(self) -> bool:
         return True
+
+    @property
+    def health(self) -> RecordingHealth:
+        """An independent snapshot of this run's recording coverage and faults."""
+        return self._health.model_copy(deep=True)
 
     @property
     def run_dir(self) -> Path | None:
@@ -338,7 +343,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         segment_id: str | None = None,
         call_ids: Sequence[str] = (),
     ) -> None:
-        self.health.problems.append(
+        self._health.problems.append(
             RecordingProblem(
                 step=step,
                 segment_id=segment_id,
@@ -484,7 +489,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         calls = tuple(call for call in self._pending_calls if call.step == step)
         self._pending_calls = [call for call in self._pending_calls if call.step != step]
         self._next_step = max(self._next_step, step + 1)
-        self.health.expected_steps = max(self.health.expected_steps, step + 1)
+        self._health.expected_steps = max(self._health.expected_steps, step + 1)
         try:
             if self.recording.errors:
                 errors = []
@@ -614,13 +619,12 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         wal = storage.wal
         if wal is None:
             raise RuntimeError("recording storage could not be constructed")
-        if wal.manifest is None:
+        manifest = wal.reconcile()
+        if manifest is None:
             if storage.config is None:
                 raise RuntimeError("recording configuration could not be captured")
             wal.init_run(storage.config, config_hash=storage.config_hash)
-        if stop_writes.is_set():
-            return
-        manifest = wal.reconcile()
+            manifest = wal.manifest
         if stop_writes.is_set():
             return
         assert manifest is not None
@@ -769,12 +773,9 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
                 continue
             try:
                 await self._offload(self._commit, segment, storage)
-                for problem in self.health.problems:
-                    if (
-                        problem.phase == "initialize"
-                        and storage.wal is not None
-                        and storage.wal.manifest is not None
-                    ):
+                initialized = storage.wal is not None and storage.wal.manifest is not None
+                for problem in self._health.problems:
+                    if problem.phase == "initialize" and initialized:
                         problem.recovered = True
                     if problem.segment_id == segment.segment_id and problem.phase == "commit":
                         problem.recovered = True
@@ -798,11 +799,13 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     def _refresh_health(self) -> None:
         manifest = self.wal.manifest if self.wal is not None else None
         saved = {entry.step for entry in manifest.steps} if manifest is not None else set()
-        self.health.committed_steps = len(saved)
-        self.health.missing_steps = sorted(set(range(self.health.expected_steps)) - saved)
-        self.health.complete_through = recorded_prefix(saved, self.health.problems)
-        unresolved = [problem for problem in self.health.problems if not problem.recovered]
-        self.health.status = "incomplete" if self.health.missing_steps or unresolved else "complete"
+        self._health.committed_steps = len(saved)
+        self._health.missing_steps = sorted(set(range(self._health.expected_steps)) - saved)
+        self._health.complete_through = recorded_prefix(saved, self._health.problems)
+        unresolved = [problem for problem in self._health.problems if not problem.recovered]
+        self._health.status = (
+            "incomplete" if self._health.missing_steps or unresolved else "complete"
+        )
 
     def _enrich_result(self) -> None:
         if self._result is None:
@@ -811,7 +814,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             self._result.metrics.usage = self._usage.model_copy(deep=True)
             self._result.metrics.llm_calls = self._coverage.calls
             self._result.metrics.usage_coverage = self._coverage.model_copy(deep=True)
-        self._result.metrics.recording_health = self.health.model_copy(deep=True)
+        self._result.metrics.recording_health = self._health.model_copy(deep=True)
 
     async def _finalize(self) -> None:
         if self._stop_writes.is_set():
@@ -820,7 +823,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self._enrich_result()
         wal = self.wal
         if wal is None or wal.manifest is None:
-            self.health.status = "incomplete"
+            self._health.status = "incomplete"
             self._enrich_result()
             return
         try:
@@ -845,20 +848,20 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self._refresh_health()
         reason = "; ".join(
             f"{problem.error}: {problem.detail}"
-            for problem in self.health.problems
+            for problem in self._health.problems
             if not problem.recovered
         )
         try:
             await self._offload(
                 wal.finalize,
-                TraceStatus(self.health.status),
+                TraceStatus(self._health.status),
                 incomplete_reason=reason or None,
-                expected_steps=self.health.expected_steps,
-                recording_problems=self.health.problems,
+                expected_steps=self._health.expected_steps,
+                recording_problems=self._health.problems,
             )
         except Exception as exc:
             self._problem(None, "manifest", "closeout", exc)
-            self.health.status = "incomplete"
+            self._health.status = "incomplete"
         self._enrich_result()
 
     async def flush(self, timeout: float | None = None) -> None:

@@ -586,9 +586,9 @@ class TestDomCleanerIsAWiredReceptor:
     @staticmethod
     def _compose(cleaner_block: dict[str, Any]) -> BrowserCapability:
         from spectragent.core.composer import ConfigComposer
-        from spectragent.scripts.generate_all import _collect_registrars
+        from spectragent.core.registries import collect_registrars
 
-        run = ConfigComposer(registrars=_collect_registrars()).compose(
+        run = ConfigComposer(registrars=collect_registrars()).compose(
             {
                 "capability": [
                     {

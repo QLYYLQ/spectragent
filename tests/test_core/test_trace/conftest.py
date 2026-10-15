@@ -21,9 +21,9 @@ from pydantic import BaseModel
 @pytest.fixture(scope="session")
 def composer() -> Any:
     from spectragent.core.composer import ConfigComposer
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
-    return ConfigComposer(registrars=_collect_registrars())
+    return ConfigComposer(registrars=collect_registrars())
 
 
 @pytest.fixture(scope="session")

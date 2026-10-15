@@ -122,12 +122,26 @@ class LexmountProvider(BrowserProviderBase):
             raise
 
     async def close(self, session: ProviderSession | None = None) -> None:
-        loop = asyncio.get_running_loop()
-        if session is not None:
-            sdk_session = self._sessions.pop(session.session_id, None)
-            if sdk_session is not None:
-                await loop.run_in_executor(None, sdk_session.close)
+        """Release owned sessions, retaining failed cleanup for a later retry."""
+        if session is not None and session.provider_id != self.provider_id:
             return
-        for sdk_session in self._sessions.values():
-            await loop.run_in_executor(None, sdk_session.close)
-        self._sessions.clear()
+        session_ids = [session.session_id] if session is not None else list(self._sessions)
+        failures: list[Exception] = []
+        for session_id in session_ids:
+            owned_session = self._sessions.get(session_id)
+            if owned_session is None:
+                continue
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, owned_session.close)
+            except asyncio.CancelledError as cancellation:
+                for failure in failures:
+                    cancellation.add_note(f"Session cleanup also failed: {failure}")
+                raise
+            except Exception as exc:
+                failures.append(exc)
+            else:
+                self._sessions.pop(session_id, None)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise ExceptionGroup("Browser session cleanup failed", failures)

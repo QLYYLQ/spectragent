@@ -345,7 +345,7 @@ class SchemaOptimizer:
 
         What that actually buys, precisely — because it is narrower than it
         looks. Both production callers
-        (:meth:`ChatModelBase._use_strict_schema`,
+        (:meth:`ChatModelBase.use_strict_schema`,
         :meth:`ToolDefinition.from_model`) hand this a schema compiled with
         ``strict=True``, and that compile already drops ``minItems``. So
         ``minItems`` can only reach this predicate from a direct caller.

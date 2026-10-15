@@ -1,8 +1,5 @@
 """ChatGroq — Groq provider via OpenAI-compatible base."""
 
-# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
-# 的 nested config 类型提取机制（详见 openai_base.py 注释）。
-
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -45,7 +42,7 @@ class ChatGroq(OpenAICompatBase):
         )
 
     @asynccontextmanager
-    async def _request_client(self) -> AsyncIterator[Any]:
+    async def request_client(self) -> AsyncIterator[Any]:
         """Groq's SDK owns its transport unless that transport was injected.
 
         Its public ``close`` has the same transport effect as OpenAI's, but
@@ -116,7 +113,7 @@ class ChatGroq(OpenAICompatBase):
 
         try:
             if output_format is None:
-                async with self._request_client() as client:
+                async with self.request_client() as client:
                     resp = await client.chat.completions.create(
                         messages=groq_messages,
                         model=self.model,
@@ -124,9 +121,9 @@ class ChatGroq(OpenAICompatBase):
                         temperature=self.temperature,
                         top_p=self.top_p,
                         seed=self.seed,
-                        **self._tool_kwargs(tools, tool_choice),
+                        **self.tool_kwargs(tools, tool_choice),
                     )
-                usage = self._get_usage(resp) if hasattr(resp, "usage") else None
+                usage = self.get_usage(resp) if hasattr(resp, "usage") else None
                 return ChatInvokeCompletion(
                     completion=resp.choices[0].message.content or "",
                     thinking=message_reasoning(resp.choices[0].message),
@@ -137,9 +134,9 @@ class ChatGroq(OpenAICompatBase):
                 )
             else:
                 schema = SchemaOptimizer.create_optimized_json_schema(
-                    output_format, strict=self._use_strict_schema(output_format)
+                    output_format, strict=self.use_strict_schema(output_format)
                 )
-                async with self._request_client() as client:
+                async with self.request_client() as client:
                     resp = await client.chat.completions.create(
                         model=self.model,
                         messages=groq_messages,
@@ -160,8 +157,8 @@ class ChatGroq(OpenAICompatBase):
                     raise ModelProviderError(
                         message="No content in response", status_code=500, model=self.name
                     )
-                usage = self._get_usage(resp) if hasattr(resp, "usage") else None
-                parsed = self._validate_structured(
+                usage = self.get_usage(resp) if hasattr(resp, "usage") else None
+                parsed = self.validate_structured(
                     output_format, resp.choices[0].message.content, usage=usage
                 )
                 # No `tool_calls=`: tools are refused on this path above.

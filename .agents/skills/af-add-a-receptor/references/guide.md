@@ -107,8 +107,8 @@ their knobs as `__init__` keyword params; *those become the generated config fie
 Do **not** write `Registrar.get("text")()`; that is the shape step 7 forbids. This is
 the framework's answer when nothing configured anything, not a configuration surface.
 
-**3. Register the registrar with the Composer** — add it to `_collect_registrars()`
-in `spectragent/scripts/generate_all.py:40-97`. **This is the step people skip.**
+**3. Register the registrar with the Composer** — add it to `collect_registrars()`
+in `spectragent/core/registries.py`. **This is the step people skip.**
 A registrar the Composer does not collect degrades the field from the nested
 discriminated union to a bare discriminator — verified by dropping
 `dom_serializer` from the dict and regenerating in memory:
@@ -221,7 +221,7 @@ Worked case: `ArchiverRegistrar` (`core/archive/_registrar.py`). M28 created it 
 test fakes registered; `TraceWriter(archive=[...])` is a plain parameter there. M29 adds
 `TraceWriter.__wiring__["archive"]`, the `Annotated[list[ArchiverBase] | None,
 Field(...)]` type, the class-level `archive: list[ArchiverBase]` annotation, and
-`archiver` in `_collect_registrars()` in the same change as `browser.network` /
+`archiver` in `collect_registrars()` in the same change as `browser.network` /
 `browser.storage` / `browser.dom_raw`.
 
 ## 3. The strategy IS the switch

@@ -329,9 +329,10 @@ class AWSBedrockMessageSerializer:
         while index < len(messages):
             message = messages[index]
             if isinstance(message, SystemMessage):
-                # Extract system message content
-                system_message = AWSBedrockMessageSerializer._serialize_system_content(
-                    message.content
+                if system_message is None:
+                    system_message = []
+                system_message.extend(
+                    AWSBedrockMessageSerializer._serialize_system_content(message.content)
                 )
                 index += 1
             elif isinstance(message, ToolMessage):

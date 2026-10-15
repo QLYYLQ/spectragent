@@ -312,7 +312,7 @@ class TaskDefinition(BaseModel):
     open-ended ``metadata`` dict.
 
     Loaders are responsible for normalizing raw benchmark data into this
-    shape via their ``_normalize_raw()`` method.
+    shape via their ``normalize_raw()`` method.
     """
 
     model_config = ConfigDict(extra="allow")

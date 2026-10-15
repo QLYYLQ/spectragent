@@ -10,8 +10,8 @@ import pytest
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.dom.cleaning.skyvern import SkyvernCleaner
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.schemas.action import Action
-from spectragent.scripts.generate_all import _collect_registrars
 
 pytestmark = pytest.mark.requires_chrome
 
@@ -20,7 +20,7 @@ def configured_capability(
     *, max_text_length: int = 5000, serializer_type: str = "text"
 ) -> BrowserCapability:
     """Use the real YAML-shaped config path, including the cleaner receptor."""
-    run = ConfigComposer(registrars=_collect_registrars()).compose(
+    run = ConfigComposer(registrars=collect_registrars()).compose(
         {
             "capability": [
                 {

@@ -19,6 +19,7 @@ from spectragent.core.trace.models import (
 )
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas.action import Action
+from spectragent.schemas.recording import RecordingProblem
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.trace_builder import (
     agent_result,
@@ -155,6 +156,49 @@ class TestWALWriter:
         wal.commit_step(0, step_record(0))
         with pytest.raises(ValueError, match="already committed"):
             wal.commit_step(0, step_record(0))
+
+    @pytest.mark.parametrize("accessor", ["manifest", "reconcile"])
+    def test_public_manifest_edits_cannot_rewrite_committed_history(self, wal, config, accessor):
+        wal.init_run(config)
+        wal.commit_step(0, step_record(0), fragments=[screenshot(0)])
+        view = wal.manifest if accessor == "manifest" else wal.reconcile()
+        assert view is not None
+        view.steps[0].fragments["browser.screenshot"].artifact = "orphan.png"
+        view.steps.clear()
+        view.prompt_images.append("orphan.png")
+        view.run_id = "other-run"
+
+        wal.commit_step(1, step_record(1))
+
+        committed = _manifest(wal)
+        assert committed.run_id == "run-001"
+        assert [entry.step for entry in committed.steps] == [0, 1]
+        assert committed.steps[0].fragments["browser.screenshot"].artifact == (
+            "observations/000_browser.screenshot.png"
+        )
+        assert committed.prompt_images == []
+        with pytest.raises(ValueError, match="already committed"):
+            wal.commit_step(0, step_record(0))
+
+    def test_finalize_takes_ownership_of_recording_problems(self, wal, config):
+        wal.init_run(config)
+        problem = RecordingProblem(
+            channel="metrics",
+            phase="capture",
+            error="ValueError",
+            detail="invalid usage",
+            occurred_at=1.0,
+            call_ids=["run:0:0"],
+        )
+        wal.finalize(TraceStatus.INCOMPLETE, recording_problems=[problem])
+        problem.call_ids.clear()
+        problem.recovered = True
+
+        wal.finalize(TraceStatus.INCOMPLETE)
+
+        persisted = _manifest(wal).recording_problems[0]
+        assert persisted.call_ids == ["run:0:0"]
+        assert persisted.recovered is False
 
     def test_the_record_must_be_the_steps_own(self, wal, config):
         wal.init_run(config)

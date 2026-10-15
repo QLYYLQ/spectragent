@@ -308,7 +308,7 @@ class TestAFailedCommitLeavesTheManifestAlone:
             wal.commit_step(0, step_record(0), **_a_full_step())
 
         assert _manifest_bytes(wal) == before_disk
-        assert wal.manifest is before_memory
+        assert wal.manifest == before_memory
         assert RunTrace(wal.run_dir).step(0) is None
 
         # Retry: nothing of the failed attempt was claimed.
@@ -577,7 +577,7 @@ class TestPathRules:
 
         assert io_log.writes() == []
         assert _manifest_bytes(wal) == before_disk
-        assert wal.manifest is before_memory
+        assert wal.manifest == before_memory
         assert _nothing_beside_the_run(tmp_path)
         wal.commit_step(0, step_record(0), fragments=[screenshot(0)])  # the run goes on
 

@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from spectragent.core.aop.advice import Intercept
+from spectragent.core.aop.errors import MissingHandlerError
 from spectragent.core.aop.weaver import Weaver
 
 
@@ -60,7 +61,8 @@ class TestWeaverIndex:
         assert "env" in weaver.intercepted_methods
         assert "observe" in weaver.intercepted_methods["env"]
 
-    def test_missing_handler_warned(self) -> None:
+    @pytest.mark.parametrize("handler", [None, 3])
+    def test_missing_or_noncallable_handler_is_refused(self, handler) -> None:
         """Hook declares intercept but has no matching handler method."""
         hook = _MockHook(
             "h1",
@@ -68,9 +70,10 @@ class TestWeaverIndex:
                 Intercept("nonexistent_method", role="env", advice="after"),
             ],
         )
-        weaver = Weaver([hook])
-        # Should not crash, just warn (logged)
-        assert weaver.intercepted_methods == {}
+        if handler is not None:
+            hook.__dict__["after_nonexistent_method"] = handler
+        with pytest.raises(MissingHandlerError, match="after_nonexistent_method"):
+            Weaver([hook])
 
 
 class TestWeaverWrap:

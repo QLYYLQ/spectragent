@@ -32,7 +32,8 @@ class BaseCapability(Protocol):
     Attributes:
         capability_id: Registry discriminator — matches ``__registry_key__``.
         id: Instance identity. Two capabilities of the same class can
-            coexist in one run as long as their ``id`` differs.
+            coexist in one run when wired into separate environments;
+            each environment routes at most one instance per capability_id.
     """
 
     @property

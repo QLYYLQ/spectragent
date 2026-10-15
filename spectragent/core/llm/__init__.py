@@ -4,6 +4,7 @@ model_type = pure communication protocol (discriminator level 0)
 provider   = nested sub-provider (discriminator level 1, hierarchical keys)
 """
 
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 # Lightweight imports that are commonly used
@@ -52,26 +53,31 @@ if TYPE_CHECKING:
     from spectragent.core.llm.providers.openai_vercel import ChatVercel
 
 # Lazy imports mapping for heavy chat models
-_LAZY_IMPORTS = {
-    # --- Primary classes ---
-    "ChatOpenAI": ("spectragent.core.llm.providers.openai", "ChatOpenAI"),
-    "ChatAzureOpenAI": ("spectragent.core.llm.providers.openai_azure", "ChatAzureOpenAI"),
-    "ChatGroq": ("spectragent.core.llm.providers.openai_groq", "ChatGroq"),
-    "ChatDeepSeek": ("spectragent.core.llm.providers.openai_deepseek", "ChatDeepSeek"),
-    "ChatCerebras": ("spectragent.core.llm.providers.openai_cerebras", "ChatCerebras"),
-    "ChatOpenRouter": ("spectragent.core.llm.providers.openai_openrouter", "ChatOpenRouter"),
-    "ChatVercel": ("spectragent.core.llm.providers.openai_vercel", "ChatVercel"),
-    "OpenAICompatBase": ("spectragent.core.llm.providers.openai_base", "OpenAICompatBase"),
-    "ChatAnthropic": ("spectragent.core.llm.providers.anthropic", "ChatAnthropic"),
-    "ChatAnthropicAWS": ("spectragent.core.llm.providers.anthropic_aws", "ChatAnthropicAWS"),
-    "AnthropicCompatBase": ("spectragent.core.llm.providers.anthropic_base", "AnthropicCompatBase"),
-    "ChatGoogle": ("spectragent.core.llm.providers.google", "ChatGoogle"),
-    "ChatBedrock": ("spectragent.core.llm.providers.bedrock", "ChatBedrock"),
-    "ChatOllama": ("spectragent.core.llm.providers.ollama", "ChatOllama"),
-    "ChatMistral": ("spectragent.core.llm.providers.mistral", "ChatMistral"),
-    "ChatOCI": ("spectragent.core.llm.providers.oci", "ChatOCI"),
-    "ChatBrowserUse": ("spectragent.core.llm.providers.browser_use", "ChatBrowserUse"),
-}
+_LAZY_IMPORTS = MappingProxyType(
+    {
+        # --- Primary classes ---
+        "ChatOpenAI": ("spectragent.core.llm.providers.openai", "ChatOpenAI"),
+        "ChatAzureOpenAI": ("spectragent.core.llm.providers.openai_azure", "ChatAzureOpenAI"),
+        "ChatGroq": ("spectragent.core.llm.providers.openai_groq", "ChatGroq"),
+        "ChatDeepSeek": ("spectragent.core.llm.providers.openai_deepseek", "ChatDeepSeek"),
+        "ChatCerebras": ("spectragent.core.llm.providers.openai_cerebras", "ChatCerebras"),
+        "ChatOpenRouter": ("spectragent.core.llm.providers.openai_openrouter", "ChatOpenRouter"),
+        "ChatVercel": ("spectragent.core.llm.providers.openai_vercel", "ChatVercel"),
+        "OpenAICompatBase": ("spectragent.core.llm.providers.openai_base", "OpenAICompatBase"),
+        "ChatAnthropic": ("spectragent.core.llm.providers.anthropic", "ChatAnthropic"),
+        "ChatAnthropicAWS": ("spectragent.core.llm.providers.anthropic_aws", "ChatAnthropicAWS"),
+        "AnthropicCompatBase": (
+            "spectragent.core.llm.providers.anthropic_base",
+            "AnthropicCompatBase",
+        ),
+        "ChatGoogle": ("spectragent.core.llm.providers.google", "ChatGoogle"),
+        "ChatBedrock": ("spectragent.core.llm.providers.bedrock", "ChatBedrock"),
+        "ChatOllama": ("spectragent.core.llm.providers.ollama", "ChatOllama"),
+        "ChatMistral": ("spectragent.core.llm.providers.mistral", "ChatMistral"),
+        "ChatOCI": ("spectragent.core.llm.providers.oci", "ChatOCI"),
+        "ChatBrowserUse": ("spectragent.core.llm.providers.browser_use", "ChatBrowserUse"),
+    }
+)
 
 
 def __getattr__(name: str):

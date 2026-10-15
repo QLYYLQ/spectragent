@@ -38,7 +38,7 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
     Subclasses should override ``env_type`` if the loader produces tasks
     for a non-browser environment — it selects both the data directory
     (``benchmark_data/<env_type>/<benchmark>``) and the ``TaskSetup``
-    variant. They may override ``_normalize_raw()`` to control how raw
+    variant. They may override ``normalize_raw()`` to control how raw
     data is mapped into ``TaskDefinition``.
     """
 
@@ -107,11 +107,14 @@ class TaskLoaderBase(metaclass=TaskLoaderRegistrar.Meta):
             self.data_dir,
         )
         for raw in parse_file(resolve_split_file(root, self.subset)):
-            task = self._normalize_raw(raw)
+            task = self.normalize_raw(raw)
             self._tasks[task.task_id] = task
 
-    def _normalize_raw(self, raw: dict[str, Any]) -> TaskDefinition:
+    def normalize_raw(self, raw: dict[str, Any]) -> TaskDefinition:
         """Map a raw record into a ``TaskDefinition``.
+
+        Extension point for loader authors. Return one task without
+        adding it to the loader's index; loading owns that bookkeeping.
 
         The setup variant is selected by ``self.env_type`` (never
         hardcoded), and each variant declares via ``__raw_keys__`` which

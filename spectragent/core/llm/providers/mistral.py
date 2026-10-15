@@ -1,6 +1,3 @@
-# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
-# 的 nested config 类型提取机制。
-
 import json
 import logging
 import os
@@ -315,7 +312,7 @@ class ChatMistral(ChatModelBase):
                     usage=usage,
                     tool_calls=_parse_raw_tool_calls(choices[0]),
                 )
-            parsed = self._validate_structured(output_format, content_text, usage=usage)
+            parsed = self.validate_structured(output_format, content_text, usage=usage)
             return ChatInvokeCompletion(
                 completion=parsed, thinking=_thinking(choices[0]), usage=usage
             )

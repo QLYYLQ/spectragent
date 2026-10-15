@@ -1,8 +1,5 @@
 """ChatAzureOpenAI — Azure OpenAI provider."""
 
-# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
-# 的 nested config 类型提取机制（详见 openai_base.py 注释）。
-
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -27,14 +24,14 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 # Azure models that require the Responses API
-RESPONSES_API_ONLY_MODELS: list[str] = [
+RESPONSES_API_ONLY_MODELS: tuple[str, ...] = (
     "gpt-5.1-codex",
     "gpt-5.1-codex-mini",
     "gpt-5.1-codex-max",
     "gpt-5-codex",
     "codex-mini-latest",
     "computer-use-preview",
-]
+)
 
 # Accepted spellings for the tri-state `use_responses_api` YAML field.
 _RESPONSES_API_TRUE = frozenset({"true", "1", "yes", "on"})
@@ -102,18 +99,16 @@ class ChatAzureOpenAI(OpenAICompatBase):
     def get_client(self) -> AsyncAzureOpenAIClient:
         import os
 
-        self.api_key = (
-            self.api_key or os.getenv("AZURE_OPENAI_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
-        )
-        self.azure_endpoint = self.azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
-        self.azure_deployment = self.azure_deployment or os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        api_key = self.api_key or os.getenv("AZURE_OPENAI_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
+        azure_endpoint = self.azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
+        azure_deployment = self.azure_deployment or os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
         params: dict[str, Any] = {}
         for k, v in {
-            "api_key": self.api_key,
+            "api_key": api_key,
             "api_version": self.api_version or "2024-12-01-preview",
-            "azure_endpoint": self.azure_endpoint,
-            "azure_deployment": self.azure_deployment,
+            "azure_endpoint": azure_endpoint,
+            "azure_deployment": azure_deployment,
             "base_url": self.base_url,
             "azure_ad_token": self.azure_ad_token,
             "azure_ad_token_provider": self.azure_ad_token_provider,
@@ -138,7 +133,7 @@ class ChatAzureOpenAI(OpenAICompatBase):
         return AsyncAzureOpenAIClient(**params)
 
     @asynccontextmanager
-    async def _request_client(self) -> AsyncIterator[AsyncAzureOpenAIClient]:
+    async def request_client(self) -> AsyncIterator[AsyncAzureOpenAIClient]:
         """Azure owns its explicitly built HTTP transport, not a second copy.
 
         ``get_client`` registers that transport before SDK construction. The
@@ -185,26 +180,26 @@ class ChatAzureOpenAI(OpenAICompatBase):
             model_params["top_p"] = self.top_p
         if self.service_tier is not None:
             model_params["service_tier"] = self.service_tier
-        effort = self._effective_reasoning_effort()
+        effort = self.effective_reasoning_effort()
         if effort is not None:
             model_params["reasoning"] = {"effort": effort}
-        if self._is_listed_reasoning_model():
+        if self.is_listed_reasoning_model():
             model_params.pop("temperature", None)
 
         try:
             if output_format is None:
-                async with self._request_client() as client:
+                async with self.request_client() as client:
                     response = await client.responses.create(**model_params)
                 thinking, redacted_thinking = _responses_reasoning(response)
                 return ChatInvokeCompletion(
                     completion=response.output_text or "",
                     thinking=thinking,
                     redacted_thinking=redacted_thinking,
-                    usage=self._get_usage_from_responses(response),
+                    usage=self.get_usage_from_responses(response),
                     stop_reason=response.status if response.status else None,
                 )
             else:
-                strict = self._use_strict_schema(output_format)
+                strict = self.use_strict_schema(output_format)
                 json_schema = SchemaOptimizer.create_optimized_json_schema(
                     output_format, strict=strict
                 )
@@ -218,7 +213,7 @@ class ChatAzureOpenAI(OpenAICompatBase):
                         "schema": json_schema,
                     }
                 }
-                async with self._request_client() as client:
+                async with self.request_client() as client:
                     response = await client.responses.create(**model_params)
                 if not response.output_text:
                     raise ModelProviderError(
@@ -226,10 +221,10 @@ class ChatAzureOpenAI(OpenAICompatBase):
                         status_code=500,
                         model=self.name,
                     )
-                usage = self._get_usage_from_responses(response)
+                usage = self.get_usage_from_responses(response)
                 thinking, redacted_thinking = _responses_reasoning(response)
                 return ChatInvokeCompletion(
-                    completion=self._validate_structured(
+                    completion=self.validate_structured(
                         output_format,
                         strip_code_fence(response.output_text),
                         usage=usage,
@@ -308,6 +303,6 @@ class ChatAzureOpenAI(OpenAICompatBase):
                 ),
             )
             return await self._ainvoke_responses_api(messages, output_format, **kwargs)
-        return await self._standard_ainvoke(
+        return await self.standard_ainvoke(
             messages, output_format, tools=tools, tool_choice=tool_choice
         )

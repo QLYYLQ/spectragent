@@ -19,6 +19,8 @@
 | **Record Once, Evaluate Many** | 运行时全量落盘（log 是一等公民），评测与运行完全解耦，支持后置多次评测 |
 | **AOP-style Cross-cutting** | 横切关注点（tracing、metrics、monitoring）通过 Lifecycle Hooks 动态织入，业务逻辑（AgentLoop）无感知 |
 
+公共 API 按真实使用者划界：组件消费者依赖已有 Protocol，扩展作者依赖基类明确提供的覆写点和共享方法，纯函数与值对象保持原有的数据合同。不能为每个 helper、属性或 Loop 子类新建一个 Protocol。仅在本组件内部使用的缓存、计数器和算法助手保持私有；类或文件的行数不是职责错误的证据。公开的读取快照不得反向修改持有方的执行、提交或记录健康状态；可变状态按运行或明确的对象实例持有，固定声明表使用不可变值。
+
 ### 1.2 类比：Spring-like Config-Driven
 
 框架的组件发现和组装机制与 Spring 类似：
@@ -476,28 +478,31 @@ class RestorationContext:            # 窄的：没有 LLM、没有 memory、没
 
 ### 4.2 AgentRuntime（通用编排）
 
-**设计决策**：从原 `BaseReactAgent.run()` 提取与 loop 范式无关的逻辑（约 90%）为独立 AgentRuntime。AgentRuntime 负责协商、AOP 织入、Loop weave、超时、错误处理，Loop 只负责编排。**API 是两段式**：`prepare()` 装配并返回 wrapped agent；`execute(task)` 加 lifecycle/timeout 包装 `agent.run(task)`。所有 deps 来自 `ComposedRun`（见 §4.2.1）。
+**设计决策**：从原 `BaseReactAgent.run()` 提取与 loop 范式无关的逻辑（约 90%）为独立 AgentRuntime。AgentRuntime 负责协商、AOP 织入、Loop weave、超时、错误处理，Loop 只负责编排。**API 是两段式**：`prepare()` 装配并返回 wrapped agent；`execute(task)` 加 lifecycle/timeout 包装 `agent.run(task)`。`ComposedRun` 是多实例图；调用方用 `AgentRuntime.for_agent(run, agent_id, env_id=...)` 选定 Agent 与环境，Loop、LLM 和 Memory 则来自该 Agent 的受体（见 §4.2.1）。
 
 ```python
 class AgentRuntime:
     """与 loop 范式无关的通用编排。每次 prepare/execute 是独立 run 上下文。"""
 
-    def __init__(self, run: ComposedRun) -> None:
+    def __init__(self, run: ComposedRun, agent: Any, *, env: Any | None = None) -> None:
         self._run = run
+        self._agent = agent
+        self._env = env
         self._hooks: list[RuntimeHook] = list(run.hooks)
 
     @classmethod
-    def from_composed(cls, run: ComposedRun) -> "AgentRuntime":
-        return cls(run)
+    def for_agent(cls, run: ComposedRun, agent_id: str,
+                  *, env_id: str | None = None) -> "AgentRuntime":
+        # 多个 environment 时 env_id 必填；只有一个时可省略。
+        return cls(run, run.instance("agent", agent_id),
+                   env=run.instance("environment", env_id) if env_id else run.optional_single("environment"))
 
     # ── prepare(): 装配阶段 ─────────────────────────────────────────
     def prepare(self, *, task_id="unknown", action_filter=None,
                 loop_inputs=None,                  # 没有 **kwargs：Loop 的每任务输入走有类型的 loop_inputs
                 env_context=None) -> Any:          # 本任务的环境 setup context（TaskContext.env），给 3d 的检查
-        run = self._run
-        agent, loop, env, llm, memory = (
-            run.agent, run.loop, run.env, run.llm, run.memory
-        )
+        agent, env = self._agent, self._env
+        loop, llm, memory = agent.agent_loop, agent.llm, agent.memory
 
         # 1. Slot 校验：loop.__required_slots__ ⊆ agent 的 callable 方法
         loop.validate_slots(agent)
@@ -582,12 +587,12 @@ class AgentRuntime:
 
         prepared_agent = self.prepare(task_id=task_id, action_filter=action_filter,
                                       loop_inputs=loop_inputs, env_context=env_context)
-        memory.clear(); self._recorder.clear()                 # 一个 ComposedRun 可以跑多个任务
-        memory.add_messages(self.seed_messages(task))          # M32：种子消息是公开方法，见下
+        self._agent.memory.clear(); self._recorder.clear()       # 一个 ComposedRun 可以跑多个任务
+        self._agent.memory.add_messages(self.seed_messages(task))  # M32：种子消息是公开方法，见下
 
         # 在 env setup 之前打开 trace：setup 失败也要落进 trace
         await self._dispatch_lifecycle("on_run_start",
-            agent=self._run.agent, env=self._run.env,          # env：原始环境，不是 AOP 代理
+            agent=self._agent, env=self._env,                    # env：原始环境，不是 AOP 代理
             task=task, config=config or {}, ...,
             archive_negotiation=self._negotiated_archive,      # 没有归档消费者时为 None
             env_evidence_privacy=self._env_evidence_privacy,   # 有序、去重的隐私标记；没绑定归档器时为 None
@@ -735,19 +740,14 @@ class AgentRuntime:
 @dataclass(frozen=True)
 class ComposedRun:
     """Fully assembled, setattr-injected object graph ready for AgentRuntime."""
-    by_layer: dict[str, dict[str, Any]]    # {layer: {registry_key: instance}}
+    by_layer: dict[str, dict[str, Any]]    # {layer: {instance_id: instance}}
     top_level_cfg: BaseModel | None = None
 
-    @property
-    def agent(self) -> Any: ...     # single("agent")
-    @property
-    def loop(self) -> Any: ...      # 优先 agent.agent_loop，回退到 single("agent_loop")
-    @property
-    def env(self) -> Any | None: ...
-    @property
-    def llm(self) -> Any: ...
-    @property
-    def memory(self) -> Any: ...
+    def instances(self, layer: str) -> list[Any]: ...
+    def ids(self, layer: str) -> list[str]: ...
+    def instance(self, layer: str, instance_id: str) -> Any: ...
+    def single(self, layer: str) -> Any: ...
+    def optional_single(self, layer: str) -> Any | None: ...
     @property
     def hooks(self) -> list[Any]: ...
 
@@ -775,6 +775,10 @@ class ConfigComposer:
         return ComposedRun(by_layer=by_layer, top_level_cfg=cfg)
 ```
 
+`by_layer` 使用配置中的实例 `id`，省略时用 `<registry_key>#<ordinal>`；同一实现的多个实例保持独立。没有单数的 `agent/loop/env/llm/memory` 便利属性。调用方用 `AgentRuntime.for_agent(run, agent_id, env_id=...)` 选定一个 Agent，Loop、模型与 Memory 来自该 Agent 自己的受体。
+
+所有运行、评测、导出、配置检查和生成入口共用 `core/registries.py::collect_registrars()`。它按稳定顺序返回新的注册表映射，不持有组件实例或跨 run 缓存；实现发现仍由 Composer 或生成入口执行。`scripts/generate_all.py` 只负责生成产物，不再承载其他运行入口依赖的私有目录函数。
+
 **Wired receptor 的判定与注入**：
 - 统一使用 conscribe 2.0 的公开 `introspect.wiring_slots` / `receptor_slots` / `init_param_names`。构造参数优先，随后读取 MRO 中的非 `ClassVar` 类级注解；继承的参数按 `**kwargs` 转发链读取，注解在声明它的模块中解析。
 - 受体的 `shape` 决定 single / list / dict 注入，识别 `Annotated`、`Optional` 和集合类型。只在 `__init__` 中注解的可选列表也按列表注入，不再要求额外的类级注解。
@@ -790,7 +794,7 @@ class ConfigComposer:
 
 **与 AgentRuntime 的边界**：`AgentRuntime` 只接收 `ComposedRun`，**不**直接看 conscribe schema、**不**自己解析 YAML。`ConfigComposer` 通过 conscribe 的公开反射接口读取受体和容器形态，不复制上游的反射规则。普通用户 `BaseModel` 子配置保持已校验的模型实例传入构造函数；只有嵌套判别器块按字段展开。增删 wiring grammar、调整 discover 路径、加新 layer 都只动 Composer。
 
-**只有一个根，每一层都是可选的（M32 实测）。** 生成的 `ComposedConfig` 每个允许顶层配置的层都是 `list[<layer union>] = []`（`inline_only` 层除外），没有必需层：只写 `evaluator:` 的 YAML 能组装；只写一个顶层层、且该层带单实例受体（`task_loader: [{benchmark_name: trace_branches, step_selector: {...}}]`）也能组装，受体照样是类型化的嵌套联合，拼错的键被拒（`tmp/flywheel/m32_design/probe_root.py`）。所以训练导出不另立根：`exporter` 与 `action_translator` 是这个根的两个可选顶层层（与 `evaluator` 同一先例，§4.15），一份只有 `exporter:` 的 YAML 照样由 `ConfigComposer(registrars=_collect_registrars())` 组装；学生的运行配置是另一份普通的运行 YAML，由导出器再组装一次。
+**只有一个根，每一层都是可选的（M32 实测）。** 生成的 `ComposedConfig` 每个允许顶层配置的层都是 `list[<layer union>] = []`（`inline_only` 层除外），没有必需层：只写 `evaluator:` 的 YAML 能组装；只写一个顶层层、且该层带单实例受体（`task_loader: [{benchmark_name: trace_branches, step_selector: {...}}]`）也能组装，受体照样是类型化的嵌套联合，拼错的键被拒（`tmp/flywheel/m32_design/probe_root.py`）。所以训练导出不另立根：`exporter` 与 `action_translator` 是这个根的两个可选顶层层（与 `evaluator` 同一先例，§4.15），一份只有 `exporter:` 的 YAML 照样由 `ConfigComposer(registrars=collect_registrars())` 组装；学生的运行配置是另一份普通的运行 YAML，由导出器再组装一次。
 
 **生成与验证（conscribe 2.0）。** 唯一入口仍为 `spectragent config generate`。严格 discover 排除 `spectragent.generated` 与 `spectragent.scripts`，无需先删除旧产物；所有已收集层必须非空。先记录注册表指纹，再构建、渲染完整源代码和 schema（Pydantic 渲染可能规范化数值约束），渲染成功后逐文件原子替换，最后写指纹。存根调用 `write_layer_stubs(prune=True)`，只清理上游识别的过期生成存根；所有现有受体均在源码中声明，所以当前不需要 `.pyi`。测试将 conscribe 警告视作错误，用公开 `isolated_registries` 隔离假实现，并在干净进程中比较运行时模型、生成 Python、JSON Schema 及所有发布 YAML 的校验结果。
 
@@ -1788,6 +1792,8 @@ Runtime 在任务的所有结束路径清理其实际持有的 agent 模型；�
 provider 作者通过公开 `ChatModelBase.client_resources: ClientResources`（`core/llm/client_resources.py`）
 声明 `get_or_create`、`own`、`use` 和 `run_sync`；缓存字典、关闭任务与使用计数是该组件的私有实现，消费者不读它们。
 
+同一基类的 `use_strict_schema` 与 `validate_structured` 是 provider 作者共享的结构化输出入口；`OpenAICompatBase` 的 `request_client`、`standard_ainvoke`、`common_model_params`、`tool_kwargs`、`get_usage`、`get_usage_from_responses`、`effective_reasoning_effort` 和 `is_listed_reasoning_model` 服务已有 provider 子类的复用与覆写。它们不扩张模型调用者的 `BaseChatModel` Protocol。身份字段使用 `model/model_type/provider/name`，不保留重复的 `model_name` 别名。由环境变量或模型家族推导的请求默认值是局部执行值，不写回配置字段。
+
 所有权按实际构造记录：provider 自建 SDK/HTTP transport 由 provider 关；通过 Python 注入的 transport 默认
 借用，由注入者关。SDK wrapper 的 close 若会关闭借用 transport，就不能调用它；不支持的注入必须明确拒绝。
 同步与异步资源分别登记，逐项独立有界清理；一项失败不跳过其余。默认清理预算每个模型 **5 秒**，覆盖等待正在使用
@@ -2307,7 +2313,7 @@ BaseTaskLoader (Protocol)           BaseEvalLoader (Protocol)
 
 **起始页：加载器补全，浏览器只认完整的 URL（用户 2026-10-14 的裁决）。** 2026-10-14 零 token 筛选 LexBench L1 的中文站点（本地的 `tmp/flywheel/followup/live2/screening.md`）发现：`lexbench_browser` 的九个 split（包括它自己那份 Online-Mind2Web）没有一个起始页带协议头，几乎都是裸主机名（`www.bilibili.com`，少数带路径：`s.weibo.com/top/summary`）；全集有 10 个任务写的是文字或几个站点（L1 的 7 个与 L2 的 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）。加载器原样交出、setup 原样导航，SecurityWatchdog 把它当作"不安全的协议"拦下，每个 LexBench 任务都在 setup 以 `agent_done: error` 结束、一次模型调用都没有，sweep 的 pre-flight 也看不出来。规则：
 
-- **补全**：`lexbench_browser` 任务加载器（`core/data_loader/task/lexbench_browser.py::complete_start_page`，在 `_normalize_raw` 里，新旧两种记录形状都经过它）把一个**裸主机名**补成 `https://…`：由 ASCII 字母、数字、连字符组成、至少有一个点的主机名，可带端口，后面可带以 `/`、`?`、`#` 开头的部分，整串不含空白、全是 ASCII。别的一律原样：已经带协议头的、文字、几个站点。
+- **补全**：`lexbench_browser` 任务加载器（`core/data_loader/task/lexbench_browser.py::complete_start_page`，在 `normalize_raw` 里，新旧两种记录形状都经过它）把一个**裸主机名**补成 `https://…`：由 ASCII 字母、数字、连字符组成、至少有一个点的主机名，可带端口，后面可带以 `/`、`?`、`#` 开头的部分，整串不含空白、全是 ASCII。别的一律原样：已经带协议头的、文字、几个站点。
 - **为什么在加载器、在 trace 记下它之前**：trace 记下的 `task_setup.context.start_url` 就是交给 setup 的那一个，而飞轮报告的站点、导出的 `split.by: site` 与 `exclude_sites`、去污染的 `site_instruction` 都按 `urlsplit(start_url).hostname` 认站点（`core/trace/sources.py::TaskIdentity.site`、`export/split.py`）。裸主机名取不出主机名：只在浏览器里补，每个 run 仍会被算成"没有 start_url"，站点数是 0。
 - **为什么只在 `lexbench_browser`，不在 `TaskLoaderBase`**：别的数据都写完整的 URL（`online_mind2web` 的 300 个任务全是 `https://`，`Hard` 的 77 个在其中；`browsecomp` 没有起始页；`trace_branches` 用源 run 记下的那一份）。裸主机名是 LexBench 数据自己的写法（它上游的字段叫 `target_website`，是网站，不是 URL）；放进共用的基类，就会把一份本该写 URL 的数据里的错误悄悄改掉，而那种错误应该由下一条点名。
 - **补不全的在 `prepare()` 被拒**：`BrowserCapability.check_setup`（§4.9 `SetupCheck`，§4.14 "协作检查一览"）拒绝不是一个 http(s) URL 的起始页，消息点名这个起始页和原因（没有协议头、协议头是别的、没有主机、含空白、不是合法的 URL），trace 不打开。sweep 的第一个任务是这样时 pre-flight 停下（退出码 2）；否则只在那个任务上报（`TaskOutcome.error`）。`spectragent run --start-url` 不补全：只写主机名，`--dry-run` 就报错。setup 自己再查一遍（同一个 `check_setup`），绕过 `prepare()` 直接 setup 的调用方也在启动浏览器之前被拒。
@@ -2347,10 +2353,14 @@ EvaluatorRegistrar = create_registrar("evaluator", BaseEvaluator, discriminator_
 class BaseEvaluator(Protocol):
     @property
     def evaluator_id(self) -> str: ...
+    def config_signature(self) -> dict[str, Any]: ...
+    @property
+    def verdict_slug(self) -> str: ...
     async def evaluate(self, trace: RunTrace, reference: Any, **kwargs) -> EvalResult: ...
 ```
 
 Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可以访问任意深度的运行数据。
+每个 evaluator（包括仅结构化满足 Protocol 的实现）公开 `config_signature()` 与稳定的 `verdict_slug`：无旋钮时签名显式返回 `{}`，有旋钮时写出影响判定的可复现设置，slug 随之变化。Runner 不猜测缺失身份，也不把读取签名的异常吞掉后记成空签名。落盘的 `EvalResult` 只接受当前 `schema_version: "2.1"`；构造新判定时 `verdict_source` 默认 `graded`，读回已存判定时该字段与 `evaluator_config` 必须实际存在，旧数据不能被默认值伪装成已评分。
 
 **现状：独立评测阶段可启用 judge，与数据飞轮的回放保真判定解耦（用户 2026-10-14 的裁决，取代 2026-10-13 的休眠约定）。** judge 只读取已提交的轨迹和明确提供的任务评测材料，在独立阶段判断任务正确性；它的模型、判定依据和运行失败必须可追溯，报告单独展示任务正确率与有效判定覆盖率，不把模型错误、证据不足或未评测算成任务失败，也不把 agent 的 `done` 当作答对。恢复与分叉阶段不调用 judge、不用 judge 覆盖恢复校验的结论。时效任务的判定以录制时点与轨迹中的证据为准，不拿当前网站内容或模型的当前知识替代录制事实。飞轮的每一段（录制、回放、分叉、导出、度量）都不需要评测结果：分叉与导出里按判定筛源的过滤都是可选项，默认不读判定（`trace_branches` 的 `require_eval` 与导出器的 `filters.require_eval` 默认都是 `null`，发布的 `export_sft.yaml` 也写 `null`），度量报告从不读判定；去污染只认导出配置里明确列出的 benchmark（默认 `[]`：不去污染，数据集 manifest 记 `decontaminated: false`），不再从判定推断（§4.15 "切分与去污染"）；`execution_dag.md` 里评测器指向分叉与导出两个模块的边因此是可选边。剩下的一处依赖在数据一侧、不在判分器：导出的参考答案泄漏扫描读 benchmark 的评测数据加载器（§4.15 "校验"）。"Record Once, Evaluate Many" 不变：已提交的 trace 随时可以拿去评测。
 
@@ -2366,6 +2376,8 @@ Evaluator 的输入是**完整的 RunTrace**（不是 AgentResult），因此可
 **独立入口**：`spectragent eval --config <yaml> --traces <run或父目录> [...] --out <新目录>` 只组合一个 `evaluator` 和一个 `eval_loader`（judge 仍经 evaluator 的 `llm` 受体），复用 `EvaluationRunner`。它只把显式提供的 trace 作为分母，不自动把整个 benchmark 未提供的任务补成失败；原 runner 显式 `expected_task_ids` 的覆盖策略保留。分叉的参考按 `BranchProvenance.source_benchmark/source_subset/source_task_id` 找，判定身份仍是被评的分叉 run。一个批次的报告分别列输入 run、有效判定、判对、判错、评测失败；任务正确率只用有效判定作分母，同时显示有效判定覆盖，零有效判定为 `null`。新输出目录保留该批的判定副本、失败与脱敏配置；trace 内的同 slug 判定沿用现有最新结果语义。退出码 0 表示本批全部输入得到有效判定（任务判错不使进程失败），1 表示至少一份无法判定，2 表示配置或输入拒绝。
 
 LexBench 图像 judge 没有任务文字、没有可用截图、回复没有有效的 0–100 总分，都属于评测错误，不制造任务失败。请求使用录制时间与已录下的 `loop.step_info.today` 解释时效文字；这些是提示中的可追溯证据，不是当前网站事实。实际 judge 模型与路由身份、模板快照、录制时间及已报告的 `eval_usage` 随独立结果保存；模型失败时已知的提示与用量也保留，未知用量不声称为零。此入口不启动浏览器、不访问当前页面、不修改恢复保真指标或训练导出。
+
+`online_mind2web` 的并行图像 judge 属于一次独立评测：一条调用失败或外部取消时，请求其他调用取消，并在有限预算内等待。未结束的调用仍由 evaluator 持有直到实际结束，诊断记录其索引；已完成回复、提示快照和已报告用量随异常保留。普通清理失败不替代原错误或取消；等待清理期间新到的外部取消优先于先前的普通错误（原错误作为 cause），若原先就是取消则保留首次取消。Runner 随后仍执行其模型生命周期清理。
 
 **评测器经 `TraceView` 读 trace，`TraceView` 认得步的来源（M31）**（`evaluator/trace_view.py`）。一个 trace 的步有三种来源（`StepRecord.origin`，§5.3）：
 
@@ -2508,7 +2520,7 @@ Browser capability 在 setup 时、模型做任何决定之前测量实际桌面
 
 同理，两者都是 `BrowserCapability.__wiring__` 上的**受体**（wired receptor），不是 `Literal` 字符串：策略以**构造好的实例**注入，它自己的 knobs（windmouse 的 gravity / wind、bezier 的控制点、`human` rhythm 的 median_iki / hold 分布、learned 的 weights_dir / num_candidates，以及下面两节的 click-hold 与 aim 分布参数）因此全部经 conscribe 进入生成的 config，YAML 可达且被校验。曾经的形状是 `Literal` 加一个未类型化的 overrides dict，conscribe 把后者整个从 schema 里丢掉——knobs 存在，没有任何东西能设置它们。这与 `dom_cleaner` / `dom_serializer` 是同一类 defect（见 §4.12），`tests/test_core/test_capabilities/test_receptor_hygiene.py` 是结构性守卫。
 
-但**受体身份是必要而非充分条件**：注册表还必须被 Composer 收集（`scripts/generate_all.py::_collect_registrars`），否则 conscribe 无从知道这个字段是一个判别联合，只能把它发成裸 `str`——knobs 依然不可达，而且更坏：一个拼错的 `trajectory_type` 不会被校验挡住，会静默退回 `instant`（非拟人）。`mouse_trajectory` 正是这样漏过一轮的，`_collect_registrars` 里现在留着记录此事的注释。新增任何一根策略轴都要同时做这两件事。
+但**受体身份是必要而非充分条件**：注册表还必须被 Composer 收集（`core/registries.py::collect_registrars`），否则 conscribe 无从知道这个字段是一个判别联合，只能把它发成裸 `str`——knobs 依然不可达，而且更坏：一个拼错的 `trajectory_type` 不会被校验挡住，会静默退回 `instant`（非拟人）。`mouse_trajectory` 正是这样漏过一轮的，`collect_registrars` 里现在留着记录此事的注释。新增任何一根策略轴都要同时做这两件事。
 
 #### 两个 Protocol
 
@@ -2662,6 +2674,8 @@ recorder 连接的 `CDPClient` 用 `compression=None`（websockets 默认与 Chr
 #### setup 与 teardown
 
 setup：协作检查（`check_setup`，`prepare()` 查过的同一个函数，再查一遍）→ 回放时加载整个源归档（`open_replay`）→ `backend.open(launch_args=..., launch_env=...)`（只对声明了 `LAUNCH_ARGS` 的 provider）→ 控制连接 → 需要时建好 recorder 连接（还不 attach）：它的客户端、archive scope（`__archive__`，与 `__browser__` 平级，归 recorder 的生命周期）与 `ArchiveChannel`；绑定了归档器时，在第一个 tab 主 frame 的 isolated world 里量浏览器的默认时区与语言（任何 override 都还没到，`backends/browser_defaults.py`；回放时在这里与源 run 的比较，不同就拒绝，下面"一致性检查与回放指纹"）；档位要 client hints 时（pinned），在一个后台的临时 `chrome://version` tab 里读浏览器自己的 client hints（上面"`replayability`"）；`replayability` 的本 run 计划（计划用不了读到的 hints，或回放时与源 run 的不同，就在这里拒绝）、已绑定归档器的运行期会话（`archive/run.py` 的 `BrowserArchiveRun`）→ global scope 与 watchdog（ArchiveWatchdog 按绑定安装）→ `RecorderConnection.open()`：设 browser 级 auto-attach，等已存在的 target 准备完（ready barrier）→ 初始 tab → `start_url`。watchdog 在 `open()` **之前**：ArchiveWatchdog 必须从 recorder 的第一个事件起就消费 archive scope，因为 `open()` 期间已存在 target 的 attach 事件必须有实际接收者；缺少处理者是归档缺口，不能被成功 flush 掩盖。
+
+启动期对输入平台、client hints、颜色偏好及默认时区/语言的四种测量共用浏览器包内 `commands.py::BrowserCommands`，只要求带超时的 `send`。控制连接和 recorder 连接都能满足它；测量不要求事件订阅或连接状态，所以不使用 `agent-cdp.CDPCommandProtocol` 的更宽合同，也不为每种测量各立一个 Protocol。
 
 teardown：标记不存活 → recorder 显式清理（`Target.setAutoAttach{autoAttach:false, waitForDebuggerOnStart:false}` → 继续所有还扣着的请求 → 每个 session `Fetch.disable` → `Target.detachFromTarget` → 停掉 recorder 客户端）→ 关闭归档会话与 archive scope → 原有的 bridge / watchdog / scope / 控制连接 → `backend.close()`。每一步都容错地往下走，第二次调用什么也不做。
 
@@ -2953,7 +2967,7 @@ M31 发现、M33 实测（Chrome 155，fixture 上 BrowserUse `dom_vision`，脚
   - `live`（`live.py`，默认）：什么都不拦截，没有旋钮；`intercepts` 为 `False`。
   - `archive`（`archive_source.py`，`ArchiveNetworkSource`）：从一个已录制 run 的归档回放网络。**它从不把请求放到线上**：这是 `archive` 来源自己的规则，不是框架的定律（用户 2026-10-13 的裁决）。要"miss 时转去真实网络"，那是一个新的网络来源（`NetworkSourceRegistrar` 的新键），不是 `archive` 的旋钮，也不是 miss 策略：miss 策略的决定只有 fulfill 与 fail 两种应答。**不是 dataclass**、手写 `__init__`：它带一个受体 `miss_policy`（`__wiring__ = {"miss_policy": ("miss_policy", ["strict"])}`，类级注解 + `default_miss_policy()`）。旋钮：`matcher: MatcherConfig`（嵌套的 pydantic 子配置：`levels: tuple[Literal["exact", "normalized", "fuzzy"], ...] = ("exact", "normalized")`（至少一级、不重复）、`fuzzy_threshold: float = 0.5`（[0, 1]）、`site_rules: str | None = None`，即规则目录；使用 pydantic dataclass，生成代码导入原类型并保留校验；conscribe 2.0 同样支持用户的 `BaseModel` 类型，不再需要绕开它）、`isolation: Literal["required", "none_acknowledged"] = "required"`、`shift_dates: Literal["none", "all"] = "none"`、`max_fulfill_body_bytes`（默认 64 MiB，校验上限 72 MiB：Chrome 读入的一条 CDP 消息 ≤ 100 MiB，base64 之后约 75 MiB 的 body）、`fulfill_timeout_s`（默认 10 s）、`log_mode: full | summary`（默认 `full`，逐事件），`log_repeat_limit`（默认 3，仅 `summary` 模式使用）。
 - **`MissPolicyRegistrar`**（`miss_policy`，判别字段 `miss_policy_id`；`miss_policy.py`）：v1 只有 `strict`（`strict.py`），这根轴存在是因为用户要求留口子。`decide(miss) -> MissDecision`：请求类别（`document` / `benign` / `subresource`）、怎么应答、是否标 `diverged`。
-- 生成配置是三层嵌套的判别联合：capability → `network_source` → `miss_policy`（`archive` 块里必须写 `miss_policy: {miss_policy_id: strict}`）。`network_source` 与 `miss_policy` 都进 `_collect_registrars()`。
+- 生成配置是三层嵌套的判别联合：capability → `network_source` → `miss_policy`（`archive` 块里必须写 `miss_policy: {miss_policy_id: strict}`）。`network_source` 与 `miss_policy` 都进 `collect_registrars()`。
 
 ```yaml
 network_source:
@@ -3179,7 +3193,7 @@ JSONP 接口按请求里的回调名（`?callback=NAME`）回一段调用 `NAME(
 
 #### 配置：运行根的两个可选层
 
-导出不另立根（§4.2.1 实测）：`ExporterRegistrar`（`exporter_id`，`spectragent/export/_registrar.py`）与 `ActionTranslatorRegistrar`（`translator_id`，`spectragent/export/translate/_registrar.py`）进 `_collect_registrars()`，是运行根的两个可选顶层层。导出用的 YAML 有一个 `exporter:` 块（`configs/flywheel/export_sft.yaml`），可选地再有运行根自己的 `eval_loader:` / `task_loader:` 块，去污染与泄漏扫描经它们读基准数据（见"基准数据"）：
+导出不另立根（§4.2.1 实测）：`ExporterRegistrar`（`exporter_id`，`spectragent/export/_registrar.py`）与 `ActionTranslatorRegistrar`（`translator_id`，`spectragent/export/translate/_registrar.py`）进 `collect_registrars()`，是运行根的两个可选顶层层。导出用的 YAML 有一个 `exporter:` 块（`configs/flywheel/export_sft.yaml`），可选地再有运行根自己的 `eval_loader:` / `task_loader:` 块，去污染与泄漏扫描经它们读基准数据（见"基准数据"）：
 
 ```yaml
 exporter:
@@ -3218,7 +3232,7 @@ exporter:
 - **`ExporterBase`**（不是 dataclass，手写关键字 `__init__`，与 `trace_branches` 同一写法）：上面每个任务字段都是 `__init__` 的 `Annotated` 参数：`sources_root: str | None`、`sources: list[str] | None`、`filters: ExportFilters | None`、`split: SplitSettings | None`、`decontamination: Decontamination | None`、`student_run_config: str`（必填）、`thought_source: Literal["teacher", "none"]`、`thought_index_refs: Literal["drop", "keep"]`、`length: LengthBudget | None`、`output_dir: str`（必填），以及 v1 所有导出器共有的 `sample: Literal["per_step"]`、`image_store: Literal["files"]`。`sources` 使用不可变元组默认值，生成配置直接显示真实的数组默认值。嵌套旋钮是 pydantic dataclass，各在 `spectragent/export/settings.py`（`ExportFilters`、`SplitSettings`、`Decontamination`、`BenchmarkRef`、`LengthBudget`）。conscribe 2.0 直接导入这些类型，已注解的受体不再生成遮蔽模块的存根；`require_eval` 复用 `core/data_loader/task/require_eval.py::RequireEval`（M31 的同一个类型、同一个语义）。`translator` 是单实例受体：`__wiring__ = {"translator": "action_translator"}`、类级注解、Python 默认 `default_translator()`（`identity`）。自己没有旋钮的导出器不写 `__init__`（conscribe 读到的就是基类的签名）；有自己旋钮的导出器要写出完整签名。`af-regenerate-and-verify` 的检查 1 证明任务字段与 `translator: Union[...]` 都在生成的每键配置上（`tests/test_export/test_registrar.py`）。
 - **`Exporter` Protocol**（`_registrar.py`）：`exporter_id`、只读的 `translator`、上面的任务字段、`root()`（sources 根的绝对路径）与 `format(rendered: RenderedSample, images: ImageStore) -> ExportRecord`。`ImageStore.put(data, media_type) -> <数据集里的相对路径>`、`ExportRecord{sample_id, record, images}` 也在 `_registrar.py`，`RenderedSample` 在 `render.py`（它不 import `_registrar`）。Protocol 里的 `translator` 写成只读 property：生成的存根把受体类型写成 `ActionTranslatorBase`，可变属性在 Protocol 里是不变型的。
 - **翻译器旋钮**：`ActionTranslatorBase.untranslatable: Literal["drop_step", "truncate", "keep_as_text", "fail"] = "drop_step"`；`index_to_coordinate` 另有 `occlusion: Literal["none", "check"] = "check"`、`occlusion_unknown: Literal["raise", "untranslatable"] = "raise"`。翻译器没有受体，旋钮是手写 `__init__` 的关键字参数。
-- **CLI**：`spectragent export --config <yaml>`（`spectragent/export/cli.py`，`pyproject` 的 `[project.scripts]`）：用 `ConfigComposer(registrars=_collect_registrars())` 组装，`ExportRunner.from_run(run, ...)` 取恰好一个 `exporter` 实例（否则 `ExportConfigError`）与文档里的加载器（`BenchmarkLoaders.from_run`），跑它，打印每个切分的样本数与按原因的丢弃数；失败非零退出。`/datasets/` 在 `.gitignore` 里。
+- **CLI**：`spectragent export --config <yaml>`（`spectragent/export/cli.py`，`pyproject` 的 `[project.scripts]`）：用 `ConfigComposer(registrars=collect_registrars())` 组装，`ExportRunner.from_run(run, ...)` 取恰好一个 `exporter` 实例（否则 `ExportConfigError`）与文档里的加载器（`BenchmarkLoaders.from_run`），跑它，打印每个切分的样本数与按原因的丢弃数；失败非零退出。`/datasets/` 在 `.gitignore` 里。
 
 #### 流水线（`ExportRunner`，`spectragent/export/runner.py`）
 
@@ -4201,17 +4215,17 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 | `BrowserProviderRegistrar` | `provider_id` (flat) | Browser capability 的 backend：`local_chrome` / `lexmount` / `skyvern` / `browser_use` / `airtop` / `agentbay` / `hyperbrowser`。文件位于 `core/capabilities/browser/backends/` | ✅ |
 | `DockerProviderRegistrar` | `provider_id` (flat) | Docker capability 的 backend（`local_docker` / `ssh_docker` ...） | P2 占位待实现 |
 | `MemoryRegistrar` | `memory_id` (flat) | 记忆策略 | ✅（3 种；协议兼容性在 `prepare()` 校验，SummaryMemory 待实现） |
-| `RestorerRegistrar` | `restorer_id` (flat) | 检查点恢复策略：把环境恢复到源 run 第 t 步之前的状态（`prefix_replay`；快照恢复 `capability_checkpoint` 是已知的下一个），`core/loops/restore/`；`BranchLoop.__wiring__["restorer"]` 受体，进 `_collect_registrars()`（§4.1） | M31 |
+| `RestorerRegistrar` | `restorer_id` (flat) | 检查点恢复策略：把环境恢复到源 run 第 t 步之前的状态（`prefix_replay`；快照恢复 `capability_checkpoint` 是已知的下一个），`core/loops/restore/`；`BranchLoop.__wiring__["restorer"]` 受体，进 `collect_registrars()`（§4.1） | M31 |
 | `HookRegistrar` | `hook_id` (flat) | Lifecycle hooks (AOP) | ✅（trace_writer / live_monitor） |
 | `EvaluatorRegistrar` | `evaluator_id` (flat) | 评测策略 | 🚧 partial |
-| `ExporterRegistrar` | `exporter_id` (flat) | 训练导出的格式（v1 `openai_messages`；以后 `llamafactory` / `ms_swift` / `trl`），`spectragent/export/_registrar.py`；`ExporterBase` 持导出任务字段与 `translator` 受体，运行根的可选顶层层（与 `evaluator` 同一先例），进 `_collect_registrars()`（§4.15） | M32 |
-| `ActionTranslatorRegistrar` | `translator_id` (flat) | 训练导出时把 teacher 的动作空间换成学生的（`identity` / `index_to_coordinate`），`spectragent/export/translate/_registrar.py`；`ExporterBase.__wiring__["translator"]` 受体，进 `_collect_registrars()`（§4.15） | M32 |
+| `ExporterRegistrar` | `exporter_id` (flat) | 训练导出的格式（v1 `openai_messages`；以后 `llamafactory` / `ms_swift` / `trl`），`spectragent/export/_registrar.py`；`ExporterBase` 持导出任务字段与 `translator` 受体，运行根的可选顶层层（与 `evaluator` 同一先例），进 `collect_registrars()`（§4.15） | M32 |
+| `ActionTranslatorRegistrar` | `translator_id` (flat) | 训练导出时把 teacher 的动作空间换成学生的（`identity` / `index_to_coordinate`），`spectragent/export/translate/_registrar.py`；`ExporterBase.__wiring__["translator"]` 受体，进 `collect_registrars()`（§4.15） | M32 |
 | `TaskLoaderRegistrar` | `benchmark_name` (flat) | 任务数据加载 | ✅ |
-| `StepSelectorRegistrar` | `selector_id` (flat) | `trace_branches` 加载器在源 run 的已提交策略步里选分叉点的策略：`explicit` / `every_k` / `all` / `last`（M33：每个源 run 最后一个候选，原路径回放段用，§4.16），`core/data_loader/task/step_selector/`；`TraceBranchesTaskLoader.__wiring__["step_selector"]` 受体，进 `_collect_registrars()`（§4.10） | M31；`last` M33 |
+| `StepSelectorRegistrar` | `selector_id` (flat) | `trace_branches` 加载器在源 run 的已提交策略步里选分叉点的策略：`explicit` / `every_k` / `all` / `last`（M33：每个源 run 最后一个候选，原路径回放段用，§4.16），`core/data_loader/task/step_selector/`；`TraceBranchesTaskLoader.__wiring__["step_selector"]` 受体，进 `collect_registrars()`（§4.10） | M31；`last` M33 |
 | `EvalLoaderRegistrar` | `benchmark_name` (flat) | 评测数据加载 | ✅ |
 | `ActionRegistrar` | `action_id` (flat, dotted key `source.id`) | 每个 Action 独立注册；键含 source 前缀避免跨 capability 撞名（`browser.click` vs `desktop.click`） | ✅ |
 | `ObservationRegistrar` | `fragment_id` (flat, dotted key `source.id`) | Observation fragment；键含 source 前缀（`browser.dom`、`docker.terminal`、`loop.action_result`）；agent / loop 的 `__wiring__` 写 capability-relative 短名（`dom`），协商期绑定到本次 environment 的 provider | ✅ |
-| `ArchiverRegistrar` | `archiver_id` (flat, dotted key `source.id`) | 环境证据归档器；键含提供它的 capability 前缀（`browser.network`）。capability 的 `__wiring__["archiver"]` 声明 provides，trace hook 实例的 `archive` 列表声明 requires（全限定）；`negotiate_archive` 在 `prepare()` 校验，并在 `prepare()` 末尾绑定（§4.5） | ✅ M28 框架机制；M29：`browser.network` / `browser.storage` / `browser.dom_raw`，回放的 `browser.replay_log`（§4.14），进 `_collect_registrars()`，经 `trace_writer.archive` 由 YAML 选择 |
+| `ArchiverRegistrar` | `archiver_id` (flat, dotted key `source.id`) | 环境证据归档器；键含提供它的 capability 前缀（`browser.network`）。capability 的 `__wiring__["archiver"]` 声明 provides，trace hook 实例的 `archive` 列表声明 requires（全限定）；`negotiate_archive` 在 `prepare()` 校验，并在 `prepare()` 末尾绑定（§4.5） | ✅ M28 框架机制；M29：`browser.network` / `browser.storage` / `browser.dom_raw`，回放的 `browser.replay_log`（§4.14），进 `collect_registrars()`，经 `trace_writer.archive` 由 YAML 选择 |
 | `ReplayabilityRegistrar` | `replayability_id` (flat) | Browser 的回放档位（`none` / `pinned`），`core/capabilities/browser/replay/`；`BrowserCapability.__wiring__["replayability"]` 受体，策略即开关，YAML 每个 capability 块必填（§4.14） | ✅（browser 内部，M29） |
 | `NetworkSourceRegistrar` | `source_id` (flat) | Browser 的网络来源（`live` 默认 / `archive` 从已录制 run 的归档离线回放），`core/capabilities/browser/replay/network_source.py`；`BrowserCapability.__wiring__["network_source"]` 受体，策略即开关——隔离由来源推出，provider 上没有并列的布尔；YAML 每个 capability 块必填（§4.14 "回放"） | ✅ M30（browser 内部） |
 | `MissPolicyRegistrar` | `miss_policy_id` (flat) | 回放 miss 的应答策略（v1 只有 `strict`），`core/capabilities/browser/replay/miss_policy.py`；`ArchiveNetworkSource.__wiring__["miss_policy"]` 受体（嵌套在 `network_source` 里），`archive` 块里必填（§4.14 "回放"） | ✅ M30（browser 内部） |
@@ -4426,7 +4440,7 @@ environment:
 | **新增度量 / 报告节（M33）** | 在 `spectragent/flywheel/metrics.py` 加一个只读 `RunTrace`（与数据集目录）的计算、在 `report.py` 加它的节模型与建议规则（阈值写成具名常量、进 `rule`）；分母为 0 时是 `null` 加原因；capability 证据的格式知识放进该 capability 的包（纯函数，只经 `ArchiveReader` 读），度量只组织调用（§4.16） | 每条数据线的 miss 成本；第二条数据线出现时每个 capability 的度量贡献成为一根轴 |
 | **新增 thought 来源（`relabel`）** | 今天是 `thought_source: Literal["teacher", "none"]`；`relabel`（固定动作、采样 K 个 thought、保留一致的）有了实现时成为新注册表（§6 与 AGENTS.md §2.2 同时加行） | OpenCUA、arXiv 2504.10127 的做法 |
 | **新增 Mouse Trajectory / Typing Rhythm 策略** | 继承 `MouseTrajectoryBase` / `TypingRhythmBase`，设 `__registry_key__`，实现 Protocol 全部成员（含 `click_hold_ms` / `aim_offset_px`），knobs 写成 `__init__` 关键字参数 | 新的运动模型；已训练模型的新导出格式属于 `learned` 的 backend，不是新策略（§4.13） |
-| **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `scripts/generate_all.py::_collect_registrars` 注册，否则字段退化成 `Literal[<keys>]`，策略的旋钮全部无法从 YAML 到达（AGENTS.md §3.4）。注册表还是空的时候不能成为 Composer 层（`composer.py` 对没有实现的已收集层直接抛错，`generate_all` 和 Composer 都拒绝空层，必须先注册实现）：先创建、先写文档，在注册第一个实现的那次改动里再收集 | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里。`ArchiverRegistrar`：M28 创建，M29 随首批归档器收集 |
+| **新增注册表（全新变化轴）** | `create_registrar(...)` + `Base(metaclass=...Meta)`；**同一次改动**里把行写进 §6 与 AGENTS.md §2.2（`tests/test_docs/test_registrar_coverage.py` 会核对，判别字段必须与 `discriminator_field` 逐字一致）；若这根轴要由 YAML 选择，还须在 `core/registries.py::collect_registrars` 注册，否则字段退化成 `Literal[<keys>]`，策略的旋钮全部无法从 YAML 到达（AGENTS.md §3.4）。注册表还是空的时候不能成为 Composer 层（`composer.py` 对没有实现的已收集层直接抛错，`generate_all` 和 Composer 都拒绝空层，必须先注册实现）：先创建、先写文档，在注册第一个实现的那次改动里再收集 | 滚轮节奏、触屏手势。反例：`NegotiationResultRegistrar` 不由 YAML 选择，因此正确地不在 Composer 里。`ArchiverRegistrar`：M28 创建，M29 随首批归档器收集 |
 | **配置字段扩展** | 给注册类添加 `Annotated[type, Field(...)]` | 自动出现在生成的 `_composed.py` config schema 中 |
 
 ---
@@ -4504,7 +4518,7 @@ environment:
 
 **分叉相关的 import 方向**（M31）：`core/loops/branch.py` 与 `core/loops/restore/*` 经 `core.trace.reader.RunTrace` 读源 trace（`SourceRun` 是唯一的入口，只读已提交的部分），反方向不成立：`core/trace/*` 不 import `core.loops`；capability 一侧的 `RestorationSupport` 实现（browser 的 `restoration.py`）只读传进来的观测，不 import `core.trace` / `core.loops`；`core/environments/*` 只认 `RestorationSupport` Protocol 与 `schemas/restoration.py` 的类型。
 
-**导出相关的 import 方向**（M32，`tests/test_export/test_export_boundaries.py` 用 AST 守着）：`spectragent/` 下 `export/` 之外没有任何模块 import `spectragent.export`（`scripts/generate_all.py` 的收集、以及它生成的 `generated/_composed.py` 引用导出旋钮类型除外）；`export/*` 经 `core.trace.reader.RunTrace` 读源 trace，经注册表与 Protocol 拿到导出器与翻译器（`runner.py` 不 import 具体的导出器或翻译器类）；`schemas/sample.py` 不 import `spectragent.core`；browser 一侧的导出知识（`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`）只读交进来的 fragment、文档与配置，不 import `core.trace` / `spectragent.export`；新模型里没有 `price` / `cost` / `usd` / `dollar` 字段。导出的叶子规则有且只有一个例外：度量闸门的链（`spectragent/flywheel/chain.py`）把 `spectragent export` 当作一段来调，只 import `spectragent.export.cli`（测试按模块名钉住）。
+**导出相关的 import 方向**（M32，`tests/test_export/test_export_boundaries.py` 用 AST 守着）：`spectragent/` 下 `export/` 之外没有任何模块 import `spectragent.export`（`core/registries.py` 的收集、以及它生成的 `generated/_composed.py` 引用导出旋钮类型除外）；`export/*` 经 `core.trace.reader.RunTrace` 读源 trace，经注册表与 Protocol 拿到导出器与翻译器（`runner.py` 不 import 具体的导出器或翻译器类）；`schemas/sample.py` 不 import `spectragent.core`；browser 一侧的导出知识（`index_points.py`、`capture_check.py`、`dom/cleaning/skyvern_hit_test.py`）只读交进来的 fragment、文档与配置，不 import `core.trace` / `spectragent.export`；新模型里没有 `price` / `cost` / `usd` / `dollar` 字段。导出的叶子规则有且只有一个例外：度量闸门的链（`spectragent/flywheel/chain.py`）把 `spectragent export` 当作一段来调，只 import `spectragent.export.cli`（测试按模块名钉住）。
 
 **度量相关的 import 方向**（M33，`tests/test_flywheel/test_flywheel_boundaries.py` 用 AST 守着）：`spectragent/` 下 `flywheel/` 之外没有任何模块 import `spectragent.flywheel`；`flywheel/*` 经 `core.trace.reader.RunTrace` 读 trace、经 `core/trace/sources.py` 找 run 与任务身份、经 `core/trace/usage.py` 读每个 run 的调用与用量，从 `spectragent.export` 只有 `chain.py` 的那一个例外（`metrics.py` / `report.py` 读数据集只读文件，不 import 导出）；browser 一侧的度量知识（`archive_stats.py`、`replay_log.iter_decisions`、`archive_index.iter_index_lines`）只经 `ArchiveReader` 读，不 import `core.trace` / `spectragent.flywheel`；报告与链的模型里没有 `price` / `cost` / `usd` / `dollar` 字段。
 

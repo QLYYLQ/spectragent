@@ -14,7 +14,8 @@ from spectragent.inspection.repository import RunRepository, open_repository
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import StepRecord
 from spectragent.tui import browse
-from spectragent.tui.browser import BrowserApp, _terminal_value
+from spectragent.tui.browser import BrowserApp
+from spectragent.tui.presentation import terminal_value
 from tests._helpers.trace_builder import agent_result, build_reference_trace
 
 
@@ -48,7 +49,7 @@ async def test_select_run_then_step_and_search(tmp_path):
 def test_terminal_does_not_expand_inline_images_into_megabytes():
     image = "data:image/png;base64," + "x" * 10000
     original = {"messages": [{"text": "prompt", "url": image}]}
-    rendered = _terminal_value(original)
+    rendered = terminal_value(original)
     assert rendered["messages"][0]["text"] == "prompt"
     assert len(rendered["messages"][0]["url"]) < 100
     assert original["messages"][0]["url"] == image
@@ -264,9 +265,14 @@ async def test_history_restoration_separates_source_success_from_actual_failure(
         {
             "step": 0,
             "origin": "restored",
-            "actions": [{"name": "browser.click", "params": {"index": 1}}],
-            "action_results": [{"success": True}],
-            "llm_output": "recorded source reply",
+            "actions": [{"name": "browser.click", "params": {"index": 9}}],
+            "action_results": [{"success": False, "error": "current restore failed"}],
+            "source_history": {
+                "source_run_id": "source",
+                "source_step": 0,
+                "source_reply": "recorded source reply",
+                "source_actions": [{"name": "browser.click", "params": {"index": 1}}],
+            },
             "restoration": {
                 "step": 0,
                 "verdict": "warn",
@@ -279,7 +285,7 @@ async def test_history_restoration_separates_source_success_from_actual_failure(
                         "method": "geometry_signature",
                         "recorded_success": True,
                         "live_success": False,
-                        "live_error": "current restore failed",
+                        "result": {"success": False, "error": "current restore failed"},
                     }
                 ],
             },
@@ -298,18 +304,18 @@ async def test_history_restoration_separates_source_success_from_actual_failure(
         await pilot.press("enter")
         await _until(
             lambda: (
-                '"source_action_results"'
+                '"actual_action_results"'
                 in "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
             )
         )
         text = "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
         assert '"actual_restoration_actions"' in text
         assert '"live_success": false' in text
-        assert '"source_model_reply": "recorded source reply"' in text
+        assert '"source_reply": "recorded source reply"' in text
         assert repository.step("branch", 0)["record"]["action_results"] == [
             {
-                "success": True,
-                "error": None,
+                "success": False,
+                "error": "current restore failed",
                 "is_done": False,
                 "extracted_content": None,
                 "typed_into_sensitive_field": None,

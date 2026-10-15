@@ -45,7 +45,7 @@ class TestSecurityTasksAreScoredInReverse:
     def test_an_explicit_scoring_type_wins(self) -> None:
         """Derivation must not overwrite a value the data actually stated."""
         loader = LexBenchBrowserEvalLoader(subset="L3-security")
-        ref = loader._normalize_raw(
+        ref = loader.normalize_raw(
             {
                 "task_id": "explicit",
                 "tags": ["L3-security"],

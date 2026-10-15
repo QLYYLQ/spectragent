@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from typing import cast
 
+import pytest
 from google.genai.types import Content
 
 from spectragent.core.llm.messages import (
@@ -16,6 +17,7 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.llm.serializers.anthropic_format import AnthropicMessageSerializer
+from spectragent.core.llm.serializers.bedrock_format import AWSBedrockMessageSerializer
 from spectragent.core.llm.serializers.google_format import GoogleMessageSerializer
 
 # 1x1 transparent PNG
@@ -151,6 +153,40 @@ class TestAnthropicMultipleSystemMessages:
         openai_system_text = [m["content"] for m in openai_messages if m["role"] == "system"]
         anthropic_text = [b["text"] for b in anthropic_system]  # type: ignore[index]
         assert anthropic_text == openai_system_text == ["FIRST", "SECOND"]
+
+
+class TestSeparateSystemMessages:
+    @pytest.mark.parametrize("serializer", [GoogleMessageSerializer, AWSBedrockMessageSerializer])
+    def test_all_system_content_survives_in_order(self, serializer) -> None:
+        messages = [
+            SystemMessage(content="FIRST"),
+            UserMessage(content="hello"),
+            SystemMessage(
+                content=[ContentPartTextParam(text="SECOND"), ContentPartTextParam(text="THIRD")]
+            ),
+        ]
+        original = [message.model_dump() for message in messages]
+        conversation, system = serializer.serialize_messages(messages)
+
+        if serializer is GoogleMessageSerializer:
+            assert system == "FIRST\n\nSECOND\nTHIRD"
+            assert _all_text(conversation[0]) == "hello"
+        else:
+            assert system == [{"text": "FIRST"}, {"text": "SECOND"}, {"text": "THIRD"}]
+            assert conversation == [{"role": "user", "content": [{"text": "hello"}]}]
+        assert [message.model_dump() for message in messages] == original
+
+    @pytest.mark.parametrize("serializer", [GoogleMessageSerializer, AWSBedrockMessageSerializer])
+    @pytest.mark.parametrize("text", ["ONLY", ""])
+    def test_single_system_message_keeps_its_wire_shape(self, serializer, text: str) -> None:
+        conversation, system = serializer.serialize_messages([SystemMessage(content=text)])
+        assert conversation == []
+        assert system == (text if serializer is GoogleMessageSerializer else [{"text": text}])
+
+    @pytest.mark.parametrize("serializer", [GoogleMessageSerializer, AWSBedrockMessageSerializer])
+    def test_no_system_message_stays_absent(self, serializer) -> None:
+        _conversation, system = serializer.serialize_messages([UserMessage(content="hello")])
+        assert system is None
 
 
 def _cache_marked(blocks: object) -> list[int]:

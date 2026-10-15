@@ -181,19 +181,12 @@ class CapabilityBase(metaclass=CapabilityRegistrar.Meta):
 
     @property
     def provided_actions(self) -> frozenset[str]:
-        """Derive provided action names from the materialised dispatch map.
+        """Actions declared by this capability's wiring.
 
-        If the subclass has an ``_actions_by_name`` dict (built at
-        construction from the config's ``actions:`` list, or from the
-        wiring when that list is omitted), that is the single source of
-        truth — it is what an ablated config actually narrows. Falls
-        back to the ``"action"`` registry entry in ``__wiring__`` for
-        capability subclasses that have no action dispatch (e.g.
-        lightweight test stubs).
+        A capability whose configured action list narrows this declaration
+        overrides the property using its own dispatch state. The framework
+        base does not inspect a subclass's private routing fields.
         """
-        dispatch: dict | None = getattr(self, "_actions_by_name", None)
-        if dispatch is not None:
-            return frozenset(dispatch.keys())
         return _wiring_keys_for(type(self), "action")
 
     # ── Archive axis (the optional ArchivingCapability surface) ─

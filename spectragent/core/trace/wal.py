@@ -143,7 +143,8 @@ class WALWriter:
 
     @property
     def manifest(self) -> TraceManifest | None:
-        return self._manifest
+        """An independent snapshot of the current in-memory commit index."""
+        return self._manifest.model_copy(deep=True) if self._manifest is not None else None
 
     def reconcile(self) -> TraceManifest | None:
         """Resolve a pending manifest replacement before making producer decisions.
@@ -155,7 +156,7 @@ class WALWriter:
         discovers content through orphan files.
         """
         self._reconcile_manifest()
-        return self._manifest
+        return self.manifest
 
     def init_run(self, config: TraceConfig, *, config_hash: str | None = None) -> None:
         """Create the directory tree, write ``config.json``, then the first manifest.
@@ -404,7 +405,7 @@ class WALWriter:
         committed = {entry.step for entry in manifest.steps}
         missing_steps = sorted(set(range(expected_steps)) - committed)
         problems = (
-            list(recording_problems)
+            [problem.model_copy(deep=True) for problem in recording_problems]
             if recording_problems is not None
             else manifest.recording_problems
         )

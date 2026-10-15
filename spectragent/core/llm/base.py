@@ -15,8 +15,6 @@ T = TypeVar("T", bound=BaseModel)
 
 @runtime_checkable
 class BaseChatModel(ModelClientLifecycle, Protocol):
-    _verified_api_keys: bool = False
-
     model: str
 
     @property
@@ -29,11 +27,6 @@ class BaseChatModel(ModelClientLifecycle, Protocol):
 
     @property
     def name(self) -> str: ...
-
-    @property
-    def model_name(self) -> str:
-        # for legacy support
-        return self.model
 
     @property
     def supports_tools(self) -> bool:

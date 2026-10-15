@@ -4,11 +4,6 @@ Provides common fields, client creation, usage extraction, and a standard
 ainvoke path (text + response_format structured output).
 """
 
-# NOTE: 不使用 from __future__ import annotations —— conscribe 0.5 的
-# _extract_params_by_level 需要通过 get_type_hints() 拿到真实的 Annotated
-# 类型对象来做 __config_annotated_only__ 过滤；future annotations 会导致
-# 跨模块类型解析失败，使 get_origin() 返回 None。
-
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -89,7 +84,15 @@ ReasoningEffortSetting = Literal["auto", "none", "minimal", "low", "medium", "hi
 
 @dataclass
 class OpenAICompatBase(ChatModelBase):
-    """Abstract base for all OpenAI-compatible providers."""
+    """Abstract base and author extension API for OpenAI-compatible providers.
+
+    Override ``get_client`` and ``http_transport`` for client construction and
+    ownership. Request paths use ``request_client`` to acquire an execution lease;
+    providers with a different SDK ownership contract may override that method.
+    ``standard_ainvoke`` exposes the shared request/error path. Custom paths reuse
+    ``common_model_params``, ``tool_kwargs``, the reasoning-policy methods and
+    usage extractors without reaching into the client's private resource cache.
+    """
 
     __abstract__ = True
     __registry_key__ = "openai"
@@ -191,7 +194,6 @@ class OpenAICompatBase(ChatModelBase):
     default_headers: Mapping[str, str] | None = None
     default_query: Mapping[str, object] | None = None
     http_client: httpx.AsyncClient | None = None
-    _strict_response_validation: bool = False
     reasoning_models: list[ChatModel | str] | None = field(
         default_factory=lambda: [
             "o4-mini",
@@ -219,11 +221,11 @@ class OpenAICompatBase(ChatModelBase):
         """Override in sub-classes to return the sub-provider name."""
         return ""
 
-    # ``model_family`` and ``_use_strict_schema`` are inherited from
+    # ``model_family`` and ``use_strict_schema`` are inherited from
     # ``ChatModelBase`` — the declarative capability table plus a compiled-schema
     # check, rather than an inline substring test on the model name.
 
-    def _tool_kwargs(
+    def tool_kwargs(
         self, tools: Sequence[ToolDefinition] | None, tool_choice: ToolChoice
     ) -> dict[str, Any]:
         """Request kwargs advertising *tools*, or empty when there are none."""
@@ -238,6 +240,7 @@ class OpenAICompatBase(ChatModelBase):
     # Client creation — default AsyncOpenAI, override for custom clients
     # ------------------------------------------------------------------
     def get_client(self) -> AsyncOpenAI:
+        """Construct an SDK wrapper; ``request_client`` owns its reuse and cleanup."""
         params: dict[str, Any] = {"api_key": self.api_key, "max_retries": self.max_retries}
         if self.base_url:
             params["base_url"] = self.base_url
@@ -259,7 +262,7 @@ class OpenAICompatBase(ChatModelBase):
         return self.http_client
 
     @asynccontextmanager
-    async def _request_client(self) -> AsyncIterator[AsyncOpenAI]:
+    async def request_client(self) -> AsyncIterator[AsyncOpenAI]:
         """Reuse this execution's SDK, protecting active calls from cleanup.
 
         OpenAI's public ``close`` closes its HTTP transport. A wrapper built
@@ -277,7 +280,8 @@ class OpenAICompatBase(ChatModelBase):
     # ------------------------------------------------------------------
     # Usage extraction
     # ------------------------------------------------------------------
-    def _get_usage(self, response: ChatCompletion) -> ChatInvokeUsage | None:
+    def get_usage(self, response: ChatCompletion) -> ChatInvokeUsage | None:
+        """Normalize chat-completions usage for compatible provider request paths."""
         if response.usage is None:
             return None
         return ChatInvokeUsage(
@@ -293,7 +297,8 @@ class OpenAICompatBase(ChatModelBase):
             total_tokens=response.usage.total_tokens,
         )
 
-    def _get_usage_from_responses(self, response: Response) -> ChatInvokeUsage | None:
+    def get_usage_from_responses(self, response: Response) -> ChatInvokeUsage | None:
+        """Normalize Responses API usage for compatible provider request paths."""
         if response.usage is None:
             return None
         cached = None
@@ -311,7 +316,8 @@ class OpenAICompatBase(ChatModelBase):
     # ------------------------------------------------------------------
     # Model params helper
     # ------------------------------------------------------------------
-    def _common_model_params(self) -> dict[str, Any]:
+    def common_model_params(self) -> dict[str, Any]:
+        """Build a fresh request-parameter mapping from this provider's settings."""
         params: dict[str, Any] = {}
         if self.temperature is not None:
             params["temperature"] = self.temperature
@@ -326,25 +332,25 @@ class OpenAICompatBase(ChatModelBase):
         if self.service_tier is not None:
             params["service_tier"] = self.service_tier
 
-        effort = self._effective_reasoning_effort()
+        effort = self.effective_reasoning_effort()
         if effort is not None:
             params["reasoning_effort"] = effort
         # OpenAI's own reasoning models reject sampling knobs. That is a fact
         # about those models, not about the parameter: a gateway serving
         # gemini takes ``temperature`` and ``reasoning_effort`` together.
-        if self._is_listed_reasoning_model():
+        if self.is_listed_reasoning_model():
             params.pop("temperature", None)
             params.pop("frequency_penalty", None)
 
         return params
 
-    def _is_listed_reasoning_model(self) -> bool:
+    def is_listed_reasoning_model(self) -> bool:
         """Whether ``model`` matches the provider's built-in reasoning list."""
         return bool(self.reasoning_models) and any(
             str(m).lower() in str(self.model).lower() for m in self.reasoning_models or ()
         )
 
-    def _effective_reasoning_effort(self) -> str | None:
+    def effective_reasoning_effort(self) -> str | None:
         """The effort to put on the wire, or ``None`` to send nothing.
 
         Anything but ``auto`` is sent as written. Under ``auto`` a listed
@@ -354,14 +360,14 @@ class OpenAICompatBase(ChatModelBase):
         """
         if self.reasoning_effort != "auto":
             return self.reasoning_effort
-        if self._is_listed_reasoning_model():
+        if self.is_listed_reasoning_model():
             return _LISTED_MODEL_DEFAULT_EFFORT
         return None
 
     # ------------------------------------------------------------------
     # Standard ainvoke — text + response_format structured output
     # ------------------------------------------------------------------
-    async def _standard_ainvoke(
+    async def standard_ainvoke(
         self,
         messages: Sequence[BaseMessage],
         output_format: type[T] | None = None,
@@ -391,11 +397,11 @@ class OpenAICompatBase(ChatModelBase):
             )
         openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
         try:
-            model_params = self._common_model_params()
-            extra = {**(extra_kwargs or {}), **self._tool_kwargs(tools, tool_choice)}
+            model_params = self.common_model_params()
+            extra = {**(extra_kwargs or {}), **self.tool_kwargs(tools, tool_choice)}
 
             if output_format is None:
-                async with self._request_client() as client:
+                async with self.request_client() as client:
                     response = await client.chat.completions.create(
                         model=self.model,
                         messages=openai_messages,
@@ -415,13 +421,13 @@ class OpenAICompatBase(ChatModelBase):
                         stop_reason=choice.finish_reason,
                         ceiling_field="max_completion_tokens",
                         ceiling=self.max_completion_tokens,
-                        usage=self._get_usage(response),
+                        usage=self.get_usage(response),
                         partial_output=choice.message.content,
                     )
                 return ChatInvokeCompletion(
                     completion=choice.message.content or "",
                     thinking=message_reasoning(choice.message),
-                    usage=self._get_usage(response),
+                    usage=self.get_usage(response),
                     stop_reason=choice.finish_reason,
                     tool_calls=OpenAIMessageSerializer.parse_tool_calls(
                         getattr(choice.message, "tool_calls", None)
@@ -462,7 +468,7 @@ class OpenAICompatBase(ChatModelBase):
         # strict dialect. An open map (``dict[str, Any]``) compiles to an object
         # node with no ``properties``; asking for strict alongside it ships a
         # schema OpenAI rejects outright.
-        strict = self._use_strict_schema(output_format)
+        strict = self.use_strict_schema(output_format)
         schema = SchemaOptimizer.create_optimized_json_schema(output_format, strict=strict)
         # One dialect rule, applied where the family declares it: a gateway
         # that translates this request into Gemini's ``response_schema``
@@ -477,7 +483,7 @@ class OpenAICompatBase(ChatModelBase):
             "schema": schema,
         }
 
-        async with self._request_client() as client:
+        async with self.request_client() as client:
             response = await client.chat.completions.create(
                 model=self.model,
                 messages=openai_messages,
@@ -503,20 +509,20 @@ class OpenAICompatBase(ChatModelBase):
                 stop_reason=choice.finish_reason,
                 ceiling_field="max_completion_tokens",
                 ceiling=self.max_completion_tokens,
-                usage=self._get_usage(response),
+                usage=self.get_usage(response),
                 partial_output=choice.message.content,
             )
 
-        # No `tool_calls=` here: `_standard_ainvoke` refuses tools on the
+        # No `tool_calls=` here: `standard_ainvoke` refuses tools on the
         # structured path, so a compliant provider cannot return any.
-        usage = self._get_usage(response)
+        usage = self.get_usage(response)
         return ChatInvokeCompletion(
             # This base is what every OpenAI-compatible *gateway* goes
             # through, and a gateway is where a reply arrives fenced despite
             # `response_format` — the translation to some vendor's native API
             # dropped it. Five other providers each unwrapped fences on their
             # own and this one, the widest path, did not.
-            completion=self._validate_structured(
+            completion=self.validate_structured(
                 output_format,
                 strip_code_fence(choice.message.content),
                 usage=usage,
@@ -528,7 +534,7 @@ class OpenAICompatBase(ChatModelBase):
         )
 
     # ------------------------------------------------------------------
-    # Default ainvoke — delegates to _standard_ainvoke
+    # Default ainvoke — delegates to standard_ainvoke
     # ------------------------------------------------------------------
     @overload
     async def ainvoke(
@@ -561,6 +567,6 @@ class OpenAICompatBase(ChatModelBase):
         tool_choice: ToolChoice = "auto",
         **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
-        return await self._standard_ainvoke(
+        return await self.standard_ainvoke(
             messages, output_format, tools=tools, tool_choice=tool_choice
         )

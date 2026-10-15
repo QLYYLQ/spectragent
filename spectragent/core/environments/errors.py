@@ -113,8 +113,9 @@ class ArchiveCollectionError(Exception):
     in capability order. A capability fails by raising, or by handing over
     a file whose ``capability_id`` is not its own (recorded as an
     ``ArchiveContractError``). The batches the healthy capabilities handed
-    over are discarded: an archive that was explicitly requested and is
-    now incomplete fails the run (``docs/architecture_design.md`` §4.6).
+    over are discarded. The archive consumer records the collection failure
+    as recording-health evidence; it does not change the agent's outcome
+    (``docs/architecture_design.md`` §4.6).
 
     Attributes:
         env_type: The environment that collected.

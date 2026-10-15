@@ -43,7 +43,9 @@ import zoneinfo
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
+
+from spectragent.core.capabilities.browser.commands import BrowserCommands
 
 logger = logging.getLogger(__name__)
 
@@ -255,20 +257,7 @@ class _CoreFoundation:
 # ── right after launch: Chrome's own answer ──────────────────────────
 
 
-class DefaultsClient(Protocol):
-    """The slice of a CDP client the measurement uses."""
-
-    async def send(
-        self,
-        method: str,
-        params: dict[str, Any] | None = None,
-        session_id: str | None = None,
-        *,
-        timeout: float | None = None,
-    ) -> Any: ...
-
-
-async def measure_browser_defaults(client: DefaultsClient, *, timeout: float) -> BrowserDefaults:
+async def measure_browser_defaults(client: BrowserCommands, *, timeout: float) -> BrowserDefaults:
     """What a frame no override reached reads, asked of Chrome right after launch.
 
     In the first page target, before any override was sent to it: attached

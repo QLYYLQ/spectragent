@@ -1,8 +1,5 @@
 """ChatDeepSeek — DeepSeek provider via OpenAI-compatible base."""
 
-# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
-# 的 nested config 类型提取机制（详见 openai_base.py 注释）。
-
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
@@ -105,14 +102,14 @@ class ChatDeepSeek(OpenAICompatBase):
         self._apply_deepseek_beta(openai_messages)
 
         try:
-            model_params = self._common_model_params()
+            model_params = self.common_model_params()
 
             if output_format is None:
-                async with self._request_client() as client:
+                async with self.request_client() as client:
                     response = await client.chat.completions.create(
                         model=self.model,
                         messages=openai_messages,
-                        **self._tool_kwargs(tools, tool_choice),
+                        **self.tool_kwargs(tools, tool_choice),
                         **model_params,
                     )
                 choice = response.choices[0] if response.choices else None
@@ -125,7 +122,7 @@ class ChatDeepSeek(OpenAICompatBase):
                 return ChatInvokeCompletion(
                     completion=choice.message.content or "",
                     thinking=message_reasoning(choice.message),
-                    usage=self._get_usage(response),
+                    usage=self.get_usage(response),
                     stop_reason=choice.finish_reason,
                     tool_calls=OpenAIMessageSerializer.parse_tool_calls(
                         getattr(choice.message, "tool_calls", None)
@@ -146,7 +143,7 @@ class ChatDeepSeek(OpenAICompatBase):
                 )
                 tool_name = output_format.__name__
                 schema = SchemaOptimizer.create_optimized_json_schema(
-                    output_format, strict=self._use_strict_schema(output_format)
+                    output_format, strict=self.use_strict_schema(output_format)
                 )
                 schema.pop("title", None)
                 schema_tools: list[ChatCompletionFunctionToolParam] = [
@@ -164,7 +161,7 @@ class ChatDeepSeek(OpenAICompatBase):
                     "function": {"name": tool_name},
                 }
 
-                async with self._request_client() as client:
+                async with self.request_client() as client:
                     resp = await client.chat.completions.create(
                         model=self.model,
                         messages=openai_messages,
@@ -178,9 +175,9 @@ class ChatDeepSeek(OpenAICompatBase):
                 raw_args = msg.tool_calls[0].function.arguments
                 # DeepSeek returns the same `usage` block as OpenAI on the
                 # tool-call path; reporting None discarded it.
-                usage = self._get_usage(resp)
+                usage = self.get_usage(resp)
                 return ChatInvokeCompletion(
-                    completion=self._validate_structured(output_format, raw_args, usage=usage),
+                    completion=self.validate_structured(output_format, raw_args, usage=usage),
                     thinking=message_reasoning(msg),
                     usage=usage,
                     stop_reason=resp.choices[0].finish_reason,

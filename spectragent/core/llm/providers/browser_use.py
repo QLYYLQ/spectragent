@@ -19,7 +19,7 @@ from spectragent.core.llm.views import ChatInvokeCompletion
 
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
-RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 class ChatBrowserUse(ChatModelBase):
@@ -190,7 +190,7 @@ class ChatBrowserUse(ChatModelBase):
             # "action" and validated *every* element against `get_args(...)[0]` —
             # i.e. an arbitrary member of the union — so heterogeneous action lists
             # were coerced to the wrong type.
-            completion = self._validate_structured(output_format, result["completion"], usage=usage)
+            completion = self.validate_structured(output_format, result["completion"], usage=usage)
         else:
             completion = result["completion"]
 

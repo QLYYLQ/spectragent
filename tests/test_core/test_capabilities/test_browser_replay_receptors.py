@@ -34,7 +34,7 @@ from spectragent.core.capabilities.browser.replay.archive_index import RecordedA
 from spectragent.core.capabilities.browser.replay.archive_source import MAX_FULFILL_BODY_BYTES
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.composer import ConfigComposer
-from spectragent.scripts.generate_all import _collect_registrars
+from spectragent.core.registries import collect_registrars
 from tests._helpers.trace_builder import new_wal
 
 _CAPABILITY: dict[str, Any] = {
@@ -71,7 +71,7 @@ def _capability_config(network_source: Any) -> Any:
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:
-    return ConfigComposer(registrars=_collect_registrars())
+    return ConfigComposer(registrars=collect_registrars())
 
 
 def _compose(composer: ConfigComposer, network_source: Any) -> BrowserCapability:
@@ -95,7 +95,7 @@ class TestRegistries:
         assert isinstance(StrictMissPolicy(), MissPolicyProtocol)
 
     def test_both_registrars_are_composer_layers_leaves_first(self) -> None:
-        layers = list(_collect_registrars())
+        layers = list(collect_registrars())
         assert layers.index("miss_policy") < layers.index("network_source")
         assert layers.index("replayability") < layers.index("miss_policy")
         assert layers.index("network_source") < layers.index("capability")

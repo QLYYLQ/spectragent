@@ -439,7 +439,7 @@ class BenchmarkRunSummary:
             "not_started": self.token_limit_reached.not_started
             if self.token_limit_reached
             else None,
-            "evaluation_errors": self.eval_errors,
+            "evaluation_errors": list(self.eval_errors),
         }
 
 
@@ -891,6 +891,7 @@ class BenchmarkRunner:
         started = time.monotonic()
         try:
             task = self._loader[task_id]
+            context = self._loader.get_task_context(task_id)
         except Exception as exc:
             logger.exception("BenchmarkRunner: cannot load task %s", task_id)
             return TaskOutcome(
@@ -918,8 +919,6 @@ class BenchmarkRunner:
         # three parts with three consumers, and each goes to its own
         # parameter: ``env`` to the capabilities' setup, ``loop`` to the
         # Loop (a branch task's checkpoint), ``branch`` to the trace.
-        context = self._loader.get_task_context(task_id)
-
         try:
             result = await runtime.execute(
                 task=getattr(task, "task_text", ""),
@@ -999,9 +998,9 @@ def _task_snapshot(task: Any, benchmark: str, subset: str) -> dict[str, Any]:
 def build_composer() -> Any:
     """Build a ConfigComposer over every registered layer."""
     from spectragent.core.composer import ConfigComposer
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
-    return ConfigComposer(registrars=_collect_registrars())
+    return ConfigComposer(registrars=collect_registrars())
 
 
 def _resolve_loader(run: ComposedRun, benchmark: str | None, subset: str | None) -> Any:

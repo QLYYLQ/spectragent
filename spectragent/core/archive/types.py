@@ -45,10 +45,9 @@ class ArchiveContractError(ValueError):
     Raised by whoever receives the batch — the environment when a
     capability hands over a file under another capability's prefix, the
     consumer when a file names an archiver this run did not bind — before
-    a single byte of it is written. A contract violation is not something
-    to record around: the archive was explicitly requested, so a batch
-    that cannot be trusted fails the run (``docs/architecture_design.md``
-    §4.6, "fail closed").
+    a single byte of it is written. The recording component reports the
+    refused batch as a recording-health fault; it never changes the Agent's
+    execution outcome (``docs/architecture_design.md`` §4.6).
     """
 
 

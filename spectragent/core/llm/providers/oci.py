@@ -300,7 +300,7 @@ class ChatOCI(ChatModelBase):
 
                 usage = self._extract_usage(response)
                 return ChatInvokeCompletion(
-                    completion=self._validate_structured(
+                    completion=self.validate_structured(
                         output_format, text, usage=usage, wire_text=wire_text
                     ),
                     thinking=self._extract_reasoning(response),

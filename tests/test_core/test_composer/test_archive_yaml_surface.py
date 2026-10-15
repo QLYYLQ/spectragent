@@ -41,14 +41,14 @@ from spectragent.core.composer import (
     UnresolvedWiringError,
 )
 from spectragent.core.hooks.trace_writer import TraceWriter
-from spectragent.scripts.generate_all import _collect_registrars
+from spectragent.core.registries import collect_registrars
 
 CONFIG = Path(__file__).resolve().parents[3] / "configs" / "ui_tars_local.yaml"
 
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:
-    return ConfigComposer(registrars=_collect_registrars())
+    return ConfigComposer(registrars=collect_registrars())
 
 
 def _base() -> dict[str, Any]:

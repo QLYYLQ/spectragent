@@ -30,36 +30,9 @@ class OCIRawMessageSerializer:
     """
 
     @staticmethod
-    def _is_base64_image(url: str) -> bool:
-        """Check if the URL is a base64 encoded image."""
-        return url.startswith("data:image/")
-
-    @staticmethod
-    def _parse_base64_url(url: str) -> str:
-        """Parse base64 URL and return the base64 data."""
-        if not OCIRawMessageSerializer._is_base64_image(url):
-            raise ValueError(f"Not a base64 image URL: {url}")
-
-        # Extract the base64 data from data:image/png;base64,<data>
-        try:
-            header, data = url.split(",", 1)
-            return data
-        except ValueError as e:
-            raise ValueError(f"Invalid base64 image URL format: {url}") from e
-
-    @staticmethod
     def _create_image_content(part: ContentPartImageParam) -> ImageContent:
         """Convert ContentPartImageParam to OCI ImageContent."""
-        url = part.image_url.url
-
-        if OCIRawMessageSerializer._is_base64_image(url):
-            # Handle base64 encoded images - OCI expects data URLs as-is
-            image_url = ImageUrl(url=url)
-        else:
-            # Handle regular URLs
-            image_url = ImageUrl(url=url)
-
-        return ImageContent(image_url=image_url)
+        return ImageContent(image_url=ImageUrl(url=part.image_url.url))
 
     @staticmethod
     def serialize_messages(messages: Sequence[BaseMessage]) -> list[Message]:

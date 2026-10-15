@@ -20,7 +20,7 @@ reads them back like any other recorded fact.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from spectragent.core.llm.lifecycle import ClientCleanupDiagnostic
 from spectragent.core.trace.reader import RunTrace
@@ -42,6 +42,15 @@ class BaseEvaluator(Protocol):
 
     @property
     def evaluator_id(self) -> str: ...
+
+    def config_signature(self) -> dict[str, Any]:
+        """Settings that can change this evaluator's verdict; ``{}`` when none exist."""
+        ...
+
+    @property
+    def verdict_slug(self) -> str:
+        """Stable filename identity derived from evaluator id and settings."""
+        ...
 
     async def evaluate(self, trace: RunTrace, reference: EvalReference) -> EvalResult: ...
 

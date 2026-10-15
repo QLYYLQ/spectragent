@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+import textwrap
+
 import pytest
 
 from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
@@ -99,9 +105,9 @@ def test_evaluator_is_a_generated_config_layer():
     from spectragent.generated._composed import ComposedConfig
 
     assert "evaluator" in ComposedConfig.model_fields
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
-    assert _collect_registrars()["evaluator"] is EvaluatorRegistrar
+    assert collect_registrars()["evaluator"] is EvaluatorRegistrar
 
 
 @pytest.mark.parametrize("key,cls", sorted(_BENCHMARK_EVALUATORS.items()))
@@ -138,3 +144,42 @@ def test_a_text_only_judge_advertises_no_vision_knob():
     from spectragent.generated._composed import BrowsecompEvaluatorConfig
 
     assert set(BrowsecompEvaluatorConfig.model_fields) == {"evaluator_id", "llm"}
+
+
+def test_evaluator_set_config_identity_is_stable_across_processes():
+    script = textwrap.dedent(
+        """\
+        import json
+        from dataclasses import dataclass, field
+        from spectragent.evaluator import EvaluatorBase
+
+        @dataclass
+        class SetConfiguredEvaluator(EvaluatorBase):
+            __abstract__ = True
+            __registry_key__ = "set_config_identity"
+            labels: set[str] = field(default_factory=lambda: {"alpha", "beta", "gamma"})
+            options: dict = field(default_factory=lambda: {
+                "labels": frozenset({"delta", "epsilon", "zeta"}),
+                "ordered": ["second", "first"],
+            })
+
+        evaluator = SetConfiguredEvaluator()
+        print(json.dumps({"slug": evaluator.verdict_slug, "config": evaluator.config_signature()}))
+        """
+    )
+    identities = [
+        json.loads(
+            subprocess.check_output(
+                [sys.executable, "-c", script],
+                env={**os.environ, "PYTHONHASHSEED": seed},
+                text=True,
+            )
+        )
+        for seed in ("1", "2", "42")
+    ]
+    assert identities[0] == identities[1] == identities[2]
+    assert identities[0]["config"]["labels"] == ["alpha", "beta", "gamma"]
+    assert identities[0]["config"]["options"] == {
+        "labels": ["delta", "epsilon", "zeta"],
+        "ordered": ["second", "first"],
+    }
