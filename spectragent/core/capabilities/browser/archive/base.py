@@ -180,6 +180,8 @@ class BrowserArchiveContext:
     clock: Callable[[], float] = time.time
     #: Whether the browser started from a fresh profile (§5.6: session state).
     fresh_profile: bool = True
+    #: This run's BrowserContext; None means the default context of a dedicated browser.
+    browser_context_id: str | None = None
     #: The replay server's log when the run replays an archive (M30), else
     #: ``None``; the archiver needing ``replay_log`` records it.
     replay_log: ReplayLogFeed | None = None

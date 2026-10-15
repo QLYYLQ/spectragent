@@ -277,6 +277,7 @@ async def test_agent_done_and_incomplete_recording_remain_separate(tmp_path, mon
     run = SimpleNamespace(
         ids=lambda layer: ["fake"],
         instances=lambda layer: [],
+        by_layer={},
         hooks=[SimpleNamespace(run_dir=wal.run_dir)],
     )
     monkeypatch.setattr(

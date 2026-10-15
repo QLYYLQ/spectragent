@@ -923,6 +923,9 @@ _UNTRACKED_SCALARS: frozenset[str] = frozenset(
 #: entry here means a new YAML line that proves nothing — give it a value
 #: the operator actually chose, or drop the line.
 _UNPROVABLE_SCALARS: dict[str, frozenset[str]] = {
+    "browser_use_shared.yaml": frozenset(
+        {"environment[0].capabilities[0].profile", "hook[0].trace_dir"}
+    ),
     "browser_use_local.yaml": frozenset(
         {
             "environment[0].capabilities[0].profile",

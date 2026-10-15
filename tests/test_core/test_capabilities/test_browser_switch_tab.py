@@ -97,7 +97,8 @@ class TestSwitchTabMovesFocus:
 
         new_sid = await cap.switch_tab("T2")
 
-        assert new_sid == "sid-T2"
+        assert new_sid.session_id == "sid-T2"
+        assert new_sid.target_id == "T2"
         # The focus actually moved — this is what the old code never did.
         assert cap._default_session_id == "sid-T2"
         assert cdp.activations() == ["T2"]
@@ -107,7 +108,8 @@ class TestSwitchTabMovesFocus:
 
         new_sid = await cap.switch_tab(None)
 
-        assert new_sid == "sid-T3"
+        assert new_sid.session_id == "sid-T3"
+        assert new_sid.target_id == "T3"
         assert cap._default_session_id == "sid-T3"
         assert cdp.activations() == ["T3"]
 

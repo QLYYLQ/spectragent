@@ -68,6 +68,7 @@ from typing import Any, NamedTuple
 
 from spectragent.core.benchmark_session import SessionLedger, TaskProgress
 from spectragent.core.composer import ComposedRun
+from spectragent.core.experiment import ExperimentScope
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.runtime import AgentRuntime
@@ -627,6 +628,7 @@ class BenchmarkRunner:
         self._progress = progress
         self._session = session
         self._config_source = config_source
+        self._experiment_scope: ExperimentScope | None = None
 
     @property
     def benchmark(self) -> str:
@@ -678,7 +680,12 @@ class BenchmarkRunner:
         if self._progress is not None:
             self._progress.set_tasks(selected)
         try:
-            summary = await self._run_selected(selected)
+            async with ExperimentScope() as scope:
+                self._experiment_scope = scope
+                try:
+                    summary = await self._run_selected(selected)
+                finally:
+                    self._experiment_scope = None
         except BaseException as exc:
             reason = (
                 "configuration_refused"
@@ -849,6 +856,8 @@ class BenchmarkRunner:
         try:
             context = self._loader.get_task_context(task_id)
             run = self._compose()
+            if self._experiment_scope is not None:
+                self._experiment_scope.bind(run)
             self._attach_progress(run)
             agent_id = self._agent_id or run.ids("agent")[0]
             runtime = AgentRuntime.for_agent(run, agent_id, env_id=self._env_id)
@@ -870,6 +879,15 @@ class BenchmarkRunner:
             attach_progress(run, self._progress)
 
     async def run_task(self, task_id: str, *, run: ComposedRun | None = None) -> TaskOutcome:
+        """Run one task, borrowing the sweep scope or owning a one-task scope."""
+        if self._experiment_scope is not None:
+            return await self._run_task(task_id, run=run, scope=self._experiment_scope)
+        async with ExperimentScope() as scope:
+            return await self._run_task(task_id, run=run, scope=scope)
+
+    async def _run_task(
+        self, task_id: str, *, run: ComposedRun | None, scope: ExperimentScope
+    ) -> TaskOutcome:
         """Run one task end to end. Never raises — a failure is data.
 
         A benchmark sweep that dies on task 3 of 300 has destroyed the
@@ -902,6 +920,7 @@ class BenchmarkRunner:
 
         try:
             run = run if run is not None else self._compose()
+            scope.bind(run)
             self._attach_progress(run)
             agent_id = self._agent_id or run.ids("agent")[0]
             runtime = AgentRuntime.for_agent(run, agent_id, env_id=self._env_id)

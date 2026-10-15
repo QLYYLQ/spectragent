@@ -2108,7 +2108,21 @@ BrowserCapability.teardown()
 
 **本地启动的资源所有权。** `local_chrome` 在业务 CDP 操作前验证本次 subprocess、连接端点、有效 profile 与 `ProviderSession` 是同一份启动事实。端口返回 `/json/version` 不是所有权证明：占用端口、子进程提前退出、profile 将启动转交旧进程、并发抢端口都必须明确失败。provider 核验实际 browser 进程身份，保留创建时的 process handle；关闭只终止该 handle 对应实例，不能按端口、进程名或复用 PID 猜所有权。失败、取消和正常结束均尝试回收本次拥有的进程与临时 profile，用户指定的持久 profile 从不删除。证明与资源账归本地 provider，不进入通用 Environment 协议。
 
-**外部端点是借用连接。** 显式 `cdp_url` 继续受支持；选了 `local_chrome` backend 不代表端点由它创建。没有本次 `ProviderSession` 就只释放 AF 的连接、scope、bridge 与订阅，不关整个浏览器、不杀外部进程、不删 profile、不批量关闭已有 tab。录制、pinned、archive replay 仍按 provider 能力与 setup 合同检查，不为外部端点伪造能力。共享 Chrome 的多 run BrowserContext 仍延期。
+**外部端点是借用连接。** 显式 `cdp_url` 继续受支持；选了 `local_chrome` backend 不代表端点由它创建。没有本次 `ProviderSession` 或实验所有者的 context lease，就只释放 AF 的连接、scope、bridge 与订阅，不关整个浏览器、不杀外部进程、不删 profile、不批量关闭已有 tab。录制、pinned、archive replay 仍按 provider 能力与 setup 合同检查，不为任意外部端点伪造共享录制能力。
+
+**同一实验进程内共享 Chrome。** `local_chrome.lifetime: run | experiment` 是资源寿命事实，默认 `run`；`experiment` 每 run 新建 BrowserContext，cookie、Web Storage、tab、权限设置与销毁均以该 context 为边界，各 run 有独立控制连接、recorder 参与者、archive channel、采集缓冲与 WAL。离线回放必须用 `run`。持久 profile 与 `experiment` 不能混用：新 context 不继承磁盘 profile 登录态，初态须显式导入 storage seed。任意外部 `cdp_url` 与实验管理模式不能同时选择。
+
+`core/experiment.py::ExperimentScope` 是显式 `async with` 所有者，唯一的通用扩展合同是 `ExperimentParticipant.bind_experiment(scope, identity=...)`。`scope.bind(ComposedRun)` 遍历实际 `by_layer` 实例，同一对象只绑定一次；绑定只装配，不启动进程或连接网络。资源按 `(layer, instance_id)` 识别，同一 identity 配置不同明确拒绝，配置相同的 fresh composed runs 借用同一所有者。资源首次实际使用才懒启动。scope 退出逐资源、有界地清理，继续尝试其它资源，不覆盖原执行异常或取消；超时明确报告尚未完成并保留可重试所有权。没有全局缓存、按端点猜测的进程池或运行统计。
+
+通用 `run` CLI 与 `BenchmarkRunner.run` 打开该 scope，单独 `run_task` 自己拥有一次 scope。Python 并发调用方显式创建 scope，将各个新 compose 的结果交给 `scope.bind`，分别驱动 Runtime，并在离开 scope 前等待所有 run 完成。通用驱动只消费实验生命周期合同，不 import browser；Runtime 不知道 Chrome。`config check/explain` 与 `prepare()` 始终不启动资源。现有 YAML backend 块设置 `lifetime: experiment` 即选择共享寿命，不新增 provider registry 或重复的实验配置。
+
+Browser 的三个所有者分别是：provider 继续证明、持有并关闭实际进程/profile；`SharedBrowser` 持有 provider session 与一根 browser-wide early-attach broker，首次 acquire 固定 launch arguments/environment，后续不一致立即拒绝；`BrowserContextLease` 代表一个 run 的 context，结束 run 只释放 lease。实际启动 metadata 通过快照进入各 run 指纹，不因 capability 没有独占 `ProviderSession` 而丢掉启动开关摘要。`BrowserCapability.browser_context_id`、`BrowserArchiveContext.browser_context_id`、`RecorderTarget.browser_context_id` 是统一分区身份，不把它推入通用 Environment。
+
+**共享录制的 early attach 只有一个所有者。** `RecorderBroker` 持有 browser-wide `Target.setAutoAttach(waitForDebuggerOnStart=true)`，按 target 的 `browserContextId` 和已证明的 parent-session 关系分发给本 run 的 `ContextRecorderClient`。slice 实现现有 RecorderClient，复用 RecorderConnection 的 batch → resume → await、参与者和暂停请求处理。slice 的 browser-level auto-attach 开关只启停本 context 参与；关闭一个 run 不关闭根 socket，不改变其它 run 的录制。相同 target 多份 session 按原合同处理，不能为去重漏掉 SW 主脚本。主动创建新 tab 仍先 `about:blank`、等 ready、再导航。
+
+这不是对任意外部 Chrome 的零干扰保证：CDP TargetFilter 只有 type，没有 context 过滤。未参与 context（包括默认 context）的新 target 仍可能短暂暂停，broker 立即 resume/detach，不配置、不归档、不关闭其页面。该行为属于显式实验所有权。Chrome 155 实测证明 `autoAttachRelated(page/tab)` 和发现后按 context 追赶漏 popup 首请求/首脚本及 SharedWorker 首个 fetch，不能冒充完整共享录制。进程崩溃影响全部共享 run，各 run 的记录健康与结算仍独立；既有嵌套 worker 主脚本等采集限制不因此消失。
+
+控制连接与 recorder slice 共用 `BrowserContextAccess`，发送前验证 session/target/context，过滤 tab 查询与 browser-level 事件，context 定向 cookie/permission 操作，拒绝 run 的全浏览器关闭。它防止合作的 AF 扩展误跨 run，不声称沙箱化任意 Python。watchdog 复用原 CDP Protocol，不按 watchdog/domain 扩增 Protocol；同 tab/OOPIF 的 observation → JS scope 协作保留。
 
 **浏览器内部 agent-cdp 合同。** AF 使用已发布的 agent-cdp 0.5.0 公共接口，不保留旧版兼容分支。scope 是调度范围：tab 观测调用同 tab JS scope、共享 watchdog 按绑定服务多个 tab、当前 tab 的 OOPIF 映射均合法；跨 tab 或失效 session 的元素/JS 在派发前拒绝。watchdog 按 `(scope, session_id)` 绑定与解绑，关闭一个 tab 仅清它自己的连接、bridge、状态；迟到事件不能复活已关闭 tab。session-bound bridge 只认信封路由，需父 session 的工厂显式 `with_session=True`。tab/JS scope 不保留事件历史，避免 DOM/截图被历史引用。
 
@@ -2122,7 +2136,8 @@ BrowserCapability.teardown()
 
 | 常量 | 承诺 | 谁要求它 |
 |---|---|---|
-| `NETWORK_CAPTURE` | 浏览器进程由 capability 经这个 provider 启动并在 teardown 杀掉；CDP 端点接受第二个 browser 级客户端（`waitForDebuggerOnStart` 的 auto-attach、Network、Fetch）；provider 实现 `NetworkCaptureProvider`：`persistent_profile() -> str \| None`（profile 不是每 run 新建时，点名是哪个旋钮——只有配置能让 profile 不是新建的，从不靠环境变量，`config.json` 才看得出来；它决定 §5.6 的 `logged_in` 与指纹的 `fresh_profile`；声明了 `NETWORK_CAPTURE` 却答不出的 provider 被协作检查拒绝，从不当作新建的） | 任一 browser 归档器被绑定；`replayability` 不是 `none`；`network_source: archive`——也就是一切需要 recorder 连接的配置（§4.14） |
+| `NETWORK_CAPTURE` | 浏览器进程经这个 provider 启动，独占时由 run teardown 关闭，共享时由显式 ExperimentScope 关闭；CDP 端点接受 browser 级录制客户端（`waitForDebuggerOnStart` 的 auto-attach、Network、Fetch）；provider 实现 `NetworkCaptureProvider`：`persistent_profile() -> str \| None`（profile 不是每 run 新建时，点名是哪个旋钮——只有配置能让 profile 不是新建的，从不靠环境变量，`config.json` 才看得出来；它决定 §5.6 的 `logged_in` 与指纹的 `fresh_profile`；声明了 `NETWORK_CAPTURE` 却答不出的 provider 被协作检查拒绝，从不当作新建的） | 任一 browser 归档器被绑定；`replayability` 不是 `none`；`network_source: archive`——也就是一切需要 recorder 连接的配置（§4.14） |
+| `EXPERIMENT_CONTEXTS` | 实现 `SharedBrowserProvider`（`lifetime` 与只读 `managed_browser`），以 `ExperimentParticipant` 绑定实验所有者；每 run 借用独立 context lease，只有实验 scope 关闭进程。配置绑定纯装配、资源懒启动 | `local_chrome.lifetime: experiment`；共享执行与独立录制，离线回放不使用它 |
 | `LAUNCH_ARGS` | `open(*, launch_args: Sequence[str] = (), launch_env: Mapping[str, str] \| None = None)` 接受本次 session 额外的 Chrome 开关与环境变量（加在浏览器从 provider 进程继承的环境上）；provider 实现 `LaunchArgsProvider`：`launch_arg_conflicts(launch_args) -> list[str]`（自己的哪些旋钮与这些开关矛盾，每条点名旋钮），`planned_launch_flags(launch_args, launch_env) -> list[str]`（M30：`open(...)` 将会写进 `metadata["launch_flags"]` 的那张表，环境变量写成 `NAME=value` 排在最前，启动之前就能算——回放的一致性检查据此在启动浏览器之前比较开关摘要），以及 `planned_browser_defaults(launch_env) -> BrowserDefaults`（它启动的浏览器会落回的默认时区与语言，从本机 OS 读，读不出的那项是 `None`，§4.14 "一致性检查"） | `replayability: pinned`（它的启动开关与 `TZ` 只能从这条路进浏览器）；`NETWORK_ISOLATION`（隔离开关也走这条路） |
 | `NETWORK_ISOLATION` | provider 启动的浏览器能被切断网络：capability 经 `open(launch_args=...)` 交给它 `chrome_switches.NETWORK_ISOLATION_ARGS`（`--host-resolver-rules=MAP * ~NOTFOUND` 与 `--no-proxy-server` 两个 argv 元素，不带 shell 引号；没有任何例外，`localhost` 也断，§4.14 "回放"）；provider 实现 `NetworkIsolatingProvider`：`isolation_conflicts() -> list[str]`（自己哪些旋钮会让隔离失效，每条点名旋钮：`local_chrome` 是 `proxy_server`、`proxy_bypass_list`、`extra_args` 里任何一个网络路由开关（与某个隔离开关一字不差的重复除外：它什么都不改）（`chrome_switches.NETWORK_ROUTING_SWITCHES`：`--host-resolver-rules`、`--proxy-server`、`--no-proxy-server`、`--proxy-pac-url`、`--proxy-auto-detect`、`--proxy-bypass-list`）、不是 `about:blank` 的 `startup_url`——它在任何 recorder 连上之前就从命令行加载）。声明它的 provider 也声明 `LAUNCH_ARGS` | `network_source: archive` 且 `isolation: required`（默认；§4.14 "回放"） |
 
@@ -2667,7 +2682,7 @@ recorder 连接的 `CDPClient` 用 `compression=None`（websockets 默认与 Chr
 
 #### 所有权与存活
 
-- **只在自己的浏览器上**：需要 recorder 连接的配置要求 provider 声明 `NETWORK_CAPTURE`（§4.9.x）。显式 `cdp_url`、注入的控制客户端、六个云 lite provider，都在 `prepare()` 报错（`check_setup`；`bind_archivers` 绑定前再查与绑定有关的那部分，setup 启动前再查全部），点名双方，一次报全。云 provider 的录制可用性并入 lite SDK 审计，不在 v1。
+- **只在明确拥有的浏览器上**：需要 recorder 连接的配置要求 provider 声明 `NETWORK_CAPTURE`（§4.9.x）。本地 `lifetime: run` 由 run 拥有进程；`experiment` 由显式实验 scope 拥有进程与 broker，每 run 拥有 context lease。任意显式 `cdp_url`、注入的控制客户端、六个云 lite provider，仍在 `prepare()` 报错（`check_setup`；`bind_archivers` 绑定前再查与绑定有关的那部分，setup 启动前再查全部），点名双方，一次报全。云 provider 录制另行设计。
 - **存活是推送的**：recorder 客户端丢失时保留原始 `RecorderLostError` 供 `collect_archive` 报告，普通录制不使控制连接的命令失败，也不改写正在完成的动作结果。recorder 同时承担 archive replay 或固定 target 配置时，下一次环境操作明确拒绝已失效的执行合同；这属于环境执行不可用，与单纯采集/落盘失败的记录健康分别表达。清理仍释放本次拥有的资源。
 - **控制连接永不设置 `waitForDebuggerOnStart: true`**（它的 iframe auto-attach 一直是 `false`），所以 recorder 是唯一需要 resume 的一方。
 

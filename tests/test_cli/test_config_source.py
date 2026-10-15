@@ -36,7 +36,9 @@ async def test_single_run_passes_the_source_version_it_parsed(tmp_path, monkeypa
     def compose(raw):
         assert raw["task_label"] == "consumed"
         path.write_bytes(b"task_label: changed\n")
-        return SimpleNamespace(ids=lambda layer: ["fixture"], instances=lambda layer: [], hooks=[])
+        return SimpleNamespace(
+            ids=lambda layer: ["fixture"], instances=lambda layer: [], by_layer={}, hooks=[]
+        )
 
     monkeypatch.setattr(
         run_cli, "ConfigComposer", lambda **kwargs: SimpleNamespace(compose=compose)

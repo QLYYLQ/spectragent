@@ -314,7 +314,7 @@ async def test_failed_tab_attach_rolls_back_every_scope_and_can_retry(
         assert "b" in cdp.targets
         assert ("Target.closeTarget", {"targetId": "b"}, None) not in cdp.sent
 
-        sid_b = await cap.switch_tab("b")
+        sid_b = (await cap.switch_tab("b")).session_id
         assert sid_b == "sid-b"
         assert set(group.scope_ids) == {"__browser__", "a", "a:js", "b", "b:js"}
         assert await event_result(cap._scopes[sid_b].emit(_js_request(sid_b))) == {

@@ -61,9 +61,11 @@ from spectragent.core.capabilities.browser.backends.base import (
     LaunchArgsProvider,
     NetworkCaptureProvider,
     NetworkIsolatingProvider,
+    SharedBrowserProvider,
 )
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.core.capabilities.browser.backends.capabilities import (
+    EXPERIMENT_CONTEXTS,
     LAUNCH_ARGS,
     NETWORK_CAPTURE,
     NETWORK_ISOLATION,
@@ -393,7 +395,33 @@ def cooperation_problems(
     bound = tuple(cap.bound_archivers if archivers is None else archivers)
     backend = None if cdp_url or injected_client else cap.resolved_backend()
     problems = binding_problems(cap, bound, cdp_url=cdp_url, injected_client=injected_client)
+    configured_backend = cap.resolved_backend()
+    if (
+        isinstance(configured_backend, SharedBrowserProvider)
+        and configured_backend.lifetime == "experiment"
+        and (cdp_url or injected_client)
+    ):
+        problems.append(
+            "backend lifetime: experiment cannot borrow an explicit cdp_url or injected client; the experiment must own its shared Chrome"
+        )
     source = cap.network_source
+    if backend is not None and EXPERIMENT_CONTEXTS in getattr(
+        type(backend), "__capabilities__", ()
+    ):
+        if not isinstance(backend, SharedBrowserProvider):
+            problems.append(
+                f"{_provider_name(backend)} declares EXPERIMENT_CONTEXTS without SharedBrowserProvider"
+            )
+        elif backend.lifetime == "experiment":
+            if source.intercepts:
+                problems.append(
+                    "network_source: archive requires a dedicated Chrome (backend lifetime: run)"
+                )
+            profile = persistent_profile(backend)
+            if profile is not None:
+                problems.append(
+                    f"backend lifetime: experiment ↔ {profile}: fresh BrowserContexts do not inherit a persistent Chrome profile; import session state explicitly"
+                )
     if source.intercepts:
         problems.extend(
             _ownership_problems(

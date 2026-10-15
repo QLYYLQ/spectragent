@@ -1,10 +1,25 @@
 """Browser provider protocol."""
 
+from __future__ import annotations
+
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from spectragent.core.capabilities.browser.backends.browser_defaults import BrowserDefaults
 from spectragent.schemas.provider_session import ProviderSession
+
+if TYPE_CHECKING:
+    from spectragent.core.capabilities.browser.shared_browser import SharedBrowser
+
+
+@runtime_checkable
+class SharedBrowserProvider(Protocol):
+    """The EXPERIMENT_CONTEXTS capability: process ownership stays with its scope."""
+
+    lifetime: Literal["run", "experiment"]
+
+    @property
+    def managed_browser(self) -> SharedBrowser | None: ...
 
 
 @runtime_checkable

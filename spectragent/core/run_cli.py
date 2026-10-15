@@ -14,6 +14,7 @@ import yaml
 from dotenv import load_dotenv
 
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.experiment import ExperimentScope
 from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
@@ -55,7 +56,15 @@ def _trace_summary(path: str | None) -> dict[str, Any]:
 
 
 async def _run(
+    **kwargs: Any,
+) -> int:
+    async with ExperimentScope() as scope:
+        return await _run_in_experiment(scope=scope, **kwargs)
+
+
+async def _run_in_experiment(
     *,
+    scope: ExperimentScope,
     config_path: Path,
     task: str,
     start_url: str | None,
@@ -70,7 +79,7 @@ async def _run(
     raw = yaml.safe_load(source_bytes)
     config_source = ConfigSource.from_path(canonical, data=source_bytes)
     composer = ConfigComposer(registrars=collect_registrars())
-    run = composer.compose(raw)
+    run = scope.bind(composer.compose(raw))
     if progress is not None:
         from spectragent.monitoring import attach_progress
 
