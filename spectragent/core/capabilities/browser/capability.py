@@ -981,6 +981,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         """The action instances this capability will actually execute."""
         return list(self._actions_by_name.values())
 
+    @property
+    def provided_actions(self) -> frozenset[str]:
+        """The actions this configured browser can actually route."""
+        return frozenset(self._actions_by_name)
+
     @actions.setter
     def actions(self, value: list[ActionBase] | None) -> None:
         """Adopt an explicit action list, or derive the full wired set.
