@@ -1,5 +1,39 @@
-# Google ads (googleads.g.doubleclick.net): the ad frame (pagead/ads) and conversion tags.
-# bdt: browser time delta; lmt: the page's last-modified time (pinned does not fix it);
-# correlator, random, fst: per-page random numbers and timestamps; eid: experiment ids
-# Google assigns per page view. The client, slot and size parameters select the ad.
-ignore_query: [bdt, lmt, correlator, random, fst, eid]
+# Google ad frame and recorded conversion endpoint: bdt/lmt are browser/page times;
+# correlator/random/fst vary per page; eid is the per-page experiment assignment.
+# Client, slot and dimensions still select the ad. No other endpoint inherits these omissions.
+rules:
+- id: google-ad-frame
+  scope:
+    host: googleads.g.doubleclick.net
+    path: /pagead/ads
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - bdt
+  - lmt
+  - correlator
+  - random
+  - fst
+  - eid
+  keep_query:
+  - client
+  - slotname
+  - width
+  - height
+  - w
+  - h
+- id: google-ad-conversion
+  scope:
+    host: googleads.g.doubleclick.net
+    path: /pagead/viewthroughconversion/1066331136/
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - bdt
+  - lmt
+  - correlator
+  - random
+  - fst
+  - eid

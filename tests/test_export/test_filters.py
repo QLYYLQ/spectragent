@@ -265,7 +265,7 @@ class TestFiltered:
         assert canonicalise(strict.trace, rel_path=strict.rel) == [], "no exportable step"
 
     async def test_max_document_misses(self, tmp_path: Path) -> None:
-        log = ReplayLog(repeat_limit=1)
+        log = ReplayLog(mode="summary", repeat_limit=1)
         session, _ = open_session(ReplayLogArchiver(), replay_log=log)
         document = ReplayLogEntry(
             kind="miss",

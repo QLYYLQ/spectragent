@@ -26,9 +26,20 @@ from conscribe import create_registrar
 #: without a body (incomplete, still pending at the run's end, a streamed body
 #: that never arrived); ``range_uncovered``: a ``Range`` the recorded bytes do
 #: not cover; ``websocket``: a WebSocket handshake (never served in v1);
-#: ``unservable``: a request Fetch never paused (a nested worker's script).
+#: ``unservable``: a request Fetch never paused (a nested worker's script);
+#: ``sequence_exhausted``: the selected sequence has no unused record;
+#: ``match_level_disallowed``: Range candidates exist only at forbidden levels;
+#: ``archive_unreadable``: committed response bytes cannot be read or verified.
 MissReason = Literal[
-    "no_match", "too_large", "body_unavailable", "range_uncovered", "websocket", "unservable"
+    "no_match",
+    "too_large",
+    "body_unavailable",
+    "range_uncovered",
+    "websocket",
+    "unservable",
+    "sequence_exhausted",
+    "match_level_disallowed",
+    "archive_unreadable",
 ]
 
 #: A request's class, as the policy sorts it.

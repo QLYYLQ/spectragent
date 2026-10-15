@@ -1,13 +1,41 @@
-# Douban (book.douban.com, www.douban.com, fundin.douban.com).
-# cost: www.douban.com/misc/ct reports how long an image took (50 vs 0).
-# _id, pv_id, pf_dm1, pf_net, pf_srv, pf_tfr: fundin's analytics pixel (Matomo): visitor id,
-#   page-view id and page timings.
-# callback: erebor.douban.com's ad requests (?unit=<slot>&bid=...&ts=...&callback=erebor_<32
-#   random hex>) name their JSONP callback with random draws, and a replay draws them in
-#   another order: the names matched the recording in 2 of 13 replays (erebor_484F3E32...
-#   vs erebor_86738B42... for unit=dale_book_home_top_right). The answer calls that name
-#   (erebor_86738B42C835484FBE32248C1E89AF9E({...})), and the replay writes the name the
-#   request asks for in its place (docs/architecture_design.md §4.14 "JSONP 回调名"), so
-#   ignoring it is safe. unit picks the ad slot and stays; ts is a timestamp the built-in
-#   normalisation already drops. Only erebor carries a callback parameter on douban.com.
-ignore_query: [cost, _id, pv_id, pf_dm1, pf_net, pf_srv, pf_tfr, callback]
+# Douban: /misc/ct cost is image loading time (50 vs 0). /piwik fields are visitor,
+# page-view and timing values. erebor / names a random JSONP function; replay rewrites
+# the opening callback to the requested name. unit and bid remain content selectors.
+# The old global timestamp heuristic is removed: ts is retained here until separately evidenced.
+rules:
+- id: douban-image-timing
+  scope:
+    host: www.douban.com
+    path: /misc/ct
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - cost
+- id: douban-analytics-pixel
+  scope:
+    host: fundin.douban.com
+    path: /piwik
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - _id
+  - pv_id
+  - pf_dm1
+  - pf_net
+  - pf_srv
+  - pf_tfr
+- id: douban-ad-callback
+  scope:
+    host: erebor.douban.com
+    path: /
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - callback
+  keep_query:
+  - unit
+  - bid
+  - ts

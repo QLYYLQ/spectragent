@@ -1,3 +1,13 @@
-# rmapi.nfzmy.com: an analytics endpoint on 21jingji's pages.
-# actionTime: a timestamp; deviceid: a random UUID (8b42c835-... vs 42c83548-...).
-ignore_query: [actionTime, deviceid]
+# The recorded analytics endpoint uses actionTime as a timestamp and deviceid as a
+# random UUID (8b42c835-... vs 42c83548-...). Other rmapi paths retain both fields.
+rules:
+- id: business-herald-analytics-record
+  scope:
+    host: rmapi.nfzmy.com
+    path: /nfzmy-analytics-api/analytics/sendRecord
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - actionTime
+  - deviceid

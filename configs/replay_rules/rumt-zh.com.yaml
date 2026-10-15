@@ -1,3 +1,39 @@
-# rumt-zh.com: Tencent's performance monitor (timings: ssl, tcp, ttfb; payload= JSON).
-synthesize_204:
-  - "https://rumt-zh.com/*"
+# Tencent performance monitor: recorded timing/report endpoints. /collect/whitelist
+# is configuration, so it does not inherit the earlier host-wide synthetic response.
+rules:
+- id: tencent-monitor-page-view
+  scope:
+    host: rumt-zh.com
+    path: /collect/pv
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://rumt-zh.com/collect/pv*
+- id: tencent-monitor-speed
+  scope:
+    host: rumt-zh.com
+    path: /speed
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://rumt-zh.com/speed*
+- id: tencent-monitor-custom-timing
+  scope:
+    host: rumt-zh.com
+    path: /speed/custom
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://rumt-zh.com/speed/custom*
+- id: tencent-monitor-performance
+  scope:
+    host: rumt-zh.com
+    path: /speed/performance
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://rumt-zh.com/speed/performance*

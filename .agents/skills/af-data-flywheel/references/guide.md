@@ -247,10 +247,11 @@ replayability: { replayability_id: pinned, random_seed: 7, base_time: from_archi
 network_source:
   source_id: archive
   isolation: required                 # none_acknowledged: Fetch interception alone
-  shift_dates: none                   # all: shift every date (pairs with base_time: run_start)
+  shift_dates: none                   # independent of base_time; all four combinations are valid
   matcher: { levels: [exact, normalized], fuzzy_threshold: 0.5, site_rules: configs/replay_rules }
   miss_policy: { miss_policy_id: strict }   # extra_benign_hosts: [...]
-  # max_fulfill_body_bytes (64 MiB, at most 72 MiB), fulfill_timeout_s (10), log_repeat_limit (3)
+  # max_fulfill_body_bytes (64 MiB, at most 72 MiB), fulfill_timeout_s (10)
+  log_mode: full                     # summary: fold repeats after log_repeat_limit (3)
 ```
 
 ```bash
@@ -284,8 +285,10 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
   - a `live` source with `browser.replay_log`: `network_source: live ↔ archiver
     browser.replay_log: ... a live source replays nothing`.
 - At `prepare()`, `check_setup` opens the source through its manifest and compares its
-  fingerprint (`env/run.browser.json`, read by `archive_index.load_fingerprint`: no index
-  line, no WARC record) with this configuration; setup compares again before Chrome starts,
+  fingerprint (`env/run.browser.json`, read by `archive_index.load_fingerprint`) with this
+  configuration. The source's public `check_config(reader)` also validates rule levels,
+  scope conflicts and exhaustion coverage from committed request index metadata; it reads
+  no WARC bodies. Setup compares again before Chrome starts,
   then loads the whole archive to serve it: the tier and its parameters
   except `base_time`, `shim_sha256`, the viewport, the launch-flag digest with the
   network-routing switches stripped on both sides (`TZ` included), and the browser's
@@ -309,15 +312,23 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
   `x-replay-miss: 1`. A CORS preflight the archive lacks gets a synthesised 204. Not replayed
   in v1, and logged as misses: WebSockets, a nested dedicated worker's script, bodies over
   `max_fulfill_body_bytes`.
-- Site rules are `<domain>.yaml` files chosen by the longest host suffix
-  (`configs/replay_rules/README.md`: `ignore_query`, `ignore_body_paths`, `ignore_headers`,
-  `fuzzy`, `synthesize_204`, `response_echo`). Their digest enters the replay fingerprint, and
-  match keys are recomputed at load, so a rule change needs no new recording. The 25 shipped
-  files were written from twelve live recordings of Chinese sites and committed as one set
-  (the user's ruling of 2026-10-14: the analytics rules shift the page's random draws and
-  request counters too, so a subset can replay worse); each comment carries its evidence, and
-  `ctrip.com.yaml`'s top-level body `id` is a risk kept on purpose and written in the file.
-  Ignore only values that change per visit and select nothing.
+- Every rule file contains a `rules` list. Explicit scopes constrain host, URL/path,
+  method and effective port. Highest priority wins; equal-priority matches are refused,
+  and files do not implicitly select host suffixes. Rules never merge. `exhaustion` is
+  required (`repeat_last` or `miss`); the published baseline explicitly selects reuse,
+  while the framework supplies no fallback. Every served candidate must choose the same
+  rule identity as its request. `matcher.levels` is an upper bound, tried in fixed strength
+  order, including Range; a stronger sequence's exhaustion never selects a weaker resource.
+  Canonicalisation performs formatting only: no global timestamp, size, random-number or
+  callback guesses. Use scoped `ignore_*` and `keep_*` declarations with counterexamples.
+  Rules are read once for the actual replay and frozen. Their exact text, origin, per-file
+  and set digests enter the existing run fingerprint; `recorded_site_rules(reader)` verifies
+  and reconstructs them through committed archive accessors without rereading the source.
+  The shipped Ctrip body `id` omission now applies only to its ad endpoint.
+- `log_mode: full` retains each event. Explicit `summary` mode folds semantically identical
+  events beyond `log_repeat_limit`, preserving count, category and first/last occurrence
+  times. `iter_decisions` returns represented counts and keeps folding metadata; batch step
+  ownership does not imply that step's action caused every asynchronous request.
 - JSONP callback names (`replay/jsonp.py`, architecture §4.14 "JSONP 回调名"): when the
   archive serves a recorded JSONP answer to a request asking another callback name, the
   responder writes the requested name over the recorded one at the call the body opens with,

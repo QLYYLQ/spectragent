@@ -1,4 +1,12 @@
-# galileotelemetry.tencent.com/collect: Tencent's telemetry collector (POST) inside
-# Qidian's pages.
-synthesize_204:
-  - "https://galileotelemetry.tencent.com/*"
+# Telemetry collector inside Qidian pages: POST /collect. The whitelist endpoint
+# is not a log submission and no longer inherits a host-wide synthetic response.
+rules:
+- id: tencent-telemetry-collector
+  scope:
+    host: galileotelemetry.tencent.com
+    path: /collect
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://galileotelemetry.tencent.com/collect*

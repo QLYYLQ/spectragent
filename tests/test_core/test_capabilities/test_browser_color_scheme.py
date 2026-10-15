@@ -22,6 +22,7 @@ from spectragent.core.capabilities.browser.replay import (
     NoneReplayability,
     PinnedReplayability,
 )
+from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser
 from tests._helpers.fake_cdp import FakeBrowser
 from tests._helpers.replay_archive import RecordingScript
@@ -32,7 +33,9 @@ def _cap(browser: FakeBrowser, *, replay: bool = False) -> BrowserCapability:
     cap.backend = IsolatingBrowser() if replay else OwnedBrowser()  # type: ignore[assignment]
     cap.replayability = PinnedReplayability(random_seed=7)
     if replay:
-        cap.network_source = ArchiveNetworkSource()
+        cap.network_source = ArchiveNetworkSource(
+            matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+        )
         cap.bind_archivers([ReplayLogArchiver()])
     cap._inject_cdp_factory(browser.client)
     return cap

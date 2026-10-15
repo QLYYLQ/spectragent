@@ -1,2 +1,12 @@
-# ep1.adtrafficquality.google: Google's ad traffic check; bg is a per-page challenge blob.
-ignore_query: [bg]
+# Google ad traffic check: bg is a per-page challenge blob. The recording identifies
+# /pagead/sodar as the endpoint; this rule does not cover other ad checks.
+rules:
+- id: google-ad-traffic-check
+  scope:
+    host: ep1.adtrafficquality.google
+    path: /pagead/sodar
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - bg

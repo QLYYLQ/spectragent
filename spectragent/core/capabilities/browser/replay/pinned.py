@@ -91,9 +91,10 @@ class PinnedReplayability(ReplayabilityBase):
             PydanticField(
                 description=(
                     "Where the shim's clock starts. 'run_start': the moment "
-                    "setup ran (a recording). 'from_archive': the T0 recorded "
+                    "setup ran. 'from_archive': the T0 recorded "
                     "in the archive being replayed — valid only with the "
-                    "'archive' network source; prepare() refuses it with a 'live' one."
+                    "'archive' network source and an available source clock. "
+                    "Independent of the network source's shift_dates option."
                 ),
             ),
         ] = "run_start",

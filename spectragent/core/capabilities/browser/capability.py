@@ -1341,7 +1341,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
           ``replay_archive``;
         - for a replay, the source run's consistency with this configuration
           (``replay/consistency.py``), read from its environment fingerprint
-          alone (``load_fingerprint``: no index line, no WARC record) —
+          (``load_fingerprint``), plus committed request index metadata for rule
+          coverage and conflicts; never WARC response bodies —
           including the browser's defaults, the time zone and locale this
           host's OS says the browser will fall back to
           (``planned_browser_defaults``), against the recording's.
@@ -1369,10 +1370,16 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 archivers=bound,
             )
         )
-        if self.network_source.intercepts and replay_archive:
+        source_reader = (
+            open_archive(replay_archive)
+            if self.network_source.intercepts and replay_archive
+            else None
+        )
+        self.network_source.check_config(source_reader)
+        if source_reader is not None:
             problems.extend(
                 consistency_problems(
-                    load_fingerprint(open_archive(replay_archive)),
+                    load_fingerprint(source_reader),
                     replayability=self.replayability,
                     viewport=(self.viewport_width, self.viewport_height),
                     planned_launch_flags=planned_launch_flags(

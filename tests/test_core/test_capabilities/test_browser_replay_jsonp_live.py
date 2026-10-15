@@ -5,7 +5,7 @@ The fixture's ``jsonp`` page names its two callbacks after
 never asks for the recording's names — the way a real page's scripts draw
 their random numbers or count their requests in another order:
 
-- ``hot.js?callback=jQuery<µs>_1``, a name the built-in normalisation drops
+- ``hot.js?callback=jQuery<µs>_1``, a name its explicit endpoint rule drops
   from the match key: the replay's request is a hit, and the recorded answer
   calls the recording's name;
 - ``ad.js?cb=ad_<hex>``, a name with a random part: the replay's request
@@ -48,7 +48,17 @@ TASK = "Read the hot searches."
 #: The endpoint of each callback, and the query parameter that names it.
 ENDPOINTS = {"hot": ("/jsonp/hot.js", "callback"), "ad": ("/jsonp/ad.js", "cb")}
 #: The site rule the replays run with: the random-part name may differ.
-SITE_RULE = "# The ad callback's name has a random part.\nignore_query: [cb]\n"
+SITE_RULE = """rules:
+  - id: fixture-default
+    scope: {}
+    exhaustion: repeat_last
+    priority: -100
+  - id: callback-endpoints
+    scope: {path: '/jsonp/*'}
+    exhaustion: repeat_last
+    priority: 10
+    ignore_query: [cb, callback, _]
+"""
 
 
 @dataclass

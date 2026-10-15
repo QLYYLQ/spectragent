@@ -619,7 +619,7 @@ class TestReasons:
         assert check.verdict == "ok" and check.evidence[0].screenshot_distance == 0
 
     async def test_document_miss(self) -> None:
-        log = ReplayLog(repeat_limit=1)
+        log = ReplayLog(mode="summary", repeat_limit=1)
         capability = replaying_capability(log)
         fragments = full()
         recorded, restored = recorded_view(fragments), restored_view(fragments)

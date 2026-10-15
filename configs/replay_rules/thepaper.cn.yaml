@@ -1,3 +1,11 @@
-# pclog.thepaper.cn/log: The Paper's client log (POST, the payload in the body).
-synthesize_204:
-  - "https://pclog.thepaper.cn/*"
+# The Paper client log: POST /log carries its payload in the body.
+rules:
+- id: thepaper-client-log
+  scope:
+    host: pclog.thepaper.cn
+    path: /log
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://pclog.thepaper.cn/log*

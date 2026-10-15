@@ -1,0 +1,7 @@
+# This published experiment explicitly reuses the last recorded response after exhaustion.
+# The framework supplies no fallback; endpoint rules below fully replace this rule.
+rules:
+- id: baseline
+  scope: {}
+  priority: -100
+  exhaustion: repeat_last

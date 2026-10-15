@@ -138,7 +138,7 @@ uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
 replayability: { replayability_id: pinned, random_seed: 7, base_time: from_archive }
 network_source:
   source_id: archive
-  shift_dates: none                    # all：日期整体平移，配 base_time: run_start
+  shift_dates: none                    # all：响应日期整体平移；独立于 base_time
   matcher: { site_rules: configs/replay_rules }
   miss_policy: { miss_policy_id: strict }
 ```
@@ -147,25 +147,30 @@ network_source:
 
 - `prepare()` 打开源 run（只读已提交的部分），拿它的环境指纹比较本次配置（setup 启动 Chrome 之前再比一次）：档位和参数（`base_time` 除外）、shim、viewport、启动开关摘要。有一项不符就拒绝运行，每条点名两边的值。启动开关摘要只覆盖 provider（`local_chrome`）拼出的启动参数，调试端口和 profile 目录换成占位符，网络路由开关两边都去掉，可执行文件路径和 Chrome 版本都不在里面。`headless: true` 会加上 `--headless=new`，所以只改 `headless` 也会不符；要看着浏览器回放，录制和回放都得写 `headless: false`，也就是重新录制。Chrome 版本不同、档位没固定 UA 而浏览器 UA 不同、脱敏策略不同只警告，写进回放 run 的 `env/run.browser.json` 的 `network_source.warnings`。
 - `isolation: required`（默认）给 `local_chrome` 加 `--host-resolver-rules=MAP * ~NOTFOUND` 和 `--no-proxy-server`（没有例外，`localhost` 也断：对着本机网站录的 run 照样从归档回放，回放时那个服务开着也连不上），并拒绝会绕过它们的旋钮：`proxy_server`、`proxy_bypass_list`、`extra_args` 里的路由开关、不是 `about:blank` 的 `startup_url`。写 `isolation: none_acknowledged` 时只靠 Fetch 拦截，preconnect 和 WebSocket 会连到真实网络。
-- `base_time: from_archive` 让页面时钟从录制时的 T0 开始，只能配 `archive` 来源。`shift_dates: none`（默认）原样送出录下的 `Date`、`Expires`、`Last-Modified` 和 cookie 过期时间。
-- 匹配默认用 `levels: [exact, normalized]`，模糊一级（`fuzzy`）要显式打开；规范化会去掉 `utm_*`、`fbclid` 这类易变参数。每条录下的记录按录制顺序只送一次，用完之后重复最后一条，并在日志里记 `exhausted`。站点规则放在 `configs/replay_rules/<domain>.yaml`，写法见[它的 README](../configs/replay_rules/README.md)。发布的 25 个文件是 2026-10-14 在 12 个中文站点（起点、携程、21 经济网、网易、东方财富、豆瓣、AcFun、乐视、澎湃等）的录制上写的，每个参数的证据写在文件的注释里；`ctrip.com.yaml` 忽略请求体顶层的 `id`，对 ctrip.com 的每个接口都生效，风险写在文件里。
+- `base_time` 与 `shift_dates` 是独立变量，`from_archive/none`、`run_start/all`、`run_start/none`、`from_archive/all` 都可表达。`from_archive` 需要归档来源及可用源 T0；`all` 每个响应用同一偏移调整 Date、Expires、Last-Modified 和 cookie 绝对过期属性，偏移按服务时刻与录制 Date（缺失时用 WARC-Date）计算。缺 Date 时两种模式都会补锚点；正文中的日期、定时器与浏览器内部时间不因此一起平移。
+- `matcher.levels` 是允许集合，固定按 exact → normalized → fuzzy 尝试；规则只能收窄，Range 同样遵守。通用规范化只整理格式，不猜时间戳、产品编号、尺寸或随机参数的内容语义。每个请求必须有显式 `exhaustion: repeat_last | miss` 策略；最强候选耗尽不向弱级别换资源。规则可按 host、path/URL、method、port 和明确优先级选择；冲突或未声明策略具名拒绝。规则文件格式见[README](../configs/replay_rules/README.md)。
+- 规则在准备回放时读取并冻结；正文、逐文件摘要、集合摘要与来源随环境 run 记录提交。修改原目录不会改变当前 run，历史规则可从 RunTrace 读回并核对。改规则时同时检查错误命中反例，不能只看命中率。
 - JSONP 回调名：页面按请求里的回调名（`?callback=NAME`）取回一段调用 `NAME(数据)` 的脚本，名字是页面自己起的（jQuery 是 `jQuery<随机数字>_<计数>`），回放时常与录制时不同。回放送出这样的应答时，把开头的函数名换成这次请求的回调名，否则页面拿不到数据。只在能确定是这种包装时才换：请求是脚本、XHR 或 fetch，应答以 `NAME(`、`typeof NAME === 'function' && NAME(`、`NAME && NAME(` 开头（前面可以有空白、注释、`;`，可以包在 `try {` 里），录下的请求里恰好一个参数的值是 `NAME`，这次请求的这个参数是一个合法的名字。其余情况原样送出。改写后 `Content-Length` 按新的字节算，`Content-MD5`、`Digest` 这类摘要头去掉。所以名字带随机部分的回调参数（豆瓣广告的 `callback`、乐视登录的 `jsonp`）可以放心写进站点规则的 `ignore_query`。设计见 [architecture_design.md](architecture_design.md) §4.14 "JSONP 回调名"。
 - `strict` 处理归档里没有的请求：主 frame 的文档 `Fetch.failRequest` 并标 `diverged`；子 frame 的文档同样失败；beacon、ping、CSP 报告、内置的分析类主机、`extra_benign_hosts` 和站点规则 `synthesize_204` 命中的回 204；其余子资源回 404。回放编出来的应答都带 `x-replay-miss: 1` 头。归档里没有的 CORS 预检合成 204。
 
-回放 run 的 `env/` 里没有 WARC，每步一个 `env/steps/NNN/browser.replay_log/replay.jsonl`；`env/run.browser.json` 多一个 `network_source` 块（`source_run_id`、`source_fingerprint_sha256`、`site_rules_sha256`、matcher、`miss_policy_id`、`shift_dates`、`isolation`、`warnings`）。回放 run 不能再当回放或分叉的源，要回放就用原来的录制。读回放日志：
+回放 run 的 `env/` 里没有 WARC，每步一个 `env/steps/NNN/browser.replay_log/replay.jsonl`；`env/run.browser.json` 多一个 `network_source` 块（`source_run_id`、`source_fingerprint_sha256`、`site_rules_sha256`、`site_rules_snapshot`、matcher、`miss_policy_id`、`shift_dates`、`isolation`、`warnings`）。回放 run 不能再当回放或分叉的源，要回放就用原来的录制。读回放日志：
 
 ```python
 from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities.browser.replay.replay_log import diverged_steps, iter_replay_log
+from spectragent.core.capabilities.browser.replay.rule_snapshot import recorded_site_rules
 
 reader = open_archive("traces/<replay-run>")
+rules = recorded_site_rules(reader)            # 校验并恢复实际规则；不读原目录
 print(diverged_steps(reader))                   # 有主 frame 文档 miss 的步
 for step, entry in iter_replay_log(reader):     # 含收尾批次（step 为 None）
     if entry.kind == "miss":
         print(step, entry.reason, entry.request_class, entry.frame, entry.url)
 ```
 
-每行是一个 `ReplayLogEntry`。`kind` 是 `hit`、`exhausted`、`synthetic`（合成的预检）、`miss` 或 `summary`（同一次收集里完全相同的条目超过 `log_repeat_limit` 之后折成一条，`count` 是折掉的条数）。命中带 `record_id` 和 `level`，改写了 JSONP 回调名的还带 `callback_rewrite`（`parameter` 是哪个参数，`recorded` 是录下的名字，`requested` 是这次请求要的名字）。miss 带 `reason`（`no_match`、`too_large`、`body_unavailable`、`range_uncovered`、`websocket`、`unservable`）、`request_class`（`document`、`benign`、`subresource`）、`frame`（`main`、`sub`）、`answer` 和 `status`、`match_key`，以及最近的 3 个候选 `candidates`。
+每行是一个 `ReplayLogEntry`。`kind` 是 `hit`、`exhausted`、`synthetic`（合成的预检）、`miss` 或 `summary`（仅显式 `log_mode: summary` 时同一次收集里相同语义条目超过 `log_repeat_limit` 后折叠，保留 `count`、`folded_kind`、`first_captured_at`、`last_captured_at`；默认 `full` 保留逐次事件）。决定带 `rule_id` 与 `exhaustion_policy`；命中带 `record_id` 和 `level`，改写了 JSONP 回调名的还带 `callback_rewrite`（`parameter` 是哪个参数，`recorded` 是录下的名字，`requested` 是这次请求要的名字）。miss 带 `reason`（`no_match`、`sequence_exhausted`、`match_level_disallowed`、`too_large`、`body_unavailable`、`archive_unreadable`、`range_uncovered`、`websocket`、`unservable`）、`request_class`（`document`、`benign`、`subresource`）、`frame`（`main`、`sub`）、`answer` 和 `status`、`match_key`，以及最近的 3 个候选 `candidates`。
+
+统计时用 `iter_decisions(reader)` 的第三项代表次数，不能把摘要行数当请求数；`entry.occurrence_times_complete` 表示是否保留逐次时间。
 
 ## 分叉
 
@@ -501,7 +506,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 - 时区与语言 override 的所有者：同一个渲染进程里只有最先设它的 frame 是所有者。所有者走了之后，同进程的其余 frame（同一个站点的第二个跨源 iframe、保留 opener 的同站弹窗）在 0.2–0.3 s 内落回浏览器的默认值；保留 opener 的跨站弹窗从第一个文档起就读默认语言。时区因为 `TZ` 仍是 pin 的；语言是机器的系统语言，录在指纹里，回放要求它相同，但落回发生在哪一次观测之前，录制和回放之间可能不同。
 - `user_agent` 写的不是 Chrome 自己的写法时（自定义字符串、Edge、Firefox 的标识），pinned 不带 client hints：打不到 opener 的新 tab（不带 `rel` 的 `target=_blank`、`rel=noopener`、`window.open(..., 'noopener')`）的第一个请求带着 Chrome 自己的 `Sec-CH-UA`，之后的请求都不带，录制和回放相同，回放时这个请求不出浏览器。不写 `user_agent` 或写普通 Chrome 标识时没有这个问题。
 - 写了 `user_agent` 的 pinned 用 `--user-agent` 启动 Chrome，Chrome 这时自己就把 client hints 的高熵值（架构、位数、完整版本列表、平台版本、形态）报成空的，override 带的也是空的。调用 `getHighEntropyValues` 或用 `Accept-CH` 要这些头的站点看得出它与真实的 Chrome 不同；brands、平台、是否移动端是一致的。
-- 模糊匹配可能送错资源，日志里记着 `level: fuzzy` 和得分；用完的记录重复最后一条（`exhausted`）是有意的。
+- 模糊匹配可能送错资源，日志里记着 `level: fuzzy` 和得分；耗尽由显式规则选择复用最后响应（`exhausted`）或缺失（`sequence_exhausted`）。
 - JSONP 回调名只在几种确定的包装里改写（见"离线回放一个 run"）。回调名在路径或请求体里、包装是别的写法的，照录下的字节送出，页面拿不到数据，日志里却是普通的命中。
 - 回放停在 Chrome 的错误页上时，错误页上写着没送到的 URL；URL 每次都变的站点，按截图比较的回放确定性必然不同。
 - 页面落定的等待看不到窗口里只在途、还没完成的请求：点击之后一次慢的接口调用，页面又没有加载提示，不等它，下一步才看到结果。CSS 过渡与动画、canvas、进程外 iframe 里的变化不经过主文档的 DOM，不算变化。

@@ -1,4 +1,11 @@
-# secure.mediav.com/t: 360 ads' tracking pixel; its parameters are cookie values with
-# timestamps (qzja, jzqc, qzjhn) and the referrer.
-synthesize_204:
-  - "https://secure.mediav.com/t?*"
+# The /t tracking pixel carries cookie values with timestamps and a referrer.
+rules:
+- id: mediav-tracking-pixel
+  scope:
+    host: secure.mediav.com
+    path: /t
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://secure.mediav.com/t*

@@ -17,12 +17,13 @@ Knobs (all reachable from YAML; the generated config nests ``matcher`` and the
   Fetch interception alone (which leaks connections Fetch never sees);
 - ``shift_dates`` — ``none`` (the default; pairs with ``base_time:
   from_archive``) or ``all`` (``Date`` / ``Expires`` / ``Last-Modified`` /
-  cookie expiry shifted together by now − record time; pairs with
-  ``base_time: run_start``) — never a subset;
+  cookie expiry shifted together by now − record time). Independent of
+  ``base_time``: all four combinations are valid — never a subset;
 - ``max_fulfill_body_bytes`` — the largest body fulfilled in one CDP message
   (64 MiB; at most 72 MiB, since one message is capped at 100 MiB and base64
   inflates by a third); a larger one is a ``too_large`` miss;
 - ``fulfill_timeout_s`` — the replay server's budget per paused request;
+- ``log_mode`` — full events (default), or explicit summary folding;
 - ``log_repeat_limit`` — identical log entries per collection before they fold
   into one ``summary`` (a polling page can miss a thousand times a minute).
 
@@ -41,7 +42,10 @@ from pydantic import TypeAdapter
 
 from spectragent.core.archive.source import ArchiveReader
 from spectragent.core.capabilities.browser.replay.archive_index import (
+    ExchangeLine,
+    PendingLine,
     RecordedArchive,
+    iter_index_lines,
     load_archive,
 )
 from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
@@ -88,6 +92,7 @@ class ArchiveNetworkSource(NetworkSourceBase):
     max_fulfill_body_bytes: int
     fulfill_timeout_s: float
     log_repeat_limit: int
+    log_mode: Literal["full", "summary"]
     _isolation: Isolation
 
     def __init__(
@@ -119,9 +124,9 @@ class ArchiveNetworkSource(NetworkSourceBase):
             PydanticField(
                 description=(
                     "'none': serve recorded Date/Expires/Last-Modified/cookie "
-                    "dates as recorded (pairs with base_time: from_archive). "
-                    "'all': shift all four by now minus the record time (pairs "
-                    "with base_time: run_start). Never a subset."
+                    "dates as recorded, adding a Date anchor if absent. "
+                    "'all': shift all four by now minus the record time. "
+                    "Independent of base_time: all four combinations are valid."
                 ),
             ),
         ] = "none",
@@ -149,6 +154,15 @@ class ArchiveNetworkSource(NetworkSourceBase):
                 ),
             ),
         ] = 10.0,
+        log_mode: Annotated[
+            Literal["full", "summary"],
+            PydanticField(
+                description=(
+                    "'full': preserve each replay event. 'summary': fold repeated "
+                    "decisions with their count, category and first/last event times."
+                ),
+            ),
+        ] = "full",
         log_repeat_limit: Annotated[
             int,
             PydanticField(
@@ -186,6 +200,9 @@ class ArchiveNetworkSource(NetworkSourceBase):
         self.shift_dates = shift_dates
         self.max_fulfill_body_bytes = max_fulfill_body_bytes
         self.fulfill_timeout_s = float(fulfill_timeout_s)
+        if log_mode not in ("full", "summary"):
+            raise ValueError(f"archive: log_mode is 'full' or 'summary', got {log_mode!r}")
+        self.log_mode = log_mode
         self.log_repeat_limit = log_repeat_limit
 
     # ── NetworkSourceProtocol ─────────────────────────────────────────
@@ -199,9 +216,32 @@ class ArchiveNetworkSource(NetworkSourceBase):
         """The knob itself: what this source needs of the provider."""
         return self._isolation
 
+    def check_config(self, reader: ArchiveReader | None = None) -> None:
+        """Check levels and recorded request policies before opening a run or Chrome.
+
+        Only committed index metadata is needed for rule scope and exhaustion;
+        request/response bodies remain setup's full archive load responsibility.
+        """
+        rules = SiteRules.load(self.matcher.site_rules)
+        rules.validate_levels(self.matcher.levels)
+        if reader is not None:
+            rules.validate_requests(
+                ((line.method or "GET"), line.url)
+                for _step, line in iter_index_lines(reader)
+                if isinstance(line, ExchangeLine | PendingLine)
+                and not (isinstance(line, ExchangeLine) and line.body_status == "websocket")
+            )
+
     def open_replay(self, reader: ArchiveReader) -> RecordedArchive:
         """Load the recorded run, keyed with this source's site rules (before the browser starts)."""
-        return load_archive(reader, SiteRules.load(self.matcher.site_rules))
+        rules = SiteRules.load(self.matcher.site_rules)
+        rules.validate_levels(self.matcher.levels)
+        recorded = load_archive(reader, rules)
+        rules.validate_requests(
+            (record.method, record.url)
+            for record in (*recorded.index.records, *recorded.index.ranges.records)
+        )
+        return recorded
 
     def serve(self, recorded: RecordedArchive, ctx: ReplayContext) -> ReplayServer:
         """This run's server: this source's knobs, the configured miss policy, the run's state."""
@@ -214,6 +254,7 @@ class ArchiveNetworkSource(NetworkSourceBase):
             max_fulfill_body_bytes=self.max_fulfill_body_bytes,
             fulfill_timeout_s=self.fulfill_timeout_s,
             log_repeat_limit=self.log_repeat_limit,
+            log_mode=self.log_mode,
             source_fingerprint=self.fingerprint(),
         )
 
@@ -227,4 +268,6 @@ class ArchiveNetworkSource(NetworkSourceBase):
             ),
             "shift_dates": self.shift_dates,
             "isolation": self.isolation,
+            "log_mode": self.log_mode,
+            "log_repeat_limit": self.log_repeat_limit,
         }

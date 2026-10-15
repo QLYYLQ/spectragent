@@ -14,6 +14,7 @@ from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.capabilities.browser.cooperation import BrowserCooperationError
 from spectragent.core.capabilities.browser.platform import PLATFORM_URL, measure_input_platform
 from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource, PinnedReplayability
+from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.trace.reader import RunTrace
 from tests._helpers.replay_archive import RecordingScript
 
@@ -154,7 +155,9 @@ async def test_real_replay_rejects_source_evidence_for_a_different_platform(tmp_
     replay = BrowserCapability()
     replay.backend = LocalChromeProvider(headless=True)
     replay.replayability = PinnedReplayability(random_seed=7, base_time="from_archive")
-    replay.network_source = ArchiveNetworkSource()
+    replay.network_source = ArchiveNetworkSource(
+        matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+    )
     replay.bind_archivers([ReplayLogArchiver()])
     try:
         with pytest.raises(BrowserCooperationError, match="same actual platform"):

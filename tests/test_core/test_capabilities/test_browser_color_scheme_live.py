@@ -24,6 +24,7 @@ from spectragent.core.capabilities.browser.backends.local_chrome import LocalChr
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
 from spectragent.core.capabilities.browser.color_scheme import measure_color_scheme
 from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource, PinnedReplayability
+from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.trace.encoding import encode_archive_file
 from spectragent.core.trace.models import TraceStatus
 from spectragent.core.trace.reader import RunTrace
@@ -151,7 +152,9 @@ async def _flow(tmp_path: Path, site: ThemeSite, source_theme: str, host_theme: 
         )
         cap.replayability = PinnedReplayability(base_time="from_archive" if replay else "run_start")
         if replay:
-            cap.network_source = ArchiveNetworkSource()
+            cap.network_source = ArchiveNetworkSource(
+                matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+            )
         cap.bind_archivers([ReplayLogArchiver()] if replay else [NetworkArchiver()])
         try:
             await cap.setup(start_url=site.url("/"), replay_archive=str(source) if replay else None)

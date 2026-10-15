@@ -1,5 +1,14 @@
-# 21st Century Business Herald (www.21jingji.com).
-# "0.*": cmsad/get carries a random number as a parameter name with no value
-#   (?ids=12,&0.4055216880515218&_=...); the recorded twin has &0.2596381187904626.
-#   ids selects the ads and stays.
-ignore_query: ["0.*"]
+# cmsad/get carries a random number as a parameter name with no value:
+# 0.4055216880515218 vs 0.2596381187904626. ids selects the ads and stays.
+rules:
+- id: business-herald-ad-slot
+  scope:
+    host: www.21jingji.com
+    path: /dynamic/poster/cmsad/get
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - 0.*
+  keep_query:
+  - ids

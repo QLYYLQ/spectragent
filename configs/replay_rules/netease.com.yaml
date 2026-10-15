@@ -1,3 +1,11 @@
-# vmonitor.ws.netease.com: NetEase's performance monitor (param= one JSON blob of timings).
-synthesize_204:
-  - "https://vmonitor.ws.netease.com/*"
+# NetEase performance monitor: /web/performance carries a JSON blob of timings.
+rules:
+- id: netease-performance-monitor
+  scope:
+    host: vmonitor.ws.netease.com
+    path: /web/performance
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://vmonitor.ws.netease.com/web/performance*

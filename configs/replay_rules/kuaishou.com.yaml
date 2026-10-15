@@ -1,3 +1,11 @@
-# wlog.kuaishou.com: Kuaishou's web log pixel on AcFun.
-synthesize_204:
-  - "https://wlog.kuaishou.com/rest/n/log/*"
+# The existing evidence identifies this web-log URL prefix. It does not establish a method,
+# so no method restriction is invented. This classifies misses; it ignores no content fields.
+rules:
+- id: kuaishou-web-log
+  scope:
+    host: wlog.kuaishou.com
+    path: /rest/n/log/*
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://wlog.kuaishou.com/rest/n/log/**

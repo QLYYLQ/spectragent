@@ -196,7 +196,8 @@ class TestTheIndexAsAWhole:
         reader = open_archive(recording.finish())
         plain = load_archive(reader).index.records[0]
         ruled = load_archive(
-            reader, SiteRules({"shop.test": SiteRule(ignore_query=["session"])})
+            reader,
+            SiteRules([SiteRule(id="session", exhaustion="miss", ignore_query=("session",))]),
         ).index.records[0]
         assert plain.keys.exact == ruled.keys.exact
         assert plain.keys.normalized != ruled.keys.normalized

@@ -48,6 +48,7 @@ from spectragent.core.capabilities.browser.replay import (
     ArchiveNetworkSource,
     PinnedReplayability,
 )
+from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser
 from tests._helpers.fake_cdp import FakeBrowser
 from tests._helpers.replay_archive import RecordingScript
@@ -90,7 +91,11 @@ def _replaying(
     cap = BrowserCapability()
     cap.backend = backend if backend is not None else IsolatingBrowser()  # type: ignore[assignment]
     cap.replayability = tier if tier is not None else PinnedReplayability(random_seed=7)
-    cap.network_source = source if source is not None else ArchiveNetworkSource()
+    cap.network_source = (
+        source
+        if source is not None
+        else ArchiveNetworkSource(matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules"))
+    )
     cap._archivers = list(archivers if archivers is not None else (ReplayLogArchiver(),))
     return cap
 

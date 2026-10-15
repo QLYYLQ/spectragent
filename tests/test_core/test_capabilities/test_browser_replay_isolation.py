@@ -16,8 +16,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -31,6 +32,8 @@ from spectragent.core.capabilities.browser.replay import (
     ArchiveNetworkSource,
     PinnedReplayability,
 )
+from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.responder import format_http_date, parse_http_date
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser, settle
 from tests._helpers.fake_cdp import FakeBrowser, FakeClient
 from tests._helpers.replay_archive import RECORDED_T0_MS, RecordingScript
@@ -47,7 +50,11 @@ def source_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
             run_id="run-src",
             launch_flags=OwnedBrowser().planned_launch_flags(PINNED_ARGS, PINNED_ENV),
         )
-        await script.exchange("http://shop.test/api/data.json", body=b'{"n":1}')
+        await script.exchange(
+            "http://shop.test/api/data.json",
+            body=b'{"n":1}',
+            headers={"Date": format_http_date(RECORDED_T0_MS / 1000)},
+        )
         await script.commit(1)
         return script.finish()
 
@@ -71,7 +78,11 @@ def _replaying(
     cap = BrowserCapability()
     cap.backend = backend  # type: ignore[assignment]
     cap.replayability = tier if tier is not None else PinnedReplayability(random_seed=7)
-    cap.network_source = source if source is not None else ArchiveNetworkSource()
+    cap.network_source = (
+        source
+        if source is not None
+        else ArchiveNetworkSource(matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules"))
+    )
     cap._archivers = list(archivers or (ReplayLogArchiver(),))
     cap._inject_cdp_factory(browser.client)
     return cap, browser
@@ -94,7 +105,11 @@ class TestIsolation:
     ) -> None:
         backend = OwnedBrowser()
         cap, _browser = _replaying(
-            backend, source=ArchiveNetworkSource(isolation="none_acknowledged")
+            backend,
+            source=ArchiveNetworkSource(
+                isolation="none_acknowledged",
+                matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules"),
+            ),
         )
         await cap.setup(replay_archive=str(source_run))
         try:
@@ -228,19 +243,69 @@ class TestServing:
             await cap.teardown()
         assert cap._replay_server is None
 
-    async def test_base_time_from_archive_pins_the_recorded_t0(self, source_run: Path) -> None:
-        tier = PinnedReplayability(random_seed=7, base_time="from_archive")
-        cap, browser = _replaying(IsolatingBrowser(), tier=tier)
+    @pytest.mark.parametrize("base_time", ["from_archive", "run_start"])
+    @pytest.mark.parametrize("shift_dates", ["none", "all"])
+    async def test_page_clock_and_response_dates_are_independent(
+        self,
+        source_run: Path,
+        base_time: Literal["from_archive", "run_start"],
+        shift_dates: Literal["none", "all"],
+    ) -> None:
+        tier = PinnedReplayability(random_seed=7, base_time=base_time)
+        cap, browser = _replaying(
+            IsolatingBrowser(),
+            tier=tier,
+            source=ArchiveNetworkSource(
+                shift_dates=shift_dates,
+                matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules"),
+            ),
+        )
+        setup_started_ms = int(time.time() * 1000)
         await cap.setup(replay_archive=str(source_run))
+        setup_finished_ms = int(time.time() * 1000)
         try:
-            assert cap._replay_plan is not None and cap._replay_plan.t0_ms == RECORDED_T0_MS
+            batch = await cap.collect_archive()
+            fingerprint = json.loads(next(f.data for f in batch.files if f.scope == "run"))
+            clock = fingerprint["replayability"]
+            assert clock["params"]["base_time"] == base_time
+            assert fingerprint["network_source"]["shift_dates"] == shift_dates
+            if base_time == "from_archive":
+                assert clock["t0_ms"] == RECORDED_T0_MS
+            else:
+                assert setup_started_ms <= clock["t0_ms"] <= setup_finished_ms
             shim = next(
-                s.params["source"]
+                s
                 for s in browser.recorder.sent
                 if s.method == "Page.addScriptToEvaluateOnNewDocument"
-                and str(RECORDED_T0_MS) in s.params["source"]
+                and str(clock["t0_ms"]) in s.params["source"]
             )
-            assert shim
+            requested_at = int(time.time())
+            browser.recorder.fire(
+                "Fetch.requestPaused",
+                {
+                    "requestId": "clock-request",
+                    "networkId": "clock-network",
+                    "request": {
+                        "url": "http://shop.test/api/data.json",
+                        "method": "GET",
+                        "headers": {},
+                    },
+                    "frameId": "page-1",
+                    "resourceType": "XHR",
+                },
+                shim.session_id,
+            )
+            await settle()
+            fulfil = next(s for s in browser.recorder.sent if s.method == "Fetch.fulfillRequest")
+            served_date = next(
+                h["value"] for h in fulfil.params["responseHeaders"] if h["name"].lower() == "date"
+            )
+            parsed_date = parse_http_date(served_date)
+            assert parsed_date is not None
+            if shift_dates == "none":
+                assert parsed_date == RECORDED_T0_MS / 1000
+            else:
+                assert requested_at <= parsed_date <= int(time.time())
         finally:
             await cap.teardown()
 

@@ -22,6 +22,7 @@ from spectragent.core.capabilities.browser.platform import (
 )
 from spectragent.core.capabilities.browser.profiles import BUILTIN_PROFILES
 from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource, PinnedReplayability
+from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.composer import ConfigComposer
 from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser
@@ -211,7 +212,9 @@ async def test_prepare_refuses_missing_or_invalid_source_platform(tmp_path, plat
     cap = _cap(FakeBrowser())
     cap.backend = IsolatingBrowser()  # type: ignore[assignment]
     cap.replayability = PinnedReplayability(random_seed=7)
-    cap.network_source = ArchiveNetworkSource()
+    cap.network_source = ArchiveNetworkSource(
+        matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+    )
     with pytest.raises(BrowserCooperationError, match="input_platform"):
         cap.check_setup({"replay_archive": str(source)}, archivers=[ReplayLogArchiver()])
     assert not cap.backend.open_calls  # type: ignore[attr-defined]
@@ -223,7 +226,9 @@ async def test_replay_measures_actual_platform_and_refuses_a_different_one(tmp_p
     cap = _cap(browser)
     cap.backend = IsolatingBrowser()  # type: ignore[assignment]
     cap.replayability = PinnedReplayability(random_seed=7)
-    cap.network_source = ArchiveNetworkSource()
+    cap.network_source = ArchiveNetworkSource(
+        matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+    )
     cap.bind_archivers([ReplayLogArchiver()])
     try:
         with pytest.raises(

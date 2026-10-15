@@ -1,3 +1,20 @@
-# log-sdk.ksapisrv.com: Kuaishou's log SDK on AcFun (POST, the payload in the body).
-synthesize_204:
-  - "https://log-sdk.ksapisrv.com/rest/wd/common/log/*"
+# Kuaishou log SDK POST collectors on AcFun; payload is in the body.
+rules:
+- id: kuaishou-sdk-misc-log
+  scope:
+    host: log-sdk.ksapisrv.com
+    path: /rest/wd/common/log/collect/misc2
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://log-sdk.ksapisrv.com/rest/wd/common/log/collect/misc2*
+- id: kuaishou-sdk-radar-log
+  scope:
+    host: log-sdk.ksapisrv.com
+    path: /rest/wd/common/log/collect/radar
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://log-sdk.ksapisrv.com/rest/wd/common/log/collect/radar*

@@ -27,7 +27,6 @@ from spectragent.core.capabilities.browser.replay.canonical import (
     canonical_query,
     exact_body_digest,
     request_keys,
-    volatile_param,
 )
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
 from tests._helpers.replay_archive import RecordingScript
@@ -93,79 +92,42 @@ class TestURL:
         assert normalized("http://shop.test/a", "get") == get
 
 
-class TestVolatileParameters:
+class TestExplicitParameterSemantics:
     @pytest.mark.parametrize(
-        ("name", "value"),
+        "name",
         [
-            ("utm_source", "newsletter"),
-            ("UTM_Campaign", "x"),
-            ("fbclid", "IwAR0abc"),
-            ("_ga", "2.1234.5678"),
-            ("_", "1700000000123"),
-            ("cb", "12.5"),
-            ("uncache", "-3"),
-            ("nocache", "42"),
-            ("cachebuster", "7"),
-            ("callback", "jsonp1234"),
-            ("cb", "jQuery331012_1700000000000"),
-            ("cachebust", "1700000000000"),
-            ("ts", "1700000000000000"),
-            ("bust_ts", "1700000000000"),
+            "products",
+            "ts",
+            "bust_ts",
+            "width",
+            "height",
+            "r",
+            "timestamp",
+            "_",
+            "cb",
+            "cachebuster",
+            "utm_source",
+            "fbclid",
+            "callback",
         ],
     )
-    def test_dropped(self, name: str, value: str) -> None:
-        assert volatile_param(name, value) == "drop"
-        assert normalized(f"http://shop.test/a?{name}={value}&k=v") == normalized(
-            "http://shop.test/a?k=v"
-        )
-
-    @pytest.mark.parametrize(
-        ("name", "value"),
-        [("timestamp", "99"), ("_", "abc"), ("r", "0.5"), ("width", "800"), ("height", "600")],
-    )
-    def test_blanked_keeping_the_name(self, name: str, value: str) -> None:
-        assert volatile_param(name, value) == "blank"
-        assert normalized(f"http://shop.test/a?{name}={value}") == normalized(
-            f"http://shop.test/a?{name}=other"
-        )
-        assert normalized(f"http://shop.test/a?{name}={value}") != normalized("http://shop.test/a")
-
-    @pytest.mark.parametrize(
-        ("name", "value"),
-        [
-            ("cb", "abc"),  # not numeric
-            ("cache_mode", "full"),
-            ("ts", "17"),  # too short for a timestamp
-            ("ts", "17000000000000000"),  # too long
-            ("ts", "2700000000000"),  # no leading 1: not an epoch in ms / µs (pywb)
-            ("products", "4006381333931"),  # an EAN-13 in a name containing "ts"
-            ("id", "1700000000000"),  # no bust / ts in the name
-            ("callback", "handle"),
-            ("page", "2"),
-        ],
-    )
-    def test_kept(self, name: str, value: str) -> None:
-        assert volatile_param(name, value) is None
-        assert normalized(f"http://shop.test/a?{name}={value}") != normalized("http://shop.test/a")
-
-    def test_a_product_code_is_not_a_timestamp(self) -> None:
-        """Two stock requests for two products keep two keys at L1, cache-buster or not.
-
-        pywb drops a ``*bust*`` / ``*ts*`` parameter only when its value is
-        ``1`` and 12–15 digits — an epoch in milliseconds or microseconds; any
-        13–16 digits would drop a barcode from ``products`` and serve one
-        product's stock for another as a clean ``normalized`` hit.
-        """
-        base = "https://shop.test/api/stock"
-        first = normalized(f"{base}?products=4006381333931&_=1712345678901")
-        second = normalized(f"{base}?products=5000112637922&_=1712345678999")
+    def test_names_and_numeric_shapes_never_erase_content(self, name: str) -> None:
+        first = normalized(f"http://shop.test/a?{name}=1234567890123")
+        second = normalized(f"http://shop.test/a?{name}=1234567890124")
         assert first != second
-        assert "products=4006381333931" in first
-        assert first == normalized(f"{base}?products=4006381333931&_=1712345670000")
+        assert first != normalized("http://shop.test/a")
 
-    def test_the_exact_key_keeps_everything(self) -> None:
-        keys = request_keys("GET", "http://shop.test/a?utm_source=x", None, None)
-        assert keys.exact[1] == "http://shop.test/a?utm_source=x"
+    def test_jsonp_names_are_preserved_without_an_explicit_rule(self) -> None:
+        assert normalized("http://shop.test/a?callback=jsonp123") != normalized(
+            "http://shop.test/a?callback=jsonp456"
+        )
+
+    def test_a_scoped_rule_can_explicitly_ignore_a_parameter(self) -> None:
+        rule = SiteRule(id="poll", exhaustion="repeat_last", ignore_query=("ts",))
+        first = request_keys("GET", "http://shop.test/poll?ts=1&id=8", None, None, rule)
+        second = request_keys("GET", "http://shop.test/poll?ts=2&id=8", None, None, rule)
+        assert first.normalized == second.normalized
+        assert first.exact != second.exact
 
 
 class TestBodies:
@@ -295,7 +257,7 @@ class TestGraphQL:
         )
 
     def test_a_volatile_variable_is_removed_by_the_site_rule(self) -> None:
-        rule = SiteRule(ignore_body_paths=["variables.cursor"])
+        rule = SiteRule(id="body", exhaustion="miss", ignore_body_paths=("variables.cursor",))
         a = self.op(variables={"q": "x", "cursor": "abc"})
         b = self.op(variables={"q": "x", "cursor": "def"})
         assert body_params(json.dumps(a).encode(), JSON) != body_params(
@@ -321,7 +283,7 @@ class TestGraphQL:
         assert (batch["0.operationName"], batch["1.operationName"]) == ("Search", "Other")
         swapped = body_params(json.dumps([second, first]).encode(), JSON)
         assert body_params(json.dumps([first, second]).encode(), JSON) != swapped
-        rule = SiteRule(ignore_body_paths=["variables.q"])
+        rule = SiteRule(id="body", exhaustion="miss", ignore_body_paths=("variables.q",))
         stripped = dict(body_params(json.dumps([first, second]).encode(), JSON, rule))
         assert "0.variables.q" not in stripped and "1.variables.q" not in stripped
 
@@ -333,7 +295,7 @@ class TestGraphQL:
         query = dict(canonical_query(url.split("?", 1)[1]))
         assert query["operationName"] == "Search"
         assert query["variables.q"] == "x"
-        assert "query_sha256" in query and "query" not in query and "utm_source" not in query
+        assert "query_sha256" in query and "query" not in query and query["utm_source"] == "x"
         spaced = url.replace("query%20Search%20%7B", "query%20%20Search%20%20%7B")
         assert normalized(url) == normalized(spaced)
 

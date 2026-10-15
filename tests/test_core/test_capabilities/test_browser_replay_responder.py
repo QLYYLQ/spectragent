@@ -192,9 +192,11 @@ def test_a_body_over_the_cap_is_refused_as_too_large() -> None:
 
 def test_response_echo_copies_the_request_id() -> None:
     rule = SiteRule(
-        response_echo=[
-            EchoRule(url="http://shop.test/api/*", request_path="id", response_path="echo")
-        ]
+        id="request-echo",
+        exhaustion="repeat_last",
+        response_echo=(
+            EchoRule(url="http://shop.test/api/*", request_path="id", response_path="echo"),
+        ),
     )
     request = LiveRequest(
         method="POST", url=URL, headers={"Content-Type": "application/json"}, body=b"{}"

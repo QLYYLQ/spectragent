@@ -1,90 +1,157 @@
-# Replay site rules
+# Replay request rules
 
-Per-site rules for offline replay (`network_source: { source_id: archive }`,
-`docs/architecture_design.md` §4.14 "站点规则"). Point an archive source at this
-directory with `matcher: { site_rules: configs/replay_rules }`; the shipped
-replay and branch configurations in `configs/flywheel/` do.
+Rules for offline replay (`network_source: {source_id: archive}`), described in
+`docs/architecture_design.md` §4.14. The shipped replay and branch configurations
+select this directory with `matcher: {site_rules: configs/replay_rules}`.
 
-- One file per domain: `<domain>.yaml` (only `*.yaml` files are read; this README is
-  ignored). A request's host picks the file of its **longest suffix** on label
-  boundaries — `a.b.example.com` tries `a.b.example.com.yaml`, `b.example.com.yaml`,
-  `example.com.yaml`, `com.yaml` — so a file named after the registrable domain
-  covers its subdomains, with no Public Suffix List involved.
-- At most one file applies to a request; rules never merge across files.
-- The directory's digest (each file's name and sha256, sorted) is recorded in the
-  replay run's fingerprint, so two replays under different rules are told apart.
-- An unknown key, a value of the wrong type or a file that is not a YAML mapping
-  fails the replay's setup, naming the file. An empty file is a rule that changes
-  nothing.
+Every `*.yaml` file contains a `rules` list. Filenames organize the evidence;
+they do not select a host or imply a domain suffix. Each rule declares its own
+scope, identity, priority and response exhaustion policy. All files form one
+rule set.
 
-## The shipped rules
+A request uses the matching rule with the greatest integer `priority`. Two
+matching rules at that priority are a configuration conflict, naming both
+rules. File order and filename order never break a tie. Rules do not merge:
+a narrower rule must repeat every behavior it needs, including `exhaustion`.
+Recorded and live requests must select the same rule identity to become matching
+candidates, including fuzzy and Range matching. Equal normalized keys from
+different scopes do not authorize exchanging their responses.
 
-The 25 files here were written on 2026-10-14 from twelve recordings of Chinese
-sites (Qidian, Ctrip, 21st Century Business Herald, NetEase news and tech,
-East Money, Douban Books, AcFun, Bank of China, Jiemian, LeTV, The Paper,
-V2EX), by comparing each replay miss with the recorded request nearest to it,
-and committed as one set: the analytics rules change which requests a page
-retries and so how its random draws and request counters line up, so a subset
-can replay worse than none.
+The published `baseline.yaml` explicitly chooses `repeat_last` at priority
+`-100` for all requests. The endpoint rules use priority `0` and make the same
+choice explicitly. This preserves this experiment's selected response reuse
+behavior. It is not a framework default. To make a stateful endpoint miss after
+its recorded sequence is consumed, give it a matching rule with
+`exhaustion: miss`. Requests without an applicable policy are refused; the
+framework does not silently supply one.
 
-- One file per registrable domain. Each comment says what a parameter is and
-  gives its evidence; `A vs B` pairs the two values one request carried in a
-  recording and in its replay.
-- `ignore_query` lists only values that change from visit to visit and select
-  nothing: random numbers, timestamps, visitor, session and trace ids, cache
-  busters, JSONP callback names. A parameter that selects content (an article
-  id, a page size, a search term, an ad slot) is never ignored; analytics
-  pixels whose event fields differ are answered 204 with `synthesize_204`
-  instead.
-- **Risk kept on purpose**: `ctrip.com.yaml` ignores the top-level `id` of
-  every ctrip.com request body (the ad endpoint's random request id). A rule
-  covers its whole domain, so an endpoint that selects content by a top-level
-  `id` would be served any recorded call of that endpoint. The file says so.
+## Evidence and scope
 
-## JSONP callback parameters
+The original rules were written on 2026-10-14 from twelve Chinese-site
+recordings by comparing replay misses with recorded requests and response
+bodies. On 2026-10-15 the parameter rules were narrowed to the documented
+endpoints, with exact paths and methods checked through the recordings'
+committed network indexes. File comments retain the parameter rationale.
+The set contains 25 site files plus the explicit baseline.
 
-A JSONP request names the function its answer calls (`?callback=NAME`), and
-the page invents the name: jQuery's `jQuery<random digits>_<counter>`, or a
-random suffix (`erebor_<32 hex>`, `vjs_<time><2 digits>`). When the archive
-serves a recorded JSONP answer to a request that asks for another name, the
-replay writes the requested name over the recorded one at the call the answer
-opens with, and records it in the replay log (`callback_rewrite`;
-`docs/architecture_design.md` §4.14 "JSONP 回调名"). So a callback parameter
-with a random part may be ignored here: `douban.com.yaml` (`callback`) and
-`le.com.yaml` (`jsonp`). An answer that never uses the parameter, a static file
-calling a fixed name, is the same bytes whatever the request asks
-(`eastmoney.com.yaml`, `callback`). jQuery's names need no rule: the built-in
-normalisation already leaves them out of the match key.
+These rules are experimental content assumptions. A visitor id on one
+statistics endpoint does not authorize ignoring the same parameter on another
+endpoint. A change must check incorrect matches as well as newly matched
+requests. In particular:
+
+- Ctrip ignores the top-level body `id` only on `POST tripAds.json`, where the
+  evidence identifies a random ad request id. Other APIs keep their `id`.
+  App-config and destination visitor fields each have their own endpoint.
+- Baidu, Douban, East Money and LeTV parameters are split across their observed
+  pixels, scripts, ad calls and API paths. Search and business endpoints do
+  not inherit statistics rules. LeTV search page size `ps` remains meaningful.
+- AcFun's search rule does not cover the home page. Qidian's CSRF omission is
+  limited to the two API endpoints identified by the original evidence.
+- Host-wide Tencent telemetry synthesis is narrowed to reporting endpoints;
+  whitelist/configuration endpoints keep their recorded behavior. The old
+  `h.trace.qq.com` entry lacks endpoint evidence and is removed.
+- There is no global removal of timestamps, cache parameters, random-looking
+  numbers, dimensions or callback names. Parameters previously removed by
+  heuristics remain in keys unless an applicable rule explicitly ignores them.
+  Douban's ad `ts`, for example, is retained by this rule set.
+
+Removing assumptions can lower hit rates. That does not justify extending a
+rule without evidence that the requests select the same content. Preserve
+failed requests, candidates and the selected rule when investigating a change.
 
 ## Schema
 
-Every key is optional.
-
-| Key | Type | Effect |
+| Key | Type | Meaning |
 |---|---|---|
-| `ignore_query` | list of name globs | Query parameters left out of the normalised key and the fuzzy score (`session*`). |
-| `ignore_body_paths` | list of path globs | Body parameters left out of the key: form field names, flattened JSON paths (`client.ts`, `items.*.nonce`), GraphQL variables matched within one operation (`variables.cursor`). |
-| `ignore_headers` | list of name globs | Request headers that never count in the header tie-break (case-insensitive). |
-| `fuzzy` | bool | `on` / `true`: the fuzzy level for this site even for documents and non-GET requests, and even when `matcher.levels` lacks `fuzzy`. YAML 1.1 reads a bare `on` as `true`. |
-| `synthesize_204` | list of URL globs | Misses of these URLs are benign: the miss policy answers 204 (analytics, telemetry). |
-| `response_echo` | list of `{url, request_path, response_path}` | On a hit for a URL matching `url`, copy the values at `request_path` in the request's JSON (or a form parameter holding JSON) into the positions at `response_path` of the served JSON — a request id the page checks for. A `*` segment walks every element; one request value is written to every position. |
+| `id` | string | Rule identity, unique within the set; included in diagnostics. |
+| `scope` | mapping | Request constraints below; an empty mapping explicitly matches every request. |
+| `priority` | integer | Greatest matching priority wins; defaults to `0`. |
+| `exhaustion` | `repeat_last` or `miss` | Required. Reuse the last response of the selected sequence, or report `sequence_exhausted`. |
+| `levels` | list of `exact`, `normalized`, `fuzzy`, or null | Restrict the run's allowed matching levels; null uses the run's set. A rule cannot enable a level forbidden by `matcher.levels`. |
+| `fuzzy` | boolean | Permit fuzzy matching for documents and non-GET requests, only when the run and rule allow `fuzzy`. Use `true` or `false`. |
+| `ignore_query` | list of name globs | Query fields omitted from the normalized key and fuzzy score. |
+| `keep_query` | list of name globs | Fields retained even when an ignore pattern matches. |
+| `ignore_body_paths` | list of path globs | Body fields omitted from the normalized key: form names, flattened JSON paths, or GraphQL variable paths within an operation. |
+| `keep_body_paths` | list of path globs | Body fields retained even when an ignore pattern matches. |
+| `ignore_headers` | list of name globs | Request headers omitted from the header tie-break; case-insensitive. |
+| `keep_headers` | list of name globs | Headers retained even when an ignore pattern matches; case-insensitive. |
+| `synthesize_204` | list of URL globs | Classify matching non-document misses as benign for a synthetic 204. Document handling takes precedence. |
+| `response_echo` | list of `{url, request_path, response_path}` | On a hit, copy request JSON values into existing response JSON positions; a `*` path segment traverses array/object members. |
 
-Globs are `fnmatch` patterns (`*` also crosses dots); URL globs match the URL
-without its fragment.
+List fields default to empty. `keep_*` takes precedence over the corresponding
+`ignore_*`. It does not restore a field removed by another rule, since only one
+rule is used.
+
+All declared scope constraints must match:
+
+| Scope key | Type | Matches |
+|---|---|---|
+| `host` | string or null | Host glob. `example.com` matches that host only; use `*.example.com` explicitly for subdomains. |
+| `path` | string or null | Request path glob, without query or fragment. |
+| `url` | string or null | Full URL glob, without fragment. |
+| `method` | string or null | HTTP method constraint, for example `GET` or `POST`. |
+| `port` | integer or null | Effective network port, including the scheme's default when the URL omits it. |
+
+Omitted/null scope fields do not constrain that dimension. Globs use `fnmatch`
+syntax; `*` crosses dots and slashes. Quote wildcard strings in YAML. A rule
+with an exact `host` never implicitly includes subdomains.
+
+Matching strength is fixed: `exact`, then `normalized`, then `fuzzy`.
+`matcher.levels` and rule `levels` are allowed sets, not ordering controls.
+Range requests respect the same boundary. Once the strongest permitted level
+finds a sequence, exhaustion is handled there; it does not fall through to a
+weaker match for another resource. `repeat_last` is logged as reuse, and
+`miss` reports exhaustion separately from a request never recorded.
 
 ## Example
 
-`example.com.yaml`:
+This file may have any name ending in `.yaml`:
 
 ```yaml
-ignore_query: [session_id, "trk_*"]
-ignore_body_paths: [client.ts, "variables.cursor"]
-ignore_headers: [x-request-id]
-fuzzy: on
-synthesize_204:
-  - "https://stats.example.com/*"
-response_echo:
-  - url: "https://example.com/aura*"
-    request_path: message.actions.*.id
-    response_path: actions.*.id
+rules:
+  - id: explicit-fallback
+    scope: {}
+    priority: -100
+    exhaustion: repeat_last
+
+  - id: order-status
+    scope:
+      host: api.example.com
+      path: /orders/status
+      method: POST
+      port: 443
+    priority: 0
+    exhaustion: miss
+    levels: [exact, normalized]
+    ignore_query: [request_nonce]
+    ignore_body_paths: [client.trace_id]
+    keep_body_paths: [id]
 ```
+
+This endpoint rule is complete: it chooses `miss` even though the broader rule
+chooses `repeat_last`. Neither rule authorizes ignoring `id` in an order body.
+
+## JSONP callbacks
+
+Ignoring a callback name is endpoint-specific. On a recorded JSONP hit, replay
+rewrites the opening callback to the name requested by the page and records
+`callback_rewrite`, subject to the checks in the architecture's “JSONP 回调名”
+section. The shipped examples are Douban's ad endpoint (`callback`) and LeTV's
+two SSO endpoints (`jsonp`). East Money's `version.jsonp` ignores its query
+callback because the recorded static answer always calls a fixed name.
+jQuery-shaped callback names have no global matching exemption.
+
+## Frozen versions and offline evidence
+
+A run reads each rule file once and freezes the resulting set. The replay
+fingerprint records the source, original file text, file identities, per-file
+SHA-256 values, the set digest and effective matcher configuration. Those bytes
+are committed through the environment archive and WAL. Editing or deleting the
+source directory cannot change a running replay or its saved snapshot.
+Historical rules can be reconstructed and checked from the committed run
+without accessing the original directory.
+
+Unknown fields, invalid types, duplicate identities and conflicting scopes
+are errors with rule/file context. Miss synthesis remains offline: it never
+fetches a missing response from the real site. Synthetic responses and sequence
+reuse remain distinguishable from recorded responses in the replay log.

@@ -119,7 +119,12 @@ def test_replay_log_counts_folded_and_trailing_decisions_only_when_committed(
 ) -> None:
     wal = WALWriter(tmp_path, "replay")
     wal.init_run(TraceConfig(negotiation=TraceNegotiation(active_archivers=["browser.replay_log"])))
-    entries = [_decision("hit"), _decision("summary", folded_kind="miss", count=7)]
+    entries = [
+        _decision("hit"),
+        _decision(
+            "summary", folded_kind="miss", count=7, first_captured_at=90.0, last_captured_at=100.0
+        ),
+    ]
     wal.commit_step(
         0,
         step_record(0),

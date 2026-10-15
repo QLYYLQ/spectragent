@@ -183,6 +183,14 @@ def test_from_archive_needs_a_recorded_t0() -> None:
     assert _names_both_sides(problem) and "T0" in problem and "from_archive" in problem
 
 
+def test_run_start_does_not_require_a_recorded_clock() -> None:
+    recorded = _source()
+    recorded.t0_ms = None
+    tier = PinnedReplayability(random_seed=7, base_time="run_start")
+    assert _problems(recorded, tier) == []
+    assert replay_t0(recorded, tier, now_ms=5) == 5
+
+
 def test_t0_comes_from_the_source() -> None:
     recorded = _source()
     from_archive = PinnedReplayability(random_seed=7, base_time="from_archive")
