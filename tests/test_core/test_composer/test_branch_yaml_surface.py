@@ -9,14 +9,14 @@ the real registrars:
   typed, and the restorer is required in a ``branch`` block;
 - the configured restorer and its knobs reach the instance, replacing the
   default a hand-built loop gets;
-- ``branch_instruction`` reaches the loop and is recorded raw (a closed set);
+- ``history_source`` reaches the loop independently of environment verification;
+- prompt contributions configure an existing Hook and an independent wired helper;
 - a mistyped ``restorer_id`` / ``loop_id``, an unknown knob and a value outside
   a closed set are refused by validation.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -25,13 +25,20 @@ import yaml
 from pydantic import ValidationError
 
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.hooks.prompt_contribution import PromptContributionHook
 from spectragent.core.loops import BranchLoop
 from spectragent.core.loops.restore import PrefixReplayRestorer
 from spectragent.core.trace.redaction import redact_config
+from spectragent.schemas.prompt import PromptContribution, PromptRequest
 from spectragent.scripts.generate_all import _collect_registrars
 
 CONFIG = Path(__file__).resolve().parents[3] / "configs" / "ui_tars_local.yaml"
 SHIPPED_BRANCH = CONFIG.parent / "flywheel" / "branch_ui_tars_archive.yaml"
+
+
+def configured_prompt_hint(*, request: PromptRequest) -> PromptContribution:
+    """Stable reference used by the configuration-only prompt hook tests."""
+    return PromptContribution(text=str(request.parameters["instruction"]), placement="system")
 
 
 @pytest.fixture(scope="module")
@@ -87,32 +94,74 @@ class TestNestedUnions:
         loop = _loop(composer, _branch(restorer={"restorer_id": "prefix_replay"}))
         assert (loop.restorer.verify, loop.restorer.screenshot_max_distance) == ("strict", 5)
         assert loop.continue_steps == 0
-        assert loop.branch_instruction == "none"
+        assert loop.history_source == "source"
 
-    def test_the_branch_instruction_reaches_the_loop_and_is_recorded_raw(
-        self, composer: ConfigComposer
+    @pytest.mark.parametrize("history_source", ["source", "restored"])
+    @pytest.mark.parametrize("verify", ["strict", "warn"])
+    def test_history_source_reaches_the_loop_and_is_recorded_independently(
+        self, composer: ConfigComposer, history_source: str, verify: str
     ) -> None:
-        """A closed set: the trace's ``config.json`` names the option a sweep ran with."""
+        """History selection and environment verification remain separate experiment inputs."""
         run = composer.compose(
             _branch(
-                restorer={"restorer_id": "prefix_replay"},
-                branch_instruction="prefer_different_action",
+                restorer={"restorer_id": "prefix_replay", "verify": verify},
+                history_source=history_source,
             )
         )
-        assert run.single("agent").agent_loop.branch_instruction == "prefer_different_action"
+        loop = run.single("agent").agent_loop
+        assert loop.history_source == history_source
+        assert loop.restorer.verify == verify
         recorded = redact_config(run.top_level_cfg)["agent"][0]["agent_loop"]
-        assert recorded["branch_instruction"] == "prefer_different_action"
+        assert recorded["history_source"] == history_source
+        assert recorded["restorer"]["verify"] == verify
 
-    def test_the_shipped_branch_config_shows_a_real_option(self, composer: ConfigComposer) -> None:
-        """The commented-out ``branch_instruction`` line names a value the block accepts."""
-        text = SHIPPED_BRANCH.read_text("utf-8")
-        shown = re.search(r"^ *# branch_instruction: (\S+)$", text, re.MULTILINE)
-        assert shown is not None
-        raw = yaml.safe_load(text)
-        assert "branch_instruction" not in raw["agent"][0]["agent_loop"]  # shown, not set
-        raw["agent"][0]["agent_loop"]["branch_instruction"] = shown.group(1)
+    def test_the_shipped_branch_config_declares_a_supported_history_source(
+        self, composer: ConfigComposer
+    ) -> None:
+        raw = yaml.safe_load(SHIPPED_BRANCH.read_text("utf-8"))
+        loop = raw["agent"][0]["agent_loop"]
+        assert loop["history_source"] == "source"
+        assert "branch_instruction" not in loop
         validated = composer.top_level_type.model_validate(raw).model_dump()
-        assert validated["agent"][0]["agent_loop"]["branch_instruction"] == shown.group(1)
+        assert validated["agent"][0]["agent_loop"]["history_source"] == "source"
+
+    def test_prompt_contribution_configuration_reaches_the_hook_and_helper(
+        self, composer: ConfigComposer
+    ) -> None:
+        raw = _branch(restorer={"restorer_id": "prefix_replay"}, history_source="restored")
+        reference = f"{__name__}:configured_prompt_hint"
+        raw["hook"].append(
+            {
+                "hook_id": "prompt_contribution",
+                "function": reference,
+                "parameters": {"instruction": "Use the actual restored result."},
+                "scope": "each_policy_step",
+                "helper_llms": [
+                    {
+                        "model_type": "openai",
+                        "model": "prompt-helper",
+                        "provider": {"name": "direct"},
+                        "temperature": 0.3,
+                    }
+                ],
+            }
+        )
+        run = composer.compose(raw)
+        hook = next(item for item in run.hooks if isinstance(item, PromptContributionHook))
+        assert hook.function == reference and hook.scope == "each_policy_step"
+        assert hook.parameters == {"instruction": "Use the actual restored result."}
+        assert len(hook.code_digest) == 64
+        assert len(hook.helper_llms) == 1
+        helper = hook.helper_llms[0]
+        assert helper.model == "prompt-helper"
+        assert helper is not run.single("agent").llm
+        recorded = next(
+            item
+            for item in redact_config(run.top_level_cfg)["hook"]
+            if item["hook_id"] == "prompt_contribution"
+        )
+        assert recorded["function"] == reference and recorded["scope"] == "each_policy_step"
+        assert recorded["helper_llms"][0]["temperature"] == 0.3
 
     def test_react_stays_the_default_shape(self, composer: ConfigComposer) -> None:
         raw = yaml.safe_load(CONFIG.read_text("utf-8"))
@@ -149,15 +198,36 @@ class TestTyposRejected:
             pytest.param(
                 {
                     "restorer": {"restorer_id": "prefix_replay"},
-                    "branch_instruction": "prefer_another_action",
+                    "history_source": "mixed",
                 },
-                id="branch_instruction-value",
+                id="history_source-value",
+            ),
+            pytest.param(
+                {
+                    "restorer": {"restorer_id": "prefix_replay"},
+                    "branch_instruction": "prefer_different_action",
+                },
+                id="removed-branch_instruction",
             ),
         ],
     )
     def test_refused_by_validation(self, composer: ConfigComposer, loop: dict[str, Any]) -> None:
         with pytest.raises(ValidationError):
             composer.top_level_type.model_validate(_branch(**loop))
+
+    def test_an_unsupported_prompt_contribution_scope_is_refused(
+        self, composer: ConfigComposer
+    ) -> None:
+        raw = _branch(restorer={"restorer_id": "prefix_replay"})
+        raw["hook"].append(
+            {
+                "hook_id": "prompt_contribution",
+                "function": f"{__name__}:configured_prompt_hint",
+                "scope": "every_builder_call",
+            }
+        )
+        with pytest.raises(ValidationError, match="scope"):
+            composer.top_level_type.model_validate(raw)
 
     def test_a_mistyped_loop_id_is_refused(self, composer: ConfigComposer) -> None:
         raw = _branch(restorer={"restorer_id": "prefix_replay"})

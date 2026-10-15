@@ -110,11 +110,10 @@ class StepRecord(BaseModel):
     # LLM call the step made, including calls that raised (a refused
     # structured reply costs real seconds and the loop retries past it).
     llm_latency_ms: int | None = None
-    # Where the step came from. ``policy``: the run's own agent decided it
-    # (every step of every trace written before this field existed reads
-    # back as ``policy``, which is right for them). ``restored``: a branch
-    # run's re-executed prefix — a copy of the source run's step, verified
-    # by ``restoration``. ``terminal``: the observation taken after the run
+    # Where the step came from. ``policy``: this run's agent decided it.
+    # ``restored``: actual restored execution, with returned action/result
+    # pairs here and all attempts in ``restoration``. Old replies and source
+    # actions remain labelled in ``source_history``. ``terminal``: observation after the run
     # ended (no LLM call, no action). Only ``policy`` steps count towards
     # ``AgentMetrics.steps`` and ``max_steps``.
     origin: Literal["policy", "restored", "terminal"] = "policy"

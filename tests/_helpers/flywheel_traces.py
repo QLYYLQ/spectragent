@@ -14,7 +14,7 @@ writes it with (the metrics read them as files, through the same models).
 answer, stated next to the run that produces it:
 
 - **record** — ``rec-shop`` (shop.test, 3 steps: documents, a stylesheet
-  written twice — the second a WARC revisit —, a large script streamed twice
+  written twice in one collection — the second a WARC revisit —, a large script streamed twice
   — one content-addressed blob —, a ``too_large`` and a failed request;
   environment time 1000 and 1200 ms on steps 1 and 2), ``rec-blocked``
   (blocked.test: one 403 document with Cloudflare's challenge marks) and
@@ -108,7 +108,7 @@ PINNED: dict[str, Any] = {
 }
 #: Cloudflare's marks on a challenge page.
 CHALLENGE = {"Server": "cloudflare", "CF-RAY": "8a1b2c3d4e5f-AMS", "cf-mitigated": "challenge"}
-#: A stylesheet the shop serves twice (the second is a revisit record). Incompressible, so
+#: A stylesheet the shop serves twice in one collection (the second is a revisit). Incompressible, so
 #: the revisit saves most of the full record's stored length (the WARC is gzip).
 STYLE = b"".join(hashlib.sha256(str(i).encode()).hexdigest().encode() for i in range(40))
 #: A script over the inline tier, streamed twice (one content-addressed blob).
@@ -455,11 +455,11 @@ class KnownChain:
 async def _shop_step0(script: RecordingScript) -> None:
     await script.exchange(f"http://{SHOP}/", resource_type="Document", body=b"<p>shop</p>")
     await script.exchange(f"http://{SHOP}/style.css", body=STYLE)
+    await script.exchange(f"http://{SHOP}/style2.css", body=STYLE)  # same collection: revisit
 
 
 async def _shop_step1(script: RecordingScript) -> None:
     await script.exchange(f"http://{SHOP}/results?q=kettle", resource_type="Document")
-    await script.exchange(f"http://{SHOP}/style2.css", body=STYLE)  # a revisit of style.css
     await script.streamed_later(f"http://{SHOP}/app.js", BIG)
 
 

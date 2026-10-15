@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import json
 import random
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -39,10 +40,14 @@ from spectragent.core.composer import (
     ConfigComposer,
     DuplicateInstanceIdError,
 )
-from spectragent.core.loops.validation import IncompatibleLoopInputError
+from spectragent.core.loops.validation import (
+    IncompatibleCheckpointError,
+    IncompatibleLoopInputError,
+)
 from spectragent.core.negotiation import IncompatibleActionError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TraceConfig, TraceNegotiation, TraceStatus
+from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.redaction import redact_config
 from spectragent.schemas.restoration import Checkpoint
 from spectragent.schemas.step_record import StepRecord
@@ -184,6 +189,29 @@ class TestShippedConfigs:
         assert agent.llm is not None
         assert agent.memory is not None
 
+    @pytest.mark.parametrize(
+        "name", ["branch_ui_tars_archive.yaml", "same_path_ui_tars_archive.yaml"]
+    )
+    def test_branch_prepare_refuses_a_source_without_effective_action_identity(
+        self, composer: ConfigComposer, tmp_path: Path, name: str
+    ) -> None:
+        root = yaml.safe_load((CONFIG_DIR / "flywheel" / name).read_text())
+        run = composer.compose(copy.deepcopy(root))
+        agent_id = run.ids("agent")[0]
+        source = _recorded_run_of(composer, root, agent_id, tmp_path)
+        original = RunTrace(source).config.action_space
+        assert original is not None and original.allowed_actions and original.descriptors
+        path = source / "config.json"
+        document = json.loads(path.read_text())
+        document.pop("action_space")
+        path.write_text(json.dumps(document))
+        runtime = AgentRuntime.for_agent(run, agent_id)
+        with pytest.raises(IncompatibleCheckpointError, match="action_space"):
+            runtime.prepare(
+                loop_inputs={"checkpoint": Checkpoint(trace_dir=str(source), step=0)},
+                env_context={"replay_archive": str(source)},
+            )
+
 
 def _check_export_config(composer: ConfigComposer, run: Any, root: dict[str, Any]) -> None:
     """An export-only config (§4.15) has nothing to prepare: no agent, no environment.
@@ -246,11 +274,14 @@ def _recorded_run_of(
     run = composer.compose(react_root)
     runtime = AgentRuntime.for_agent(run, agent_id)
     runtime.prepare()
+    assert runtime.action_space.allowed_actions, "the source must record its real guarded actions"
+    assert runtime.action_space.descriptors == runtime.active_descriptors
     config = TraceConfig(
         agent_id=run.instance("agent", agent_id).agent_id,
         loop_id="react",
         env_type=run.instances("environment")[0].env_type,
         resolved=redact_config(run.top_level_cfg),
+        action_space=runtime.action_space,
         negotiation=TraceNegotiation.from_results(
             runtime.negotiated_observation,
             runtime.negotiated_actions,

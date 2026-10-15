@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -190,10 +191,31 @@ def flow(site: FixtureSite, tmp_path_factory: pytest.TempPathFactory) -> Flow:
     base = tmp_path_factory.mktemp("client_hints")
     major = asyncio.run(asyncio.wait_for(_installed_major(), 60))
     identifier = _identifier(major)
+
+    def finish_after_both_documents(_request: dict[str, Any]) -> str:
+        # The page schedules its second document after 300 ms. The fixture's
+        # 100 ms observation quiet window may finish before that timer, so a
+        # fast scripted model must not tear down Chrome before this scenario
+        # has exercised the second document and its first-script report.
+        deadline = time.monotonic() + 15
+        reported: set[str] = set()
+        while time.monotonic() < deadline:
+            reported = {
+                row.query.get("n", "")
+                for row in site.requests[mark:]
+                if row.bare_path == "/new_tab/report"
+                and row.query.get("how") == "blank"
+                and row.query.get("kind") == "document"
+            }
+            if reported == {"1", "2"}:
+                return driver.done("read")
+            time.sleep(0.01)
+        raise AssertionError(f"new tab did not report both documents: {sorted(reported)!r}")
+
     script = [
         driver.navigate(site.url("new_tab")),
         driver.click_at(*new_tab_point("blank")),
-        driver.done("read"),
+        finish_after_both_documents,
     ]
     mark = len(site.requests)
     with ScriptedLLMServer(script) as llm:

@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from spectragent.core.capabilities.browser.replay.archive_index import ExchangeLine, load_archive
 from spectragent.core.capabilities.browser.settle import PageSettle
 from spectragent.core.llm.messages import (
     AssistantMessage,
@@ -84,6 +85,7 @@ from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.flywheel_traces import (
     BIG,
+    STYLE,
     KnownChain,
     Step,
     check,
@@ -310,7 +312,23 @@ class TestArchiveOverhead:
             total.before == total.after + total.saved_by_revisit + total.saved_by_content_addressing
         )
         assert total.saved_by_content_addressing == len(BIG), "app2.js reused app.js's blob"
-        assert total.saved_by_revisit > 0, "style2.css was written as a revisit of style.css"
+        (shop,) = [run for run in chain.role("record").runs if run.rel == "rec-shop"]
+        styles = {
+            line.url: (step, line)
+            for step, line in shop.index_lines
+            if isinstance(line, ExchangeLine) and line.url.endswith(("/style.css", "/style2.css"))
+        }
+        first_step, first = styles["http://shop.test/style.css"]
+        repeated_step, repeated = styles["http://shop.test/style2.css"]
+        assert first_step == repeated_step == 0, "both responses entered the same collection"
+        assert first.revisit_of is None and repeated.revisit_of == first.response_record_id
+        assert first.payload_sha256 == repeated.payload_sha256
+        assert first.warc.response is not None and repeated.warc.response is not None
+        assert total.saved_by_revisit == first.warc.response.length - repeated.warc.response.length
+        assert total.saved_by_revisit > len(STYLE) // 3, "a large inline body was actually replaced"
+        archive = load_archive(shop.trace)
+        bodies = [archive.body(record) for record in archive.index.records if record.url in styles]
+        assert bodies == [STYLE, STYLE], "the revisit restores the exact original body"
         assert found.per_step_before == total.before / 5
         assert found.per_step_after == total.after / 5
 

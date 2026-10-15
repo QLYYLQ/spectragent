@@ -36,7 +36,13 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from spectragent.core.capabilities.browser.replay.archive_index import BodyLine
+from spectragent.core.capabilities.browser.archive.network import INDEX_NAME
+from spectragent.core.capabilities.browser.replay.archive_index import (
+    BodyLine,
+    ExchangeLine,
+    IndexLine,
+    load_archive,
+)
 from spectragent.flywheel.chain import ChainSpec, build_spec_report
 from spectragent.flywheel.metrics import ChainLayout, open_chain
 from spectragent.flywheel.report import report_json
@@ -206,8 +212,52 @@ def test_rehearsal_values_are_explained(rehearsal: Rehearsed, report: dict) -> N
     assert overhead["archived"]["tier"] == overhead["control"]["tier"] == "browser:pinned"
     assert overhead["p50_overhead_ms"] is not None and overhead["reason"] is None
     bytes_ = overhead["bytes"]["total"]
-    assert bytes_["saved_by_revisit"] > 0, (
-        "the shop's logo and stylesheet are revisits after page 1"
+    # Cross-page logo/CSS repeats belong to different collections. The only
+    # same-collection duplicate is the login page's two tiny JSON responses:
+    # a WARC revisit's reference headers outweigh that payload. Verify the
+    # source records and actual bytes before comparing the signed metric.
+    savings = []
+    repeated_assets = []
+    for run in chain.role("record").runs:
+        archive = load_archive(run.trace)
+        records = {record.record_id: record for record in archive.index.records}
+        for _step, entry in run.trace.iter_archive("browser.network", include_trailing=True):
+            if entry.name != INDEX_NAME:
+                continue
+            exchanges = [
+                line.root
+                for line in run.trace.archive_lines(entry.path, IndexLine)
+                if isinstance(line.root, ExchangeLine)
+            ]
+            full = {
+                line.response_record_id: line
+                for line in exchanges
+                if not line.revisit_of and line.response_record_id
+            }
+            for line in exchanges:
+                path = urlsplit(line.url).path
+                if path in ("/flywheel_shop/site.css", "/flywheel_shop/logo.png"):
+                    repeated_assets.append(line)
+                    assert line.revisit_of is None, "separate collections own independent responses"
+                if line.revisit_of is None:
+                    continue
+                original = full[line.revisit_of]  # the reference must stay inside this index batch
+                assert {path, urlsplit(original.url).path} == {
+                    "/flywheel_shop/api/me",
+                    "/flywheel_shop/api/login",
+                }
+                assert original.payload_sha256 == line.payload_sha256
+                assert archive.body(records[original.record_id]) == b'{"ok": true}'
+                assert archive.body(records[line.record_id]) == b'{"ok": true}'
+                assert original.warc.response is not None and line.warc.response is not None
+                saving = original.warc.response.length - line.warc.response.length
+                assert saving < 0, "the revisit costs more than this tiny complete response"
+                savings.append(saving)
+    assert len(repeated_assets) > 2, "the shop assets were recorded on multiple pages"
+    assert len(savings) == 1, "the login API pair is the one same-collection duplicate"
+    assert bytes_["saved_by_revisit"] == sum(savings) < 0
+    assert bytes_["before"] == (
+        bytes_["after"] + bytes_["saved_by_revisit"] + bytes_["saved_by_content_addressing"]
     )
     assert metrics["body_completeness"]["complete"]["value"] == 1.0
 
