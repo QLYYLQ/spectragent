@@ -41,6 +41,26 @@ Normalize the usage fields a provider actually returns, including distinct cache
 and cache-creation counters. This supports the user ruling to record tokens faithfully
 without estimating money.
 
+## Implemented model lifecycle and attribution (2026-10-15)
+
+At the accepted `a6a36d0` implementation, clients are created lazily and reused within
+one execution; owned resources close explicitly, borrowed transports remain borrowed,
+and later executions create fresh owned transports. Public lifecycle methods and the
+provider extension surface `client_resources` replace the earlier per-request close
+mechanism. Cleanup is bounded and diagnostic; it never replaces replies, primary
+errors or cancellation, and never retries an already completed model request.
+
+Runtime closes its main and explicitly declared prompt-helper models from its final
+cleanup, including when another hook's lifecycle fails. Independent evaluation owns
+its own model execution. One recording ledger keeps caller/purpose/model/step identity,
+known usage and missing coverage; helper replies do not become Agent decisions/thoughts.
+This does not deliver arbitrary action-internal models, Jev or cross-run shared pools.
+
+The tested versions were agent-cdp 0.5.0, conscribe 2.0.0 and Ollama 0.6.3 (minimum
+0.6.2 to use a public close API). These are dated acceptance facts, not version advice
+for future upgrades. Cloud lite SDK lifecycle work remains deferred. Details and tests:
+`tmp/flywheel/followup/implementation/README.md` and architecture §§4.6–4.7.
+
 ## `conscribe` and `agent-cdp`
 
 Historical integration lessons that remain worth checking:
@@ -52,14 +72,20 @@ Historical integration lessons that remain worth checking:
 - Any new YAML-selectable registrar must be collected by the single global generator,
   not merely declared.
 - `agent-cdp` is browser-internal. Watchdogs are resolvers/action executors inside the
-  browser capability, not a framework-wide page-object abstraction.
+  browser capability, not a framework-wide page-object abstraction. Watchdog-to-tab is
+  N:M; scope is scheduling, not a blanket browser permission boundary. Same-tab
+  observation/JS/OOPIF collaboration remains valid, while binding/session ownership and
+  per-binding cleanup are explicit. Generic Capability APIs stay free of browser tabs/scopes.
+- Older conscribe 1.3 / agent-cdp 0.4 API descriptions and dataclass/receptor workarounds
+  are historical. Current 2.0 / 0.5 integration and generation tests replace those assumptions.
 
 Inspect the installed versions and current tests before relying on old metaclass or
 annotation edge cases.
 
 ## Runtime-flow memory was retired
 
-The Claude `reference_af_framework_flow` snapshot is intentionally not reproduced. It
-mixed a now-disputed memory-negotiation claim with an obsolete structured-output dead
-path and reflected an older runtime. Use `docs/architecture_design.md` plus `core/runtime.py`,
-`core/step_recorder.py`, and the loop tests for the current call graph.
+Both older Claude runtime-flow snapshots (including the October re-verification) are
+retired from active routing: they describe private slot methods, sync prompt builders,
+old guard return values and superseded tracing boundaries. Use the implementation
+handoff for status, and `docs/architecture_design.md`, public Protocols and current tests
+for the call graph. The old records remain in the historical index, not as current API guidance.

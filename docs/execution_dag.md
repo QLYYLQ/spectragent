@@ -1,6 +1,12 @@
 # All4One Agent Framework — 开发执行依赖图
 
 > 本文档基于 `architecture_design.md` 的目标架构与 `spectragent/` 的现存实现，拆分出 33 个开发模块（M01–M33）及其依赖关系。每个模块是一个可独立交付的工作包，包含业务实现、业务逻辑和设计思考。
+>
+> 状态阅读说明（2026-10-16）：图中依赖关系是实施顺序，不表示每个节点都尚未实现。
+> 六项后续改造已在 `a6a36d0` 完成验收；当前续接见本地
+> `tmp/flywheel/followup/implementation/README.md`，缺本地资料时看仓库
+> `.agents/skills/af-project-history/references/unfinished-work.md`。旧分解中的示意代码和历史命名
+> 不覆盖当前 `architecture_design.md` 的公开合同；完整 Agent × benchmark 矩阵仍单独验收。
 
 ---
 
@@ -21,7 +27,7 @@ flowchart TB
     subgraph P0_ABSTRACTIONS ["P0 · 核心抽象层（四模块可并行）"]
         M02["M02<br/>Observation<br/>Fragment 体系"]
         M03["M03<br/>AgentLoop<br/>注册表 + Protocol"]
-        M04["M04<br/>Hook + Event<br/>Emitter 体系"]
+        M04["M04<br/>Hook + AOP<br/>方法拦截"]
         M05["M05<br/>Action 体系<br/>演进"]
     end
 
@@ -40,7 +46,7 @@ flowchart TB
     %% ════════════════════════════════════════
     subgraph P1_PERSISTENCE ["P1 · 持久化层"]
         M10["M10<br/>RunTrace<br/>WAL 持久化"]
-        M11["M11<br/>TraceWriter +<br/>Metrics Hook"]
+        M11["M11<br/>统一记录组件<br/>TraceWriter"]
         M27["M27<br/>Trace<br/>读写加固"]
         M28["M28<br/>环境归档<br/>机制"]
         M29["M29<br/>Browser 归档器<br/>+ 可回放档位"]
@@ -236,7 +242,7 @@ M01 ✅ → M03 → M12 → M14
           M06 → M13 → M14
 ```
 
-M01 已完成（conscribe v0.6.1），**M02/M03/M04/M05 四模块现在可以立即并行启动**。当前最长路径为 **M02 → M06 → M07 → M08 → M18**。
+这表示最初拆分时可并行的基础依赖，不能再据此启动一轮 M02/M03/M04/M05 重建。后续实现已覆盖这些基础合同；恢复工作先核对当前源码、验收和交接，再沿 **M02 → M06 → M07 → M08 → M18** 等依赖检查真正剩余的门槛。
 
 ---
 
@@ -597,7 +603,7 @@ ReactLoop 是第一个也是最关键的 Loop 实现 — 三个现有 Browser Ag
 
 #### 业务实现
 
-实现 RunTrace 的 WAL（Write-Ahead Log）风格持久化系统：每步必须确认落盘后才继续下一步，crash 后可通过 manifest 恢复到最后一个完整 step。同时实现 RunTrace 的 lazy loading 读取器。
+实现 RunTrace 的 WAL（Write-Ahead Log）风格持久化系统及 lazy reader。当前步骤先封存、后台有界持久化，执行不等待故障恢复；manifest 是已提交内容的唯一索引，保留缺口后的提交和连续完整前缀。记录健康与执行结局分开，详见 architecture §4.6、§5。
 
 #### 业务逻辑
 
@@ -621,11 +627,11 @@ ReactLoop 是第一个也是最关键的 Loop 实现 — 三个现有 Browser Ag
 
 不使用 SQLite 的理由：agent 场景数据结构异构（不同 fragment 字段完全不同），schema 随框架演进频繁变化，与关系数据库的同构行/稳定 schema 假设冲突。数据落盘速度不是运行瓶颈（LLM 推理每步数秒，文件写入只需毫秒），SQLite 的查询优势可通过后置索引实现。
 
-WAL 设计借鉴了数据库 WAL 的核心思想：每步确认持久化后才继续。如果 agent 在第 47 步 crash，前 46 步的数据不能丢。这对 benchmark 评测至关重要 — 30 分钟的运行如果因为一个 bug 全部丢失是不可接受的。
+WAL 保证已经提交的数据，不把执行步号冒充持久化进度。进程崩溃时队列中的段可能尚未提交；读者按 manifest、记录范围和完整前缀判断可用证据，不能扫描孤儿文件补成完整，也不能因记录故障停止 Agent。
 
 ---
 
-### M11: TraceWriter + Metrics Hook
+### M11: 统一记录组件（TraceWriter）
 
 **优先级**: P1 | **前置依赖**: M04, M10 | **被依赖方**: M18, M27, M28
 
@@ -1361,7 +1367,7 @@ archive scope 是 browser 级的，因为弹窗的流量在控制连接接管它
 
 **Loop 输入**：`AgentLoopBase.__loop_inputs__`（`LoopInput(type, required)`）与 `check_loop_inputs`，`prepare()` / `weave()` 对多的、缺的、类型不对的键抛 `IncompatibleLoopInputError`；`AgentRuntime.prepare(loop_inputs=)`、`execute(loop_inputs=, branch=)`，删掉原先把任意关键字转给 `weave` 的 `**kwargs`；weave 的 deps 多 `negotiated_actions` 与只读的 `loop_inputs`；`get_task_context` 返回 `TaskContext`，`BenchmarkRunner` 把三部分分别交给 `execute`（M30 的 `replay_archive` 照旧在 env 部分）。
 
-**BranchLoop**：受体 `restorer`（只在普通 mixin 上注解），旋钮 `continue_steps: int = 0`、`terminal_observation = True`（2026-10-13 起另有 `branch_instruction`：闭集、默认 `none`，第 t 步给 teacher 的一条固定指令，architecture_design.md §4.1 "teacher 采样"），输入 `checkpoint`。装配期（`weave`，任何 setup 之前）对照源 trace：同一个 agent（`agent_id`、记录下来的闭集旋钮、memory 策略）、相同的观测与动作协商、源 loop 是 `react`、源 run 不是分叉 run、检查点步已提交且是策略步——不符抛 `IncompatibleCheckpointError`。运行期：种子 system 消息与源 run 相同；**从源 trace 重建上下文**（录下的观测 → `build_react_prompt`；每次录下的 LLM 调用依次经 `parse_react_output` 与上面三个 memory 方法），并逐条校验——每次调用之前的上下文与录下的 `messages` 相同、每步的动作 / 截断 / 回复与源 StepRecord 相同；然后经恢复器恢复环境（恢复出的步记 `origin="restored"`，内容抄自源 run、带校验结果、观测是恢复出的 live 观测）；第 t 步在经校验的 obs_t 上走一个 ReAct 步（`loop.step_info` 的 `max_steps` / `today` 取自源 run），再走至多 `continue_steps` 个，最后终止观测。
+**BranchLoop**：保留 `restorer`、`continue_steps`、`terminal_observation` 与 `checkpoint` 输入；当前新增 `history_source: source | restored`，旧 `branch_instruction` 已由配置的 `prompt_contribution` Hook 替代。装配检查真实有效 ActionSpace、观测/动作合同与源前缀证据；source 精确重建原主决策提示，restored 通过 Agent 公开历史方法表达实际恢复动作/结果及源材料，均独立于环境 strict/warn。恢复和策略步经公开 `execute_step`，共用 live checkpoint 观测并保持步骤计时归属；helper 独立归因，历史/重试不重复调用。具体合同以 architecture §4.1 为准，不按旧源副本或固定文本实现重建。
 
 **恢复器 `prefix_replay`**：对每个 k < t observe → `verify_restoration` → 每个录下的动作 `retarget` → `act_fn` → 比较成败；最后校验 obs_t。旋钮 `verify: strict | warn`、`screenshot_max_distance`（默认 5）、`pace: none | recorded_llm_latency`。逐步交回 `RestoredStep`，`strict` 下发散抛 `RestorationDivergedError`（Loop 记一条 `origin="restored"`、`error_phase="restore"` 的记录，`agent_done=error`、`env_status=failed`）。`RestorationCheck.reason` 是固定顺序的枚举：`document_miss`、`url_mismatch`、`retarget_not_found`、`retarget_ambiguous`、`action_failed`、`signature_mismatch`、`screenshot_distance`。恢复器的包在 `core/loops/restore/`，`RunAbort` 卫生检查改成递归扫描 `core/loops/`。
 
@@ -1459,7 +1465,7 @@ PRD §9 的每一项度量、§10 / §11 交给 M33 的每一个问题，由一�
 
 #### 验收
 
-- 表单提交的卡顿修好，有真实 Chrome 的回归测试（fixture，pinned + 归档：GET / POST 点击提交与回车提交）；脚本化模型的连接卡死修在 provider 层（每个请求返回之前关掉自己建的 SDK 客户端，architecture §4.7），不靠调大超时，为它加过的 60 s 超时已撤掉。
+- 表单提交的卡顿修好，有真实 Chrome 的回归测试（fixture，pinned + 归档：GET / POST 点击提交与回车提交）；脚本化模型的连接卡死修在 provider 层（当时在每个请求返回之前关掉自己建的 SDK 客户端（历史修复；当前已由执行内惰性复用、执行结束统一清理替代），architecture §4.7），不靠调大超时，为它加过的 60 s 超时已撤掉。
 - 度量组件只从 trace（与数据集目录）算出 §9 的每一项与 M33 负责的每一节；单测用真实 WAL 写出的、答案已知的 trace（没有任何运行中的状态），覆盖"没测到不变成 0"、未提交的步不可见、折叠的回放日志按条数计。
 - 一条命令在 fixture 站点上用脚本化的模型跑完整条链并产出演练报告；报告的数都有解释（确定性的流程原路径保真 100%，发散的站点有预期的文档 miss，POST 分叉的 miss、被拦截的站点进剔除名单，两次导出逐字节相同，植入的凭证 0 次）；报告算两次逐字节相同；演练期间没有非 loopback 的外联。
 - live 计划（S2b 与 M33 的 live 链：配置、命令、N、路由选项（不写密钥）、按阶段的 token / 调用估算、核对清单）写在 `tmp/flywheel/M33_live_plan.md`，没有跑任何 live 的东西。

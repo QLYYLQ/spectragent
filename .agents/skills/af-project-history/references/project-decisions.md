@@ -35,6 +35,27 @@ whether it supports reproducible research, not by how quickly it produces a demo
 framework. This explains why their wiring and resolver models are first-class design
 choices rather than immutable third-party constraints.
 
+## Semantic ownership and public extension contracts
+
+User ruling, reaffirmed during the six-branch implementation on 2026-10-15: satisfying
+written requirements is not enough if a function or state is owned by the wrong layer.
+Review responsibility placement as a correctness issue.
+
+- Agent owns domain prompts, parsing and its message/history representation; Loop owns
+  execution strategy; Runtime owns assembly, explicit dependency lifecycle and identity;
+  recording/WAL owns accounting, persistence and recording health.
+- Generic execution helpers do not live in a concrete ReAct module merely because it
+  needed them first. Trace reconstruction does not live under a particular restorer.
+- A researcher, caller or extension author's real dependency needs an explicit public
+  Protocol/API. Internal caches and implementation details may remain private. Public
+  snapshots must actually protect their underlying state; a name or shallow frozen flag
+  alone does not prove that contract.
+- Review methods and helper classes as well as fields. This is not a blanket ban on `_`
+  and does not authorize the deferred whole-framework audit without the corresponding task.
+
+The accepted implementation's public step/history/prompt contracts, `client_resources`
+and effective `ActionSpace` are examples of applying this ruling, not exceptions to it.
+
 ## What belongs in a trace
 
 User ruling, 2026-09-16: per-tick mouse and keyboard coordinates are framework
@@ -70,8 +91,9 @@ bracket, billing mode, and sometimes time, and a gateway may hide the serving su
 An authoritative-looking zero or guessed cost is worse than an absent field.
 
 Prompt caching still matters as API-efficiency behavior. Preserve distinct read/write
-cache counters when a provider reports them. The current tracked analysis is
-`docs/ref_gap_analysis.md`; this note preserves why that boundary was chosen.
+cache counters when a provider reports them. The local historical analysis is
+`docs/ref_gap_analysis.md`; current architecture/code define the contract, and this note
+preserves why that boundary was chosen.
 
 ## Commit and branch names
 

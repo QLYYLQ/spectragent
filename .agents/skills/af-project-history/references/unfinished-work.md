@@ -1,227 +1,117 @@
-# Unfinished work and handoff routing
+# Current handoff and remaining work
 
-These documents are intentionally preserved because they contain continuation state,
-not merely retrospective history. None outranks `docs/architecture_design.md`. Before
-implementing an item, compare its dated baseline with current code, tests, and later
-commits; mark it complete only after verifying the resulting behavior.
+Memory updated 2026-10-16 after the implementation accepted on 2026-10-15 at `a6a36d0`.
+This file routes continuation; it does not outrank `docs/architecture_design.md`,
+`docs/execution_dag.md` or `AGENTS.md`.
 
-## Data flywheel line (2026-10-10 to 2026-10-12)
+## Current entry point
 
-### Later evidence: live runs and the interrupted session (2026-10-14)
+The new implementation handoff is
+[implementation/README.md](../../../../tmp/flywheel/followup/implementation/README.md).
+Read it before resuming the six review-change workstreams. Their implementation is
+**complete**, not awaiting a design discussion or another upstream release.
 
-The fixture-only and pending-live statements below describe the earlier snapshot, not
-the current state. The user subsequently authorized the live runs and made further
-decisions in the local `tmp/flywheel/followup/RULINGS_2026-10-13.md` and
-`RULINGS_2026-10-14.md`. The latter records a twelve-site LexBench run, a repeat with
-site rules, about 1.59 million model tokens used against a 3 million token ceiling,
-and the final two work items: JSONP callback rewriting with all 25 site-rule files,
-then a zero-model-call virtual-time probe on six sites. The probe is measurement only;
-it is not authorization to implement virtual time or change restoration checks.
+Evidence beside that handoff:
 
-Claude's latest session stopped at its weekly limit after committing `e8b8308`
-(JSONP rewriting, replay-log counts, and the site rules). Its full gate passed:
-7,050 tests and 187 generated-config checks; pyright had no new errors against its
-existing baseline, not zero errors. The unfinished actions were the replay comparison
-and the virtual-time findings, not the older React-layering backlog. Codex resumed
-those actions from the existing scripts and traces. The local continuation outputs are
-`tmp/flywheel/followup/jsonp_report.md`, `vtime/findings.md` under that same follow-up
-directory, and `resume_report.md`; read their final status and evidence before doing
-another run. The replay experiment also found that the host's light/dark appearance
-changes screenshots; its light-media override is a measurement-only patch, not a
-shipped pinned-tier setting.
+- `delivery.json`: final scope, versions, formats and limits.
+- `final/summary.json`, `pytest.log`, `pytest.xml`: **7882 passed, zero failures/errors/
+  skips**, tested at `a6a36d0`; Pyright zero errors/warnings, lint/format passed.
+- `branch_delivery.json`: six original feature heads and worktree locations. All six
+  working branches were later fast-forwarded to the integrated code. The independent
+  commits remain in Git history; old dependency overlays are backups, not patches to apply.
+- `final/attempt-*`: earlier collection and integration failures, subsequently resolved.
+  They are not current open defects.
 
-With that appearance aligned, the previous rules run passed 171/236 checks (72.5%);
-the released rules with JSONP rewriting passed 188/236 (79.7%, 62 rewrites). The
-same-rules control with rewriting disabled passed 174/236 (73.7%). Each set completed
-24 replays, two per site, using only a local scripted model. A follow-up corrected the
-documented duplicate-parameter boundary: a recorded callback key appearing more than
-once is ambiguous even when only one of its values equals the called name.
+These are local, gitignored artifacts. If absent in a fresh clone, use the versioned
+architecture, browser/data-flywheel runbooks, code and tests. Do not recreate completed
+features merely because a local handoff or experiment trace is missing.
 
-The completed virtual-time probe recommends against shipping its current approach:
-baseline completed all six sites (28/62 restoration checks passed); both the one-second
-and three-second variants completed only one site, with the other five ending on
-screenshot failures. Their surviving prefixes (14/21 and 14/22) are not evidence of a
-fidelity improvement over the baseline. The recommendation is experimental evidence,
-not a new user ruling; volatile-region masking still needs its design discussion.
+The tested implementation uses agent-cdp **0.5.0**, conscribe **2.0.0**, Ollama **0.6.3**
+(minimum 0.6.2), Trace format **5** and AgentResult **3.0**. Old test recordings must be
+regenerated; do not add compatibility paths. Later memory-only commits do not change
+which code revision actually ran the full acceptance suite.
 
-The earlier implementation boundaries still apply: do not edit `react.py` before the
-user's revised design; keep the export side frozen; record agent-cdp requirements in
-the local append-only ledger, without changing that upstream repository; do not push
-the local commits without current authorization. Preserve failed experimental traces
-and compare completed-run counts as well as per-step fidelity.
+## Completed boundaries to preserve
 
-### Subsequent approved work (2026-10-14)
+- Loop owns execution policy/facts; one recording component owns call accounting and
+  persisted scope. No separate metrics hook, no token ledger in ReactLoop or LoopBase.
+- Typed execution limits, public step/history/prompt contracts, Runtime-owned identity
+  and `execution_ms` replace name-probing and shared private helpers. Task elapsed time
+  still includes cleanup and read-back.
+- Recording faults do not control execution. Stable sealed segments, sparse manifests,
+  selected-channel completeness, bounded background persistence and honest unknown
+  usage are implemented. Manifest reconciliation after uncertain writes is implemented.
+- Model clients are lazy and reused within an execution; creators close owned resources,
+  external transports remain borrowed. Runtime closes its main and explicitly declared
+  helper models even if an earlier lifecycle hook fails; judges own their separate use.
+- ReAct branch history supports `source` and `restored`, independently of `strict/warn`.
+  Contributions use Agent-owned placement and async Hook/Python/helper contracts;
+  historical contributions are replayed without new helper calls. Helper output is not
+  Agent thought. All restored attempts retain actual provenance and timing.
+- Effective ActionSpace identity includes filter/descriptors/guard/bindings. Local Chrome
+  endpoint ownership, external-CDP retention, tab/OOPIF and per-binding cleanup are in.
+- AF adopted the published agent-cdp 0.5.0 public contracts. Replay rules are scoped,
+  bounded by run permissions, explicitly declare exhaustion, and save loaded snapshots.
+  Clock/date controls are independent. WARC revisits stay inside a collection batch.
 
-The user then authorized the next replay/model-validation phase. Its current report
-is `tmp/flywheel/followup/replay_next/report.md`; the associated `session_status.md`
-is a continuation ledger, whose later entries supersede its earlier progress notes.
-Read the report's final verification status before treating the work as accepted.
+See the handoff for exact APIs and acceptance files; see the architecture for authority.
+This is a dated implementation summary, not a second architecture document.
 
-Decided and implemented in this phase: measure the recording's current color theme
-and pin it for replay; retain same-capture screenshot source URLs as restoration
-evidence without showing them to pure-vision agents; enable an independent offline
-judge stage; provide candidate dynamic-region diagnostics without extra captures,
-masking, or changed strict checks. A UI navigation guard implements the user's
-no-constructed-URL task protocol. The export side remains frozen.
+## Active deferred routing
 
-The user explicitly revoked the interim proposal to treat Ctrl+A and Cmd+A as the
-same intent. The final contract measures the actual browser input platform, exposes
-it through the required `browser.platform` observation, and optionally asserts
-`expected_platform`; mismatch or failed measurement refuses setup. Literal key
-modifiers are preserved. Only a platform's native select-all chord may carry the CDP
-editing command; the page can still cancel its default behavior. The same measured
-fact drives semantic `clear=True` and the replay fingerprint. Old traces without
-platform evidence are retained for offline analysis, not silently repaired.
+No item below is authorization to start it automatically. Use the user's next task
+and the current execution DAG. The original full list is
+[deferred_verification.md](../../../../tmp/flywheel/followup/review_changes/deferred_verification.md).
 
-Real local Chrome controls exposed two execution defects: held mouse moves needed
-both `button` and `buttons`, and `send_keys` reversed the Ctrl/Alt modifier masks.
-Both are fixed, and drag release cleanup is bounded. The zero-model three-strategy
-control baseline improved from 6/12 to 12/12. Of 15 single model mouse predictions,
-14 reached the requested controls through all three strategies; Qwen's remaining
-failure was a roughly 109-pixel y-coordinate error. This is a small ordinary-UI
-fixture, not a CAPTCHA or complex-site success claim.
+| Remaining scope | Trigger / limit |
+|---|---|
+| Framework-wide public/private API audit, **including private methods** | Raise it when the user next asks to optimize the framework. Judge semantic owner and actual consumers; this round's local public APIs did not complete a file-by-file audit. |
+| Commented YAML template CLI | Still deferred; `spectragent config explain` already exists and is not this feature. See `developer-experience.md`. |
+| Richer configuration provenance | Existing explain covers identities, negotiation, AOP, freshness and redacted resolved config. Inspect a concrete need before adding detailed wiring/MRO/field-origin explanations; do not list the whole explainer as unimplemented. |
+| Cloud lite SDK lifecycle and cloud recording/replay | Resume only when a real remote-browser need is requested; verify current SDK/public APIs and provider capabilities. |
+| Student context, image memory, new export/translation/thought/training strategies | Explicit next phase. Existing export received only necessary cross-cutting adaptations. |
+| Shared Chrome multi-run BrowserContext isolation and broad permissions | A separate AF design. Do not reopen this round's already completed local ownership/tab/OOPIF fixes. |
+| WebSocket replay and large-body loopback serving | Separate requested capability work; current HTTP replay does not imply support. |
+| Login state and OOPIF storage | Design with credential/profile inputs and partitioned storage; unread-frame evidence is not complete capture. |
+| Private-trace residual privacy issues | Keep the user's selected threat model; do not turn this into an unsolicited private-directory scan. |
+| Linux fsync calibration | Requires the corresponding environment; local measurements do not establish ext4/xfs behavior. |
+| Cross-run pools, archive merging, environment mocks and broader replay/training paths | New scope and dependency review, not an implication of this lifecycle or replay work. |
+| Wire-level requests and pre-call prompt durability under process kill | Logical request recording is implemented; these stronger guarantees remain deferred. |
+| More detailed judge/unevaluable failure classification | Independent judging exists, but does not close every finer classification question. |
+| Full Agent × benchmark integration matrix | Still a separate DAG acceptance gate; sampled browser runs and the 7882-test suite do not replace it. |
+| Automatic dynamic-region masking / virtual time | Diagnostics do not alter restoration verdicts; the prior probe did not justify shipping virtual time. |
+| Jev/System One/probe/cascade | Read the full preserved memo before resuming. Generic helper attribution is not approval or implementation of these research proposals. |
+| Remaining port-residue issues | Revalidate individual findings against current design/code/tests; do not batch-execute a dated handoff. |
 
-LongCat-Flash-Chat and LongCat-Flash-Thinking exact routes both returned 503; no
-substitute name was used. Gemini 3.8 Flash, GPT-6 Luna, Qwen 3.8 Flash and the two
-specified Doubao Seed 2.0 variants completed single-image mouse trials, but routing,
-latency, truncation and task-level limitations remain separately documented. The
-new L1 recordings passed 18/36 restoration checks and 2/8 whole paths; unlike the
-old 79.7% result, all these checks had URL evidence, and the tasks differ. Xiaohongshu
-was a separately labelled login-blocked L2 entry, not a completed complex task.
-Four independent judge calls yielded one valid verdict and three timeouts; judge
-coverage is not task correctness. Eight strict branch attempts yielded five restore
-refusals and three teacher calls, of which two produced actions.
+Internal verification debt is separate from those feature decisions. The uncertain
+manifest rename/fsync case is closed by `test_wal_recovery.py` (14 cases present in
+the accepted full-suite XML). Do not repeatedly list it as unverified. Broader provider
+partial-output coverage, supported-Python matrices, body-read timeout release,
+Response-stage OPTIONS, synchronous archive I/O tail latency, real DOM-index retargeting,
+nested-worker isolation and nested-receptor coverage need their own evidence; this
+handoff does not infer blanket completion. Historical process/connection failures whose
+original evidence is missing remain unproven, not newly confirmed bugs.
 
-The local `agentcdp_current_status.md` confirms that the upstream proposal exists:
-items 1–9 were decided, while 10–23 still contain undecided scope/API semantics.
-The installed upstream remains 0.4.0; it was not edited or published. Preserve the
-append-only requirements ledger and distinguish AF-side fixes from upstream work.
+## Retired from the active queue
 
-### Earlier snapshot
+| Old entry | Current routing |
+|---|---|
+| `review_changes/README.md` and the six "awaiting implementation" specifications | Completed requirements/evidence. Start from `implementation/README.md`. |
+| `review_reconciliation/index.json` and earlier partition audits | Historical review traceability; old pending labels are not a task scheduler. |
+| `HANDOFF_261010_react_loop_layering.md`, `react_synthesis.md` | The approved layering/accounting implementation is complete. The temporary prohibition on editing react.py is over. |
+| `tmp/flywheel/H28_fix.md` and per-request-client cleanup follow-ups | Historical failure evidence; execution-owned lifecycle replaced the old mechanism. |
+| `agentcdp_current_status.md`, the upstream spec and ledger's old "release pending" status | agent-cdp 0.5.0 is adopted. Retain the append-only ledger for new upstream needs; keep AF-owned CDPClient issues separate. |
+| `resume_report.md`, `replay_next/session_status.md`, old live-run plans | Old continuation/experiment records. Earlier paid-run budgets are not ongoing permission. |
+| JSONP, virtual-time and `replay_next/report.md` reports | Historical measurements and methodological limits, read only for that research context. |
+| September heavy handoffs | Mixed-state evidence, not the default current implementation queue. |
 
-Done: eight commits on `main` after `661c924`, `422b006` to `1ad8e47`, covering typed
-trace read-back, the archive axis, browser archivers and the recorder connection, offline
-replay, branching from recorded checkpoints, SFT export through the student agent, the
-metrics chain with the form-submit observation fix, and LLM providers closing the client
-each request builds. Architecture §4.14–§4.16 and `docs/execution_dag.md` M27–M33 describe
-the result; the `af-data-flywheel` skill is the working guide. Every module was accepted on
-fixtures with scripted models; nothing has run against a live site or a paid model. The
-local orchestration record (`tmp/flywheel/`: decisions, acceptance reports, the live plan)
-and the local PRD (`docs/data_flywheel_prd.md` and its revision log) hold the evidence when
-present.
+The detailed earlier memory, including dated live measurements and user rulings, is
+preserved in [flywheel-history.md](flywheel-history.md). Read it on demand, not before
+every new task. `HANDOFF_260918_skyvern_cleaner.md` §9 and the current Skyvern tests document
+its implemented JS path; the full benchmark matrix remains independent.
 
-Open user decisions, each surfaced and none taken:
-
-- Dropping `--disable-site-isolation-trials`: `pinned` no longer passes it, because the
-  recorder captured out-of-process frames without it and the switch changes their
-  observation. It still needs sign-off.
-- Failed-teacher branches: a branch whose teacher call failed counts as a branch with no
-  document miss, which inflates the rate the strict-miss-policy decision reads. The report
-  lists such runs (`model_failures`); excluding them would change the metric's definition.
-- The live run: S2b (record and same-path replay of 10 live `online_mind2web` tasks) and
-  the full live chain are prepared in `tmp/flywheel/M33_live_plan.md` and
-  `tmp/flywheel/m33_live/`, and need the user's route, task count and token ceiling. Until
-  they run, the metrics report's recommendations rest on fixture evidence and stay
-  `partial`.
-
-Decided by the user on 2026-10-13 (threat model "only me") and implemented: the BrowserUse
-DOM observation masks sensitive control values with the shared rule (architecture §4.12);
-`storage.json` keeps cookie and Web Storage values as they are, under redaction policy
-`af-privacy-1+browser-2` (§4.14, §5.6); typing records
-`ActionResult.typed_into_sensitive_field`, which export does not use yet;
-`browser.extract_content` of one element masks the same values in the HTML it returns
-(§4.12); the flywheel report's privacy measure checks only the two gates, the recorded model
-requests and the exported datasets, never `env/` (§4.16).
-
-Decided by the user on 2026-10-13 and implemented (the configuration surface): "not
-enabled" is spelled `none`, so the replayability tier `off` is now `none` and the export's
-`occlusion: off` is `occlusion: none`, and a test refuses registry keys and option values
-YAML 1.1 reads as booleans or null; `trace_writer.archive` is the one archiving switch and
-a top-level `archiver:` section is refused; numeric limits say `unlimited`, never `null`;
-`actions: []` means no actions; `reasoning_effort` defaults to an explicit `auto`; the
-`CHROME_USER_DATA_DIR` fallback is gone; `deterministic_rendering` passes when its seed
-equals the tier's (architecture §4.2.1, §4.14).
-
-The `react.py` layering handoff (`HANDOFF_261010_react_loop_layering.md`, local) is still
-open. `_UsageTally`, `_merge_token_usage` and most other private helpers in `react.py`
-belong to the trace/metrics hook layer or to `AgentLoopBase`; the user's uncommitted TODO
-line in `react.py` asks the same question and stays out of commits. M31 placed its new
-code by layer and moved nothing, and who owns token accounting (the hook layer, or a
-base-Loop helper around the LLM call) awaits the user. The handoff records two accounting
-defects, both unfixed: with the `metrics` hook on, a provider that reports no usage turns
-the result's `usage=None` into an all-zero `AgentUsage`, which the eval summary then counts
-as a measured zero; and after an in-step parse retry, a step that ends on a later failed or
-vetoed call records `token_usage=None` although its earlier calls were billed.
-
-Follow-ups of the LLM client fix (`1ad8e47`, architecture §4.7; local report
-`tmp/flywheel/H28_fix.md`):
-
-- Reusing connections needs an LLM lifecycle, such as a run-owned `aclose()` on the model
-  (architecture §14.3), which is a protocol change for the user. Until then every request
-  builds and closes its own client, and `ChatGoogle` on Vertex without explicit credentials
-  reloads ADC per request. `ChatOllama` and `ChatMistral` still leave their clients to the
-  garbage collector.
-- Providers whose `get_client()` ignores an injected `http_client` (deepseek, cerebras,
-  vercel, openrouter, `anthropic.aws`) leave the client they built open whenever one is
-  injected, because the close rule keys on the field. YAML cannot set the field, so nothing
-  in the repository reaches this path.
-- The six cloud lite browser backends cache one SDK client per backend instance and close
-  only their sessions, never the client. The lite SDKs define no finalizer that schedules
-  work on the event loop, so this leaks until collection without the stale-close hang.
-
-## Current heavy handoff pair
-
-### `HANDOFF_260918_port_residue.md`
-
-This is the broad 2026-09-18 port-residue audit and the primary index for that round.
-It was written at commit `b25a1da`. Later commits completed meaningful parts of it,
-including deletion of the model nickname factory, removal of model-name prompt
-selection, Anthropic cache-breakpoint repair, token-only usage accounting, and
-truncation handling. Therefore, preserve the document but do not treat every finding as
-open.
-
-Its durable continuation value is:
-
-- the remaining port-specific behavioral gaps and dead-code candidates;
-- the explicit unresolved design questions in §7;
-- the evidence and reproduction notes behind each finding;
-- the relationship to the SkyvernCleaner sister handoff.
-
-When resuming it, start with the document's proposed order, then classify each item as
-still reproducible, completed by a later commit, superseded by architecture, or awaiting
-a user decision. Never bulk-apply the old cleanup list.
-
-### `HANDOFF_260918_skyvern_cleaner.md`
-
-Preserve this record of work that was explicitly unfinished and the user's later
-decision to complete it. Sections §0–§8 retain the historical gaps and decisions;
-§9 records the 2026-10-01 implementation. The current JS capture path is connected:
-the configured cleaner requests a separate JS execution scope, runs this project's
-own extraction script in isolated worlds, resolves CDP node identities, and produces
-`DOMState`. It does not copy upstream AGPL `domUtils.js` or silently fall back to
-BrowserUse snapshots. See `docs/architecture_design.md` §4.4/§4.12 for the current
-contract and `docs/ref_gap_analysis.md` C1 for the decision history.
-
-The verification entry points under `tests/test_core/test_capabilities/` are:
-
-- `test_browser_skyvern_live.py`: real Chrome verification of YAML-selected JS
-  extraction, indexed actions, same-process and OOP frames, navigation, tab isolation,
-  scope cleanup, sensitive-value masking, serialization, and DOM budgets;
-- `test_browser_js_scope.py`: cross-scope execution, session ownership, and rollback;
-- `test_browser_skyvern_dom.py`: explicit failure without fallback and frame deadlines.
-
-These capability checks do not complete M18's three-Agent × three-benchmark
-integration matrix. Revalidate that separate gate before declaring it complete.
-
-## Older evidence, not the active queue
-
-- `HANDOFF_260916_findings.md` and `HANDOFF_260916_next.md` form the anti-bot/input
-  round's evidence and backlog pair. Keep them for measurements and rationale, but
-  current architecture §4.13 and later commits supersede many implementation claims.
-  In particular, do not revive N1's per-tick `InputRecorder`: the user later ruled that
-  input ticks are framework execution detail and do not belong in the agent trace.
-- `HANDOFF_260730_remaining.md` contains the third-round mixed backlog and deferred
-  items. Its predecessors `HANDOFF_260728_coupling_and_fixes.md` and
-  `HANDOFF_260729_remaining.md` explicitly say that most findings were implemented or
-  invalidated and point forward. Use all three only for provenance unless a current
-  source links to a specific finding.
+Claude's `memory/MEMORY.md` now routes five obsolete runtime-status records through its
+`reference_af_history_index.md`: WAL open items, initial flywheel plan, review-followup
+journal, old runtime flow and old conscribe/agent-cdp usage. Their source files remain.
+The upstream append-only-ledger convention stays active; its obsolete release status
+was updated rather than deleting the convention.

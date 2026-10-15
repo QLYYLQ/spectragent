@@ -1,6 +1,6 @@
 ---
 name: af-project-history
-description: Resume durable or unfinished AF/All4One work from project decisions, heavy handoffs, JEV research, experiment results, and roadmap history. Use when continuing earlier work or revisiting browser-input, anti-bot, LLM-routing, data-flywheel, decision-model, operations, or visual-system context. Never substitute it for current architecture or code inspection.
+description: Resume AF/All4One work from its current implementation handoff, remaining-work ledger, durable user decisions, and historical evidence. Use when continuing earlier work or revisiting browser-input, anti-bot, LLM-routing, data-flywheel, decision-model, operations, or visual-system context. Never substitute memory for current architecture or code inspection.
 ---
 
 # AF project history
@@ -22,6 +22,12 @@ compromise or silently refresh the historical claim.
 
 ## Read only the relevant reference
 
+- Current accepted implementation, the new local handoff, genuinely deferred work and
+  retired continuation routes: [unfinished-work.md](references/unfinished-work.md).
+  The six review-change packages were accepted at `a6a36d0`; their current local entry
+  is `tmp/flywheel/followup/implementation/README.md`. The review specifications are
+  requirement history, not a new implementation queue. If local evidence is absent,
+  use the tracked summary and re-check the current architecture/code/tests.
 - Project purpose, user-set design boundaries, and naming preferences:
   [project-decisions.md](references/project-decisions.md)
 - The 2026-09-17 ordered roadmap snapshot and its invalidated assumptions:
@@ -32,11 +38,12 @@ compromise or silently refresh the historical claim.
   [llm-and-runtime-findings.md](references/llm-and-runtime-findings.md)
 - Local execution conventions, ignored visual assets, and migration exclusions:
   [operations-and-exclusions.md](references/operations-and-exclusions.md)
-- The data-flywheel line's open decisions and follow-ups, the active unfinished handoff
-  pair, and older handoff routing: [unfinished-work.md](references/unfinished-work.md)
+- Earlier flywheel discussion, dated live experiments and heavy-handoff provenance,
+  only when that history is needed: [flywheel-history.md](references/flywheel-history.md).
+  Its old pending labels and temporary freezes are superseded, not active instructions.
 - The dated Jev/System One feasibility study and unresolved registrar/attribution choice:
   [jev-system-one-study.md](references/jev-system-one-study.md)
-- Human–code-agent development rationale and the deferred configuration explainer:
+- Human–code-agent development rationale, current config explanation and deferred tooling:
   [developer-experience.md](references/developer-experience.md)
 
 ## Use the history safely

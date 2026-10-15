@@ -42,3 +42,10 @@ gate in `docs/execution_dag.md`; and the approved environment-vs-subject ownersh
 in `docs/actions_that_call_an_llm.md`. The memo's proposed order was probe → real-trace
 calibration → config-time compatibility gate → cascade. That order is evidence for a
 future decision, not authorization to implement it.
+
+## Distinguish the completed generic plumbing
+
+The 2026-10-15 implementation supplies generic caller/purpose/model/step attribution
+and prompt-helper model lifecycle. That closes the generic plumbing gap; it does not
+resolve Jev's subject-versus-instrument ownership, registrar, result contract, probe,
+calibration or cascade proposals. Read the preserved memo before resuming any of them.
