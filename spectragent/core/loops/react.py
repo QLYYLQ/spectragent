@@ -13,11 +13,12 @@ See docs/architecture_design.md 4.1 and docs/execution_dag.md M09.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from dataclasses import dataclass
 from datetime import date
-from typing import Annotated, Any, ClassVar
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from pydantic import Field
 
@@ -36,12 +37,16 @@ from spectragent.core.loops._registrar import AgentLoopBase
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.run import LoopRun
+from spectragent.core.loops.validation import IncompatibleError
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation.dynamic_model import summarize_observation
 from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.restoration import RestorationCheck
 from spectragent.schemas.step_record import StepRecord
+
+if TYPE_CHECKING:
+    from spectragent.agents.memory.base import BaseMemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -170,11 +175,36 @@ class ReactLoop(AgentLoopBase):
                 "it as an origin='terminal' step: no LLM call, no action, "
                 "env-source fragments only. Never on an infrastructure "
                 "failure, a failed action or a veto. The run's result is "
-                "decided before it and does not change (its end_to_end_ms "
-                "excludes it)."
+                "decided before it and does not change (Runtime execution_ms "
+                "includes it)."
             ),
         ),
     ] = False
+
+    def validate_slots(self, agent: Any) -> None:
+        """Validate the asynchronous prompt boundary before an execution can start."""
+        super().validate_slots(agent)
+        builder = agent.build_react_prompt
+        context = inspect.signature(builder).parameters.get("context")
+        if (
+            not inspect.iscoroutinefunction(builder)
+            or context is None
+            or (context.kind is not inspect.Parameter.KEYWORD_ONLY)
+        ):
+            raise IncompatibleError(
+                agent_name=getattr(agent, "agent_name", type(agent).__name__),
+                loop_id=self.loop_id,
+                missing_slots=["async build_react_prompt(observation, *, context)"],
+            )
+
+    def prompt_context(self, run: ReactRun, step_idx: int) -> ReactPromptContext:
+        """Describe this policy turn; specialized ReAct loops may add source facts."""
+        return ReactPromptContext(
+            step=step_idx,
+            phase="policy",
+            policy_step=run.policy_steps,
+            is_branch=run.is_branch,
+        )
 
     def execution_limits(self) -> ExecutionLimits:
         """The action cap the Agent must communicate in its own prompt."""
@@ -285,34 +315,44 @@ class ReactLoop(AgentLoopBase):
         #    only what the agent wants appended this step). Loop owns
         #    the memory write and assembles the full LLM context.
         #
-        #    Only ``RunAbort`` is caught here. An ordinary exception out
-        #    of the agent's own builder is a bug in the agent, not an
-        #    infrastructure failure, and it propagates exactly as it
-        #    always has — there is deliberately no blanket handler. But
-        #    ``build_react_prompt`` is an agent method, so it is woven
-        #    by the AOP proxy like any other (``runtime.py`` wraps the
-        #    agent with ``role="agent"``), and a guard can veto from
-        #    here. When it does, the observation it fired on is the
-        #    evidence, so the step is recorded before the veto flies.
+        # Builder exceptions remain errors for the caller, while the step
+        # preserves their phase, observation and generated contribution facts.
         agent = run.agent
         memory = run.memory
         try:
-            prompt_context = ReactPromptContext(
-                step=step_idx,
-                phase="policy",
-                policy_step=run.policy_steps,
-                is_branch=run.is_branch,
-            )
+            prompt_context = self.prompt_context(run, step_idx)
             new_msgs = await agent.build_react_prompt(observation, context=prompt_context)
         except RunAbort as exc:
             await self._note_abort(
                 run,
                 phase="prompt",
+                prompt_context=prompt_context,
                 exc=exc,
                 observation=observation,
                 observation_summary=observation_summary,
                 step_idx=step_idx,
                 restoration=restoration,
+            )
+            raise
+        except Exception as exc:
+            record = StepRecord(
+                step=step_idx,
+                observation_summary=observation_summary,
+                error_phase="prompt",
+                error=str(exc),
+                timestamp=time.time(),
+                prompt_contributions=list(prompt_context.contributions),
+                restoration=restoration,
+            )
+            run.step_records.append(record)
+            await self.end_step(
+                run,
+                record,
+                observation,
+                agent_done="error",
+                env_status="success",
+                error=f"prompt failed at step {step_idx}: {type(exc).__name__}: {exc}",
+                answer=run.last_answer,
             )
             raise
         memory.add_messages(new_msgs)
@@ -370,6 +410,7 @@ class ReactLoop(AgentLoopBase):
                 await self._note_abort(
                     run,
                     phase="llm",
+                    prompt_context=prompt_context,
                     exc=exc,
                     observation=observation,
                     observation_summary=observation_summary,
@@ -391,6 +432,7 @@ class ReactLoop(AgentLoopBase):
                 return await self._abort(
                     run,
                     phase="llm",
+                    prompt_context=prompt_context,
                     exc=exc,
                     observation=observation,
                     observation_summary=observation_summary,
@@ -404,6 +446,7 @@ class ReactLoop(AgentLoopBase):
                 return await self._abort(
                     run,
                     phase="llm",
+                    prompt_context=prompt_context,
                     exc=exc,
                     observation=observation,
                     observation_summary=observation_summary,
@@ -433,6 +476,7 @@ class ReactLoop(AgentLoopBase):
                 await self._note_abort(
                     run,
                     phase="parse",
+                    prompt_context=prompt_context,
                     exc=exc,
                     observation=observation,
                     observation_summary=observation_summary,
@@ -655,12 +699,16 @@ class ReactLoop(AgentLoopBase):
         )
         return actions[: self.max_actions_per_step], dropped
 
-    def remember_rejected(self, memory: Any, output_text: str, exc: ParseError) -> None:
+    def remember_rejected(
+        self, memory: BaseMemoryManager, output_text: str, exc: ParseError
+    ) -> None:
         """A reply the parser refused: the reply as the assistant turn, then why it was refused."""
         memory.add_message(AssistantMessage(content=output_text))
         memory.add_message(UserMessage(content=parse_feedback(exc)))
 
-    def remember_reply(self, memory: Any, output_text: str, dropped: list[str]) -> None:
+    def remember_reply(
+        self, memory: BaseMemoryManager, output_text: str, dropped: list[str]
+    ) -> None:
         """A reply that parsed: the assistant turn, then a notice of any actions cut from it."""
         memory.add_message(AssistantMessage(content=output_text))
         if dropped:
@@ -695,6 +743,7 @@ class ReactLoop(AgentLoopBase):
         observation_summary: str = "",
         llm_output: str = "",
         restoration: RestorationCheck | None = None,
+        prompt_context: ReactPromptContext | None = None,
     ) -> None:
         """Record the step a ``RunAbort`` interrupted, then let it fly.
 
@@ -702,9 +751,8 @@ class ReactLoop(AgentLoopBase):
         ``_abort`` converts a failure into a terminal ``AgentResult``;
         this converts nothing. It writes the partial step to the sink so
         the trace still shows what the run was doing when it was vetoed,
-        and returns — the caller re-raises. If the sink cannot take the
-        step, that failure becomes a note on the veto, never its
-        replacement, and a cancellation that cuts the hand-over off carries
+        and returns — the caller re-raises. Recording errors are isolated
+        by the recording component. A cancellation cutting off the hand-over carries
         the veto with it (:meth:`surrender_vetoed`): the veto is what the
         caller has to see.
 
@@ -736,6 +784,7 @@ class ReactLoop(AgentLoopBase):
             timestamp=time.time(),
             error_phase=phase,
             error=str(exc),
+            prompt_contributions=list(prompt_context.contributions) if prompt_context else [],
             restoration=restoration,
         )
         run.step_records.append(record)
@@ -752,6 +801,7 @@ class ReactLoop(AgentLoopBase):
         observation_summary: str = "",
         env_status: str = "failed",
         restoration: RestorationCheck | None = None,
+        prompt_context: ReactPromptContext | None = None,
     ) -> AgentResult:
         """Terminate on an infrastructure failure, with the step recorded.
 
@@ -769,6 +819,7 @@ class ReactLoop(AgentLoopBase):
             timestamp=time.time(),
             error_phase=phase,
             error=str(exc),
+            prompt_contributions=list(prompt_context.contributions) if prompt_context else [],
             restoration=restoration,
         )
         run.step_records.append(record)

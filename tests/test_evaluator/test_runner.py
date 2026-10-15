@@ -436,11 +436,9 @@ async def test_a_task_that_produced_no_trace_counts_as_failed(three_traces, load
 async def test_summary_partitions_metrics_by_outcome(traces_dir, loader):
     """'Successes take 8 steps, failures burn 31' is the useful statement."""
     traces = [
+        write_trace(traces_dir, run_id="p", task_id="t-1", answer="42", steps=2, execution_ms=1000),
         write_trace(
-            traces_dir, run_id="p", task_id="t-1", answer="42", steps=2, end_to_end_ms=1000
-        ),
-        write_trace(
-            traces_dir, run_id="f", task_id="t-2", answer="nope", steps=6, end_to_end_ms=9000
+            traces_dir, run_id="f", task_id="t-2", answer="nope", steps=6, execution_ms=9000
         ),
     ]
 
@@ -450,7 +448,7 @@ async def test_summary_partitions_metrics_by_outcome(traces_dir, loader):
     assert summary.successful_tasks_metrics["steps"].mean == 2
     assert summary.failed_tasks_metrics["steps"].mean == 6
     assert summary.metrics_statistics["steps"].mean == 4
-    assert summary.metrics_statistics["end_to_end_ms"].max == 9000
+    assert summary.metrics_statistics["execution_ms"].max == 9000
 
 
 async def test_summary_counts_failure_categories(traces_dir, loader):

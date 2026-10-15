@@ -14,13 +14,13 @@ its source run's steps ``0..t-1`` and then the branch's own policy steps).
 A segment starts at a renderable step with the student's memory cleared and
 seeded for the task; within it, step *k*'s observation is the student's
 ``NegotiatedObservation`` — env-source fragments read back from the trace
-(``core/loops/restore/source.py::recorded_observation``), loop-source ones
+(``core/trace/reconstruction.py::recorded_observation``), loop-source ones
 built by ``loop_fragment_builders`` with the ``max_steps`` / ``today`` step
 *k* recorded (``today_override`` first) and the segment's earlier steps as
 history — then ``build_react_prompt`` writes into memory, the context at that
 moment is the sample's, and the reply ``format_react_output`` writes for the
 step's translated actions goes into memory through the Loop's own
-``_remember_reply``. A step that is not exportable, or that the
+``remember_reply``. A step that is not exportable, or that the
 ``untranslatable`` policy drops, ends the segment.
 
 **Round trip.** Every reply written is parsed back at once (which also
@@ -56,10 +56,10 @@ from spectragent.core.loops._loop_fragments import (
 )
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
 from spectragent.core.loops.react import ReactLoop
-from spectragent.core.loops.restore.source import recorded_observation, recorded_step_info
 from spectragent.core.negotiation.observation import IncompatibleFragmentError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_observation, recorded_step_info
 from spectragent.export.canonical import ThoughtSource
 from spectragent.export.errors import (
     ExportConfigError,
@@ -73,6 +73,7 @@ from spectragent.export.translate._registrar import UntranslatablePolicy
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation._registrar import FragmentBase, fragment_field_name
 from spectragent.schemas.observation.geometry import CoordinateSpace, point_grid
+from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.sample import CanonicalStepSample, ThoughtRecord, UntranslatableReason
 from spectragent.schemas.step_record import StepRecord
 
@@ -328,7 +329,7 @@ class StudentRenderer:
 
     # ── rendering ────────────────────────────────────────────
 
-    def render(self, steps: Sequence[TrajectoryStep]) -> list[RenderedSample]:
+    async def render(self, steps: Sequence[TrajectoryStep]) -> list[RenderedSample]:
         """Every emitted, renderable step of one trajectory, rendered in order.
 
         Raises:
@@ -349,7 +350,7 @@ class StudentRenderer:
                 segment = None
                 continue
             try:
-                outcome = self._render_step(item, sample, segment, segments)
+                outcome = await self._render_step(item, sample, segment, segments)
             except _Truncated:
                 self.stats.skipped["truncated"] += sum(
                     1 for later in steps[position + 1 :] if later.emit and later.sample is not None
@@ -364,7 +365,7 @@ class StudentRenderer:
                 rendered.append(result)
         return rendered
 
-    def _render_step(
+    async def _render_step(
         self,
         item: TrajectoryStep,
         sample: CanonicalStepSample,
@@ -388,7 +389,22 @@ class StudentRenderer:
         if segment is None:
             segment = self._open(item, segments)
         observation, step_info = self._with_loop_fragments(item, observation, segment)
-        self.memory.add_messages(self.agent.build_react_prompt(observation))
+        prompt_context = ReactPromptContext(
+            step=item.record.step,
+            phase="history",
+            policy_step=sum(
+                record.origin == "policy"
+                for record in item.trace.step_records
+                if record.step < item.record.step
+            ),
+            is_branch=item.trace.config.branch is not None,
+            contributions=list(item.record.prompt_contributions),
+            source_run_id=item.trace.run_id,
+            source_reply=item.record.llm_output,
+        )
+        self.memory.add_messages(
+            await self.agent.build_react_prompt(observation, context=prompt_context)
+        )
         actions = sample.actions or []
         if refusal is not None:
             self._refuse(item, sample, *refusal)  # keep_as_text: counted, then the text turn
@@ -408,7 +424,7 @@ class StudentRenderer:
             self._keep_as_text(segment, item, sample, "unrepresentable")
             return segment, None
         executed, errors = self._round_trip(sample, actions, text, thought)
-        self.loop._remember_reply(self.memory, text, [])
+        self.loop.remember_reply(self.memory, text, [])
         context_steps = tuple(segment.steps)
         segment.steps.append(item.record.step)
         segment.history.append(_as_student_saw(item.record, actions))
@@ -493,7 +509,7 @@ class StudentRenderer:
             separators=(",", ":"),
             ensure_ascii=False,
         )
-        self.loop._remember_reply(self.memory, f"[not expressible: {reason}] {written}", [])
+        self.loop.remember_reply(self.memory, f"[not expressible: {reason}] {written}", [])
         segment.steps.append(item.record.step)
         segment.history.append(_as_student_saw(item.record, list(actions)))
 

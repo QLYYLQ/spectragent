@@ -76,7 +76,9 @@ class _Agent:
     def __init__(self) -> None:
         self.answer = ""
 
-    def build_react_prompt(self, obs):
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs, *, context):
         # The Loop injects the task through the ``loop.task`` fragment;
         # the last word of the fixture's task text is the task id.
         task = getattr(getattr(obs, "task", None), "user_request", "") or ""
@@ -106,6 +108,10 @@ class _Completion:
 
 class _LLM:
     model = "offline-model"
+    name = "offline-model"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
 
     async def ainvoke(self, messages, output_format=None, **kw):
         return _Completion()

@@ -117,6 +117,8 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 
 本地配置默认打开可见的 Chrome 窗口。Chrome/Chromium 必须已安装；自动发现失败时设置 `CHROME_EXECUTABLE_PATH` 为可执行文件路径。`--start-url` 让 browser capability 在 agent 开始前打开页面，三个 agent 都能使用。它要写成一个完整的 `http://` 或 `https://` URL：只写主机名（`example.com`）、写别的协议头、写几个站点，`--dry-run` 就报错，消息点名这个起始页。`spectragent run` 会读取仓库根目录的 `.env`，也接受已导出的环境变量。`--dry-run` 会验证 YAML、实例化配置并执行 `AgentRuntime.prepare()` 的协商检查；不会启动 Chrome 或调用模型。
 
+每步动作上限由 `agent_loop.max_actions_per_step` 唯一决定。Runtime 将有类型的 `ExecutionLimits` 交给 Agent 原有 `prepare`，三个发货 Agent 用它构造自己的提示；消费声明或异步提示入口不匹配时，`--dry-run` 就拒绝。`metrics.execution_ms` 从环境 setup 前计到 Loop 结束（含分叉恢复、终止观测），不含结束 hook 与资源释放；任务表的 `elapsed_ms` 则包含完整收尾和结果回读。超时预算仍只覆盖 `agent.run`。
+
 ## 选择 agent
 
 | 想运行的 agent | 现成 YAML | 页面输入与动作 | 单任务命令 |

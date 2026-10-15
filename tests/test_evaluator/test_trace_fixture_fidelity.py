@@ -67,6 +67,7 @@ async def test_the_fixture_writes_what_trace_writer_writes(tmp_path: Path) -> No
     await writer.after_record_step(
         None, args=(StepRecord(step=0),), kwargs={"observation": observation}
     )
+    await writer.on_run_end()
     assert writer.run_dir is not None
     writer_trace = RunTrace(writer.run_dir)
 

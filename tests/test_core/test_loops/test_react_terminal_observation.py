@@ -123,7 +123,9 @@ class _Agent:
     def __init__(self) -> None:
         self.seen_cycles: list[int] = []
 
-    def build_react_prompt(self, obs: Any) -> list:
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list:
         self.seen_cycles.append(obs.test_terminal_frame.cycle)
         return [{"role": "user", "content": "go"}]
 
@@ -269,10 +271,10 @@ class TestWhenItFires:
         )
         assert len(recorder.records) == 3
         assert result.metrics.steps == 2
-        assert result.metrics.llm_calls == 2
+        assert result.metrics.llm_calls is None
 
     async def test_the_result_is_decided_before_it(self) -> None:
-        """end_to_end_ms does not include the terminal observation."""
+        """The Loop never measures Runtime execution time, even for terminal observation."""
 
         class _SlowTerminalEnv(EnvironmentBase):
             __wiring__ = {"capabilities": "capability"}
@@ -289,7 +291,7 @@ class TestWhenItFires:
         env = make_env(_SlowTerminalEnv, {"terminal_cycle_test_cap": cap})
         result, recorder = await _run(ReactLoop(max_steps=3, terminal_observation=True), env=env)
         assert recorder.records[-1].origin == "terminal"
-        assert result.metrics.end_to_end_ms < 300
+        assert result.metrics.execution_ms is None
 
 
 class TestWhenItDoesNot:
@@ -374,31 +376,6 @@ class TestTheTerminalObserveCanFail:
 
 
 class TestRecordingTheTerminalStep:
-    async def test_a_failing_result_names_the_recording_failure(self) -> None:
-        env, _ = _env()
-        loop = ReactLoop(max_steps=5, max_consecutive_parse_errors=1, terminal_observation=True)
-        result, _ = await _run(
-            loop,
-            agent=_Unparseable(),
-            env=env,
-            recorder=_FailingTerminalRecorder(OSError(28, "No space left on device")),
-        )
-        assert result.agent_done.value == "error"
-        assert result.error is not None
-        assert result.error.startswith("Parse failed 1 consecutive times")
-        assert "recording this step failed too: OSError" in result.error
-
-    async def test_a_successful_result_is_unchanged(self) -> None:
-        env, _ = _env()
-        result, recorder = await _run(
-            ReactLoop(max_steps=3, terminal_observation=True),
-            env=env,
-            recorder=_FailingTerminalRecorder(OSError(28, "No space left on device")),
-        )
-        assert result.agent_done.value == "done"
-        assert result.error is None
-        assert recorder.records[-1].origin == "terminal"
-
     async def test_a_veto_raised_by_the_sink_is_still_a_veto(self) -> None:
         env, _ = _env()
         veto = RunAbort("evidence guard", source="sink")

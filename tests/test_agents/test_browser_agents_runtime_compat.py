@@ -2,7 +2,7 @@
 
 Verifies that all three adapted agents:
 
-- Pass ``AgentRuntime``'s ``validate_compatibility`` against ``ReactLoop``
+- Pass ``AgentRuntime``'s ``validate_slots`` against ``ReactLoop``
 - Have the right observation negotiation behaviour (UITars must NOT
   trigger DOM resolution)
 - Successfully complete one mocked observe → think → act step driven

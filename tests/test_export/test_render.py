@@ -8,7 +8,6 @@ canonicalises and translates it with the real pipeline pieces, and renders it.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 from pathlib import Path
 from typing import Any
@@ -35,6 +34,7 @@ from spectragent.export.render import StudentRenderer, TrajectoryStep
 from spectragent.export.translate.identity import IdentityTranslator
 from spectragent.schemas.action import Action
 from spectragent.schemas.observation.fragments import StepInfoObs
+from spectragent.schemas.prompt import PromptContribution, ReactPromptContext
 from tests._helpers.export_runs import STUDENT_CONFIG, student_root
 from tests._helpers.export_traces import (
     UI_TARS_NEGOTIATION,
@@ -94,7 +94,7 @@ def _three_steps(tmp_path: Path, middle: Action | None = None, **kwargs: Any) ->
 
 
 class TestAssembly:
-    def test_render_makes_no_llm_call_and_no_setup(
+    async def test_render_makes_no_llm_call_and_no_setup(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Sentinels on the model and on every setup: rendering reaches none of them."""
@@ -116,21 +116,47 @@ class TestAssembly:
         renderer = _renderer(composer)
         llm = renderer.runtime.agent.llm
         monkeypatch.setattr(llm, "ainvoke", no_model)
-        rendered = renderer.render(_trajectory(_three_steps(tmp_path)))
+        rendered = await renderer.render(_trajectory(_three_steps(tmp_path)))
         assert [r.sample.step for r in rendered] == [0, 1, 2]
         assert calls == []
         # The sentinels sit exactly where a run would reach them.
         with pytest.raises(Sentinel):
-            asyncio.run(renderer.agent.llm.ainvoke([]))
+            await renderer.agent.llm.ainvoke([])
         with pytest.raises(Sentinel):
-            asyncio.run(renderer.runtime.setup_environment(None))
+            await renderer.runtime.setup_environment(None)
 
-    def test_the_context_is_the_students_own_assembly(
+    async def test_recorded_contributions_reach_the_agent_as_history(
+        self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        trace = _three_steps(tmp_path)
+        trajectory = _trajectory(trace)
+        contribution = PromptContribution(text="Keep the kettle blue", source="recorded function")
+        trajectory[0].record.prompt_contributions = [contribution]
+        seen: list[ReactPromptContext] = []
+        original = UITarsAgent.build_react_prompt
+
+        async def spy(self: UITarsAgent, observation: Any, *, context: ReactPromptContext) -> Any:
+            seen.append(context)
+            return await original(self, observation, context=context)
+
+        monkeypatch.setattr(UITarsAgent, "build_react_prompt", spy)
+        await _renderer(composer).render(trajectory)
+        assert [(item.step, item.policy_step, item.phase) for item in seen] == [
+            (0, 0, "history"),
+            (1, 1, "history"),
+            (2, 2, "history"),
+        ]
+        assert seen[0].contributions == [contribution]
+        assert seen[1].contributions == []
+        assert {item.source_run_id for item in seen} == {trace.run_id}
+        assert not any(item.is_branch for item in seen)
+
+    async def test_the_context_is_the_students_own_assembly(
         self, composer: ConfigComposer, tmp_path: Path
     ) -> None:
         trace = _three_steps(tmp_path)
         renderer = _renderer(composer)
-        rendered = renderer.render(_trajectory(trace))
+        rendered = await renderer.render(_trajectory(trace))
         seed = renderer.runtime.seed_messages(trace.config.task)
         assert len(seed) == 1 and isinstance(seed[0], SystemMessage)
         first, second, third = rendered
@@ -162,12 +188,12 @@ class TestAssembly:
         assert [r.context_steps for r in rendered] == [(), (0,), (0, 1)]
         assert {r.segment for r in rendered} == {0}
 
-    def test_the_target_label_is_the_quantised_point(
+    async def test_the_target_label_is_the_quantised_point(
         self, composer: ConfigComposer, tmp_path: Path
     ) -> None:
         """x=3 on a 1280 px viewport is not on the 0-1000 grid: the label is where it lands."""
         trace = RunTrace(write_ui_tars_run(tmp_path, "run-q", [ui_tars_step(click_at(3, 700))]))
-        (item,) = _renderer(composer).render(_trajectory(trace))
+        (item,) = await _renderer(composer).render(_trajectory(trace))
         assert item.target.endswith("click(point='(2, 972)')")
         executed = item.target_actions[0].params
         assert (executed["coordinate_x"], executed["coordinate_y"]) == (3, 700)
@@ -175,7 +201,7 @@ class TestAssembly:
         trace2 = RunTrace(
             write_ui_tars_run(tmp_path / "b", "run-r", [ui_tars_step(click_at(7, 700))])
         )
-        (lossy,) = _renderer(composer).render(_trajectory(trace2))
+        (lossy,) = await _renderer(composer).render(_trajectory(trace2))
         assert lossy.target.endswith("click(point='(5, 972)')")
         # x=7 is one of the 280 the grid cannot give back: grid 5 executes at x=6.
         assert lossy.target_actions[0].params["coordinate_x"] == 6
@@ -205,7 +231,7 @@ class TestAssembly:
 
     def test_only_one_hookless_react_student(self, composer: ConfigComposer) -> None:
         root = student_root()
-        root["hook"] = [{"hook_id": "metrics"}]
+        root["hook"] = [{"hook_id": "trace_writer"}]
         with pytest.raises(ExportConfigError, match="hooks"):
             _renderer(composer, root=root)
         root = student_root()
@@ -249,7 +275,9 @@ class TestWhatTheStudentNeeds:
         assert excinfo.value.provider == "source run 'recorded/run-dom' (as recorded)"
         assert "browser.screenshot ← ui_tars (the student)" in str(excinfo.value)
 
-    def test_capture_mismatch_is_named(self, composer: ConfigComposer, tmp_path: Path) -> None:
+    async def test_capture_mismatch_is_named(
+        self, composer: ConfigComposer, tmp_path: Path
+    ) -> None:
         trace = RunTrace(
             write_ui_tars_run(
                 tmp_path,
@@ -258,7 +286,7 @@ class TestWhatTheStudentNeeds:
             )
         )
         with pytest.raises(StudentCaptureMismatchError) as excinfo:
-            _renderer(composer).render(_trajectory(trace))
+            (await _renderer(composer).render(_trajectory(trace)))
         assert (excinfo.value.source, excinfo.value.step) == ("run-dpr2", 0)
         assert excinfo.value.mismatches == (
             "browser.screenshot: device scale factor 1 configured, 2 recorded",
@@ -266,7 +294,7 @@ class TestWhatTheStudentNeeds:
             "2560x1440 recorded",
         )
 
-    def test_a_step_without_the_screenshot_ends_the_segment(
+    async def test_a_step_without_the_screenshot_ends_the_segment(
         self, composer: ConfigComposer, tmp_path: Path
     ) -> None:
         negotiation = UI_TARS_NEGOTIATION.model_copy(update={"required_fragments": ["loop.task"]})
@@ -283,7 +311,7 @@ class TestWhatTheStudentNeeds:
             )
         )
         renderer = _renderer(composer)
-        rendered = renderer.render(_trajectory(trace))
+        rendered = await renderer.render(_trajectory(trace))
         assert [(r.sample.step, r.segment, r.context_steps) for r in rendered] == [
             (0, 0, ()),
             (2, 1, ()),
@@ -297,32 +325,32 @@ class TestUntranslatable:
     #: The student does not offer ``browser.navigate``: no counterpart.
     MIDDLE = Action(name="browser.navigate", params={"url": "https://shop.example.test/cart"})
 
-    def test_drop_step_segments(self, composer: ConfigComposer, tmp_path: Path) -> None:
+    async def test_drop_step_segments(self, composer: ConfigComposer, tmp_path: Path) -> None:
         renderer = _renderer(composer, untranslatable="drop_step")
-        rendered = renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
+        rendered = await renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
         assert [(r.sample.step, r.segment) for r in rendered] == [(0, 0), (2, 1)]
         assert renderer.stats.untranslatable == {"no_counterpart": 1}
 
-    def test_history_after_dropped_middle_step(
+    async def test_history_after_dropped_middle_step(
         self, composer: ConfigComposer, tmp_path: Path
     ) -> None:
         """The step after a dropped one starts over: re-seeded, nothing before it."""
         renderer = _renderer(composer, untranslatable="drop_step")
-        _first, last = renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
+        _first, last = await renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
         assert last.context_steps == ()
         assert [type(m).__name__ for m in last.context] == ["SystemMessage", "UserMessage"]
         assert last.context[0].text == renderer.runtime.seed_messages(last.sample.task)[0].text
 
-    def test_truncate(self, composer: ConfigComposer, tmp_path: Path) -> None:
+    async def test_truncate(self, composer: ConfigComposer, tmp_path: Path) -> None:
         renderer = _renderer(composer, untranslatable="truncate")
-        rendered = renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
+        rendered = await renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
         assert [r.sample.step for r in rendered] == [0]
         assert renderer.stats.untranslatable == {"no_counterpart": 1}
         assert renderer.stats.skipped == {"truncated": 1}
 
-    def test_keep_as_text(self, composer: ConfigComposer, tmp_path: Path) -> None:
+    async def test_keep_as_text(self, composer: ConfigComposer, tmp_path: Path) -> None:
         renderer = _renderer(composer, untranslatable="keep_as_text")
-        first, last = renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
+        first, last = await renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
         assert (first.sample.step, last.sample.step) == (0, 2)
         assert last.segment == 0 and last.context_steps == (0, 1)
         kept = [m.text for m in last.context if isinstance(m, AssistantMessage)][1]
@@ -331,13 +359,13 @@ class TestUntranslatable:
             '"params":{"url":"https://shop.example.test/cart"}}]'
         )
 
-    def test_fail(self, composer: ConfigComposer, tmp_path: Path) -> None:
+    async def test_fail(self, composer: ConfigComposer, tmp_path: Path) -> None:
         renderer = _renderer(composer, untranslatable="fail")
         with pytest.raises(UntranslatableActionError) as excinfo:
-            renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE)))
+            (await renderer.render(_trajectory(_three_steps(tmp_path, self.MIDDLE))))
         assert (excinfo.value.sample_id, excinfo.value.reason) == ("run-1/s1", "no_counterpart")
 
-    def test_more_actions_than_the_students_budget(
+    async def test_more_actions_than_the_students_budget(
         self, composer: ConfigComposer, tmp_path: Path
     ) -> None:
         trace = RunTrace(
@@ -348,15 +376,17 @@ class TestUntranslatable:
             )
         )
         renderer = _renderer(composer)
-        assert renderer.render(_trajectory(trace)) == []
+        assert (await renderer.render(_trajectory(trace))) == []
         assert renderer.stats.untranslatable == {"exceeds_action_budget": 1}
 
-    def test_a_param_the_student_cannot_write(
+    async def test_a_param_the_student_cannot_write(
         self, composer: ConfigComposer, tmp_path: Path
     ) -> None:
         scroll = Action(name="browser.scroll", params={"direction": "down", "amount": 300})
         renderer = _renderer(composer)
-        assert renderer.render(_trajectory(_three_steps(tmp_path, scroll)))[1].sample.step == 2
+        assert (await renderer.render(_trajectory(_three_steps(tmp_path, scroll))))[
+            1
+        ].sample.step == 2
         assert renderer.stats.untranslatable == {"unrepresentable": 1}
 
 
@@ -365,19 +395,19 @@ class TestStepInfo:
         seen: list[StepInfoObs | None] = []
         original = UITarsAgent.build_react_prompt
 
-        def spy(self: UITarsAgent, observation: Any) -> Any:
+        async def spy(self: UITarsAgent, observation: Any, *, context: ReactPromptContext) -> Any:
             seen.append(getattr(observation, "step_info", None))
-            return original(self, observation)
+            return await original(self, observation, context=context)
 
         monkeypatch.setattr(UITarsAgent, "build_react_prompt", spy)
         return seen
 
-    def test_the_recorded_step_info_is_pinned(
+    async def test_the_recorded_step_info_is_pinned(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         seen = self._seen(monkeypatch)
         renderer = _renderer(composer)
-        rendered = renderer.render(_trajectory(_three_steps(tmp_path)))
+        rendered = await renderer.render(_trajectory(_three_steps(tmp_path)))
         assert [(i.step, i.max_steps, i.today) for i in seen if i] == [
             (1, 30, "2026-10-11"),
             (2, 30, "2026-10-11"),
@@ -385,13 +415,13 @@ class TestStepInfo:
         ]
         assert {r.step_info for r in rendered} == {"recorded"}
 
-    def test_today_override_wins_and_the_fallback_is_the_manifest_date(
+    async def test_today_override_wins_and_the_fallback_is_the_manifest_date(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         seen = self._seen(monkeypatch)
         root = student_root()
         root["agent"][0]["agent_loop"]["today_override"] = "2030-01-02"
-        _renderer(composer, root=root).render(_trajectory(_three_steps(tmp_path / "a")))
+        (await _renderer(composer, root=root).render(_trajectory(_three_steps(tmp_path / "a"))))
         assert {(i.max_steps, i.today) for i in seen if i} == {(30, "2030-01-02")}
 
         seen.clear()
@@ -407,7 +437,7 @@ class TestStepInfo:
             )
         )
         renderer = _renderer(composer)
-        (item,) = renderer.render(_trajectory(trace))
+        (item,) = await renderer.render(_trajectory(trace))
         created = trace.manifest.created_at.date().isoformat()
         assert [(i.step, i.max_steps, i.today) for i in seen if i] == [(1, 30, created)]
         assert item.step_info == "fallback"
@@ -415,15 +445,15 @@ class TestStepInfo:
 
 
 class TestThought:
-    def test_none_writes_no_thought(self, composer: ConfigComposer, tmp_path: Path) -> None:
+    async def test_none_writes_no_thought(self, composer: ConfigComposer, tmp_path: Path) -> None:
         trace = _three_steps(tmp_path)
-        rendered = _renderer(composer, thought_source="none").render(
+        rendered = await _renderer(composer, thought_source="none").render(
             _trajectory(trace, thought_source="none")
         )
         assert all("Thought:" not in r.target for r in rendered)
         assert all(r.thought is None for r in rendered)
 
-    def test_index_references_are_dropped_when_the_student_cannot_see_them(
+    async def test_index_references_are_dropped_when_the_student_cannot_see_them(
         self, composer: ConfigComposer, tmp_path: Path
     ) -> None:
         dom_teacher = UI_TARS_NEGOTIATION.model_copy(
@@ -441,18 +471,18 @@ class TestThought:
             )
         )
         renderer = _renderer(composer)
-        first, second = renderer.render(_trajectory(trace))
+        first, second = await renderer.render(_trajectory(trace))
         assert first.thought is None and first.thought_dropped
         assert "Thought:" not in first.target
         assert second.thought is not None and second.thought.text == "then the button"
         assert renderer.stats.thoughts_dropped == 1
         assert renderer.stats.thought_fields == {"Thought": 1}
-        kept = _renderer(composer, thought_index_refs="keep").render(_trajectory(trace))
+        kept = await _renderer(composer, thought_index_refs="keep").render(_trajectory(trace))
         assert kept[0].target.startswith("Thought: click [12] the cart")
 
 
 class TestRoundTrip:
-    def test_a_formatter_that_is_not_a_fixed_point_is_a_round_trip_error(
+    async def test_a_formatter_that_is_not_a_fixed_point_is_a_round_trip_error(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         original = UITarsAgent.format_react_output
@@ -462,9 +492,9 @@ class TestRoundTrip:
 
         monkeypatch.setattr(UITarsAgent, "format_react_output", off_by_twenty)
         with pytest.raises(RoundTripError, match=r"run-1/s0: .*no fixed point"):
-            _renderer(composer).render(_trajectory(_three_steps(tmp_path)))
+            (await _renderer(composer).render(_trajectory(_three_steps(tmp_path))))
 
-    def test_a_formatter_that_moves_a_point_past_the_quantum_is_a_round_trip_error(
+    async def test_a_formatter_that_moves_a_point_past_the_quantum_is_a_round_trip_error(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Snapping to 100 px is a fixed point, so only the quantum clause can catch it."""
@@ -477,9 +507,9 @@ class TestRoundTrip:
         with pytest.raises(
             RoundTripError, match=r"run-1/s0: .*moved 40 px, more than the grid's quantum 1"
         ):
-            _renderer(composer).render(_trajectory(_three_steps(tmp_path)))
+            (await _renderer(composer).render(_trajectory(_three_steps(tmp_path))))
 
-    def test_a_formatter_that_drops_a_param_is_a_round_trip_error(
+    async def test_a_formatter_that_drops_a_param_is_a_round_trip_error(
         self, composer: ConfigComposer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         original = UITarsAgent.format_react_output
@@ -495,7 +525,7 @@ class TestRoundTrip:
 
         monkeypatch.setattr(UITarsAgent, "format_react_output", forgets_the_answer)
         with pytest.raises(RoundTripError, match="extracted_content"):
-            _renderer(composer).render(_trajectory(_three_steps(tmp_path)))
+            (await _renderer(composer).render(_trajectory(_three_steps(tmp_path))))
 
 
 def _shifted(actions: Any, move: Any) -> list[Action]:

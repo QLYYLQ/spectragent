@@ -170,7 +170,9 @@ class _AuditEnv(EnvironmentBase):
 class _AuditAgent:
     __wiring__ = {"action": ("action", ["audit_cap.done"])}
 
-    def build_react_prompt(self, obs):
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs, *, context):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, llm_output):

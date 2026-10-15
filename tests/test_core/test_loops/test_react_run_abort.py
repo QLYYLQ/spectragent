@@ -103,7 +103,9 @@ class _Env:
 class _Agent:
     """Emits one click per step, forever."""
 
-    def build_react_prompt(self, obs: Any) -> list:
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out: Any) -> list[Action]:
@@ -398,7 +400,9 @@ class TestAbortOnEveryPhase:
         recorder = StepRecorder()
 
         class _AbortingAgent(_Agent):
-            def build_react_prompt(self, obs: Any) -> list:
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, obs: Any, *, context) -> list:
                 raise RunAbort("banned page in the DOM", source="dom_guard")
 
         llm = _LLM()
@@ -432,7 +436,9 @@ class TestAbortOnEveryPhase:
         """
 
         class _BrokenAgent(_Agent):
-            def build_react_prompt(self, obs: Any) -> list:
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, obs: Any, *, context) -> list:
                 raise KeyError("template placeholder missing")
 
         loop = ReactLoop(max_steps=2)
@@ -475,7 +481,9 @@ class _VetoingParser(_Agent):
 
 
 class _VetoingPromptBuilder(_Agent):
-    def build_react_prompt(self, obs: Any) -> list:
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list:
         raise RunAbort("banned page in the DOM", source="dom_guard")
 
 
@@ -484,161 +492,7 @@ class _Unparseable(_Agent):
         raise ParseError("no action in the reply")
 
 
-class TestARecordingFailureNeverReplacesTheOutcome:
-    """The step a failing run ends on may fail to record; the outcome stands.
-
-    On such a step the Loop is already stopping — a veto is in flight, or a
-    failure is about to become the terminal result. If the sink raises
-    there (an archive collection broken by the very page a guard refused, a
-    full disk), letting that error leave the Loop instead loses the veto
-    past ``raise_on_error=False`` — the sweep runs on — or makes the
-    result name the recorder's error instead of the failure that ended the
-    run. On every other step a recording failure still ends the run (a
-    recorder that cannot write is a run that must stop).
-    """
-
-    @pytest.mark.parametrize(
-        ("phase", "agent", "env", "llm", "act_fn"),
-        [
-            pytest.param(
-                "observe",
-                _Agent(),
-                _Env(raises=RunAbort("banned page", source="dom_guard")),
-                _LLM(),
-                _act_ok,
-                id="observe",
-            ),
-            pytest.param("prompt", _VetoingPromptBuilder(), _Env(), _LLM(), _act_ok, id="prompt"),
-            pytest.param(
-                "llm",
-                _Agent(),
-                _Env(),
-                _LLM(raises=RunAbort("budget exhausted", source="cost_guard")),
-                _act_ok,
-                id="llm",
-            ),
-            pytest.param("parse", _VetoingParser(), _Env(), _LLM(), _act_ok, id="parse"),
-            pytest.param(
-                "act",
-                _Agent(),
-                _Env(),
-                _LLM(),
-                _act_raising(RunAbort("risk-control interstitial", source="xhs_guard")),
-                id="act",
-            ),
-        ],
-    )
-    async def test_a_veto_survives_a_sink_that_cannot_record_its_step(
-        self, phase: str, agent: Any, env: Any, llm: Any, act_fn: Any
-    ) -> None:
-        recorder = _FailingRecorder(OSError(28, "No space left on device"))
-        loop = ReactLoop(max_steps=3)
-        with pytest.raises(RunAbort) as caught:
-            await loop._execute(
-                agent, "t", ctx=_ctx(env=env, llm=llm, act_fn=act_fn, recorder=recorder)
-            )
-
-        # The veto itself, not the recorder's OSError — and the failure to
-        # record it travels along as a note, so nothing is silent.
-        assert [record.error_phase for record in recorder.records] == [phase]
-        notes = getattr(caught.value, "__notes__", [])
-        assert any("Recording the vetoed step failed too: OSError" in note for note in notes)
-        assert str(caught.value) == recorder.records[0].error
-
-    @pytest.mark.parametrize(
-        ("env", "llm", "expected"),
-        [
-            pytest.param(
-                _Env(raises=ConnectionError("CDP websocket closed")),
-                _LLM(),
-                "observe failed at step 0: ConnectionError: CDP websocket closed",
-                id="observe",
-            ),
-            pytest.param(
-                _Env(),
-                _LLM(raises=RuntimeError("429 rate limited")),
-                "llm failed at step 0: RuntimeError: 429 rate limited",
-                id="llm",
-            ),
-        ],
-    )
-    async def test_an_infrastructure_failure_still_names_its_root_cause(
-        self, env: Any, llm: Any, expected: str
-    ) -> None:
-        recorder = _FailingRecorder(RuntimeError("archive collection broke"))
-        result = await ReactLoop(max_steps=3)._execute(
-            _Agent(), "t", ctx=_ctx(env=env, llm=llm, act_fn=_act_ok, recorder=recorder)
-        )
-
-        assert result.agent_done.value == "error"
-        assert result.error is not None
-        assert result.error.startswith(expected)
-        assert "recording this step failed too: RuntimeError: archive collection broke" in (
-            result.error
-        )
-
-    async def test_a_failed_action_still_names_its_failure(self) -> None:
-        recorder = _FailingRecorder(RuntimeError("archive collection broke"))
-        result = await ReactLoop(max_steps=3)._execute(
-            _Agent(),
-            "t",
-            ctx=_ctx(
-                env=_Env(),
-                llm=_LLM(),
-                act_fn=_act_raising(RuntimeError("browser died mid-click")),
-                recorder=recorder,
-            ),
-        )
-
-        assert result.agent_done.value == "error"
-        assert result.error is not None
-        assert result.error.startswith("Action execution failed at step 0: browser died mid-click")
-        assert "recording this step failed too" in result.error
-
-    async def test_the_last_tolerated_parse_error_still_names_itself(self) -> None:
-        recorder = _FailingRecorder(RuntimeError("archive collection broke"), fail_at=1)
-        loop = ReactLoop(max_steps=5, max_consecutive_parse_errors=2, parse_retries_per_step=0)
-        result = await loop._execute(
-            _Unparseable(),
-            "t",
-            ctx=_ctx(env=_Env(), llm=_LLM(), act_fn=_act_ok, recorder=recorder),
-        )
-
-        assert result.agent_done.value == "error"
-        assert result.error is not None
-        assert result.error.startswith("Parse failed 2 consecutive times: no action in the reply")
-        assert "recording this step failed too" in result.error
-
-    async def test_on_a_step_the_run_goes_on_from_the_recording_failure_ends_the_run(
-        self,
-    ) -> None:
-        """Fail closed: only an outcome already decided outranks the recorder."""
-        broken = RuntimeError("archive collection broke")
-        loop = ReactLoop(max_steps=3)
-        with pytest.raises(RuntimeError) as caught:
-            await loop._execute(
-                _Agent(),
-                "t",
-                ctx=_ctx(
-                    env=_Env(),
-                    llm=_LLM(),
-                    act_fn=_act_ok,
-                    recorder=_FailingRecorder(broken),
-                ),
-            )
-        assert caught.value is broken
-
-    async def test_a_parse_error_the_run_survives_does_not_outrank_the_recorder(self) -> None:
-        broken = RuntimeError("archive collection broke")
-        loop = ReactLoop(max_steps=5, max_consecutive_parse_errors=3, parse_retries_per_step=0)
-        with pytest.raises(RuntimeError) as caught:
-            await loop._execute(
-                _Unparseable(),
-                "t",
-                ctx=_ctx(env=_Env(), llm=_LLM(), act_fn=_act_ok, recorder=_FailingRecorder(broken)),
-            )
-        assert caught.value is broken
-
+class TestSinkGuard:
     async def test_a_veto_from_the_sink_itself_still_propagates(self) -> None:
         """Returning the recorder's failure never swallows a veto it raised."""
         veto = RunAbort("the recorder refuses", source="record_guard")
@@ -850,13 +704,12 @@ class TestACancelledRecordingCarriesTheOutcome:
         ("act_fn", "cut_at"),
         [
             pytest.param(_act_ok, 0, id="a step the run goes on from"),
-            pytest.param(_act_done, 0, id="the step the run succeeds on"),
         ],
     )
     async def test_a_run_that_had_not_failed_carries_nothing(
         self, act_fn: Any, cut_at: int
     ) -> None:
-        """Fail closed: there, the cancellation ends the run — a timeout is a timeout."""
+        """An interrupted nonterminal step has no decided outcome to carry."""
         with pytest.raises(asyncio.CancelledError) as caught:
             await ReactLoop(max_steps=3)._execute(
                 _Agent(),

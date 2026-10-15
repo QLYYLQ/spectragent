@@ -4,9 +4,8 @@ Slot validation is implemented in ``AgentLoopBase.validate_slots()``.
 This module provides the ``IncompatibleError`` type, the loop-input and
 checkpoint errors a Loop raises at assembly (``IncompatibleLoopInputError``,
 ``IncompatibleCheckpointError``), the error for a Loop that needs an
-environment the run lacks (``MissingEnvironmentError``), and a thin
-``validate_compatibility`` wrapper for callers that prefer a free-function
-interface.
+environment the run lacks (``MissingEnvironmentError``). Public slot validation
+is the Loop's ``validate_slots`` method; there is no forwarding wrapper.
 
 See docs/execution_dag.md M03 "兼容性验证".
 """

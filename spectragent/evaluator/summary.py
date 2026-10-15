@@ -28,7 +28,7 @@ from spectragent.schemas.eval_summary import (
 #: Numeric agent metrics worth summarising. Each maps a result to a value
 #: or ``None`` when that run did not record it — a missing metric must
 #: shrink the sample, never contribute a zero.
-_METRIC_KEYS = ("steps", "end_to_end_ms", "ttft_ms", "total_tokens")
+_METRIC_KEYS = ("steps", "execution_ms", "ttft_ms", "total_tokens")
 
 
 def _metric_value(result: EvalResult, key: str) -> float | None:

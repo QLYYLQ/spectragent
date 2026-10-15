@@ -99,7 +99,9 @@ class TestParseErrorRecovery:
         class _Agent:
             __wiring__: dict = {}
 
-            def build_react_prompt(self, obs: Any) -> list:
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, obs: Any, *, context) -> list:
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, llm_output: Any) -> list[Action]:
@@ -131,7 +133,9 @@ class TestParseErrorRecovery:
         class _Agent:
             __wiring__: dict = {}
 
-            def build_react_prompt(self, obs: Any) -> list:
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, obs: Any, *, context) -> list:
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, llm_output: Any) -> list[Action]:
@@ -169,7 +173,9 @@ class TestParseErrorTermination:
         class _AlwaysFail:
             __wiring__: dict = {}
 
-            def build_react_prompt(self, obs: Any) -> list:
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, obs: Any, *, context) -> list:
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, llm_output: Any) -> list[Action]:
@@ -199,7 +205,9 @@ class TestParseErrorTermination:
             def __init__(self) -> None:
                 self._calls = 0
 
-            def build_react_prompt(self, obs: Any) -> list:
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, obs: Any, *, context) -> list:
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, llm_output: Any) -> list[Action]:
@@ -236,7 +244,9 @@ class TestParseErrorTermination:
             def __init__(self) -> None:
                 self._calls = 0
 
-            def build_react_prompt(self, obs: Any) -> list:
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, obs: Any, *, context) -> list:
                 return []
 
             def parse_react_output(self, llm_output: Any) -> list[Action]:

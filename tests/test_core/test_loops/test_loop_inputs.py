@@ -110,7 +110,9 @@ class TestWeaveChecksToo:
 
     def test_react_weave_refuses_a_checkpoint(self) -> None:
         class _ReactAgent:
-            def build_react_prompt(self, obs: Any) -> list[Any]:
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, obs: Any, *, context) -> list[Any]:
                 return []
 
             def parse_react_output(self, raw: Any) -> list[Any]:

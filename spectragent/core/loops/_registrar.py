@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Annotated, Any, ClassVar
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from conscribe import create_registrar
 from pydantic import Field
@@ -39,6 +39,10 @@ from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.observation.dynamic_model import summarize_observation
 from spectragent.schemas.step_record import StepRecord
+
+if TYPE_CHECKING:
+    from spectragent.core.environments.base import Environment
+    from spectragent.core.step_recorder import StepSink
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +253,9 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
         """Limits a consuming Agent must describe through its existing prompt inputs."""
         return ExecutionLimits()
 
-    async def surrender(self, recorder: Any, record: StepRecord, observation: Any) -> None:
+    async def surrender(
+        self, recorder: StepSink | None, record: StepRecord, observation: Any
+    ) -> None:
         """Hand execution facts to the step sink; recording failures are its responsibility.
 
         This public extension point is used for normal, failed and vetoed steps.
@@ -259,12 +265,17 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
             await recorder.record_step(record, observation=observation)
 
     async def surrender_vetoed(
-        self, recorder: Any, record: StepRecord, observation: Any, veto: RunAbort
+        self, recorder: StepSink | None, record: StepRecord, observation: Any, veto: RunAbort
     ) -> None:
         """Hand over a vetoed step without losing its outcome to cancellation."""
         try:
             await self.surrender(recorder, record, observation)
         except asyncio.CancelledError as cancelled:
+            logger.warning(
+                "recording step %d was cut off by a cancellation; the run had already ended (the veto: %s)",
+                record.step,
+                veto,
+            )
             carry_outcome(cancelled, veto)
             raise
 
@@ -338,7 +349,7 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 
     async def observe_terminal(
         self,
-        env: Any,
+        env: Environment,
         negotiated_obs: Any,
         *,
         step: int,

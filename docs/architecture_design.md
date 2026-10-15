@@ -384,7 +384,7 @@ class ReactLoop(AgentLoopBase):
 | `llm.ainvoke` | around | 每次 LLM 调用：返回、抛异常或被取消 | TraceWriter 在 `proceed()` 之前登记这次调用，按结局记为 completed / failed / cancelled，并测量等待时间；MetricsCollector 补记计费了的失败回复（校验失败、截断） |
 | `loop.record_step` | after | Loop 交出完整 StepRecord 后 | TraceWriter 一次 `commit_step` 提交本步观测、全部 LLM 调用记录和 step record，manifest 原子重写即提交点 |
 | `env.act` | after | 每次 action 执行后 | 可选：action 级别追踪 |
-| `agent.build_react_prompt` | around | prompt 构建时 | 可选：prompt 审计（同步方法，`proceed()` 直接返回值而非 awaitable） |
+| `agent.build_react_prompt` | around | prompt 构建时 | 异步提示贡献与审计；`await proceed()`，显式 `ReactPromptContext` 描述历史与策略阶段 |
 
 > **与 emitter.dispatch() 的权衡**：AOP 方案让 Loop 代码完全干净（零横切逻辑），但只能拦截实际存在的方法调用。如果某些 Loop（如 PlanExecuteLoop）需要发出不对应任何方法调用的语义事件（如 `plan_generated`），可以将其建模为 agent Protocol 方法（如 `agent.parse_plan()`），AOP 自然覆盖。
 
@@ -428,8 +428,9 @@ ReAct 的公开 `cap_actions`、`remember_rejected`、`remember_reply`、`today_
 
 - **何时**：done、`max_steps` 用尽、连续解析失败到上限，以及 `BranchLoop` 的步数预算用尽。**从不**在基础设施失败（`_abort`）、动作失败、恢复发散和任何 `RunAbort` 路径上。
 - **结果在前**：终止的 `AgentResult` 在决定结局时就建好，终止观测不改它的 `agent_done`、`env_status`、`answer` 与 `execution_ms`（由 Runtime 在终止观测结束后填写，包含这次观测）。记录失败只改变记录健康，不改写此结果。
-- **不致命**：observe 抛普通异常时记一条带 `error_phase="observe"` 的终止记录，run 的结局不变。guard 在这次 observe 上否决：先把这条终止记录作为被否决的一步交出，再上抛否决（否决优先于已经定下的结局，§4.2）。交出终止记录失败不顶替结局（与"记录失败不顶替 run 已经定下的结局"同一条规则，§4.6）：失败的结局在 `error` 后面附上原因，成功的结局只记日志，什么也不抛；trace 记为 `incomplete`（完整到最后一个策略步，原因写明，§4.6 "尾部失败不抛错"）；交出被取消切断时取消带着结局离开（`carry_outcome`）。
-- **分层**：observe 并建出终止记录是 `AgentLoopBase._observe_terminal(env, negotiated_obs, *, step)`（任何 Loop 可用，自己不交出记录）；交出与结局优先级用的是 `ReactLoop` 现有的交出方法。终止观测只有 env 来源的 fragment：没有 agent 看它，所以 loop 来源的 fragment 不填。
+- **不致命**：observe 抛普通异常时记一条带 `error_phase="observe"` 的终止记录，run 的结局不变。guard 在这次 observe 上否决时交出终止记录并上抛（否决优先于已定结果）。记录组件自身错误只进入记录健康；不会追加到执行错误、吞掉否决或替换答案。取消仍原样传播并携带已定结局。
+- **分层**：`AgentLoopBase.observe_terminal(env, negotiated_obs, *, step)` 公开捕获并构造终止记录；`observe_after_result(run, result)` 使用同一公开 `surrender` 完成交接与取消的结果传递。ReAct 的 `with_terminal` 仅决定是否启用。终止观测只填环境 fragment，没有 Agent 读取的 loop fragment。
+
 
 #### `BranchLoop`：从检查点分叉（M31）
 
@@ -455,7 +456,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):      # restorer 只在普通 
 **运行期（`_execute`）**：
 
 1. **种子消息**：runtime 已写入的 `agent.prepare` 种子消息（三个 browser agent 都只有一条 system 消息），必须与源 run 第 0 步第 0 次调用的 prompt 开头逐条相同，否则 `IncompatibleCheckpointError`（system prompt 里有任务、动作表与 `max_actions_per_step`）。比较的是 trace 记录的形状（`core/trace/reconstruction.py::recorded_form`：活的消息走记录器同一条路，先做 JSON 快照，再按记录的消息类型读回），所以两边逐条相同当且仅当记录器会为两边写下同样的内容。
-2. **重建上下文（Option A）**：上下文从**源 trace** 重建，不从恢复出的观测重建，因为恢复出的页面里元素 index 是新的 backendNodeId、tab id 是新的 CDP targetId、截图是重拍的，从它们重建的 prompt 不可能与源 run 一致。对每个 k < t：读回录下的观测 obs_k（env 与 loop 来源的 fragment 都读，经 `from_trace` 还原成类型，组装成本次协商的 `NegotiatedObservation`），调 `build_react_prompt`，写进 memory；再按开始顺序重放第 k 步的**每一次**录下的 LLM 调用：取出 live 时交给解析器的那个回复（文本调用是录下的文本；结构化调用用 agent 的 `get_react_output_model()` 把录下的 JSON 还原成实例；被 schema 拒绝的调用是 `failure.raw_output`），经 `parse_react_output` 解析：`ParseError` 走 `_remember_rejected`，成功走 `_cap_actions` + `_remember_reply`。重放自己校验自己：每次调用之前，memory 的上下文必须与这次录下的调用的 `messages` 逐条相同；第 k 步最后一次调用之后，解析出的动作（按 `guarded_act` 的那条规则命名，即 `core/action_guard.py` 的 `resolve_action_name`，用本 run 守卫的动作名集合与绑定表：守卫解析得了的补全前缀，它拒绝的保持 agent 写的名字，源记录里留下的正是守卫给的名字；本 run 的守卫能代表源 run 的，因为 weave 已证明两边协商相同、种子检查已证明带着动作表的种子 prompt 相同）、被丢弃的个数、写进 memory 的回复文本必须等于源 StepRecord 的 `actions`、`truncated_actions`、`llm_output`，解析失败的步必须在源 run 里也是解析失败的步。任何一条不符都是 `IncompatibleCheckpointError`（这个 agent 复现不了这个检查点），发生在恢复环境之前。重放经过 agent 的 slot，所以 Skyvern 的 `_action_history`、browser_use / UI-TARS 的坐标网格这类 agent 自己的状态一并重建；连续解析失败的步数也由重放得出。
+2. **重建上下文（Option A）**：上下文从**源 trace** 重建，不从恢复出的观测重建，因为恢复出的页面里元素 index 是新的 backendNodeId、tab id 是新的 CDP targetId、截图是重拍的，从它们重建的 prompt 不可能与源 run 一致。对每个 k < t：读回录下的观测 obs_k（env 与 loop 来源的 fragment 都读，经 `from_trace` 还原成类型，组装成本次协商的 `NegotiatedObservation`），调 `build_react_prompt`，写进 memory；再按开始顺序重放第 k 步的**每一次**录下的 LLM 调用：取出 live 时交给解析器的那个回复（文本调用是录下的文本；结构化调用用 agent 的 `get_react_output_model()` 把录下的 JSON 还原成实例；被 schema 拒绝的调用是 `failure.raw_output`），经 `parse_react_output` 解析：`ParseError` 走 `remember_rejected`，成功走 `cap_actions` + `remember_reply`。重放自己校验自己：每次调用之前，memory 的上下文必须与这次录下的调用的 `messages` 逐条相同；第 k 步最后一次调用之后，解析出的动作（按 `guarded_act` 的那条规则命名，即 `core/action_guard.py` 的 `resolve_action_name`，用本 run 守卫的动作名集合与绑定表：守卫解析得了的补全前缀，它拒绝的保持 agent 写的名字，源记录里留下的正是守卫给的名字；本 run 的守卫能代表源 run 的，因为 weave 已证明两边协商相同、种子检查已证明带着动作表的种子 prompt 相同）、被丢弃的个数、写进 memory 的回复文本必须等于源 StepRecord 的 `actions`、`truncated_actions`、`llm_output`，解析失败的步必须在源 run 里也是解析失败的步。任何一条不符都是 `IncompatibleCheckpointError`（这个 agent 复现不了这个检查点），发生在恢复环境之前。重放经过 agent 的 slot，所以 Skyvern 的 `_action_history`、browser_use / UI-TARS 的坐标网格这类 agent 自己的状态一并重建；连续解析失败的步数也由重放得出。
 3. **恢复环境**：`async for restored in self.restorer.restore(RestorationContext(...))`：每个 k < t 交回一条 `RestoredStep(step=k, check, observation)`，Loop 把它记成 `origin="restored"` 的 StepRecord：内容是源 run 第 k 步记录的副本（动作、结果、回复、观测摘要照抄，所以策略步看到的 `loop.history` / `loop.action_result` 与源 run 第 t 步看到的相同），`restoration` 是这一步的校验结果，`token_usage` 置空，`duration_ms` / `llm_latency_ms` 由 TraceWriter 照常盖章，`timestamp` 是现在；交给 `record_step` 的是**恢复出的** live 观测（只有 env 来源的 fragment）。最后一条 `step == t`：经校验的 live obs_t 与它的校验结果。
 4. **策略步**：先把配置的 `branch_instruction` 写进 memory（`none` 什么都不写，见下文"teacher 采样"），然后 `_run_step(run, t, observation=obs_t, restoration=<obs_t 的校验结果>)`，即一个 ReAct 步。`loop.step_info` 的 `max_steps` 与 `today` 取自源 run 在第 t 步录下的 `loop.step_info`（设了 `today_override` 时 today 用它），所以 agent 看到的"第几步 / 共几步"与源 run 相同。
 5. **继续步**：再走至多 `continue_steps` 个 ReAct 步（`continue_steps: 0` 就是单步分叉，单步由配置值决定，没有写死在逻辑里）。策略步总数不超过 `max_steps`；预算用尽是 `agent_done=max_steps`。

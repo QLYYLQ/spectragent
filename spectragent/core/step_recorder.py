@@ -31,6 +31,25 @@ from spectragent.schemas.step_record import StepRecord
 class StepSink(Protocol):
     """Contract for the object a Loop hands each completed step to."""
 
+    @property
+    def records(self) -> list[StepRecord]:
+        """A snapshot of surrendered execution records in order."""
+        ...
+
+    @property
+    def policy_step_count(self) -> int:
+        """The number of surrendered policy decisions."""
+        ...
+
+    @property
+    def last_observation(self) -> Any:
+        """Most recent surrendered observation, or None."""
+        ...
+
+    def clear(self) -> None:
+        """Start a fresh execution's in-memory record history."""
+        ...
+
     async def record_step(
         self,
         record: StepRecord,

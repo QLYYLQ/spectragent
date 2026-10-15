@@ -9,9 +9,10 @@ Start with the current Loop design in `docs/architecture_design.md`; the reposit
 
 Read [references/guide.md](references/guide.md) selectively:
 
-- Always read §1, §5, and §6 for Loop/Agent separation, config, and required test seams.
-- Read §2 for retry or parsing policy.
-- Read §3 before touching exception handling or `RunAbort`.
+- Always read §1, §5, and §6 for Loop/Agent separation, run state, typed execution limits, config, and required test seams.
+- Read §2 for retry, parsing, public ReAct round operations, or the async prompt contract.
+- Read §3 before touching execution outcomes, recording isolation, cancellation, or timing.
 - Read §4 before re-observing or re-asking within a step.
+- Read §7–§8 for branching, trace reconstruction, terminal observation, or frozen export consumers.
 
-Preserve the central split: Agents provide domain knowledge and typed failures; Loops own execution policy and remain stateless across woven agents.
+Preserve the central split: Agents provide domain prompts and typed failures; Loops own execution policy and remain stateless across woven agents. Runtime owns identity and execution timing; the recording component owns model-call accounting and persistence failures. Use declared public round operations across module boundaries, with no old-name forwarding aliases.

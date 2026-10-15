@@ -40,7 +40,6 @@ from spectragent.core.negotiation import ObservationNegotiationResult
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
-from spectragent.schemas.step_record import TokenUsage
 from tests._helpers.assembly import make_env
 
 _FRAG = "test_retry_screenshot"
@@ -151,7 +150,9 @@ class _Agent:
         self.cycles_seen: list[int] = []
         self.parse_calls = 0
 
-    def build_react_prompt(self, obs: Any) -> list:
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list:
         self.prompts_built += 1
         cycle = getattr(obs, _FRAG).cycle
         self.cycles_seen.append(cycle)
@@ -433,13 +434,8 @@ class TestCrossStepCounterIsUnchanged:
 
 
 class TestAccounting:
-    async def test_every_attempt_is_billed_to_the_step(self) -> None:
-        """Retries are real LLM calls and must not be free.
-
-        ``StepRecord.token_usage`` used to be the step's single call. If a
-        retried step reported only its last attempt, per-step cost reports
-        and ``AgentResult.metrics.usage`` would stop adding up.
-        """
+    async def test_loop_does_not_measure_usage_without_recording(self) -> None:
+        """The strategy executes retries but does not duplicate instrumentation."""
         env, _cap = _fresh_env()
         recorder = StepRecorder()
         loop = ReactLoop(max_steps=5, parse_retries_per_step=2)
@@ -456,15 +452,10 @@ class TestAccounting:
             ),
         )
 
-        assert result.metrics.llm_calls == 3
+        assert result.metrics.llm_calls is None
         assert result.metrics.steps == 1
-        step_usage = recorder.records[0].token_usage
-        assert step_usage is not None
-        assert step_usage.total_tokens == 42
-        assert step_usage.prompt_tokens == 30
-        # The run total and the step total are the same three calls.
-        assert result.metrics.usage is not None
-        assert result.metrics.usage.total_tokens == 42
+        assert recorder.records[0].token_usage is None
+        assert result.metrics.usage is None
 
     async def test_unmeasured_usage_survives_a_retry(self) -> None:
         """``None`` is the "not measured" sentinel, not zero."""
@@ -512,85 +503,3 @@ class TestRetryPathRespectsRunAbort:
                     recorder=StepRecorder(),
                 ),
             )
-
-
-class TestTokenUsageMerge:
-    """The helper the step accounting rests on, in isolation.
-
-    One thing to know before changing these: on the ReactLoop path both
-    operands come from ``TokenUsage.from_llm_usage``
-    (``schemas/step_record.py:19``), which builds a *fresh* model out of
-    the three declared counters and copies nothing else. A provider's
-    ``extra="allow"`` fields are therefore already gone by the time this
-    helper is called, and no production call site can produce the input
-    the last test uses. That test pins the helper's own arithmetic, not a
-    guarantee the pipeline delivers — an earlier version of this file
-    claimed the latter, and it was simply untrue.
-    """
-
-    def test_none_is_the_unmeasured_sentinel(self) -> None:
-        """``None`` means "nobody measured", and must not become zero.
-
-        It is the identity element of the merge in both directions, which
-        is what lets the accumulator start at ``None`` and stay there for
-        a whole run against a provider that reports no usage.
-        """
-        from spectragent.core.loops.react import _merge_token_usage
-
-        one = TokenUsage(prompt_tokens=1, completion_tokens=2, total_tokens=3)
-        assert _merge_token_usage(None, None) is None
-        assert _merge_token_usage(None, one) == one
-        assert _merge_token_usage(one, None) == one
-        # The helper happens to return the operand rather than a copy.
-        # That is an optimisation, not a contract — assert values, not
-        # identity, so a future rewrite is free to copy.
-
-    def test_extras_on_the_base_are_not_dropped_by_the_sum(self) -> None:
-        """Merging adds three counters and leaves everything else alone.
-
-        Unreachable today (see the class docstring), and kept anyway: if
-        ``from_llm_usage`` ever starts forwarding provider extras, the sum
-        must already be the ``model_copy(update=...)`` that preserves them
-        rather than a reconstruction that silently drops them.
-        """
-        from spectragent.core.loops.react import _merge_token_usage
-
-        # ``model_validate`` rather than a kwarg: ``reasoning_tokens`` is an
-        # ``extra="allow"`` field, so the constructor has no such parameter
-        # as far as a type checker is concerned.
-        base = TokenUsage.model_validate(
-            {
-                "prompt_tokens": 1,
-                "completion_tokens": 1,
-                "total_tokens": 2,
-                "reasoning_tokens": 7,
-            }
-        )
-        merged = _merge_token_usage(
-            base, TokenUsage(prompt_tokens=3, completion_tokens=4, total_tokens=7)
-        )
-        assert merged is not None
-        assert (merged.prompt_tokens, merged.completion_tokens, merged.total_tokens) == (
-            4,
-            5,
-            9,
-        )
-        assert (merged.model_extra or {}).get("reasoning_tokens") == 7
-
-    def test_the_loop_never_hands_this_helper_an_extra(self) -> None:
-        """Pin the upstream fact the class docstring rests on.
-
-        If ``TokenUsage.from_llm_usage`` ever starts carrying extras
-        through, the two tests above stop being hypothetical and their
-        wording needs revisiting.
-        """
-
-        class _RichUsage:
-            prompt_tokens = 1
-            completion_tokens = 2
-            total_tokens = 3
-            reasoning_tokens = 9
-
-        converted = TokenUsage.from_llm_usage(_RichUsage())
-        assert converted is not None
-        assert converted.model_extra in (None, {})

@@ -35,8 +35,8 @@ measure  spectragent flywheel run | report      a chain spec, not a run YAML
 | Browser capability | Capture (the recorder connection, each bound archiver's run-time session, redaction before a file is built), the replayability tier, replay serving and miss answers, retargeting and restoration checks, the student capture check, and every reader of its own evidence formats | `core/capabilities/browser/`: `recorder.py`, `archive/`, `replay/`, `restoration.py`, `capture_check.py`, `index_points.py`, `archive_stats.py`, `cooperation.py`, `navigation.py`, `settle.py` |
 | Archive axis | `ArchiverRegistrar`, the `ArchivingCapability` and `ArchiveConsumer` Protocols, `ArchiveFile` / `ArchiveBatch`, the shared privacy rules and ledger, the replay read side (`ArchiveReader`, `open_archive`) | `core/archive/` |
 | Negotiation and runtime | `negotiate_archive` (right after memory negotiation), `bind_archivers` as the last step of `prepare()` on the raw environment, `seed_messages`, typed Loop inputs, the branch provenance handed to the trace | `core/negotiation/archive.py`, `core/runtime.py` |
-| Trace hook, WAL, reader | The demand side (`trace_writer.archive`), pulling `collect_archive()` at its own commit points, step attribution, the `env/` subtree, run-record versions, failing closed; reading back only through the manifest | `core/hooks/trace_writer.py`, `core/trace/` |
-| Loop | `BranchLoop` (context rebuilt from the source trace, restore, the step-*t* `branch_instruction`, policy step, `continue_steps`, terminal observation), the restorer axis, per-run state (`LoopRun`), loop-fragment builders, the recorded-observation readers the export shares | `core/loops/branch.py`, `core/loops/restore/`, `core/loops/run.py`, `core/loops/_loop_fragments.py` |
+| Recording component, WAL, reader | Archive demands, pulling `collect_archive()` at commit points, call/step attribution, usage, the `env/` subtree, immutable run-record versions, gaps and recording health; manifest-based reading and shared context reconstruction | `core/hooks/`, `core/trace/` |
+| Loop | ReAct branching (configured history reconstruction, restore, policy/continuation steps and terminal observation), the restorer axis, fresh execution state (`LoopRun`, `ReactRun`, `BranchRun`), loop-fragment builders and the checkpoint-specific `SourceRun` wrapper | `core/loops/branch.py`, `core/loops/restore/`, `core/loops/run.py`, `core/loops/react.py`, `core/loops/_loop_fragments.py` |
 | Task loading | The `trace_branches` loader, the step-selector axis, `RequireEval` | `core/data_loader/task/` |
 | Export | `ExportRunner`, the exporter and translator axes, the student renderer, validation, split, benchmark loaders | `spectragent/export/` |
 | Flywheel | The chain, the metrics, the report and `spectragent flywheel`; a package, not a registry | `spectragent/flywheel/` |
@@ -92,14 +92,17 @@ The shipped flywheel code gives each kind of new piece a precedent:
   (`recorded_calls`, `recorded_usage`) for the calls a run recorded and the tokens they
   reported, read by the bench's and the chain's token limit, the report's `token_use` and
   the privacy measure;
-  `core/loops/restore/source.py` (`recorded_observation`, `recorded_step_info`) for the branch
-  replay and the student renderer; `core/trace/secret_patterns.py` for the secret guard, the
-  export's credential scan and the privacy metric.
-- Known misplacements, recorded in the local handoff `HANDOFF_261010_react_loop_layering.md`:
-  `_UsageTally`, `_merge_token_usage` and most other private helpers in `react.py` belong to
-  the trace/metrics or base-Loop layers, and `core/loops/restore/source.py` carries
-  trace-format knowledge (`SourceRun`, `recorded_form`, `first_difference`) that may belong to
-  `core/trace/`. Add nothing to either.
+  `core/trace/reconstruction.py` (`recorded_observation`, `recorded_step_info`,
+  `recorded_form`, `first_difference`) for branch replay and student rendering;
+  `core/trace/secret_patterns.py` for the secret guard, the export's credential scan and
+  the privacy metric.
+- Execution state and common outcome handling belong to `LoopRun` and `AgentLoopBase`;
+  ReAct-specific retry state belongs to `ReactRun`. Model-call accounting belongs to the
+  recording component, and Runtime resolves identity and measures `execution_ms` once.
+  `core/loops/restore/source.py::SourceRun` wraps trace reads with checkpoint-specific
+  errors; it exposes no forwarding aliases for the shared reconstruction functions.
+  ReAct consumers use public `execute_step`, `cap_actions`, `remember_rejected` and
+  `remember_reply`, without accessing another class's private helpers.
 
 ## 2. Configuring each stage
 
@@ -932,8 +935,14 @@ value on an existing one.
 - `format_react_output(actions, *, thought=None) -> str` is the inverse of
   `parse_react_output`: it writes the reply this agent would be asked for when served. It
   reads per-step agent state, so the order is `prepare`, then the step's
-  `build_react_prompt(obs)`, then `format_react_output`, then `parse_react_output`. The same
-  input gives the same text.
+  `await build_react_prompt(obs, context=ReactPromptContext(...))`, then
+  `format_react_output`, then `parse_react_output`. Historical rendering passes
+  `phase="history"` and recorded contributions; it never regenerates them with a helper
+  model. The same input gives the same text.
+- `StudentRenderer.render` is async. Its callers await it; the synchronous
+  `ExportRunner.run` drives the entire async rendering phase with one `asyncio.run`.
+  Segment seeding still uses `AgentRuntime.seed_messages`, and assistant history uses
+  the public `ReactLoop.remember_reply`. No environment or model is started.
 - What it cannot write raises `UnrepresentableActionError(action_name, params, detail)`
   (`core/loops/errors.py`). Never drop a parameter silently.
 - It must satisfy the round-trip definition of architecture §4.15: the parsed name resolves
@@ -1023,15 +1032,13 @@ value on an existing one.
   (`TabRegistry`), so it is the same with or without the recorder, in recording, replay and
   branching. Each fragment of the capture carries `focus_moved` (`None` and left out of the
   trace JSON when nothing moved); agents never render it.
-- Fail closed, two ledgers. A lost recorder fails observation, action and collection
-  (`RecorderLostError`). A collection that fails, or hands over a batch that breaks the
-  contract, is a hole: its step stays uncommitted, the trace closes `incomplete`, complete
-  through the step before (`complete_through`, reason in `incomplete_reason`), and nothing is
-  collected after it. The run stops there with `agent_done: error`, `error: "recording failed
-  at step t: ..."` (`RecordingFailedError`) — unless the agent called done on that very step,
-  whose answer is kept. A failure after the run ended (the close-out collection, an owed
-  trailing commit, the terminal observation, `result.json`) keeps the outcome, marks the
-  trace `incomplete` and raises nothing; what the close-out cannot commit is dropped.
+- Keep execution and recording ledgers separate. Collection, encoding and WAL failures
+  affect recording health and committed evidence; they do not stop the Agent or replace
+  its answer, cancellation, veto or execution error. The recording component owns gap and
+  recovery handling. Loop code does not catch arbitrary hand-over exceptions or inspect
+  recorder health. Read manifests and completeness limits when selecting branch/export
+  evidence; a successful task can still have an incomplete trace. A real failed browser
+  operation remains an environment failure, independently of whether recording is enabled.
   The `archive` network source never forwards a request to the network. That is the
   source's own rule, not a framework law: a source that falls back to the network would be
   a new network source.

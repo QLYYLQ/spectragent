@@ -1,510 +1,325 @@
-# Add a Loop
+# Add or change a Loop
 
-> Source line numbers are historical navigation hints in this mid-refactor repository.
-> Locate the named symbol with `rg` and read the current implementation before editing.
-
-`ReactLoop` is the only execution strategy that exists. `BranchLoop` (`branch`, M31) is a
-`ReactLoop` *subclass*: a branch run's steps are ReAct steps, so it adds a restore phase
-and no new phase vocabulary (§7). `CodeActLoop` (M20, P2), `FunctionCallingLoop` (M22, P3)
-and `PlanExecuteLoop` (M24, P3) are designed and unbuilt — target registry keys and slots
-are in `docs/architecture_design.md` §4.1. You are the author of the second *strategy*.
-Several things in `react.py` are shaped the way they are *because* there is only one
-sample; this skill says which, so you know which lifts are yours.
+Read the relevant section of `docs/architecture_design.md` first. Find the symbols below
+with `rg`; this guide names contracts, not historical line numbers. The architecture is
+being refactored, and neither an old test nor a dated handoff justifies retaining a
+superseded implementation.
 
 ## 1. The split: the Agent is passive, the Loop drives
 
-Two independent registries. The Agent holds no Loop reference and never calls the Loop;
-the Loop holds no agent state and never stores deps on itself.
+An Agent owns domain prompts and output parsing. A Loop owns execution policy: when to
+observe, ask, retry, act and finish. `BranchLoop` is a ReAct specialization, not a second
+generic strategy. Do not generalize all branching protocols from that one implementation.
 
-```python
-# spectragent/core/loops/react.py:233-239
-__registry_key__ = "react"
-__required_slots__ = {"build_react_prompt", "parse_react_output"}
-__optional_slots__ = {"get_react_output_model", "prepare",
-                      "format_react_output", "parse_react_thought"}  # the last two: §8
-__required_message_protocols__ = frozenset({"user_assistant"})
-__requires_env__ = True
-```
+A new strategy subclasses `AgentLoopBase`, declares `__registry_key__` and its required
+Agent method slots, and implements `async def _execute(self, agent, task, *, ctx, **kwargs)`.
+Conscribe registers it. The public structural contract is `core/loops/base.py::AgentLoop`;
+keep that Protocol consistent with the methods Runtime actually invokes.
 
-`weave()` (`core/loops/_registrar.py:117-135`) validates the slots, captures deps in a
-closure and monkey-patches `agent.run` onto the *instance*:
+`AgentLoopBase.weave` validates slots and task inputs, captures dependencies in a closure,
+and installs `agent.run`. Every invocation constructs fresh run state. Dependencies and
+mutable state never live on the Loop instance: no `loop.ctx`, per-Loop retry counter or
+cached task history. Repeated weaving must not redirect an earlier Agent to a later run.
 
-```python
-ctx = dict(deps)
-async def run(task, **kw):
-    return await loop._execute(agent, task, ctx=ctx, **kw)
-agent.run = run
-```
+### Compatibility and assembly
 
-**Stateless on purpose.** Deps live only in that closure, so one Loop instance drives N
-agents concurrently and the Nth weave cannot rewrite the 1st agent's env. Everything your
-`_execute` needs arrives in `ctx`: `env`, `llm`, `memory`, `act_fn`, `negotiated_obs`,
-`negotiated_actions`, `active_descriptors`, `step_recorder`, `task_id`, and the read-only
-`loop_inputs` (§7) (`core/runtime.py:419-430`). Keep it that
-way: do not store per-run dependencies or mutable run state on `self`. Reading immutable
-config fields and calling stateless helper methods on `self` is fine.
+Compatibility uses `__required_slots__` and `validate_slots(agent)`, raising
+`IncompatibleError` for missing callables. Do not add `*Compatible` Protocols or a
+compatibility wrapper around an unused API. `__optional_slots__` documents methods a
+consumer may use; the consumer validates an optional slot just before calling it.
 
-### Compatibility is slots, not Protocols
+Runtime validates slots, typed Loop inputs, execution limits, environment requirements,
+fragment/action/memory contracts and setup compatibility before it starts the environment
+or model. It then weaves AOP and the Loop. A config that setup would refuse must be refused
+by `prepare()` too; do not defer an already knowable error to the first step.
 
-Current `AGENTS.md` §2.3 and `docs/architecture_design.md` §4.1 both define compatibility
-through method slots. `rg "class .*Compatible" spectragent/` returns nothing, and it
-should. The design reason is that a Loop that is ReAct plus one method is
-`class ReactWithThoughtLoop(ReactLoop):
-__required_slots__ = ReactLoop.__required_slots__ | {"parse_thought"}` — zero new Protocol.
-The Protocol route needs a new `*Compatible` per variant, an N×M explosion. The cost is no
-static check; the compensation is that a missing slot raises `IncompatibleError` naming the
-methods, at `prepare()` time, before an LLM is ever called
-(`core/loops/validation.py:16-31`, `_registrar.py:97-113`).
+- `__requires_env__` defaults to `True`. An environment-free Loop explicitly declares
+  `False`; the Agent's fragment and action requirements still undergo negotiation.
+- `__loop_fragments__` declares exactly the loop-source fragments this strategy can
+  construct. The default is `LOOP_FRAGMENT_KEYS` from `core/loops/_loop_fragments.py`.
+  Negotiation refuses a required fragment the Loop cannot build.
+- `__required_message_protocols__` participates in memory negotiation. Extending the
+  protocol names also requires a concrete message and memory behavior contract.
+- An Agent can narrow its own fragment demands; it cannot remove the Loop's requirements.
 
-So: "an Agent supports many Loops" means it defines both method sets, and names both loops
-in `__wiring__` — `agents/browser_use.py:282` pins one (`"agent_loop": ("agent_loop",
-["react"])`); `agents/_registrar.py:90` is the Mode 1 default that allows all. conscribe
-turns that into `Literal[...]` on the generated config, so an illegal pairing dies in
-Pydantic validation, never at runtime.
+### Typed execution limits and prompt ownership
 
-### Where your Loop is picked up
+`execution_limits() -> ExecutionLimits` is the Loop's sole source of execution limits.
+`ReactLoop` supplies `max_actions_per_step`. The immutable type and validation live in
+`core/loops/limits.py`.
 
-`AgentRuntime.prepare` (`core/runtime.py`), in order: slot validation → loop inputs
-(`__loop_inputs__`) → your `__requires_env__` (no environment and `True`, the default:
-`MissingEnvironmentError`, naming your Loop) → observation negotiation (the Loop side offers
-your `__loop_fragments__`) → action negotiation → memory-protocol negotiation (reads your
-`__required_message_protocols__`) → archive negotiation (validation only, and only when a
-hook declares a non-empty `archive`) → the environment's setup check
-(`Environment.check_setup` with the task's setup context: what setup would refuse, refused
-before the trace is opened) → AOP weaving of agent/env/llm/recorder → `build_guarded_act`
-→ `loop.weave` → intercept audit → `env.bind_archivers` (the last statement, on the raw
-environment; again only when a hook archives). Your Loop's observation demand goes in
-**unnarrowed**: an agent may narrow its own half per mode, but "cannot excuse itself from a
-fragment the Loop needs" (`core/negotiation/observation.py`).
+An Agent declares consumed fields in `__execution_limit_fields__`. A deliberate empty set
+means these limits do not apply to its prompts; an absent declaration cannot silently
+ignore a supplied limit. Consumed fields must be known and provided. A consuming Agent's
+existing `prepare` slot explicitly accepts `execution_limits` by keyword; `**kwargs` is
+not a consumption declaration. Runtime checks this in `prepare()` and hands the same typed
+value to `AgentRuntime.seed_messages()`.
 
-> **Known document drift:** `docs/architecture_design.md` §4.8 still describes memory
-> protocol negotiation as future work, while `AgentRuntime.prepare()` currently calls
-> `negotiate_memory()` and the tests exercise it. Per `AGENTS.md` §3.1, surface that
-> conflict before changing the memory/Loop contract; do not use this guide to silently
-> choose one side.
+The Agent uses its existing `prepare`, `_build_system_prompt` and `build_react_prompt`
+methods to decide wording and placement. Runtime never constructs domain prompt text.
+Do not restore the convention that probes `getattr(loop, "max_actions_per_step")` and
+passes a matching keyword only when a signature happens to accept it.
 
-Minimum new Loop: subclass `AgentLoopBase`, set `__registry_key__`, `__required_slots__`,
-`__requires_env__`, implement `async def _execute(self, agent, task, *, ctx, **kwargs)`
-returning an `AgentResult`. Registration is automatic via the conscribe metaclass
-(`tests/test_core/test_loops/test_loop_registration.py`).
+### Run state, identity and measurements
 
-Two class declarations `prepare()` reads, both defaulted on `AgentLoopBase`
-(architecture §4.1 "Loop 的两条类级声明"):
+`core/loops/run.py::LoopRun` owns one execution's dependencies, resolved `RunIdentity`,
+step records, action history, last answer and previous step. `ReactRun` in `react.py`
+extends it with the ReAct-specific parse-error streak. `BranchRun` extends the ReAct state
+for checkpoint execution. Use `from_ctx(..., step_executor=...)` to construct a new state
+for each invocation; the step executor is the declared execution seam, including its AOP
+wrapper when supplied by Runtime.
 
-- `__requires_env__ = True`: a run without an environment is refused by name. Declare
-  `False` only if your Loop really runs env-less; the missing environment then provides
-  nothing, so an agent needing an environment fragment or action is refused by
-  negotiation, and the run has no action space.
-- `__loop_fragments__`: the loop-source fragments your Loop fills after `env.observe()`.
-  The default is `LOOP_FRAGMENT_KEYS`, the four `loop_fragment_builders` builds (§8). If
-  your Loop builds others, or none, say so: negotiation offers only these on the Loop's
-  side, so an agent requiring a loop-source fragment your Loop does not build is refused
-  at `prepare()`, naming the fragment and your Loop, instead of failing at step 0 on a
-  missing builder.
+Runtime resolves run and model identity once. Other layers receive that identity instead
+of independently inspecting model implementations. Token accounting and model-call counts
+belong to the recording component, including failed replies with reported usage and calls
+before an in-step retry fails. Neither `LoopRun` nor `ReactRun` has a usage tally or a
+second run clock. With no recording component, usage and call count remain `None`.
 
-## 2. Where a knob belongs — the worked example
+`AgentLoopBase` provides the common public operations `surrender`, `surrender_vetoed`,
+`end_step`, `build_result`, `observe_terminal` and `observe_after_result`. Both ordinary and
+failing paths use the same overridable hand-over method; never hard-code a call to a
+concrete `ReactLoop` implementation from a generic failure path.
 
-Three knobs sit together on `ReactLoop` (`react.py:242,246,253`):
+## 2. ReAct policy, parsing and its public round operations
 
-| field | meaning |
+ReAct keeps its own phase vocabulary and knobs:
+
+| Field | Meaning |
 |---|---|
-| `max_steps` | steps before termination |
-| `max_consecutive_parse_errors` | consecutive unparseable **steps** before termination |
-| `parse_retries_per_step` | extra re-asks **inside** one step, on the observation it already took |
+| `max_steps` | Budget for this run's policy decisions |
+| `max_actions_per_step` | Maximum actions executed from one accepted reply |
+| `max_consecutive_parse_errors` | Consecutive unparseable steps before termination |
+| `parse_retries_per_step` | Additional asks inside the same observation cycle |
+| `today_override` | Date shown by ReAct's step-info fragment |
+| `terminal_observation` | Whether to observe after a normal terminal result |
 
-`parse_retries_per_step` is the interesting one, because *parsing* is agent domain
-knowledge — `parse_react_output` is an agent slot, and only the agent knows this run's
-verbs — while **what to do when parsing fails is execution strategy**. Putting the retry
-budget on the Agent would split the two halves of one decision across two classes, and the
-next person asking "how many times does a bad reply get re-asked?" would have two places to
-look and no rule for which wins. One fact, one source: the knob goes on the Loop.
+Parsing is Agent knowledge; deciding what to do with a parse failure is Loop policy. The
+Agent raises `ParseError(detail, raw_output=...)`; ReAct's public `parse_feedback` renders
+that diagnostic for another ask. A schema validation failure carries its actual rejected
+reply. A truncated provider response follows the existing truncation policy; do not
+reinterpret it as a successful parse or manufacture a partial action.
 
-### The seam that makes it work
+`ReactLoop.execute_step(run, step_idx, *, observation=None, restoration=None)` is the
+public reusable round. It returns an `AgentResult` when finished, otherwise `None`.
+Supplying an observation means the world has already been captured for that step and must
+not be observed again. A supplied restoration check belongs on every record that round
+hands over.
 
-The Loop does not invent the feedback text. The agent raises `ParseError(detail,
-raw_output=...)` (`core/loops/errors.py:31-48`); the Loop renders it:
+The shared ReAct operations are public:
 
-```python
-# react.py:87-99
-def _parse_feedback(exc: ParseError) -> str:
-    return (
-        f"[SYSTEM] Your previous output could not be parsed into actions. "
-        f"Error: {exc.detail}\n"
-        f"Please try again with valid output format."
-    )
-```
+- `cap_actions(actions, step_idx)` applies the action budget and names discarded actions.
+- `remember_rejected(memory, output_text, exc)` records the rejected assistant reply and
+  feedback turn.
+- `remember_reply(memory, output_text, dropped)` records an accepted reply and any action
+  truncation notice.
+- `today_iso()` and `loop_fragment_builders(run, step_idx)` supply ReAct's fragment values.
+- `serialize_llm_output(raw_output)` provides the common reply text representation.
 
-**Agent supplies content, Loop supplies policy.** Copy that shape for any new phase: the
-agent's exception carries the thing only the agent knows, the Loop decides what it costs.
+Branch history and frozen student rendering call these declared interfaces. Do not expose
+old private names as aliases, import another class's private helpers, or duplicate its
+memory protocol in a consumer.
 
-### The invariant worth preserving
+A step that exhausts parsing retries records `error_phase="parse"` and the actual parse
+error. A successfully parsed empty action list remains a different execution fact.
+Whether the run continues follows the configured parse-error streak; recording the error
+does not change that strategy. Both steps remain excluded from training samples under the
+existing export filter.
 
-`react.py:570-571` writes the rejected reply and the feedback into memory *before* deciding
-whether to retry. So the in-step retry and the next step read **exactly the same two
-messages** — the only difference is whether a new observation follows. If they differed the
-model could tell which situation it was in, and the in-step path would be training on a
-prompt shape the cross-step path never produces. Do not "improve" one of them in isolation.
+### The asynchronous prompt slot
 
-One more convention, and it is a convention rather than something the design doc settles:
-in-step retries are invisible to the cross-step streak (`react.py:589-593`) — a step either
-parses or it does not. `test_react_parse_retry.py:380
-::test_streak_counts_steps_not_attempts` documents the decision, not just the behaviour.
-Read it first if you ever unify the two budgets.
+The current contract is
+`await agent.build_react_prompt(observation, context=ReactPromptContext(...))`.
+`ReactPromptContext` is in `schemas/prompt.py`; it carries the explicit step, phase,
+policy-step index, branch identity, source facts and prompt contributions. Runtime and
+Loop pass facts; the Agent decides how to express them.
 
-## 3. `RunAbort`, and the layering question
+Policy steps use `phase="policy"`. Historical reconstruction uses `phase="history"` and
+recorded contributions, so it never calls a current contribution function to guess an old
+prompt. Contributions produced for a policy step are retained on that step's record.
+In-step parse retries reuse the built prompt and contributions. Do not infer phase from a
+hook call counter, start background generation, or nest an event loop inside a builder.
+Prompt/helper failures are execution failures and cancellation propagates; they are not
+recording failures to suppress.
 
-### 3.1 What it fixes
+## 3. Execution outcomes, cancellation and recording isolation
 
-A blanket `except Exception` around act/parse used to swallow a guard's veto. Observed
-live: an agent's own safety guard fired, the run came back as an ordinary
-`agent_done="error"`, and the benchmark driver went on to the next task. A Loop turns
-*failures* into results — that is right for a dead browser and wrong for a refusal.
+### Execution failures and vetoes
 
-### 3.2 The rule is global and mechanically enforced
+`RunAbort` is a typed execution veto. Any broad `except Exception` in a Loop must first
+handle `RunAbort` or explicitly re-raise it after handing over the interrupted step.
+`tests/test_core/test_loops/test_abort_handler_hygiene.py` checks these exception shapes.
+The step preserves the phase, observation, reply and completed actions that actually
+existed. ReAct's `_note_abort` stays private to ReAct because its phase vocabulary is
+strategy-specific.
 
-**No Loop may swallow `RunAbort`.**
-`tests/test_core/test_loops/test_abort_handler_hygiene.py` AST-scans every module under
-`spectragent/core/loops/` and fails on any `try` with a blanket `except Exception` that
-does not carry one of the two accepted shapes. The scan is recursive since M31, so the
-restorer package (`core/loops/restore/`) is covered, and a meta test pins that
-`restore/prefix_replay.py` and `branch.py` are in the scanned set. It constrains the
-*source*, not call sites, so your loop inherits the rule on the day you create the file —
-and the test survives being refactored into a base-class helper later. `:248` guards against the rule going vacuous.
+The action phase may capture an exception long enough to assemble partial results. It
+must log a veto before awaiting hand-over and then re-raise that veto. An ordinary model
+failure does not become an environment failure. An Agent prompt bug propagates as an
+execution error; a diagnostic recording failure must never impersonate it.
 
-Third answer, allowed and deliberately ugly: `# RunAbort-exempt: <reason>` on the `except`
-line, for a handler that genuinely cannot be vetoing anything (teardown, logging).
+Runtime closes out a vetoed run and re-raises `RunAbort` even with `raise_on_error=False`.
+The benchmark layer decides that a veto stops a sweep and still evaluates completed
+outcomes. A Loop does not know whether a sweep exists.
 
-### 3.3 The two shapes
+### Recording failures belong to the recorder
 
-**(a) Handle inline** — observe (`react.py:342`), prompt (`:387`), llm (`:454`), parse
-(`:544`). `except RunAbort as exc:` **above** the blanket handler (Python matches top-down,
-so position is load-bearing, not style), call `await self._note_abort(phase=..., exc=exc,
-recorder=..., observation=..., step_idx=..., step_records=...)`, then bare `raise`. Pass
-`llm_output=` / `token_usage=` if the phase has them — for a parser veto the refused reply
-*is* the evidence (`react.py:544-563`).
+The Loop hands execution facts to `record_step`; the recording component owns collection,
+encoding, persistence health, gaps and retry/recovery policy. A recording/WAL failure does
+not stop the Agent, change `agent_done` or `answer`, append an artificial execution error,
+or masquerade as a model/action failure. Later execution may continue while the trace
+truthfully records its gaps.
 
-**(b) Capture and re-raise** — the per-action loop only (`react.py:682-687`, resolved at
-`:713`). The blanket handler assigns to `act_error` and breaks, because the failure must be
-attributed to one action among several; the ordinary (richer) `StepRecord` is built,
-`_surrender`ed, and only then `if isinstance(act_error, RunAbort): raise act_error`. **Do
-not call `_note_abort` here** — the record is already written and you would double it.
+Keep this isolation at the recording boundary. Do not add `except Exception: pass` around
+`surrender`, inspect recorder health from the Loop, or reinstate a generic
+`RecordingFailedError` stop path. Such catches would also swallow real execution vetoes
+and bugs from arbitrary blocking advice. AOP guards and prompt injectors remain execution
+components; the recorder's fault-isolation policy does not apply to them.
 
-**The step a failing run ends on can fail to record, and that must not replace the
-outcome.** The sink is woven: `TraceWriter`'s blocking `after` advice on `record_step`
-raises when the step's archive collection fails or the disk is full, and a page broken
-enough for a guard to veto is exactly when capture breaks too. If that error leaves the
-Loop instead of the veto, `AgentRuntime.execute`'s `isinstance(exc, RunAbort)` sees an
-ordinary exception, `raise_on_error=False` swallows it, and the sweep starts its next
-task; an `_abort` result likewise names the recorder's error instead of the root cause.
+The result ledger and trace completeness ledger are separate. Offline consumers use
+manifest evidence and completeness limits; they do not conclude that an Agent failed
+merely because some evidence could not be persisted.
 
-So every surrender on a step after which the run is over *because it failed* (both
-abort shapes, `_abort`, a failed action, the last tolerated parse error) goes through
-`ReactLoop._surrender_failing`, which logs the recording failure and returns it: the
-veto is re-raised with it attached as a note (`_note_unrecorded`), the error result
-appends "recording this step failed too: …" (`_unrecorded_suffix`). A `RunAbort` the sink
-raises itself still propagates. On every other step, where the run would go on, a
-recording failure still ends the run (fail closed): `TraceWriter` raises
-`RecordingFailedError` (`core/step_recorder.py`), and the result reads `recording failed
-at step t: …`. On the step the agent called done on, `TraceWriter` raises nothing — the
-outcome is already decided — so a Loop's done path needs no special case. Nothing is lost
-by not raising it: the recorder already knows (TraceWriter keeps the step's calls owed,
-commits them as trailing at close-out and closes the trace out `incomplete`, complete
-through the step before, as far as the disk lets it). `TraceWriter` raises nothing at
-close-out either: a disk still full there costs the trace its ledger entry
-(`incomplete_reason`), never the outcome; a close-out failure of another hook is the
-runtime's to rank, not the Loop's: `AgentRuntime.execute` logs it and adds it to the veto
-as one more note (§3.4). A new Loop owes the same split.
+### Cancellation preserves already decided outcomes
 
-**A cancellation that cuts that hand-over off must carry the outcome.** The hand-over
-can take a while (`TraceWriter` pulls the environment's evidence there, of the very
-page the guard refused), and the run's own timeout can land in it. The Loop must not
-swallow the cancellation (it may be Ctrl-C, or a caller's own `asyncio.timeout`), but
-re-raising it bare loses the outcome: `asyncio.wait_for` turns it into `TimeoutError`,
-and `AgentRuntime.execute` returns an ordinary timeout result whatever `raise_on_error`
-says. The sweep then starts its next task against the site the guard refused, and
-nothing says a guard said stop.
+An outside `asyncio.CancelledError` is re-raised unchanged after lifecycle cleanup. Never
+swallow or replace it with a recording result.
 
-So `_surrender_vetoed` and `_end_failing` catch
-`asyncio.CancelledError`, call `carry_outcome(cancelled, outcome)`
-(`core/loops/errors.py`: a `RunEnded` holding the veto or the terminal result goes to the
-head of the cancellation's `__context__` chain) and re-raise the same object; the
-runtime reads it back only for its own timeout (§3.4). The inline shape gets the veto
-for free, because awaiting inside `except RunAbort` makes it the cancellation's context.
-The capture-and-re-raise shape does not: there the veto is only a local, so carry it
-explicitly. A terminal result has to be carried explicitly in every shape: `_end_failing`
-builds it in the handler, without the "recording failed" suffix, and the runtime appends
-what cut it off. And log the veto *before* the hand-over (the act phase does), so it is
-on record however the hand-over ends. A new Loop owes this too: every await between
-deciding a failing outcome and leaving the Loop either carries that outcome on a
-cancellation or cannot be cancelled.
+When cancellation interrupts an await after the Loop has decided an outcome,
+`surrender_vetoed`, `end_step` and `observe_after_result` use `carry_outcome` to retain that
+veto or terminal result on the same cancellation object. They call the public hand-over
+operation, including overrides. Runtime examines a carried outcome only for its own
+`wait_for` timeout: a decided veto remains a veto, a decided result remains that result,
+and a run still executing becomes a timeout. Do not use this to absorb outside cancellation.
 
-The prompt phase is the one asymmetry: it catches `RunAbort` and *nothing else*
-(`react.py:372-397`). An exception out of the agent's own `build_react_prompt` is a bug in
-the agent, and converting it to `agent_done="error"` would hide it.
+### Two clocks, with one owner each
 
-Guard side, for completeness: a hook raising `RunAbort` must be `blocking=True`
-(`core/aop/proxy.py:337`) or its exception is logged and dropped by `_safe_call` (`:552`) —
-the guard looks like it is running and the run continues. Subclasses work; the Loop only
-does `isinstance`.
+Runtime alone measures `AgentMetrics.execution_ms`: immediately before environment setup
+until the execution path ends, before ending lifecycle callbacks. This includes setup,
+restoration, policy steps, terminal observation and actual step-commit waits. Timeout and
+error paths report measured elapsed time, not `timeout * 1000`.
 
-### 3.4 Three layers — and "stop the sweep" is not one of them
-
-The Loop's only job is to **raise a typed signal and not eat it**. It does not know a sweep
-exists. Each layer above decides what the signal means:
-
-| layer | decision | code |
-|---|---|---|
-| `ReactLoop._execute` | record the interrupted step, then let it fly | `react.py:342/387/454/544/713` |
-| `AgentRuntime.execute` | does it travel past `raise_on_error=False`? | `runtime.py:636-729` |
-| `BenchmarkRunner.run` | does the sweep stop? | `benchmark_runner.py:301-328` |
-
-At the runtime layer the order is the point: build the terminal result, close the run out
-with `_finish` — `on_run_end`, then `on_run_error` with `partial_steps`, then drain
-(`runtime.py:788-805`) — and *only then* raise. The veto arm calls `_close_out_vetoed`,
-then re-raises:
-
-```python
-# runtime.py:820-826 — AgentRuntime._close_out_vetoed
-try:
-    await self._finish(result, error=veto)
-except Exception as failure:
-    logger.exception("AgentRuntime: closing out a vetoed run failed")
-    veto.add_note(f"Closing the vetoed run out failed too: {type(failure).__name__}: {failure}")
-```
-
-`raise_on_error=False` means "a failed task must not stop the sweep". A veto is the
-opposite instruction, so it propagates either way. It does so after the trace is closed
-out, and even when that close-out fails (a disk that stays full makes
-`TraceWriter.on_run_end` raise): like a cancellation, a veto outranks a close-out that
-fails under it, and the failure becomes one more note on it. Every other failure keeps `if raise_on_error: raise`,
-and a close-out failure there propagates as it is.
-
-The run's own timeout is the other way a veto used to get lost, and it is not an outside
-cancellation. `except TimeoutError` first asks `_outcome_under(timed_out)`: `wait_for`
-raises its `TimeoutError` *from* the cancellation it delivered into the Loop, and when
-that cancellation carries an outcome (`carried_outcome`, §3.3) the run had already
-ended. A carried veto is closed out as vetoed (`agent_done="vetoed"`, an `error` that
-names the veto and says the timeout expired while the vetoed step was being recorded,
-the timeout as a note on the `RunAbort`) and re-raised whatever `raise_on_error` says;
-a carried terminal result is closed out and returned with the same remark appended to
-its `error`. Only a run cut off while still under way gets `agent_done="timeout"`. An
-outside cancellation never reads the chain: it is re-raised unchanged, as before.
-
-At the sweep layer, `run_task` catches `RunAbort` first and returns it as the task's
-outcome (`TaskOutcome.vetoed`, its result read back from the trace) while still absorbing
-ordinary failures, and `run` stops after it, records `BenchmarkRunSummary.aborted` naming
-the task — **and then still evaluates the outcomes that finished**. The table shows the
-vetoed task and a `vetoed:` line, and `spectragent bench` exits 3 (`VETO_EXIT_CODE`), so
-the flywheel chain stops. A veto raised during the environment's setup is a veto too. The guard said stop, not destroy the
-evidence; under Record Once, Evaluate Many those traces are complete and worth scoring.
-Without the `aborted` field a short sweep is indistinguishable from a small one.
-
-This is also why `RunAbort` derives from `Exception` and not `BaseException`
-(`core/loops/errors.py:69-79`): a `BaseException` would skip `_finish` and destroy exactly
-the WAL commit the abort exists to preserve.
-
-A finished veto reports `agent_done="vetoed"` (`AgentDoneStatus.VETOED`, the agent's
-ledger in `result.json`), with the `RunAbort` in the error string; selecting vetoed runs
-needs no string matching.
-
-### 3.5 What is deliberately still ReactLoop-local
-
-`_note_abort` (`react.py:932-988`) and its per-phase bookkeeping live on `ReactLoop`, not
-on `AgentLoopBase`. That is intentional: React's phases are observe/prompt/llm/parse/act,
-CodeAct's would be generate/execute/verify, PlanExec's plan/execute. Phase vocabulary does
-not generalise from one sample, and inventing the abstraction now would be guessing at its
-shape.
-
-**Generalise at the second instance, not the first — and that instance is yours.** When you
-write loop #2, the right move is to lift the `RunAbort`/blanket pairing into a helper on
-`AgentLoopBase` that phases run through, so it cannot be forgotten. Until then, copying the
-pairing per phase is correct, and the hygiene test is the guard rail that makes copying
-safe. The duplication is accidental shape; do not defend it as design.
+The `timeout` budget still wraps `agent.run`; it does not expand to setup, end hooks or
+teardown. `TaskOutcome.elapsed_ms` measures the outer task through assembly, Runtime
+cleanup, resource release and result readback. Do not write that not-yet-finished task
+clock into `result.json`. Step durations have their own recording boundaries; their sum
+is not an asserted identity for execution time.
 
 ## 4. One `Environment.observe` is one cycle
 
-`EnvironmentBase.observe` (`core/environments/_registrar.py:517-577`) holds a monotonic
-counter, increments it on every call, and announces `begin_observation(cycle)` to each
-participating capability (`core/capabilities/_registrar.py:236-259`) before resolving
-anything. Capabilities run concurrently; one capability's own fragments run sequentially
-because they share a capture.
+`EnvironmentBase.observe` begins a fresh observation cycle and each capability's resolvers
+share that cycle's capture. `observe()` is not an idempotent getter.
 
-**`observe()` is not a getter and is not idempotent.** Defect F11 was a step being served
-the previous step's screenshot byte for byte, because the browser held one capture until
-the next `execute_action` and a step that ran no action (a reply that failed to parse)
-reused it. The fix made the caller's `observe()` *be* the boundary.
+A parse retry asks about the observation already shown. Re-read memory for the retry,
+without observing again or rebuilding the prompt. Conversely, a new policy step observes
+again even when the preceding reply failed to parse and executed no action. Otherwise a
+no-action step would indefinitely reuse stale browser evidence.
 
-The consequence for any Loop that re-asks the model inside a step is blunt: **an in-step
-retry must not open a new cycle.** If it did, the model would be answering a follow-up
-question about a screenshot it was never shown — F11 from the other side. ReactLoop's retry
-therefore re-reads `memory.get_context_messages()` and nothing else (`react.py:582`; the
-reasoning is in the comment at `:408-419`).
-
-Pinned by `tests/test_core/test_loops/test_react_parse_retry.py:193`
-(`TestRetryDoesNotOpenANewObservationCycle`). Note *how*: `_CycleCap` at `:56` is a fake
-capability that implements the cycle rule and advances a counter when a fragment is asked
-for twice, and the assertions are `cap.cycles == 1` / `agent.cycles_seen == [1]`. Write
-your version the same way — an `observe_calls == 1` assertion passes for the wrong reasons
-and dies the first time the call site moves. The environment-side half is
-`tests/test_core/test_environments/test_observe.py:103`.
-
-Before adding any code path that re-asks the model or re-reads the world, ask whether it
-calls `env.observe`. If it does and it did not before, you have changed which screenshot
-the model is looking at.
+A restored checkpoint observation is already the policy step's capture. Pass it to
+`execute_step(..., observation=...)`; opening another cycle would discard the verified
+state the branch was supposed to decide on. Check behavior with cycle-aware fakes, not
+only a total method-call counter (`test_react_parse_retry.py`, `test_restore_prefix_replay.py`).
 
 ## 5. Config surface
 
-Loop config fields are `Annotated` conscribe fields on the dataclass. `AgentLoopBase` sets
-`__config_annotated_only__ = True` (`_registrar.py:70`), so only annotated attributes reach
-the generated config.
+Loop knobs are `Annotated` conscribe fields on the strategy dataclass.
+`AgentLoopBase.__config_annotated_only__` prevents ordinary state from becoming YAML.
+Document each new knob on the owning class, choose defaults from the agreed behavior, and
+keep ReAct-only date/retry/budget knobs out of unrelated Loop bases.
 
-```python
-# react.py:253-265 — the default appears twice, and that is this file's convention
-parse_retries_per_step: Annotated[
-    int, Field(default=0, description="...")
-] = 0
+After changing a field or `__wiring__`, regenerate through the single entry point:
+
+```bash
+uv run spectragent config generate
 ```
 
-- Pick a default that is a **no-op**, so no shipped YAML changes behaviour on upgrade.
-- Add the field to the Loop class docstring's config list (`react.py:223-230`) — the only
-  prose inventory of that surface.
-- Never hand-edit `spectragent/generated/_composed.py`. Regenerate: `uv run spectragent config generate`.
-- The generated class is named after the *wiring*, not the loop: `ReactAgent_LoopConfig`
-  (`_composed.py:254`). Search with `rg` for your field name, not for a class name you guessed.
-- Until regeneration runs, the knob is reachable in Python and rejected by YAML with
-  `extra_forbidden` — loud, not silent. Details and the staleness traps: the
-  **af-regenerate-and-verify** skill.
+Do not edit `spectragent/generated` by hand. Verify the live-registry fingerprint and a
+real YAML that sets the knob; a stale generated class can pass its own tests. Use
+`af-regenerate-and-verify` for that seam and `af-add-a-receptor` when the new axis is a
+configurable strategy. Every new registrar also belongs in the architecture and AGENTS
+registrar tables and `_collect_registrars()`.
 
-## 6. Test seams a new Loop owes
+## 6. Test seams a Loop change owes
 
-- `_validate_slots` rejects an agent missing a slot — model on `test_weave.py`.
-- Weave is stateless: two agents, one loop instance, no cross-talk (`test_weave.py`).
-- Every phase, abort: the exception escapes **and** a record reached the sink. The hygiene
-  test catches a missing pairing; only a behaviour test catches a pairing that forgets to
-  record. Model on `test_react_run_abort.py::TestAbortOnEveryPhase` (`:293-449`).
-- Every phase again, with a sink that raises on the step the run ends on: the veto still
-  escapes (the recording failure as a note), an error result still names its root cause,
-  and on an ordinary step the recording failure still propagates. Model on
-  `test_react_run_abort.py::TestARecordingFailureNeverReplacesTheOutcome`; the
-  end-to-end version with a real archive collection is
-  `test_trace_writer_archive.py::TestThroughTheRuntime::test_a_veto_at_a_step_whose_collection_fails_is_still_a_veto`,
-  and the one where the close-out fails too (a disk that stays full) is
-  `::test_a_veto_survives_a_disk_that_stays_full_through_the_close_out`. That half is the
-  runtime's (`test_run_lifecycle.py::TestTheCloseOutRunsOnce::test_a_vetoed_run`), so a new
-  Loop inherits it by raising `RunAbort` and nothing else.
-- Every phase a third time, with a sink a cancellation cuts off on the step the run ends
-  on: the cancellation escapes unchanged and `carried_outcome` reads back the veto, or the
-  terminal result naming its root cause; on a step the run goes on from, or succeeds on,
-  nothing is carried. Model on
-  `test_react_run_abort.py::TestACancelledRecordingCarriesTheOutcome` (it also pins that
-  the act-phase veto is logged before the hand-over). The runtime half is
-  `test_run_lifecycle.py::TestAnOutcomeOutranksTheRunsOwnTimeout`; end to end, with the
-  run's own timeout landing in a stalled archive collection,
-  `test_trace_writer_archive.py::TestThroughTheRuntime::test_a_veto_whose_step_the_runs_timeout_cuts_off_is_still_a_veto`
-  and `::test_such_a_veto_stops_the_sweep_when_the_timeout_cuts_its_step_off`.
-- Ordinary failures still return a terminal `AgentResult` with an honest `env_status` —
-  `"failed"` only when the environment is what broke; a 429 is `"success"`
-  (`react.py:503-523`).
-- If your loop re-asks inside a step: the cycle test from §4.
-- The Action seam AGENTS.md §2.5 names: negotiation matches *names*, not parameter
-  contracts. A loop that emits actions must produce the params `descriptor().params`
-  declares — put a test on it.
+Use existing behavior tests for the path being changed; extend only the meaningful seams:
 
-## 7. What M31 added: loop inputs, one run and one step, terminal observation, restore
+- Slot, typed input, limit and environment incompatibility fail at `prepare()` before
+  setup or model calls. `test_execution_limits.py` covers missing declarations, absent
+  fields and keyword sinks that do not satisfy explicit consumption.
+- Repeated weave/execution keeps run state separate (`test_weave.py`). A common hand-over
+  override is reached on normal, failed and vetoed steps.
+- Every execution phase preserves a veto and its partial evidence. Recording-component
+  failures leave execution outcomes intact; test actual recorder isolation, not a Loop
+  swallowing an arbitrary fake sink exception.
+- Cancellation preserves its object and any already decided outcome. Runtime close-out
+  runs once, outside cancellation propagates, and its own timeout recognizes carried
+  outcomes (`test_run_lifecycle.py`).
+- Controllable clocks distinguish setup/restore/terminal observation from end hooks and
+  teardown; timeout duration is measured. Outer task timing includes cleanup and readback.
+- Parse retry tests keep one observation cycle, preserve all model calls for recorder
+  attribution, and distinguish exhausted parsing from a successful empty action list.
+- A shared async prompt builder receives explicit phase and recorded contributions;
+  helper work is not repeated on history replay or an in-step parse retry.
+- Emitted action parameters satisfy the advertised descriptors. Negotiating a matching
+  action name alone does not establish a parameter contract.
+- Branch context identity and the frozen export remain stable after public API changes
+  (`test_branch_context_identity.py`, `tests/test_export/`). Trace reconstruction respects
+  committed evidence and imports no concrete Loop (`test_reconstruction.py`).
 
-`docs/architecture_design.md` §4.1 ("Loop 输入", "一个 run 与一步", "终止观测",
-"`BranchLoop`") is the design; this is where each piece lives and what a new Loop inherits.
+Do not preserve tests for superseded private methods, duplicate usage ledgers or the old
+recording-failure stop rule. Replace them with the current behavior contract.
 
-- **Per-task Loop inputs** (`AgentLoopBase.__loop_inputs__: Mapping[str, LoopInput]`,
-  `core/loops/_registrar.py`). Declare what a task must hand your Loop
-  (`{"checkpoint": LoopInput(Checkpoint)}` on `BranchLoop`); `check_loop_inputs` refuses
-  unknown, missing and mistyped keys in one `IncompatibleLoopInputError`, at
-  `AgentRuntime.prepare(loop_inputs=…)` (right after slot validation, before negotiation)
-  and again in `weave()`. The checked inputs reach `_execute` as the read-only
-  `ctx["loop_inputs"]`, never as attributes on `self`. They come from
-  `TaskLoader.get_task_context(id).loop` through `BenchmarkRunner` (§4.10). The old
-  untyped `**kwargs` channel of `prepare` / `execute` is gone: a misspelled keyword is a
-  `TypeError`. A Loop that declares nothing (`react`) refuses every input, so a checkpoint
-  handed to the wrong loop fails at `prepare()` instead of running from scratch.
-- **One run, one step.** `LoopRun` (`core/loops/run.py`) is the per-run state every Loop
-  keeps (deps from `ctx`, records, action history, model calls, last answer, parse-error
-  streak, the token ledger); build it with `LoopRun.from_ctx` and subclass it for more
-  (`branch.py::BranchRun`). `ReactLoop._run_step(run, step_idx, *, observation=None,
-  restoration=None)` is one ReAct step, returning a terminal `AgentResult` or `None`:
-  given `observation` it does not observe again (the restorer's verified obs_t is the
-  step's cycle, §4); given `restoration` every record the step builds carries it. ReAct's
-  memory protocol is three `ReactLoop` methods (`_cap_actions`, `_remember_rejected`,
-  `_remember_reply`). They are the only copies, used by the live step and by
-  `BranchLoop`'s replay alike. Do not add module-level private helpers to `react.py`
-  (the layering handoff, `HANDOFF_261010_react_loop_layering.md`): Loop-generic code goes on `AgentLoopBase` or
-  in a `core/loops/` module, trace/accounting code in the trace layer.
-- **Steps are counted by origin.** `StepRecord.origin` is `policy` / `restored` /
-  `terminal`; `AgentMetrics.steps` and the `max_steps` budget count `policy` only, and only
-  policy actions enter `AgentResult.action_history`.
-- **Terminal observation** (`terminal_observation`, default off on `ReactLoop`, on for
-  `BranchLoop`): after done / `max_steps` / the parse-error streak (never after an abort,
-  a failed action, a divergence or a veto), one more observe, recorded as an
-  `origin="terminal"` record. `AgentLoopBase._observe_terminal(env, negotiated_obs, *,
-  step)` observes and builds the record (any Loop can use it; an ordinary failure becomes
-  an `error_phase="observe"` record, a `RunAbort` propagates); surrendering it and ranking
-  a recording failure against the outcome stay the Loop's (`ReactLoop._with_terminal`).
-  The terminal result is built before, and its `end_to_end_ms` excludes the observation.
-- **The restore phase** (`BranchLoop`): rebuild the context from the source trace by
-  replaying every recorded model call through the agent's parser and the three memory
-  methods, checking each call's context against the recording; then `async for` the
-  restorer (`self.restorer`, a receptor: `RestorerRegistrar`, `core/loops/restore/`),
-  which yields one `RestoredStep` per restored step and finally the verified obs_t; then
-  the configured `branch_instruction` (a closed set, `none` by default) is written into
-  memory once, and `_run_step(run, t, observation=obs_t, restoration=check_t)` and
-  `continue_steps` more run. A message the Loop adds at step *t* goes in through memory
-  before `_run_step`, from the Loop's own method: nothing compares step *t*'s context,
-  and ReAct's step is not edited for it.
-  A restorer gets a narrow `RestorationContext` (env, `act_fn`, the negotiated
-  observation, the source accessor, *t*) with no model, memory or recorder, so it can
-  restore only the environment. Vetoes in replay and restore record an
-  `origin="restored"` step with `error_phase="replay"` / `"restore"` and propagate;
-  a strict divergence ends the run with `RestorationDivergedError`, without a terminal
-  observation. Under `strict` a restorer raises at the first failed check (the
-  observation's, a retarget's or an action's outcome) before the step's next action runs,
-  and it calls `env.verify_restoration` exactly once per restored observation.
-- **A Loop subclass with a receptor.** `BranchLoop` is a `@dataclass` subclass of
-  `ReactLoop` whose `restorer` is annotated only on a plain mixin (the `AgentReceptors`
-  shape) with an in-Python default; see the af-add-a-receptor skill §6 for why, and for
-  the PEP 563 trap an inherited `react.py` string annotation sets for `branch.py`.
-- **Test seams this adds**: loop inputs refused at `prepare()` before negotiation and
-  before any trace directory exists (`test_loop_inputs_channel.py`); the terminal
-  observation's firing and non-firing paths (`test_react_terminal_observation.py`); a
-  restorer's call order, one cycle per observe and its narrow context
-  (`test_restore_prefix_replay.py`); a branch's context identity with its source for every
-  browser agent (`test_branch_context_identity.py`); and, in a real Chrome, 100% prefix
-  verification, identical terminal screenshots and branch isolation
-  (`test_core/test_capabilities/test_browser_branch_live.py`).
+## 7. Loop inputs, terminal observations and ReAct branching
 
-## 8. What M32 added: optional slots consumed by others, one builder for loop fragments
+`__loop_inputs__: Mapping[str, LoopInput]` declares per-task Loop inputs. Runtime and
+`weave` both refuse unknown, missing or mistyped values with
+`IncompatibleLoopInputError`. Validated values reach the closure as `ctx["loop_inputs"]`.
+`TaskContext.env`, `.loop` and `.branch` remain separate channels: setup, execution inputs
+and trace provenance respectively.
 
-`docs/architecture_design.md` §4.1 ("可选 slot", "一个 run 与一步") and §4.15 are the design.
+`terminal_observation` is a ReAct policy switch. Common capture is
+`AgentLoopBase.observe_terminal`, and common outcome/cancellation handling is
+`observe_after_result`; ReAct decides when to call them through `with_terminal`.
+Done, budget exhaustion and the configured parse-error limit may produce the terminal
+observation. Abort, action failure and restoration divergence do not. It contains only
+environment fragments, has `origin="terminal"`, and makes no model call. An ordinary
+capture failure creates an observe-error record without changing the decided result;
+a guard's veto still propagates. Runtime's execution clock includes the observation.
 
-- **An optional slot is validated by whoever calls it, right before calling it.**
-  `__optional_slots__` lists agent methods used *if present*, and the user need not be the
-  Loop: `prepare` is called by `AgentRuntime.seed_messages(task)`; `ReactLoop` also lists
-  `format_react_output` (the inverse of `parse_react_output`, the student side) and
-  `parse_react_thought` (the teacher side), which only the training export calls.
-  `prepare()` never checks an optional slot; the export checks after assembling the
-  student and raises the existing `IncompatibleError` with `needed_for=` (the phrase is
-  `export/errors.py::needed_for_export`), so a missing optional slot never reads like a
-  Loop's required one. Do not invent an `__inverse_slots__` mechanism; a new ReAct-family
-  Loop inherits the set.
-- **Loop-source fragments have one builder.** `core/loops/_loop_fragments.py::
-  loop_fragment_builders(*, task, step, max_steps, today, history, prev_step)` returns the
-  four `loop.*` builders `populate_loop_fragments` calls; `ReactLoop._loop_fragment_builders`
-  hands it the live run's values, `BranchLoop` the budget its source recorded at the
-  checkpoint (`pinned_step_info(recorded, today_override=...)`: the recorded `max_steps` and
-  `today`, `today_override` winning), and the export's student renderer the values each
-  recorded step was shown. A Loop that needs different values passes different arguments
-  and never writes a second copy of the construction. `LOOP_FRAGMENT_KEYS` is read off
-  this function, and it is `AgentLoopBase.__loop_fragments__`'s default; a new loop-source
-  fragment goes into the builders and into the declaration of every Loop that builds it.
-- **The memory protocol has a third user.** The export writes each earlier assistant turn
-  of a student context through `ReactLoop._remember_reply(memory, text, [])`, the same
-  method the live step and `BranchLoop`'s replay use, and seeds each context segment with
-  `AgentRuntime.seed_messages`, never by calling the agent's `prepare` itself.
+`BranchLoop` remains a ReAct branch. Its restored prefix and terminal observation do not
+consume the policy-step budget, enter the run's policy action history, or inherit source
+model usage. Source history reconstruction replays only Agent decision/retry calls, not
+auxiliary model replies. The configured history policy must keep source material and
+actual restored execution distinguishable; consult the current architecture before
+changing that policy or its Agent contract.
+
+A restorer receives a narrow `RestorationContext` with environment, action function,
+negotiated observation, source accessor and checkpoint. It has no model, memory or
+recorder. It yields restored steps and the checked checkpoint observation. Under strict
+verification, the first divergent observation, retarget or action outcome stops restoration
+before later actions; each restored observation gets one `verify_restoration` call.
+
+`SourceRun` stays in `core/loops/restore/source.py` as the checkpoint-specific wrapper.
+Shared `recorded_observation`, `recorded_step_info`, `recorded_form` and `first_difference`
+live in `core/trace/reconstruction.py`; `RunTrace.step` reads the typed step. The trace
+layer never imports a concrete Loop. Do not leave a forwarding alias in the old module.
+
+## 8. Optional export slots and shared fragment construction
+
+`format_react_output` and `parse_react_thought` are optional ReAct slots consumed by
+training export. The exporter checks them immediately before use and raises the ordinary
+`IncompatibleError` with the training-export need. Runtime does not make optional export
+capabilities mandatory for a live run.
+
+`core/loops/_loop_fragments.py` exposes `loop_fragment_builders` with explicit task, step,
+budget, date, history and previous-step inputs. `populate_loop_fragments` constructs only
+negotiated loop-source fragments. ReAct supplies current values; a branch or student uses
+`pinned_step_info` for a source-recorded budget/date, with `today_override` taking priority.
+Keep one construction rule instead of copying it into each consumer.
+
+`StudentRenderer.render` is async and awaits the Agent's prompt slot with historical
+context and recorded contributions. It writes accepted assistant history through the
+public `ReactLoop.remember_reply`, and seeds segments through `AgentRuntime.seed_messages`.
+The offline `ExportRunner.run` remains synchronous and drives its whole async rendering
+phase with one `asyncio.run`. Consumers already inside an event loop await the renderer;
+there is no nested event loop in an Agent builder. Rendering never starts an environment
+or calls a model, and this API adaptation adds no student-training strategy.

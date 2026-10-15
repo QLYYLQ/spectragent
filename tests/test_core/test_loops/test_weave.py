@@ -2,6 +2,8 @@
 
 import asyncio
 import copy
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import pytest
 
@@ -37,6 +39,7 @@ def teardown_module():
 
 
 class _GoodAgent:
+    run: Callable[[str], Coroutine[Any, Any, dict]]
     name = "good"
 
     def build_prompt(self, obs):
@@ -47,6 +50,7 @@ class _GoodAgent:
 
 
 class _PlanAgent:
+    run: Callable[[str], Coroutine[Any, Any, dict]]
     name = "planner"
 
     def build_plan(self, obs):
@@ -142,6 +146,7 @@ class TestWeave:
         # _GoodAgent does not satisfy _NoEnvLoop — it needs build_plan.
         # Use a dual agent.
         class DualAgent:
+            run: Callable[[str], Coroutine[Any, Any, dict]]
             name = "dual"
 
             def build_prompt(self, obs):

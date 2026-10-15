@@ -210,8 +210,8 @@ class TraceView:
         return self._result.metrics.model_copy(deep=True)
 
     @cached_property
-    def end_to_end_ms(self) -> int:
-        return self.metrics.end_to_end_ms
+    def execution_ms(self) -> int | None:
+        return self.metrics.execution_ms
 
     def result_ref(self) -> AgentResultRef:
         """Back-pointer from a verdict to the run that produced it."""

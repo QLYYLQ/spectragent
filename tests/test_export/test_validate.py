@@ -49,7 +49,7 @@ ANSWER = "The Trader Joe's on Hollywood Blvd opens at 8 am"
 
 
 @pytest.fixture
-def item(composer: ConfigComposer, tmp_path: Path) -> RenderedSample:
+async def item(composer: ConfigComposer, tmp_path: Path) -> RenderedSample:
     trace = RunTrace(
         write_ui_tars_run(
             tmp_path,
@@ -69,7 +69,7 @@ def item(composer: ConfigComposer, tmp_path: Path) -> RenderedSample:
         trace, rel_path="run-1", thought_source="teacher", teacher_cls=UITarsAgent
     )
     translator = IdentityTranslator()
-    rendered = renderer.render(
+    rendered = await renderer.render(
         [
             TrajectoryStep(trace, "run-1", record, translator.translate(s, trace).applied(s))
             for record, s in zip(trace.step_records, samples, strict=True)
@@ -271,7 +271,7 @@ class TestLength:
         fixed = ApproxTokenEstimator(image_tokens="fixed", fixed_image_tokens=100).estimate(item)
         assert fixed - text_only == 200
 
-    def test_the_shipped_budget_holds_a_full_segment_of_the_shipped_student(
+    async def test_the_shipped_budget_holds_a_full_segment_of_the_shipped_student(
         self, composer: ConfigComposer, tmp_path: Path
     ) -> None:
         """``export_sft.yaml``'s ``length`` fits the longest record the shipped student renders.
@@ -307,7 +307,7 @@ class TestLength:
         renderer = StudentRenderer(
             student, untranslatable="drop_step", thought_source="teacher", thought_index_refs="drop"
         )
-        rendered = renderer.render(
+        rendered = await renderer.render(
             [
                 TrajectoryStep(
                     trace, "full-length", record, translator.translate(s, trace).applied(s)
