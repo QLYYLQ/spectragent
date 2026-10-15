@@ -1,6 +1,6 @@
 """A relative ``replay_archive`` is resolved against the launch directory, for every caller.
 
-``AgentRuntime.execute`` makes it absolute before the context is recorded as
+The actual browser owner prepares its path as absolute before the context is recorded as
 ``TraceConfig.task_setup`` and before setup opens it
 (``docs/architecture_design.md`` §4.10), so a Python caller that passes
 ``env_context`` itself gets what the CLI gets.
@@ -8,26 +8,36 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from spectragent.core.capabilities.browser import BrowserCapability
+from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
-from spectragent.schemas.task import REPLAY_ARCHIVE_KEY, resolve_env_context_paths
-from tests._helpers.assembly import AGENT_ID
+from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
+from tests._helpers.assembly import AGENT_ID, make_env
 from tests._helpers.branch_fakes import TASK, BranchFakeAgent, build_run, make_cap
 
 
-class TestResolveEnvContextPaths:
+def browser_context(context: Mapping[str, Any] | None) -> dict[str, Any]:
+    env = make_env(EnvironmentBase, {"browser": BrowserCapability()})
+    return dict(env.prepare_setup_context(context).execution)
+
+
+class TestOwnerPreparedEnvContextPaths:
     def test_a_relative_directory_becomes_absolute(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
         context = {"start_url": "https://a.example/", REPLAY_ARCHIVE_KEY: "runs/src"}
-        resolved = resolve_env_context_paths(context)
-        assert resolved == {
+        resolved = browser_context(context)
+        env = make_env(EnvironmentBase, {"browser": BrowserCapability()})
+        assert env.route_setup_context(resolved)["browser"] == {
             "start_url": "https://a.example/",
             REPLAY_ARCHIVE_KEY: str((tmp_path / "runs" / "src").resolve()),
         }
@@ -37,20 +47,20 @@ class TestResolveEnvContextPaths:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        resolved = resolve_env_context_paths({"browser": {REPLAY_ARCHIVE_KEY: Path("src")}})
+        resolved = browser_context({"browser": {REPLAY_ARCHIVE_KEY: Path("src")}})
         assert resolved == {"browser": {REPLAY_ARCHIVE_KEY: str((tmp_path / "src").resolve())}}
 
     def test_a_home_relative_directory_is_expanded(self) -> None:
-        resolved = resolve_env_context_paths({REPLAY_ARCHIVE_KEY: "~/runs/src"})
+        resolved = browser_context({REPLAY_ARCHIVE_KEY: "~/runs/src"})
         assert resolved == {REPLAY_ARCHIVE_KEY: str((Path.home() / "runs" / "src").resolve())}
 
     @pytest.mark.parametrize("value", ["", None, 3])
     def test_a_value_that_is_no_path_is_left_for_setup_to_refuse(self, value: object) -> None:
-        assert resolve_env_context_paths({REPLAY_ARCHIVE_KEY: value}) == {REPLAY_ARCHIVE_KEY: value}
+        assert browser_context({REPLAY_ARCHIVE_KEY: value}) == {REPLAY_ARCHIVE_KEY: value}
 
     def test_no_context_stays_none(self) -> None:
-        assert resolve_env_context_paths(None) is None
-        assert resolve_env_context_paths({}) == {}
+        assert browser_context(None) == {}
+        assert browser_context({}) == {}
 
 
 async def test_the_trace_and_setup_see_the_absolute_directory(

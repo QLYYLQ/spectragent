@@ -24,7 +24,7 @@ its own: that would hide the inherited ``id`` knob from conscribe
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -34,6 +34,7 @@ from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.memory.sliding_window import SlidingWindowMemory
 from spectragent.agents.prompt_context import place_prompt_contributions
 from spectragent.core.capabilities._registrar import CapabilityBase
+from spectragent.core.capabilities.base import PreparedSetupContext
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
@@ -110,6 +111,13 @@ class BranchFakeCap(CapabilityBase):
     #: ``setup`` (the source run directory) — accepted the way the browser
     #: accepts it; the fake's pages are deterministic without it.
     replay_archive: str | None
+
+    def prepare_setup_context(self, context: Mapping[str, Any]) -> PreparedSetupContext:
+        execution = dict(context)
+        path = execution.get("replay_archive")
+        if isinstance(path, str) and path:
+            execution["replay_archive"] = str(Path(path).expanduser().resolve())
+        return PreparedSetupContext(execution, dict(execution))
 
     async def setup(self, *, negotiation: Any = None, replay_archive: str | None = None) -> None:
         self.setups += 1

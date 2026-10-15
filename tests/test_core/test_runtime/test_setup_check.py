@@ -190,7 +190,7 @@ class TestPrepareRunsTheSetupCheck:
         assert not (tmp_path / "traces").exists(), "a trace was opened for a run never assembled"
         assert cap.fake.setup_calls == 0
 
-    def test_a_relative_replay_archive_reaches_the_check_absolute(
+    def test_unprepared_other_domain_path_reaches_the_check_unchanged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
@@ -198,7 +198,7 @@ class TestPrepareRunsTheSetupCheck:
         run = make_archive_run(hooks=[], capability=cap)
         AgentRuntime.for_agent(run, AGENT_ID).prepare(env_context={"replay_archive": "runs/src"})
         (check,) = cap.checks
-        assert check.context == {"replay_archive": str((tmp_path / "runs" / "src").resolve())}
+        assert check.context == {"replay_archive": "runs/src"}
 
 
 class TestUnknownSetupKeys:

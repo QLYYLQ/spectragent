@@ -529,12 +529,12 @@ class AgentRuntime:
             sorted({m for a in archivers for m in a.privacy_markers}) if negotiated_archive else None
         )
 
-        # 3d. setup 会拒绝的，现在就拒绝（§4.3 "setup 之前的检查"）：任务的 setup context（相对的
-        #     replay_archive 先解析成绝对路径）、观测协商结果、将要绑定的归档器；只校验，不获取任何资源
-        context = resolve_env_context_paths(env_context)
+        # 3d. 同一路由先确认 owner，再由 owner 准备执行输入与记录投影；不获取 backend 资源
+        self._prepared_setup = PreparedSetupContext({}, {})
         if env is not None:
-            env.check_setup(context, negotiation=negotiated_obs, archivers=archivers)
-        elif context:
+            self._prepared_setup = env.prepare_setup_context(env_context)
+            env.check_setup(self._prepared_setup.execution, negotiation=negotiated_obs, archivers=archivers)
+        elif env_context:
             raise ValueError(...)                                    # 没有环境，就没有可以 setup 的
 
         # 4. AOP 织入 — Weaver 包装四个角色：agent / env / llm，以及 StepRecorder（role="loop"）
@@ -577,11 +577,9 @@ class AgentRuntime:
     async def execute(self, task, *, timeout=300, task_id="unknown", benchmark="", subset="",
                       run_id=None, env_context=None, loop_inputs=None, branch=None,
                       action_filter=None, config=None, raise_on_error=True):   # 没有 **kwargs
-        # 相对的 replay_archive 按启动目录解析成绝对路径（§4.10）：prepare() 查的、trace 记的、setup 打开的是同一个目录
-        env_context = resolve_env_context_paths(env_context)
-
         prepared_agent = self.prepare(task_id=task_id, action_filter=action_filter,
                                       loop_inputs=loop_inputs, env_context=env_context)
+        env_context = self._prepared_setup.execution            # 复用 prepare 的结果，不二次读取输入文件
         memory.clear(); self._recorder.clear()                 # 一个 ComposedRun 可以跑多个任务
         memory.add_messages(self.seed_messages(task))          # M32：种子消息是公开方法，见下
 
@@ -591,7 +589,7 @@ class AgentRuntime:
             task=task, config=config or {}, ...,
             archive_negotiation=self._negotiated_archive,      # 没有归档消费者时为 None
             env_evidence_privacy=self._env_evidence_privacy,   # 有序、去重的隐私标记；没绑定归档器时为 None
-            task_setup=env_context,                            # 交给 setup_environment 的那份；没有时为 None
+            task_setup=self._prepared_setup.recordable,       # owner 决定的记录投影；TraceWriter 只 snapshot / redact
             branch=branch)                                     # M31：分叉来源（BranchProvenance），非分叉 run 为 None
 
         self._finish_started = False
@@ -856,6 +854,10 @@ class Environment(Protocol):
 **三条 provides 轴在 Protocol 上一样声明。** `provided_actions` 过去只在 `EnvironmentBase` 上，`negotiate_action` 却一直从环境上读它：结构化实现 `Environment` 的人照着 Protocol 写，类型检查通过，到协商时才失败。M28 把它补进 Protocol，第三条轴从第一天起就三样一起声明（`provided_archivers`、`bind_archivers`、`collect_archive`），不再复制那个不对称。代价写明：`Environment` 是 `@runtime_checkable`，多了这几个成员，一个没有归档面的结构化环境（测试里的 `SurfacelessEnv`）`isinstance(env, Environment)` 就变成 `False`。代码里没有任何地方做这个判断（runtime 只在有归档消费者时才碰这三个成员），以后也不要靠它分辨环境，否则不归档的 run 对 env 零调用这条保证就破了。
 
 **setup 的任务上下文按名字路由。** `Environment.setup(context, *, negotiation)` 不广播 context：`EnvironmentBase.route_setup_context`（`environments/_registrar.py`）读每个 capability 的 `setup()` **签名**，扁平的键（`{"start_url": ...}`，`TaskSetup.to_context()` 发出的形状）只交给签名里点名了它的 capability；挂在 capability 实例 id 或 `capability_id` 下的映射（`{"browser": {...}}`）只属于那一个 capability；谁都不点名的键抛 `ValueError`，列出各 capability 声明的键。同一套路由在 `prepare()` 里就跑一遍（`check_setup`，下一段），setup 之前再跑一遍。`**kwargs` 什么都不声明，所以什么都收不到，也就不再是绕过检查的出口（`test_capability_isolation.py` 禁止 capability 的 `setup` 带它）；`negotiation` 是框架保留的参数，不是任务上下文的键。所以 capability 的 setup 一律写成 `async def setup(self, *, negotiation=None, <它接受的任务上下文键>=None)`，加一个任务上下文的键就是给 `setup()` 加一个具名参数，契约不会与实现漂移。实现了的先例是 browser 的 `start_url`；M30 加 `replay_archive`（回放的源 run 目录，§4.14）。任务上下文的词表在 §4.10；M31 把它拆成 `TaskContext{env, loop, branch}` 三部分，只有 env 那一部分走这条路由（loop 部分是 Loop 的输入，§4.1；branch 部分只进 trace，§5.3）。
+
+**owner 确定后的 setup 输入准备（`prepare_setup_context`）。** `Environment.prepare_setup_context(context)` 是公开的环境操作，先经同一个 `route_setup_context` 确认每个 key 的真实 capability owner，再把 effective slice 交给实现可选 `SetupContextPreparation` 的 capability。该 Protocol 只有一个操作：`prepare_setup_context(slice) -> PreparedSetupContext(execution, recordable)`；普通 capability 不实现它，自己的值在两份投影中原样保留。字段属于谁由 setup 路由决定，不能在 Runtime、schema 或记录组件根据 `storage_state` 这样的名字猜 domain。相同的 flat key 仍按现合同广播给每个点名它的 owner，namespaced key 与 flat key 按原输入顺序覆盖；转换 / 剔除造成多 owner 的值不同，环境仅将那一个字段按各 owner 的 instance namespace 重新装配，既有 alias 保留。未变 flat 字段与只属于一个 owner 的 flat 字段保留 flat 形状。
+
+`AgentRuntime.prepare` 每次建立一份 run-owned `PreparedSetupContext`，`execute` 复用其 `execution` 做检查与 setup，将 `recordable` 交给生命周期的 task_setup 记录；不二次读取输入文件。Runtime 不认识 browser 字段。`TraceWriter` 只 snapshot / redact 接到的 recordable projection，不导入 browser 或 task-schema 过滤器。value 的两个字段固定，普通 domain 的 opaque 值保留其自身可变性语义，不声称任意输入深不可变；需要冻结文件 / 可变对象的 capability 自己做。Browser 的实现冻结自己路由到的 storage seed、绝对化自己的 replay archive 路径，且仅从自己的记录投影剔除 seed 正文 / 原路径；例如 `OtherCapability.setup(storage_state="opaque-cache-id")` 的值照常执行和记录，`browser#0` 或别名实例收到的 browser seed 才会转换。不存在按 key 名递归删除的路径。
 
 **setup 之前的检查（`check_setup`）。** 一个配置能不能和这个任务一起跑，由配置与任务数据决定，所以 `AgentRuntime.prepare()` 在协商之后、织入之前就问（§4.2 第 3d 步）：`EnvironmentBase.check_setup(context, *, negotiation, archivers)`（`environments/_registrar.py`）依次
 
@@ -2298,13 +2300,13 @@ BaseTaskLoader (Protocol)           BaseEvalLoader (Protocol)
 | 键 | 谁接受 | 含义 |
 |---|---|---|
 | `start_url` | browser | 任务的落地页，agent 第一次观测之前打开（`TaskSetup.to_context()`；`spectragent run --start-url`）。必须是一个完整的 `http://` 或 `https://` URL：没有协议头、协议头不是这两个、没有主机、含空白的，在 `prepare()` 报错（`check_setup`，§4.9），点名这个起始页，不打开 trace。数据写成别的形状的，由读它的加载器在 trace 记下它之前补全（下面"起始页"） |
-| `storage_state` | browser | `BrowserStorageState` 或其 JSON 路径；`BrowserSetup` 建模，公共 `resolve_env_context_paths` 在 Runtime 的 prepare / execute 入口读取并冻结为 typed 文档（相对启动目录、`~` 展开），setup 再冻结 canonical bytes。只接受 owned fresh context；显式外部 CDP、注入 control、持久 profile 与 seed 组合均在 prepare 拒绝。cookies 是 context 级，local 以真实 storageKey 为键，session 以 logical tab + storageKey 为键；首请求、首个业务脚本前生效（§4.14） |
+| `storage_state` | browser | `BrowserStorageState` 或其 JSON 路径；`BrowserSetup` 建模，`Environment.prepare_setup_context` 先按实际 owner 路由，再由 browser 的 `prepare_setup_context` 读取并冻结为 typed 文档（相对启动目录、`~` 展开），setup 再冻结 canonical bytes。只接受 owned fresh context；显式外部 CDP、注入 control、持久 profile 与 seed 组合均在 prepare 拒绝。cookies 是 context 级，local 以真实 storageKey 为键，session 以 logical tab + storageKey 为键；首请求、首个业务脚本前生效（§4.14） |
 | `risk_control`、`risk_control_types` | browser | 现有词表；接受、记 WARNING、还不处理 |
 | `cdp_url` | browser | 显式 CDP 端点（per-run override；与需要 recorder 连接的配置互斥，§4.14） |
-| `replay_archive` | browser（M30） | 回放的**源 run 目录**（一个 trace 目录，含 `manifest.json`）。`network_source` 拦截（`archive`）时必须给、不拦截（`live`）时不许给，都在 `prepare()` 报错（`check_setup`）、点名双方。capability 经 `core/archive` 的 `open_archive` 打开它，只读已提交的部分（§4.14 "回放"）；`spectragent run --replay-archive DIR`。相对路径可以写，意思是相对启动目录（af 从不切换工作目录，所以就是当前目录；`~` 先展开）：`AgentRuntime.execute` 在交给 `prepare()` 检查、记进 `task_setup`、交给 setup 之前把它解析成绝对路径（`schemas/task.py::resolve_env_context_paths`；`prepare()` 自己也解析一遍，直接调它的调用方一样），对每个调用方都一样：CLI、任务加载器、自己组 `env_context` 的 Python 调用方；按 capability id 挂的那一块（`{"browser": {...}}`）里的也一样。trace 因此记下 setup 打开的那个目录（用户 2026-10-13 的裁决） |
+| `replay_archive` | browser（M30） | 回放的**源 run 目录**（一个 trace 目录，含 `manifest.json`）。`network_source` 拦截（`archive`）时必须给、不拦截（`live`）时不许给，都在 `prepare()` 报错（`check_setup`）、点名双方。capability 经 `core/archive` 的 `open_archive` 打开它，只读已提交的部分（§4.14 "回放"）；`spectragent run --replay-archive DIR`。相对路径可以写，意思是相对启动目录（af 从不切换工作目录，所以就是当前目录；`~` 先展开）：`AgentRuntime.prepare` 经 Environment 路由后，由实际 browser owner 的 `prepare_setup_context` 把它解析成绝对路径，execute 复用同一 execution / recordable 结果做检查、记录和 setup（§4.3；输入文件在这一次准备中读取，不重复读取），对每个调用方都一样：CLI、任务加载器、自己组 `env_context` 的 Python 调用方；按 capability id 挂的那一块（`{"browser": {...}}`）里的也一样。trace 因此记下 setup 打开的那个目录（用户 2026-10-13 的裁决） |
 | `task_tools` | tool_sandbox（设计中，M23） | 每个 task 的工具定义（§13.5） |
 
-context 经 schema 的 `recordable_env_context` 去掉 `storage_state` 正文与原路径，再按值级规则脱敏记进 `TraceConfig.task_setup`（§5.6）；初态唯一恢复权威是 `browser.storage` 的 `initial_state.json`，指纹始终声明初态是否非空、digest 与覆盖范围，未选 storage 归档也不冒充空初态，所以 `replay_archive` 是路径字符串，不是打开的对象；分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。上面的键都属于 `TaskContext.env`，路由不变（下一段）。
+context 在实际 capability owner 准备出的 `recordable` projection 上按值级规则脱敏记进 `TraceConfig.task_setup`（§5.6）；初态唯一恢复权威是 `browser.storage` 的 `initial_state.json`，指纹始终声明初态是否非空、digest 与覆盖范围，未选 storage 归档也不冒充空初态，所以 `replay_archive` 是路径字符串，不是打开的对象；分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。上面的键都属于 `TaskContext.env`，路由不变（下一段）。
 
 **登录的两条路径。** 预置登录态沿上面的 `storage_state` 输入，或在 `none` 档位显式选择 provider 的持久 profile；需要操作网页登录时，把账号、密码和登录步骤放进现有 `task_text`，Agent 用自己的 prompt 和既有 type / click 动作执行。框架不自动登录，不新增 credential store、加密机制或 `TaskContext.agent` / `agent_inputs` 通道。`BrowserSetup.login_required` / `login_type` 只保留 benchmark 元数据，不路由 setup、不触发自动登录；无实现的 `credentials_ref` 现在明确拒绝，旧 `LoginSnapshot` 删除，不能再拿它声称保存了分区登录态。
 

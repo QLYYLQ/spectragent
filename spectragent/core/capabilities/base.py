@@ -318,3 +318,29 @@ class SetupCheck(Protocol):
         no state written.
         """
         ...
+
+
+@dataclass(frozen=True)
+class PreparedSetupContext:
+    """Execution inputs and recordable provenance after their owner prepared them.
+
+    Fields are fixed; opaque domain values retain their own mutability semantics.
+    A capability that needs a durable snapshot must freeze its own input values.
+    """
+
+    execution: Mapping[str, Any]
+    recordable: Mapping[str, Any]
+
+
+@runtime_checkable
+class SetupContextPreparation(Protocol):
+    """Optional owner-specific preparation, after environment setup-key routing.
+
+    The environment calls once per prepare. This operation may read task input
+    files but never acquires backend resources. Ordinary capabilities need no
+    implementation: their routed values are passed through in both projections.
+    """
+
+    def prepare_setup_context(self, context: Mapping[str, Any]) -> PreparedSetupContext:
+        """Prepare owned execution input and the provenance a recorder may persist."""
+        ...

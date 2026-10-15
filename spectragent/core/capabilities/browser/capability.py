@@ -46,9 +46,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal, cast
 
@@ -60,7 +62,7 @@ from spectragent.core.actions.base import BaseAction
 from spectragent.core.archive import ArchiveBatch, ArchiverBase
 from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities._registrar import CapabilityBase, negotiated_fragment_keys
-from spectragent.core.capabilities.base import CaptureComparison
+from spectragent.core.capabilities.base import CaptureComparison, PreparedSetupContext
 from spectragent.core.capabilities.browser.actions import (  # noqa: F401 — registration
     ClickAction,
     ClickCoordinateAction,
@@ -1346,6 +1348,22 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         )
 
     # ── What setup would refuse, refused at prepare() (SetupCheck, §4.14) ──
+
+    def prepare_setup_context(self, context: Mapping[str, Any]) -> PreparedSetupContext:
+        """Freeze browser-owned input files and keep seed evidence out of task provenance."""
+        execution = dict(context)
+        source = execution.get("storage_state")
+        if source is not None:
+            if isinstance(source, os.PathLike):
+                source = os.fspath(source)
+            if isinstance(source, Mapping):
+                source = BrowserStorageState.model_validate(source)
+            execution["storage_state"] = StorageSeed.freeze(source).state
+        archive = execution.get(REPLAY_ARCHIVE_KEY)
+        if isinstance(archive, (str, os.PathLike)) and os.fspath(archive):
+            execution[REPLAY_ARCHIVE_KEY] = str(Path(archive).expanduser().resolve())
+        recordable = {key: value for key, value in execution.items() if key != "storage_state"}
+        return PreparedSetupContext(execution, recordable)
 
     def check_setup(
         self,

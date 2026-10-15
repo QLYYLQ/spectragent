@@ -7,15 +7,18 @@ from typing import Any
 
 import pytest
 
+from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive.encoding import canonical_json
 from spectragent.core.capabilities.browser.storage_seed import StorageSeed, read_initial_seed
+from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.schemas.browser_storage import (
     BrowserStorageState,
     SessionStorageArea,
     StorageArea,
     StorageTab,
 )
-from spectragent.schemas.task import BrowserSetup, recordable_env_context, resolve_env_context_paths
+from spectragent.schemas.task import BrowserSetup
+from tests._helpers.assembly import make_env
 
 
 def state(token: str = "initial") -> BrowserStorageState:
@@ -38,7 +41,8 @@ def test_freeze_has_no_mutable_caller_or_source_file_reference(tmp_path: Path) -
     assert seed.state.local[0].items["auth_token"] == "initial"
     path = tmp_path / "seed.json"
     path.write_bytes(seed.data)
-    context = resolve_env_context_paths({"browser": {"storage_state": str(path)}})
+    env = make_env(EnvironmentBase, {"browser#0": BrowserCapability()})
+    context = env.prepare_setup_context({"browser": {"storage_state": str(path)}}).execution
     path.unlink()
     assert context is not None
     assert StorageSeed.freeze(context["browser"]["storage_state"]).data == seed.data
@@ -46,7 +50,10 @@ def test_freeze_has_no_mutable_caller_or_source_file_reference(tmp_path: Path) -
 
 def test_task_setup_records_provenance_without_seed_values_or_path() -> None:
     context = {"browser": {"start_url": "https://site.test/", "storage_state": state()}}
-    assert recordable_env_context(context) == {"browser": {"start_url": "https://site.test/"}}
+    env = make_env(EnvironmentBase, {"browser#0": BrowserCapability()})
+    assert env.prepare_setup_context(context).recordable == {
+        "browser": {"start_url": "https://site.test/"}
+    }
     assert "storage_state" in context["browser"], "recording must not mutate setup input"
     assert BrowserSetup(
         storage_state=state(), login_required=True, login_type="password"

@@ -28,8 +28,6 @@ See docs/architecture_design.md §4.10 and docs/execution_dag.md M15.
 from __future__ import annotations
 
 import json
-import os
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, Final, Literal
 
@@ -386,74 +384,6 @@ class TaskContext(BaseModel):
 REPLAY_ARCHIVE_KEY: Final = "replay_archive"
 
 
-def resolve_env_context_paths(env: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Resolve archive paths and freeze browser storage sources as typed documents.
-
-    ``replay_archive`` names a filesystem directory; ``storage_state`` may
-    name a JSON file whose bytes are loaded now rather than during setup.
-    A relative path is relative to the directory the process was
-    launched from (nothing in af changes the working directory, so that is
-    the current one), with ``~`` expanded first as for every other path
-    knob. ``AgentRuntime.execute`` resolves it here for every caller alike —
-    the CLI, a task loader, a Python caller — before the context is recorded
-    as ``TraceConfig.task_setup`` and before setup opens it
-    (``docs/architecture_design.md`` §4.10). A capability-scoped block
-    (``{"browser": {...}}``) is resolved the same way.
-
-    Returns:
-        A new mapping (*env* is never mutated), or ``None`` for ``None``. A
-        value that is not a non-empty path is left as it is, for setup to
-        refuse by name.
-    """
-    if env is None:
-        return None
-    resolved: dict[str, Any] = {}
-    for key, value in env.items():
-        if key == REPLAY_ARCHIVE_KEY:
-            value = _absolute_path(value)
-        elif key == "storage_state" and value is not None:
-            value = _storage_document(value)
-        elif isinstance(value, Mapping) and (
-            REPLAY_ARCHIVE_KEY in value or "storage_state" in value
-        ):
-            value = resolve_env_context_paths(value)
-        resolved[key] = value
-    return resolved
-
-
-def recordable_env_context(env: Mapping[str, Any]) -> dict[str, Any]:
-    """Task setup provenance without duplicated browser session evidence.
-
-    Initial storage belongs to browser.storage's immutable initial_state.json.
-    Its fingerprint declares the digest and coverage, even if recording scope
-    omitted that archiver. Replay must read that evidence, never this context.
-    """
-    return {
-        key: (
-            recordable_env_context(value)
-            if key == "browser" and isinstance(value, Mapping)
-            else value
-        )
-        for key, value in env.items()
-        if key != "storage_state"
-    }
-
-
-def _storage_document(value: Any) -> BrowserStorageState:
-    # Freeze once before prepare, recording, and setup consume the same task context.
-    if isinstance(value, (str, os.PathLike)):
-        return BrowserStorageState.model_validate_json(Path(value).expanduser().read_bytes())
-    if isinstance(value, BrowserStorageState):
-        return BrowserStorageState.model_validate_json(value.model_dump_json())
-    return BrowserStorageState.model_validate(value)
-
-
-def _absolute_path(value: Any) -> Any:
-    if isinstance(value, str | os.PathLike) and os.fspath(value):
-        return str(Path(value).expanduser().resolve())
-    return value
-
-
 __all__ = [
     "SetupBase",
     "BrowserSetup",
@@ -468,6 +398,4 @@ __all__ = [
     "TaskDefinition",
     "TaskContext",
     "REPLAY_ARCHIVE_KEY",
-    "resolve_env_context_paths",
-    "recordable_env_context",
 ]

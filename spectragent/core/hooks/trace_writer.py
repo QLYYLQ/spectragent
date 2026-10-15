@@ -66,7 +66,6 @@ from spectragent.schemas.recording import (
 )
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import StepRecord, TokenUsage
-from spectragent.schemas.task import recordable_env_context
 
 logger = logging.getLogger(__name__)
 _RunVersions = dict[str, tuple[int, str, int]]
@@ -1108,7 +1107,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
 
 
 def _task_setup_record(context: Any, *, record_secrets: bool) -> TaskSetupRecord | None:
-    """The setup context as the trace records it: snapshotted, then redacted.
+    """The owners' recordable setup projection: snapshotted, then redacted.
 
     The record must not be what fails a run: ``encoding.snapshot`` never
     raises and turns anything into plain JSON (stringifying keys and
@@ -1124,7 +1123,7 @@ def _task_setup_record(context: Any, *, record_secrets: bool) -> TaskSetupRecord
     """
     if context is None:
         return None
-    taken = snapshot(recordable_env_context(context) if isinstance(context, Mapping) else context)
+    taken = snapshot(context)
     document = taken if isinstance(taken, dict) else {"value": taken}
     if record_secrets:
         return TaskSetupRecord(context=document, redactions=RedactionLedger())
