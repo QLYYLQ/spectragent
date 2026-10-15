@@ -38,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -55,6 +55,7 @@ from spectragent.schemas.prompt import PromptSnapshot
 
 logger = logging.getLogger(__name__)
 
+_IMAGE_CALL_DRAIN_TIMEOUT_S = 1.0
 _SCORE_DIGIT = re.compile(r"[1-5]")
 _FAILURE_CATEGORY = re.compile(r"Failure Category\s*:\s*([A-Za-z0-9_-]+)", re.IGNORECASE)
 _REASONING_PATTERNS = (
@@ -68,6 +69,10 @@ class OnlineMind2WebEvaluator(LLMJudgeEvaluator):
     """WebJudge: key points → per-screenshot image judge → final verdict."""
 
     __registry_key__ = "online_mind2web"
+
+    # A request that ignores cancellation remains owned until it actually
+    # finishes. It must not be reported as stopped when the drain expires.
+    _image_calls: set[asyncio.Task[str]] = field(default_factory=set, init=False, repr=False)
 
     image_detail: Annotated[
         str,
@@ -222,17 +227,80 @@ class OnlineMind2WebEvaluator(LLMJudgeEvaluator):
             asyncio.create_task(self.ask(system=system, text=user, images=[part], tally=tally))
             for part in parts
         ]
+        for call in calls:
+            self._image_calls.add(call)
+            call.add_done_callback(self._image_calls.discard)
+            call.add_done_callback(_consume_finished)
         joined = asyncio.gather(*calls)
+        joined.add_done_callback(_consume_finished)
         try:
             responses = await asyncio.shield(joined)
-        except BaseException:
-            # These requests belong to this evaluation. Drain cancelled
-            # siblings before the runner starts another trace or closes
-            # the judge, preserving the original error or cancellation.
-            for call in calls:
-                if not call.done():
-                    call.cancel()
-            await asyncio.gather(joined, *calls, return_exceptions=True)
+        except BaseException as original:
+            # A judge may suppress cancellation. Drain for a finite budget,
+            # then let the runner's model lifecycle proceed with an honest
+            # account of calls still in flight. A new external cancellation
+            # outranks an earlier provider error, with that error as its cause.
+            later_cancel: asyncio.CancelledError | None = None
+            try:
+                later_cancel = await _cancel_and_drain(calls)
+            except Exception as cleanup_error:
+                logger.warning("Could not drain image judge calls", exc_info=True)
+                original.add_note(
+                    f"Image judge drain also failed: {type(cleanup_error).__name__}: {cleanup_error}"
+                )
+            outcome = (
+                later_cancel
+                if later_cancel is not None and not isinstance(original, asyncio.CancelledError)
+                else original
+            )
+            try:
+                records: list[dict[str, Any]] = []
+                unfinished: list[int] = []
+                cancelled: list[int] = []
+                failed: list[dict[str, Any]] = []
+                for index, call in enumerate(calls):
+                    if not call.done():
+                        unfinished.append(index)
+                    elif call.cancelled():
+                        cancelled.append(index)
+                    elif error := call.exception():
+                        failed.append({"index": index, "error": f"{type(error).__name__}: {error}"})
+                    else:
+                        response = call.result()
+                        score, _ = _parse_image_judgement(response)
+                        records.append({"index": index, "Response": response, "Score": score})
+                previous = getattr(original, "details", None)
+                details = (
+                    previous.model_copy(deep=True)
+                    if isinstance(previous, EvalDetails)
+                    else EvalDetails()
+                )
+                details.additional_prompts = {
+                    **snapshots,
+                    **(details.additional_prompts or {}),
+                }
+                if details.eval_usage is None and tally is not None:
+                    details.eval_usage = tally.to_eval_usage()
+                details.benchmark_details.update(
+                    {
+                        "key_points": key_points,
+                        "image_judge_record": records,
+                        "screenshots_found": len(parts),
+                        "score_threshold": self.score_threshold,
+                        "image_judge_unfinished": unfinished,
+                        "image_judge_cancelled": cancelled,
+                        "image_judge_failed": failed,
+                    }
+                )
+                outcome.__dict__["details"] = details
+            except Exception as evidence_error:
+                logger.warning("Could not retain partial image judge evidence", exc_info=True)
+                outcome.add_note(
+                    "Partial image judge evidence also failed: "
+                    f"{type(evidence_error).__name__}: {evidence_error}"
+                )
+            if outcome is not original:
+                raise outcome from original
             raise
 
         records: list[dict[str, Any]] = []
@@ -276,6 +344,40 @@ class OnlineMind2WebEvaluator(LLMJudgeEvaluator):
 
 
 # ── Response parsing (verbatim ports) ───────────────────────────────
+
+
+def _consume_finished(task: asyncio.Future[Any]) -> None:
+    """Retrieve a late failure after a bounded drain stops waiting."""
+    if not task.cancelled():
+        task.exception()
+
+
+async def _cancel_and_drain(calls: list[asyncio.Task[str]]) -> asyncio.CancelledError | None:
+    """Request cancellation, then wait once for a finite cleanup budget.
+
+    The wait runs in its own task so repeated cancellation of the evaluator
+    cannot cancel the drain. Return the first cancellation delivered during
+    cleanup so the caller can give it priority over an earlier ordinary error.
+    """
+    for call in calls:
+        if not call.done():
+            call.cancel()
+    drain = asyncio.create_task(asyncio.wait(calls, timeout=_IMAGE_CALL_DRAIN_TIMEOUT_S))
+    cancellation: asyncio.CancelledError | None = None
+    while not drain.done():
+        try:
+            await asyncio.shield(drain)
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+    _, unfinished = drain.result()
+    if unfinished:
+        logger.warning(
+            "%d image judge call(s) still running after %.1fs cancellation drain: %s",
+            len(unfinished),
+            _IMAGE_CALL_DRAIN_TIMEOUT_S,
+            sorted(calls.index(call) for call in unfinished),
+        )
+    return cancellation
 
 
 def _parse_key_points(response: str) -> str:

@@ -19,6 +19,7 @@ import pytest
 from spectragent.core.data_loader.eval.online_mind2web import OnlineMind2WebEvalLoader
 from spectragent.core.trace.reader import RunTrace
 from spectragent.evaluator import OnlineMind2WebEvaluator
+from spectragent.evaluator import online_mind2web as webjudge
 from spectragent.evaluator.errors import TraceIncompleteError
 from spectragent.evaluator.online_mind2web import (
     _parse_image_judgement,
@@ -29,6 +30,7 @@ from spectragent.evaluator.online_mind2web import (
 )
 from spectragent.evaluator.runner import EvaluationRunner
 from spectragent.schemas.eval_reference import EvalReference
+from spectragent.schemas.eval_result import EvalDetails
 from tests.conftest import require_benchmark_data
 from tests.test_evaluator.conftest import FakeJudge, png_bytes, write_trace
 
@@ -240,7 +242,7 @@ async def test_missing_task_text_is_a_loud_error(traces_dir, reference):
         await _evaluator(FakeJudge()).evaluate(trace, reference)
 
 
-@pytest.mark.parametrize("termination", ["failure", "cancel"])
+@pytest.mark.parametrize("termination", ["failure", "cancel", "drain_failure"])
 async def test_image_judges_finish_before_evaluator_cleanup(traces_dir, monkeypatch, termination):
     """A failed/cancelled image batch cannot outlive its owning evaluation."""
     reference = EvalReference(task_id="owned-images", benchmark="offline_bench")
@@ -266,7 +268,7 @@ async def test_image_judges_finish_before_evaluator_cleanup(traces_dir, monkeypa
             all_started.set()
         try:
             await all_started.wait()
-            if termination == "failure" and index == 0:
+            if termination in ("failure", "drain_failure") and index == 0:
                 raise failure
             await parked.wait()
             return _IMAGE_PASS
@@ -282,6 +284,15 @@ async def test_image_judges_finish_before_evaluator_cleanup(traces_dir, monkeypa
 
     monkeypatch.setattr(evaluator, "ask", ask)
     monkeypatch.setattr(evaluator, "aclose", close)
+    if termination == "drain_failure":
+
+        async def broken_drain(calls):
+            for call in calls:
+                call.cancel()
+            await asyncio.gather(*calls, return_exceptions=True)
+            raise RuntimeError("drain failed too")
+
+        monkeypatch.setattr(webjudge, "_cancel_and_drain", broken_drain)
     runner = EvaluationRunner(
         evaluator=evaluator,
         eval_loader=SimpleNamespace(get=lambda task_id: reference),
@@ -298,6 +309,12 @@ async def test_image_judges_finish_before_evaluator_cleanup(traces_dir, monkeypa
             with pytest.raises(ValueError) as caught:
                 await operation
             assert caught.value is failure
+            evidence = getattr(caught.value, "details", None)
+            assert isinstance(evidence, EvalDetails)
+            assert evidence.additional_prompts is not None
+            assert "judge_image_user" in evidence.additional_prompts
+            if termination == "drain_failure":
+                assert any("drain failed too" in note for note in caught.value.__notes__)
         assert sorted(finished) == [0, 1]
         assert cleanup_counts == [2]
         assert all(task.done() for task in image_tasks)
@@ -306,6 +323,113 @@ async def test_image_judges_finish_before_evaluator_cleanup(traces_dir, monkeypa
             if not task.done():
                 task.cancel()
         await asyncio.gather(operation, *image_tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "termination", ["failure", "cancel", "repeated_cancel", "failure_then_cancel"]
+)
+async def test_stubborn_image_judge_has_bounded_drain_and_keeps_evidence(
+    traces_dir, monkeypatch, caplog, termination
+):
+    """A request that swallows cancellation cannot hold the original outcome hostage."""
+    reference = EvalReference(task_id="stubborn-images", benchmark="offline_bench")
+    trace_dir = write_trace(
+        traces_dir, task_id=reference.task_id, steps=2, screenshots=_three_frames()[:2]
+    )
+    evaluator = OnlineMind2WebEvaluator()
+    monkeypatch.setattr(webjudge, "_IMAGE_CALL_DRAIN_TIMEOUT_S", 0.02)
+    started = asyncio.Event()
+    first_finished = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release = asyncio.Event()
+    image_tasks: list[asyncio.Task] = []
+    cleanup_pending: list[bool] = []
+    failure = ValueError("first image judge failed")
+
+    async def ask(*, images=None, tally=None, **kwargs):
+        assert tally is not None
+        if not images:
+            tally.add(SimpleNamespace(prompt_tokens=7, completion_tokens=2))
+            return _KEY_POINTS
+        current = asyncio.current_task()
+        assert current is not None
+        index = len(image_tasks)
+        image_tasks.append(current)
+        if len(image_tasks) == 2:
+            started.set()
+        await started.wait()
+        if index == 0:
+            tally.add(SimpleNamespace(prompt_tokens=3, completion_tokens=1))
+            first_finished.set()
+            if termination in ("failure", "failure_then_cancel"):
+                raise failure
+            return _IMAGE_PASS
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                continue
+        tally.add(SimpleNamespace(prompt_tokens=100, completion_tokens=100))
+        return _IMAGE_PASS
+
+    async def close(*, timeout=5.0):
+        cleanup_pending.append(not image_tasks[1].done())
+        return ()
+
+    monkeypatch.setattr(evaluator, "ask", ask)
+    monkeypatch.setattr(evaluator, "aclose", close)
+    runner = EvaluationRunner(
+        evaluator=evaluator,
+        eval_loader=SimpleNamespace(get=lambda task_id: reference),
+        write_into_trace=False,
+    )
+    operation = asyncio.create_task(runner.evaluate_trace(trace_dir))
+    try:
+        await asyncio.wait_for(first_finished.wait(), timeout=1)
+        if termination in ("cancel", "repeated_cancel"):
+            operation.cancel("first cancellation")
+            if termination == "repeated_cancel":
+                asyncio.get_running_loop().call_later(0.005, operation.cancel, "later cancellation")
+            with pytest.raises(asyncio.CancelledError, match="first cancellation") as caught:
+                await asyncio.wait_for(operation, timeout=1)
+        elif termination == "failure_then_cancel":
+            await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+            operation.cancel("late cancellation")
+            asyncio.get_running_loop().call_later(
+                0.005, operation.cancel, "second late cancellation"
+            )
+            with pytest.raises(asyncio.CancelledError, match="late cancellation") as caught:
+                await asyncio.wait_for(operation, timeout=1)
+            assert caught.value.__cause__ is failure
+        else:
+            with pytest.raises(ValueError) as caught:
+                await asyncio.wait_for(operation, timeout=1)
+            assert caught.value is failure
+
+        details = getattr(caught.value, "details", None)
+        assert isinstance(details, EvalDetails)
+        assert details.additional_prompts is not None
+        assert "judge_image_user" in details.additional_prompts
+        assert details.eval_usage is not None
+        assert details.eval_usage.prompt_tokens == 10
+        assert details.benchmark_details["key_points"] == _parse_key_points(_KEY_POINTS)
+        assert details.benchmark_details["image_judge_unfinished"] == [1]
+        assert details.benchmark_details["screenshots_found"] == 2
+        if termination in ("failure", "failure_then_cancel"):
+            assert details.benchmark_details["image_judge_failed"][0]["index"] == 0
+        else:
+            assert details.benchmark_details["image_judge_record"][0]["Score"] == 5
+        assert cleanup_pending == [True]
+        assert len(evaluator._image_calls) == 1
+        assert "still running" in caplog.text
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*image_tasks, return_exceptions=True), timeout=1)
+        if not operation.done():
+            operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
+    assert not evaluator._image_calls
 
 
 # ── Parsers (verbatim ports) ────────────────────────────────────────
