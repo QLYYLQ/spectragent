@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { startupRoute } from "./routing.js";
+import { actionLabel, restoredActionOutcome } from "./evidence.js";
 import "./styles.css";
 
 const number = (value) =>
@@ -133,15 +135,29 @@ function Badge({ value, kind = "" }) {
     value == null || value === ""
       ? "not recorded"
       : String(value).replaceAll("_", " ");
-  const tone = ["incomplete", "error", "failed", "failure", "vetoed"].includes(
-    String(value),
-  )
+  const tone = [
+    "incomplete",
+    "error",
+    "failed",
+    "failure",
+    "vetoed",
+    "diverged",
+    "miss",
+  ].includes(String(value))
     ? "bad"
-    : ["writing", "timeout", "cancelled", "max_steps", "restored"].includes(
-          String(value),
-        )
+    : [
+          "writing",
+          "timeout",
+          "cancelled",
+          "max_steps",
+          "restored",
+          "warn",
+          "exhausted",
+        ].includes(String(value))
       ? "warn"
-      : ["complete", "completed", "success", "policy"].includes(String(value))
+      : ["complete", "completed", "success", "policy", "ok", "hit"].includes(
+            String(value),
+          )
         ? "good"
         : "neutral";
   return <span className={`badge ${tone} ${kind}`}>{label}</span>;
@@ -316,16 +332,18 @@ function Ledger({ row }) {
   );
 }
 
-function RunList({ revision, selected, setSelected }) {
+function RunList({ revision, selected, setSelected, workspace }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("");
   const [benchmark, setBenchmark] = useState("");
+  const [execution, setExecution] = useState("");
   const state = useRemote("/api/runs", revision);
   const rows = state.data || [];
   const visible = rows.filter(
     (row) =>
       (!filter || row.trace_status === filter) &&
       (!benchmark || row.benchmark === benchmark) &&
+      (!execution || row.execution_kind === execution) &&
       [
         row.task,
         row.task_id,
@@ -421,6 +439,20 @@ function RunList({ revision, selected, setSelected }) {
             ))}
           </select>
           <select
+            aria-label="Filter by execution kind"
+            value={execution}
+            onChange={(event) => setExecution(event.target.value)}
+          >
+            <option value="">All execution kinds</option>
+            {["live", "replay", "branch", "branch_replay", "unknown"].map(
+              (value) => (
+                <option key={value} value={value}>
+                  {value.replaceAll("_", " ")}
+                </option>
+              ),
+            )}
+          </select>
+          <select
             aria-label="Filter by benchmark"
             value={benchmark}
             onChange={(event) => setBenchmark(event.target.value)}
@@ -435,11 +467,21 @@ function RunList({ revision, selected, setSelected }) {
           {() =>
             !visible.length ? (
               <Empty
-                title={rows.length ? "No matching runs" : "No traces found"}
+                title={
+                  rows.length
+                    ? "No matching runs"
+                    : workspace.config_source || workspace.config_hash
+                      ? "No matching configuration history"
+                      : "No traces found"
+                }
               >
                 {rows.length
                   ? "Try a different search or filter."
-                  : "Select a directory containing recorded runs, then refresh. Only committed trace evidence appears here."}
+                  : workspace.config_source
+                    ? "No recorded run in this root names this configuration source. Older traces with unknown config source are excluded. Runs stored elsewhere require a different root directory."
+                    : workspace.config_hash
+                      ? "No recorded run in this root has this configuration digest. Runs stored elsewhere require a different root directory."
+                      : "Select a directory containing recorded runs, then refresh. Only committed trace evidence appears here."}
               </Empty>
             ) : (
               <div className="table-scroll">
@@ -451,6 +493,7 @@ function RunList({ revision, selected, setSelected }) {
                       </th>
                       <th>Task / run</th>
                       <th>Agent / model</th>
+                      <th>Execution</th>
                       <th>Agent</th>
                       <th>Environment</th>
                       <th>Recording</th>
@@ -494,6 +537,14 @@ function RunList({ revision, selected, setSelected }) {
                             {row.benchmark || "Unspecified benchmark"} ·{" "}
                             {date(row.created_at)}
                           </div>
+                          <div
+                            className="muted small"
+                            title={row.config_source?.path}
+                          >
+                            {row.config_source
+                              ? `${row.config_source.path.split("/").pop()} · source ${row.config_source.sha256.slice(0, 10)}`
+                              : "Config source unknown"}
+                          </div>
                           {row.read_error && (
                             <span className="row-error" title={row.read_error}>
                               Unreadable trace
@@ -503,6 +554,9 @@ function RunList({ revision, selected, setSelected }) {
                         <td className="model-cell">
                           <span>{text(row.agent_id)}</span>
                           <small className="muted">{text(row.model)}</small>
+                        </td>
+                        <td>
+                          <Badge value={row.execution_kind || "unknown"} />
                         </td>
                         <td>
                           <Badge value={row.agent_done} />
@@ -723,6 +777,114 @@ function Screenshot({ runKey, step }) {
   );
 }
 
+function StepActions({ record }) {
+  const restored = record.origin === "restored";
+  const check = record.restoration;
+  return (
+    <>
+      {restored && (
+        <>
+          <div className="notice">
+            <strong>Restored step</strong>
+            <p>
+              Current execution is recorded by the restoration check. The source
+              actions, results, and model output below are copied history.
+            </p>
+          </div>
+          {check ? (
+            <section>
+              <div className="section-heading">
+                <h3>Actual restoration execution</h3>
+                <Badge value={check.verdict} />
+              </div>
+              {check.reasons.length > 0 && (
+                <div className="notice error">{check.reasons.join(", ")}</div>
+              )}
+              {check.actions.length ? (
+                check.actions.map((action, index) => (
+                  <article className="call-card" key={index}>
+                    <div className="section-heading">
+                      <h3>{action.executed?.name || `Action ${index + 1}`}</h3>
+                      <Badge value={restoredActionOutcome(action)} />
+                    </div>
+                    <p className="muted small">
+                      Retargeting: {action.method}
+                      {action.failure ? ` · ${action.failure}` : ""}
+                    </p>
+                    {action.detail && <p className="small">{action.detail}</p>}
+                    {action.live_error && (
+                      <div className="notice error">{action.live_error}</div>
+                    )}
+                    {action.executed ? (
+                      <JsonPanel
+                        title="Executed action"
+                        value={action.executed}
+                        initialOpen
+                      />
+                    ) : (
+                      <p className="muted">
+                        This action was not submitted for execution.
+                      </p>
+                    )}
+                    <JsonPanel
+                      title="Restored action evidence"
+                      value={action}
+                    />
+                  </article>
+                ))
+              ) : (
+                <p className="muted">
+                  No restoration actions recorded for this check.
+                </p>
+              )}
+            </section>
+          ) : (
+            <div className="notice error">
+              No restoration check was recorded. Actual re-execution outcomes
+              are unknown.
+            </div>
+          )}
+        </>
+      )}
+      {check && (
+        <JsonPanel
+          title={
+            restored ? "Restoration check" : "Checkpoint restoration check"
+          }
+          value={check}
+          initialOpen
+        />
+      )}
+      {record.truncated_actions > 0 && (
+        <div className="notice">
+          {record.truncated_actions} model-emitted actions were discarded{" "}
+          {restored ? "in the copied source step" : "by the action limit"}.
+        </div>
+      )}
+      <JsonPanel
+        title={restored ? "Source actions (copied)" : "Actions"}
+        value={record.actions}
+        initialOpen={!restored}
+      />
+      <JsonPanel
+        title={restored ? "Source action results (copied)" : "Action results"}
+        value={record.action_results}
+        initialOpen={!restored}
+      />
+      {record.llm_output && (
+        <JsonPanel
+          title={
+            restored
+              ? "Source parsed model output (copied)"
+              : "Parsed model output"
+          }
+          value={record.llm_output}
+        />
+      )}
+    </>
+  );
+}
+
 function StepDetail({ runKey, index, revision }) {
   const state = useRemote(query("step", { key: runKey, index }), revision);
   const [tab, setTab] = useState("observation");
@@ -756,7 +918,12 @@ function StepDetail({ runKey, index, revision }) {
           <div className="tabs compact" aria-label="Step sections">
             {[
               ["observation", "Observation"],
-              ["actions", `Actions (${step.record.actions?.length || 0})`],
+              [
+                "actions",
+                step.record.origin === "restored"
+                  ? "Restoration actions"
+                  : `Actions (${step.record.actions?.length || 0})`,
+              ],
               ["calls", `Model calls (${step.calls.length})`],
               ["archive", `Archive (${step.archive.length})`],
             ].map(([key, label]) => (
@@ -776,6 +943,9 @@ function StepDetail({ runKey, index, revision }) {
                 <Screenshot runKey={runKey} step={index} />
               )}
               <p className="observation-summary">
+                {step.record.origin === "restored" && (
+                  <strong>Source observation summary (copied): </strong>
+                )}
                 {step.record.observation_summary}
               </p>
               {!Object.keys(step.fragments).length && (
@@ -797,28 +967,7 @@ function StepDetail({ runKey, index, revision }) {
           )}
           {tab === "actions" && (
             <>
-              {step.record.truncated_actions > 0 && (
-                <div className="notice">
-                  {step.record.truncated_actions} model-emitted actions were
-                  discarded by the action limit.
-                </div>
-              )}
-              <JsonPanel
-                title="Actions"
-                value={step.record.actions}
-                initialOpen
-              />
-              <JsonPanel
-                title="Action results"
-                value={step.record.action_results}
-                initialOpen
-              />
-              {step.record.llm_output && (
-                <JsonPanel
-                  title="Parsed model output"
-                  value={step.record.llm_output}
-                />
-              )}
+              <StepActions record={step.record} />
               <JsonPanel title="Step record" value={step.record} />
             </>
           )}
@@ -883,12 +1032,7 @@ function Trajectory({ run, route, revision }) {
                 </span>
               )}
             </div>
-            <span className="action-name">
-              {step.actions?.map((action) => action.name).join(", ") ||
-                (step.origin === "terminal"
-                  ? "Final observation"
-                  : "No action")}
-            </span>
+            <span className="action-name">{actionLabel(step)}</span>
             <span className="muted small">
               {duration(step.duration_ms)}
               {step.call_count ? ` · ${step.call_count} calls` : ""}
@@ -949,6 +1093,253 @@ function Evaluations({ evaluations, error }) {
         </article>
       ))}
     </div>
+  );
+}
+
+function ExecutionContext({ run }) {
+  const execution = run.execution;
+  if (!execution)
+    return <div className="notice">Execution provenance is unavailable.</div>;
+  return (
+    <section className="panel padded">
+      <div className="section-heading">
+        <h3>Execution provenance</h3>
+        <Badge value={run.summary.execution_kind || "unknown"} />
+      </div>
+      <dl className="properties">
+        <div>
+          <dt>Loop</dt>
+          <dd>{text(run.summary.loop_id)}</dd>
+        </div>
+        <div>
+          <dt>Network source</dt>
+          <dd>{text(execution.network_source)}</dd>
+        </div>
+        <div>
+          <dt>Source relationship</dt>
+          <dd>{text(execution.relationship)}</dd>
+        </div>
+        {execution.source_run_id && (
+          <div>
+            <dt>Source run</dt>
+            <dd>{execution.source_run_id}</dd>
+          </div>
+        )}
+        {execution.checkpoint != null && (
+          <div>
+            <dt>Checkpoint step</dt>
+            <dd>{execution.checkpoint}</dd>
+          </div>
+        )}
+        {execution.source_resolution && (
+          <div>
+            <dt>Source location</dt>
+            <dd>{execution.source_resolution.replaceAll("_", " ")}</dd>
+          </div>
+        )}
+      </dl>
+      {execution.source_key && (
+        <button
+          className="text-button"
+          onClick={() =>
+            navigate(
+              runRoute(
+                execution.source_key,
+                execution.checkpoint == null
+                  ? {}
+                  : { step: execution.checkpoint },
+              ),
+            )
+          }
+        >
+          {execution.checkpoint == null
+            ? "Open source run"
+            : `Open source checkpoint · step ${execution.checkpoint}`}{" "}
+          ↗
+        </button>
+      )}
+      {run.summary.branch && (
+        <JsonPanel title="Branch provenance" value={run.summary.branch} />
+      )}
+    </section>
+  );
+}
+
+function ReplayLog({ log, runKey }) {
+  const [search, setSearch] = useState("");
+  const [kind, setKind] = useState("");
+  const [limit, setLimit] = useState(100);
+  if (!log || (!log.recorded && !log.error))
+    return (
+      <Empty title="No replay log recorded">
+        This run has no committed replay-log archive. Replay decisions cannot be
+        inferred from its actions or final outcome.
+      </Empty>
+    );
+  const entries = log.entries.filter(
+    (entry) =>
+      (!kind ||
+        (kind === "summary"
+          ? Boolean(entry.folded_kind)
+          : entry.kind === kind)) &&
+      [entry.url, entry.reason, entry.method].some((value) =>
+        String(value || "")
+          .toLowerCase()
+          .includes(search.toLowerCase()),
+      ),
+  );
+  return (
+    <>
+      {log.error && (
+        <div className="notice error" role="alert">
+          <strong>Replay evidence is unreadable</strong>
+          <p>{log.error}</p>
+          <p>Any entries shown below are partial evidence.</p>
+        </div>
+      )}
+      <div className="stats">
+        {[
+          ["hit", "Archive hits"],
+          ["miss", "Archive misses"],
+          ["exhausted", "Exhausted responses"],
+          ["synthetic", "Synthetic responses"],
+        ].map(([key, label]) => (
+          <Stat
+            key={key}
+            label={label}
+            value={log.error ? "—" : number(log.counts?.[key])}
+          />
+        ))}
+      </div>
+      <div className="panel">
+        <div className="toolbar">
+          <label className="search">
+            <Icon name="search" />
+            <input
+              aria-label="Search replay decisions"
+              placeholder="Search URL, method, reason…"
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setLimit(100);
+              }}
+            />
+          </label>
+          <select
+            aria-label="Filter replay decision kind"
+            value={kind}
+            onChange={(event) => {
+              setKind(event.target.value);
+              setLimit(100);
+            }}
+          >
+            <option value="">All decisions</option>
+            {["hit", "miss", "exhausted", "synthetic", "summary"].map(
+              (value) => (
+                <option key={value}>{value}</option>
+              ),
+            )}
+          </select>
+        </div>
+        {entries.length ? (
+          <div className="table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Commit</th>
+                  <th>Decision</th>
+                  <th className="numeric">Count</th>
+                  <th>Request</th>
+                  <th>Reason / answer</th>
+                  <th>Evidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.slice(0, limit).map((entry, index) => (
+                  <tr key={index}>
+                    <td>
+                      {entry.step == null ? (
+                        "Trailing"
+                      ) : (
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            navigate(runRoute(runKey, { step: entry.step }))
+                          }
+                        >
+                          Step {entry.step} ↗
+                        </button>
+                      )}
+                    </td>
+                    <td>
+                      <Badge value={entry.kind} />
+                      {entry.folded_kind && (
+                        <div className="muted small">
+                          {entry.folded_kind} repeated
+                        </div>
+                      )}
+                      {entry.diverged && (
+                        <div className="row-error">Diverged</div>
+                      )}
+                    </td>
+                    <td className="numeric">{number(entry.weight)}</td>
+                    <td>
+                      <strong>{entry.method}</strong>
+                      <div className="mono small">{entry.url}</div>
+                      <div className="muted small">
+                        {entry.resource_type}
+                        {entry.frame ? ` · ${entry.frame} frame` : ""}
+                      </div>
+                    </td>
+                    <td>
+                      {text(entry.reason)}
+                      <div className="muted small">
+                        {text(entry.answer)}
+                        {entry.status != null ? ` · ${entry.status}` : ""}
+                      </div>
+                    </td>
+                    <td>
+                      <JsonPanel title="Replay decision" value={entry} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <Empty
+            title={
+              log.entries.length
+                ? "No matching decisions"
+                : "No decisions recorded"
+            }
+          >
+            {log.entries.length
+              ? "Try a different search or decision filter."
+              : "The replay log was enabled but contains no committed decisions."}
+          </Empty>
+        )}
+        <div className="table-footer">
+          <span>
+            {number(entries.length)} matching entries ·{" "}
+            {number(log.entries.length)} recorded entries
+          </span>
+          {entries.length > limit && (
+            <button
+              className="text-button"
+              onClick={() => setLimit(limit + 100)}
+            >
+              Show next {Math.min(entries.length - limit, 100)}
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="footnote">
+        Counts include repeated requests represented by summary entries. Step
+        labels identify the commit that collected each decision; trailing
+        entries were collected at close-out.
+      </p>
+    </>
   );
 }
 
@@ -1017,27 +1408,7 @@ function RunDetail({ route, revision }) {
                 <p>{run.summary.error}</p>
               </div>
             )}
-            {run.summary.branch && (
-              <div className="notice branch">
-                <strong>Branched run</strong>
-                {run.source_key ? (
-                  <button
-                    className="text-button"
-                    onClick={() => navigate(runRoute(run.source_key))}
-                  >
-                    Open source run ↗
-                  </button>
-                ) : (
-                  <span>
-                    Source run is outside this workspace or unavailable.
-                  </span>
-                )}
-                <JsonPanel
-                  title="Branch provenance"
-                  value={run.summary.branch}
-                />
-              </div>
-            )}
+            <ExecutionContext run={run} />
             <div className="tabs" aria-label="Run sections">
               {[
                 ["trajectory", "Trajectory"],
@@ -1048,6 +1419,12 @@ function RunDetail({ route, revision }) {
                     : `Evaluations (${Object.keys(run.evaluations).length})`,
                 ],
                 ["trailing", `Trailing calls (${run.trailing_calls.length})`],
+                [
+                  "replay",
+                  run.replay_log?.error
+                    ? "Replay log (!)"
+                    : `Replay log (${run.replay_log?.entries.length || 0})`,
+                ],
                 ["config", "Configuration"],
                 ["result", "Result & manifest"],
               ].map(([key, label]) => (
@@ -1089,6 +1466,9 @@ function RunDetail({ route, revision }) {
                 />
               </>
             )}
+            {tab === "replay" && (
+              <ReplayLog log={run.replay_log} runKey={route.key} />
+            )}
             {tab === "config" && (
               <>
                 <div className="panel padded">
@@ -1100,6 +1480,25 @@ function RunDetail({ route, revision }) {
                     The resolved configuration and negotiated contracts captured
                     for this run.
                   </p>
+                  {run.summary.config_source ? (
+                    <dl className="properties">
+                      <div>
+                        <dt>Recorded source path</dt>
+                        <dd>{run.summary.config_source.path}</dd>
+                      </div>
+                      <div>
+                        <dt>Source file SHA-256</dt>
+                        <dd className="mono">
+                          {run.summary.config_source.sha256}
+                        </dd>
+                      </div>
+                    </dl>
+                  ) : (
+                    <div className="notice">
+                      Configuration source unknown. This trace does not record
+                      which YAML file produced it.
+                    </div>
+                  )}
                   <JsonPanel
                     title="Configuration snapshot"
                     value={run.config}
@@ -1249,9 +1648,7 @@ function EvidenceColumn({ summary, revision }) {
               >
                 {data.steps.map((item) => (
                   <option key={item.step} value={item.step}>
-                    {item.step} · {item.origin} ·{" "}
-                    {item.actions.map((action) => action.name).join(", ") ||
-                      "observation"}
+                    {item.step} · {item.origin} · {actionLabel(item)}
                   </option>
                 ))}
               </select>
@@ -1279,15 +1676,7 @@ function EvidenceColumn({ summary, revision }) {
                   <p>No committed screenshot</p>
                 </div>
               )}
-              <JsonPanel
-                title="Actions"
-                value={data.record.actions}
-                initialOpen
-              />
-              <JsonPanel
-                title="Action results"
-                value={data.record.action_results}
-              />
+              <StepActions record={data.record} />
               {data.record.error && (
                 <div className="notice error">{data.record.error}</div>
               )}
@@ -1395,6 +1784,7 @@ function Compare({ route, revision }) {
                       ["Agent", "agent_id"],
                       ["Model", "model"],
                       ["Loop", "loop_id"],
+                      ["Execution", "execution_kind"],
                       ["Agent outcome", "agent_done"],
                       ["Environment", "env_status"],
                       ["Recording", "trace_status"],
@@ -1731,7 +2121,7 @@ function ExperimentComparison({ route, revision }) {
   );
 }
 
-function Reports({ route, revision }) {
+function Reports({ route, revision, workspace }) {
   const list = useRemote("/api/reports", revision);
   const report = useRemote(
     route.key ? query("report", { key: route.key }) : null,
@@ -1749,6 +2139,16 @@ function Reports({ route, revision }) {
           </p>
         </div>
       </div>
+      {(workspace.config_source || workspace.config_hash) && (
+        <div className="notice">
+          <strong>Reports retain their original scope</strong>
+          <p>
+            Reports are discovered across this root and retain their original
+            inputs and denominators. Configuration filters apply to run lists;
+            they do not filter or recompute report statistics.
+          </p>
+        </div>
+      )}
       <div className="report-layout">
         <aside className="panel report-list">
           <div className="timeline-title">Artifacts</div>
@@ -1816,8 +2216,43 @@ function Reports({ route, revision }) {
   );
 }
 
+function WorkspaceScope({ workspace }) {
+  return workspace.config_source || workspace.config_hash ? (
+    <div className="notice">
+      <strong>
+        Run list filter ·{" "}
+        {workspace.config_source
+          ? "configuration file history"
+          : "configuration digest"}
+      </strong>
+      {workspace.config_source && (
+        <p className="mono small">{workspace.config_source}</p>
+      )}
+      <p>
+        {workspace.config_hash ? (
+          <>
+            Configuration digest:{" "}
+            <span className="mono small">{workspace.config_hash}</span>
+          </>
+        ) : (
+          "All recorded versions of this file. Traces with unknown configuration source are excluded."
+        )}
+      </p>
+      <p className="small">
+        Search root: <span className="mono">{workspace.root}</span>
+      </p>
+    </div>
+  ) : (
+    <p className="footnote">
+      Search root: <span className="mono">{workspace.root}</span>
+    </p>
+  );
+}
+
 function App() {
-  const [route, setRoute] = useState(routeFromHash);
+  const [urlRoute, setRoute] = useState(routeFromHash);
+  const workspace = useRemote("/api/workspace", 0);
+  const route = startupRoute(urlRoute, workspace.data?.initial_run);
   const [revision, setRevision] = useState(0);
   const [live, setLive] = useState(false);
   const [selected, setSelected] = useState([]);
@@ -1917,21 +2352,33 @@ function App() {
           </div>
         </header>
         <main id="main-content" tabIndex="-1">
-          {view === "run" && route.key ? (
-            <RunDetail route={route} revision={revision} />
-          ) : view === "compare" ? (
-            <Compare route={route} revision={revision} />
-          ) : view === "groups" ? (
-            <ExperimentComparison route={route} revision={revision} />
-          ) : view === "reports" ? (
-            <Reports route={route} revision={revision} />
-          ) : (
-            <RunList
-              revision={revision}
-              selected={selected}
-              setSelected={setSelected}
-            />
-          )}
+          <RemoteState state={workspace}>
+            {() => (
+              <>
+                <WorkspaceScope workspace={workspace.data} />
+                {view === "run" && route.key ? (
+                  <RunDetail route={route} revision={revision} />
+                ) : view === "compare" ? (
+                  <Compare route={route} revision={revision} />
+                ) : view === "groups" ? (
+                  <ExperimentComparison route={route} revision={revision} />
+                ) : view === "reports" ? (
+                  <Reports
+                    route={route}
+                    revision={revision}
+                    workspace={workspace.data}
+                  />
+                ) : (
+                  <RunList
+                    revision={revision}
+                    selected={selected}
+                    setSelected={setSelected}
+                    workspace={workspace.data}
+                  />
+                )}
+              </>
+            )}
+          </RemoteState>
         </main>
       </div>
     </div>

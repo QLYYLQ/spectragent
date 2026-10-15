@@ -36,6 +36,8 @@ class ProgressState:
         self._policy_steps = 0
         self._error: str | None = None
         self._max_steps: int | None = None
+        self._continue_steps: int | None = None
+        self._branch: Any = None
         self._token_limit: int | str | None = None
         self._trace_path: str | None = None
         self._trace_locator: Callable[[], str | None] | None = None
@@ -84,6 +86,8 @@ class ProgressState:
         self._run_outcome = None
         self._error = None
         self._max_steps = None
+        self._continue_steps = None
+        self._branch = None
         self._run_started = time.monotonic()
         self._status = "running"
 
@@ -126,6 +130,9 @@ class ProgressState:
         max_steps = identity.pop("max_steps", None)
         if isinstance(max_steps, int):
             self._max_steps = max_steps
+        continuation = identity.pop("continue_steps", None)
+        self._continue_steps = continuation if isinstance(continuation, int) else None
+        self._branch = identity.pop("branch", None)
         self._identity = {key: str(value or "") for key, value in identity.items()}
         self._task_id = self._identity.get("task_id") or self._task_id
         self._active.clear()
@@ -218,6 +225,10 @@ class ProgressState:
                 "tasks": self._tasks,
                 "steps": steps,
                 "max_steps": self._max_steps,
+                "continue_steps": self._continue_steps,
+                "branch": self._branch.model_dump(mode="json")
+                if hasattr(self._branch, "model_dump")
+                else self._branch,
                 "token_limit": self._token_limit,
                 "trace_path": self._trace_path,
                 "tasks_completed": sum(row.get("status") == "finished" for row in self._tasks),

@@ -10,11 +10,19 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 
-def create_app(root: Path) -> "FastAPI":
+def create_app(
+    root: Path,
+    initial_run: str | None = None,
+    *,
+    config_source: Path | str | None = None,
+    config_hash: str | None = None,
+) -> "FastAPI":
     """Create a local HTTP view of the committed evidence below ``root``."""
     from spectragent.viewer.server import create_app as create
 
-    return create(root)
+    return create(
+        root, initial_run=initial_run, config_source=config_source, config_hash=config_hash
+    )
 
 
 def serve(
@@ -22,8 +30,20 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = False,
+    initial_run: str | None = None,
+    *,
+    config_source: Path | str | None = None,
+    config_hash: str | None = None,
 ) -> None:
     """Serve the viewer until interrupted; the default bind is loopback only."""
     from spectragent.viewer.server import serve as start
 
-    start(root, host=host, port=port, open_browser=open_browser)
+    start(
+        root,
+        host=host,
+        port=port,
+        open_browser=open_browser,
+        initial_run=initial_run,
+        config_source=config_source,
+        config_hash=config_hash,
+    )

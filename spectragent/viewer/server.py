@@ -35,9 +35,26 @@ def _image_type(data: bytes) -> str:
     raise HTTPException(422, "Recorded screenshot is not a supported raster image")
 
 
-def create_app(root: Path) -> FastAPI:
+def create_app(
+    root: Path,
+    initial_run: str | None = None,
+    *,
+    config_source: Path | str | None = None,
+    config_hash: str | None = None,
+) -> FastAPI:
     """Create an isolated app exposing only the repository's read operations."""
-    repository = open_repository(Path(root))
+    root = Path(root).expanduser().resolve()
+    source = Path(config_source).expanduser().resolve() if config_source is not None else None
+    repository = open_repository(root, config_source=source, config_hash=config_hash)
+    if initial_run is not None:
+        # A focus is validated before binding the server. It does not narrow
+        # the repository: sibling runs and source-run links stay available.
+        repository.run(initial_run)
+        initial_run = PurePosixPath(initial_run).as_posix()
+        if not repository.matches(initial_run):
+            raise RepositoryError(
+                f"Initial run {initial_run!r} does not match the selected configuration filters"
+            )
     app = FastAPI(
         title="All4One experiment viewer", docs_url=None, redoc_url=None, openapi_url=None
     )
@@ -63,6 +80,15 @@ def create_app(root: Path) -> FastAPI:
     @app.exception_handler(FileNotFoundError)
     async def missing_record(request: Request, exc: FileNotFoundError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.get("/api/workspace")
+    def workspace() -> dict[str, Any]:
+        return {
+            "root": str(root),
+            "initial_run": initial_run,
+            "config_source": str(source) if source is not None else None,
+            "config_hash": config_hash,
+        }
 
     @app.get("/api/runs")
     def runs(search: str = "") -> list[dict[str, Any]]:
@@ -126,9 +152,15 @@ def serve(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = False,
+    initial_run: str | None = None,
+    *,
+    config_source: Path | str | None = None,
+    config_hash: str | None = None,
 ) -> None:
     """Run the local viewer; opening a browser is always an explicit choice."""
-    app = create_app(root)
+    app = create_app(
+        root, initial_run=initial_run, config_source=config_source, config_hash=config_hash
+    )
     url_host = f"[{host}]" if ":" in host else host
     print(f"All4One viewer: http://{url_host}:{port}/", flush=True)
     print("Read-only local evidence. Press Ctrl-C to stop.", flush=True)

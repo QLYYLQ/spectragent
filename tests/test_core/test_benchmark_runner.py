@@ -29,6 +29,7 @@ from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.task import TaskContext
 from tests._helpers.assembly import make_env, make_run
@@ -174,6 +175,20 @@ def _make_factory(tmp_path, envs: list[_Env], writers: list[TraceWriter]):
         )
 
     return compose
+
+
+async def test_explicit_configuration_source_reaches_every_benchmark_trace(tmp_path):
+    source = ConfigSource.from_path(tmp_path / "batch.yaml", data=b"source: fixture\n")
+    runner = BenchmarkRunner(
+        loader=_Loader(),
+        compose=_make_factory(tmp_path, [], []),
+        config_source=source,
+    )
+    summary = await runner.run()
+    assert len(summary.outcomes) == 2
+    for outcome in summary.outcomes:
+        assert outcome.trace_dir is not None
+        assert RunTrace(outcome.trace_dir).config.config_source == source
 
 
 class TestRunIdSafety:

@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
+from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 from spectragent.scripts.generate_all import _collect_registrars
 
@@ -64,7 +65,10 @@ async def _run(
     progress: Any = None,
     report: Callable[[dict[str, Any]], None] | None = None,
 ) -> int:
-    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    canonical = config_path.expanduser().resolve()
+    source_bytes = canonical.read_bytes()
+    raw = yaml.safe_load(source_bytes)
+    config_source = ConfigSource.from_path(canonical, data=source_bytes)
     composer = ConfigComposer(registrars=_collect_registrars())
     run = composer.compose(raw)
     if progress is not None:
@@ -104,7 +108,9 @@ async def _run(
         return 0
 
     try:
-        result = await runtime.execute(task=task, timeout=timeout, env_context=context)
+        result = await runtime.execute(
+            task=task, timeout=timeout, env_context=context, config_source=config_source
+        )
     except BaseException as exc:
         if progress is not None:
             progress.finish("cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")

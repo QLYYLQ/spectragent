@@ -48,6 +48,7 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TaskSetupRecord, TraceConfig, TraceNegotiation
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.restoration import BranchProvenance
 from tests._helpers.archive_fakes import (
     BLOBS_KEY,
@@ -169,6 +170,7 @@ async def _run(
     record_secrets=False,
     branch=None,
     env_context=None,
+    config_source=None,
 ) -> Path:
     raw = copy.deepcopy(yaml.safe_load((CONFIG_DIR / "browser_use_local.yaml").read_text("utf-8")))
     if mutate is not None:
@@ -193,6 +195,7 @@ async def _run(
         timeout=10,
         branch=branch,
         env_context=env_context,
+        config_source=config_source,
     )
     assert writer.run_dir is not None
     return writer.run_dir
@@ -201,6 +204,37 @@ async def _run(
 @pytest.fixture()
 async def trace(tmp_path, composer) -> RunTrace:
     return RunTrace(await _run(tmp_path, composer))
+
+
+class TestConfigurationSource:
+    async def test_source_is_recorded_without_changing_effective_configuration_hash(
+        self, tmp_path, composer
+    ):
+        original = ConfigSource.from_path(tmp_path / "a.yaml", data=b"model: first\n")
+        changed = ConfigSource.from_path(tmp_path / "b.yaml", data=b"model: second\n")
+        first = RunTrace(await _run(tmp_path, composer, task_id="one", config_source=original))
+        second = RunTrace(await _run(tmp_path, composer, task_id="two", config_source=changed))
+        unknown = RunTrace(await _run(tmp_path, composer, task_id="unknown"))
+        assert first.config.config_source == original
+        assert second.config.config_source == changed
+        assert (
+            first.manifest.config_hash
+            == second.manifest.config_hash
+            == unknown.manifest.config_hash
+        )
+        assert unknown.config.config_source is None
+        assert "config_source" not in json.loads((unknown.trace_dir / "config.json").read_text())
+
+    async def test_branch_keeps_its_launch_config_source_separate_from_parent_run(
+        self, tmp_path, composer
+    ):
+        source = ConfigSource.from_path(tmp_path / "branch.yaml", data=b"agent_loop: branch\n")
+        branch = TestBranchProvenance._provenance(0)
+        trace = RunTrace(await _run(tmp_path, composer, branch=branch, config_source=source))
+        assert trace.config.config_source == source
+        assert trace.config.branch == branch
+        assert trace.config.config_source is not None
+        assert trace.config.config_source.path != branch.source_trace
 
 
 class TestResolvedConfigIsRecorded:

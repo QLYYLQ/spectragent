@@ -55,6 +55,8 @@ class LiveMonitor(HookBase):
             self._capture(
                 "run_started",
                 max_steps=getattr(kwargs.get("loop"), "max_steps", None),
+                continue_steps=getattr(kwargs.get("loop"), "continue_steps", None),
+                branch=kwargs.get("branch"),
                 **{
                     key: kwargs.get(key)
                     for key in ("run_id", "task_id", "agent_id", "loop_id", "llm_model")

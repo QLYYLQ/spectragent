@@ -46,6 +46,7 @@ from spectragent.core.negotiation import (
 from spectragent.core.step_recorder import RecordingFailedError, StepRecorder
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
+from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.task import resolve_env_context_paths
 
 if TYPE_CHECKING:
@@ -586,6 +587,7 @@ class AgentRuntime:
         env_context: Mapping[str, Any] | None = None,
         loop_inputs: Mapping[str, Any] | None = None,
         branch: BranchProvenance | None = None,
+        config_source: ConfigSource | None = None,
         action_filter: list[str] | None = None,
         config: dict[str, Any] | None = None,
         raise_on_error: bool = True,
@@ -675,6 +677,8 @@ class AgentRuntime:
                 ``TraceConfig.branch``; the runtime does not read it.
                 ``None`` for every other run.
             action_filter: Optional extra narrowing of the action space.
+            config_source: Explicit source YAML file identity, if the caller has one.
+                Passed through to persistence; never inferred from the resolved settings.
             config: Config snapshot recorded in the trace.
             raise_on_error: Re-raise an unexpected exception after the
                 trace is closed out. Benchmark drivers pass ``False`` to
@@ -751,6 +755,7 @@ class AgentRuntime:
             ),
             task_setup=env_context,
             branch=branch,
+            config_source=config_source,
         )
 
         started = time.monotonic()

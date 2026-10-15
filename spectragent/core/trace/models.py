@@ -26,6 +26,7 @@ from spectragent.core.archive.privacy import RedactionLedger
 from spectragent.core.llm.messages import BaseMessage, ToolCall
 from spectragent.core.llm.views import ChatInvokeUsage
 from spectragent.schemas._types import UTCDatetime
+from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.restoration import BranchProvenance
 
 #: The on-disk layout this build writes, and the only one it reads.
@@ -677,6 +678,11 @@ class TraceConfig(BaseModel):
     #: ``secrets_recorded`` / ``env_evidence_privacy`` layer above.
     branch: BranchProvenance | None = Field(default=None, exclude_if=_absent)
 
+    #: Which source file launched this run, across all historical versions.
+    #: Absent for callers and older traces without explicit source provenance.
+    #: Source location/version never changes the effective configuration digest.
+    config_source: ConfigSource | None = Field(default=None, exclude_if=_absent)
+
     def configuration_digest(self, *, resolved: dict[str, Any] | None = None) -> str:
         """Stable hash of *how this run was configured*.
 
@@ -692,7 +698,7 @@ class TraceConfig(BaseModel):
         ``archive_bindings``) moves it through the latter, with no special
         case. Excluded: ``task`` / ``task_id`` (which task, not which
         configuration), ``extra``, ``task_setup`` and ``branch`` (per-task
-        data) and the provenance fields ``secrets_recorded`` /
+        data) and the provenance fields ``config_source`` / ``secrets_recorded`` /
         ``env_evidence_privacy``.
 
         Args:

@@ -8,6 +8,7 @@ from textual.widgets import DataTable, RichLog, Static, TabbedContent
 
 from spectragent.monitoring import ProgressState
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.restoration import BranchProvenance, RestorationCheck, RestoredAction
 from spectragent.schemas.step_record import StepRecord
 from spectragent.tui.app import MonitorApp
 
@@ -99,7 +100,9 @@ async def test_selected_step_shows_action_result_and_log_handler_is_removed():
     app = MonitorApp(operation, state)
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
-        assert "policy steps 1/9" in str(app.query_one("#summary", Static).render())
+        assert "policy steps 1 · configured ceiling 9" in str(
+            app.query_one("#summary", Static).render()
+        )
         app.query_one("#steps", DataTable).focus()
         await pilot.press("enter")
         await pilot.pause()
@@ -154,3 +157,71 @@ async def test_ui_preserves_scheduler_stop_reason_and_duplicate_task_rows(reason
         assert app.query_one("#tasks", DataTable).row_count == 2
         await pilot.press("q")
     assert app.operation_result() == 4
+
+
+async def test_branch_ceiling_and_source_failures_are_explicit():
+    state = ProgressState()
+    check = RestorationCheck(
+        step=0,
+        verdict="warn",
+        reason="action_failed",
+        reasons=["action_failed"],
+        actions=[
+            RestoredAction(
+                recorded=Action(name="browser.click", params={"index": 1}),
+                executed=Action(name="browser.click", params={"index": 9}),
+                method="geometry_signature",
+                recorded_success=True,
+                live_success=False,
+                live_error="restored element disappeared",
+            )
+        ],
+    )
+
+    async def operation():
+        state.run_started(
+            loop_id="branch",
+            max_steps=30,
+            continue_steps=0,
+            branch=BranchProvenance(
+                source_run_id="source-run",
+                source_trace="source",
+                checkpoint_step=1,
+                branch_index=0,
+                branch_group_id="source-run/s1",
+            ),
+        )
+        state.recorded(
+            StepRecord(
+                step=0,
+                origin="restored",
+                actions=[Action(name="browser.click")],
+                action_results=[ActionResult(success=True)],
+                llm_output="source reply",
+                restoration=check,
+            )
+        )
+        state.recorded(StepRecord(step=1, origin="policy"))
+        state.recorded(StepRecord(step=2, origin="terminal"))
+
+    app = MonitorApp(operation, state)
+    async with app.run_test(size=(125, 40)) as pilot:
+        await pilot.pause()
+        text = str(app.query_one("#summary", Static).render())
+        assert "policy steps 1 · configured ceiling 30 · continue_steps 0" in text
+        assert "1/30" not in text
+        assert "source-run · checkpoint 1" in text
+        table = app.query_one("#steps", DataTable)
+        assert "source: browser.click; actual: browser.click (failed)" in str(
+            table.get_row_at(0)[2]
+        )
+        table.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        text = "\n".join(line.text for line in app.query_one("#details", RichLog).lines)
+        assert '"source_action_results"' in text
+        assert '"source_model_reply": "source reply"' in text
+        assert '"actual_restoration_actions"' in text
+        assert '"live_success": false' in text
+        assert "restored element disappeared" in text
+        await pilot.press("q")

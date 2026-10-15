@@ -90,6 +90,7 @@ from spectragent.flywheel.metrics import (
 )
 from spectragent.flywheel.report import FlywheelReport, build_report, write_report
 from spectragent.schemas._types import UNLIMITED, Unlimited, limit_value
+from spectragent.schemas.config_source import ConfigSource
 
 logger = logging.getLogger(__name__)
 
@@ -246,10 +247,17 @@ def resolve_planted(
 # ── the path plumbing ─────────────────────────────────────────────────
 
 
-def _load_stage_yaml(stage: str, path: Path) -> dict[str, Any]:
+def _stage_bytes(stage: str, path: Path) -> bytes:
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ChainConfigError(f"stage {stage!r}: {path} does not read: {exc}") from exc
+
+
+def _load_stage_yaml(stage: str, path: Path, *, data: bytes | None = None) -> dict[str, Any]:
+    try:
+        raw = yaml.safe_load(_stage_bytes(stage, path) if data is None else data)
+    except yaml.YAMLError as exc:
         raise ChainConfigError(f"stage {stage!r}: {path} does not read: {exc}") from exc
     if not isinstance(raw, dict):
         raise ChainConfigError(f"stage {stage!r}: {path} is not a YAML mapping")
@@ -274,9 +282,11 @@ def _one(
     return entries[0]
 
 
-def run_stage_config(stage: str, path: Path, layout: ChainLayout) -> dict[str, Any]:
+def run_stage_config(
+    stage: str, path: Path, layout: ChainLayout, *, data: bytes | None = None
+) -> dict[str, Any]:
     """*path*'s YAML with this chain's paths written in (module docstring); nothing else changes."""
-    raw = _load_stage_yaml(stage, path)
+    raw = _load_stage_yaml(stage, path, data=data)
     writer = _one(stage, path, raw, "hook", "hook_id", "trace_writer")
     writer["trace_dir"] = str(layout.traces(stage))
     if stage in BRANCH_STAGES:
@@ -537,13 +547,17 @@ def run_chain(
     selected = selected_stages(spec, stages)
     layout = ChainLayout(spec.root.expanduser().resolve())
     effective: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+    sources: dict[str, ConfigSource] = {}
     for stage in selected:
         if stage in RUN_STAGES:
             stage_spec: StageSpec = getattr(spec, stage)
+            source_path = stage_spec.config.expanduser().resolve()
+            source_bytes = _stage_bytes(stage, source_path)
+            sources[stage] = ConfigSource.from_path(source_path, data=source_bytes)
             effective[stage] = [
                 (
                     layout.configs_dir / f"{stage}.yaml",
-                    run_stage_config(stage, stage_spec.config, layout),
+                    run_stage_config(stage, source_path, layout, data=source_bytes),
                 )
             ]
         elif stage == "export":
@@ -599,6 +613,7 @@ def run_chain(
                         outcome,
                         bench_main,
                         log_level,
+                        source=sources[stage],
                         remaining=account.remaining if account is not None else None,
                     )
                 finally:
@@ -642,6 +657,7 @@ def _run_stage(
     entry: Entry,
     log_level: str,
     *,
+    source: ConfigSource,
     remaining: int | None = None,
 ) -> bool:
     """Run one ``spectragent bench`` stage; whether its sweep stopped at the token limit.
@@ -655,7 +671,18 @@ def _run_stage(
     path, raw = config
     _write_yaml(path, raw)
     stage_spec: StageSpec = getattr(spec, stage)
-    argv = ["--config", str(path), "--timeout", f"{stage_spec.timeout:g}", "--log-level", log_level]
+    argv = [
+        "--config",
+        str(path),
+        "--config-source",
+        source.path,
+        "--config-source-sha256",
+        source.sha256,
+        "--timeout",
+        f"{stage_spec.timeout:g}",
+        "--log-level",
+        log_level,
+    ]
     if stage in ("record", "control"):
         tasks = spec.tasks
         if tasks.benchmark:

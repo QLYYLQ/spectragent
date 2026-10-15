@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from spectragent.monitoring.protocols import ProgressSink
+from spectragent.schemas.config_source import ConfigSource
 
 
 class TaskProgress(ProgressSink, Protocol):
@@ -43,7 +44,14 @@ class SessionLedger(Protocol):
 
 
 class BatchSession:
-    def __init__(self, directory: Path, *, benchmark: str, subset: str) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        benchmark: str,
+        subset: str,
+        config_source: ConfigSource | None = None,
+    ) -> None:
         self.path = directory / f"{uuid.uuid4().hex}.json"
         self._data: dict[str, Any] = {
             "format": "af-session-1",
@@ -55,6 +63,8 @@ class BatchSession:
             "tasks": [],
         }
         self._active: int | None = None
+        if config_source is not None:
+            self._data["config_source"] = config_source.model_dump(mode="json")
 
     def start(self, task_ids: list[str]) -> None:
         self._data["tasks"] = [

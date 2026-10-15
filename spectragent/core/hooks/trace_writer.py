@@ -89,6 +89,7 @@ from spectragent.core.trace.models import (
 )
 from spectragent.core.trace.redaction import redact_config, trace_safe
 from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import StepRecord
 
@@ -320,6 +321,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         env_evidence_privacy: Sequence[str] | None = None,
         task_setup: Mapping[str, Any] | None = None,
         branch: BranchProvenance | None = None,
+        config_source: ConfigSource | None = None,
         **kwargs: Any,
     ) -> None:
         """Open the trace: directory, config snapshot, initial manifest.
@@ -379,6 +381,8 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             branch: Where a branch run came from, recorded as given
                 (:attr:`~spectragent.core.trace.models.TraceConfig.branch`);
                 ``None`` for every other run. Not part of the digest.
+            config_source: Explicit original YAML file identity, recorded as given.
+                Its path and byte digest are provenance, never effective settings.
 
         Raises:
             RuntimeError: The archive was not negotiated and bound (see above).
@@ -444,6 +448,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             ),
             task_setup=_task_setup_record(task_setup, record_secrets=self.record_secrets),
             branch=branch,
+            config_source=config_source,
         )
         self._wal.init_run(
             trace_config,

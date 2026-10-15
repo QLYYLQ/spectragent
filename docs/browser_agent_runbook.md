@@ -36,6 +36,22 @@ uv run spectragent tui --root traces
 uv run spectragent view --root traces --port 8765 --open
 ```
 
+`view`、历史 `tui` 和 `runs list` 也支持按配置文件来源筛选。`--root` 始终是搜索目录，默认 `traces`；`--config` 不会从当前 YAML 推断或扩大这个范围，也不要求该文件仍然存在。同一文件改过参数的历史版本都包含在内，不同目录下的同名文件分开。新的录制与批量运行记录来源路径和源文件版本摘要；此前未记录来源的结果显示 Unknown，不凭目录或脱敏配置猜归属。
+
+```bash
+# 同一份配置启动的全部历史版本（在所选根目录内）
+uv run spectragent view --root traces --config configs/experiment.yaml --open
+uv run spectragent tui --root traces --config configs/experiment.yaml
+uv run spectragent --json runs list --root traces --config configs/experiment.yaml
+# 启动时直接聚焦一个 run；根目录仍保留其他结果和源运行导航
+uv run spectragent view --root traces --run branch/RUN_KEY --open
+uv run spectragent tui --root traces --run branch/RUN_KEY
+```
+
+`--config-hash` 是另一种筛选：精确选择 Trace 已记录的有效配置摘要，可与来源路径取交集；它不是源 YAML 字节摘要。`--run` 与显式筛选冲突会在打开界面前拒绝。若源录制与分叉分别在 `record/`、`branch/`，请选它们的共同父目录作为 root；TUI 的 `s` 跳到所选运行的源检查点，网页提供同样的链接，不越界打开根外的来源。
+
+恢复步骤的源动作、源结果和源模型回复与本次实际恢复执行分开展示。实时终端把 `max_steps` 标为配置上限，并单列 `continue_steps`，不把配置上限当成分叉的实际步数预算。回放日志页按原有读取器的折叠权重统计 hit/miss/exhausted/synthetic，包含 trailing 收尾决定；未记录日志、空日志和日志损坏分别显示。
+
 查看器只读本地目录，展示截图、步骤、模型请求/回复、每次失败与重试、观测、评测、配置和分叉来源。运行对比与实验组对比分开：实验组按配置摘要选择，按相同任务配对，必须明确选择 evaluator；重复尝试记为 ambiguous，不自动挑最好的一次。判分配置不同不合并统计。报告页读取同一根目录下的独立评测、飞轮、诊断、数据集和任务清单；可以把 `--root` 指向包含这些产物的共同父目录。
 
 服务默认只监听 `127.0.0.1`。SSH 使用时在服务器运行 view，在本机建立端口转发后打开 `http://127.0.0.1:8765`：

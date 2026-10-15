@@ -82,6 +82,7 @@ from spectragent.schemas._types import (
     Unlimited,
     limit_value,
 )
+from spectragent.schemas.config_source import ConfigSource
 
 logger = logging.getLogger(__name__)
 
@@ -574,6 +575,7 @@ class BenchmarkRunner:
         token_limit: int | Unlimited = UNLIMITED,
         progress: TaskProgress | None = None,
         session: SessionLedger | None = None,
+        config_source: ConfigSource | None = None,
     ) -> None:
         if token_limit != UNLIMITED and (
             isinstance(token_limit, bool) or not isinstance(token_limit, int) or token_limit < 1
@@ -601,6 +603,7 @@ class BenchmarkRunner:
         self._evals_dir = evals_dir
         self._progress = progress
         self._session = session
+        self._config_source = config_source
 
     @property
     def benchmark(self) -> str:
@@ -903,6 +906,7 @@ class BenchmarkRunner:
                 env_context=context.env,
                 loop_inputs=context.loop,
                 branch=context.branch,
+                config_source=self._config_source,
                 timeout=self._timeout,
                 raise_on_error=False,
                 config=_task_snapshot(task, self._benchmark, self._subset),
@@ -1095,6 +1099,15 @@ def main(
         ),
     )
     parser.add_argument("--config", required=True, type=Path, help="YAML run config.")
+    parser.add_argument(
+        "--config-source",
+        type=Path,
+        help="Canonical absolute original YAML path before generated overrides; requires --config-source-sha256.",
+    )
+    parser.add_argument(
+        "--config-source-sha256",
+        help="Digest captured from that original YAML's consumed bytes; requires --config-source.",
+    )
     parser.add_argument("--benchmark", help="Task loader key (if not in the config).")
     parser.add_argument("--subset", help="Benchmark subset/split.")
     parser.add_argument("--task-id", action="append", dest="task_ids", help="Repeatable.")
@@ -1144,6 +1157,8 @@ def main(
         ),
     )
     args = parser.parse_args(argv)
+    if (args.config_source is None) != (args.config_source_sha256 is None):
+        parser.error("--config-source and --config-source-sha256 must be supplied together")
 
     logging.basicConfig(
         level=getattr(logging, str(args.log_level).upper(), logging.INFO),
@@ -1152,7 +1167,14 @@ def main(
 
     import yaml
 
-    raw = yaml.safe_load(args.config.read_text("utf-8"))
+    canonical = args.config.expanduser().resolve()
+    source_bytes = canonical.read_bytes()
+    raw = yaml.safe_load(source_bytes)
+    config_source = (
+        ConfigSource(path=str(args.config_source), sha256=args.config_source_sha256)
+        if args.config_source is not None
+        else ConfigSource.from_path(canonical, data=source_bytes)
+    )
     composer = build_composer()
     probe = composer.compose(raw)
     loader = _resolve_loader(probe, args.benchmark, args.subset)
@@ -1169,7 +1191,10 @@ def main(
         Path("traces"),
     )
     session = BatchSession(
-        args.session_dir or trace_root / ".sessions", benchmark=benchmark, subset=subset
+        args.session_dir or trace_root / ".sessions",
+        benchmark=benchmark,
+        subset=subset,
+        config_source=config_source,
     )
     if progress is not None:
         progress.configure(token_limit=args.token_limit)
@@ -1188,6 +1213,7 @@ def main(
         token_limit=args.token_limit,
         progress=progress,
         session=session,
+        config_source=config_source,
     )
 
     selected = runner.select_task_ids(task_ids=args.task_ids, limit=args.limit)

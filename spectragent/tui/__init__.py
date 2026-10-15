@@ -18,12 +18,21 @@ def run_operation(factory: Callable[[], Awaitable[T]], state: ProgressState) -> 
     return app.operation_result()
 
 
-def browse(root: Path) -> None:
+def browse(
+    root: Path,
+    initial_run: str | None = None,
+    *,
+    config_source: Path | str | None = None,
+    config_hash: str | None = None,
+) -> None:
     """Browse recorded runs without starting a browser or executing actions."""
     from spectragent.inspection.repository import open_repository
     from spectragent.tui.browser import BrowserApp
 
-    BrowserApp(open_repository(root)).run()
+    repository = open_repository(root, config_source=config_source, config_hash=config_hash)
+    if initial_run is not None and not repository.matches(initial_run):
+        raise ValueError("The selected run does not match the configuration filters")
+    BrowserApp(repository, initial_run=initial_run).run()
 
 
 __all__ = ["browse", "run_operation"]

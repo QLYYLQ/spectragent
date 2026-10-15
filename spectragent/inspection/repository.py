@@ -16,6 +16,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from spectragent.core.trace.errors import TraceSchemaError
+from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import task_identity
 from spectragent.core.trace.usage import recorded_usage
@@ -29,6 +30,7 @@ class RunRepository(Protocol):
     """JSON-ready read surface; keys are paths relative to the selected root."""
 
     def list_runs(self, search: str = "") -> list[dict[str, Any]]: ...
+    def matches(self, key: str) -> bool: ...
     def run(self, key: str) -> dict[str, Any]: ...
     def step(self, key: str, index: int) -> dict[str, Any]: ...
     def screenshot(self, key: str, index: int) -> bytes | None: ...
@@ -38,9 +40,11 @@ class RunRepository(Protocol):
     def report(self, key: str) -> dict[str, Any]: ...
 
 
-def open_repository(root: Path) -> RunRepository:
+def open_repository(
+    root: Path, *, config_source: Path | str | None = None, config_hash: str | None = None
+) -> RunRepository:
     """Open a local experiment root, which may itself be a single run."""
-    return _FileRepository(root)
+    return _FileRepository(root, config_source=config_source, config_hash=config_hash)
 
 
 def _json(value: Any) -> Any:
@@ -93,6 +97,76 @@ def _verdicts(evaluations: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _mappings(value: Any) -> Iterator[dict[str, Any]]:
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _mappings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _mappings(child)
+
+
+def _replay_archive(config: TraceConfig) -> str | None:
+    context = config.task_setup.context if config.task_setup else {}
+    value = context.get("replay_archive")
+    if not isinstance(value, str):
+        browser = context.get("browser", {})
+        value = browser.get("replay_archive") if isinstance(browser, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def _network_source(config: TraceConfig) -> str | None:
+    sources = {
+        block["network_source"].get("source_id")
+        for block in _mappings(config.resolved)
+        if block.get("capability_id") == "browser" and isinstance(block.get("network_source"), dict)
+    }
+    sources &= {"live", "archive"}
+    if len(sources) == 1:
+        return next(iter(sources))
+    # replay_archive is an explicit recorded setup fact, not a directory-name guess.
+    return "archive" if _replay_archive(config) is not None else None
+
+
+def _execution_kind(config: TraceConfig) -> str:
+    network = _network_source(config)
+    if config.branch is not None:
+        return "branch_replay" if network == "archive" else "branch"
+    return "replay" if network == "archive" else "live" if network == "live" else "unknown"
+
+
+def _replay_log(trace: RunTrace) -> dict[str, Any]:
+    from spectragent.core.capabilities.browser.replay.replay_log import iter_decisions
+
+    enabled = bool(
+        trace.config.negotiation
+        and "browser.replay_log" in trace.config.negotiation.active_archivers
+    )
+    entries: list[dict[str, Any]] = []
+    counts = dict.fromkeys(("hit", "miss", "exhausted", "synthetic"), 0)
+    try:
+        for step, entry, weight in iter_decisions(trace):
+            if entry.kind not in counts:
+                raise ValueError("A folded replay log entry does not identify its decision kind")
+            entries.append({"step": step, **entry.model_dump(mode="json"), "weight": weight})
+            counts[entry.kind] += weight
+    except (TraceSchemaError, ValueError, KeyError) as exc:
+        return {
+            "recorded": enabled or bool(entries),
+            "entries": entries,
+            "counts": None,
+            "error": str(exc),
+        }
+    recorded = enabled or bool(entries)
+    return {
+        "recorded": recorded,
+        "entries": entries,
+        "counts": counts if recorded else None,
+        "error": None,
+    }
+
+
 def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
     config, result, manifest = trace.config, trace.result, trace.manifest
     records = trace.step_records
@@ -113,6 +187,8 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
         "loop_id": config.loop_id,
         "model": config.llm_model,
         "config_hash": manifest.config_hash,
+        "config_source": _json(config.config_source),
+        "execution_kind": _execution_kind(config),
         "created_at": manifest.created_at.isoformat(),
         "updated_at": manifest.updated_at.isoformat(),
         "agent_done": str(result.agent_done) if result else None,
@@ -137,8 +213,14 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
 
 
 class _FileRepository:
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self, root: Path, *, config_source: Path | str | None = None, config_hash: str | None = None
+    ) -> None:
         self.root = Path(root).expanduser().resolve()
+        self.config_source = (
+            str(Path(config_source).expanduser().resolve()) if config_source is not None else None
+        )
+        self.config_hash = config_hash
         if not self.root.is_dir():
             raise FileNotFoundError(f"Experiment directory does not exist: {self.root}")
 
@@ -157,6 +239,19 @@ class _FileRepository:
             raise FileNotFoundError(f"No recorded run at {key}")
         try:
             return RunTrace(path)
+        except TraceSchemaError as exc:
+            raise RepositoryError(str(exc)) from exc
+
+    def _matches(self, trace: RunTrace) -> bool:
+        source = trace.config.config_source
+        return (
+            self.config_source is None or (source is not None and source.path == self.config_source)
+        ) and (self.config_hash is None or trace.manifest.config_hash == self.config_hash)
+
+    def matches(self, key: str) -> bool:
+        """Initial focus obeys filters; lineage navigation may leave the filter, never the root."""
+        try:
+            return self._matches(self._trace(key))
         except TraceSchemaError as exc:
             raise RepositoryError(str(exc)) from exc
 
@@ -213,8 +308,13 @@ class _FileRepository:
                 continue
             key = directory.relative_to(self.root).as_posix()
             try:
-                rows.append(_summary(self._trace(key), key))
+                trace = self._trace(key)
+                if self._matches(trace):
+                    rows.append(_summary(trace, key))
             except (RepositoryError, TraceSchemaError, OSError) as exc:
+                if self.config_source is not None or self.config_hash is not None:
+                    # No readable identity means no evidence of membership.
+                    continue
                 rows.append(
                     {
                         "key": key,
@@ -248,10 +348,7 @@ class _FileRepository:
                         "call_count": len(entry.llm_calls),
                     }
                 )
-            source_key = None
-            branch = trace.config.branch
-            if branch is not None:
-                source_key = self._source_key(branch.source_run_id)
+            execution = self._execution(trace)
             return {
                 "summary": summary,
                 "config": _json(trace.config),
@@ -267,12 +364,14 @@ class _FileRepository:
                     if call.output_format is not None
                 },
                 "usage": _json(usage),
-                "source_key": source_key,
+                "source_key": execution["source_key"],
+                "execution": execution,
+                "replay_log": _replay_log(trace),
             }
         except (TraceSchemaError, KeyError) as exc:
             raise RepositoryError(str(exc)) from exc
 
-    def _source_key(self, run_id: str) -> str | None:
+    def _source_match(self, run_id: str) -> tuple[str | None, str]:
         candidates = []
         for directory, files in self._directories():
             if "manifest.json" not in files:
@@ -283,7 +382,42 @@ class _FileRepository:
                     candidates.append(key)
             except (RepositoryError, OSError):
                 continue
-        return candidates[0] if len(candidates) == 1 else None
+        if len(candidates) == 1:
+            return candidates[0], "found"
+        return None, "ambiguous" if candidates else "missing"
+
+    def _execution(self, trace: RunTrace) -> dict[str, Any]:
+        config = trace.config
+        branch = config.branch
+        source_key, resolution, source_run_id = None, "none", None
+        if branch is not None:
+            source_run_id = branch.source_run_id
+            source_key, resolution = self._source_match(source_run_id)
+        else:
+            archive = _replay_archive(config)
+            if archive is not None:
+                path = Path(archive).expanduser()
+                # Runtime records an absolute source. Never reinterpret an
+                # old relative path against the viewer's current directory.
+                if not path.is_absolute():
+                    resolution = "missing"
+                elif not path.resolve().is_relative_to(self.root):
+                    resolution = "outside_root"
+                else:
+                    key = path.resolve().relative_to(self.root).as_posix()
+                    try:
+                        source_run_id = self._trace(key).run_id
+                        source_key, resolution = key, "found"
+                    except (RepositoryError, FileNotFoundError):
+                        resolution = "missing"
+        return {
+            "network_source": _network_source(config),
+            "source_key": source_key,
+            "source_run_id": source_run_id,
+            "checkpoint": branch.checkpoint_step if branch else None,
+            "relationship": "branch" if branch else "replay" if _replay_archive(config) else None,
+            "source_resolution": resolution,
+        }
 
     def step(self, key: str, index: int) -> dict[str, Any]:
         trace = self._trace(key)

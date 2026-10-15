@@ -10,6 +10,7 @@ from spectragent.core.composer import ComposedRun
 from spectragent.core.hooks.live_monitor import LiveMonitor
 from spectragent.monitoring import ProgressState, attach_progress
 from spectragent.schemas.action import Action
+from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
 
 
@@ -172,3 +173,41 @@ def test_trace_location_is_observed_lazily_and_cleared_for_the_next_run():
     assert state.snapshot()["trace_path"] == "/recorded/task-one"
     attach_progress(ComposedRun(by_layer={}), state)
     assert state.snapshot()["trace_path"] is None
+
+
+async def test_strict_restore_failure_keeps_zero_policy_steps_and_branch_context():
+    state = ProgressState()
+    hook = LiveMonitor()
+    hook.bind(state, environment=False)
+    provenance = BranchProvenance(
+        source_run_id="source",
+        source_trace="source",
+        checkpoint_step=3,
+        branch_index=2,
+        branch_group_id="source/s3",
+    )
+    await hook.on_run_start(
+        loop=SimpleNamespace(max_steps=30, continue_steps=0), loop_id="branch", branch=provenance
+    )
+
+    async def recorded():
+        return None
+
+    check = RestorationCheck(
+        step=0, verdict="diverged", reason="url_mismatch", reasons=["url_mismatch"]
+    )
+    record = StepRecord(
+        step=0,
+        origin="restored",
+        error_phase="restore",
+        error="RestorationDivergedError",
+        restoration=check,
+    )
+    await hook.around_record_step(proceed=recorded, args=(record,), kwargs={})
+    snapshot = state.snapshot()
+    assert snapshot["policy_steps"] == 0
+    assert snapshot["calls"] == 0
+    assert snapshot["max_steps"] == 30
+    assert snapshot["continue_steps"] == 0
+    assert snapshot["branch"] == provenance.model_dump(mode="json")
+    assert snapshot["steps"][0]["detail"]["restoration"]["verdict"] == "diverged"

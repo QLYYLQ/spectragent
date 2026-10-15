@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
@@ -28,6 +29,41 @@ def _terminal_value(value: Any) -> Any:
     return value
 
 
+def _step_presentation(record: dict[str, Any]) -> dict[str, Any]:
+    """Name copied source facts separately from the restoration that actually ran."""
+    if record.get("origin") != "restored":
+        return record
+    check = record.get("restoration") or {}
+    return {
+        **{
+            key: value
+            for key, value in record.items()
+            if key not in {"actions", "action_results", "llm_output", "restoration"}
+        },
+        "source_actions": record.get("actions", []),
+        "source_action_results": record.get("action_results", []),
+        "source_model_reply": record.get("llm_output", ""),
+        "actual_restoration_actions": check.get("actions", []),
+        "restoration_check": {key: value for key, value in check.items() if key != "actions"},
+    }
+
+
+def _step_actions(record: dict[str, Any]) -> str:
+    names = ", ".join(action.get("name", "?") for action in record.get("actions", []))
+    if record.get("origin") != "restored":
+        return names
+    actual = []
+    for action in (record.get("restoration") or {}).get("actions", []):
+        executed = action.get("executed")
+        if executed is None:
+            actual.append(f"not executed ({action.get('failure') or 'no action'})")
+        else:
+            success = action.get("live_success")
+            result = "ok" if success is True else "failed" if success is False else "unknown result"
+            actual.append(f"{executed.get('name', '?')} ({result})")
+    return f"source: {names or '—'}; actual: {', '.join(actual) or 'no execution recorded'}"
+
+
 class BrowserApp(App[None]):
     """A keyboard-friendly experiment index and step inspector; never executes a trace."""
 
@@ -45,13 +81,18 @@ class BrowserApp(App[None]):
         Binding("ctrl+c", "quit", "Close", priority=True),
         Binding("r", "refresh_runs", "Refresh"),
         Binding("slash", "search", "Search"),
+        Binding("s", "source", "Source checkpoint"),
     ]
 
-    def __init__(self, repository: RunRepository) -> None:
+    def __init__(self, repository: RunRepository, initial_run: str | None = None) -> None:
         super().__init__()
         self.repository = repository
         self._rows: dict[str, dict[str, Any]] = {}
         self._selected: str | None = None
+        self._initial_run = initial_run
+        self._selected_step: int | None = None
+        self._source_selection = False
+        self._run_detail: dict[str, Any] | None = None
         self._query: str | None = None
         self._list_generation = 0
         self._detail_generation = 0
@@ -73,11 +114,21 @@ class BrowserApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#runs", DataTable).add_columns(
-            "Task", "Agent / model", "Agent ending", "Trace", "Policy steps", "Known tokens"
+            "Task",
+            "Agent / model",
+            "Agent ending",
+            "Trace",
+            "Policy steps",
+            "Known tokens",
+            "Config source",
         )
-        self.query_one("#steps", DataTable).add_columns("Step", "Origin", "Actions", "Error")
+        self.query_one("#steps", DataTable).add_columns(
+            "Step", "Origin", "Actions / restoration", "Error"
+        )
         self.action_refresh_runs()
         self.query_one("#runs", DataTable).focus()
+        if self._initial_run is not None:
+            self._select_run(self._initial_run)
 
     @on(Input.Changed, "#search")
     def search_changed(self, event: Input.Changed) -> None:
@@ -102,7 +153,7 @@ class BrowserApp(App[None]):
         self._list_generation += 1
         self.query_one("#status", Static).update("Loading recorded runs…")
         self.run_worker(
-            self._load_runs(query, self._list_generation, debounce=debounce),
+            partial(self._load_runs, query, self._list_generation, debounce=debounce),
             group="run-list",
             exclusive=True,
             exit_on_error=False,
@@ -130,15 +181,28 @@ class BrowserApp(App[None]):
                 str(row.get("trace_status") or "unreadable"),
                 str(row.get("policy_steps", "—")),
                 str(row.get("tokens") if row.get("tokens") is not None else "unknown"),
+                Text(str((row.get("config_source") or {}).get("path") or "Unknown")),
                 key=row["key"],
             )
         self.query_one("#status", Static).update(
             f"{len(rows)} recorded runs · writing means an open trace; process liveness is unknown."
         )
+        initial_run, self._initial_run = self._initial_run, None
         if self._selected in self._rows:
-            self._select_run(self._selected)
+            table.move_cursor(row=list(self._rows).index(self._selected))
+            self._select_run(
+                self._selected, step=self._selected_step, source_navigation=self._source_selection
+            )
         elif self._selected is not None:
+            if self._selected == initial_run and not query:
+                # Keep the explicit run's own read error visible, even if it
+                # could not appear in directory discovery.
+                return
+            if self._source_selection:
+                self._select_run(self._selected, step=self._selected_step, source_navigation=True)
+                return
             self._selected = None
+            self._run_detail = None
             self._detail_generation += 1
             self.workers.cancel_group(self, "run-detail")
             self.query_one("#steps", DataTable).clear()
@@ -148,13 +212,18 @@ class BrowserApp(App[None]):
     def run_selected(self, event: DataTable.RowSelected) -> None:
         self._select_run(str(event.row_key.value))
 
-    def _select_run(self, key: str) -> None:
+    def _select_run(
+        self, key: str, *, step: int | None = None, source_navigation: bool = False
+    ) -> None:
         self._selected = key
+        self._source_selection = source_navigation
+        self._selected_step = step
+        self._run_detail = None
         self._detail_generation += 1
         self.query_one("#steps", DataTable).clear()
         self._show({"loading_run": key})
         self.run_worker(
-            self._load_run(key, self._detail_generation),
+            partial(self._load_run, key, self._detail_generation),
             group="run-detail",
             exclusive=True,
             exit_on_error=False,
@@ -169,17 +238,40 @@ class BrowserApp(App[None]):
             return
         if not self._detail_is_current(key, generation):
             return
+        self._run_detail = detail
+        runs = self.query_one("#runs", DataTable)
+        runs.show_cursor = key in self._rows
+        if key in self._rows:
+            runs.move_cursor(row=list(self._rows).index(key))
+        config_source = (detail.get("summary", {}).get("config_source") or {}).get(
+            "path"
+        ) or "Unknown"
+        scope = (
+            " · source outside the current list filter"
+            if self._source_selection and key not in self._rows
+            else ""
+        )
+        self.query_one("#status", Static).update(
+            f"Run {key} · config source: {config_source}{scope}"
+        )
         table = self.query_one("#steps", DataTable)
         for item in detail.get("steps", []):
             record = item.get("record", item)
             table.add_row(
                 str(record["step"]),
                 str(record.get("origin", "policy")),
-                Text(", ".join(action.get("name", "?") for action in record.get("actions", []))),
+                Text(_step_actions(record)),
                 Text(str(record.get("error") or "")),
                 key=str(record["step"]),
             )
         self._show({key: value for key, value in detail.items() if key != "steps"})
+        if self._selected_step is not None:
+            step = self._selected_step
+            indices = [item.get("record", item)["step"] for item in detail.get("steps", [])]
+            if step in indices:
+                table.move_cursor(row=indices.index(step))
+                self.call_after_refresh(table.focus)
+            await self._load_step(key, step, generation)
 
     @on(DataTable.RowSelected, "#steps")
     def step_selected(self, event: DataTable.RowSelected) -> None:
@@ -187,9 +279,10 @@ class BrowserApp(App[None]):
             return
         self._detail_generation += 1
         index = int(str(event.row_key.value))
+        self._selected_step = index
         self._show({"loading_step": index, "run": self._selected})
         self.run_worker(
-            self._load_step(self._selected, index, self._detail_generation),
+            partial(self._load_step, self._selected, index, self._detail_generation),
             group="run-detail",
             exclusive=True,
             exit_on_error=False,
@@ -206,4 +299,36 @@ class BrowserApp(App[None]):
                 self._show({"error": str(exc)})
         else:
             if self._detail_is_current(key, generation):
-                self._show(detail)
+                self._show({**detail, "record": _step_presentation(detail["record"])})
+
+    def action_source(self) -> None:
+        detail = self._run_detail
+        if detail is None:
+            self._show({"source_navigation": "Select a run and wait for its details to load."})
+            return
+        execution = detail.get("execution") or {}
+        branch = detail.get("summary", {}).get("branch") or {}
+        source = execution.get("source_key") or detail.get("source_key")
+        checkpoint = execution.get("checkpoint", branch.get("checkpoint_step"))
+        resolution = execution.get("source_resolution", "missing" if branch else "none")
+        if source is None:
+            reasons = {
+                "none": "The selected run has no recorded source relationship.",
+                "missing": "The recorded source run is unavailable under this root.",
+                "ambiguous": "Multiple runs under this root share the recorded source id; no source was chosen.",
+                "outside_root": "The recorded source is outside this root; choose a root containing both runs to navigate.",
+            }
+            self._show(
+                {
+                    "source_run_id": execution.get("source_run_id", branch.get("source_run_id")),
+                    "checkpoint_step": checkpoint,
+                    "source_navigation": reasons.get(
+                        resolution, "The recorded source could not be resolved under this root."
+                    ),
+                }
+            )
+            return
+        if self.query_one("#search", Input).value:
+            self.query_one("#search", Input).value = ""
+            self._request_runs("", debounce=False)
+        self._select_run(source, step=checkpoint, source_navigation=True)

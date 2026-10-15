@@ -19,7 +19,7 @@ from textual.events import Print
 from textual.widgets import DataTable, Footer, Header, RichLog, Static, TabbedContent, TabPane
 
 from spectragent.monitoring.state import ProgressState
-from spectragent.tui.browser import _terminal_value
+from spectragent.tui.browser import _step_actions, _step_presentation, _terminal_value
 
 T = TypeVar("T")
 
@@ -98,7 +98,9 @@ class MonitorApp(App[None], Generic[T]):
 
     def on_mount(self) -> None:
         self.query_one("#tasks", DataTable).add_columns("Task", "State", "Agent ending", "Trace")
-        self.query_one("#steps", DataTable).add_columns("Step", "Origin", "Actions", "Error")
+        self.query_one("#steps", DataTable).add_columns(
+            "Step", "Origin", "Actions / restoration", "Error"
+        )
         self.set_interval(0.15, self.refresh_progress)
         self.refresh_progress()
         self.begin_capture_print(self)
@@ -169,6 +171,17 @@ class MonitorApp(App[None], Generic[T]):
         ending = f" · agent ended: {snapshot['agent_done']}" if snapshot["agent_done"] else ""
         finished = " · Press q to return" if self._complete else ""
         budget = snapshot["max_steps"] if snapshot["max_steps"] is not None else "—"
+        continuation = (
+            f" · continue_steps {snapshot['continue_steps']}"
+            if snapshot["continue_steps"] is not None
+            else ""
+        )
+        branch = snapshot.get("branch")
+        provenance = (
+            f"\nSource: {branch.get('source_run_id', '—')} · checkpoint {branch.get('checkpoint_step', '—')} · branch {branch.get('branch_index', '—')}"
+            if branch
+            else ""
+        )
         token_limit = f" / {snapshot['token_limit']}" if snapshot["token_limit"] is not None else ""
         summary = (
             f"{snapshot['status'].upper()}  {phase}{phase_elapsed}{ending}{finished}\n"
@@ -176,11 +189,11 @@ class MonitorApp(App[None], Generic[T]):
             f"{identity.get('agent_id', '—')} / {identity.get('loop_id', '—')} / "
             f"{identity.get('llm_model', '—')}\n"
             f"Tasks {snapshot['tasks_completed']}/{snapshot['tasks_total']}  ·  "
-            f"elapsed {snapshot['elapsed_s']:.1f}s  ·  policy steps {snapshot['policy_steps']}/{budget}  ·  "
+            f"elapsed {snapshot['elapsed_s']:.1f}s  ·  policy steps {snapshot['policy_steps']} · configured ceiling {budget}{continuation} ·  "
             f"model calls {snapshot['calls']}\n"
             f"Known session tokens {snapshot['tokens']:,}{token_limit}  ·  "
             f"calls without usage {snapshot['usage_missing']}  ·  "
-            f"Trace: {snapshot['trace_path'] or 'not opened'}"
+            f"Trace: {snapshot['trace_path'] or 'not opened'}{provenance}"
         )
         if summary != self._last_summary:
             self.query_one("#summary", Static).update(summary)
@@ -206,7 +219,7 @@ class MonitorApp(App[None], Generic[T]):
                 table.add_row(
                     str(row["step"]),
                     row["origin"],
-                    Text(row["actions"]),
+                    Text(_step_actions(row["detail"])),
                     Text(str(row["error"] or "")),
                     key=str(row["step"]),
                 )
@@ -247,7 +260,7 @@ class MonitorApp(App[None], Generic[T]):
         if row is not None:
             self._show_details(
                 {
-                    "observed_step": row["detail"],
+                    "observed_step": _step_presentation(row["detail"]),
                     "persistence": "Use Inspect trace to verify committed evidence.",
                 }
             )
@@ -269,7 +282,12 @@ class MonitorApp(App[None], Generic[T]):
         except Exception as exc:
             self._show_details({"trace": path, "error": str(exc)})
         else:
-            self._show_details(result)
+            self._show_details(
+                {
+                    **result,
+                    "steps": [_step_presentation(record) for record in result.get("steps", [])],
+                }
+            )
 
     def _request_close(self) -> None:
         self._close_requested = True

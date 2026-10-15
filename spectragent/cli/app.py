@@ -400,13 +400,27 @@ def create_app() -> typer.Typer:
         ctx: typer.Context,
         root: Annotated[Path, typer.Option()] = Path("traces"),
         search: str = typer.Option(""),
+        config: Annotated[
+            Path | None,
+            typer.Option(
+                "--config",
+                help="Only runs launched from this source file, across all versions; the file need not exist.",
+            ),
+        ] = None,
+        config_hash: str | None = typer.Option(
+            None, help="Exact recorded effective configuration hash."
+        ),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
         from spectragent.inspection.repository import open_repository
 
         _checked(
             _output(ctx, json_output),
-            lambda: {"runs": open_repository(root).list_runs(search=search)},
+            lambda: {
+                "runs": open_repository(
+                    root, config_source=config, config_hash=config_hash
+                ).list_runs(search=search)
+            },
         )
 
     @runs_app.command("show")
@@ -461,6 +475,19 @@ def create_app() -> typer.Typer:
     @app.command("view")
     def view(
         root: Annotated[Path, typer.Option()] = Path("traces"),
+        config: Annotated[
+            Path | None,
+            typer.Option(
+                "--config",
+                help="Filter this root by source YAML path, including historical versions.",
+            ),
+        ] = None,
+        config_hash: str | None = typer.Option(
+            None, help="Filter by the recorded effective configuration hash."
+        ),
+        initial_run: str | None = typer.Option(
+            None, "--run", help="Initially open this run path relative to --root."
+        ),
         host: str = typer.Option("127.0.0.1"),
         port: int = typer.Option(8765, min=1, max=65535),
         open_browser: bool = typer.Option(False, "--open"),
@@ -468,16 +495,39 @@ def create_app() -> typer.Typer:
         """Serve a local, read-only result viewer."""
         from spectragent.viewer.server import serve
 
-        serve(root, host=host, port=port, open_browser=open_browser)
+        serve(
+            root,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+            initial_run=initial_run,
+            config_source=config,
+            config_hash=config_hash,
+        )
 
     @app.command("tui")
-    def tui(root: Annotated[Path, typer.Option()] = Path("traces")) -> None:
+    def tui(
+        root: Annotated[Path, typer.Option()] = Path("traces"),
+        config: Annotated[
+            Path | None,
+            typer.Option(
+                "--config",
+                help="Filter this root by source YAML path, including historical versions.",
+            ),
+        ] = None,
+        config_hash: str | None = typer.Option(
+            None, help="Filter by the recorded effective configuration hash."
+        ),
+        initial_run: str | None = typer.Option(
+            None, "--run", help="Initially open this run path relative to --root."
+        ),
+    ) -> None:
         """Browse existing runs in an interactive terminal."""
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
             raise typer.BadParameter("tui requires an interactive terminal")
         from spectragent.tui import browse
 
-        browse(root)
+        browse(root, initial_run=initial_run, config_source=config, config_hash=config_hash)
 
     leaf_commands = (
         (

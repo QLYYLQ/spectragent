@@ -14,6 +14,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
+from spectragent.schemas.config_source import ConfigSource
+
 
 @runtime_checkable
 class RuntimeHook(Protocol):
@@ -98,6 +100,7 @@ class RuntimeHook(Protocol):
         env_evidence_privacy: list[str] | None,
         task_setup: Mapping[str, Any] | None,
         branch: Any,
+        config_source: ConfigSource | None,
         **kwargs: Any,
     ) -> None:
         """Called when AgentRuntime.execute() begins, before env setup.
@@ -146,6 +149,9 @@ class RuntimeHook(Protocol):
           the source run, its trace and the checkpoint step — or ``None``
           for every run that is not a branch. Per task, like ``task_setup``;
           the runtime passes it through without reading it.
+        - ``config_source``: the source YAML path and consumed-byte digest supplied
+          by the caller, or ``None`` when its source is unknown. It is provenance,
+          not effective configuration; no hook derives it from resolved settings.
 
         *env* is the **raw** environment, never its AOP proxy. A recorder
         that pulls environment evidence (``Environment.collect_archive``)

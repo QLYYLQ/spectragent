@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 
 from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.wal import WALWriter
+from spectragent.inspection import RepositoryError
+from spectragent.schemas.config_source import ConfigSource
 from spectragent.viewer import create_app
 from tests._helpers.trace_builder import PNG_BYTES, agent_result, build_reference_trace, eval_result
 
@@ -17,6 +19,75 @@ from tests._helpers.trace_builder import PNG_BYTES, agent_result, build_referenc
 def client(tmp_path: Path):
     build_reference_trace(tmp_path)
     return TestClient(create_app(tmp_path))
+
+
+def test_workspace_without_initial_focus_keeps_the_root_scope(client, tmp_path: Path):
+    assert client.get("/api/workspace").json() == {
+        "root": str(tmp_path.resolve()),
+        "initial_run": None,
+        "config_source": None,
+        "config_hash": None,
+    }
+
+
+def test_initial_run_focus_preserves_other_runs_in_the_workspace(tmp_path: Path):
+    build_reference_trace(tmp_path / "nested", "one")
+    build_reference_trace(tmp_path, "two")
+    client = TestClient(create_app(tmp_path, initial_run="nested/one"))
+    assert client.get("/api/workspace").json()["initial_run"] == "nested/one"
+    assert {row["key"] for row in client.get("/api/runs").json()} == {"nested/one", "two"}
+    assert client.get("/api/run", params={"key": "two"}).status_code == 200
+
+
+def test_initial_run_is_validated_before_server_startup(tmp_path: Path):
+    with pytest.raises(FileNotFoundError, match="No recorded run"):
+        create_app(tmp_path, initial_run="missing")
+    with pytest.raises(RepositoryError, match="relative path"):
+        create_app(tmp_path, initial_run="../outside")
+
+
+def test_single_run_root_can_focus_its_dot_key(tmp_path: Path):
+    fixture = build_reference_trace(tmp_path)
+    client = TestClient(create_app(fixture.run_dir, initial_run="."))
+    assert client.get("/api/workspace").json()["initial_run"] == "."
+    assert client.get("/api/run", params={"key": "."}).status_code == 200
+
+
+def test_configuration_file_history_is_a_filter_not_a_new_root(tmp_path: Path):
+    source = (tmp_path / "configs" / "experiment.yaml").resolve()
+    hashes = {}
+    for name, version in [("earlier", "a"), ("later", "b"), ("unknown", None)]:
+        config = TraceConfig(
+            config_source=ConfigSource(path=str(source), sha256=version * 64) if version else None,
+            resolved={"variant": name},
+        )
+        writer = WALWriter(tmp_path, name)
+        writer.init_run(config)
+        writer.write_result(agent_result())
+        writer.finalize(TraceStatus.COMPLETE)
+        hashes[name] = config.configuration_digest()
+    assert not source.exists()
+    client = TestClient(create_app(tmp_path, initial_run="later", config_source=source))
+    workspace = client.get("/api/workspace").json()
+    assert workspace["root"] == str(tmp_path.resolve())
+    assert workspace["config_source"] == str(source.resolve())
+    assert {row["key"] for row in client.get("/api/runs").json()} == {"earlier", "later"}
+    assert client.get("/api/run", params={"key": "unknown"}).status_code == 200
+    with pytest.raises(RepositoryError, match="does not match"):
+        create_app(tmp_path, initial_run="unknown", config_source=source)
+    exact = TestClient(create_app(tmp_path, config_source=source, config_hash=hashes["earlier"]))
+    assert [row["key"] for row in exact.get("/api/runs").json()] == ["earlier"]
+    assert exact.get("/api/workspace").json()["config_hash"] == hashes["earlier"]
+    with pytest.raises(RepositoryError, match="does not match"):
+        create_app(tmp_path, initial_run="later", config_hash=hashes["earlier"])
+
+
+def test_config_source_without_history_does_not_require_the_yaml_file(tmp_path: Path):
+    build_reference_trace(tmp_path)
+    source = tmp_path / "missing.yaml"
+    client = TestClient(create_app(tmp_path, config_source=source))
+    assert client.get("/api/runs").json() == []
+    assert client.get("/api/workspace").json()["config_source"] == str(source.resolve())
 
 
 def test_run_and_step_endpoints_preserve_independent_outcomes_and_calls(client):
@@ -166,3 +237,13 @@ def test_serve_defaults_to_loopback_without_opening_browser(tmp_path: Path, monk
     assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 8765
     assert "http://127.0.0.1:8765/" in capsys.readouterr().out
+
+
+def test_public_serve_forwards_initial_run_to_the_app(tmp_path: Path, monkeypatch):
+    from spectragent.viewer import serve, server
+
+    build_reference_trace(tmp_path)
+    apps = []
+    monkeypatch.setattr(server.uvicorn, "run", lambda app, **kwargs: apps.append(app))
+    serve(tmp_path, initial_run="run-test")
+    assert TestClient(apps[0]).get("/api/workspace").json()["initial_run"] == "run-test"

@@ -9,6 +9,7 @@ The real CLIs run in the rehearsal (``test_rehearsal_live.py``).
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -159,6 +160,10 @@ class TestThePaths:
         assert record == [
             "--config",
             str(root / "configs" / "record.yaml"),
+            "--config-source",
+            str((tmp_path / "record.yaml").resolve()),
+            "--config-source-sha256",
+            hashlib.sha256((tmp_path / "record.yaml").read_bytes()).hexdigest(),
             "--timeout",
             "60",
             "--log-level",
@@ -176,6 +181,31 @@ class TestThePaths:
         assert control[-2:] == ["--evals-dir", str(root / "evals" / "control")]
         for call in (same_path, branch):
             assert "--no-eval" in call and "--benchmark" not in call and "--task-id" not in call
+
+    def test_original_source_version_survives_generated_paths_and_later_file_edits(self, tmp_path):
+        spec = _spec(tmp_path)
+        original = {
+            name: hashlib.sha256(getattr(spec, name).config.read_bytes()).hexdigest()
+            for name in ("record", "branch")
+        }
+
+        def stage(raw, argv):
+            stage_name = Path(raw["hook"][0]["trace_dir"]).name
+            source_path = argv[argv.index("--config-source") + 1]
+            source_hash = argv[argv.index("--config-source-sha256") + 1]
+            assert source_path == str(getattr(spec, stage_name).config.resolve())
+            assert source_hash == original[stage_name]
+            assert source_path != argv[argv.index("--config") + 1]
+            if stage_name == "record":
+                assert spec.branch is not None
+                spec.branch.config.write_text("changed: true\n")
+            else:
+                assert raw["task_loader"][0]["branches_per_step"] == 2
+            return commit_one_run(raw, argv)
+
+        run_chain(spec, stages=["record", "branch"], bench=Recorder(stage))
+        saved = json.loads((spec.root / "chain.json").read_text())
+        assert "--config-source" in json.dumps(saved)
 
     @pytest.mark.parametrize(
         ("stage", "raw", "block"),
@@ -254,7 +284,7 @@ class TestStageOutcomes:
         record = json.loads((tmp_path / "root" / "chain.json").read_text())
         assert set(record["stages"]) == {"record", "control", "same_path"}
         assert message in record["stages"]["same_path"]["error"]
-        assert record["stages"]["record"]["runs"] == ["traces/record/run-15"]
+        assert record["stages"]["record"]["runs"] == [f"traces/record/run-{len(bench.calls[0])}"]
 
     def test_a_report_that_cannot_be_written_is_the_report_stage_s_failure(
         self, tmp_path: Path

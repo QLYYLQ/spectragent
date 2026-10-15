@@ -4,11 +4,18 @@ import asyncio
 import threading
 from typing import cast
 
+import pytest
 from textual.widgets import DataTable, Input, RichLog, Static
 
+from spectragent.core.trace.models import TraceConfig, TraceStatus
+from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.wal import WALWriter
 from spectragent.inspection.repository import RunRepository, open_repository
+from spectragent.schemas.restoration import BranchProvenance
+from spectragent.schemas.step_record import StepRecord
+from spectragent.tui import browse
 from spectragent.tui.browser import BrowserApp, _terminal_value
-from tests._helpers.trace_builder import build_reference_trace
+from tests._helpers.trace_builder import agent_result, build_reference_trace
 
 
 async def test_select_run_then_step_and_search(tmp_path):
@@ -139,3 +146,207 @@ async def test_search_is_debounced_and_old_detail_cannot_replace_new_selection()
             assert '"run_id": "slow"' not in text
     finally:
         repository.detail_released.set()
+
+
+def _branch_trace(root, restored=None):
+    writer = WALWriter(root, "branch")
+    writer.init_run(
+        TraceConfig(
+            branch=BranchProvenance(
+                source_run_id="source",
+                source_trace="source",
+                checkpoint_step=1,
+                branch_index=0,
+                branch_group_id="source/s1",
+            )
+        )
+    )
+    writer.commit_step(0, restored or StepRecord(step=0, origin="restored"))
+    writer.commit_step(1, StepRecord(step=1, origin="policy"))
+    writer.write_result(agent_result())
+    writer.finalize(TraceStatus.COMPLETE)
+    return writer.run_dir
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+async def test_initial_run_and_source_checkpoint_keep_the_selected_root(tmp_path, filtered):
+    build_reference_trace(tmp_path, "source")
+    branch = _branch_trace(tmp_path)
+    repository = open_repository(
+        tmp_path, config_hash=RunTrace(branch).manifest.config_hash if filtered else None
+    )
+    app = BrowserApp(repository, initial_run="branch")
+    async with app.run_test(size=(110, 40)) as pilot:
+        await _until(
+            lambda: (
+                app._run_detail is not None
+                and app._selected == "branch"
+                and len(app._rows) == (1 if filtered else 2)
+            )
+        )
+        assert app.query_one("#runs", DataTable).row_count == (1 if filtered else 2)
+        assert app._run_detail is not None and app._run_detail["source_key"] == "source"
+        await pilot.press("s")
+        await _until(
+            lambda: (
+                app._selected == "source"
+                and '"record"'
+                in "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+            )
+        )
+        await pilot.pause()
+        assert app.repository is repository
+        assert app._selected_step == 1
+        assert app.query_one("#steps", DataTable).cursor_coordinate.row == 1
+        assert app.query_one("#runs", DataTable).row_count == (1 if filtered else 2)
+        # Refreshing the filtered list must not eject an explicitly opened
+        # source that belongs to the root but not to this configuration.
+        generation = app._detail_generation
+        app.action_refresh_runs()
+        await _until(
+            lambda: (
+                app._detail_generation > generation
+                and app._run_detail is not None
+                and app._selected == "source"
+            )
+        )
+        assert app._selected_step == 1
+
+
+async def test_source_unavailable_under_single_run_root_has_an_explicit_reason(tmp_path):
+    build_reference_trace(tmp_path, "source")
+    directory = _branch_trace(tmp_path)
+    app = BrowserApp(open_repository(directory), initial_run=".")
+    async with app.run_test(size=(110, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None and app._selected == ".")
+        await pilot.press("s")
+        await pilot.pause()
+        text = "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+        assert "unavailable under this root" in " ".join(text.split())
+        assert app._selected == "."
+
+
+@pytest.mark.parametrize(
+    "resolution,reason",
+    [
+        ("outside_root", "outside this root"),
+        ("ambiguous", "Multiple runs"),
+        ("missing", "unavailable under this root"),
+        ("none", "no recorded source relationship"),
+    ],
+)
+async def test_unresolved_source_navigation_explains_the_recorded_resolution(resolution, reason):
+    class Repository(DelayedRepository):
+        def run(self, key):
+            return {
+                "summary": {},
+                "steps": [],
+                "execution": {
+                    "source_resolution": resolution,
+                    "source_key": None,
+                    "source_run_id": "recording",
+                    "checkpoint": None,
+                },
+            }
+
+    app = BrowserApp(cast(RunRepository, Repository()), initial_run="initial")
+    async with app.run_test(size=(110, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        await pilot.press("s")
+        await pilot.pause()
+        text = "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+        assert reason in " ".join(text.split())
+        assert app._selected == "initial"
+
+
+async def test_history_restoration_separates_source_success_from_actual_failure(tmp_path):
+    record = StepRecord.model_validate(
+        {
+            "step": 0,
+            "origin": "restored",
+            "actions": [{"name": "browser.click", "params": {"index": 1}}],
+            "action_results": [{"success": True}],
+            "llm_output": "recorded source reply",
+            "restoration": {
+                "step": 0,
+                "verdict": "warn",
+                "reason": "action_failed",
+                "reasons": ["action_failed"],
+                "actions": [
+                    {
+                        "recorded": {"name": "browser.click", "params": {"index": 1}},
+                        "executed": {"name": "browser.click", "params": {"index": 9}},
+                        "method": "geometry_signature",
+                        "recorded_success": True,
+                        "live_success": False,
+                        "live_error": "current restore failed",
+                    }
+                ],
+            },
+        }
+    )
+    _branch_trace(tmp_path, restored=record)
+    repository = open_repository(tmp_path)
+    app = BrowserApp(repository, initial_run="branch")
+    async with app.run_test(size=(110, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        steps = app.query_one("#steps", DataTable)
+        assert "source: browser.click; actual: browser.click (failed)" in str(
+            steps.get_row_at(0)[2]
+        )
+        steps.focus()
+        await pilot.press("enter")
+        await _until(
+            lambda: (
+                '"source_action_results"'
+                in "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+            )
+        )
+        text = "\n".join(line.text for line in app.query_one("#content", RichLog).lines)
+        assert '"actual_restoration_actions"' in text
+        assert '"live_success": false' in text
+        assert '"source_model_reply": "recorded source reply"' in text
+        assert repository.step("branch", 0)["record"]["action_results"] == [
+            {
+                "success": True,
+                "error": None,
+                "is_done": False,
+                "extracted_content": None,
+                "typed_into_sensitive_field": None,
+            }
+        ]
+
+
+async def test_plain_replay_source_navigation_needs_no_branch_provenance(tmp_path):
+    source = build_reference_trace(tmp_path, "source")
+    writer = WALWriter(tmp_path, "replay")
+    writer.init_run(
+        TraceConfig.model_validate(
+            {
+                "task_setup": {
+                    "context": {"replay_archive": str(source.run_dir.resolve())},
+                    "redactions": {},
+                }
+            }
+        )
+    )
+    writer.write_result(agent_result())
+    writer.finalize(TraceStatus.COMPLETE)
+    app = BrowserApp(open_repository(tmp_path), initial_run="replay")
+    async with app.run_test(size=(110, 40)) as pilot:
+        await _until(lambda: app._run_detail is not None)
+        assert app._run_detail is not None and app._run_detail["summary"]["branch"] is None
+        await pilot.press("s")
+        await _until(lambda: app._selected == "source" and app._run_detail is not None)
+        assert app._selected_step is None
+        assert app.query_one("#runs", DataTable).row_count == 2
+
+
+def test_browse_initial_focus_must_match_config_filter(tmp_path, monkeypatch):
+    build_reference_trace(tmp_path, "source")
+    branch = _branch_trace(tmp_path)
+    monkeypatch.setattr(
+        BrowserApp, "run", lambda self: pytest.fail("mismatched selection opened a terminal")
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        browse(tmp_path, initial_run="source", config_hash=RunTrace(branch).manifest.config_hash)
