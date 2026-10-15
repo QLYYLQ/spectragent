@@ -99,9 +99,9 @@ def test_evaluator_is_a_generated_config_layer():
     from spectragent.generated._composed import ComposedConfig
 
     assert "evaluator" in ComposedConfig.model_fields
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
-    assert _collect_registrars()["evaluator"] is EvaluatorRegistrar
+    assert collect_registrars()["evaluator"] is EvaluatorRegistrar
 
 
 @pytest.mark.parametrize("key,cls", sorted(_BENCHMARK_EVALUATORS.items()))

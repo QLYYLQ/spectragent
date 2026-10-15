@@ -36,8 +36,8 @@ from typing import Any
 
 from spectragent.core.benchmark_runner import BenchmarkRunner, TaskOutcome
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.reader import RunTrace
-from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers import replay_driver as driver
 from tests._helpers.scripted_llm import Reply, ScriptedLLMServer
 
@@ -147,7 +147,7 @@ def branch_config(
 
 def run_branch_task(raw: dict[str, Any], task_id: str, *, timeout: float = 240) -> TaskOutcome:
     """Run one branch task of *raw* the way ``spectragent bench`` does: its loader, its runner."""
-    composer = ConfigComposer(registrars=_collect_registrars())
+    composer = ConfigComposer(registrars=collect_registrars())
     loader = composer.compose(raw).single("task_loader")
     runner = BenchmarkRunner(loader=loader, compose=lambda: composer.compose(raw), timeout=timeout)
     return asyncio.run(runner.run_task(task_id))

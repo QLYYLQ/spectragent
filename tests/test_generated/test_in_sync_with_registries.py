@@ -55,12 +55,13 @@ _REGENERATE = "Regenerate with `uv run spectragent config generate` (or `python 
 _PROBE = """
 import json
 from conscribe import compute_registry_fingerprint
-from spectragent.scripts.generate_all import _collect_registrars, discover
+from conscribe import discover
+from spectragent.core.registries import collect_registrars
 
 discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
 print(json.dumps({
     layer: compute_registry_fingerprint(registrar)
-    for layer, registrar in _collect_registrars().items()
+    for layer, registrar in collect_registrars().items()
 }))
 """
 
@@ -116,7 +117,7 @@ def test_every_collected_registrar_is_fingerprinted(
     """The recorded layers are exactly the collected ones.
 
     Separate from the drift check because the failure has a different cause
-    and a different fix. A registrar added to ``_collect_registrars`` without
+    and a different fix. A registrar added to ``collect_registrars`` without
     regenerating shows up here as a *missing* layer; one removed from the code
     but left in the file shows up as an extra. Folding both into the hash
     comparison above would report "recorded None" and send the reader looking

@@ -33,8 +33,8 @@ from spectragent.core.capabilities.browser.dom.models import DOMState, HitTest, 
 from spectragent.core.capabilities.browser.dom.serializers.text_serializer import TextSerializer
 from spectragent.core.capabilities.browser.observations import DOMObs
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.core.trace.encoding import encode_fragment
-from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.dom_captures import (
     CAPTURES_DIR,
     capture_from_json,
@@ -303,7 +303,7 @@ class TestTheVariant:
                 "dom_serializer": {"serializer_type": "text"},
                 "backend": {"provider_id": "local_chrome", "headless": True},
             }
-            composer = ConfigComposer(registrars=_collect_registrars())
+            composer = ConfigComposer(registrars=collect_registrars())
             return composer.compose({"capability": [block]}).single("capability")
 
         cap = compose({"cleaner_type": "skyvern_hit_test", "covered_elements": "keep"})

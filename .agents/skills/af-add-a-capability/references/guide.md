@@ -656,8 +656,8 @@ Your knobs reach YAML through conscribe codegen, and **nothing about that is aut
 2. **`Annotated[...]` constructor fields** — every YAML knob is a constructor parameter
    with a `pydantic.Field` description. See `browser/capability.py:415-460` for the shape.
    `CapabilityBase.id` (`_registrar.py:107-116`) is inherited this way.
-3. **A new registrar must be added to `_collect_registrars()`**
-   (`spectragent/scripts/generate_all.py:40-97`). `CapabilityRegistrar` is already there
+3. **A new registrar must be added to `collect_registrars()`**
+   (`spectragent/core/registries.py`). `CapabilityRegistrar` is already there
    (`:83`) — so a new *capability* needs no edit. A new **backend registrar** does:
    `DockerProviderRegistrar` must be pinned beside `BrowserProviderRegistrar` (`:73`), or
    its config surface degrades to `Literal[<keys>]` and **every knob it declares becomes
@@ -696,7 +696,7 @@ registries in a **clean subprocess** (`:58-68`), because by the time it runs ins
 full suite other modules have imported stub capabilities into those very registries.
 `test_generated_config_matches_the_live_registries` (`:96`) catches drift;
 `test_every_collected_registrar_is_fingerprinted` (`:116`) catches a registrar added to
-`_collect_registrars` without regenerating. Run both.
+`collect_registrars` without regenerating. Run both.
 
 See the sibling skill **`af-regenerate-and-verify`** for the full loop and for proving a
 knob actually reached YAML.
@@ -723,7 +723,7 @@ Before you call a capability done:
 - [ ] `collect_archive` takes no step or cycle, hands over everything since the last collect and forgets it, raises when it cannot collect (never a fake-complete empty batch), is safe on a half-built instance, swaps its buffer atomically with respect to its producers, and carries an in-flight item into a later batch exactly once
 - [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
-- [ ] Backend registrar pinned in `_collect_registrars()` if you added one
+- [ ] Backend registrar pinned in `collect_registrars()` if you added one
 - [ ] `uv run spectragent config generate`, then `uv run pytest tests/test_generated/`
 - [ ] `uv run pyright spectragent tests` — only the four known metaclass artifacts
 - [ ] A test on the action seam: negotiation matches **names**, not parameter contracts. An agent may emit a verb the run holds and send params the action cannot read. `tests/_helpers/action_params.py::minimal_params` walks `descriptor().params_schema` and builds the smallest legal payload; use it.

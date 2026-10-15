@@ -658,7 +658,7 @@ A new axis, that is, a new registrar:
 - `create_registrar(...)`, a Protocol, a base, and a `default_*()` factory for owners built
   by hand. The receptor goes on its owner as af-add-a-receptor §2 lays out; the layering rule
   (§1) picks the package.
-- Add it to `_collect_registrars()` in `spectragent/scripts/generate_all.py`, leaves before
+- Add it to `collect_registrars()` in `spectragent/core/registries.py`, leaves before
   owners. An empty registry cannot be a Composer layer, so create and document it now and
   collect it with its first implementation (af-add-a-receptor §2, the `ArchiverRegistrar`
   case).

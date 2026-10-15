@@ -29,7 +29,7 @@ from spectragent.core.llm.messages import UserMessage
 from spectragent.core.llm.providers.openai import ChatOpenAI
 from spectragent.core.llm.providers.openai_azure import ChatAzureOpenAI
 from spectragent.core.llm.providers.openai_base import ReasoningEffortSetting
-from spectragent.scripts.generate_all import _collect_registrars
+from spectragent.core.registries import collect_registrars
 from tests._helpers.llm_clients import FakeClient
 
 SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_local.yaml"
@@ -92,7 +92,7 @@ def _compose_with_llm(**llm_overrides: Any) -> Any:
     raw = yaml.safe_load(SHIPPED_CONFIG.read_text())
     raw = copy.deepcopy(raw)
     raw["agent"][0]["llm"].update(llm_overrides)
-    composer = ConfigComposer(registrars=_collect_registrars())
+    composer = ConfigComposer(registrars=collect_registrars())
     run = composer.compose(raw)
     agent = run.instance("agent", run.ids("agent")[0])
     return agent.llm

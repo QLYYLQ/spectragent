@@ -156,7 +156,7 @@ class ConfigComposer:
 
     Example::
 
-        composer = ConfigComposer(registrars=_collect_registrars())
+        composer = ConfigComposer(registrars=collect_registrars())
         run = composer.compose(yaml.safe_load(Path("cfg.yaml").read_text()))
         result = await AgentRuntime.for_agent(run, "main").execute(task="...")
     """

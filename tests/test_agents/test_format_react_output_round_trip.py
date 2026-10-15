@@ -41,6 +41,7 @@ from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.observations import BrowserPlatformObs, ScreenshotObs
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.loops.errors import UnrepresentableActionError
+from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.observation._registrar import fragment_field_name
@@ -53,7 +54,6 @@ from spectragent.schemas.observation.fragments import (
 )
 from spectragent.schemas.observation.geometry import CoordinateSpace, PointGrid, point_grid
 from spectragent.schemas.prompt import ReactPromptContext
-from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.action_params import variant_params
 
 _TASK = "Put a kettle in the cart"
@@ -75,7 +75,7 @@ _BROWSER = {
 
 
 def _formatting_agents() -> list[type]:
-    _collect_registrars()  # imports every implementation, so every agent is registered
+    collect_registrars()  # imports every implementation, so every agent is registered
     agents = [
         cls
         for cls in AgentRegistrar.get_all().values()
@@ -106,7 +106,7 @@ def _runtime(cls: type, space: CoordinateSpace | None) -> AgentRuntime:
         "agent": [agent],
         "environment": [{"env_type": "browser", "id": "env", "capabilities": [_BROWSER]}],
     }
-    run = ConfigComposer(registrars=_collect_registrars()).compose(root)
+    run = ConfigComposer(registrars=collect_registrars()).compose(root)
     return AgentRuntime.for_agent(run, "student")
 
 
