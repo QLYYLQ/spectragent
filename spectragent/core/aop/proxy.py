@@ -54,11 +54,11 @@ a quiet lie.
 
 ``__class__`` is deliberately *not* forwarded either: spoofing it while
 ``type(proxy)`` still says ``AOPProxy`` swaps one inconsistency for
-another, and this framework's consumers are ``Protocol``-typed. A
-``@runtime_checkable`` Protocol check is structural — it asks
-``hasattr``, which the proxy answers correctly — so the only thing that
-sees through the proxy is a nominal ``isinstance`` against a concrete
-class, which Protocol-First says nothing should be doing.
+another. Named method calls satisfy the consumers' structural contracts,
+but runtime ``isinstance`` checks are not transparent: Python 3.12+
+``@runtime_checkable`` checks use static attribute lookup, which bypasses
+``__getattr__``. Runtime capability checks belong on raw objects before
+weaving; the proxy does not claim the target's runtime type identity.
 """
 
 from __future__ import annotations
@@ -527,11 +527,9 @@ def _apply_around_chain_sync(
 ) -> Any:
     """The synchronous twin of :func:`_apply_around_chain`.
 
-    ``around`` on a sync method is not a curiosity: it is the framework's
-    only documented around use case (``agent.build_react_prompt``, a
-    plain ``def`` on every shipped agent — see
-    docs/architecture_design.md §4.1). Handlers here call ``proceed()``
-    and get a value rather than an awaitable.
+    Handlers on a synchronous target call ``proceed()`` and get a value
+    rather than an awaitable. Asynchronous boundaries, including ReAct
+    prompt building, use :func:`_apply_around_chain`.
     """
 
     def innermost() -> Any:

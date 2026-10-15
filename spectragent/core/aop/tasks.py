@@ -30,8 +30,7 @@ DEFAULT_DRAIN_TIMEOUT = 5.0
 """Seconds :meth:`BackgroundTasks.drain` waits before cancelling.
 
 Deliberately short. A ``blocking=False`` handler is a fire-and-forget
-side channel — the designed one is ``live_monitor`` pushing state over a
-WebSocket — and a side channel that has not finished seconds after the
+side channel, and one that has not finished seconds after the
 run ended has nothing left to contribute. A generous timeout would be
 paid once per task by every benchmark sweep, so a single dead socket
 would stall hundreds of teardowns.
@@ -86,7 +85,13 @@ class BackgroundTasks:
         if not pending:
             return
 
-        _, unfinished = await asyncio.wait(pending, timeout=timeout)
+        try:
+            _, unfinished = await asyncio.wait(pending, timeout=timeout)
+        except asyncio.CancelledError:
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            raise
         if not unfinished:
             return
 
@@ -98,7 +103,13 @@ class BackgroundTasks:
         )
         for task in unfinished:
             task.cancel()
-        # Let the cancellations land. Without this the tasks outlive the
-        # loop and CPython prints "Task was destroyed but it is pending!"
-        # from the GC, which is the exact noise this class exists to stop.
-        await asyncio.gather(*unfinished, return_exceptions=True)
+        # Give cancellation a scheduling turn, never an unbounded gather:
+        # a handler may suppress CancelledError or await unbounded cleanup.
+        # The owner keeps strong references until those tasks actually end.
+        _, remaining = await asyncio.wait(unfinished, timeout=0)
+        if remaining:
+            logger.warning(
+                "%d background hook handler(s) still running after cancellation was requested: %s",
+                len(remaining),
+                sorted(task.get_name() for task in remaining),
+            )

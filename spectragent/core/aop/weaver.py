@@ -24,12 +24,12 @@ See docs/architecture_design.md §4.6 and docs/execution_dag.md M04.
 from __future__ import annotations
 
 import inspect
-import logging
 from typing import Any
 
 from spectragent.core.aop.advice import AdviceType, Intercept
 from spectragent.core.aop.errors import (
     DeadInterceptError,
+    MissingHandlerError,
     UnclaimedRoleError,
     UnsupportedAdviceError,
 )
@@ -42,8 +42,6 @@ from spectragent.core.aop.proxy import (
     validate_advice_shape,
 )
 from spectragent.core.aop.tasks import BackgroundTasks
-
-logger = logging.getLogger(__name__)
 
 
 class Weaver:
@@ -83,22 +81,18 @@ class Weaver:
             for intercept in intercepts:
                 handler_name = intercept.handler_name
                 handler = getattr(hook, handler_name, None)
-                if handler is None:
-                    logger.warning(
-                        "Hook '%s' declares intercept %s.%s(%s) but has no method '%s'",
-                        hook_id_of(hook),
-                        intercept.role,
-                        intercept.method,
-                        intercept.advice,
-                        handler_name,
-                    )
-                    continue
-
                 advice = (
                     intercept.advice
                     if isinstance(intercept.advice, AdviceType)
                     else AdviceType(intercept.advice)
                 )
+                if not callable(handler):
+                    raise MissingHandlerError(
+                        hook_cls=type(hook).__name__,
+                        method=intercept.method,
+                        advice=advice.value,
+                        handler_name=handler_name,
+                    )
                 key = (intercept.role, intercept.method)
                 self._index.setdefault(key, []).append((hook, advice, handler))
 
@@ -216,6 +210,10 @@ class Weaver:
             # Objects serving other methods of the role do not make it dead.
             for original in originals:
                 if not (inspect.isfunction(original) or inspect.ismethod(original)):
+                    # Descriptors may resolve to methods; do not invoke them
+                    # during assembly. A plain non-callable value cannot.
+                    if not callable(original) and not hasattr(type(original), "__get__"):
+                        dead.append((point, hook_ids, f"attribute {method!r} is not callable"))
                     continue
                 try:
                     validate_advice_shape(original, interceptors, method)

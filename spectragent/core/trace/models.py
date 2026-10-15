@@ -618,7 +618,7 @@ def _empty(value: Any) -> bool:
 
 
 class TraceConfig(BaseModel):
-    """Frozen configuration snapshot for a run.
+    """Recorded configuration snapshot for a run.
 
     Three layers, and they answer different questions.
 

@@ -33,7 +33,7 @@ class Intercept:
 
     Attributes:
         method: Target method name (e.g. ``"observe"``, ``"ainvoke"``).
-        role: Target object role (``"env"``, ``"agent"``, ``"llm"``).
+        role: Target object role (``"env"``, ``"agent"``, ``"llm"``, ``"loop"``).
         advice: When to run: before, after, or around.
 
     Example::

@@ -752,3 +752,74 @@ async def test_an_earlier_lifecycle_failure_cannot_skip_helper_model_cleanup():
     assert (main.calls, helper.calls) == (1, 1)
     assert not owner.end_called
     assert (main.closed, helper.closed) == (1, 1)
+
+
+@pytest.mark.parametrize("ending", ["error", "cancel", "veto"])
+async def test_startup_failure_drains_handlers_and_closes_owned_models(ending):
+    from spectragent.core.hooks._registrar import HookBase
+    from spectragent.core.loops.errors import RunAbort
+
+    events = []
+    failure = {
+        "error": RuntimeError("startup failed"),
+        "cancel": asyncio.CancelledError("startup cancelled"),
+        "veto": RunAbort("startup vetoed"),
+    }[ending]
+
+    class Model(MockLLM):
+        def __init__(self, label):
+            self.label = label
+            self.calls = 0
+
+        async def ainvoke(self, messages, **kwargs):
+            self.calls += 1
+            return await super().ainvoke(messages, **kwargs)
+
+        async def aclose(self, *, timeout=5.0):
+            events.append(f"close:{self.label}")
+            return ()
+
+    class BackgroundStart(HookBase):
+        priority = 0
+
+        @property
+        def blocking(self):
+            return False
+
+        async def on_run_start(self, **kwargs):
+            await asyncio.sleep(0)
+            events.append("background finished")
+
+    class FailingStart(HookBase):
+        priority = 10
+
+        def __init__(self, helper):
+            super().__init__()
+            self.helper_llms = [helper]
+
+        def bind_prompt_models(self, models, call_context):
+            self.models = models
+
+        async def on_run_start(self, *, llm, **kwargs):
+            await llm.ainvoke([])
+            await self.models[0].ainvoke([])
+            raise failure
+
+        async def on_run_end(self, **kwargs):
+            events.append("end")
+
+    main, helper = Model("main"), Model("helper")
+    run = make_run(
+        agent=SimpleAgent(),
+        loop=ReactLoop(),
+        env=_make_env(),
+        llm=main,
+        memory=MockMemory(),
+        hooks=[BackgroundStart(), FailingStart(helper)],
+    )
+    with pytest.raises(type(failure)) as caught:
+        await AgentRuntime.for_agent(run, AGENT_ID).execute("task", raise_on_error=False)
+    assert caught.value is failure
+    assert (main.calls, helper.calls) == (1, 1)
+    assert events[0] == "background finished"
+    assert sorted(events[1:]) == ["close:helper", "close:main"]

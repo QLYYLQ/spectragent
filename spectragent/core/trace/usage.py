@@ -82,8 +82,9 @@ def recorded_usage(
     No prompt, image, or step record is opened. Recording gaps retain the
     known subtotal while ``complete`` reports the absent coverage.
     """
-    missing = tuple(trace.manifest.missing_steps)
-    recording_complete = trace.manifest.status == TraceStatus.COMPLETE and not missing
+    manifest = trace.manifest
+    missing = tuple(manifest.missing_steps)
+    recording_complete = manifest.status == TraceStatus.COMPLETE and not missing
     if not trace.config.recording.metrics:
         return RunUsage(
             tokens=None,
@@ -97,7 +98,7 @@ def recorded_usage(
     count = 0
     reported: list[TokenUsage] = []
     without: list[CallWithoutUsage] = []
-    committed = [call for entry in trace.manifest.steps for call in trace.call_metrics(entry.step)]
+    committed = [call for entry in manifest.steps for call in trace.call_metrics(entry.step)]
     trailing = trace.trailing_call_metrics
     for calls, is_trailing in ((committed, False), (trailing, True)):
         for call in calls:

@@ -14,9 +14,9 @@ from conscribe.exceptions import RegistryError
 class MissingHandlerError(RegistryError):
     """A Hook declares ``__intercepts__`` but the matching handler is missing.
 
-    Raised by ``HookBase.__init_subclass__`` at class creation time so
-    typos like ``after_obseve`` instead of ``after_observe`` surface
-    immediately, not when the Weaver runs.
+    Raised by ``HookBase.__init_subclass__`` at class creation, or by the
+    Weaver when a structural hook supplies no base-class validation.
+    Missing and non-callable handlers fail before execution.
     """
 
     def __init__(

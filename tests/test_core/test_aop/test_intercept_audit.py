@@ -95,6 +95,15 @@ class TestAuditCatchesDeadIntercepts:
         with pytest.raises(DeadInterceptError, match="plain ``def``"):
             weaver.audit_intercepts()
 
+    def test_noncallable_attribute_is_refused_before_execution(self) -> None:
+        class Env:
+            observe = 3
+
+        weaver = Weaver([_ObserveHook()])
+        weaver.wrap(Env(), role="env")
+        with pytest.raises(DeadInterceptError, match="observe.*not callable"):
+            weaver.audit_intercepts()
+
     def test_every_dead_intercept_is_reported_at_once(self) -> None:
         weaver = Weaver([_TypoHook(), _RunHook()])
         weaver.wrap(_Env(), role="env")
@@ -106,6 +115,16 @@ class TestAuditCatchesDeadIntercepts:
 
 
 class TestAuditDoesNotFalseAlarm:
+    def test_audit_does_not_execute_a_descriptor(self) -> None:
+        class Env:
+            @property
+            def observe(self):
+                raise AssertionError("assembly executed a descriptor")
+
+        weaver = Weaver([_ObserveHook()])
+        weaver.wrap(Env(), role="env")
+        weaver.audit_intercepts()
+
     def test_agent_run_after_weave_is_alive(self) -> None:
         """The exact case that got the wrap-time check deleted."""
         weaver = Weaver([_RunHook()])

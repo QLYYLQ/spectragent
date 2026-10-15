@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import gc
 
+import pytest
+
 from spectragent.core.aop.advice import AdviceType
 from spectragent.core.aop.proxy import _build_wrapped_method
 from spectragent.core.aop.tasks import BackgroundTasks
@@ -223,3 +225,52 @@ class TestDrainPolicy:
         await tasks.drain()
         await tasks.drain()
         assert fired == ["nb"]
+
+    async def test_cancellation_suppressing_handler_cannot_hold_drain(self, caplog) -> None:
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler():
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+
+        tasks = BackgroundTasks()
+        task = tasks.spawn(handler(), label="stubborn-hook")
+        await started.wait()
+        try:
+            with caplog.at_level("WARNING"):
+                await asyncio.wait_for(tasks.drain(timeout=0.01), timeout=0.5)
+            assert cancelled.is_set()
+            assert task in tasks.pending
+            assert not task.done()
+            assert any(
+                "still running after cancellation was requested" in record.message
+                and "stubborn-hook" in record.message
+                for record in caplog.records
+            )
+        finally:
+            release.set()
+            await task
+
+    async def test_external_drain_cancellation_is_preserved(self) -> None:
+        started = asyncio.Event()
+
+        async def handler():
+            started.set()
+            await asyncio.Event().wait()
+
+        tasks = BackgroundTasks()
+        task = tasks.spawn(handler(), label="cancelled-hook")
+        await started.wait()
+        drain = asyncio.create_task(tasks.drain())
+        await asyncio.sleep(0)
+        drain.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await drain
+        await asyncio.gather(task, return_exceptions=True)
+        assert task.cancelled()

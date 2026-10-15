@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterator
+from copy import deepcopy
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -117,6 +118,11 @@ _JSON_OBJECT: TypeAdapter[dict[str, Any]] = TypeAdapter(dict[str, Any])
 class RunTrace:
     """Lazy, manifest-driven, typed reader for one trace directory.
 
+    Mutable records and collections are independent snapshots. Callers can
+    edit their view without changing later reads, recording-scope checks,
+    committed-file membership, or integrity metadata. Private caches retain
+    the validated evidence, so internal lookups never copy an entire manifest.
+
     Raises:
         TraceSchemaError: At construction, when ``manifest.json`` is missing
             or unreadable, leads outside the run directory, or declares a
@@ -147,7 +153,8 @@ class RunTrace:
 
     @property
     def manifest(self) -> TraceManifest:
-        return self._manifest
+        """An independent snapshot; edits cannot change the reader's committed index."""
+        return self._manifest.model_copy(deep=True)
 
     @property
     def run_id(self) -> str:
@@ -158,9 +165,13 @@ class RunTrace:
         """Number of committed steps, including saved steps after a recording gap."""
         return len(self._manifest.steps)
 
-    @cached_property
+    @property
     def config(self) -> TraceConfig:
         """The configuration snapshot (``config.json``)."""
+        return self._config.model_copy(deep=True)
+
+    @cached_property
+    def _config(self) -> TraceConfig:
         return _read_model(self._own_file(CONFIG_FILE), TraceConfig)
 
     def require_recording(
@@ -169,11 +180,11 @@ class RunTrace:
         consumer: str,
     ) -> None:
         """Refuse omitted content without declaring an intentionally light recording damaged."""
-        missing = tuple(name for name in channels if not getattr(self.config.recording, name))
+        missing = tuple(name for name in channels if not getattr(self._config.recording, name))
         if missing:
             raise RecordingScopeError(consumer, missing)
 
-    @cached_property
+    @property
     def result(self) -> AgentResult | None:
         """The final result, or ``None`` when ``result.json`` is absent.
 
@@ -184,6 +195,11 @@ class RunTrace:
         returning ``None`` for both hides the first one from every
         evaluator downstream.
         """
+        result = self._result
+        return result.model_copy(deep=True) if result is not None else None
+
+    @cached_property
+    def _result(self) -> AgentResult | None:
         data = self._result_data
         if data is None:
             return None
@@ -196,9 +212,13 @@ class RunTrace:
                 _result_schema_message(path, _declared_schema(value), exc), path=path
             ) from exc
 
-    @cached_property
+    @property
     def step_records(self) -> list[StepRecord]:
         """Every committed step, in manifest order."""
+        return [record.model_copy(deep=True) for record in self._step_records]
+
+    @cached_property
+    def _step_records(self) -> list[StepRecord]:
         return [self._read_step(entry) for entry in self._manifest.steps]
 
     def step(self, idx: int) -> StepRecord | None:
@@ -268,7 +288,7 @@ class RunTrace:
             return None
         return self._read_artifact(files.artifact)
 
-    @cached_property
+    @property
     def screenshots(self) -> list[Path]:
         """Every committed step's screenshot file, in step order.
 
@@ -278,6 +298,10 @@ class RunTrace:
         manifest's fragment index: a frame for a step that never committed
         is not a frame of this run.
         """
+        return list(self._screenshots)
+
+    @cached_property
+    def _screenshots(self) -> list[Path]:
         self.require_recording("observations", consumer="screenshot reading")
         paths: list[Path] = []
         for entry in sorted(self._manifest.steps, key=lambda item: item.step):
@@ -311,13 +335,17 @@ class RunTrace:
             return []
         return [self._read_call(rel, step=step) for rel in entry.llm_calls]
 
-    @cached_property
+    @property
     def trailing_calls(self) -> list[RecordedLLMCall]:
         """Calls of a step the Loop never surrendered, in commit then start order.
 
         Their prompts hold their inline images again, as :meth:`llm_messages`'
         do.
         """
+        return [call.model_copy(deep=True) for call in self._trailing_calls]
+
+    @cached_property
+    def _trailing_calls(self) -> list[RecordedLLMCall]:
         self.require_recording("trajectory", consumer="model trajectory reading")
         return [
             self._read_call(rel) for entry in self._manifest.trailing for rel in entry.llm_calls
@@ -330,9 +358,13 @@ class RunTrace:
             return []
         return [self._read_call_metrics(rel, step=step) for rel in entry.call_metrics]
 
-    @cached_property
+    @property
     def trailing_call_metrics(self) -> list[RecordedCallMetrics]:
         """Lightweight facts of calls whose executing step was never surrendered."""
+        return [call.model_copy(deep=True) for call in self._trailing_call_metrics]
+
+    @cached_property
+    def _trailing_call_metrics(self) -> list[RecordedCallMetrics]:
         return [
             self._read_call_metrics(rel)
             for entry in self._manifest.trailing
@@ -344,13 +376,15 @@ class RunTrace:
         entry = self._entries.get(step)
         if entry is None or entry.extra_index is None:
             return []
-        return list(self._read_index(entry.extra_index).files)
+        return [
+            record.model_copy(deep=True) for record in self._read_index(entry.extra_index).files
+        ]
 
-    @cached_property
+    @property
     def trailing_extra_files(self) -> list[ExtraFileRecord]:
         """The extra files every ``commit_trailing`` committed, in commit order."""
         return [
-            record
+            record.model_copy(deep=True)
             for entry in self._manifest.trailing
             if entry.extra_index is not None
             for record in self._read_index(entry.extra_index).files
@@ -417,7 +451,7 @@ class RunTrace:
 
     # ── what the run consists of: every committed file ─────────
 
-    @cached_property
+    @property
     def committed_files(self) -> list[CommittedFile]:
         """Every file this run committed, one entry per listing, in commit order.
 
@@ -440,6 +474,10 @@ class RunTrace:
                 archive file's metadata does not parse — naming the file
                 that lists it.
         """
+        return deepcopy(self._committed_files)
+
+    @cached_property
+    def _committed_files(self) -> list[CommittedFile]:
         self._own_file(CONFIG_FILE)
         files = [
             CommittedFile(path=MANIFEST_FILE, kind="manifest"),
@@ -519,7 +557,7 @@ class RunTrace:
         if entry is None or entry.extra_index is None:
             return []
         return [
-            record
+            record.model_copy(deep=True)
             for record in self._archive_records(entry.extra_index)
             if record.scope == "step" and record.archiver_id == archiver_id
         ]
@@ -609,7 +647,7 @@ class RunTrace:
                     continue
                 if latest is None or _run_version(record) > _run_version(latest):
                     latest = record
-        return latest
+        return latest.model_copy(deep=True) if latest is not None else None
 
     # ── after the run: not in the manifest ────────────────────
 
@@ -642,7 +680,7 @@ class RunTrace:
             self._require_inside(path, f"{EVALS_DIR}/{path.name}", listed_in=directory)
             if not path.is_file():
                 continue
-            verdicts[path.stem] = _read_model(path, EvalResult)
+            verdicts[path.stem] = _read_persisted_eval_result(path)
         return dict(sorted(verdicts.items()))
 
     # ── internals ─────────────────────────────────────────────
@@ -664,7 +702,7 @@ class RunTrace:
     def _committed_by_path(self) -> dict[str, CommittedFile]:
         """Each committed path's first listing."""
         found: dict[str, CommittedFile] = {}
-        for file in self.committed_files:
+        for file in self._committed_files:
             found.setdefault(file.path, file)
         return found
 
@@ -735,7 +773,7 @@ class RunTrace:
                 continue
             for record in self._archive_records(entry.extra_index):
                 if record.scope == "step" and record.archiver_id == archiver_id:
-                    yield entry.step, record
+                    yield entry.step, record.model_copy(deep=True)
         if not include_trailing:
             return
         for trailing in self._manifest.trailing:
@@ -743,7 +781,7 @@ class RunTrace:
                 continue
             for record in self._archive_records(trailing.extra_index):
                 if record.scope == "step" and record.archiver_id == archiver_id:
-                    yield None, record
+                    yield None, record.model_copy(deep=True)
 
     def _archive_records(self, rel: str) -> list[ArchiveRecord]:
         """The archive files the extra index *rel* lists, in index order.
@@ -1100,6 +1138,23 @@ def _why_not_read(found: Any) -> str:
 def _read_model(path: Path, model: type[M]) -> M:
     """Read a committed JSON file as *model* — the reader's single entry for JSON."""
     return _parse(path, _read_bytes(path), model.model_validate, model.__name__)
+
+
+def _read_persisted_eval_result(path: Path) -> EvalResult:
+    """Require the provenance that a stored verdict needs to be interpretable.
+
+    ``EvalResult`` supplies construction defaults for a freshly graded
+    result. A saved JSON document must have actually recorded these fields;
+    otherwise an older score could silently become a current graded verdict.
+    """
+    value = _read_json_object(path)
+    missing = {"schema_version", "evaluator_config", "verdict_source"} - value.keys()
+    if missing:
+        raise TraceSchemaError(
+            f"{path} is missing persisted EvalResult field(s) {sorted(missing)}",
+            path=path,
+        )
+    return _validated(path, value, EvalResult.model_validate, "EvalResult")
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:

@@ -17,13 +17,19 @@ from spectragent.core.capabilities.browser.observations import DOMObs, Screensho
 from spectragent.core.llm.messages import SystemMessage, UserMessage
 from spectragent.core.trace.encoding import TraceFile, sha256_hex
 from spectragent.core.trace.errors import TraceSchemaError
-from spectragent.core.trace.models import TRACE_FORMAT_VERSION, TraceConfig, TraceStatus
+from spectragent.core.trace.models import (
+    TRACE_FORMAT_VERSION,
+    CommittedFile,
+    TraceConfig,
+    TraceStatus,
+)
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult, AgentUsage
 from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import TaskObs
+from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.fragment_samples import FRAME_BUTTON_HANDLE, JPEG_BYTES, PNG_BYTES
 from tests._helpers.trace_builder import (
@@ -118,6 +124,91 @@ class TestRunTrace:
         monkeypatch.setattr(Path, "read_bytes", recording)
         _ = trace.result
         assert opened == ["result.json"]
+
+
+class TestReaderSnapshots:
+    def test_manifest_edits_cannot_retarget_committed_reads(self, trace, reference):
+        (reference.run_dir / "orphan.json").write_text(step_record(0).model_dump_json())
+        manifest = trace.manifest
+        manifest.steps[0].step_file = "orphan.json"
+        manifest.steps[0].fragments.clear()
+        manifest.steps.clear()
+        manifest.run_id = "other-run"
+
+        assert trace.run_id == "run-test"
+        assert trace.step_count == 2
+        assert trace.screenshot(0) == PNG_BYTES
+        assert trace.step(0).llm_output == "click(btn)"
+        with pytest.raises(KeyError):
+            trace.read_committed("orphan.json")
+
+    def test_committed_listing_cannot_admit_orphans(self, trace, reference):
+        (reference.run_dir / "orphan.json").write_bytes(b"uncommitted")
+        files = trace.committed_files
+        files.append(CommittedFile(path="orphan.json", kind="step"))
+        files[0] = CommittedFile(path="orphan.json", kind="step")
+
+        with pytest.raises(KeyError):
+            trace.read_committed("orphan.json")
+        assert trace.committed_files[0].path == "manifest.json"
+
+    @pytest.mark.parametrize("source", ["step", "trailing", "listing"])
+    def test_public_extra_metadata_cannot_disable_integrity_checks(self, trace, reference, source):
+        if source == "step":
+            record = trace.extra_files(0)[0]
+        elif source == "trailing":
+            record = trace.trailing_extra_files[0]
+        else:
+            record = next(file.extra for file in trace.committed_files if file.extra is not None)
+        assert record is not None
+        path = record.path
+        changed = b"corrupt replacement"
+        (reference.run_dir / path).write_bytes(changed)
+        record.size = len(changed)
+        record.sha256 = sha256_hex(changed)
+        record.meta["rewritten"] = {"nested": [True]}
+
+        with pytest.raises(TraceSchemaError, match="does not match its index"):
+            trace.read_extra(path)
+
+    def test_config_edits_do_not_change_recording_scope(self, trace):
+        config = trace.config
+        config.recording = RecordingPlan(trajectory=False)
+        config.resolved["injected"] = {"value": [1]}
+
+        assert len(trace.llm_messages(0)) == 2
+        assert trace.config.recording.trajectory is True
+        assert "injected" not in trace.config.resolved
+
+    def test_cached_evidence_is_independent_for_each_caller(self, trace):
+        result = trace.result
+        assert result is not None
+        result.answer = "changed"
+        records = trace.step_records
+        records[0].actions.clear()
+        records.clear()
+        calls = trace.trailing_calls
+        calls[0].messages.clear()
+        trace.screenshots.clear()
+
+        assert trace.result.answer == "42"
+        assert len(trace.step_records) == 2
+        assert trace.step_records[0].actions
+        assert trace.trailing_calls[0].messages
+        assert len(trace.screenshots) == 2
+
+    def test_internal_reads_do_not_copy_the_public_manifest_or_listing(self, trace, monkeypatch):
+        def no_snapshot(_):
+            raise AssertionError("an internal lookup copied the complete public snapshot")
+
+        monkeypatch.setattr(RunTrace, "manifest", property(no_snapshot))
+        monkeypatch.setattr(RunTrace, "committed_files", property(no_snapshot))
+        monkeypatch.setattr(RunTrace, "config", property(no_snapshot))
+        for _ in range(20):
+            assert trace.step_count == 2
+            assert trace.screenshot(0) == PNG_BYTES
+            assert trace.llm_messages(0)
+            assert trace.read_committed("steps/000.json")
 
 
 class TestFragmentsReadBackAsTheirOwnType:
@@ -282,6 +373,27 @@ def archived(tmp_path) -> ArchiveTrace:
 
 class TestArchiveAccessors:
     """Environment evidence, resolved only through the extra indexes (§5.5)."""
+
+    @pytest.mark.parametrize("source", ["files", "iterator", "run"])
+    def test_archive_metadata_is_an_independent_snapshot(self, archived, source):
+        trace = RunTrace(archived.run_dir)
+        if source == "files":
+            record = trace.archive_files(0, STEPS_ARCHIVER)[0]
+        elif source == "iterator":
+            record = next(trace.iter_archive(STEPS_ARCHIVER))[1]
+        else:
+            record = trace.archive_run_file(ARCHIVE_CAPABILITY)
+        assert record is not None
+        original = record.model_copy(deep=True)
+        record.archiver_id = "other.archive"
+        record.ids["injected"] = "other-session"
+        record.run_version = 999
+
+        if source == "run":
+            assert trace.archive_run_file(ARCHIVE_CAPABILITY) == original
+        else:
+            assert trace.archive_files(0, STEPS_ARCHIVER)[0] == original
+            assert next(trace.iter_archive(STEPS_ARCHIVER))[1] == original
 
     def test_a_steps_files_of_one_archiver_in_index_order(self, archived):
         trace = RunTrace(archived.run_dir)
@@ -889,6 +1001,34 @@ class TestEvals:
         with pytest.raises(TraceSchemaError, match="exact_match.json") as info:
             trace.evals()
         assert info.value.path == evals_dir / "exact_match.json"
+
+    @pytest.mark.parametrize("version", ["1.0", "1.1", "2.0"])
+    def test_old_verdict_versions_are_refused(self, trace, reference, version):
+        from tests._helpers.trace_builder import eval_result
+
+        payload = eval_result().model_dump(mode="json")
+        payload["schema_version"] = version
+        path = reference.run_dir / "evals" / "old.json"
+        path.write_text(json.dumps(payload), "utf-8")
+
+        with pytest.raises(TraceSchemaError, match="old.json"):
+            trace.evals()
+
+    @pytest.mark.parametrize("missing", ["schema_version", "evaluator_config", "verdict_source"])
+    def test_persisted_verdict_requires_identity_and_source(self, trace, reference, missing):
+        from tests._helpers.trace_builder import eval_result
+
+        # Fresh construction may default to graded; persisted evidence must
+        # prove that the writer actually recorded the source and identity.
+        verdict = eval_result()
+        assert verdict.verdict_source == "graded"
+        payload = verdict.model_dump(mode="json")
+        del payload[missing]
+        path = reference.run_dir / "evals" / "missing.json"
+        path.write_text(json.dumps(payload), "utf-8")
+
+        with pytest.raises(TraceSchemaError, match=missing):
+            trace.evals()
 
     def test_the_first_bad_verdict_named_does_not_depend_on_listing_order(
         self, trace, reference, monkeypatch
