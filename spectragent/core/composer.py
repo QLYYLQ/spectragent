@@ -29,10 +29,12 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, Literal, get_origin
 
-from conscribe import build_composed_config, discover
+from conscribe import discover
 from conscribe.introspect import init_param_names, receptor_slots, wiring_slots
 from conscribe.wiring import WiringSpec
 from pydantic import BaseModel
+
+from spectragent.core.configuration_catalog import ConfigurationCatalog, build_configuration_catalog
 
 
 class ComposeError(Exception):
@@ -180,22 +182,25 @@ class ConfigComposer:
         if not registrars:
             raise ComposeError("ConfigComposer requires at least one registrar.")
         self._registrars = registrars
-        self._composed = build_composed_config(
-            registrars, inline_wiring=True, top_level_extra="forbid"
-        )
+        self._catalog = build_configuration_catalog(registrars)
         # Reverse index: per-key Pydantic model → (layer_name, registry_key).
         self._model_to_lk: dict[type[BaseModel], tuple[str, str]] = {}
-        for layer, result in self._composed.layer_results.items():
-            for key, model in result.per_key_models.items():
-                self._model_to_lk[model] = (layer, key)
+        for layer, entries in self._catalog.components.items():
+            for key, definition in entries.items():
+                self._model_to_lk[definition.config_model] = (layer, key)
+
+    @property
+    def catalog(self) -> ConfigurationCatalog:
+        """The public configuration definitions used by this Composer."""
+        return self._catalog
 
     @cached_property
     def top_level_type(self) -> type[BaseModel]:
-        return self._composed.top_level_type
+        return self._catalog.top_level_type
 
     @property
     def dependency_order(self) -> list[str]:
-        return list(self._composed.dependency_order)
+        return list(self._catalog.dependency_order)
 
     # -- Main entry point --------------------------------------------
 
@@ -204,7 +209,7 @@ class ConfigComposer:
         cfg = raw if isinstance(raw, BaseModel) else self.top_level_type.model_validate(raw)
         state = _State(by_layer={layer: {} for layer in self._registrars})
 
-        for layer in self._composed.top_level_layers:
+        for layer in self._catalog.top_level_layers:
             entries = getattr(cfg, layer, None) or []
             for idx, entry in enumerate(entries):
                 self._instantiate(entry, state, path=f"{layer}[{idx}]")
