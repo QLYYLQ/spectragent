@@ -385,3 +385,34 @@ def test_output_is_deterministic_for_same_selections(composer):
     assert render_config_template(choices, composer=composer) == render_config_template(
         choices, composer=composer
     )
+
+
+def test_cursor_presentation_knobs_expand_validate_compose_and_explain(
+    composer,
+    tmp_path,
+    capsys,
+):
+    template = render_config_template(TemplateChoices(model="test-model"), composer=composer)
+    raw = yaml.safe_load(template)
+    assert _browser(raw)["screenshot_cursor"] is False
+    assert _browser(raw)["screenshot_cursor_size"] == 32
+    assert "Model image cursor height in CSS pixels" in template
+    _browser(raw).update(screenshot_cursor=True, screenshot_cursor_size=40)
+    expanded = render_config_template(TemplateChoices(), raw, composer=composer)
+    run = composer.compose(yaml.safe_load(expanded))
+    capability = run.single("capability")
+    assert capability.screenshot_cursor is True and capability.screenshot_cursor_size == 40
+    source = tmp_path / "cursor.yaml"
+    source.write_text(expanded)
+    assert main(["config", "explain", str(source), "--json"]) == 0
+    explanation = json.loads(capsys.readouterr().out)
+    assert "screenshot_cursor" in json.dumps(explanation)
+    assert "screenshot_cursor_size" in json.dumps(explanation)
+    for invalid in (15, 97):
+        _browser(raw)["screenshot_cursor_size"] = invalid
+        with pytest.raises(ValidationError, match="screenshot_cursor_size"):
+            composer.compose(raw)
+    _browser(raw)["screenshot_cursor_size"] = 32
+    _browser(raw)["screenshot_cursor"] = "typo"
+    with pytest.raises(ValidationError, match="screenshot_cursor"):
+        composer.compose(raw)

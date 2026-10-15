@@ -33,10 +33,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from collections.abc import Callable
 from typing import ClassVar, Literal
 
 from agent_cdp import CDPCommandProtocol, ConnectionType, EventScope, Participation, ResultContract
 
+from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.capabilities.browser.watchdogs.base import (
     BrowserWatchdog,
@@ -84,7 +86,13 @@ class ScreenshotWatchdog(BrowserWatchdog):
         viewport: tuple[int, int] = (1280, 720),
         image_format: ScreenshotFormat = "png",
         image_quality: int = 80,
+        cursor: bool = False,
+        cursor_size: int = 32,
+        cursor_position_getter: Callable[[], tuple[int, int] | None] | None = None,
     ) -> None:
+        self._cursor = cursor
+        self._cursor_size = cursor_size
+        self._cursor_position_getter = cursor_position_getter
         self._cdp = cdp
         self._viewport = viewport
         self._format: ScreenshotFormat = image_format
@@ -98,6 +106,9 @@ class ScreenshotWatchdog(BrowserWatchdog):
             viewport=ctx.viewport,
             image_format=ctx.screenshot_format,
             image_quality=ctx.screenshot_quality,
+            cursor=ctx.screenshot_cursor,
+            cursor_size=ctx.screenshot_cursor_size,
+            cursor_position_getter=ctx.pointer_position.snapshot,
         )
 
     def attach(self, scope: EventScope, session_id: str | None = None) -> None:
@@ -148,6 +159,12 @@ class ScreenshotWatchdog(BrowserWatchdog):
         if not (event.fragments & self.provides):
             return None
         try:
+            # Read once in this capture cycle; no CDP query and no per-tick evidence.
+            position = (
+                self._cursor_position_getter()
+                if self._cursor and self._cursor_position_getter
+                else None
+            )
             screenshot = await self._capture(timeout=_SCREENSHOT_COMMAND_TIMEOUT_S)
             width, height = self._viewport
             image_width, image_height = image_size(screenshot)
@@ -156,6 +173,15 @@ class ScreenshotWatchdog(BrowserWatchdog):
                 fragments={
                     "browser.screenshot": ScreenshotObs(
                         image_bytes=screenshot,
+                        cursor=(
+                            ScreenshotCursor(
+                                position=position,
+                                size_css_px=self._cursor_size,
+                                image_quality=self._quality,
+                            )
+                            if self._cursor
+                            else None
+                        ),
                         viewport_width=width,
                         viewport_height=height,
                         image_width=image_width,

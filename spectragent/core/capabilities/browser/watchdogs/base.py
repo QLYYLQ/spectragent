@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 from agent_cdp import EventScope, WatchdogBase, WatchdogRegistrar
 
 from spectragent.core.capabilities.browser.dom.budget import DOMBudget
+from spectragent.core.capabilities.browser.input.mouse import PointerPosition
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.sessions import TabSessions
 
@@ -183,6 +184,10 @@ class WatchdogContext:
     screenshot_format: Literal["png", "jpeg"] = "png"
     #: Lossy-encoder quality 1-100. Ignored for ``png``.
     screenshot_quality: int = 80
+    screenshot_cursor: bool = False
+    screenshot_cursor_size: int = 32
+    #: Shared only by the input controller and screenshot resolver built for this tab.
+    pointer_position: PointerPosition = field(default_factory=PointerPosition)
 
     selector_map_getter: Callable[[], DOMSelectorMap] = field(default=_no_selector_map)
     selector_map_setter: Callable[[DOMSelectorMap], None] = field(default=_discard_selector_map)

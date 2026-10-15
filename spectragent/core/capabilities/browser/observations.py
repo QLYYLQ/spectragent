@@ -28,8 +28,9 @@ from dataclasses import is_dataclass
 from types import NoneType, UnionType
 from typing import Any, ClassVar, Literal, Self, Union, get_args, get_origin, get_type_hints
 
-from pydantic import Field, field_serializer
+from pydantic import Field, PrivateAttr, field_serializer
 
+from spectragent.core.capabilities.browser.cursor import ScreenshotCursor, render_cursor
 from spectragent.core.capabilities.browser.dom.budget import DOMBudgetReport
 from spectragent.core.capabilities.browser.dom.models import (
     DOMElementNode,
@@ -589,7 +590,7 @@ class ScreenshotObs(BrowserCaptureFragment):
     """Screenshot of the browser viewport.
 
     Either ``image_path`` (on disk) or ``image_bytes`` (in memory) must be
-    set; consumers prefer ``image_path`` when both are present. The
+    set; the model view prefers ``image_bytes`` when both are present. The
     encoding is PNG unless the capability was configured for JPEG
     (``screenshot_format``), and is not carried as a field: the bytes
     already say, and a second source of truth can disagree with them —
@@ -626,6 +627,36 @@ class ScreenshotObs(BrowserCaptureFragment):
         default=None,
         description="The document URL read in the same capture cycle; None when unavailable.",
     )
+
+    #: None means disabled; a cursor with no position means enabled but unknown.
+    cursor: ScreenshotCursor | None = None
+    _model_image_cache: tuple[tuple[Any, ...], bytes] | None = PrivateAttr(default=None)
+
+    def model_image_bytes(self) -> bytes | None:
+        """The model presentation, derived from clean evidence and immutable metadata.
+
+        The cache belongs to this fragment and keys every rendering input; mutable
+        fragment fields can never reuse a presentation of an earlier capture.
+        """
+        image = self.image_bytes
+        if image is None and self.image_path:
+            from pathlib import Path
+
+            image = Path(self.image_path).read_bytes()
+        if image is None or self.cursor is None:
+            return image
+        key = (image, self.cursor, self.viewport_width, self.viewport_height)
+        if self._model_image_cache is None or self._model_image_cache[0] != key:
+            self._model_image_cache = (
+                key,
+                render_cursor(
+                    image,
+                    self.cursor,
+                    viewport_width=self.viewport_width,
+                    viewport_height=self.viewport_height,
+                ),
+            )
+        return self._model_image_cache[1]
 
     @field_serializer("image_bytes")
     def _serialize_image_bytes(self, value: bytes | None) -> str | None:

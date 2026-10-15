@@ -1055,6 +1055,16 @@ class GAIAAgent(AgentBase):
 
 **设计决策**：Observation 不再是万能袋，而是 Fragment 注册表 + `__wiring__` 三方协商 + Resolver 模式。Fragment 是语义不可分的一组字段，独立注册在 conscribe；Env(Capability)/Agent/Loop 通过 `__wiring__` 声明 provides/requires；config 时 Avro 式协商 → 动态生成 Observation model → Capability 的 Resolver 按需计算。
 
+#### 截图的原图与模型视图
+
+浏览器 capability 的 `screenshot_cursor`（默认 False）与 `screenshot_cursor_size`（默认 32 CSS px，16–96）决定模型图片里是否显示放大、高亮的光标。它们属于 capability 的 `Annotated` 标量配置与实验身份，不属于 Agent 或 profile，也不改变 DOM 的 `debug_highlight`。
+
+`ScreenshotObs.image_bytes`、`trace_binary()` 和 `RunTrace.screenshot()` 始终是干净的原始截图；恢复的 dHash 与 evaluator 继续读原图。fragment 的 `cursor` sidecar 元数据保存截图时同 tab 最后一次成功确认的 `mouseMoved` 坐标（CSS px）及呈现大小和编码质量；`cursor=None` 是关闭，`cursor.position=None` 是已启用但位置未知。冷启动用于轨迹的猜测位置不算事实，wheel 的目标坐标也不算鼠标移动。移动尚未确认、超时、失败或取消时，指针位置回到 unknown：未收到确认不能证明浏览器没有移动；下次成功确认才恢复 known。每个 tab 的 `PointerPosition` 由同 tab 输入控制器更新、截图 resolver 经 snapshot 回调读取，不采集逐 tick 轨迹；不同 tab 和 run 不共享它。
+
+现有图片消费者通过通用 `ModelImage.model_image_bytes()` / `read_model_image()` 取得公开的模型视图，Agent 不认识浏览器绘图配置；纯文本 Agent 保持自身的输入模态。已知位置时，浏览器 fragment 用固定矢量和 Pillow 纯函数，从原图与少量元数据确定性重建图像，按实际图像像素与 CSS viewport 的两轴比例绘制，不改尺寸或坐标网格。位置未知时保持原图字节。PNG/JPEG 格式来自实际字节，JPEG 模型视图用记录的质量重编码。缓存只属于 fragment，所有原图、几何和光标输入变化都使缓存失效。`from_trace` 恢复原图和元数据后可重建同一模型视图，不在 JSON 中保存第二张 bitmap。
+
+完整 LLM 调用记录沿用 `PromptImageRef` 保存实际发送的模型图片，内容寻址；环境 screenshot artifact 仍只有干净原图。是否记录图片仍由 `RecordingPlan` 各通道决定，光标开关不额外启用 prompt 记录。训练导出用已有 `CaptureCheck` 比较呈现开关、大小和 JPEG 质量，不能默默把源图呈现为另一种输入。Branch 的 `history_source: source` 按源 fragment 的元数据重建同一模型视图，再精确比较原调用；`restored` 使用实际恢复观测的视图。新 policy 步读取当前 capability 的配置，呈现开关是显式实验变量，不把它扩成所有 branch 环境配置都必须相同的限制。
+
 #### Fragment 注册表
 
 ```python
@@ -4206,6 +4216,8 @@ fragment 也一样。`FragmentBase.from_trace(payload: dict[str, Any], artifact:
 **落盘文件名带 provenance。** Observation 文件名用的是**全限定 fragment key**（`000_browser.dom.json`），不是协商后的 field name（`000_dom.json`）。后者是"本次装配里哪个 capability 赢了协商"的产物：同一个 `000_screenshot.png` 在 browser run 和 desktop run 里含义不同，而读 trace 的人无从分辨——"Record Once, Evaluate Many" 的前提是 trace 自带足够信息，evaluator 不需要回头猜配置。
 
 同一份 provenance 在数据里再写一遍：`fragment_id` 是 `FragmentBase` 上的**真实字段**（默认值来自 `__registry_key__`），不是 `@property`——property 不进 `model_dump()`，于是每个 fragment 落盘时都是匿名的。
+
+**截图原图与模型呈现分别记录。** `browser.screenshot` 的二进制 artifact 是 clean capture，sidecar 的 `cursor` 是可重建模型视图的坐标与样式元数据。`ModelImage.model_image_bytes()` 产生给模型看的图；LLM 调用的内容寻址图片保存这份实际输入。reader/writer 不画光标，恢复与评测不把光标差异当成页面变化。
 
 **二进制 fragment 的后缀来自字节本身，不来自配置。** 截图的编码是 capability 配置（`screenshot_format: png | jpeg`，默认 png 与旧行为逐字节相同），但 `ScreenshotObs.trace_binary()` 是从图像头读出后缀的——一个"声明的格式"字段能和字节不一致（provider 没听配置、fragment 从磁盘文件重建），而不一致会在几层之外变成 vision provider 的 400。同理，agent 拼 `data:` URL 的 media type、artifact 落盘时的后缀、evaluator 按后缀判类型，读的都是同一个来源（`spectragent/schemas/observation/image.py`）。
 

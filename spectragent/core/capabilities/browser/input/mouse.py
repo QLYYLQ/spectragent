@@ -72,6 +72,7 @@ from __future__ import annotations
 import logging
 from asyncio import CancelledError, create_task, shield, wait_for
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from agent_cdp import CDPCommandProtocol
@@ -93,6 +94,16 @@ logger = logging.getLogger(__name__)
 _DRAG_RELEASE_TIMEOUT_S = 2.0
 
 
+@dataclass
+class PointerPosition:
+    """One tab's confirmed pointer position; None while movement is uncertain."""
+
+    position: tuple[int, int] | None = None
+
+    def snapshot(self) -> tuple[int, int] | None:
+        return self.position
+
+
 class HumanMouse:
     """Owns cursor state + a trajectory strategy; performs move/click/wheel/drag.
 
@@ -109,9 +120,13 @@ class HumanMouse:
         viewport: tuple[int, int] = (1280, 720),
         move_callback: Callable[[int, int], Any] | None = None,
         cold_start: str = "center",
+        pointer_position: PointerPosition | None = None,
         wheel_steps: int = 8,
         wheel_step_delay_ms: float = 12.0,
     ) -> None:
+        self._pointer_position = (
+            pointer_position if pointer_position is not None else PointerPosition()
+        )
         self._cdp = cdp
         self._sid = session_id_getter
         self._vw, self._vh = viewport
@@ -154,6 +169,16 @@ class HumanMouse:
     def position(self) -> tuple[int, int]:
         return self._x, self._y
 
+    @property
+    def observed_position(self) -> tuple[int, int] | None:
+        """Last successfully acknowledged mouseMoved; None before real movement.
+
+        Wheel coordinates select the event's target and do not move the pointer.
+        In-flight, failed or cancelled moves make the current position unknown:
+        a lost acknowledgement does not prove Chrome did not move.
+        """
+        return self._pointer_position.snapshot()
+
     # ── helpers ───────────────────────────────────────────────────────────
     def _clamp(self, x: int, y: int) -> tuple[int, int]:
         return (max(0, min(x, self._vw - 1)), max(0, min(y, self._vh - 1)))
@@ -166,6 +191,9 @@ class HumanMouse:
         return masks[button]
 
     async def _dispatch_move(self, x: int, y: int, *, button: str = "none") -> None:
+        # Chrome may move before its acknowledgement is lost. Never present
+        # the preceding point as current while delivery is uncertain.
+        self._pointer_position.position = None
         await self._cdp.send(
             "Input.dispatchMouseEvent",
             {
@@ -178,6 +206,7 @@ class HumanMouse:
             session_id=self._sid(),
         )
         self._x, self._y = x, y
+        self._pointer_position.position = (x, y)
         if self._move_cb is not None:
             try:
                 await maybe_await(self._move_cb(x, y))

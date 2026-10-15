@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 ImageMediaType = Literal["image/png", "image/jpeg", "image/gif", "image/webp"]
 """Media types a screenshot fragment can carry.
@@ -146,3 +146,26 @@ def _jpeg_size(data: bytes) -> tuple[int, int]:
             return width, height
         pos += 2 + length
     return 0, 0
+
+
+@runtime_checkable
+class ModelImage(Protocol):
+    """An image fragment's public presentation to a decision model.
+
+    Environment evidence can retain a different, clean original. Consumers
+    request this view without knowing a capability's rendering or settings.
+    """
+
+    def model_image_bytes(self) -> bytes | None: ...
+
+
+def read_model_image(fragment: object | None) -> bytes | None:
+    """Read the model view, refusing an image fragment with no presentation contract."""
+    if fragment is None:
+        return None
+    if not isinstance(fragment, ModelImage):
+        raise TypeError(
+            f"{type(fragment).__name__} provides no model image view "
+            "(ModelImage.model_image_bytes)."
+        )
+    return fragment.model_image_bytes()

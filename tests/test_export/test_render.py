@@ -9,6 +9,7 @@ canonicalises and translates it with the real pipeline pieces, and renders it.
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ import pytest
 from spectragent.agents._registrar import AgentRegistrar
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.capability import BrowserCapability
+from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.llm.messages import AssistantMessage, SystemMessage, UserMessage
 from spectragent.core.loops.validation import IncompatibleError
@@ -538,3 +540,40 @@ def _shifted(actions: Any, move: Any) -> list[Action]:
         else a
         for a in actions
     ]
+
+
+@pytest.mark.parametrize("student_cursor,student_size", [(False, 32), (True, 48)])
+@pytest.mark.parametrize("prefix_only", [False, True], ids=["emitted", "branch-source-prefix"])
+async def test_cursor_presentation_mismatch_rejects_emitted_and_context_prefix(
+    composer: ConfigComposer,
+    tmp_path: Path,
+    student_cursor: bool,
+    student_size: int,
+    prefix_only: bool,
+) -> None:
+    source_image = screenshot()
+    source_image.cursor = ScreenshotCursor(position=(100, 100))
+    source = RunTrace(
+        write_ui_tars_run(
+            tmp_path,
+            "source-cursor-on",
+            [ExportStep(actions=[click_at(10, 10)], fragments=[source_image])],
+        )
+    )
+    target = RunTrace(
+        write_ui_tars_run(
+            tmp_path,
+            "branch-cursor-off",
+            [ui_tars_step(click_at(20, 20))],
+        )
+    )
+    steps = _trajectory(source)
+    if prefix_only:
+        steps = [replace(steps[0], emit=False), *_trajectory(target)]
+    root = student_root()
+    cap = root["environment"][0]["capabilities"][0]
+    cap.update(screenshot_cursor=student_cursor, screenshot_cursor_size=student_size)
+    with pytest.raises(StudentCaptureMismatchError) as raised:
+        await _renderer(composer, root=root).render(steps)
+    assert raised.value.source == "source-cursor-on" and raised.value.step == 0
+    assert any("screenshot_cursor" in message for message in raised.value.mismatches)

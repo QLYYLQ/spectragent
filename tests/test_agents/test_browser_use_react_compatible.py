@@ -57,6 +57,15 @@ class _FakeDOM:
 
 @dataclass
 class _FakeScreenshot:
+    def model_image_bytes(self) -> bytes | None:
+        if self.image_bytes is not None:
+            return self.image_bytes
+        if self.image_path:
+            from pathlib import Path
+
+            return Path(self.image_path).read_bytes()
+        return None
+
     image_bytes: bytes | None = None
     image_path: str | None = None
     viewport_width: int = 0

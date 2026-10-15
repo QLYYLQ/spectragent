@@ -81,7 +81,7 @@ from spectragent.schemas.observation.geometry import (
     ScreenshotGeometry,
     point_grid,
 )
-from spectragent.schemas.observation.image import image_media_type
+from spectragent.schemas.observation.image import image_media_type, read_model_image
 from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, RestoredHistory
 
 # ── The verb vocabulary ──────────────────────────────────────
@@ -790,14 +790,7 @@ class UITarsAgent(AgentBase):
                 f"viewport_height (ScreenshotGeometry, "
                 f"spectragent.schemas.observation.geometry)."
             )
-        image_bytes: bytes | None = None
-        if screenshot is not None:
-            # The image itself is not part of the geometry contract.
-            image_bytes = getattr(screenshot, "image_bytes", None)
-            image_path = getattr(screenshot, "image_path", None)
-            if image_bytes is None and image_path:
-                with open(image_path, "rb") as f:
-                    image_bytes = f.read()
+        image_bytes = read_model_image(screenshot)
 
         if screenshot is None or image_bytes is None:
             self._grid = None

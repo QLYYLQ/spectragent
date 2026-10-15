@@ -70,7 +70,7 @@ from spectragent.schemas.observation.geometry import (
     ScreenshotGeometry,
     point_grid,
 )
-from spectragent.schemas.observation.image import image_media_type
+from spectragent.schemas.observation.image import image_media_type, read_model_image
 from spectragent.schemas.prompt import (
     PromptRef,
     PromptSnapshot,
@@ -566,7 +566,7 @@ class BrowserUseAgent(AgentBase):
         """
         screenshot = getattr(observation, "screenshot", None)
         shows_screenshot = (
-            self.observation_mode in _MODES_WITH_IMAGE and _image_bytes(screenshot) is not None
+            self.observation_mode in _MODES_WITH_IMAGE and read_model_image(screenshot) is not None
         )
         self._grid = None
         if shows_screenshot and self._has_point_actions():
@@ -931,7 +931,7 @@ class BrowserUseAgent(AgentBase):
             ImageURL,
         )
 
-        image_bytes = _image_bytes(observation.screenshot)
+        image_bytes = read_model_image(observation.screenshot)
         assert image_bytes is not None  # noqa: S101 — caller's precondition
         media_type = image_media_type(image_bytes) or "image/png"
         b64 = base64.b64encode(image_bytes).decode()
@@ -1072,27 +1072,6 @@ class BrowserUseAgent(AgentBase):
                 parts.append(f"DOM:\n{dom_str}")
 
         return "\n\n".join(parts) if parts else "(empty browser state)"
-
-
-def _image_bytes(screenshot: Any) -> bytes | None:
-    """The encoded bytes of a screenshot fragment, reading a path if needed.
-
-    The encoding is whatever the capability captured — PNG by default,
-    JPEG when it was configured for one. The caller labels the data URL
-    from the bytes (:func:`image_media_type`) rather than assuming: a
-    JPEG under a ``data:image/png`` prefix is sniffed past by OpenAI and
-    rejected outright by Anthropic.
-    """
-    if screenshot is None:
-        return None
-    image_bytes = getattr(screenshot, "image_bytes", None)
-    if image_bytes is not None:
-        return image_bytes
-    image_path = getattr(screenshot, "image_path", None)
-    if not image_path:
-        return None
-    with open(image_path, "rb") as f:
-        return f.read()
 
 
 def _render_action_list(
