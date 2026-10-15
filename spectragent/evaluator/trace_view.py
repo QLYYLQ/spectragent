@@ -155,17 +155,29 @@ class TraceView:
     def restored_action_history(self) -> list[str]:
         """A branch run's restored prefix, each action labelled ``[restored]``.
 
-        The source run's actions as the restored steps recorded them, in
+        The actions actually executed after retargeting during this run, in
         step order. Empty for every trace that is not a branch, so a judge
         that prepends it to :attr:`action_history` sends exactly what it
         sent before for those.
         """
-        return [
-            f"[restored] {a.name}({a.params})"
-            for record in self._trace.step_records
-            if record.origin == "restored"
-            for a in record.actions
-        ]
+        history: list[str] = []
+        for record in self._trace.step_records:
+            if record.origin != "restored":
+                continue
+            if record.restoration is None:
+                history.extend(f"[restored] {a.name}({a.params})" for a in record.actions)
+                continue
+            for attempt in record.restoration.actions:
+                action = attempt.executed
+                if action is None:
+                    continue
+                text = f"[restored] {action.name}({action.params})"
+                if attempt.live_error is not None:
+                    text += f" [raised: {attempt.live_error}]"
+                elif attempt.result is not None and not attempt.result.success:
+                    text += f" [failed: {attempt.result.error or 'unsuccessful result'}]"
+                history.append(text)
+        return history
 
     @cached_property
     def screenshots(self) -> list[Path]:
@@ -210,8 +222,8 @@ class TraceView:
         return self._result.metrics.model_copy(deep=True)
 
     @cached_property
-    def end_to_end_ms(self) -> int:
-        return self.metrics.end_to_end_ms
+    def execution_ms(self) -> int:
+        return self.metrics.execution_ms
 
     def result_ref(self) -> AgentResultRef:
         """Back-pointer from a verdict to the run that produced it."""

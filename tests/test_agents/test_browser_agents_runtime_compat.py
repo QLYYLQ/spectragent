@@ -2,7 +2,7 @@
 
 Verifies that all three adapted agents:
 
-- Pass ``AgentRuntime``'s ``validate_compatibility`` against ``ReactLoop``
+- Pass ``ReactLoop.validate_slots`` for each browser Agent
 - Have the right observation negotiation behaviour (UITars must NOT
   trigger DOM resolution)
 - Successfully complete one mocked observe → think → act step driven
@@ -11,7 +11,6 @@ Verifies that all three adapted agents:
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,8 +27,9 @@ from spectragent.core.capabilities.browser.observations import (
     DOMObs,
     ScreenshotObs,
 )
+from spectragent.core.loops.identity import RunIdentity
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
-from spectragent.core.loops.validation import validate_compatibility
 from spectragent.core.negotiation import extract_wiring, negotiate_action
 from spectragent.core.negotiation.observation import _observation_rules
 from spectragent.schemas.action import ActionDescriptor, ActionResult
@@ -38,6 +38,7 @@ from spectragent.schemas.observation.fragments import (
     StepInfoObs,
     TaskObs,
 )
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_params import minimal_params
 from tests._helpers.assembly import make_agent
 
@@ -49,17 +50,17 @@ class TestValidateCompatibility:
         agent = make_agent(BrowserUseAgent, memory=SimpleMemory(max_messages=10))
         loop = ReactLoop()
         # Should not raise.
-        validate_compatibility(agent, loop)
+        loop.validate_slots(agent)
 
     def test_skyvern_agent_compatible_with_react_loop(self) -> None:
         agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=10))
         loop = ReactLoop()
-        validate_compatibility(agent, loop)
+        loop.validate_slots(agent)
 
     def test_ui_tars_agent_compatible_with_react_loop(self) -> None:
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         loop = ReactLoop()
-        validate_compatibility(agent, loop)
+        loop.validate_slots(agent)
 
 
 # ── Observation negotiation ───────────────────────────────────────────
@@ -221,7 +222,7 @@ class _ActionsOnlyEnv:
         self.provided_actions = capability.provided_actions
 
 
-def _resolve(agent: Any, action: Any, capability: Any) -> str:
+async def _resolve(agent: Any, action: Any, capability: Any) -> str:
     """What ``build_guarded_act`` would send to ``env.act`` for *action*."""
     negotiated = negotiate_action(agent, _ActionsOnlyEnv(capability))
     descriptors = [
@@ -235,10 +236,7 @@ def _resolve(agent: Any, action: Any, capability: Any) -> str:
 
     _kept, guard = build_guarded_act(_act, descriptors, bindings=negotiated.action_bindings)
 
-    async def _drive() -> ActionResult:
-        return await guard(action)
-
-    result = asyncio.run(_drive())
+    result = await guard(action)
     assert result.success, result.error
     return routed[0].name
 
@@ -252,7 +250,7 @@ class TestAgentToCapabilityActionVocabulary:
     the guard turn the emitted string into a key that is".
     """
 
-    def test_browser_use_verbs_resolve_to_capability_actions(self) -> None:
+    async def test_browser_use_verbs_resolve_to_capability_actions(self) -> None:
         """Now a tautology by construction, and worth pinning as one.
 
         browser_use compiles its output schema *from the negotiated
@@ -272,51 +270,58 @@ class TestAgentToCapabilityActionVocabulary:
         descriptors = [
             a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
         ]
-        agent.prepare(task="t", action_descriptors=descriptors)
+        agent.prepare(
+            task="t",
+            action_descriptors=descriptors,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         model = agent.get_react_output_model()
 
         for descriptor in descriptors:
             params = minimal_params(descriptor)
             out = model.model_validate({"memory": "", "action": [{descriptor.name: params}]})
             for action in agent.parse_react_output(out):
-                routed = _resolve(agent, action, capability)
+                routed = await _resolve(agent, action, capability)
                 assert routed in provided, (
                     f"BrowserUseAgent emitted {action.name!r}, which resolved "
                     f"to {routed!r} — not in BrowserCapability."
                     f"provided_actions {sorted(provided)}"
                 )
 
-    def test_ui_tars_click_produces_click_coordinate(self) -> None:
+    async def test_ui_tars_click_produces_click_coordinate(self) -> None:
         from spectragent.core.capabilities.browser.capability import (
             BrowserCapability,
         )
 
         agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         # A point is placed with the screenshot the step showed.
-        agent.build_react_prompt(
-            type(
-                "Obs",
-                (),
-                {
-                    "platform": BrowserPlatformObs(operating_system="macos"),
-                    "task": type("Task", (), {"user_request": "t"})(),
-                    "screenshot": ScreenshotObs(
-                        image_bytes=b"\x89PNG\r\n\x1a\n",
-                        viewport_width=1280,
-                        viewport_height=720,
-                        image_width=1280,
-                        image_height=720,
-                    ),
-                },
-            )()
+        (
+            await agent.build_react_prompt(
+                type(
+                    "Obs",
+                    (),
+                    {
+                        "platform": BrowserPlatformObs(operating_system="macos"),
+                        "task": type("Task", (), {"user_request": "t"})(),
+                        "screenshot": ScreenshotObs(
+                            image_bytes=b"\x89PNG\r\n\x1a\n",
+                            viewport_width=1280,
+                            viewport_height=720,
+                            image_width=1280,
+                            image_height=720,
+                        ),
+                    },
+                )(),
+                context=ReactPromptContext(step=0, phase="policy"),
+            )
         )
         actions = agent.parse_react_output("Thought: click it.\nAction: click(point='(100, 200)')")
         assert len(actions) == 1
         assert actions[0].name == "click_coordinate"
         capability = BrowserCapability()
-        assert _resolve(agent, actions[0], capability) == "browser.click_coordinate"
+        assert await _resolve(agent, actions[0], capability) == "browser.click_coordinate"
 
-    def test_all_three_agents_done_uses_extracted_content(self) -> None:
+    async def test_all_three_agents_done_uses_extracted_content(self) -> None:
         # Regression: every adapted agent must emit its done action
         # with the ``extracted_content`` key so the answer survives the
         # capability's DoneEvent translation.
@@ -337,6 +342,7 @@ class TestAgentToCapabilityActionVocabulary:
             action_descriptors=[
                 a.descriptor() for a in capability.actions if a.action_id == "browser.done"
             ],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
         )
         bu_out = bu.get_react_output_model().model_validate(
             {
@@ -345,7 +351,7 @@ class TestAgentToCapabilityActionVocabulary:
             }
         )
         bu_actions = bu.parse_react_output(bu_out)
-        assert _resolve(bu, bu_actions[0], capability) == "browser.done"
+        assert await _resolve(bu, bu_actions[0], capability) == "browser.done"
         assert bu_actions[0].params["extracted_content"] == "answer bu"
 
         # SkyvernAgent
@@ -356,13 +362,13 @@ class TestAgentToCapabilityActionVocabulary:
             extracted_content="answer sk",
         )
         sk_actions = sk.parse_react_output(sk_out)
-        assert _resolve(sk, sk_actions[0], capability) == "browser.done"
+        assert await _resolve(sk, sk_actions[0], capability) == "browser.done"
         assert sk_actions[0].params["extracted_content"] == "answer sk"
 
         # UITarsAgent
         ut = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
         ut_actions = ut.parse_react_output("Action: finished(content='answer ut')")
-        assert _resolve(ut, ut_actions[0], capability) == "browser.done"
+        assert await _resolve(ut, ut_actions[0], capability) == "browser.done"
         assert ut_actions[0].params["extracted_content"] == "answer ut"
 
 
@@ -434,7 +440,11 @@ class TestReactLoopDriveBrowserUse:
             for a in BrowserCapability().actions
             if a.action_id in negotiated_actions.active_actions
         ]
-        seed = agent.prepare(task="Find the answer", action_descriptors=descriptors)
+        seed = agent.prepare(
+            task="Find the answer",
+            action_descriptors=descriptors,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         agent.memory.add_messages(seed)
         llm = _MockLLM(
             agent.get_react_output_model().model_validate(
@@ -453,7 +463,7 @@ class TestReactLoopDriveBrowserUse:
             "negotiated_obs": _MockNegotiated(),
             "active_descriptors": [],
             "session_id": None,
-            "task_id": "t1",
+            "identity": RunIdentity(task_id="t1"),
         }
         result = await loop._execute(agent, task="Find the answer", ctx=ctx)
 

@@ -43,6 +43,7 @@ from spectragent.agents.skyvern import SkyvernAgent
 from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import extract_wiring
 from spectragent.core.negotiation.action import _action_rules
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
@@ -88,7 +89,11 @@ def prepared() -> tuple[SkyvernAgent, str, list[ActionDescriptor], Any]:
     """A prepared agent plus the real guarded_act built over its action set."""
     descriptors, bindings = _negotiated()
     agent = make_agent(SkyvernAgent, memory=SimpleMemory(max_messages=100))
-    prompt = agent.prepare(task="t", action_descriptors=descriptors)[0].content
+    prompt = agent.prepare(
+        task="t",
+        action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+    )[0].content
     assert isinstance(prompt, str)
 
     async def _accept(action: Action, **_kw: Any) -> ActionResult:
@@ -183,7 +188,11 @@ class TestPromptVocabulary:
             ),
             ActionDescriptor(name="desktop.done", description="Finish."),
         ]
-        prompt = agent.prepare(task="t", action_descriptors=elsewhere)[0].content
+        prompt = agent.prepare(
+            task="t",
+            action_descriptors=elsewhere,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )[0].content
         assert isinstance(prompt, str)
 
         assert "`desktop.done`" in prompt

@@ -436,13 +436,13 @@ class BranchLoop(ReactLoop):
 
 **source 历史**：先验证 prepare 种子，按源观测、原始提示贡献及其位置重建每步 prompt。只重放 `purpose=agent_decision` 的主决策及解析重试；每次主调用前精确比较 prompt，调用后校验解析动作、截断及回复。helper 的回复不进入 Agent parser。恢复历史不执行贡献函数、不调用 helper；源贡献证据缺失时明确拒绝。种子和重建不符不受环境 `warn` 影响。然后恢复环境，第一策略步始终使用恢复器已经校验的 live 观测，不额外重拍。
 
-**restored 历史**：恢复器交回本次 live 观测、retarget 后实际执行动作及完整实际结果。每条恢复事实交给 Agent 的公开历史槽；Agent 按自己的消息格式表达并更新自己的状态（例如 Skyvern 的动作历史），Loop 不改私有字段。源回复、thought 和动作作为带来源的材料保留，不能改编号伪造新回复；实际结果不能被源结果覆盖。缺失动作结果、时序或目标身份不一致、Agent 不能表达时明确失败，不能回退 source。所有前缀步骤仍是 `origin=restored`，没有本次模型调用，也不继承源 usage。恢复校验及发散始终保存。
+**restored 历史**：恢复器交回本次 live 观测、retarget 后实际执行动作及完整实际结果。每条恢复事实交给 Agent 的公开历史槽；Agent 按自己的消息格式表达并更新自己的状态（例如 Skyvern 的动作历史），Loop 不改私有字段。源回复、thought 和动作作为带来源的材料保留，不能改编号伪造新回复；实际结果不能被源结果覆盖。缺失动作结果、时序或目标身份不一致、Agent 不能表达时明确失败，不能回退 source。所有前缀步骤仍是 `origin=restored`，没有本次模型调用，也不继承源 usage。恢复校验及发散始终保存。恢复步骤的顶层 `actions` / `action_results` 只保存实际返回结果的精确配对；抛异常而无返回值的动作尝试仍完整保留在 `restoration.actions`，不伪造返回结果、不把后一个结果配到前一个动作。
 
 **提示贡献合同**：`schemas/prompt.py` 的 `ReactPromptContext` 显式带 step、phase（history/policy/terminal）、policy_step、is_branch 与该步贡献；每次构建属于本 run，不通过 Hook 实例计数猜阶段。`build_react_prompt(observation, *, context)` 是异步槽，Loop 必须 await。`PromptContribution` 记录 text、placement（system/turn）、稳定来源与代码身份；Agent 决定放入适合自己的系统内容或当前轮次并遵守自身消息协议。贡献的实际内容/位置随 trajectory 保存，轻量计划不强迫保存正文。
 
 现有 HookRegistrar 注册 `prompt_contribution`，用 blocking `around` 拦截 Agent builder 并将贡献通过公开 context 传入；不是 after 返回值或私改 memory。配置 stable `package.module:function`，组装时解析 callable 并校验显式参数合同及 async 目标。函数同步或异步均可；可用 wired `helper_llms`（零或一个）接收独立 helper。默认只在分叉第一个 policy 步生成一次，可选每个 policy 步。解析重试复用同一步已构建提示；history 阶段只读原贡献，terminal 不生成。缓存归本次 run/step 的 context，不保存在 Hook 计数器。贡献进入 memory 后是否仍出现由明确 Agent/Memory 合同决定。
 
-函数/辅助调用失败或取消是实际执行失败，沿既有执行策略传播；记录器失败不改变它。helper 调用带 caller/purpose/model/step 和成功、失败、取消及未知 usage，实验用量包含所有实际调用并可按用途拆分；helper thinking 和注入文字均不是 Agent thought。辅助模型由持有它的组件明确清理，不能靠反射寻找 Agent 的模型。
+函数/辅助调用失败或取消是实际执行失败，沿既有执行策略传播；记录器失败不改变它。helper 调用带 caller/purpose/model/step 和成功、失败、取消及未知 usage，实验用量包含所有实际调用并可按用途拆分；helper thinking 和注入文字均不是 Agent thought。Runtime 在准备期通过公开的 `PromptModelOwner.helper_llms` 收集辅助依赖，执行最终收尾统一关闭主模型与这些 helper；不能靠反射寻找模型，也不能因前序 hook 失败跳过清理。Hook 不再并行持有另一套模型关闭时机。
 
 查看器、指标和独立 judge 区分 source 材料、restored 执行、policy 决策和 terminal 页面证据；任务正确性、有效判定覆盖、恢复保真分别表达。冻结导出仅适配公开异步入口与调用用途筛选，不增加学生策略。删除旧 `branch_instruction` 枚举及 Loop 内固定文本，不保留兼容入口。
 
@@ -3933,7 +3933,7 @@ class RestorationCheck(BaseModel):
     actions: list[RestoredAction] = []            # 这一步录下的动作；第 t 步（策略步的起点）为空
 ```
 
-- `origin`：`policy` 是 Loop 自己的 agent 决定的一步（包括所有旧 trace 的每一步：读回来就是 `policy`，这对它们是对的）；`restored` 是分叉 run 恢复出来的前缀步（内容抄自源 run 的那一步，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
+- `origin`：`policy` 是 Loop 自己的 agent 决定的一步（包括所有旧 trace 的每一步：读回来就是 `policy`，这对它们是对的）；`restored` 是分叉 run 恢复出来的前缀步（实际 retarget 后动作及结果，旧回复只在 `source_history` 来源材料中，§4.1 `BranchLoop`）；`terminal` 是终止观测（§4.1，没有动作、没有 LLM 调用）。`AgentMetrics.steps` 与 `max_steps` 只数 `policy`。
 - `restoration`：恢复出来的第 k 步带它自己的校验；分叉的策略步（第 t 步）带 obs_t 的校验，因为这一步是在那个被校验过的状态上做的决定；`strict` 下发散的那一条（`origin="restored"`、`error_phase="restore"`）带不通过的那次校验。原因的判定：capability 证据里 `document_misses > 0` → `document_miss`；`url_match is False` → `url_mismatch`；重定位 `not_found` / `ambiguous` → `retarget_*`；动作成败与录下的不同、或执行抛错 → `action_failed`；`signature_match is False` → `signature_mismatch`；`screenshot_distance > screenshot_max_distance` → `screenshot_distance`。值为 `None` 的量不参与判定。
 - `AgentResult.schema_version` **不升**（仍是 `2.1`）：`StepRecord` 不在 `result.json` 里，§5.5 的"只认当前版本"守的是 `AgentResult` 自己的形状；升版会让 M29 / M30 录下的、正要拿来分叉的每一个 trace 都读不出 `result`。`manifest.format_version` 也不升：只多了带默认值的字段。
 - 这两个字段都不渲染进 prompt：`StepRecord` 是 `HistoryObs` 的载荷，agent 只渲染动作、结果与回复（`test_the_stamp_does_not_reach_the_prompt` 同样钉住 `origin` / `restoration`）。

@@ -17,7 +17,9 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import ActionDescriptor
+from spectragent.schemas.prompt import ReactPromptContext
 
 #: Stand-in for a negotiated action set. Deliberately *not* empty: the
 #: old suite passed ``action_descriptors=[]`` everywhere, which is why a
@@ -99,7 +101,7 @@ def _make_agent(**overrides: Any) -> SkyvernAgent:
 class TestSlotConformance:
     def test_has_required_react_slots(self) -> None:
         agent = _make_agent()
-        ReactLoop()._validate_slots(agent)  # Should not raise
+        ReactLoop().validate_slots(agent)  # Should not raise
 
     def test_legacy_methods_removed(self) -> None:
         agent = _make_agent()
@@ -153,7 +155,11 @@ class TestWiring:
 class TestPrepare:
     def test_returns_jinja_rendered_system_prompt_seed(self) -> None:
         agent = _make_agent()
-        seed = agent.prepare(task="Find the cheapest flight", action_descriptors=_DESCRIPTORS)
+        seed = agent.prepare(
+            task="Find the cheapest flight",
+            action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         assert isinstance(seed, list)
         assert len(seed) == 1
         assert isinstance(seed[0], SystemMessage)
@@ -171,7 +177,11 @@ class TestPrepare:
         finding nothing is the regression.
         """
         agent = _make_agent()
-        seed = agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        seed = agent.prepare(
+            task="t",
+            action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         text = seed[0].content
         assert isinstance(text, str)
         for descriptor in _DESCRIPTORS:
@@ -180,14 +190,26 @@ class TestPrepare:
 
     def test_renders_the_loops_action_budget(self) -> None:
         agent = _make_agent()
-        seed = agent.prepare(task="t", action_descriptors=_DESCRIPTORS, max_actions_per_step=4)
+        seed = agent.prepare(
+            task="t",
+            action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=4),
+        )
         text = seed[0].content
         assert isinstance(text, str)
         assert {int(n) for n in re.findall(r"maximum of (\d+) actions", text)} == {4}
 
     def test_optional_config_blocks_render_only_when_set(self) -> None:
         """Every remaining knob is consumed by the template."""
-        off = _make_agent().prepare(task="t", action_descriptors=[])[0].content
+        off = (
+            _make_agent()
+            .prepare(
+                task="t",
+                action_descriptors=[],
+                execution_limits=ExecutionLimits(max_actions_per_step=1),
+            )[0]
+            .content
+        )
         assert isinstance(off, str)
         assert "PAY ONLY WITH THE SAVED CARD" not in off
         assert "GIVE UP AFTER A PAYWALL" not in off
@@ -200,7 +222,11 @@ class TestPrepare:
                 verification_code_check=True,
                 navigation_payload="username=bob",
             )
-            .prepare(task="t", action_descriptors=[])[0]
+            .prepare(
+                task="t",
+                action_descriptors=[],
+                execution_limits=ExecutionLimits(max_actions_per_step=1),
+            )[0]
             .content
         )
         assert isinstance(on, str)
@@ -209,15 +235,29 @@ class TestPrepare:
         assert "verification code" in on
         assert "username=bob" in on
 
-    def test_resets_action_history(self) -> None:
+    async def test_resets_action_history(self) -> None:
         agent = _make_agent()
-        agent._action_history.append("stale")
-        agent.prepare(task="t", action_descriptors=[])
-        assert agent._action_history == []
+        agent.parse_react_output(
+            SkyvernOutput(actions=[SkyvernActionItem(action_type="browser.click", index=7)])
+        )
+        (before,) = await agent.build_react_prompt(
+            _FakeObservation(), context=ReactPromptContext(step=1, phase="policy")
+        )
+        assert "browser.click(" in before.text
+        agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
+        (after,) = await agent.build_react_prompt(
+            _FakeObservation(), context=ReactPromptContext(step=0, phase="policy")
+        )
+        assert "(no actions yet)" in after.text
+        assert "browser.click(" not in after.text
 
 
 class TestBuildReactPrompt:
-    def test_includes_dom_text(self) -> None:
+    async def test_includes_dom_text(self) -> None:
         """A real ``DOMState``, not a string.
 
         ``DOMObs.element_tree`` carries a ``DOMState``; the form the model
@@ -227,7 +267,11 @@ class TestBuildReactPrompt:
         indexed DOM the model needs.
         """
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        agent.prepare(
+            task="t",
+            action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         state = DOMState(
             serialized_dom="[1]<button>Submit</button>\n[2]<input placeholder='q'/>",
         )
@@ -236,7 +280,9 @@ class TestBuildReactPrompt:
             browser_meta=_FakeBrowserMeta(url="https://www.example.com", page_title="Ex"),
             task=_FakeTask(user_request="find the cheapest flight"),
         )
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         assert len(messages) == 1
         assert isinstance(messages[0], UserMessage)
         content = messages[0].content
@@ -248,20 +294,27 @@ class TestBuildReactPrompt:
         assert "DOMElementNode(" not in content
         assert "serialized_dom=" not in content
 
-    def test_dom_text_reaches_the_model_after_the_old_agent_cutoff(self) -> None:
+    async def test_dom_text_reaches_the_model_after_the_old_agent_cutoff(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        agent.prepare(
+            task="t",
+            action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         tail = "[173]<button>Reachable at the end</button>"
         state = DOMState(serialized_dom="x" * 10_100 + tail)
-        content = agent.build_react_prompt(_FakeObservation(dom=_FakeDOM(element_tree=state)))[
-            0
-        ].content
+        content = (
+            await agent.build_react_prompt(
+                _FakeObservation(dom=_FakeDOM(element_tree=state)),
+                context=ReactPromptContext(step=0, phase="policy"),
+            )
+        )[0].content
 
         assert isinstance(content, str)
         assert tail in content
         assert "... (truncated)" not in content
 
-    def test_action_history_is_rendered_per_step_not_in_the_system_prompt(
+    async def test_action_history_is_rendered_per_step_not_in_the_system_prompt(
         self,
     ) -> None:
         """The window follows the step, because it changes every step.
@@ -271,12 +324,18 @@ class TestBuildReactPrompt:
         forever. It belongs next to ``<user_request>`` / ``<step_info>``.
         """
         agent = _make_agent(action_history_window=2)
-        seed = agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        seed = agent.prepare(
+            task="t",
+            action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         assert isinstance(seed[0].content, str)
         assert "<action_history>" not in seed[0].content
 
         obs = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
-        first = agent.build_react_prompt(obs)[0].content
+        first = (
+            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
+        )[0].content
         assert isinstance(first, str)
         assert "<action_history>\n(no actions yet)\n</action_history>" in first
 
@@ -286,7 +345,9 @@ class TestBuildReactPrompt:
                     actions=[SkyvernActionItem(action_type="browser.click", index=i, reasoning="r")]
                 )
             )
-        later = agent.build_react_prompt(obs)[0].content
+        later = (
+            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
+        )[0].content
         assert isinstance(later, str)
         history = later.split("<action_history>\n")[1].split("\n</action_history>")[0]
         # window=2 → the two most recent actions, oldest dropped.
@@ -295,7 +356,7 @@ class TestBuildReactPrompt:
         assert "'index': 1" in history
         assert "'index': 2" in history
 
-    def test_a_zero_window_renders_nothing_not_everything(self) -> None:
+    async def test_a_zero_window_renders_nothing_not_everything(self) -> None:
         """``lst[-0:]`` is ``lst[0:]``.
 
         Zero is the obvious YAML spelling of "no history", and the naive
@@ -303,49 +364,74 @@ class TestBuildReactPrompt:
         asked for, and unbounded prompt growth.
         """
         agent = _make_agent(action_history_window=0)
-        agent.prepare(task="t", action_descriptors=_DESCRIPTORS)
+        agent.prepare(
+            task="t",
+            action_descriptors=_DESCRIPTORS,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         for i in range(3):
             agent.parse_react_output(
                 SkyvernOutput(
                     actions=[SkyvernActionItem(action_type="browser.click", index=i, reasoning="r")]
                 )
             )
-        content = agent.build_react_prompt(_FakeObservation(dom=_FakeDOM(element_tree="<x/>")))[
-            0
-        ].content
+        content = (
+            await agent.build_react_prompt(
+                _FakeObservation(dom=_FakeDOM(element_tree="<x/>")),
+                context=ReactPromptContext(step=0, phase="policy"),
+            )
+        )[0].content
         assert isinstance(content, str)
         assert "browser.click(" not in content
 
-    def test_user_request_prefix(self) -> None:
+    async def test_user_request_prefix(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<x/>"),
             task=_FakeTask(user_request="reset the user password"),
         )
-        content = agent.build_react_prompt(obs)[0].content
+        content = (
+            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
+        )[0].content
         assert isinstance(content, str)
         assert "<user_request>" in content
         assert "reset the user password" in content
 
-    def test_step_info_prefix_when_present(self) -> None:
+    async def test_step_info_prefix_when_present(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<x/>"),
             task=_FakeTask(user_request="x"),
             step_info=_FakeStepInfo(step=2, max_steps=10, today="2026-05-01"),
         )
-        content = agent.build_react_prompt(obs)[0].content
+        content = (
+            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
+        )[0].content
         assert isinstance(content, str)
         assert "<step_info>step 2/10" in content
         assert "today=2026-05-01" in content
 
-    def test_returns_only_new_user_message(self) -> None:
+    async def test_returns_only_new_user_message(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(dom=_FakeDOM(element_tree="<x/>"))
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         assert isinstance(messages, list)
         assert all(isinstance(m, BaseMessage) for m in messages)
         # Pure builder: agent emits only the new step's user message.
@@ -466,7 +552,7 @@ class TestParseReactOutput:
         assert actions[0].params["extracted_content"] == "answer text"
         assert "text" not in actions[0].params
 
-    def test_action_history_populated_for_prompt_window(self) -> None:
+    async def test_action_history_populated_for_prompt_window(self) -> None:
         agent = _make_agent()
         out = SkyvernOutput(
             actions=[
@@ -479,7 +565,11 @@ class TestParseReactOutput:
             ]
         )
         agent.parse_react_output(out)
-        assert any(entry.startswith("browser.type(") for entry in agent._action_history)
+        (message,) = await agent.build_react_prompt(
+            _FakeObservation(), context=ReactPromptContext(step=1, phase="policy")
+        )
+        assert "browser.type(" in message.text
+        assert "'text': 'hello'" in message.text
 
     def test_a_bare_name_is_left_for_the_guard_to_bind(self) -> None:
         """The agent must not invent a provider for a bare verb.

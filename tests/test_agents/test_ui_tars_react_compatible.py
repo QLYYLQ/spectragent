@@ -23,7 +23,9 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action
+from spectragent.schemas.prompt import ReactPromptContext
 
 
 @dataclass
@@ -71,7 +73,7 @@ def _make_agent(**overrides: Any) -> UITarsAgent:
     )
 
 
-def _looking_at_screen(**overrides: Any) -> UITarsAgent:
+async def _looking_at_screen(**overrides: Any) -> UITarsAgent:
     """An agent that has been shown a 1280x720 screenshot of a 1280x720 viewport.
 
     A point in a reply is placed with the screenshot the same step showed,
@@ -79,33 +81,44 @@ def _looking_at_screen(**overrides: Any) -> UITarsAgent:
     numbers a test writes are the numbers the action receives.
     """
     agent = _make_agent(**overrides)
-    agent.build_react_prompt(
-        _FakeObservation(
-            screenshot=_FakeScreenshot(
-                image_bytes=b"\x89PNG",
-                viewport_width=1280,
-                viewport_height=720,
-                image_width=1280,
-                image_height=720,
-            )
+    (
+        await agent.build_react_prompt(
+            _FakeObservation(
+                screenshot=_FakeScreenshot(
+                    image_bytes=b"\x89PNG",
+                    viewport_width=1280,
+                    viewport_height=720,
+                    image_width=1280,
+                    image_height=720,
+                )
+            ),
+            context=ReactPromptContext(step=0, phase="policy"),
         )
     )
     return agent
 
 
 class TestSlotConformance:
-    def test_screenshot_provenance_does_not_reach_the_model(self) -> None:
+    async def test_screenshot_provenance_does_not_reach_the_model(self) -> None:
         before = _FakeObservation(screenshot=_FakeScreenshot(image_bytes=b"\x89PNG"))
         after = _FakeObservation(
             screenshot=_FakeScreenshot(
                 image_bytes=b"\x89PNG", source_url="https://private.test/only-for-restoration"
             )
         )
-        assert _make_agent().build_react_prompt(before) == _make_agent().build_react_prompt(after)
+        assert (
+            await _make_agent().build_react_prompt(
+                before, context=ReactPromptContext(step=0, phase="policy")
+            )
+        ) == (
+            await _make_agent().build_react_prompt(
+                after, context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
 
     def test_has_required_react_slots(self) -> None:
         agent = _make_agent()
-        ReactLoop()._validate_slots(agent)  # Should not raise
+        ReactLoop().validate_slots(agent)  # Should not raise
 
     def test_legacy_methods_removed(self) -> None:
         agent = _make_agent()
@@ -194,7 +207,11 @@ class TestVerbTableAndWiringAgree:
 class TestPrepare:
     def test_prepare_returns_system_prompt_seed(self) -> None:
         agent = _make_agent()
-        seed = agent.prepare(task="t", action_descriptors=[])
+        seed = agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         assert isinstance(seed, list)
         assert len(seed) == 1
         assert isinstance(seed[0], SystemMessage)
@@ -203,14 +220,20 @@ class TestPrepare:
 
 
 class TestBuildReactPrompt:
-    def test_attaches_screenshot_when_present(self) -> None:
+    async def test_attaches_screenshot_when_present(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="click the search box", action_descriptors=[])
+        agent.prepare(
+            task="click the search box",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=b"\x89PNG\r\n\x1a\nFAKE"),
             task=_FakeTask(user_request="click the search box"),
         )
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         assert isinstance(messages, list)
         assert all(isinstance(m, BaseMessage) for m in messages)
         # Pure builder: a single new user message this step.
@@ -221,7 +244,7 @@ class TestBuildReactPrompt:
         assert isinstance(content, list)
         assert len(content) == 2
 
-    def test_the_image_is_labelled_from_its_own_bytes(self) -> None:
+    async def test_the_image_is_labelled_from_its_own_bytes(self) -> None:
         """A JPEG capture must not be shipped under a ``data:image/png`` prefix.
 
         ``screenshot_format: jpeg`` on the capability hands this agent JPEG
@@ -237,25 +260,37 @@ class TestBuildReactPrompt:
         Image.new("RGB", (1280, 720)).save(buffer, format="JPEG", quality=70)
 
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=buffer.getvalue()),
             task=_FakeTask(user_request="t"),
         )
-        content = agent.build_react_prompt(obs)[0].content
+        content = (
+            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
+        )[0].content
         assert isinstance(content, list)
         image = next(p for p in content if isinstance(p, ContentPartImageParam))
         assert image.image_url.url.startswith("data:image/jpeg;base64,")
         assert image.image_url.media_type == "image/jpeg"
 
-    def test_task_text_pulled_from_observation(self) -> None:
+    async def test_task_text_pulled_from_observation(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="ignored-old-value", action_descriptors=[])
+        agent.prepare(
+            task="ignored-old-value",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=b"\x89PNG"),
             task=_FakeTask(user_request="open settings menu"),
         )
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         content = messages[0].content
         assert isinstance(content, list)
         text_parts = [p for p in content if isinstance(p, ContentPartTextParam)]
@@ -263,11 +298,17 @@ class TestBuildReactPrompt:
         # Confirms task does NOT come from agent state (agent has no _task).
         assert not hasattr(agent, "_task")
 
-    def test_falls_back_to_text_when_no_screenshot(self) -> None:
+    async def test_falls_back_to_text_when_no_screenshot(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(task=_FakeTask(user_request="some task"))
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         assert len(messages) == 1
         assert isinstance(messages[0], UserMessage)
         content = messages[0].content
@@ -279,8 +320,8 @@ class TestBuildReactPrompt:
 class TestParseReactOutput:
     """Verb → action translation. Reply grammar lives in ``test_ui_tars_parser``."""
 
-    def test_parses_click_with_point_to_click_coordinate(self) -> None:
-        agent = _looking_at_screen()
+    async def test_parses_click_with_point_to_click_coordinate(self) -> None:
+        agent = await _looking_at_screen()
         text = "Thought: I need to click the search box.\nAction: click(point='(640, 360)')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
@@ -293,8 +334,8 @@ class TestParseReactOutput:
         assert action.params["coordinate_x"] == 640
         assert action.params["coordinate_y"] == 360
 
-    def test_parses_click_with_alternative_coordinate_format(self) -> None:
-        agent = _looking_at_screen()
+    async def test_parses_click_with_alternative_coordinate_format(self) -> None:
+        agent = await _looking_at_screen()
         text = "Action: click(point='100,200')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
@@ -313,7 +354,7 @@ class TestParseReactOutput:
         assert actions[0].params["extracted_content"] == "task complete"
         assert actions[0].params["success"] is True
 
-    def test_parses_type_to_the_executable_shape(self) -> None:
+    async def test_parses_type_to_the_executable_shape(self) -> None:
         """``type`` used to emit ``{content, point}`` and be 100% dead.
 
         ``TypeAction`` reads ``index`` (which a vision-only run has no
@@ -322,7 +363,7 @@ class TestParseReactOutput:
         'index'`` — and had an index been supplied it would have typed
         the empty string.
         """
-        agent = _looking_at_screen()
+        agent = await _looking_at_screen()
         text = "Action: type(content='hello world', point='(100, 100)')"
         actions = agent.parse_react_output(text)
         assert len(actions) == 1
@@ -333,18 +374,18 @@ class TestParseReactOutput:
             "text": "hello world",
         }
 
-    def test_type_without_a_point_is_a_loud_parse_error(self) -> None:
+    async def test_type_without_a_point_is_a_loud_parse_error(self) -> None:
         from spectragent.core.loops.errors import ParseError
 
-        agent = _looking_at_screen()
+        agent = await _looking_at_screen()
         with pytest.raises(ParseError, match=r"a point is missing; write point='\(x, y\)'"):
             agent.parse_react_output("Action: type(content='hello')")
 
-    def test_type_without_content_is_a_loud_parse_error(self) -> None:
+    async def test_type_without_content_is_a_loud_parse_error(self) -> None:
         """``clear_by_default`` would wipe the field and report success."""
         from spectragent.core.loops.errors import ParseError
 
-        agent = _looking_at_screen()
+        agent = await _looking_at_screen()
         with pytest.raises(ParseError, match="type needs content="):
             agent.parse_react_output("Action: type(point='(1, 2)')")
 
@@ -375,8 +416,8 @@ class TestParseReactOutput:
         with pytest.raises(ParseError, match="key and keys say the same thing; write only key"):
             agent.parse_react_output("Action: hotkey(key='ctrl+a', keys='ctrl+c')")
 
-    def test_drag_carries_both_endpoints(self) -> None:
-        agent = _looking_at_screen()
+    async def test_drag_carries_both_endpoints(self) -> None:
+        agent = await _looking_at_screen()
         actions = agent.parse_react_output("Action: drag(start_point='(1, 2)', end_point='(3, 4)')")
         assert actions[0].name == "drag"
         assert actions[0].params == {
@@ -444,13 +485,13 @@ class TestParseReactOutput:
         with pytest.raises(ParseError, match="No line starts with 'Action:'"):
             agent.parse_react_output(text)
 
-    def test_invalid_click_coordinate_raises_parse_error(self) -> None:
+    async def test_invalid_click_coordinate_raises_parse_error(self) -> None:
         # A click whose point does not parse is unexecutable, so it fails
         # at parse time naming the argument rather than reaching the
         # action and coming back as ``Missing param``.
         from spectragent.core.loops.errors import ParseError
 
-        agent = _looking_at_screen()
+        agent = await _looking_at_screen()
         text = "Action: click(point='invalid')"
         with pytest.raises(ParseError, match="not a coordinate"):
             agent.parse_react_output(text)

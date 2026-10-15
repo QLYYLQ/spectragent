@@ -59,6 +59,10 @@ from pydantic import Field as PydanticField
 
 from spectragent.agents._browser_platform import render_browser_platform
 from spectragent.agents._registrar import AgentBase
+from spectragent.agents.prompt_context import (
+    place_prompt_contributions,
+    restored_history_message,
+)
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -68,6 +72,7 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionDescriptor
 from spectragent.schemas.observation.geometry import (
     CoordinateSpace,
@@ -76,7 +81,7 @@ from spectragent.schemas.observation.geometry import (
     point_grid,
 )
 from spectragent.schemas.observation.image import image_media_type
-from spectragent.schemas.prompt import PromptSnapshot
+from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext, RestoredHistory
 
 # ── The verb vocabulary ──────────────────────────────────────
 
@@ -622,6 +627,8 @@ class UITarsAgent(AgentBase):
     # optional four are the rest of its native vocabulary, dropped from
     # both the prompt and the parser's reach when a capability does not
     # offer them.
+    __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react", "branch"]),
         "observation": {
@@ -714,7 +721,7 @@ class UITarsAgent(AgentBase):
         self,
         task: str,
         action_descriptors: list[ActionDescriptor],
-        max_actions_per_step: int = 1,
+        execution_limits: ExecutionLimits,
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
 
@@ -724,6 +731,9 @@ class UITarsAgent(AgentBase):
         ``max_actions_per_step`` comes from the Loop, which is what
         actually truncates; the prompt has to promise exactly that.
         """
+        max_actions_per_step = execution_limits.max_actions_per_step
+        if max_actions_per_step is None:
+            raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
         self._action_descriptors = list(action_descriptors)
         negotiated = {_local_id(d.name) for d in self._action_descriptors}
         self._verbs = {
@@ -739,7 +749,9 @@ class UITarsAgent(AgentBase):
 
     # ── ReactLoop slots ────────────────────────────────────────
 
-    def build_react_prompt(self, observation: Any) -> list[BaseMessage]:
+    async def build_react_prompt(
+        self, observation: Any, *, context: ReactPromptContext
+    ) -> list[BaseMessage]:
         """Pure builder: return the screenshot user-message for this step.
 
         UI-TARS is purely vision-driven, so the screenshot is always
@@ -780,11 +792,14 @@ class UITarsAgent(AgentBase):
 
         if screenshot is None or image_bytes is None:
             self._grid = None
-            return [
-                UserMessage(
-                    content=f"Task: {task_text}\n{platform_text}\n(no screenshot available)"
-                )
-            ]
+            return place_prompt_contributions(
+                [
+                    UserMessage(
+                        content=f"Task: {task_text}\n{platform_text}\n(no screenshot available)"
+                    )
+                ],
+                context=context,
+            )
 
         self._grid = point_grid(self.coordinate_space, screenshot)
         text = f"Task: {task_text}\n{platform_text}"
@@ -805,7 +820,25 @@ class UITarsAgent(AgentBase):
                 ),
             ),
         ]
-        return [UserMessage(content=content)]
+        return place_prompt_contributions([UserMessage(content=content)], context=context)
+
+    async def build_restored_history(
+        self,
+        observation: Any,
+        *,
+        history: RestoredHistory,
+        context: ReactPromptContext,
+    ) -> list[BaseMessage]:
+        """Keep the live screenshot grid and label restored CSS-pixel actions as facts."""
+        history.validate_execution()
+        messages = await self.build_react_prompt(observation, context=context)
+        restored = restored_history_message(history)
+        return [
+            *messages,
+            UserMessage(
+                content="Executed coordinate parameters use CSS viewport pixels. " + restored.text
+            ),
+        ]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
         """Read every ``Action:`` line of a reply into an executable Action.

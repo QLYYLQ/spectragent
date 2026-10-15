@@ -31,7 +31,9 @@ from spectragent.core.llm.messages import (
     UserMessage,
 )
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionDescriptor
+from spectragent.schemas.prompt import ReactPromptContext
 
 # ── Test fixtures ─────────────────────────────────────────────────────
 
@@ -143,7 +145,11 @@ def _make_agent(**overrides: Any) -> BrowserUseAgent:
 def _prepared(**overrides: Any) -> BrowserUseAgent:
     """An agent that has been through ``prepare()`` with a real action set."""
     agent = _make_agent(**overrides)
-    agent.prepare(task="t", action_descriptors=_descriptors())
+    agent.prepare(
+        task="t",
+        action_descriptors=_descriptors(),
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+    )
     return agent
 
 
@@ -160,7 +166,7 @@ class TestSlotConformance:
     def test_has_required_react_slots(self) -> None:
         agent = _make_agent()
         loop = ReactLoop()
-        loop._validate_slots(agent)  # Should not raise
+        loop.validate_slots(agent)  # Should not raise
 
     def test_legacy_execution_methods_removed(self) -> None:
         agent = _make_agent()
@@ -224,7 +230,11 @@ class TestPrepare:
     def test_prepare_returns_system_prompt_seed(self) -> None:
         agent = _make_agent()
         descriptors = _descriptors("browser.click")
-        seed = agent.prepare(task="navigate to example.com", action_descriptors=descriptors)
+        seed = agent.prepare(
+            task="navigate to example.com",
+            action_descriptors=descriptors,
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
 
         assert isinstance(seed, list)
         assert len(seed) == 1
@@ -237,7 +247,11 @@ class TestPrepare:
 
     def test_prepare_builds_prompt_snapshot(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         snapshot = agent.system_prompt
         assert snapshot is not None
 
@@ -246,15 +260,21 @@ class TestPrepare:
 
 
 class TestBuildReactPrompt:
-    def test_returns_only_new_step_messages(self) -> None:
+    async def test_returns_only_new_step_messages(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
 
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<html><body>hi</body></html>"),
             browser_meta=_FakeBrowserMeta(url="https://example.com", page_title="Example"),
         )
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
 
         assert isinstance(messages, list)
         assert all(isinstance(m, BaseMessage) for m in messages)
@@ -262,15 +282,21 @@ class TestBuildReactPrompt:
         assert len(messages) == 1
         assert isinstance(messages[0], UserMessage)
 
-    def test_observation_contains_url_and_dom(self) -> None:
+    async def test_observation_contains_url_and_dom(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             dom=_FakeDOM(element_tree="<DOM>tree</DOM>"),
             browser_meta=_FakeBrowserMeta(url="https://example.com", page_title="Example"),
             task=_FakeTask(user_request="navigate to example.com"),
         )
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         assert len(messages) == 1
         content = messages[0].content
         assert isinstance(content, str)
@@ -278,46 +304,65 @@ class TestBuildReactPrompt:
         assert "Example" in content
         assert "<DOM>tree</DOM>" in content
 
-    def test_dom_text_reaches_the_model_after_the_old_agent_cutoff(self) -> None:
+    async def test_dom_text_reaches_the_model_after_the_old_agent_cutoff(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         tail = "[173]<button>Reachable at the end</button>"
         state = DOMState(serialized_dom="x" * 10_100 + tail)
-        content = agent.build_react_prompt(_FakeObservation(dom=_FakeDOM(element_tree=state)))[
-            0
-        ].content
+        content = (
+            await agent.build_react_prompt(
+                _FakeObservation(dom=_FakeDOM(element_tree=state)),
+                context=ReactPromptContext(step=0, phase="policy"),
+            )
+        )[0].content
 
         assert isinstance(content, str)
         assert tail in content
         assert "... (truncated)" not in content
 
-    def test_user_request_present_in_user_message(self) -> None:
+    async def test_user_request_present_in_user_message(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             task=_FakeTask(user_request="book a flight to Tokyo"),
             browser_meta=_FakeBrowserMeta(url="https://airline.example"),
         )
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         content = messages[0].content
         assert isinstance(content, str)
         assert "<user_request>" in content
         assert "book a flight to Tokyo" in content
         assert messages[0].cache is True
 
-    def test_step_info_block_when_present(self) -> None:
+    async def test_step_info_block_when_present(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             task=_FakeTask(user_request="x"),
             step_info=_FakeStepInfo(step=4, max_steps=20, today="2026-05-01"),
         )
-        content = agent.build_react_prompt(obs)[0].content
+        content = (
+            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
+        )[0].content
         assert isinstance(content, str)
         assert "<step_info>" in content
         assert "step 4/20" in content
 
-    def test_history_renders_step_blocks(self) -> None:
+    async def test_history_renders_step_blocks(self) -> None:
         from spectragent.schemas.action import ActionResult
         from spectragent.schemas.step_record import StepRecord
 
@@ -328,22 +373,34 @@ class TestBuildReactPrompt:
             action_results=[ActionResult(success=True)],
         )
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             task=_FakeTask(user_request="x"),
             history=_FakeHistory(items=[rec]),
         )
-        content = agent.build_react_prompt(obs)[0].content
+        content = (
+            await agent.build_react_prompt(obs, context=ReactPromptContext(step=0, phase="policy"))
+        )[0].content
         assert isinstance(content, str)
         assert "<step_1>" in content
         assert "browser.click" in content
 
-    def test_handles_minimal_observation(self) -> None:
+    async def test_handles_minimal_observation(self) -> None:
         agent = _make_agent()
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         # Only the required task fragment; no DOM / browser_meta / etc.
         obs = _FakeObservation(task=_FakeTask(user_request="hello"))
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         assert len(messages) == 1
         content = messages[0].content
         assert isinstance(content, str)
@@ -351,25 +408,37 @@ class TestBuildReactPrompt:
         assert "hello" in content
         assert "(empty browser state)" in content
 
-    def test_a_vision_mode_attaches_the_screenshot_when_present(self) -> None:
+    async def test_a_vision_mode_attaches_the_screenshot_when_present(self) -> None:
         agent = _make_agent(observation_mode="dom_vision")
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(
             screenshot=_FakeScreenshot(image_bytes=b"\x89PNG\r\n\x1a\nfake"),
             task=_FakeTask(user_request="vision task"),
         )
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         assert len(messages) == 1
         # Multi-modal content should be a list (text + image)
         content = messages[0].content
         assert isinstance(content, list)
         assert len(content) == 2
 
-    def test_a_vision_mode_with_no_screenshot_falls_back_to_text(self) -> None:
+    async def test_a_vision_mode_with_no_screenshot_falls_back_to_text(self) -> None:
         agent = _make_agent(observation_mode="dom_vision")
-        agent.prepare(task="t", action_descriptors=_descriptors())
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors(),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         obs = _FakeObservation(task=_FakeTask(user_request="x"))  # no screenshot
-        messages = agent.build_react_prompt(obs)
+        messages = await agent.build_react_prompt(
+            obs, context=ReactPromptContext(step=0, phase="policy")
+        )
         assert len(messages) == 1
         # Text content (the fallback path)
         assert isinstance(messages[0].content, str)
@@ -497,7 +566,11 @@ class TestOutputModel:
         # Built per run: a second prepare with a different verb set gives a
         # different model, which is the point of building it from the
         # negotiated descriptors rather than from the class.
-        agent.prepare(task="t", action_descriptors=_descriptors("browser.done"))
+        agent.prepare(
+            task="t",
+            action_descriptors=_descriptors("browser.done"),
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         assert agent.get_react_output_model() is not model
 
 

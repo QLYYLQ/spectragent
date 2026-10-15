@@ -209,7 +209,7 @@ agent_loop:
   max_steps: 30
   max_actions_per_step: 1          # 必须与源 run 相同
   continue_steps: 0                # 0：只决定第 t 步；N：之后再走 N 个 ReAct 步
-  branch_instruction: none         # prefer_different_action：第 t 步多给 teacher 一条固定指令，见下面"teacher 采样"
+  history_source: source          # source 精确原对话；restored 使用本次恢复事实
   restorer:
     restorer_id: prefix_replay
     verify: strict                 # warn：记下不通过的检查，继续
@@ -222,9 +222,9 @@ agent_loop:
 一个分叉 run 按这个顺序执行：
 
 1. 开跑前对照源 trace：`agent_id`、闭集的 agent 旋钮（`prompt_template`、`coordinate_space`……）、memory、观测与动作的协商结果都要相同，源 loop 必须是 `react`，源 run 本身不能是分叉 run。不符就抛 `IncompatibleCheckpointError`，点名两边的值。teacher 的模型和采样参数可以与源 run 不同。
-2. 从源 trace 重建第 t 步之前的上下文，teacher 看到的与源 agent 当时看到的相同。录下的每一次模型回复都过一遍 agent 的解析器，并与记录核对。
+2. `history_source: source` 从源 trace 精确重建第 t 步之前的上下文；仅主决策回复及其解析重试经过 Agent 解析器，helper 不参与。`restored` 在恢复每步后通过 Agent 的公开合同构建实际历史，不重新生成源回复。
 3. 浏览器回放源 run 的归档，`prefix_replay` 逐步重新执行录下的动作（元素 index 按位置和签名重新找到，tab id 按顺序和 URL 映射），并校验每一步。恢复出的步记成 `origin: restored`，带这一步的 `restoration` 检查。第 t 步（检查点）的观测也要校验，结果记在第 t 步的策略步上；strict 下它不通过时 teacher 不会被调用。
-4. 配了 `branch_instruction` 时，先把那条指令写进对话；然后第 t 步和之后的 `continue_steps` 步由 teacher 决定（`origin: policy`），最后再观测一次（`origin: terminal`）。
+4. 配了 `prompt_contribution` hook 时，经 Agent 的公开异步提示入口生成附加贡献；第 t 步和之后的 `continue_steps` 步由 teacher 决定（`origin: policy`），最后再观测一次（`origin: terminal`）。
 
 `verify: strict` 下第一个不通过的检查就结束 run：记一条 `error_phase: restore` 的恢复步，结果是 `agent_done=error`、`env_status=failed`，`error` 点名 `RestorationDivergedError`。`warn` 只把检查结果写进那一步，继续往下走。每个分叉是独立的任务，重新组装、启动新的浏览器和新的 profile，分叉之间不共享状态。一个分叉的策略步数是 `1 + continue_steps`（不超过 `max_steps`），每个策略步至少调用一次模型；`AgentMetrics.steps` 只数策略步。
 
@@ -240,21 +240,20 @@ for record in RunTrace(Path("traces/branches/<run>")).step_records:
 
 同一个检查点的几个分叉输入完全相同：同一个源、同一个检查点、同一份任务和环境。分支编号只记进 trace，teacher 看不到，所以分叉之间的差别全靠采样。发布的分叉配置因此把 teacher 的 `temperature` 设成 0.8（录制配置没写，用的是 openai 的默认值 0.2），每步分 3 个（`branches_per_step: 3`）。原路径回放配置不变，用录制时的模型和默认温度：分叉不要求 teacher 与源 run 不同。温度原样记在分叉 run 的 `config.json`（`resolved.agent[0].llm.temperature`）。分得够不够散，看度量报告的重复分叉率：同一个检查点上执行了相同动作的分叉占比。
 
-`branch_instruction` 在第 t 步多给 teacher 一条固定指令，取值是一个闭集：
+`history_source: source` 默认严格重建源对话，使用源观测、原贡献及其位置，并逐次验证 Agent 主决策 prompt。`history_source: restored` 改用本次恢复的观测、实际 retarget 后动作及完整结果，通过 Agent 的公开历史方法构建消息。两者与恢复器的 `verify: strict | warn` 独立；第一策略步始终使用恢复后的 live 检查点观测，不为验证再拍一次。恢复步骤的旧回复位于 `source_history`，不能当成本次新 thought；`actions` / `action_results` 则描述本次恢复执行。
 
-| `branch_instruction` | 第 t 步多出的消息 |
-|---|---|
-| `none`（默认） | 没有 |
-| `prefer_different_action` | 引用源 run 在第 t 步的回复，请 teacher 在另一个动作同样推进任务时选那个动作 |
+提示干预通过显式 `prompt_contribution` hook 配置，函数使用可导入的稳定引用，签名为 `def contribution(*, request: PromptRequest)` 或同签名 `async def`，返回字符串或 `PromptContribution`。Agent 决定贡献放在 system 或当前轮次，Hook 不写 memory。
 
-这条消息在前缀重建并校验、环境恢复之后写进对话，排在第 t 步的观测之前，只写一次；继续步把它当作历史看到。源 run 在第 t 步没有录下动作（回复没解析成，或那次模型调用失败）时不写。取值原样记在 `config.json` 的 `resolved.agent[0].agent_loop.branch_instruction`，指令的原文在第 t 步录下的模型调用里：
-
-```python
-trace = RunTrace(Path("traces/branches/<run>"))
-t = trace.config.branch.checkpoint_step
-for message in trace.llm_messages(t)[0].messages[-3:]:   # 上一步的回复、指令、第 t 步的观测
-    print(message.role, message.text[:300])
+```yaml
+hook:
+  - hook_id: prompt_contribution
+    function: my_experiment.prompts:contribution
+    parameters: {instruction: "Consider another useful next action."}
+    scope: first_policy_step      # 默认：仅分叉首个策略步；each_policy_step 每个策略步
+    helper_llms: []               # 可配置一个独立的 LLM，函数从 request.helper 调用
 ```
+
+函数/参数/范围及 helper 配置是实验身份；正文按统一记录计划决定是否保留。完整轨迹保存实际 `prompt_contributions`，重建历史只读这些事实，不再次执行函数或 helper。解析重试复用该步已经生成的贡献。helper 调用按 `purpose=prompt_helper` 记录，用量计入实验合计，不能作为 Agent 主回复、思考或 teacher thought。函数失败和取消属于执行失败。
 
 要注意的：
 

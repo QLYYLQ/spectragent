@@ -36,7 +36,7 @@ measure  spectragent flywheel run | report      a chain spec, not a run YAML
 | Archive axis | `ArchiverRegistrar`, the `ArchivingCapability` and `ArchiveConsumer` Protocols, `ArchiveFile` / `ArchiveBatch`, the shared privacy rules and ledger, the replay read side (`ArchiveReader`, `open_archive`) | `core/archive/` |
 | Negotiation and runtime | `negotiate_archive` (right after memory negotiation), `bind_archivers` as the last step of `prepare()` on the raw environment, `seed_messages`, typed Loop inputs, the branch provenance handed to the trace | `core/negotiation/archive.py`, `core/runtime.py` |
 | Trace hook, WAL, reader | The demand side (`trace_writer.archive`), pulling `collect_archive()` at its own commit points, step attribution, the `env/` subtree, run-record versions, failing closed; reading back only through the manifest | `core/hooks/trace_writer.py`, `core/trace/` |
-| Loop | `BranchLoop` (context rebuilt from the source trace, restore, the step-*t* `branch_instruction`, policy step, `continue_steps`, terminal observation), the restorer axis, per-run state (`LoopRun`), loop-fragment builders, the recorded-observation readers the export shares | `core/loops/branch.py`, `core/loops/restore/`, `core/loops/run.py`, `core/loops/_loop_fragments.py` |
+| Loop | `BranchLoop` (source/restored history, environment restore, explicit prompt contribution hook, policy step, `continue_steps`, terminal observation), the restorer axis, per-run state (`LoopRun`), loop-fragment builders, the recorded-observation readers the export shares | `core/loops/branch.py`, `core/loops/restore/`, `core/loops/run.py`, `core/loops/_loop_fragments.py` |
 | Task loading | The `trace_branches` loader, the step-selector axis, `RequireEval` | `core/data_loader/task/` |
 | Export | `ExportRunner`, the exporter and translator axes, the student renderer, validation, split, benchmark loaders | `spectragent/export/` |
 | Flywheel | The chain, the metrics, the report and `spectragent flywheel`; a package, not a registry | `spectragent/flywheel/` |
@@ -346,7 +346,7 @@ agent:
       max_actions_per_step: 1          # must equal the source's; checked at assembly
       continue_steps: 0                # ReAct steps after the policy step
       terminal_observation: true       # the branch default
-      branch_instruction: none         # prefer_different_action: one fixed message at step t
+      history_source: source          # or restored, independent of strict/warn
       restorer:
         restorer_id: prefix_replay
         verify: strict                 # warn: record failed checks and go on
@@ -400,18 +400,19 @@ uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml -
   `branches_per_step: 3`; the same-path config keeps the recording's model and default
   temperature, and nothing requires the teacher to differ from the source. The metrics
   report's duplicate-branch rate says whether the spread is enough.
-- `branch_instruction` (closed set, default `none`, recorded raw in `config.json`):
-  `prefer_different_action` writes one `[SYSTEM]` user message into memory after the prefix
-  was rebuilt and verified and the environment restored, just before step *t*'s
-  observation. It quotes the source's reply at *t* (`StepRecord.llm_output`, the agent's
-  own syntax and grid; the recorded `Action` is in capability units) and asks for a
-  different action that also moves the task forward. Written once (continue steps see it
-  as history), never compared (nothing checks step *t*'s context), and skipped when the
-  source recorded no action at *t*. The text sits in step *t*'s recorded model call. A new
-  option is a new `Literal` value plus its text in `branch.py::BRANCH_INSTRUCTIONS` (a test
-  holds the two together); a per-branch hint would need the branch index as a Loop input,
-  deferred until live data shows many duplicate branches. Watch for model-dependent
-  coordinate drift at high temperature (runbook, "teacher 采样").
+- `history_source: source` reconstructs and compares the exact recorded decision prompts;
+  only `purpose=agent_decision` calls pass through the parser. `restored` instead uses
+  actual observations, retargeted actions and results through the Agent's public async
+  `build_restored_history` contract. Missing results or unsupported history are errors
+  regardless of `verify: warn`. Both decide on the live restored checkpoint observation.
+- Explicit `prompt_contribution` hooks wrap the async `build_react_prompt` slot. A stable
+  Python function receives `PromptRequest`, optionally uses its wired helper, and returns
+  text or `PromptContribution`; the Agent owns system/turn placement. The default scope
+  generates once at a branch's first policy step; each-policy-step mode still reuses the
+  same contribution for parse retries. History reads recorded contributions and never
+  regenerates them. Helper calls carry `purpose=prompt_helper`, count toward experiment
+  usage, and never become Agent replies or teacher thoughts. Code references, parameters,
+  scope and helper configuration are experimental inputs, not recorder settings.
 - `trace_branches` has no eval loader: pass `--no-eval`. A configured evaluator is refused
   before the sweep starts.
 - Write branch runs outside the sources glob; the shipped file sets the trace writer's

@@ -32,17 +32,20 @@ from pydantic import BaseModel, Field
 
 from spectragent.agents.memory.simple import SimpleMemory
 from spectragent.agents.memory.sliding_window import SlidingWindowMemory
+from spectragent.agents.prompt_context import place_prompt_contributions
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.hooks.trace_writer import TraceWriter
-from spectragent.core.llm.messages import SystemMessage, UserMessage
+from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 from spectragent.core.loops import BranchLoop, ReactLoop
 from spectragent.core.loops.errors import ParseError, RunAbort
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import (
     BranchProvenance,
     Checkpoint,
@@ -197,6 +200,7 @@ class BranchFakeAgent:
     """
 
     agent_id = FAKE_AGENT_ID
+    __execution_limit_fields__ = frozenset({"max_actions_per_step"})
     __wiring__: ClassVar[dict[str, Any]] = {
         "observation": ("observation", ["page", "task"], ["step_info", "history", "action_result"]),
         "action": ("action", ["click", "done"]),
@@ -214,8 +218,13 @@ class BranchFakeAgent:
         self.prompts = 0
 
     def prepare(
-        self, task: str, action_descriptors: list[ActionDescriptor], max_actions_per_step: int = 1
+        self,
+        task: str,
+        action_descriptors: list[ActionDescriptor],
+        *,
+        execution_limits: ExecutionLimits,
     ) -> list[Any]:
+        max_actions_per_step = execution_limits.max_actions_per_step
         self.parsed_log = []
         names = ", ".join(sorted(d.name for d in action_descriptors))
         return [
@@ -227,12 +236,12 @@ class BranchFakeAgent:
             )
         ]
 
-    def build_react_prompt(self, obs: Any) -> list[Any]:
+    async def build_react_prompt(self, obs: Any, *, context: ReactPromptContext) -> list[Any]:
         self.prompts += 1
         info = obs.step_info
         history = [[a.name for a in item.actions] for item in obs.history.items]
         last = obs.action_result
-        return [
+        messages: list[BaseMessage] = [
             UserMessage(
                 content=(
                     f"step {info.step}/{info.max_steps} {info.today} | {obs.page.url} "
@@ -241,6 +250,25 @@ class BranchFakeAgent:
                 )
             )
         ]
+        return place_prompt_contributions(messages, context=context)
+
+    async def build_restored_history(
+        self, observation: Any, *, history: RestoredHistory, context: ReactPromptContext
+    ) -> list[Any]:
+        history.validate_execution()
+        messages = await self.build_react_prompt(observation, context=context)
+        self.parsed_log.extend(
+            f"restored {action.name}({action.params})" for action in history.actions
+        )
+        messages.append(
+            UserMessage(
+                content=(
+                    f"[restored] {history.actions!r}; results={history.results!r}; "
+                    f"[source {history.source_run_id} step {history.source_step}] {history.source_reply}"
+                )
+            )
+        )
+        return messages
 
     def get_react_output_model(self) -> type[BaseModel] | None:
         return Reply if self.structured else None
@@ -269,6 +297,9 @@ class ScriptedLLM:
     """
 
     model = "scripted-teacher"
+    model_type = "scripted"
+    provider = "test"
+    name = "scripted teacher"
 
     #: What every reply is billed: a source with real token counts, so a
     #: restored copy of its steps can be seen not to carry them.
@@ -284,6 +315,11 @@ class ScriptedLLM:
     def __init__(self, replies: Sequence[Any]) -> None:
         self.replies = list(replies)
         self.prompts: list[list[Any]] = []
+        self.closed = 0
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple:
+        self.closed += 1
+        return ()
 
     async def ainvoke(self, messages: Any, output_format: Any = None, **kwargs: Any) -> Any:
         self.prompts.append(list(messages))
@@ -353,6 +389,7 @@ def build_run(
     window: int = 4,
     config_agent_id: str = FAKE_AGENT_ID,
     env_cls: type[EnvironmentBase] = BranchFakeEnv,
+    extra_hooks: Sequence[Any] = (),
 ) -> tuple[Any, TraceWriter, ScriptedLLM]:
     """One composed stack on the fake site — what a Composer would build — and its writer and teacher.
 
@@ -368,7 +405,7 @@ def build_run(
         env=make_env(env_cls, {CAP_ID: cap}),
         llm=llm,
         memory=memory_strategy,
-        hooks=[writer],
+        hooks=[writer, *extra_hooks],
     )
     config = FakeConfig(
         agent=[
@@ -411,6 +448,7 @@ async def _drive(
     env_cls: type[EnvironmentBase] = BranchFakeEnv,
     env_context: dict[str, Any] | None = None,
     action_filter: list[str] | None = None,
+    extra_hooks: Sequence[Any] = (),
 ) -> BranchRunOutcome:
     run, writer, llm = build_run(
         trace_root,
@@ -422,6 +460,7 @@ async def _drive(
         window=window,
         config_agent_id=config_agent_id,
         env_cls=env_cls,
+        extra_hooks=extra_hooks,
     )
     outcome = BranchRunOutcome(result=None, run_dir=None, llm=llm, cap=cap, agent=agent)
     try:
@@ -456,6 +495,7 @@ async def record_source(
     branch: BranchProvenance | None = None,
     env_context: dict[str, Any] | None = None,
     action_filter: list[str] | None = None,
+    extra_hooks: Sequence[Any] = (),
 ) -> Path:
     """Run the fake agent through the real runtime and trace writer; return the run dir.
 
@@ -477,6 +517,7 @@ async def record_source(
         branch=branch,
         env_context=env_context,
         action_filter=action_filter,
+        extra_hooks=extra_hooks,
     )
     assert outcome.run_dir is not None
     return outcome.run_dir
@@ -499,6 +540,7 @@ async def run_branch(
     raise_on_error: bool = True,
     env_cls: type[EnvironmentBase] = BranchFakeEnv,
     action_filter: list[str] | None = None,
+    extra_hooks: Sequence[Any] = (),
 ) -> BranchRunOutcome:
     """Branch *source* at *step* with a scripted teacher."""
     return await _drive(
@@ -517,4 +559,5 @@ async def run_branch(
         raise_on_error=raise_on_error,
         env_cls=env_cls,
         action_filter=action_filter,
+        extra_hooks=extra_hooks,
     )

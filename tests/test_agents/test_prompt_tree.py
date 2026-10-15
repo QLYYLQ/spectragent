@@ -39,6 +39,7 @@ from spectragent.agents.prompts import (
     load_prompt,
     template_variables,
 )
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.prompts import PROMPT_PATH, PromptNotFoundError
 
 
@@ -61,10 +62,18 @@ _PREPARE_KWARGS: dict[str, dict[str, Any]] = {
     "browser_use": {
         "task": "t",
         "action_descriptors": _descriptors("browser.navigate", "browser.done"),
-        "max_actions_per_step": 3,
+        "execution_limits": ExecutionLimits(max_actions_per_step=3),
     },
-    "skyvern": {"task": "t", "action_descriptors": [], "max_actions_per_step": 3},
-    "ui_tars": {"task": "t", "action_descriptors": [], "max_actions_per_step": 3},
+    "skyvern": {
+        "task": "t",
+        "action_descriptors": [],
+        "execution_limits": ExecutionLimits(max_actions_per_step=3),
+    },
+    "ui_tars": {
+        "task": "t",
+        "action_descriptors": [],
+        "execution_limits": ExecutionLimits(max_actions_per_step=3),
+    },
 }
 
 #: Every ``(agent_id, kwargs)`` that reaches a *distinct* template. For

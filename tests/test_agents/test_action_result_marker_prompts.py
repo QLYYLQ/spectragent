@@ -24,9 +24,11 @@ from spectragent.core.capabilities.browser.observations import (
     ScreenshotObs,
 )
 from spectragent.core.loops._loop_fragments import last_action_result_obs, loop_fragment_builders
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation._registrar import fragment_field_name
+from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 from tests._helpers.assembly import make_agent
 
@@ -100,24 +102,30 @@ def _prepared(agent_id: str) -> Any:
     descriptors = [
         a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
     ]
-    agent.prepare(task="log in", action_descriptors=descriptors)
+    agent.prepare(
+        task="log in",
+        action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+    )
     return agent
 
 
-def _prompt(agent_id: str, marker: bool | None) -> list[dict[str, Any]]:
-    messages = _prepared(agent_id).build_react_prompt(_observation(marker))
+async def _prompt(agent_id: str, marker: bool | None) -> list[dict[str, Any]]:
+    messages = await _prepared(agent_id).build_react_prompt(
+        _observation(marker), context=ReactPromptContext(step=0, phase="policy")
+    )
     return [message.model_dump() for message in messages]
 
 
 @pytest.mark.parametrize("agent_id", sorted(_AGENTS))
-def test_the_marker_never_changes_a_prompt(agent_id: str) -> None:
-    unset, unsensitive, sensitive = (_prompt(agent_id, marker) for marker in _MARKERS)
+async def test_the_marker_never_changes_a_prompt(agent_id: str) -> None:
+    unset, unsensitive, sensitive = [await _prompt(agent_id, marker) for marker in _MARKERS]
     assert sensitive == unsensitive == unset
 
 
-def test_the_history_the_comparison_relies_on_is_rendered() -> None:
+async def test_the_history_the_comparison_relies_on_is_rendered() -> None:
     """BrowserUse shows the typed step and its result: the comparison above is not vacuous."""
-    text = repr(_prompt("browser_use", True))
+    text = repr(await _prompt("browser_use", True))
     assert "browser.type" in text and "ok=True" in text
 
 

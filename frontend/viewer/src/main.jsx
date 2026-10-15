@@ -580,14 +580,17 @@ function RunList({ revision, selected, setSelected, workspace }) {
                           </small>
                         </td>
                         <td className="numeric">
-                          {number(row.tokens)}
+                          {row.usage_measured === false ? "Not measured" : number(row.tokens)}
+                          {row.usage_measured && row.usage_complete === false && (
+                            <small className="warn-text">Known subtotal</small>
+                          )}
                           {row.usage_missing > 0 && (
                             <small className="warn-text">
                               {row.usage_missing} unknown
                             </small>
                           )}
                         </td>
-                        <td className="numeric">{duration(row.duration_ms)}</td>
+                        <td className="numeric">{duration(row.execution_ms)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -694,7 +697,7 @@ function Calls({ calls, schemas = {} }) {
         >
           <div className="section-heading">
             <h3>
-              Call {call.call ?? index}
+              {call.purpose === "prompt_helper" ? "Prompt helper" : "Agent decision"} {call.call ?? index}
               <span className="muted small"> · step {call.step}</span>
             </h3>
             <div className="inline">
@@ -702,6 +705,10 @@ function Calls({ calls, schemas = {} }) {
               <span className="small mono">{duration(call.latency_ms)}</span>
             </div>
           </div>
+          <p className="muted small">
+            Caller: {call.caller || "Unknown"} · Model: {call.model || "Unknown"}
+            {call.purpose === "prompt_helper" && " · External prompt generation; this is not the Agent's thought."}
+          </p>
           {call.failure && (
             <div className="notice error">
               <strong>{call.failure.error || "Model call failed"}</strong>
@@ -787,10 +794,14 @@ function StepActions({ record }) {
           <div className="notice">
             <strong>Restored step</strong>
             <p>
-              Current execution is recorded by the restoration check. The source
-              actions, results, and model output below are copied history.
+              These actions and results describe this run's restored execution.
+              The source material below retains the earlier decision separately;
+              restoration did not generate a new Agent reply or thought.
             </p>
           </div>
+          {record.source_history && (
+            <JsonPanel title="Source material and restoration correspondence" value={record.source_history} />
+          )}
           {check ? (
             <section>
               <div className="section-heading">
@@ -858,16 +869,16 @@ function StepActions({ record }) {
       {record.truncated_actions > 0 && (
         <div className="notice">
           {record.truncated_actions} model-emitted actions were discarded{" "}
-          {restored ? "in the copied source step" : "by the action limit"}.
+          by the action limit.
         </div>
       )}
       <JsonPanel
-        title={restored ? "Source actions (copied)" : "Actions"}
+        title={restored ? "Executed restored actions" : "Actions"}
         value={record.actions}
         initialOpen={!restored}
       />
       <JsonPanel
-        title={restored ? "Source action results (copied)" : "Action results"}
+        title={restored ? "Actual restored results" : "Action results"}
         value={record.action_results}
         initialOpen={!restored}
       />
@@ -899,7 +910,11 @@ function StepDetail({ runKey, index, revision }) {
                 <Badge value={step.record.origin} />
                 <span className="muted small">
                   {duration(step.record.duration_ms)} ·{" "}
-                  {number(step.calls.length)} model calls
+                  {step.recording.metrics
+                    ? `${number(step.call_metrics.length)} model calls`
+                    : "Model calls not measured"}
+                  {step.record.recording_ms != null &&
+                    ` · recording ${duration(step.record.recording_ms)}`}
                 </span>
               </div>
             </div>
@@ -922,9 +937,9 @@ function StepDetail({ runKey, index, revision }) {
                 "actions",
                 step.record.origin === "restored"
                   ? "Restoration actions"
-                  : `Actions (${step.record.actions?.length || 0})`,
+                  : step.recording.trajectory ? `Actions (${step.record.actions?.length || 0})` : "Actions (not recorded)",
               ],
-              ["calls", `Model calls (${step.calls.length})`],
+              ["calls", step.recording.metrics ? `Model calls (${step.call_metrics.length})` : "Model calls"],
               ["archive", `Archive (${step.archive.length})`],
             ].map(([key, label]) => (
               <button
@@ -944,13 +959,15 @@ function StepDetail({ runKey, index, revision }) {
               )}
               <p className="observation-summary">
                 {step.record.origin === "restored" && (
-                  <strong>Source observation summary (copied): </strong>
+                  <strong>Restored observation: </strong>
                 )}
                 {step.record.observation_summary}
               </p>
               {!Object.keys(step.fragments).length && (
                 <Empty title="No observation fragments">
-                  This step has no committed observation fragments.
+                  {step.recording.observations
+                    ? "This step has no committed observation fragments."
+                    : "The recording plan did not select observations."}
                 </Empty>
               )}
               {Object.entries(step.fragments).map(([name, fragment]) => (
@@ -967,12 +984,19 @@ function StepDetail({ runKey, index, revision }) {
           )}
           {tab === "actions" && (
             <>
-              <StepActions record={step.record} />
+              {step.recording.trajectory
+                ? <StepActions record={step.record} />
+                : <Empty title="Actions not recorded">The recording plan did not select the agent trajectory.</Empty>}
               <JsonPanel title="Step record" value={step.record} />
             </>
           )}
           {tab === "calls" && (
-            <Calls calls={step.calls} schemas={step.output_schemas} />
+            step.recording.trajectory
+              ? <Calls calls={step.calls} schemas={step.output_schemas} />
+              : <>
+                  <Empty title="Model inputs and replies not recorded">The recording plan did not select the agent trajectory.</Empty>
+                  <JsonPanel title="Call metrics and errors" value={step.call_metrics} initialOpen />
+                </>
           )}
           {tab === "archive" && (
             <>
@@ -1032,7 +1056,7 @@ function Trajectory({ run, route, revision }) {
                 </span>
               )}
             </div>
-            <span className="action-name">{actionLabel(step)}</span>
+            <span className="action-name">{run.config.recording.trajectory ? actionLabel(step) : "Actions not recorded"}</span>
             <span className="muted small">
               {duration(step.duration_ms)}
               {step.call_count ? ` · ${step.call_count} calls` : ""}
@@ -1389,12 +1413,14 @@ function RunDetail({ route, revision }) {
               <span>{text(run.summary.model)}</span>
               <span>{number(run.summary.policy_steps)} policy steps</span>
               <span>
-                {number(run.summary.tokens)} tokens
+                {run.summary.usage_measured === false
+                  ? "Tokens not measured"
+                  : `${number(run.summary.tokens)} tokens${run.summary.usage_complete === false ? " · known subtotal" : ""}`}
                 {run.summary.usage_missing > 0
                   ? ` · ${run.summary.usage_missing} calls without usage`
                   : ""}
               </span>
-              <span>{duration(run.summary.duration_ms)}</span>
+              <span>{duration(run.summary.execution_ms)}</span>
             </div>
             {run.manifest.incomplete_reason && (
               <div className="notice error">
@@ -1648,7 +1674,7 @@ function EvidenceColumn({ summary, revision }) {
               >
                 {data.steps.map((item) => (
                   <option key={item.step} value={item.step}>
-                    {item.step} · {item.origin} · {actionLabel(item)}
+                    {item.step} · {item.origin} · {data.config.recording.trajectory ? actionLabel(item) : "Actions not recorded"}
                   </option>
                 ))}
               </select>
@@ -1673,7 +1699,7 @@ function EvidenceColumn({ summary, revision }) {
               ) : (
                 <div className="empty">
                   <Icon name="image" />
-                  <p>No committed screenshot</p>
+                  <p>{data.recording.observations ? "No committed screenshot" : "Observations not selected"}</p>
                 </div>
               )}
               <StepActions record={data.record} />
@@ -1793,7 +1819,7 @@ function Compare({ route, revision }) {
                       ["Total steps", "total_steps"],
                       ["Tokens", "tokens"],
                       ["Calls without usage", "usage_missing"],
-                      ["Duration", "duration_ms"],
+                      ["Execution time", "execution_ms"],
                     ].map(([label, key]) => (
                       <tr key={key}>
                         <th>{label}</th>
@@ -1805,7 +1831,7 @@ function Compare({ route, revision }) {
                               "trace_status",
                             ].includes(key) ? (
                               <Badge value={run[key]} />
-                            ) : key === "duration_ms" ? (
+                            ) : key === "execution_ms" ? (
                               duration(run[key])
                             ) : (
                               text(run[key])

@@ -26,7 +26,7 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from spectragent.schemas.action import Action
+from spectragent.schemas.action import Action, ActionResult
 
 #: Why a restored step did not pass. The order of the literal is also the
 #: order the reasons are reported in (``RestorationCheck.reasons``), so the
@@ -123,6 +123,7 @@ class RestoredAction(BaseModel):
     failure: RetargetFailure | None = None
     detail: str = ""
     recorded_success: bool | None
+    result: ActionResult | None = None
     live_success: bool | None = None
     live_error: str | None = None
 

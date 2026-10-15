@@ -38,6 +38,7 @@ from spectragent.core.action_guard import build_guarded_act
 from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import negotiate_action, negotiate_observation
 from tests._helpers.assembly import make_agent, make_env
@@ -133,11 +134,20 @@ def _run(mode: str, config: dict[str, Any]) -> tuple[BrowserUseAgent, str, set[s
     descriptors = env.get_action_space(
         active_actions=actions.active_actions, fragments=obs.active_fragments
     )
-    descriptors, guard = build_guarded_act(
+    action_space, guard = build_guarded_act(
         env.act, descriptors, None, bindings=actions.action_bindings
     )
-    agent.prepare(task="t", action_descriptors=descriptors)
-    return agent, agent._system_prompt_text, {d.name for d in descriptors}, descriptors
+    agent.prepare(
+        task="t",
+        action_descriptors=action_space.descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+    )
+    return (
+        agent,
+        agent._system_prompt_text,
+        {d.name for d in action_space.descriptors},
+        action_space.descriptors,
+    )
 
 
 _IDS = [f"{mode}-{sorted(config.items())}" for mode, config in _CONFIGURATIONS]
@@ -253,6 +263,7 @@ def test_the_coordinate_paragraph_follows_the_configured_grid() -> None:
         action_descriptors=env.get_action_space(
             active_actions=actions.active_actions, fragments=obs.active_fragments
         ),
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
     )
     assert "0-1000 grid" in agent._system_prompt_text
 

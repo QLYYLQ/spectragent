@@ -29,8 +29,10 @@ from spectragent.core.capabilities.browser.observations import (
 )
 from spectragent.core.capabilities.browser.tabs import FocusMove
 from spectragent.core.loops._loop_fragments import loop_fragment_builders
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import negotiate_action
 from spectragent.schemas.observation._registrar import fragment_field_name
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import make_agent
 
 _AGENTS: dict[str, type[Any]] = {
@@ -109,27 +111,33 @@ def _prepared(agent_id: str) -> Any:
     descriptors = [
         a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
     ]
-    seed = agent.prepare(task="read the article", action_descriptors=descriptors)
+    seed = agent.prepare(
+        task="read the article",
+        action_descriptors=descriptors,
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+    )
     return agent, seed
 
 
-def _messages(agent_id: str, move: FocusMove | None) -> list[dict[str, Any]]:
+async def _messages(agent_id: str, move: FocusMove | None) -> list[dict[str, Any]]:
     agent, seed = _prepared(agent_id)
-    step = agent.build_react_prompt(_observation(move))
+    step = await agent.build_react_prompt(
+        _observation(move), context=ReactPromptContext(step=0, phase="policy")
+    )
     return [message.model_dump() for message in [*seed, *step]]
 
 
 @pytest.mark.parametrize("agent_id", sorted(_AGENTS))
-def test_a_focus_move_never_changes_a_prompt(agent_id: str) -> None:
-    assert _messages(agent_id, _MOVE) == _messages(agent_id, None)
+async def test_a_focus_move_never_changes_a_prompt(agent_id: str) -> None:
+    assert (await _messages(agent_id, _MOVE)) == (await _messages(agent_id, None))
 
 
-def test_the_tab_list_the_comparison_relies_on_is_rendered() -> None:
+async def test_the_tab_list_the_comparison_relies_on_is_rendered() -> None:
     """BrowserUse shows the URL and the tabs: the comparison above is not vacuous."""
-    text = repr(_messages("browser_use", _MOVE))
+    text = repr(await _messages("browser_use", _MOVE))
     assert "https://news.test/a/1" in text and "FOLLOWED" in text
 
 
-def test_ui_tars_no_focus_move_prompt_is_stable() -> None:
-    encoded = json.dumps(_messages("ui_tars", None), sort_keys=True, default=repr).encode()
+async def test_ui_tars_no_focus_move_prompt_is_stable() -> None:
+    encoded = json.dumps((await _messages("ui_tars", None)), sort_keys=True, default=repr).encode()
     assert hashlib.sha256(encoded).hexdigest() == UI_TARS_PROMPT_SHA256

@@ -449,16 +449,14 @@ parse_retries_per_step: Annotated[
   an `error_phase="observe"` record, a `RunAbort` propagates); surrendering it and ranking
   a recording failure against the outcome stay the Loop's (`ReactLoop._with_terminal`).
   The terminal result is built before, and its `end_to_end_ms` excludes the observation.
-- **The restore phase** (`BranchLoop`): rebuild the context from the source trace by
-  replaying every recorded model call through the agent's parser and the three memory
-  methods, checking each call's context against the recording; then `async for` the
-  restorer (`self.restorer`, a receptor: `RestorerRegistrar`, `core/loops/restore/`),
-  which yields one `RestoredStep` per restored step and finally the verified obs_t; then
-  the configured `branch_instruction` (a closed set, `none` by default) is written into
-  memory once, and `_run_step(run, t, observation=obs_t, restoration=check_t)` and
-  `continue_steps` more run. A message the Loop adds at step *t* goes in through memory
-  before `_run_step`, from the Loop's own method: nothing compares step *t*'s context,
-  and ReAct's step is not edited for it.
+- **The restore phase** (`BranchLoop`): `history_source: source` rebuilds exact source
+  prompts from recorded observations and contributions, replaying only Agent decision
+  calls through parsing and the public ReAct memory methods. `restored` uses actual
+  restoration observations/actions/results through `build_restored_history`; the Loop
+  never touches Agent-private history. Both use the restorer's one live checkpoint
+  observation in `execute_step(run, t, observation=obs_t, restoration=check_t)`.
+  Optional prompt contributions come from an AOP around hook on the async Agent builder;
+  explicit `ReactPromptContext` phases and policy-step index determine generation timing.
   A restorer gets a narrow `RestorationContext` (env, `act_fn`, the negotiated
   observation, the source accessor, *t*) with no model, memory or recorder, so it can
   restore only the environment. Vetoes in replay and restore record an

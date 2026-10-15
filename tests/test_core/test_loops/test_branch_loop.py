@@ -15,21 +15,19 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any, ClassVar, get_args, get_type_hints
+from typing import Any, ClassVar, Literal
 
 import pytest
 
-from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops import BranchLoop, ReactLoop
-from spectragent.core.loops.branch import BRANCH_INSTRUCTIONS
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.loops.restore import PrefixReplayRestorer
-from spectragent.core.loops.restore.source import recorded_form
 from spectragent.core.loops.validation import (
     IncompatibleCheckpointError,
     IncompatibleLoopInputError,
 )
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.core.trace.redaction import OMITTED
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.restoration import BranchProvenance
@@ -131,7 +129,7 @@ class TestBudget:
 
 
 class TestRecords:
-    async def test_restored_records_copy_the_source_and_reset_the_rest(
+    async def test_restored_records_keep_actual_facts_and_source_material(
         self, tmp_path: Path, source: Path
     ) -> None:
         out = await run_branch(tmp_path, source, 2, ["click 102"])
@@ -141,15 +139,14 @@ class TestRecords:
             mine, theirs = branch.step(step), recorded.step(step)
             assert mine is not None and theirs is not None
             assert mine.origin == "restored"
-            assert (mine.actions, mine.action_results, mine.llm_output) == (
-                theirs.actions,
-                theirs.action_results,
-                theirs.llm_output,
-            )
+            assert (mine.actions, mine.action_results) == (theirs.actions, theirs.action_results)
+            assert mine.llm_output == ""
+            assert mine.source_history is not None
+            assert mine.source_history.source_reply == theirs.llm_output
             assert mine.observation_summary == theirs.observation_summary
             # The source's tokens are not this run's.
             assert theirs.token_usage is not None
-            assert mine.token_usage is None
+            assert mine.token_usage is not None and mine.token_usage.total_tokens == 0
             assert mine.timestamp > theirs.timestamp
             # Re-measured by the recorder, not copied: no model call here.
             assert mine.llm_latency_ms in (None, 0)
@@ -222,80 +219,122 @@ class TestRecords:
         )
 
 
-def _instruction(recorded_reply: str) -> str:
-    return BRANCH_INSTRUCTIONS["prefer_different_action"].format(recorded_reply=recorded_reply)
+class TestHistorySource:
+    def test_source_is_the_default(self) -> None:
+        assert BranchLoop().history_source == "source"
 
-
-def _different_action_loop(**knobs: Any) -> BranchLoop:
-    return BranchLoop(branch_instruction="prefer_different_action", **knobs)
-
-
-class TestBranchInstruction:
-    """One fixed message at step *t*, after the verified prefix, quoting the source's reply."""
-
-    def test_every_option_but_none_has_exactly_one_text(self) -> None:
-        hint = get_type_hints(BranchLoop, include_extras=True)["branch_instruction"]
-        assert set(get_args(get_args(hint)[0])) == {"none", *BRANCH_INSTRUCTIONS}
-        assert BranchLoop().branch_instruction == "none"
-
-    @pytest.mark.parametrize("step", [0, 2])
-    async def test_it_quotes_the_recorded_reply_just_before_the_observation(
-        self, tmp_path: Path, source: Path, step: int
+    @pytest.mark.parametrize("verify", ["strict", "warn"])
+    async def test_restored_history_uses_actual_targets_results_and_source_labels(
+        self, tmp_path: Path, source: Path, verify: Literal["strict", "warn"]
     ) -> None:
-        out = await run_branch(tmp_path, source, step, ["click 101"], loop=_different_action_loop())
-        recorded = recorded_form(RunTrace(source).llm_messages(step)[0].messages)
-        note = recorded_form([UserMessage(content=_instruction(SOURCE_REPLIES[step]))])
-        # The source's prompt with one more message, between the rebuilt
-        # history (just the seed at step 0) and the step's own observation.
-        expected = recorded[:-1] + note + recorded[-1:]
-        assert recorded_form(out.llm.prompts[0]) == expected
-        # The trace records the call as the teacher received it.
-        assert out.run_dir is not None
-        assert recorded_form(RunTrace(out.run_dir).llm_messages(step)[0].messages) == expected
-        assert out.result is not None and out.result.agent_done.value == "max_steps"
-
-    async def test_it_is_written_once(self, tmp_path: Path, source: Path) -> None:
+        loop = BranchLoop(history_source="restored")
+        loop.restorer = PrefixReplayRestorer(verify=verify)
+        agent = BranchFakeAgent()
         out = await run_branch(
-            tmp_path,
-            source,
-            1,
-            ["click 102", "done ok"],
-            loop=_different_action_loop(continue_steps=1),
+            tmp_path, source, 2, ["done ok"], cap=make_cap(id_offset=500), loop=loop, agent=agent
         )
-        note = _instruction(SOURCE_REPLIES[1])
-        first, second = ([m.content for m in prompt] for prompt in out.llm.prompts)
-        assert first.count(note) == 1
-        # The continue step sees it as history, where step t left it.
-        assert second.count(note) == 1
-        assert second.index(note) == first.index(note)
         assert out.result is not None and out.result.agent_done.value == "done"
+        text = str(recorded_form(out.llm.prompts[0]))
+        assert "[restored]" in text and "[source" in text
+        assert "index': 500" in text and "clicked 0" in text
+        assert "restored branchfake.click" in text
+        assert agent.parsed_log[0].startswith("restored ")
+        assert out.run_dir is not None
+        trace = RunTrace(out.run_dir)
+        first = trace.step(0)
+        assert first is not None and first.llm_output == ""
+        assert first.actions[0].params == {"index": 500}
+        assert first.source_history is not None
+        assert first.source_history.source_actions[0].params == {"index": 100}
+        assert trace.llm_messages(0) == []
+        assert out.result.metrics.llm_calls == 1
+        assert out.cap.cycle == 4  # prefix, live checkpoint, terminal; no validation-only capture
 
-    async def test_a_structured_reply_is_quoted_as_written(self, tmp_path: Path) -> None:
-        """A JSON reply's braces are the reply's, not placeholders of the template."""
-        source = await record_source(tmp_path, SOURCE_REPLIES, structured=True)
-        recorded = RunTrace(source).step(2)
-        assert recorded is not None and recorded.llm_output.startswith("{")
-        out = await run_branch(
-            tmp_path,
-            source,
-            2,
-            ["click 101"],
-            agent=BranchFakeAgent(structured=True),
-            loop=_different_action_loop(),
-        )
-        assert out.llm.prompts[0][-2].content == _instruction(recorded.llm_output)
-
-    async def test_a_checkpoint_step_without_a_recorded_action_gets_none(
-        self, tmp_path: Path
+    async def test_restored_requires_a_public_async_history_slot(
+        self, tmp_path: Path, source: Path
     ) -> None:
-        """The source's step 1 never parsed: there is no recorded action to name."""
-        source = await record_source(tmp_path, ["click 100", "what", "huh", "click 101", "done ok"])
-        failed = RunTrace(source).step(1)
-        assert failed is not None and failed.actions == []
-        out = await run_branch(tmp_path, source, 1, ["click 101"], loop=_different_action_loop())
-        assert recorded_form(out.llm.prompts[0]) == recorded_form(
-            RunTrace(source).llm_messages(1)[0].messages
+        agent: Any = BranchFakeAgent()
+        agent.build_restored_history = None
+        with pytest.raises(Exception, match="build_restored_history"):
+            await run_branch(
+                tmp_path,
+                source,
+                1,
+                ["done ok"],
+                agent=agent,
+                loop=BranchLoop(history_source="restored"),
+            )
+
+
+@pytest.mark.parametrize("history_source", ["source", "restored"])
+@pytest.mark.parametrize("verify", ["strict", "warn"])
+async def test_history_choice_does_not_change_environment_verification(
+    tmp_path: Path,
+    source: Path,
+    history_source: Literal["source", "restored"],
+    verify: Literal["strict", "warn"],
+) -> None:
+    loop = BranchLoop(history_source=history_source)
+    loop.restorer = PrefixReplayRestorer(verify=verify)
+    out = await run_branch(
+        tmp_path,
+        source,
+        2,
+        ["done ok"],
+        loop=loop,
+        cap=make_cap(urls={2: "https://diverged.test/"}),
+    )
+    assert out.result is not None
+    assert out.result.agent_done.value == ("done" if verify == "warn" else "error")
+    assert out.run_dir is not None
+    record = RunTrace(out.run_dir).step(1)
+    assert record is not None and record.restoration is not None
+    assert record.restoration.verdict == ("warn" if verify == "warn" else "diverged")
+
+
+async def test_restored_history_refuses_missing_actual_results_even_under_warn(
+    tmp_path: Path, source: Path
+) -> None:
+    from dataclasses import replace
+
+    class MissingResultRestorer:
+        restorer_id = "missing_result"
+
+        async def restore(self, ctx):
+            async for item in PrefixReplayRestorer(verify="warn").restore(ctx):
+                if item.step == 0:
+                    checks = [
+                        action.model_copy(update={"result": None}) for action in item.check.actions
+                    ]
+                    item = replace(item, check=item.check.model_copy(update={"actions": checks}))
+                yield item
+
+    loop = BranchLoop(history_source="restored")
+    loop.restorer = MissingResultRestorer()
+    out = await run_branch(tmp_path, source, 2, ["done ok"], loop=loop)
+    assert out.result is not None and out.result.agent_done.value == "error"
+    assert out.llm.prompts == []
+    assert out.run_dir is not None
+    record = RunTrace(out.run_dir).step(0)
+    assert record is not None and record.error_phase == "restored_history"
+    assert record.error is not None and "one actual result" in record.error
+    assert record.source_history is not None
+    assert record.source_history.source_reply == SOURCE_REPLIES[0]
+
+
+async def test_restored_history_refuses_missing_source_result_before_setup(
+    tmp_path: Path, source: Path
+) -> None:
+    path = source / "steps/000.json"
+    document = json.loads(path.read_text())
+    document["action_results"] = []
+    path.write_text(json.dumps(document))
+    cap = make_cap()
+    with pytest.raises(IncompatibleCheckpointError, match="necessary executed action results"):
+        await run_branch(
+            tmp_path, source, 2, ["done ok"], cap=cap, loop=BranchLoop(history_source="restored")
         )
+    assert cap.setups == 0
 
 
 def _warn_loop() -> BranchLoop:
@@ -378,11 +417,11 @@ class _VetoingAgent(BranchFakeAgent):
 
     veto_on_prompt: ClassVar[int] = 1
 
-    def build_react_prompt(self, obs: Any) -> list[Any]:
+    async def build_react_prompt(self, obs: Any, *, context) -> list[Any]:
         if self.prompts + 1 == self.veto_on_prompt:
             self.prompts += 1
             raise RunAbort("the page shows a captcha", source="prompt_guard")
-        return super().build_react_prompt(obs)
+        return await super().build_react_prompt(obs, context=context)
 
 
 class TestVetoes:
@@ -473,8 +512,8 @@ class _NarrowAgent(BranchFakeAgent):
         "action": ("action", ["click", "done"]),
     }
 
-    def build_react_prompt(self, obs: Any) -> list[Any]:
-        return super().build_react_prompt(obs)
+    async def build_react_prompt(self, obs: Any, *, context) -> list[Any]:
+        return await super().build_react_prompt(obs, context=context)
 
 
 class TestCheckpointCompatibility:
@@ -607,8 +646,8 @@ class TestCheckpointCompatibility:
         self, tmp_path: Path, source: Path
     ) -> None:
         class _Chatty(BranchFakeAgent):
-            def build_react_prompt(self, obs: Any) -> list[Any]:
-                messages = super().build_react_prompt(obs)
+            async def build_react_prompt(self, obs: Any, *, context) -> list[Any]:
+                messages = await super().build_react_prompt(obs, context=context)
                 messages[0].content += " (rendered differently)"
                 return messages
 
@@ -799,3 +838,40 @@ class TestRecordedReplies:
         )
         assert out.result is not None and out.result.agent_done.value == "done"
         assert DONE in out.cap.log[-1]
+
+
+async def test_warn_restoration_does_not_pair_a_later_result_with_a_failed_attempt(
+    tmp_path: Path,
+) -> None:
+    source = await record_source(
+        tmp_path,
+        ["click 100 101", "done ok"],
+        loop=ReactLoop(max_steps=10, max_actions_per_step=2, today_override="2001-02-03"),
+    )
+    cap = make_cap()
+    original = cap.execute_action
+
+    async def fail_first(action):
+        if action.params.get("index") == 100:
+            raise RuntimeError("first execution failed")
+        return await original(action)
+
+    cap.execute_action = fail_first
+    loop = BranchLoop(max_actions_per_step=2)
+    loop.restorer = PrefixReplayRestorer(verify="warn")
+    out = await run_branch(tmp_path, source, 1, ["done ok"], loop=loop, cap=cap)
+    assert out.run_dir is not None
+    record = RunTrace(out.run_dir).step(0)
+    assert record is not None and record.restoration is not None
+    assert [action.params["index"] for action in record.actions] == [101]
+    assert [result.extracted_content for result in record.action_results] == ["clicked 1"]
+    first, second = record.restoration.actions
+    assert first.executed is not None and first.executed.params["index"] == 100
+    assert first.result is None and first.live_error == "RuntimeError: first execution failed"
+    assert second.result == record.action_results[0]
+    from spectragent.evaluator.trace_view import TraceView
+
+    history = TraceView(RunTrace(out.run_dir)).restored_action_history
+    assert len(history) == 2
+    assert "index': 100" in history[0] and "raised: RuntimeError" in history[0]
+    assert "index': 101" in history[1]

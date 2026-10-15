@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import re
 from collections.abc import Sequence
 from functools import cache
 from pathlib import Path
@@ -223,6 +224,12 @@ class ScriptedTeacher:
     """Replies from a script; a dict is validated into the call's output model."""
 
     model = "scripted-teacher"
+    name = "scripted-teacher"
+    model_type = "test"
+    provider = "test"
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple:
+        return ()
 
     def __init__(self, replies: Sequence[Any]) -> None:
         self.replies = list(replies)
@@ -302,9 +309,11 @@ async def drive(
     built: list[Any] = []
     original = agent.build_react_prompt
 
-    def spy(observation: Any) -> Any:
-        messages = original(observation)
-        snapshot = list(getattr(agent, "_action_history", []))
+    async def spy(observation: Any, *, context) -> Any:
+        messages = await original(observation, context=context)
+        text = "\n".join(str(message.content) for message in messages)
+        history = re.search(r"<action_history>\n(.*?)\n</action_history>", text, flags=re.S)
+        snapshot = history.group(1).splitlines() if history else []
         built.append((messages, snapshot))
         return messages
 

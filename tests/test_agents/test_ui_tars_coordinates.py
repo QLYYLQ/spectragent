@@ -52,10 +52,12 @@ from spectragent.core.capabilities.browser.watchdogs.events import (
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.llm.messages import ContentPartTextParam
 from spectragent.core.loops.errors import ParseError
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import extract_wiring
 from spectragent.core.negotiation.action import _action_rules
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation.geometry import CoordinateSpace
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import make_agent, make_env
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -85,8 +87,12 @@ def _agent(**config: Any) -> UITarsAgent:
     return make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10), **config)
 
 
-def _step_text(agent: UITarsAgent, observation: Any) -> str:
-    content = agent.build_react_prompt(observation)[0].content
+async def _step_text(agent: UITarsAgent, observation: Any) -> str:
+    content = (
+        await agent.build_react_prompt(
+            observation, context=ReactPromptContext(step=0, phase="policy")
+        )
+    )[0].content
     assert isinstance(content, list)
     return next(p.text for p in content if isinstance(p, ContentPartTextParam))
 
@@ -101,25 +107,33 @@ def _points(agent: UITarsAgent, reply: str) -> list[tuple[str, dict[str, Any]]]:
 class TestThePromptNamesTheGrid:
     def test_pixels_are_taught_as_pixels_of_the_screenshot(self) -> None:
         agent = _agent()
-        prompt = agent.prepare(task="t", action_descriptors=[])[0].content
+        prompt = agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )[0].content
         assert isinstance(prompt, str)
         assert "# Coordinates" in prompt
         assert "pixels of the screenshot you are shown" in prompt
         assert "0-1000" not in prompt
 
-    def test_a_pixel_step_states_the_size_of_its_screenshot(self) -> None:
+    async def test_a_pixel_step_states_the_size_of_its_screenshot(self) -> None:
         agent = _agent()
-        text = _step_text(agent, _observation(image=(2560, 1440)))
+        text = await _step_text(agent, _observation(image=(2560, 1440)))
         assert "Screenshot: 2560x1440 pixels." in text
 
-    def test_normalized_is_taught_as_a_0_1000_grid_and_no_pixel_size(self) -> None:
+    async def test_normalized_is_taught_as_a_0_1000_grid_and_no_pixel_size(self) -> None:
         agent = _agent(coordinate_space="normalized_1000")
-        prompt = agent.prepare(task="t", action_descriptors=[])[0].content
+        prompt = agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )[0].content
         assert isinstance(prompt, str)
         assert "0-1000 grid" in prompt
         assert "pixels of the screenshot you are shown" not in prompt
         # A pixel size next to a 0-1000 instruction invites mixing the two.
-        assert "Screenshot:" not in _step_text(agent, _observation(image=(2560, 1440)))
+        assert "Screenshot:" not in (await _step_text(agent, _observation(image=(2560, 1440))))
 
     @pytest.mark.parametrize("space", ["screenshot_pixels", "normalized_1000"])
     def test_every_grid_also_says_a_point_is_numbers_and_nothing_else(self, space: str) -> None:
@@ -130,7 +144,11 @@ class TestThePromptNamesTheGrid:
         told spends a step finding out.
         """
         agent = _agent(coordinate_space=space)
-        prompt = agent.prepare(task="t", action_descriptors=[])[0].content
+        prompt = agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )[0].content
         assert isinstance(prompt, str)
         assert "the two numbers alone" in prompt
         assert "Never put an element name, a selector or a description" in prompt
@@ -138,7 +156,11 @@ class TestThePromptNamesTheGrid:
     def test_the_recorded_snapshot_says_which_grid_the_run_taught(self) -> None:
         """A trace reader has the prompt snapshot, not the config."""
         agent = _agent(coordinate_space="normalized_1000")
-        agent.prepare(task="t", action_descriptors=[])
+        agent.prepare(
+            task="t",
+            action_descriptors=[],
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+        )
         snapshot = agent.system_prompt
         assert snapshot is not None
         assert "0-1000 grid" in snapshot.params["coordinate_space"]  # pyright: ignore[reportAttributeAccessIssue]
@@ -159,7 +181,7 @@ class TestTheFieldIsTheSharedGrid:
         assert field_options == get_args(CoordinateSpace)
         assert set(_COORDINATE_PROMPTS) == set(field_options)
 
-    def test_a_screenshot_fragment_without_geometry_stops_the_run(self) -> None:
+    async def test_a_screenshot_fragment_without_geometry_stops_the_run(self) -> None:
         """An assembly error, not something the model can fix one step at a time."""
         agent = _agent()
         observation = SimpleNamespace(
@@ -168,7 +190,11 @@ class TestTheFieldIsTheSharedGrid:
             screenshot=SimpleNamespace(image_bytes=b"\x89PNG\r\n\x1a\n"),
         )
         with pytest.raises(TypeError, match="reports no screenshot geometry") as excinfo:
-            agent.build_react_prompt(observation)
+            (
+                await agent.build_react_prompt(
+                    observation, context=ReactPromptContext(step=0, phase="policy")
+                )
+            )
         assert "ScreenshotGeometry" in str(excinfo.value)
 
 
@@ -176,16 +202,24 @@ class TestTheFieldIsTheSharedGrid:
 
 
 class TestScreenshotPixels:
-    def test_dpr_one_is_the_identity(self) -> None:
+    async def test_dpr_one_is_the_identity(self) -> None:
         agent = _agent()
-        agent.build_react_prompt(_observation(image=(1280, 720)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(1280, 720)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         assert _points(agent, "Action: click(point='(61, 377)')") == [
             ("click_coordinate", {"coordinate_x": 61, "coordinate_y": 377})
         ]
 
-    def test_dpr_two_halves_every_point_of_every_point_verb(self) -> None:
+    async def test_dpr_two_halves_every_point_of_every_point_verb(self) -> None:
         agent = _agent()
-        agent.build_react_prompt(_observation(image=(2560, 1440)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(2560, 1440)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         reply = (
             "Action: click(point='(101, 400)')\n"
             "Action: type(content='hi', point='(640, 360)')\n"
@@ -197,17 +231,21 @@ class TestScreenshotPixels:
             ("drag", {"start_x": 50, "start_y": 100, "end_x": 1000, "end_y": 500}),
         ]
 
-    def test_the_far_edge_lands_on_the_last_css_pixel(self) -> None:
+    async def test_the_far_edge_lands_on_the_last_css_pixel(self) -> None:
         agent = _agent()
-        agent.build_react_prompt(_observation(image=(2560, 1440)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(2560, 1440)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         assert _points(agent, "Action: click(point='(2560, 1440)')") == [
             ("click_coordinate", {"coordinate_x": 1279, "coordinate_y": 719})
         ]
 
-    def test_an_unknown_image_size_is_refused_not_guessed(self) -> None:
+    async def test_an_unknown_image_size_is_refused_not_guessed(self) -> None:
         agent = _agent()
         # No size to state, so the step states none.
-        assert "Screenshot:" not in _step_text(agent, _observation(image=(0, 0)))
+        assert "Screenshot:" not in (await _step_text(agent, _observation(image=(0, 0))))
         with pytest.raises(ParseError) as excinfo:
             agent.parse_react_output("Action: click(point='(10, 20)')")
         assert excinfo.value.detail == (
@@ -215,10 +253,14 @@ class TestScreenshotPixels:
             "because this step's screenshot has no known size"
         )
 
-    def test_a_point_off_the_screenshot_is_clamped_onto_its_edge(self) -> None:
+    async def test_a_point_off_the_screenshot_is_clamped_onto_its_edge(self) -> None:
         """The framework's one rule for a point off the grid, which browser_use shares."""
         agent = _agent()
-        agent.build_react_prompt(_observation(image=(2560, 1440)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(2560, 1440)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         assert _points(agent, "Action: click(point='(2600, 300)')") == [
             ("click_coordinate", {"coordinate_x": 1279, "coordinate_y": 150})
         ]
@@ -226,19 +268,28 @@ class TestScreenshotPixels:
             ("click_coordinate", {"coordinate_x": 0, "coordinate_y": 2})
         ]
 
-    def test_a_ui_tars_1_5_corner_on_its_resized_input_is_not_a_parse_failure(self) -> None:
+    async def test_a_ui_tars_1_5_corner_on_its_resized_input_is_not_a_parse_failure(self) -> None:
         """Qwen2.5-VL sees 1280x720 as 1288x728; its bottom-right answer is a real one."""
         agent = _agent()
-        agent.build_react_prompt(_observation(image=(1280, 720)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(1280, 720)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         assert _points(agent, "Action: click(point='<point>1287 727</point>')") == [
             ("click_coordinate", {"coordinate_x": 1279, "coordinate_y": 719})
         ]
 
 
 class TestNormalized1000:
-    def test_the_grid_maps_onto_the_viewport_whatever_the_image_size(self) -> None:
+    async def test_the_grid_maps_onto_the_viewport_whatever_the_image_size(self) -> None:
         agent = _agent(coordinate_space="normalized_1000")
-        agent.build_react_prompt(_observation(image=(2560, 1440), viewport=(1280, 720)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(2560, 1440), viewport=(1280, 720)),
+                context=ReactPromptContext(step=0, phase="policy"),
+            )
+        )
         assert _points(agent, "Action: click(point='(500, 500)')") == [
             ("click_coordinate", {"coordinate_x": 640, "coordinate_y": 360})
         ]
@@ -246,45 +297,74 @@ class TestNormalized1000:
             ("click_coordinate", {"coordinate_x": 1279, "coordinate_y": 719})
         ]
 
-    def test_the_image_size_is_not_needed_but_the_viewport_is(self) -> None:
+    async def test_the_image_size_is_not_needed_but_the_viewport_is(self) -> None:
         agent = _agent(coordinate_space="normalized_1000")
-        agent.build_react_prompt(_observation(image=(0, 0), viewport=(1000, 800)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(0, 0), viewport=(1000, 800)),
+                context=ReactPromptContext(step=0, phase="policy"),
+            )
+        )
         assert _points(agent, "Action: click(point='<point>250 500</point>')") == [
             ("click_coordinate", {"coordinate_x": 250, "coordinate_y": 400})
         ]
-        agent.build_react_prompt(_observation(image=(1000, 800), viewport=(0, 0)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(1000, 800), viewport=(0, 0)),
+                context=ReactPromptContext(step=0, phase="policy"),
+            )
+        )
         with pytest.raises(ParseError, match="screenshot has no known size"):
             agent.parse_react_output("Action: click(point='(250, 500)')")
 
-    def test_an_answer_past_1000_is_clamped_like_any_point_off_the_grid(self) -> None:
+    async def test_an_answer_past_1000_is_clamped_like_any_point_off_the_grid(self) -> None:
         agent = _agent(coordinate_space="normalized_1000")
-        agent.build_react_prompt(_observation(image=(2560, 1440)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(2560, 1440)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         assert _points(agent, "Action: click(point='(1500, 300)')") == [
             ("click_coordinate", {"coordinate_x": 1279, "coordinate_y": 216})
         ]
 
 
 class TestTheFrameIsPerStep:
-    def test_each_reply_is_placed_with_the_screenshot_its_step_showed(self) -> None:
+    async def test_each_reply_is_placed_with_the_screenshot_its_step_showed(self) -> None:
         agent = _agent()
-        agent.build_react_prompt(_observation(image=(2560, 1440)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(2560, 1440)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         assert _points(agent, "Action: click(point='(200, 200)')")[0][1] == {
             "coordinate_x": 100,
             "coordinate_y": 100,
         }
-        agent.build_react_prompt(_observation(image=(1280, 720)))
+        (
+            await agent.build_react_prompt(
+                _observation(image=(1280, 720)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
         assert _points(agent, "Action: click(point='(200, 200)')")[0][1] == {
             "coordinate_x": 200,
             "coordinate_y": 200,
         }
 
-    def test_a_step_without_a_screenshot_places_no_point(self) -> None:
+    async def test_a_step_without_a_screenshot_places_no_point(self) -> None:
         agent = _agent()
-        agent.build_react_prompt(_observation(image=(1280, 720)))
-        agent.build_react_prompt(
-            SimpleNamespace(
-                platform=SimpleNamespace(operating_system="macos"),
-                task=SimpleNamespace(user_request="t"),
+        (
+            await agent.build_react_prompt(
+                _observation(image=(1280, 720)), context=ReactPromptContext(step=0, phase="policy")
+            )
+        )
+        (
+            await agent.build_react_prompt(
+                SimpleNamespace(
+                    platform=SimpleNamespace(operating_system="macos"),
+                    task=SimpleNamespace(user_request="t"),
+                ),
+                context=ReactPromptContext(step=0, phase="policy"),
             )
         )
         with pytest.raises(ParseError, match="screenshot has no known size"):
@@ -361,11 +441,18 @@ async def test_every_emitted_action_meets_its_descriptor_and_executes_in_css_px(
     """
     agent = _agent()
     prompt = agent.prepare(
-        task="t", action_descriptors=seam["descriptors"], max_actions_per_step=9
+        task="t",
+        action_descriptors=seam["descriptors"],
+        execution_limits=ExecutionLimits(max_actions_per_step=9),
     )[0].content
     assert isinstance(prompt, str)
     assert "maximum of 9 actions" in prompt
-    agent.build_react_prompt(_observation(image=(2560, 1440), viewport=(1280, 720)))
+    (
+        await agent.build_react_prompt(
+            _observation(image=(2560, 1440), viewport=(1280, 720)),
+            context=ReactPromptContext(step=0, phase="policy"),
+        )
+    )
 
     actions = agent.parse_react_output(_EVERY_VERB)
     by_local_id = {d.name.rsplit(".", 1)[-1]: d for d in seam["descriptors"]}

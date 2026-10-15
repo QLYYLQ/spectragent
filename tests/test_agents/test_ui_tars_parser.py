@@ -36,8 +36,10 @@ from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops.errors import ParseError
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import make_agent
 
 # ── Verbatim replies from recorded runs ───────────────────────────────
@@ -122,12 +124,20 @@ def _screenshot(
     )
 
 
-def _agent(descriptors: list[ActionDescriptor] | None = None) -> UITarsAgent:
+async def _agent(descriptors: list[ActionDescriptor] | None = None) -> UITarsAgent:
     """An agent one step in: prepared (when *descriptors* are given) and shown a screenshot."""
     agent = make_agent(UITarsAgent, memory=SimpleMemory(max_messages=10))
     if descriptors is not None:
-        agent.prepare(task="t", action_descriptors=descriptors, max_actions_per_step=6)
-    agent.build_react_prompt(_screenshot())
+        agent.prepare(
+            task="t",
+            action_descriptors=descriptors,
+            execution_limits=ExecutionLimits(max_actions_per_step=6),
+        )
+    (
+        await agent.build_react_prompt(
+            _screenshot(), context=ReactPromptContext(step=0, phase="policy")
+        )
+    )
     return agent
 
 
@@ -135,8 +145,8 @@ def _negotiated(*local_ids: str) -> list[ActionDescriptor]:
     return [ActionDescriptor(name=f"browser.{a}", description=a) for a in local_ids]
 
 
-def _parsed(reply: str, agent: UITarsAgent | None = None) -> list[tuple[str, dict[str, Any]]]:
-    return [(a.name, a.params) for a in (agent or _agent()).parse_react_output(reply)]
+async def _parsed(reply: str, agent: UITarsAgent | None = None) -> list[tuple[str, dict[str, Any]]]:
+    return [(a.name, a.params) for a in (agent or (await _agent())).parse_react_output(reply)]
 
 
 # ── Real replies ──────────────────────────────────────────────────────
@@ -147,24 +157,24 @@ def _parsed(reply: str, agent: UITarsAgent | None = None) -> list[tuple[str, dic
     [(reply, expected) for _, reply, expected in _REAL],
     ids=[name for name, _, _ in _REAL],
 )
-def test_real_replies_parse_to_the_actions_they_meant(reply, expected) -> None:
-    assert _parsed(reply) == expected
+async def test_real_replies_parse_to_the_actions_they_meant(reply, expected) -> None:
+    assert (await _parsed(reply)) == expected
 
 
 class TestTheRealFailures:
-    def test_the_empty_reply_says_it_was_empty_and_what_to_send(self) -> None:
+    async def test_the_empty_reply_says_it_was_empty_and_what_to_send(self) -> None:
         """Hub step 1: 47 completion tokens, ``completion == ""``."""
         with pytest.raises(ParseError) as excinfo:
-            _agent().parse_react_output("")
+            (await _agent()).parse_react_output("")
         detail = excinfo.value.detail
         assert detail.startswith("The reply was empty.")
         assert "Action: click(point='(x, y)')" in detail
 
-    def test_whitespace_only_is_the_same_empty_reply(self) -> None:
+    async def test_whitespace_only_is_the_same_empty_reply(self) -> None:
         with pytest.raises(ParseError, match="The reply was empty"):
-            _agent().parse_react_output("\n\n```\n```\n [EOS]")
+            (await _agent()).parse_react_output("\n\n```\n```\n [EOS]")
 
-    def test_a_quoted_action_in_prose_is_not_an_action(self) -> None:
+    async def test_a_quoted_action_in_prose_is_not_an_action(self) -> None:
         """Hub step 4: the quote mid-sentence, then a refusal and no Action line.
 
         The old parser took ``click(point='(647, 281)')" was executed. ...``
@@ -173,7 +183,7 @@ class TestTheRealFailures:
         tried to fix. It was never going to click; it had refused.
         """
         with pytest.raises(ParseError) as excinfo:
-            _agent().parse_react_output(_HUB_STEP4_REFUSAL)
+            (await _agent()).parse_react_output(_HUB_STEP4_REFUSAL)
         detail = excinfo.value.detail
         assert detail.startswith("No line starts with 'Action:'.")
         assert "'Action:' does appear, but not at the start of a line" in detail
@@ -200,7 +210,13 @@ class TestTheRealFailures:
 
         agent = make_agent(UITarsAgent)
         memory = SimpleMemory(max_messages=50)
-        memory.add_messages(agent.prepare(task="t", action_descriptors=_negotiated("done")))
+        memory.add_messages(
+            agent.prepare(
+                task="t",
+                action_descriptors=_negotiated("done"),
+                execution_limits=ExecutionLimits(max_actions_per_step=1),
+            )
+        )
         ctx = {"env": _Env(), "llm": _LLM(), "memory": memory, "act_fn": _act}
 
         import asyncio
@@ -412,8 +428,8 @@ class TestTheRealFailures:
         ),
     ],
 )
-def test_tolerated_dressings(reply: str, expected: list[tuple[str, dict[str, Any]]]) -> None:
-    assert _parsed(reply) == expected
+async def test_tolerated_dressings(reply: str, expected: list[tuple[str, dict[str, Any]]]) -> None:
+    assert (await _parsed(reply)) == expected
 
 
 # ── Refused, precisely ────────────────────────────────────────────────
@@ -518,9 +534,9 @@ def test_tolerated_dressings(reply: str, expected: list[tuple[str, dict[str, Any
         ),
     ],
 )
-def test_refusals_say_which_line_and_what(reply: str, detail: str) -> None:
+async def test_refusals_say_which_line_and_what(reply: str, detail: str) -> None:
     with pytest.raises(ParseError) as excinfo:
-        _agent().parse_react_output(reply)
+        (await _agent()).parse_react_output(reply)
     assert excinfo.value.detail.startswith(detail), excinfo.value.detail
     assert excinfo.value.raw_output == reply[:500]
 
@@ -561,10 +577,12 @@ class TestAPointIsReadNotScraped:
             pytest.param("<point>10 20", id="an-opening-tag-with-no-closer"),
         ],
     )
-    def test_a_point_that_names_a_thing_is_refused_not_mined_for_digits(self, written: str) -> None:
+    async def test_a_point_that_names_a_thing_is_refused_not_mined_for_digits(
+        self, written: str
+    ) -> None:
         reply = f"Action: click(point={written!r})"
         with pytest.raises(ParseError) as excinfo:
-            _agent().parse_react_output(reply)
+            (await _agent()).parse_react_output(reply)
         detail = excinfo.value.detail
         assert f"point={written!r} is not a coordinate" in detail, detail
         assert "two numbers and nothing else" in detail
@@ -578,23 +596,23 @@ class TestAPointIsReadNotScraped:
             pytest.param("(10)", 1, id="one"),
         ],
     )
-    def test_a_count_that_is_neither_a_point_nor_a_box_says_the_count(
+    async def test_a_count_that_is_neither_a_point_nor_a_box_says_the_count(
         self, written: str, count: int
     ) -> None:
         """Distinct from "not a coordinate": the model wrote numbers, just too many."""
         with pytest.raises(ParseError) as excinfo:
-            _agent().parse_react_output(f"Action: click(point={written!r})")
+            (await _agent()).parse_react_output(f"Action: click(point={written!r})")
         assert excinfo.value.detail.endswith(
             f"point={written!r} has {count} numbers; write two for a point "
             f"(point='(x, y)') or four for a box (point='(x1, y1, x2, y2)')"
         ), excinfo.value.detail
 
-    def test_two_points_in_one_argument_are_not_averaged_into_a_third(self) -> None:
+    async def test_two_points_in_one_argument_are_not_averaged_into_a_third(self) -> None:
         """Six numbers, not a box: refused rather than read as some centre."""
         with pytest.raises(ParseError, match="has 6 numbers"):
-            _agent().parse_react_output("Action: click(point='(1,2), (3,4), (5,6)')")
+            (await _agent()).parse_react_output("Action: click(point='(1,2), (3,4), (5,6)')")
 
-    def test_an_element_hint_beside_a_good_point_is_refused_by_the_verb(self) -> None:
+    async def test_an_element_hint_beside_a_good_point_is_refused_by_the_verb(self) -> None:
         """The other half of the same rule: nothing is read off the *call* text.
 
         ``_parse_point`` only ever sees the value of the point argument, so a
@@ -602,36 +620,38 @@ class TestAPointIsReadNotScraped:
         refused anyway, because ``click()`` does not take it.
         """
         with pytest.raises(ParseError) as excinfo:
-            _agent().parse_react_output("Action: click(point='(100, 200)', element='item3')")
+            (await _agent()).parse_react_output(
+                "Action: click(point='(100, 200)', element='item3')"
+            )
         assert excinfo.value.detail == (
             "Action line 1, click(point='(100, 200)', element='item3'): click() does "
             "not take element; write it as click(point='(x, y)')"
         )
 
-    def test_digits_in_a_text_argument_do_not_move_the_point(self) -> None:
+    async def test_digits_in_a_text_argument_do_not_move_the_point(self) -> None:
         reply = "Action: type(content='btn2 x1y2 (99, 99)', point='(10, 20)')"
-        assert _parsed(reply) == [
+        assert (await _parsed(reply)) == [
             (
                 "type_coordinate",
                 {"coordinate_x": 10, "coordinate_y": 20, "text": "btn2 x1y2 (99, 99)"},
             )
         ]
 
-    def test_a_list_argument_must_hold_numbers_and_nothing_else(self) -> None:
+    async def test_a_list_argument_must_hold_numbers_and_nothing_else(self) -> None:
         with pytest.raises(ParseError, match="is not a coordinate"):
-            _agent().parse_react_output("Action: click(point=['x1', 'y2'])")
+            (await _agent()).parse_react_output("Action: click(point=['x1', 'y2'])")
         with pytest.raises(ParseError, match="is not a coordinate"):
-            _agent().parse_react_output("Action: click(point=[True, False])")
+            (await _agent()).parse_react_output("Action: click(point=[True, False])")
 
-    def test_a_refused_point_does_not_reach_an_action(self) -> None:
+    async def test_a_refused_point_does_not_reach_an_action(self) -> None:
         """All-or-nothing: the good click in the same reply does not run either."""
         reply = "Action: click(point='(10, 20)')\nAction: click(point='btn2')"
         with pytest.raises(ParseError, match="Action line 2"):
-            _agent().parse_react_output(reply)
+            (await _agent()).parse_react_output(reply)
 
 
 class TestAllOrNothing:
-    def test_one_bad_line_fails_the_whole_reply(self) -> None:
+    async def test_one_bad_line_fails_the_whole_reply(self) -> None:
         """Half a plan is a different plan: the tiles would be clicked, VERIFY never."""
         reply = (
             "Action: click(point='(10, 20)')\n"
@@ -639,14 +659,14 @@ class TestAllOrNothing:
             "Action: click(point='(50, 60)')"
         )
         with pytest.raises(ParseError, match="Action line 2 has text after the call"):
-            _agent().parse_react_output(reply)
+            (await _agent()).parse_react_output(reply)
 
 
 class TestTheNegotiatedSetIsTheVocabulary:
-    def test_a_verb_this_run_did_not_negotiate_is_refused_at_parse_time(self) -> None:
+    async def test_a_verb_this_run_did_not_negotiate_is_refused_at_parse_time(self) -> None:
         """UI-TARS sees no action results, so a guard rejection would be invisible to it."""
-        agent = _agent(_negotiated("click_coordinate", "type_coordinate", "done"))
-        assert _parsed("Action: click(point='(1, 2)')", agent) == [
+        agent = await _agent(_negotiated("click_coordinate", "type_coordinate", "done"))
+        assert (await _parsed("Action: click(point='(1, 2)')", agent)) == [
             ("click_coordinate", {"coordinate_x": 1, "coordinate_y": 2})
         ]
         with pytest.raises(ParseError) as excinfo:
@@ -655,7 +675,7 @@ class TestTheNegotiatedSetIsTheVocabulary:
             "Action line 1: unknown verb 'drag'; this run offers: click, type, finished"
         )
 
-    def test_the_example_in_an_error_is_a_call_this_run_offers(self) -> None:
-        agent = _agent(_negotiated("wait", "done"))
+    async def test_the_example_in_an_error_is_a_call_this_run_offers(self) -> None:
+        agent = await _agent(_negotiated("wait", "done"))
         with pytest.raises(ParseError, match=r"e\.g\. Action: wait\(\)\."):
             agent.parse_react_output("")

@@ -146,6 +146,7 @@ class PrefixReplayRestorer(RestorerBase):
                         failure=retarget.failure,
                         detail=retarget.detail,
                         recorded_success=recorded_result.success,
+                        result=result,
                         live_success=result.success if result is not None else False,
                         live_error=(
                             f"{type(act_error).__name__}: {act_error}"

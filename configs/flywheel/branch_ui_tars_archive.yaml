@@ -28,7 +28,7 @@
 # - The teacher samples hotter than the recording (temperature 0.8; the openai
 #   default the recording ran with is 0.2) and every selected step gets three
 #   branches: the branches of one step share every input, so sampling is what
-#   makes them differ. agent_loop.branch_instruction (commented out below) can
+#   makes them differ. An explicit prompt_contribution hook can
 #   add one fixed instruction at step t.
 # - The trace writer records the branch runs somewhere else than the sources:
 #   a branch run is never a source (branching a branch is refused).
@@ -42,10 +42,9 @@ agent:
       max_steps: 30
       max_actions_per_step: 1
       continue_steps: 0                  # 0: a single-step branch; N: N more ReAct steps
-      # branch_instruction: prefer_different_action
-      #   none (the default): the teacher gets no extra text. prefer_different_action:
-      #   at step t only, one message quotes the reply the source gave at that step
-      #   and asks for a different action that also moves the task forward.
+      history_source: source
+      # Configure a prompt_contribution hook separately when an experiment needs
+      # an additional instruction. Its stable function receives source provenance.
       restorer:
         restorer_id: prefix_replay
         verify: strict                   # warn: record failed checks and go on
@@ -85,7 +84,6 @@ hook:
       - archiver_id: browser.replay_log  # the replay log of every branch
       - archiver_id: browser.storage
       - archiver_id: browser.dom_raw
-  - hook_id: metrics
 
 task_loader:
   - benchmark_name: trace_branches

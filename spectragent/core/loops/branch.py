@@ -1,73 +1,33 @@
-"""BranchLoop — resume a recorded run at a checkpoint and decide that step again.
+"""Resume a ReAct checkpoint with source or actually restored Agent history.
 
-A branch (``docs/architecture_design.md`` §4.1 "`BranchLoop`") is a recorded
-run's environment put back where it stood before step *t*, one policy step on
-it, and ``continue_steps`` ordinary ReAct steps after. Its Loop input is a
-:class:`~spectragent.schemas.restoration.Checkpoint` (the source run's
-directory and *t*); its ``restorer`` receptor decides how the environment is
-restored (``prefix_replay`` in v1); its teacher is whatever model this run
-wires, sampled however that model is configured, and told at step *t* only
-what the closed ``branch_instruction`` option adds (nothing by default).
-
-**At assembly** (``weave``, inside ``AgentRuntime.prepare()``, before
-``on_run_start`` and any environment setup) the source trace is opened and
-checked against this assembly: a source the branch cannot resume, or one an
-agent configured differently recorded, raises
-:class:`~spectragent.core.loops.validation.IncompatibleCheckpointError` naming
-the source and both values.
-
-**At run time** (``_execute``):
-
-1. the seeded memory (the runtime wrote ``agent.prepare``'s seed messages)
-   must equal the start of the source's first recorded prompt;
-2. the conversation is rebuilt **from the source trace** (``docs/architecture_design.md`` §4.1):
-   for each ``k < t`` the recorded observation is rendered by the agent's own
-   ``build_react_prompt`` and every recorded model call of the step is
-   replayed through ``parse_react_output`` and ReAct's memory protocol
-   (``ReactLoop._remember_rejected`` / ``_cap_actions`` / ``_remember_reply``
-   — the same methods the live step uses). The replay checks itself: before
-   each call the context must equal the recorded prompt, and after a step's
-   last call the actions, the dropped count and the reply must equal the
-   source's record. All of this happens before any action runs;
-3. the restorer restores the environment, handing back one step at a time;
-   each restored step is recorded (``origin="restored"``) as it arrives;
-4. the configured ``branch_instruction`` (``none`` by default) is written
-   into memory, once; then the policy step decides on the restored, verified
-   observation of step *t* (``ReactLoop._run_step``), and ``continue_steps``
-   more steps may follow;
-5. at the step budget's end the run ends with ``agent_done=max_steps``, and
-   the terminal observation is recorded (``terminal_observation`` is on by
-   default here).
-
-The Loop stores nothing per run on itself: the source travels in the weave
-deps (``ctx["branch_source"]``), the run's state in a :class:`BranchRun`.
+The Loop owns sequencing; Agents render history through public slots. Every
+restored record describes this run's execution, and source replies retain an
+explicit provenance instead of masquerading as new policy output.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from collections.abc import Mapping
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import Enum
-from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import Field
 
 from spectragent.core.action_guard import resolve_action_name
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
-from spectragent.core.llm.messages import UserMessage
-from spectragent.core.loops._loop_fragments import loop_fragment_builders, pinned_step_info
+from spectragent.core.loops._loop_fragments import (
+    loop_fragment_builders,
+    pinned_step_info,
+    populate_loop_fragments,
+)
 from spectragent.core.loops._registrar import LoopInput
 from spectragent.core.loops.errors import ParseError, RunAbort
-from spectragent.core.loops.react import (
-    ReactLoop,
-    _model_name,
-    _serialize_llm_output,
-    _UsageTally,
-)
+from spectragent.core.loops.react import ReactLoop, ReactRun, serialize_llm_output
 from spectragent.core.loops.restore import (
     RestorationContext,
     RestorationDivergedError,
@@ -78,16 +38,17 @@ from spectragent.core.loops.restore import (
 from spectragent.core.loops.restore.prefix_replay import (  # noqa: F401 — registration
     PrefixReplayRestorer,
 )
-from spectragent.core.loops.restore.source import first_difference, recorded_form
 from spectragent.core.loops.run import LoopRun
 from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.trace.models import RecordedLLMCall, TraceNegotiation
+from spectragent.core.trace.reconstruction import first_difference, recorded_form
 from spectragent.core.trace.redaction import OMITTED
 from spectragent.core.trace.sources import not_closed_reason, past_complete_reason
 from spectragent.schemas.action import Action
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation.dynamic_model import summarize_observation
 from spectragent.schemas.observation.fragments import StepInfoObs
+from spectragent.schemas.prompt import ReactPromptContext, RestoredHistory
 from spectragent.schemas.restoration import Checkpoint, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
 
@@ -111,34 +72,9 @@ NEGOTIATION_FIELDS = (
 #: it is in the seeded prompt and decides what the replay drops.
 COMPARED_LOOP_SETTINGS = ("max_actions_per_step",)
 
-#: The text each ``branch_instruction`` option writes into memory, once, just
-#: before the first policy step's own messages. ``none`` writes nothing and
-#: has no entry; every other value of the field's ``Literal`` has exactly one
-#: (a test holds the two together). ``{recorded_reply}`` is the reply the
-#: source gave at the checkpoint step (its ``StepRecord.llm_output``): the
-#: recorded action in the agent's own syntax and on its own point grid. The
-#: recorded ``Action`` would not do: its params are in the capability's units
-#: (UI-TARS turns a point on its 0-1000 grid into CSS pixels), a grid the
-#: model never writes. A DOM-index agent's element numbers are the recorded
-#: page's, not the restored page's, which the text says. "Reached this step"
-#: rather than "saw this page": under ``verify: warn`` the restored page may
-#: differ from the recorded one.
-BRANCH_INSTRUCTIONS: Mapping[str, str] = MappingProxyType(
-    {
-        "prefer_different_action": (
-            "[SYSTEM] When an earlier run of this task reached this step, it replied:\n"
-            "<recorded_reply>\n{recorded_reply}\n</recorded_reply>\n"
-            "If a different action would also move the task forward, take that action "
-            "instead of the recorded one. The recorded reply was written for the earlier "
-            "run's page: element numbers in it may not match the page shown next. Reply "
-            "in your usual format."
-        ),
-    }
-)
-
 
 @dataclass(kw_only=True)
-class BranchRun(LoopRun):
+class BranchRun(ReactRun):
     """A branch run's books: a :class:`LoopRun` plus its source.
 
     Attributes:
@@ -160,6 +96,7 @@ class BranchRun(LoopRun):
     """
 
     source: SourceRun
+    is_branch: bool = True
     step_info: StepInfoObs | None = None
     action_names: frozenset[str] = frozenset()
     action_bindings: Mapping[str, str] = field(default_factory=dict)
@@ -194,9 +131,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
       *t* only — a configuration value, not a special case);
     - ``terminal_observation``: on by default — a branch's outcome is judged
       on the state its last action left;
-    - ``branch_instruction``: one fixed instruction for the teacher at step
-      *t*, from a closed list (:data:`BRANCH_INSTRUCTIONS`; ``none`` by
-      default);
+    - ``history_source``: exact source conversation or actual restored history;
     - ``restorer``: how the environment is restored (``prefix_replay``).
     """
 
@@ -230,24 +165,17 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             ),
         ),
     ] = True
-    branch_instruction: Annotated[
-        Literal["none", "prefer_different_action"],
+    history_source: Annotated[
+        Literal["source", "restored"],
         Field(
-            default="none",
+            default="source",
             description=(
-                "One fixed instruction for the teacher at the checkpoint step, "
-                "written into the conversation once: after the recorded prefix "
-                "was rebuilt and verified and the environment restored, just "
-                "before that step's own observation. 'none' (the default) adds "
-                "nothing. 'prefer_different_action' quotes the reply the source "
-                "run gave at that step and asks for a different action that also "
-                "moves the task forward; a checkpoint step the source recorded no "
-                "action for gets no instruction. The text appears in the step's "
-                "recorded model call and stays in the conversation for any "
-                "continue steps."
+                "History before the checkpoint: exact source conversation, or actual "
+                "restored observations, retargeted actions and results. Independent of "
+                "the restorer's strict/warn environment verification."
             ),
         ),
-    ] = "none"
+    ] = "source"
 
     def __post_init__(self) -> None:
         # The default for a hand-built loop; the Composer's injection, which
@@ -265,7 +193,32 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             IncompatibleCheckpointError: The source cannot be branched by
                 this assembly — every problem at once.
         """
-        self._validate_slots(agent)
+        self.validate_slots(agent)
+        history_builder = getattr(agent, "build_restored_history", None)
+        if self.history_source == "restored" and (
+            not callable(history_builder) or not inspect.iscoroutinefunction(history_builder)
+        ):
+            from spectragent.core.loops.validation import IncompatibleError
+
+            raise IncompatibleError(
+                getattr(agent, "agent_id", type(agent).__name__),
+                self.loop_id,
+                ["build_restored_history"],
+                needed_for="restored branch history",
+            )
+        if self.history_source == "restored":
+            assert callable(history_builder)
+            try:
+                signature = inspect.signature(history_builder)
+                for name in ("history", "context"):
+                    parameter = signature.parameters.get(name)
+                    if parameter is None or parameter.kind != inspect.Parameter.KEYWORD_ONLY:
+                        raise TypeError(f"{name} must be an explicit keyword-only parameter")
+                signature.bind(None, history=None, context=None)
+            except TypeError as exc:
+                raise TypeError(
+                    "build_restored_history must accept observation, history= and context="
+                ) from exc
         inputs = deps.get("loop_inputs") or {}
         self.check_loop_inputs(inputs)
         source = SourceRun.open(inputs["checkpoint"])
@@ -291,12 +244,23 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             incomplete = past_complete_reason(manifest, t)
             if incomplete is not None:
                 problems.append(incomplete)
-            record = source.record(t)
-            if record.origin != "policy":
-                problems.append(f"step {t} is a {record.origin!r} step, not a policy step")
-            if record.error_phase == "observe":
-                problems.append(f"step {t} recorded no observation (its observe failed)")
+            else:
+                record = source.record(t)
+                if record.origin != "policy":
+                    problems.append(f"step {t} is a {record.origin!r} step, not a policy step")
+                if record.error_phase == "observe":
+                    problems.append(f"step {t} recorded no observation (its observe failed)")
         config = source.config
+        if self.history_source == "restored" and not problems:
+            for step in range(t):
+                record = source.record(step)
+                if len(record.action_results) > len(record.actions) or (
+                    len(record.action_results) < len(record.actions)
+                    and all(
+                        result.success and not result.is_done for result in record.action_results
+                    )
+                ):
+                    problems.append(f"step {step} lacks necessary executed action results")
         if config.loop_id != "react":
             problems.append(
                 f"the source ran loop {config.loop_id!r}; a branch replays ReAct's memory protocol"
@@ -331,6 +295,8 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     )
                 mismatches.update(self._loop_mismatches(entries[0].get("agent_loop")))
         mismatches.update(self._negotiation_mismatches(config.negotiation, deps))
+        if config.action_space != deps.get("action_space"):
+            mismatches["action_space"] = (config.action_space, deps.get("action_space"))
         if problems or mismatches:
             raise IncompatibleCheckpointError(source.name, problems, mismatches=mismatches)
 
@@ -419,15 +385,15 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             agent,
             task,
             ctx,
-            model_id=_model_name(ctx["llm"]),
-            usage=_UsageTally(),
             source=source,
+            step_executor=ctx.get("step_executor", self),
             step_info=source.step_info(t),
             action_names=frozenset(d.name for d in ctx.get("active_descriptors") or ()),
             action_bindings=dict(getattr(negotiated_actions, "action_bindings", None) or {}),
         )
-        self._check_seed(run)
-        await self._replay_prefix(run)
+        if self.history_source == "source":
+            self._check_seed(run)
+            await self._replay_prefix(run)
 
         restored = await self._restore(run)
         if isinstance(restored, AgentResult):
@@ -436,9 +402,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
 
         budget = min(1 + self.continue_steps, self.max_steps)
         for offset in range(budget):
-            if offset == 0:
-                self._add_branch_instruction(run)
-            result = await self._run_step(
+            result = await run.step_executor.execute_step(
                 run,
                 t + offset,
                 observation=observation if offset == 0 else None,
@@ -446,9 +410,9 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             )
             if result is not None:
                 return result
-        return await self._with_terminal(
+        return await self.with_terminal(
             run,
-            self._build_result(
+            self.build_result(
                 run, agent_done="max_steps", env_status="success", answer=run.last_answer
             ),
         )
@@ -494,7 +458,18 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         memory = run.memory
         observation = source.observation(step, run.negotiated_obs)
         try:
-            new_msgs = agent.build_react_prompt(observation)
+            record = source.record(step)
+            new_msgs = await agent.build_react_prompt(
+                observation,
+                context=ReactPromptContext(
+                    step=step,
+                    phase="history",
+                    is_branch=True,
+                    contributions=list(record.prompt_contributions),
+                    source_run_id=source.manifest.run_id,
+                    source_reply=record.llm_output,
+                ),
+            )
         except RunAbort as veto:
             await self._note_replay_veto(run, step, veto)
             raise
@@ -531,7 +506,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     ],
                 )
             reply = self._recorded_reply(source, call, output_model, step, index)
-            output_text = _serialize_llm_output(reply)
+            output_text = serialize_llm_output(reply)
             try:
                 actions = agent.parse_react_output(reply)
             except RunAbort as veto:
@@ -539,7 +514,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                 raise
             except ParseError as exc:
                 parse_failure = exc
-                self._remember_rejected(memory, output_text, exc)
+                self.remember_rejected(memory, output_text, exc)
                 continue
             parse_failure = None
 
@@ -550,8 +525,8 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             dropped: list[str] = []
         else:
             run.parse_error_streak = 0
-            kept, dropped = self._cap_actions(actions, step)
-            self._remember_reply(memory, output_text, dropped)
+            kept, dropped = self.cap_actions(actions, step)
+            self.remember_reply(memory, output_text, dropped)
         self._check_replayed_step(run, step, record, kept, dropped, output_text)
 
     def _recorded_reply(
@@ -642,13 +617,18 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         record = StepRecord(
             step=step,
             origin="restored",
-            llm_output=llm_output,
+            source_history=RestoredHistory(
+                source_run_id=run.source.manifest.run_id,
+                source_step=step,
+                source_reply=llm_output or run.source.record(step).llm_output,
+                source_actions=run.source.record(step).actions,
+            ),
             timestamp=time.time(),
             error_phase="replay",
             error=str(veto),
         )
         run.step_records.append(record)
-        await self._surrender_vetoed(run.recorder, record, None, veto)
+        await self.surrender_vetoed(run.recorder, record, None, veto)
 
     # 3. the environment
 
@@ -677,7 +657,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     record = self._restore_failure(
                         run, exc.check.step, str(exc), exc.check, exc.observation
                     )
-                    return await self._end_failing(
+                    return await self.end_step(
                         run,
                         record,
                         exc.observation,
@@ -691,12 +671,12 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                         "BranchLoop: run aborted while restoring step %d: %s", step, veto
                     )
                     record = self._restore_failure(run, step, str(veto), None)
-                    await self._surrender_vetoed(run.recorder, record, None, veto)
+                    await self.surrender_vetoed(run.recorder, record, None, veto)
                     raise
                 except Exception as exc:
                     logger.exception("BranchLoop: restoring step %d failed", step)
                     record = self._restore_failure(run, step, f"{type(exc).__name__}: {exc}", None)
-                    return await self._end_failing(
+                    return await self.end_step(
                         run,
                         record,
                         None,
@@ -705,44 +685,115 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                         env_status="failed",
                         answer=run.last_answer,
                     )
-                if restored.step >= run.checkpoint_step:
+                if restored.step != step or restored.check.step != restored.step:
+                    raise IncompatibleCheckpointError(
+                        run.source.name,
+                        [
+                            f"restorer returned step {restored.step} with check {restored.check.step}; expected {step}"
+                        ],
+                    )
+                if restored.step == run.checkpoint_step:
                     return restored.observation, restored.check
-                # Outside the handlers on purpose: a recorder that cannot
-                # write a restored step ends the run like any other step's
-                # (fail closed) — it is not a restoration failure.
-                record = self._restored_record(run, restored.step, restored.check)
+                # History rendering is execution; the recorder separately owns
+                # any failure to persist the execution facts handed over below.
+                record = self._restored_record(
+                    run, restored.step, restored.check, restored.observation
+                )
+                if self.history_source == "restored":
+                    try:
+                        await self._append_restored_history(run, record, restored.observation)
+                    except RunAbort as veto:
+                        record.error_phase, record.error = "restored_history", str(veto)
+                        run.step_records.append(record)
+                        await self.surrender_vetoed(
+                            run.recorder, record, restored.observation, veto
+                        )
+                        raise
+                    except Exception as exc:
+                        record.error_phase = "restored_history"
+                        record.error = f"{type(exc).__name__}: {exc}"
+                        run.step_records.append(record)
+                        return await self.end_step(
+                            run,
+                            record,
+                            restored.observation,
+                            error=record.error,
+                            agent_done="error",
+                            env_status="failed",
+                            answer=run.last_answer,
+                        )
                 run.step_records.append(record)
                 run.prev_step_record = record
-                await self._surrender(run.recorder, record, restored.observation)
+                await self.surrender(run.recorder, record, restored.observation)
                 step = restored.step + 1
         raise IncompatibleCheckpointError(
             run.source.name,
             [f"restorer {self.restorer.restorer_id!r} ended without the checkpoint step"],
         )
 
-    def _restored_record(self, run: BranchRun, step: int, check: RestorationCheck) -> StepRecord:
-        """A restored step: the source's record of it, marked and re-stamped.
-
-        Its actions, results and reply are the source's, so the policy step
-        sees the same ``loop.history`` / ``loop.action_result`` the source
-        saw at *t*. The source's tokens are not this run's, and the timings
-        are measured anew by the recorder; the timestamp is now.
-        """
+    def _restored_record(
+        self, run: BranchRun, step: int, check: RestorationCheck, observation: Any
+    ) -> StepRecord:
+        """Actual restored execution; the original reply is only source material."""
         source_record = run.source.record(step)
-        for result in source_record.action_results:
+        # These parallel lists contain only returned results and their exact
+        # action. Attempts that raised remain in check.actions; compacting
+        # only the result side would pair a later result with the wrong target.
+        returned = [
+            item for item in check.actions if item.executed is not None and item.result is not None
+        ]
+        actions = [item.executed for item in returned if item.executed is not None]
+        results = [item.result for item in returned if item.result is not None]
+        history = RestoredHistory(
+            source_run_id=run.source.manifest.run_id,
+            source_step=step,
+            source_reply=source_record.llm_output,
+            source_actions=source_record.actions[: len(source_record.action_results)],
+            actions=actions,
+            results=results,
+            executions=list(check.actions),
+        )
+        for result in results:
             if result.extracted_content:
                 run.last_answer = result.extracted_content
-        return source_record.model_copy(
-            update={
-                "origin": "restored",
-                "restoration": check,
-                "token_usage": None,
-                "duration_ms": None,
-                "llm_latency_ms": None,
-                "timestamp": time.time(),
-            },
-            deep=True,
+        return StepRecord(
+            step=step,
+            origin="restored",
+            restoration=check,
+            source_history=history,
+            actions=actions,
+            action_results=results,
+            observation_summary=summarize_observation(observation)
+            if observation is not None
+            else "",
+            timestamp=time.time(),
         )
+
+    async def _append_restored_history(
+        self, run: BranchRun, record: StepRecord, observation: Any
+    ) -> None:
+        """Let the Agent express actual recovery and own its state changes."""
+        history = record.source_history
+        assert history is not None
+        history.validate_execution()
+        observation = populate_loop_fragments(
+            observation,
+            loop_sourced=frozenset(getattr(run.negotiated_obs, "loop_sourced", ())),
+            builders=self.loop_fragment_builders(run, record.step),
+        )
+        context = ReactPromptContext(
+            step=record.step,
+            phase="history",
+            is_branch=True,
+            source_run_id=history.source_run_id,
+            source_reply=history.source_reply,
+        )
+        messages = await run.agent.build_restored_history(
+            observation,
+            history=history,
+            context=context,
+        )
+        run.memory.add_messages(messages)
 
     def _restore_failure(
         self,
@@ -757,52 +808,39 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         Not a copy of the source's step: what ran of it, and how, is in the
         failing check's ``actions``.
         """
-        record = StepRecord(
-            step=step,
-            origin="restored",
-            observation_summary=(
-                summarize_observation(observation) if observation is not None else ""
-            ),
-            timestamp=time.time(),
-            error_phase="restore",
-            error=error,
-            restoration=check,
-        )
+        if check is not None:
+            record = self._restored_record(run, step, check, observation)
+            record.error_phase = "restore"
+            record.error = error
+        else:
+            record = StepRecord(
+                step=step,
+                origin="restored",
+                observation_summary=(
+                    summarize_observation(observation) if observation is not None else ""
+                ),
+                timestamp=time.time(),
+                error_phase="restore",
+                error=error,
+            )
         run.step_records.append(record)
         return record
 
-    # 4. the policy step: the configured instruction, the view of the budget
+    def prompt_context(self, run: ReactRun, step_idx: int) -> ReactPromptContext:
+        """Expose branch provenance as facts; contribution functions choose their text."""
+        context = super().prompt_context(run, step_idx)
+        if isinstance(run, BranchRun):
+            context.source_run_id = run.source.manifest.run_id
+            complete = run.source.manifest.complete_through
+            if (
+                complete is not None
+                and step_idx <= complete
+                and step_idx in run.source.committed_steps()
+            ):
+                context.source_reply = run.source.record(step_idx).llm_output
+        return context
 
-    def _add_branch_instruction(self, run: BranchRun) -> None:
-        """Write the configured ``branch_instruction`` into memory, once, before step *t*.
-
-        Runs after the prefix was rebuilt and verified and the environment
-        restored, right before the policy step adds its own observation, so
-        the instruction is the last message ahead of that observation and the
-        step's recorded model call carries it. Nothing compares the policy
-        step's context, so this changes no check. ``none`` writes nothing;
-        so does a checkpoint step the source recorded no action for (its
-        reply did not parse, or its model call failed): there is no recorded
-        action to name.
-        """
-        if self.branch_instruction == "none":
-            return
-        template = BRANCH_INSTRUCTIONS[self.branch_instruction]
-        t = run.checkpoint_step
-        record = run.source.record(t)
-        if not record.actions:
-            logger.info(
-                "BranchLoop: %s recorded no action at step %d; branch_instruction %r adds nothing",
-                run.source.name,
-                t,
-                self.branch_instruction,
-            )
-            return
-        run.memory.add_message(
-            UserMessage(content=template.format(recorded_reply=record.llm_output))
-        )
-
-    def _loop_fragment_builders(self, run: LoopRun, step_idx: int) -> dict[str, Any]:
+    def loop_fragment_builders(self, run: LoopRun, step_idx: int) -> dict[str, Any]:
         """ReAct's builders, with ``loop.step_info`` pinned to the source's.
 
         The policy step is told the step budget and the date the source
@@ -810,15 +848,22 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         ``pinned_step_info``), so the decision is made on the prompt the
         source made it on.
         """
+        history = run.step_records
+        if isinstance(run, BranchRun) and self.history_source == "source":
+            history = [
+                run.source.record(record.step) if record.origin == "restored" else record
+                for record in run.step_records
+            ]
         pinned = run.step_info if isinstance(run, BranchRun) else None
         if pinned is None:
-            return super()._loop_fragment_builders(run, step_idx)
-        max_steps, today = pinned_step_info(pinned, today_override=self.today_override)
+            max_steps, today = self.max_steps, self.today_iso()
+        else:
+            max_steps, today = pinned_step_info(pinned, today_override=self.today_override)
         return loop_fragment_builders(
             task=run.task,
             step=step_idx,
             max_steps=max_steps,
             today=today,
-            history=run.step_records,
-            prev_step=run.prev_step_record,
+            history=history,
+            prev_step=history[-1] if history else None,
         )
