@@ -77,15 +77,23 @@ Adding a provider owes the test suite five things:
 3. The structured path routed through `ChatModelBase._validate_structured` — enforced
    by an AST scan (`test_provider_validation.py:85`) that hunts bare
    `output_format.model_validate*`. One documented exemption: `_groq_parser.py`.
-4. Every request's SDK client closed before the request returns: go through the
-   family's `_request_client()` (or the SDK's own `async with`), never a bare
-   `self.get_client().…`. An unclosed openai / anthropic / groq / google-genai client
-   is collected later and its `__del__`'s late `aclose()` unregisters a reused
-   descriptor from the event loop, so the next model call's connect never completes
-   (`architecture_design.md` §4.7). The `_Case` row above is re-run as
-   `test_a_request_closes_the_client_it_built` (stub clients from
-   `tests/_helpers/llm_clients.py`); a provider with no client of its own goes in
-   `_NO_REQUEST_CLIENT` with its reason. `test_request_clients.py` runs the real SDKs.
+4. Lazily reuse each SDK client within one execution and implement the public
+   `BaseChatModel.aclose(timeout=5.0)` contract through `ChatModelBase`. Provider
+   implementations use the public `ChatModelBase.client_resources: ClientResources`
+   extension API (`core/llm/client_resources.py`): `get_or_create` caches a lazy client,
+   `own` registers additional resources, `use` leases them for an async request, and
+   `run_sync` retains a lease until a synchronous SDK call really exits even if its
+   asyncio waiter is cancelled. Close callbacks consume the registered object;
+   `close=None` declares a borrowed object. The cache's storage is private;
+   borrowed transports remain open. Every request uses its lifecycle lease, so teardown
+   cannot close a resource still in use. Check the installed SDK's public API; never reach
+   through private transport fields. SDK wrappers that close a borrowed transport cannot
+   themselves be closed. Unsupported injection is rejected explicitly. Test reuse, fresh
+   clients after teardown, all failure and cancellation paths, ownership, independent
+   cleanup failures and bounded cleanup. `test_request_clients.py` exercises real SDKs
+   against a local keep-alive endpoint. Cleanup diagnostics use ordinary logging and are
+   returned separately from replies and usage. Consumers use `model_session(...)` or
+   `close_models(...)`; no request retries are triggered by cleanup.
 5. A reasoning case: a `_Case` row in `tests/test_core/test_llm/test_model_reasoning.py`
    per return path, answering with the reasoning your response carries, or an entry in
    `_CARRIES_NONE` saying why it carries none. `test_every_registered_provider_is_covered`

@@ -44,7 +44,7 @@ dependencies = [
     "anthropic>=0.76",
     "google-genai>=1.65",
     "groq>=1.0",
-    "ollama>=0.4",
+    "ollama>=0.6.2",
     "boto3>=1.35",
     "oci>=2.100",
     "Pillow",

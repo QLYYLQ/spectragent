@@ -1,12 +1,21 @@
 """OCI GenAI chat model integration."""
 
-import asyncio
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
 
 import oci
+from oci.auth.signers.ephemeral_resource_principals_v21_signer import (
+    EphemeralResourcePrincipalV21Signer,
+)
+from oci.auth.signers.instance_principals_security_token_signer import (
+    InstancePrincipalsSecurityTokenSigner,
+)
+from oci.auth.signers.nested_resource_principals_signer import NestedResourcePrincipals
+from oci.auth.signers.resource_principals_federation_signer import (
+    ResourcePrincipalsFederationSigner,
+)
 from oci.generative_ai_inference import GenerativeAiInferenceClient
 from oci.generative_ai_inference.models import (
     BaseChatRequest,
@@ -18,6 +27,7 @@ from oci.generative_ai_inference.models import (
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
+from spectragent.core.llm.client_resources import ClientResources
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage, ContentPartTextParam, SystemMessage
@@ -69,35 +79,55 @@ class ChatOCI(ChatModelBase):
     def _uses_cohere_format(self) -> bool:
         return self.oci_provider.lower() == "cohere"
 
-    def _get_oci_client(self) -> GenerativeAiInferenceClient:
-        if not hasattr(self, "_client"):
-            if self.auth_type == "INSTANCE_PRINCIPAL":
-                signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
-                self._client = GenerativeAiInferenceClient(
-                    config={},
-                    signer=signer,
-                    service_endpoint=self.service_endpoint,
-                    retry_strategy=oci.retry.NoneRetryStrategy(),
-                    timeout=(10, 240),
-                )
-            elif self.auth_type == "RESOURCE_PRINCIPAL":
-                signer = oci.auth.signers.get_resource_principals_signer()
-                self._client = GenerativeAiInferenceClient(
-                    config={},
-                    signer=signer,
-                    service_endpoint=self.service_endpoint,
-                    retry_strategy=oci.retry.NoneRetryStrategy(),
-                    timeout=(10, 240),
-                )
-            else:
-                config = oci.config.from_file("~/.oci/config", self.auth_profile)
-                self._client = GenerativeAiInferenceClient(
-                    config=config,
-                    service_endpoint=self.service_endpoint,
-                    retry_strategy=oci.retry.NoneRetryStrategy(),
-                    timeout=(10, 240),
-                )
-        return self._client
+    def _own_signer_resources(
+        self, signer: Any, clients: ClientResources, key: str = "oci.signer"
+    ) -> None:
+        """Own the concrete SDK signers' public sessions, independently.
+
+        These are the signer classes returned by OCI's authentication factories;
+        there is no recursive attribute search or access to private SDK state.
+        The ephemeral 2.2 signer only reads credentials and has no HTTP session.
+        """
+        if isinstance(signer, InstancePrincipalsSecurityTokenSigner):
+            clients.own(
+                key + ".federation",
+                signer.federation_client.requests_session,
+                close=lambda value: value.close(),
+            )
+        elif isinstance(signer, ResourcePrincipalsFederationSigner):
+            clients.own(key, signer.base_client, close=lambda value: value.session.close())
+            self._own_signer_resources(signer.instance_principal_signer, clients, key + ".instance")
+        elif isinstance(signer, EphemeralResourcePrincipalV21Signer):
+            clients.own(key, signer.base_client, close=lambda value: value.session.close())
+        elif isinstance(signer, NestedResourcePrincipals):
+            clients.own(key, signer.base_client, close=lambda value: value.session.close())
+            self._own_signer_resources(signer.sub_resource_rp_signer, clients, key + ".child")
+
+    def _get_oci_client(self, clients: ClientResources) -> GenerativeAiInferenceClient:
+        config: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {}
+        if self.auth_type == "INSTANCE_PRINCIPAL":
+            signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+            self._own_signer_resources(signer, clients)
+            kwargs["signer"] = signer
+        elif self.auth_type == "RESOURCE_PRINCIPAL":
+            signer = oci.auth.signers.get_resource_principals_signer()
+            self._own_signer_resources(signer, clients)
+            kwargs["signer"] = signer
+        else:
+            config = oci.config.from_file("~/.oci/config", self.auth_profile)
+        client = GenerativeAiInferenceClient(
+            config=config,
+            service_endpoint=self.service_endpoint,
+            retry_strategy=oci.retry.NoneRetryStrategy(),
+            timeout=(10, 240),
+            **kwargs,
+        )
+        if "signer" not in kwargs:
+            # OCI configuration can select an authentication type itself. The
+            # SDK then creates the signer and exposes it on its public base client.
+            self._own_signer_resources(client.base_client.signer, clients)
+        return client
 
     def _extract_usage(self, response) -> ChatInvokeUsage | None:
         try:
@@ -178,9 +208,16 @@ class ChatOCI(ChatModelBase):
         chat_details.chat_request = chat_request
         chat_details.compartment_id = self.compartment_id
 
+        clients = self.client_resources
+
         def _sync_request():
             try:
-                return self._get_oci_client().chat(chat_details)
+                client = clients.get_or_create(
+                    "oci",
+                    lambda: self._get_oci_client(clients),
+                    close=lambda value: value.base_client.session.close(),
+                )
+                return client.chat(chat_details)
             except Exception as e:
                 status_code = getattr(e, "status", 500)
                 if status_code == 429:
@@ -189,8 +226,7 @@ class ChatOCI(ChatModelBase):
                     message=str(e), status_code=status_code, model=self.name
                 ) from e
 
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _sync_request)
+        return await clients.run_sync(_sync_request)
 
     @overload
     async def ainvoke(

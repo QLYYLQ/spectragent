@@ -9,12 +9,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
 
+import httpx
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.messages import BaseMessage
-from spectragent.core.llm.providers.openai_base import OpenAICompatBase, message_reasoning
+from spectragent.core.llm.providers.openai_base import (
+    OpenAICompatBase,
+    message_reasoning,
+    resolve_http_transport,
+)
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
@@ -38,6 +43,10 @@ class ChatCerebras(OpenAICompatBase):
     def provider(self) -> str:
         return "cerebras"
 
+    @property
+    def http_transport(self) -> httpx.AsyncClient | None:
+        return resolve_http_transport(self.http_client, self.client_params)
+
     def get_client(self) -> AsyncOpenAI:
         effective_base_url = self.base_url or "https://api.cerebras.ai/v1"
         params: dict[str, Any] = {
@@ -47,6 +56,8 @@ class ChatCerebras(OpenAICompatBase):
         }
         if self.client_params:
             params.update(self.client_params)
+        if self.http_transport is not None:
+            params["http_client"] = self.http_transport
         return AsyncOpenAI(**params)
 
     @overload

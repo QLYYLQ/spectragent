@@ -1775,6 +1775,7 @@ BaseChatModel (Protocol)
     ├── model_type: str         # "openai", "anthropic", "google", ...
     ├── provider: str           # "direct", "azure", "aws", ...
     ├── name: str
+    ├── aclose(*, timeout=5.0) → tuple[ClientCleanupDiagnostic, ...]
     └── ainvoke(messages, output_format?) → ChatInvokeCompletion[T]
          │
          ├── OpenAICompatBase          ← openai.direct, openai.azure, openai.groq,
@@ -1795,19 +1796,45 @@ LLM 实例**只有一条构造路径**：YAML 写 `model_type` + `provider` 判�
 `__wiring__` setattr 注入 `agent.llm`。**没有模型昵称表，没有 `get_llm_by_name()` 这类字符串工厂**——
 模型的 wire id 直接写在配置里。
 
-**provider 建的客户端由 provider 关，不留给垃圾回收。**OpenAI 系（`OpenAICompatBase`
-及其子类）、Anthropic 系（`AnthropicCompatBase`）与 `ChatGoogle` 的每个请求经 `get_client()`
-新建一个 SDK 客户端（连同它的连接池），并在这个请求返回之前关掉它，成功、失败、被取消都一样
-（`_request_client()`；`ChatGroq` 的 SDK 不是 openai 的，用它自己的 `async with`）。留给回收器的后果比泄漏更糟：
-openai / anthropic / groq / google-genai 的异步客户端在未关闭就被回收时，`__del__` 会在仍在运行的事件
-循环上排一个 `aclose()`。这类客户端多半挂在引用环上（它的资源对象引用回它，或持有它的 run 对象图成环），
-由循环回收器收；同一轮回收已经把它的 socket 关掉，号码随即被下一个新建的 socket 拿到，迟到的 `aclose()`
-关传输时却按旧号码把事件循环选择器里**新 socket 的**注册删掉；删掉的若是下一次模型调用的 connect 回调，
-这次调用就永远等不到连接完成，卡到超时为止，超时设多长都一样。调用方注入的 `http_client` 归注入方，
-provider 不关它。代价是调用之间不复用连接：OpenAI 系与 Anthropic 系原本就每次调用新建客户端，`ChatGoogle`
-原先按实例缓存一个；按 run 复用一个客户端需要 LLM 的生命周期（§14.3）。`ChatOllama`（SDK 没有关闭接口）
-与 `ChatMistral`（按实例缓存）也还没关自己的客户端；它们是纯 httpx，没有那种 `__del__`，只泄漏到回收为止，
-不会删别人的注册。
+**客户端属于一次执行，由持有方显式收尾。** `BaseChatModel.aclose(*, timeout=5.0)` 是公开、具类型的
+生命周期合同，返回 `tuple[ClientCleanupDiagnostic, ...]`；空元组表示本次没有未完成清理。第一次请求才创建
+客户端，同一次任务或独立 judge 批次的后续调用与请求重试复用它；构造、prepare 与 dry-run 不打开连接。
+Runtime 在任务的所有结束路径清理其实际持有的 agent 模型；独立评测入口负责自己的 judge，提示贡献者负责自己
+显式持有的辅助模型，互不扫描其他消费者。直接 Python 调用使用 `core.llm.lifecycle.model_session(model)`
+异步上下文，或在 `finally` 调用 `await model.aclose()`。一个执行内可以多次调用，但不能在仍有调用使用时提前关闭。
+
+provider 作者通过公开 `ChatModelBase.client_resources: ClientResources`（`core/llm/client_resources.py`）
+声明 `get_or_create`、`own`、`use` 和 `run_sync`；缓存字典、关闭任务与使用计数是该组件的私有实现，消费者不读它们。
+
+所有权按实际构造记录：provider 自建 SDK/HTTP transport 由 provider 关；通过 Python 注入的 transport 默认
+借用，由注入者关。SDK wrapper 的 close 若会关闭借用 transport，就不能调用它；不支持的注入必须明确拒绝。
+同步与异步资源分别登记，逐项独立有界清理；一项失败不跳过其余。默认清理预算每个模型 **5 秒**，覆盖等待正在使用
+的请求和资源关闭，不改模型请求 timeout 或重试次数，也不新增 YAML 资源作用域。清理只取消未完成的关闭尝试，
+不能把取消请求当成已释放；同步关闭用独立 daemon worker，避免阻塞事件循环或解释器的默认线程池收尾。仍在使用的
+资源延后到调用退出再关闭，并明确报告未完成。所有自建 transport 从执行缓存移除，即使清理失败也不进入下一次执行；
+同一 Python 模型对象的顺序新执行重新建客户端，跨 asyncio 事件循环也一样。借用 transport 的后续复用由注入方决定。
+
+关闭失败、超时和未完成通过普通执行日志可见，并作为类型化诊断返回，完全没启用记录组件也能发现；它们不是模型请求
+失败、动作错误或重试理由。成功回复及 usage 不变，原调用异常不被覆盖，外部取消仍传播。重复清理不重复关闭已处理的
+资源，也不为清理创建客户端；已有未完成诊断保留到新执行开始，不能把第二次清理的无操作冒充释放成功。`close_models(...)` 给 Runtime、judge 和辅助模型 owner 提供同一有界收尾入口；每个
+模型独立清理，不能让一个坏模型拦住其他模型。这里没有全局池、引用计数、多 agent 共享模型或私有 SDK 字段探测。
+
+已核实的 SDK 关闭合同（版本是本次验收环境，不是统一共享实现的假设）：
+
+| provider | 实际所有权与公开关闭入口 |
+|---|---|
+| OpenAI 系、Anthropic 系、Groq | OpenAI 2.29.0、Anthropic 0.86.0、Groq 1.1.1 的 `close()` 都关闭其 HTTPX transport；借用 transport 时只释放 wrapper 引用。Azure 自建 HTTPX 在 SDK 构造前登记，SDK 构造失败也收尾。DeepSeek/Cerebras 的 `client_params.http_client` 与字段注入统一解析，冲突拒绝。 |
+| Google | google-genai 1.68.0 的 `Client.close()` 与 `Client.aio.aclose()` 分别登记；SDK 明确保留 `HttpOptions.httpx_client` / `httpx_async_client` / `aiohttp_client` 的借用对象。嵌套 `client_args` / `async_client_args` 的 transport、mounts、connector 注入拒绝，提示改用明确客户端注入。 |
+| Mistral / browser_use | HTTPX 0.28.1 自建 `AsyncClient.aclose()`；Python 注入的 `http_client` 借用。Mistral 客户端构造失败后已创建的 transport 仍登记收尾。 |
+| Ollama | 要求 ollama >= 0.6.2，验收 0.6.3 的公开 `AsyncClient.close()`；0.6.1 无此入口。注入 `client_params.transport` / `mounts` 时，所有权包装仅转发公开 HTTP 请求，SDK 关闭不向借用 transport 转发。SDK 不支持的 `http_client` 明确拒绝。 |
+| Bedrock | boto3/botocore 1.42.72 的新建 client `close()`；Python 注入的 Session 本身借用，`session.client()` 创建的客户端仍由执行拥有。 |
+| OCI | OCI 2.168.2 的公开 `base_client.session.close()`；本 provider 实际创建的 principal signer 按具体 SDK 类型登记公开 session，逐项独立关闭。SDK 构造内部抛错且未交回对象的资源不可访问，不探私有字段，也不声称框架已释放它。 |
+
+同步 SDK 请求取消时线程可能仍在执行：`run_sync` 保留该请求的资源使用权直到线程实际返回，不能仅因 asyncio
+等待者取消就提前关闭 transport。Python 无法强制终止一个拒绝返回的 SDK 线程或拒绝取消的关闭协程；预算耗尽时
+报告 `in_use` / `timeout`、隔离该次资源，不能宣称强制释放成功。独立评测中 `EvaluationRunner.run` 是一次 judge
+批次，`evaluate_trace` 是一次单轨迹执行；`LLMJudgeEvaluator` 通过 `EvaluatorLifecycle.aclose` 显式释放自己的
+judge，不把评测伪装成 AgentRuntime 任务。直接调用 evaluator 的 Python 代码同样负责结束它的生命周期。
 
 **模型的推理：响应带回什么就记什么，不索取，不回喂。**（用户 2026-10-14 的裁决）响应里本来就带着的推理，provider
 填进 `ChatInvokeCompletion.thinking`；只以不透明形式返回的推理填进 `redacted_thinking`。每条返回路径（文本、
@@ -4766,10 +4793,8 @@ conscribe 0.6.1 将支持 `__wiring__` Mode 2 三元素 tuple（`required + opti
 
 DD 1.4 提到走独立的 A2A 通讯协议设计，不属于 agent loop 范畴。具体设计待定。
 
-### 14.3 LLM 客户端的生命周期
+### 14.3 LLM 客户端的生命周期（已决定）
 
-provider 为每个请求建一个 SDK 客户端、请求返回前关掉（§4.7），所以请求之间不复用 TCP/TLS 连接；
-`ChatGoogle` 走 Vertex 且没给 `credentials` 时，每个新客户端还要重新加载一次 ADC、刷新一次 token。
-按 run 持有一个客户端能省掉这些，但得有人在 run 结束时关它：例如 `BaseChatModel` 加 `aclose()`，由持有
-LLM 实例的一方（组装出它的 run——agent 的 `llm`、动作的 LLM、评测器的 judge）在每条结束路径上调用。
-这是协议改动，待定。在它之前，按实例缓存客户端而不关是不可取的：对带 `__del__` 的 SDK，那正是 §4.7 描述的连接卡死。
+已按 §4.7 实施执行内惰性复用与显式收尾。生命周期归一次任务、独立评测批次或显式 Python
+`model_session`，不属于 AgentLoop 策略，也不通过 YAML wire id 建立共享池。云浏览器 lite SDK 的
+生命周期审计仍延期；不因模型客户端改动扩大到浏览器后端。

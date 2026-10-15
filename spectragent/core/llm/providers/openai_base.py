@@ -53,6 +53,18 @@ _LISTED_MODEL_DEFAULT_EFFORT = "low"
 _REASONING_FIELDS = ("reasoning_content", "reasoning")
 
 
+def resolve_http_transport(
+    http_client: httpx.AsyncClient | None, client_params: Mapping[str, Any] | None
+) -> httpx.AsyncClient | None:
+    """Resolve Python transport injection without ignoring a conflicting owner."""
+    extra_client = (client_params or {}).get("http_client")
+    if extra_client is not None and not isinstance(extra_client, httpx.AsyncClient):
+        raise TypeError("client_params['http_client'] must be an httpx.AsyncClient")
+    if http_client is not None and extra_client is not None and extra_client is not http_client:
+        raise ValueError("http_client and client_params['http_client'] name different transports")
+    return http_client if http_client is not None else extra_client
+
+
 def message_reasoning(message: object) -> str | None:
     """The reasoning an OpenAI-compatible reply message carried, or ``None``.
 
@@ -237,38 +249,30 @@ class OpenAICompatBase(ChatModelBase):
             params["default_headers"] = self.default_headers
         if self.default_query:
             params["default_query"] = self.default_query
-        if self.http_client:
-            params["http_client"] = self.http_client
+        if self.http_transport is not None:
+            params["http_client"] = self.http_transport
         return AsyncOpenAI(**params)
+
+    @property
+    def http_transport(self) -> httpx.AsyncClient | None:
+        """The actual borrowed transport passed to this provider's SDK."""
+        return self.http_client
 
     @asynccontextmanager
     async def _request_client(self) -> AsyncIterator[AsyncOpenAI]:
-        """The client one request runs on, closed before the request returns.
+        """Reuse this execution's SDK, protecting active calls from cleanup.
 
-        :meth:`get_client` builds a new client — and with it a connection
-        pool — every time, so every request site goes through here and the
-        pool is closed on success, failure and cancellation alike.
-
-        Not closing it is not merely a leak. openai's client is cyclic
-        garbage once the call returns, and when the collector reaches it,
-        one pass both closes the pooled socket (its own finalizer) and runs
-        the SDK's ``__del__``, which schedules ``aclose()`` on the running
-        loop. By the time that task runs, the next socket has taken the
-        freed descriptor number, and closing the stale transport
-        unregisters that number from the loop's selector — the next model
-        call's connect callback with it, so the connect never completes and
-        the call hangs to its timeout (``docs/architecture_design.md`` §4.7).
-
-        An injected ``http_client`` belongs to whoever injected it: closing
-        the SDK client would close it too, so a client built around it is
-        left open.
+        OpenAI's public ``close`` closes its HTTP transport. A wrapper built
+        around a borrowed transport therefore has no independent close action.
+        Every constructor in this family passes ``http_transport`` unchanged.
         """
-        client = self.get_client()
-        try:
+        async with self.client_resources.use():
+            client = self.client_resources.get_or_create(
+                "sdk",
+                self.get_client,
+                close=None if self.http_transport is not None else lambda sdk: sdk.close(),
+            )
             yield client
-        finally:
-            if self.http_client is None:
-                await client.close()
 
     # ------------------------------------------------------------------
     # Usage extraction

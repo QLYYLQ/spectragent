@@ -221,6 +221,13 @@ class FakeJudge:
     model: str = "fake-judge"
     calls: list[RecordedCall] = field(default_factory=list)
 
+    @property
+    def name(self) -> str:
+        return self.model
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
+        return ()
+
     async def ainvoke(self, messages, output_format=None, **kwargs: Any) -> Any:
         self.calls.append(RecordedCall(messages=list(messages)))
         index = min(len(self.calls) - 1, len(self.replies) - 1)

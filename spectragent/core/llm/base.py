@@ -5,6 +5,7 @@ from typing import Any, Protocol, TypeVar, overload, runtime_checkable
 
 from pydantic import BaseModel
 
+from spectragent.core.llm.lifecycle import ClientCleanupDiagnostic, ModelClientLifecycle
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
 from spectragent.core.llm.views import ChatInvokeCompletion
@@ -13,7 +14,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 @runtime_checkable
-class BaseChatModel(Protocol):
+class BaseChatModel(ModelClientLifecycle, Protocol):
     _verified_api_keys: bool = False
 
     model: str
@@ -88,6 +89,16 @@ class BaseChatModel(Protocol):
         tool_choice:
             How the model should choose between answering and calling; ignored
             when *tools* is empty.
+        """
+        ...
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple[ClientCleanupDiagnostic, ...]:
+        """End this execution's client use without changing any model-call outcome.
+
+        Implementations release only owned resources, report cleanup failures,
+        leave borrowed transports open, and never create a client for cleanup.
+        Subsequent executions create fresh owned clients. Cancellation of the
+        caller propagates while already-started bounded cleanup continues.
         """
         ...
 

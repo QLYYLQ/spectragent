@@ -1,6 +1,7 @@
 """LLM provider registry using conscribe."""
 
 import json
+import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -8,10 +9,12 @@ from conscribe import create_registrar
 from pydantic import BaseModel, ValidationError
 
 from spectragent.core.llm.base import BaseChatModel
+from spectragent.core.llm.client_resources import ClientResources
 from spectragent.core.llm.exceptions import (
     StructuredOutputValidationError,
     ToolsUnsupportedError,
 )
+from spectragent.core.llm.lifecycle import ClientCleanupDiagnostic
 from spectragent.core.llm.model_families import ModelFamily, detect_model_family
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.tools import ToolDefinition
@@ -44,6 +47,31 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
         # checker only keeps the shared helpers below statically checkable
         # without touching what conscribe sees at runtime.
         model: str
+
+    @property
+    def client_resources(self) -> ClientResources:
+        """Provider extension API for execution-owned clients and resource leases."""
+        resources = getattr(self, "_client_resources", None)
+        if resources is None:
+            resources = ClientResources(str(self.model))
+            self._client_resources = resources
+            self._client_cleanup_diagnostics = ()
+        return resources
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple[ClientCleanupDiagnostic, ...]:
+        """Release this execution's clients; a later execution starts fresh."""
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("Model cleanup timeout must be finite and positive")
+        resources = getattr(self, "_client_resources", None)
+        if resources is None:
+            return getattr(self, "_client_cleanup_diagnostics", ())
+        try:
+            diagnostics = await resources.aclose(timeout=timeout)
+            self._client_cleanup_diagnostics = diagnostics
+            return diagnostics
+        finally:
+            if self._client_resources is resources:
+                self._client_resources = None
 
     @property
     def model_name(self) -> str:

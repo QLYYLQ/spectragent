@@ -4,7 +4,8 @@
 # 的 nested config 类型提取机制（详见 openai_base.py 注释）。
 
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
 
@@ -116,7 +117,7 @@ class ChatAzureOpenAI(OpenAICompatBase):
             "base_url": self.base_url,
             "azure_ad_token": self.azure_ad_token,
             "azure_ad_token_provider": self.azure_ad_token_provider,
-            "http_client": self.http_client,
+            "http_client": self.http_transport,
         }.items():
             if v is not None:
                 params[k] = v
@@ -125,10 +126,27 @@ class ChatAzureOpenAI(OpenAICompatBase):
         if self.default_query:
             params["default_query"] = self.default_query
         if "http_client" not in params:
-            params["http_client"] = httpx.AsyncClient(
-                limits=httpx.Limits(max_connections=20, max_keepalive_connections=6)
+            # Register the owned HTTP transport before the SDK constructor:
+            # even a constructor failure must leave it available for cleanup.
+            params["http_client"] = self.client_resources.get_or_create(
+                "http",
+                lambda: httpx.AsyncClient(
+                    limits=httpx.Limits(max_connections=20, max_keepalive_connections=6)
+                ),
+                close=lambda transport: transport.aclose(),
             )
         return AsyncAzureOpenAIClient(**params)
+
+    @asynccontextmanager
+    async def _request_client(self) -> AsyncIterator[AsyncAzureOpenAIClient]:
+        """Azure owns its explicitly built HTTP transport, not a second copy.
+
+        ``get_client`` registers that transport before SDK construction. The
+        SDK wrapper has no cleanup independent from closing the same transport.
+        """
+        async with self.client_resources.use():
+            client = self.client_resources.get_or_create("sdk", self.get_client, close=None)
+            yield client
 
     def _should_use_responses_api(self) -> bool:
         """Resolve the tri-state ``use_responses_api`` field.

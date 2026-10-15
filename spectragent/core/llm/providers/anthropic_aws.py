@@ -78,6 +78,8 @@ class ChatAnthropicAWS(AnthropicCompatBase):
             params["default_headers"] = self.default_headers
         if self.default_query:
             params["default_query"] = self.default_query
+        if self.http_client is not None:
+            params["http_client"] = self.http_client
         return AsyncAnthropicBedrock(**params)
 
     # ainvoke inherited from AnthropicCompatBase

@@ -7,12 +7,18 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
 
+import httpx
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
+from openai.types.chat import ChatCompletionFunctionToolParam, ChatCompletionNamedToolChoiceParam
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.messages import BaseMessage
-from spectragent.core.llm.providers.openai_base import OpenAICompatBase, message_reasoning
+from spectragent.core.llm.providers.openai_base import (
+    OpenAICompatBase,
+    message_reasoning,
+    resolve_http_transport,
+)
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
@@ -37,6 +43,10 @@ class ChatDeepSeek(OpenAICompatBase):
     def provider(self) -> str:
         return "deepseek"
 
+    @property
+    def http_transport(self) -> httpx.AsyncClient | None:
+        return resolve_http_transport(self.http_client, self.client_params)
+
     def get_client(self) -> AsyncOpenAI:
         effective_base_url = self.base_url or "https://api.deepseek.com/v1"
         params: dict[str, Any] = {
@@ -46,6 +56,8 @@ class ChatDeepSeek(OpenAICompatBase):
         }
         if self.client_params:
             params.update(self.client_params)
+        if self.http_transport is not None:
+            params["http_client"] = self.http_transport
         return AsyncOpenAI(**params)
 
     def _apply_deepseek_beta(self, ds_messages: list) -> None:
@@ -137,7 +149,7 @@ class ChatDeepSeek(OpenAICompatBase):
                     output_format, strict=self._use_strict_schema(output_format)
                 )
                 schema.pop("title", None)
-                schema_tools = [
+                schema_tools: list[ChatCompletionFunctionToolParam] = [
                     {
                         "type": "function",
                         "function": {
@@ -147,7 +159,10 @@ class ChatDeepSeek(OpenAICompatBase):
                         },
                     }
                 ]
-                schema_tool_choice = {"type": "function", "function": {"name": tool_name}}
+                schema_tool_choice: ChatCompletionNamedToolChoiceParam = {
+                    "type": "function",
+                    "function": {"name": tool_name},
+                }
 
                 async with self._request_client() as client:
                     resp = await client.chat.completions.create(

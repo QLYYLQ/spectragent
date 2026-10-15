@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from spectragent.core.llm.lifecycle import ClientCleanupDiagnostic
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.eval_result import EvalResult
@@ -43,3 +44,10 @@ class BaseEvaluator(Protocol):
     def evaluator_id(self) -> str: ...
 
     async def evaluate(self, trace: RunTrace, reference: EvalReference) -> EvalResult: ...
+
+
+@runtime_checkable
+class EvaluatorLifecycle(Protocol):
+    """Optional resource ownership for an independent evaluation execution."""
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple[ClientCleanupDiagnostic, ...]: ...

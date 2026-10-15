@@ -273,8 +273,15 @@ class ChatBedrock(ChatModelBase):
                 body.update(self.request_params)
             body = {k: v for k, v in body.items() if v is not None}
 
-            client = self._get_client()
-            response = client.converse(modelId=self.model, messages=bedrock_messages, **body)
+            clients = self.client_resources
+
+            def request() -> dict[str, Any]:
+                client = clients.get_or_create(
+                    "bedrock", self._get_client, close=lambda value: value.close()
+                )
+                return client.converse(modelId=self.model, messages=bedrock_messages, **body)
+
+            response = await clients.run_sync(request)
             usage = self._get_usage(response)
 
             if "output" in response and "message" in response["output"]:

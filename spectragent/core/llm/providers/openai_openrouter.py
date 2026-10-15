@@ -43,6 +43,8 @@ class ChatOpenRouter(OpenAICompatBase):
             "max_retries": self.max_retries,
             "base_url": effective_base_url,
         }
+        if self.http_transport is not None:
+            params["http_client"] = self.http_transport
         return AsyncOpenAI(**params)
 
     @overload

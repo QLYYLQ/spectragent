@@ -49,6 +49,8 @@ class ChatVercel(OpenAICompatBase):
             "max_retries": self.max_retries,
             "base_url": effective_base_url,
         }
+        if self.http_transport is not None:
+            params["http_client"] = self.http_transport
         return AsyncOpenAI(**params)
 
     def _vercel_needs_prompt_json(self) -> bool:

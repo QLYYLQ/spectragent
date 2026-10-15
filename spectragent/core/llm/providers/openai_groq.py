@@ -4,7 +4,8 @@
 # 的 nested config 类型提取机制（详见 openai_base.py 注释）。
 
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, TypeVar, overload
 
@@ -40,7 +41,23 @@ class ChatGroq(OpenAICompatBase):
             base_url=self.base_url,
             timeout=self.timeout,
             max_retries=self.max_retries,
+            http_client=self.http_transport,
         )
+
+    @asynccontextmanager
+    async def _request_client(self) -> AsyncIterator[Any]:
+        """Groq's SDK owns its transport unless that transport was injected.
+
+        Its public ``close`` has the same transport effect as OpenAI's, but
+        request types belong to Groq's own SDK rather than AsyncOpenAI.
+        """
+        async with self.client_resources.use():
+            client = self.client_resources.get_or_create(
+                "sdk",
+                self.get_client,
+                close=None if self.http_transport is not None else lambda sdk: sdk.close(),
+            )
+            yield client
 
     @overload
     async def ainvoke(
@@ -97,13 +114,9 @@ class ChatGroq(OpenAICompatBase):
 
         groq_messages = OpenAIMessageSerializer.serialize_messages(messages)
 
-        # Each request's client is closed before it returns, for the reason
-        # ``OpenAICompatBase._request_client`` gives (arch §4.7). ``AsyncGroq`` is
-        # not openai's client, so this is the SDK's own ``async with``; it never
-        # wraps an injected ``http_client``, so it is always this request's.
         try:
             if output_format is None:
-                async with self.get_client() as client:
+                async with self._request_client() as client:
                     resp = await client.chat.completions.create(
                         messages=groq_messages,
                         model=self.model,
@@ -126,7 +139,7 @@ class ChatGroq(OpenAICompatBase):
                 schema = SchemaOptimizer.create_optimized_json_schema(
                     output_format, strict=self._use_strict_schema(output_format)
                 )
-                async with self.get_client() as client:
+                async with self._request_client() as client:
                     resp = await client.chat.completions.create(
                         model=self.model,
                         messages=groq_messages,
