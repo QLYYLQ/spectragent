@@ -39,10 +39,10 @@ def test_composed_config_is_exported_and_is_a_model() -> None:
 
 def test_every_layer_the_composer_needs_is_present() -> None:
     """Each registrar layer must have a field on the top-level model."""
+    from spectragent.core.registries import collect_registrars
     from spectragent.generated import ComposedConfig
-    from spectragent.scripts.generate_all import _collect_registrars
 
-    missing = set(_collect_registrars()) - set(ComposedConfig.model_fields)
+    missing = set(collect_registrars()) - set(ComposedConfig.model_fields)
     assert not missing, f"generated config is stale — missing layers: {sorted(missing)}"
 
 

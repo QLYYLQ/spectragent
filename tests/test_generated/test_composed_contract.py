@@ -20,10 +20,10 @@ from conscribe.introspect import wiring_slots
 from conscribe.stubs import collect_class_stub_info
 from pydantic import ValidationError
 
-from spectragent.scripts.generate_all import _collect_registrars
+from spectragent.core.registries import collect_registrars
 
 discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
-registrars = _collect_registrars()
+registrars = collect_registrars()
 validate_wiring(registrars)
 result = build_composed_config(registrars, inline_wiring=True, top_level_extra="forbid")
 from spectragent.generated import ComposedConfig

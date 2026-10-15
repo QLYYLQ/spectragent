@@ -15,11 +15,11 @@ from spectragent.cli.configuration_errors import inspection_stage
 from spectragent.cli.configuration_provenance import explain_provenance
 from spectragent.cli.fingerprints import source_fingerprints
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.core.run_cli import task_context
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TraceNegotiation
 from spectragent.core.trace.redaction import redact_config
-from spectragent.scripts.generate_all import _collect_registrars
 
 
 def explain_config(
@@ -36,7 +36,7 @@ def explain_config(
         if not isinstance(raw, dict):
             raise ValueError("The configuration must be a YAML mapping")
     with inspection_stage("schema"):
-        registrars = _collect_registrars()
+        registrars = collect_registrars()
         composer = ConfigComposer(registrars=registrars)
     with inspection_stage("validation"):
         config = composer.top_level_type.model_validate(raw)
@@ -141,7 +141,7 @@ def explain_config(
 
 
 def list_components(layer: str | None = None) -> dict[str, Any]:
-    registrars = _collect_registrars()
+    registrars = collect_registrars()
     composer = ConfigComposer(registrars=registrars)
     if layer is not None and layer not in registrars:
         raise ValueError(f"Unknown component layer {layer!r}; choose {', '.join(registrars)}")

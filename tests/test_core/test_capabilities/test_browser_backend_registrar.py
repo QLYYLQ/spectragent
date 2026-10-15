@@ -267,9 +267,9 @@ class TestComposerInjectsBackend:
         """
         import spectragent.core.capabilities.browser.backends.local_chrome  # noqa: F401
         from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
-        from spectragent.scripts.generate_all import _collect_registrars
+        from spectragent.core.registries import collect_registrars
 
-        composer = ConfigComposer(registrars=_collect_registrars())
+        composer = ConfigComposer(registrars=collect_registrars())
         raw = {
             "capability": [
                 {

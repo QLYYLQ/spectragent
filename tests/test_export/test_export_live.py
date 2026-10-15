@@ -103,9 +103,9 @@ def _record_ui_tars(
 
 
 def _collect() -> dict[str, Any]:
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
-    return _collect_registrars()
+    return collect_registrars()
 
 
 def _rendered(composer: ConfigComposer, trace: RunTrace) -> list[RenderedSample]:

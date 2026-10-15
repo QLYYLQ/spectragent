@@ -30,11 +30,11 @@ from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
+from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
-from spectragent.scripts.generate_all import _collect_registrars
 from tests._helpers.assembly import AGENT_ID, make_run
 from tests._helpers.browser_archive import OwnedBrowser
 from tests._helpers.fake_cdp import FakeBrowser
@@ -249,7 +249,7 @@ async def test_page_interactions_and_other_capabilities_are_unaffected(action: A
 
 
 def test_yaml_explicitly_selects_the_browser_hook_and_rejects_a_typo() -> None:
-    composer = ConfigComposer(registrars=_collect_registrars())
+    composer = ConfigComposer(registrars=collect_registrars())
     run = composer.compose(yaml.safe_load("hook:\n  - hook_id: ui_navigation_guard\n"))
     assert isinstance(run.single("hook"), UiNavigationGuard)
     assert composer.compose({}).by_layer.get("hook", {}) == {}, "the guard is opt-in"

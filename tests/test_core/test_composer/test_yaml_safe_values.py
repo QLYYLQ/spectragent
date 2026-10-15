@@ -30,8 +30,8 @@ from conscribe import discover, get_registry
 from spectragent import PACKAGE_ROOT
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
 from spectragent.core.composer import ConfigComposer
+from spectragent.core.registries import collect_registrars
 from spectragent.flywheel.chain import ChainSpec
-from spectragent.scripts.generate_all import _collect_registrars
 
 #: What YAML 1.1 reads as a boolean or null, compared case-insensitively.
 YAML_HAZARDS = frozenset({"on", "off", "yes", "no", "true", "false", "null", "~"})
@@ -95,7 +95,7 @@ def _schema_strings(node: Any) -> Iterator[str]:
 
 
 def _option_values() -> set[str]:
-    run = ConfigComposer(registrars=_collect_registrars()).top_level_type
+    run = ConfigComposer(registrars=collect_registrars()).top_level_type
     values: set[str] = set()
     for model in (run, ChainSpec, SiteRule):
         values.update(_schema_strings(model.model_json_schema()))

@@ -30,12 +30,12 @@ def source_fingerprints() -> dict[str, str]:
 def _probe() -> dict[str, str]:
     from conscribe import compute_registry_fingerprint, discover
 
-    from spectragent.scripts.generate_all import _collect_registrars
+    from spectragent.core.registries import collect_registrars
 
     discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
     return {
         name: compute_registry_fingerprint(registrar)
-        for name, registrar in _collect_registrars().items()
+        for name, registrar in collect_registrars().items()
     }
 
 
