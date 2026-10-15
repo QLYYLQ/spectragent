@@ -27,13 +27,13 @@ The intended collaboration loop is:
 4. A human selects experiments through schema-backed YAML.
 5. AF rejects incompatible composition before spending run time or model calls.
 
-## Configuration explanation: implemented surface and remaining detail
+## Configuration explanation: implemented surface
 
 The user approved the original config-explainer direction on 2026-09-23. Do not keep
 that whole direction labelled unimplemented: the current command is
 `spectragent config explain CONFIG --json`, implemented in `cli/app.py` and
 `cli/configuration.py` and documented in architecture §4.17. It already exists in the
-accepted `a6a36d0` code; it is not an extra feature delivered by this memory update.
+accepted `a6a36d0` code; the richer provenance below was added later.
 
 The current command composes and prepares without launching an environment or model.
 It reports component instance/implementation identities, resolved redacted config,
@@ -41,31 +41,34 @@ effective action/fragment/archive negotiation and descriptors, AOP intercepts,
 fingerprints and generated-config freshness. It has human and JSON output. CLI tests
 verify the no-launch and secret-redaction boundaries.
 
-The original richer intent remains useful when a researcher needs more explanation:
-explicit/default/inherited wiring-edge provenance, detailed MRO resolution, field-level
-origins and further diagnosis of rejected composition. Inspect the actual output and
-that user's need before proposing an extension; do not infer these richer facts from
-an instance list or silently claim every provenance feature exists. General-purpose
-Conscribe support is a separate possible upstream improvement, not a reason to rebuild
-the existing AF command.
+The 2026-10-16 framework expansion delivered the richer field/MRO/wiring provenance.
+Published Conscribe 2.1.0 supplies public declaration evidence; AF joins it with explicit/
+default input origins and actual Composer injection evidence. These are separate facts,
+not a graph guessed from instance fields. Structured failures retain their stage and
+public contract details. See architecture §4.17 and the current handoff indexed in
+`unfinished-work.md` for evidence and limits.
 
 Keep read-only preparation, trace-equivalent redaction, machine-readable output and
-actionable errors as constraints. The commented YAML template CLI below is a different,
-still-deferred feature.
+actionable errors as constraints. Templates below author ordinary executable YAML;
+explain remains a redacted report.
 
-## Deferred direction: commented YAML template assembly
+## Commented YAML template assembly: implemented after the original deferral
 
 On 2026-10-15 the user preferred explicit configuration even where Conscribe can supply
-defaults. A future `spectragent` CLI should assemble a commented YAML template from
-selected components and requirements; their example was a BrowserUse agent with a
-ReAct loop, token recording enabled, and no replay. Exact syntax and which parameters
-the template expands have not been designed. The user explicitly deferred this CLI
-work; do not start it as part of the loop-layering discussion.
+defaults, with BrowserUse/ReAct, token recording and no replay as their example. They
+initially deferred template work during the loop-layering discussion. The later
+authorized framework expansion delivered `spectragent config template`: selected
+components, receptors and default actions expand with schema comments/constraints,
+missing required values are named, and null/empty/subset semantics are preserved.
+Selection or `--from CONFIG` produces ordinary YAML through the public catalog and
+same Composer, without starting environment/model or opening task replay evidence.
+Architecture §4.17 defines the CLI; it is no longer an active deferral.
 
 ## Implemented recording and execution decisions
 
-The 2026-10-15 discussion is now implemented and accepted at `a6a36d0`; the current
-handoff is `tmp/flywheel/followup/implementation/README.md`. The earlier
+The 2026-10-15 discussion was implemented and accepted at `a6a36d0`; its dated
+handoff is `tmp/flywheel/followup/implementation/README.md`. The current framework
+expansion is indexed in `unfinished-work.md`. The earlier
 `review_changes/README.md` remains the requirements index, not an unfinished-work queue.
 
 Preserve these user rulings in future changes:
@@ -89,22 +92,26 @@ The old questions about the concrete recording field set, accounting ownership a
 unconditional stop-on-hole behavior are closed. Discuss related new design questions
 by meaningful part rather than making the user reconfirm every settled review item.
 
-## Deferred framework-wide public/private API review
+## Framework-wide public/private API review: completed after the original request
 
 On 2026-10-15 the user requested a future file-by-file review of private module
 variables, helper classes, instance/class attributes, properties, and methods. They
-have only inspected Agent classes so far and suspect the same excessive `_` use
+had then inspected only Agent classes and suspected the same excessive `_` use
 elsewhere. BrowserUse's system-prompt text and its private prompt-building helpers are
 examples to examine, not the limit of the task.
 
-When the user next asks to optimize the framework, proactively raise this work item.
-Judge each member's responsibility and intended consumers; define or change the public
-Protocol/API where researchers, callers, or extension authors need access. Distinguish
+The later authorized framework expansion completed this review, including methods,
+properties and helper classes. `unfinished-work.md` indexes baseline, integration and
+cursor module coverage separately; the independent reviewer did not repeat every
+baseline inspection. The earlier `a6a36d0` work alone had only audited touched contracts.
+
+Keep judging each member's responsibility and intended consumers; define or change
+the public Protocol/API where researchers, callers, or extension authors need access. Distinguish
 public read-only state, configuration/extension points, and actual implementation
 details. Do not reduce the task to mechanically deleting underscores or treating every
 private member as wrong. Existing public snapshots must be checked for whether they
 meet the intended use, rather than assumed sufficient. The user explicitly added
-private methods to the scope. This whole-framework review remains deferred. The completed
-six-branch implementation reviewed and corrected the public contracts it touched; it did not audit every module.
-The user reaffirmed semantic layer ownership and strict private/public reasoning during
-that implementation. Do not turn this reminder into mechanical underscore removal.
+private methods to the scope. The completed audit is not an automatic request to repeat
+it or a claim about future modules. The user reaffirmed semantic layer ownership and
+strict private/public reasoning; do not turn this reminder into mechanical underscore
+removal.

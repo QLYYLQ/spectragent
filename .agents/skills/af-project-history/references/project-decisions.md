@@ -50,8 +50,10 @@ Review responsibility placement as a correctness issue.
   Protocol/API. Internal caches and implementation details may remain private. Public
   snapshots must actually protect their underlying state; a name or shallow frozen flag
   alone does not prove that contract.
-- Review methods and helper classes as well as fields. This is not a blanket ban on `_`
-  and does not authorize the deferred whole-framework audit without the corresponding task.
+- Review methods and helper classes as well as fields. This is not a blanket ban on `_`.
+  The whole-framework audit was subsequently authorized and completed in the 2026-10-16
+  framework expansion (coverage and review limits: `unfinished-work.md`); this ruling
+  does not automatically authorize unrelated new audit work.
 
 The accepted implementation's public step/history/prompt contracts, `client_resources`
 and effective `ActionSpace` are examples of applying this ruling, not exceptions to it.
