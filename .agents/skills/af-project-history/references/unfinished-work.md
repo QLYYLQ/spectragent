@@ -33,8 +33,10 @@ complete recording. These local artifacts are continuation evidence, not design 
 
 The 2026-10-16 cursor-on live run ended Bilibili at `CHALLENGE_BLOCKED`; account/password
 validity remains unconfirmed. All five site recordings and five same-path recordings
-are complete; all 35 call images match their fragment model views. Four replays reached
-the checkpoint; one errored at startup. Actual restoration checks passed **19/33**
+are complete; all 35 recording policy calls contain the matching fragment model-view
+image (history images and four replay calls are separate). Four replays reached the
+checkpoint; Qidian errored during prefix restoration at step 7. Actual restoration
+checks passed **19/33**
 (35 planned, two unreached); exact screenshot plus URL matched **5/33**. No independent
 judge was run. See `live/acceptance.json` under the current handoff directory.
 
