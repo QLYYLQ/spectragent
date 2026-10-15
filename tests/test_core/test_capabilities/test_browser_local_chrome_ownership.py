@@ -435,6 +435,44 @@ async def test_live_concurrent_sessions_keep_process_endpoint_profile_and_cleanu
 
 
 @pytest.mark.requires_chrome
+async def test_live_external_endpoint_keeps_its_process_profile_and_existing_tabs(
+    tmp_path: Path,
+) -> None:
+    from spectragent.core.capabilities.browser import BrowserCapability
+
+    profile = tmp_path / "external-profile"
+    profile.mkdir()
+    sentinel = profile / "caller-owned.txt"
+    sentinel.write_text("keep")
+    owner = LocalChromeProvider(headless=True, user_data_dir=str(profile))
+    session = await owner.open()
+    assert session.cdp_url is not None
+    cap = BrowserCapability(cdp_url=session.cdp_url)
+    try:
+        async with CDPClient(session.cdp_url, proxy=None) as probe:
+            await probe.send("Target.createTarget", {"url": "about:blank"})
+            before = await probe.send("Target.getTargets")
+            existing = {
+                info["targetId"] for info in before["targetInfos"] if info["type"] == "page"
+            }
+            assert len(existing) >= 2
+            await cap.setup()
+            assert cap._session is None
+            await cap.teardown()
+            after = await probe.send("Target.getTargets")
+            remaining = {
+                info["targetId"] for info in after["targetInfos"] if info["type"] == "page"
+            }
+            assert existing <= remaining
+            assert await _browser_pid(session) == session.metadata["pid"]
+            assert sentinel.read_text() == "keep"
+    finally:
+        await cap.teardown()
+        await owner.close(session)
+    assert sentinel.read_text() == "keep"
+
+
+@pytest.mark.requires_chrome
 async def test_live_existing_chrome_survives_port_conflict_and_profile_handoff(
     tmp_path: Path,
 ) -> None:
