@@ -1,7 +1,7 @@
 """Action guard — prompt-capability consistency guarantee.
 
 The ``build_guarded_act()`` factory produces a pair of
-(filtered_descriptors, guarded_act_closure). The closure validates that
+(action_space, guarded_act_closure). The closure validates that
 every action emitted by the agent is in the active action set before
 delegating to ``env.act()``. This eliminates prompt/capability mismatch:
 what the prompt tells the LLM is available matches what actually executes.
@@ -16,6 +16,7 @@ from collections.abc import Set as AbstractSet
 from typing import Any
 
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.action_space import ActionSpace
 
 
 def resolve_action_name(
@@ -64,7 +65,7 @@ def build_guarded_act(
     action_filter: list[str] | None = None,
     *,
     bindings: Mapping[str, str] | None = None,
-) -> tuple[list[ActionDescriptor], Callable[..., Awaitable[ActionResult]]]:
+) -> tuple[ActionSpace, Callable[..., Awaitable[ActionResult]]]:
     """Build a guarded action executor with optional filtering.
 
     This is the **only** place a capability-relative action name becomes a
@@ -87,9 +88,9 @@ def build_guarded_act(
             so only fully-qualified names are accepted.
 
     Returns:
-        A tuple of ``(filtered_descriptors, guarded_act)``:
-        - ``filtered_descriptors``: the (possibly narrowed) descriptor
-          list — use this for prompt building.
+        A tuple of ``(action_space, guarded_act)``:
+        - ``action_space``: the original filter, final prompt descriptors,
+          allowed names and bindings — one typed experiment contract.
         - ``guarded_act``: an async closure that resolves the action name
           against *bindings* and validates it is in the active set before
           delegating to *act_fn*.
@@ -102,6 +103,12 @@ def build_guarded_act(
 
     active_names = frozenset(d.name for d in filtered)
     bound = dict(bindings or {})
+    action_space = ActionSpace(
+        action_filter=list(action_filter) if action_filter is not None else None,
+        descriptors=[descriptor.model_copy(deep=True) for descriptor in filtered],
+        allowed_actions=active_names,
+        action_bindings=bound,
+    )
 
     async def guarded_act(action: Action, **kwargs: Any) -> ActionResult:
         # An ablation can narrow the descriptors after negotiation, so a
@@ -120,4 +127,4 @@ def build_guarded_act(
             action.name = full
         return await act_fn(action, **kwargs)
 
-    return filtered, guarded_act
+    return action_space, guarded_act
