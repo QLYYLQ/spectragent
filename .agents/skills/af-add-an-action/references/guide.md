@@ -139,7 +139,7 @@ A YAML `actions:` block **narrows** that list (ablation); it never widens it
 (`capability.py:288-290`).
 
 Then regenerate — you touched `Annotated[...]` class fields, so `_composed.py` is now
-stale: `uv run spectragent-gen`. See the `af-regenerate-and-verify` skill. (Editing
+stale: `uv run spectragent config generate`. See the `af-regenerate-and-verify` skill. (Editing
 only `Params` needs no regeneration — `Params` is not a config surface,
 `__config_annotated_only__` at `_registrar.py:103`.)
 
@@ -335,7 +335,7 @@ the move is to ask, not to ship a compromise.
 ## 6. Before you call it done
 
 ```bash
-uv run spectragent-gen                              # only if you touched class fields
+uv run spectragent config generate                              # only if you touched class fields
 uv run pytest tests/test_core/test_actions/         # registry-wide scans
 uv run pytest tests/test_agents/                    # descriptor prose IS prompt text
 uv run pytest tests/test_core/test_llm/test_schema_dialects.py

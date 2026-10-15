@@ -34,7 +34,7 @@ imported stub capabilities, agents, actions and environments into those very
 registries. Computing the hash in the pytest interpreter therefore measures
 the suite's fixtures, not the shipped code: run alone it passed, run in the
 suite it reported four layers drifting. Only a clean interpreter sees what
-``spectragent-gen`` sees.
+``spectragent config generate`` sees.
 """
 
 from __future__ import annotations
@@ -49,9 +49,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FINGERPRINT = _REPO_ROOT / "spectragent" / "generated" / ".fingerprint.json"
 
-_REGENERATE = (
-    "Regenerate with `uv run spectragent-gen` (or `python -m spectragent.scripts.generate_all`)."
-)
+_REGENERATE = "Regenerate with `uv run spectragent config generate` (or `python -m spectragent.scripts.generate_all`)."
 
 #: Mirrors what ``generate_all.main()`` fingerprints, and nothing else.
 _PROBE = """

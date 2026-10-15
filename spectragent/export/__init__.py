@@ -2,7 +2,7 @@
 
 An offline consumer of ``RunTrace``, like an evaluator: it sets up no
 environment, calls no LLM and never writes a source trace. The pipeline
-(``runner.py``, driven by ``spectragent-export`` in ``cli.py``) — sources and
+(``runner.py``, driven by ``spectragent export`` in ``cli.py``) — sources and
 filters (``filters.py``), canonical samples (``canonical.py``), translation
 into the student's action space (``translate/``), student rendering
 (``render.py``), an exporter's record format (``_registrar.py``,

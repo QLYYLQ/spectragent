@@ -221,7 +221,7 @@ class _Memory:
 async def test_a_sweep_starting_on_text_stops_at_its_pre_flight(
     lexbench: LexBenchBrowserTaskLoader,
 ) -> None:
-    """``spectragent-bench``'s pre-flight is ``prepare()``: the browser's check names the start page."""
+    """``spectragent bench``'s pre-flight is ``prepare()``: the browser's check names the start page."""
     backend = OwnedBrowser()
 
     def compose() -> Any:

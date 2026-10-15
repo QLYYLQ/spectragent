@@ -17,7 +17,7 @@ browser's evidence formats are read by the browser package's own functions
   ``report.json`` and ``report.md``;
 - ``chain.py`` — the chain: the existing CLIs' ``main(argv)`` in order, path
   fields only;
-- ``cli.py`` — ``spectragent-flywheel run | report``.
+- ``cli.py`` — ``spectragent flywheel run | report``.
 
 Nothing outside this package imports it; it imports no runtime, no live
 capability, and only ``chain.py`` imports ``spectragent.export``

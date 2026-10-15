@@ -1,10 +1,54 @@
 # Browser agent 运行手册
 
-从仓库根目录执行下列命令。当前执行链是 `YAML → ConfigComposer → AgentRuntime.execute()`；单任务入口是 `spectragent-run`，数据集入口是 `spectragent-bench`。`agent_id` 选模型理解页面和输出动作的方式，`capability_id: browser` 提供浏览器动作与观察，`backend.provider_id` 选 Chrome 会话的来源。这三项可以分别配置。
+从仓库根目录执行下列命令。当前执行链是 `YAML → ConfigComposer → AgentRuntime.execute()`；单任务入口是 `spectragent run`，数据集入口是 `spectragent bench`。`agent_id` 选模型理解页面和输出动作的方式，`capability_id: browser` 提供浏览器动作与观察，`backend.provider_id` 选 Chrome 会话的来源。这三项可以分别配置。
+
+## 统一命令与结果界面
+
+安装或更新工作区后执行 `uv sync --extra dev`。统一入口为 `uv run spectragent --help`；模型、浏览器与实验参数继续写在 YAML，不需要在界面里重新配置一遍。
+
+```bash
+# 只检查配置、协商和可静态判断的 setup 条件
+uv run spectragent config check configs/browser_use_local.yaml
+# 查看实际组件、动作/观测绑定、拦截器与脱敏配置
+uv run spectragent config explain configs/browser_use_local.yaml
+# 查询已注册组件
+uv run spectragent components list --layer agent
+# 注册声明改变后重新生成配置
+uv run spectragent config generate
+```
+
+普通交互终端显示 Rich 实时进度；加 `--tui` 使用全屏界面。TUI 的阶段来自当前进程，显示的动作步骤标为已观察，是否持久化由 Trace 查看器确认。按 `q` 或 Ctrl-C 关闭正在执行的界面会请求取消并等待 trace 和环境收尾。不存在暂停或原地恢复的暗含操作。
+
+```bash
+uv run spectragent run --config configs/browser_use_local.yaml \
+  --start-url https://example.com --task "报告当前页面标题" --tui
+uv run spectragent bench --config configs/browser_use_local.yaml \
+  --benchmark online_mind2web --subset All --limit 5 --no-eval --tui
+```
+
+批量命令在 trace 根目录的 `.sessions/` 中记录所选任务及停止原因，保留未启动任务。文件里的 running 只表示未记录收尾，不是进程存活证明。`--json` 将结构化结果写到 stdout，日志仍到 stderr；不能与 `--tui` 同用。
+
+```bash
+uv run spectragent --json runs list --root traces
+uv run spectragent runs show RUN_KEY --root traces --step 0
+uv run spectragent runs compare RUN_A RUN_B --root traces
+uv run spectragent tui --root traces
+uv run spectragent view --root traces --port 8765 --open
+```
+
+查看器只读本地目录，展示截图、步骤、模型请求/回复、每次失败与重试、观测、评测、配置和分叉来源。运行对比与实验组对比分开：实验组按配置摘要选择，按相同任务配对，必须明确选择 evaluator；重复尝试记为 ambiguous，不自动挑最好的一次。判分配置不同不合并统计。报告页读取同一根目录下的独立评测、飞轮、诊断、数据集和任务清单；可以把 `--root` 指向包含这些产物的共同父目录。
+
+服务默认只监听 `127.0.0.1`。SSH 使用时在服务器运行 view，在本机建立端口转发后打开 `http://127.0.0.1:8765`：
+
+```bash
+ssh -L 8765:127.0.0.1:8765 your-server
+```
+
+网页前端已经随 Python 包分发，使用者无需 Node。修改前端源码时，在 `frontend/viewer` 执行 `npm ci`、`npm run build`，产物写入 `spectragent/viewer/static/`。界面不会重新执行网络回放或调用 judge；这两项仍由各自运行命令明确启动。
 
 ## 独立评测已录下的任务
 
-`spectragent-eval` 只读已保存的 RunTrace，调用独立 judge 判断任务正确性，不启动浏览器或重跑 agent；它不改变回放保真、恢复校验或分叉放行条件。先完成 judge 路由和图像输入验证，再把验证过的 `llm` 配置放进 YAML。例如保存为本地 `tmp/evaluation.yaml`：
+`spectragent eval` 只读已保存的 RunTrace，调用独立 judge 判断任务正确性，不启动浏览器或重跑 agent；它不改变回放保真、恢复校验或分叉放行条件。先完成 judge 路由和图像输入验证，再把验证过的 `llm` 配置放进 YAML。例如保存为本地 `tmp/evaluation.yaml`：
 
 ```yaml
 evaluator:
@@ -26,11 +70,11 @@ eval_loader:
 这里的 `openai/direct` 是配置形状示例，型号或网关采用别的协议时，整体替换为验证过的 `llm` 块。密钥从相应环境变量读取；入口也加载 `.env`。参考数据默认由 `SPECTRAGENT_BENCHMARK_DATA` 指定的根目录定位。每次只组合一个 evaluator 和一个 eval_loader；不接受 agent、environment 或 hook 块。
 
 ```bash
-uv run spectragent-eval --config tmp/evaluation.yaml \
+uv run spectragent eval --config tmp/evaluation.yaml \
   --traces traces/chains/example/traces/record \
   --out evals/example-first --dry-run
 
-uv run spectragent-eval --config tmp/evaluation.yaml \
+uv run spectragent eval --config tmp/evaluation.yaml \
   --traces traces/chains/example/traces/record traces/chains/example/traces/branch \
   --out evals/example-first
 ```
@@ -50,20 +94,20 @@ uv run spectragent-eval --config tmp/evaluation.yaml \
 ```bash
 uv sync --extra dev
 export OPENAI_API_KEY="你的密钥"
-uv run spectragent-run --config configs/browser_use_local.yaml --dry-run
-uv run spectragent-run --config configs/browser_use_local.yaml \
+uv run spectragent run --config configs/browser_use_local.yaml --dry-run
+uv run spectragent run --config configs/browser_use_local.yaml \
   --start-url https://example.com --task "报告当前页面标题"
 ```
 
-本地配置默认打开可见的 Chrome 窗口。Chrome/Chromium 必须已安装；自动发现失败时设置 `CHROME_EXECUTABLE_PATH` 为可执行文件路径。`--start-url` 让 browser capability 在 agent 开始前打开页面，三个 agent 都能使用。它要写成一个完整的 `http://` 或 `https://` URL：只写主机名（`example.com`）、写别的协议头、写几个站点，`--dry-run` 就报错，消息点名这个起始页。`spectragent-run` 会读取仓库根目录的 `.env`，也接受已导出的环境变量。`--dry-run` 会验证 YAML、实例化配置并执行 `AgentRuntime.prepare()` 的协商检查；不会启动 Chrome 或调用模型。
+本地配置默认打开可见的 Chrome 窗口。Chrome/Chromium 必须已安装；自动发现失败时设置 `CHROME_EXECUTABLE_PATH` 为可执行文件路径。`--start-url` 让 browser capability 在 agent 开始前打开页面，三个 agent 都能使用。它要写成一个完整的 `http://` 或 `https://` URL：只写主机名（`example.com`）、写别的协议头、写几个站点，`--dry-run` 就报错，消息点名这个起始页。`spectragent run` 会读取仓库根目录的 `.env`，也接受已导出的环境变量。`--dry-run` 会验证 YAML、实例化配置并执行 `AgentRuntime.prepare()` 的协商检查；不会启动 Chrome 或调用模型。
 
 ## 选择 agent
 
 | 想运行的 agent | 现成 YAML | 页面输入与动作 | 单任务命令 |
 |---|---|---|---|
-| BrowserUseAgent | `configs/browser_use_local.yaml` | 默认 DOM 文本，按元素索引操作；也支持 DOM + 截图或纯截图 | `uv run spectragent-run --config configs/browser_use_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
-| SkyvernAgent | `configs/skyvern_agent_local.yaml` | Skyvern DOM 清洗与 HTML 序列化、动作历史和结构化输出 | `uv run spectragent-run --config configs/skyvern_agent_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
-| UITarsAgent | `configs/ui_tars_local.yaml` | 只向模型发送截图，解析 `Action:` 文本中的坐标动作 | `uv run spectragent-run --config configs/ui_tars_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
+| BrowserUseAgent | `configs/browser_use_local.yaml` | 默认 DOM 文本，按元素索引操作；也支持 DOM + 截图或纯截图 | `uv run spectragent run --config configs/browser_use_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
+| SkyvernAgent | `configs/skyvern_agent_local.yaml` | Skyvern DOM 清洗与 HTML 序列化、动作历史和结构化输出 | `uv run spectragent run --config configs/skyvern_agent_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
+| UITarsAgent | `configs/ui_tars_local.yaml` | 只向模型发送截图，解析 `Action:` 文本中的坐标动作 | `uv run spectragent run --config configs/ui_tars_local.yaml --start-url https://example.com --task "报告当前页面标题"` |
 
 三个文件中的 `llm` 都只是可编辑的 OpenAI 示例。运行 UI-TARS 专用模型时，把 `llm.model_type`、`model`、`provider`（必要时 `base_url`）改为该模型实际提供的 API；`coordinate_space` 要与它输出的坐标一致，值为 `screenshot_pixels` 或 `normalized_1000`。`prompt_template` 可选 `computer_use`、`grounding`、`mobile_use`。`ui_tars` 不请求 DOM，浏览器不会为这个 agent 提取 DOM。
 
@@ -119,7 +163,7 @@ hook:
 
 ```bash
 export SKYVERN_API_KEY="你的密钥"
-uv run spectragent-run --config configs/browser_use_skyvern.yaml \
+uv run spectragent run --config configs/browser_use_skyvern.yaml \
   --start-url https://example.com --task "报告当前页面标题"
 ```
 
@@ -166,20 +210,20 @@ network_source: { source_id: live }
 
 ## 跑数据集
 
-单任务命令只接收自由文本。需要数据集身份、任务起始 URL、逐任务 trace 时，用 `spectragent-bench`。基准数据不包含在安装包中；数据根目录约定为 `<root>/browser/<benchmark>/data_info.json`。
+单任务命令只接收自由文本。需要数据集身份、任务起始 URL、逐任务 trace 时，用 `spectragent bench`。基准数据不包含在安装包中；数据根目录约定为 `<root>/browser/<benchmark>/data_info.json`。
 
 ```bash
 export OPENAI_API_KEY="你的密钥"
 export SPECTRAGENT_BENCHMARK_DATA="$HOME/agent-data"
-uv run spectragent-bench --config configs/browser_use_local.yaml \
+uv run spectragent bench --config configs/browser_use_local.yaml \
   --benchmark online_mind2web --subset All --list
-uv run spectragent-bench --config configs/browser_use_local.yaml \
+uv run spectragent bench --config configs/browser_use_local.yaml \
   --benchmark online_mind2web --subset All --limit 1 --no-eval
 ```
 
 把 `--config` 换成上面的其他 agent YAML，就使用同一个数据集入口。也可以用 `--task-id <ID>` 指定任务，或用 `--limit N` 控制数量。`--list` 会先加载数据并只打印选中的任务 ID，不启动浏览器。数据集 loader 把每个任务的 `start_url` 传给 browser capability，trace 记下的也是这一个。
 
-起始页必须是完整的 http(s) URL。`lexbench_browser` 的数据（每个 split）把起始页写成不带协议头的主机名，例如 `www.bilibili.com`、`s.weibo.com/top/summary`，加载器把它补成 `https://www.bilibili.com` 再交出去，飞轮报告和导出按这个 URL 的主机认站点。写成文字或几个站点的起始页（L1 有 7 个、L2 有 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）原样留下，在 `prepare()` 被拒，不打开 trace，消息点名这个起始页：这样的任务若是 sweep 的第一个任务，开跑前的预检查停下，退出码 2；否则只记在那个任务上，汇总表里那一行写着原因（算作 infrastructure failure，退出码 1）。其他数据集的起始页本来就是完整的 URL，加载器不改。`spectragent-bench` 不调用 `load_dotenv()`，所以运行前要在 shell 导出模型及云后端需要的密钥。需要自动评分时，在 YAML 中配置 `evaluator:`，然后去掉 `--no-eval`；只有任务数据与 trace 不会自动产生评分。
+起始页必须是完整的 http(s) URL。`lexbench_browser` 的数据（每个 split）把起始页写成不带协议头的主机名，例如 `www.bilibili.com`、`s.weibo.com/top/summary`，加载器把它补成 `https://www.bilibili.com` 再交出去，飞轮报告和导出按这个 URL 的主机认站点。写成文字或几个站点的起始页（L1 有 7 个、L2 有 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）原样留下，在 `prepare()` 被拒，不打开 trace，消息点名这个起始页：这样的任务若是 sweep 的第一个任务，开跑前的预检查停下，退出码 2；否则只记在那个任务上，汇总表里那一行写着原因（算作 infrastructure failure，退出码 1）。其他数据集的起始页本来就是完整的 URL，加载器不改。`spectragent bench` 不调用 `load_dotenv()`，所以运行前要在 shell 导出模型及云后端需要的密钥。需要自动评分时，在 YAML 中配置 `evaluator:`，然后去掉 `--no-eval`；只有任务数据与 trace 不会自动产生评分。
 
 按 Ctrl-C 中断时，正在跑的任务照常收尾：trace 写出 `result.json`（`agent_done: error`，`error: "Execution cancelled"`），进行中的那次 LLM 调用以 `cancelled` 状态连同 prompt 落盘，浏览器也会关掉。随后中断继续往外传，sweep 结束，不打印汇总表，也不评分。
 
@@ -189,7 +233,7 @@ uv run spectragent-bench --config configs/browser_use_local.yaml \
 
 每次运行的 trace 写在 `traces/<run_id>/`，配置里的 `hook: [{hook_id: trace_writer}]` 决定是否落盘。`manifest.json` 是已提交内容的唯一索引（`format_version: 4`），`config.json` 是配置快照，`steps/NNN.json` 是每步的记录。`observations/` 存观测和截图，文件名带全限定的 fragment key，如 `000_browser.dom.json`、`000_browser.screenshot.png`。`messages/` 每次 LLM 调用一个 `NNN_call_KK.json`（parse 重试、校验失败、截断、被取消的调用各占一个）；请求了结构化输出时，schema 每个 run 只在 `messages/output_formats/` 存一份。prompt 里内联的图片（vision agent 发给模型的截图）每张每个 run 只在 `messages/images/` 存一份（`<sha256>.png` 之类，就是那张图片本身），调用记录里在图片的位置写一个引用；所以带着全部历史截图的 agent，`messages/` 也只随不同截图的张数增长。直接打开 `NNN_call_KK.json` 看到的是引用，经 `RunTrace` 读回的是完整的 prompt。绑定了归档器的录制 run 还有 `env/`；现成的评测 YAML 不录环境证据，没有这个目录。
 
-run 开始之后，不论完成、超时、出错、被否决还是被外部中断，都会写 `result.json`，它的 `agent_done` 说 agent 怎么结束（`done`、`max_steps`、`error`、`timeout`、`vetoed`）。manifest 的 `status` 只说 trace 记全没有：写着时是 `writing`，收尾之后是 `complete`，或 `incomplete` 加上 `incomplete_reason`（某一步或收尾时有东西没记下来）和 `complete_through`（完整到第几步）。超时的 run 照样可以是 `complete`。`result.json` 的 `metrics.steps` 只数策略步，即 `steps/` 里 `origin` 为 `policy` 的步。`agent_loop.terminal_observation: true` 在 run 结束后多记的一次观测（`origin: terminal`），以及分叉 run 恢复出的前缀步（`origin: restored`），都在 `steps/` 里，但不计数。模型调用次数另记在 `metrics.llm_calls`。`spectragent-bench` 会在终端先列出三本账的计数（agent 怎么结束、环境、trace 完整与否），再列每个任务的终止状态与 trace 目录名；环境坏了、模型在重试之后仍不可用、trace 不完整都标成 infrastructure failure，退出码 1；guard 否决了某个任务时 sweep 停在那里，退出码 3。
+run 开始之后，不论完成、超时、出错、被否决还是被外部中断，都会写 `result.json`，它的 `agent_done` 说 agent 怎么结束（`done`、`max_steps`、`error`、`timeout`、`vetoed`）。manifest 的 `status` 只说 trace 记全没有：写着时是 `writing`，收尾之后是 `complete`，或 `incomplete` 加上 `incomplete_reason`（某一步或收尾时有东西没记下来）和 `complete_through`（完整到第几步）。超时的 run 照样可以是 `complete`。`result.json` 的 `metrics.steps` 只数策略步，即 `steps/` 里 `origin` 为 `policy` 的步。`agent_loop.terminal_observation: true` 在 run 结束后多记的一次观测（`origin: terminal`），以及分叉 run 恢复出的前缀步（`origin: restored`），都在 `steps/` 里，但不计数。模型调用次数另记在 `metrics.llm_calls`。`spectragent bench` 会在终端先列出三本账的计数（agent 怎么结束、环境、trace 完整与否），再列每个任务的终止状态与 trace 目录名；环境坏了、模型在重试之后仍不可用、trace 不完整都标成 infrastructure failure，退出码 1；guard 否决了某个任务时 sweep 停在那里，退出码 3。
 
 用 `RunTrace` 读 trace，参数是 `Path`：
 
@@ -213,10 +257,10 @@ trace.screenshot(0)          # 第 0 步截图的字节
 
 | 用途 | 命令 |
 |---|---|
-| 录制（`pinned` 加三个归档器） | `uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml --start-url URL --task "任务"`；数据集换用 `spectragent-bench` |
-| 用录制的网络离线重跑 | `uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml --start-url URL --task "录制时的任务" --replay-archive traces/<录制的 run_id>` |
-| 从录制的检查点分叉 | 把 `configs/flywheel/branch_ui_tars_archive.yaml` 的 `task_loader.data_dir` 指向录制所在的目录，再 `uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval` |
-| 导出训练数据 | `uv run spectragent-export --config configs/flywheel/export_sft.yaml` |
-| 跑整条链并出度量报告 | `uv run spectragent-flywheel run --spec chain.yaml`；只重算报告用 `uv run spectragent-flywheel report --spec chain.yaml` |
+| 录制（`pinned` 加三个归档器） | `uv run spectragent run --config configs/flywheel/record_ui_tars_pinned.yaml --start-url URL --task "任务"`；数据集换用 `spectragent bench` |
+| 用录制的网络离线重跑 | `uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml --start-url URL --task "录制时的任务" --replay-archive traces/<录制的 run_id>` |
+| 从录制的检查点分叉 | 把 `configs/flywheel/branch_ui_tars_archive.yaml` 的 `task_loader.data_dir` 指向录制所在的目录，再 `uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval` |
+| 导出训练数据 | `uv run spectragent export --config configs/flywheel/export_sft.yaml` |
+| 跑整条链并出度量报告 | `uv run spectragent flywheel run --spec chain.yaml`；只重算报告用 `uv run spectragent flywheel report --spec chain.yaml` |
 
-`--replay-archive` 只能配 `network_source: archive`，YAML 写的是 `live` 时 setup 会拒绝。`spectragent-export` 只读 trace，不启动浏览器，也不调用模型。`chain.yaml` 要自己写，格式见 [configs/README.md](../configs/README.md#measuring-the-flywheel)。`spectragent-flywheel` 和 `spectragent-bench` 一样不读 `.env`，跑之前先在 shell 里导出密钥（`set -a; . ./.env; set +a`）。
+`--replay-archive` 只能配 `network_source: archive`，YAML 写的是 `live` 时 setup 会拒绝。`spectragent export` 只读 trace，不启动浏览器，也不调用模型。`chain.yaml` 要自己写，格式见 [configs/README.md](../configs/README.md#measuring-the-flywheel)。`spectragent flywheel` 和 `spectragent bench` 一样不读 `.env`，跑之前先在 shell 里导出密钥（`set -a; . ./.env; set +a`）。

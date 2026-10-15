@@ -2,8 +2,8 @@
 
 Not a new way to run anything: each stage calls an existing entry point's
 ``main(argv)`` in this process — ``spectragent.core.benchmark_runner.main``
-(``spectragent-bench``) for the run stages, ``spectragent.export.cli.main``
-(``spectragent-export``) for the export, twice — and the last stage computes
+(``spectragent bench``) for the run stages, ``spectragent.export.cli.main``
+(``spectragent export``) for the export, twice — and the last stage computes
 the report (``report.py``).
 
 **The spec** is a plain YAML (:class:`ChainSpec`, ``extra="forbid"``), not a
@@ -48,7 +48,7 @@ chain's total is every token the runs under the root recorded
 ``core/trace/usage.py``): counted once before the first stage, so a chain
 run stage by stage stays inside one limit, then increased by each run
 stage's new runs (``stages.<stage>.token_use``). Each run stage gets what is
-left (``spectragent-bench --token-limit``), which lets the task that reaches
+left (``spectragent bench --token-limit``), which lets the task that reaches
 it finish and starts no other. When a stage's sweep exits
 ``TOKEN_LIMIT_EXIT_CODE``, or the total reaches the limit, no later run or
 export stage starts; the report still runs when selected and states the
@@ -57,7 +57,7 @@ stop itself (it counts from the traces too); ``chain.json`` records
 same. Runs that had already reached the limit before the chain started stop
 it before any run or export stage (the stop's ``stage`` is ``None``).
 
-**Secrets.** ``spectragent-bench`` reads no ``.env`` and neither does the
+**Secrets.** ``spectragent bench`` reads no ``.env`` and neither does the
 chain: export the keys in the shell first (``set -a; . ./.env; set +a``).
 A planted credential the report searches for is written in the spec as a
 literal (``value``, the rehearsal) or as the name of an environment variable
@@ -95,7 +95,7 @@ logger = logging.getLogger(__name__)
 
 #: The stages, in the order a chain runs them.
 STAGES: tuple[str, ...] = ("record", "control", "same_path", "branch", "export", "report")
-#: The stages run by ``spectragent-bench``.
+#: The stages run by ``spectragent bench``.
 RUN_STAGES: tuple[str, ...] = ("record", "control", "same_path", "branch")
 #: The stages whose tasks come from the recordings (a ``trace_branches`` loader).
 BRANCH_STAGES: tuple[str, ...] = ("same_path", "branch")
@@ -129,7 +129,7 @@ class TasksSpec(_Spec):
 
 
 class StageSpec(_Spec):
-    """A ``spectragent-bench`` stage: its YAML, the per-task timeout, whether it evaluates."""
+    """A ``spectragent bench`` stage: its YAML, the per-task timeout, whether it evaluates."""
 
     config: Path
     timeout: float = Field(default=300.0, gt=0)
@@ -523,7 +523,7 @@ def run_chain(
     """Run *spec*'s stages (all, or *stages*) in order; the report last.
 
     *bench* / *export* replace the in-process CLIs (a test's seam); by
-    default they are ``spectragent-bench``'s and ``spectragent-export``'s
+    default they are ``spectragent bench``'s and ``spectragent export``'s
     ``main``. With a numeric ``token_limit``, the chain stops where its runs'
     tokens reach it (module docstring): no later run or export stage starts,
     and :attr:`ChainResult.token_limit_stop` says where.
@@ -644,7 +644,7 @@ def _run_stage(
     *,
     remaining: int | None = None,
 ) -> bool:
-    """Run one ``spectragent-bench`` stage; whether its sweep stopped at the token limit.
+    """Run one ``spectragent bench`` stage; whether its sweep stopped at the token limit.
 
     *remaining* is what is left of the chain's token limit (``None``: the
     chain has none), handed to the bench as ``--token-limit``; with it, the
@@ -688,15 +688,15 @@ def _run_stage(
     if code == VETO_EXIT_CODE:
         raise ChainStageError(
             stage,
-            f"spectragent-bench exited {code}: a guard vetoed the stage, so the chain stops "
+            f"spectragent bench exited {code}: a guard vetoed the stage, so the chain stops "
             f"here (the stage's summary and the vetoed run's trace say why)",
         )
     reached = remaining is not None and code == TOKEN_LIMIT_EXIT_CODE
     if code not in (0, 1) and not reached:
-        raise ChainStageError(stage, f"spectragent-bench exited {code}")
+        raise ChainStageError(stage, f"spectragent bench exited {code}")
     if not new:
         raise ChainStageError(
-            stage, f"spectragent-bench exited {code} and wrote no run under {directory}"
+            stage, f"spectragent bench exited {code} and wrote no run under {directory}"
         )
     return reached
 
@@ -714,7 +714,7 @@ def _new_runs_token_use(layout: ChainLayout, stage: str, names: Sequence[str]) -
 def build_spec_report(spec: ChainSpec) -> FlywheelReport:
     """The report of *spec*'s chain root: its evidence basis, planted credentials, name and token limit.
 
-    What the chain's report stage and ``spectragent-flywheel report --spec``
+    What the chain's report stage and ``spectragent flywheel report --spec``
     both compute, so the two give the same bytes.
 
     Raises:
@@ -760,7 +760,7 @@ def _export_stage(
         code = _invoke("export", entry, argv)
         outcome.exit_codes.append(code)
         if code != 0:
-            raise ChainStageError("export", f"spectragent-export exited {code} (it wrote nothing)")
+            raise ChainStageError("export", f"spectragent export exited {code} (it wrote nothing)")
 
 
 __all__ = [

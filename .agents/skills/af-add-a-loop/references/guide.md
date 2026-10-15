@@ -294,7 +294,7 @@ At the sweep layer, `run_task` catches `RunAbort` first and returns it as the ta
 outcome (`TaskOutcome.vetoed`, its result read back from the trace) while still absorbing
 ordinary failures, and `run` stops after it, records `BenchmarkRunSummary.aborted` naming
 the task — **and then still evaluates the outcomes that finished**. The table shows the
-vetoed task and a `vetoed:` line, and `spectragent-bench` exits 3 (`VETO_EXIT_CODE`), so
+vetoed task and a `vetoed:` line, and `spectragent bench` exits 3 (`VETO_EXIT_CODE`), so
 the flywheel chain stops. A veto raised during the environment's setup is a veto too. The guard said stop, not destroy the
 evidence; under Record Once, Evaluate Many those traces are complete and worth scoring.
 Without the `aborted` field a short sweep is indistinguishable from a small one.
@@ -368,7 +368,7 @@ parse_retries_per_step: Annotated[
 - Pick a default that is a **no-op**, so no shipped YAML changes behaviour on upgrade.
 - Add the field to the Loop class docstring's config list (`react.py:223-230`) — the only
   prose inventory of that surface.
-- Never hand-edit `spectragent/generated/_composed.py`. Regenerate: `uv run spectragent-gen`.
+- Never hand-edit `spectragent/generated/_composed.py`. Regenerate: `uv run spectragent config generate`.
 - The generated class is named after the *wiring*, not the loop: `ReactAgent_LoopConfig`
   (`_composed.py:254`). Search with `rg` for your field name, not for a class name you guessed.
 - Until regeneration runs, the knob is reachable in Python and rejected by YAML with

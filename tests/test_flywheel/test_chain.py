@@ -210,7 +210,7 @@ class TestStageOutcomes:
     def test_a_task_that_failed_is_data(self, tmp_path: Path) -> None:
         def failed_task(raw: dict[str, Any], argv: list[str]) -> int:
             commit_one_run(raw, argv)
-            return 1  # spectragent-bench: a task did not complete
+            return 1  # spectragent bench: a task did not complete
 
         result = run_chain(
             _spec(tmp_path, control=None),
@@ -270,7 +270,7 @@ class TestStageOutcomes:
 
     def test_an_export_that_fails(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
-        with pytest.raises(ChainStageError, match="spectragent-export exited 1"):
+        with pytest.raises(ChainStageError, match="spectragent export exited 1"):
             run_chain(spec, stages=["export"], bench=Recorder(), export=Recorder(lambda r, a: 1))
 
     @pytest.mark.parametrize("dataset", ["first", "second"])
@@ -377,7 +377,7 @@ def committed_run(raw: dict[str, Any], name: str, calls: Sequence[int | None]) -
 
 
 class Sweep:
-    """A stand-in ``spectragent-bench``: per stage, the calls of each run it commits and its exit code.
+    """A stand-in ``spectragent bench``: per stage, the calls of each run it commits and its exit code.
 
     A stage it has no plan for commits one run of one 1-token call and exits 0.
     """
@@ -556,7 +556,7 @@ class TestTheTokenLimit:
         assert "tokens_used" not in record and "stopped_by_token_limit" not in record
         assert all("token_use" not in stage for stage in record["stages"].values())
         # A sweep that says it reached a limit nobody gave it is a failed stage.
-        with pytest.raises(ChainStageError, match="stage 'record': spectragent-bench exited 4"):
+        with pytest.raises(ChainStageError, match="stage 'record': spectragent bench exited 4"):
             run_chain(
                 _spec(tmp_path),
                 stages=["record"],

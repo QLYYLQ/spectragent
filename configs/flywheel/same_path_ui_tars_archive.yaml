@@ -7,11 +7,11 @@
 # (one model call per task) and the run ends with a terminal observation.
 # Two tasks per source: the same input twice, for replay determinism.
 #
-#   spectragent-bench --config configs/flywheel/same_path_ui_tars_archive.yaml --no-eval
+#   spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yaml --no-eval
 #
 # Pair it with the recording config (record_ui_tars_pinned.yaml): the agent,
 # the tier and the browser block are the branch config's
-# (branch_ui_tars_archive.yaml). The metrics chain (spectragent-flywheel run)
+# (branch_ui_tars_archive.yaml). The metrics chain (spectragent flywheel run)
 # writes task_loader.data_dir (its traces/record) and trace_writer.trace_dir
 # (its traces/same_path) itself; run it by hand by pointing data_dir at your
 # recordings. There is no eval loader for branch tasks: pass --no-eval.

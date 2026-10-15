@@ -37,7 +37,7 @@ only records traces omits it; a run that scores as it goes adds::
 
 Scoring then runs after the sweep::
 
-    spectragent-bench --benchmark online_mind2web --subset test --config run.yaml
+    spectragent bench --benchmark online_mind2web --subset test --config run.yaml
 
 which writes one trace directory per task, an ``EvalResult`` into each
 trace's ``evals/`` (plus a flat copy under ``--evals-dir``), and prints

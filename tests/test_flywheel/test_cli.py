@@ -1,4 +1,4 @@
-"""``spectragent-flywheel``: the report subcommand on a chain root, ``run`` and its exit codes."""
+"""``spectragent flywheel``: the report subcommand on a chain root, ``run`` and its exit codes."""
 
 from __future__ import annotations
 
@@ -185,7 +185,7 @@ def test_run_exits_4_at_the_token_limit(
     assert "record: exit [4], 1 run(s), 10 tokens" in captured.out
     assert f"report: {(tmp_path / 'root' / 'report').resolve()}" in captured.out
     assert (
-        "spectragent-flywheel: stopped at the token limit: the runs under the chain root "
+        "spectragent flywheel: stopped at the token limit: the runs under the chain root "
         "recorded 10 tokens, reaching the token limit of 5 in stage 'record'; stages not "
         "started: same_path; 0 call(s) reported no usage"
     ) in captured.err

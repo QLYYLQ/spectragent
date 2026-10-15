@@ -469,12 +469,20 @@ class TestPreflight:
         )
         write_source(tmp_path / "recorded", "run-a", steps=2)
 
-        code = main(["--config", str(_branch_sweep_config(tmp_path)), "--no-eval"])
+        code = main(
+            [
+                "--session-dir",
+                str(tmp_path / ".sessions"),
+                "--config",
+                str(_branch_sweep_config(tmp_path)),
+                "--no-eval",
+            ]
+        )
 
         assert code == PREFLIGHT_EXIT_CODE == 2
         assert executed == []
         err = capsys.readouterr().err
-        assert "spectragent-bench: the pre-flight check refused the configuration" in err
+        assert "spectragent bench: the pre-flight check refused the configuration" in err
         assert "replayability: pinned ↔ provider" in err
 
 
@@ -720,12 +728,20 @@ class TestTheSummaryCountsThreeLedgers:
         write_source(tmp_path / "recorded", "run-a", steps=2)
         write_source(tmp_path / "recorded", "run-b", steps=2)
 
-        code = main(["--config", str(_branch_sweep_config(tmp_path)), "--no-eval"])
+        code = main(
+            [
+                "--session-dir",
+                str(tmp_path / ".sessions"),
+                "--config",
+                str(_branch_sweep_config(tmp_path)),
+                "--no-eval",
+            ]
+        )
 
         assert code == VETO_EXIT_CODE == 3
         captured = capsys.readouterr()
         assert "vetoed: a guard stopped the sweep at" in captured.out
-        assert "spectragent-bench: the sweep was vetoed at" in captured.err
+        assert "spectragent bench: the sweep was vetoed at" in captured.err
 
 
 # ── The task context's three parts (M31) ──────────────────────────────
@@ -828,7 +844,7 @@ class TestTaskContextRouting:
 
 
 def _branch_sweep_config(tmp_path, **extra: Any) -> Any:
-    """A ``spectragent-bench`` config whose tasks come from ``trace_branches``."""
+    """A ``spectragent bench`` config whose tasks come from ``trace_branches``."""
     import yaml
 
     config = {
@@ -860,7 +876,7 @@ class TestTraceBranchesSweep:
             BenchmarkRunner, "run_task", lambda self, task_id: executed.append(task_id)
         )
         try:
-            main(["--config", str(path)])
+            main(["--session-dir", str(tmp_path / ".sessions"), "--config", str(path)])
         except SystemExit as exc:
             message = str(exc.code)
         else:  # pragma: no cover — the assertion below explains
@@ -880,11 +896,34 @@ class TestTraceBranchesSweep:
         monkeypatch.setattr(EvalLoaderRegistrar, "get_or_none", no_lookup)
         write_source(tmp_path / "recorded", "run-a", steps=2)
 
-        assert main(["--config", str(_branch_sweep_config(tmp_path)), "--list"]) == 0
+        assert (
+            main(
+                [
+                    "--session-dir",
+                    str(tmp_path / ".sessions"),
+                    "--config",
+                    str(_branch_sweep_config(tmp_path)),
+                    "--list",
+                ]
+            )
+            == 0
+        )
         assert capsys.readouterr().out.split() == ["run-a/s1/b0"]
         # --no-eval keeps a configured evaluator from asking, too.
         with_judge = _branch_sweep_config(tmp_path, evaluator=[{"evaluator_id": "exact_match"}])
-        assert main(["--config", str(with_judge), "--list", "--no-eval"]) == 0
+        assert (
+            main(
+                [
+                    "--session-dir",
+                    str(tmp_path / ".sessions"),
+                    "--config",
+                    str(with_judge),
+                    "--list",
+                    "--no-eval",
+                ]
+            )
+            == 0
+        )
 
     def test_the_registry_answers_for_every_other_benchmark(self, monkeypatch):
         from spectragent.core.benchmark_runner import _resolve_eval_loader
@@ -1185,14 +1224,24 @@ class TestTheTokenLimit:
             write_source(tmp_path / "recorded", name, steps=2)
         config = str(_branch_sweep_config(tmp_path))
 
-        code = main(["--config", config, "--no-eval", "--token-limit", "15"])
+        code = main(
+            [
+                "--session-dir",
+                str(tmp_path / ".sessions"),
+                "--config",
+                config,
+                "--no-eval",
+                "--token-limit",
+                "15",
+            ]
+        )
 
         assert code == TOKEN_LIMIT_EXIT_CODE == 4
         assert started == ["run-a/s1/b0", "run-b/s1/b0"]
         captured = capsys.readouterr()
         assert "token limit: the sweep's runs recorded 20 tokens" in captured.out
         assert (
-            "spectragent-bench: the sweep reached its token limit after task run-b/s1/b0 "
+            "spectragent bench: the sweep reached its token limit after task run-b/s1/b0 "
             "(20 of 15 tokens); 1 task(s) not started"
         ) in captured.err
 
@@ -1201,7 +1250,16 @@ class TestTheTokenLimit:
         from spectragent.core.benchmark_runner import main
 
         with pytest.raises(SystemExit) as raised:
-            main(["--config", str(tmp_path / "x.yaml"), "--token-limit", value])
+            main(
+                [
+                    "--session-dir",
+                    str(tmp_path / ".sessions"),
+                    "--config",
+                    str(tmp_path / "x.yaml"),
+                    "--token-limit",
+                    value,
+                ]
+            )
         assert raised.value.code == 2
         assert "--token-limit" in capsys.readouterr().err
 
@@ -1218,7 +1276,36 @@ class TestTheTokenLimit:
         monkeypatch.setattr(BenchmarkRunner, "run", record_limit)
         write_source(tmp_path / "recorded", "run-a", steps=2)
         config = str(_branch_sweep_config(tmp_path))
-        assert main(["--config", config, "--no-eval"]) == 0
-        assert main(["--config", config, "--no-eval", "--token-limit", "unlimited"]) == 0
-        assert main(["--config", config, "--no-eval", "--token-limit", "7"]) == 0
+        assert (
+            main(["--session-dir", str(tmp_path / ".sessions"), "--config", config, "--no-eval"])
+            == 0
+        )
+        assert (
+            main(
+                [
+                    "--session-dir",
+                    str(tmp_path / ".sessions"),
+                    "--config",
+                    config,
+                    "--no-eval",
+                    "--token-limit",
+                    "unlimited",
+                ]
+            )
+            == 0
+        )
+        assert (
+            main(
+                [
+                    "--session-dir",
+                    str(tmp_path / ".sessions"),
+                    "--config",
+                    config,
+                    "--no-eval",
+                    "--token-limit",
+                    "7",
+                ]
+            )
+            == 0
+        )
         assert limits == [None, None, 7]

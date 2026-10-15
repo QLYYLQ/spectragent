@@ -1,4 +1,4 @@
-"""``spectragent-export --config <yaml>`` (arch §4.15 "CLI")."""
+"""``spectragent export --config <yaml>`` (arch §4.15 "CLI")."""
 
 from __future__ import annotations
 
@@ -22,7 +22,8 @@ def _config(tmp_path: Path, *entries: dict) -> Path:
 
 def test_the_entry_point_is_declared() -> None:
     scripts = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["scripts"]
-    assert scripts["spectragent-export"] == "spectragent.export.cli:main"
+    assert scripts["spectragent"] == "spectragent.cli:main"
+    assert "spectragent-export" not in scripts
 
 
 def test_an_export_prints_what_it_wrote(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

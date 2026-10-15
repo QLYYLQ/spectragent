@@ -466,7 +466,7 @@ configuration and task data (an option that cannot work with this provider, a ta
 value that cannot work with this configuration) belongs in `check_setup` (`SetupCheck`),
 not only in `setup()`: `AgentRuntime.prepare()` calls it through `Environment.check_setup`,
 so the run fails before its trace is opened and before anything is acquired, and
-`spectragent-bench`'s pre-flight stops a whole sweep with it. It reads configuration and its
+`spectragent bench`'s pre-flight stops a whole sweep with it. It reads configuration and its
 arguments only (no backend, no connection, no state written); `setup()` may call it again.
 The environment routes the context exactly as setup does, so a key no `setup()` declares is
 refused there too.
@@ -648,7 +648,7 @@ Your knobs reach YAML through conscribe codegen, and **nothing about that is aut
    what an uncollected registrar does today; a `Literal` does reject a typo.) Put it
    early, with the other leaves of the wiring DAG — the dict
    order is deliberate, for deterministic output.
-4. **Regenerate**: `uv run spectragent-gen`. A layer with **zero** registered classes is
+4. **Regenerate**: `uv run spectragent config generate`. A layer with **zero** registered classes is
    skipped (`:118`), so an empty new registrar silently produces nothing.
 5. **Provides entries are optional fields you must not fill.** `__wiring__["observation"]`
    and `__wiring__["archiver"]` have no slot on the capability, so conscribe emits them as
@@ -706,7 +706,7 @@ Before you call a capability done:
 - [ ] Every `ArchiveFile` carries `meta` (`captured_at`, `cycle`, `ids`), a `capability_id` that is this capability's own, and a single-segment `name` of at most 255 bytes of UTF-8 (`MAX_SEGMENT_BYTES`; derive names from URLs or titles only after shortening them); every string it carries (`name`, `media_type`, `ids`) encodes as UTF-8, so decode CDP payloads strictly rather than leaving lone surrogates; at most one JSON run record per batch
 - [ ] All registry keys fully qualified; `__wiring__` *requires* stay relative
 - [ ] Backend registrar pinned in `_collect_registrars()` if you added one
-- [ ] `uv run spectragent-gen`, then `uv run pytest tests/test_generated/`
+- [ ] `uv run spectragent config generate`, then `uv run pytest tests/test_generated/`
 - [ ] `uv run pyright spectragent tests` — only the four known metaclass artifacts
 - [ ] A test on the action seam: negotiation matches **names**, not parameter contracts. An agent may emit a verb the run holds and send params the action cannot read. `tests/_helpers/action_params.py::minimal_params` walks `descriptor().params_schema` and builds the smallest legal payload; use it.
 - [ ] `docs/architecture_design.md` §4.9 (line 1352) and `docs/execution_dag.md` M06 updated if you changed the contract. AGENTS.md §0 makes the design doc the source of truth — a contract that lives only in `base.py` and a test helper is the situation this layer exists to end.

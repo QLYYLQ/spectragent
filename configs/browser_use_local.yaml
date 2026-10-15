@@ -164,7 +164,7 @@ environment:
         # Where the network comes from (§4.14 "回放") — the strategy is the
         # switch again. ``live`` is the network itself. ``archive`` answers
         # every request from a recorded run's archive (the run directory
-        # arrives per task: ``spectragent-run --replay-archive DIR``) and never
+        # arrives per task: ``spectragent run --replay-archive DIR``) and never
         # goes to the network; it isolates the browser through this
         # local_chrome backend and needs ``browser.replay_log`` on the trace
         # hook (it records the replay log; ``browser.network`` is refused in a
@@ -252,7 +252,7 @@ environment:
 # Cross-cutting hooks, woven onto agent/env/llm by core/aop. Without a
 # ``trace_writer`` entry a run leaves nothing on disk, which makes "Record
 # Once, Evaluate Many" unreachable from this file — evaluators read a
-# RunTrace, not in-memory state. ``spectragent-bench`` installs its own
+# RunTrace, not in-memory state. ``spectragent bench`` installs its own
 # hooks and discovers the trace by duck-typing ``run_dir``, so declaring
 # them here is what makes a *direct* run (demo_yaml_compose.py, or any
 # AgentRuntime.execute caller) recordable too.

@@ -1,11 +1,11 @@
-"""``spectragent-flywheel``: run the metrics chain, or recompute its report (arch §4.16).
+"""``spectragent flywheel``: run the metrics chain, or recompute its report (arch §4.16).
 
 ::
 
-    spectragent-flywheel run --spec chain.yaml [--stages record,same_path,report]
-    spectragent-flywheel report --spec chain.yaml [--out DIR]
-    spectragent-flywheel report --root traces/chains/first-live --evidence live|rehearsal [--out DIR]
-    spectragent-flywheel diagnose --recordings DIR --replays DIR --out NEW_DIR
+    spectragent flywheel run --spec chain.yaml [--stages record,same_path,report]
+    spectragent flywheel report --spec chain.yaml [--out DIR]
+    spectragent flywheel report --root traces/chains/first-live --evidence live|rehearsal [--out DIR]
+    spectragent flywheel diagnose --recordings DIR --replays DIR --out NEW_DIR
 
 ``run`` runs the spec's stages in order (``chain.py``); ``report`` reads
 the chain root only — committed runs and published datasets — and can be
@@ -20,7 +20,7 @@ written (``--out`` names a directory that cannot be created or written), and
 the message names which; 2 the spec or the arguments are wrong; 4 (``run``)
 the chain stopped at its token limit: no later run or export stage started,
 and the report, when selected, was still computed from what exists — the
-same code ``spectragent-bench`` exits with when its sweep reaches its limit.
+same code ``spectragent bench`` exits with when its sweep reaches its limit.
 """
 
 from __future__ import annotations
@@ -44,13 +44,13 @@ from spectragent.flywheel.diagnostics import DiagnosticInputError, DifferenceMet
 from spectragent.flywheel.metrics import ChainLayout, DatasetFormatError
 from spectragent.flywheel.report import FlywheelReport, build_report, write_report
 
-#: ``spectragent-flywheel run``'s exit code when the chain stopped at its token limit.
+#: ``spectragent flywheel run``'s exit code when the chain stopped at its token limit.
 TOKEN_LIMIT_EXIT_CODE = 4
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="spectragent-flywheel",
+        prog="spectragent flywheel",
         description="The data flywheel's metrics gate (docs/architecture_design.md §4.16).",
         epilog=(
             "Exit codes: 0 done; 1 a stage failed, or the report could not be computed or "
@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"report: {result.layout.report_dir}")
             if result.token_limit_stop is not None:
                 print(
-                    f"spectragent-flywheel: stopped at the token limit: "
+                    f"spectragent flywheel: stopped at the token limit: "
                     f"{result.token_limit_stop.describe()}",
                     file=sys.stderr,
                 )
@@ -189,10 +189,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"report: {json_path}\nreport: {md_path}")
         return 0
     except ChainConfigError as exc:
-        print(f"spectragent-flywheel: {exc}", file=sys.stderr)
+        print(f"spectragent flywheel: {exc}", file=sys.stderr)
         return 2
     except ChainStageError as exc:
-        print(f"spectragent-flywheel: {exc}", file=sys.stderr)
+        print(f"spectragent flywheel: {exc}", file=sys.stderr)
         return 1
 
 

@@ -1,6 +1,6 @@
 """Shared pieces of the training-export tests: student configs, one export, JSON lines.
 
-An export is composed exactly as ``spectragent-export`` composes it — one
+An export is composed exactly as ``spectragent export`` composes it — one
 ``exporter:`` entry through the real ``ConfigComposer`` — and run by the real
 ``ExportRunner``; nothing here reimplements a pipeline stage.
 """

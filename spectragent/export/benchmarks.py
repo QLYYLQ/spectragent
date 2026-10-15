@@ -5,7 +5,7 @@ Through the loaders the export document configures — its own ``eval_loader:`` 
 ``task_loader:`` layers, the run root's layers, composed with every knob
 (``data_dir``, ``subset``) — matched to a benchmark by ``benchmark_name``. A
 benchmark the document configures no loader for is read by its registered
-loader built with its defaults: the rule ``spectragent-bench`` resolves its
+loader built with its defaults: the rule ``spectragent bench`` resolves its
 eval loader by (config first, then the registry). A benchmark it does
 configure is read only through those loaders — never by a default-built
 instance beside a configured one, which would ignore the knobs the document

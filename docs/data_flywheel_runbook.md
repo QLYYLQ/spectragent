@@ -4,11 +4,11 @@
 
 | 段 | 入口 | 发布的配置 | 产物 |
 |---|---|---|---|
-| 录制 | `spectragent-bench` 或 `spectragent-run` | `record_ui_tars_pinned.yaml` | run 目录下的 `env/` |
-| 离线回放 | `spectragent-run --replay-archive` | `replay_ui_tars_archive.yaml` | 一个新 run，`env/` 里是回放日志 |
-| 分叉 | `spectragent-bench`（任务来自 `trace_branches`） | `branch_ui_tars_archive.yaml`、`same_path_ui_tars_archive.yaml` | 每个分叉一个 run |
-| 导出 | `spectragent-export` | `export_sft.yaml`、`ui_tars_student.yaml` | 数据集目录 |
-| 度量 | `spectragent-flywheel run`、`spectragent-flywheel report` | 自己写的链规格 | `report.json`、`report.md` |
+| 录制 | `spectragent bench` 或 `spectragent run` | `record_ui_tars_pinned.yaml` | run 目录下的 `env/` |
+| 离线回放 | `spectragent run --replay-archive` | `replay_ui_tars_archive.yaml` | 一个新 run，`env/` 里是回放日志 |
+| 分叉 | `spectragent bench`（任务来自 `trace_branches`） | `branch_ui_tars_archive.yaml`、`same_path_ui_tars_archive.yaml` | 每个分叉一个 run |
+| 导出 | `spectragent export` | `export_sft.yaml`、`ui_tars_student.yaml` | 数据集目录 |
+| 度量 | `spectragent flywheel run`、`spectragent flywheel report` | 自己写的链规格 | `report.json`、`report.md` |
 
 ## 先在 fixture 上演练
 
@@ -41,7 +41,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
   这一档原来叫 `off`，现在叫 `none`，不用加引号；写 `off` 会被拒（PyYAML 按 YAML 1.1 把裸的 `off` 读成 `false`）。
 - 归档器只写在 `trace_writer` 的 `archive` 列表里，键要全限定（`browser.network`）。写进 capability 块的 `archiver:` 在组装时被拒。
 - 每次观测之前，browser capability 先等页面落定，录制、原路径回放、分叉都一样：主 frame 的文档加载完（`load`），之后连续 `settle_quiet_ms`（默认 500 ms）没有 DOM 变化、也没有资源加载完成；最多等 `settle_max_wait_s`（默认 5 s），到了就按当时的样子采集。只协商 DOM 的观测与要截图的观测等的是同一个等待。两个旋钮写在 capability 块上，发布的 YAML 不写，默认值录制与回放都适用，数字原样记进 `config.json`；`settle_max_wait_s: 0` 关掉等待，窗口比上限长时组装报错。**这是时间开销**：每次观测至少多等一个静默窗口（500 ms）；一直在变的页面（轮播、视频、ticker）每一步都等满上限。40 个真实站点上实测（architecture §4.14）：`navigate` 之后平均多等 1.75 s，滚动之后 1.98 s，点击引起导航之后 4.34 s（多数等满上限）。每个观测 fragment（`browser.dom`、`browser.screenshot`、`browser.browser_meta`）都带这次采集的 `settle` 记录：`waited_ms`、`outcome`（`settled`、`capped`、`unknown`）和 `waiting_for`（被上限截断时还没等到的 `load` 或 `dom`）；度量报告在归档开销一节按角色给出 p50、p95 和被上限截断的占比。
-- 这些组合问题全部在 `prepare()` 报：归档器与档位、provider 与它的旋钮、profile、网络来源，以及回放时与源 run 的一致性（`prepare()` 只读源 run 的环境指纹）。错误在打开 trace、启动 Chrome 之前出现，每条点名两边，`spectragent-run --dry-run` 也查得出来（回放配置要加 `--replay-archive DIR`）。`spectragent-bench` 开跑前先用第一个任务检查一次（pre-flight）：被拒时一个任务也不跑、不建 trace，在 stderr 印出原因，退出码 2。setup 在启动 Chrome 之前再查一遍。
+- 这些组合问题全部在 `prepare()` 报：归档器与档位、provider 与它的旋钮、profile、网络来源，以及回放时与源 run 的一致性（`prepare()` 只读源 run 的环境指纹）。错误在打开 trace、启动 Chrome 之前出现，每条点名两边，`spectragent run --dry-run` 也查得出来（回放配置要加 `--replay-archive DIR`）。`spectragent bench` 开跑前先用第一个任务检查一次（pre-flight）：被拒时一个任务也不跑、不建 trace，在 stderr 印出原因，退出码 2。setup 在启动 Chrome 之前再查一遍。
 
 ## 录制
 
@@ -49,11 +49,11 @@ uv run python -m tests._helpers.flywheel_rehearsal --out /tmp/af-rehearsal
 
 ```bash
 export OPENAI_API_KEY="你的密钥"
-uv run spectragent-bench --config my/record.yaml \
+uv run spectragent bench --config my/record.yaml \
   --benchmark online_mind2web --subset All --task-id <ID> --no-eval
 ```
 
-基准数据不随仓库发布，数据目录怎么设见 [Browser agent 运行手册](browser_agent_runbook.md) 的"跑数据集"。单个自由文本任务用 `spectragent-run --config my/record.yaml --start-url URL --task "..."`。数据集任务的 trace 目录是 `<trace_dir>/<task_id>_<8 位随机串>`，`spectragent-run` 的是 `<trace_dir>/<run_id>`。飞轮的每一段都不需要评测结果；只有想按评测结果筛选源 run（分叉和导出的可选过滤 `require_eval`，默认 `null`）时，才在录制配置里加 `evaluator:` 块、去掉 `--no-eval`，判定会写进每个 trace 的 `evals/`。
+基准数据不随仓库发布，数据目录怎么设见 [Browser agent 运行手册](browser_agent_runbook.md) 的"跑数据集"。单个自由文本任务用 `spectragent run --config my/record.yaml --start-url URL --task "..."`。数据集任务的 trace 目录是 `<trace_dir>/<task_id>_<8 位随机串>`，`spectragent run` 的是 `<trace_dir>/<run_id>`。飞轮的每一段都不需要评测结果；只有想按评测结果筛选源 run（分叉和导出的可选过滤 `require_eval`，默认 `null`）时，才在录制配置里加 `evaluator:` 块、去掉 `--no-eval`，判定会写进每个 trace 的 `evals/`。
 
 ```yaml
 hook:
@@ -127,7 +127,7 @@ for record in trace.archive_files(0, "browser.dom_raw"):
 `configs/flywheel/replay_ui_tars_archive.yaml` 回放用录制配置录下的 run（设计见 [architecture_design.md](architecture_design.md) §4.14 "回放"）。浏览器经 Fetch 发出的每个请求都在 Request 阶段按源 run 的 `browser.network` 归档应答，归档里没有的由 miss 策略应答（失败、204 或 404），没有请求会被放到网络上。agent 照常运行，每一步仍然调用模型，只有网络来源换成了归档。
 
 ```bash
-uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
+uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
   --task "录制时的任务文本" --start-url <录制时的 start_url> \
   --replay-archive traces/recorded/<run>
 ```
@@ -171,11 +171,11 @@ for step, entry in iter_replay_log(reader):     # 含收尾批次（step 为 Non
 
 `configs/flywheel/branch_ui_tars_archive.yaml` 把录下的 run 放回第 t 步之前的状态，让 teacher（这份配置的 `llm`）重新决定第 t 步。任务来自 `task_loader: trace_branches`：`data_dir` 下每个通过筛选的源 run、每个选中的步展开 `branches_per_step` 个任务，任务 id 是 `<source_run_id>/s<t>/b<i>`。设计见 [architecture_design.md](architecture_design.md) §4.1 `BranchLoop`、§4.10 `trace_branches` 和 §4.14 "恢复：重定位与校验"。`trace_branches` 没有评测加载器，所以传 `--no-eval`；不传而配了 `evaluator:` 时，开跑前就会被拒。
 
-`branch` loop 需要 loop 输入 `checkpoint`，即源 run 目录和要分叉的步。只有 `trace_branches` 会把它放进每个任务的上下文，同时放进去的还有源 run 的 `start_url` 和 `replay_archive`（源 run 目录）。`spectragent-run` 没有能提供 `checkpoint` 的参数，用它跑分叉配置（包括原路径回放配置）时，`prepare()` 做完槽位校验就报 `IncompatibleLoopInputError`，加 `--dry-run` 也一样。
+`branch` loop 需要 loop 输入 `checkpoint`，即源 run 目录和要分叉的步。只有 `trace_branches` 会把它放进每个任务的上下文，同时放进去的还有源 run 的 `start_url` 和 `replay_archive`（源 run 目录）。`spectragent run` 没有能提供 `checkpoint` 的参数，用它跑分叉配置（包括原路径回放配置）时，`prepare()` 做完槽位校验就报 `IncompatibleLoopInputError`，加 `--dry-run` 也一样。
 
 ```bash
-uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --list     # 只列任务 id
-uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --list     # 只列任务 id
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
 ```
 
 ```yaml
@@ -188,7 +188,7 @@ task_loader:
     on_unbranchable: raise             # skip：跳过并记下原因
 ```
 
-源 run 由 `sources` 选出。它是相对 `data_dir` 的 glob 列表，默认 `["*"]`，即 `data_dir` 的直接子目录；匹配到的目录里没有 `manifest.json` 就不算 run，直接忽略。一个都匹配不到时（`data_dir` 不存在也一样），加载器只记一条 warning（`trace_branches: no recorded run under ... matches ...; no branch tasks`），展开出 0 个任务，不报错，所以开跑前先用 `--list` 确认任务 id。`data_dir` 不要指向 `traces/`：发布的回放配置也写到那里，不能分叉的回放 run 会混进源里；`traces/recorded` 这样的子目录本身没有 `manifest.json`，默认的 `*` 匹配到它也只会忽略，它下面的录制一个都找不到。只分叉一个 run 时，把 `sources` 写成 `["<那个 run 的目录名>"]`，或者给 `spectragent-bench` 传 `--task-id <source_run_id>/s<t>/b<i>`。
+源 run 由 `sources` 选出。它是相对 `data_dir` 的 glob 列表，默认 `["*"]`，即 `data_dir` 的直接子目录；匹配到的目录里没有 `manifest.json` 就不算 run，直接忽略。一个都匹配不到时（`data_dir` 不存在也一样），加载器只记一条 warning（`trace_branches: no recorded run under ... matches ...; no branch tasks`），展开出 0 个任务，不报错，所以开跑前先用 `--list` 确认任务 id。`data_dir` 不要指向 `traces/`：发布的回放配置也写到那里，不能分叉的回放 run 会混进源里；`traces/recorded` 这样的子目录本身没有 `manifest.json`，默认的 `*` 匹配到它也只会忽略，它下面的录制一个都找不到。只分叉一个 run 时，把 `sources` 写成 `["<那个 run 的目录名>"]`，或者给 `spectragent bench` 传 `--task-id <source_run_id>/s<t>/b<i>`。
 
 步号从 0 开始。加载器从第 0 步往后扫描源 run 已提交的步，遇到第一个缺失的步号、或超出 trace 完整到的那一步（manifest 的 `complete_through`）就停；扫到的步里 `origin: policy`、`error_phase` 不是 `observe` 的是候选步。trace 从没关闭（manifest 还是 `writing`：录制还在跑，或进程死在收尾之前）的源一个候选步都没有，跳过并记原因。这一条是硬条件，关不掉：一个在第 t 步收证据失败而停下的录制（`incomplete`），仍然贡献第 t 步之前的每个检查点；只是收尾失败的录制一个检查点也不少。`step_selector` 决定在哪些步分叉：
 
@@ -267,17 +267,17 @@ for message in trace.llm_messages(t)[0].messages[-3:]:   # 上一步的回复、
 `configs/flywheel/same_path_ui_tars_archive.yaml` 是同一个分叉 sweep 的一种设置：`step_selector: last`、`continue_steps: 0`、`verify: warn`、`branches_per_step: 2`、`agent_outcome: any`、`on_unbranchable: skip`。每个任务把一个录制恢复到它最后一个候选步，之前每一步都重放并校验；teacher 只在最后一步决定一次，每个任务一次模型调用；同一个源跑两遍，用来量回放确定性。度量报告的"原路径回放保真"就来自它。发布配置的 `data_dir` 已经是 `traces/recorded`，run 写到 `traces/same_path`：
 
 ```bash
-uv run spectragent-bench --config configs/flywheel/same_path_ui_tars_archive.yaml --no-eval
+uv run spectragent bench --config configs/flywheel/same_path_ui_tars_archive.yaml --no-eval
 ```
 
 ## 导出 SFT 数据
 
 这一期交付的是 teacher 轨迹（录制、回放、分叉）。学生一侧是暂定的，挪到下一期再定；导出代码冻结，不加功能，下面写的是它冻结时的用法（[architecture_design.md](architecture_design.md) §4.15）。
 
-`spectragent-export` 只读已提交的 trace，不起浏览器，也不调模型。学生是一个普通的 af agent：`configs/flywheel/ui_tars_student.yaml`（UITarsAgent，`coordinate_space: normalized_1000`）只被组装，从不运行；每个样本由它自己的 prompt 构建与 memory 渲染，目标轮由它的 `format_react_output` 写出，所以训练格式就是它服务时的格式（设计见 [architecture_design.md](architecture_design.md) §4.15）。
+`spectragent export` 只读已提交的 trace，不起浏览器，也不调模型。学生是一个普通的 af agent：`configs/flywheel/ui_tars_student.yaml`（UITarsAgent，`coordinate_space: normalized_1000`）只被组装，从不运行；每个样本由它自己的 prompt 构建与 memory 渲染，目标轮由它的 `format_react_output` 写出，所以训练格式就是它服务时的格式（设计见 [architecture_design.md](architecture_design.md) §4.15）。
 
 ```bash
-uv run spectragent-export --config configs/flywheel/export_sft.yaml
+uv run spectragent export --config configs/flywheel/export_sft.yaml
 ```
 
 导出 YAML 有一个 `exporter:` 块，可以再加 `eval_loader:` / `task_loader:` 块（见下面的去污染），没有 agent 和 environment。v1 唯一的导出器是 `exporter_id: openai_messages`，`sample: per_step` 与 `image_store: files` 也只有这一个取值。发布的 `export_sft.yaml` 不按评测结果筛（`filters.require_eval: null`），也不去污染（`decontamination.against: []`），所以直接用在 online_mind2web 的录制上就能导出；teacher 失败的轨迹也会进数据集，每个样本带着 `labels.step_status` 和判定标签，训练时可以再筛。开跑前按自己的数据改这几处：
@@ -306,7 +306,7 @@ uv run spectragent-export --config configs/flywheel/export_sft.yaml
 
 ## 度量报告
 
-`spectragent-flywheel` 把前面几段串成一条链，依次是录制、对照组（可选）、原路径回放、分叉、两次导出，最后算一份报告（设计见 [architecture_design.md](architecture_design.md) §4.16）。链在进程内依次调用 `spectragent-bench` 和 `spectragent-export` 的 `main`，每段的运行方式与手动执行相同。它只改各段 YAML 的路径字段（`trace_writer.trace_dir`，`trace_branches` 的 `data_dir`，导出器的 `sources_root`、`sources`、`output_dir`），把改好的配置写到 `<root>/configs/` 再运行。
+`spectragent flywheel` 把前面几段串成一条链，依次是录制、对照组（可选）、原路径回放、分叉、两次导出，最后算一份报告（设计见 [architecture_design.md](architecture_design.md) §4.16）。链在进程内依次调用 `spectragent bench` 和 `spectragent export` 的 `main`，每段的运行方式与手动执行相同。它只改各段 YAML 的路径字段（`trace_writer.trace_dir`，`trace_branches` 的 `data_dir`，导出器的 `sources_root`、`sources`、`output_dir`），把改好的配置写到 `<root>/configs/` 再运行。
 
 链规格是一份普通 YAML（pydantic 模型 `ChainSpec`，多余的键被拒），ConfigComposer 不读它。不要把它放进 `configs/flywheel/`，那里每个文件都要能组装并通过 `prepare()`。
 
@@ -327,10 +327,10 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}
 `my/` 下是从 `configs/flywheel/` 复制来改过的文件。
 
 ```bash
-uv run spectragent-flywheel run --spec chain.yaml                     # 规格里配了的每一段
-uv run spectragent-flywheel run --spec chain.yaml --stages record     # 只跑列出的段，按链的顺序
-uv run spectragent-flywheel report --spec chain.yaml                  # 只读，随时重算
-uv run spectragent-flywheel report --root traces/chains/first-live --evidence live --out /tmp/report
+uv run spectragent flywheel run --spec chain.yaml                     # 规格里配了的每一段
+uv run spectragent flywheel run --spec chain.yaml --stages record     # 只跑列出的段，按链的顺序
+uv run spectragent flywheel report --spec chain.yaml                  # 只读，随时重算
+uv run spectragent flywheel report --root traces/chains/first-live --evidence live --out /tmp/report
 ```
 
 `--stages` 可写的段名是 `record`、`control`、`same_path`、`branch`、`export`、`report`，用逗号分隔。
@@ -338,13 +338,13 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 - `root` 放在 git 忽略的目录下，例如 `traces/` 或 `tmp/`；`runs/` 不在 `.gitignore` 里。
 - 布局：`<root>/traces/{record,control,same_path,branch}/`，`<root>/datasets/{first,second}/`，`<root>/report/{report.json,report.md}`，`<root>/configs/`，`<root>/evals/<段>/`（写了 `evaluate: true` 的段），`<root>/chain.json`（每段的 argv、退出码、产生的 run 和起止时刻；`token_limit` 写了数字时，还有每段的 token 用量和停止记录，见下）。
 - `same_path` 和 `branch` 的源是 `<root>/traces/record`，所以 `record` 先跑。重跑一个运行段会在已有的 run 旁边再加 run，并记一条 warning（`already holds runs; this stage adds to them`）。重跑 `record` 之后，`same_path`、`branch`、导出和报告都会把新旧录制一起读进来；想干净地重做，换一个 `root`。
-- 导出从不覆盖：选了 `export` 时，只要 `repeat` 要写的 `datasets/first`（`repeat: 2` 时还有 `datasets/second`）有一个已经存在，链就在任何一段开跑之前报 `ChainConfigError`。要在链里重导，先删掉这些目录，再跑 `--stages export,report`。也可以复制 `<root>/configs/export_first.yaml`（链实际用的导出配置，路径都已写好），改掉 `output_dir` 和要改的筛选，用 `spectragent-export` 导到别处。只想重算报告就用 `spectragent-flywheel report`。
+- 导出从不覆盖：选了 `export` 时，只要 `repeat` 要写的 `datasets/first`（`repeat: 2` 时还有 `datasets/second`）有一个已经存在，链就在任何一段开跑之前报 `ChainConfigError`。要在链里重导，先删掉这些目录，再跑 `--stages export,report`。也可以复制 `<root>/configs/export_first.yaml`（链实际用的导出配置，路径都已写好），改掉 `output_dir` 和要改的筛选，用 `spectragent export` 导到别处。只想重算报告就用 `spectragent flywheel report`。
 - 链用的导出 YAML 用 `filters.require_eval: null`（链默认不评测）和 `decontamination: {against: []}`（源本来就是被测 benchmark 的任务）；这两个就是默认值，发布的 `export_sft.yaml` 也这么写。
 - 运行段退出码是 0 或 1、并且写出了新的 run，就算跑完；个别任务的基础设施失败是要度量的数据。退出码 4 表示这一段的 sweep 用完了链剩下的 token 额度，链在这里停下（见下一条）。其余情况链停在这一段，报 `ChainStageError`，之前的产物保留；退出码 2 表示这一段的 pre-flight 拒绝了它的配置，一个任务也没跑（原因在 stderr）；退出码 3 表示一个 guard 否决了这一段（比如录制撞上风控页），sweep 停在被否决的任务，这一段的 run 不会喂给下一段。
 - token 上限：`token_limit` 是所有运行段合计能用的 token，默认 `unlimited`（不限，链不数用量，和以前一样）。写了数字时：
   - 用量从 trace 里数：每个 run 的每次模型调用记录里 provider 报的数（`total_tokens`，没给总数时 prompt 加 completion；失败的调用照样计费），不需要 metrics hook。provider 没报用量的调用计入调用数、不加 token，按 `traces/<段>/<run>: step S call K (状态)` 点名，不当作 0。
-  - 链开跑前先数一遍链根下已有的 run，所以按段跑时前几段花掉的照样算；每个运行段把剩下的额度交给 `spectragent-bench --token-limit`。sweep 每跑完一个任务就加一次；累计达到额度时，正在跑的那个任务照常跑完，之后的任务不开始。
-  - 达到上限后，后面的运行段和导出段都不开始，报告照样按已有的数据算，`report.md` 开头写明是因为 token 上限停的（`report.json` 的 `token_use.limit_reached: true`）。`spectragent-flywheel run` 打印停在哪一段、用了多少、上限多少，退出码 4；`chain.json` 的 `stopped_by_token_limit` 记着同样的内容，加上没开始的段和没报用量的调用。
+  - 链开跑前先数一遍链根下已有的 run，所以按段跑时前几段花掉的照样算；每个运行段把剩下的额度交给 `spectragent bench --token-limit`。sweep 每跑完一个任务就加一次；累计达到额度时，正在跑的那个任务照常跑完，之后的任务不开始。
+  - 达到上限后，后面的运行段和导出段都不开始，报告照样按已有的数据算，`report.md` 开头写明是因为 token 上限停的（`report.json` 的 `token_use.limit_reached: true`）。`spectragent flywheel run` 打印停在哪一段、用了多少、上限多少，退出码 4；`chain.json` 的 `stopped_by_token_limit` 记着同样的内容，加上没开始的段和没报用量的调用。
   - 一个任务不会被打断，所以实际用量最多超出上限一个任务的用量。要接着跑，先调高 `token_limit`，再用 `--stages` 只跑没开始的段；上限没调高时，选中的运行段和导出段一个也不开始（报告照跑）。
   - 报告的 `token_use` 按角色列出 token、调用数和没报用量的调用，不论有没有上限；`report --root` 没有规格，不知道上限（`limit: null`）。
 - `report --root` 没有规格，也就没有植入值，隐私一项的结论是 `insufficient`。
@@ -374,7 +374,7 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
 ## 离线截图差异诊断
 
 ```bash
-uv run spectragent-flywheel diagnose \
+uv run spectragent flywheel diagnose \
   --recordings traces/chains/first-live/traces/record \
   --replays traces/chains/first-live/traces/same_path \
   --out tmp/replay-diagnostics
@@ -421,7 +421,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 
 真实站点上的每一段都会花 LLM token。开跑之前先定下：模型路由（model id 和 `coordinate_space`）、任务列表、链的 token 上限、要不要对照组、要不要评测、磁盘预算。
 
-1. 路由与密钥。`spectragent-bench` 和 `spectragent-flywheel` 都不读 `.env`（`spectragent-run` 会读），先在 shell 里导出：
+1. 路由与密钥。`spectragent bench` 和 `spectragent flywheel` 都不读 `.env`（`spectragent run` 会读），先在 shell 里导出：
 
    ```bash
    set -a; . ./.env; set +a
@@ -429,7 +429,7 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 
    密钥只放在环境变量里，不要写进 YAML 的 `api_key`：链把每段的 YAML 原样复制到 `<root>/configs/`，隐私一项只看发给模型的请求和导出的数据集，不扫描那个目录。路由写在 `llm` 块（`model_type`、`model`，需要时 `base_url`）；`OPENAI_BASE_URL` 只在 YAML 没写 `base_url` 时生效。`coordinate_space` 要与模型实际输出的坐标网格一致，Qwen-VL 这类在 0 到 1000 网格上回答的模型用 `normalized_1000`。录制、原路径回放、分叉三份 YAML 的 agent 块必须相同，分叉在开跑前核对；teacher 的模型和采样可以换（发布的分叉配置用温度 0.8），原路径回放通常用录制时的模型和默认温度。
 2. 选任务。先取 10 个，只跑录制、原路径回放和报告，看保真度和花费；再扩到 10 到 20 个任务跑整条链。任务要无需登录、公开、不被 Cloudflare 拦截。online_mind2web 的每个任务有 `task_id`、`task_text`、`start_url`、`difficulty` 和 `metadata.reference_length`，可以离线挑：先挑 `easy`，每个可注册域名只取一个任务，跳过任务文本要求账号的，跳过已知重度反爬的站点。会不会被拦截离线判断不了，被拦截的站点会出现在报告的 anti-bot 一节和剔除名单里，代价是一次录制。`lexbench_browser` 的起始页在数据里不带协议头，加载器补成 `https://`；写成文字或几个站点的任务在开跑前的检查里被拒，挑任务时直接跳过。提交表单（POST）的任务在回放和分叉里必然 miss。
-3. token 上限。真跑的规格写一个具体的数，例如 `token_limit: 2000000`（默认 `unlimited` 不限）。链从每个 run 的模型调用记录里数用量，每跑完一个任务加一次；达到上限时，那个任务照常跑完，之后的任务和段（包括导出）都不开始，报告照样按已有的数据算，并写明是因为 token 上限停的，`spectragent-flywheel run` 退出码 4（见"度量报告"）。按段跑时上限照样管住整条链：链每次开跑前先数链根下已有的 run。上限按估算加上余量来定；一个任务不会被打断，实际用量最多超出上限一个任务的用量。每个任务的模型调用数：
+3. token 上限。真跑的规格写一个具体的数，例如 `token_limit: 2000000`（默认 `unlimited` 不限）。链从每个 run 的模型调用记录里数用量，每跑完一个任务加一次；达到上限时，那个任务照常跑完，之后的任务和段（包括导出）都不开始，报告照样按已有的数据算，并写明是因为 token 上限停的，`spectragent flywheel run` 退出码 4（见"度量报告"）。按段跑时上限照样管住整条链：链每次开跑前先数链根下已有的 run。上限按估算加上余量来定；一个任务不会被打断，实际用量最多超出上限一个任务的用量。每个任务的模型调用数：
 
    | 段 | 每个任务的调用数 |
    |---|---|
@@ -442,12 +442,12 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 4. 按段跑，每段之后重算报告（只读，不花钱），先看 `token_use` 和 `inputs.roles.<段>.model_failures` 再继续：
 
    ```bash
-   uv run spectragent-flywheel run --spec chain.yaml --stages record
-   uv run spectragent-flywheel report --spec chain.yaml
-   uv run spectragent-flywheel run --spec chain.yaml --stages control      # 可选
-   uv run spectragent-flywheel run --spec chain.yaml --stages same_path
-   uv run spectragent-flywheel run --spec chain.yaml --stages branch
-   uv run spectragent-flywheel run --spec chain.yaml --stages export,report
+   uv run spectragent flywheel run --spec chain.yaml --stages record
+   uv run spectragent flywheel report --spec chain.yaml
+   uv run spectragent flywheel run --spec chain.yaml --stages control      # 可选
+   uv run spectragent flywheel run --spec chain.yaml --stages same_path
+   uv run spectragent flywheel run --spec chain.yaml --stages branch
+   uv run spectragent flywheel run --spec chain.yaml --stages export,report
    ```
 
    以模型调用失败结束的 run（429、超时、被拒的 schema，`error_phase: llm`）列在 `model_failures` 里。它们不会让站点进剔除名单。teacher 调用失败的分叉是空分叉，不计入 `miss_policy` 依据的占比，按原因记在 `metrics.branch_coverage.empty`；原路径回放在最后一步失败的 run 没有终止截图。预算里给重跑这些任务留出余量。
@@ -479,16 +479,16 @@ uv run pytest tests/test_core/test_trace/test_secret_guard.py
 
   每一步的 `restoration.evidence` 记着各项的测量值，`restoration.actions` 记着每个录下动作的重定位方式和结果。值为 `null` 的项不参与判定，所以 UI-TARS 这类纯视觉 run 主要靠截图距离、文档 miss 和动作成败来判。
 - `IncompatibleCheckpointError`：分叉配置与源 run 不匹配，在任何 setup 之前报，点名两边：源 trace 从没关闭，或检查点超出它完整到的那一步（`past the step its trace is complete through`），另一个 agent，不同的 `prompt_template`、`coordinate_space` 等旋钮或数字旋钮（如 memory 的 `max_messages`），不同的 memory 或协商结果，不同的 `max_actions_per_step`（`agent_loop.max_actions_per_step`），源 loop 不是 `react`，源 run 本身是分叉 run；开跑之后、任何动作之前还会查种子 prompt 与源 run 是否相同、录下的回复在这个 agent 上能否复现。分叉配置的 agent 块照抄录制配置（llm 一块可以不同）。
-- `IncompatibleLoopInputError: Loop 'branch' loop inputs: requires checkpoint`：用 `spectragent-run` 跑了分叉或原路径回放的配置。它们只能经 `spectragent-bench` 的 `trace_branches` 任务运行，检查配置用 `--list`。
+- `IncompatibleLoopInputError: Loop 'branch' loop inputs: requires checkpoint`：用 `spectragent run` 跑了分叉或原路径回放的配置。它们只能经 `spectragent bench` 的 `trace_branches` 任务运行，检查配置用 `--list`。
 - 录制中途失败：录制按 fail closed 处理，两本账分开记。recorder 连接意外断开时，capability 立刻标记自己不存活，观测、动作和收集都抛 `RecorderLostError`；一次收集失败（例如 archive scope 丢过事件）同样让 run 在这一步停下。录制从不在缺少记录的情况下继续：这一步不提交，它的模型调用作为收尾调用落盘，manifest 记 `"status": "incomplete"`，`incomplete_reason` 以 `recording failed at step t:` 开头，`complete_through` 是 t-1；`result.json` 是 `agent_done: error`、`error: "recording failed at step t: ..."`。agent 恰好在那一步说了 done 时，`result.json` 保留 done 和答案，trace 照样是 `incomplete`。之前提交的步完好，可以拿来分叉、导出；要补全就重跑这个任务。
 - run 成功、trace 却是 `incomplete`：尾部没记下来（收尾那次收集、收尾补写的欠账、终止观测那一步，或 `result.json` 写不进去），原因在 manifest 的 `incomplete_reason`。不抛错，run 的结局不变；收尾写不进去的东西丢掉，不重试。磁盘一直满着时连终态都写不进去，manifest 停在 `writing`（日志里有一条 ERROR）。
 - sweep 的汇总：表头下面三行是三本账的计数（`agent outcome`、`environment`、`trace`），之后每个任务一行；`infrastructure failure: ...` 是环境坏了、模型在 provider 重试之后仍不可用（`the model call failed after the provider's retries`）或 trace 不完整，计入 `infrastructure_failures`，退出码 1。被否决的任务那一行写 `vetoed: ...`，最后一行 `vetoed: a guard stopped the sweep at ...`，退出码 3。
 - 导出失败时什么都不写。`ExportEmptyError` 列出每个筛选和丢弃原因的计数，最常见的是写了 `require_eval` 却没评测过、`against` 列了录制所用的 benchmark，或者 `sources` 只列了分叉 run 而没列它们的源 run。`OcclusionEvidenceMissingError` 见"导出 SFT 数据"。`StudentCaptureMismatchError`：学生的截图管线与录制不同。`SampleTooLongError` 点名超长的样本。`CredentialLeakError`、`ReferenceLeakError`：凭证形状或参考答案进了输出。`output_dir ... exists`：换一个目录，或者删掉旧的。
-- `spectragent-bench: the pre-flight check refused the configuration for task ...`（退出码 2）：开跑之前，第一个任务的 `prepare()` 拒绝了配置，一个任务也没跑、没建 trace。冒号后面是原来的错误，点名两边：组合问题（`BrowserCooperationError`）、协商（`IncompatibleFragmentError`、`IncompatibleActionError`、`IncompatibleArchiveError`）、loop 输入、任务上下文里没有谁接受的 setup 键。改配置后重跑；只想看哪里不对可以先 `--dry-run`（`spectragent-run`）。
-- `spectragent-bench: the sweep reached its token limit after task ...`（退出码 4）：sweep 的 runs 记下的用量达到了 `--token-limit`。那个任务跑完了，之后的任务没开始；汇总表的表头带 `token_limit_reached=1`，`tokens:` 一行是合计，每个任务那一行带它的 token 数，最后一行写着累计、上限和没开始的任务数。`no usage reported (not counted): ...` 是 provider 没报用量的调用，`tokens not counted: ...` 是 trace 读不回来的任务。
-- `spectragent-bench: the pre-flight check refused ... a token limit counts the tokens each task's trace records, and this configuration writes no trace`（退出码 2）：给了 `--token-limit`，配置里却没有 `trace_writer` hook，用量无从数起。加上 `trace_writer`，或者去掉上限。
+- `spectragent bench: the pre-flight check refused the configuration for task ...`（退出码 2）：开跑之前，第一个任务的 `prepare()` 拒绝了配置，一个任务也没跑、没建 trace。冒号后面是原来的错误，点名两边：组合问题（`BrowserCooperationError`）、协商（`IncompatibleFragmentError`、`IncompatibleActionError`、`IncompatibleArchiveError`）、loop 输入、任务上下文里没有谁接受的 setup 键。改配置后重跑；只想看哪里不对可以先 `--dry-run`（`spectragent run`）。
+- `spectragent bench: the sweep reached its token limit after task ...`（退出码 4）：sweep 的 runs 记下的用量达到了 `--token-limit`。那个任务跑完了，之后的任务没开始；汇总表的表头带 `token_limit_reached=1`，`tokens:` 一行是合计，每个任务那一行带它的 token 数，最后一行写着累计、上限和没开始的任务数。`no usage reported (not counted): ...` 是 provider 没报用量的调用，`tokens not counted: ...` 是 trace 读不回来的任务。
+- `spectragent bench: the pre-flight check refused ... a token limit counts the tokens each task's trace records, and this configuration writes no trace`（退出码 2）：给了 `--token-limit`，配置里却没有 `trace_writer` hook，用量无从数起。加上 `trace_writer`，或者去掉上限。
 - 链：`ChainConfigError` 在任何一段开跑之前报，原因可能是段 YAML 缺 `trace_writer`、`trace_branches` 或 `exporter` 块（或者有两个），`--stages` 写了不存在或规格里没配的段，或者数据集目录已经存在（怎么重导见"度量报告"）。`ChainStageError` 点名失败的段，`chain.json` 记着每段的 argv 和退出码。
-- `spectragent-flywheel: stopped at the token limit ...`（`run` 退出码 4）：链根下的 runs 用量达到了 `token_limit`，后面的段没开始，选了报告段时报告照样算了。`chain.json` 的 `stopped_by_token_limit` 写着在哪一段停的（`stage: null` 表示这次开跑之前就已经达到了）、用了多少、上限多少、哪些段没开始、哪些调用没报用量。要接着跑，调高 `token_limit`，再用 `--stages` 只跑没开始的段。
+- `spectragent flywheel: stopped at the token limit ...`（`run` 退出码 4）：链根下的 runs 用量达到了 `token_limit`，后面的段没开始，选了报告段时报告照样算了。`chain.json` 的 `stopped_by_token_limit` 写着在哪一段停的（`stage: null` 表示这次开跑之前就已经达到了）、用了多少、上限多少、哪些段没开始、哪些调用没报用量。要接着跑，调高 `token_limit`，再用 `--stages` 只跑没开始的段。
 
 ## 已知限制
 

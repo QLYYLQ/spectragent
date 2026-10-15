@@ -5,7 +5,7 @@
    registrar collection in ``scripts/generate_all.py`` and what it generates
    (``generated/_composed.py`` imports the exporter's knob types), and the
    metrics chain (``flywheel/chain.py``, M33), which runs
-   ``spectragent-export``'s ``main`` in-process — its CLI module and nothing
+   ``spectragent export``'s ``main`` in-process — its CLI module and nothing
    else of the export.
 2. ``export/runner.py`` reaches exporters and translators only through the
    registrars and Protocols: it imports no concrete exporter or translator.

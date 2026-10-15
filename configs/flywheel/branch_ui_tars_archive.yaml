@@ -7,7 +7,7 @@
 # both sides), and the browser block matches the replay config
 # (replay_ui_tars_archive.yaml). Run a sweep:
 #
-#   spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
+#   spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
 #
 # The tasks come from task_loader: trace_branches — one per selected step of
 # every recorded run under data_dir, id <source_run_id>/s<t>/b<i>. Each task's

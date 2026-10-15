@@ -4,7 +4,7 @@
 # source run is set the same here: the tier and its seed, the viewport, the
 # backend's own switches. The source run directory arrives per task:
 #
-#   spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
+#   spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
 #       --task "..." --start-url URL --replay-archive traces/<recorded-run>
 #
 # What changes against the recording:

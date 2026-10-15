@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="sg-mark-dark-title sg-mark-dark-desc">
+  <title id="sg-mark-dark-title">Spectragent prism mark, dark</title>
+  <desc id="sg-mark-dark-desc">A dark optical instrument faceplate with one input beam and six discrete spectral channels.</desc>
+  <defs>
+    <pattern id="sg-mark-dark-scan" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="1" fill="#A8B5C2" opacity="0.11"/>
+    </pattern>
+    <filter id="sg-mark-dark-glow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2"/></filter>
+    <g id="sg-mark-dark-spectrum" shape-rendering="crispEdges">
+      <g fill="#FF5E57"><rect x="128" y="88" width="24" height="8"/><rect x="152" y="80" width="24" height="8"/><rect x="176" y="72" width="24" height="8"/><rect x="200" y="64" width="16" height="8"/></g>
+      <g fill="#FFA62B"><rect x="136" y="104" width="24" height="8"/><rect x="160" y="96" width="24" height="8"/><rect x="184" y="88" width="32" height="8"/></g>
+      <g fill="#F2D65C"><rect x="144" y="120" width="24" height="8"/><rect x="168" y="112" width="48" height="8"/></g>
+      <rect x="144" y="136" width="72" height="8" fill="#57D68D"/>
+      <g fill="#3FD0E0"><rect x="144" y="152" width="24" height="8"/><rect x="168" y="160" width="48" height="8"/></g>
+      <g fill="#8B7BE8"><rect x="152" y="168" width="24" height="8"/><rect x="176" y="176" width="24" height="8"/><rect x="200" y="184" width="16" height="8"/></g>
+    </g>
+    <g id="sg-mark-dark-fringe" shape-rendering="crispEdges">
+      <path d="M104 64L168 184H72Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="miter"/>
+      <g fill="currentColor"><rect x="40" y="120" width="72" height="8"/><rect x="128" y="88" width="24" height="8"/><rect x="152" y="80" width="24" height="8"/><rect x="176" y="72" width="24" height="8"/><rect x="200" y="64" width="16" height="8"/><rect x="136" y="104" width="24" height="8"/><rect x="160" y="96" width="24" height="8"/><rect x="184" y="88" width="32" height="8"/><rect x="144" y="120" width="24" height="8"/><rect x="168" y="112" width="48" height="8"/><rect x="144" y="136" width="72" height="8"/><rect x="144" y="152" width="24" height="8"/><rect x="168" y="160" width="48" height="8"/><rect x="152" y="168" width="24" height="8"/><rect x="176" y="176" width="24" height="8"/><rect x="200" y="184" width="16" height="8"/></g>
+    </g>
+  </defs>
+  <rect width="256" height="256" fill="#0A0E14"/>
+  <rect x="16" y="16" width="224" height="224" rx="8" fill="#2A3340"/>
+  <path d="M24 16H232L224 24H32L24 32V224L16 232V24Z" fill="#3E4A5A" opacity="0.72"/>
+  <rect x="32" y="32" width="192" height="192" fill="#D9E0E7"/>
+  <rect x="40" y="40" width="176" height="176" fill="#141A22"/>
+  <rect x="40" y="40" width="176" height="176" fill="url(#sg-mark-dark-scan)"/>
+  <g shape-rendering="crispEdges" fill="#D9E0E7">
+    <rect x="24" y="24" width="8" height="8"/><rect x="26" y="27" width="4" height="2" fill="#3E4A5A"/>
+    <rect x="224" y="24" width="8" height="8"/><rect x="226" y="27" width="4" height="2" fill="#3E4A5A"/>
+    <rect x="24" y="224" width="8" height="8"/><rect x="26" y="227" width="4" height="2" fill="#3E4A5A"/>
+    <rect x="224" y="224" width="8" height="8"/><rect x="226" y="227" width="4" height="2" fill="#3E4A5A"/>
+  </g>
+  <g filter="url(#sg-mark-dark-glow)" opacity="0.32"><rect x="40" y="120" width="72" height="8" fill="#F4EFE2"/><use href="#sg-mark-dark-spectrum"/></g>
+  <use href="#sg-mark-dark-fringe" transform="translate(-1 0)" color="#3FD0E0" opacity="0.22"/>
+  <use href="#sg-mark-dark-fringe" transform="translate(1 0)" color="#FFA62B" opacity="0.22"/>
+  <use href="#sg-mark-dark-spectrum"/>
+  <path d="M104 64L168 184H72Z" fill="#D9E0E7"/>
+  <path d="M104 80L152 176H80Z" fill="#101721"/>
+  <path d="M104 80L112 96L88 176H80Z" fill="#3E4A5A" opacity="0.55"/>
+  <g shape-rendering="crispEdges"><rect x="40" y="118" width="72" height="12" fill="#0A0E14" opacity="0.7"/><rect x="40" y="120" width="72" height="8" fill="#F4EFE2"/><rect x="96" y="122" width="24" height="4" fill="#F4EFE2" opacity="0.72"/></g>
+  <g shape-rendering="crispEdges" fill="#D9E0E7" opacity="0.55">
+    <rect x="48" y="208" width="2" height="4"/><rect x="64" y="204" width="2" height="8"/><rect x="80" y="208" width="2" height="4"/><rect x="96" y="204" width="2" height="8"/><rect x="112" y="208" width="2" height="4"/><rect x="128" y="204" width="2" height="8"/><rect x="144" y="208" width="2" height="4"/><rect x="160" y="204" width="2" height="8"/><rect x="176" y="208" width="2" height="4"/><rect x="192" y="204" width="2" height="8"/>
+  </g>
+</svg>

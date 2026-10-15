@@ -2,7 +2,7 @@
 
 ## One entry point
 
-Run `uv run spectragent-gen` (or `python -m spectragent.scripts.generate_all`).
+Run `uv run spectragent config generate` (or `python -m spectragent.scripts.generate_all`).
 It writes `spectragent/generated/_composed.py`, `_composed.schema.json` and
 `.fingerprint.json`, then reports the stubs still needed by the source.
 Never edit generated files by hand.

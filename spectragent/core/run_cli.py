@@ -6,13 +6,16 @@ import argparse
 import asyncio
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.runtime import AgentRuntime
+from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.task import REPLAY_ARCHIVE_KEY
 from spectragent.scripts.generate_all import _collect_registrars
 
@@ -36,6 +39,20 @@ def task_context(
     return context or None
 
 
+def _trace_summary(path: str | None) -> dict[str, Any]:
+    if path is None:
+        return {"status": "not_recorded", "complete_through": None, "reason": None}
+    try:
+        manifest = RunTrace(Path(path)).manifest
+        return {
+            "status": str(manifest.status),
+            "complete_through": manifest.complete_through,
+            "reason": manifest.incomplete_reason,
+        }
+    except Exception as exc:
+        return {"status": "unreadable", "complete_through": None, "reason": str(exc)}
+
+
 async def _run(
     *,
     config_path: Path,
@@ -44,10 +61,19 @@ async def _run(
     timeout: float,
     dry_run: bool,
     replay_archive: str | None = None,
+    progress: Any = None,
+    report: Callable[[dict[str, Any]], None] | None = None,
 ) -> int:
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     composer = ConfigComposer(registrars=_collect_registrars())
     run = composer.compose(raw)
+    if progress is not None:
+        from spectragent.monitoring import attach_progress
+
+        if not dry_run:
+            progress.set_tasks(["unknown"])
+            progress.start_task("unknown")
+        attach_progress(run, progress)
     agent_id = run.ids("agent")[0]
     runtime = AgentRuntime.for_agent(run, agent_id)
 
@@ -71,25 +97,70 @@ async def _run(
         # with the source run are checked too. Nothing is launched.
         runtime.prepare(env_context=context)
         print("Configuration and agent/environment negotiation succeeded.")
+        if report is not None:
+            report({"checked": "configuration_and_prepare", "launched": False})
+        if progress is not None:
+            progress.finish("checked")
         return 0
 
-    result = await runtime.execute(task=task, timeout=timeout, env_context=context)
+    try:
+        result = await runtime.execute(task=task, timeout=timeout, env_context=context)
+    except BaseException as exc:
+        if progress is not None:
+            progress.finish("cancelled" if isinstance(exc, asyncio.CancelledError) else "failed")
+        raise
     print(f"agent_done={result.agent_done} env_status={result.env_status}")
     if result.answer:
         print(f"answer: {result.answer}")
     if result.error:
         print(f"error: {result.error}")
+    trace_path = None
     for hook in run.hooks:
         trace_dir = getattr(hook, "run_dir", None)
         if trace_dir is not None:
+            trace_path = str(trace_dir)
             print(f"trace: {trace_dir}")
             break
-    return 1 if result.error else 0
+    trace = _trace_summary(trace_path)
+    print(f"recording={trace['status']} complete_through={trace['complete_through']}")
+    if trace["reason"]:
+        print(f"recording detail: {trace['reason']}")
+    print("evaluation=not_evaluated")
+    if report is not None:
+        report(
+            {
+                "result": result.model_dump(mode="json"),
+                "trace_dir": trace_path,
+                "recording": trace,
+                "evaluation": "not_evaluated",
+            }
+        )
+    if progress is not None:
+        if trace_path is not None:
+            progress.set_trace(trace_path)
+        progress.finish_task(
+            "unknown",
+            {
+                "agent_done": str(result.agent_done),
+                "env_status": str(result.env_status),
+                "trace_dir": trace_path,
+                "error": result.error,
+                "trace_status": trace["status"],
+            },
+        )
+        progress.finish(str(result.agent_done))
+    return 1 if result.error or trace["status"] in ("incomplete", "writing", "unreadable") else 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    progress: Any = None,
+    execute: Callable[..., Any] = asyncio.run,
+    report: Callable[[dict[str, Any]], None] | None = None,
+) -> int:
     parser = argparse.ArgumentParser(
-        prog="spectragent-run",
+        prog="spectragent run",
         description="Run one task with a composed agent and environment.",
     )
     parser.add_argument("--config", required=True, type=Path, help="YAML run config")
@@ -119,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     load_dotenv()
-    return asyncio.run(
+    return execute(
         _run(
             config_path=args.config,
             task=args.task,
@@ -127,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             dry_run=args.dry_run,
             replay_archive=args.replay_archive,
+            progress=progress,
+            report=report,
         )
     )
 

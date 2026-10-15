@@ -172,7 +172,7 @@ sufficient — it runs at `__init__` time, long after class creation.
 making the context field **non-optional** for a brand-new receptor: then the default
 has exactly one home by construction rather than by discipline.
 
-**9. Regenerate and prove it landed** — `uv run spectragent-gen`. There is exactly
+**9. Regenerate and prove it landed** — `uv run spectragent config generate`. There is exactly
 one entry point (`pyproject.toml:76`); AGENTS.md §3.4 used to name nine
 `generate_config.py` files that no longer exist. See the **af-regenerate-and-verify**
 skill for the verification loop and the staleness trap.

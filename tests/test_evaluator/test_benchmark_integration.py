@@ -1,6 +1,6 @@
 """The benchmark acceptance path, run offline.
 
-    spectragent-bench --benchmark ... --subset ... --config ...
+    spectragent bench --benchmark ... --subset ... --config ...
     -> one traces/ directory per task
     -> an EvalResult under evals/
     -> a printed EvalSummary

@@ -1,4 +1,4 @@
-"""``spectragent-run``'s task-context flags (``--start-url``, ``--replay-archive``)."""
+"""``spectragent run``'s task-context flags (``--start-url``, ``--replay-archive``)."""
 
 from __future__ import annotations
 

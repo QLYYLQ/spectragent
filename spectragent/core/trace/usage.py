@@ -20,7 +20,7 @@ folded into the total as a silent zero.
 
 Only ``RunTrace``'s accessors are read, so nothing here depends on a metrics
 hook: ``result.json``'s ``metrics.usage`` exists only when one is configured.
-``spectragent-bench``'s token limit, the flywheel chain's and the flywheel
+``spectragent bench``'s token limit, the flywheel chain's and the flywheel
 report's ``token_use`` all count through :func:`recorded_usage`.
 """
 

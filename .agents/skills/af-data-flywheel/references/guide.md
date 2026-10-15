@@ -11,20 +11,20 @@ moved to another machine, given the run directories it reads; the export and the
 need no browser or model at all.
 
 ```
-record   spectragent-bench | spectragent-run    configs/flywheel/record_ui_tars_pinned.yaml
+record   spectragent bench | spectragent run    configs/flywheel/record_ui_tars_pinned.yaml
            replayability: pinned, network_source: live, trace_writer.archive: three archivers
            -> traces/<run>/env/  (WARC + index.jsonl, storage.json, raw DOM, run.browser.json)
-replay   spectragent-run --replay-archive DIR    configs/flywheel/replay_ui_tars_archive.yaml
+replay   spectragent run --replay-archive DIR    configs/flywheel/replay_ui_tars_archive.yaml
            network_source: archive (isolated, strict misses), base_time: from_archive,
            trace_writer.archive: browser.replay_log in browser.network's place
            -> env/steps/NNN/browser.replay_log/replay.jsonl
-branch   spectragent-bench --no-eval             configs/flywheel/branch_ui_tars_archive.yaml
+branch   spectragent bench --no-eval             configs/flywheel/branch_ui_tars_archive.yaml
            agent_loop: branch (restorer: prefix_replay), task_loader: trace_branches
            -> branch runs: restored steps, the policy step(s), a terminal observation
-export   spectragent-export                      configs/flywheel/export_sft.yaml
+export   spectragent export                      configs/flywheel/export_sft.yaml
            exporter: openai_messages, its translator, student_run_config
            -> datasets/<name>/{train,validation}.jsonl, *.samples.jsonl, images/, manifest.json
-measure  spectragent-flywheel run | report      a chain spec, not a run YAML
+measure  spectragent flywheel run | report      a chain spec, not a run YAML
            record -> same_path -> branch -> export x2 -> report/{report.json,report.md}
 ```
 
@@ -39,7 +39,7 @@ measure  spectragent-flywheel run | report      a chain spec, not a run YAML
 | Loop | `BranchLoop` (context rebuilt from the source trace, restore, the step-*t* `branch_instruction`, policy step, `continue_steps`, terminal observation), the restorer axis, per-run state (`LoopRun`), loop-fragment builders, the recorded-observation readers the export shares | `core/loops/branch.py`, `core/loops/restore/`, `core/loops/run.py`, `core/loops/_loop_fragments.py` |
 | Task loading | The `trace_branches` loader, the step-selector axis, `RequireEval` | `core/data_loader/task/` |
 | Export | `ExportRunner`, the exporter and translator axes, the student renderer, validation, split, benchmark loaders | `spectragent/export/` |
-| Flywheel | The chain, the metrics, the report and `spectragent-flywheel`; a package, not a registry | `spectragent/flywheel/` |
+| Flywheel | The chain, the metrics, the report and `spectragent flywheel`; a package, not a registry | `spectragent/flywheel/` |
 
 The capability never learns a step number and never touches the WAL. Whatever step *t*'s
 commit collects belongs to step *t* (architecture §4.6, "记录器从环境拉取证据"). A capability
@@ -49,11 +49,11 @@ reads a source run only through `ArchiveReader`, which `RunTrace` satisfies stru
 **Current scope (the user's ruling of 2026-10-13).** This phase delivers teacher
 trajectories: record, replay, branch. The student side (how its messages are assembled,
 "the student sees a screenshot and emits coordinates") moves to the next phase, and the
-export package is frozen: `spectragent/export/`, `spectragent-export`,
+export package is frozen: `spectragent/export/`, `spectragent export`,
 `configs/flywheel/export_sft.yaml` and `configs/flywheel/ui_tars_student.yaml` get no new
 features and no new design decisions, only the adaptations a cross-cutting change needs to
 keep their tests green (architecture §4.15). Independent task judging was re-enabled by the user on
-2026-10-14 as a separate stage (`spectragent-eval`, architecture §4.11). It reads committed
+2026-10-14 as a separate stage (`spectragent eval`, architecture §4.11). It reads committed
 traces and explicit references, reports valid-verdict coverage separately from task
 correctness, and never changes restoration checks. No flywheel stage requires a verdict:
 filters remain optional and off by default, and decontamination checks only an explicit
@@ -139,9 +139,9 @@ hook:
 Run it like any benchmark config, or record one task:
 
 ```bash
-uv run spectragent-bench --config configs/flywheel/record_ui_tars_pinned.yaml \
+uv run spectragent bench --config configs/flywheel/record_ui_tars_pinned.yaml \
     --benchmark online_mind2web --no-eval        # plus --subset, --task-id, --limit
-uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
+uv run spectragent run --config configs/flywheel/record_ui_tars_pinned.yaml \
     --start-url URL --task "..."
 ```
 
@@ -166,12 +166,12 @@ uv run spectragent-run --config configs/flywheel/record_ui_tars_pinned.yaml \
   drain the archive scope.
 - Each problem names both sides, and each check reports all of its problems in one
   `BrowserCooperationError`. Every row is decided by configuration and task data, so all of
-  them are raised at `prepare()`, before the trace is opened, on a `spectragent-run
+  them are raised at `prepare()`, before the trace is opened, on a `spectragent run
   --dry-run` too: `BrowserCapability.check_setup` (through `Environment.check_setup`, with
   the task's setup context and the archivers about to be bound) runs the whole check, the
   tier's rows, the network source's rows and a replay's consistency included.
   `bind_archivers` re-checks the binding rows before it binds, and setup re-checks
-  everything before Chrome starts (architecture §4.14, "协作检查一览"). `spectragent-bench`
+  everything before Chrome starts (architecture §4.14, "协作检查一览"). `spectragent bench`
   runs `prepare()` once for the first task before the sweep (the pre-flight): a refused
   configuration runs no task, opens no trace and exits 2.
 - `browser.network` has `require_replayable` (default true), so binding it under
@@ -254,14 +254,14 @@ network_source:
 ```
 
 ```bash
-uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
+uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
     --start-url URL --task "the recorded task" --replay-archive traces/<recorded-run>
 ```
 
 - The source run arrives per task as `replay_archive`, a run directory. A relative one is
   relative to the launch directory: `AgentRuntime.execute` makes it absolute
   (`schemas/task.py::resolve_env_context_paths`) before it is recorded as `task_setup` and
-  handed to setup, for every caller — `spectragent-run`, a task loader, a Python caller
+  handed to setup, for every caller — `spectragent run`, a task loader, a Python caller
   building `env_context` itself; `prepare()` checks the absolute one. The `archive` source
   without it is a `BrowserCooperationError` row at `prepare()`
   (`network_source: archive ↔ task context: no replay_archive`), and so is `live` with it.
@@ -368,8 +368,8 @@ task_loader:
 ```
 
 ```bash
-uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --list    # task ids only
-uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --list    # task ids only
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
 ```
 
 - A task id is `<source_run_id>/s<t>/b<i>`. Its context carries the source's setup context
@@ -458,7 +458,7 @@ exporter:
 # task_loader: [{ benchmark_name: ..., subset: ..., data_dir: ... }]
 ```
 
-`uv run spectragent-export --config configs/flywheel/export_sft.yaml` prints the samples per
+`uv run spectragent export --config configs/flywheel/export_sft.yaml` prints the samples per
 split and the drops by reason, and exits non-zero on any failure.
 
 - One `exporter` block per document. The student YAML holds one agent on a ReAct-family loop
@@ -516,10 +516,10 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}  # value o
 ```
 
 ```bash
-set -a; . ./.env; set +a              # neither spectragent-bench nor the chain reads .env
-uv run spectragent-flywheel run --spec chain.yaml [--stages record,same_path]
-uv run spectragent-flywheel report --spec chain.yaml [--out DIR]
-uv run spectragent-flywheel report --root traces/chains/first-live --evidence live [--name N] [--out DIR]
+set -a; . ./.env; set +a              # neither spectragent bench nor the chain reads .env
+uv run spectragent flywheel run --spec chain.yaml [--stages record,same_path]
+uv run spectragent flywheel report --spec chain.yaml [--out DIR]
+uv run spectragent flywheel report --root traces/chains/first-live --evidence live [--name N] [--out DIR]
 uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture rehearsal, no spend
 ```
 
@@ -548,13 +548,13 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
   completion). A call whose provider reported no usage adds no tokens and is counted and
   named (`traces/<role>/<run>: step S call K (status)`), never read as zero. Before the first
   stage the chain counts every run already under the root, so a stage-by-stage run stays
-  inside one limit; each run stage gets what is left as `spectragent-bench --token-limit`,
+  inside one limit; each run stage gets what is left as `spectragent bench --token-limit`,
   which adds each finished task's tokens and, once its total reaches the limit, lets that
   task finish, starts no other and exits 4 (`TOKEN_LIMIT_EXIT_CODE`). Then no later run or
   export stage starts, the report still runs when selected and states the stop
   (`report.json` `token_use.limit_reached`, the first lines of `report.md`), `chain.json`
   records `stopped_by_token_limit{stage, tokens_used, token_limit, stages_not_started,
-  calls_without_usage}` and each run stage's `token_use`, and `spectragent-flywheel run`
+  calls_without_usage}` and each run stage's `token_use`, and `spectragent flywheel run`
   exits 4. A sweep runs one task at a time, so a task is never cut off and a sweep overshoots
   by at most one task. The bench's pre-flight refuses a limit when no hook writes a trace.
   The evaluator's judge calls are not in any trace and are not counted.
@@ -628,7 +628,7 @@ A new strategy on an existing axis:
 4. Declare knobs as `Annotated` constructor parameters or dataclass fields with real
    constraints. A strategy never reaches its knobs through a name someone else looks up
    (af-add-a-receptor §0).
-5. Run `uv run spectragent-gen`, then `uv run pytest tests/test_generated -q`, and prove the
+5. Run `uv run spectragent config generate`, then `uv run pytest tests/test_generated -q`, and prove the
    knob reached the owner's generated block (af-regenerate-and-verify §5).
 6. Update the key lists in the registrar's rows of `AGENTS.md` §2.2 and architecture §6,
    and the architecture sections in the recipe's Design section row.
@@ -722,7 +722,7 @@ For a browser archiver:
   archive a `none` run, and a new archiver with the same need takes the same knob.
 - Import the class in `core/capabilities/browser/archive/__init__.py` and add its key to
   `BrowserCapability.__wiring__["archiver"]`. conscribe resolves those keys only when it
-  builds a config (`spectragent-gen` and every `ConfigComposer`), and one key that does not
+  builds a config (`spectragent config generate` and every `ConfigComposer`), and one key that does not
   resolve makes it drop the capability's whole wiring without an error (§5). With the
   import, a broken module fails as an `ImportError`; without it, `discover()` skips the
   module with a WARNING. The capability iterates the bound instances and never branches on
@@ -1113,11 +1113,11 @@ value on an existing one.
 | `InlineOnlyLayerError: The top-level 'archiver' section is not accepted ...` | Move the entries into `trace_writer.archive` |
 | `Field required` for `step_selector`, `restorer`, `translator`, `miss_policy`, `network_source` or `replayability` | Write the receptor block (§4) |
 | `BrowserCooperationError` at `prepare()` (or setup, for a caller that skipped `prepare()`) | Architecture §4.14, "协作检查一览"; `browser/cooperation.py` (`binding_problems`, `cooperation_problems`), run by `BrowserCapability.check_setup`. Each line names both sides |
-| `spectragent-bench` exits 3: `the sweep was vetoed at ...` | A guard (`RunAbort`) stopped the sweep — during setup or the run — at the task named; its row says `vetoed: ...` and its `result.json` says `agent_done: vetoed`. Look at the vetoed run's last steps (a challenge page, a risk-control response), not at the configuration |
+| `spectragent bench` exits 3: `the sweep was vetoed at ...` | A guard (`RunAbort`) stopped the sweep — during setup or the run — at the task named; its row says `vetoed: ...` and its `result.json` says `agent_done: vetoed`. Look at the vetoed run's last steps (a challenge page, a risk-control response), not at the configuration |
 | A summary row says `infrastructure failure: ...` | The environment failed, the model stayed unavailable after the provider's retries, or the run's trace is `incomplete` / never closed (its manifest's `incomplete_reason` says what was lost). The three counters above the rows are the agent's ledger, the environment's and the trace's |
-| `spectragent-bench` exits 4: `the sweep reached its token limit after task ...` | The tokens the sweep's traces recorded reached `--token-limit`: the named task finished, the rest never started. The table's `tokens:` line is the total; `no usage reported (not counted)` names calls without usage, `tokens not counted` a task whose trace does not read back |
-| `spectragent-flywheel` exits 4: `stopped at the token limit ...` | The runs under the chain root reached `token_limit`; read `chain.json`'s `stopped_by_token_limit` (`stage: null`: reached before this invocation). Raise the limit, then run only the stages not started (`--stages`) |
-| `spectragent-bench` exits 2: `the pre-flight check refused the configuration for task ...` | The first task's `prepare()` refused the stage YAML before any task ran; the original error follows the colon and names both sides. Check one task with `spectragent-run --dry-run` (`--replay-archive DIR` for a replay) |
+| `spectragent bench` exits 4: `the sweep reached its token limit after task ...` | The tokens the sweep's traces recorded reached `--token-limit`: the named task finished, the rest never started. The table's `tokens:` line is the total; `no usage reported (not counted)` names calls without usage, `tokens not counted` a task whose trace does not read back |
+| `spectragent flywheel` exits 4: `stopped at the token limit ...` | The runs under the chain root reached `token_limit`; read `chain.json`'s `stopped_by_token_limit` (`stage: null`: reached before this invocation). Raise the limit, then run only the stages not started (`--stages`) |
+| `spectragent bench` exits 2: `the pre-flight check refused the configuration for task ...` | The first task's `prepare()` refused the stage YAML before any task ran; the original error follows the colon and names both sides. Check one task with `spectragent run --dry-run` (`--replay-archive DIR` for a replay) |
 | `BrowserCooperationError` naming `browser.network` or `browser.replay_log` beside the network source | A replay binds `browser.replay_log` in `browser.network`'s place; a live run binds no `browser.replay_log` (§2.2) |
 | A replay refused at `prepare()`, naming the tier, shim, viewport or launch flags | `replay/consistency.py::consistency_problems`. The replay YAML must match the recording's tier, seed, user agent, viewport and provider switches |
 | A replay refused naming `browser default timezone` or `locale` (`read from this host before launch` at `prepare()`, or `measured after launch` from setup) | The host's browser falls back to another time zone or locale than the recording's (a frame no override reaches reads it). Replay on a host with the recording's system language; `pinned`'s zone comes from `TZ`. `recorded no browser defaults`: record the source again |
@@ -1132,7 +1132,7 @@ value on an existing one.
 | `RestorationDivergedError` | `verify: strict` met a failed check; read `StepRecord.restoration.reasons`. `verify: warn` records every step's check for diagnosis |
 | A restored step right after a click shows `url_mismatch` against a URL from another tab | Compare the step's `focus_moved` in the source and the branch (any browser fragment of that step's observation): the branch's `new_tabs` differs from the recording's, or the tab opened later than the observation captured in one of the runs. Record, replay and branch keep one `new_tabs` |
 | An agent keeps clicking a link that opens a new tab and sees no change | The run has `new_tabs: stay`, or the tab never finished its first navigation within 10 s (a WARNING `the focus cannot move to tab ...`), or Chrome reported it opened without the user's activation (the tab is listed in `browser_meta.tabs`, the trace has no `focus_moved`) |
-| A branch sweep refuses its sources, or lists no tasks | The reasons in `loader.skipped` (`spectragent-bench --list`); `on_unbranchable: skip`. Branch and replay runs are never sources |
+| A branch sweep refuses its sources, or lists no tasks | The reasons in `loader.skipped` (`spectragent bench --list`); `on_unbranchable: skip`. Branch and replay runs are never sources |
 | The bench refuses before starting: no eval loader for `trace_branches` | Pass `--no-eval` |
 | `ExportEmptyError` | The counts in the message; most often a `require_eval` over runs nobody evaluated, or `decontamination.against` listing the benchmark the sources were recorded on (§2.4) |
 | `ExportConfigError` | More than one exporter block, a student YAML with hooks, several agents or a non-ReAct loop, or decontamination data that cannot be read |

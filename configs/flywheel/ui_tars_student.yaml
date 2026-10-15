@@ -1,5 +1,5 @@
 # The training export's student (data flywheel): UI-TARS writing
-# points on a 0-1000 grid over the screenshot. `spectragent-export` composes this
+# points on a 0-1000 grid over the screenshot. `spectragent export` composes this
 # file and only assembles it — prepare(), never execute(): no environment is set
 # up, no model is called, so it carries no hooks. Samples are rendered by this
 # agent's own prepare / build_react_prompt / memory and written by its

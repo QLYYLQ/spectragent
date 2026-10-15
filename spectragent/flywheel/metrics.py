@@ -32,7 +32,7 @@ it apart.
 
 **Token use.** :func:`token_use` / :func:`role_token_use` add up the tokens
 the runs' model calls recorded (``core/trace/usage.py::recorded_usage``,
-the count ``spectragent-bench``'s token limit uses), naming every call whose
+the count ``spectragent bench``'s token limit uses), naming every call whose
 provider reported no usage: the chain's token limit and the report's
 ``token_use`` read them.
 

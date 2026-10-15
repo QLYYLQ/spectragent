@@ -2,7 +2,7 @@
 
 ``spectragent/generated/`` is gitignored, so ``_composed.py`` — the
 codegen artifact — is absent after ``git clone`` and is only written by
-an explicit ``spectragent-gen`` run. Nine tests import it (the codegen
+an explicit ``spectragent config generate`` run. Nine tests import it (the codegen
 tripwires in ``tests/test_generated/``, plus
 ``tests/test_evaluator/test_registrar.py`` and
 ``TestMouseTrajectoryIsConstrained``), and there is no CI step, build

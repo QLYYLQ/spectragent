@@ -23,10 +23,10 @@ End-to-end YAML samples that drive `ConfigComposer` → `AgentRuntime`.
 
 ```bash
 # Validate compose pipeline only (no real LLM / Chrome required)
-uv run spectragent-run --config configs/browser_use_local.yaml --dry-run
+uv run spectragent run --config configs/browser_use_local.yaml --dry-run
 
 # Run end-to-end (needs OPENAI_API_KEY + a Chrome binary)
-uv run spectragent-run --config configs/browser_use_local.yaml \
+uv run spectragent run --config configs/browser_use_local.yaml \
     --start-url https://example.com --task "report the page title"
 ```
 
@@ -37,7 +37,7 @@ uv run spectragent-run --config configs/browser_use_local.yaml \
 3. Surface report (`agent`, `loop`, `model`, `environment`, `capabilities` and their backends).
 4. `AgentRuntime.prepare()` — loop slots plus observation/action negotiation, and the environment's setup check: everything setup would refuse (the browser's cooperation rows, a task-context key no capability accepts), with `--start-url` / `--replay-archive` as the task context. A replaying config needs `--replay-archive DIR` here too, and its consistency with that recorded run is checked from the run's environment fingerprint.
 
-It does **not** start a browser or call the LLM — useful for CI smoke tests. `spectragent-bench` makes the same check once for its first task before running any (the pre-flight); a refused config runs no task, opens no trace and exits 2.
+It does **not** start a browser or call the LLM — useful for CI smoke tests. `spectragent bench` makes the same check once for its first task before running any (the pre-flight); a refused config runs no task, opens no trace and exits 2.
 
 ## YAML shape
 
@@ -337,7 +337,7 @@ network_source:
 `flywheel/record_ui_tars_pinned.yaml`:
 
 ```bash
-uv run spectragent-run --config configs/flywheel/replay_ui_tars_archive.yaml \
+uv run spectragent run --config configs/flywheel/replay_ui_tars_archive.yaml \
     --start-url URL --task "the recorded task" --replay-archive traces/<recorded-run>
 ```
 
@@ -379,8 +379,8 @@ decide that step again (`docs/architecture_design.md` §4.1 `BranchLoop`, §4.10
 the recordings are in and run the sweep:
 
 ```bash
-uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
-uv run spectragent-bench --config configs/flywheel/branch_ui_tars_archive.yaml --list   # the task ids only
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --no-eval
+uv run spectragent bench --config configs/flywheel/branch_ui_tars_archive.yaml --list   # the task ids only
 ```
 
 ```yaml
@@ -457,7 +457,7 @@ task_loader:
 
 ## Exporting training data
 
-`spectragent-export` turns recorded runs into a dataset a student model is trained on
+`spectragent export` turns recorded runs into a dataset a student model is trained on
 (`docs/architecture_design.md` §4.15). The student is an ordinary agent: its run YAML
 (`student_run_config`) is composed and assembled — never run, no browser, no model call —
 and every sample is rendered by its own `prepare` / `build_react_prompt` / memory and
@@ -465,7 +465,7 @@ written by its `format_react_output`, so the training format is the format it is
 in. Point its `llm` at the trained model and run the same YAML to evaluate it.
 
 ```bash
-uv run spectragent-export --config configs/flywheel/export_sft.yaml
+uv run spectragent export --config configs/flywheel/export_sft.yaml
 ```
 
 ```yaml
@@ -547,7 +547,7 @@ task_loader:
 
 ## Measuring the flywheel
 
-`spectragent-flywheel` runs the data flywheel end to end and reports on it
+`spectragent flywheel` runs the data flywheel end to end and reports on it
 (`docs/architecture_design.md` §4.16): record → same-path replay → branch → export (twice) →
 a report of every metric and section, each with a rule-based, evidence-backed recommendation
 (`supported` only on live evidence from at least 10 sites; fewer is `partial`, an
@@ -575,11 +575,11 @@ report:    {planted: [{label: teacher api key, env: OPENAI_API_KEY}]}  # searche
 ```
 
 ```bash
-set -a; . ./.env; set +a     # spectragent-bench and the chain never read .env
-uv run spectragent-flywheel run --spec chain.yaml                      # every configured stage
-uv run spectragent-flywheel run --spec chain.yaml --stages record      # one stage at a time
-uv run spectragent-flywheel report --spec chain.yaml                   # recompute the report
-uv run spectragent-flywheel report --root traces/chains/first-live --evidence live --out /tmp/report
+set -a; . ./.env; set +a     # spectragent bench and the chain never read .env
+uv run spectragent flywheel run --spec chain.yaml                      # every configured stage
+uv run spectragent flywheel run --spec chain.yaml --stages record      # one stage at a time
+uv run spectragent flywheel report --spec chain.yaml                   # recompute the report
+uv run spectragent flywheel report --root traces/chains/first-live --evidence live --out /tmp/report
 ```
 
 - **Layout**: `<root>/traces/{record,control,same_path,branch}/`, `<root>/datasets/{first,second}/`,
@@ -594,10 +594,10 @@ uv run spectragent-flywheel report --root traces/chains/first-live --evidence li
   the model calls each run's trace recorded (the provider's `total_tokens`, or prompt plus
   completion; a call whose provider reported no usage is counted and named, never read as 0).
   The chain counts the runs already under the root first, hands each run stage what is left
-  (`spectragent-bench --token-limit`), and the sweep adds each finished task. Once the total
+  (`spectragent bench --token-limit`), and the sweep adds each finished task. Once the total
   reaches the limit, the task that reached it finishes, no later task or stage (the export
   included) starts, the report is still computed from what exists and says why the chain
-  stopped, `chain.json` records `stopped_by_token_limit`, and `spectragent-flywheel run` exits 4.
+  stopped, `chain.json` records `stopped_by_token_limit`, and `spectragent flywheel run` exits 4.
   `unlimited` (the default) counts nothing and changes nothing.
 - **The export YAML** of a chain uses `filters.require_eval: null` (the chain does not evaluate)
   and `decontamination: {against: []}` (the sources are the benchmark's own tasks) — the

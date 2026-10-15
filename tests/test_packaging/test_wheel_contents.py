@@ -64,6 +64,14 @@ def wheel_names(tmp_path_factory: pytest.TempPathFactory) -> frozenset[str]:
 
 
 class TestRuntimeDataShips:
+    def test_viewer_runs_from_packaged_static_assets(self, wheel_names: frozenset[str]) -> None:
+        static = PACKAGE_ROOT / "viewer" / "static"
+        expected = _source_data_files(static)
+        assert f"{_PACKAGE}/viewer/static/index.html" in expected
+        assert any(name.endswith(".js") for name in expected)
+        assert any(name.endswith(".css") for name in expected)
+        assert expected <= wheel_names, sorted(expected - wheel_names)
+
     def test_every_prompt_file_is_in_the_wheel(self, wheel_names: frozenset[str]) -> None:
         expected = _source_data_files(PROMPT_PATH)
         assert expected, "no prompt files found on disk — did prompts/ move?"

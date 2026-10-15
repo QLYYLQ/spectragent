@@ -1,7 +1,7 @@
 """The generated config surface must actually import.
 
 `spectragent/generated/__init__.py` guards its import so that
-``discover()`` survives the window where ``spectragent-gen`` has wiped
+``discover()`` survives the window where ``spectragent config generate`` has wiped
 ``_composed.py`` and not yet rewritten it. That guard used to be a bare
 ``except Exception``, which turned a genuine codegen defect into a silent
 ``ComposedConfig is None`` — the committed artifact raised

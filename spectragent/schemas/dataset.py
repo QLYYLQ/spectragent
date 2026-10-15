@@ -1,6 +1,6 @@
 """The training dataset's manifest: what one export wrote, and from what (arch §4.15).
 
-``spectragent-export`` writes ``<dataset>/manifest.json`` through
+``spectragent export`` writes ``<dataset>/manifest.json`` through
 :class:`DatasetManifest`, and every reader of a dataset — the flywheel
 metrics report (arch §4.16) — reads it back through the same model. A key
 renamed on one side, or a value of another type, then fails the read naming

@@ -146,7 +146,7 @@ def branch_config(
 
 
 def run_branch_task(raw: dict[str, Any], task_id: str, *, timeout: float = 240) -> TaskOutcome:
-    """Run one branch task of *raw* the way ``spectragent-bench`` does: its loader, its runner."""
+    """Run one branch task of *raw* the way ``spectragent bench`` does: its loader, its runner."""
     composer = ConfigComposer(registrars=_collect_registrars())
     loader = composer.compose(raw).single("task_loader")
     runner = BenchmarkRunner(loader=loader, compose=lambda: composer.compose(raw), timeout=timeout)

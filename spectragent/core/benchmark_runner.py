@@ -66,6 +66,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from spectragent.core.benchmark_session import SessionLedger, TaskProgress
 from spectragent.core.composer import ComposedRun
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError
 from spectragent.core.loops.errors import RunAbort
@@ -86,15 +87,15 @@ logger = logging.getLogger(__name__)
 
 _UNSAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
-#: ``spectragent-bench``'s exit code when the pre-flight check refused the
+#: ``spectragent bench``'s exit code when the pre-flight check refused the
 #: configuration: no task ran and no trace was opened (0 and 1 are a sweep
 #: that ran, with no infrastructure failure / with one).
 PREFLIGHT_EXIT_CODE = 2
-#: ``spectragent-bench``'s exit code when a guard vetoed the sweep: the sweep
+#: ``spectragent bench``'s exit code when a guard vetoed the sweep: the sweep
 #: stopped at the vetoed task, whose trace and the finished tasks' traces stay
 #: (the flywheel chain stops on it, arch §4.16).
 VETO_EXIT_CODE = 3
-#: ``spectragent-bench``'s exit code when the tokens the sweep's traces recorded
+#: ``spectragent bench``'s exit code when the tokens the sweep's traces recorded
 #: reached its ``--token-limit``: the task that reached it finished, no task
 #: after it started (the flywheel chain stops on it, arch §4.16).
 TOKEN_LIMIT_EXIT_CODE = 4
@@ -404,6 +405,41 @@ class BenchmarkRunSummary:
             lines.append(f"  eval error: {message}")
         return "\n".join(lines)
 
+    def as_dict(self) -> dict[str, Any]:
+        """Machine-readable summary; preserve the independent result ledgers."""
+        return {
+            "benchmark": self.benchmark,
+            "subset": self.subset,
+            "tasks": self.total,
+            "completed": self.completed,
+            "infrastructure_failures": self.failed,
+            "agent_outcomes": self.count_by_done(),
+            "environment_statuses": self.count_by_environment(),
+            "trace_statuses": self.count_by_trace(),
+            "outcomes": [_outcome_dict(outcome) for outcome in self.outcomes],
+            "aborted": self.aborted,
+            "token_limit": self.token_limit,
+            "tokens": self.tokens if self.token_limit is not None else None,
+            "not_started": self.token_limit_reached.not_started
+            if self.token_limit_reached
+            else None,
+            "evaluation_errors": self.eval_errors,
+        }
+
+
+def _outcome_dict(outcome: TaskOutcome) -> dict[str, Any]:
+    return {
+        "task_id": outcome.task_id,
+        "agent_done": outcome.agent_done,
+        "env_status": outcome.env_status,
+        "trace_status": outcome.trace_status,
+        "trace_dir": str(outcome.trace_dir) if outcome.trace_dir is not None else None,
+        "elapsed_ms": outcome.elapsed_ms,
+        "infrastructure_failure": outcome.infrastructure_error is not None,
+        "vetoed": outcome.vetoed is not None,
+        "tokens": outcome.usage.tokens if outcome.usage is not None else None,
+    }
+
 
 def _count(keys: Any) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -536,6 +572,8 @@ class BenchmarkRunner:
         eval_loader: Any = None,
         evals_dir: Path | None = None,
         token_limit: int | Unlimited = UNLIMITED,
+        progress: TaskProgress | None = None,
+        session: SessionLedger | None = None,
     ) -> None:
         if token_limit != UNLIMITED and (
             isinstance(token_limit, bool) or not isinstance(token_limit, int) or token_limit < 1
@@ -561,6 +599,8 @@ class BenchmarkRunner:
         self._evaluator = evaluator
         self._eval_loader = eval_loader
         self._evals_dir = evals_dir
+        self._progress = progress
+        self._session = session
 
     @property
     def benchmark(self) -> str:
@@ -607,6 +647,45 @@ class BenchmarkRunner:
             PreflightError: The pre-flight check refused the configuration.
         """
         selected = self.select_task_ids(task_ids=task_ids, limit=limit)
+        if self._session is not None:
+            self._session.start(selected)
+        if self._progress is not None:
+            self._progress.set_tasks(selected)
+        try:
+            summary = await self._run_selected(selected)
+        except BaseException as exc:
+            reason = (
+                "configuration_refused"
+                if isinstance(exc, PreflightError)
+                else "cancelled"
+                if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt))
+                else "execution_failed"
+            )
+            self._finish_observers(reason, preserve_error=True)
+            raise
+        reason = (
+            "vetoed"
+            if summary.was_aborted
+            else "token_limit"
+            if summary.token_limit_reached is not None
+            else "completed_with_failures"
+            if summary.failed or summary.eval_errors
+            else "completed"
+        )
+        self._finish_observers(reason)
+        return summary
+
+    def _finish_observers(self, reason: str, *, preserve_error: bool = False) -> None:
+        for observer in (self._session, self._progress):
+            if observer is not None:
+                try:
+                    observer.finish(reason)
+                except Exception:
+                    if not preserve_error:
+                        raise
+                    logger.exception("Could not close the batch observer after %s", reason)
+
+    async def _run_selected(self, selected: list[str]) -> BenchmarkRunSummary:
         logger.info(
             "BenchmarkRunner: %s/%s — %d task(s)",
             self._benchmark,
@@ -622,8 +701,14 @@ class BenchmarkRunner:
         tokens = 0
         for task_id in selected:
             run, prepared = prepared, None
+            for observer in (self._session, self._progress):
+                if observer is not None:
+                    observer.start_task(task_id)
             outcome = await self.run_task(task_id, run=run)
             outcomes.append(outcome)
+            for observer in (self._session, self._progress):
+                if observer is not None:
+                    observer.finish_task(task_id, _outcome_dict(outcome))
             if outcome.vetoed is not None:
                 # Stop the sweep, but keep what it produced. The guard said
                 # "stop", not "destroy the evidence": the finished tasks and
@@ -737,6 +822,7 @@ class BenchmarkRunner:
         try:
             context = self._loader.get_task_context(task_id)
             run = self._compose()
+            self._attach_progress(run)
             agent_id = self._agent_id or run.ids("agent")[0]
             runtime = AgentRuntime.for_agent(run, agent_id, env_id=self._env_id)
             runtime.prepare(task_id=task_id, loop_inputs=context.loop, env_context=context.env)
@@ -749,6 +835,12 @@ class BenchmarkRunner:
         except Exception as exc:
             raise PreflightError(task_id, exc) from exc
         return run
+
+    def _attach_progress(self, run: ComposedRun) -> None:
+        if self._progress is not None:
+            from spectragent.monitoring import attach_progress
+
+            attach_progress(run, self._progress)
 
     async def run_task(self, task_id: str, *, run: ComposedRun | None = None) -> TaskOutcome:
         """Run one task end to end. Never raises — a failure is data.
@@ -782,6 +874,7 @@ class BenchmarkRunner:
 
         try:
             run = run if run is not None else self._compose()
+            self._attach_progress(run)
             agent_id = self._agent_id or run.ids("agent")[0]
             runtime = AgentRuntime.for_agent(run, agent_id, env_id=self._env_id)
         except Exception as exc:
@@ -985,9 +1078,15 @@ def _token_limit_argument(text: str) -> int | Unlimited:
     return value
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    progress: Any = None,
+    execute: Callable[..., Any] = asyncio.run,
+    report: Callable[[dict[str, Any]], None] | None = None,
+) -> int:
     parser = argparse.ArgumentParser(
-        prog="spectragent-bench",
+        prog="spectragent bench",
         description="Run a benchmark's tasks through a composed agent stack.",
         epilog=(
             "Exit codes: 0 every task ran with no infrastructure failure; 1 some task had one; "
@@ -1004,6 +1103,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--agent-id", help="Agent instance id to drive.")
     parser.add_argument("--env-id", help="Environment instance id to run against.")
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--session-dir",
+        type=Path,
+        help="Batch plan/outcome directory; default: the trace root's .sessions directory.",
+    )
     parser.add_argument(
         "--list",
         action="store_true",
@@ -1058,6 +1162,18 @@ def main(argv: list[str] | None = None) -> int:
     subset = args.subset if args.subset is not None else getattr(loader, "subset", "")
     eval_loader = _resolve_eval_loader(probe, benchmark, subset) if evaluator is not None else None
 
+    from spectragent.core.benchmark_session import BatchSession
+
+    trace_root = next(
+        (Path(hook.trace_dir) for hook in probe.hooks if hasattr(hook, "trace_dir")),
+        Path("traces"),
+    )
+    session = BatchSession(
+        args.session_dir or trace_root / ".sessions", benchmark=benchmark, subset=subset
+    )
+    if progress is not None:
+        progress.configure(token_limit=args.token_limit)
+
     runner = BenchmarkRunner(
         loader=loader,
         compose=lambda: composer.compose(raw),
@@ -1070,33 +1186,40 @@ def main(argv: list[str] | None = None) -> int:
         eval_loader=eval_loader,
         evals_dir=args.evals_dir if evaluator is not None else None,
         token_limit=args.token_limit,
+        progress=progress,
+        session=session,
     )
 
     selected = runner.select_task_ids(task_ids=args.task_ids, limit=args.limit)
     if args.list:
         for task_id in selected:
             print(task_id)
+        if report is not None:
+            report({"task_ids": selected, "launched": False})
         return 0
 
     try:
-        summary = asyncio.run(runner.run(task_ids=selected))
+        summary = execute(runner.run(task_ids=selected))
     except PreflightError as exc:
         # Nothing ran and no trace exists: exit 2, never 0 or 1 (the codes of
         # a sweep that ran), so a script or the flywheel chain stops here.
-        print(f"spectragent-bench: {exc}", file=sys.stderr)
+        print(f"spectragent bench: {exc}", file=sys.stderr)
         return PREFLIGHT_EXIT_CODE
+    if report is not None:
+        report({"summary": summary.as_dict(), "session": str(session.path)})
     print(summary.format_table())
+    print(f"session: {session.path}")
     if summary.was_aborted:
         # A guard said stop: its own code, so a script or the flywheel chain
         # stops here too instead of feeding the vetoed stage's runs onwards.
-        print(f"spectragent-bench: the sweep was vetoed at {summary.aborted}", file=sys.stderr)
+        print(f"spectragent bench: the sweep was vetoed at {summary.aborted}", file=sys.stderr)
         return VETO_EXIT_CODE
     reached = summary.token_limit_reached
     if reached is not None:
         # The budget is spent: its own code, ahead of 1, so a script or the
         # flywheel chain starts nothing more.
         print(
-            f"spectragent-bench: the sweep reached its token limit after task {reached.task_id} "
+            f"spectragent bench: the sweep reached its token limit after task {reached.task_id} "
             f"({reached.tokens} of {reached.limit} tokens); {reached.not_started} task(s) not "
             f"started",
             file=sys.stderr,

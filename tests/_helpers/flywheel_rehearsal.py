@@ -30,8 +30,8 @@ writes that summary as ``rehearsal.json``). What it does:
   literals, a token limit — :data:`REHEARSAL_TOKEN_LIMIT`, far above the
   scripted models' 15 tokens a call, so the real bench counts every call
   against what is left and never stops) and runs it with
-  ``spectragent.flywheel.chain.run_chain`` — the real ``spectragent-bench``
-  and ``spectragent-export`` in this process.
+  ``spectragent.flywheel.chain.run_chain`` — the real ``spectragent bench``
+  and ``spectragent export`` in this process.
 
 Nothing leaves the machine: the recordings resolve every unmapped name to
 nothing (``chrome_args(hermetic=True)``), the replays are isolated, and

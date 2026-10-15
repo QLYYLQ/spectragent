@@ -1,6 +1,6 @@
 # Export recorded runs as an SFT dataset for the UI-TARS student (data flywheel):
 #
-#   uv run spectragent-export --config configs/flywheel/export_sft.yaml
+#   uv run spectragent export --config configs/flywheel/export_sft.yaml
 #
 # An export-only document: one `exporter:` block (plus, optionally, the
 # `eval_loader:` / `task_loader:` blocks decontamination and the reference-leak

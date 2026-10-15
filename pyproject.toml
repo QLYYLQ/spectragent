@@ -32,7 +32,6 @@ dependencies = [
     # WARC/1.1 writing for the browser network archive (Apache-2.0; its only
     # dependency is six). Never add py-wacz / cdxj-indexer / surt: AGPL chain.
     "warcio>=1.8.1",
-
     # Cloud browser SDKs (lite — session lifecycle + CDP URL only)
     "lexmount>=0.4.2",
     "browser-use-lite",
@@ -40,7 +39,6 @@ dependencies = [
     "agentbay-lite>=1.0.1",
     "airtop-lite",
     "skyvern-lite",
-
     # LLM provider SDKs
     "openai>=2.15",
     "anthropic>=0.76",
@@ -50,6 +48,11 @@ dependencies = [
     "boto3>=1.35",
     "oci>=2.100",
     "Pillow",
+    "typer>=0.16",
+    "rich>=14",
+    "textual>=6",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -79,12 +82,7 @@ dev = [
 
 
 [project.scripts]
-spectragent-gen = "spectragent.scripts.generate_all:main"
-spectragent-run = "spectragent.core.run_cli:main"
-spectragent-bench = "spectragent.core.benchmark_runner:main"
-spectragent-eval = "spectragent.evaluator.cli:main"
-spectragent-export = "spectragent.export.cli:main"
-spectragent-flywheel = "spectragent.flywheel.cli:main"
+spectragent = "spectragent.cli:main"
 # Always build through this, never bare `uv build`: setuptools reuses
 # `build/lib` without pruning, so two builds of one commit can differ.
 spectragent-build = "spectragent.scripts.build_wheel:main"
@@ -114,7 +112,7 @@ include-package-data = false
 # something to ship by accident. Loaders find it via `data_dir:` or
 # `$SPECTRAGENT_BENCHMARK_DATA` instead — see configs/README.md.
 [tool.setuptools.package-data]
-"spectragent" = ["prompts/**/*"]
+"spectragent" = ["prompts/**/*", "viewer/static/*", "viewer/static/**/*"]
 
 [tool.setuptools.exclude-package-data]
 "*" = ["**/__pycache__/*", "**/*.pyc"]

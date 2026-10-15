@@ -1,4 +1,4 @@
-"""``spectragent-export --config <yaml>``: export recorded runs as a training dataset (arch §4.15).
+"""``spectragent export --config <yaml>``: export recorded runs as a training dataset (arch §4.15).
 
 The YAML is an ordinary run-root document holding one ``exporter:`` block
 (``configs/flywheel/export_sft.yaml``) and, optionally, the ``eval_loader:`` /
@@ -45,7 +45,7 @@ def export(config_path: Path) -> ExportReport:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="spectragent-export",
+        prog="spectragent export",
         description=(
             "Export recorded runs as a training dataset rendered by a student agent "
             "(docs/architecture_design.md §4.15)."

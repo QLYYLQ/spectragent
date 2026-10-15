@@ -3,7 +3,7 @@
 Replaces the nine per-layer ``generate_config.py`` scripts. Run it whenever
 a registrar gains or loses a registered class::
 
-    uv run spectragent-gen          # via pyproject [project.scripts]
+    uv run spectragent config generate          # via pyproject [project.scripts]
     uv run python -m spectragent.scripts.generate_all
 
 Outputs (under ``spectragent/generated/``):
@@ -22,6 +22,7 @@ in the source, so the current build needs none.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -143,7 +144,11 @@ def _collect_registrars() -> dict[str, type]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _ = argv  # unused, reserved for future flags
+    parser = argparse.ArgumentParser(
+        prog="spectragent config generate",
+        description="Regenerate composed configuration, schema and registry fingerprints.",
+    )
+    parser.parse_args(argv)
     discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
     registrars = _collect_registrars()
     # Snapshot declarations before rendering: pydantic can normalize numeric

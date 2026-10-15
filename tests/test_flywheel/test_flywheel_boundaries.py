@@ -6,7 +6,7 @@
    environment, no agent, no concrete browser capability — every module
    reads committed runs, except ``chain.py``, which calls the existing CLIs.
 3. Only ``chain.py`` imports ``spectragent.export`` — exactly its CLI — and
-   only ``chain.py`` imports ``spectragent-bench``'s module.
+   only ``chain.py`` imports ``spectragent bench``'s module.
 4. Nothing loads ``.env``: keys are exported in the shell (the CLIs' rule).
 5. No model field is about money (tokens, never prices).
 
