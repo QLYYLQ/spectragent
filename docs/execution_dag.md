@@ -691,6 +691,8 @@ Agent 基类改造是三个 Browser Agent 适配（M14）的前提。改造的�
 
 **Backend 管理**：`BrowserProviderRegistrar` 的 local Chrome 与六个 lite cloud SDK 由 `__wiring__["backend"]` 注入；backend 只负责 session 生命周期与 CDP URL。
 
+共享本地 Chrome 通过 `local_chrome.lifetime: experiment` 与显式 `ExperimentScope` 接入（架构 §4.9.x）：同进程内各 run 拥有独立 BrowserContext、控制连接和记录会话，实验所有者统一 early-attach 并按 context 路由。run 只释放 lease，实验结束关闭 provider 持有的进程；离线回放使用独占 `lifetime: run`。这不是任意外部 CDP 的权限提升，Runtime 不引入 browser 知识。
+
 **Scope 编排**：每个已接管 tab 有观测与 JS 执行两个 EventScope；前者的 DOM handler 可跨 scope 等待后者的 JS handler。一个共享 JavaScriptExecutionWatchdog 服务多个 tab，且不发布第二份 `browser.dom`。这利用 agent-cdp 的 N:M scope↔watchdog 连接能力，见 `architecture_design.md` §4.4/§4.12/§11。M29 起，归档或回放档位打开时另有一个 browser 级的 archive EventScope，随 recorder 连接建与关（不是第三个 per-tab scope：弹窗的流量在控制连接接管它之前就到了）；tab 仍然只有这两个 scope，`bind_tab_scopes` 的签名不变，见 §4.14 与 M29。
 
 #### 设计思考

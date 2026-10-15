@@ -1,0 +1,40 @@
+# The bench command owns one experiment scope; every task gets a fresh context.
+# Concurrent Python runs use the same explicit ExperimentScope (see the runbook).
+agent:
+  - agent_id: browser_use
+    id: main
+    observation_mode: dom
+    agent_loop:
+      loop_id: react
+      max_steps: 30
+      max_actions_per_step: 3
+    llm:
+      model_type: openai
+      model: gpt-4o
+      provider: {name: direct}
+    memory: {memory_id: simple, max_messages: 200}
+
+environment:
+  - env_type: browser
+    id: browser_env
+    capabilities:
+      - capability_id: browser
+        profile: standard
+        dom_cleaner: {cleaner_type: browser_use}
+        dom_serializer: {serializer_type: text}
+        mouse_trajectory: {trajectory_type: instant}
+        typing_rhythm: {rhythm_type: instant}
+        replayability: {replayability_id: none}
+        network_source: {source_id: live}
+        backend:
+          provider_id: local_chrome
+          lifetime: experiment
+          headless: true
+
+hook:
+  - hook_id: trace_writer
+    trace_dir: traces
+    archive:
+      - archiver_id: browser.network
+        require_replayable: false
+      - archiver_id: browser.storage

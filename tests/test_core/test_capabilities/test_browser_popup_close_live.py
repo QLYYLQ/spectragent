@@ -71,7 +71,7 @@ async def test_a_popup_that_closes_itself_releases_its_feed() -> None:
         popup = None
         for _ in range(100):
             try:
-                popup = await cap.switch_tab()  # adopt the popup the page opened
+                popup = (await cap.switch_tab()).session_id  # adopt the popup the page opened
                 break
             except ValueError:  # not open yet
                 await asyncio.sleep(0.1)

@@ -16,6 +16,8 @@ fresh profile without the configuration or ``config.json`` showing it
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -25,8 +27,8 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import Annotated, Any, ClassVar
+from dataclasses import dataclass, field, fields
+from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -40,6 +42,7 @@ from spectragent.core.capabilities.browser.backends.browser_defaults import (
 from spectragent.core.capabilities.browser.backends.capabilities import (
     CDP,
     CUSTOM_PROXY,
+    EXPERIMENT_CONTEXTS,
     EXTENSIONS,
     LAUNCH_ARGS,
     NETWORK_CAPTURE,
@@ -55,6 +58,8 @@ from spectragent.core.capabilities.browser.backends.chrome_switches import (
     split_switch,
 )
 from spectragent.core.capabilities.browser.cdp_client import CDPClient
+from spectragent.core.capabilities.browser.shared_browser import SharedBrowser
+from spectragent.core.experiment import ExperimentScope, InstanceIdentity
 from spectragent.schemas.provider_session import ProviderSession
 
 logger = logging.getLogger(__name__)
@@ -297,12 +302,39 @@ class LocalChromeProvider(BrowserProviderBase):
         CDP,
         CUSTOM_PROXY,
         EXTENSIONS,
+        EXPERIMENT_CONTEXTS,
         LAUNCH_ARGS,
         NETWORK_CAPTURE,
         NETWORK_ISOLATION,
         PROFILE,
         SCREEN_SIZE,
     }
+
+    lifetime: Annotated[
+        Literal["run", "experiment"],
+        Field(
+            description="Own Chrome for one run, or share it within an explicit ExperimentScope using a fresh BrowserContext per run."
+        ),
+    ] = "run"
+
+    _managed_browser: SharedBrowser | None = field(default=None, init=False, repr=False)
+
+    @property
+    def managed_browser(self) -> SharedBrowser | None:
+        """The explicit experiment owner; binding performs no browser I/O."""
+        return self._managed_browser
+
+    def bind_experiment(self, scope: ExperimentScope, *, identity: InstanceIdentity) -> None:
+        if self.lifetime != "experiment":
+            return
+        configuration = {f.name: getattr(self, f.name) for f in fields(self) if f.init}
+        digest = hashlib.sha256(json.dumps(configuration, sort_keys=True).encode()).hexdigest()
+        self._managed_browser = scope.resource(
+            identity,
+            configuration=digest,
+            create=lambda: SharedBrowser(self),
+            close=lambda owner: owner.aclose(),
+        )
 
     # ── executable ─────────────────────────────────────────────────────
     executable_path: Annotated[

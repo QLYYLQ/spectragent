@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, Literal, cast
 
-from agent_cdp import CDPEventBridge, EventScope, Participation, ScopeGroup
+from agent_cdp import CDPCommandProtocol, CDPEventBridge, EventScope, Participation, ScopeGroup
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
@@ -89,7 +89,10 @@ from spectragent.core.capabilities.browser.archive import (  # noqa: F401 — re
     ReplayLogArchiver,
     StorageArchiver,
 )
-from spectragent.core.capabilities.browser.backends.base import BaseBrowserProvider
+from spectragent.core.capabilities.browser.backends.base import (
+    BaseBrowserProvider,
+    SharedBrowserProvider,
+)
 from spectragent.core.capabilities.browser.backends.browser_defaults import (
     BrowserDefaults,
     measure_browser_defaults,
@@ -99,6 +102,7 @@ from spectragent.core.capabilities.browser.capture_check import compare_capture
 from spectragent.core.capabilities.browser.cdp_client import CDPClient, transport_options
 from spectragent.core.capabilities.browser.client_hints import ClientHints, measure_client_hints
 from spectragent.core.capabilities.browser.color_scheme import ColorScheme, measure_color_scheme
+from spectragent.core.capabilities.browser.context_client import BrowserContextClient
 from spectragent.core.capabilities.browser.cooperation import (
     BrowserCooperationError,
     binding_problems,
@@ -198,6 +202,7 @@ from spectragent.core.capabilities.browser.settle import (
     PageSettle,
     wait_for_settle,
 )
+from spectragent.core.capabilities.browser.shared_browser import BrowserContextLease
 from spectragent.core.capabilities.browser.start_page import start_page_problem
 from spectragent.core.capabilities.browser.tabs import (
     FocusMove,
@@ -205,6 +210,7 @@ from spectragent.core.capabilities.browser.tabs import (
     FollowWindow,
     PageTab,
     TabRegistry,
+    TabSelection,
     tabs_after_close,
     tabs_to_follow,
 )
@@ -584,8 +590,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     # Declared here as type-only annotations so both pyright and the
     # conscribe stub writer see them; the values are set in ``__init__``.
     _actions_by_name: dict[str, ActionBase]
-    _cdp: CDPClient | None
+    _cdp: CDPClient | BrowserContextClient | None
     _session: ProviderSession | None
+    _context_lease: BrowserContextLease | None
     _scope_group: ScopeGroup | None
     #: Observation scopes by tab CDP session.
     _scopes: dict[str, EventScope]
@@ -925,6 +932,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self._actions_by_name = {}
         self._cdp = None
         self._session = None
+        self._context_lease = None
         self._scope_group = None
         self._scopes = {}
         self._js_scopes = {}
@@ -1081,10 +1089,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         return self._default_session_id
 
     @property
-    def cdp(self) -> CDPClient:
+    def cdp(self) -> CDPCommandProtocol:
         if self._cdp is None:
             raise RuntimeError("BrowserCapability not set up — call setup() first")
         return self._cdp
+
+    @property
+    def browser_context_id(self) -> str | None:
+        """This run's partition, or None for a dedicated/default-context browser."""
+        return self._context_lease.context_id if self._context_lease is not None else None
 
     # ── Test injection (private) ──────────────────────────────────────
 
@@ -1261,7 +1274,13 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         server = self._replay_server
         return await archive.collect(
             plan_fingerprint=self._replay_plan.fingerprint() if self._replay_plan else {},
-            session_metadata=self._session.metadata if self._session is not None else None,
+            session_metadata=(
+                self._context_lease.metadata
+                if self._context_lease is not None
+                else self._session.metadata
+                if self._session is not None
+                else None
+            ),
             fresh_profile=self._fresh_profile(),
             clock=time.time,
             network_fingerprint=(
@@ -1603,13 +1622,26 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 # browser-level concern and is applied per tab via
                 # ``Emulation.setDeviceMetricsOverride`` in _attach_tab.
                 switches, env = launch_args(self), launch_env(self)
-                if (switches or env) and LAUNCH_ARGS in getattr(
+                if isinstance(backend, SharedBrowserProvider) and backend.lifetime == "experiment":
+                    owner = backend.managed_browser
+                    if owner is None:
+                        raise RuntimeError(
+                            "backend lifetime: experiment requires an explicitly bound ExperimentScope"
+                        )
+                    self._context_lease = await owner.acquire(
+                        launch_args=switches,
+                        launch_env=env,
+                        record_targets=bool(recorder_needs(self)),
+                    )
+                    cdp_url = self._context_lease.cdp_url
+                elif (switches or env) and LAUNCH_ARGS in getattr(
                     type(backend), "__capabilities__", ()
                 ):
                     self._session = await backend.open(launch_args=switches, launch_env=env)
                 else:
                     self._session = await backend.open()
-                cdp_url = self._session.cdp_url
+                if self._session is not None:
+                    cdp_url = self._session.cdp_url
                 if cdp_url is None:
                     raise RuntimeError(
                         f"Backend {backend.provider_id!r} opened a "
@@ -1622,10 +1654,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     "``cdp_url`` in config, pass it as a kwarg, or wire "
                     "a ``browser_provider`` backend via __wiring__."
                 )
-            self._cdp = self._new_cdp_client(
+            control = self._new_cdp_client(
                 cdp_url,
                 additional_headers=self._session_cdp_headers(),
                 **transport_options(cdp_url),
+            )
+            self._cdp = (
+                BrowserContextClient(control, self._context_lease.context_id)
+                if self._context_lease is not None
+                else control
             )
             await self._cdp.start()
 
@@ -1656,6 +1693,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # read. Before the first tab is adopted — discovery reports the tabs
         # already open before its reply.
         await self._start_tab_discovery()
+
+        # A newly acquired context has no default page. Make a blank page for
+        # pre-recording measurements; business navigation still waits for the
+        # recorder's ready barrier. Existing hydrated login tabs are retained.
+        if self._context_lease is not None:
+            targets = await self._cdp.send("Target.getTargets", {})
+            if not any(info.get("type") == "page" for info in targets.get("targetInfos", [])):
+                await self._cdp.send("Target.createTarget", {"url": "about:blank"})
 
         # 1b. The recorder connection (§4.14), built but not yet attached: its
         # client, the archive scope and channel, this run's plan and the bound
@@ -1760,14 +1805,17 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         carries its log — and the source run's tolerated mismatches
         (*notes*, the Chrome version) become its warnings.
         """
-        client = self._new_cdp_client(
-            cdp_url,
-            additional_headers=self._session_cdp_headers(),
-            max_frame_size=None,
-            compression=None,
-            proxy=None,
-        )
-        await client.start()
+        if self._context_lease is not None:
+            client = self._context_lease.recorder_client
+        else:
+            client = self._new_cdp_client(
+                cdp_url,
+                additional_headers=self._session_cdp_headers(),
+                max_frame_size=None,
+                compression=None,
+                proxy=None,
+            )
+            await client.start()
         # With archivers bound: the browser-level archive scope and its channel,
         # before the recorder exists (it emits into the channel from its first
         # attach). Shim-only (no archiver): neither.
@@ -1790,12 +1838,14 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         )
         self._recorder = recorder
         version = await recorder.browser_version()
+        measurement = self._cdp if self._context_lease is not None else recorder
+        assert measurement is not None
         if self._archivers:
             self._browser_defaults = await self._measure_browser_defaults(
-                recorder, expected=expected_defaults, recorded=recorded
+                measurement, expected=expected_defaults, recorded=recorded
             )
         hints = (
-            await self._measure_client_hints(recorder)
+            await self._measure_client_hints(measurement)
             if self.replayability.needs_client_hints
             else None
         )
@@ -1803,7 +1853,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             color_scheme = (
                 replay_color_scheme(recorded)
                 if recorded is not None
-                else await self._measure_color_scheme(recorder)
+                else await self._measure_color_scheme(measurement)
             )
         plan = self.replayability.plan(
             t0_ms=t0_ms,
@@ -1847,6 +1897,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                     viewport=(self.viewport_width, self.viewport_height),
                     cycle=lambda: self._observation_cycle,
                     fresh_profile=self._fresh_profile(),
+                    browser_context_id=self.browser_context_id,
                     replay_log=(
                         self._replay_server.log if self._replay_server is not None else None
                     ),
@@ -1854,7 +1905,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 self._archivers,
             )
 
-    async def _measure_color_scheme(self, recorder: RecorderConnection) -> ColorScheme:
+    async def _measure_color_scheme(
+        self, recorder: RecorderConnection | CDPClient | BrowserContextClient
+    ) -> ColorScheme:
         """The live recording's theme, measured once before any target is prepared."""
         try:
             return await measure_color_scheme(recorder, timeout=_COLOR_SCHEME_TIMEOUT_S)
@@ -1869,7 +1922,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ]
             ) from exc
 
-    async def _measure_client_hints(self, recorder: RecorderConnection) -> ClientHints:
+    async def _measure_client_hints(
+        self, recorder: RecorderConnection | CDPClient | BrowserContextClient
+    ) -> ClientHints:
         """The browser's own client hints, read right after launch (§4.14, ``client_hints.py``).
 
         In a temporary background tab, closed again before any tab is
@@ -1893,7 +1948,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
 
     async def _measure_browser_defaults(
         self,
-        recorder: RecorderConnection,
+        recorder: RecorderConnection | CDPClient | BrowserContextClient,
         *,
         expected: BrowserDefaults | None,
         recorded: RecordedArchive | None,
@@ -2092,6 +2147,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             self._cdp = None
         elif self._cdp is not None and await aclean("control CDP close", self._cdp.stop):
             self._cdp = None
+
+        if self._context_lease is not None and await aclean(
+            "browser context close", self._context_lease.aclose
+        ):
+            self._context_lease = None
 
         backend = self.resolved_backend()
         if self._session is not None and backend is not None:
@@ -2690,8 +2750,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         ]
         return self._tabs.in_opening_order(ids) if self._tabs is not None else ids
 
-    async def switch_tab(self, target_id: str | None = None) -> str:
-        """Move agent focus to another tab; returns its CDP session id.
+    async def switch_tab(self, target_id: str | None = None) -> TabSelection:
+        """Move agent focus to another tab; return its target and control session.
 
         ``target_id`` is a CDP ``targetId`` — the same string the agent
         already sees as ``tab_id`` in the ``browser_meta`` fragment.
@@ -2737,7 +2797,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         if self._follow_window is not None and self._tabs is not None:
             self._follow_window = FollowWindow(focused=target_id, mark=self._tabs.mark)
         logger.info("Agent focus switched to tab %s (session %s)", target_id, sid)
-        return sid
+        return TabSelection(target_id=target_id, session_id=sid)
 
     async def _move_focus(
         self, target_id: str, *, url: str = "", adopt_timeout: float | None = None

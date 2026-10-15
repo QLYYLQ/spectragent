@@ -54,6 +54,14 @@ WINDOW_OPEN_MATCH_S = 2.0
 FocusMoveReason = Literal["new_tab", "tab_closed"]
 
 
+@dataclass(frozen=True)
+class TabSelection:
+    """The target and control session selected by one successful tab switch."""
+
+    target_id: str
+    session_id: str
+
+
 class FocusMove(BaseModel):
     """The capability moved the agent's focus to another tab before this capture.
 

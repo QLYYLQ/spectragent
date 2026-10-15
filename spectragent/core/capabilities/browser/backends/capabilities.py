@@ -56,3 +56,7 @@ LAUNCH_ARGS = "launch_args"
 # ``network_source: archive`` with ``isolation: required``; v1: only
 # ``local_chrome``.
 NETWORK_ISOLATION = "network_isolation"
+
+# A provider can lend per-run contexts from an explicitly bound experiment
+# owner. SharedBrowserProvider describes the public lifecycle contract.
+EXPERIMENT_CONTEXTS = "experiment_contexts"

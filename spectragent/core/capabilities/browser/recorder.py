@@ -161,6 +161,8 @@ class RecorderTarget:
     waiting: bool = False
     #: The session it was auto-attached under; ``None`` at browser level.
     parent_session_id: str | None = None
+    #: Chrome's storage/target partition, independent of any run's session ids.
+    browser_context_id: str | None = None
 
     @classmethod
     def from_attached(cls, params: Mapping[str, Any], parent: str | None) -> "RecorderTarget":
@@ -173,6 +175,7 @@ class RecorderTarget:
             opener_id=info.get("openerId"),
             waiting=bool(params.get("waitingForDebugger")),
             parent_session_id=parent,
+            browser_context_id=info.get("browserContextId"),
         )
 
     @property

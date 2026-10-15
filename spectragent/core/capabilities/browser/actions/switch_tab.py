@@ -60,15 +60,14 @@ class SwitchTabAction(ActionBase):
         capability: BrowserCapability,
     ) -> ActionResult:
         try:
-            new_session_id = await capability.switch_tab(params.get("target_id"))
+            selected = await capability.switch_tab(params.get("target_id"))
         except Exception as exc:
             # Unknown tab / single-tab browser / CDP refusal — the agent
             # must learn the switch did not happen, so it can pick another
             # tab rather than acting blind on the old one.
             return ActionResult(success=False, error=str(exc))
 
-        target_id = capability._session_to_target.get(new_session_id, new_session_id)
         return ActionResult(
             success=True,
-            extracted_content=f"Switched to tab {target_id}",
+            extracted_content=f"Switched to tab {selected.target_id}",
         )

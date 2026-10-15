@@ -2,6 +2,27 @@
 
 从仓库根目录执行下列命令。当前执行链是 `YAML → ConfigComposer → AgentRuntime.execute()`；单任务入口是 `spectragent run`，数据集入口是 `spectragent bench`。`agent_id` 选模型理解页面和输出动作的方式，`capability_id: browser` 提供浏览器动作与观察，`backend.provider_id` 选 Chrome 会话的来源。这三项可以分别配置。
 
+## 同一实验共享 Chrome
+
+`configs/browser_use_shared.yaml` 使用 `backend: {provider_id: local_chrome, lifetime: experiment}`。`spectragent bench --config configs/browser_use_shared.yaml ...` 的整个 sweep 共用进程，每个 task 新建独立 BrowserContext，分别记录网络与存储；`spectragent run` 也拥有显式实验作用域，结束后关闭 Chrome。配置检查与 dry-run 不启动浏览器。离线回放将 backend 设回 `lifetime: run`。
+
+并发 Python 调用方显式持有作用域，每 run 仍重新 compose。资源使用 Composer 的 provider instance identity（内联实例按稳定构造顺序编号）；相同 identity 的配置必须一致，不同 identity 拥有不同进程。不要复用一个 capability 执行两个 run。
+
+```python
+import asyncio
+from spectragent.core.experiment import ExperimentScope
+from spectragent.core.runtime import AgentRuntime
+
+async with ExperimentScope() as experiment:
+    runs = [experiment.bind(composer.compose(config)) for _ in tasks]
+    await asyncio.gather(*(
+        AgentRuntime.for_agent(run, "main").execute(task=task)
+        for run, task in zip(runs, tasks, strict=True)
+    ))
+```
+
+每个 run 结束只释放自己的 context；实验作用域结束关闭共享进程。磁盘登录 profile 不能自动继承到新 context，改用显式会话 state 导入；持久 profile 继续使用独占进程。共享的 browser-wide recorder 会短暂暂停未参与 context 的新 target 并立即放行、detach，不归档或关闭其页面。它不是给任意外部 CDP 端点增加录制所有权；进程故障仍会影响全部共享 run。
+
 ## 统一命令与结果界面
 
 安装或更新工作区后执行 `uv sync --extra dev`。统一入口为 `uv run spectragent --help`；模型、浏览器与实验参数继续写在 YAML，不需要在界面里重新配置一遍。
