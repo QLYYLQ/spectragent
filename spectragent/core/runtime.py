@@ -672,6 +672,7 @@ class AgentRuntime:
                 trace is closed out. Benchmark drivers pass ``False`` to
                 get the failed ``AgentResult`` back and keep going.
         """
+        has_env_context = env_context is not None
         prepared_agent = self.prepare(
             task_id=task_id,
             action_filter=action_filter,
@@ -745,7 +746,7 @@ class AgentRuntime:
                     if self._env_evidence_privacy is not None
                     else None
                 ),
-                task_setup=self._prepared_setup.recordable if env_context else None,
+                task_setup=self._prepared_setup.recordable if has_env_context else None,
                 branch=branch,
                 config_source=config_source,
             )

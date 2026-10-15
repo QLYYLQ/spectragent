@@ -928,15 +928,16 @@ class TestTraceBranchesSweep:
         assert "--no-eval" in message and executed == []
 
     def test_a_sweep_without_an_evaluator_never_asks_for_one(self, tmp_path, monkeypatch, capsys):
+        from spectragent.core import benchmark_runner
         from spectragent.core.benchmark_runner import main
-        from spectragent.core.data_loader.eval._registrar import EvalLoaderRegistrar
         from tests._helpers.branch_sources import write_source
 
         def no_lookup(*args: Any, **kwargs: Any) -> Any:
             raise AssertionError("a sweep that scores nothing resolved an eval loader")
 
-        monkeypatch.setattr(EvalLoaderRegistrar, "get", no_lookup)
-        monkeypatch.setattr(EvalLoaderRegistrar, "get_or_none", no_lookup)
+        # The configuration catalog may read eval-loader classes as schema
+        # metadata; scoring nothing must skip actual reference resolution.
+        monkeypatch.setattr(benchmark_runner, "_resolve_eval_loader", no_lookup)
         write_source(tmp_path / "recorded", "run-a", steps=2)
 
         assert (
@@ -997,6 +998,8 @@ class TestTraceBranchesSweep:
         source = await record_source(
             tmp_path, ["click 100", "click 101", "done ok"], env_context={}
         )
+        setup = RunTrace(source).config.task_setup
+        assert setup is not None and setup.context == {}
         loader = TraceBranchesTaskLoader(data_dir=str(source.parent), require_archive=())
         loader.step_selector = ExplicitSteps(steps=[1])
         caps: list[Any] = []

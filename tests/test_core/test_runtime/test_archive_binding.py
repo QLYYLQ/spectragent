@@ -221,11 +221,14 @@ class TestOnRunStartReceivesTheArchiveFacts:
             {MARKER_SESSION_STATE, MARKER_REDACTED}
         )
 
-    async def test_no_context_means_no_task_setup(self) -> None:
+    @pytest.mark.parametrize("context", [None, {}], ids=["omitted", "explicit_empty"])
+    async def test_task_setup_preserves_absent_and_explicit_empty_context(
+        self, context: dict[str, Any] | None
+    ) -> None:
         hook = ArchiveConsumerHook([])
-        await _runtime(hook).execute("t", timeout=10)
+        await _runtime(hook).execute("t", timeout=10, env_context=context)
         assert hook.run_start is not None
-        assert hook.run_start["task_setup"] is None
+        assert hook.run_start["task_setup"] == context
 
     async def test_the_context_still_reaches_setup(self) -> None:
         cap = FakeArchivingCapability()
