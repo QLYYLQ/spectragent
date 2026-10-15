@@ -26,7 +26,7 @@ class _InMemoryLoader(TaskLoaderBase):
 
     def _seed(self, raws: list[dict]) -> None:
         for raw in raws:
-            task = self._normalize_raw(raw)
+            task = self.normalize_raw(raw)
             self._tasks[task.task_id] = task
 
 
@@ -47,7 +47,7 @@ class TestProtocolConformance:
         loader = _InMemoryLoader()
         assert isinstance(loader, BaseTaskLoader)
         # And verify the real classes have the necessary class members
-        assert hasattr(BrowseCompTaskLoader, "_normalize_raw")
+        assert hasattr(BrowseCompTaskLoader, "normalize_raw")
         assert hasattr(BrowseCompTaskLoader, "get_task_context")
 
 

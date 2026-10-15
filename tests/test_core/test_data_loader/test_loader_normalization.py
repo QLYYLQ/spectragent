@@ -2,7 +2,7 @@
 
 These tests use the real loader classes but bypass disk loading by
 monkey-patching ``_load`` on each instance, then directly seed test
-records via ``_normalize_raw``. This exercises the inherited
+records via ``normalize_raw``. This exercises the inherited
 normalization logic without subclassing (subclassing would create
 duplicate conscribe registry entries).
 """
@@ -25,7 +25,7 @@ def _build_stub(cls: type[TaskLoaderBase], raws: list[dict]) -> TaskLoaderBase:
 
     Bypasses ``__post_init__``-driven loading by constructing the
     instance via ``__new__``, then manually initializing the dataclass
-    fields and populating ``_tasks`` from ``_normalize_raw``.
+    fields and populating ``_tasks`` from ``normalize_raw``.
     """
     loader = cls.__new__(cls)
     # Initialize the dataclass fields by hand (we skip __init__ so
@@ -34,7 +34,7 @@ def _build_stub(cls: type[TaskLoaderBase], raws: list[dict]) -> TaskLoaderBase:
     loader.data_dir = None
     loader._tasks = {}
     for raw in raws:
-        task = loader._normalize_raw(raw)
+        task = loader.normalize_raw(raw)
         loader._tasks[task.task_id] = task
     return loader
 

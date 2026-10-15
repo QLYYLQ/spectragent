@@ -218,9 +218,22 @@ class OnlineMind2WebEvaluator(LLMJudgeEvaluator):
         snapshots["judge_image_user"] = user_snapshot
 
         parts = [image_part(path, detail=self.image_detail) for path in screenshots]
-        responses = await asyncio.gather(
-            *(self.ask(system=system, text=user, images=[part], tally=tally) for part in parts)
-        )
+        calls = [
+            asyncio.create_task(self.ask(system=system, text=user, images=[part], tally=tally))
+            for part in parts
+        ]
+        joined = asyncio.gather(*calls)
+        try:
+            responses = await asyncio.shield(joined)
+        except BaseException:
+            # These requests belong to this evaluation. Drain cancelled
+            # siblings before the runner starts another trace or closes
+            # the judge, preserving the original error or cancellation.
+            for call in calls:
+                if not call.done():
+                    call.cancel()
+            await asyncio.gather(joined, *calls, return_exceptions=True)
+            raise
 
         records: list[dict[str, Any]] = []
         kept_images: list[ContentPartImageParam] = []

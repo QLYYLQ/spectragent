@@ -164,7 +164,7 @@ class EvaluatorBase(metaclass=EvaluatorRegistrar.Meta):
         judge = getattr(self, "llm", None)
         if judge is None:
             return None
-        for attr in ("model", "model_name", "name"):
+        for attr in ("model", "name"):
             value = getattr(judge, attr, None)
             if isinstance(value, str) and value:
                 return value
@@ -224,7 +224,12 @@ def _jsonable(value: Any) -> Any:
     """
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if isinstance(value, (set, frozenset)):
+        return sorted(
+            (_jsonable(item) for item in value),
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+    if isinstance(value, (list, tuple)):
         return [_jsonable(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}

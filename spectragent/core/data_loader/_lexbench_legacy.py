@@ -8,7 +8,7 @@ instruction ``query``, the start URL ``target_website``, the reference
 top level instead of nested under ``setup``.
 
 This module converts that shape into the normalized dict the loader base
-classes expect. It is the concrete reason ``_normalize_raw`` is an
+classes expect. It is the concrete reason ``normalize_raw`` is an
 overridable hook on both the task and the eval side.
 """
 

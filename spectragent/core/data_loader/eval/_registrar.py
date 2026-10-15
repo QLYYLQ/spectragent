@@ -37,7 +37,7 @@ class EvalLoaderBase(metaclass=EvalLoaderRegistrar.Meta):
 
     Subclasses should override ``env_type`` when the benchmark's data
     lives outside ``benchmark_data/browser/``, and may override
-    ``_normalize_raw()`` to map an upstream record shape into
+    ``normalize_raw()`` to map an upstream record shape into
     ``EvalReference`` — the mirror of the task loader's hook.
     """
 
@@ -92,11 +92,14 @@ class EvalLoaderBase(metaclass=EvalLoaderRegistrar.Meta):
             self.data_dir,
         )
         for raw in parse_file(resolve_split_file(root, self.subset)):
-            ref = self._normalize_raw(raw)
+            ref = self.normalize_raw(raw)
             self._refs[ref.task_id] = ref
 
-    def _normalize_raw(self, raw: dict[str, Any]) -> EvalReference:
+    def normalize_raw(self, raw: dict[str, Any]) -> EvalReference:
         """Map a raw record into an ``EvalReference``.
+
+        Extension point for loader authors. Return one reference without
+        adding it to the loader's index; loading owns that bookkeeping.
 
         Identity is resolved through the same key precedence as the task
         side (``task_id`` > ``id`` > ``instance_id``), so upstream files

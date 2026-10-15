@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from spectragent.evaluator import (
     discover_traces,
     summarize,
 )
+from spectragent.evaluator.base import BaseEvaluator
 from spectragent.evaluator.summary import format_summary
 from spectragent.schemas.eval_reference import EvalReference
 from tests.test_evaluator.conftest import write_trace
@@ -294,10 +296,25 @@ class _FlakyEvaluator:
         self._broken = broken
         self._inner = ExactMatchEvaluator()
 
+    def config_signature(self) -> dict[str, list[str]]:
+        return {"broken": sorted(self._broken)}
+
+    @property
+    def verdict_slug(self) -> str:
+        signature = json.dumps(self.config_signature(), sort_keys=True)
+        return f"{self.evaluator_id}_{hashlib.sha256(signature.encode()).hexdigest()[:8]}"
+
     async def evaluate(self, trace, reference):
         if reference.task_id in self._broken:
             raise ConnectionError("429 Too Many Requests")
         return await self._inner.evaluate(trace, reference)
+
+
+def test_structural_evaluator_declares_persistent_identity():
+    evaluator = _FlakyEvaluator({"t-2", "t-1"})
+    assert isinstance(evaluator, BaseEvaluator)
+    assert evaluator.config_signature() == {"broken": ["t-1", "t-2"]}
+    assert evaluator.verdict_slug == _FlakyEvaluator({"t-1", "t-2"}).verdict_slug
 
 
 @pytest.fixture

@@ -11,6 +11,9 @@ hiding it.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 from spectragent.core.data_loader.eval.online_mind2web import OnlineMind2WebEvalLoader
@@ -24,6 +27,8 @@ from spectragent.evaluator.online_mind2web import (
     extract_predication,
     extract_reasoning,
 )
+from spectragent.evaluator.runner import EvaluationRunner
+from spectragent.schemas.eval_reference import EvalReference
 from tests.conftest import require_benchmark_data
 from tests.test_evaluator.conftest import FakeJudge, png_bytes, write_trace
 
@@ -233,6 +238,74 @@ async def test_missing_task_text_is_a_loud_error(traces_dir, reference):
 
     with pytest.raises(TraceIncompleteError, match="task text"):
         await _evaluator(FakeJudge()).evaluate(trace, reference)
+
+
+@pytest.mark.parametrize("termination", ["failure", "cancel"])
+async def test_image_judges_finish_before_evaluator_cleanup(traces_dir, monkeypatch, termination):
+    """A failed/cancelled image batch cannot outlive its owning evaluation."""
+    reference = EvalReference(task_id="owned-images", benchmark="offline_bench")
+    trace_dir = write_trace(
+        traces_dir, task_id=reference.task_id, steps=2, screenshots=_three_frames()[:2]
+    )
+    evaluator = OnlineMind2WebEvaluator()
+    all_started = asyncio.Event()
+    parked = asyncio.Event()
+    image_tasks: list[asyncio.Task] = []
+    finished: list[int] = []
+    cleanup_counts: list[int] = []
+    failure = ValueError("one image judge failed")
+
+    async def ask(*, images=None, **kwargs):
+        if not images:
+            return _KEY_POINTS
+        current = asyncio.current_task()
+        assert current is not None
+        index = len(image_tasks)
+        image_tasks.append(current)
+        if len(image_tasks) == 2:
+            all_started.set()
+        try:
+            await all_started.wait()
+            if termination == "failure" and index == 0:
+                raise failure
+            await parked.wait()
+            return _IMAGE_PASS
+        finally:
+            await asyncio.sleep(0)
+            finished.append(index)
+            if index == 1:
+                raise RuntimeError("image request cleanup failed")
+
+    async def close(*, timeout=5.0):
+        cleanup_counts.append(len(finished))
+        return ()
+
+    monkeypatch.setattr(evaluator, "ask", ask)
+    monkeypatch.setattr(evaluator, "aclose", close)
+    runner = EvaluationRunner(
+        evaluator=evaluator,
+        eval_loader=SimpleNamespace(get=lambda task_id: reference),
+        write_into_trace=False,
+    )
+    operation = asyncio.create_task(runner.evaluate_trace(trace_dir))
+    try:
+        await asyncio.wait_for(all_started.wait(), timeout=1)
+        if termination == "cancel":
+            operation.cancel("stop image batch")
+            with pytest.raises(asyncio.CancelledError, match="stop image batch"):
+                await operation
+        else:
+            with pytest.raises(ValueError) as caught:
+                await operation
+            assert caught.value is failure
+        assert sorted(finished) == [0, 1]
+        assert cleanup_counts == [2]
+        assert all(task.done() for task in image_tasks)
+    finally:
+        for task in [operation, *image_tasks]:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(operation, *image_tasks, return_exceptions=True)
 
 
 # ── Parsers (verbatim ports) ────────────────────────────────────────

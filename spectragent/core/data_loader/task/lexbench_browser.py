@@ -67,14 +67,14 @@ class LexBenchBrowserTaskLoader(TaskLoaderBase):
         Field("All", description="LexBench data subset"),
     ] = "All"
 
-    def _normalize_raw(self, raw: dict[str, Any]) -> TaskDefinition:
+    def normalize_raw(self, raw: dict[str, Any]) -> TaskDefinition:
         """Accept both the normalized and the upstream record shape; complete the start page.
 
         The ``private`` split ships upstream-shaped records (integer
         ``id``, ``query``, ``target_website``, flat login flags). Either
         shape's start page goes through :func:`complete_start_page`.
         """
-        task = super()._normalize_raw(normalize_legacy_record(raw))
+        task = super().normalize_raw(normalize_legacy_record(raw))
         setup = task.setup
         if isinstance(setup, BrowserSetup) and setup.start_url:
             completed = complete_start_page(setup.start_url)

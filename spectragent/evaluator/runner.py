@@ -117,8 +117,8 @@ class EvaluationRunner:
         eval_loader: Source of ``EvalReference`` rows, keyed by task id —
             i.e. any registered eval data loader.
         evals_dir: Optional directory for a flat copy of every verdict
-            plus ``summary.json``. Verdicts are *always* written into
-            each trace's own ``evals/`` regardless.
+            plus ``summary.json``. Writing into each trace's own
+            ``evals/`` is controlled separately by ``write_into_trace``.
         write_into_trace: Turn off to evaluate read-only.
     """
 
@@ -148,13 +148,12 @@ class EvaluationRunner:
         ``evaluator_id`` alone is not a filename: re-scoring a trace with
         the same evaluator under a different threshold, normalization or
         judge model would land on the same path and silently destroy the
-        earlier verdict. :class:`EvaluatorBase` derives a config digest;
-        an evaluator that only satisfies the Protocol has no such notion,
-        and falls back to its bare id — it simply does not get the
-        disambiguation.
+        earlier verdict. Every evaluator declares its own stable identity.
         """
-        slug = getattr(self._evaluator, "verdict_slug", None)
-        return str(slug) if slug else self.evaluator_id
+        slug = self._evaluator.verdict_slug
+        if not isinstance(slug, str) or not slug:
+            raise ValueError(f"{self.evaluator_id} must provide a nonempty verdict_slug")
+        return slug
 
     async def evaluate_trace(self, trace_dir: Path) -> EvalResult:
         """Score one trace as one independent judge execution."""
@@ -341,7 +340,7 @@ class EvaluationRunner:
         return EvalResult(
             task_id=task_id,
             evaluator_id=self.evaluator_id,
-            evaluator_config=_config_signature(self._evaluator),
+            evaluator_config=self._evaluator.config_signature(),
             benchmark=benchmark,
             subset=subset,
             timestamp=now,
@@ -402,23 +401,6 @@ def _task_id_or_dirname(trace_dir: Path) -> str:
         return TraceView(RunTrace(trace_dir)).task_id
     except Exception:
         return trace_dir.name
-
-
-def _config_signature(evaluator: BaseEvaluator) -> dict[str, Any]:
-    """The evaluator's settings, when it is one that can report them.
-
-    A synthetic record should name the configuration that failed to score
-    the trace, for the same reason a real verdict does. Protocol-only
-    evaluators have no signature to give.
-    """
-    reader = getattr(evaluator, "config_signature", None)
-    if not callable(reader):
-        return {}
-    try:
-        signature = reader()
-    except Exception:  # pragma: no cover — a broken evaluator, not our verdict
-        return {}
-    return signature if isinstance(signature, dict) else {}
 
 
 def _safe_name(name: str) -> str:

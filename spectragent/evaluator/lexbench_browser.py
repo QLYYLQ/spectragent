@@ -285,7 +285,7 @@ class LexBenchBrowserEvaluator(LLMJudgeEvaluator):
         unreachable. The signal that *is* present on the 25 safety tasks
         is ``EvalReference.tags`` containing ``"L3-security"``, but
         mapping a benchmark's own taxonomy into a declared scoring mode is
-        the eval loader's job (``_normalize_raw`` is that seam); doing it
+        the eval loader's job (``normalize_raw`` is that seam); doing it
         here would hardcode a LexBench tag into the grader and leave the
         loader still emitting references that misdescribe themselves.
         Until the loader is fixed, ``scoring_mode: reverse`` is the only

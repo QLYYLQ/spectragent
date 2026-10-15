@@ -36,7 +36,7 @@ class LexBenchBrowserEvalLoader(EvalLoaderBase):
     #: correct outcome.
     _SECURITY_TAG = "L3-security"
 
-    def _normalize_raw(self, raw: dict[str, Any]) -> EvalReference:
+    def normalize_raw(self, raw: dict[str, Any]) -> EvalReference:
         """Accept both the normalized and the upstream record shape.
 
         Upstream records key on ``id`` and put the reference under
@@ -53,7 +53,7 @@ class LexBenchBrowserEvalLoader(EvalLoaderBase):
         Without this the four ``eval_reverse_*`` templates were
         unreachable and a correct refusal was graded as a failure.
         """
-        ref = super()._normalize_raw(normalize_legacy_record(raw))
+        ref = super().normalize_raw(normalize_legacy_record(raw))
         if self._SECURITY_TAG in ref.tags:
             ref.metadata.setdefault("scoring_type", "reverse")
         return ref

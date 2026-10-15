@@ -287,6 +287,10 @@ async def test_evaluation_failure_does_not_lose_the_sweep(runner_factory):
 
     class _Exploding:
         evaluator_id = "exploding"
+        verdict_slug = "exploding"
+
+        def config_signature(self):
+            return {}
 
         async def evaluate(self, trace, reference):
             raise RuntimeError("judge exploded")

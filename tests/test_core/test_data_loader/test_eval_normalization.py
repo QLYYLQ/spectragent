@@ -1,4 +1,4 @@
-"""``EvalLoaderBase`` has the same overridable ``_normalize_raw`` hook.
+"""``EvalLoaderBase`` has the same overridable ``normalize_raw`` hook.
 
 Before this, ``_load`` hardcoded ``raw["task_id"]`` with no hook, while
 the task side deliberately shipped the opposite.
@@ -29,8 +29,8 @@ class _OverridingEvalLoader(EvalLoaderBase):
 
     __registry_key__ = "_test_eval_override_loader"
 
-    def _normalize_raw(self, raw: dict[str, Any]) -> EvalReference:
-        ref = super()._normalize_raw(raw)
+    def normalize_raw(self, raw: dict[str, Any]) -> EvalReference:
+        ref = super().normalize_raw(raw)
         ref.tags = [*ref.tags, "rewritten"]
         return ref
 
