@@ -3,7 +3,7 @@
 import asyncio
 import json
 import threading
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 
@@ -13,6 +13,8 @@ from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive import StorageArchiver
 from spectragent.core.capabilities.browser.backends.local_chrome import LocalChromeProvider
 from spectragent.core.capabilities.browser.storage_seed import StorageSeed
+from spectragent.core.composer import ComposedRun
+from spectragent.core.experiment import ExperimentScope
 from spectragent.schemas.action import Action
 from spectragent.schemas.browser_storage import (
     BrowserStorageState,
@@ -84,6 +86,15 @@ def capability() -> BrowserCapability:
     return cap
 
 
+@pytest.fixture(params=["run", "experiment"])
+async def seeded_capability(request: pytest.FixtureRequest) -> AsyncIterator[BrowserCapability]:
+    cap = capability()
+    cast(LocalChromeProvider, cap.backend).lifetime = request.param
+    async with ExperimentScope() as scope:
+        scope.bind(ComposedRun({"browser_provider": {"seed": cap.backend}}))
+        yield cap
+
+
 async def evaluate(cap: BrowserCapability, expression: str) -> Any:
     result = await cap.cdp.send(
         "Runtime.evaluate",
@@ -95,9 +106,10 @@ async def evaluate(cap: BrowserCapability, expression: str) -> Any:
 
 async def test_seed_precedes_first_request_and_script_and_keeps_two_tab_sessions(
     auth_site: tuple[str, list[Any]],
+    seeded_capability: BrowserCapability,
 ) -> None:
     origin, requests = auth_site
-    cap = capability()
+    cap = seeded_capability
     seed = BrowserStorageState(
         cookies=[{"name": "sid", "value": "authenticated", "domain": "one.test", "path": "/"}],
         local=[
@@ -152,6 +164,7 @@ async def test_seed_precedes_first_request_and_script_and_keeps_two_tab_sessions
 
 async def test_two_third_party_partitions_and_oopif_session_are_captured_and_seeded(
     auth_site: tuple[str, list[Any]],
+    seeded_capability: BrowserCapability,
 ) -> None:
     origin, requests = auth_site
     port = origin.rsplit(":", 1)[1]
@@ -194,7 +207,7 @@ async def test_two_third_party_partitions_and_oopif_session_are_captured_and_see
             for name in ("one", "two")
         ],
     )
-    cap = capability()
+    cap = seeded_capability
     try:
         await cap.setup(storage_state=seed, start_url=origin + "/partition")
         for _ in range(200):
@@ -388,6 +401,7 @@ async def test_hydration_failure_and_cancellation_close_only_their_own_tabs(
         assert before == after
         assert not cdp._callbacks.get("Fetch.requestPaused")
         assert not cdp._callbacks.get("Target.attachedToTarget")
+        assert not cdp._callbacks.get("Target.detachedFromTarget")
     finally:
         await cdp.stop()
         await provider.close(session)

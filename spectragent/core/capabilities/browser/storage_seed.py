@@ -18,7 +18,7 @@ from typing import Any, Literal
 
 from spectragent.core.archive.source import ArchiveReader
 from spectragent.core.capabilities.browser.archive.encoding import canonical_json
-from spectragent.core.capabilities.browser.commands import BrowserConnection
+from spectragent.core.capabilities.browser.commands import BrowserConnection, PendingCommand
 from spectragent.schemas.browser_storage import BrowserStorageState, StorageArea
 
 INITIAL_STATE_NAME = "initial_state.json"
@@ -88,30 +88,61 @@ class _Hydration:
         self.sessions: set[str] = set()
         self.roots: set[str] = set()
         self.frame_sessions: dict[str, str] = {}
+        self.parents: dict[str, str] = {}
+        self.retired: set[str] = set()
         self.tasks: set[asyncio.Task[Any]] = set()
+        self.task_sessions: dict[asyncio.Task[Any], str] = {}
         self.documents: dict[str, str] = {}
         self.errors: list[BaseException] = []
+        self.closing = False
 
-    def spawn(self, coroutine: Any) -> None:
+    def spawn(self, coroutine: Any, sid: str) -> None:
         task = asyncio.create_task(coroutine)
         self.tasks.add(task)
+        self.task_sessions[task] = sid
         task.add_done_callback(self.done)
 
     def done(self, task: asyncio.Task[Any]) -> None:
         self.tasks.discard(task)
-        if not task.cancelled() and (error := task.exception()) is not None:
-            self.errors.append(error)
+        sid = self.task_sessions.pop(task, None)
+        if not task.cancelled():
+            error = task.exception()  # retrieve even a late result from a retired session
+            if error is not None and sid not in self.retired:
+                self.errors.append(error)
 
     def attached(self, params: dict[str, Any], parent: str | None = None) -> None:
-        if parent in self.sessions:
-            self.frame_sessions[params["targetInfo"]["targetId"]] = params["sessionId"]
-            self.spawn(self.prepare(params["sessionId"], resume=True))
+        sid = params["sessionId"]
+        if not self.closing and parent in self.sessions and sid not in self.retired:
+            # Admit synchronously: detach or nested attach can precede prepare's task.
+            self.sessions.add(sid)
+            self.parents[sid] = parent
+            self.frame_sessions[params["targetInfo"]["targetId"]] = sid
+            self.spawn(self.prepare(sid, resume=True), sid)
+
+    def detached(self, params: dict[str, Any], parent: str | None = None) -> None:
+        retired = {params["sessionId"]}
+        while (
+            children := {sid for sid, owner in self.parents.items() if owner in retired} - retired
+        ):
+            retired.update(children)
+        self.retired.update(retired)
+        self.sessions.difference_update(retired)
+        self.roots.difference_update(retired)
+        self.parents = {sid: owner for sid, owner in self.parents.items() if sid not in retired}
+        self.frame_sessions = {
+            frame: sid for frame, sid in self.frame_sessions.items() if sid not in retired
+        }
+        for task, sid in tuple(self.task_sessions.items()):
+            if sid in retired:
+                task.cancel()
 
     def paused(self, params: dict[str, Any], sid: str | None = None) -> None:
-        if sid in self.sessions:
-            self.spawn(self.fulfill(params, sid))
+        if not self.closing and sid in self.sessions:
+            self.spawn(self.fulfill(params, sid), sid)
 
     async def fulfill(self, params: dict[str, Any], sid: str) -> None:
+        if self.closing or sid not in self.sessions:
+            return
         document = self.documents.get(params["request"]["url"])
         if document is None:
             await self.cdp.send(
@@ -132,25 +163,34 @@ class _Hydration:
         )
 
     async def prepare(self, sid: str, *, resume: bool = False) -> None:
+        if sid in self.retired or self.closing:
+            return
         self.sessions.add(sid)
         if not resume:
             self.roots.add(sid)
         # Queue all commands before releasing a waiting OOPIF.
-        replies = []
+        replies: list[PendingCommand] = []
         try:
-            for method, params in (
-                ("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}),
-                (
-                    "Target.setAutoAttach",
-                    {"autoAttach": True, "flatten": True, "waitForDebuggerOnStart": True},
-                ),
-            ):
-                replies.append(await self.cdp.post(method, params, sid))
-        finally:
-            if resume:
-                replies.append(await self.cdp.post("Runtime.runIfWaitingForDebugger", {}, sid))
-        try:
+            try:
+                for method, params in (
+                    (
+                        "Fetch.enable",
+                        {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
+                    ),
+                    (
+                        "Target.setAutoAttach",
+                        {"autoAttach": True, "flatten": True, "waitForDebuggerOnStart": True},
+                    ),
+                ):
+                    if sid not in self.sessions:
+                        return
+                    replies.append(await self.cdp.post(method, params, sid))
+            finally:
+                if resume and sid in self.sessions:
+                    replies.append(await self.cdp.post("Runtime.runIfWaitingForDebugger", {}, sid))
             for reply in replies:
+                if sid not in self.sessions:
+                    return
                 await reply.wait(10)
         finally:
             for reply in replies:
@@ -162,8 +202,12 @@ class _Hydration:
             if self.errors:
                 raise self.errors[0]
             for session in sorted(self.sessions, key=lambda item: item == sid):
+                if session not in self.sessions:
+                    continue
                 try:
                     tree = await self.cdp.send("Page.getFrameTree", {}, session, timeout=1)
+                    if session not in self.sessions:
+                        continue
                     nodes = [tree["frameTree"]]
                     while nodes:
                         node = nodes.pop()
@@ -191,8 +235,11 @@ class _Hydration:
                         result = await self.cdp.send(
                             "Storage.getStorageKey", {"frameId": frame["id"]}, session, timeout=1
                         )
-                        if result["storageKey"] == area.storage_key:
+                        if session in self.sessions and result["storageKey"] == area.storage_key:
                             return session, frame["id"]
+                except PermissionError:
+                    if session not in self.retired:
+                        raise
                 except RuntimeError:
                     continue  # an OOPIF belongs to its own session
             await asyncio.sleep(0.01)
@@ -236,6 +283,7 @@ class _Hydration:
         # Drain already admitted pauses before Fetch.disable could release them.
         if self.tasks:
             await asyncio.wait(list(self.tasks), timeout=1)
+        self.closing = True
         self.cdp.off_event("Fetch.requestPaused", self.paused)
         self.cdp.off_event("Target.attachedToTarget", self.attached)
         failures: list[Exception] = []
@@ -247,20 +295,31 @@ class _Hydration:
                     {"autoAttach": False, "flatten": True, "waitForDebuggerOnStart": False},
                 ),
             ):
+                if sid not in self.sessions:
+                    break
                 try:
                     await self.cdp.send(method, params, sid, timeout=1)
                 except Exception as exc:
                     if sid in self.roots:
                         failures.append(exc)
-        for task in list(self.tasks):
+        tasks = list(self.tasks)
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
+        if tasks:
+            _, unfinished = await asyncio.wait(tasks, timeout=1)
+            if unfinished:
+                failures.append(
+                    RuntimeError(f"{len(unfinished)} storage hydration task(s) remain unfinished")
+                )
         for sid in list(self.sessions):
+            if sid not in self.sessions:
+                continue
             try:
                 await self.cdp.send("Target.detachFromTarget", {"sessionId": sid}, timeout=1)
             except Exception as exc:
                 if sid in self.roots:
                     failures.append(exc)
+        self.cdp.off_event("Target.detachedFromTarget", self.detached)
         if failures:
             raise ExceptionGroup("storage hydration cleanup could not be confirmed", failures)
 
@@ -274,6 +333,7 @@ async def _hydrate_storage(
     hydration = _Hydration(cdp)
     cdp.on_event("Fetch.requestPaused", hydration.paused)
     cdp.on_event("Target.attachedToTarget", hydration.attached)
+    cdp.on_event("Target.detachedFromTarget", hydration.detached)
     success = False
     failure: BaseException | None = None
     try:
