@@ -4,6 +4,7 @@ import logging
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Annotated, Any, TypeVar, overload
 
 from google import genai
@@ -90,11 +91,13 @@ def _thoughts(response: Any) -> str | None:
 
 
 #: ``tool_choice`` spelled the Gemini way (``function_calling_config.mode``).
-_GEMINI_TOOL_MODE: dict[str, types.FunctionCallingConfigMode] = {
-    "auto": types.FunctionCallingConfigMode.AUTO,
-    "required": types.FunctionCallingConfigMode.ANY,
-    "none": types.FunctionCallingConfigMode.NONE,
-}
+_GEMINI_TOOL_MODE = MappingProxyType(
+    {
+        "auto": types.FunctionCallingConfigMode.AUTO,
+        "required": types.FunctionCallingConfigMode.ANY,
+        "none": types.FunctionCallingConfigMode.NONE,
+    }
+)
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage, join_reasoning
 
 T = TypeVar("T", bound=BaseModel)
@@ -329,45 +332,47 @@ class ChatGoogle(ChatModelBase):
 
         # Thinking configuration
         policy = gemini_thinking_policy(self.model)
+        thinking_level = self.thinking_level
+        thinking_budget = self.thinking_budget
         if policy.supports_level:
-            if policy.ignores_budget and self.thinking_budget is not None:
+            if policy.ignores_budget and thinking_budget is not None:
                 self.logger.warning(
                     f"thinking_budget={self.thinking_budget} is ignored for {self.model}. Use thinking_level."
                 )
-            if self.thinking_level in policy.fallback_to_low:
+            if thinking_level in policy.fallback_to_low:
                 self.logger.warning(
                     f'thinking_level="{self.thinking_level}" not supported for {self.model}. Falling back to "low".'
                 )
-                self.thinking_level = "low"
-            if self.thinking_level is None:
-                self.thinking_level = policy.default_level
-            if self.thinking_level is not None:
+                thinking_level = "low"
+            if thinking_level is None:
+                thinking_level = policy.default_level
+            if thinking_level is not None:
                 if (
                     policy.accepted_levels is not None
-                    and self.thinking_level.lower() not in policy.accepted_levels
+                    and thinking_level.lower() not in policy.accepted_levels
                 ):
                     raise ValueError(
                         f"thinking_level={self.thinking_level!r} is not supported for {self.model}; "
                         f"choose one of {', '.join(policy.accepted_levels)}."
                     )
-                level = types.ThinkingLevel(self.thinking_level.upper())
+                level = types.ThinkingLevel(thinking_level.upper())
                 config["thinking_config"] = types.ThinkingConfigDict(thinking_level=level)
-            elif self.thinking_budget is not None or policy.default_budget is not None:
-                if self.thinking_budget is None:
-                    self.thinking_budget = policy.default_budget
+            elif thinking_budget is not None or policy.default_budget is not None:
+                if thinking_budget is None:
+                    thinking_budget = policy.default_budget
                 config["thinking_config"] = types.ThinkingConfigDict(
-                    thinking_budget=self.thinking_budget
+                    thinking_budget=thinking_budget
                 )
         else:
             if self.thinking_level is not None:
                 self.logger.warning(
                     f'thinking_level="{self.thinking_level}" not supported for this model. Use thinking_budget.'
                 )
-            if self.thinking_budget is None:
-                self.thinking_budget = policy.default_budget
-            if self.thinking_budget is not None:
+            if thinking_budget is None:
+                thinking_budget = policy.default_budget
+            if thinking_budget is not None:
                 config["thinking_config"] = types.ThinkingConfigDict(
-                    thinking_budget=self.thinking_budget
+                    thinking_budget=thinking_budget
                 )
 
         if self.max_output_tokens is not None:
@@ -498,7 +503,7 @@ class ChatGoogle(ChatModelBase):
                                 text = strip_code_fence(response.text)
                                 parsed_data = json.loads(text)
                                 return ChatInvokeCompletion(
-                                    completion=self._validate_structured(
+                                    completion=self.validate_structured(
                                         output_format, _strip_placeholders(parsed_data), usage=usage
                                     ),
                                     thinking=_thoughts(response),
@@ -519,7 +524,7 @@ class ChatGoogle(ChatModelBase):
                                 stop_reason=self._get_stop_reason(response),
                             )
                         return ChatInvokeCompletion(
-                            completion=self._validate_structured(
+                            completion=self.validate_structured(
                                 output_format, _strip_placeholders(response.parsed), usage=usage
                             ),
                             thinking=_thoughts(response),
@@ -555,7 +560,7 @@ class ChatGoogle(ChatModelBase):
                             text = strip_code_fence(response.text)
                             parsed_data = json.loads(text)
                             return ChatInvokeCompletion(
-                                completion=self._validate_structured(
+                                completion=self.validate_structured(
                                     output_format, _strip_placeholders(parsed_data), usage=usage
                                 ),
                                 thinking=_thoughts(response),

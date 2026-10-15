@@ -34,11 +34,14 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
 
     Subclasses auto-register via conscribe's AutoRegistrar metaclass.
     Set __registry_key__ = "key" to specify the registration key.
+
+    Provider authors share ``client_resources``, ``use_strict_schema`` and
+    ``validate_structured`` through this base. They are extension APIs, not
+    additional requirements on the consumer-facing ``BaseChatModel`` Protocol.
     """
 
     __abstract__ = True
     __config_annotated_only__ = True
-    _verified_api_keys: bool = False
 
     if TYPE_CHECKING:
         # Every concrete provider declares ``model`` (``ChatOCI`` as a property
@@ -72,11 +75,6 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
         finally:
             if self._client_resources is resources:
                 self._client_resources = None
-
-    @property
-    def model_name(self) -> str:
-        """Legacy support — returns self.model."""
-        return self.model
 
     @property
     def model_family(self) -> ModelFamily:
@@ -125,8 +123,11 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
     # ------------------------------------------------------------------
     # Structured output
     # ------------------------------------------------------------------
-    def _use_strict_schema(self, output_format: type[BaseModel] | None = None) -> bool:
+    def use_strict_schema(self, output_format: type[BaseModel] | None = None) -> bool:
         """Whether to emit an OpenAI-style ``"strict": true`` schema.
+
+        Provider extension API: pair the model's capabilities with the exact
+        output schema before compiling the provider request.
 
         Two independent questions, and both must be answered yes:
 
@@ -150,7 +151,7 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
             SchemaOptimizer.create_optimized_json_schema(output_format, strict=True)
         )
 
-    def _validate_structured(
+    def validate_structured(
         self,
         output_format: type[T],
         payload: str | dict[str, Any],
@@ -159,6 +160,9 @@ class ChatModelBase(metaclass=LLMRegistrar.Meta):
         wire_text: str | None = None,
     ) -> T:
         """Validate a structured reply, or raise a *recoverable* error.
+
+        Provider extension API: call this after any wire-format unwrapping,
+        carrying the reply's usage and original text when available.
 
         Every provider's structured path ends in the same two lines —
         parse, then validate — and every one of them used to let the

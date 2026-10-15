@@ -199,7 +199,7 @@ class ChatOllama(ChatModelBase):
                     # Flatten $ref/$defs: Ollama compiles `format` into a grammar and
                     # local backends do not resolve JSON-Schema references.
                     schema = SchemaOptimizer.create_optimized_json_schema(
-                        output_format, strict=self._use_strict_schema(output_format)
+                        output_format, strict=self.use_strict_schema(output_format)
                     )
                     response = await client.chat(
                         model=self.model,
@@ -209,7 +209,7 @@ class ChatOllama(ChatModelBase):
                     )
                     usage = self._get_usage(response)
                     return ChatInvokeCompletion(
-                        completion=self._validate_structured(
+                        completion=self.validate_structured(
                             output_format, response.message.content or "", usage=usage
                         ),
                         thinking=_thinking(response),

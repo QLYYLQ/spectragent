@@ -1,14 +1,10 @@
 """Shared base for Anthropic providers (direct API + AWS Bedrock via Anthropic SDK)."""
 
-# NOTE: 不使用 from __future__ import annotations —— conscribe 0.5 的
-# _extract_params_by_level 需要通过 get_type_hints() 拿到真实的 Annotated
-# 类型对象来做 __config_annotated_only__ 过滤；future annotations 会导致
-# 跨模块类型解析失败，使 get_origin() 返回 None。
-
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Annotated, Any, ClassVar, TypeVar, overload
 
 import httpx
@@ -210,14 +206,12 @@ class AnthropicCompatBase(ChatModelBase):
     def provider(self) -> str:
         return ""
 
-    # ``model_family`` and ``_use_strict_schema`` come from ``ChatModelBase``.
+    # ``model_family`` and ``use_strict_schema`` come from ``ChatModelBase``.
 
     #: ``tool_choice`` spelled the Anthropic way.
-    _TOOL_CHOICE: ClassVar[dict[str, dict[str, str]]] = {
-        "auto": {"type": "auto"},
-        "required": {"type": "any"},
-        "none": {"type": "none"},
-    }
+    _TOOL_CHOICE_TYPES: ClassVar[Mapping[str, str]] = MappingProxyType(
+        {"auto": "auto", "required": "any", "none": "none"}
+    )
 
     def _tool_kwargs(
         self, tools: Sequence[ToolDefinition] | None, tool_choice: ToolChoice
@@ -227,7 +221,7 @@ class AnthropicCompatBase(ChatModelBase):
             return {}
         return {
             "tools": AnthropicMessageSerializer.serialize_tools(tools),
-            "tool_choice": self._TOOL_CHOICE[tool_choice],
+            "tool_choice": {"type": self._TOOL_CHOICE_TYPES[tool_choice]},
         }
 
     def _get_invoke_params(self) -> dict[str, Any]:
@@ -408,7 +402,7 @@ class AnthropicCompatBase(ChatModelBase):
                 # Native structured outputs via output_config.format (constrained
                 # decoding) — returns JSON directly in a text block, no tool round-trip.
                 schema = SchemaOptimizer.create_optimized_json_schema(
-                    output_format, strict=self._use_strict_schema(output_format)
+                    output_format, strict=self.use_strict_schema(output_format)
                 )
                 schema.pop("title", None)
 
@@ -446,7 +440,7 @@ class AnthropicCompatBase(ChatModelBase):
                 t = strip_code_fence(text)
                 thinking, redacted_thinking = _reasoning(response)
                 return ChatInvokeCompletion(
-                    completion=self._validate_structured(
+                    completion=self.validate_structured(
                         output_format, t, usage=usage, wire_text=text
                     ),
                     thinking=thinking,
@@ -458,7 +452,7 @@ class AnthropicCompatBase(ChatModelBase):
             else:
                 tool_name = output_format.__name__
                 schema = SchemaOptimizer.create_optimized_json_schema(
-                    output_format, strict=self._use_strict_schema(output_format)
+                    output_format, strict=self.use_strict_schema(output_format)
                 )
                 schema.pop("title", None)
 
@@ -497,14 +491,14 @@ class AnthropicCompatBase(ChatModelBase):
                     if hasattr(block, "type") and block.type == "tool_use":
                         # ``input`` is a dict on the normal path and a JSON
                         # string when the model stuffed everything into one
-                        # argument; ``_validate_structured`` takes either and
+                        # argument; ``validate_structured`` takes either and
                         # raises the recoverable error for both. The retry that
                         # used to sit here caught its own typed error and
                         # re-parsed with ``json.loads``, so malformed text came
                         # back out as a bare ``JSONDecodeError`` — a reply the
                         # model could have fixed, laundered into one it cannot.
                         return ChatInvokeCompletion(
-                            completion=self._validate_structured(
+                            completion=self.validate_structured(
                                 output_format, block.input, usage=usage
                             ),
                             thinking=thinking,

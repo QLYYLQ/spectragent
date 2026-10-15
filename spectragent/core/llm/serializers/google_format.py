@@ -119,7 +119,7 @@ class GoogleMessageSerializer:
         messages = [m.model_copy(deep=True) for m in messages]
 
         formatted_messages: ContentListUnion = []
-        system_message: str | None = None
+        system_messages: list[str] = []
         system_parts: list[str] = []
 
         # Gemini keys function responses by tool name, so a ToolMessage that
@@ -141,7 +141,7 @@ class GoogleMessageSerializer:
                     if include_system_in_user:
                         system_parts.append(message.content)
                     else:
-                        system_message = message.content
+                        system_messages.append(message.content)
                 elif message.content is not None:
                     # Handle Iterable of content parts
                     parts = []
@@ -152,7 +152,7 @@ class GoogleMessageSerializer:
                     if include_system_in_user:
                         system_parts.append(combined_text)
                     else:
-                        system_message = combined_text
+                        system_messages.append(combined_text)
                 continue
 
             # Determine the role for non-system messages
@@ -210,6 +210,7 @@ class GoogleMessageSerializer:
             trailing = Content(role="user", parts=[Part.from_text(text="\n\n".join(system_parts))])
             formatted_messages.append(trailing)  # type: ignore
 
+        system_message = "\n\n".join(system_messages) if system_messages else None
         return formatted_messages, system_message
 
     # region - Tool declarations

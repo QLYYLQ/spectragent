@@ -1,8 +1,5 @@
 """ChatCerebras — Cerebras provider via OpenAI-compatible base."""
 
-# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
-# 的 nested config 类型提取机制（详见 openai_base.py 注释）。
-
 import json
 import re
 from collections.abc import Sequence
@@ -92,7 +89,7 @@ class ChatCerebras(OpenAICompatBase):
         **kwargs: Any,
     ) -> ChatInvokeCompletion[T] | ChatInvokeCompletion[str]:
         if output_format is None:
-            return await self._standard_ainvoke(messages, tools=tools, tool_choice=tool_choice)
+            return await self.standard_ainvoke(messages, tools=tools, tool_choice=tool_choice)
 
         # Cerebras has no native json_schema response_format, so structured output
         # is prompt-injected ("valid JSON only, no other text") — an instruction
@@ -110,7 +107,7 @@ class ChatCerebras(OpenAICompatBase):
         # Cerebras: prompt injection fallback for structured output
         openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
         try:
-            model_params = self._common_model_params()
+            model_params = self.common_model_params()
             schema = output_format.model_json_schema()
             json_prompt = f"\nPlease respond with a JSON object that follows this exact schema:\n{json.dumps(schema, indent=2)}\nYour response must be valid JSON only, no other text.\n"
 
@@ -122,7 +119,7 @@ class ChatCerebras(OpenAICompatBase):
             else:
                 openai_messages.append({"role": "user", "content": json_prompt})
 
-            async with self._request_client() as client:
+            async with self.request_client() as client:
                 resp = await client.chat.completions.create(
                     model=self.model,
                     messages=openai_messages,
@@ -134,9 +131,9 @@ class ChatCerebras(OpenAICompatBase):
 
             json_match = re.search(r"\{.*\}", content, re.DOTALL)
             json_str = json_match.group(0) if json_match else content
-            usage = self._get_usage(resp)
+            usage = self.get_usage(resp)
             return ChatInvokeCompletion(
-                completion=self._validate_structured(output_format, json_str, usage=usage),
+                completion=self.validate_structured(output_format, json_str, usage=usage),
                 thinking=message_reasoning(resp.choices[0].message),
                 usage=usage,
             )

@@ -1,8 +1,5 @@
 """ChatVercel — Vercel AI Gateway provider via OpenAI-compatible base."""
 
-# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
-# 的 nested config 类型提取机制（详见 openai_base.py 注释）。
-
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -69,7 +66,7 @@ class ChatVercel(OpenAICompatBase):
             # Gemini speaks a different JSON-Schema dialect.
             or family.schema_requires_gemini_fix
         )
-        return needs_family_workaround or self._is_listed_reasoning_model()
+        return needs_family_workaround or self.is_listed_reasoning_model()
 
     @overload
     async def ainvoke(
@@ -108,7 +105,7 @@ class ChatVercel(OpenAICompatBase):
 
         try:
             if output_format is None:
-                return await self._standard_ainvoke(
+                return await self.standard_ainvoke(
                     messages, None, extra_kwargs, tools=tools, tool_choice=tool_choice
                 )
 
@@ -129,7 +126,7 @@ class ChatVercel(OpenAICompatBase):
                 return await self._structured_vercel_prompt(messages, output_format, extra_kwargs)
 
             # Default: response_format
-            return await self._standard_ainvoke(
+            return await self.standard_ainvoke(
                 messages, output_format, extra_kwargs, tools=tools, tool_choice=tool_choice
             )
 
@@ -172,8 +169,8 @@ class ChatVercel(OpenAICompatBase):
             modified.insert(0, SystemMessage(content=instruction))
 
         vercel_messages = OpenAIMessageSerializer.serialize_messages(modified)
-        model_params = self._common_model_params()
-        async with self._request_client() as client:
+        model_params = self.common_model_params()
+        async with self.request_client() as client:
             response = await client.chat.completions.create(
                 model=self.model,
                 messages=vercel_messages,
@@ -188,9 +185,9 @@ class ChatVercel(OpenAICompatBase):
 
         text = strip_code_fence(content)
 
-        usage = self._get_usage(response)
+        usage = self.get_usage(response)
         return ChatInvokeCompletion(
-            completion=self._validate_structured(
+            completion=self.validate_structured(
                 output_format, text, usage=usage, wire_text=content
             ),
             thinking=message_reasoning(response.choices[0].message),

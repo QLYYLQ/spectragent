@@ -12,7 +12,7 @@ from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 class MistralSchemaOptimizer:
     """Create JSON schemas that avoid Mistral's unsupported keywords."""
 
-    UNSUPPORTED_KEYWORDS = {"minLength", "maxLength", "pattern", "format"}
+    UNSUPPORTED_KEYWORDS = frozenset({"minLength", "maxLength", "pattern", "format"})
 
     @classmethod
     def create_mistral_compatible_schema(cls, model: type[BaseModel]) -> dict[str, Any]:

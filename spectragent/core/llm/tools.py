@@ -35,9 +35,6 @@ output path already does (``output_format=``), and admitting a bare tool name
 here would make ``tool_choice="auto"`` ambiguous for a tool named ``auto``.
 """
 
-#: An empty-but-valid JSON Schema object — the shape a zero-argument tool needs.
-EMPTY_PARAMETERS: dict[str, Any] = {"type": "object", "properties": {}}
-
 
 class ToolDefinition(BaseModel):
     """One callable tool, in the form every supported provider can express."""
@@ -49,7 +46,7 @@ class ToolDefinition(BaseModel):
     """What the tool does. This is the model's only documentation — providers
     pass it through verbatim."""
 
-    parameters: dict[str, Any] = Field(default_factory=lambda: dict(EMPTY_PARAMETERS))
+    parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
     """JSON Schema for the arguments, as a single flattened object node.
 
     ``$ref``/``$defs`` must already be inlined: Gemini, Ollama and Bedrock all
@@ -92,4 +89,4 @@ class ToolDefinition(BaseModel):
         )
 
 
-__all__ = ["EMPTY_PARAMETERS", "ToolChoice", "ToolDefinition"]
+__all__ = ["ToolChoice", "ToolDefinition"]

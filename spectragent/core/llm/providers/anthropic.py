@@ -1,8 +1,5 @@
 """ChatAnthropic — direct Anthropic API provider."""
 
-# NOTE: 不使用 from __future__ import annotations，为适配 conscribe 0.5
-# 的 nested config 类型提取机制（详见 anthropic_base.py 注释）。
-
 from dataclasses import dataclass
 from typing import Any
 

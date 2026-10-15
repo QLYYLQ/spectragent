@@ -634,7 +634,7 @@ class TestOpenAIStrictModeGap:
         from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 
         chat = ChatOpenAI(model="gpt-4o", api_key="test")
-        strict = chat._use_strict_schema(model)
+        strict = chat.use_strict_schema(model)
         return {
             "strict": strict,
             "schema": SchemaOptimizer.create_optimized_json_schema(model, strict=strict),
@@ -693,15 +693,15 @@ class TestOpenAIStrictModeDowngrade:
 
     def test_capability_question_is_unchanged(self) -> None:
         """No argument = "does this model support strict at all"."""
-        assert self._chat()._use_strict_schema() is True
-        assert self._chat("meta-llama/Llama-3.3-70B")._use_strict_schema() is False
+        assert self._chat().use_strict_schema() is True
+        assert self._chat("meta-llama/Llama-3.3-70B").use_strict_schema() is False
 
     def test_the_closed_action_union_keeps_strict(self) -> None:
         """The regression guard: reopening ``action`` silently loses strict."""
         agent = _prepared_agent()
         model = agent.get_react_output_model()
         assert model is not None
-        assert self._chat()._use_strict_schema(model) is True
+        assert self._chat().use_strict_schema(model) is True
 
     def test_closed_model_keeps_strict(self) -> None:
         """The downgrade is payload-specific, not a blanket disable."""
@@ -710,13 +710,13 @@ class TestOpenAIStrictModeDowngrade:
             a: str
             b: int
 
-        assert self._chat()._use_strict_schema(_Closed) is True
+        assert self._chat().use_strict_schema(_Closed) is True
 
     def test_non_strict_family_stays_false_even_for_closed_models(self) -> None:
         class _Closed(BaseModel):
             a: str
 
-        assert self._chat("meta-llama/Llama-3.3-70B")._use_strict_schema(_Closed) is False
+        assert self._chat("meta-llama/Llama-3.3-70B").use_strict_schema(_Closed) is False
 
     async def test_request_ships_strict_true_with_the_closed_schema(self) -> None:
         """End to end: the emitted response_format is internally consistent."""

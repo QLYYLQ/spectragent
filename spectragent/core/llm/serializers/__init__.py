@@ -8,13 +8,6 @@ from spectragent.core.llm.serializers.ollama_format import OllamaMessageSerializ
 from spectragent.core.llm.serializers.openai_format import OpenAIMessageSerializer
 from spectragent.core.llm.serializers.openai_responses import ResponsesAPIMessageSerializer
 
-# Aliases — these providers use the same OpenAI message format
-DeepSeekMessageSerializer = OpenAIMessageSerializer
-CerebrasMessageSerializer = OpenAIMessageSerializer
-OpenRouterMessageSerializer = OpenAIMessageSerializer
-VercelMessageSerializer = OpenAIMessageSerializer
-GroqMessageSerializer = OpenAIMessageSerializer
-
 __all__ = [
     "OpenAIMessageSerializer",
     "ResponsesAPIMessageSerializer",
@@ -23,9 +16,4 @@ __all__ = [
     "AWSBedrockMessageSerializer",
     "OCIRawMessageSerializer",
     "OllamaMessageSerializer",
-    "DeepSeekMessageSerializer",
-    "CerebrasMessageSerializer",
-    "OpenRouterMessageSerializer",
-    "VercelMessageSerializer",
-    "GroqMessageSerializer",
 ]

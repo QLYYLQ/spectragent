@@ -12,7 +12,7 @@ from spectragent.core.llm.model_families.llama import LlamaFamily
 from spectragent.core.llm.model_families.mistral import MistralFamily
 from spectragent.core.llm.model_families.qwen import QwenFamily
 
-_ALL_FAMILIES: list[ModelFamily] = [
+_ALL_FAMILIES: tuple[ModelFamily, ...] = (
     ClaudeFamily,
     GPTFamily,
     GeminiFamily,
@@ -22,7 +22,7 @@ _ALL_FAMILIES: list[ModelFamily] = [
     QwenFamily,
     GrokFamily,
     CohereFamily,
-]
+)
 
 
 def detect_model_family(model_name: str) -> ModelFamily:

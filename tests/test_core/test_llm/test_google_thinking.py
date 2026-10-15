@@ -88,14 +88,20 @@ async def test_unsupported_flash_level_is_refused_before_any_request(level: str)
     ],
 )
 async def test_omitted_thinking_keeps_existing_request_defaults(model: str, expected: Any) -> None:
-    config = await _wire_config(_composed_google(model))
+    chat = _composed_google(model)
+    config = await _wire_config(chat)
     assert config.get("thinkingConfig") == expected
+    assert chat.thinking_level is None
+    assert chat.thinking_budget is None
 
 
 @pytest.mark.parametrize("level", ["minimal", "medium"])
 async def test_legacy_pro_keeps_its_level_fallback(level: str) -> None:
-    config = await _wire_config(_composed_google("gemini-3-pro-preview", thinking_level=level))
+    chat = _composed_google("gemini-3-pro-preview", thinking_level=level)
+    config = await _wire_config(chat)
     assert config["thinkingConfig"] == {"thinking_level": "LOW"}
+    assert chat.thinking_level == level
+    assert chat.thinking_budget is None
 
 
 async def test_unknown_version_does_not_inherit_verified_level_support() -> None:

@@ -37,36 +37,36 @@ SHIPPED_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "browser_use_
 
 class TestWhatGoesOnTheWire:
     def test_auto_on_a_listed_reasoning_model_keeps_the_old_default(self) -> None:
-        params = ChatOpenAI(model="gpt-5-mini")._common_model_params()
+        params = ChatOpenAI(model="gpt-5-mini").common_model_params()
         assert params["reasoning_effort"] == "low"
         # OpenAI's reasoning models reject sampling knobs.
         assert "temperature" not in params
         assert "frequency_penalty" not in params
 
     def test_auto_on_any_other_model_sends_nothing(self) -> None:
-        params = ChatOpenAI(model="gpt-4o")._common_model_params()
+        params = ChatOpenAI(model="gpt-4o").common_model_params()
         assert "reasoning_effort" not in params
         assert params["temperature"] == 0.2
 
     def test_none_is_sent_as_none(self) -> None:
         """``none`` is a wire value (no reasoning), not "not set"."""
-        params = ChatOpenAI(model="gpt-5", reasoning_effort="none")._common_model_params()
+        params = ChatOpenAI(model="gpt-5", reasoning_effort="none").common_model_params()
         assert params["reasoning_effort"] == "none"
 
     def test_explicit_value_reaches_a_model_the_list_does_not_know(self) -> None:
-        params = ChatOpenAI(model="gemini-3.5-flash", reasoning_effort="low")._common_model_params()
+        params = ChatOpenAI(model="gemini-3.5-flash", reasoning_effort="low").common_model_params()
         assert params["reasoning_effort"] == "low"
         # Not an OpenAI reasoning model: sampling knobs stay.
         assert params["temperature"] == 0.2
 
     def test_explicit_value_overrides_the_listed_default(self) -> None:
-        params = ChatOpenAI(model="gpt-5", reasoning_effort="high")._common_model_params()
+        params = ChatOpenAI(model="gpt-5", reasoning_effort="high").common_model_params()
         assert params["reasoning_effort"] == "high"
 
     def test_azure_responses_path_follows_the_same_rule(self) -> None:
         chat = ChatAzureOpenAI(model="gemini-3.5-flash", reasoning_effort="minimal")
-        assert chat._effective_reasoning_effort() == "minimal"
-        assert ChatAzureOpenAI(model="gpt-4o")._effective_reasoning_effort() is None
+        assert chat.effective_reasoning_effort() == "minimal"
+        assert ChatAzureOpenAI(model="gpt-4o").effective_reasoning_effort() is None
 
     async def test_the_request_actually_carries_it(self, monkeypatch) -> None:
         """Through ``ainvoke``, not just the params helper."""
@@ -102,7 +102,7 @@ class TestReachableFromYaml:
     def test_yaml_sets_it(self) -> None:
         llm = _compose_with_llm(model="gemini-3.5-flash", reasoning_effort="low")
         assert llm.reasoning_effort == "low"
-        assert llm._common_model_params()["reasoning_effort"] == "low"
+        assert llm.common_model_params()["reasoning_effort"] == "low"
 
     def test_omitting_it_is_auto(self) -> None:
         llm = _compose_with_llm()

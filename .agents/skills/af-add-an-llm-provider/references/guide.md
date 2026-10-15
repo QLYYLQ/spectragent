@@ -74,7 +74,7 @@ Adding a provider owes the test suite five things:
 2. No private fence stripper. `test_no_provider_reimplements_fence_stripping`
    (`test_fence_stripping.py:195`) `rglob`s `providers/` and fails on any ``"```"``
    literal, docstrings included.
-3. The structured path routed through `ChatModelBase._validate_structured` — enforced
+3. The structured path routed through `ChatModelBase.validate_structured` — enforced
    by an AST scan (`test_provider_validation.py:85`) that hunts bare
    `output_format.model_validate*`. One documented exemption: `_groq_parser.py`.
 4. Lazily reuse each SDK client within one execution and implement the public
@@ -110,7 +110,7 @@ route that can never succeed, because `response_format` was dropped before the m
 saw anything. Never evaluate a gateway route by status code: send the real schema and
 validate the body.
 
-The framework's tell for this is `_validate_structured(..., wire_text=...)`
+The framework's tell for this is `validate_structured(..., wire_text=...)`
 (`_registrar.py:180-185`): the provider passes the **upstream text** while `payload` is
 the unwrapped/trimmed one, and when they differ the exception message says so. "Arrived
 fenced *and* the wrong shape" is the signature of a dropped `response_format`.
@@ -190,7 +190,7 @@ that forgot to call it. If the rule's opposite is true somewhere, write that tes
 "simplified" away.
 
 `is_strict_compatible` (`optimizer.py:292`) answers whether a *compiled* schema can ship
-under `"strict": true`. `ChatModelBase._use_strict_schema` (`_registrar.py:100`) pairs it
+under `"strict": true`. `ChatModelBase.use_strict_schema` (`_registrar.py:100`) pairs it
 with `model_family.supports_strict_mode`: strict goes out only when the model supports it
 **and** this payload can express it. It is an allowlist (`STRICT_DIALECT_KEYWORDS`,
 `:41`), so it fails closed — an unknown keyword costs constrained decoding, never a 400.
@@ -248,7 +248,7 @@ every OpenAI-compatible gateway goes through and the path most likely to be talk
 translated model, had none. It returns a reply that already starts with `{`/`[`
 untouched, because `{"memory": "I clicked ```Run```"}` is a real thing a browser agent
 writes; the old Groq `content.split("```")[1]` would have returned `Run`. Call it
-**before** `_validate_structured`, and pass the original as `wire_text=`.
+**before** `validate_structured`, and pass the original as `wire_text=`.
 
 ## 7. The smell this round removed
 
@@ -275,7 +275,7 @@ The last two let a YAML hand-edit a compiled schema.
    using that route as an experiment variable.
 4. Run dies on one bad action parameter → the provider is flattening
    `StructuredOutputValidationError`; add its `_Case` row and route through
-   `_validate_structured` (§5).
+   `validate_structured` (§5).
 5. New config key rejected as "extra inputs are not permitted" → regenerate; see the
    `af-regenerate-and-verify` skill.
 

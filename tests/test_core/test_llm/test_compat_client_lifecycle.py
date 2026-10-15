@@ -179,6 +179,27 @@ async def test_real_sdk_is_lazy_reused_then_replaced(
     assert transports[1].is_closed and transports[1].close_calls == 1
 
 
+async def test_azure_environment_resolution_does_not_replace_configured_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _Provider(ChatAzureOpenAI, "AsyncAzureOpenAIClient")
+    _sdks, _transports, requests = _capture_clients(case, monkeypatch)
+    monkeypatch.setenv("AZURE_OPENAI_KEY", "environment-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://azure.example.test")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "environment-deployment")
+    model = ChatAzureOpenAI(model="gpt-4o", max_retries=0)
+    try:
+        assert (await model.ainvoke(_MESSAGES)).completion == "hi"
+        assert requests[0].url.host == "azure.example.test"
+        assert "/deployments/environment-deployment/" in requests[0].url.path
+        assert requests[0].headers["api-key"] == "environment-key"
+        assert model.api_key is None
+        assert model.azure_endpoint is None
+        assert model.azure_deployment is None
+    finally:
+        await model.aclose()
+
+
 @pytest.mark.parametrize("case", _PROVIDERS, ids=_IDS)
 @pytest.mark.parametrize("outcome", ["success", "error", "cancelled"])
 async def test_injected_transport_survives_every_exit(case: _Provider, outcome: str) -> None:

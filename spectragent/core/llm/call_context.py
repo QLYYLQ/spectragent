@@ -21,13 +21,13 @@ class RunCallContext:
     """
 
     def __init__(self) -> None:
-        self.context: ContextVar[CallAttribution | None] = ContextVar(
+        self._context: ContextVar[CallAttribution | None] = ContextVar(
             "model_call_attribution", default=None
         )
 
     @property
     def current(self) -> CallAttribution:
-        value = self.context.get()
+        value = self._context.get()
         return value if value is not None else CallAttribution()
 
     @contextmanager
@@ -39,8 +39,8 @@ class RunCallContext:
             purpose=purpose,
             step=self.current.step if step is None else step,
         )
-        token = self.context.set(attribution)
+        token = self._context.set(attribution)
         try:
             yield attribution
         finally:
-            self.context.reset(token)
+            self._context.reset(token)

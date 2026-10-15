@@ -19,7 +19,7 @@ So the seam is scanned rather than trusted: no module under
 
 Calling the validator is only half of it, though, and the half a scan can
 see. The error still has to survive the trip out: ``AnthropicCompatBase``
-called ``_validate_structured`` correctly on both its structured paths and
+called ``validate_structured`` correctly on both its structured paths and
 then caught its own typed error in a trailing ``except Exception`` that
 re-raised a generic ``ModelProviderError`` — passing the scan while
 costing the run exactly what the scan exists to prevent. So the second
@@ -79,7 +79,7 @@ def _hand_validations(path: Path) -> list[str]:
         if not isinstance(func, ast.Attribute) or func.attr not in _VALIDATORS:
             continue
         target = func.value
-        # ``self._validate_structured`` is the sanctioned route; what this
+        # ``self.validate_structured`` is the sanctioned route; what this
         # hunts is a *format* being validated directly, which is always a
         # bare name (``output_format``) or a subscript of one.
         if isinstance(target, ast.Name):
@@ -97,7 +97,7 @@ def test_no_provider_validates_an_output_format_by_hand() -> None:
         "These providers validate a structured reply themselves, so a "
         "mistyped parameter ends the run there while the same mistake is "
         "recoverable elsewhere. Route them through "
-        "ChatModelBase._validate_structured(output_format, payload, "
+        "ChatModelBase.validate_structured(output_format, payload, "
         "usage=usage):\n  " + "\n  ".join(offenders)
     )
 
@@ -132,7 +132,7 @@ class _Provider(ChatModelBase):
 def test_a_bad_reply_is_recoverable_and_keeps_what_it_cost(payload: object) -> None:
     provider = _Provider()
     with pytest.raises(StructuredOutputValidationError) as exc:
-        provider._validate_structured(_Shape, payload, usage="7 tokens")  # type: ignore[arg-type]
+        provider.validate_structured(_Shape, payload, usage="7 tokens")  # type: ignore[arg-type]
     # Three things the Loop needs and a generic error cannot carry: the
     # model's own text to feed back, what the call cost, and a status that
     # says "the model can fix this".
@@ -144,8 +144,8 @@ def test_a_bad_reply_is_recoverable_and_keeps_what_it_cost(payload: object) -> N
 
 def test_a_good_reply_is_returned_as_the_declared_type() -> None:
     provider = _Provider()
-    assert provider._validate_structured(_Shape, '{"index": 3}').index == 3
-    assert provider._validate_structured(_Shape, {"index": 3}).index == 3
+    assert provider.validate_structured(_Shape, '{"index": 3}').index == 3
+    assert provider.validate_structured(_Shape, {"index": 3}).index == 3
 
 
 # ── The error has to survive the trip out, for every provider ──
