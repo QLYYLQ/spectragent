@@ -222,7 +222,7 @@ class TraceView:
         return self._result.metrics.model_copy(deep=True)
 
     @cached_property
-    def execution_ms(self) -> int:
+    def execution_ms(self) -> int | None:
         return self.metrics.execution_ms
 
     def result_ref(self) -> AgentResultRef:
