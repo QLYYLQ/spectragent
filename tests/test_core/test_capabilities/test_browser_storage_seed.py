@@ -1,15 +1,21 @@
 """Initial state is immutable evidence, never an after-action approximation."""
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from spectragent.core.capabilities.browser import BrowserCapability
 from spectragent.core.capabilities.browser.archive.encoding import canonical_json
-from spectragent.core.capabilities.browser.storage_seed import StorageSeed, read_initial_seed
+from spectragent.core.capabilities.browser.commands import BrowserConnection
+from spectragent.core.capabilities.browser.storage_seed import (
+    StorageSeed,
+    _Hydration,
+    read_initial_seed,
+)
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.schemas.browser_storage import (
     BrowserStorageState,
@@ -131,3 +137,196 @@ def test_explicit_seed_refuses_external_or_persistent_state_before_launch(tmp_pa
     ):
         persistent.check_setup({"storage_state": state()})
     assert not (tmp_path / "profile").exists()
+
+
+def attached(sid: str, frame: str = "frame") -> dict[str, Any]:
+    return {"sessionId": sid, "targetInfo": {"targetId": frame}}
+
+
+async def test_hydration_detach_before_prepare_and_late_events_cannot_revive_session() -> None:
+    hydration = _Hydration(cast(BrowserConnection, SimpleNamespace()))
+    hydration.sessions.add("root")
+    hydration.attached(attached("child"), "root")
+    hydration.attached(attached("nested", "nested-frame"), "child")
+    tasks = list(hydration.tasks)
+    hydration.detached({"sessionId": "child"}, "root")
+    hydration.attached(attached("child"), "root")
+    hydration.paused({"request": {"url": "late"}}, "child")
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await hydration.prepare("child")
+    assert hydration.sessions == {"root"}
+    assert hydration.retired == {"child", "nested"}
+    assert hydration.parents == hydration.frame_sessions == {}
+    assert not hydration.tasks
+    assert not hydration.errors
+    hydration.closing = True
+    hydration.attached(attached("late"), "root")
+    hydration.paused({"request": {"url": "late"}}, "root")
+    await hydration.fulfill({}, "root")
+    assert hydration.sessions == {"root"}
+    assert not hydration.tasks
+
+
+async def test_hydration_detach_keeps_new_owner_of_same_frame() -> None:
+    hydration = _Hydration(cast(BrowserConnection, SimpleNamespace()))
+    hydration.sessions.add("root")
+    hydration.attached(attached("old"), "root")
+    hydration.attached(attached("new"), "root")
+    hydration.detached({"sessionId": "old"}, "root")
+    assert hydration.frame_sessions == {"frame": "new"}
+    hydration.detached({"sessionId": "root"})
+    await asyncio.gather(*hydration.tasks, return_exceptions=True)
+    assert not hydration.sessions
+    assert not hydration.roots
+    assert not hydration.frame_sessions
+
+
+async def test_hydration_detach_before_done_callback_retrieves_and_ignores_late_failure() -> None:
+    hydration = _Hydration(cast(BrowserConnection, SimpleNamespace()))
+    hydration.sessions.add("child")
+
+    async def rejected() -> None:
+        raise PermissionError("session retired while command was pending")
+
+    hydration.spawn(rejected(), "child")
+    tasks = list(hydration.tasks)
+    await asyncio.sleep(0)
+    assert tasks[0].done()
+    hydration.detached({"sessionId": "child"})
+    await asyncio.gather(*tasks, return_exceptions=True)
+    assert not hydration.errors
+
+
+@pytest.mark.parametrize("phase", ["Fetch.enable", "Target.setAutoAttach", "resume", "reply"])
+async def test_hydration_detach_during_prepare_abandons_all_pending_commands(phase: str) -> None:
+    entered = asyncio.Event()
+    replies = []
+    calls = []
+
+    class Reply:
+        abandoned = False
+
+        async def wait(self, timeout: float | None = None) -> None:
+            if phase == "reply":
+                entered.set()
+                await asyncio.Event().wait()
+
+        def abandon(self) -> None:
+            self.abandoned = True
+
+    async def post(method: str, params: Any, sid: str) -> Reply:
+        calls.append((method, sid))
+        reply = Reply()
+        replies.append(reply)
+        if method == phase or (phase == "resume" and method == "Runtime.runIfWaitingForDebugger"):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                reply.abandon()  # the transport owns cleanup until post returns its handle
+                raise
+        return reply
+
+    hydration = _Hydration(cast(BrowserConnection, SimpleNamespace(post=post)))
+    hydration.sessions.add("root")
+    hydration.attached(attached("child"), "root")
+    tasks = list(hydration.tasks)
+    await asyncio.wait_for(entered.wait(), 1)
+    hydration.detached({"sessionId": "child"}, "root")
+    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 1)
+    assert replies and all(reply.abandoned for reply in replies)
+    assert (
+        calls[-1][0]
+        == {
+            "Fetch.enable": "Fetch.enable",
+            "Target.setAutoAttach": "Target.setAutoAttach",
+            "resume": "Runtime.runIfWaitingForDebugger",
+            "reply": "Runtime.runIfWaitingForDebugger",
+        }[phase]
+    )
+    assert not hydration.errors
+
+
+async def test_hydration_partial_prepare_failure_still_abandons_earlier_replies() -> None:
+    abandoned = []
+
+    async def post(method: str, params: Any, sid: str) -> Any:
+        if method == "Target.setAutoAttach":
+            raise RuntimeError("injected write failure")
+        return SimpleNamespace(abandon=lambda: abandoned.append(method))
+
+    hydration = _Hydration(cast(BrowserConnection, SimpleNamespace(post=post)))
+    with pytest.raises(RuntimeError, match="injected write failure"):
+        await hydration.prepare("child", resume=True)
+    assert abandoned == ["Fetch.enable", "Runtime.runIfWaitingForDebugger"]
+
+
+@pytest.mark.parametrize("retire_during_read", [False, True])
+async def test_hydration_frame_only_tolerates_permission_error_for_its_detached_session(
+    retire_during_read: bool,
+) -> None:
+    calls = []
+    area = state().local[0]
+
+    async def send(method: str, params: Any, sid: str, **kwargs: Any) -> Any:
+        calls.append((method, sid))
+        if sid == "old":
+            if retire_during_read:
+                hydration.detached({"sessionId": "old"})
+            raise PermissionError("session is unavailable")
+        if method == "Storage.getStorageKey":
+            return {"storageKey": area.storage_key}
+        return {
+            "frameTree": {
+                "frame": {"id": "root-frame", "url": "seed", "securityOrigin": area.origin}
+            }
+        }
+
+    hydration = _Hydration(cast(BrowserConnection, SimpleNamespace(send=send)))
+    hydration.sessions.update({"root", "old"})
+    if retire_during_read:
+        assert await hydration.frame("root", area, "seed") == ("root", "root-frame")
+    else:
+        with pytest.raises(PermissionError, match="session is unavailable"):
+            await hydration.frame("root", area, "seed")
+
+
+async def test_hydration_close_skips_retired_root_and_reports_unfinished_tasks() -> None:
+    methods = []
+
+    async def send(method: str, params: Any, sid: str, **kwargs: Any) -> None:
+        methods.append(method)
+        hydration.detached({"sessionId": sid})
+        raise PermissionError("session retired during send")
+
+    hydration = _Hydration(
+        cast(BrowserConnection, SimpleNamespace(send=send, off_event=lambda *args: None))
+    )
+    hydration.sessions.add("root")
+    hydration.roots.add("root")
+    await hydration.close()
+    assert methods == ["Fetch.disable"]
+    assert not hydration.sessions
+    assert not hydration.roots
+
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow() -> None:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    hydration.spawn(slow(), "slow")
+    await started.wait()
+    tasks = list(hydration.tasks)
+    try:
+        with pytest.raises(ExceptionGroup, match="cleanup could not be confirmed") as caught:
+            await asyncio.wait_for(hydration.close(), 3)
+        assert "remain unfinished" in str(caught.value.exceptions[0])
+        assert tasks[0] in hydration.tasks
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
