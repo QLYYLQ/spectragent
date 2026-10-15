@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 # Lightweight imports that are commonly used
 from spectragent.core.llm._registrar import ChatModelBase, LLMRegistrar
 from spectragent.core.llm.base import BaseChatModel
+from spectragent.core.llm.lifecycle import ClientCleanupDiagnostic, close_models, model_session
 from spectragent.core.llm.messages import (
     AssistantMessage,
     BaseMessage,
@@ -96,6 +97,10 @@ __all__ = [
     # Registry
     "LLMRegistrar",
     "ChatModelBase",
+    # Execution lifecycle
+    "ClientCleanupDiagnostic",
+    "close_models",
+    "model_session",
     # Base classes
     "BaseChatModel",
     "OpenAICompatBase",
