@@ -185,6 +185,20 @@ def composer(registrars: dict[str, Any]) -> ConfigComposer:
 
 
 class TestBasicCompose:
+    def test_catalog_exposes_the_actual_models_without_mutable_membership(
+        self, composer: ConfigComposer
+    ) -> None:
+        catalog = composer.catalog
+        assert catalog.top_level_type is composer.top_level_type
+        definition = catalog.components["cmp_backend"]["local"]
+        assert definition.implementation is _LocalBackend
+        cfg = composer.top_level_type.model_validate({"cmp_backend": [{"name": "local"}]})
+        assert type(cfg.cmp_backend[0]) is definition.config_model
+        with pytest.raises(TypeError):
+            catalog.components["cmp_backend"]["local"] = definition  # type: ignore[index]
+        with pytest.raises(TypeError):
+            catalog.components["cmp_backend"] = {}  # type: ignore[index]
+
     def test_dependency_order_leaves_first(
         self,
         composer: ConfigComposer,
