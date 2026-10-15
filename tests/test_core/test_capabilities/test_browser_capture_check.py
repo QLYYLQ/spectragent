@@ -18,6 +18,7 @@ from PIL import Image
 from spectragent.core.capabilities.base import CaptureCheck
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.capture_check import compare_capture
+from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs, ScreenshotObs
 from spectragent.core.capabilities.browser.replay.pinned import PinnedReplayability
 from spectragent.schemas.observation.failure import FragmentFailure
@@ -128,3 +129,36 @@ class TestTheCapability:
         comparison = cap.compare_capture({"browser.screenshot": screenshot(dpr=2)})
         assert comparison.mismatches == ()
         assert len(comparison.unchecked) == 1
+
+
+def test_cursor_disabled_ignores_unused_size_and_quality() -> None:
+    assert _compare(screenshot(), screenshot_cursor_size=96, screenshot_quality=30) == ((), ())
+
+
+def test_cursor_enabled_unknown_still_compares_presentation_settings() -> None:
+    image = screenshot()
+    image.cursor = ScreenshotCursor(position=None, size_css_px=40)
+    assert _compare(image, screenshot_cursor=True, screenshot_cursor_size=40) == ((), ())
+    differences, _ = _compare(image, screenshot_cursor=False)
+    assert differences == ("browser.screenshot: screenshot_cursor False configured, True recorded",)
+    differences, _ = _compare(screenshot(), screenshot_cursor=True)
+    assert differences == ("browser.screenshot: screenshot_cursor True configured, False recorded",)
+
+
+def test_cursor_jpeg_quality_is_part_of_capture_presentation() -> None:
+    image = screenshot()
+    image.image_bytes = _jpeg(1280, 720)
+    image.cursor = ScreenshotCursor(position=(30, 40), image_quality=70)
+    differences, _ = _compare(
+        image,
+        screenshot_format="jpeg",
+        screenshot_cursor=True,
+        screenshot_quality=80,
+    )
+    assert differences == ("browser.screenshot: cursor image quality 80 configured, 70 recorded",)
+    assert _compare(
+        image,
+        screenshot_format="jpeg",
+        screenshot_cursor=True,
+        screenshot_quality=70,
+    ) == ((), ())

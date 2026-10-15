@@ -49,6 +49,9 @@ def compare_capture(
     viewport: tuple[int, int],
     screenshot_format: str,
     device_scale_factor: float,
+    screenshot_cursor: bool = False,
+    screenshot_cursor_size: int = 32,
+    screenshot_quality: int = 80,
 ) -> CaptureComparison:
     """Compare the recorded ``browser.screenshot`` with what this configuration captures.
 
@@ -65,6 +68,23 @@ def compare_capture(
         return CaptureComparison()
     mismatches: list[str] = []
     unchecked: list[str] = []
+    cursor = shot.cursor
+    if (cursor is not None) != screenshot_cursor:
+        mismatches.append(
+            f"{SCREENSHOT_KEY}: screenshot_cursor {screenshot_cursor} configured, "
+            f"{cursor is not None} recorded"
+        )
+    elif cursor is not None:
+        if cursor.size_css_px != screenshot_cursor_size:
+            mismatches.append(
+                f"{SCREENSHOT_KEY}: screenshot_cursor_size {screenshot_cursor_size} configured, "
+                f"{cursor.size_css_px} recorded"
+            )
+        if screenshot_format == "jpeg" and cursor.image_quality != screenshot_quality:
+            mismatches.append(
+                f"{SCREENSHOT_KEY}: cursor image quality {screenshot_quality} configured, "
+                f"{cursor.image_quality} recorded"
+            )
     width, height = viewport
     recorded_viewport = (shot.viewport_width, shot.viewport_height)
     if recorded_viewport != (width, height):

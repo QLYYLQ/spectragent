@@ -208,10 +208,9 @@ in one place, for the three callers that need the answer. So `browser.dom`
 becomes `obs.dom` and the agent's access pattern does not depend on which
 capability won.
 
-The model is `lru_cache`d (`dynamic_model.py:80`). The cache key is
-`(key, resolved class, may_fail)` triples — not the key set. Anything that
-changes the model's *shape* must be in that key, or the first run of a process
-decides the shape for every later one.
+The model is built afresh from the current negotiated classes and optional-failure
+shape. There is no module-level model cache: independent runs must not retain
+registry classes or share mutable model state through a process-global cache.
 
 ## 4. Fully-qualified vs relative keys
 

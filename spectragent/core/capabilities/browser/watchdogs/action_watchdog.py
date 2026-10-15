@@ -78,6 +78,7 @@ from spectragent.core.capabilities.browser.input.keyboard import (
     META_MODIFIER,
     SHIFT_MODIFIER,
 )
+from spectragent.core.capabilities.browser.input.mouse import PointerPosition
 from spectragent.core.capabilities.browser.platform import InputPlatform
 from spectragent.core.capabilities.browser.sessions import TabSessions
 from spectragent.core.capabilities.browser.watchdogs.base import (
@@ -434,7 +435,13 @@ class ActionWatchdog(BrowserWatchdog):
             typing_rhythm=ctx.typing_rhythm,
             viewport=ctx.viewport,
             sessions=ctx.tab_sessions,
+            pointer_position=ctx.pointer_position,
         )
+
+    @property
+    def cursor_position(self) -> tuple[int, int] | None:
+        """The tab's last acknowledged pointer position, for observation snapshots."""
+        return self._mouse.observed_position
 
     def __init__(
         self,
@@ -449,6 +456,7 @@ class ActionWatchdog(BrowserWatchdog):
         typing_rhythm: TypingRhythmProtocol | None = None,
         viewport: tuple[int, int] = (1280, 720),
         sessions: TabSessions | None = None,
+        pointer_position: PointerPosition | None = None,
     ) -> None:
         self._cdp = cdp
         self._sessions = sessions
@@ -466,6 +474,7 @@ class ActionWatchdog(BrowserWatchdog):
             cdp,
             session_id_getter=lambda: self._session_id,
             trajectory=mouse_trajectory,
+            pointer_position=pointer_position,
             viewport=viewport,
             move_callback=self._overlay_move_cursor if debug_highlight else None,
         )

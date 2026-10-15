@@ -586,6 +586,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
     debug_highlight: bool
     screenshot_format: Literal["png", "jpeg"]
     screenshot_quality: int
+    screenshot_cursor: bool
+    screenshot_cursor_size: int
     dom_max_elements: int | Unlimited
     dom_max_serialized_chars: int | Unlimited
     dom_interactive_only: bool
@@ -744,6 +746,16 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 ),
             ),
         ] = 80,
+        screenshot_cursor: Annotated[
+            bool,
+            PydanticField(
+                description="Show a highlighted cursor in the model image view; clean screenshot evidence is unchanged."
+            ),
+        ] = False,
+        screenshot_cursor_size: Annotated[
+            int,
+            PydanticField(ge=16, le=96, description="Model image cursor height in CSS pixels."),
+        ] = 32,
         dom_max_elements: Annotated[
             Annotated[int, PydanticField(ge=1)] | Unlimited,
             PydanticField(
@@ -903,6 +915,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         self.debug_highlight = debug_highlight
         self.screenshot_format = screenshot_format
         self.screenshot_quality = screenshot_quality
+        self.screenshot_cursor = screenshot_cursor
+        self.screenshot_cursor_size = screenshot_cursor_size
         self.dom_max_elements = dom_max_elements
         self.dom_max_serialized_chars = dom_max_serialized_chars
         self.dom_interactive_only = dom_interactive_only
@@ -1363,6 +1377,9 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             viewport=(self.viewport_width, self.viewport_height),
             screenshot_format=self.screenshot_format,
             device_scale_factor=self.replayability.device_scale_factor,
+            screenshot_cursor=self.screenshot_cursor,
+            screenshot_cursor_size=self.screenshot_cursor_size,
+            screenshot_quality=self.screenshot_quality,
         )
 
     # ── What setup would refuse, refused at prepare() (SetupCheck, §4.14) ──
@@ -3485,6 +3502,15 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
                 return self._main_frame_ids.get(cdp_session_id)
             return None
 
+        # The only optional argument here is a callback, not a union of all
+        # context fields (the tab-local pointer state is supplied by its factory).
+        capture_options: dict[str, Any] = (
+            {"raw_capture_sink": self._raw_capture_sink(cdp_session_id)}
+            if cdp_session_id is not None
+            and self._archive is not None
+            and "raw_dom" in self._archive.needs
+            else {}
+        )
         return WatchdogContext(
             cdp=cdp,
             profile=self.profile_config,
@@ -3500,6 +3526,8 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             dom_budget=self.dom_budget,
             screenshot_format=self.screenshot_format,
             screenshot_quality=self.screenshot_quality,
+            screenshot_cursor=self.screenshot_cursor,
+            screenshot_cursor_size=self.screenshot_cursor_size,
             selector_map_getter=_selector_map_getter,
             selector_map_setter=_selector_map_setter,
             main_frame_id_getter=_main_frame_id_getter,
@@ -3509,13 +3537,7 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
             archive=self._recorder.channel if self._recorder is not None else None,
             # A real sink only when setup opened the raw-DOM channel (§4.12);
             # otherwise the default no-op, and the resolver never knows.
-            **(
-                {"raw_capture_sink": self._raw_capture_sink(cdp_session_id)}
-                if cdp_session_id is not None
-                and self._archive is not None
-                and "raw_dom" in self._archive.needs
-                else {}
-            ),
+            **capture_options,
         )
 
     def _create_watchdogs_for_scope(

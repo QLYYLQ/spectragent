@@ -23,10 +23,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
+from spectragent.core.capabilities.browser.cursor import ScreenshotCursor
+from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.reconstruction import recorded_form
@@ -221,3 +223,60 @@ async def test_shipped_agent_restored_history_uses_live_execution(
         assert first.actions[0].params["index"] == 501
         assert first.source_history.source_actions[0].params["index"] == 101
     assert all(record.llm_output == "" for record in trace.step_records[:2])
+
+
+@pytest.mark.parametrize("history_source", ["source", "restored"])
+async def test_cursor_model_view_follows_source_or_restored_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    history_source: Literal["source", "restored"],
+) -> None:
+    from tests._helpers.branch_browser import FakeBrowserCap
+
+    resolve = FakeBrowserCap.resolve_fragment
+
+    async def with_cursor(self, key):
+        fragment = await resolve(self, key)
+        if isinstance(fragment, ScreenshotObs):
+            # Source and relaunched worlds have identical clean pixels, but
+            # different confirmed cursor positions. This is presentation only.
+            fragment.cursor = ScreenshotCursor(
+                position=(10, 10) if self.id_offset == 100 else (50, 25),
+            )
+        return fragment
+
+    monkeypatch.setattr(FakeBrowserCap, "resolve_fragment", with_cursor)
+    _, source = await _source(tmp_path, "ui_tars", "simple")
+    loop = branch_loop()
+    loop.history_source = history_source
+    outcome = await drive(
+        tmp_path / "cursor-branch",
+        kind="ui_tars",
+        memory="simple",
+        loop=loop,
+        replies=[SCRIPTS["ui_tars"]()[-1]],
+        run_id="cursor-branch",
+        id_offset=500,
+        checkpoint=Checkpoint(trace_dir=str(source.trace_dir.resolve()), step=2),
+    )
+    assert outcome.result is not None and outcome.result.error is None
+    assert outcome.run_dir is not None
+    branch_trace = RunTrace(outcome.run_dir)
+    source_image = source.observation_fragment(0, "browser.screenshot")
+    live_image = branch_trace.observation_fragment(0, "browser.screenshot")
+    assert isinstance(source_image, ScreenshotObs) and isinstance(live_image, ScreenshotObs)
+    assert source_image.image_bytes == live_image.image_bytes
+    assert source_image.model_image_bytes() != live_image.model_image_bytes()
+    import base64
+
+    from spectragent.core.llm.messages import ContentPartImageParam
+
+    images = [
+        part.image_url.url
+        for message in outcome.teacher.prompts[0]
+        if isinstance(message.content, list)
+        for part in message.content
+        if isinstance(part, ContentPartImageParam)
+    ]
+    expected = source_image if history_source == "source" else live_image
+    assert base64.b64decode(images[0].split(",", 1)[1]) == expected.model_image_bytes()

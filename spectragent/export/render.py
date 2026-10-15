@@ -384,8 +384,9 @@ class StudentRenderer:
             if item.emit:
                 self.stats.skipped["fragment_unavailable"] += 1
             return None
-        if item.emit and refusal is None:
-            self._check_capture(item, observation)
+        # Prefix steps enter the student's context too, even when they do not
+        # emit a sample. Check every observation we are about to render.
+        self._check_capture(item, observation)
         if segment is None:
             segment = self._open(item, segments)
         observation, step_info = self._with_loop_fragments(item, observation, segment)
