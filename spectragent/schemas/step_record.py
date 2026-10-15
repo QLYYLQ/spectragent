@@ -1,10 +1,13 @@
 """Step record data contracts — per-step execution trace."""
 
+from collections.abc import Iterable
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.prompt import PromptContribution, RestoredHistory
+from spectragent.schemas.recording import UsageCoverage
 from spectragent.schemas.restoration import RestorationCheck
 
 
@@ -16,6 +19,9 @@ class TokenUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    prompt_cached_tokens: int = 0
+    prompt_cache_creation_tokens: int = 0
+    prompt_image_tokens: int = 0
 
     @classmethod
     def from_llm_usage(cls, usage: Any) -> "TokenUsage | None":
@@ -34,7 +40,23 @@ class TokenUsage(BaseModel):
             prompt_tokens=prompt,
             completion_tokens=completion,
             total_tokens=total,
+            prompt_cached_tokens=int(getattr(usage, "prompt_cached_tokens", 0) or 0),
+            prompt_cache_creation_tokens=int(
+                getattr(usage, "prompt_cache_creation_tokens", 0) or 0
+            ),
+            prompt_image_tokens=int(getattr(usage, "prompt_image_tokens", 0) or 0),
         )
+
+    @classmethod
+    def combine(cls, usages: Iterable[Any]) -> "TokenUsage":
+        """Known subtotal only; callers separately retain missing-call coverage."""
+        total = cls()
+        for usage in usages:
+            item = cls.from_llm_usage(usage)
+            if item is not None:
+                for name in cls.model_fields:
+                    setattr(total, name, getattr(total, name) + getattr(item, name))
+        return total
 
 
 class StepRecord(BaseModel):
@@ -51,7 +73,13 @@ class StepRecord(BaseModel):
     actions: list[Action] = Field(default_factory=list)
     action_results: list[ActionResult] = Field(default_factory=list)
     timestamp: float = 0.0
+    prompt_contributions: list[PromptContribution] = Field(default_factory=list)
+    source_history: RestoredHistory | None = None
+    action_count: int | None = None
+    proposed_action_count: int | None = None
     token_usage: TokenUsage | None = None
+    usage_coverage: UsageCoverage | None = None
+    recording_ms: float | None = None
     # Number of actions the LLM emitted that the loop discarded because
     # they exceeded ``max_actions_per_step``. Non-zero means the model
     # believes it executed steps that never ran.

@@ -12,6 +12,7 @@ from spectragent.schemas._types import (
     UTCDatetime,
 )
 from spectragent.schemas.prompt import PromptSnapshot
+from spectragent.schemas.recording import RecordingHealth, UsageCoverage
 
 
 class AgentUsage(BaseModel):
@@ -117,10 +118,12 @@ class AgentMetrics(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     ttft_ms: int | None = None
-    end_to_end_ms: int
+    execution_ms: int | None = None
     steps: int
     llm_calls: int | None = None
     usage: AgentUsage | None = None
+    usage_coverage: UsageCoverage | None = None
+    recording_health: RecordingHealth | None = None
 
 
 class AgentResult(BaseModel):

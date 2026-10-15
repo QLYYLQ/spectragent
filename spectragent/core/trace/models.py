@@ -26,7 +26,9 @@ from spectragent.core.archive.privacy import RedactionLedger
 from spectragent.core.llm.messages import BaseMessage, ToolCall
 from spectragent.core.llm.views import ChatInvokeUsage
 from spectragent.schemas._types import UTCDatetime
+from spectragent.schemas.action_space import ActionSpace
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.recording import RecordingPlan, RecordingProblem
 from spectragent.schemas.restoration import BranchProvenance
 
 #: The on-disk layout this build writes, and the only one it reads.
@@ -42,10 +44,13 @@ from spectragent.schemas.restoration import BranchProvenance
 #: and through which step it is complete. 4 is the layout of §5.3: format 3
 #: with every image a prompt sent inline stored once per run under
 #: ``messages/images/`` (:attr:`TraceManifest.prompt_images`), the call
-#: records holding a :class:`PromptImageRef` where each one stood. A format-2
+#: records holding a :class:`PromptImageRef` where each one stood. Format 5
+#: declares selected recording channels, indexes lightweight call facts and
+#: distinguishes currently missing segments from historical recording faults.
+#: A format-2
 #: ``error`` meant either outcome, and a format-3 call record holds its
 #: images inline: ``RunTrace`` refuses every version but this one.
-TRACE_FORMAT_VERSION = 4
+TRACE_FORMAT_VERSION = 5
 
 
 class TraceStatus(StrEnum):
@@ -53,14 +58,15 @@ class TraceStatus(StrEnum):
 
     How the agent ended (done, max_steps, error, timeout, vetoed) is
     ``result.json``'s ``agent_done``; this says only whether what the run
-    did is all on disk. A run that timed out, or whose model call failed,
-    has a complete trace when everything it did was recorded.
+    did within its declared recording scope is on disk. A run that timed
+    out, or whose model call failed, has a complete trace when every
+    selected fact was recorded.
 
     - ``writing``: the trace is open — the run is still going, or its
       process died before closing the trace out. Nothing about it is final.
-    - ``complete``: closed, and nothing the run did failed to be recorded.
+    - ``complete``: closed, and all selected facts were recorded.
     - ``incomplete``: closed, but something failed to be recorded — a
-      step's evidence (the run stopped there), the close-out evidence
+      step's evidence, the close-out evidence
       collection, an item the close-out could not commit, ``result.json``.
       ``TraceManifest.incomplete_reason`` says what, and
       ``TraceManifest.complete_through`` how far the trace is still whole.
@@ -101,6 +107,8 @@ class StepManifestEntry(BaseModel):
     #: Every LLM call of the step, in start order — parse retries,
     #: refused structured replies, truncations included.
     llm_calls: list[str] = Field(default_factory=list)
+    #: Lightweight call facts, readable without loading prompts or images.
+    call_metrics: list[str] = Field(default_factory=list)
     #: ``steps/NNN.extra.json`` when the step committed extra files. The
     #: files are listed there, not here: the manifest is rewritten whole on
     #: every commit and read eagerly by every reader, so inlining a step's
@@ -117,6 +125,7 @@ class TrailingEntry(BaseModel):
     """
 
     llm_calls: list[str] = Field(default_factory=list)
+    call_metrics: list[str] = Field(default_factory=list)
     extra_index: str | None = None  # steps/trailing_KK.extra.json
 
 
@@ -136,7 +145,16 @@ class TraceManifest(BaseModel):
     #: :data:`TRACE_FORMAT_VERSION`; ``RunTrace`` reads no other version.
     format_version: int = 1
     run_id: str
-    last_step_completed: int = -1  # -1 means no step completed yet
+    #: Greatest committed step index, never the number of committed steps.
+    last_step_completed: int = -1
+    #: Number of execution segments surrendered, with indices starting at zero.
+    #: While writing, this is at least the greatest committed index plus one.
+    expected_steps: int = Field(default=0, ge=0)
+    #: Expected step indices not yet committed. Backfilling removes a gap.
+    missing_steps: list[int] = Field(default_factory=list)
+    #: Historical recording failures, including failures later recovered.
+    #: These diagnostics do not themselves make the current trace incomplete.
+    recording_problems: list[RecordingProblem] = Field(default_factory=list)
     status: TraceStatus = TraceStatus.WRITING
     #: What failed to be recorded, in plain words — set exactly when
     #: ``status`` is ``incomplete`` (several failures, in the order they
@@ -275,6 +293,7 @@ CommittedKind = Literal[
     "fragment",
     "artifact",
     "llm_call",
+    "call_metrics",
     "extra_index",
     "output_schema",
     "prompt_image",
@@ -395,6 +414,24 @@ class PromptImageRef(BaseModel):
     prefix: str | None
 
 
+class RecordedCallMetrics(BaseModel):
+    """One invocation's facts, readable without its prompt or reply artifacts."""
+
+    call_id: str
+    step: int
+    call: int
+    caller: str = "agent"
+    purpose: str = "agent_decision"
+    model: str = ""
+    status: Literal["completed", "failed", "cancelled"]
+    started_at: float
+    ended_at: float
+    latency_ms: int
+    usage: ChatInvokeUsage | None = None
+    error: str | None = None
+    detail: str | None = None
+
+
 class RecordedLLMCall(BaseModel):
     """``messages/NNN_call_KK.json`` — one LLM call, whatever its outcome.
 
@@ -404,6 +441,12 @@ class RecordedLLMCall(BaseModel):
     a stored record that sent an image fails (an object stands where ``url``
     wants a string), so nothing reads a prompt with its images missing.
     """
+
+    call_id: str = ""
+    caller: str = "agent"
+    purpose: str = "agent_decision"
+    model: str = ""
+    ended_at: float = 0.0
 
     #: The step the Loop was on. For a trailing call, the step it never
     #: surrendered (``last_step_completed + 1``).
@@ -627,6 +670,8 @@ class TraceConfig(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    recording: RecordingPlan = Field(default_factory=RecordingPlan)
+    action_space: ActionSpace | None = None
     agent_id: str = ""
     loop_id: str = ""
     env_type: str = ""
@@ -743,6 +788,15 @@ class TraceConfig(BaseModel):
         """
         source = self.resolved if resolved is None else resolved
         payload = {
+            "recording": self.recording.model_dump(mode="json"),
+            "action_space": (
+                {
+                    **self.action_space.model_dump(mode="json"),
+                    "allowed_actions": sorted(self.action_space.allowed_actions),
+                }
+                if self.action_space is not None
+                else None
+            ),
             "agent_id": self.agent_id,
             "loop_id": self.loop_id,
             "env_type": self.env_type,
