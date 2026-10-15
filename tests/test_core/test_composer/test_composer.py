@@ -192,7 +192,7 @@ class TestBasicCompose:
         assert catalog.top_level_type is composer.top_level_type
         definition = catalog.components["cmp_backend"]["local"]
         assert definition.implementation is _LocalBackend
-        cfg = composer.top_level_type.model_validate({"cmp_backend": [{"name": "local"}]})
+        cfg: Any = composer.top_level_type.model_validate({"cmp_backend": [{"name": "local"}]})
         assert type(cfg.cmp_backend[0]) is definition.config_model
         with pytest.raises(TypeError):
             catalog.components["cmp_backend"]["local"] = definition  # type: ignore[index]
@@ -335,6 +335,35 @@ class TestBasicCompose:
 
 
 class TestInstanceIdentity:
+    def test_evidence_distinguishes_same_class_instances_and_input_presence(
+        self, composer: ConfigComposer
+    ) -> None:
+        from dataclasses import FrozenInstanceError
+
+        explicit = _agent_entry(id_="explicit")
+        omitted = _agent_entry()
+        del omitted["max_steps"]
+        run = composer.compose({"cmp_agent": [explicit, omitted]})
+        evidence = run.composition
+        assert evidence is not None
+        origins = {entry.path: entry.source for entry in evidence.inputs}
+        assert origins["cmp_agent[0].max_steps"] == "explicit"
+        assert origins["cmp_agent[1].max_steps"] == "default"
+        assert run.instances("cmp_agent")[0].max_steps == run.instances("cmp_agent")[1].max_steps
+        components = {entry.path: entry for entry in evidence.components}
+        assert components["cmp_agent[0]"].identity_source == "explicit"
+        assert components["cmp_agent[1]"].identity_source == "ordinal"
+        edges = {entry.path: entry for entry in evidence.wiring}
+        assert edges["cmp_agent[0].memory"].targets[0].instance_id == "simple#0"
+        assert edges["cmp_agent[1].memory"].targets[0].instance_id == "simple#1"
+        assert edges["cmp_agent[0].backend"].source == "declaration_only"
+        assert edges["cmp_agent[0].backend"].targets == ()
+        with pytest.raises(FrozenInstanceError):
+            components["cmp_agent[0]"].instance_id = "changed"  # type: ignore[misc]
+        # Mutating live receptor containers cannot rewrite the saved decision.
+        run.instances("cmp_agent")[0].capabilities.clear()
+        assert len(edges["cmp_agent[0].capabilities"].targets) == 1
+
     def test_explicit_id_becomes_the_key_and_the_attribute(
         self,
         composer: ConfigComposer,
@@ -411,6 +440,27 @@ class TestInstanceIdentity:
 
 
 class TestErrors:
+    def test_constructor_failure_has_a_safe_diagnosis_and_preserves_the_cause(
+        self, registrars: dict[str, Any]
+    ) -> None:
+        from spectragent.core.composer import InstantiationError
+
+        class Refusing(_LocalBackend):
+            __registry_key__ = "refusing"
+
+            def __init__(self, **kwargs):
+                raise ValueError("constructor-secret-sentinel")
+
+        composer = ConfigComposer(registrars=registrars, discover_roots=())
+        with pytest.raises(InstantiationError) as refused:
+            composer.compose({"cmp_backend": [{"name": "refusing"}]})
+        issue = refused.value.issue
+        assert issue is not None
+        assert issue.path == "cmp_backend[0]"
+        assert issue.code == "constructor_failed"
+        assert "constructor-secret-sentinel" not in issue.message
+        assert isinstance(refused.value.__cause__, ValueError)
+
     def test_empty_layer_raises_on_construction(self) -> None:
         # conscribe reports the empty layer by name before constructing instances.
         @runtime_checkable

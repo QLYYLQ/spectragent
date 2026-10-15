@@ -3465,6 +3465,12 @@ browser 证据的格式知识留在 browser 的包里：纯函数，只经 `Arch
 
 **配置解释。** `check` 和 `explain` 只 compose/prepare，不 setup、不调用模型。显示实例图、生效 action/fragment/archive 协商、AOP 拦截与生成配置新鲜度；配置按 trace 同一规则脱敏，校验错误只显示字段位置与问题类型，不回显秘密值。实际 Chrome 平台、外部服务可用性等只能 setup 后检查的事实不声称已通过。运行的环境变量规则保持现状：run/eval 读 `.env`，bench/flywheel 要求 shell 导出。
 
+**配置来源有三条独立证据。** `explain --json` 的 `provenance.inputs` 记录验证模型的字段输入来源 `explicit | default`；显式写成默认值、`null` 或 `[]` 仍是 explicit，省略的默认子块不会因工厂给子字段传参而冒充用户输入。`provenance.declarations` 由 Conscribe 2.1 的公开 `registrar.get_config_provenance(key)` 提供：字段的声明类、构造接收者、继承覆盖记录、受体与 wiring 各自的声明者、完整 MRO、实际构造参数链及截断原因、schema/flattened 提取来源分别表达。它是注册类的声明视图（`declared_fields_before_schema_composition`）；注册表添加的判别器与组合包装不伪造 Python 参数声明，实例的层/实现身份与全部验证字段的输入来源另行记录。AF 不复制 Conscribe 的 MRO、注解或 wiring 解析，也不读其私有缓存。声明来源与输入来源不是互斥标签：显式值可以填到继承自基类的参数。
+
+`ComposedRun.composition` 是 Composer 在真实注入决定处产生的不可变 `CompositionEvidence`；没有配置值或运行时对象引用。`components` 记录配置路径、层、实现和显式/序号实例身份；`wiring` 区分 `inline`、`pool`、`owner_default`、`empty` 与 `declaration_only`，并记录实际 init/setattr/retained 路径及目标。主人自己构造的默认对象标为 `owner_default`、`path=None`、`instance_id=None`，不能伪造 YAML 块或 Composer 身份。省略与显式空不合并，纯协商声明不画成实例注入边。CLI 展示这些事实，不通过扫描实例私有字段重建图；输出的 `resolved` 仍是按 trace 规则脱敏的已验证配置，不声称是任意运行状态的快照。
+
+配置工具共用 `core/configuration_catalog.py` 的不可变 `ConfigurationCatalog`（公开模型/实现引用、只读层与键映射、依赖顺序）；`ConfigComposer.catalog` 指向它实际使用的那次构建。模板编写与解释共享此配置空间，不共享运行来源记录。组合失败保持原有异常及异常链；CLI 另标明 YAML、schema、validation、composition、selection、prepare 或 provenance 阶段，并从公开异常合同读取字段位置、缺失集合和原因。构造异常正文不回显配置值，安全诊断由抛错位置提供；不另造一套 prepare/协商规则，不把未完成的图显示成成功结果。
+
 **一个读侧，多个界面。** `spectragent/inspection/` 提供结构化查询 Protocol，CLI、Textual 和 FastAPI/React 本地查看器共用它。运行目录发现可以列目录；一个 run 的全部记录与附件只经 `RunTrace`，不绕过 manifest。每次刷新建立新的 reader 快照，不复用缓存的 manifest。路径必须在用户指定根目录之内，损坏或不支持的 trace 在列表中显示原因，不静默消失。网页只读，默认监听回环地址；远端使用 SSH 转发。前端资源随 Python 包分发，不依赖运行时 CDN 或 Node。
 
 **目录、配置来源与单次运行。** `view`、历史 `tui` 和 `runs list` 使用同一选择规则：`--root` 是目录搜索边界，默认 `traces`，也可以是单个 run；`--config PATH` 按启动配置文件的来源筛选这个根内的全部历史版本（用户 2026-10-15 确认），不解释为当前 YAML 内容相同，也不通过读取 YAML 的输出路径偷偷扩大搜索范围。路径展开 `~` 并规范化为绝对路径；不同目录中的同名文件不同，移动后的文件视为新的来源。配置文件已经删掉也能按原路径查询。`--config-hash` 另用于精确选择已记录的有效配置摘要，两者可以取交集。`--run KEY` 是根内相对路径，用于初始聚焦；列表筛选不缩小根内源运行导航的范围，但初始 run 必须满足显式筛选。没有显式网页路由时采用初始聚焦，已保存的网页深链接优先。

@@ -30,15 +30,28 @@ from functools import cached_property
 from typing import Any, Literal, get_origin
 
 from conscribe import discover
-from conscribe.introspect import init_param_names, receptor_slots, wiring_slots
+from conscribe.introspect import WiringSlot, init_param_names, receptor_slots, wiring_slots
 from conscribe.wiring import WiringSpec
 from pydantic import BaseModel
 
+from spectragent.core.composition_evidence import (
+    CompositionEvidence,
+    CompositionIssue,
+    ConfiguredComponent,
+    WiringDecision,
+    WiringSource,
+    configured_inputs,
+    implementation_name,
+)
 from spectragent.core.configuration_catalog import ConfigurationCatalog, build_configuration_catalog
 
 
 class ComposeError(Exception):
     """Base class for Composer failures."""
+
+    def __init__(self, message: str, *, issue: CompositionIssue | None = None) -> None:
+        super().__init__(message)
+        self.issue = issue
 
 
 class InstantiationError(ComposeError):
@@ -72,6 +85,7 @@ class ComposedRun:
 
     by_layer: dict[str, dict[str, Any]]
     top_level_cfg: BaseModel | None = None
+    composition: CompositionEvidence | None = None
 
     # -- Raw accessors --
     def instances(self, layer: str) -> list[Any]:
@@ -136,12 +150,14 @@ class _State:
     by_layer: dict[str, dict[str, Any]]
     ordinals: dict[tuple[str, str], int] = field(default_factory=lambda: defaultdict(int))
     deferred: list[_Deferred] = field(default_factory=list)
-    #: ``id(instance) -> (layer, registry_key, instance_id)``
-    identity: dict[int, tuple[str, str, str]] = field(default_factory=dict)
+    identity: dict[int, ConfiguredComponent] = field(default_factory=dict)
+    wiring: list[WiringDecision] = field(default_factory=list)
 
     def instance_id_of(self, instance: Any, path: str) -> str:
         try:
-            return self.identity[id(instance)][2]
+            identity = self.identity[id(instance)].instance_id
+            assert identity is not None
+            return identity
         except KeyError:
             raise UnresolvedWiringError(
                 f"{path}: {type(instance).__name__} was not built by this "
@@ -150,7 +166,52 @@ class _State:
 
     def registry_key_of(self, instance: Any) -> str | None:
         entry = self.identity.get(id(instance))
-        return entry[1] if entry is not None else None
+        return entry.key if entry is not None else None
+
+    def record_wiring(
+        self,
+        path: str,
+        entry: WiringSlot,
+        source: WiringSource,
+        value: Any = None,
+        *,
+        via: Literal["init", "setattr", "retained"] | None = None,
+    ) -> None:
+        slot = entry.slot
+        if value is None:
+            values = []
+        elif slot is not None and slot.shape == "dict":
+            values = list(value.values())
+        elif slot is not None and slot.shape == "list":
+            values = list(value)
+            if isinstance(value, set | frozenset):
+                values.sort(key=lambda instance: implementation_name(type(instance)))
+        else:
+            values = [value]
+        targets = []
+        for instance in values:
+            target = self.identity.get(id(instance))
+            if target is None:
+                key = getattr(type(instance), "__registry_key__", "")
+                target = ConfiguredComponent(
+                    path=None,
+                    layer=entry.spec.registry_name,
+                    key=key,
+                    implementation=implementation_name(type(instance)),
+                    instance_id=None,
+                    identity_source="owner_default",
+                )
+            targets.append(target)
+        self.wiring.append(
+            WiringDecision(
+                path=path,
+                registry=entry.spec.registry_name,
+                source=source,
+                via=via,
+                shape=slot.shape if slot else None,
+                targets=tuple(targets),
+            )
+        )
 
 
 class ConfigComposer:
@@ -207,6 +268,7 @@ class ConfigComposer:
     def compose(self, raw: dict | BaseModel) -> ComposedRun:
         """Validate, instantiate (leaves-first), inject, assemble."""
         cfg = raw if isinstance(raw, BaseModel) else self.top_level_type.model_validate(raw)
+        inputs = configured_inputs(cfg)
         state = _State(by_layer={layer: {} for layer in self._registrars})
 
         for layer in self._catalog.top_level_layers:
@@ -215,7 +277,15 @@ class ConfigComposer:
                 self._instantiate(entry, state, path=f"{layer}[{idx}]")
 
         self._resolve_deferred(state)
-        return ComposedRun(by_layer=state.by_layer, top_level_cfg=cfg)
+        return ComposedRun(
+            by_layer=state.by_layer,
+            top_level_cfg=cfg,
+            composition=CompositionEvidence(
+                inputs=inputs,
+                components=tuple(state.identity.values()),
+                wiring=tuple(state.wiring),
+            ),
+        )
 
     # -- Per-instance assembly ---------------------------------------
 
@@ -240,6 +310,7 @@ class ConfigComposer:
         init_kwargs: dict[str, Any] = {}
         wired_setters: dict[str, Any] = {}
         deferred: list[tuple[str, WiringSpec]] = []
+        retained: list[tuple[str, WiringSlot]] = []
 
         # -- Pass A: wiring-driven receptors (the primary driver) ----
         for name, entry in wiring.items():
@@ -266,20 +337,34 @@ class ConfigComposer:
                         f"value, so this config block would be silently "
                         f"dropped. Either remove it and declare the instance "
                         f"in the top-level {spec.registry_name!r} section, or "
-                        f"give {cls.__name__} a receptor slot for it."
+                        f"give {cls.__name__} a receptor slot for it.",
+                        issue=CompositionIssue(
+                            "negotiation_only",
+                            f"{path}.{name}",
+                            "This wiring entry declares a negotiation contract and receives no instance.",
+                            "Remove this value or add a runtime receptor to the declaring implementation.",
+                        ),
                     )
+                state.record_wiring(f"{path}.{name}", entry, "declaration_only")
                 continue
             if spec.registry_name not in self._registrars:
                 raise UnresolvedWiringError(
                     f"{path}.{name}: {cls.__name__} declares a receptor slot wired to "
                     f"registry {spec.registry_name!r}, which is not one of the "
-                    f"Composer's layers ({sorted(self._registrars)})."
+                    f"Composer's layers ({sorted(self._registrars)}).",
+                    issue=CompositionIssue(
+                        "uncollected_registry",
+                        f"{path}.{name}",
+                        f"The receptor targets uncollected registry {spec.registry_name!r}.",
+                        "Add the registrar to the configuration catalog's input registrars.",
+                    ),
                 )
             value = getattr(cfg, name, None) if name in model_fields else None
             if value is None:
                 if self._registrars[spec.registry_name].inline_only:
                     # Filled from its own block or not at all: omitted or
                     # null leaves the owner's default, never the pool.
+                    retained.append((name, entry))
                     continue
                 # Declarative multi-instance receptor: either the per-key
                 # model exposes no field at all, or the field is optional
@@ -298,6 +383,13 @@ class ConfigComposer:
                 init_kwargs[name] = resolved
             else:
                 wired_setters[name] = resolved
+            state.record_wiring(
+                f"{path}.{name}",
+                entry,
+                "empty" if isinstance(resolved, list | dict) and not resolved else "inline",
+                resolved,
+                via="init" if name in init_params else "setattr",
+            )
 
         # -- Pass B: plain config fields -----------------------------
         for name in model_fields:
@@ -322,7 +414,13 @@ class ConfigComposer:
                 raise UnresolvedWiringError(
                     f"{path}.{name}: config field has no matching __init__ "
                     f"parameter on {cls.__name__} and is not a nested "
-                    f"sub-config, so its value would be silently dropped."
+                    f"sub-config, so its value would be silently dropped.",
+                    issue=CompositionIssue(
+                        "unconsumed_field",
+                        f"{path}.{name}",
+                        f"No constructor parameter on {implementation_name(cls)} consumes this field.",
+                        "Correct the declaration so the validated field reaches its owning constructor.",
+                    ),
                 )
 
         # The resolved instance id always wins over whatever the config
@@ -334,13 +432,37 @@ class ConfigComposer:
         try:
             instance = cls(**init_kwargs)
         except Exception as exc:
-            raise InstantiationError(f"{path}: failed to construct {cls.__name__}: {exc}") from exc
+            raise InstantiationError(
+                f"{path}: failed to construct {cls.__name__}: {exc}",
+                issue=CompositionIssue(
+                    "constructor_failed",
+                    path,
+                    f"The constructor of {implementation_name(cls)} refused its configuration.",
+                    "Check this component's constructor contract; the original exception is retained in Python.",
+                ),
+            ) from exc
 
         for name, val in wired_setters.items():
             setattr(instance, name, val)
 
-        state.identity[id(instance)] = (layer, key, instance_id)
+        state.identity[id(instance)] = ConfiguredComponent(
+            path=path,
+            layer=layer,
+            key=key,
+            implementation=implementation_name(cls),
+            instance_id=instance_id,
+            identity_source="explicit" if getattr(cfg, "id", None) else "ordinal",
+        )
         state.by_layer[layer][instance_id] = instance
+
+        for name, entry in retained:
+            state.record_wiring(
+                f"{path}.{name}",
+                entry,
+                "owner_default",
+                getattr(instance, name, None),
+                via="retained",
+            )
 
         for name, spec in deferred:
             state.deferred.append(
@@ -375,7 +497,13 @@ class ConfigComposer:
         if instance_id in state.by_layer[layer]:
             raise DuplicateInstanceIdError(
                 f"{path}: instance id {instance_id!r} is already used in layer "
-                f"{layer!r}. Give each entry a distinct ``id:``."
+                f"{layer!r}. Give each entry a distinct ``id:``.",
+                issue=CompositionIssue(
+                    "duplicate_instance_id",
+                    path,
+                    f"Two entries claim the same instance identity in layer {layer!r}.",
+                    "Give each entry in this layer a distinct id.",
+                ),
             )
         return instance_id
 
@@ -406,7 +534,13 @@ class ConfigComposer:
         # was omitted in YAML and the field is Optional in Pydantic.
         raise UnresolvedWiringError(
             f"{path}: expected nested config for single-instance wired "
-            f"field, got {type(value).__name__}={value!r}"
+            f"field, got {type(value).__name__}={value!r}",
+            issue=CompositionIssue(
+                "receptor_shape",
+                path,
+                "A single-instance receptor requires a nested component configuration.",
+                "Supply a component block with its registry discriminator.",
+            ),
         )
 
     def _as_instance_list(
@@ -425,7 +559,13 @@ class ConfigComposer:
             ]
         raise UnresolvedWiringError(
             f"{path}: expected list of nested configs or a single nested "
-            f"config, got {type(value).__name__}={value!r}"
+            f"config, got {type(value).__name__}={value!r}",
+            issue=CompositionIssue(
+                "receptor_shape",
+                path,
+                "A collection receptor requires nested component configurations.",
+                "Supply a list of component blocks or an explicit empty list.",
+            ),
         )
 
     def _resolve_deferred(self, state: _State) -> None:
@@ -439,6 +579,7 @@ class ConfigComposer:
                 if allowed is None or state.registry_key_of(inst) in allowed
             }
             shape = receptor_slots(item.owner_cls, names=[item.field_name])[item.field_name].shape
+            entry = wiring_slots(item.owner_cls)[item.field_name]
 
             if (
                 shape in ("dict", "list")
@@ -449,6 +590,13 @@ class ConfigComposer:
                 # owner's own default stands (a capability's ``actions``:
                 # every wired action). An empty container would say "none",
                 # which is what ``[]`` in the config says — never omission.
+                state.record_wiring(
+                    item.path,
+                    entry,
+                    "owner_default",
+                    getattr(item.owner, item.field_name),
+                    via="retained",
+                )
                 continue
             if shape == "dict":
                 resolved: Any = selected
@@ -461,9 +609,16 @@ class ConfigComposer:
                     f"{item.path}: single-instance receptor on "
                     f"{item.owner_cls.__name__} matched {len(selected)} instances "
                     f"in layer {item.spec.registry_name!r} "
-                    f"({sorted(selected)}). Declare it explicitly in the config."
+                    f"({sorted(selected)}). Declare it explicitly in the config.",
+                    issue=CompositionIssue(
+                        "ambiguous_receptor" if selected else "unfilled_receptor",
+                        item.path,
+                        f"A single-instance receptor matched {len(selected)} instances in layer {item.spec.registry_name!r}.",
+                        "Supply one inline component block for this receptor.",
+                    ),
                 )
             setattr(item.owner, item.field_name, resolved)
+            state.record_wiring(item.path, entry, "pool", resolved, via="setattr")
 
     # -- Nested non-receptor sub-configs ------------------------------
 
@@ -502,7 +657,13 @@ class ConfigComposer:
         if orphans:
             raise UnresolvedWiringError(
                 f"{path}.{field_name}: sub-config fields {sorted(orphans)} have no "
-                f"matching __init__ parameter on {owner_cls.__name__}."
+                f"matching __init__ parameter on {owner_cls.__name__}.",
+                issue=CompositionIssue(
+                    "unconsumed_subconfig",
+                    f"{path}.{field_name}",
+                    f"Nested fields {sorted(orphans)} have no constructor parameter on {implementation_name(owner_cls)}.",
+                    "Correct the nested configuration declaration or its constructor parameters.",
+                ),
             )
         return merged
 
@@ -517,7 +678,13 @@ class ConfigComposer:
             return self._model_to_lk[type(cfg)]
         except KeyError as exc:
             raise InstantiationError(
-                f"{path}: config type {type(cfg).__name__} is not registered in any known layer."
+                f"{path}: config type {type(cfg).__name__} is not registered in any known layer.",
+                issue=CompositionIssue(
+                    "unknown_config_model",
+                    path,
+                    "The component block was not validated by this Composer's catalog.",
+                    "Validate the input against this Composer's top_level_type.",
+                ),
             ) from exc
 
 

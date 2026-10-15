@@ -118,6 +118,14 @@ def _output(ctx: typer.Context, json_output: bool = False) -> Output:
 
 
 def _validation_error(exc: Exception) -> dict[str, Any]:
+    from spectragent.cli.configuration_errors import ConfigInspectionError, contract_details
+
+    if isinstance(exc, ConfigInspectionError):
+        return {
+            **_validation_error(exc.cause),
+            **contract_details(exc.cause),
+            "stage": exc.stage,
+        }
     if isinstance(exc, yaml.YAMLError):
         mark = getattr(exc, "problem_mark", None)
         return {
@@ -163,6 +171,9 @@ def _render_configuration(console: Console, value: dict[str, Any]) -> None:
         if len(entries) > 5:
             branch.add(Text(f"… {len(entries) - 5} more; --json includes every instance"))
     console.print(tree)
+    from spectragent.cli.configuration_provenance import render_provenance
+
+    render_provenance(console, value.get("provenance") or {})
     negotiation = value.get("negotiation") or {}
     for label, field in (
         ("Active observations", "active_fragments"),
@@ -179,7 +190,9 @@ def _render_configuration(console: Console, value: dict[str, Any]) -> None:
         table.add_row(hook["hook_id"], str(hook["blocking"]), points)
     console.print(table)
     console.print(
-        Text("Use --json for resolved fields, action parameter contracts and fingerprints.")
+        Text(
+            "Use --json for field inputs, declaration/MRO origins, resolved fields and fingerprints."
+        )
     )
 
 
@@ -365,7 +378,7 @@ def create_app() -> typer.Typer:
         task_id: str | None = typer.Option(None),
         json_output: bool = typer.Option(False, "--json"),
     ) -> None:
-        """Show redacted resolved fields, component identities, negotiations and fingerprints."""
+        """Explain inputs, declaration/MRO origins, injection, negotiations and fingerprints."""
         config_operation(
             ctx, config, agent_id, env_id, start_url, replay_archive, task_id, json_output, True
         )
