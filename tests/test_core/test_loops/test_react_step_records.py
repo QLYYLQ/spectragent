@@ -482,3 +482,38 @@ class TestPublicExecutionBoundaries:
         for agent in (SyncPrompt(), ImplicitContext()):
             with pytest.raises(IncompatibleError, match="async build_react_prompt"):
                 ReactLoop().validate_slots(agent)
+
+
+async def test_prompt_context_failure_preserves_the_original_error_and_veto():
+    import pytest
+
+    from spectragent.core.loops.errors import RunAbort
+
+    for failure in (ValueError("source context unreadable"), RunAbort("source refused")):
+
+        class BrokenContext(ReactLoop):
+            __abstract__ = True
+
+            def prompt_context(self, run, step_idx, *, problem=failure):
+                raise problem
+
+        active = frozenset({"browser.browser_meta"})
+        recorder, llm = StepRecorder(), _LLM()
+        with pytest.raises(type(failure)) as caught:
+            await BrokenContext(max_steps=1)._execute(
+                _Agent([[]]),
+                "t",
+                ctx=_ctx(
+                    env=_Env(active),
+                    llm=llm,
+                    memory=_Memory(),
+                    act_fn=_act_ok(),
+                    negotiated=_Negotiated(active),
+                    recorder=recorder,
+                ),
+            )
+        assert caught.value is failure
+        assert llm.calls == 0
+        assert recorder.records[0].error_phase == "prompt"
+        assert recorder.records[0].error == str(failure)
+        assert recorder.records[0].prompt_contributions == []

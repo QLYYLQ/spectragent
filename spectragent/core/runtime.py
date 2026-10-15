@@ -55,6 +55,7 @@ from spectragent.schemas.config_source import ConfigSource
 from spectragent.schemas.task import resolve_env_context_paths
 
 if TYPE_CHECKING:
+    from spectragent.core.llm.base import BaseChatModel
     from spectragent.schemas.restoration import BranchProvenance
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,7 @@ class AgentRuntime:
         # slot :meth:`seed_messages` calls.
         self._prepared_agent: Any = None
         self._identity = RunIdentity()
+        self._execution_models: tuple[BaseChatModel, ...] = ()
         self._call_context = RunCallContext()
         self._execution_limits = ExecutionLimits()
         self._agent_consumes_limits = False
@@ -434,12 +436,17 @@ class AgentRuntime:
         wrapped_agent = weaver.wrap(agent, role="agent")
         wrapped_env = weaver.wrap(env, role="env")
         wrapped_llm = weaver.wrap(llm, role="llm")
+        execution_models = [llm]
         for hook in self._hooks:
             if isinstance(hook, PromptModelOwner):
+                execution_models.extend(hook.helper_llms)
                 hook.bind_prompt_models(
                     [weaver.wrap(model, role="llm") for model in hook.helper_llms],
                     self._call_context,
                 )
+        # Retain raw, explicitly declared dependencies for unconditional cleanup.
+        # A failed earlier lifecycle hook must not orphan a helper model.
+        self._execution_models = tuple(execution_models)
         # The Loop's step sink. Wrapped like any other role, so a hook
         # observes finished steps through an ordinary method call.
         wrapped_recorder = weaver.wrap(self._recorder, role="loop")
@@ -935,7 +942,7 @@ class AgentRuntime:
                     logger.exception("AgentRuntime: environment teardown failed")
                 finally:
                     try:
-                        await close_models((self._agent.llm,))
+                        await close_models(self._execution_models)
                     except Exception:
                         logger.exception("AgentRuntime: model client cleanup failed")
 
@@ -1040,10 +1047,9 @@ class AgentRuntime:
     ) -> None:
         """Dispatch a lifecycle callback to all hooks, in priority order.
 
-        Ordering is load-bearing: an enricher that mutates ``result``
-        must run before a writer that serializes it. Relying on YAML order
-        meant ``hook: [trace_writer, metrics]`` silently wrote
-        ``total_tokens: 0`` into every ``result.json``.
+        Explicit priority orders callbacks independently of YAML order.
+        Model resource cleanup is unconditional in ``execute``'s finally
+        and cannot be skipped when an earlier lifecycle callback fails.
         """
         ordered = sorted(
             self._hooks,

@@ -695,3 +695,60 @@ async def test_helper_models_share_llm_interception_and_receive_a_fresh_run_cont
     assert owner.contexts[-1] is not first
     await owner.models[0].ainvoke([])
     assert owner.interceptions == 2
+
+
+async def test_an_earlier_lifecycle_failure_cannot_skip_helper_model_cleanup():
+    from spectragent.core.hooks._registrar import HookBase
+
+    class Model(MockLLM):
+        def __init__(self):
+            self.calls = 0
+            self.closed = 0
+
+        async def ainvoke(self, messages, **kwargs):
+            self.calls += 1
+            return await super().ainvoke(messages, **kwargs)
+
+        async def aclose(self, *, timeout=5.0):
+            self.closed += 1
+            return ()
+
+    class EarlyFailure(HookBase):
+        priority = 0
+
+        async def on_run_end(self, **kwargs):
+            raise RuntimeError("earlier lifecycle failed")
+
+    class PromptOwner(HookBase):
+        priority = 100
+
+        def __init__(self, helper):
+            super().__init__()
+            self.helper_llms = [helper]
+            self.end_called = False
+
+        def bind_prompt_models(self, models, call_context):
+            self.models = models
+
+        async def on_run_start(self, **kwargs):
+            await self.models[0].ainvoke([])
+
+        async def on_run_end(self, **kwargs):
+            self.end_called = True
+            await self.helper_llms[0].aclose()
+
+    main, helper = Model(), Model()
+    owner = PromptOwner(helper)
+    run = make_run(
+        agent=SimpleAgent(),
+        loop=ReactLoop(),
+        env=_make_env(),
+        llm=main,
+        memory=MockMemory(),
+        hooks=[EarlyFailure(), owner],
+    )
+    with pytest.raises(RuntimeError, match="earlier lifecycle failed"):
+        await AgentRuntime.for_agent(run, AGENT_ID).execute("task")
+    assert (main.calls, helper.calls) == (1, 1)
+    assert not owner.end_called
+    assert (main.closed, helper.closed) == (1, 1)

@@ -319,6 +319,7 @@ class ReactLoop(AgentLoopBase):
         # preserves their phase, observation and generated contribution facts.
         agent = run.agent
         memory = run.memory
+        prompt_context: ReactPromptContext | None = None
         try:
             prompt_context = self.prompt_context(run, step_idx)
             new_msgs = await agent.build_react_prompt(observation, context=prompt_context)
@@ -341,7 +342,7 @@ class ReactLoop(AgentLoopBase):
                 error_phase="prompt",
                 error=str(exc),
                 timestamp=time.time(),
-                prompt_contributions=list(prompt_context.contributions),
+                prompt_contributions=list(prompt_context.contributions) if prompt_context else [],
                 restoration=restoration,
             )
             run.step_records.append(record)
@@ -530,7 +531,7 @@ class ReactLoop(AgentLoopBase):
                 action_results=[],
                 error_phase="parse",
                 error=str(parse_failure),
-                prompt_contributions=list(prompt_context.contributions),
+                prompt_contributions=list(prompt_context.contributions) if prompt_context else [],
                 timestamp=time.time(),
                 restoration=restoration,
             )
@@ -597,7 +598,7 @@ class ReactLoop(AgentLoopBase):
             action_results=step_results,
             timestamp=time.time(),
             truncated_actions=len(dropped),
-            prompt_contributions=list(prompt_context.contributions),
+            prompt_contributions=list(prompt_context.contributions) if prompt_context else [],
             error_phase="act" if act_error is not None else "",
             error=str(act_error) if act_error is not None else None,
             restoration=restoration,
