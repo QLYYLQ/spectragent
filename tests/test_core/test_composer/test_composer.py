@@ -192,7 +192,7 @@ class TestBasicCompose:
         assert catalog.top_level_type is composer.top_level_type
         definition = catalog.components["cmp_backend"]["local"]
         assert definition.implementation is _LocalBackend
-        cfg = composer.top_level_type.model_validate({"cmp_backend": [{"name": "local"}]})
+        cfg: Any = composer.top_level_type.model_validate({"cmp_backend": [{"name": "local"}]})
         assert type(cfg.cmp_backend[0]) is definition.config_model
         with pytest.raises(TypeError):
             catalog.components["cmp_backend"]["local"] = definition  # type: ignore[index]

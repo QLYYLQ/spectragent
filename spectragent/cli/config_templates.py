@@ -19,8 +19,8 @@ from pydantic import BaseModel
 
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.configuration_catalog import ComponentDefinition, ConfigurationCatalog
+from spectragent.core.registries import collect_registrars
 from spectragent.schemas.recording import RecordingPlan
-from spectragent.scripts.generate_all import _collect_registrars
 
 TemplatePath = tuple[str | int, ...]
 
@@ -51,7 +51,7 @@ def render_config_template(
     preparation still belongs to ``config check`` / ``run --dry-run``. An input
     skeleton keeps all its values except the explicitly selected component blocks.
     """
-    composer = composer or ConfigComposer(registrars=_collect_registrars())
+    composer = composer or ConfigComposer(registrars=collect_registrars())
     catalog = composer.catalog
     raw = copy.deepcopy(dict(source)) if source is not None else _browser_recipe(catalog)
     origins: dict[TemplatePath, str] = {}
@@ -67,6 +67,9 @@ def render_config_template(
         for entries in catalog.components.values()
         for component in entries.values()
     }
+    pooled_actions = frozenset(
+        definitions[type(action)].key for action in getattr(run.top_level_cfg, "action", ()) or ()
+    )
     comments: dict[TemplatePath, list[str]] = {}
     expanded = _expand_model(
         run.top_level_cfg,
@@ -76,7 +79,7 @@ def render_config_template(
         origins,
         comments,
         root_fields=tuple(raw),
-        pooled_actions=bool(raw.get("action")),
+        pooled_actions=pooled_actions,
     )
     # Full expansion can change the set of explicitly set fields (notably nested
     # provider options). Recompose the emitted values, not only the input skeleton.
@@ -323,7 +326,7 @@ def _expand_model(
     comments: dict[TemplatePath, list[str]],
     *,
     root_fields: tuple[str, ...],
-    pooled_actions: bool,
+    pooled_actions: frozenset[str],
 ) -> dict[str, Any]:
     definition = definitions.get(type(model))
     slots = wiring_slots(definition.implementation) if definition else {}
@@ -362,7 +365,12 @@ def _expand_model(
             and not browser_actions
         ):
             continue
-        if browser_actions and value is None and not pooled_actions:
+        if (
+            browser_actions
+            and value is None
+            and slot is not None
+            and not pooled_actions.intersection(slot.spec.allowed_keys or ())
+        ):
             assert slot is not None
             value = [
                 catalog.components["action"][key].config_model.model_validate({})

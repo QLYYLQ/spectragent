@@ -14,13 +14,13 @@ from pydantic import BaseModel, Field, ValidationError
 from spectragent.cli import main
 from spectragent.cli.config_templates import TemplateChoices, render_config_template
 from spectragent.core.composer import ConfigComposer, UnresolvedWiringError
+from spectragent.core.registries import collect_registrars
 from spectragent.core.runtime import AgentRuntime
-from spectragent.scripts.generate_all import _collect_registrars
 
 
 @pytest.fixture(scope="module")
 def composer():
-    return ConfigComposer(registrars=_collect_registrars())
+    return ConfigComposer(registrars=collect_registrars())
 
 
 def _browser(raw):
@@ -115,6 +115,21 @@ def test_top_level_action_pool_is_not_duplicated_by_default_expansion(composer):
     expanded = yaml.safe_load(render_config_template(TemplateChoices(), raw, composer=composer))
     assert _browser(expanded)["actions"] is None
     assert expanded["action"][0]["default_amount"] == 999
+    assert _action_state(before) == _action_state(composer.compose(expanded))
+
+
+def test_unrelated_action_pool_does_not_hide_browser_default_actions():
+    from spectragent.core.capabilities.browser.actions.wait import WaitAction
+
+    class ForeignWait(WaitAction):
+        __registry_key__ = "other.wait"
+
+    composer = ConfigComposer(registrars=collect_registrars())
+    raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    raw["action"] = [{"action_id": "other.wait"}]
+    before = composer.compose(raw)
+    expanded = yaml.safe_load(render_config_template(TemplateChoices(), raw, composer=composer))
+    assert len(_browser(expanded)["actions"]) == 16
     assert _action_state(before) == _action_state(composer.compose(expanded))
 
 
