@@ -20,9 +20,9 @@ and artifact hashes are in `conscribe_release.json`. Trace/AgentResult remain **
 API coverage has separate source indexes under `tmp/framework_expansion/api_audit/`:
 `final_coverage.json` and its source ledgers cover the 400-module baseline;
 `integrated_inventory.json` plus `new_modules.review.json` cover 16 integration additions
-and verify two removals; `tmp/framework_expansion/review/cursor.json` audits the added
-cursor module. Thus the
-frozen tree has **415** non-generated production Python modules (400 + 16 - 2 + 1).
+and verify two removals; `cursor_modules.review.json` indexes cursor's one added and
+11 modified production modules. The frozen tree has **415** non-generated production
+Python modules (400 + 16 - 2 + 1).
 The old ledger's deferred `schemas/login.py` was subsequently removed by the login
 feature. The independent reviewer checked coverage and substantive changes/new modules;
 this does not claim they repeated every baseline file inspection.
