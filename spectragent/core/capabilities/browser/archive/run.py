@@ -16,9 +16,6 @@ the sessions:
   emitted so far was handled, or the collection fails), then each session in
   binding order, then the fingerprint run record. Every step is bounded; a
   step that cannot collect raises.
-
-.. note::
-   No ``from __future__ import annotations`` — the archive package rule.
 """
 
 import logging

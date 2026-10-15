@@ -275,6 +275,7 @@ class TestWhenItFires:
         """end_to_end_ms does not include the terminal observation."""
 
         class _SlowTerminalEnv(EnvironmentBase):
+            __wiring__ = {"capabilities": "capability"}
             __registry_key__ = "terminal_slow_env"
 
             async def observe(self, negotiated: Any) -> Any:
@@ -349,6 +350,7 @@ class TestTheTerminalObserveCanFail:
         veto = RunAbort("banned page", source="dom_guard")
 
         class _GuardedEnv(EnvironmentBase):
+            __wiring__ = {"capabilities": "capability"}
             __registry_key__ = "terminal_guarded_env"
 
             async def observe(self, negotiated: Any) -> Any:

@@ -127,21 +127,26 @@ class TestWiring:
         # Screenshot, browser_meta and step_info are optional. The agent
         # renders its own bounded action history, not loop.history.
         wiring = SkyvernAgent.__wiring__
-        assert wiring["observation"] == (
-            "observation",
-            ["dom", "platform", "task"],
-            [
+        assert wiring["observation"] == {
+            "registry": "observation",
+            "keys": ["dom", "platform", "task"],
+            "optional_keys": [
                 "screenshot",
                 "browser_meta",
                 "step_info",
             ],
-        )
+            "declare_only": True,
+        }
 
     def test_no_wiring_key_names_a_capability(self) -> None:
         for entry in SkyvernAgent.__wiring__.values():
             if isinstance(entry, str):
                 continue
-            for key_list in entry[1:]:
+            for key_list in (
+                [entry["keys"], entry.get("optional_keys", [])]
+                if isinstance(entry, dict)
+                else entry[1:]
+            ):
                 assert all("." not in k for k in key_list), key_list
 
 

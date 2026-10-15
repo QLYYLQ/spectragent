@@ -11,10 +11,6 @@ fail).
 Every action a translator hands back passes its action's ``Params`` — a
 translation that produced an action its executor could not read would be a
 training label for a reply that fails.
-
-.. note::
-   No ``from __future__ import annotations``: conscribe reads the knobs'
-   ``Annotated`` metadata from the ``__init__`` signature.
 """
 
 from collections.abc import Sequence

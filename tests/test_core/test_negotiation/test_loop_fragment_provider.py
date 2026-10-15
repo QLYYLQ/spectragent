@@ -33,6 +33,8 @@ from tests._helpers.archive_fakes import (
 )
 from tests._helpers.assembly import AGENT_ID, make_run
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 
 class _TaskOnlyLoop(ReactLoop):
     """A ReAct loop that builds the task and nothing else."""

@@ -33,10 +33,6 @@ one place that rule is spelled; :func:`document_miss_total` and the flywheel
 metrics count through it) and :func:`diverged_steps` — "this step diverged"
 is derived at read time: the step's log holds a main-frame document miss. No
 ``StepRecord`` field carries it (M31's ``restoration`` is separate).
-
-.. note::
-   No ``from __future__ import annotations`` — the browser replay package
-   rule.
 """
 
 import hashlib

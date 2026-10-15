@@ -21,9 +21,6 @@ event (the recorder participant defaults). The entry type and the readers
 live with the replay (``replay/replay_log.py``); this side sees plain JSON
 dicts (:class:`~.base.ReplayLogFeed`), so the archive package never imports a
 replay type.
-
-.. note::
-   No ``from __future__ import annotations`` — the archive package rule.
 """
 
 from typing import Annotated, ClassVar

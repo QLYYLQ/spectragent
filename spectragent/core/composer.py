@@ -1,28 +1,10 @@
 """ConfigComposer — turn a validated YAML/dict into fully-wired runtime instances.
 
-conscribe gives us four pieces:
-
-1. ``build_composed_config(inline_wiring=True)``: produces a top-level
-   Pydantic model whose wired fields are *inlined* as nested discriminated
-   unions of the target layer's per-key models.
-2. ``parse_wiring(cls)``: normalized wiring specs (Mode 1/2/3).
-3. ``WiredField`` descriptor: raises a clear ``AttributeError`` on read if
-   the framework forgot to inject.
-4. ``resolve_wiring(cls)``: reports whether each wiring entry is an
-   ``__init__`` param or a setattr-injected receptor.
-
-ConfigComposer stitches them together.
-
-**Injection is driven by ``parse_wiring(cls)``, not by the config model.**
-The config model only *supplies values*. A wiring entry becomes a runtime
-receptor if — and only if — the owning class declares a slot for it: an
-``__init__`` parameter or a class-level annotation. That single rule
-separates real receptors (``agent.llm``, ``env.capabilities``,
-``capability.backend``) from pure negotiation declarations
-(``agent.observation``, ``agent.action``), which live in ``__wiring__``
-so conscribe can constrain them in the schema but have no runtime slot
-to fill. Receptor-ness is therefore a property of the *class*, never of
-the caller's registrar dict.
+conscribe 2.0 builds the typed schema and exposes constructor and receptor
+reflection through ``conscribe.introspect``. The Composer constructs instances
+and injects them through the slots that reflection describes. Negotiation-only
+entries use ``declare_only`` and reject supplied YAML values because they have
+no runtime consumer.
 
 **Instance identity is a config-supplied ``id:``**, falling back to
 ``f"{registry_key}#{ordinal}"``. ``by_layer`` is keyed by that instance
@@ -32,8 +14,8 @@ The conscribe registry key is only ever used to look the *class* up.
 **An omitted receptor is "not set", never "empty".** A list or dict
 receptor the config leaves out adopts the matching instances of its
 layer's top-level section; when there are none, the owner's own default
-stands (an empty container is what ``[]`` says). A receptor its owner
-lists in ``__inline_only__`` is never adopted at all: it is filled from
+stands (an empty container is what ``[]`` says). A receptor targeting an
+``inline_only`` registrar is never adopted at all: it is filled from
 its own config block or keeps the owner's default, and its layer's
 top-level section is refused, naming where the instances go
 (``docs/architecture_design.md`` §4.2.1; ``trace_writer.archive`` is the
@@ -42,15 +24,14 @@ case: archiving has one switch).
 
 from __future__ import annotations
 
-import inspect
-import typing
 from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, ClassVar, Literal, get_args, get_origin
+from typing import Any, Literal, get_origin
 
 from conscribe import build_composed_config, discover
-from conscribe.wiring import WiringSpec, parse_wiring
+from conscribe.introspect import init_param_names, receptor_slots, wiring_slots
+from conscribe.wiring import WiringSpec
 from pydantic import BaseModel
 
 
@@ -68,10 +49,6 @@ class UnresolvedWiringError(ComposeError):
 
 class DuplicateInstanceIdError(ComposeError):
     """Two config entries in one layer claimed the same instance id."""
-
-
-class InlineOnlyLayerError(ComposeError):
-    """A top-level section for a layer whose instances are written only inline."""
 
 
 @dataclass(frozen=True)
@@ -202,23 +179,15 @@ class ConfigComposer:
             discover(root)
         if not registrars:
             raise ComposeError("ConfigComposer requires at least one registrar.")
-        for layer, reg in registrars.items():
-            if not reg.keys():
-                raise ComposeError(
-                    f"Layer {layer!r} has no registered implementations — "
-                    f"``build_composed_config`` cannot build a Union of no types. "
-                    f"Either register at least one subclass or omit this layer."
-                )
         self._registrars = registrars
-        self._composed = build_composed_config(registrars, inline_wiring=True)
+        self._composed = build_composed_config(
+            registrars, inline_wiring=True, top_level_extra="forbid"
+        )
         # Reverse index: per-key Pydantic model → (layer_name, registry_key).
         self._model_to_lk: dict[type[BaseModel], tuple[str, str]] = {}
         for layer, result in self._composed.layer_results.items():
             for key, model in result.per_key_models.items():
                 self._model_to_lk[model] = (layer, key)
-        #: Layer → the receptors its instances are written under, for every
-        #: layer some owner fills only inline (``__inline_only__``).
-        self._inline_only = _inline_only_layers(registrars)
 
     @cached_property
     def top_level_type(self) -> type[BaseModel]:
@@ -233,36 +202,15 @@ class ConfigComposer:
     def compose(self, raw: dict | BaseModel) -> ComposedRun:
         """Validate, instantiate (leaves-first), inject, assemble."""
         cfg = raw if isinstance(raw, BaseModel) else self.top_level_type.model_validate(raw)
-        self._refuse_inline_only_sections(cfg)
         state = _State(by_layer={layer: {} for layer in self._registrars})
 
-        for layer in self._composed.dependency_order:
+        for layer in self._composed.top_level_layers:
             entries = getattr(cfg, layer, None) or []
             for idx, entry in enumerate(entries):
                 self._instantiate(entry, state, path=f"{layer}[{idx}]")
 
         self._resolve_deferred(state)
         return ComposedRun(by_layer=state.by_layer, top_level_cfg=cfg)
-
-    def _refuse_inline_only_sections(self, cfg: BaseModel) -> None:
-        """Refuse a top-level section whose instances only a receptor's own block may hold.
-
-        conscribe generates a top-level section for every layer, so the
-        section validates; nothing would ever adopt its instances, so it is
-        refused before anything is built, naming where they go.
-        """
-        for layer, receptors in self._inline_only.items():
-            entries = getattr(cfg, layer, None) or []
-            if not entries:
-                continue
-            keys = [
-                self._lookup_layer_key(entry, f"{layer}[{i}]")[1] for i, entry in enumerate(entries)
-            ]
-            raise InlineOnlyLayerError(
-                f"The top-level {layer!r} section is not accepted: {layer} instances are "
-                f"written only inline, under {' or '.join(receptors)}. Move "
-                f"{'its entry' if len(keys) == 1 else f'its {len(keys)} entries'} {keys} there."
-            )
 
     # -- Per-instance assembly ---------------------------------------
 
@@ -278,10 +226,8 @@ class ConfigComposer:
         registrar = self._registrars[layer]
         cls = registrar.get(key)
         discriminators = _discriminator_names(registrar)
-        init_params = _init_param_names(cls)
-        slots = _receptor_slots(cls)
-        wiring_by_name = {spec.param_name: spec for spec in parse_wiring(cls)}
-        inline_only = _inline_only_names(cls)
+        init_params = set(init_param_names(cls))
+        wiring = wiring_slots(cls)
         model_fields = type(cfg).model_fields
 
         instance_id = self._claim_instance_id(cfg, state, layer, key, path)
@@ -291,8 +237,9 @@ class ConfigComposer:
         deferred: list[tuple[str, WiringSpec]] = []
 
         # -- Pass A: wiring-driven receptors (the primary driver) ----
-        for name, spec in wiring_by_name.items():
-            if name not in slots:
+        for name, entry in wiring.items():
+            spec = entry.spec
+            if entry.declare_only or entry.slot is None:
                 # Pure negotiation declaration: conscribe keeps it in the
                 # schema so illegal combinations fail Pydantic validation,
                 # but the class has no attribute to receive it. Injecting
@@ -325,7 +272,7 @@ class ConfigComposer:
                 )
             value = getattr(cfg, name, None) if name in model_fields else None
             if value is None:
-                if name in inline_only:
+                if self._registrars[spec.registry_name].inline_only:
                     # Filled from its own block or not at all: omitted or
                     # null leaves the owner's default, never the pool.
                     continue
@@ -349,7 +296,7 @@ class ConfigComposer:
 
         # -- Pass B: plain config fields -----------------------------
         for name in model_fields:
-            if name in wiring_by_name:
+            if name in wiring:
                 continue
             value = getattr(cfg, name)
             if name in discriminators and not isinstance(value, BaseModel):
@@ -358,7 +305,7 @@ class ConfigComposer:
                 # config, so it falls through to the splat branch below.
                 continue
             if name in init_params:
-                init_kwargs[name] = _unwrap_nested_model(value)
+                init_kwargs[name] = value
             elif isinstance(value, BaseModel):
                 # A nested sub-config whose owner exposes it as a
                 # read-only property rather than an ``__init__`` param —
@@ -438,13 +385,13 @@ class ConfigComposer:
         *,
         path: str,
     ) -> Any:
-        origin = get_origin(_slot_annotation(owner_cls, field_name))
+        shape = receptor_slots(owner_cls, names=[field_name])[field_name].shape
 
-        if origin is dict:
+        if shape == "dict":
             items = self._as_instance_list(value, state, path)
             return {state.instance_id_of(inst, path): inst for inst in items}
 
-        if origin is list:
+        if shape == "list":
             return self._as_instance_list(value, state, path)
 
         # Single.
@@ -486,10 +433,10 @@ class ConfigComposer:
                 for inst_id, inst in pool.items()
                 if allowed is None or state.registry_key_of(inst) in allowed
             }
-            origin = get_origin(_slot_annotation(item.owner_cls, item.field_name))
+            shape = receptor_slots(item.owner_cls, names=[item.field_name])[item.field_name].shape
 
             if (
-                origin in (dict, list)
+                shape in ("dict", "list")
                 and not selected
                 and _holds_own_value(item.owner, item.field_name)
             ):
@@ -498,9 +445,9 @@ class ConfigComposer:
                 # every wired action). An empty container would say "none",
                 # which is what ``[]`` in the config says — never omission.
                 continue
-            if origin is dict:
+            if shape == "dict":
                 resolved: Any = selected
-            elif origin is list:
+            elif shape == "list":
                 resolved = list(selected.values())
             elif len(selected) == 1:
                 resolved = next(iter(selected.values()))
@@ -542,7 +489,7 @@ class ConfigComposer:
             if sub_name not in value.model_fields_set:
                 continue
             if sub_name in init_params:
-                merged[sub_name] = _unwrap_nested_model(getattr(value, sub_name))
+                merged[sub_name] = getattr(value, sub_name)
             elif get_origin(sub_field.annotation) is Literal:
                 continue  # nested discriminator tag, e.g. ``name: 'azure'``
             else:
@@ -597,70 +544,6 @@ def _is_populated(value: Any) -> bool:
     return not (isinstance(value, list | dict) and not value)
 
 
-def _init_param_names(cls: type) -> set[str]:
-    """Names ``cls.__init__`` accepts *by name*.
-
-    ``*args`` / ``**kwargs`` are excluded. They name no option, so they
-    claim none — the same rule ``_setup_keys`` applies to ``setup()``.
-    Counting them let a ``def __init__(self, **kwargs)`` class advertise
-    a parameter literally called ``kwargs``, which is never what a config
-    field is called, while the field the config *did* carry fell through
-    to the "no matching __init__ parameter" error.
-    """
-    try:
-        sig = inspect.signature(cls.__init__)
-    except (ValueError, TypeError):
-        return set()
-    return {
-        p.name
-        for p in sig.parameters.values()
-        if p.name != "self" and p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)
-    }
-
-
-def _safe_type_hints(cls: type) -> dict[str, Any]:
-    try:
-        return typing.get_type_hints(cls)
-    except Exception:
-        hints: dict[str, Any] = {}
-        for klass in cls.__mro__:
-            hints.update(getattr(klass, "__annotations__", {}))
-        return hints
-
-
-def _receptor_slots(cls: type) -> set[str]:
-    """Names *cls* can actually receive a value on.
-
-    An ``__init__`` parameter or a non-``ClassVar`` class-level
-    annotation anywhere in the MRO. This is the single rule that decides
-    whether a ``__wiring__`` entry is a runtime receptor or a
-    schema-only negotiation declaration.
-    """
-    names = _init_param_names(cls)
-    for klass in cls.__mro__:
-        for name, annotation in getattr(klass, "__annotations__", {}).items():
-            if name.startswith("__") or _is_classvar(annotation):
-                continue
-            names.add(name)
-    return names
-
-
-def _is_classvar(annotation: Any) -> bool:
-    if isinstance(annotation, str):
-        return annotation.startswith(("ClassVar", "typing.ClassVar"))
-    return get_origin(annotation) is ClassVar or annotation is ClassVar
-
-
-def _slot_annotation(cls: type, name: str) -> Any:
-    """Resolved annotation for a receptor slot, or ``None`` if untyped."""
-    annotation = _safe_type_hints(cls).get(name)
-    if annotation is None:
-        return None
-    if get_origin(annotation) is typing.Annotated:
-        annotation = get_args(annotation)[0]
-    return annotation
-
-
 def _allowed_keys(spec: WiringSpec) -> frozenset[str] | None:
     """Registry keys a wiring spec accepts (``None`` = every key)."""
     if spec.allowed_keys is None and spec.optional_keys is None:
@@ -681,77 +564,11 @@ def _holds_own_value(owner: Any, name: str) -> bool:
     return True
 
 
-def _inline_only_names(cls: type) -> frozenset[str]:
-    """The receptors *cls* fills only from its own config block (``__inline_only__``)."""
-    return frozenset(getattr(cls, "__inline_only__", ()))
-
-
-def _inline_only_layers(registrars: dict[str, Any]) -> dict[str, tuple[str, ...]]:
-    """Every layer some receptor owner fills only inline, and the receptors that do.
-
-    A receptor in its owner's ``__inline_only__`` is a list or dict receptor
-    that never adopts the pool of a top-level section, so that section has
-    no reader: the Composer refuses it. Returned as ``{layer: ("<key>.<receptor>",
-    ...)}`` (``{"archiver": ("trace_writer.archive",)}``), the text of the refusal.
-
-    Raises:
-        ComposeError: A declaration names no list or dict receptor of its
-            class, or another receptor still adopts the same layer from the
-            pool — the section would then be both refused and needed.
-    """
-    inline: dict[str, list[str]] = defaultdict(list)
-    pooled: dict[str, list[str]] = defaultdict(list)
-    for registrar in registrars.values():
-        # A snapshot of the classes, not a lookup per key: reading declarations
-        # resolves nothing (a sweep that scores nothing never asks for an eval loader).
-        for key, cls in sorted(registrar.get_all().items()):
-            declared = _inline_only_names(cls)
-            slots = _receptor_slots(cls)
-            receptors = {s.param_name: s for s in parse_wiring(cls) if s.param_name in slots}
-            containers = {
-                name
-                for name in receptors
-                if get_origin(_slot_annotation(cls, name)) in (dict, list)
-            }
-            if declared - containers:
-                raise ComposeError(
-                    f"{cls.__name__}.__inline_only__ names {sorted(declared - containers)}, "
-                    f"which are not list or dict receptors of the class (its list and dict "
-                    f"receptors: {sorted(containers)})."
-                )
-            for name, spec in receptors.items():
-                where = inline if name in declared else pooled
-                where[spec.registry_name].append(f"{key}.{name}")
-    clashes = sorted(layer for layer in inline if layer in pooled)
-    if clashes:
-        raise ComposeError(
-            "A layer cannot be both written only inline and adopted from its top-level "
-            "section: "
-            + "; ".join(
-                f"{layer!r}: inline-only for {inline[layer]}, adopted by {pooled[layer]}"
-                for layer in clashes
-            )
-        )
-    return {layer: tuple(where) for layer, where in inline.items() if layer in registrars}
-
-
-def _unwrap_nested_model(value: Any) -> Any:
-    """Flatten nested Pydantic models back to dicts for __init__ consumption."""
-    if isinstance(value, BaseModel):
-        return value.model_dump()
-    if isinstance(value, list):
-        return [_unwrap_nested_model(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _unwrap_nested_model(v) for k, v in value.items()}
-    return value
-
-
 __all__ = [
     "ComposeError",
     "ComposedRun",
     "ConfigComposer",
     "DuplicateInstanceIdError",
-    "InlineOnlyLayerError",
     "InstantiationError",
     "UnresolvedWiringError",
 ]

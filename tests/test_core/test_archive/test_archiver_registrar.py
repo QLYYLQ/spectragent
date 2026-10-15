@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
+import pytest
 from conscribe.config.extractor import extract_config_schema
 from conscribe.registration.registry import get_registry
 from pydantic import Field
@@ -36,6 +37,8 @@ from tests._helpers.archive_fakes import (
     FakeStepArchiver,
     FakeUnprovidedArchiver,
 )
+
+pytestmark = pytest.mark.usefixtures("archive_fakes")
 
 _ARCHIVE_PACKAGE = Path(archive_pkg.__file__).parent
 

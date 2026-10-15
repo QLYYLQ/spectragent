@@ -25,19 +25,6 @@ never calls a capture method on an archiver. An archiver's knobs are
 ``Annotated`` constructor parameters on its subclass, and the instances
 travel with them: the trace hook holds them, ``bind_archivers`` hands them
 to the capability.
-
-.. note::
-   No ``from __future__ import annotations`` in any module of this
-   package — the repository's rule for every module that declares
-   conscribe ``Annotated`` config fields (``af-trace-and-hooks`` §6). Under
-   PEP 563 a knob's annotation is a string that has to resolve in the
-   globals of the module defining it, and one that does not resolve
-   carries no field info, so ``__config_annotated_only__`` drops the knob
-   from the generated config — silently.
-   ``tests/test_generated/test_no_dropped_annotated_fields.py`` catches it:
-   it visits every layer ``_collect_registrars()`` returns, ``archiver``
-   among them, and reads both class-level annotations and the parameters of
-   a hand-written ``__init__``.
 """
 
 from typing import ClassVar, Protocol, runtime_checkable
@@ -80,6 +67,7 @@ ArchiverRegistrar = create_registrar(
     Archiver,
     discriminator_field="archiver_id",
     key_separator=ARCHIVER_KEY_SEPARATOR,
+    inline_only=True,
 )
 
 

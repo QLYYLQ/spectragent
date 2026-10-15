@@ -18,6 +18,7 @@ from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 
 class SimpleCap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "rt_simple_cap"
     __wiring__ = {"action": ("action", ["rt_simple_cap.done"])}
 
@@ -29,6 +30,7 @@ class SimpleCap(CapabilityBase):
 
 
 class SimpleEnv(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "rt_simple_env"
 
 
@@ -100,6 +102,7 @@ class _ClickTypeCap(CapabilityBase):
 
 
 class _CompositeDoneCap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "rt_composite_cap_done"
     __wiring__ = {"action": ("action", ["finish.done"])}
 

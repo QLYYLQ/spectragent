@@ -45,9 +45,6 @@ It holds:
 - **Privacy** — ``contains_session_state``, ``fresh_profile``, the evidence
   privacy ``level`` (``session_state`` when any bound archiver keeps session
   state, else ``redacted``) and the bound archivers' markers.
-
-.. note::
-   No ``from __future__ import annotations`` — the archive package rule.
 """
 
 import hashlib

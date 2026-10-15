@@ -75,6 +75,8 @@ from tests._helpers.trace_builder import (
     usage,
 )
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 #: What a negotiation binding both fake archivers yields — for the scripted env.
 BOTH_BOUND = ArchiveNegotiationResult(
     active_archivers=frozenset({STEPS_KEY, BLOBS_KEY}),

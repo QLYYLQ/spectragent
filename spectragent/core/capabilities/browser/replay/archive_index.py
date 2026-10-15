@@ -46,10 +46,6 @@ else, so it opens no WARC and parses no index line.
 ``(step, line)`` — the read the replay loads with and the offline readers of
 the archive (``archive_stats.py``, the flywheel metrics, §4.16) share, so a
 line means one thing to both.
-
-.. note::
-   No ``from __future__ import annotations`` — the browser replay package
-   rule.
 """
 
 import hashlib

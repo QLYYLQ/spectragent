@@ -37,7 +37,9 @@ class TestStaticContract:
         # Wiring derives all four fragments from the registered resolvers.
         wiring = BrowserCapability.__wiring__
         assert "observation" in wiring
-        registry, frags = wiring["observation"]
+        entry = wiring["observation"]
+        registry, frags = entry["registry"], entry["keys"]
+        assert entry["declare_only"] is True
         assert registry == "observation"
         assert set(frags) == {
             "browser.dom",

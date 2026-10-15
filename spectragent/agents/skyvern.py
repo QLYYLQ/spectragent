@@ -53,23 +53,24 @@ class SkyvernAgent(AgentBase):
         "agent_loop": ("agent_loop", ["react", "branch"]),
         # DOM is required, screenshot is optional (Skyvern is mostly
         # element-tree based but can use vision when available).
-        "observation": (
-            "observation",
-            ["dom", "platform", "task"],
-            [
+        "observation": {
+            "registry": "observation",
+            "keys": ["dom", "platform", "task"],
+            "optional_keys": [
                 "screenshot",
                 "browser_meta",
                 "step_info",
             ],
-        ),
+            "declare_only": True,
+        },
         # The *negotiated* action names are Skyvern's vocabulary:
         # ``prepare()`` renders those descriptors into the system prompt
         # verbatim, so there is no second verb list to keep in sync and
         # no translation table to drift.
-        "action": (
-            "action",
-            ["click", "type", "done"],
-            [
+        "action": {
+            "registry": "action",
+            "keys": ["click", "type", "done"],
+            "optional_keys": [
                 "scroll",
                 "send_keys",
                 "go_back",
@@ -77,7 +78,8 @@ class SkyvernAgent(AgentBase):
                 "select_dropdown",
                 "extract_content",
             ],
-        ),
+            "declare_only": True,
+        },
         "llm": "llm",
     }
 

@@ -23,9 +23,6 @@ Knobs:
 - ``pace`` — ``none`` (default) or ``recorded_llm_latency``: wait, before
   executing step ``k``'s actions, as long as the source run waited for its
   model at step ``k``, so asynchronous loading settles as it did then.
-
-No ``from __future__ import annotations``: conscribe reads the knobs'
-``Annotated`` metadata at class creation.
 """
 
 import asyncio

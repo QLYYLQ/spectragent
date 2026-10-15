@@ -61,6 +61,8 @@ from tests._helpers.archive_fakes import (
     StructuralCapability,
 )
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 FACTORY_IDS = sorted(HARNESS_FACTORIES)
 
 

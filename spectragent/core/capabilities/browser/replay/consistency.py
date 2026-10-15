@@ -45,10 +45,6 @@ all — a side without a launch-flag digest — is a note
 (:func:`consistency_notes`). A ``none`` recording's DPR is a measured host
 fact and is not compared; its time zone and locale are the browser's
 defaults and are.
-
-.. note::
-   No ``from __future__ import annotations`` — the browser replay package
-   rule.
 """
 
 from collections.abc import Mapping, Sequence

@@ -43,9 +43,6 @@ benchmark's (its revisit half is the browser's
 ``archive_stats.revisit_saving``); the dataset digest is
 ``core/trace/digest.py``'s, the one the tests use to prove a reader left a run
 untouched.
-
-.. note::
-   No ``from __future__ import annotations``: pydantic models throughout.
 """
 
 import gzip

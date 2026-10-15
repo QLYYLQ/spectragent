@@ -198,17 +198,22 @@ class TestWiring:
         # mode needs is required, what a mode promotes or excludes is
         # optional. ``dom`` is optional here and promoted to required by
         # both DOM modes — see ``_MODE_DEMAND``.
-        assert wiring["observation"] == (
-            "observation",
-            ["screenshot", "platform", "task"],
-            ["dom", "browser_meta", "step_info", "history"],
-        )
+        assert wiring["observation"] == {
+            "registry": "observation",
+            "keys": ["screenshot", "platform", "task"],
+            "optional_keys": ["dom", "browser_meta", "step_info", "history"],
+            "declare_only": True,
+        }
 
     def test_no_wiring_key_names_a_capability(self) -> None:
         for entry in BrowserUseAgent.__wiring__.values():
             if isinstance(entry, str):
                 continue
-            for key_list in entry[1:]:
+            for key_list in (
+                [entry["keys"], entry.get("optional_keys", [])]
+                if isinstance(entry, dict)
+                else entry[1:]
+            ):
                 assert all("." not in k for k in key_list), key_list
 
 

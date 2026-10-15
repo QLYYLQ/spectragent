@@ -36,6 +36,8 @@ from tests._helpers.archive_fakes import make_archive_run
 from tests._helpers.assembly import make_env, make_run
 from tests._helpers.browser_archive import OwnedBrowser
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 #: The seven L1 tasks whose start page is text or several sites (the 2026-10-14 screening).
 L1_NOT_A_URL = {"5", "7", "216", "217", "218", "221", "223"}
 

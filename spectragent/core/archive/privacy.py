@@ -43,12 +43,6 @@ key ``BrowserCapability.setup`` accepts, though no shipped entry point
 routes it through the setup context). Covering any of them is a new rule —
 and a new :data:`PRIVACY_POLICY`. Recorded as a to-do, not done: the
 user's ruling of 2026-10-13 keeps traces on the machine that recorded them.
-
-.. note::
-   No ``from __future__ import annotations`` — the package rule
-   (:mod:`spectragent.core.archive._registrar`). This is also the one
-   module of the package ``core/trace`` may import (``TaskSetupRecord``
-   types its ledger with :class:`RedactionLedger`).
 """
 
 import re

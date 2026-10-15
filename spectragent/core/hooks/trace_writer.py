@@ -43,13 +43,6 @@ is kept and no archive method is ever called.
 
 Registered via conscribe as hook_id="trace_writer". See
 ``docs/architecture_design.md`` §4.6 and §5.4.
-
-.. note::
-   No ``from __future__ import annotations`` here — ``trace_dir`` must
-   stay a real ``Annotated[...]`` object in the signature of the
-   hand-written ``__init__``, which is where conscribe reads it from (and
-   where any future subclass living in another module must resolve it;
-   see the same note on ``hooks/_registrar.py``).
 """
 
 import logging
@@ -155,20 +148,15 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     With a non-empty :attr:`archive` it also records environment evidence:
     see the module docstring and ``docs/architecture_design.md`` §5.4.
 
-    **Not a** ``@dataclass``. ``archive`` is a receptor wired from YAML
-    (``__wiring__ = {"archive": "archiver"}``), and conscribe's metaclass
-    reads ``inspect.signature(__init__)`` at class creation — before
-    ``@dataclass`` would have synthesised one — so a receptor that is a
-    dataclass field looks unreceived and loses its default to a
-    ``WiredField`` (``af-add-a-receptor`` §6). The knobs are named
-    ``Annotated`` parameters of the hand-written ``__init__``, and the
-    receptor's class-level annotation is on :class:`_TraceWriterReceptors`.
+    The explicit constructor initializes recording state and exposes named
+    ``Annotated`` knobs. ``archive`` is a receptor wired from YAML; its
+    source annotation is on :class:`_TraceWriterReceptors`.
 
     **YAML** (``docs/architecture_design.md`` §4.2.1, §5.4): the ``archive:``
     list is the one switch for archiving. Written, it builds the archivers in
     place; omitted, ``null`` or ``[]``, nothing is recorded. A top-level
     ``archiver:`` section is refused at compose time, with a message naming
-    ``trace_writer.archive`` (``__inline_only__``).
+    ``hook[trace_writer].archive`` (``ArchiverRegistrar.inline_only``).
     """
 
     __registry_key__ = "trace_writer"
@@ -178,7 +166,6 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
     # Archiving has one switch (the user's ruling of 2026-10-13): the list is
     # filled from this hook's own block or not at all, never adopted from a
     # top-level ``archiver:`` section, which ``ConfigComposer`` therefore refuses.
-    __inline_only__: ClassVar[frozenset[str]] = frozenset({"archive"})
     __intercepts__ = [
         # The one recording point for LLM calls — see :meth:`around_ainvoke`.
         Intercept("ainvoke", role="llm", advice="around"),

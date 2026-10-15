@@ -40,21 +40,11 @@ thousand times. The sources are scanned on first use (``task_ids``,
 ``__getitem__``, ``get``, ``len``, ``get_task_context``, ``skipped``).
 
 **Not a dataclass.** ``TaskLoaderBase`` loads in ``__post_init__``, before
-the Composer injects receptors, and conscribe reads ``__init__``'s signature
-at class creation (af-add-a-receptor §6), so ``__init__`` is hand-written:
+the Composer injects receptors, so this loader uses a hand-written ``__init__``:
 it takes the inherited ``subset`` / ``data_dir`` and the knobs, and never
 calls the dataclass machinery. ``step_selector`` is an annotation-only
 receptor with an in-Python default (``all``), the ``ArchiveNetworkSource
 .miss_policy`` shape.
-
-.. note::
-   ``from __future__ import annotations`` for the reason
-   ``archive_source.py`` gives: conscribe writes a ``.pyi`` stub next to a
-   class with an injected receptor and renders evaluated ``Annotated[...,
-   Field(...)]`` parameters as ``FieldInfo(...)`` reprs; PEP 563 strings are
-   copied verbatim. The class defines its own ``__init__`` and nothing
-   subclasses it, so no inherited string is resolved in a foreign module
-   (``tests/test_generated/test_no_dropped_annotated_fields.py`` checks).
 """
 
 from __future__ import annotations
@@ -103,14 +93,6 @@ logger = logging.getLogger(__name__)
 
 #: The Loop-input key ``BranchLoop`` declares.
 CHECKPOINT_KEY = "checkpoint"
-#: ``sources`` when the config leaves it null: every run directly under the root.
-DEFAULT_SOURCES: tuple[str, ...] = ("*",)
-#: ``require_archive`` when the config leaves it null: what an offline browser branch
-#: replays from (a null in YAML, because a list default cannot be written in a
-#: signature conscribe reads without being a shared mutable default).
-DEFAULT_REQUIRE_ARCHIVE: tuple[str, ...] = ("browser.network",)
-
-
 _REQUIRE_EVAL: TypeAdapter[RequireEval] = TypeAdapter(RequireEval)
 
 
@@ -154,16 +136,16 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             ),
         ] = None,
         sources: Annotated[
-            list[str] | None,
+            tuple[str, ...],
             Field(
                 description=(
                     "Globs relative to the sources root naming recorded run "
                     "directories; the matches are sorted by path, and a match without "
-                    "a manifest.json is not a run and is ignored. Null (the default): "
+                    "a manifest.json is not a run and is ignored. Default: "
                     "['*'], every run directly under the root."
                 ),
             ),
-        ] = None,
+        ] = ("*",),
         branches_per_step: Annotated[
             int,
             Field(ge=1, description="Branch tasks per selected checkpoint step (b0, b1, ...)."),
@@ -191,16 +173,16 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             ),
         ] = None,
         require_archive: Annotated[
-            list[str] | None,
+            tuple[str, ...],
             Field(
                 description=(
                     "Precondition: archiver keys each source must have recorded, with "
-                    "their capability's environment fingerprint committed. Null (the "
-                    "default): ['browser.network'], what an offline browser branch "
+                    "their capability's environment fingerprint committed. Default: "
+                    "['browser.network'], what an offline browser branch "
                     "replays from; [] requires none."
                 ),
             ),
-        ] = None,
+        ] = ("browser.network",),
         on_unbranchable: Annotated[
             Literal["raise", "skip"],
             Field(
@@ -216,7 +198,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
         self.step_selector = default_step_selector()
         self.subset = subset
         self.data_dir = data_dir
-        self.sources = tuple(sources) if sources is not None else DEFAULT_SOURCES
+        self.sources = tuple(sources)
         for pattern in self.sources:
             problem = source_pattern_problem(pattern)
             if problem is not None:
@@ -242,9 +224,7 @@ class TraceBranchesTaskLoader(TaskLoaderBase):
             if require_eval is None or isinstance(require_eval, RequireEval)
             else _REQUIRE_EVAL.validate_python(require_eval)
         )
-        self.require_archive = (
-            tuple(require_archive) if require_archive is not None else DEFAULT_REQUIRE_ARCHIVE
-        )
+        self.require_archive = tuple(require_archive)
         self.on_unbranchable = on_unbranchable
         self._tasks = {}
         self._contexts = {}

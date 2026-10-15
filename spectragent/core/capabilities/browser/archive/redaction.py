@@ -42,9 +42,6 @@ The rule version is :data:`BROWSER_REDACTION_POLICY`; every ledger these rules
 write carries it. ``tests/test_core/test_capabilities/test_browser_redaction.py``
 pins a digest of the rule sources, so a rule cannot change without the
 version changing with it.
-
-.. note::
-   No ``from __future__ import annotations`` — the archive package rule.
 """
 
 import copy

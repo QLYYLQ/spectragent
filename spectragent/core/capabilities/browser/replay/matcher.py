@@ -43,10 +43,6 @@ recorded, then the smaller URL (WPR).
 A ``Range`` request is answered from the archive's byte-range map and uses no
 cursor. A ``304`` is a candidate only for a conditional request. On a miss the
 result carries the three nearest records of the same host.
-
-.. note::
-   No ``from __future__ import annotations`` — the browser replay package
-   rule: ``MatcherConfig`` is a knob conscribe reads at class creation.
 """
 
 import dataclasses
@@ -96,10 +92,7 @@ _STRIPPED = frozenset(DEFAULT_STRIPPED_REQUEST_HEADERS)
 class MatcherConfig:
     """How hard the replay tries to match (``network_source.matcher``).
 
-    A pydantic dataclass rather than a ``BaseModel``: conscribe (1.3) imports
-    a non-``BaseModel`` knob type into the generated ``_composed.py`` but
-    assumes every ``BaseModel`` is a submodel it emitted itself, so a
-    ``BaseModel`` here would leave the generated module unimportable.
+    Frozen settings shared by the live matcher and generated configuration.
     """
 
     levels: list[MatchLevel] = Field(

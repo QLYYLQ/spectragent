@@ -40,6 +40,8 @@ from tests._helpers.archive_fakes import (
 )
 from tests._helpers.assembly import make_env
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 _REQ = CONSUMER_HOOK_ID
 _BOTH = sorted([BLOBS_KEY, STEPS_KEY])
 

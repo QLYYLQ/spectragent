@@ -6,6 +6,7 @@ from spectragent.core.environments._registrar import EnvironmentBase, Environmen
 class TestEnvironmentRegistration:
     def test_concrete_env_registers(self) -> None:
         class TestEnv(EnvironmentBase):
+            __wiring__ = {"capabilities": "capability"}
             __registry_key__ = "test_reg_env"
 
         assert EnvironmentRegistrar.get("test_reg_env") is TestEnv
@@ -13,12 +14,14 @@ class TestEnvironmentRegistration:
 
     def test_abstract_not_registered(self) -> None:
         class AbstractEnv(EnvironmentBase):
+            __wiring__ = {"capabilities": "capability"}
             __abstract__ = True
 
         assert EnvironmentRegistrar.get_or_none("abstract_env") is None
 
     def test_env_type_property(self) -> None:
         class TypeEnv(EnvironmentBase):
+            __wiring__ = {"capabilities": "capability"}
             __registry_key__ = "test_type_env"
 
         instance = TypeEnv(capabilities={})

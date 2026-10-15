@@ -19,10 +19,6 @@ package ``__init__`` never imports this module, so ``import
 spectragent.core.archive`` never pulls the trace layer in, and the
 ``core/trace`` → ``core.archive.privacy`` direction stays acyclic
 (``tests/test_core/test_archive/test_archive_boundaries.py`` pins both).
-
-.. note::
-   No ``from __future__ import annotations`` — the package rule
-   (:mod:`spectragent.core.archive._registrar`).
 """
 
 from collections.abc import Iterator, Mapping, Sequence

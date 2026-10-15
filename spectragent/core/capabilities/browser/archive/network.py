@@ -63,9 +63,6 @@ the source run's archive — so the cooperation check refuses this archiver
 there, by its ``fetch_response`` need, and names the one a replay binds
 instead: ``browser.replay_log`` (``archive/replay_log.py``), which records the
 replay server's decisions.
-
-.. note::
-   No ``from __future__ import annotations`` — the archive package rule.
 """
 
 import asyncio

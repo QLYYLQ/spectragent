@@ -52,6 +52,8 @@ from tests._helpers.archive_fakes import (
 )
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 
 @dataclass(frozen=True)
 class _Check:

@@ -572,7 +572,11 @@ class TestUITarsRunsWhereverItsVerbsExist:
         for entry in UITarsAgent.__wiring__.values():
             if isinstance(entry, str):
                 continue
-            for key_list in entry[1:]:
+            for key_list in (
+                [entry["keys"], entry.get("optional_keys", [])]
+                if isinstance(entry, dict)
+                else entry[1:]
+            ):
                 assert all("." not in key for key in key_list), key_list
 
     def test_actions_negotiate_against_browser(self) -> None:

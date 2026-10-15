@@ -14,10 +14,6 @@ directory, a name longer than a filesystem allows (:data:`MAX_SEGMENT_BYTES`)
 or a string UTF-8 cannot encode (a lone surrogate) would fail its commit —
 and fail again, the same way, every time the consumer retried the batch.
 Refusing it here keeps that failure at the capability that produced it.
-
-.. note::
-   No ``from __future__ import annotations`` — the package rule
-   (:mod:`spectragent.core.archive._registrar`).
 """
 
 import math

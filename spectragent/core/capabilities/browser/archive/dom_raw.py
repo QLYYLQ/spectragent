@@ -27,9 +27,6 @@ page across steps is stored once), carrying the capture redacted
 key, the tab and the document stamp; the cycle and capture time are its
 provenance. With the Skyvern cleaner the capture is the page script's raw
 output plus ``DOM.describeNode`` identities, redacted the same way.
-
-.. note::
-   No ``from __future__ import annotations`` — the archive package rule.
 """
 
 import asyncio

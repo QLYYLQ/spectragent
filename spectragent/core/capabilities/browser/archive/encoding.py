@@ -4,9 +4,6 @@ Deterministic on purpose: keys sorted, compact separators, no timestamp in a
 gzip header. A content-addressed file (``ArchiveFile.content_addressed``) is
 deduplicated by its bytes, so the same evidence must always encode to the
 same bytes.
-
-.. note::
-   No ``from __future__ import annotations`` — the archive package rule.
 """
 
 import gzip

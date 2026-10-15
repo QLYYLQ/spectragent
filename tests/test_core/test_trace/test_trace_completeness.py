@@ -42,6 +42,7 @@ _PNG = b"\x89PNG\r\n\x1a\n-pretend-this-is-a-screenshot"
 
 
 class _Cap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "trace_e2e_cap"
     __wiring__ = {
         "action": ("action", ["trace_e2e_cap.done", "trace_e2e_cap.click"]),
@@ -71,10 +72,12 @@ class _Cap(CapabilityBase):
 
 
 class _Env(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "trace_e2e_env"
 
 
 class _TeardownRecordingEnv(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "trace_e2e_teardown_env"
 
     torn_down = False

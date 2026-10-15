@@ -1,6 +1,6 @@
 """Receptors filled only inline, and what an omitted receptor means (§4.2.1).
 
-A receptor its owner lists in ``__inline_only__`` takes its instances from
+A receptor targeting an ``inline_only`` registrar takes its instances from
 its own config block or not at all: omitted or null leaves the owner's
 default, and the layer's top-level section is refused, naming the receptor.
 ``trace_writer.archive`` is the shipped case (archiving has one switch;
@@ -17,12 +17,10 @@ from typing import Annotated, Any, ClassVar, Protocol, runtime_checkable
 
 import pytest
 from conscribe import create_registrar
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from spectragent.core.composer import (
-    ComposeError,
     ConfigComposer,
-    InlineOnlyLayerError,
 )
 
 
@@ -36,10 +34,10 @@ class _OwnerP(Protocol):
     owner_id: str
 
 
-ItemReg = create_registrar("inl_item", _ItemP, discriminator_field="item_id")
+ItemReg = create_registrar("inl_item", _ItemP, discriminator_field="item_id", inline_only=True)
 OwnerReg = create_registrar("inl_owner", _OwnerP, discriminator_field="owner_id")
+PoolItemReg = create_registrar("pool_item", _ItemP, discriminator_field="item_id")
 PoolerReg = create_registrar("inl_pooler", _OwnerP, discriminator_field="owner_id")
-BadReg = create_registrar("inl_bad", _OwnerP, discriminator_field="owner_id")
 
 
 class _ItemBase(metaclass=ItemReg.Meta):
@@ -65,6 +63,9 @@ class _Blue(_ItemBase):
         pass
 
 
+PoolItemReg.register(key="blue")(_Blue)
+
+
 class _ItemReceptors:
     """Annotation-only list receptor slot (the ``_TraceWriterReceptors`` shape)."""
 
@@ -77,7 +78,6 @@ class _Keeper(_ItemReceptors, metaclass=OwnerReg.Meta):
     __registry_key__: ClassVar[str] = "keeper"
     __config_annotated_only__ = True
     __wiring__: ClassVar[dict[str, Any]] = {"items": "inl_item"}
-    __inline_only__: ClassVar[frozenset[str]] = frozenset({"items"})
 
     def __init__(
         self,
@@ -91,11 +91,11 @@ class _Keeper(_ItemReceptors, metaclass=OwnerReg.Meta):
 
 
 class _Pooler(_ItemReceptors, metaclass=PoolerReg.Meta):
-    """Adopts ``inl_item`` from the pool — clashes with ``_Keeper``'s declaration."""
+    """Adopts the ordinary ``pool_item`` layer from its instance pool."""
 
     __registry_key__: ClassVar[str] = "pooler"
     __config_annotated_only__ = True
-    __wiring__: ClassVar[dict[str, Any]] = {"items": "inl_item"}
+    __wiring__: ClassVar[dict[str, Any]] = {"items": "pool_item"}
 
     def __init__(
         self,
@@ -103,24 +103,6 @@ class _Pooler(_ItemReceptors, metaclass=PoolerReg.Meta):
     ) -> None:
         if items is not None:
             self.items = list(items)
-
-    @property
-    def owner_id(self) -> str:
-        return self.__registry_key__
-
-
-class _BadBase(metaclass=BadReg.Meta):
-    # A class with no base is the registrar's root and is never registered.
-    __abstract__ = True
-
-
-class _Misdeclared(_BadBase):
-    """Lists a name that is not one of its list or dict receptors."""
-
-    __registry_key__: ClassVar[str] = "misdeclared"
-    __config_annotated_only__ = True
-    __wiring__: ClassVar[dict[str, Any]] = {}
-    __inline_only__: ClassVar[frozenset[str]] = frozenset({"items"})
 
     @property
     def owner_id(self) -> str:
@@ -176,44 +158,31 @@ class TestAnInlineOnlyReceptor:
             "inl_item": [{"item_id": "red"}, {"item_id": "blue"}],
             "inl_owner": [{"owner_id": "keeper", **block}],
         }
-        with pytest.raises(InlineOnlyLayerError) as refused:
+        with pytest.raises(ValidationError) as refused:
             composer.compose(raw)
-        assert str(refused.value) == (
-            "The top-level 'inl_item' section is not accepted: inl_item instances are "
-            "written only inline, under keeper.items. Move its 2 entries ['red', 'blue'] "
-            "there."
-        )
+        error = refused.value.errors()[0]
+        assert error["type"] == "inline_only_layer"
+        assert error["loc"] == ("inl_item",)
+        assert "inl_owner[keeper].items" in error["msg"]
 
-    def test_an_empty_top_level_section_is_no_section(self, composer: ConfigComposer) -> None:
-        run = composer.compose({"inl_item": [], "inl_owner": [{"owner_id": "keeper"}]})
-        assert run.single("inl_owner").items == []
-
-
-class TestDeclarationsAreChecked:
-    def test_a_layer_another_receptor_adopts_from_the_pool(self) -> None:
-        with pytest.raises(ComposeError, match=r"'inl_item': inline-only for \['keeper.items'\]"):
-            ConfigComposer(
-                registrars={"inl_item": ItemReg, "inl_owner": OwnerReg, "inl_pooler": PoolerReg},
-                discover_roots=(),
-            )
-
-    def test_a_name_that_is_no_list_or_dict_receptor(self) -> None:
-        with pytest.raises(ComposeError, match=r"_Misdeclared.__inline_only__ names \['items'\]"):
-            ConfigComposer(registrars={"inl_item": ItemReg, "inl_bad": BadReg}, discover_roots=())
+    @pytest.mark.parametrize("value", [[], None])
+    def test_an_empty_top_level_section_is_refused(self, composer: ConfigComposer, value) -> None:
+        with pytest.raises(ValidationError, match="inline-only"):
+            composer.compose({"inl_item": value, "inl_owner": [{"owner_id": "keeper"}]})
 
 
 class TestAnOmittedReceptorWithNothingToAdopt:
-    """Without ``__inline_only__``: the pool when it has instances, else the owner's own value."""
+    """For ordinary pooled layers: the pool when it has instances, else the owner's own value."""
 
     @pytest.fixture(scope="class")
     def pooling(self) -> ConfigComposer:
         return ConfigComposer(
-            registrars={"inl_item": ItemReg, "inl_pooler": PoolerReg}, discover_roots=()
+            registrars={"pool_item": PoolItemReg, "inl_pooler": PoolerReg}, discover_roots=()
         )
 
     def test_adopts_the_top_level_section(self, pooling: ConfigComposer) -> None:
         run = pooling.compose(
-            {"inl_item": [{"item_id": "blue"}], "inl_pooler": [{"owner_id": "pooler"}]}
+            {"pool_item": [{"item_id": "blue"}], "inl_pooler": [{"owner_id": "pooler"}]}
         )
         assert [type(i) for i in run.single("inl_pooler").items] == [_Blue]
 
@@ -225,6 +194,9 @@ class TestAnOmittedReceptorWithNothingToAdopt:
 
     def test_an_explicit_empty_list_is_kept(self, pooling: ConfigComposer) -> None:
         run = pooling.compose(
-            {"inl_item": [{"item_id": "blue"}], "inl_pooler": [{"owner_id": "pooler", "items": []}]}
+            {
+                "pool_item": [{"item_id": "blue"}],
+                "inl_pooler": [{"owner_id": "pooler", "items": []}],
+            }
         )
         assert run.single("inl_pooler").items == []

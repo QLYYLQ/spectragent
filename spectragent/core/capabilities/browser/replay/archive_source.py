@@ -26,25 +26,10 @@ Knobs (all reachable from YAML; the generated config nests ``matcher`` and the
 - ``log_repeat_limit`` — identical log entries per collection before they fold
   into one ``summary`` (a polling page can miss a thousand times a minute).
 
-**Not a dataclass**, and ``__init__`` is hand-written: the source carries the
-``miss_policy`` receptor, and conscribe reads ``inspect.signature(__init__)``
-at class creation, before ``@dataclass`` would synthesise one (af-add-a-receptor
-§6). ``strict`` is imported above the class so its key is registered when
-``__wiring__`` is read.
+The explicit constructor stores replay settings and installs an in-Python
+``miss_policy`` default. ConfigComposer replaces it with the configured
+strategy. conscribe imports the nested matcher type and preserves its validators.
 
-.. note::
-   This module — unlike the other strategy modules of the package — uses
-   ``from __future__ import annotations``, for the reason ``capability.py``
-   does: conscribe writes a ``.pyi`` stub next to every class with an
-   injected receptor (``miss_policy``) and renders its ``__init__`` signature
-   as text. Evaluated ``Annotated[..., Field(...)]`` annotations come out as
-   ``FieldInfo(...)`` reprs (an invalid stub, measured: 25 pyright errors);
-   PEP 563 strings come out verbatim. The trap the package rule guards
-   against — a subclass resolving an inherited ``__init__``'s strings in its
-   own globals and dropping the field — cannot happen here: the class defines
-   its own ``__init__`` and nothing subclasses it, and
-   ``tests/test_generated/test_no_dropped_annotated_fields.py`` would catch a
-   dropped knob.
 """
 
 from __future__ import annotations

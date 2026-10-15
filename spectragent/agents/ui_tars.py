@@ -624,16 +624,18 @@ class UITarsAgent(AgentBase):
     # offer them.
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react", "branch"]),
-        "observation": (
-            "observation",
-            ["screenshot", "platform", "task"],
-            ["step_info"],
-        ),
-        "action": (
-            "action",
-            ["click_coordinate", "type_coordinate", "done"],
-            ["scroll", "send_keys", "drag", "wait"],
-        ),
+        "observation": {
+            "registry": "observation",
+            "keys": ["screenshot", "platform", "task"],
+            "optional_keys": ["step_info"],
+            "declare_only": True,
+        },
+        "action": {
+            "registry": "action",
+            "keys": ["click_coordinate", "type_coordinate", "done"],
+            "optional_keys": ["scroll", "send_keys", "drag", "wait"],
+            "declare_only": True,
+        },
         "llm": "llm",
     }
 
@@ -642,10 +644,6 @@ class UITarsAgent(AgentBase):
     # the Loop owns and enforces them, and AgentRuntime hands the limit to
     # ``prepare()`` so the prompt advertises exactly what will run.
     #
-    # Both Literals are written inline rather than through a module alias
-    # or computed: the generated stub cannot import a module-level alias
-    # (it would type the field ``Any``), and a ``Literal[tuple(...)]``
-    # renders through conscribe but costs a pyright error per field.
     # ``prompt_template``'s members are the on-disk stems, so nothing has
     # to case-fold a config value into a filename on the way to the loader
     # (``tests/test_agents/test_prompt_tree.py`` asserts the two agree);

@@ -13,10 +13,6 @@
 
 See ``docs/architecture_design.md`` §4.5 (the third provides axis), §4.6
 (a recorder pulling evidence) and §4.9 (the archiving contract).
-
-.. note::
-   No ``from __future__ import annotations`` — the package rule
-   (:mod:`spectragent.core.archive._registrar`).
 """
 
 from collections.abc import Sequence

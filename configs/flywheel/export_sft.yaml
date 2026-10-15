@@ -16,7 +16,7 @@ exporter:
     sample: per_step                 # the only v1 value
     image_store: files               # the only v1 value: images/<sha256><suffix>, stored once
     sources_root: traces             # null: traces in the working directory
-    sources: ["recorded/*"]          # globs under sources_root, sorted by path (null: ["*"])
+    sources: ["recorded/*"]          # globs under sources_root, sorted by path (default: ["*"])
     filters:
       agent_outcome: any             # done | max_steps | error | timeout | vetoed (the run's result.json);
                                      # an exported step is always one its trace is closed and complete through

@@ -17,10 +17,9 @@ capability for routing, concurrency and failure-isolation tests),
 the zero-overhead path of a run nobody archives), and :class:`CollectSpy`
 (the raw environment as the trace hook sees it, every collection recorded).
 
-**Registries are global** and shared with every other test module, so every
-key here is unique to this module (``contract_archive*`` /
-``contract_nowhere``). Never parametrize over a registry's keys at
-collection time (af-add-a-receptor §7).
+Registrations are captured with conscribe's ``isolated_registries`` and
+activated by the ``archive_fakes`` fixture only for tests that need them.
+Other tests therefore build their schemas from production registrations.
 
 The fake capability follows the archiving contract
 (``docs/architecture_design.md`` §4.9) on purpose:
@@ -42,10 +41,6 @@ The fake capability follows the archiving contract
 No custom ``__init__`` on the capability (``CapabilityBase.id`` must stay
 visible to conscribe, ``test_no_dropped_annotated_fields``): per-instance
 state lives in a holder created lazily in the instance ``__dict__``.
-
-.. note::
-   No ``from __future__ import annotations``: the fake archivers declare
-   ``Annotated`` knobs, which must stay real objects for conscribe.
 """
 
 import asyncio
@@ -55,6 +50,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Literal
 
+from conscribe.testing import isolated_registries
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as PydanticField
 
@@ -105,118 +101,140 @@ RUN_RECORD_NAME = "fingerprint.json"
 # ── archivers ──────────────────────────────────────────────────────
 
 
-class FakeStepArchiver(ArchiverBase):
-    """``contract_archive.steps`` — one JSON file per observation cycle.
+FAKES = isolated_registries()
 
-    Its one knob shows the shape every archiver's knobs take (an
-    ``Annotated`` constructor parameter) and how a privacy declaration is
-    *derived* from configuration rather than hard-coded.
-    """
+with FAKES:
 
-    __registry_key__ = STEPS_KEY
+    class FakeStepArchiver(ArchiverBase):
+        """``contract_archive.steps`` — one JSON file per observation cycle.
 
-    def __init__(
-        self,
-        redact: Annotated[
-            bool,
-            PydanticField(description="Apply the shared privacy rules to what it captures."),
-        ] = True,
-    ) -> None:
-        self.redact = redact
+        Its one knob shows the shape every archiver's knobs take (an
+        ``Annotated`` constructor parameter) and how a privacy declaration is
+        *derived* from configuration rather than hard-coded.
+        """
 
-    @property
-    def privacy_markers(self) -> frozenset[str]:
-        return frozenset({MARKER_REDACTED}) if self.redact else frozenset()
+        __registry_key__ = STEPS_KEY
 
+        def __init__(
+            self,
+            redact: Annotated[
+                bool,
+                PydanticField(description="Apply the shared privacy rules to what it captures."),
+            ] = True,
+        ) -> None:
+            self.redact = redact
 
-class FakeBlobArchiver(ArchiverBase):
-    """``contract_archive.blobs`` — a content-addressed body per action.
-
-    ``payload_bytes`` is read by the capability off the *bound instance*:
-    the knobs travel with the archivers the trace hook holds.
-    """
-
-    __registry_key__ = BLOBS_KEY
-
-    def __init__(
-        self,
-        payload_bytes: Annotated[
-            int,
-            PydanticField(ge=8, description="Size of each captured response body."),
-        ] = 32,
-    ) -> None:
-        self.payload_bytes = payload_bytes
+        @property
+        def privacy_markers(self) -> frozenset[str]:
+            return frozenset({MARKER_REDACTED}) if self.redact else frozenset()
 
 
-class FakeUnprovidedArchiver(ArchiverBase):
-    """Prefixed like the capability, missing from its provides."""
+with FAKES:
 
-    __registry_key__ = UNPROVIDED_KEY
+    class FakeBlobArchiver(ArchiverBase):
+        """``contract_archive.blobs`` — a content-addressed body per action.
 
+        ``payload_bytes`` is read by the capability off the *bound instance*:
+        the knobs travel with the archivers the trace hook holds.
+        """
 
-class FakeOrphanArchiver(ArchiverBase):
-    """Prefixed by a capability no environment here has."""
+        __registry_key__ = BLOBS_KEY
 
-    __registry_key__ = ORPHAN_KEY
-
-
-class StructuralCapabilityArchiver(ArchiverBase):
-    """Prefixed by :class:`StructuralCapability`, which cannot archive."""
-
-    __registry_key__ = "contract_archive_structural.x"
-
-
-class PeerAArchiver(ArchiverBase):
-    """Provided by the first :class:`PeerArchivingCapability`."""
-
-    __registry_key__ = PEER_A_KEY
+        def __init__(
+            self,
+            payload_bytes: Annotated[
+                int,
+                PydanticField(ge=8, description="Size of each captured response body."),
+            ] = 32,
+        ) -> None:
+            self.payload_bytes = payload_bytes
 
 
-class PeerBArchiver(ArchiverBase):
-    """Provided by the second :class:`PeerArchivingCapability`."""
+with FAKES:
 
-    __registry_key__ = PEER_B_KEY
+    class FakeUnprovidedArchiver(ArchiverBase):
+        """Prefixed like the capability, missing from its provides."""
+
+        __registry_key__ = UNPROVIDED_KEY
+
+
+with FAKES:
+
+    class FakeOrphanArchiver(ArchiverBase):
+        """Prefixed by a capability no environment here has."""
+
+        __registry_key__ = ORPHAN_KEY
+
+
+with FAKES:
+
+    class StructuralCapabilityArchiver(ArchiverBase):
+        """Prefixed by :class:`StructuralCapability`, which cannot archive."""
+
+        __registry_key__ = "contract_archive_structural.x"
+
+
+with FAKES:
+
+    class PeerAArchiver(ArchiverBase):
+        """Provided by the first :class:`PeerArchivingCapability`."""
+
+        __registry_key__ = PEER_A_KEY
+
+
+with FAKES:
+
+    class PeerBArchiver(ArchiverBase):
+        """Provided by the second :class:`PeerArchivingCapability`."""
+
+        __registry_key__ = PEER_B_KEY
 
 
 # ── the fragment and the actions the capability serves ─────────────
 
 
-class ContractArchiveObs(FragmentBase):
-    """``contract_archive.page`` — says which cycle it was captured in."""
+with FAKES:
 
-    __registry_key__ = PAGE_KEY
-    __source__: ClassVar[Literal["env", "loop"]] = "env"
-    cycle: int = 0
+    class ContractArchiveObs(FragmentBase):
+        """``contract_archive.page`` — says which cycle it was captured in."""
+
+        __registry_key__ = PAGE_KEY
+        __source__: ClassVar[Literal["env", "loop"]] = "env"
+        cycle: int = 0
 
 
 class _NoParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ContractArchiveDoneAction(ActionBase):
-    """``contract_archive.done`` — ends the run."""
+with FAKES:
 
-    __registry_key__ = DONE_KEY
-    Params = _NoParams
+    class ContractArchiveDoneAction(ActionBase):
+        """``contract_archive.done`` — ends the run."""
 
-    def descriptor(self, **context: Any) -> ActionDescriptor:
-        return self.describe("Finish the task.", **context)
+        __registry_key__ = DONE_KEY
+        Params = _NoParams
 
-    async def execute(self, params: dict[str, Any], *, capability: Any) -> ActionResult:
-        return await capability.execute_action(Action(name=self.action_id, params=dict(params)))
+        def descriptor(self, **context: Any) -> ActionDescriptor:
+            return self.describe("Finish the task.", **context)
+
+        async def execute(self, params: dict[str, Any], *, capability: Any) -> ActionResult:
+            return await capability.execute_action(Action(name=self.action_id, params=dict(params)))
 
 
-class ContractArchiveKeepGoingAction(ActionBase):
-    """``contract_archive.keep_going`` — a step that does not end the run."""
+with FAKES:
 
-    __registry_key__ = KEEP_GOING_KEY
-    Params = _NoParams
+    class ContractArchiveKeepGoingAction(ActionBase):
+        """``contract_archive.keep_going`` — a step that does not end the run."""
 
-    def descriptor(self, **context: Any) -> ActionDescriptor:
-        return self.describe("Take one more step.", **context)
+        __registry_key__ = KEEP_GOING_KEY
+        Params = _NoParams
 
-    async def execute(self, params: dict[str, Any], *, capability: Any) -> ActionResult:
-        return await capability.execute_action(Action(name=self.action_id, params=dict(params)))
+        def descriptor(self, **context: Any) -> ActionDescriptor:
+            return self.describe("Take one more step.", **context)
+
+        async def execute(self, params: dict[str, Any], *, capability: Any) -> ActionResult:
+            return await capability.execute_action(Action(name=self.action_id, params=dict(params)))
 
 
 # ── the capability ─────────────────────────────────────────────────
@@ -246,177 +264,185 @@ class FakeArchiveState:
     log: list[str] | None = None
 
 
-class FakeArchivingCapability(CapabilityBase):
-    """``contract_archive`` — a capability that provides two archivers."""
+with FAKES:
 
-    __registry_key__ = CAPABILITY_ID
-    __wiring__ = {
-        "action": ("action", [DONE_KEY, KEEP_GOING_KEY]),
-        "observation": ("observation", [PAGE_KEY]),
-        "archiver": ("archiver", [STEPS_KEY, BLOBS_KEY]),
-    }
+    class FakeArchivingCapability(CapabilityBase):
+        """``contract_archive`` — a capability that provides two archivers."""
 
-    # ── per-instance state, created on first use ──
+        __registry_key__ = CAPABILITY_ID
+        __wiring__ = {
+            "action": ("action", [DONE_KEY, KEEP_GOING_KEY]),
+            "observation": ("observation", [PAGE_KEY]),
+            "archiver": ("archiver", [STEPS_KEY, BLOBS_KEY]),
+        }
 
-    @property
-    def fake(self) -> FakeArchiveState:
-        state = self.__dict__.get("_fake_state")
-        if state is None:
-            state = FakeArchiveState()
-            self.__dict__["_fake_state"] = state
-        return state
+        # ── per-instance state, created on first use ──
 
-    @property
-    def bind_calls(self) -> int:
-        return self.fake.bind_calls
+        @property
+        def fake(self) -> FakeArchiveState:
+            state = self.__dict__.get("_fake_state")
+            if state is None:
+                state = FakeArchiveState()
+                self.__dict__["_fake_state"] = state
+            return state
 
-    @property
-    def collect_calls(self) -> int:
-        return self.fake.collect_calls
+        @property
+        def bind_calls(self) -> int:
+            return self.fake.bind_calls
 
-    @property
-    def broken(self) -> bool:
-        return self.fake.broken
+        @property
+        def collect_calls(self) -> int:
+            return self.fake.collect_calls
 
-    @broken.setter
-    def broken(self, value: bool) -> None:
-        self.fake.broken = value
+        @property
+        def broken(self) -> bool:
+            return self.fake.broken
 
-    @property
-    def bound_keys(self) -> tuple[str, ...]:
-        return tuple(a.archiver_id for a in self.fake.bound)
+        @broken.setter
+        def broken(self, value: bool) -> None:
+            self.fake.broken = value
 
-    def _note(self, event: str) -> None:
-        if self.fake.log is not None:
-            self.fake.log.append(event)
+        @property
+        def bound_keys(self) -> tuple[str, ...]:
+            return tuple(a.archiver_id for a in self.fake.bound)
 
-    def _bound(self, key: str) -> ArchiverBase | None:
-        return next((a for a in self.fake.bound if a.archiver_id == key), None)
+        def _note(self, event: str) -> None:
+            if self.fake.log is not None:
+                self.fake.log.append(event)
 
-    def _provenance(self, **ids: str) -> ArchiveProvenance:
-        return ArchiveProvenance(
-            captured_at=time.time(),
-            cycle=self.fake.cycle or None,
-            ids={"capability": CAPABILITY_ID, **ids},
-        )
+        def _bound(self, key: str) -> ArchiverBase | None:
+            return next((a for a in self.fake.bound if a.archiver_id == key), None)
 
-    # ── the archiving surface ──
-
-    def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
-        unknown = sorted(
-            a.archiver_id for a in archivers if a.archiver_id not in self.provided_archivers
-        )
-        if unknown:
-            raise ValueError(f"{CAPABILITY_ID} does not provide {unknown}")
-        self.fake.bind_calls += 1
-        self.fake.bound = tuple(archivers)
-        self.fake.run_record_due = bool(archivers)
-        self._note("bind")
-
-    async def collect_archive(self) -> ArchiveBatch:
-        self.fake.collect_calls += 1
-        self._note("collect")
-        if self.fake.broken:
-            raise RuntimeError(f"{CAPABILITY_ID}: collection broken on purpose")
-        if self.fake.run_record_due:
-            self.fake.run_record_due = False
-            self.fake.buffer.append(
-                ArchiveFile(
-                    archiver_id=CAPABILITY_ID,
-                    name=RUN_RECORD_NAME,
-                    media_type="application/json",
-                    data=json.dumps(
-                        {"capability": CAPABILITY_ID, "generation": self.fake.run_generation},
-                        sort_keys=True,
-                    ).encode("utf-8"),
-                    meta=self._provenance(),
-                    scope="run",
-                )
+        def _provenance(self, **ids: str) -> ArchiveProvenance:
+            return ArchiveProvenance(
+                captured_at=time.time(),
+                cycle=self.fake.cycle or None,
+                ids={"capability": CAPABILITY_ID, **ids},
             )
-        # The hand-over: one synchronous statement, so nothing a producer
-        # appends can fall between "read" and "clear".
-        files, self.fake.buffer = self.fake.buffer, []
-        return ArchiveBatch(tuple(files))
 
-    # ── helpers for tests and the contract harness ──
+        # ── the archiving surface ──
 
-    async def produce(self, step: int) -> None:
-        """Capture what one step of activity would: one cycle, one action.
+        def bind_archivers(self, archivers: Sequence[ArchiverBase]) -> None:
+            unknown = sorted(
+                a.archiver_id for a in archivers if a.archiver_id not in self.provided_archivers
+            )
+            if unknown:
+                raise ValueError(f"{CAPABILITY_ID} does not provide {unknown}")
+            self.fake.bind_calls += 1
+            self.fake.bound = tuple(archivers)
+            self.fake.run_record_due = bool(archivers)
+            self._note("bind")
 
-        *step* is the caller's bookkeeping only — the capability never
-        learns step numbers; it numbers the cycle itself.
+        async def collect_archive(self) -> ArchiveBatch:
+            self.fake.collect_calls += 1
+            self._note("collect")
+            if self.fake.broken:
+                raise RuntimeError(f"{CAPABILITY_ID}: collection broken on purpose")
+            if self.fake.run_record_due:
+                self.fake.run_record_due = False
+                self.fake.buffer.append(
+                    ArchiveFile(
+                        archiver_id=CAPABILITY_ID,
+                        name=RUN_RECORD_NAME,
+                        media_type="application/json",
+                        data=json.dumps(
+                            {"capability": CAPABILITY_ID, "generation": self.fake.run_generation},
+                            sort_keys=True,
+                        ).encode("utf-8"),
+                        meta=self._provenance(),
+                        scope="run",
+                    )
+                )
+            # The hand-over: one synchronous statement, so nothing a producer
+            # appends can fall between "read" and "clear".
+            files, self.fake.buffer = self.fake.buffer, []
+            return ArchiveBatch(tuple(files))
+
+        # ── helpers for tests and the contract harness ──
+
+        async def produce(self, step: int) -> None:
+            """Capture what one step of activity would: one cycle, one action.
+
+            *step* is the caller's bookkeeping only — the capability never
+            learns step numbers; it numbers the cycle itself.
+            """
+            await self.begin_observation(self.fake.cycle + 1)
+            await self.execute_action(Action(name=KEEP_GOING_KEY, params={}))
+
+        def change_run_record(self) -> None:
+            """Make the next collection carry a run record with new content."""
+            self.fake.run_generation += 1
+            self.fake.run_record_due = True
+
+        # ── capability behaviour ──
+
+        def get_action_descriptors(self, **context: Any) -> list[ActionDescriptor]:
+            return [
+                ContractArchiveDoneAction().descriptor(**context),
+                ContractArchiveKeepGoingAction().descriptor(**context),
+            ]
+
+        async def begin_observation(self, cycle: int) -> None:
+            self.fake.cycle = cycle
+            if self._bound(STEPS_KEY) is not None:
+                self.fake.buffer.append(
+                    ArchiveFile(
+                        archiver_id=STEPS_KEY,
+                        name=f"cycle_{cycle:03d}.json",
+                        media_type="application/json",
+                        data=json.dumps({"cycle": cycle}).encode("utf-8"),
+                        meta=self._provenance(frame="main"),
+                    )
+                )
+
+        async def resolve_fragment(self, fragment_key: str) -> Any:
+            if fragment_key != PAGE_KEY:
+                raise KeyError(fragment_key)
+            return ContractArchiveObs(cycle=self.fake.cycle)
+
+        async def execute_action(self, action: Any) -> ActionResult:
+            if action.name not in self.provided_actions:
+                return ActionResult(
+                    success=False, error=f"{CAPABILITY_ID} cannot run {action.name!r}"
+                )
+            self.fake.actions += 1
+            blobs = self._bound(BLOBS_KEY)
+            if isinstance(blobs, FakeBlobArchiver):
+                seed = f"response #{(self.fake.actions - 1) % 2}|".encode()
+                payload = (seed * (blobs.payload_bytes // len(seed) + 1))[: blobs.payload_bytes]
+                self.fake.buffer.append(
+                    ArchiveFile(
+                        archiver_id=BLOBS_KEY,
+                        name="response.bin",
+                        media_type="application/octet-stream",
+                        data=payload,
+                        meta=self._provenance(request=f"r{self.fake.actions}"),
+                        content_addressed=True,
+                    )
+                )
+            done = action.name == DONE_KEY
+            return ActionResult(
+                success=True, is_done=done, extracted_content="42" if done else None
+            )
+
+        async def setup(self, *, negotiation: Any = None, start_url: str | None = None) -> None:
+            await super().setup(negotiation=negotiation)
+            self.fake.setup_calls += 1
+            self.fake.start_url = start_url
+            self.fake.bound_at_setup = self.bound_keys
+            self._note("setup")
+
+
+with FAKES:
+
+    class QuietCapability(CapabilityBase):
+        """``contract_archive_quiet`` — a ``CapabilityBase`` that archives nothing.
+
+        Satisfies ``ArchivingCapability`` through the inert defaults: provides
+        no archivers, accepts an empty binding, collects an empty batch.
         """
-        await self.begin_observation(self.fake.cycle + 1)
-        await self.execute_action(Action(name=KEEP_GOING_KEY, params={}))
 
-    def change_run_record(self) -> None:
-        """Make the next collection carry a run record with new content."""
-        self.fake.run_generation += 1
-        self.fake.run_record_due = True
-
-    # ── capability behaviour ──
-
-    def get_action_descriptors(self, **context: Any) -> list[ActionDescriptor]:
-        return [
-            ContractArchiveDoneAction().descriptor(**context),
-            ContractArchiveKeepGoingAction().descriptor(**context),
-        ]
-
-    async def begin_observation(self, cycle: int) -> None:
-        self.fake.cycle = cycle
-        if self._bound(STEPS_KEY) is not None:
-            self.fake.buffer.append(
-                ArchiveFile(
-                    archiver_id=STEPS_KEY,
-                    name=f"cycle_{cycle:03d}.json",
-                    media_type="application/json",
-                    data=json.dumps({"cycle": cycle}).encode("utf-8"),
-                    meta=self._provenance(frame="main"),
-                )
-            )
-
-    async def resolve_fragment(self, fragment_key: str) -> Any:
-        if fragment_key != PAGE_KEY:
-            raise KeyError(fragment_key)
-        return ContractArchiveObs(cycle=self.fake.cycle)
-
-    async def execute_action(self, action: Any) -> ActionResult:
-        if action.name not in self.provided_actions:
-            return ActionResult(success=False, error=f"{CAPABILITY_ID} cannot run {action.name!r}")
-        self.fake.actions += 1
-        blobs = self._bound(BLOBS_KEY)
-        if isinstance(blobs, FakeBlobArchiver):
-            seed = f"response #{(self.fake.actions - 1) % 2}|".encode()
-            payload = (seed * (blobs.payload_bytes // len(seed) + 1))[: blobs.payload_bytes]
-            self.fake.buffer.append(
-                ArchiveFile(
-                    archiver_id=BLOBS_KEY,
-                    name="response.bin",
-                    media_type="application/octet-stream",
-                    data=payload,
-                    meta=self._provenance(request=f"r{self.fake.actions}"),
-                    content_addressed=True,
-                )
-            )
-        done = action.name == DONE_KEY
-        return ActionResult(success=True, is_done=done, extracted_content="42" if done else None)
-
-    async def setup(self, *, negotiation: Any = None, start_url: str | None = None) -> None:
-        await super().setup(negotiation=negotiation)
-        self.fake.setup_calls += 1
-        self.fake.start_url = start_url
-        self.fake.bound_at_setup = self.bound_keys
-        self._note("setup")
-
-
-class QuietCapability(CapabilityBase):
-    """``contract_archive_quiet`` — a ``CapabilityBase`` that archives nothing.
-
-    Satisfies ``ArchivingCapability`` through the inert defaults: provides
-    no archivers, accepts an empty binding, collects an empty batch.
-    """
-
-    __registry_key__ = "contract_archive_quiet"
+        __registry_key__ = "contract_archive_quiet"
 
 
 class StructuralCapability:
@@ -535,10 +561,14 @@ class PeerArchivingCapability(StructuralCapability):
         )
 
 
-class ContractArchiveEnv(EnvironmentBase):
-    """The environment the fake capability lives in."""
+with FAKES:
 
-    __registry_key__ = ENV_TYPE
+    class ContractArchiveEnv(EnvironmentBase):
+        """The environment the fake capability lives in."""
+
+        __wiring__ = {"capabilities": "capability"}
+
+        __registry_key__ = ENV_TYPE
 
 
 class SurfacelessEnv:
@@ -624,28 +654,30 @@ class CollectSpy:
 # ── a consumer that is not the trace hook ──────────────────────────
 
 
-class ArchiveConsumerHook(HookBase):
-    """A minimal ``ArchiveConsumer``: an ``archive`` list, nothing else.
+with FAKES:
 
-    For tests that need a consumer without the trace hook (the runtime
-    knows only the Protocol). Records the keywords ``on_run_start``
-    received, and appends lifecycle events to an optional shared log.
-    """
+    class ArchiveConsumerHook(HookBase):
+        """A minimal ``ArchiveConsumer``: an ``archive`` list, nothing else.
 
-    __registry_key__ = CONSUMER_HOOK_ID
+        For tests that need a consumer without the trace hook (the runtime
+        knows only the Protocol). Records the keywords ``on_run_start``
+        received, and appends lifecycle events to an optional shared log.
+        """
 
-    def __init__(
-        self, archive: list[ArchiverBase] | None = None, *, log: list[str] | None = None
-    ) -> None:
-        super().__init__()
-        self.archive: list[ArchiverBase] = list(archive or [])
-        self.log = log
-        self.run_start: dict[str, Any] | None = None
+        __registry_key__ = CONSUMER_HOOK_ID
 
-    async def on_run_start(self, **kwargs: Any) -> None:
-        self.run_start = dict(kwargs)
-        if self.log is not None:
-            self.log.append("on_run_start")
+        def __init__(
+            self, archive: list[ArchiverBase] | None = None, *, log: list[str] | None = None
+        ) -> None:
+            super().__init__()
+            self.archive: list[ArchiverBase] = list(archive or [])
+            self.log = log
+            self.run_start: dict[str, Any] | None = None
+
+        async def on_run_start(self, **kwargs: Any) -> None:
+            self.run_start = dict(kwargs)
+            if self.log is not None:
+                self.log.append("on_run_start")
 
 
 # ── a whole run ────────────────────────────────────────────────────

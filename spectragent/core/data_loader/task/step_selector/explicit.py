@@ -1,8 +1,4 @@
-"""``explicit`` — fork at the steps named.
-
-No ``from __future__ import annotations``: conscribe reads the knobs'
-``Annotated`` metadata at class creation.
-"""
+"""``explicit`` — fork at the steps named."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -23,10 +19,8 @@ class ExplicitSteps(StepSelectorBase):
     ``loader.skipped``, so a sweep over sources of different lengths says
     what it left out rather than shrinking silently.
 
-    ``steps`` must name at least one step. That is checked here, at
-    construction: the generated config does not carry a ``min_length``
-    (conscribe drops it), so ``steps: []`` would otherwise validate and fork
-    nowhere.
+    ``steps`` must name at least one step. The generated config enforces
+    ``min_length``; construction checks it too for direct Python callers.
     """
 
     __registry_key__ = "explicit"
@@ -34,6 +28,7 @@ class ExplicitSteps(StepSelectorBase):
     steps: Annotated[
         list[int],
         Field(
+            min_length=1,
             description=(
                 "The step numbers to fork at (at least one). A step that is not "
                 "branchable in some source is skipped for that source, with the "

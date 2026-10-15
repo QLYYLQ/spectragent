@@ -78,6 +78,7 @@ from spectragent.core.environments._registrar import EnvironmentBase
 
 
 class _DoneCap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "rt_memnego_cap"
     __wiring__ = {"action": ("action", ["rt_memnego_cap.done"])}
 
@@ -89,6 +90,7 @@ class _DoneCap(CapabilityBase):
 
 
 class _Env(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "rt_memnego_env"
 
 

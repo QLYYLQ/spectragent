@@ -60,10 +60,13 @@ from tests._helpers.archive_fakes import (
 )
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 
 
 class _Cap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "runcfg_cap"
     __wiring__ = {
         "action": ("action", ["runcfg_cap.done", "runcfg_cap.click"]),
@@ -90,6 +93,7 @@ class _Cap(CapabilityBase):
 
 
 class _Env(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "runcfg_env"
 
 
@@ -459,7 +463,8 @@ class TestStepTimings:
         from spectragent.schemas.step_record import StepRecord
 
         agent_cls = AgentRegistrar.get(agent_id)
-        _, required, optional = agent_cls.__wiring__["observation"]
+        entry = agent_cls.__wiring__["observation"]
+        required, optional = entry["keys"], entry["optional_keys"]
         demands = {key.rsplit(".", 1)[-1] for key in (*required, *optional)}
         if "history" not in demands:
             # Never negotiated, so ``HistoryObs`` never reaches this agent.

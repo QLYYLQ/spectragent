@@ -1,8 +1,4 @@
-"""``every_k`` — fork at every k-th step, counted by step number from an offset.
-
-No ``from __future__ import annotations``: conscribe reads the knobs'
-``Annotated`` metadata at class creation.
-"""
+"""``every_k`` — fork at every k-th step, counted by step number from an offset."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass

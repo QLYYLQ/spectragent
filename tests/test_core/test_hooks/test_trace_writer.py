@@ -35,6 +35,8 @@ from spectragent.schemas.observation.failure import FragmentFailure
 from spectragent.schemas.observation.fragments import TaskObs
 from spectragent.schemas.step_record import StepRecord, TokenUsage
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 _PNG = b"\x89PNG\r\n\x1a\n-fake-bytes"
 
 

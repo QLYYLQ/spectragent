@@ -23,6 +23,8 @@ from tests._helpers.archive_fakes import (
     StructuralCapability,
 )
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 
 class TestDefaults:
     def test_provided_archivers_is_derived_from_the_wiring(self) -> None:

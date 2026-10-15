@@ -13,20 +13,6 @@ uses: a Protocol (:mod:`spectragent.evaluator.base`), a registrar keyed on
 conscribe auto-registers.
 """
 
-# WARNING for anyone adding a field declaration to a base class here: an
-# inherited ``Annotated`` field vanishes under PEP 563, silently.
-#
-# conscribe derives each per-key config model from the dataclass-generated
-# ``__init__`` and needs the ``Annotated[..., Field(...)]`` metadata to
-# survive ``get_type_hints``. Under PEP 563 (the ``from __future__`` below)
-# those annotations are *strings*, resolved against the **subclass's**
-# module globals — a module that does not itself import ``Annotated`` and
-# ``Field`` cannot resolve them, the extractor falls back to raw strings,
-# and ``__config_annotated_only__`` drops the field without a word.
-#
-# => No base here declares an ``Annotated`` config field. Every knob is
-# declared on the concrete evaluator that uses it, in that evaluator's own
-# module.
 from __future__ import annotations
 
 import hashlib

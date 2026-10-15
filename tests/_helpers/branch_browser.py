@@ -215,6 +215,7 @@ def make_browser(*, id_offset: int = 100) -> FakeBrowserCap:
 
 
 class FakeBrowserEnv(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "branch_fake_browser_env"
 
 

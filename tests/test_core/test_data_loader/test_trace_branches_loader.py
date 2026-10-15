@@ -80,7 +80,14 @@ class TestExpansion:
         write_source(tmp_path / "a", "run-2", steps=1)
         (tmp_path / "a" / "notes").mkdir()  # a match without a manifest is not a run
         (tmp_path / "a" / "summary.json").write_text("{}")
-        tasks = loader(tmp_path, sources=["b/*", "a/*", "a/run-*"])
+        tasks = loader(
+            tmp_path,
+            sources=(
+                "b/*",
+                "a/*",
+                "a/run-*",
+            ),
+        )
         assert tasks.task_ids() == ["run-2/s0/b0", "run-1/s0/b0"], "sorted by path: a/ before b/"
         branch = tasks.get_task_context("run-2/s0/b0").branch
         assert branch is not None and branch.source_trace == "a/run-2"
@@ -121,7 +128,7 @@ class TestExpansion:
     def test_no_match_is_empty_and_warns(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        tasks = loader(tmp_path / "missing", sources=["recorded/*"])
+        tasks = loader(tmp_path / "missing", sources=("recorded/*",))
         assert tasks.task_ids() == [] and len(tasks) == 0
         assert "recorded/*" in caplog.text and "missing" in caplog.text
 
@@ -501,7 +508,7 @@ class TestPreconditions:
     def test_a_shared_run_id_refuses_both(self, tmp_path: Path) -> None:
         write_source(tmp_path / "a", "run-x", steps=1)
         _duplicate(tmp_path)
-        tasks = loader(tmp_path, sources=["*/*"], on_unbranchable="skip")
+        tasks = loader(tmp_path, sources=("*/*",), on_unbranchable="skip")
         assert tasks.task_ids() == []
         assert "also the run id of copy/run-x" in tasks.skipped["a/run-x"]
         assert "also the run id of a/run-x" in tasks.skipped["copy/run-x"]
@@ -509,7 +516,7 @@ class TestPreconditions:
     def test_a_shared_run_id_filtered_out_is_no_collision(self, tmp_path: Path) -> None:
         write_source(tmp_path / "a", "run-x", steps=1)
         write_source(tmp_path / "copy", "run-x", steps=1, agent_done=AgentDoneStatus.ERROR)
-        tasks = loader(tmp_path, sources=["*/*"], agent_outcome="done")
+        tasks = loader(tmp_path, sources=("*/*",), agent_outcome="done")
         assert tasks.task_ids() == ["run-x/s0/b0"]
 
     def test_every_unbranchable_source_is_listed_at_once(self, tmp_path: Path) -> None:
@@ -521,7 +528,7 @@ class TestPreconditions:
 
     def test_require_archive_names_what_is_required(self, tmp_path: Path) -> None:
         write_source(tmp_path, "run-a", steps=1, archivers=())
-        assert loader(tmp_path, require_archive=[]).task_ids() == ["run-a/s0/b0"]
+        assert loader(tmp_path, require_archive=()).task_ids() == ["run-a/s0/b0"]
         write_source(tmp_path, "run-b", steps=1, archivers=("browser.network", "browser.storage"))
         tasks = loader(
             tmp_path,
@@ -617,7 +624,7 @@ class TestKnobs:
     @pytest.mark.parametrize("pattern", ["/abs/*", "~/traces/*", "../up/*", "a/../../b", ""])
     def test_a_glob_must_stay_inside_the_root(self, pattern: str) -> None:
         with pytest.raises(ValueError, match="source glob"):
-            TraceBranchesTaskLoader(sources=[pattern])
+            TraceBranchesTaskLoader(sources=(pattern,))
 
     def test_defaults(self) -> None:
         built = TraceBranchesTaskLoader()

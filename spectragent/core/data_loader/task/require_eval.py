@@ -1,9 +1,8 @@
 """``require_eval`` — the ``trace_branches`` loader's evaluation filter.
 
-Its own module, not the loader's: conscribe writes a ``.pyi`` stub next to the
-loader (it carries an injected receptor), and a stub types a same-module
-sibling as ``Any`` — so a type defined beside the loader would be ``Any`` to
-every type checker that imports it. Here it is a real class to everyone.
+Shared by branch selection and training export; both consumers use the same
+validated settings and verdict-matching semantics.
+
 """
 
 from collections.abc import Mapping
@@ -22,8 +21,7 @@ class RequireEval:
     ``evaluation_error`` or ``not_evaluated`` verdict says nothing about the
     run) and with ``predicted_label == label``; with ``slug``, only the
     verdict file of that ``verdict_slug`` counts. A pydantic dataclass, not
-    a ``BaseModel``: conscribe imports it into the generated config like any
-    other type (af-add-a-receptor §7).
+    a ``BaseModel``; conscribe imports the original type into generated config.
     """
 
     evaluator_id: str = Field(description="The evaluator whose verdicts count.")

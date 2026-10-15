@@ -275,15 +275,16 @@ class BrowserUseAgent(AgentBase):
         "agent_loop": ("agent_loop", ["react", "branch"]),
         # ``screenshot`` is required in every mode because the evaluators
         # read it out of the trace, not because the model always sees it.
-        "observation": (
-            "observation",
-            ["screenshot", "platform", "task"],
-            ["dom", "browser_meta", "step_info", "history"],
-        ),
-        "action": (
-            "action",
-            ["navigate", "done"],
-            [
+        "observation": {
+            "registry": "observation",
+            "keys": ["screenshot", "platform", "task"],
+            "optional_keys": ["dom", "browser_meta", "step_info", "history"],
+            "declare_only": True,
+        },
+        "action": {
+            "registry": "action",
+            "keys": ["navigate", "done"],
+            "optional_keys": [
                 # Index-addressed and point-addressed verbs are never
                 # merged: ``click`` takes a selector-map index, which only
                 # exists when ``browser.dom`` was negotiated;
@@ -304,7 +305,8 @@ class BrowserUseAgent(AgentBase):
                 "switch_tab",
                 "wait",
             ],
-        ),
+            "declare_only": True,
+        },
         "llm": "llm",  # auto-discovery — any registered LLM
     }
 
@@ -314,9 +316,6 @@ class BrowserUseAgent(AgentBase):
     # hands the loop's limits to ``prepare()`` so the prompt advertises
     # exactly what will be executed.
     #
-    # Both Literals are written inline rather than through a module alias:
-    # conscribe renders an alias into the generated stub as ``Any``, which
-    # silently drops the narrowing this field exists for.
     observation_mode: Annotated[
         Literal["dom", "dom_vision", "vision"],
         PydanticField(

@@ -35,6 +35,7 @@ from tests._helpers.assembly import make_env, make_run
 
 
 class _Cap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "bench_runner_cap"
     __wiring__ = {"action": ("action", ["bench_runner_cap.done"])}
 
@@ -52,6 +53,7 @@ class _Cap(CapabilityBase):
 
 
 class _Env(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "bench_runner_env"
 
     def __init__(self, **kw):
@@ -913,7 +915,7 @@ class TestTraceBranchesSweep:
         source = await record_source(
             tmp_path, ["click 100", "click 101", "done ok"], env_context={}
         )
-        loader = TraceBranchesTaskLoader(data_dir=str(source.parent), require_archive=[])
+        loader = TraceBranchesTaskLoader(data_dir=str(source.parent), require_archive=())
         loader.step_selector = ExplicitSteps(steps=[1])
         caps: list[Any] = []
 

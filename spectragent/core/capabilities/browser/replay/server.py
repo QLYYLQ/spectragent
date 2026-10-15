@@ -35,10 +35,6 @@ pure construction — and owned by the capability from setup to teardown:
 State is per recorder session where it is per anything: a target's detach
 drops what the server kept for that session, so a tab closed mid-pause leaves
 nothing behind. The cursors are the run's (one :class:`~.matcher.Matcher`).
-
-.. note::
-   No ``from __future__ import annotations`` — the browser replay package
-   rule.
 """
 
 import logging

@@ -1,12 +1,9 @@
 """The export job's nested knobs (arch §4.15 "配置").
 
-Each is a pydantic dataclass, not a ``BaseModel``, and lives here rather than
-beside the exporter: conscribe (1.3) imports a non-``BaseModel`` knob type into
-the generated config but assumes every ``BaseModel`` is a submodel it emitted
-itself, and the ``.pyi`` stub it writes next to a receptor-carrying class types
-a same-module sibling as ``Any`` (af-add-a-receptor §7). ``require_eval`` is
-M31's :class:`~spectragent.core.data_loader.task.require_eval.RequireEval` —
-the same type, the same meaning as the ``trace_branches`` filter.
+Frozen pydantic dataclasses validate each settings block. conscribe imports
+these original types into the generated config, preserving their validators.
+``RequireEval`` is shared with the ``trace_branches`` loader.
+
 """
 
 from typing import Annotated, Literal

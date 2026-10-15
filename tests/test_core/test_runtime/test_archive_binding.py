@@ -45,6 +45,8 @@ from tests._helpers.archive_fakes import (
 )
 from tests._helpers.assembly import AGENT_ID
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 
 class _DeadIntercept(HookBase):
     """Intercepts a method no environment has — the audit refuses it."""

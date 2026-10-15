@@ -178,7 +178,7 @@ There is **one** generator entry point for every registrar:
 uv run spectragent-gen                             # or: .venv/bin/python -m spectragent.scripts.generate_all
 ```
 
-It discovers every registrar via `_collect_registrars()` and writes `_composed.py`, `_composed.schema.json`, `.fingerprint.json` and the `.pyi` stubs in one pass. Regenerate after **any** change to a `__wiring__` entry or an `Annotated[...]` constructor field.
+It discovers every registrar via `_collect_registrars()` and writes `_composed.py`, `_composed.schema.json`, `.fingerprint.json` and prunes obsolete conscribe-generated `.pyi` stubs in one pass. Discovery is strict and excludes `spectragent.generated` and `spectragent.scripts`; old generated config files remain intact until replacement content renders successfully. All collected layers must have implementations. Regenerate after **any** change to a `__wiring__` entry or an `Annotated[...]` constructor field.
 
 A new strategy axis must be added to `_collect_registrars()` as well as registered. A registrar the Composer does not collect degrades to `Literal[<keys>]` instead of the discriminated union, **so every knob the strategy declares stays unreachable from YAML** — measured, not assumed: regenerating with and without `dom_serializer` collected gives `Union[HtmlDom_SerializerConfig, TextDom_SerializerConfig]` versus `Literal['text', 'html']`. The `Literal` still rejects a typo, so the loss is silent only for a *brand-new* axis that no YAML names yet; once a config block exists, the degraded field rejects it loudly. (An earlier note here claimed a bare `str` and a silently-defaulted typo — that was the pre-`__wiring__` shape `mouse_trajectory` had, not what an uncollected registrar does today.)
 
@@ -206,9 +206,17 @@ The repo-scoped `af-project-history` skill under `.agents/skills/` contains cura
 
 ## 4. External dependencies worth knowing
 
-- `conscribe` (v≥0.6.1, in-house) — the registrar + `__wiring__` + config-generation framework. Its three-element `__wiring__` tuple (`(registry, required, optional)`) is the keystone of the whole design. M01 in the DAG = already shipped.
+- `conscribe` (v≥2.0.0,<3, in-house) — the registrar + `__wiring__` + config-generation framework. Its three-element `__wiring__` tuple (`(registry, required, optional)`) is the keystone of the whole design. M01 in the DAG = already shipped.
 - `agent-cdp` (v≥0.4.0, in-house) — CDP client + Watchdog + Event scope; **only the Browser Capability consumes it**, it is not a framework-level concern.
 - `bubus` — event bus used inside `agent-cdp` watchdogs (optional extra).
 - `pydantic` v2 — all data contracts.
 - Cloud browser "lite" SDKs (`lexmount`, `browser-use-lite`, `hyperbrowser-lite`, `agentbay-lite`, `airtop-lite`, `skyvern-lite`) — session lifecycle + CDP URL only, wrapped behind the Browser Capability's backend abstraction. None of them declares `NETWORK_CAPTURE`, so browser archiving and `replayability: pinned` refuse them (`docs/architecture_design.md` §4.9.x, §4.14).
 - `warcio` (Apache-2.0) — writes `browser.network`'s WARC files. **Never** add `py-wacz`, `cdxj-indexer` or `surt` as dependencies: `surt` is AGPL and the other two pull it in. A lockfile test enforces this; port permissive code instead and record it in `THIRD_PARTY_NOTICES.md`.
+
+## conscribe 2.0 integration
+
+- Mark observation/action/archive negotiation declarations with dict-form `declare_only: True`; they create neither injected attributes nor stubs. Runtime receptors keep their existing declarations.
+- `ArchiverRegistrar` declares `inline_only=True`. conscribe refuses every top-level `archiver:` value, including `[]` and `null`, with Pydantic error type `inline_only_layer`; write instances under `hook[trace_writer].archive`.
+- Composer uses `conscribe.introspect` for constructor forwarding, runtime slots and container shapes, and `ComposedConfigResult.top_level_layers` for writable root sections. Do not reimplement these rules.
+- User-defined Pydantic models, nested constraints, tuple defaults and dataclass receptors are supported. Do not add 1.x workarounds for them. Keep ordinary `BaseModel` config values typed when passing them to constructors.
+- Tests treat `conscribe.ConscribeWarning` as errors. Use `conscribe_isolated` / `isolated_registries()` for test registrations; capture module-level fakes and activate them only in tests that need them.

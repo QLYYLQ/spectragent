@@ -124,15 +124,17 @@ class TestWiring:
         # Capability-relative: a screenshot is a screenshot whether a
         # browser, a desktop VM or a phone produced it.
         wiring = UITarsAgent.__wiring__
-        assert wiring["observation"] == (
-            "observation",
-            ["screenshot", "platform", "task"],
-            ["step_info"],
-        )
+        assert wiring["observation"] == {
+            "registry": "observation",
+            "keys": ["screenshot", "platform", "task"],
+            "optional_keys": ["step_info"],
+            "declare_only": True,
+        }
 
     def test_does_not_require_dom(self) -> None:
         wiring = UITarsAgent.__wiring__
-        registry, required, optional = wiring["observation"]
+        entry = wiring["observation"]
+        required, optional = entry["keys"], entry["optional_keys"]
         assert "dom" not in required
         assert "dom" not in optional
 
@@ -145,7 +147,11 @@ class TestWiring:
         for entry in UITarsAgent.__wiring__.values():
             if isinstance(entry, str):
                 continue
-            for key_list in entry[1:]:
+            for key_list in (
+                [entry["keys"], entry.get("optional_keys", [])]
+                if isinstance(entry, dict)
+                else entry[1:]
+            ):
                 assert all("." not in k for k in key_list), key_list
 
     def test_no_capability_entry(self) -> None:
@@ -163,7 +169,8 @@ class TestVerbTableAndWiringAgree:
     """
 
     def test_every_verb_maps_to_a_wired_action(self) -> None:
-        _registry, required, optional = UITarsAgent.__wiring__["action"]
+        entry = UITarsAgent.__wiring__["action"]
+        required, optional = entry["keys"], entry["optional_keys"]
         wired = set(required) | set(optional)
         assert {v.action for v in _VERB_TABLE.values()} == wired
 

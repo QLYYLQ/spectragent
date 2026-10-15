@@ -30,6 +30,8 @@ from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.schemas.action import ActionResult
 from tests._helpers.assembly import make_env
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 
 @dataclass
 class Browserish(CapabilityBase):

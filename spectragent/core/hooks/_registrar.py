@@ -64,27 +64,11 @@ class HookBase(metaclass=HookRegistrar.Meta):
     - ``on_run_start/end/error`` lifecycle callbacks
     - Handler methods named ``{advice}_{method}`` matching ``__intercepts__``
 
-    **A hook with knobs takes one of two shapes**, chosen by one question:
-    does it carry a ``__wiring__`` receptor?
-
-    - **No receptor** (``metrics``): decorate the subclass with
-      ``@dataclass`` too, declare its knobs as ``Annotated`` fields and its
-      internals as ``field(init=False, repr=False)``. The synthesised
-      ``__init__`` makes each knob a named parameter. Example below.
-    - **A receptor** (``trace_writer``, whose ``archive`` is one):
-      **not** a ``@dataclass``. conscribe's metaclass decides whether
-      a ``__wiring__`` entry is already a constructor parameter by reading
-      ``inspect.signature(cls.__init__)`` at class creation — before
-      ``@dataclass`` has synthesised anything — so a receptor that is a
-      dataclass field looks unreceived, gets a ``WiredField`` installed
-      over its default, and loses its optionality. Hand-write ``__init__``:
-      every knob a named ``Annotated`` parameter, and the receptor's
-      class-level annotation on a plain mixin (``list[...]`` for a list
-      receptor — the Composer reads the class annotation to choose list,
-      dict or single injection). ``TraceWriter`` is the worked case.
-      ``tests/test_core/test_capabilities/test_receptor_hygiene.py`` (Rule
-      3) fails a receptor that is a parameter of a synthesised
-      ``__init__``.
+    Hooks can declare knobs as dataclass fields or named ``Annotated``
+    constructor parameters. conscribe 2.0 preserves dataclass receptor
+    defaults. ``TraceWriter`` uses an explicit constructor for its recording
+    state; ``metrics`` uses a dataclass. Receptors may be constructor
+    parameters or annotation-only attributes injected after construction.
 
     Example (no receptor)::
 

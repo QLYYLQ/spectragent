@@ -35,7 +35,11 @@ class BaseCapability(Protocol):
             coexist in one run as long as their ``id`` differs.
     """
 
-    capability_id: str
+    @property
+    def capability_id(self) -> str:
+        """Registry identity, read from the implementation's registered key."""
+        ...
+
     id: str | None
 
     __invalidated_by_foreign_actions__: ClassVar[bool]

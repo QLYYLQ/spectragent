@@ -31,9 +31,6 @@ spec's ``token_limit``, which only a spec gives (``report --root`` has none:
 the limit is ``null``, with the reason). When the runs reached it, the chain
 stopped there — no stage starts once the limit is reached — and ``report.md``
 says so first: everything after covers only the runs and datasets that exist.
-
-.. note::
-   No ``from __future__ import annotations``: pydantic models throughout.
 """
 
 import json

@@ -59,7 +59,7 @@ import json
 from conscribe import compute_registry_fingerprint
 from spectragent.scripts.generate_all import _collect_registrars, discover
 
-discover("spectragent")
+discover("spectragent", exclude=["spectragent.generated", "spectragent.scripts"])
 print(json.dumps({
     layer: compute_registry_fingerprint(registrar)
     for layer, registrar in _collect_registrars().items()

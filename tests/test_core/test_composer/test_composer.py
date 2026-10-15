@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any, ClassVar, Protocol, runtime_checkable
 
 import pytest
-from conscribe import create_registrar
-from pydantic import Field
+from conscribe import EmptyLayerError, create_registrar
+from conscribe.introspect import init_param_names
+from pydantic import BaseModel, Field
 
 from spectragent.core.composer import (
     ComposedRun,
@@ -22,7 +23,6 @@ from spectragent.core.composer import (
     ConfigComposer,
     DuplicateInstanceIdError,
     UnresolvedWiringError,
-    _init_param_names,
 )
 
 # ── Shared fixture: fresh protocol/registrar per test module ───────
@@ -398,14 +398,13 @@ class TestInstanceIdentity:
 
 class TestErrors:
     def test_empty_layer_raises_on_construction(self) -> None:
-        # Register a layer with no implementations — build_composed_config
-        # would crash; ConfigComposer surfaces a clearer error first.
+        # conscribe reports the empty layer by name before constructing instances.
         @runtime_checkable
         class _EmptyP(Protocol):
             key: str
 
         EmptyReg = create_registrar("cmp_empty", _EmptyP, discriminator_field="key")
-        with pytest.raises(ComposeError, match="cmp_empty"):
+        with pytest.raises(EmptyLayerError, match="cmp_empty"):
             ConfigComposer(
                 registrars={"cmp_empty": EmptyReg},
                 discover_roots=(),
@@ -489,11 +488,75 @@ class TestInitParamNames:
         # called ``kwargs`` — never a config field name — while the field
         # the config *did* carry fell through to "no matching __init__
         # parameter" and aborted the compose.
-        assert _init_param_names(_Sink) == {"real"}
+        assert set(init_param_names(_Sink)) == {"real"}
 
     def test_var_positional_is_not_a_named_parameter(self) -> None:
         class _Splat:
             def __init__(self, *args: Any, real: int = 1) -> None:
                 self.real = real
 
-        assert _init_param_names(_Splat) == {"real"}
+        assert set(init_param_names(_Splat)) == {"real"}
+
+
+class _Settings(BaseModel):
+    retries: int = Field(default=3, ge=1)
+
+
+def test_user_model_reaches_its_constructor_as_a_model(composer: ConfigComposer) -> None:
+    class _Configured(_CapBase):
+        __registry_key__ = "typed_settings"
+
+        def __init__(self, settings: Annotated[_Settings, Field(description="Settings")]):
+            self.settings = settings
+
+    fresh = ConfigComposer(
+        registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg}, discover_roots=()
+    )
+    run = fresh.compose(
+        {"cmp_cap": [{"capability_id": "typed_settings", "settings": {"retries": 7}}]}
+    )
+    assert isinstance(run.single("cmp_cap").settings, _Settings)
+    assert run.single("cmp_cap").settings.retries == 7
+
+
+def test_constructor_only_optional_list_is_injected_as_a_list() -> None:
+    class _Configured(_CapBase):
+        __registry_key__ = "constructor_list"
+        __wiring__ = {"backends": "cmp_backend"}
+
+        def __init__(self, backends: list[_BackendP] | None = None):
+            self.backends = list(backends or [])
+
+    fresh = ConfigComposer(
+        registrars={"cmp_cap": CapReg, "cmp_backend": BackendReg}, discover_roots=()
+    )
+    run = fresh.compose(
+        {
+            "cmp_cap": [
+                {
+                    "capability_id": "constructor_list",
+                    "backends": [
+                        {"name": "local", "port": 1234},
+                        {"name": "remote", "url": "wss://example.test"},
+                    ],
+                }
+            ]
+        }
+    )
+    assert [type(backend) for backend in run.single("cmp_cap").backends] == [
+        _LocalBackend,
+        _RemoteBackend,
+    ]
+    assert run.single("cmp_cap").backends[0].port == 1234
+
+
+def test_forwarded_constructor_fields_reach_the_base() -> None:
+    class _Configured(_LocalBackend):
+        __registry_key__ = "forwarded"
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+    fresh = ConfigComposer(registrars={"cmp_backend": BackendReg}, discover_roots=())
+    run = fresh.compose({"cmp_backend": [{"name": "forwarded", "port": 1234}]})
+    assert run.single("cmp_backend").port == 1234

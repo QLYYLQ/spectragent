@@ -23,9 +23,6 @@ exchange whose body is not known (``too_large``, ``streamed_later``,
 ``incomplete``) gets only its request record: a response record with an
 empty or partial payload would lie to anyone reading the WARC without the
 index. Its status and headers are in the index line.
-
-.. note::
-   No ``from __future__ import annotations`` — the archive package rule.
 """
 
 import io

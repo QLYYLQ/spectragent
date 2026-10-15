@@ -86,6 +86,7 @@ SECRETS = (API_KEY, GATEWAY_URL, PROXY_URL, PROFILE_DIR, START_URL)
 
 
 class _Cap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "secret_guard_cap"
     __wiring__ = {
         "action": ("action", ["secret_guard_cap.done"]),
@@ -167,6 +168,7 @@ class _ArchiveCap(CapabilityBase):
 
 
 class _Env(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "secret_guard_env"
 
 

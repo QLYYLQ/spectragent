@@ -29,10 +29,6 @@ A rule only ever loosens or shapes what the shared canonicaliser
 
 The directory's digest (each file's name and sha256, sorted) goes into the
 replay fingerprint, so two replays with different rules are told apart.
-
-.. note::
-   No ``from __future__ import annotations`` — the browser replay package
-   rule (conscribe reads the strategies' annotations at class creation).
 """
 
 import fnmatch

@@ -32,6 +32,8 @@ from tests._helpers.assembly import AGENT_ID, make_env, make_run
 class _Cap(CapabilityBase):
     """No ``__init__`` of its own: it would hide the inherited ``id`` knob from conscribe."""
 
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
     __registry_key__ = "loop_inputs_channel_cap"
     __wiring__ = {"action": ("action", ["loop_inputs_channel_cap.done"])}
 
@@ -48,6 +50,7 @@ class _Cap(CapabilityBase):
 
 
 class _Env(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "loop_inputs_channel_env"
 
 

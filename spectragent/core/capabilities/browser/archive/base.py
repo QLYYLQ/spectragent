@@ -22,10 +22,6 @@ the browser that business has three parts, kept apart on purpose:
 
 The capability iterates over bound instances and their sessions without ever
 branching on an archiver id or looking one up (receptor hygiene Rule 2).
-
-.. note::
-   No ``from __future__ import annotations`` in this package: archivers
-   declare conscribe ``Annotated`` knobs (``af-trace-and-hooks`` §6).
 """
 
 import time

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from spectragent.core.archive import ArchiveBatch, ArchiveConsumer, ArchivingCapability
 from spectragent.core.capabilities.base import BaseCapability
 from spectragent.core.hooks.metrics_collector import MetricsCollector
@@ -20,6 +22,8 @@ from tests._helpers.archive_fakes import (
     QuietCapability,
     StructuralCapability,
 )
+
+pytestmark = pytest.mark.usefixtures("archive_fakes")
 
 
 class _StructuralConsumer:

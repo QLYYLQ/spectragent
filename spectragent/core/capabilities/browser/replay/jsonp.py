@@ -49,10 +49,6 @@ or the body. The name is ASCII and the rest of the body is copied unchanged,
 so the rewrite needs no charset: a GBK body stays GBK. The responder
 (``responder.py``) serves the new bytes with their own ``Content-Length`` and
 without the recorded body digests.
-
-.. note::
-   No ``from __future__ import annotations`` — the browser replay package
-   rule.
 """
 
 from dataclasses import dataclass

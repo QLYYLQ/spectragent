@@ -37,6 +37,8 @@ from spectragent.schemas.action import Action
 from tests._helpers.browser_archive import OwnedBrowser, archiving_capability, settle
 from tests._helpers.fake_cdp import FakeBrowser
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 
 def _index(batch: Any) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []

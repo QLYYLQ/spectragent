@@ -413,18 +413,9 @@ class _BrowserReceptors:
 class BrowserCapability(_BrowserReceptors, CapabilityBase):
     """Browser automation capability — CDP + multi-tab + watchdog system.
 
-    Deliberately **not** a ``@dataclass``, unlike :class:`CapabilityBase`
-    itself. conscribe's metaclass decides whether a ``__wiring__`` entry
-    is already a constructor parameter by reading
-    ``inspect.signature(cls.__init__)`` at *class creation* time — before
-    ``@dataclass`` has synthesised anything. On a dataclass capability
-    every wiring key therefore looks unreceived and conscribe installs a
-    ``WiredField`` descriptor over whatever the class body bound, which
-    both destroys the field default and makes the generated config field
-    required. Hand-writing ``__init__`` in the class body is what lets
-    ``actions`` be an *optional* receptor carrying a discriminated union
-    of per-action configs — the same trick :class:`EnvironmentBase` uses
-    for ``capabilities``.
+    An explicit constructor initializes per-run browser state and accepts
+    optional configured actions. conscribe reflects both its parameters and
+    annotation-only strategy receptors; dataclass receptors are also supported.
     """
 
     __registry_key__: ClassVar[str] = "browser"
@@ -434,10 +425,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # fragment cannot drift out of sync with the class that resolves
         # it — and adding one does not edit this file. Evaluated at class
         # creation; ``watchdogs`` is imported above for exactly that.
-        "observation": (
-            "observation",
-            sorted(fragments_provided_by(browser_watchdog_classes().values())),
-        ),
+        "observation": {
+            "registry": "observation",
+            "keys": sorted(fragments_provided_by(browser_watchdog_classes().values())),
+            "declare_only": True,
+        },
         # Action provides — symmetric to observation. Keep in sync with
         # the concrete classes registered under
         # ``spectragent.core.capabilities.browser.actions``.
@@ -538,10 +530,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # hook's ``archive`` list, bound here by ``bind_archivers``. Keep in
         # sync with the classes in ``browser/archive/`` (imported above, so
         # the keys resolve when conscribe reads this entry).
-        "archiver": (
-            "archiver",
-            ["browser.dom_raw", "browser.network", "browser.replay_log", "browser.storage"],
-        ),
+        "archiver": {
+            "registry": "archiver",
+            "keys": ["browser.dom_raw", "browser.network", "browser.replay_log", "browser.storage"],
+            "declare_only": True,
+        },
         # ``browser_provider`` is the existing conscribe registrar for
         # the underlying browser backend (local_chrome, lexmount,
         # browseruse_lite, ...). Mode 1 (auto-discovery) allows any

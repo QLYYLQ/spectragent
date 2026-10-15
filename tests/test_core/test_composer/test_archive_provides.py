@@ -27,6 +27,8 @@ from tests._helpers.archive_fakes import (
     FakeArchivingCapability,
 )
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 
 @pytest.fixture(scope="module")
 def composer() -> ConfigComposer:

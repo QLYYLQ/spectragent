@@ -15,16 +15,6 @@ pipeline around it (``runner.py``) is the same for every format.
 in-Python default (:func:`default_translator`, ``identity``) — the
 ``trace_branches`` shape (af-add-a-receptor §6). An exporter with no knob of
 its own writes no ``__init__``; conscribe then reads this one.
-
-.. note::
-   ``from __future__ import annotations`` for the reason ``trace_branches.py``
-   gives: conscribe writes a ``.pyi`` stub next to every registered class with
-   an injected receptor and renders evaluated ``Annotated[..., Field(...)]``
-   parameters as ``FieldInfo(...)`` reprs, while PEP 563 strings come out
-   verbatim. The inherited hand-written ``__init__`` resolves its strings
-   against this module's globals (its own ``__globals__``), so a subclass in
-   another module loses nothing (``test_no_dropped_annotated_fields.py``
-   checks).
 """
 
 from __future__ import annotations
@@ -51,8 +41,6 @@ from spectragent.export.settings import (
 )
 from spectragent.export.translate._registrar import ActionTranslator, default_translator
 
-#: ``sources`` when the config leaves it null: every run directly under the root.
-DEFAULT_SOURCES: tuple[str, ...] = ("*",)
 #: ``sources_root`` when the config leaves it null (relative to the working directory).
 DEFAULT_SOURCES_ROOT = "traces"
 
@@ -205,15 +193,15 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
             ),
         ] = None,
         sources: Annotated[
-            list[str] | None,
+            tuple[str, ...],
             Field(
                 description=(
                     "Globs relative to the sources root naming recorded run directories "
                     "(branch runs included); matches are sorted by path, and a match "
-                    "without a manifest.json is ignored. Null (the default): ['*']."
+                    "without a manifest.json is ignored. Default: ['*']."
                 ),
             ),
-        ] = None,
+        ] = ("*",),
         filters: Annotated[
             ExportFilters | None,
             Field(
@@ -287,7 +275,7 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
         self.sample = sample
         self.image_store = image_store
         self.sources_root = sources_root
-        self.sources = tuple(sources) if sources is not None else DEFAULT_SOURCES
+        self.sources = tuple(sources)
         for pattern in self.sources:
             problem = source_pattern_problem(pattern)
             if problem is not None:
@@ -336,7 +324,6 @@ class ExporterBase(metaclass=ExporterRegistrar.Meta):
 
 
 __all__ = [
-    "DEFAULT_SOURCES",
     "DEFAULT_SOURCES_ROOT",
     "ExportRecord",
     "Exporter",

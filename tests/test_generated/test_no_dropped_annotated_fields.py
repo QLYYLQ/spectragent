@@ -31,7 +31,7 @@ globals — so the trap is the same, one level down.
 from __future__ import annotations
 
 import pytest
-from conscribe import discover
+from conscribe import ConfigAnnotationError, discover
 from conscribe.config.extractor import extract_config_schema
 
 from spectragent.scripts.generate_all import _collect_registrars
@@ -162,5 +162,5 @@ def test_the_init_check_has_teeth() -> None:
             self.knob = knob
 
     assert _declared_annotated_init_params(_Dropped) == {"knob": __name__}
-    schema = extract_config_schema(_Dropped)
-    assert schema is None or "knob" not in schema.model_fields
+    with pytest.raises(ConfigAnnotationError, match="Unresolvable"):
+        extract_config_schema(_Dropped)

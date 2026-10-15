@@ -114,6 +114,7 @@ def _assert_never_sent(bodies: list[bytes]) -> None:
 
 
 class _Cap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "reasoning_prompt_cap"
     __wiring__ = {
         "action": ("action", ["reasoning_prompt_cap.done", "reasoning_prompt_cap.click"]),
@@ -138,6 +139,7 @@ class _Cap(CapabilityBase):
 
 
 class _Env(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "reasoning_prompt_env"
 
 

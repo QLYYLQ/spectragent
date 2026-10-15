@@ -151,6 +151,7 @@ class TestAuditDoesNotFalseAlarm:
 
 
 class _AuditCap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "audit_cap"
     __wiring__ = {"action": ("action", ["audit_cap.done"])}
 
@@ -162,6 +163,7 @@ class _AuditCap(CapabilityBase):
 
 
 class _AuditEnv(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "audit_env"
 
 

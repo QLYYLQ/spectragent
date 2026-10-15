@@ -30,9 +30,6 @@ provider and dataset export, and ``env/`` is never exported. Session tokens
 are therefore in this file (and in the WARC's ``Set-Cookie`` headers), so
 the archiver always declares ``contains_session_state``. The file still
 carries the browser ledger, empty: it names the policy it was written under.
-
-.. note::
-   No ``from __future__ import annotations`` — the archive package rule.
 """
 
 import logging

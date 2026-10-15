@@ -43,10 +43,8 @@ class AgentReceptors:
     which live in ``__wiring__`` but are read straight off the class by
     the negotiation engine and have no runtime attribute).
 
-    These stay on a plain (non-dataclass) mixin on purpose: turning them
-    into dataclass fields would materialise conscribe's ``WiredField``
-    descriptor into every instance's ``__dict__`` and destroy the
-    "not injected yet" AttributeError.
+    These stay on a plain mixin so they are injected after construction,
+    while the agent's dataclass fields describe its own configuration knobs.
     """
 
     agent_loop: Any

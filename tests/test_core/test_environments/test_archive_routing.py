@@ -49,6 +49,8 @@ from tests._helpers.archive_fakes import (
 )
 from tests._helpers.assembly import make_env
 
+pytestmark = pytest.mark.usefixtures("archive_fakes")
+
 _PEER_A_KEY = "contract_archive_peer_a.events"
 _PEER_B_KEY = "contract_archive_peer_b.events"
 

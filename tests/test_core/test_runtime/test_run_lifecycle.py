@@ -29,6 +29,7 @@ from tests._helpers.trace_builder import agent_result
 
 
 class _DoneCap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "lifecycle_done_cap"
     __wiring__ = {"action": ("action", ["lifecycle_done_cap.done"])}
 
@@ -46,6 +47,7 @@ class _DoneCap(CapabilityBase):
 
 
 class _Env(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "lifecycle_env"
 
     def __init__(self, **kw):
@@ -111,6 +113,8 @@ class _AcquiringCap(_DoneCap):
     session behind.
     """
 
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
+
     __registry_key__ = "lifecycle_acquiring_cap"
     boom = False
 
@@ -130,6 +134,7 @@ class _AcquiringCap(_DoneCap):
 
 
 class _FailingAcquiringCap(_AcquiringCap):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "lifecycle_failing_cap"
     boom = True
 

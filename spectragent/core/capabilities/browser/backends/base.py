@@ -23,12 +23,6 @@ class BaseBrowserProvider(Protocol):
 
     async def close(self, session: ProviderSession | None = None) -> None: ...
 
-    @classmethod
-    def __get_pydantic_core_schema__(cls, source_type: Any, handler: Any) -> Any:
-        from pydantic_core import core_schema
-
-        return core_schema.any_schema()
-
 
 @runtime_checkable
 class NetworkCaptureProvider(Protocol):

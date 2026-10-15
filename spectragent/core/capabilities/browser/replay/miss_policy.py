@@ -13,9 +13,6 @@ What a miss *is* — the facts the replay server knows when it gives up — is
 :class:`ReplayMiss`; the answer is :class:`MissDecision`. Neither knows CDP:
 the server turns a decision into ``Fetch.fulfillRequest`` /
 ``Fetch.failRequest`` and writes the replay log.
-
-No ``from __future__ import annotations`` here or in the policy modules:
-conscribe reads the knobs' ``Annotated`` metadata at class creation.
 """
 
 from dataclasses import dataclass

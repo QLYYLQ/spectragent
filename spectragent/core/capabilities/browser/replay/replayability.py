@@ -13,12 +13,6 @@ boolean beside it. A tier owns three things and nothing else:
 - a per-run :class:`ReplayabilityPlan` (:meth:`plan`): the commands the
   recorder connection sends each new target before it runs, and the
   fingerprint fields describing the tier.
-
-The configured instance holds knobs only; everything run-specific (T0, the
-browser's own user agent and, for a tier that overrides the user agent, the
-browser's own client hints) arrives as :meth:`plan` arguments and lives on the
-plan. No ``from __future__ import annotations`` here or in the tier modules:
-conscribe reads the knobs' ``Annotated`` metadata at class creation.
 """
 
 from collections.abc import Mapping, Sequence

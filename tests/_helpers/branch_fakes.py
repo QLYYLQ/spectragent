@@ -75,6 +75,7 @@ class BranchPage(FragmentBase):
 
 
 class BranchFakeEnv(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "branchfake_env"
 
 
@@ -88,6 +89,7 @@ class BranchFakeCap(CapabilityBase):
     ``log`` (every action executed), ``setups``.
     """
 
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = CAP_ID
     __wiring__ = {
         "action": ("action", [CLICK, DONE]),

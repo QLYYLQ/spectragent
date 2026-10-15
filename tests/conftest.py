@@ -15,12 +15,10 @@ exist precisely to catch codegen emitting something unimportable, and a
 (fresh clone, first run) where a codegen regression is most likely to go
 unnoticed.
 
-**In a subprocess, deliberately.** ``generate_all.main()`` unlinks
-``_composed.py`` and then ``discover("spectragent")``s the whole package,
-which imports ``spectragent.generated`` while the file is missing and
-pins ``ComposedConfig`` to ``None`` in ``sys.modules`` for the rest of
-the process. Running it in-process would therefore *cause* the failure it
-is meant to prevent.
+**In a subprocess, deliberately.** Code generation must discover only shipped
+registrations, before collection-time test fakes can affect its schema or
+fingerprints. Generated packages are excluded from discovery.
+
 """
 
 from __future__ import annotations
@@ -33,6 +31,24 @@ from pathlib import Path
 import pytest
 
 from spectragent.core.data_loader._common import resolve_data_dir
+
+pytest_plugins = ["conscribe.testing.pytest_plugin"]
+
+
+@pytest.fixture(scope="module")
+def archive_fakes():
+    """Activate the shared archive implementations only for their contract tests."""
+    from tests._helpers.archive_fakes import FAKES
+
+    with FAKES.activate():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_registries(conscribe_isolated):
+    """Roll back classes registered inside each test, including failing tests."""
+    yield
+
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _COMPOSED = _REPO_ROOT / "spectragent" / "generated" / "_composed.py"

@@ -18,9 +18,6 @@ browser starts — the source run directory arrives as the task context's
 ``replay_archive`` and is opened through ``core/archive``'s ``open_archive``)
 and building the run's replay server (:meth:`NetworkSourceProtocol.serve`, a
 recorder participant). The configured instance holds knobs only.
-
-No ``from __future__ import annotations`` here or in the source modules:
-conscribe reads the knobs' ``Annotated`` metadata at class creation.
 """
 
 from typing import Any, ClassVar, Literal, Protocol, runtime_checkable

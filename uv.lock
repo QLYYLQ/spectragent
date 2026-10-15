@@ -379,14 +379,14 @@ wheels = [
 
 [[package]]
 name = "conscribe"
-version = "1.3.0"
+version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d3/e6/491f840fc3c4fb15f3b05ccd8f26fbf32b566caccf9b87095146109089fb/conscribe-1.3.0.tar.gz", hash = "sha256:cd5de370ff3a9cb4e790bbf3214a293053a1b27a27c45217b307f3de73c1c1e4", size = 80370, upload-time = "2026-07-29T13:43:12.098Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a4/6b/4084b11f471efe1ff8daded5dece3d127b62c3ce0df3a6e0bd99610b427e/conscribe-2.0.0.tar.gz", hash = "sha256:c7ae08f7cfb8cc995fc8e248dd2a8b768204353f7fff1a9eeb62056749d19aa4", size = 377291, upload-time = "2026-10-14T11:31:19.205Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/db/8f078fb00960279d2d0f6c97f8eaefe3f608e522918fcff86f9d973bcd09/conscribe-1.3.0-py3-none-any.whl", hash = "sha256:6eac14a0b1d7006f7baed49422aee41bb690a2f7cdf697cff54300670c68ad3a", size = 95845, upload-time = "2026-07-29T13:43:10.661Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/92/3963203f12bbd505087b5edc308007419071f9bc65f9b8af27f90bff2582/conscribe-2.0.0-py3-none-any.whl", hash = "sha256:b0c1359ece170aa4165aaa80ef30fcf397005c09c3159137c82a302464b63c5d", size = 406815, upload-time = "2026-10-14T11:31:15.577Z" },
 ]
 
 [[package]]
@@ -1725,7 +1725,7 @@ requires-dist = [
     { name = "browser-use-lite" },
     { name = "bubus", marker = "extra == 'comparison'", specifier = "==1.5.6" },
     { name = "cdp-use", marker = "extra == 'comparison'", specifier = "==1.4.5" },
-    { name = "conscribe", specifier = ">=1.3.0" },
+    { name = "conscribe", specifier = ">=2.0.0,<3" },
     { name = "google-genai", specifier = ">=1.65" },
     { name = "groq", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.25" },
@@ -1739,7 +1739,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2.15" },
     { name = "pillow" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.5" },
-    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "pyright", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },

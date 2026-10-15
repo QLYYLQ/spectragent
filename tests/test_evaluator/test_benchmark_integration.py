@@ -45,6 +45,7 @@ def _read_verdict(trace_dir) -> dict[str, Any]:
 
 
 class _Cap(CapabilityBase):
+    __abstract__ = True  # Directly assembled fake; never a YAML implementation.
     __registry_key__ = "eval_e2e_cap"
     __wiring__ = {"action": ("action", ["eval_e2e_cap.done"])}
 
@@ -58,6 +59,7 @@ class _Cap(CapabilityBase):
 
 
 class _Env(EnvironmentBase):
+    __wiring__ = {"capabilities": "capability"}
     __registry_key__ = "eval_e2e_env"
 
 

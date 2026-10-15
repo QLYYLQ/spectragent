@@ -8,10 +8,6 @@ locates on the step's recorded screenshot; every other action passes
 unchanged. The browser knowledge (geometry, occlusion evidence) lives in
 ``index_points``; this module fetches what it needs from the trace and
 organises the calls.
-
-.. note::
-   No ``from __future__ import annotations``: conscribe reads the knobs'
-   ``Annotated`` metadata from the ``__init__`` signature.
 """
 
 from functools import cached_property

@@ -191,7 +191,7 @@ def test_a_required_field_is_required(composer: ConfigComposer, missing: str) ->
 @pytest.mark.parametrize("glob", ["/abs/*", "~/runs/*", "../elsewhere/*", ""])
 def test_a_source_glob_must_stay_under_the_root(glob: str) -> None:
     with pytest.raises(ValueError, match="source glob"):
-        OpenAIMessagesExporter(student_run_config="s.yaml", output_dir="out", sources=[glob])
+        OpenAIMessagesExporter(student_run_config="s.yaml", output_dir="out", sources=(glob,))
 
 
 def test_built_by_hand_the_translator_is_identity() -> None:

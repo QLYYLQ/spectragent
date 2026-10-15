@@ -56,10 +56,6 @@ against the recorded ``Date``) and mitmproxy ``Response.refresh`` /
 ``refresh_set_cookie_header`` (@ 5253dcbd, MIT: the same Δ for cookie
 expiry); see THIRD_PARTY_NOTICES.md. Modified: one switch for all four,
 a synthesised ``Date``, an unparsable cookie expiry kept rather than dropped.
-
-.. note::
-   No ``from __future__ import annotations`` — the browser replay package
-   rule.
 """
 
 import base64

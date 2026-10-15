@@ -8,7 +8,7 @@ Composer and the real registrars:
 - archiving has one switch: ``archive`` omitted, ``null`` or ``[]`` records
   nothing, and a top-level ``archiver:`` section is refused with a message
   naming ``trace_writer.archive`` — beside an omitted archive, an empty one or
-  an inline list alike (``TraceWriter.__inline_only__``);
+  an inline list alike (``ArchiverRegistrar.inline_only``);
 - an inline ``archive:`` list builds its archivers in place, knobs reaching the
   instances;
 - a mistyped ``archiver_id`` and an unknown knob are refused by validation;
@@ -38,7 +38,6 @@ from spectragent.core.capabilities.browser.archive import (
 )
 from spectragent.core.composer import (
     ConfigComposer,
-    InlineOnlyLayerError,
     UnresolvedWiringError,
 )
 from spectragent.core.hooks.trace_writer import TraceWriter
@@ -116,17 +115,19 @@ class TestWhatIsRefused:
         ]
         if inline != "omitted":
             _trace_entry(raw)["archive"] = inline
-        with pytest.raises(InlineOnlyLayerError) as refused:
+        with pytest.raises(ValidationError) as refused:
             composer.compose(raw)
         message = str(refused.value)
-        assert "top-level 'archiver' section" in message
-        assert "trace_writer.archive" in message
-        assert "['browser.network', 'browser.storage']" in message
+        assert "inline-only" in message
+        assert "hook[trace_writer].archive" in message
+        assert refused.value.errors()[0]["type"] == "inline_only_layer"
 
-    def test_an_empty_top_level_section_is_no_section(self, composer: ConfigComposer) -> None:
+    @pytest.mark.parametrize("value", [[], None])
+    def test_an_empty_top_level_section_is_refused(self, composer: ConfigComposer, value) -> None:
         raw = _base()
-        raw["archiver"] = []
-        assert _writer(composer, raw).archive == []
+        raw["archiver"] = value
+        with pytest.raises(ValidationError, match="inline-only"):
+            composer.compose(raw)
 
     def test_a_mistyped_archiver_id(self, composer: ConfigComposer) -> None:
         raw = _base()
@@ -150,7 +151,7 @@ class TestWhatIsRefused:
 
     def test_a_capability_level_archiver_block(self, composer: ConfigComposer) -> None:
         raw = _base()
-        raw["environment"][0]["capabilities"][0]["archiver"] = {"archiver_id": "browser.network"}
+        raw["environment"][0]["capabilities"][0]["archiver"] = "browser.network"
         with pytest.raises(UnresolvedWiringError, match="negotiation-only entry"):
             composer.compose(copy.deepcopy(raw))
 

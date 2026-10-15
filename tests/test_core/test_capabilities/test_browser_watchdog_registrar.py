@@ -314,6 +314,7 @@ class TestNegotiationDrivenCost:
         from spectragent.core.environments._registrar import EnvironmentBase
 
         class _ProbeEnv(EnvironmentBase):
+            __wiring__ = {"capabilities": "capability"}
             __registry_key__ = "probe_env_negotiation"
 
         cap = BrowserCapability(profile="standard")

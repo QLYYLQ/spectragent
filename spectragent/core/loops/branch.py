@@ -41,15 +41,6 @@ the source and both values.
 
 The Loop stores nothing per run on itself: the source travels in the weave
 deps (``ctx["branch_source"]``), the run's state in a :class:`BranchRun`.
-
-``from __future__ import annotations``: conscribe writes a ``.pyi`` stub next
-to a class with an injected receptor (``restorer``) and renders evaluated
-``Annotated[..., Field(...)]`` parameters as ``FieldInfo(...)`` reprs — an
-invalid stub. As strings they are copied verbatim, like ``ReactLoop``'s. The
-strings — this module's and the ones ``BranchLoop`` inherits from
-``react.py`` — resolve in this module's globals (the dataclass-synthesised
-``__init__`` carries them), which is why ``Annotated`` and ``Field`` are
-imported here under exactly those names.
 """
 
 from __future__ import annotations
