@@ -103,7 +103,6 @@ class TestNormalization:
                     "setup": {
                         "login_required": True,
                         "login_type": "sso",
-                        "credentials_ref": "creds_a",
                     },
                 }
             ]
@@ -112,7 +111,6 @@ class TestNormalization:
         assert isinstance(task.setup, BrowserSetup)
         assert task.setup.login_required is True
         assert task.setup.login_type == "sso"
-        assert task.setup.credentials_ref == "creds_a"
 
     def test_top_level_start_url_merges_with_nested_setup(self) -> None:
         loader = _InMemoryLoader()

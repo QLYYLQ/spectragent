@@ -66,6 +66,7 @@ from spectragent.schemas.recording import (
 )
 from spectragent.schemas.restoration import BranchProvenance
 from spectragent.schemas.step_record import StepRecord, TokenUsage
+from spectragent.schemas.task import recordable_env_context
 
 logger = logging.getLogger(__name__)
 _RunVersions = dict[str, tuple[int, str, int]]
@@ -1123,7 +1124,7 @@ def _task_setup_record(context: Any, *, record_secrets: bool) -> TaskSetupRecord
     """
     if context is None:
         return None
-    taken = snapshot(context)
+    taken = snapshot(recordable_env_context(context) if isinstance(context, Mapping) else context)
     document = taken if isinstance(taken, dict) else {"value": taken}
     if record_secrets:
         return TaskSetupRecord(context=document, redactions=RedactionLedger())

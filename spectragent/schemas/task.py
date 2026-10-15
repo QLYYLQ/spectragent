@@ -39,8 +39,10 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
+from spectragent.schemas.browser_storage import BrowserStorageState
 from spectragent.schemas.restoration import BranchProvenance
 
 # ── Setup variants ────────────────────────────────────────────────────
@@ -89,24 +91,36 @@ class BrowserSetup(SetupBase):
     """Browser session requirements for a task."""
 
     __env_types__: ClassVar[tuple[str, ...]] = ("browser",)
-    __raw_keys__: ClassVar[tuple[str, ...]] = ("start_url",)
+    __raw_keys__: ClassVar[tuple[str, ...]] = ("start_url", "storage_state")
 
     setup_type: Literal["browser"] = "browser"
 
     start_url: str | None = None
     login_required: bool = False
     login_type: str | None = None  # "account_password", "sso", "oauth"
-    credentials_ref: str | None = None  # key into credential store, never plaintext
+    storage_state: BrowserStorageState | str | None = None
     risk_control: bool = False
     risk_control_types: list[str] = Field(default_factory=list)
+
+    @field_validator("storage_state", mode="before")
+    @classmethod
+    def storage_source(cls, value: Any) -> Any:
+        return str(value) if isinstance(value, Path) else value
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_credentials_ref(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "credentials_ref" in value:
+            raise ValueError(
+                "credentials_ref is unsupported; include login instructions and credentials in task_text"
+            )
+        return value
 
     def to_context(self) -> dict[str, Any]:
         return _prune(
             {
                 "start_url": self.start_url,
-                "login_required": self.login_required or None,
-                "login_type": self.login_type,
-                "credentials_ref": self.credentials_ref,
+                "storage_state": self.storage_state,
                 "risk_control": self.risk_control or None,
                 "risk_control_types": self.risk_control_types,
             }
@@ -373,10 +387,11 @@ REPLAY_ARCHIVE_KEY: Final = "replay_archive"
 
 
 def resolve_env_context_paths(env: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """*env* with its ``replay_archive`` made absolute against the current directory.
+    """Resolve archive paths and freeze browser storage sources as typed documents.
 
-    ``replay_archive`` is the one setup context key that names a filesystem
-    path. A relative one is relative to the directory the process was
+    ``replay_archive`` names a filesystem directory; ``storage_state`` may
+    name a JSON file whose bytes are loaded now rather than during setup.
+    A relative path is relative to the directory the process was
     launched from (nothing in af changes the working directory, so that is
     the current one), with ``~`` expanded first as for every other path
     knob. ``AgentRuntime.execute`` resolves it here for every caller alike —
@@ -396,10 +411,41 @@ def resolve_env_context_paths(env: Mapping[str, Any] | None) -> dict[str, Any] |
     for key, value in env.items():
         if key == REPLAY_ARCHIVE_KEY:
             value = _absolute_path(value)
-        elif isinstance(value, Mapping) and REPLAY_ARCHIVE_KEY in value:
-            value = {**value, REPLAY_ARCHIVE_KEY: _absolute_path(value[REPLAY_ARCHIVE_KEY])}
+        elif key == "storage_state" and value is not None:
+            value = _storage_document(value)
+        elif isinstance(value, Mapping) and (
+            REPLAY_ARCHIVE_KEY in value or "storage_state" in value
+        ):
+            value = resolve_env_context_paths(value)
         resolved[key] = value
     return resolved
+
+
+def recordable_env_context(env: Mapping[str, Any]) -> dict[str, Any]:
+    """Task setup provenance without duplicated browser session evidence.
+
+    Initial storage belongs to browser.storage's immutable initial_state.json.
+    Its fingerprint declares the digest and coverage, even if recording scope
+    omitted that archiver. Replay must read that evidence, never this context.
+    """
+    return {
+        key: (
+            recordable_env_context(value)
+            if key == "browser" and isinstance(value, Mapping)
+            else value
+        )
+        for key, value in env.items()
+        if key != "storage_state"
+    }
+
+
+def _storage_document(value: Any) -> BrowserStorageState:
+    # Freeze once before prepare, recording, and setup consume the same task context.
+    if isinstance(value, (str, os.PathLike)):
+        return BrowserStorageState.model_validate_json(Path(value).expanduser().read_bytes())
+    if isinstance(value, BrowserStorageState):
+        return BrowserStorageState.model_validate_json(value.model_dump_json())
+    return BrowserStorageState.model_validate(value)
 
 
 def _absolute_path(value: Any) -> Any:
@@ -423,4 +469,5 @@ __all__ = [
     "TaskContext",
     "REPLAY_ARCHIVE_KEY",
     "resolve_env_context_paths",
+    "recordable_env_context",
 ]

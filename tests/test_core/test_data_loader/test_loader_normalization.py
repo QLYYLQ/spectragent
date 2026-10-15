@@ -118,7 +118,6 @@ class TestLexBenchBrowserNormalization:
                     "setup": {
                         "login_required": True,
                         "login_type": "account_password",
-                        "credentials_ref": "lexbench_account_a",
                     },
                 }
             ],
@@ -128,7 +127,6 @@ class TestLexBenchBrowserNormalization:
         assert task.setup.start_url == "https://secure.example.com"
         assert task.setup.login_required is True
         assert task.setup.login_type == "account_password"
-        assert task.setup.credentials_ref == "lexbench_account_a"
 
 
 # ── BrowseComp ─────────────────────────────────────────────────────────

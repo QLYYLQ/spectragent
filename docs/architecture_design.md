@@ -2077,7 +2077,7 @@ ConfigComposer.compose()
                    `backend: BaseBrowserProvider` 标识 receptor;
                    conscribe WiredField 描述符接受 setattr)
 
-BrowserCapability.setup(*, negotiation, cdp_url, start_url, replay_archive, login_*/risk_* …)
+BrowserCapability.setup(*, negotiation, cdp_url, start_url, replay_archive, storage_state, risk_* …)
 ├── network_source 拦截（archive）时：先经 core/archive 的 open_archive(replay_archive) 打开源 run
 │     （ArchiveReader，只读已提交的部分），加载它的指纹与网络索引（§4.14 "回放"）
 ├── 协作检查 + 回放一致性检查（§4.14）：需要 recorder 连接的配置与 provider / cdp_url / 注入客户端 /
@@ -2298,12 +2298,15 @@ BaseTaskLoader (Protocol)           BaseEvalLoader (Protocol)
 | 键 | 谁接受 | 含义 |
 |---|---|---|
 | `start_url` | browser | 任务的落地页，agent 第一次观测之前打开（`TaskSetup.to_context()`；`spectragent run --start-url`）。必须是一个完整的 `http://` 或 `https://` URL：没有协议头、协议头不是这两个、没有主机、含空白的，在 `prepare()` 报错（`check_setup`，§4.9），点名这个起始页，不打开 trace。数据写成别的形状的，由读它的加载器在 trace 记下它之前补全（下面"起始页"） |
-| `login_required`、`login_type`、`credentials_ref`、`risk_control`、`risk_control_types` | browser | `BrowserSetup` 的其余词表；接受、记 WARNING、还不处理 |
+| `storage_state` | browser | `BrowserStorageState` 或其 JSON 路径；`BrowserSetup` 建模，公共 `resolve_env_context_paths` 在 Runtime 的 prepare / execute 入口读取并冻结为 typed 文档（相对启动目录、`~` 展开），setup 再冻结 canonical bytes。只接受 owned fresh context；显式外部 CDP、注入 control、持久 profile 与 seed 组合均在 prepare 拒绝。cookies 是 context 级，local 以真实 storageKey 为键，session 以 logical tab + storageKey 为键；首请求、首个业务脚本前生效（§4.14） |
+| `risk_control`、`risk_control_types` | browser | 现有词表；接受、记 WARNING、还不处理 |
 | `cdp_url` | browser | 显式 CDP 端点（per-run override；与需要 recorder 连接的配置互斥，§4.14） |
 | `replay_archive` | browser（M30） | 回放的**源 run 目录**（一个 trace 目录，含 `manifest.json`）。`network_source` 拦截（`archive`）时必须给、不拦截（`live`）时不许给，都在 `prepare()` 报错（`check_setup`）、点名双方。capability 经 `core/archive` 的 `open_archive` 打开它，只读已提交的部分（§4.14 "回放"）；`spectragent run --replay-archive DIR`。相对路径可以写，意思是相对启动目录（af 从不切换工作目录，所以就是当前目录；`~` 先展开）：`AgentRuntime.execute` 在交给 `prepare()` 检查、记进 `task_setup`、交给 setup 之前把它解析成绝对路径（`schemas/task.py::resolve_env_context_paths`；`prepare()` 自己也解析一遍，直接调它的调用方一样），对每个调用方都一样：CLI、任务加载器、自己组 `env_context` 的 Python 调用方；按 capability id 挂的那一块（`{"browser": {...}}`）里的也一样。trace 因此记下 setup 打开的那个目录（用户 2026-10-13 的裁决） |
 | `task_tools` | tool_sandbox（设计中，M23） | 每个 task 的工具定义（§13.5） |
 
-整个 context 按值级规则脱敏后记进 `TraceConfig.task_setup`（§5.6），所以 `replay_archive` 是路径字符串，不是打开的对象；分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。上面的键都属于 `TaskContext.env`，路由不变（下一段）。
+context 经 schema 的 `recordable_env_context` 去掉 `storage_state` 正文与原路径，再按值级规则脱敏记进 `TraceConfig.task_setup`（§5.6）；初态唯一恢复权威是 `browser.storage` 的 `initial_state.json`，指纹始终声明初态是否非空、digest 与覆盖范围，未选 storage 归档也不冒充空初态，所以 `replay_archive` 是路径字符串，不是打开的对象；分叉任务（M31）从源 trace 里重建环境靠的就是这份记录。上面的键都属于 `TaskContext.env`，路由不变（下一段）。
+
+**登录的两条路径。** 预置登录态沿上面的 `storage_state` 输入，或在 `none` 档位显式选择 provider 的持久 profile；需要操作网页登录时，把账号、密码和登录步骤放进现有 `task_text`，Agent 用自己的 prompt 和既有 type / click 动作执行。框架不自动登录，不新增 credential store、加密机制或 `TaskContext.agent` / `agent_inputs` 通道。`BrowserSetup.login_required` / `login_type` 只保留 benchmark 元数据，不路由 setup、不触发自动登录；无实现的 `credentials_ref` 现在明确拒绝，旧 `LoginSnapshot` 删除，不能再拿它声称保存了分区登录态。
 
 **起始页：加载器补全，浏览器只认完整的 URL（用户 2026-10-14 的裁决）。** 2026-10-14 零 token 筛选 LexBench L1 的中文站点（本地的 `tmp/flywheel/followup/live2/screening.md`）发现：`lexbench_browser` 的九个 split（包括它自己那份 Online-Mind2Web）没有一个起始页带协议头，几乎都是裸主机名（`www.bilibili.com`，少数带路径：`s.weibo.com/top/summary`）；全集有 10 个任务写的是文字或几个站点（L1 的 7 个与 L2 的 3 个，例如 `www.xiachufang.com或其他美食网站`、`jd.com + tmall.com + suning.com`）。加载器原样交出、setup 原样导航，SecurityWatchdog 把它当作"不安全的协议"拦下，每个 LexBench 任务都在 setup 以 `agent_done: error` 结束、一次模型调用都没有，sweep 的 pre-flight 也看不出来。规则：
 
@@ -2821,7 +2824,17 @@ class ReplayabilityProtocol(Protocol):
 
 #### `browser.storage`
 
-在**收集时**读：`Storage.getCookies`，以及每个 tab 每个 origin 的 `DOMStorage.getDOMStorageItems`（local 与 session），走 recorder 连接。记在本步（动作之后的状态），有意不按每个观测 cycle 记：收集点本来就是步的边界，多一次 cycle 级采集只会把同样的状态再记一遍。`storage.json` **只在状态变了时**才写（采集时间不算）：某一步的状态是那一步及之前最近的一份；也因此一次什么都没发生的收集交出空批次（归档契约"交出并忘掉"）。localStorage 每个 origin 读一次（它在 origin 的 tab 之间共享），sessionStorage 按 tab 与 origin 读；frame tree 与 DOM storage 在 recorder 的 session 上不需要 `Page.enable` / `DOMStorage.enable`（实测）；读的时候已经关掉的 tab 记在 `unreadable_tabs` 里，不致命；读失败的 origin 记在 `unreadable_origins`（tab、origin、local / session、原因）；进程外的 iframe 是自己的 target，不在 tab 的 frame tree 里，它的 storage 又按顶层站点分区（这份文档还没有分区键），所以 v1 不读、记在 `unread_frames`。缺什么都写明，不悄悄缺失。cookie（名字、值、域、路径、过期、标志）与 local / session storage 的条目都**原样保存**（用户 2026-10-13 裁决，威胁模型"只有我"，§5.6）；会话 token 就在里面，所以 `browser.storage` 声明 `contains_session_state`。文件仍带 browser 台账，条目为空，只说明写它时的规则版本。`allow_session_state` 在它身上与在别的归档器上一样，只表示"接受非新建的 profile"。
+`BrowserStorageState`（`schemas/browser_storage.py`）限定 cookies 与 local / session Web Storage，不声称复制 IndexedDB、service worker、cache 或完整磁盘 profile。cookies 通过 `Storage.getCookies(browserContextId=run_context)` 读取，CHIPS 的 `partitionKey` 原样保留；local 按 Chrome `Storage.getStorageKey(frameId)` 返回的真实 opaque key 去重，session 按 **logical tab + storageKey** 读取。每个 frame 记录 origin 与最近 parent 优先的 ancestor origins，重建时据此建立实际分区并验证 key，绝不通过解析 key 猜分区。OOPIF 由自己的 recorder target session 读取，父 tab frame tree 即使列出它也不能替代其 sessionStorage namespace。logical tab 身份在本 run 的初态、采集与 hydration 之间一致；关闭或不可读的 frame / tab 放进 typed `unavailable`，不伪造完整快照。
+
+启动 seed 在业务导航之前、recorder capture 之前，由 control 连接临时开启 Fetch Request 拦截，全部 synthetic 空文档 / 嵌套 iframe 本地 fulfill；它们建立 origin 与 ancestor partition，写入后退回 about:blank、等待提交，再撤掉 Fetch / autoattach / 临时 sessions。无真实网络请求、业务脚本或常驻 reset/init 脚本。session 所属 tab 保留，setup 按 seed 声明顺序选择首个 tab，不依赖 `Target.getTargets` 的返回顺序。`StorageTab.url` 是快照来源信息，hydration 不自动导航它；初次业务导航仍只由 `start_url` 决定。失败和取消关闭本次 hydration 新建的 tabs，Runtime 的 teardown 继续释放本 run 资源。
+
+immutable canonical 初态通过 `browser.storage/initial_state.json` 交给现有 Archive/WAL；发生状态变化的批次再次携带同一初态的 content-addressed 引用，避免依赖此前未提交的批次。它是**首请求前**的初态，不能用 step 0 动作后的 `storage.json` 替代。环境指纹 `initial_storage` 始终保存 `sha256`、`nonempty`、`coverage: cookies_local_session` 与 `origin_coverage: fresh | seed | observed_frames`。fresh 无 seed 是已知空态；显式 seed 是已声明范围；持久 profile 的未知 origin 无法穷举，只能记启动时可见 frames / cookies，标 `observed_frames`，这种源拒绝 offline replay / branch，不假称可恢复。
+
+回放和分叉只经 `ArchiveReader` 读取已提交 initial_state 与 fingerprint，检查摘要；非空初态缺文件、覆盖不足、或另给的显式 seed 与源初态冲突，都在 prepare 拒绝。已知 fresh 空态允许在未选 storage 归档时按指纹重建为空；非空 seed 即使没有选择 storage 归档也可以正常执行 Agent，但其归档以后明确拒绝缺少初态的回放。recordable task context 不复制 seed 正文 / 原路径，所以源 JSON 后来删改不影响 branch，也不会因 task setup 的 credential 字段脱敏把必要值改坏。
+
+每次**收集时**另读当前状态，记 `storage.json`（动作之后）；只有状态变化才写，采集时间不参与去重。它用于逐步环境证据，不能成为启动 seed。cookie 和 storage 的值原样保存（用户 2026-10-13 裁决，§5.6），声明 `contains_session_state`；browser 台账仍为空、只声明规则版本。`allow_session_state` 仍只表示接受持久 profile。`pinned` 允许物理 fresh context + 显式 seed，仍拒绝持久 profile。
+
+Chrome 155 的 fixture 回归 `test_browser_storage_seed_live.py` 验证首请求 cookie / 首脚本、同源多 tab session、两第三方分区 / CHIPS / OOPIF session，以及 JSON 源路径删改后的 capture → offline replay → branch；失败 / 取消只清自己的 hydration tabs。它不代替真实账户的业务验收。
 
 #### `browser.dom_raw`
 
@@ -2856,7 +2869,7 @@ capability 自己的 run 记录（`archiver_id="browser"`，`scope="run"`，`arc
 - `storage.json` 原样保存 cookie 与 local / session storage 的值（用户 2026-10-13 裁决，§5.6）；`browser.storage` 声明 `contains_session_state`，`allow_session_state` 只表示"接受非新建的 profile"。
 - 两个新规则名（`request_header` / `input_value`）加进共享台账的 `RedactionRule`；browser 的规则版本是 `BROWSER_REDACTION_POLICY`（`<PRIVACY_POLICY>+browser-2`，写进每个 browser 台账的 `policy`），规则源码由测试按摘要钉住；与 `PRIVACY_POLICY` 一样，改规则就升版本。`browser-2`（2026-10-13）删掉了 cookie 值的哈希和它的规则名 `value_hash`。
 - **键入标记**：`browser.type` / `browser.type_coordinate` 在敲字之前读焦点所在的元素（穿过开放的 shadow root 与同进程的 iframe），按同一条规则判定，动作结果的 `typed_into_sensitive_field` 记下判定：`true` / `false`；焦点在看不进去的 frame 里（进程外的 iframe、跨源）或读焦点失败时是 `null`（不知道，不是"不敏感"）；封闭的 shadow root 里看到的是宿主，判为 `false`。它进 `steps/NNN.json`；agent 只渲染动作结果的成败与错误，提示词逐字节不变（测试钉住）；导出怎么用它随学生侧一起推迟。键入的文字本身照旧原样留在动作参数与 LLM 记录里（§5.6）。
-- **会话态（`logged_in` 的定义）**：没有任何地方声明 `logged_in`，所以定义为"浏览器不是从新建的 profile 启动的"，即 provider 的 `persistent_profile()`（`NETWORK_CAPTURE` 的承诺之一，§4.9.x）点名了一个旋钮（只看配置，从不看环境变量）。这时只要绑定了归档器，每个归档器都必须写 `allow_session_state: true`，否则报错，点名 provider 的旋钮与归档器（pinned 本来就拒绝非新建的 profile）。v1 的数据来源是无需登录的公开站点。
+- **会话态（`logged_in` 的定义）**：没有任何地方声明 `logged_in`，所以定义为"浏览器不是从新建的 profile 启动的"，即 provider 的 `persistent_profile()`（`NETWORK_CAPTURE` 的承诺之一，§4.9.x）点名了一个旋钮（只看配置，从不看环境变量）。这时只要绑定了归档器，每个归档器都必须写 `allow_session_state: true`，否则报错，点名 provider 的旋钮与归档器（pinned 本来就拒绝非新建的 profile）。预置 seed 可用于登录页；在页面登录由 Agent 的既有动作完成。
 - 残余，写明：WebSocket 帧的内容原样记录（没有字段规则可用）；字段名规则只认凭证形状的名字；URL 原样记录（回放按 URL 匹配），query 里的凭证不脱敏；`browser.extract_content` 不给编号时返回的页面文本列出 `<select>` 的选项文字，被判敏感的也在内（页面写的选项列表，不是用户的选择）。
 - 验证（`test_browser_archive_live.py`）：经 `Network.setExtraHTTPHeaders` 植入 `Authorization` 与 `X-Api-Key`（后者在 `strip_request_headers` 里）、经 `Network.setCookie` 植入 cookie、一个 urlencoded POST 的密码、脚本设置的密码输入值，fixture 收到了每一个；植入的 cookie 值只出现在 `storage.json`（原值），其余植入值在 trace 目录里（gzip 解开）一次也不出现，三种台账规则都出现；正向对照：WARC 里的标记请求能找到。DOM 观测路径另有一条（`test_privacy_guard_on_the_dom_path`，BrowserUse 清洗，绑定 `browser.dom_raw`，观测像运行期那样提交进 trace）：写进标记的、脚本设置的、`display:none` 的密码，在提示词与 trace 目录里一次也不出现；经 `browser.type` 敲进去的只出现在 `steps/000.json` 的动作参数里，它的结果带 `typed_into_sensitive_field: true`，敲进普通文本框的是 `false`；`browser.extract_content` 读写进标记的那个密码框，返回的 HTML 里是占位符，读普通文本框返回它写进标记的值；普通文本框的值照常出现在观测里（正向对照）。`Proxy-Authorization` 无法这样植入：Chrome 155 让每个带它的请求以 `net::ERR_INVALID_ARGUMENT` 失败；它的剥离由 fake CDP 测试覆盖（ExtraInfo 与 Fetch 两个来源）。
 

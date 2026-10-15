@@ -10,6 +10,7 @@ from spectragent.schemas.agent_result import (
     AgentResult,
     AgentUsage,
 )
+from spectragent.schemas.browser_storage import BrowserStorageState
 from spectragent.schemas.config import BenchConfig, RunConfig
 from spectragent.schemas.eval_reference import EvalReference
 from spectragent.schemas.eval_result import (
@@ -26,7 +27,6 @@ from spectragent.schemas.eval_summary import (
     MetricStats,
     OverallStatistics,
 )
-from spectragent.schemas.login import LoginSnapshot
 from spectragent.schemas.prompt import PromptRef, PromptSnapshot, TemplatePrompt, TextPrompt
 from spectragent.schemas.restoration import (
     REASON_ORDER,
@@ -76,7 +76,7 @@ __all__ = [
     "Retarget",
     "RetargetMethod",
     # Login
-    "LoginSnapshot",
+    "BrowserStorageState",
     # Task
     "TaskDefinition",
     "TaskContext",

@@ -33,11 +33,9 @@ class TestBrowserSetup:
         setup = BrowserSetup(
             login_required=True,
             login_type="account_password",
-            credentials_ref="example_creds",
         )
         assert setup.login_required is True
         assert setup.login_type == "account_password"
-        assert setup.credentials_ref == "example_creds"
 
 
 class TestTaskDefinition:

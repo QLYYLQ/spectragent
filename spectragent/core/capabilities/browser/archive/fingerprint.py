@@ -134,6 +134,7 @@ class BrowserFingerprint:
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
         input_platform: InputPlatform | None = None,
+        initial_storage: Mapping[str, Any] | None = None,
         timeout: float = 1.0,
         include_unchanged: bool = False,
     ) -> ArchiveFile | None:
@@ -154,6 +155,7 @@ class BrowserFingerprint:
             network_fingerprint=network_fingerprint,
             browser_defaults=browser_defaults,
             input_platform=input_platform,
+            initial_storage=initial_storage,
             timeout=timeout,
         )
         data = canonical_json(document)
@@ -182,6 +184,7 @@ class BrowserFingerprint:
         network_fingerprint: Mapping[str, Any] | None = None,
         browser_defaults: BrowserDefaults | None = None,
         input_platform: InputPlatform | None = None,
+        initial_storage: Mapping[str, Any] | None = None,
         timeout: float = 1.0,
     ) -> dict[str, Any]:
         version = await recorder.browser_version()
@@ -215,6 +218,7 @@ class BrowserFingerprint:
             "page": page,
             "browser_defaults": browser_defaults.as_record() if browser_defaults else None,
             "input_platform": input_platform,
+            "initial_storage": dict(initial_storage) if initial_storage is not None else None,
             "viewport": {"width": viewport[0], "height": viewport[1]},
             "replayability": dict(plan_fingerprint),
             "launch_flags_sha256": launch_flags_digest(session_metadata),

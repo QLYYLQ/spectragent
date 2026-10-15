@@ -240,6 +240,7 @@ async def run_task(
     task: str,
     start_url: str | None = None,
     replay_archive: Path | None = None,
+    storage_state: Any = None,
     timeout: float = 180,
 ) -> Outcome:
     """Compose *raw* with the real Composer and run it with the real runtime."""
@@ -248,6 +249,8 @@ async def run_task(
     context: dict[str, Any] = {}
     if start_url:
         context["start_url"] = start_url
+    if storage_state is not None:
+        context["storage_state"] = storage_state
     if replay_archive is not None:
         context["replay_archive"] = str(replay_archive)
     result = await AgentRuntime.for_agent(run, "main").execute(
