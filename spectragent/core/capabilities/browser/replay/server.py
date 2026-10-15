@@ -59,7 +59,6 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
     RecordedArchive,
     ReplayArchiveError,
 )
-from spectragent.core.capabilities.browser.replay.canonical import host_of
 from spectragent.core.capabilities.browser.replay.matcher import (
     LiveRequest,
     Matcher,
@@ -148,6 +147,7 @@ class ReplayServer(RecorderParticipantBase):
         max_fulfill_body_bytes: int,
         fulfill_timeout_s: float,
         log_repeat_limit: int,
+        log_mode: Literal["full", "summary"],
         source_fingerprint: Mapping[str, Any],
     ) -> None:
         self.recorded = recorded
@@ -157,7 +157,7 @@ class ReplayServer(RecorderParticipantBase):
         self.shift_dates: ShiftDates = shift_dates
         self.max_fulfill_body_bytes = max_fulfill_body_bytes
         self.fulfill_timeout_s = fulfill_timeout_s
-        self.log = ReplayLog(log_repeat_limit)
+        self.log = ReplayLog(mode=log_mode, repeat_limit=log_repeat_limit)
         #: Mismatches the run tolerates but records (Chrome version, UA, redaction policy).
         self.warnings: list[str] = []
         self._source_fingerprint = dict(source_fingerprint)
@@ -332,6 +332,8 @@ class ReplayServer(RecorderParticipantBase):
         result = self.matcher.match(live)
         base["match_key"] = short_key(result.keys.normalized)
         base["body_key"] = short_key(result.keys.body_key)
+        base["rule_id"] = result.rule_id
+        base["exhaustion_policy"] = result.exhaustion_policy
         reason: MissReason | None = result.reason
         if reason is None:
             served = self._serve(result, live, raw_body)
@@ -352,9 +354,11 @@ class ReplayServer(RecorderParticipantBase):
             reason = served.reason
         if reason == "no_match" and is_preflight(live):
             served = synthetic_preflight(live)
-            return served, ReplayLogEntry(kind="synthetic", status=served.status, **base)
+            return served, ReplayLogEntry(
+                kind="synthetic", reason=reason, status=served.status, **base
+            )
 
-        rule = self.recorded.rules.for_host(host_of(url))
+        rule = self.recorded.rules.for_request(method, url)
         miss = ReplayMiss(
             method=method,
             url=url,
@@ -372,6 +376,8 @@ class ReplayServer(RecorderParticipantBase):
             record_id=record.record_id if record is not None else None,
             run_id=record.run_id if record is not None else None,
             request_class=decision.request_class,
+            level=result.level,
+            fuzzy_score=result.fuzzy_score,
             reason=reason,
             status=decision.status if decision.answer == "fulfill" else None,
             candidates=[
@@ -414,13 +420,13 @@ class ReplayServer(RecorderParticipantBase):
             body = self.recorded.body(record)
         except ReplayArchiveError as exc:
             logger.warning("replay: %s", exc)
-            return Refusal("body_unavailable")
+            return Refusal("archive_unreadable")
         return serve_record(
             record,
             body,
             request=live,
             raw_body=raw_body,
-            rule=self.recorded.rules.for_host(host_of(live.url)),
+            rule=self.recorded.rules.for_request(live.method, live.url),
             shift_dates=self.shift_dates,
             now=now,
             cap=cap,
@@ -501,6 +507,7 @@ class ReplayServer(RecorderParticipantBase):
             "source_run_id": self.recorded.run_id,
             "source_fingerprint_sha256": self.recorded.fingerprint_sha256,
             "site_rules_sha256": self.recorded.rules.sha256,
+            "site_rules_snapshot": self.recorded.rules.snapshot().model_dump(mode="json"),
             "warnings": list(self.warnings),
         }
 

@@ -26,6 +26,7 @@ from spectragent.core.capabilities.browser.recorder import (
 )
 from spectragent.core.capabilities.browser.replay import ArchiveNetworkSource
 from spectragent.core.capabilities.browser.replay.archive_index import RecordedArchive
+from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.capabilities.browser.replay.miss_policy import MissDecision, ReplayMiss
 from spectragent.core.capabilities.browser.replay.server import (
     REQUEST_STAGE_PATTERN,
@@ -84,7 +85,9 @@ def source_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def _recorded(run: Path) -> RecordedArchive:
-    return ArchiveNetworkSource().open_replay(open_archive(run))
+    return ArchiveNetworkSource(
+        matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+    ).open_replay(open_archive(run))
 
 
 async def _serving(
@@ -97,7 +100,9 @@ async def _serving(
     recorder = RecorderConnection(
         client, participants=lambda: box, channel=None, on_lost=lambda _e: None, **recorder_kwargs
     )
-    source = source or ArchiveNetworkSource()
+    source = source or ArchiveNetworkSource(
+        matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+    )
     server = source.serve(
         source.open_replay(open_archive(run)),
         ReplayContext(recorder=recorder, cycle=lambda: 7, clock=lambda: NOW),
@@ -229,7 +234,9 @@ class TestPreparation:
         await recorder.close()
 
     def test_it_owns_the_request_stage_and_serves(self, source_run: Path) -> None:
-        server = ArchiveNetworkSource(fulfill_timeout_s=3.5).serve(
+        server = ArchiveNetworkSource(
+            matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules"), fulfill_timeout_s=3.5
+        ).serve(
             _recorded(source_run),
             ReplayContext(recorder=None, cycle=lambda: 0),  # type: ignore[arg-type]
         )
@@ -417,7 +424,10 @@ class TestMisses:
         await recorder.close()
 
     async def test_a_body_over_the_cap_is_a_too_large_miss(self, source_run: Path) -> None:
-        source = ArchiveNetworkSource(max_fulfill_body_bytes=100)
+        source = ArchiveNetworkSource(
+            matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules"),
+            max_fulfill_body_bytes=100,
+        )
         _browser, recorder, client, server, sid = await _serving(source_run, source=source)
         _pause(client, sid, "qt", "http://shop.test/clip.mp4", resource_type="Media")
         _pause(client, sid, "qh", "http://shop.test/huge.bin")
@@ -433,7 +443,9 @@ class TestMisses:
 
     def test_websocket_and_unservable_requests_are_logged(self, source_run: Path) -> None:
         recorder = _SilentRecorder()
-        server = ArchiveNetworkSource().serve(
+        server = ArchiveNetworkSource(
+            matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+        ).serve(
             _recorded(source_run),
             ReplayContext(recorder=recorder, cycle=lambda: 3, clock=lambda: NOW),
         )
@@ -473,7 +485,9 @@ class TestMisses:
         self, source_run: Path
     ) -> None:
         recorder = _SilentRecorder()
-        server = ArchiveNetworkSource().serve(
+        server = ArchiveNetworkSource(
+            matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+        ).serve(
             _recorded(source_run),
             ReplayContext(recorder=recorder, cycle=lambda: 3, clock=lambda: NOW),
         )
@@ -518,7 +532,9 @@ class TestNeverContinue:
     async def test_no_decision_ever_continues_a_request(self, source_run: Path) -> None:
         """Every path — hit, exhausted, range, preflight, every miss class, a bug, a
         timeout, a failed send, a request held at close, no target — and not one continue."""
-        source = ArchiveNetworkSource(fulfill_timeout_s=0.05)
+        source = ArchiveNetworkSource(
+            matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules"), fulfill_timeout_s=0.05
+        )
         browser, recorder, client, server, sid = await _serving(source_run, source=source)
         paths = [
             ("hit", "http://shop.test/", {"resource_type": "Document", "frame_id": "page-1"}),
@@ -652,7 +668,12 @@ class TestJsonpCallbackNames:
         await recorder.close()
 
     async def test_repeats_fold_and_count_every_rewrite(self, jsonp_run: Path) -> None:
-        _browser, recorder, client, server, sid = await _serving(jsonp_run)
+        _browser, recorder, client, server, sid = await _serving(
+            jsonp_run,
+            source=ArchiveNetworkSource(
+                matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules"), log_mode="summary"
+            ),
+        )
         names = [f"jQuery371_17919586137{i:02d}" for i in range(6)]
         for index, name in enumerate(names):
             _pause(
@@ -723,7 +744,9 @@ class TestState:
 
 def test_the_fingerprint_names_the_source_run_and_the_warnings(source_run: Path) -> None:
     recorded = _recorded(source_run)
-    server = ArchiveNetworkSource(shift_dates="all").serve(
+    server = ArchiveNetworkSource(
+        matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules"), shift_dates="all"
+    ).serve(
         recorded,
         ReplayContext(recorder=None, cycle=lambda: 0),  # type: ignore[arg-type]
     )
@@ -732,13 +755,20 @@ def test_the_fingerprint_names_the_source_run_and_the_warnings(source_run: Path)
     block = server.fingerprint()
     assert block == {
         "source_id": "archive",
-        "matcher": {"levels": ["exact", "normalized"], "fuzzy_threshold": 0.5, "site_rules": None},
+        "matcher": {
+            "levels": ["exact", "normalized"],
+            "fuzzy_threshold": 0.5,
+            "site_rules": "tests/fixtures/replay_rules",
+        },
         "miss_policy_id": "strict",
         "shift_dates": "all",
         "isolation": "required",
         "source_run_id": "run-src",
         "source_fingerprint_sha256": recorded.fingerprint_sha256,
-        "site_rules_sha256": None,
+        "site_rules_sha256": recorded.rules.sha256,
+        "site_rules_snapshot": recorded.rules.snapshot().model_dump(mode="json"),
+        "log_mode": "full",
+        "log_repeat_limit": 3,
         "warnings": ["Chrome version differs: recorded X, now Y"],
     }
     assert recorded.fingerprint_sha256
@@ -799,3 +829,25 @@ def _paused(target: RecorderTarget, request_id: str, url: str, network_id: str) 
         },
         target=target,
     )
+
+
+async def test_unreadable_source_body_is_a_distinct_offline_miss(tmp_path: Path) -> None:
+    script = RecordingScript(tmp_path / "source", run_id="run-src")
+    await script.streamed_later("http://shop.test/api/data.json", b"response" * 1024)
+    await script.commit(0)
+    source_run = script.finish()
+    _browser, recorder, client, server, sid = await _serving(source_run)
+    reader = open_archive(source_run)
+    (blob,) = [
+        entry for _step, entry in reader.iter_archive("browser.network") if entry.content_addressed
+    ]
+    (source_run / blob.path).unlink()
+    _pause(client, sid, "bad-body", "http://shop.test/api/data.json")
+    await _settle()
+    (entry,) = _log(server)
+    assert entry["kind"] == "miss"
+    assert entry["reason"] == "archive_unreadable"
+    assert entry["record_id"] and entry["level"] == "exact"
+    assert entry["status"] == 404
+    assert all(sent.method != "Fetch.continueRequest" for sent in client.sent)
+    await recorder.close()

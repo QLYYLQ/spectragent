@@ -1,6 +1,27 @@
-# NetEase news (news.163.com, tech.163.com, nex.163.com, gw.m.163.com).
-# useruuid: the visitor id on nex.163.com ad requests (null / 1e335df7... vs dcd839ad...);
-#   the slot is chosen by l, type and location, and cb (nteeaseadtrack2021<n>) is the same
-#   in recording and replay.
-# trace_id: a random id plus a timestamp on gw.m.163.com/.../getUserByCookie.
-ignore_query: [useruuid, trace_id]
+# NetEase: /q useruuid is a visitor id (null / 1e335df7... vs dcd839ad...).
+# The ad slot remains selected by l, type and location; cb names a stable callback.
+# getUserByCookie trace_id is a random id plus timestamp. No other endpoint inherits these fields.
+rules:
+- id: netease-ad-query
+  scope:
+    host: nex.163.com
+    path: /q
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - useruuid
+  keep_query:
+  - l
+  - type
+  - location
+  - cb
+- id: netease-user-cookie-trace
+  scope:
+    host: gw.m.163.com
+    path: /commons-user-main/api/v1/commons/user/pc/getUserByCookie
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - trace_id

@@ -39,6 +39,8 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
     load_archive,
     load_fingerprint,
 )
+from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
+from spectragent.core.capabilities.browser.replay.site_rules import SiteRuleError
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.runtime import AgentRuntime
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
@@ -90,7 +92,9 @@ def _pinned(backend: Any, **pinned: Any) -> BrowserCapability:
 
 def _replaying(backend: Any = None, *, seed: int = 7) -> BrowserCapability:
     cap = _pinned(backend if backend is not None else IsolatingBrowser(), random_seed=seed)
-    cap.network_source = ArchiveNetworkSource()
+    cap.network_source = ArchiveNetworkSource(
+        matcher=MatcherConfig(site_rules="tests/fixtures/replay_rules")
+    )
     return cap
 
 
@@ -200,11 +204,11 @@ class TestReplay:
             {"replay_archive": str(source_run)}, archivers=[ReplayLogArchiver()]
         )
 
-    def test_only_the_fingerprint_is_read(
+    def test_rule_scope_check_does_not_load_warc_bodies(
         self, source_run: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def no_index(*args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("the check loaded the source run's index")
+            raise AssertionError("the check loaded the source run's response bodies")
 
         monkeypatch.setattr(ArchiveNetworkSource, "open_replay", no_index)
         _replaying().check_setup(
@@ -361,3 +365,26 @@ def test_prepare_refuses_a_start_page_that_is_not_a_url() -> None:
     ]
     assert backend.open_calls == []
     runtime.prepare(env_context={"start_url": "https://www.xiachufang.com"})
+
+
+def test_missing_replay_rule_is_refused_during_setup_check(source_run: Path) -> None:
+    cap = _replaying()
+    cap.network_source = ArchiveNetworkSource()
+    with pytest.raises(SiteRuleError, match="no replay rule declares exhaustion"):
+        cap.check_setup({"replay_archive": str(source_run)}, archivers=[ReplayLogArchiver()])
+    assert isinstance(cap.backend, IsolatingBrowser)
+    assert not cap.backend.open_calls
+
+
+def test_conflicting_replay_rules_are_refused_during_setup_check(
+    source_run: Path, tmp_path: Path
+) -> None:
+    (tmp_path / "conflict.yaml").write_text(
+        "rules:\n  - {id: first, exhaustion: miss}\n  - {id: second, exhaustion: repeat_last}\n"
+    )
+    cap = _replaying()
+    cap.network_source = ArchiveNetworkSource(matcher=MatcherConfig(site_rules=str(tmp_path)))
+    with pytest.raises(SiteRuleError, match="first.*second.*conflict"):
+        cap.check_setup({"replay_archive": str(source_run)}, archivers=[ReplayLogArchiver()])
+    assert isinstance(cap.backend, IsolatingBrowser)
+    assert not cap.backend.open_calls

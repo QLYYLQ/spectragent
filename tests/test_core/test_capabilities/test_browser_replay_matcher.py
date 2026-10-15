@@ -11,8 +11,10 @@ Records are built in memory with the loader's own canonicaliser
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from spectragent.core.capabilities.browser.replay.archive_index import (
     ArchiveIndex,
@@ -28,11 +30,39 @@ from spectragent.core.capabilities.browser.replay.matcher import (
     fuzzy_score,
     parse_range,
 )
-from spectragent.core.capabilities.browser.replay.site_rules import SiteRule, SiteRules
-from tests._helpers.replay_archive import indexed
+from spectragent.core.capabilities.browser.replay.site_rules import (
+    ExhaustionPolicy,
+    MatchLevel,
+    RequestScope,
+    SiteRule,
+    SiteRuleError,
+    SiteRules,
+)
+from tests._helpers.replay_archive import indexed as build_indexed
 
 API = "http://shop.test/api"
-FUZZY = MatcherConfig(levels=["exact", "normalized", "fuzzy"])
+FUZZY = MatcherConfig(
+    levels=(
+        "exact",
+        "normalized",
+        "fuzzy",
+    )
+)
+
+
+def indexed(url: str, **kwargs: Any) -> IndexedRecord:
+    """These sequence fixtures explicitly declare their cache-counter semantics."""
+    return build_indexed(
+        url, rule=SiteRule(id="fixture", exhaustion="repeat_last", ignore_query=("_",)), **kwargs
+    )
+
+
+def build_matcher(
+    index: ArchiveIndex, config: MatcherConfig | None = None, rules: SiteRules | None = None
+) -> Matcher:
+    if rules is None:
+        rules = SiteRules([SiteRule(id="fixture", exhaustion="repeat_last", ignore_query=("_",))])
+    return Matcher(index, config, rules)
 
 
 def get(url: str, **headers: str) -> LiveRequest:
@@ -46,7 +76,7 @@ def ids(*results: object) -> list[str | None]:
 class TestLevels:
     def test_exact(self) -> None:
         record = indexed(f"{API}?id=1", record_id="r1", order=0)
-        result = Matcher(ArchiveIndex([record])).match(get(f"{API}?id=1"))
+        result = build_matcher(ArchiveIndex([record])).match(get(f"{API}?id=1"))
         assert (result.record, result.level, result.exhausted, result.reason) == (
             record,
             "exact",
@@ -57,20 +87,20 @@ class TestLevels:
 
     def test_normalized(self) -> None:
         record = indexed(f"{API}?id=1&_=111", record_id="r1", order=0)
-        result = Matcher(ArchiveIndex([record])).match(get(f"{API}?_=222&id=1"))
+        result = build_matcher(ArchiveIndex([record])).match(get(f"{API}?_=222&id=1"))
         assert (result.record, result.level) == (record, "normalized")
 
     def test_fuzzy_needs_its_level(self) -> None:
         record = indexed(f"{API}?a=1&b=2", record_id="r1", order=0)
         live = get(f"{API}?a=1&b=3")
-        assert Matcher(ArchiveIndex([record])).match(live).reason == "no_match"
-        result = Matcher(ArchiveIndex([record]), FUZZY).match(live)
+        assert build_matcher(ArchiveIndex([record])).match(live).reason == "no_match"
+        result = build_matcher(ArchiveIndex([record]), FUZZY).match(live)
         assert (result.record, result.level, result.fuzzy_score) == (record, "fuzzy", 0.5)
 
     def test_a_level_left_out_is_not_tried(self) -> None:
         record = indexed(f"{API}?id=1", record_id="r1", order=0)
-        normalized_only = MatcherConfig(levels=["normalized"])
-        result = Matcher(ArchiveIndex([record]), normalized_only).match(get(f"{API}?id=1"))
+        normalized_only = MatcherConfig(levels=("normalized",))
+        result = build_matcher(ArchiveIndex([record]), normalized_only).match(get(f"{API}?id=1"))
         assert result.level == "normalized"
 
     def test_fuzzy_is_same_host_same_path_same_method(self) -> None:
@@ -79,7 +109,10 @@ class TestLevels:
             indexed("http://shop.test/apix?a=1", record_id="path", order=1),
             indexed(f"{API}?a=1", record_id="method", order=2, method="DELETE"),
         ]
-        assert Matcher(ArchiveIndex(records), FUZZY).match(get(f"{API}?a=2")).reason == "no_match"
+        assert (
+            build_matcher(ArchiveIndex(records), FUZZY).match(get(f"{API}?a=2")).reason
+            == "no_match"
+        )
 
 
 class TestTheFuzzyThreshold:
@@ -88,8 +121,8 @@ class TestTheFuzzyThreshold:
     )
     def test_inclusive_boundary(self, threshold: float, hit: bool) -> None:
         record = indexed(f"{API}?a=1&b=2", record_id="r1", order=0)
-        config = MatcherConfig(levels=["fuzzy"], fuzzy_threshold=threshold)
-        result = Matcher(ArchiveIndex([record]), config).match(get(f"{API}?a=1&b=3"))
+        config = MatcherConfig(levels=("fuzzy",), fuzzy_threshold=threshold)
+        result = build_matcher(ArchiveIndex([record]), config).match(get(f"{API}?a=1&b=3"))
         assert (result.record is not None) is hit
 
     def test_the_score(self) -> None:
@@ -103,39 +136,39 @@ class TestTheFuzzyThreshold:
     def test_off_for_documents_and_non_get_unless_the_site_says_on(self) -> None:
         page = indexed(f"{API}?a=1&b=2", record_id="page", order=0)
         document = LiveRequest("GET", f"{API}?a=1&b=3", is_document=True)
-        assert Matcher(ArchiveIndex([page]), FUZZY).match(document).reason == "no_match"
+        assert build_matcher(ArchiveIndex([page]), FUZZY).match(document).reason == "no_match"
         posted = indexed(f"{API}?a=1&b=2", record_id="post", order=0, method="POST")
         post = LiveRequest("POST", f"{API}?a=1&b=3")
-        assert Matcher(ArchiveIndex([posted]), FUZZY).match(post).reason == "no_match"
-        rules = SiteRules({"shop.test": SiteRule(fuzzy=True)}, sha256="t")
-        assert Matcher(ArchiveIndex([page]), FUZZY, rules).match(document).level == "fuzzy"
-        assert Matcher(ArchiveIndex([posted]), FUZZY, rules).match(post).level == "fuzzy"
+        assert build_matcher(ArchiveIndex([posted]), FUZZY).match(post).reason == "no_match"
+        rules = SiteRules([SiteRule(id="fuzzy", exhaustion="repeat_last", fuzzy=True)])
+        assert build_matcher(ArchiveIndex([page]), FUZZY, rules).match(document).level == "fuzzy"
+        assert build_matcher(ArchiveIndex([posted]), FUZZY, rules).match(post).level == "fuzzy"
 
     def test_the_best_score_wins_then_headers_then_the_earlier_then_the_smaller_url(self) -> None:
         near = indexed(f"{API}?a=1&b=2&c=9", record_id="near", order=5)
         far = indexed(f"{API}?a=1&b=8&c=9", record_id="far", order=0)
         live = get(f"{API}?a=1&b=2&c=0")
-        assert Matcher(ArchiveIndex([near, far]), FUZZY).match(live).record == near
+        assert build_matcher(ArchiveIndex([near, far]), FUZZY).match(live).record == near
         # Equal scores: shared headers first ...
         left = indexed(f"{API}?a=1&x=1", record_id="left", order=0, request_headers={"Accept": "a"})
         right = indexed(
             f"{API}?a=1&x=2", record_id="right", order=1, request_headers={"Accept": "b"}
         )
         tied = get(f"{API}?a=1&x=3", Accept="b")
-        assert Matcher(ArchiveIndex([left, right]), FUZZY).match(tied).record == right
+        assert build_matcher(ArchiveIndex([left, right]), FUZZY).match(tied).record == right
         # ... then the earlier recording ...
         plain = get(f"{API}?a=1&x=3")
-        assert Matcher(ArchiveIndex([left, right]), FUZZY).match(plain).record == left
+        assert build_matcher(ArchiveIndex([left, right]), FUZZY).match(plain).record == left
         # ... then the smaller URL.
         b = indexed(f"{API}?a=1&x=b", record_id="b", order=0)
         a = indexed(f"{API}?a=1&x=a", record_id="a", order=0, run_id="run-b")
-        assert Matcher(ArchiveIndex([b, a]), FUZZY).match(plain).record == a
+        assert build_matcher(ArchiveIndex([b, a]), FUZZY).match(plain).record == a
 
 
 class TestEachRecordIsUsedOnce:
     def test_a_polling_key_is_served_in_recording_order(self) -> None:
         polls = [indexed(f"{API}/poll", record_id=f"p{n}", order=n) for n in (2, 0, 1)]
-        matcher = Matcher(ArchiveIndex(polls))
+        matcher = build_matcher(ArchiveIndex(polls))
         results = [matcher.match(get(f"{API}/poll")) for _ in range(3)]
         assert ids(*results) == ["p0", "p1", "p2"]
         assert not any(result.exhausted for result in results)
@@ -143,18 +176,18 @@ class TestEachRecordIsUsedOnce:
     def test_the_used_set_is_shared_across_levels(self) -> None:
         one = indexed(f"{API}?_=1", record_id="one", order=0)
         two = indexed(f"{API}?_=2", record_id="two", order=1)
-        matcher = Matcher(ArchiveIndex([one, two]))
+        matcher = build_matcher(ArchiveIndex([one, two]))
         first = matcher.match(get(f"{API}?_=9"))  # L1: the earlier of the two
-        second = matcher.match(get(f"{API}?_=1"))  # L0's only candidate is used: L1's next
+        second = matcher.match(get(f"{API}?_=1"))  # L0 owns the exhausted sequence.
         assert (ids(first, second), first.level, second.level) == (
-            ["one", "two"],
+            ["one", "one"],
             "normalized",
-            "normalized",
+            "exact",
         )
 
     def test_exhausted_repeats_the_last_record(self) -> None:
         polls = [indexed(f"{API}/poll", record_id=f"p{n}", order=n) for n in range(2)]
-        matcher = Matcher(ArchiveIndex(polls))
+        matcher = build_matcher(ArchiveIndex(polls))
         served = [matcher.match(get(f"{API}/poll")) for _ in range(4)]
         assert ids(*served) == ["p0", "p1", "p1", "p1"]
         assert [result.exhausted for result in served] == [False, False, True, True]
@@ -163,7 +196,7 @@ class TestEachRecordIsUsedOnce:
     def test_exhausted_repeats_from_the_best_level_that_had_candidates(self) -> None:
         exact = indexed(f"{API}?_=1", record_id="exact", order=0)
         other = indexed(f"{API}?_=2", record_id="other", order=1)
-        matcher = Matcher(ArchiveIndex([exact, other]))
+        matcher = build_matcher(ArchiveIndex([exact, other]))
         assert ids(matcher.match(get(f"{API}?_=1")), matcher.match(get(f"{API}?_=5"))) == [
             "exact",
             "other",
@@ -173,7 +206,7 @@ class TestEachRecordIsUsedOnce:
 
     def test_a_hit_on_an_unservable_record_carries_its_reason_and_uses_it(self) -> None:
         big = indexed(f"{API}/big", record_id="big", order=0, miss_reason="too_large")
-        matcher = Matcher(ArchiveIndex([big]))
+        matcher = build_matcher(ArchiveIndex([big]))
         first = matcher.match(get(f"{API}/big"))
         assert (first.record, first.reason, first.servable) == (big, "too_large", False)
         assert matcher.match(get(f"{API}/big")).exhausted
@@ -198,7 +231,7 @@ class TestRunAffinity:
         )
         data_a = indexed(f"{API}/data", record_id="data-a", order=1, run_id="run-a")
         data_b = indexed(f"{API}/data", record_id="data-b", order=3, run_id="run-b")
-        matcher = Matcher(ArchiveIndex([page_a, page_b, data_a, data_b]))
+        matcher = build_matcher(ArchiveIndex([page_a, page_b, data_a, data_b]))
         assert matcher.affinity is None
         first = matcher.match(get(f"{API}/page", Accept="*/*"))  # tie broken by the header
         assert (first.record, matcher.affinity) == (page_b, "run-b")
@@ -211,7 +244,7 @@ class TestRunAffinity:
     def test_without_a_hit_there_is_no_affinity(self) -> None:
         data_a = indexed(f"{API}/data", record_id="data-a", order=1, run_id="run-a")
         data_b = indexed(f"{API}/data", record_id="data-b", order=3, run_id="run-b")
-        matcher = Matcher(ArchiveIndex([data_b, data_a]))
+        matcher = build_matcher(ArchiveIndex([data_b, data_a]))
         assert matcher.match(get(f"{API}/nothing")).reason == "no_match"
         assert matcher.affinity is None
         assert matcher.match(get(f"{API}/data")).record == data_a
@@ -222,7 +255,7 @@ class TestHeadersOnlyBreakTies:
     def test_recording_order_beats_matching_headers(self) -> None:
         first = indexed(API, record_id="first", order=0, request_headers={"Accept": "x"})
         second = indexed(API, record_id="second", order=1, request_headers={"Accept": "live"})
-        matcher = Matcher(ArchiveIndex([first, second]))
+        matcher = build_matcher(ArchiveIndex([first, second]))
         assert ids(
             matcher.match(get(API, Accept="live")), matcher.match(get(API, Accept="live"))
         ) == [
@@ -233,8 +266,8 @@ class TestHeadersOnlyBreakTies:
     def test_between_equals_the_shared_headers_decide_never_credentials(self) -> None:
         a = indexed(API, record_id="a", order=0, run_id="run-a", request_headers={"Accept": "x"})
         b = indexed(API, record_id="b", order=0, run_id="run-b", request_headers={"Accept": "y"})
-        assert Matcher(ArchiveIndex([a, b])).match(get(API, Accept="y")).record == b
-        assert Matcher(ArchiveIndex([a, b])).match(get(API, Accept="x")).record == a
+        assert build_matcher(ArchiveIndex([a, b])).match(get(API, Accept="y")).record == b
+        assert build_matcher(ArchiveIndex([a, b])).match(get(API, Accept="x")).record == a
         # A stripped header (a credential) never counts, even if a record carried one:
         # otherwise the cookie-carrying record would win; as it is, the ids decide.
         cookie = indexed(
@@ -242,7 +275,9 @@ class TestHeadersOnlyBreakTies:
         )
         plain = indexed(API, record_id="a-plain", order=0, run_id="run-d")
         for records in ([cookie, plain], [plain, cookie]):
-            assert Matcher(ArchiveIndex(records)).match(get(API, Cookie="s=1")).record == plain
+            assert (
+                build_matcher(ArchiveIndex(records)).match(get(API, Cookie="s=1")).record == plain
+            )
 
 
 class TestTheNearestOnAMiss:
@@ -254,7 +289,7 @@ class TestTheNearestOnAMiss:
             indexed(f"{API}?a=1&b=1", record_id="post", order=3, method="POST"),
             indexed("http://elsewhere.test/api?a=1", record_id="other-host", order=4),
         ]
-        matcher = Matcher(ArchiveIndex(records))
+        matcher = build_matcher(ArchiveIndex(records))
         matcher.match(get(f"{API}?z=9"))  # uses path-far
         miss = matcher.match(get(f"{API}?a=1&b=2"))
         assert miss.reason == "no_match" and miss.record is None
@@ -266,7 +301,7 @@ class TestTheNearestOnAMiss:
 
     def test_a_host_never_seen_has_no_candidates(self) -> None:
         record = indexed(f"{API}?a=1", record_id="r1", order=0)
-        miss = Matcher(ArchiveIndex([record])).match(get("http://nowhere.test/api?a=1"))
+        miss = build_matcher(ArchiveIndex([record])).match(get("http://nowhere.test/api?a=1"))
         assert (miss.reason, miss.candidates) == ("no_match", ())
 
 
@@ -289,7 +324,7 @@ class TestRanges:
 
     def test_a_range_request_is_served_from_the_map_and_uses_no_cursor(self) -> None:
         index, full, _ = self._index()
-        matcher = Matcher(index)
+        matcher = build_matcher(index)
         ranged = matcher.match(get("http://shop.test/v.mp4", Range="bytes=2-"))
         assert ranged.servable and ranged.range is not None
         assert (ranged.range.start, ranged.range.end, ranged.range.total) == (2, 9, 10)
@@ -299,7 +334,7 @@ class TestRanges:
 
     def test_suffix_and_closed_ranges_and_clipping(self) -> None:
         index, _, _ = self._index()
-        matcher = Matcher(index)
+        matcher = build_matcher(index)
         suffix = matcher.match(get("http://shop.test/v.mp4", Range="bytes=-3"))
         assert suffix.range is not None and (suffix.range.start, suffix.range.end) == (7, 9)
         closed = matcher.match(get("http://shop.test/v.mp4", Range="bytes=1-4"))
@@ -308,7 +343,7 @@ class TestRanges:
 
     def test_uncovered_and_unknown(self) -> None:
         index, _, _ = self._index()
-        matcher = Matcher(index)
+        matcher = build_matcher(index)
         assert matcher.match(get("http://shop.test/v.mp4", Range="bytes=10-")).reason == (
             "range_uncovered"
         ), "beyond the known total"
@@ -330,13 +365,13 @@ class TestNotModified:
     def test_a_304_answers_only_a_conditional_request(self) -> None:
         cached = indexed(f"{API}/logo.png", record_id="cached", order=0, status=304)
         fresh = indexed(f"{API}/logo.png", record_id="fresh", order=1)
-        matcher = Matcher(ArchiveIndex([cached, fresh]))
+        matcher = build_matcher(ArchiveIndex([cached, fresh]))
         assert matcher.match(get(f"{API}/logo.png")).record == fresh
-        conditional = Matcher(ArchiveIndex([cached, fresh]))
+        conditional = build_matcher(ArchiveIndex([cached, fresh]))
         assert (
             conditional.match(get(f"{API}/logo.png", **{"If-None-Match": '"e1"'})).record == cached
         )
-        only_304 = Matcher(ArchiveIndex([cached]))
+        only_304 = build_matcher(ArchiveIndex([cached]))
         assert only_304.match(get(f"{API}/logo.png")).reason == "no_match"
 
 
@@ -344,7 +379,7 @@ class TestTheConfig:
     def test_defaults(self) -> None:
         config = MatcherConfig()
         assert (config.levels, config.fuzzy_threshold, config.site_rules) == (
-            ["exact", "normalized"],
+            ("exact", "normalized"),
             0.5,
             None,
         )
@@ -368,3 +403,236 @@ class TestTheConfig:
     def test_refused(self, bad: dict[str, object]) -> None:
         with pytest.raises(ValidationError):
             MatcherConfig(**bad)  # type: ignore[arg-type]
+
+
+class TestExplicitPolicyBoundaries:
+    @pytest.mark.parametrize("exhaustion", ["repeat_last", "miss"])
+    def test_strong_sequence_exhaustion_does_not_consume_a_weaker_candidate(
+        self, exhaustion: ExhaustionPolicy
+    ) -> None:
+        rule = SiteRule(id="stock", exhaustion=exhaustion, ignore_query=("_",))
+        exact = build_indexed(f"{API}?_=1", record_id="exact", order=0, rule=rule)
+        other = build_indexed(f"{API}?_=2", record_id="other", order=1, rule=rule)
+        matcher = Matcher(ArchiveIndex([exact, other]), rules=SiteRules([rule]))
+        assert matcher.match(get(f"{API}?_=1")).record == exact
+        exhausted = matcher.match(get(f"{API}?_=1"))
+        assert exhausted.level == "exact" and exhausted.exhausted
+        assert exhausted.rule_id == "stock" and exhausted.exhaustion_policy == exhaustion
+        if exhaustion == "miss":
+            assert exhausted.reason == "sequence_exhausted" and exhausted.record is None
+        else:
+            assert exhausted.record == exact and exhausted.reason is None
+        assert matcher.match(get(f"{API}?_=2")).record == other
+
+    def test_endpoint_polling_and_business_sequences_have_separate_policies(self) -> None:
+        rules = SiteRules(
+            [
+                SiteRule(id="poll", scope=RequestScope(path="/poll"), exhaustion="repeat_last"),
+                SiteRule(id="stock", scope=RequestScope(path="/stock"), exhaustion="miss"),
+            ]
+        )
+        poll = indexed("http://shop.test/poll", record_id="poll", order=0)
+        stock = indexed("http://shop.test/stock", record_id="stock", order=1)
+        matcher = Matcher(ArchiveIndex([poll, stock]), rules=rules)
+        for record in (poll, stock):
+            assert matcher.match(get(record.url)).record == record
+        assert matcher.match(get(poll.url)).record == poll
+        assert matcher.match(get(stock.url)).reason == "sequence_exhausted"
+
+    def test_no_policy_is_refused_only_when_a_candidate_would_be_served(self) -> None:
+        record = indexed(API, record_id="record", order=0)
+        matcher = Matcher(ArchiveIndex([record]))
+        assert matcher.match(get(API + "/unknown")).reason == "no_match"
+        with pytest.raises(SiteRuleError, match="exhaustion.*GET"):
+            matcher.match(get(API))
+
+    def test_rule_can_restrict_levels_and_run_order_is_always_strongest_first(self) -> None:
+        record = indexed(API, record_id="record", order=0)
+        config = MatcherConfig(
+            levels=(
+                "fuzzy",
+                "normalized",
+                "exact",
+            )
+        )
+        assert build_matcher(ArchiveIndex([record]), config).match(get(API)).level == "exact"
+        rules = SiteRules([SiteRule(id="restricted", exhaustion="miss", levels=("normalized",))])
+        assert Matcher(ArchiveIndex([record]), config, rules).match(get(API)).level == "normalized"
+
+    def test_fuzzy_does_not_cross_effective_ports(self) -> None:
+        record = indexed("http://shop.test:8080/api?a=1", record_id="record", order=0)
+        matcher = build_matcher(
+            ArchiveIndex([record]), MatcherConfig(levels=("fuzzy",), fuzzy_threshold=0)
+        )
+        assert matcher.match(get("http://shop.test:8081/api?a=1")).reason == "no_match"
+
+    def test_allowed_levels_are_frozen_from_the_callers_list(self) -> None:
+        levels = ["exact"]
+        config = TypeAdapter(MatcherConfig).validate_python({"levels": levels})
+        levels.append("fuzzy")
+        assert config.levels == ("exact",)
+        assert config.fingerprint()["levels"] == ["exact"]
+
+
+class TestRangeLevelBoundary:
+    def test_exact_only_never_uses_normalized_bytes(self) -> None:
+        rule = SiteRule(id="video", exhaustion="repeat_last", ignore_query=("ts",))
+        record = build_indexed(
+            "http://shop.test/v?ts=1", record_id="record", order=0, rule=rule, payload_length=10
+        )
+        ranges = RangeMap({record.keys.normalized: [RangeSegment(0, 9, 10, record)]})
+        index = ArchiveIndex([record], ranges)
+        request = get("http://shop.test/v?ts=2", Range="bytes=0-4")
+        exact = Matcher(index, MatcherConfig(levels=("exact",)), SiteRules([rule])).match(request)
+        assert exact.reason == "match_level_disallowed" and exact.range is None
+        normalized = Matcher(index, MatcherConfig(levels=("normalized",)), SiteRules([rule])).match(
+            request
+        )
+        assert normalized.level == "normalized" and normalized.range is not None
+        uncovered = Matcher(index, MatcherConfig(levels=("normalized",)), SiteRules([rule])).match(
+            get("http://shop.test/v?ts=2", Range="bytes=20-30")
+        )
+        assert uncovered.reason == "range_uncovered"
+
+    def test_exact_ranges_never_join_bytes_from_another_normalized_url(self) -> None:
+        rule = SiteRule(id="video", exhaustion="miss", ignore_query=("ts",))
+        first = build_indexed("http://shop.test/v?ts=1", record_id="first", order=0, rule=rule)
+        other = build_indexed("http://shop.test/v?ts=2", record_id="other", order=1, rule=rule)
+        ranges = RangeMap(
+            {first.keys.normalized: [RangeSegment(0, 4, 10, first), RangeSegment(5, 9, 10, other)]}
+        )
+        index = ArchiveIndex([], ranges)
+        request = get(first.url, Range="bytes=5-9")
+        exact = Matcher(
+            index,
+            MatcherConfig(
+                levels=(
+                    "exact",
+                    "normalized",
+                )
+            ),
+            SiteRules([rule]),
+        ).match(request)
+        assert exact.reason == "range_uncovered"
+        normalized = Matcher(index, MatcherConfig(levels=("normalized",)), SiteRules([rule])).match(
+            request
+        )
+        assert normalized.range is not None and normalized.range.parts[0][0] == other
+
+    def test_rule_level_restrictions_apply_to_ranges(self) -> None:
+        rule = SiteRule(
+            id="video", exhaustion="repeat_last", levels=("exact",), ignore_query=("ts",)
+        )
+        record = build_indexed("http://shop.test/v?ts=1", record_id="record", order=0, rule=rule)
+        index = ArchiveIndex(
+            [], RangeMap({record.keys.normalized: [RangeSegment(0, 9, 10, record)]})
+        )
+        result = Matcher(
+            index,
+            MatcherConfig(
+                levels=(
+                    "exact",
+                    "normalized",
+                )
+            ),
+            SiteRules([rule]),
+        ).match(get("http://shop.test/v?ts=2", Range="bytes=0-4"))
+        assert result.reason == "match_level_disallowed"
+
+
+class TestRequestRuleIsolation:
+    @pytest.fixture
+    def rules(self) -> SiteRules:
+        return SiteRules(
+            [
+                SiteRule(
+                    id=f"account-{account}",
+                    scope=RequestScope(url=f"*account={account}*"),
+                    exhaustion="miss",
+                    ignore_query=("account", "nonce"),
+                )
+                for account in ("a", "b")
+            ]
+        )
+
+    @pytest.mark.parametrize("level", ["normalized", "fuzzy"])
+    def test_equal_keys_under_different_rules_never_authorize_a_response(
+        self, rules: SiteRules, level: MatchLevel
+    ) -> None:
+        recorded_url = f"{API}?account=b&nonce=1&item=7"
+        recorded = build_indexed(
+            recorded_url,
+            record_id="account-b",
+            order=0,
+            rule=rules.require_for_request("GET", recorded_url),
+        )
+        matcher = Matcher(ArchiveIndex([recorded]), MatcherConfig(levels=(level,)), rules)
+        live = get(f"{API}?account=a&nonce=2&item=7")
+        result = matcher.match(live)
+        assert result.keys.normalized == recorded.keys.normalized
+        assert result.reason == "no_match" and result.record is None
+        assert result.rule_id == "account-a"
+        # Rejecting another rule's record never consumes that record's sequence.
+        assert matcher.match(get(f"{API}?account=b&nonce=2&item=7")).record == recorded
+
+    def test_fuzzy_similarity_still_requires_the_same_selected_rule(self, rules: SiteRules) -> None:
+        url = f"{API}?account=b&nonce=1&item=7&variant=red"
+        recorded = build_indexed(
+            url, record_id="account-b", order=0, rule=rules.require_for_request("GET", url)
+        )
+        matcher = Matcher(
+            ArchiveIndex([recorded]), MatcherConfig(levels=("fuzzy",), fuzzy_threshold=0.5), rules
+        )
+        result = matcher.match(get(f"{API}?account=a&nonce=2&item=7&variant=blue"))
+        assert result.keys.normalized != recorded.keys.normalized
+        assert fuzzy_score(result.keys.params, recorded.keys.params) == 0.5
+        assert result.reason == "no_match" and result.record is None
+
+    @pytest.mark.parametrize("level", ["exact", "normalized", "fuzzy"])
+    def test_ranges_cannot_use_a_resource_selected_by_another_rule(
+        self, rules: SiteRules, level: MatchLevel
+    ) -> None:
+        url = f"{API}?account=b&nonce=1&item=7"
+        recorded = build_indexed(
+            url, record_id="account-b", order=0, rule=rules.require_for_request("GET", url)
+        )
+        index = ArchiveIndex(
+            [], RangeMap({recorded.keys.normalized: [RangeSegment(0, 9, 10, recorded)]})
+        )
+        result = Matcher(index, MatcherConfig(levels=(level,)), rules).match(
+            get(f"{API}?account=a&nonce=2&item=7", Range="bytes=0-4")
+        )
+        assert result.reason == "no_match" and result.range is None
+        assert result.rule_id == "account-a"
+
+    def test_ranges_never_fill_a_gap_with_another_rules_bytes(self, rules: SiteRules) -> None:
+        first_url = f"{API}?account=a&nonce=1"
+        second_url = f"{API}?account=b&nonce=1"
+        first = build_indexed(
+            first_url,
+            record_id="account-a",
+            order=0,
+            rule=rules.require_for_request("GET", first_url),
+        )
+        second = build_indexed(
+            second_url,
+            record_id="account-b",
+            order=1,
+            rule=rules.require_for_request("GET", second_url),
+        )
+        assert first.keys.normalized == second.keys.normalized
+        index = ArchiveIndex(
+            [],
+            RangeMap(
+                {
+                    first.keys.normalized: [
+                        RangeSegment(0, 4, 10, first),
+                        RangeSegment(5, 9, 10, second),
+                    ]
+                }
+            ),
+        )
+        result = Matcher(index, MatcherConfig(levels=("normalized",)), rules).match(
+            get(f"{API}?account=a&nonce=2", Range="bytes=5-9")
+        )
+        assert result.reason == "range_uncovered" and result.range is None

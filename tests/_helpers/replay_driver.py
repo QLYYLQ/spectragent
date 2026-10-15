@@ -180,7 +180,7 @@ def to_replay_config(
     capability["network_source"] = {
         "source_id": "archive",
         "isolation": isolation,
-        "matcher": {"levels": ["exact", "normalized"]},
+        "matcher": {"levels": ["exact", "normalized"], "site_rules": "tests/fixtures/replay_rules"},
         "miss_policy": {"miss_policy_id": "strict"},
     }
     capability["replayability"] = {**capability["replayability"], "base_time": "from_archive"}

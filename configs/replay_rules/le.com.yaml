@@ -1,12 +1,50 @@
-# LeTV video (www.le.com, so.le.com, apple.www.le.com, dc-so.le.com).
-# lc, uuid, device_id: the visitor's device id and visit ids, generated in the page
-#   (lc fb86738b... vs ed025601...); the replay's ids are the recording's random draws
-#   shifted. They select nothing.
-# jsonp: sso.le.com's login calls (User/getPlatInfo?plat=www, user/setCountryLang?lang=...
-#   and ?country=...) name their JSONP callback vjs_<time><two random digits>
-#   (vjs_179195905609142 vs vjs_179195905609196), and the answer calls that name
-#   (vjs_179195905609196({...})); the replay writes the name the request asks for in its
-#   place (docs/architecture_design.md §4.14 "JSONP 回调名"), so ignoring it is safe. The
-#   path and plat / lang / country pick the call. Only sso.le.com carries a jsonp parameter.
-ignore_query: [lc, uuid, device_id, jsonp]
-# Not ignored: cur_url, the page a pixel reports on.
+# Recorded LeTV statistics pixels carry generated visit/device ids (fb86738b... vs ed025601...).
+# Only those pixels ignore them. The two sso endpoints use vjs_<time><random> JSONP names;
+# replay rewrites the opening callback. plat/lang/country and cur_url stay.
+rules:
+- id: letv-operation-pixel
+  scope:
+    host: apple.www.le.com
+    path: /op/
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - lc
+  - uuid
+  keep_query:
+  - cur_url
+- id: letv-search-statistics
+  scope:
+    host: dc-so.le.com
+    path: /data_collect.so
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - device_id
+  keep_query:
+  - cur_url
+- id: letv-platform-callback
+  scope:
+    host: sso.le.com
+    path: /User/getPlatInfo
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - jsonp
+  keep_query:
+  - plat
+- id: letv-language-callback
+  scope:
+    host: sso.le.com
+    path: /user/setCountryLang
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - jsonp
+  keep_query:
+  - lang
+  - country

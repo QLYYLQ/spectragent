@@ -1,3 +1,21 @@
-# mediadata.xuexi.cn: an analytics SDK on 21jingji's pages.
-# _abfpc: a browser fingerprint hash on its scripts (rcfg.js, pbe.js): 86165b40... vs 0a7ad531....
-ignore_query: [_abfpc]
+# The analytics SDK scripts carry a browser fingerprint hash (_abfpc, 86165b40... vs 0a7ad531...).
+# Only the two script paths documented in the original evidence ignore that field.
+rules:
+- id: xuexi-analytics-config-script
+  scope:
+    host: mediadata.xuexi.cn
+    path: /rcfg.js
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - _abfpc
+- id: xuexi-analytics-script
+  scope:
+    host: mediadata.xuexi.cn
+    path: /pbe.js
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - _abfpc

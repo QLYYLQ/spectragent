@@ -48,6 +48,10 @@ class NetworkSourceProtocol(Protocol):
         """What an intercepting source needs of the provider; ``None`` when it intercepts nothing."""
         ...
 
+    def check_config(self, reader: ArchiveReader | None = None) -> None:
+        """Validate source-owned experiment inputs and recorded request coverage before a run."""
+        ...
+
     def open_replay(self, reader: ArchiveReader) -> RecordedArchive:
         """Load the recorded run *reader* reads (setup, before the browser starts)."""
         ...
@@ -101,6 +105,9 @@ class NetworkSourceBase(metaclass=NetworkSourceRegistrar.Meta):
     @property
     def isolation(self) -> Isolation | None:
         return None
+
+    def check_config(self, reader: ArchiveReader | None = None) -> None:
+        """A source without extra inputs has nothing to check."""
 
     def open_replay(self, reader: ArchiveReader) -> RecordedArchive:
         raise NotImplementedError(

@@ -39,16 +39,20 @@ hygiene for what page JavaScript reads, not framing (measured, arch §4.14).
 **Dates** (:func:`dated_headers`), ``shift_dates``:
 
 - ``none`` — ``Date`` / ``Expires`` / ``Last-Modified`` and cookie expiry as
-  recorded; pairs with ``base_time: from_archive``. Chrome rebases a cookie's
+  recorded. Chrome rebases a cookie's
   expiry by the served ``Date`` (``Expires + (now − Date)``), so lifetimes stay
   right.
 - ``all`` — all four shifted by one Δ = now − record time (the recorded
-  ``Date``, else the request's start, the WARC-Date source); pairs with
-  ``base_time: run_start``.
+  ``Date``, else the request's start, the WARC-Date source).
 - Never a subset: shifting the cookie expiry alone double-shifts it (measured, arch §4.14).
   A response without ``Date`` gets one (record time + Δ) so Chrome's
   rebasing has its anchor. A value that does not parse as a date is served
   as recorded.
+
+The page's pinned ``base_time`` and response ``shift_dates`` are independent:
+all four combinations are valid. The offset uses the time each response is
+served; it does not reconstruct a shared timeline or shift dates inside a
+response body, page timers, ``performance.now`` or browser-internal clocks.
 
 Follows (re-implemented, not copied) WPR ``proxy.go`` ``updateDates``
 (webpagereplay @ 6a31bb09, BSD-3: shifts ``Last-Modified`` / ``Expires``

@@ -1,0 +1,15 @@
+rules:
+  - id: fixture-default
+    scope: {}
+    priority: -100
+    exhaustion: repeat_last
+  - id: fixture-jsonp
+    scope: {path: '/jsonp/*'}
+    priority: 10
+    exhaustion: repeat_last
+    ignore_query: [callback, cb, _]
+  - id: fixture-script-callback
+    scope: {path: '/api/hot'}
+    priority: 10
+    exhaustion: repeat_last
+    ignore_query: [callback, _]

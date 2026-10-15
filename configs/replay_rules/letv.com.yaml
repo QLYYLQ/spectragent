@@ -1,8 +1,85 @@
-# LeTV's other domain (dc.letv.com, fe-go.letv.com, ark.letv.com, search-*.letv.com).
-# lc, uuid, apprunid, weid, device_id: device, visit and run ids in the dc / fe-go pixels.
-# _r: a random float on fe-go pixels (0.1749... vs 0.8379...).
-# vvid: the ad request's view id on ark.letv.com/s (c567fbb5-..._179... vs d085b8cf-...),
-#   a random UUID and a timestamp; the ad slot is chosen by ark= and n=.
-ignore_query: [lc, uuid, apprunid, weid, device_id, _r, vvid]
-# Not ignored: ps on search-lekan (page size 25 vs 30: it changes the result count);
-# ap (which element a pixel reports); url (the page a pixel reports).
+# dc/fe-go pixel fields are visit/run ids; _r is a random float (0.1749... vs 0.8379...).
+# vvid on /s is a random UUID plus timestamp; ark and n select the ad.
+# Search endpoints retain lc/device_id and ps: the statistics evidence does not authorize them.
+rules:
+- id: letv-environment-pixel
+  scope:
+    host: dc.letv.com
+    path: /env/
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - apprunid
+  - lc
+  - uuid
+  keep_query:
+  - ap
+  - url
+- id: letv-operation-log
+  scope:
+    host: dc.letv.com
+    path: /op/
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - apprunid
+  - lc
+  - uuid
+  keep_query:
+  - ap
+  - url
+- id: letv-page-view
+  scope:
+    host: dc.letv.com
+    path: /pgv/
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - apprunid
+  - lc
+  - uuid
+  - weid
+  keep_query:
+  - ap
+  - url
+- id: letv-query-pixel
+  scope:
+    host: dc.letv.com
+    path: /qy/
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - lc
+  - uuid
+  keep_query:
+  - ap
+  - url
+- id: letv-frontend-pixel
+  scope:
+    host: fe-go.letv.com
+    path: /ds
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - _r
+  - lc
+  keep_query:
+  - ap
+  - url
+- id: letv-ad-view
+  scope:
+    host: ark.letv.com
+    path: /s
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - vvid
+  keep_query:
+  - ark
+  - n

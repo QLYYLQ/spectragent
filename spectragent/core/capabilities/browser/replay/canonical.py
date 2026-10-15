@@ -53,8 +53,7 @@ the rule.
   ``harBackend``'s exact match), since the boundary is random per request.
 - **normalized** (L1) — the canonical URL with every parameter, sorted:
   scheme and host lower-cased, default port and fragment dropped, the query
-  decoded and stripped of volatile parameters (:func:`volatile_param`) and of
-  the site rule's ``ignore_query``, plus ``__wb_method=<METHOD>`` and the
+  decoded and stripped only of the applicable rule's ``ignore_query``, plus ``__wb_method=<METHOD>`` and the
   body's parameters (:func:`body_params`).
 - **body_key** — the body's parameters on their own (``None`` without a
   body), for the replay log.
@@ -68,7 +67,7 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import parse_qsl, quote, urlsplit
 
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRule
@@ -86,26 +85,6 @@ BODY_PARAM_PREFIX = "body:"
 GRAPHQL_URL_PARAMS = frozenset({"query", "variables", "operationName", "extensions"})
 
 Params = tuple[tuple[str, str], ...]
-
-# ── volatile query parameters ──────────────────────────────────────────
-# Classes from pywb's rules.yaml, wabac.js's fuzzy matcher and WARC-Bench's
-# normalizeUrl (facts only: none of their code is used — pywb and wabac.js are
-# GPL / AGPL, WARC-Bench carries no license text).
-
-#: Dropped whatever their value.
-_DROPPED_NAMES = frozenset({"fbclid", "_ga"})
-#: Dropped when the value is a number (pywb ``(_|cb|uncache)=\d+``, wabac
-#: ``\w*cache\w*=[\d.-]+``).
-_DROPPED_WHEN_NUMERIC = frozenset({"_", "cb", "uncache"})
-_NUMERIC = re.compile(r"^[\d.\-]+$")
-#: A JSONP callback name (``callback=jsonp123``, ``cb=jQuery1234_5678``).
-_JSONP = re.compile(r"^(?:jsonp|jquery\d+_\d+$)", re.IGNORECASE)
-#: A timestamp in a parameter whose name contains ``bust`` or ``ts``: pywb's
-#: ``1[\d]{12,15}`` — ``1`` and 12–15 more digits, an epoch in milliseconds or
-#: microseconds. Any 13–16 digits would take barcodes and ids (``products=…``).
-_TIMESTAMP = re.compile(r"^1\d{12,15}$")
-#: WARC-Bench's placeholders: the name stays, the value is blanked.
-_BLANKED_NAMES = frozenset({"timestamp", "_", "r", "width", "height"})
 
 # ── bodies ──────────────────────────────────────────────────────────────
 #: ``name="…"`` in a multipart part's Content-Disposition (not ``filename=``).
@@ -126,6 +105,7 @@ class RequestKeys:
         normalized: The canonical URL with the method and body parameters.
         body_key: The body's canonical parameters (``None`` without a body).
         host: The lower-cased host, without port.
+        port: The effective port, including the scheme's default when omitted.
         path: The URL path (``/`` when empty).
         params: Query and body parameters (body names prefixed ``body:``),
             sorted — what the fuzzy level scores.
@@ -137,6 +117,7 @@ class RequestKeys:
     host: str
     path: str
     params: Params
+    port: int | None = None
 
 
 def request_keys(
@@ -153,7 +134,7 @@ def request_keys(
         url: The request URL; a fragment is ignored.
         body: The (redacted) request body; ``b""`` is no body.
         content_type: The request's ``Content-Type``.
-        rule: The site rule of the request's host, if any.
+        rule: The selected request rule, if any.
     """
     verb = method.upper()
     bare = url.split("#", 1)[0]
@@ -180,6 +161,7 @@ def request_keys(
         normalized=f"{scheme}://{authority}{path}?{encode_params(merged)}",
         body_key=encode_params(body_pairs) if payload is not None else None,
         host=host,
+        port=port if port is not None else DEFAULT_PORTS.get(scheme),
         path=path,
         params=tuple(
             sorted((*query, *((BODY_PARAM_PREFIX + name, value) for name, value in body_pairs)))
@@ -204,7 +186,7 @@ def _opaque_keys(
 
 
 def host_of(url: str) -> str:
-    """The lower-cased host of *url* (no port, no brackets) — what site rules are chosen by."""
+    """The lower-cased host of *url* (no port, no brackets) — without interpreting any request rule."""
     try:
         return (urlsplit(url.split("#", 1)[0]).hostname or "").lower()
     except ValueError:
@@ -243,36 +225,11 @@ def media_type(content_type: str | None) -> tuple[str, dict[str, str]]:
 # ── the query ──────────────────────────────────────────────────────────
 
 
-def volatile_param(name: str, value: str) -> Literal["drop", "blank"] | None:
-    """What a query parameter's name and value say about it: drop it, blank it, or keep it.
-
-    Dropped: ``utm_*``, ``fbclid``, ``_ga``; ``_`` / ``cb`` / ``uncache`` or a
-    name containing ``cache`` with a numeric value (``.`` and ``-`` allowed);
-    a JSONP callback value (``jsonp…``, ``jQuery\\d+_\\d+``); a name
-    containing ``bust`` or ``ts`` with a timestamp value — ``1`` and 12–15
-    more digits (pywb's rule: an epoch in milliseconds or microseconds).
-    Blanked (name kept, value emptied, WARC-Bench's placeholder): ``timestamp``,
-    ``_``, ``r``, ``width``, ``height``. Names compare case-insensitively.
-    """
-    lowered = name.lower()
-    if lowered.startswith("utm_") or lowered in _DROPPED_NAMES:
-        return "drop"
-    if (lowered in _DROPPED_WHEN_NUMERIC or "cache" in lowered) and _NUMERIC.match(value):
-        return "drop"
-    if _JSONP.match(value):
-        return "drop"
-    if ("bust" in lowered or "ts" in lowered) and _TIMESTAMP.match(value):
-        return "drop"
-    if lowered in _BLANKED_NAMES:
-        return "blank"
-    return None
-
-
 def canonical_query(query: str, rule: SiteRule | None = None) -> Params:
     """A query string's canonical parameters, sorted.
 
-    Decoded (``%20`` and ``+`` are the same space), volatile parameters
-    dropped or blanked, the site rule's ``ignore_query`` removed. A GraphQL
+    Decoded (``%20`` and ``+`` are the same space), with only the explicit
+    rule's ``ignore_query`` removed. A GraphQL
     GET request's ``query`` / ``variables`` / ``operationName`` /
     ``extensions`` become its operation's parameters (:func:`graphql_params`).
     """
@@ -284,10 +241,7 @@ def canonical_query(query: str, rule: SiteRule | None = None) -> Params:
             continue
         if rule is not None and rule.ignores_query(name):
             continue
-        verdict = volatile_param(name, value)
-        if verdict == "drop":
-            continue
-        kept.append((name, "" if verdict == "blank" else value))
+        kept.append((name, value))
     if operation is not None:
         kept.extend(graphql_params([operation], rule))
     return tuple(sorted(kept))

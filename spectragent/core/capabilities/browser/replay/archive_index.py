@@ -64,7 +64,6 @@ from spectragent.core.capabilities.browser.archive.network import INDEX_NAME, WA
 from spectragent.core.capabilities.browser.archive.warc import header_lines
 from spectragent.core.capabilities.browser.replay.canonical import (
     RequestKeys,
-    host_of,
     request_keys,
 )
 from spectragent.core.capabilities.browser.replay.miss_policy import MissReason
@@ -318,17 +317,37 @@ class RangeMap:
             if found
         }
 
+    @property
+    def records(self) -> tuple[IndexedRecord, ...]:
+        """Every resource record represented here, including partial (206) responses."""
+        unique = {
+            (segment.record.run_id, segment.record.record_id): segment.record
+            for segments in self._segments.values()
+            for segment in segments
+        }
+        return tuple(sorted(unique.values(), key=lambda r: (r.order, r.run_id, r.record_id)))
+
     def knows(self, key: str) -> bool:
         return key in self._segments
 
-    def cover(self, key: str, start: int | None, end: int | None) -> RangeCover | None:
+    def cover(
+        self,
+        key: str,
+        start: int | None,
+        end: int | None,
+        *,
+        records: Sequence[IndexedRecord] | None = None,
+    ) -> RangeCover | None:
         """The contiguous recorded bytes from *start* (to *end*, or as far as recorded).
 
         *start* ``None`` with *end* ``K`` is a suffix range (the last ``K``
         bytes, needing a known total). ``None`` when the first byte asked for
         was never recorded.
         """
-        segments = self._segments.get(key)
+        segments = self._segments.get(key, [])
+        if records is not None:
+            allowed = {(record.run_id, record.record_id) for record in records}
+            segments = [s for s in segments if (s.record.run_id, s.record.record_id) in allowed]
         if not segments:
             return None
         total = next((s.total for s in segments if s.total is not None), None)
@@ -414,7 +433,16 @@ class PayloadStore:
                 record_id=record.record_id,
             )
         if isinstance(locator, BlobPayload):
-            data = self._reader.blob(locator.sha256)
+            try:
+                data = self._reader.blob(locator.sha256)
+            except Exception as exc:
+                # A source read failure is an environment fact, never a failure
+                # of the replay run's recorder. Keep that boundary browser-owned.
+                raise ReplayArchiveError(
+                    f"cannot read committed response blob {locator.sha256}: {exc}",
+                    run_id=record.run_id,
+                    record_id=record.record_id,
+                ) from exc
         else:
             data = self._warcs.record(
                 locator.path,
@@ -513,7 +541,7 @@ def load_archive(reader: ArchiveReader, rules: SiteRules | None = None) -> Recor
             response the archive does not hold, a late body is not a
             committed blob, or the fingerprint is not a JSON object.
     """
-    rules = rules or SiteRules()
+    rules = rules if rules is not None else SiteRules()
     run_id = reader.run_id
     fingerprint, fingerprint_sha256 = _fingerprint(reader, run_id)
     commits = _commits(reader.iter_archive(NETWORK_ARCHIVER, include_trailing=True))
@@ -602,7 +630,7 @@ def load_archive(reader: ArchiveReader, rules: SiteRules | None = None) -> Recor
             fields["url"],
             fields["body"],
             fields["content_type"],
-            rules.for_host(host_of(fields["url"])),
+            rules.for_request(fields["method"], fields["url"]),
         )
         record = IndexedRecord(run_id=run_id, order=order, keys=keys, **fields)
         segment = _range_segment(record)

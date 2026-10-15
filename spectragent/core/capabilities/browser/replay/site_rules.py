@@ -1,46 +1,21 @@
-"""Per-site replay rules: ``<domain>.yaml`` files in one directory (§4.14 "站点规则").
+"""Frozen, explicitly scoped replay rules and their reproducible source snapshots.
 
-The archive source's ``matcher.site_rules`` names a directory (shipped example:
-``configs/replay_rules/``). Each ``<domain>.yaml`` holds one :class:`SiteRule`
-for that domain and every host below it; a request's host picks its file by
-the **longest suffix** on label boundaries (``a.b.example.com`` tries
-``a.b.example.com.yaml``, ``b.example.com.yaml``, ``example.com.yaml``,
-``com.yaml``), so a file named after the registrable domain works without a
-Public Suffix List.
-
-A rule only ever loosens or shapes what the shared canonicaliser
-(``canonical.py``) and the matcher do for that site:
-
-- ``ignore_query`` — query parameter names (``fnmatch`` globs) left out of the
-  normalised key and the fuzzy score;
-- ``ignore_body_paths`` — full-path globs (``variables.cursor``,
-  ``client.*``) left out of a body's key — form field names, flattened JSON
-  paths, GraphQL variables (matched within one operation);
-- ``ignore_headers`` — request header names (globs, case-insensitive) left
-  out of the header tie-break;
-- ``fuzzy: on`` — the fuzzy level for this site even for documents and
-  non-GET requests, and even when ``matcher.levels`` lacks ``fuzzy``
-  (YAML 1.1 reads a bare ``on`` as ``true``);
-- ``synthesize_204`` — URL globs whose misses are benign: answered 204 by the
-  miss policy, like analytics;
-- ``response_echo`` — on a hit, copy values from the request's JSON into the
-  served response's JSON (a request id the page checks for, the Salesforce
-  Aura shape WARC-Bench handles): :meth:`SiteRule.echo`.
-
-The directory's digest (each file's name and sha256, sorted) goes into the
-replay fingerprint, so two replays with different rules are told apart.
+Rules select by method, host/path or URL and effective port. The greatest
+explicit priority wins; equal-priority matches are configuration conflicts.
+Every rule declares response-sequence exhaustion. File order never selects
+behavior, and all rule collections are immutable after parsing.
 """
 
 import fnmatch
 import hashlib
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qsl
+from typing import Any, Literal
+from urllib.parse import parse_qsl, urlsplit
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 #: The file suffix of a site rule.
 RULE_SUFFIX = ".yaml"
@@ -48,6 +23,49 @@ RULE_SUFFIX = ".yaml"
 
 class SiteRuleError(ValueError):
     """A site-rule directory or file that cannot be used, naming it."""
+
+
+MatchLevel = Literal["exact", "normalized", "fuzzy"]
+ExhaustionPolicy = Literal["repeat_last", "miss"]
+
+
+class RequestScope(BaseModel):
+    """Conjunctive request selectors; omitted selectors match every value.
+
+    Host, path and URL are fnmatch globs. Host matching ignores case and a
+    trailing dot; it does not implicitly include subdomains. URL matching
+    ignores the fragment. Port is the effective port, including 80/443.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    host: str | None = None
+    path: str | None = None
+    url: str | None = None
+    method: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+
+    def matches(self, method: str, url: str) -> bool:
+        bare = url.split("#", 1)[0]
+        if self.method is not None and self.method.upper() != method.upper():
+            return False
+        if self.url is not None and not fnmatch.fnmatchcase(bare, self.url):
+            return False
+        if self.host is None and self.path is None and self.port is None:
+            return True
+        try:
+            parts = urlsplit(bare)
+            host = (parts.hostname or "").lower().rstrip(".")
+            port = parts.port
+        except ValueError:
+            return False
+        if port is None:
+            port = {"http": 80, "https": 443, "ws": 80, "wss": 443}.get(parts.scheme.lower())
+        return (
+            (self.host is None or fnmatch.fnmatchcase(host, self.host.lower().rstrip(".")))
+            and (self.path is None or fnmatch.fnmatchcase(parts.path or "/", self.path))
+            and (self.port is None or self.port == port)
+        )
 
 
 class EchoRule(BaseModel):
@@ -66,26 +84,47 @@ class EchoRule(BaseModel):
 
 
 class SiteRule(BaseModel):
-    """One site's replay rules (``<domain>.yaml``)."""
+    """One complete request policy; matching rules never implicitly merge."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ignore_query: list[str] = Field(default_factory=list)
-    ignore_body_paths: list[str] = Field(default_factory=list)
-    ignore_headers: list[str] = Field(default_factory=list)
+    id: str = Field(min_length=1)
+    scope: RequestScope = Field(default_factory=RequestScope)
+    priority: int = 0
+    exhaustion: ExhaustionPolicy
+    levels: tuple[MatchLevel, ...] | None = Field(default=None, min_length=1)
+    ignore_query: tuple[str, ...] = ()
+    keep_query: tuple[str, ...] = ()
+    ignore_body_paths: tuple[str, ...] = ()
+    keep_body_paths: tuple[str, ...] = ()
+    ignore_headers: tuple[str, ...] = ()
+    keep_headers: tuple[str, ...] = ()
     fuzzy: bool = False
-    synthesize_204: list[str] = Field(default_factory=list)
-    response_echo: list[EchoRule] = Field(default_factory=list)
+    synthesize_204: tuple[str, ...] = ()
+    response_echo: tuple[EchoRule, ...] = ()
+
+    @field_validator("levels")
+    @classmethod
+    def unique_levels(cls, levels: tuple[MatchLevel, ...] | None) -> tuple[MatchLevel, ...] | None:
+        if levels is not None and len(levels) != len(set(levels)):
+            raise ValueError("each matching level must appear once")
+        return levels
 
     def ignores_query(self, name: str) -> bool:
-        return any(fnmatch.fnmatchcase(name, pattern) for pattern in self.ignore_query)
+        return not any(fnmatch.fnmatchcase(name, p) for p in self.keep_query) and any(
+            fnmatch.fnmatchcase(name, p) for p in self.ignore_query
+        )
 
     def ignores_body_path(self, path: str) -> bool:
-        return any(fnmatch.fnmatchcase(path, pattern) for pattern in self.ignore_body_paths)
+        return not any(fnmatch.fnmatchcase(path, p) for p in self.keep_body_paths) and any(
+            fnmatch.fnmatchcase(path, p) for p in self.ignore_body_paths
+        )
 
     def ignores_header(self, name: str) -> bool:
         lowered = name.lower()
-        return any(fnmatch.fnmatchcase(lowered, pattern.lower()) for pattern in self.ignore_headers)
+        return not any(fnmatch.fnmatchcase(lowered, p.lower()) for p in self.keep_headers) and any(
+            fnmatch.fnmatchcase(lowered, p.lower()) for p in self.ignore_headers
+        )
 
     def synthesizes_204(self, url: str) -> bool:
         """Whether a miss of *url* is benign by this rule."""
@@ -140,74 +179,186 @@ class SiteRule(BaseModel):
         return json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-class SiteRules:
-    """Every rule of one directory, by domain."""
+class RuleFileSnapshot(BaseModel):
+    """The exact UTF-8 source adopted by this run, with its provenance and digest."""
 
-    def __init__(
-        self,
-        rules: Mapping[str, SiteRule] | None = None,
-        *,
-        sha256: str | None = None,
-        directory: Path | None = None,
-    ) -> None:
-        self._rules = {domain.lower(): rule for domain, rule in (rules or {}).items()}
-        #: The directory's digest (``None`` when no directory is configured).
-        self.sha256 = sha256
-        self.directory = directory
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str
+    origin: str
+    sha256: str
+    text: str
+
+
+class SiteRulesSnapshot(BaseModel):
+    """Self-contained replay input; digests are checked by ``from_snapshot``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    directory: str | None
+    sha256: str
+    files: tuple[RuleFileSnapshot, ...]
+
+
+class RuleDocument(BaseModel):
+    """The only accepted YAML document shape."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    rules: tuple[SiteRule, ...] = Field(min_length=1)
+
+
+class SiteRules:
+    """An immutable set of rules, preserving the exact source read at load time."""
+
+    def __init__(self, rules: Sequence[SiteRule] = ()) -> None:
+        self._rules = tuple(rules)
+        self._validate_ids()
+        document = RuleDocument(rules=self._rules) if self._rules else None
+        files: tuple[RuleFileSnapshot, ...] = ()
+        if document is not None:
+            text = document.model_dump_json()
+            files = (
+                RuleFileSnapshot(
+                    name="memory.yaml",
+                    origin="memory",
+                    text=text,
+                    sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                ),
+            )
+        self._snapshot = SiteRulesSnapshot(
+            directory=None,
+            sha256=_listing_digest([(f.name, f.sha256) for f in files]),
+            files=files,
+        )
+
+    def _validate_ids(self) -> None:
+        ids = [rule.id for rule in self._rules]
+        repeated = sorted({identity for identity in ids if ids.count(identity) > 1})
+        if repeated:
+            raise SiteRuleError(f"duplicate replay rule ids: {repeated}")
+
+    @property
+    def sha256(self) -> str:
+        return self._snapshot.sha256
+
+    @property
+    def directory(self) -> Path | None:
+        return Path(self._snapshot.directory) if self._snapshot.directory is not None else None
 
     @classmethod
     def load(cls, directory: str | Path | None) -> "SiteRules":
-        """Read every ``<domain>.yaml`` of *directory*; ``None`` → no rules.
-
-        Raises:
-            SiteRuleError: The directory does not exist, or a file is not
-                YAML, or not a mapping, or carries an unknown key — naming
-                the file.
-        """
+        """Read each rule file once; its digest and behavior derive from those bytes."""
         if directory is None:
             return cls()
-        root = Path(directory)
+        root = Path(directory).expanduser().resolve()
         if not root.is_dir():
             raise SiteRuleError(f"site rules directory {root} does not exist")
-        rules: dict[str, SiteRule] = {}
-        listing: list[tuple[str, str]] = []
+        files: list[RuleFileSnapshot] = []
         for path in sorted(root.glob(f"*{RULE_SUFFIX}")):
             if not path.is_file():
                 continue
-            data = path.read_bytes()
-            listing.append((path.name, hashlib.sha256(data).hexdigest()))
-            rules[path.name[: -len(RULE_SUFFIX)].lower()] = _parse_rule(path, data)
-        return cls(rules, sha256=_listing_digest(listing), directory=root)
+            try:
+                data = path.read_bytes()
+                text = data.decode("utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                raise SiteRuleError(f"cannot read site rule {path}: {exc}") from exc
+            files.append(
+                RuleFileSnapshot(
+                    name=path.name,
+                    origin=str(path),
+                    text=text,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                )
+            )
+        return cls.from_snapshot(
+            SiteRulesSnapshot(
+                directory=str(root),
+                sha256=_listing_digest([(f.name, f.sha256) for f in files]),
+                files=tuple(files),
+            )
+        )
 
-    def for_host(self, host: str) -> SiteRule | None:
-        """The rule of the longest domain suffix of *host*, or ``None``."""
-        labels = host.lower().rstrip(".").split(".")
-        for start in range(len(labels)):
-            rule = self._rules.get(".".join(labels[start:]))
-            if rule is not None:
-                return rule
-        return None
+    def snapshot(self) -> SiteRulesSnapshot:
+        """Return frozen input without reading its source directory again."""
+        return self._snapshot
 
-    def domains(self) -> list[str]:
-        return sorted(self._rules)
+    @classmethod
+    def from_snapshot(cls, snapshot: SiteRulesSnapshot) -> "SiteRules":
+        """Validate every digest and reconstruct behavior entirely from the snapshot."""
+        names = [file.name for file in snapshot.files]
+        if len(names) != len(set(names)):
+            raise SiteRuleError("replay rule snapshot contains duplicate file names")
+        rules: list[SiteRule] = []
+        listing: list[tuple[str, str]] = []
+        for file in snapshot.files:
+            digest = hashlib.sha256(file.text.encode("utf-8")).hexdigest()
+            if digest != file.sha256:
+                raise SiteRuleError(f"replay rule snapshot {file.name}: sha256 mismatch")
+            listing.append((file.name, digest))
+            rules.extend(_parse_rules(file.origin, file.text))
+        if _listing_digest(listing) != snapshot.sha256:
+            raise SiteRuleError("replay rule snapshot: collection sha256 mismatch")
+        instance = cls(rules)
+        instance._snapshot = snapshot
+        return instance
+
+    def for_request(self, method: str, url: str) -> SiteRule | None:
+        """Select the highest priority policy, refusing ties with both identities."""
+        matches = [rule for rule in self._rules if rule.scope.matches(method, url)]
+        if not matches:
+            return None
+        priority = max(rule.priority for rule in matches)
+        best = [rule for rule in matches if rule.priority == priority]
+        if len(best) != 1:
+            raise SiteRuleError(
+                f"replay rules {sorted(rule.id for rule in best)} conflict at priority "
+                f"{priority} for {method.upper()} {url}"
+            )
+        return best[0]
+
+    def require_for_request(self, method: str, url: str) -> SiteRule:
+        """Require explicit policy for a known recording before replay can serve it."""
+        rule = self.for_request(method, url)
+        if rule is None:
+            raise SiteRuleError(f"no replay rule declares exhaustion for {method.upper()} {url}")
+        return rule
+
+    def validate_requests(self, requests: Iterable[tuple[str, str]]) -> None:
+        """Check coverage and priority conflicts for recorded or otherwise known requests."""
+        for method, url in requests:
+            self.require_for_request(method, url)
+
+    def validate_levels(self, levels: Sequence[MatchLevel]) -> None:
+        """Rules may restrict the run's allowed levels, never expand them."""
+        allowed = set(levels)
+        for rule in self._rules:
+            required = set(rule.levels or ()) | ({"fuzzy"} if rule.fuzzy else set())
+            if required - allowed:
+                raise SiteRuleError(
+                    f"replay rule {rule.id!r} requests levels {sorted(required - allowed)} "
+                    f"but matcher.levels permits only {sorted(allowed)}"
+                )
+            if rule.fuzzy and rule.levels is not None and "fuzzy" not in rule.levels:
+                raise SiteRuleError(
+                    f"replay rule {rule.id!r}: fuzzy permission conflicts with levels"
+                )
 
     def __len__(self) -> int:
         return len(self._rules)
 
 
-def _parse_rule(path: Path, data: bytes) -> SiteRule:
+def _parse_rules(source: str, text: str) -> tuple[SiteRule, ...]:
     try:
-        raw = yaml.safe_load(data.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise SiteRuleError(f"site rule {path} is not YAML: {exc}") from exc
-    if raw is None:
-        return SiteRule()
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise SiteRuleError(f"site rule {source} is not YAML: {exc}") from exc
     if not isinstance(raw, dict):
-        raise SiteRuleError(f"site rule {path} is not a mapping of rule keys")
+        raise SiteRuleError(f"site rule {source} is not a mapping of rule keys")
     try:
-        return SiteRule.model_validate(raw)
+        return RuleDocument.model_validate(raw).rules
     except ValidationError as exc:
-        raise SiteRuleError(f"site rule {path} is not a valid rule: {exc}") from exc
+        raise SiteRuleError(f"site rule {source} is not a valid rule: {exc}") from exc
 
 
 def _listing_digest(listing: Sequence[tuple[str, str]]) -> str:

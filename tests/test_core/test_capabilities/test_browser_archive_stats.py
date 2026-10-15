@@ -257,7 +257,7 @@ def test_near_misses_count_by_host_and_differing_parameter() -> None:
     }
 
 
-def test_volatile_parameters_alone_never_make_a_candidate() -> None:
-    """``_=<number>`` is dropped by the canonical query: equal queries mean another cause."""
+def test_cache_shaped_parameters_remain_candidates_without_an_explicit_rule() -> None:
+    """A counter-shaped parameter is not globally assumed irrelevant to content."""
     decisions = [(1, _miss(f"{SHOP}/poll?_=1&id=7", candidates=[f"{SHOP}/poll?_=2&id=7"]), 1)]
-    assert site_rule_candidates(decisions) == {}
+    assert site_rule_candidates(decisions)["shop.test"].params == {"_": 1}

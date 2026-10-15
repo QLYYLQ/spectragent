@@ -1,9 +1,31 @@
-# Qidian (www.qidian.com, qdp.qidian.com).
-# _csrfToken: a per-session token the site's jQuery setup reads from a cookie and appends
-#   to every www.qidian.com XHR (getPortalAdv, ajax/comment/index); recorded
-#   dQWv9mcd... vs replayed VASOBcpS... It never selects content.
-ignore_query: [_csrfToken]
-# qreport: tracking pixels whose parameters describe the event (eid, l1, e1, e2 name the
-#   element clicked or shown); a miss is answered 204 like other analytics.
-synthesize_204:
-  - "https://qdp.qidian.com/qreport*"
+# The site jQuery setup reads _csrfToken from a session cookie (dQWv9mcd... vs VASOBcpS...).
+# Only the two endpoints identified in the original rule evidence ignore it here.
+# qreport event fields identify the element clicked/shown; they are retained and a miss is synthetic.
+rules:
+- id: qidian-portal-ad
+  scope:
+    host: www.qidian.com
+    path: /webcommon/portalOps/getPortalAdv
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - _csrfToken
+- id: qidian-comments
+  scope:
+    host: www.qidian.com
+    path: /ajax/comment/index
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - _csrfToken
+- id: qidian-event-report
+  scope:
+    host: qdp.qidian.com
+    path: /qreport
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://qdp.qidian.com/qreport*

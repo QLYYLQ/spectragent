@@ -1,55 +1,15 @@
-"""Matching live requests against a recorded archive (§4.14 "三级匹配").
+"""Replay matching with explicit allowed levels and per-request exhaustion.
 
-One :class:`Matcher` per replay run (one episode): it owns the run's cursors.
-:meth:`Matcher.match` takes a live request — its body already redacted with
-M29's ``redact_post_body`` — and in one synchronous call selects a recorded
-exchange *and* marks it used, so no ``await`` ever sits between choosing a
-record and consuming it.
-
-**Levels**, tried in order:
-
-- **L0 exact** — method, full URL (no fragment) and body bytes equal; a
-  multipart body compared without its boundary (Playwright ``harBackend``).
-- **L1 normalised** — the canonical keys equal (``canonical.py``).
-- **L2 fuzzy** — same host and path and method, scored ``2M/T`` (``M`` the
-  parameter names whose values agree on both sides, ``T`` the parameter names
-  of both sides together; both sides without any: ``1.0``) over the canonical
-  query parameters — and, for a request with a body, its canonical body
-  parameters too — and a hit only at or above ``fuzzy_threshold``. Off for
-  documents and non-GET requests unless the host's site rule says
-  ``fuzzy: on``, which also turns it on when ``levels`` lacks ``fuzzy``.
-  The threshold and both restrictions are **ours**: WPR's fuzzy match has no
-  threshold (the best same-path URL always wins, ``M`` counted from 1) and
-  never looks at a body.
-
-**Each record is used once.** Within a key, records come in recording order
-(mitmproxy's pop, WPR's ``serve-response-in-chronological-sequence``); the
-used set is shared across levels. When no level has an unused record left,
-the **last** record (recording order) of the best level that had candidates
-is repeated and the result says ``exhausted`` — a deliberate choice of ours
-(mitmproxy misses once a key is used up, WPR falls back to the best header
-match), so a polling page does not fail on its N+1st poll; the replay log
-shows it.
-
-**Run affinity**: once an episode has hit a record, records of that run come
-first, then other runs in recording order ("right HTML, wrong JSON" across a
-merged archive; v1 archives hold one run). **Request headers only break
-ties**: between candidates otherwise equal — two runs' records at the same
-place in their recordings, two fuzzy URLs with the same score — the one
-sharing more Fetch-visible request headers wins (the stripped credential
-headers and the site rule's ``ignore_headers`` never count), then the earlier
-recorded, then the smaller URL (WPR).
-
-A ``Range`` request is answered from the archive's byte-range map and uses no
-cursor. A ``304`` is a candidate only for a conditional request. On a miss the
-result carries the three nearest records of the same host.
+The strongest allowed level with candidates owns the decision. Consumption
+is synchronous and shared across levels; exhaustion never silently changes
+to a weaker resource. Range matching obeys the same level and rule bounds,
+while using the byte-range map without consuming ordinary sequence cursors.
 """
 
 import dataclasses
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
 
 from pydantic import ConfigDict, Field, field_validator
 from pydantic.dataclasses import dataclass as pydantic_dataclass
@@ -65,13 +25,15 @@ from spectragent.core.capabilities.browser.replay.archive_index import (
 from spectragent.core.capabilities.browser.replay.canonical import (
     Params,
     RequestKeys,
-    host_of,
     request_keys,
 )
 from spectragent.core.capabilities.browser.replay.miss_policy import MissReason
-from spectragent.core.capabilities.browser.replay.site_rules import SiteRule, SiteRules
-
-MatchLevel = Literal["exact", "normalized", "fuzzy"]
+from spectragent.core.capabilities.browser.replay.site_rules import (
+    ExhaustionPolicy,
+    MatchLevel,
+    SiteRule,
+    SiteRules,
+)
 
 #: Request headers that make a request conditional (a ``304`` answers only these).
 CONDITIONAL_HEADERS = (
@@ -95,13 +57,12 @@ class MatcherConfig:
     Frozen settings shared by the live matcher and generated configuration.
     """
 
-    levels: list[MatchLevel] = Field(
-        default_factory=lambda: ["exact", "normalized"],
+    levels: tuple[MatchLevel, ...] = Field(
+        default=("exact", "normalized"),
         min_length=1,
         description=(
-            "Matching levels to try, in order: exact (method, URL, body bytes), "
-            "normalized (canonical keys), fuzzy (same host and path, query-ratio "
-            "score). A site rule's 'fuzzy: on' turns fuzzy on for that site anyway."
+            "Allowed matching levels; fixed strength order is exact, normalized, fuzzy. "
+            "Request rules may restrict this set and never enable an excluded level."
         ),
     )
     fuzzy_threshold: float = Field(
@@ -113,21 +74,21 @@ class MatcherConfig:
     site_rules: str | None = Field(
         default=None,
         description=(
-            "Directory of per-site rule files (<domain>.yaml), e.g. configs/replay_rules. "
-            "None: no site rules."
+            "Directory of explicitly scoped rule documents, e.g. configs/replay_rules. "
+            "Serving a recorded request requires an explicit exhaustion rule."
         ),
     )
 
     @field_validator("levels")
     @classmethod
-    def _each_level_once(cls, levels: list[MatchLevel]) -> list[MatchLevel]:
+    def _each_level_once(cls, levels: tuple[MatchLevel, ...]) -> tuple[MatchLevel, ...]:
         if len(set(levels)) != len(levels):
             raise ValueError(f"each matching level once: got {levels}")
         return levels
 
     def fingerprint(self) -> dict[str, object]:
         """The knobs as the replay fingerprint records them."""
-        return dataclasses.asdict(self)
+        return {**dataclasses.asdict(self), "levels": list(self.levels)}
 
 
 @dataclass(frozen=True)
@@ -182,11 +143,12 @@ class MatchResult:
             cover reads from); ``None`` on a miss.
         level: The level that found it.
         fuzzy_score: The ``2M/T`` score of a fuzzy hit.
-        exhausted: Every candidate was used; :attr:`record` is the last one,
-            repeated.
+        exhausted: The selected response sequence was consumed; the policy
+            either repeats its last record or reports ``sequence_exhausted``.
         range: The bytes that answer a ``Range`` request.
         reason: ``None`` when the result can be served; otherwise why not —
-            ``no_match``, ``range_uncovered``, or the chosen record's own
+            ``no_match``, ``sequence_exhausted``, ``match_level_disallowed``,
+            ``range_uncovered``, or the chosen record's own
             ``too_large`` / ``body_unavailable``.
         candidates: On ``no_match``, the nearest records of the same host.
     """
@@ -199,6 +161,8 @@ class MatchResult:
     range: RangeCover | None = None
     reason: MissReason | None = None
     candidates: tuple[Candidate, ...] = ()
+    rule_id: str | None = None
+    exhaustion_policy: ExhaustionPolicy | None = None
 
     @property
     def servable(self) -> bool:
@@ -249,6 +213,7 @@ class Matcher:
         self.index = index
         self.config = config if config is not None else MatcherConfig()
         self.rules = rules if rules is not None else SiteRules()
+        self.rules.validate_levels(self.config.levels)
         #: ``(run_id, record_id)`` of every record served (or repeated) so far.
         self._used: set[tuple[str, str]] = set()
         #: The run of the episode's first hit.
@@ -258,42 +223,51 @@ class Matcher:
 
     def match(self, request: LiveRequest) -> MatchResult:
         """Select and consume the record for *request* — synchronously, in one call."""
-        rule = self.rules.for_host(host_of(request.url))
+        rule = self.rules.for_request(request.method, request.url)
         keys = request_keys(request.method, request.url, request.body, request.content_type, rule)
-        range_header = request.header("range")
-        if range_header is not None:
-            return self._match_range(keys, range_header)
+        if request.header("range") is not None:
+            result = self._match_range(request, keys, rule)
+        else:
+            result = self._match_sequence(request, keys, rule)
+        return dataclasses.replace(
+            result,
+            rule_id=rule.id if rule else None,
+            exhaustion_policy=rule.exhaustion if rule else None,
+        )
+
+    def _match_sequence(
+        self, request: LiveRequest, keys: RequestKeys, rule: SiteRule | None
+    ) -> MatchResult:
         conditional = any(request.header(name) is not None for name in CONDITIONAL_HEADERS)
         live_headers = {(name.lower(), value) for name, value in request.headers.items()}
-
-        best: tuple[MatchLevel, list[_Group]] | None = None
         for level in self._levels(request, rule):
             groups = self._groups(level, keys, conditional, live_headers, rule)
             if not groups:
                 continue
-            if best is None:
-                best = (level, groups)
-            for group in groups:
-                record = group.next_unused(self._used, self.affinity)
-                if record is not None:
-                    return self._hit(keys, level, group, record, exhausted=False)
-        if best is not None:
-            level, groups = best
-            record = groups[0].last(self.affinity)
-            return self._hit(keys, level, groups[0], record, exhausted=True)
+            selected = self.rules.require_for_request(request.method, request.url)
+            group = groups[0]
+            record = group.next_unused(self._used, self.affinity)
+            if record is not None:
+                return self._hit(keys, level, group, record, exhausted=False)
+            if selected.exhaustion == "repeat_last":
+                return self._hit(keys, level, group, group.last(self.affinity), exhausted=True)
+            return MatchResult(
+                keys=keys,
+                level=level,
+                exhausted=True,
+                reason="sequence_exhausted",
+                fuzzy_score=group.score if level == "fuzzy" else None,
+                candidates=self._nearest(keys, request),
+            )
         return MatchResult(keys=keys, reason="no_match", candidates=self._nearest(keys, request))
 
-    # ── levels ───────────────────────────────────────────────────────────
-
     def _levels(self, request: LiveRequest, rule: SiteRule | None) -> list[MatchLevel]:
-        levels: list[MatchLevel] = [level for level in self.config.levels if level != "fuzzy"]
-        fuzzy = rule is not None and rule.fuzzy
-        if not fuzzy and "fuzzy" in self.config.levels:
-            fuzzy = request.method.upper() == "GET" and not request.is_document
-        if fuzzy:
-            levels.append("fuzzy")
-        order: dict[MatchLevel, int] = {"exact": 0, "normalized": 1, "fuzzy": 2}
-        return sorted(levels, key=lambda level: order[level])
+        allowed = set(self.config.levels)
+        if rule is not None and rule.levels is not None:
+            allowed.intersection_update(rule.levels)
+        if (request.method.upper() != "GET" or request.is_document) and not (rule and rule.fuzzy):
+            allowed.discard("fuzzy")
+        return [level for level in ("exact", "normalized", "fuzzy") if level in allowed]
 
     def _groups(
         self,
@@ -302,6 +276,7 @@ class Matcher:
         conditional: bool,
         live_headers: set[tuple[str, str]],
         rule: SiteRule | None,
+        records: Sequence[IndexedRecord] | None = None,
     ) -> list["_Group"]:
         """The candidate groups of one level, best first."""
 
@@ -309,19 +284,42 @@ class Matcher:
             return _shared_headers(record, live_headers, rule)
 
         def eligible(records: Sequence[IndexedRecord]) -> list[IndexedRecord]:
-            return [record for record in records if conditional or record.status != 304]
+            selected_id = rule.id if rule is not None else None
+            found: list[IndexedRecord] = []
+            for record in records:
+                if not conditional and record.status == 304:
+                    continue
+                recorded_rule = self.rules.for_request(record.method, record.url)
+                recorded_id = recorded_rule.id if recorded_rule is not None else None
+                if recorded_id == selected_id:
+                    found.append(record)
+            return found
 
         if level == "exact":
-            found = eligible(self.index.exact(keys.exact))
+            found = eligible(
+                self.index.exact(keys.exact)
+                if records is None
+                else [record for record in records if record.keys.exact == keys.exact]
+            )
             return [_Group(found, headers_of)] if found else []
         if level == "normalized":
-            found = eligible(self.index.normalized(keys.normalized))
+            found = eligible(
+                self.index.normalized(keys.normalized)
+                if records is None
+                else [record for record in records if record.keys.normalized == keys.normalized]
+            )
             return [_Group(found, headers_of)] if found else []
         verb = keys.exact[0]
         by_key: dict[str, list[IndexedRecord]] = {}
         scores: dict[str, float] = {}
-        for record in eligible(self.index.same_path(keys.host, keys.path)):
-            if record.method != verb:
+        pool = self.index.same_path(keys.host, keys.path) if records is None else records
+        for record in eligible(pool):
+            if (
+                record.method != verb
+                or record.keys.host != keys.host
+                or record.keys.path != keys.path
+                or record.keys.port != keys.port
+            ):
                 continue
             score = scores.get(record.keys.normalized)
             if score is None:
@@ -361,18 +359,42 @@ class Matcher:
 
     # ── ranges ───────────────────────────────────────────────────────────
 
-    def _match_range(self, keys: RequestKeys, header: str) -> MatchResult:
-        """A ``Range`` request: answered from the byte-range map, never from a cursor."""
+    def _match_range(
+        self, request: LiveRequest, keys: RequestKeys, rule: SiteRule | None
+    ) -> MatchResult:
+        """Select a resource under the ordinary level boundary, then cover its bytes."""
         ranges = self.index.ranges
-        if not ranges.knows(keys.normalized):
-            return MatchResult(keys=keys, reason="no_match")
+        header = request.header("range")
+        assert header is not None
         wanted = parse_range(header)
-        cover = ranges.cover(keys.normalized, *wanted) if wanted is not None else None
-        if cover is None:
-            return MatchResult(keys=keys, reason="range_uncovered")
-        first = cover.parts[0][0]
-        level: MatchLevel = "exact" if first.keys.exact[1] == keys.exact[1] else "normalized"
-        return MatchResult(keys=keys, record=first, level=level, range=cover)
+        live_headers = {(name.lower(), value) for name, value in request.headers.items()}
+        allowed = self._levels(request, rule)
+        for level in allowed:
+            groups = self._groups(level, keys, True, live_headers, rule, ranges.records)
+            if not groups:
+                continue
+            self.rules.require_for_request(request.method, request.url)
+            group = groups[0]
+            cover = (
+                ranges.cover(group.head.keys.normalized, *wanted, records=group.records)
+                if wanted is not None
+                else None
+            )
+            if cover is None:
+                return MatchResult(keys=keys, level=level, reason="range_uncovered")
+            return MatchResult(
+                keys=keys,
+                record=cover.parts[0][0],
+                level=level,
+                range=cover,
+                fuzzy_score=group.score if level == "fuzzy" else None,
+            )
+        for level in ("exact", "normalized", "fuzzy"):
+            if level not in allowed and self._groups(
+                level, keys, True, live_headers, rule, ranges.records
+            ):
+                return MatchResult(keys=keys, reason="match_level_disallowed")
+        return MatchResult(keys=keys, reason="no_match", candidates=self._nearest(keys, request))
 
     # ── misses ───────────────────────────────────────────────────────────
 

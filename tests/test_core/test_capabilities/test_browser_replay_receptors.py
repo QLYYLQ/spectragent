@@ -56,6 +56,7 @@ _ARCHIVE: dict[str, Any] = {
     "max_fulfill_body_bytes": 1000,
     "fulfill_timeout_s": 2.5,
     "log_repeat_limit": 7,
+    "log_mode": "summary",
     "miss_policy": {"miss_policy_id": "strict", "extra_benign_hosts": ["stats.test"]},
 }
 
@@ -118,9 +119,10 @@ class TestTheStrategies:
         )
         assert archive.shift_dates == "none"
         assert archive.matcher == MatcherConfig()
-        assert archive.matcher.levels == ["exact", "normalized"]
+        assert archive.matcher.levels == ("exact", "normalized")
         assert (archive.max_fulfill_body_bytes, archive.fulfill_timeout_s) == (64 * 2**20, 10.0)
         assert archive.log_repeat_limit == 3
+        assert archive.log_mode == "full"
         assert isinstance(archive.miss_policy, StrictMissPolicy)
 
     def test_isolation_is_the_knob_itself(self) -> None:
@@ -129,7 +131,7 @@ class TestTheStrategies:
     def test_matcher_arrives_as_a_dict_or_as_the_config(self) -> None:
         as_dict = ArchiveNetworkSource(matcher={"levels": ["exact"], "fuzzy_threshold": 0.3})  # type: ignore[arg-type]
         as_config = ArchiveNetworkSource(
-            matcher=MatcherConfig(levels=["exact"], fuzzy_threshold=0.3)
+            matcher=MatcherConfig(levels=("exact",), fuzzy_threshold=0.3)
         )
         assert as_dict.matcher == as_config.matcher
         assert isinstance(as_dict.matcher, MatcherConfig)
@@ -141,6 +143,7 @@ class TestTheStrategies:
             {"max_fulfill_body_bytes": 0},
             {"fulfill_timeout_s": 0},
             {"log_repeat_limit": 0},
+            {"log_mode": "automatic"},
             {"isolation": "off"},
             {"shift_dates": "cookies"},
         ],
@@ -180,7 +183,9 @@ class TestTheStrategies:
     def test_open_replay_keys_with_the_configured_site_rules(self, tmp_path: Path) -> None:
         rules = tmp_path / "rules"
         rules.mkdir()
-        (rules / "shop.test.yaml").write_text("ignore_query: [session]\n")
+        (rules / "shop.test.yaml").write_text(
+            "rules:\n  - id: shop\n    scope: {host: shop.test}\n    exhaustion: repeat_last\n    ignore_query: [session]\n"
+        )
         wal = new_wal(tmp_path / "runs", "run-src")
         from spectragent.core.archive.source import open_archive
 
@@ -189,7 +194,7 @@ class TestTheStrategies:
         )
         assert isinstance(recorded, RecordedArchive)
         assert recorded.run_id == "run-src"
-        assert recorded.rules.domains() == ["shop.test"]
+        assert recorded.rules.require_for_request("GET", "http://shop.test/").id == "shop"
         assert recorded.rules.sha256 is not None
 
 
@@ -214,6 +219,7 @@ class TestTheGeneratedConfig:
             "max_fulfill_body_bytes",
             "fulfill_timeout_s",
             "log_repeat_limit",
+            "log_mode",
         }
         assert set(generated.LiveNetwork_SourceConfig.model_fields) == {"source_id"}
         assert "extra_benign_hosts" in generated.StrictMiss_PolicyConfig.model_fields
@@ -226,7 +232,7 @@ class TestTheGeneratedConfig:
             "none_acknowledged",
             "all",
         )
-        assert source.matcher == MatcherConfig(levels=["exact"], fuzzy_threshold=0.25)
+        assert source.matcher == MatcherConfig(levels=("exact",), fuzzy_threshold=0.25)
         assert source.miss_policy.extra_benign_hosts == ["stats.test"]
 
     @pytest.mark.parametrize(
@@ -244,6 +250,7 @@ class TestTheGeneratedConfig:
             ({**_ARCHIVE, "shift_dates": "cookies"}, "shift_dates"),
             ({**_ARCHIVE, "max_fulfill_body_bytes": MAX_FULFILL_BODY_BYTES + 1}, "max_fulfill"),
             ({**_ARCHIVE, "log_repeat_limit": 0}, "log_repeat_limit"),
+            ({**_ARCHIVE, "log_mode": "automatic"}, "log_mode"),
             ({"source_id": "live", "isolation": "required"}, "isolation"),
         ],
     )
@@ -281,7 +288,7 @@ class TestTheComposerInjectsInstances:
             7,
         )
         assert isinstance(source.matcher, MatcherConfig)
-        assert source.matcher == MatcherConfig(levels=["exact"], fuzzy_threshold=0.25)
+        assert source.matcher == MatcherConfig(levels=("exact",), fuzzy_threshold=0.25)
         policy = source.miss_policy
         assert isinstance(policy, StrictMissPolicy)
         assert policy.extra_benign_hosts == ["stats.test"]

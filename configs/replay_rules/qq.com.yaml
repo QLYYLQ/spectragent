@@ -1,5 +1,21 @@
-# Tencent telemetry inside the sj.qq.com frame on Qidian (POST beacons and kv pixels).
-synthesize_204:
-  - "https://otheve.beacon.qq.com/*"
-  - "https://h.trace.qq.com/*"
-  - "https://yybadaccess.3g.qq.com/v3/pcyyb_report_profile_info*"
+# Tencent telemetry inside the Qidian sharing frame. The recorded beacon/profile
+# reports are POST; the earlier h.trace host-only rule has no endpoint evidence and is removed.
+rules:
+- id: tencent-beacon-upload
+  scope:
+    host: otheve.beacon.qq.com
+    path: /analytics/v2_upload
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://otheve.beacon.qq.com/analytics/v2_upload*
+- id: tencent-profile-report
+  scope:
+    host: yybadaccess.3g.qq.com
+    path: /v3/pcyyb_report_profile_info
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://yybadaccess.3g.qq.com/v3/pcyyb_report_profile_info*

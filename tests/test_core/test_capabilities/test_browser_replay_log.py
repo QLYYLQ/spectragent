@@ -1,7 +1,7 @@
 """The replay log: entries, the repeat limit, the ``browser.replay_log`` archiver, the readers.
 
-§4.14 "回放日志". The step whose collection takes an entry is the step it is
-attributed to; "diverged" is derived at read time from main-frame document
+§4.14 "回放日志". Collection assigns an event batch to a step without claiming
+the action caused it; "diverged" is derived at read time from main-frame document
 misses. The readers find the log by the archiver that writes it. The live
 counterpart (entries attributed to step, frame and resourceType in a real
 replay) is ``test_browser_replay_live.py``.
@@ -63,6 +63,8 @@ def _entry(kind: str = "miss", **fields: Any) -> ReplayLogEntry:
         base.update(
             record_id="rec-1", run_id="run-a", level="exact", answer="fulfilled", status=200
         )
+    if kind == "summary":
+        base.update(folded_kind="miss", count=1, first_captured_at=1.0, last_captured_at=1.0)
     base.update(fields)
     return ReplayLogEntry(**base)
 
@@ -71,6 +73,23 @@ def _entry(kind: str = "miss", **fields: Any) -> ReplayLogEntry:
 
 
 class TestTheEntry:
+    @pytest.mark.parametrize(
+        "missing", ["folded_kind", "count", "first_captured_at", "last_captured_at"]
+    )
+    def test_a_summary_must_say_what_and_when_it_folds(self, missing: str) -> None:
+        fields = _entry("summary").model_dump()
+        del fields[missing]
+        with pytest.raises(ValidationError, match="summary requires"):
+            ReplayLogEntry.model_validate(fields)
+
+    def test_raw_events_do_not_claim_summary_metadata(self) -> None:
+        with pytest.raises(ValidationError, match="folding metadata"):
+            _entry(count=1)
+
+    def test_a_summary_preserves_the_last_event_time(self) -> None:
+        with pytest.raises(ValidationError, match="last_captured_at"):
+            _entry("summary", last_captured_at=2.0)
+
     def test_unknown_fields_are_refused(self) -> None:
         with pytest.raises(ValidationError):
             ReplayLogEntry(**{**_entry().model_dump(), "extra": 1})
@@ -107,8 +126,18 @@ def _literal_arms(annotation: Any) -> set[str]:
 
 
 class TestTheRepeatLimit:
+    def test_full_is_the_default_and_preserves_every_event(self) -> None:
+        log = ReplayLog(repeat_limit=1)
+        entries = [_entry(captured_at=float(n), cycle=n) for n in range(5)]
+        for entry in entries:
+            log.append(entry)
+        assert log.mode == "full"
+        assert log.drain() == [
+            entry.model_dump(mode="json", exclude_none=True) for entry in entries
+        ]
+
     def test_repeats_past_the_limit_fold_into_one_summary(self) -> None:
-        log = ReplayLog(repeat_limit=3)
+        log = ReplayLog(mode="summary", repeat_limit=3)
         for n in range(5):
             log.append(_entry(captured_at=float(n)))
         drained = log.drain()
@@ -116,9 +145,48 @@ class TestTheRepeatLimit:
         summary = drained[-1]
         assert summary["folded_kind"] == "miss" and summary["count"] == 2
         assert summary["captured_at"] == 4.0, "the summary carries the last folded entry"
+        assert summary["first_captured_at"] == 3.0
+        assert summary["last_captured_at"] == 4.0
+        assert ReplayLogEntry.model_validate(summary).occurrence_times_complete is False
+
+    @pytest.mark.parametrize(
+        "difference",
+        [
+            {"rule_id": "another-rule"},
+            {"exhaustion_policy": "miss"},
+            {"reason": "too_large"},
+            {"answer": "failed"},
+            {"status": 500},
+            {"request_class": "benign"},
+            {"frame": "sub"},
+            {"frame_id": "another-frame"},
+            {"diverged": True},
+            {"record_id": "another-record"},
+        ],
+    )
+    def test_summary_keeps_different_decision_meanings_separate(
+        self, difference: dict[str, Any]
+    ) -> None:
+        log = ReplayLog(mode="summary", repeat_limit=1)
+        first = _entry(rule_id="poll", exhaustion_policy="repeat_last")
+        second = first.model_copy(update=difference)
+        for entry in (first, first, second, second):
+            log.append(entry)
+        drained = [ReplayLogEntry.model_validate(line) for line in log.drain()]
+        assert [entry.kind for entry in drained] == ["miss", "miss", "summary", "summary"]
+        assert [entry.count for entry in drained[2:]] == [1, 1]
+        assert all(getattr(drained[-1], name) == value for name, value in difference.items())
+
+    def test_summary_times_preserve_event_order_even_if_wall_clock_moves_back(self) -> None:
+        log = ReplayLog(mode="summary", repeat_limit=1)
+        for captured_at in (10.0, 12.0, 11.0):
+            log.append(_entry(captured_at=captured_at))
+        summary = log.drain()[-1]
+        assert summary["first_captured_at"] == 12.0
+        assert summary["last_captured_at"] == summary["captured_at"] == 11.0
 
     def test_different_keys_never_fold_together(self) -> None:
-        log = ReplayLog(repeat_limit=1)
+        log = ReplayLog(mode="summary", repeat_limit=1)
         log.append(_entry())
         log.append(_entry(reason="too_large", record_id="rec-9"))
         log.append(_entry(method="POST"))
@@ -128,7 +196,7 @@ class TestTheRepeatLimit:
 
     def test_a_cache_busted_poll_is_one_request(self) -> None:
         """Repeats are told apart by canonical key, not URL: the poll still folds."""
-        log = ReplayLog(repeat_limit=1)
+        log = ReplayLog(mode="summary", repeat_limit=1)
         for n in range(3):
             log.append(_entry(url=f"http://shop.test/poll?_={1700000000000 + n}", cycle=n))
         drained = log.drain()
@@ -147,7 +215,7 @@ class TestTheRepeatLimit:
                 ),
             )
 
-        log = ReplayLog(repeat_limit=1)
+        log = ReplayLog(mode="summary", repeat_limit=1)
         for n in range(3):
             log.append(rewritten("cb_0", f"cb_{n + 1}"))
         log.append(rewritten("cb_9", "cb_4"))
@@ -179,7 +247,7 @@ class TestTheRepeatLimit:
                 status=None,
             )
 
-        log = ReplayLog(repeat_limit=3)
+        log = ReplayLog(mode="summary", repeat_limit=3)
         for n in range(5):
             log.append(socket(f"h{n}.example.test"))
         assert [(line["kind"], line["url"]) for line in log.drain()] == [
@@ -191,7 +259,7 @@ class TestTheRepeatLimit:
 
     def test_a_diverged_document_miss_is_never_folded_into_other_misses(self) -> None:
         """Same canonical key, another decision: the divergence is written in full."""
-        log = ReplayLog(repeat_limit=3)
+        log = ReplayLog(mode="summary", repeat_limit=3)
         for _ in range(3):
             log.append(_entry())
         document = _entry(
@@ -216,7 +284,7 @@ class TestTheRepeatLimit:
 
     def test_diverged_total_counts_folded_entries(self) -> None:
         """Every appended divergence counts — the folded ones too — and drain() never resets it."""
-        log = ReplayLog(repeat_limit=1)
+        log = ReplayLog(mode="summary", repeat_limit=1)
         document = _entry(
             resource_type="Document",
             frame="main",
@@ -244,7 +312,7 @@ class TestTheRepeatLimit:
         assert log.diverged_total == 4, "drain() leaves the count alone"
 
     def test_each_collection_is_its_own_window(self) -> None:
-        log = ReplayLog(repeat_limit=1)
+        log = ReplayLog(mode="summary", repeat_limit=1)
         log.append(_entry())
         log.append(_entry())
         assert [line["kind"] for line in log.drain()] == ["miss", "summary"]
@@ -266,7 +334,9 @@ class TestTheRepeatLimit:
         with pytest.raises(ValueError, match="summaries"):
             ReplayLog().append(_entry("summary"))
         with pytest.raises(ValueError):
-            ReplayLog(repeat_limit=0)
+            ReplayLog(mode="summary", repeat_limit=0)
+        with pytest.raises(ValueError, match="mode"):
+            ReplayLog(mode="automatic")  # type: ignore[arg-type]
 
 
 # ── browser.replay_log ────────────────────────────────────────────────
@@ -328,7 +398,7 @@ async def _committed(
     with ``encode_archive_file`` like ``TraceWriter`` does.
     """
     wal = new_wal(base, "run-replay")
-    log = log if log is not None else ReplayLog(repeat_limit=100)
+    log = log if log is not None else ReplayLog(mode="summary", repeat_limit=100)
     session, _ = open_session(ReplayLogArchiver(), replay_log=log)
     for step, entries in steps.items():
         for entry in entries:
@@ -384,7 +454,7 @@ class TestReading:
             status=None,
             diverged=True,
         )
-        log = ReplayLog(repeat_limit=1)
+        log = ReplayLog(mode="summary", repeat_limit=1)
         run = await _committed(
             tmp_path,
             {
@@ -445,7 +515,7 @@ class TestDecisions:
     async def test_a_summary_reads_as_the_kind_it_folds_weighing_its_count(
         self, tmp_path: Path
     ) -> None:
-        log = ReplayLog(repeat_limit=1)
+        log = ReplayLog(mode="summary", repeat_limit=1)
         run = await _committed(
             tmp_path,
             {1: [_entry("hit"), _entry(), _entry(), _entry(), _entry()], None: [_entry()]},
@@ -464,6 +534,15 @@ class TestDecisions:
             (None, "miss", 1),
         ]
         assert sum(w for _s, e, w in decisions if e.kind == "miss") == 5, "every miss appended"
+        assert [entry.occurrence_times_complete for _step, entry, _weight in decisions] == [
+            True,
+            True,
+            False,
+            True,
+        ]
+        summary = decisions[2][1]
+        assert summary.folded_kind == "miss" and summary.count == 3
+        assert summary.first_captured_at == summary.last_captured_at == 1.0
 
     async def test_the_document_miss_total_is_counted_through_it(self, tmp_path: Path) -> None:
         document = _entry(
@@ -475,7 +554,7 @@ class TestDecisions:
             diverged=True,
         )
         run = await _committed(
-            tmp_path, {1: [document] * 4, 2: [_entry()]}, ReplayLog(repeat_limit=2)
+            tmp_path, {1: [document] * 4, 2: [_entry()]}, ReplayLog(mode="summary", repeat_limit=2)
         )
         reader = open_archive(run)
         diverged = [(e.kind, w) for _s, e, w in iter_decisions(reader) if e.diverged]

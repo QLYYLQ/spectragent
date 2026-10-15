@@ -1,9 +1,28 @@
-# AcFun (www.acfun.cn, apilog-web.acfun.cn).
-# t: a timestamp on the search page's ajaxpipe requests (t=1791958477977 vs ...777);
-#   keyword, sortType, type, pagelets select the content.
-# reqID: the page's count of ajaxpipe requests so far (1 vs 0); the response does not
-#   echo it (checked in the recorded bodies).
-ignore_query: [t, reqID]
-# perfLog: the page's performance log (POST).
-synthesize_204:
-  - "https://apilog-web.acfun.cn/rest/direct/frontend/perfLog*"
+# On the search ajaxpipe endpoint t is a timestamp and reqID is the request counter
+# (1 vs 0); recorded responses do not echo reqID. Content selectors stay.
+# The old domain-wide rule also reached the home page; that scope is not retained.
+rules:
+- id: acfun-search-ajaxpipe
+  scope:
+    host: www.acfun.cn
+    path: /search
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - t
+  - reqID
+  keep_query:
+  - keyword
+  - sortType
+  - type
+  - pagelets
+- id: acfun-performance-log
+  scope:
+    host: apilog-web.acfun.cn
+    path: /rest/direct/frontend/perfLog
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://apilog-web.acfun.cn/rest/direct/frontend/perfLog*

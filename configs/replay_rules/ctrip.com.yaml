@@ -1,24 +1,184 @@
-# Ctrip (www.ctrip.com, m.ctrip.com, trains.ctrip.com, flights.ctrip.com).
-# x-traceID: <client id>-<time>-<random> on every m.ctrip.com/restapi call
-#   (...-1791958761572-20176... vs ...-1791958761672-96387...); the service path and the
-#   body select the content. _rm: a random float on tripAds.json.
-ignore_query: [x-traceID, _rm]
-# Visitor and client ids inside restapi bodies:
-#   head.cid (getAppConfig.json: 1791958761572.a3abgLM99uKC vs 1791958761572.afe7NRTwhgLM),
-#   head.Frontend.vid (getHotDestination: ...3d88TwhgLM99 vs ...afe7NRTwhgLM),
-#   head.clientID (getHotDestination: 09031074310868542872 vs "" on the first call),
-#   user.vid (tripAds.json, the same visitor id).
-# id: tripAds.json's request id, SHOP__1.0.6_<random UUID> (3f5ee0b6-30d7-... vs
-#   30d724c6-2796-...). Without the ad body rules (id, user.vid and the head ids), the home
-#   page's ad requests miss again: same-path fidelity 0.92 -> 0.75 in a run with a scripted
-#   model.
-# RISK, kept on purpose (the user's ruling of 2026-10-14): a site rule applies to its whole
-#   domain, so "id" is ignored in the top-level "id" field of EVERY ctrip.com request body,
-#   not only tripAds.json's. Only tripAds.json carried a top-level id in the recordings this
-#   rule was written from; an endpoint that selects content by a top-level id (a hotel, a
-#   train, an order) would match any recorded call of that endpoint, and a branch that reaches
-#   it could be served another item's data. If a replay shows the wrong item, look here first.
-ignore_body_paths: [head.cid, head.clientID, head.Frontend.vid, user.vid, id]
-# recordErrorLog: the page's error log, called only because other calls failed.
-synthesize_204:
-  - "https://m.ctrip.com/restapi/soa2/23619/json/recordErrorLog*"
+# x-traceID is a client id, time and random suffix; only recorded m.ctrip.com restapi
+# endpoints and methods listed here ignore it. The path and body still select content.
+# App config head.cid, destination head.clientID/head.Frontend.vid and ad user.vid are visitor ids.
+# Only tripAds.json ignores its top-level id: SHOP__1.0.6_<random UUID>. Other request bodies
+# retain id; the earlier domain-wide content-selection risk is removed. _rm is the ad request random float.
+rules:
+- id: ctrip-app-config
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/18088/getAppConfig.json
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_body_paths:
+  - head.cid
+- id: ctrip-hot-destinations
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/21881/json/getHotDestination
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_body_paths:
+  - head.clientID
+  - head.Frontend.vid
+- id: ctrip-ad-request
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/13916/tripAds.json
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - _rm
+  ignore_body_paths:
+  - head.cid
+  - head.clientID
+  - head.Frontend.vid
+  - user.vid
+  - id
+- id: ctrip-error-log
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/23619/json/recordErrorLog
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://m.ctrip.com/restapi/soa2/23619/json/recordErrorLog*
+- id: ctrip-format-number
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/12216/json/queryFormatNum
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-general-config
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/12378/json/getGeneralConfigData
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-qr-code
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/13242/json/getWxqrCode
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-station-booking
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/14666/json/GetBookingByStationV3
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-ticket-success-rate
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/14666/json/GetGrabTicketSucRateInfo
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-train-stations
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/14666/json/GetTrainStationV3
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-train-transfers
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/14666/json/TrainGetTransferRouteV2
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-member-summary
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/15201/getMemberSummaryInfo
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-popup-tips
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/15201/getPopupTipsInfo
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-train-config
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/19436/json/GetConfigInfo
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-station-info
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/19436/json/getStationInfoV2
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-discard-telemetry
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/23196/json/getDiscardUbts
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-config-by-key
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/23841/json/getConfigByKeys
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-injected-function-report
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/28967/reportInjectFnInfo
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID
+- id: ctrip-ad-hotels
+  scope:
+    host: m.ctrip.com
+    path: /restapi/soa2/34951/getAdHotels
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  ignore_query:
+  - x-traceID

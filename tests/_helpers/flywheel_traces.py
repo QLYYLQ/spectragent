@@ -333,7 +333,7 @@ async def write_replayed(
             task_id=task_id, site=site, loop="branch", branch=branch, archiver="browser.replay_log"
         )
     )
-    log = ReplayLog(repeat_limit=repeat_limit)
+    log = ReplayLog(mode="summary", repeat_limit=repeat_limit)
     session, _ = open_session(ReplayLogArchiver(), replay_log=log)
     for index, spec in enumerate(steps):
         for entry in spec.replay:

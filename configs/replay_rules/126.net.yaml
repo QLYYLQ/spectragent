@@ -1,6 +1,30 @@
-# NetEase's analytics hosts on 126.net. h5.analytics.126.net puts its whole event (session
-# id, uuid, time) in the query as one JSON parameter name; webstat.ws.126.net reports page
-# timings, sizes and run ids (pgr, prev_pgr, utime, cost, pagesize). Answer their misses 204.
-synthesize_204:
-  - "https://h5.analytics.126.net/*"
-  - "https://webstat.ws.126.net/*"
+# NetEase analytics: the news collector carries event JSON; /stat/ carries timings, sizes and run ids.
+# Methods and paths were checked against the original recordings.
+rules:
+- id: netease-news-event
+  scope:
+    host: h5.analytics.126.net
+    path: /news/c
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://h5.analytics.126.net/news/c*
+- id: netease-news-beacon
+  scope:
+    host: h5.analytics.126.net
+    path: /news/g
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://h5.analytics.126.net/news/g*
+- id: netease-web-stat
+  scope:
+    host: webstat.ws.126.net
+    path: /stat/
+    method: GET
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://webstat.ws.126.net/stat/*

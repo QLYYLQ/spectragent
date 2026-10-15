@@ -1,3 +1,11 @@
-# track.sfccn.com/public_client_log: a client log (POST, the payload in the body).
-synthesize_204:
-  - "https://track.sfccn.com/*"
+# Client log: POST /public_client_log carries the log payload in its body.
+rules:
+- id: business-herald-client-log
+  scope:
+    host: track.sfccn.com
+    path: /public_client_log
+    method: POST
+  priority: 0
+  exhaustion: repeat_last
+  synthesize_204:
+  - https://track.sfccn.com/public_client_log*
