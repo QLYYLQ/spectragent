@@ -50,12 +50,13 @@ import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal, cast
 
 from agent_cdp import CDPEventBridge, EventScope, Participation, ScopeGroup
 from pydantic import Field as PydanticField
 
 from spectragent.core.actions._registrar import ActionBase, ActionRegistrar
+from spectragent.core.actions.base import BaseAction
 from spectragent.core.archive import ArchiveBatch, ArchiverBase
 from spectragent.core.archive.source import open_archive
 from spectragent.core.capabilities._registrar import CapabilityBase, negotiated_fragment_keys
@@ -2181,8 +2182,11 @@ class BrowserCapability(_BrowserReceptors, CapabilityBase):
         # The next resolve call will trigger a fresh BrowserStateRequest.
         self._cycle_cache.pop(sid, None)
 
+        # ActionRegistrar registers implementations against BaseAction.
+        # ActionBase carries configuration; execution consumes the public contract.
+        executor = cast(BaseAction, impl)
         try:
-            result = await impl.execute(action.params, capability=self)
+            result = await executor.execute(action.params, capability=self)
         except RecorderLostError:
             raise
         except Exception as exc:

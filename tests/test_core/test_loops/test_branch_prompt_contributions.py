@@ -137,6 +137,7 @@ async def test_retry_reuses_contribution_and_online_usage_equals_all_recorded_ca
     assert all(call.caller == f"prompt_contribution:{hook.function}" for call in helpers)
     measured = recorded_usage(trace)
     metrics = out.result.metrics
+    assert measured.calls is not None
     assert metrics.llm_calls == measured.calls == 3 + len(helper_replies)
     assert metrics.usage is not None
     assert metrics.usage.total_tokens == measured.tokens == 12 * measured.calls

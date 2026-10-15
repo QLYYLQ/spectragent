@@ -28,6 +28,7 @@ from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.views import ChatInvokeCompletion
 from spectragent.core.loops.errors import RunAbort
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
@@ -125,7 +126,11 @@ async def test_navigation_shortcut_spellings_are_vetoed_under_the_real_keys_cont
 @pytest.mark.parametrize("spelling", ["'ctrl l'", "['cmd', 'l']", "'Alt + D'", "'F6'"])
 async def test_ui_tars_hotkey_normalization_reaches_the_same_veto(spelling: str) -> None:
     agent = UITarsAgent()
-    agent.prepare(task="Use page controls", action_descriptors=[SendKeysAction().descriptor()])
+    agent.prepare(
+        task="Use page controls",
+        action_descriptors=[SendKeysAction().descriptor()],
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+    )
     actions = agent.parse_react_output(f"Action: hotkey(key={spelling})")
     assert len(actions) == 1
     env = _Environment()

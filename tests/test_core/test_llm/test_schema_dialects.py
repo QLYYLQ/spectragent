@@ -40,6 +40,7 @@ from spectragent.core.llm.schema.optimizer import (
     STRICT_DIALECT_KEYWORDS,
     SchemaOptimizer,
 )
+from spectragent.core.loops.react import ReactLoop
 from tests._helpers.llm_clients import FakeClient, FakeGenaiClient
 
 # ── shared fixtures ────────────────────────────────────────────────
@@ -55,7 +56,11 @@ def _agent_output_model() -> type[BaseModel]:
     keys = sorted(ActionRegistrar.get_all())
     descriptors = [ActionRegistrar.get(key)().descriptor() for key in keys]
     agent = BrowserUseAgent()
-    agent.prepare(task="t", action_descriptors=descriptors)
+    agent.prepare(
+        task="t",
+        execution_limits=ReactLoop().execution_limits(),
+        action_descriptors=descriptors,
+    )
     model = agent.get_react_output_model()
     assert model is not None
     return model

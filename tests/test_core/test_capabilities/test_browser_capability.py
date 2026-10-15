@@ -18,6 +18,7 @@ from spectragent.core.capabilities.browser.actions import (
     ScrollAction,
 )
 from spectragent.schemas.action import ActionDescriptor
+from spectragent.schemas.prompt import ReactPromptContext
 
 
 class TestStaticContract:
@@ -830,12 +831,13 @@ class TestFailedSetupReleasesResources:
         from tests._helpers.assembly import make_run
 
         class _Agent:
+            __execution_limit_fields__ = frozenset()
             __wiring__ = {"action": ("action", ["browser.done"])}
 
             def prepare(self, *, task, action_descriptors):
                 return []
 
-            def build_react_prompt(self, obs):
+            async def build_react_prompt(self, obs, *, context: ReactPromptContext):
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, out):
@@ -850,6 +852,10 @@ class TestFailedSetupReleasesResources:
 
         class _LLM:
             model = "test-model"
+            name = "test-model"
+
+            async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
+                return ()
 
             async def ainvoke(self, messages, **kwargs):
                 return _Completion()

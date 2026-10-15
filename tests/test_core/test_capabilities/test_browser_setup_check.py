@@ -43,6 +43,7 @@ from spectragent.core.capabilities.browser.replay.matcher import MatcherConfig
 from spectragent.core.capabilities.browser.replay.site_rules import SiteRuleError
 from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.runtime import AgentRuntime
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 from tests._helpers.browser_archive import IsolatingBrowser, OwnedBrowser
 from tests._helpers.replay_archive import RecordingScript
@@ -302,12 +303,15 @@ def test_the_check_changes_nothing() -> None:
 
 
 class _ScreenshotAgent:
+    __execution_limit_fields__ = frozenset()
     __wiring__: ClassVar[dict[str, Any]] = {
         "observation": ("observation", ["screenshot"]),
         "action": ("action", ["done"]),
     }
 
-    def build_react_prompt(self, obs: Any) -> list[dict[str, str]]:
+    async def build_react_prompt(
+        self, obs: Any, *, context: ReactPromptContext
+    ) -> list[dict[str, str]]:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out: Any) -> list[Any]:
@@ -316,6 +320,10 @@ class _ScreenshotAgent:
 
 class _LLM:
     model = "setup-check-llm"
+    name = "setup-check-llm"
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
+        return ()
 
 
 class _Memory:

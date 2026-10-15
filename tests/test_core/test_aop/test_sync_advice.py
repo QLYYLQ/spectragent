@@ -187,25 +187,25 @@ class TestSyncAround:
         assert wrapped(1) == 999
         assert ran == []
 
-    def test_documented_use_case_prompt_audit(self) -> None:
-        """docs/architecture_design.md §4.1: around on ``build_react_prompt``."""
+    def test_synchronous_prompt_builder_can_be_audited(self) -> None:
+        """Generic synchronous builders support around advice; ReAct uses an async builder."""
 
         class _Agent:
-            def build_react_prompt(self, obs):
+            def build_prompt(self, obs):
                 return [{"role": "user", "content": obs}]
 
         audited: list[list] = []
 
-        def around_build_react_prompt(*, proceed, args, kwargs, **ctx):
+        def around_build_prompt(*, proceed, args, kwargs, **ctx):
             messages = proceed()
             audited.append(messages)
             return messages
 
         agent = _Agent()
         wrapped = _build_wrapped_method(
-            agent.build_react_prompt,
-            interceptors=[(_Blocking(), AdviceType.AROUND, around_build_react_prompt)],
-            method_name="build_react_prompt",
+            agent.build_prompt,
+            interceptors=[(_Blocking(), AdviceType.AROUND, around_build_prompt)],
+            method_name="build_prompt",
             target=agent,
             role="agent",
         )

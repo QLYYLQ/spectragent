@@ -35,8 +35,9 @@ from spectragent.core.actions._registrar import ActionRegistrar
 from spectragent.core.capabilities.browser.observations import BrowserPlatformObs
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.loops.errors import ParseError
-from spectragent.core.loops.react import ReactLoop, _serialize_llm_output
+from spectragent.core.loops.react import ReactLoop, serialize_llm_output
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.llm_clients import FakeClient
 
 # ── Shared fixtures ───────────────────────────────────────────────
@@ -50,7 +51,9 @@ def _descriptors(*keys: str) -> list[ActionDescriptor]:
 
 def _prepared_agent() -> BrowserUseAgent:
     agent = BrowserUseAgent()
-    agent.prepare(task="t", action_descriptors=_descriptors())
+    agent.prepare(
+        task="t", execution_limits=ReactLoop().execution_limits(), action_descriptors=_descriptors()
+    )
     return agent
 
 
@@ -165,7 +168,11 @@ class TestHallucinatedVerbRejection:
     def test_negotiated_out_verb_is_rejected(self) -> None:
         """A real action the capability did not offer this run."""
         agent = BrowserUseAgent()
-        agent.prepare(task="t", action_descriptors=_descriptors("browser.click"))
+        agent.prepare(
+            task="t",
+            execution_limits=ReactLoop().execution_limits(),
+            action_descriptors=_descriptors("browser.click"),
+        )
         with pytest.raises(ParseError):
             agent.parse_react_output(
                 json.dumps({"memory": "m", "action": [{"browser.navigate": {"url": "u"}}]})
@@ -242,7 +249,7 @@ class _StubAgent:
     def __init__(self, output_model: type[BaseModel] | None) -> None:
         self._output_model = output_model
 
-    def build_react_prompt(self, _obs: Any) -> list:
+    async def build_react_prompt(self, _obs: Any, *, context: ReactPromptContext) -> list:
         return [UserMessage(content="go")]
 
     def parse_react_output(self, _llm_output: Any) -> list[Action]:
@@ -295,7 +302,7 @@ class TestReactLoopRoutesOutputFormat:
         class _NoSlotAgent:
             __wiring__: dict = {}
 
-            def build_react_prompt(self, _obs: Any) -> list:
+            async def build_react_prompt(self, _obs: Any, *, context: ReactPromptContext) -> list:
                 return [UserMessage(content="go")]
 
             def parse_react_output(self, _o: Any) -> list[Action]:
@@ -318,11 +325,11 @@ class TestCompletionSerialization:
         assert model is not None
         completion = model.model_validate(_PAYLOAD)
 
-        text = _serialize_llm_output(completion)
+        text = serialize_llm_output(completion)
         assert json.loads(text)["action"] == [{"browser.click": {"index": 1}}]
 
     def test_text_completion_passes_through(self) -> None:
-        assert _serialize_llm_output("plain text") == "plain text"
+        assert serialize_llm_output("plain text") == "plain text"
 
     def test_both_loop_branches_use_the_same_serialization(self) -> None:
         """Memory must show the LLM its own JSON on success *and* on failure.

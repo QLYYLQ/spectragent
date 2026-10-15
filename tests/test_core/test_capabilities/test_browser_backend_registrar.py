@@ -40,6 +40,7 @@ class TestRegistrar:
 
         wiring = BrowserCapability.__wiring__
         backend_wiring = wiring.get("backend")
+        assert backend_wiring is not None
         # Wiring may be Mode 1 (string) or Mode 2/3 (tuple)
         if isinstance(backend_wiring, str):
             referenced_registry = backend_wiring

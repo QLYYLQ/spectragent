@@ -32,6 +32,7 @@ from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.loops import ReactLoop
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import task_identity
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.archive_fakes import make_archive_run
 from tests._helpers.assembly import make_env, make_run
 from tests._helpers.browser_archive import OwnedBrowser
@@ -195,12 +196,15 @@ async def test_the_trace_records_the_completed_start_page_and_its_site(
 
 
 class _BrowserAgent:
+    __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset()
     __wiring__: ClassVar[dict[str, Any]] = {
         "observation": ("observation", ["screenshot"]),
         "action": ("action", ["done"]),
     }
 
-    def build_react_prompt(self, obs: Any) -> list[dict[str, str]]:
+    async def build_react_prompt(
+        self, obs: Any, *, context: ReactPromptContext
+    ) -> list[dict[str, str]]:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out: Any) -> list[Any]:
@@ -209,6 +213,10 @@ class _BrowserAgent:
 
 class _LLM:
     model = "start-page-llm"
+    name = "start-page-llm"
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple[()]:
+        return ()
 
 
 class _Memory:

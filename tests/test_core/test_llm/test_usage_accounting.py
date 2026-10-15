@@ -11,26 +11,36 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from spectragent.core.llm.providers.anthropic_base import AnthropicCompatBase
+from anthropic.types import Message, Usage
+
+from spectragent.core.llm.providers.anthropic import ChatAnthropic
 from spectragent.schemas.agent_result import AgentUsage
 
 
-def _anthropic_response(*, uncached: int, cache_read: int, cache_write: int, output: int):
-    """The shape ``_get_usage`` reads off an Anthropic ``Message``."""
-    return SimpleNamespace(
-        usage=SimpleNamespace(
+def _anthropic_response(
+    *, uncached: int, cache_read: int, cache_write: int, output: int
+) -> Message:
+    """A real SDK reply with independent cache-read, cache-write and input counts."""
+    return Message(
+        id="msg_usage",
+        content=[],
+        model="claude-sonnet-4-5",
+        role="assistant",
+        stop_reason="end_turn",
+        stop_sequence=None,
+        type="message",
+        usage=Usage(
             input_tokens=uncached,
             cache_read_input_tokens=cache_read,
             cache_creation_input_tokens=cache_write,
             output_tokens=output,
-        )
+        ),
     )
 
 
 class TestAnthropicUsage:
     def test_all_three_input_counters_are_summed(self) -> None:
-        usage = AnthropicCompatBase._get_usage(
-            None,  # type: ignore[arg-type] — reads only `response.usage`
+        usage = ChatAnthropic(model="claude-sonnet-4-5")._get_usage(
             _anthropic_response(uncached=200, cache_read=8000, cache_write=1500, output=300),
         )
 
@@ -42,15 +52,13 @@ class TestAnthropicUsage:
 
     def test_total_is_never_less_than_prompt(self) -> None:
         """The old arithmetic gave total=500 against prompt=8200 on this input."""
-        usage = AnthropicCompatBase._get_usage(
-            None,  # type: ignore[arg-type]
+        usage = ChatAnthropic(model="claude-sonnet-4-5")._get_usage(
             _anthropic_response(uncached=200, cache_read=8000, cache_write=1500, output=300),
         )
         assert usage.total_tokens >= usage.prompt_tokens
 
     def test_uncached_call_is_unaffected(self) -> None:
-        usage = AnthropicCompatBase._get_usage(
-            None,  # type: ignore[arg-type]
+        usage = ChatAnthropic(model="claude-sonnet-4-5")._get_usage(
             _anthropic_response(uncached=1200, cache_read=0, cache_write=0, output=400),
         )
         assert (usage.prompt_tokens, usage.total_tokens) == (1200, 1600)
