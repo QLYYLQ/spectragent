@@ -1,0 +1,16 @@
+|scroll element|<html /> (2.3 pages below)
+	[4]<a id=home />
+		Home
+	[5]<a id=covered />
+		Covered link
+	[6]<a id=partial />
+		Partial link
+	[7]<a id=clear />
+		Clear link
+	[8]<input id=agree type=checkbox value=on />
+	I agree
+	[9]<a id=below />
+		Below the fold
+	[10]<iframe id=frame />
+		[11]<button id=inside />
+			Inside
