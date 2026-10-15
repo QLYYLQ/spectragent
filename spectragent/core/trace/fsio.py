@@ -37,8 +37,10 @@ failures are the ones that mean "this platform or filesystem cannot
 ``ENOTSUP`` / ``EOPNOTSUPP`` from the ``fsync`` call itself. Everything else
 — ``EIO``, ``ENOSPC``, and ``os.open`` failing with ``EMFILE``, ``EACCES``
 or ``ENOENT`` — propagates, exactly as a failed data ``fsync`` or
-``os.replace`` always has: a manifest that claims a commit it is not sure of
-is worse than a run that stops.
+``os.replace`` always has. A caller must distinguish failure before rename
+from failure after it: the latter may already have installed the new file.
+The WAL reconciles its manifest before it performs another write; recording
+errors remain separate from execution outcomes.
 
 **Permissions are a plain write's.** A new file gets ``0o666`` masked by
 the process umask, and replacing a file keeps that file's permission bits
@@ -160,7 +162,9 @@ def atomic_write(path: Path, data: bytes) -> None:
 
     After this returns, *path* holds *data* and its name survives power
     loss. A reader sees either the previous file or the new one, never a
-    partial write.
+    partial write. An exception from the directory fsync occurs after the
+    replacement: *path* may already hold *data*. Callers maintaining an
+    in-memory index must read back the commit point before writing again.
     """
     # Deepest first, so a directory's own entries are durable before the
     # entry naming it in its parent is.

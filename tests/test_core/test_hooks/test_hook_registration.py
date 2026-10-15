@@ -159,7 +159,16 @@ class TestHookConfigIsExtractable:
         # an ``Annotated`` parameter wired from the archiver registry.
         trace_schema = extract_config_schema(TraceWriter)
         assert trace_schema is not None
-        assert set(trace_schema.model_fields) == {"trace_dir", "record_secrets", "archive"}
+        assert set(trace_schema.model_fields) == {
+            "trace_dir",
+            "record_secrets",
+            "archive",
+            "recording",
+            "pending_segments",
+            "write_retries",
+            "retry_delay",
+            "close_timeout",
+        }
 
     def test_trace_writer_exposes_trace_dir(self) -> None:
         from spectragent.generated._composed import TraceWriterHookConfig

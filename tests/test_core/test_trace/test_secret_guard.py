@@ -173,12 +173,13 @@ class _Env(EnvironmentBase):
 
 
 class _Agent:
+    __execution_limit_fields__ = frozenset()
     __wiring__ = {
         "action": ("action", ["done"]),
         "observation": ("observation", ["browser.browser_meta", "loop.task"]),
     }
 
-    def build_react_prompt(self, obs):
+    async def build_react_prompt(self, obs, *, context):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out):
@@ -195,6 +196,10 @@ class _Completion:
 
 class _LLM:
     model = "gpt-4o-mini"
+    name = "gpt-4o-mini"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
 
     async def ainvoke(self, messages, **kw):
         return _Completion()

@@ -6,7 +6,7 @@ Hooks register via conscribe and declare method interceptions via
 Lifecycle events (run_start/end/error) are called directly by AgentRuntime,
 not through method interception.
 
-M11 adds TraceWriter (WAL persistence) and MetricsCollector (token stats).
+TraceWriter collects execution facts and persists the selected recording scope.
 
 See docs/architecture_design.md §4.6 and docs/execution_dag.md M04/M11.
 """
@@ -14,7 +14,6 @@ See docs/architecture_design.md §4.6 and docs/execution_dag.md M04/M11.
 from spectragent.core.hooks._registrar import HookBase, HookRegistrar
 from spectragent.core.hooks.base import RuntimeHook
 from spectragent.core.hooks.events import LifecycleEvents
-from spectragent.core.hooks.metrics_collector import MetricsCollector
 from spectragent.core.hooks.trace_writer import TraceWriter
 
 __all__ = [
@@ -23,5 +22,4 @@ __all__ = [
     "HookBase",
     "LifecycleEvents",
     "TraceWriter",
-    "MetricsCollector",
 ]

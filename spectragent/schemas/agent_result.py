@@ -13,6 +13,7 @@ from spectragent.schemas._types import (
 )
 from spectragent.schemas.prompt import PromptSnapshot
 from spectragent.schemas.recording import RecordingHealth, UsageCoverage
+from spectragent.schemas.step_record import TokenUsage
 
 
 class AgentUsage(BaseModel):
@@ -45,65 +46,54 @@ class AgentUsage(BaseModel):
     total_completion_tokens: int = 0
     total_prompt_cached_tokens: int = 0
     total_prompt_cache_creation_tokens: int = 0
+    total_prompt_image_tokens: int = 0
     total_tokens: int = 0
 
     # Invocation info
     entry_count: int = 0
     by_model: dict[str, Any] | None = None
+    by_purpose: dict[str, Any] | None = None
 
-    @model_validator(mode="after")
-    def _auto_fill_total_tokens(self) -> "AgentUsage":
-        if self.total_tokens == 0 and (self.total_prompt_tokens + self.total_completion_tokens) > 0:
-            self.total_tokens = self.total_prompt_tokens + self.total_completion_tokens
-        return self
-
-    def add_llm_usage(self, usage: Any, *, model: str = "") -> None:
-        """Accumulate one LLM call's usage in place.
-
-        *usage* is duck-typed against ``ChatInvokeUsage`` (``prompt_tokens``,
-        ``completion_tokens``, ``prompt_cached_tokens``, ``total_tokens``)
-        so providers that report a subset — or a different object entirely
-        — still contribute what they have. ``None`` is a no-op, which is
-        how a provider that reports no usage leaves ``entry_count`` behind
-        as evidence that a call happened.
-        """
+    def add_llm_usage(
+        self, usage: Any, *, model: str = "", purpose: str = "agent_decision"
+    ) -> None:
+        """Accumulate provider facts using the same rule as step and offline totals."""
         self.entry_count += 1
-        if usage is None:
-            return
-
-        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
-        completion = int(getattr(usage, "completion_tokens", 0) or 0)
-        cached = int(getattr(usage, "prompt_cached_tokens", 0) or 0)
-        cache_write = int(getattr(usage, "prompt_cache_creation_tokens", 0) or 0)
-        total = int(getattr(usage, "total_tokens", 0) or 0) or (prompt + completion)
-
-        self.total_prompt_tokens += prompt
-        self.total_completion_tokens += completion
-        self.total_prompt_cached_tokens += cached
-        self.total_prompt_cache_creation_tokens += cache_write
-        self.total_tokens += total
-
-        if not model:
-            return
-        by_model = self.by_model if self.by_model is not None else {}
-        entry = by_model.setdefault(
-            model,
-            {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "cached_tokens": 0,
-                "cache_creation_tokens": 0,
-                "total_tokens": 0,
-                "calls": 0,
-            },
-        )
-        entry["prompt_tokens"] += prompt
-        entry["completion_tokens"] += completion
-        entry["cached_tokens"] += cached
-        entry["cache_creation_tokens"] = entry.get("cache_creation_tokens", 0) + cache_write
-        entry["total_tokens"] += total
-        entry["calls"] += 1
-        self.by_model = by_model
+        item = TokenUsage.from_llm_usage(usage)
+        if item is not None:
+            self.total_prompt_tokens += item.prompt_tokens
+            self.total_completion_tokens += item.completion_tokens
+            self.total_prompt_cached_tokens += item.prompt_cached_tokens
+            self.total_prompt_cache_creation_tokens += item.prompt_cache_creation_tokens
+            self.total_prompt_image_tokens += item.prompt_image_tokens
+            self.total_tokens += item.total_tokens
+        for field, key in (("by_model", model), ("by_purpose", purpose)):
+            if not key:
+                continue
+            groups = getattr(self, field) or {}
+            entry = groups.setdefault(
+                key,
+                {
+                    "calls": 0,
+                    "reported_calls": 0,
+                    "total_tokens": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "cached_tokens": 0,
+                    "cache_creation_tokens": 0,
+                    "image_tokens": 0,
+                },
+            )
+            entry["calls"] += 1
+            if item is not None:
+                entry["reported_calls"] += 1
+                entry["total_tokens"] += item.total_tokens
+                entry["prompt_tokens"] += item.prompt_tokens
+                entry["completion_tokens"] += item.completion_tokens
+                entry["cached_tokens"] += item.prompt_cached_tokens
+                entry["cache_creation_tokens"] += item.prompt_cache_creation_tokens
+                entry["image_tokens"] += item.prompt_image_tokens
+            setattr(self, field, groups)
 
 
 class AgentMetrics(BaseModel):
@@ -115,7 +105,7 @@ class AgentMetrics(BaseModel):
     per-step average computed from a trace.
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     ttft_ms: int | None = None
     execution_ms: int | None = None
@@ -135,18 +125,9 @@ class AgentResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # Version
-    # 2.1 renamed ``agent_success`` -> ``agent_reported_success``. Traces
-    # written before that carry 2.0 and the old key; they are legacy.
-    #
-    # Only the current version is accepted. The wider Literal this used
-    # to carry ("1.0", "1.1", "2.0") advertised a compatibility that does
-    # not exist: with ``extra="forbid"`` and the field renamed, a 2.0
-    # payload cannot validate under any circumstances, so accepting the
-    # version string only bought a confusing error about ``agent_success``
-    # instead of an honest one about the version. ``RunTrace`` turns the
-    # rejection into a ``TraceSchemaError`` that names the mismatch.
-    schema_version: Literal["2.1"] = "2.1"
+    # Only the current execution/recording contract is readable. Version 3
+    # separates execution_ms, provider coverage and recording health.
+    schema_version: Literal["3.0"] = "3.0"
 
     # Identity
     task_id: str

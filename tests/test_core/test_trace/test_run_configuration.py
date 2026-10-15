@@ -26,6 +26,7 @@ import copy
 import dataclasses
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -49,6 +50,7 @@ from spectragent.core.trace.models import TaskSetupRecord, TraceConfig, TraceNeg
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.restoration import BranchProvenance
 from tests._helpers.archive_fakes import (
     BLOBS_KEY,
@@ -99,6 +101,7 @@ class _Env(EnvironmentBase):
 
 
 class _Agent:
+    __execution_limit_fields__ = frozenset()
     __wiring__ = {
         # ``click`` is declared optional and never emitted — it must still
         # show up as active, because "what the model was allowed to do" is
@@ -107,7 +110,7 @@ class _Agent:
         "observation": ("observation", ["browser.browser_meta", "loop.task"]),
     }
 
-    def build_react_prompt(self, obs):
+    async def build_react_prompt(self, obs, *, context):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out):
@@ -441,21 +444,10 @@ class TestStepTimings:
         assert StepRecord(step=0).duration_ms is None
         assert StepRecord(step=0).llm_latency_ms is None
 
-    def test_the_stamp_does_not_reach_the_prompt(self):
-        """The seam this measurement buys, pinned.
-
-        ``_stamp_timings`` mutates the Loop's own ``StepRecord``, and that
-        object is also the payload of ``HistoryObs`` — it is rendered into
-        prompts. If a renderer dumped the record wholesale, turning
-        ``trace_writer`` on would change what the model reads, and a
-        persistence hook would have become part of the experiment.
-
-        Pinned against the real renderer rather than asserted in prose,
-        because the failure is silent: nothing errors, the prompt just
-        quietly differs between a traced run and an untraced one.
-        """
+    async def test_measurements_do_not_change_the_public_prompt(self):
+        """Recording enriches shared history without changing model input."""
         from spectragent.agents.browser_use import BrowserUseAgent
-        from spectragent.schemas.observation.fragments import HistoryObs
+        from spectragent.schemas.observation.fragments import HistoryObs, TaskObs
         from spectragent.schemas.step_record import StepRecord
 
         agent = BrowserUseAgent()
@@ -469,14 +461,30 @@ class TestStepTimings:
         stamped.duration_ms = 1234
         stamped.llm_latency_ms = 999
 
-        rendered_plain = agent._render_history(HistoryObs(items=[plain]))
-        rendered_stamped = agent._render_history(HistoryObs(items=[stamped]))
+        context = ReactPromptContext(step=1, phase="policy", policy_step=1)
+        rendered_plain = await agent.build_react_prompt(
+            SimpleNamespace(
+                task=TaskObs(user_request="continue"),
+                history=HistoryObs(items=[plain]),
+                platform=SimpleNamespace(operating_system="linux"),
+            ),
+            context=context,
+        )
+        rendered_stamped = await agent.build_react_prompt(
+            SimpleNamespace(
+                task=TaskObs(user_request="continue"),
+                history=HistoryObs(items=[stamped]),
+                platform=SimpleNamespace(operating_system="linux"),
+            ),
+            context=context,
+        )
         assert rendered_plain == rendered_stamped
-        assert "1234" not in rendered_stamped
-        assert "999" not in rendered_stamped
+        text = "\n".join(message.text for message in rendered_stamped)
+        assert "1234" not in text
+        assert "999" not in text
 
     @pytest.mark.parametrize("agent_id", ["browser_use", "skyvern", "ui_tars"])
-    def test_origin_and_restoration_do_not_reach_the_prompt(self, agent_id):
+    async def test_origin_and_restoration_do_not_reach_the_prompt(self, agent_id):
         """A restored step is a copy of the source's step, and must read the same.
 
         ``origin`` and ``restoration`` ride on the same ``StepRecord`` that
@@ -488,7 +496,7 @@ class TestStepTimings:
         an agent that never negotiates ``loop.history`` — by its declaration.
         """
         from spectragent.agents._registrar import AgentRegistrar
-        from spectragent.schemas.observation.fragments import HistoryObs
+        from spectragent.schemas.observation.fragments import HistoryObs, TaskObs
         from spectragent.schemas.restoration import (
             RestorationCheck,
             RestorationEvidence,
@@ -502,7 +510,6 @@ class TestStepTimings:
         demands = {key.rsplit(".", 1)[-1] for key in (*required, *optional)}
         if "history" not in demands:
             # Never negotiated, so ``HistoryObs`` never reaches this agent.
-            assert not hasattr(agent_cls, "_render_history")
             return
 
         plain = StepRecord(
@@ -539,11 +546,27 @@ class TestStepTimings:
         )
 
         agent = agent_cls()
-        rendered_plain = agent._render_history(HistoryObs(items=[plain]))
-        rendered_restored = agent._render_history(HistoryObs(items=[restored]))
+        context = ReactPromptContext(step=1, phase="policy", policy_step=1)
+        rendered_plain = await agent.build_react_prompt(
+            SimpleNamespace(
+                task=TaskObs(user_request="continue"),
+                history=HistoryObs(items=[plain]),
+                platform=SimpleNamespace(operating_system="linux"),
+            ),
+            context=context,
+        )
+        rendered_restored = await agent.build_react_prompt(
+            SimpleNamespace(
+                task=TaskObs(user_request="continue"),
+                history=HistoryObs(items=[restored]),
+                platform=SimpleNamespace(operating_system="linux"),
+            ),
+            context=context,
+        )
         assert rendered_plain == rendered_restored
+        text = "\n".join(message.text for message in rendered_restored)
         for marker in ("restored", "8765", "4321", "marker-detail", "screenshot_distance"):
-            assert marker not in rendered_restored
+            assert marker not in text
 
 
 class TestBranchProvenance:

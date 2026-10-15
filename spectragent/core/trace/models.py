@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Set
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
@@ -124,6 +125,8 @@ class TrailingEntry(BaseModel):
     claiming one would put an action-less phantom in the manifest.
     """
 
+    #: Producer-owned stable identity, preserved across retries and index reuse.
+    segment_id: str | None = None
     llm_calls: list[str] = Field(default_factory=list)
     call_metrics: list[str] = Field(default_factory=list)
     extra_index: str | None = None  # steps/trailing_KK.extra.json
@@ -161,7 +164,9 @@ class TraceManifest(BaseModel):
     #: happened, joined by ``"; "``).
     incomplete_reason: str | None = None
     #: The last step through which the trace is complete: steps
-    #: ``0..complete_through`` are all committed, each with its evidence.
+    #: ``0..complete_through`` are all committed, each with every selected
+    #: recording channel. An unresolved per-step channel failure truncates
+    #: this prefix even when that step's record was committed.
     #: -1 when there is none. It stops at the first step whose recording
     #: failed, so it equals ``last_step_completed`` unless a step was lost
     #: and a later one still committed; it is kept up to date while the
@@ -449,7 +454,7 @@ class RecordedLLMCall(BaseModel):
     ended_at: float = 0.0
 
     #: The step the Loop was on. For a trailing call, the step it never
-    #: surrendered (``last_step_completed + 1``).
+    #: surrendered, retaining its execution-time identity.
     step: int
     #: Start order within the step, from 0.
     call: int
@@ -816,3 +821,14 @@ class TraceConfig(BaseModel):
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def recorded_prefix(committed: Set[int], problems: Iterable[RecordingProblem]) -> int:
+    """The contiguous prefix with all selected channels, not only step records."""
+    through = -1
+    while through + 1 in committed:
+        through += 1
+    for problem in problems:
+        if not problem.recovered and problem.step is not None:
+            through = min(through, problem.step - 1)
+    return through

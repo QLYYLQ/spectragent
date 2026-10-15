@@ -16,12 +16,14 @@ from spectragent.core.capabilities.browser.archive import ReplayLogArchiver
 from spectragent.core.capabilities.browser.replay.replay_log import ReplayLog, ReplayLogEntry
 from spectragent.core.data_loader.task.require_eval import RequireEval
 from spectragent.core.trace.encoding import encode_archive_file
-from spectragent.core.trace.models import TraceStatus
+from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.sources import task_identity
+from spectragent.core.trace.wal import WALWriter
 from spectragent.export.canonical import canonicalise
 from spectragent.export.filters import Source, filtered_out, open_sources
 from spectragent.export.settings import ExportFilters
 from spectragent.schemas._types import AgentDoneStatus
+from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.restoration import BranchProvenance, RestorationCheck
 from tests._helpers.archive_recorder import open_session
 from tests._helpers.export_traces import (
@@ -330,3 +332,14 @@ def test_a_branch_is_keyed_by_its_source_task(tmp_path: Path) -> None:
     )
     assert identity.key == "online_mind2web/test/task-001"
     assert identity.start_url == START_URL and identity.site == "shop.example.test"
+
+
+def test_light_recording_is_skipped_as_out_of_scope_not_corrupt(tmp_path: Path) -> None:
+    wal = WALWriter(tmp_path, "light")
+    wal.init_run(TraceConfig(recording=RecordingPlan(trajectory=False, observations=False)))
+    wal.finalize(TraceStatus.COMPLETE)
+    sources, skipped = open_sources(tmp_path, ["*"])
+    assert sources == []
+    assert "did not select" in skipped["light"]
+    assert "trajectory, observations" in skipped["light"]
+    assert "unreadable" not in skipped["light"]

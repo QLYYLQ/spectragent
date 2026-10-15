@@ -1435,7 +1435,8 @@ def _lines_section(name: str, sections: Sections) -> list[str]:
         return [
             f"- duplicates: {_ratio_md(s.rate)} in {s.groups} group(s); not compared (no action at "
             f"the checkpoint step) {s.not_compared}; the first export flagged "
-            f"{_fmt(s.dataset_duplicates)}"
+            f"{_fmt(s.dataset_duplicates)}",
+            *_skipped_md(s.skipped),
         ]
     if name == "post_branch_misses":
         s = sections.post_branch_misses
@@ -1502,6 +1503,9 @@ def _token_use_md(use: TokenUseReport) -> list[str]:
         )
         lines += [
             f"  - no usage reported (not counted): `{call}`" for call in item.calls_without_usage
+        ]
+        lines += [
+            f"  - incomplete recording `{run}`: {reason}" for run, reason in item.incomplete.items()
         ]
         lines += _skipped_md(item.skipped, indent="  ")
     return lines

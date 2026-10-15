@@ -14,7 +14,7 @@ import pytest
 
 from spectragent.core.archive import ArchiveBatch, ArchiveConsumer, ArchivingCapability
 from spectragent.core.capabilities.base import BaseCapability
-from spectragent.core.hooks.metrics_collector import MetricsCollector
+from spectragent.core.hooks.live_monitor import LiveMonitor
 from tests._helpers.archive_fakes import (
     ArchiveConsumerHook,
     FakeArchivingCapability,
@@ -56,7 +56,7 @@ class TestArchiveConsumer:
         assert hook.archive == []
 
     def test_a_hook_without_one_is_not(self) -> None:
-        assert not isinstance(MetricsCollector(), ArchiveConsumer)
+        assert not isinstance(LiveMonitor(), ArchiveConsumer)
 
     def test_any_object_with_the_attribute_is(self) -> None:
         assert isinstance(_StructuralConsumer(), ArchiveConsumer)

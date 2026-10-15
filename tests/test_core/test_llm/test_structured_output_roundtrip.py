@@ -1103,7 +1103,6 @@ class TestStructuredValidationIsFedBack:
         the wiring, not just the handler.
         """
         from spectragent.core.aop.weaver import Weaver
-        from spectragent.core.hooks.metrics_collector import MetricsCollector
         from spectragent.core.hooks.trace_writer import TraceWriter
         from spectragent.core.llm.exceptions import StructuredOutputValidationError
         from spectragent.core.llm.views import ChatInvokeUsage
@@ -1132,8 +1131,7 @@ class TestStructuredValidationIsFedBack:
                 )
 
         writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
-        metrics = MetricsCollector()
-        weaver = Weaver([writer, metrics])
+        weaver = Weaver([writer])
         llm = weaver.wrap(_RaisingLLM(), "llm")
 
         memory = _FakeMemory()
@@ -1143,7 +1141,6 @@ class TestStructuredValidationIsFedBack:
 
         async def _run() -> Any:
             await writer.on_run_start(agent=agent, env=env, task="task", config={})
-            await metrics.on_run_start()
             # The step recorder the runtime wraps under ``role="loop"`` —
             # its ``record_step`` is TraceWriter's commit point.
             recorder = weaver.wrap(StepRecorder(), "loop")
@@ -1181,6 +1178,8 @@ class TestStructuredValidationIsFedBack:
         assert call.failure.usage.total_tokens == 15
         # And what it cost is counted once on both sides, rather than only
         # by the loop that kept going.
-        assert metrics.llm_calls == 1
-        assert metrics._usage.total_tokens == 15
+        from spectragent.core.trace.usage import recorded_usage
+
+        assert recorded_usage(trace).calls == 1
+        assert recorded_usage(trace).tokens == 15
         assert result.metrics.llm_calls == 1

@@ -205,7 +205,7 @@ class TestAssembly:
 
     def test_only_one_hookless_react_student(self, composer: ConfigComposer) -> None:
         root = student_root()
-        root["hook"] = [{"hook_id": "metrics"}]
+        root["hook"] = [{"hook_id": "trace_writer"}]
         with pytest.raises(ExportConfigError, match="hooks"):
             _renderer(composer, root=root)
         root = student_root()

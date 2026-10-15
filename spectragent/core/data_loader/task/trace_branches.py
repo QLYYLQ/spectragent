@@ -68,7 +68,7 @@ from spectragent.core.data_loader.task.step_selector import (  # noqa: F401 — 
     StepSelector,
     default_step_selector,
 )
-from spectragent.core.trace.errors import TraceSchemaError
+from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.models import TraceConfig, TraceManifest
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import (
@@ -382,7 +382,10 @@ class _Scan:
         """Every branch task of one source that passed the filters."""
         try:
             config = trace.config
+            trace.require_recording("trajectory", "observations", consumer="branch restoration")
             records = trace.step_records
+        except RecordingScopeError as exc:
+            raise _Unbranchable(str(exc)) from exc
         except TraceSchemaError as exc:
             raise _Unbranchable(f"its configuration or steps do not read back: {exc}") from exc
         if config.branch is not None:

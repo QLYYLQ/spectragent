@@ -24,7 +24,6 @@ from spectragent.core.llm.exceptions import (
 )
 from spectragent.core.llm.messages import UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
-from spectragent.core.step_recorder import RecordingFailedError
 from spectragent.core.trace.models import TraceManifest, TraceStatus
 from spectragent.core.trace.reader import RunTrace
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
@@ -86,7 +85,7 @@ def _result(agent_done: AgentDoneStatus = AgentDoneStatus.DONE, **kw) -> AgentRe
         "agent_done": agent_done,
         "agent_reported_success": agent_done is AgentDoneStatus.DONE or None,
         "answer": "42",
-        "metrics": AgentMetrics(end_to_end_ms=1000, steps=0),
+        "metrics": AgentMetrics(execution_ms=1000, steps=0),
     }
     defaults.update(kw)
     return AgentResult(**defaults)
@@ -109,6 +108,11 @@ async def _call(
 
     kwargs = {"output_format": output_format} if output_format is not None else {}
     return await writer.around_ainvoke(proceed=proceed, args=(_prompt(text),), kwargs=kwargs)
+
+
+async def _seal(writer: TraceWriter, result: Any, *, args: tuple, kwargs: dict) -> None:
+    await writer.after_record_step(result, args=args, kwargs=kwargs)
+    await writer.flush()
 
 
 async def _start(writer: TraceWriter, **kwargs: Any) -> Path:
@@ -135,7 +139,12 @@ class TestTraceWriterRegistration:
     def test_around_is_the_only_llm_intercept(self):
         """No ``after_ainvoke``: it never sees a call that raised, nor a cancelled one."""
         handlers = {(i.role, i.handler_name) for i in TraceWriter.__intercepts__}
-        assert handlers == {("llm", "around_ainvoke"), ("loop", "after_record_step")}
+        assert handlers == {
+            ("llm", "around_ainvoke"),
+            ("loop", "around_record_step"),
+            ("loop", "around_execute_step"),
+            ("loop", "around_observe_terminal"),
+        }
         assert not hasattr(TraceWriter, "after_ainvoke")
 
 
@@ -177,7 +186,16 @@ class TestTheConstructorSurface:
 
         schema = extract_config_schema(TraceWriter)
         assert schema is not None
-        assert set(schema.model_fields) == {"trace_dir", "record_secrets", "archive"}
+        assert set(schema.model_fields) == {
+            "trace_dir",
+            "record_secrets",
+            "archive",
+            "recording",
+            "pending_segments",
+            "write_retries",
+            "retry_delay",
+            "close_timeout",
+        }
         assert TraceWriter.__wiring__ == {"archive": "archiver"}
 
     def test_the_generated_config_types_the_archive(self):
@@ -190,6 +208,11 @@ class TestTheConstructorSurface:
             "record_secrets",
             "archive",
             "hook_id",
+            "recording",
+            "pending_segments",
+            "write_retries",
+            "retry_delay",
+            "close_timeout",
         }
         config = TraceWriterHookConfig.model_validate(
             {"archive": [{"archiver_id": "browser.network", "drain_timeout_s": 0.5}]}
@@ -224,7 +247,7 @@ class TestTraceWriterLifecycle:
         run_dir = await _start(writer)
         assert (run_dir / "manifest.json").exists()
         assert (run_dir / "config.json").exists()
-        assert RunTrace(run_dir).manifest.format_version == 4
+        assert RunTrace(run_dir).manifest.format_version == 5
 
     async def test_config_records_full_identity(self, writer):
         """A trace nothing can join back to its dataset is an orphan.
@@ -266,7 +289,7 @@ class TestTraceWriterLifecycle:
     async def test_record_step_commits_the_record_and_its_call(self, writer):
         run_dir = await _start(writer)
         await _call(writer, "what do you see?")
-        await writer.after_record_step(None, args=(_step(0),), kwargs={"observation": None})
+        await _seal(writer, None, args=(_step(0),), kwargs={"observation": None})
 
         trace = RunTrace(run_dir)
         assert trace.manifest.last_step_completed == 0
@@ -287,11 +310,11 @@ class TestTraceWriterLifecycle:
         run_dir = await _start(writer)
         for i in range(3):
             await _call(writer, f"step {i}")
-            await writer.after_record_step(None, args=(_step(i),), kwargs={})
+            await _seal(writer, None, args=(_step(i),), kwargs={})
 
         trace = RunTrace(run_dir)
         assert trace.manifest.last_step_completed == 2
-        assert writer._steps_written == 3
+        assert writer.health.committed_steps == 3
         assert [trace.llm_messages(i)[0].messages[0].text for i in range(3)] == [
             "step 0",
             "step 1",
@@ -307,7 +330,7 @@ class TestTraceWriterLifecycle:
             task=TaskObs(user_request="find the price"),
         )
         await _call(writer)
-        await writer.after_record_step(None, args=(_step(0),), kwargs={"observation": obs})
+        await _seal(writer, None, args=(_step(0),), kwargs={"observation": obs})
 
         png = run_dir / "observations" / "000_browser.screenshot.png"
         assert png.read_bytes() == _PNG
@@ -328,9 +351,7 @@ class TestTraceWriterLifecycle:
         Model = build_observation_model(frozenset({"loop.task"}))
         fragment = TaskObs(user_request="find the price")
         await _call(writer)
-        await writer.after_record_step(
-            None, args=(_step(0),), kwargs={"observation": Model(task=fragment)}
-        )
+        await _seal(writer, None, args=(_step(0),), kwargs={"observation": Model(task=fragment)})
 
         trace = RunTrace(run_dir)
         assert list(trace.manifest.steps[0].fragments) == ["loop.task"]
@@ -361,7 +382,7 @@ class TestTraceWriterLifecycle:
             task=TaskObs(user_request="find the price"),
         )
         await _call(writer)
-        await writer.after_record_step(None, args=(_step(0),), kwargs={"observation": obs})
+        await _seal(writer, None, args=(_step(0),), kwargs={"observation": obs})
 
         # No .png: nothing was captured, so no artifact is invented.
         assert not (run_dir / "observations" / "000_browser.screenshot.png").exists()
@@ -390,7 +411,7 @@ class TestTraceWriterLifecycle:
         for step, data in enumerate([_PNG, b"", _PNG]):
             await _call(writer, f"step {step}")
             obs = Model(screenshot=ScreenshotObs(image_bytes=data, viewport_width=1280))
-            await writer.after_record_step(None, args=(_step(step),), kwargs={"observation": obs})
+            await _seal(writer, None, args=(_step(step),), kwargs={"observation": obs})
 
         trace = RunTrace(run_dir)
         observations = run_dir / "observations"
@@ -408,9 +429,7 @@ class TestTraceWriterLifecycle:
     async def test_an_observation_that_is_not_a_fragment_model_is_not_recorded(self, writer):
         """The old ``NNN_observation.json`` fallback is gone; nothing could read it back."""
         run_dir = await _start(writer)
-        await writer.after_record_step(
-            None, args=(_step(0),), kwargs={"observation": {"dom": "<div/>"}}
-        )
+        await _seal(writer, None, args=(_step(0),), kwargs={"observation": {"dom": "<div/>"}})
 
         assert RunTrace(run_dir).manifest.steps[0].fragments == {}
         assert list((run_dir / "observations").iterdir()) == []
@@ -450,7 +469,7 @@ class TestTraceWriterLifecycle:
         trace = RunTrace(run_dir)
         assert trace.result is None
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert "result.json was not written" in (trace.manifest.incomplete_reason or "")
+        assert "execution closed without a result" in (trace.manifest.incomplete_reason or "")
 
     async def test_on_run_error_alone_closes_the_trace_out(self, writer):
         """A driver that dispatches only on_run_error: closed, with no result, so incomplete."""
@@ -483,7 +502,7 @@ class TestEveryCallOfAStep:
             await _call(writer, "first try", raises=refused, output_format=Reply)
         await _call(writer, "second try", returns=_completion("garbage"), output_format=Reply)
         await _call(writer, "third try", returns=_completion("click(3)"), output_format=Reply)
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         calls = RunTrace(run_dir).llm_messages(0)
         assert [(c.call, c.status, c.messages[0].text) for c in calls] == [
@@ -500,7 +519,7 @@ class TestEveryCallOfAStep:
         with pytest.raises(StructuredOutputValidationError):
             await _call(writer, raises=refused)
         # The Loop turns this into a parse error and surrenders a step.
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         (call,) = RunTrace(run_dir).llm_messages(0)
         assert call.status == "failed"
@@ -521,7 +540,7 @@ class TestEveryCallOfAStep:
         )
         with pytest.raises(ModelOutputTruncatedError):
             await _call(writer, raises=truncated)
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         (call,) = RunTrace(run_dir).llm_messages(0)
         assert call.failure is not None
@@ -552,7 +571,7 @@ class TestEveryCallOfAStep:
             await _call(writer, "attempt 2", raises=truncated, output_format=Reply)
         with pytest.raises(asyncio.CancelledError):
             await _call(writer, "attempt 3", raises=asyncio.CancelledError(), output_format=Reply)
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         trace = RunTrace(run_dir)
         calls = trace.llm_messages(0)
@@ -583,7 +602,7 @@ class TestEveryCallOfAStep:
         run_dir = await _start(writer)
         with pytest.raises(TimeoutError):
             await _call(writer, raises=TimeoutError("gateway gone"))
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         (call,) = RunTrace(run_dir).llm_messages(0)
         assert call.failure is not None
@@ -628,7 +647,7 @@ class TestEveryCallOfAStep:
 
         with pytest.raises(type(raises)):
             await writer.around_ainvoke(proceed=proceed, args=(_prompt("slow"),), kwargs={})
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         record = RunTrace(run_dir).step(0)
         assert record is not None
@@ -649,7 +668,7 @@ class TestEveryCallOfAStep:
         with pytest.raises(StructuredOutputValidationError):
             await writer.around_ainvoke(proceed=refused, args=(_prompt("a"),), kwargs={})
         await writer.around_ainvoke(proceed=answered, args=(_prompt("b"),), kwargs={})
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         record = RunTrace(run_dir).step(0)
         assert record is not None and record.llm_latency_ms is not None
@@ -665,7 +684,7 @@ class TestEveryCallOfAStep:
 
         await writer.around_ainvoke(proceed=proceed, args=([message],), kwargs={})
         message.content = "rewritten afterwards"
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         (call,) = RunTrace(run_dir).llm_messages(0)
         assert call.messages[0].text == "as sent"
@@ -684,7 +703,7 @@ class TestTheModelsReasoning:
             stop_reason="end_turn",
         )
         await _call(writer, returns=completion)
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         raw = json.loads((run_dir / "messages/000_call_00.json").read_text())
         assert raw["completion"]["thinking"] == "The third element is the search button."
@@ -698,7 +717,7 @@ class TestTheModelsReasoning:
     async def test_a_reply_without_reasoning_records_none(self, writer):
         run_dir = await _start(writer)
         await _call(writer, returns=_completion("click(3)"))
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         (call,) = RunTrace(run_dir).llm_messages(0)
         assert call.completion is not None
@@ -712,7 +731,7 @@ class TestTheRequestedSchema:
         for step in range(2):
             await _call(writer, f"step {step}", output_format=Reply)
             await _call(writer, f"step {step} again", output_format=Reply)
-            await writer.after_record_step(None, args=(_step(step),), kwargs={})
+            await _seal(writer, None, args=(_step(step),), kwargs={})
 
         trace = RunTrace(run_dir)
         (sha,) = trace.manifest.output_formats
@@ -741,7 +760,7 @@ class TestTheRequestedSchema:
     async def test_an_unstructured_call_references_none(self, writer):
         run_dir = await _start(writer)
         await _call(writer)
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         trace = RunTrace(run_dir)
         assert trace.llm_messages(0)[0].output_format is None
@@ -750,7 +769,7 @@ class TestTheRequestedSchema:
     async def test_a_schema_that_cannot_be_generated_does_not_fail_the_call(self, writer):
         run_dir = await _start(writer)
         await _call(writer, output_format=object)  # type: ignore[arg-type]
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
 
         assert RunTrace(run_dir).llm_messages(0)[0].output_format is None
 
@@ -799,7 +818,7 @@ class TestTrailingCalls:
     async def test_the_index_follows_the_last_committed_step(self, writer):
         run_dir = await _start(writer)
         await _call(writer, "step 0")
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
         # Step 1's call comes back; the run dies before record_step.
         await _call(writer, "step 1")
         await writer.on_run_end(result=_result(AgentDoneStatus.TIMEOUT))
@@ -843,94 +862,84 @@ class TestTrailingCalls:
     async def test_a_clean_run_records_no_trailing_calls(self, writer):
         run_dir = await _start(writer)
         await _call(writer)
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        await _seal(writer, None, args=(_step(0),), kwargs={})
         await writer.on_run_end(result=_result())
 
         trace = RunTrace(run_dir)
         assert trace.trailing_calls == []
-        assert trace.manifest.trailing == []
+        assert all(not entry.llm_calls for entry in trace.manifest.trailing)
         assert trace.manifest.status == TraceStatus.COMPLETE
 
-    async def test_a_step_committed_after_its_trailing_calls_numbers_after_them(self, writer):
-        """A driver that drains and keeps going must not collide with what it drained."""
+    async def test_explicit_flush_does_not_seal_an_unfinished_step(self, writer):
         run_dir = await _start(writer)
-        await _call(writer, "before the drain")
-        await writer.on_run_error(error=RuntimeError("transient"), partial_steps=[])
-        await _call(writer, "after the drain")
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
-
-        # Only the drained step continues the count; the next starts at 0.
-        await _call(writer, "next step")
-        await writer.after_record_step(None, args=(_step(1),), kwargs={})
-
+        await _call(writer, "before the flush")
+        await writer.flush()
+        await _call(writer, "after the flush")
+        await _seal(writer, None, args=(_step(0),), kwargs={})
+        await writer.on_run_end(result=_result())
         trace = RunTrace(run_dir)
-        assert [(c.call, c.messages[0].text) for c in trace.trailing_calls] == [
-            (0, "before the drain")
+        assert trace.trailing_calls == []
+        assert [(call.call, call.messages[0].text) for call in trace.llm_messages(0)] == [
+            (0, "before the flush"),
+            (1, "after the flush"),
         ]
-        assert [(c.call, c.messages[0].text) for c in trace.llm_messages(0)] == [
-            (1, "after the drain")
-        ]
-        assert [(c.call, c.messages[0].text) for c in trace.llm_messages(1)] == [(0, "next step")]
 
     async def test_calls_of_a_step_that_failed_to_commit_are_kept_for_run_end(
         self, writer, monkeypatch
     ):
         run_dir = await _start(writer)
         await _call(writer, "owed to the trace")
-        assert writer._wal is not None
+        assert writer.wal is not None
 
         def failing_commit(*args: Any, **kwargs: Any) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr(writer._wal, "commit_step", failing_commit)
-        with pytest.raises(RecordingFailedError, match="recording failed at step 0: OSError"):
-            await writer.after_record_step(None, args=(_step(0),), kwargs={})
+        monkeypatch.setattr(writer.wal, "commit_step", failing_commit)
+        await _seal(writer, None, args=(_step(0),), kwargs={})
         monkeypatch.undo()
         await writer.on_run_end(result=_result(AgentDoneStatus.ERROR))
 
         trace = RunTrace(run_dir)
-        (call,) = trace.trailing_calls
-        assert call.messages[0].text == "owed to the trace"
+        assert trace.trailing_calls == []
+        assert trace.manifest.missing_steps == [0]
         # The hole: the trace is incomplete, complete through no step.
         assert trace.manifest.status == TraceStatus.INCOMPLETE
         assert trace.manifest.complete_through == -1
-        assert (trace.manifest.incomplete_reason or "").startswith(
-            "recording failed at step 0: OSError: disk full"
-        )
+        assert "OSError: disk full" in (trace.manifest.incomplete_reason or "")
 
     async def test_a_step_the_agent_called_done_on_is_never_raised_over(self, writer, monkeypatch):
         """Its outcome is decided before it is recorded: the hole is the trace's, not the run's."""
         run_dir = await _start(writer)
-        await writer.after_record_step(None, args=(_step(0),), kwargs={})
-        assert writer._wal is not None
+        await _seal(writer, None, args=(_step(0),), kwargs={})
+        assert writer.wal is not None
 
         def failing_commit(*args: Any, **kwargs: Any) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr(writer._wal, "commit_step", failing_commit)
+        monkeypatch.setattr(writer.wal, "commit_step", failing_commit)
         done = _step(1, action_results=[ActionResult(success=True, is_done=True)])
-        await writer.after_record_step(None, args=(done,), kwargs={})  # not raised
-        with pytest.raises(RecordingFailedError, match="recording failed at step 2"):
-            await writer.after_record_step(None, args=(_step(2),), kwargs={})
+        await _seal(writer, None, args=(done,), kwargs={})  # not raised
+        await _seal(writer, None, args=(_step(2),), kwargs={})
         monkeypatch.undo()
         await writer.on_run_end(result=_result())
 
         manifest = RunTrace(run_dir).manifest
         assert (manifest.status, manifest.complete_through) == (TraceStatus.INCOMPLETE, 0)
         # The first hole is the reason; the later failure follows from it.
-        assert manifest.incomplete_reason == "recording failed at step 1: OSError: disk full"
+        assert manifest.missing_steps == [1, 2]
+        assert "OSError: disk full" in (manifest.incomplete_reason or "")
 
     async def test_the_terminal_state_lands_even_if_the_trailing_commit_fails(
         self, writer, monkeypatch
     ):
         run_dir = await _start(writer)
         await _call(writer)
-        assert writer._wal is not None
+        assert writer.wal is not None
 
         def failing_trailing(**kwargs: Any) -> None:
             raise OSError("disk hiccup")
 
-        monkeypatch.setattr(writer._wal, "commit_trailing", failing_trailing)
+        monkeypatch.setattr(writer.wal, "commit_trailing", failing_trailing)
         # Not raised: the run's outcome is decided; the trace says what it lost.
         await writer.on_run_end(result=_result(AgentDoneStatus.TIMEOUT))
 
@@ -945,17 +954,15 @@ class TestTrailingCalls:
     ):
         """Not ``writing`` forever — and not ``complete`` without the result it claims."""
         run_dir = await _start(writer)
-        assert writer._wal is not None
+        assert writer.wal is not None
 
         def failing_result(result: Any) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr(writer._wal, "write_result", failing_result)
+        monkeypatch.setattr(writer.wal, "write_result", failing_result)
         await writer.on_run_end(result=_result())
 
         trace = RunTrace(run_dir)
         assert trace.manifest.status == TraceStatus.INCOMPLETE
-        assert trace.manifest.incomplete_reason == (
-            "result.json could not be written: OSError: disk full"
-        )
+        assert trace.manifest.incomplete_reason == "OSError: disk full"
         assert trace.result is None

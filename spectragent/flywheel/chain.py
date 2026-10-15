@@ -357,6 +357,8 @@ class TokenLimitStop:
     stages_not_started: list[str]
     #: Every recorded call under the root whose provider reported no usage (counted, no tokens).
     calls_without_usage: list[str]
+    #: Run paths whose recording or selected scope leaves the token count partial.
+    recording_incomplete: dict[str, str] = field(default_factory=dict)
 
     def record(self) -> dict[str, Any]:
         return {
@@ -365,6 +367,7 @@ class TokenLimitStop:
             "token_limit": self.token_limit,
             "stages_not_started": self.stages_not_started,
             "calls_without_usage": self.calls_without_usage,
+            "recording_incomplete": self.recording_incomplete,
         }
 
     def describe(self) -> str:
@@ -380,7 +383,8 @@ class TokenLimitStop:
         return (
             f"the runs under the chain root recorded {self.tokens_used} tokens, reaching the token "
             f"limit of {self.token_limit} {where}; stages not started: {not_started}; "
-            f"{without} call(s) reported no usage{named}"
+            f"{without} call(s) reported no usage{named}; "
+            f"{len(self.recording_incomplete)} run(s) have incomplete recording coverage"
         )
 
 
@@ -391,6 +395,7 @@ class _TokenAccount:
     limit: int
     used: int
     calls_without_usage: list[str]
+    recording_incomplete: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def opened(cls, layout: ChainLayout, limit: int) -> _TokenAccount:
@@ -401,6 +406,11 @@ class _TokenAccount:
             limit=limit,
             used=sum(use.tokens for use in uses),
             calls_without_usage=[call for use in uses for call in use.calls_without_usage],
+            recording_incomplete={
+                key: reason
+                for use in uses
+                for key, reason in {**use.skipped, **use.incomplete}.items()
+            },
         )
 
     @property
@@ -415,6 +425,8 @@ class _TokenAccount:
         if use is not None:
             self.used += use.tokens
             self.calls_without_usage += use.calls_without_usage
+            self.recording_incomplete.update(use.skipped)
+            self.recording_incomplete.update(use.incomplete)
 
     def stop(self, stage: str | None) -> TokenLimitStop:
         return TokenLimitStop(
@@ -423,6 +435,7 @@ class _TokenAccount:
             token_limit=self.limit,
             stages_not_started=[],
             calls_without_usage=list(self.calls_without_usage),
+            recording_incomplete=dict(self.recording_incomplete),
         )
 
 

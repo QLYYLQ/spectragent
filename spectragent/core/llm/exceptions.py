@@ -62,7 +62,7 @@ class StructuredOutputValidationError(ModelProviderError):
 
     ``usage`` is whatever the call actually cost — the provider's own
     ``ChatInvokeUsage``, typed, because the Loop puts it straight into a
-    ``ChatInvokeCompletion`` and ``MetricsCollector`` adds it to the run's
+    ``ChatInvokeCompletion`` and the recording component adds it to the run's
     total. A failed validation is still billed, and dropping it here is
     how a run's token total came out lower than the bill.
     """

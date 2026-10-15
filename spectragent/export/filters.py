@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from spectragent.core.capabilities.browser.replay.replay_log import document_miss_total
-from spectragent.core.trace.errors import TraceSchemaError
+from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.models import TraceConfig
 from spectragent.core.trace.reader import RunTrace
 from spectragent.core.trace.sources import (
@@ -88,6 +88,10 @@ def open_sources(root: Path, patterns: Sequence[str]) -> tuple[list[Source], dic
         try:
             trace = RunTrace(directory)
             config = trace.config
+            trace.require_recording("trajectory", "observations", consumer="training export")
+        except RecordingScopeError as exc:
+            skipped[rel] = str(exc)
+            continue
         except TraceSchemaError as exc:
             logger.warning("export: skipping %s, it does not read back: %s", rel, exc)
             skipped[rel] = unreadable_reason(directory, exc)
@@ -142,6 +146,11 @@ def filtered_out(
         if found is None:
             return f"branch source {branch.source_run_id!r} not among the sources"
         origin = found
+        if branch.checkpoint_step - 1 > origin.trace.manifest.complete_through:
+            return (
+                f"branch source {origin.rel!r} is not complete through the prefix before "
+                f"checkpoint {branch.checkpoint_step}"
+            )
     outcome = agent_outcome_filtered_out(source.trace, filters.agent_outcome)
     if outcome is not None:
         return outcome

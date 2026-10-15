@@ -130,9 +130,12 @@ def _trace_dir_of(run: ComposedRun) -> Path | None:
     return None
 
 
-def _writes_a_trace(run: ComposedRun) -> bool:
-    """Whether some hook of *run* writes a trace: the duck type :func:`_trace_dir_of` reads."""
-    return any(hasattr(hook, "run_dir") for hook in run.hooks)
+def _records_usage(run: ComposedRun) -> bool:
+    """Whether a recording hook declares that it persists usage facts."""
+    return any(
+        hasattr(hook, "run_dir") and getattr(getattr(hook, "recording", None), "metrics", False)
+        for hook in run.hooks
+    )
 
 
 class PreflightError(RuntimeError):
@@ -297,12 +300,20 @@ class BenchmarkRunSummary:
     @property
     def tokens(self) -> int:
         """Every task's recorded tokens (only counted with a token limit)."""
-        return sum(o.usage.tokens for o in self.outcomes if o.usage is not None)
+        return sum(
+            o.usage.tokens
+            for o in self.outcomes
+            if o.usage is not None and o.usage.tokens is not None
+        )
 
     @property
     def calls(self) -> int:
         """Every task's recorded model calls (only counted with a token limit)."""
-        return sum(o.usage.calls for o in self.outcomes if o.usage is not None)
+        return sum(
+            o.usage.calls
+            for o in self.outcomes
+            if o.usage is not None and o.usage.calls is not None
+        )
 
     @property
     def calls_without_usage(self) -> list[str]:
@@ -379,7 +390,11 @@ class BenchmarkRunSummary:
                 detail = f" infrastructure failure: {failure}"
             else:
                 detail = ""
-            tokens = f", {outcome.usage.tokens} tokens" if outcome.usage is not None else ""
+            tokens = (
+                f", {outcome.usage.tokens} tokens"
+                if outcome.usage is not None and outcome.usage.tokens is not None
+                else ""
+            )
             lines.append(
                 f"  {outcome.task_id}: {outcome.agent_done} "
                 f"({outcome.elapsed_ms} ms, trace={where}{tokens}){detail}"
@@ -495,6 +510,12 @@ def _trace_ledger(
     if count_tokens:
         try:
             usage = recorded_usage(trace)
+            if not usage.measured:
+                usage_note = "the recording plan did not select metrics"
+            elif not usage.recording_complete:
+                usage_note = "recording coverage is incomplete; tokens are a known subtotal"
+                if usage.missing_steps:
+                    usage_note += f" (missing steps: {', '.join(map(str, usage.missing_steps))})"
         except TraceSchemaError as exc:
             usage_note = f"a recorded model call does not read back: {exc}"
     return _TraceLedger(
@@ -514,10 +535,12 @@ def _model_call_that_ended(trace: RunTrace, result: Any) -> str | None:
     policy = [record for record in trace.step_records if record.origin == "policy"]
     if not policy or policy[-1].error_phase != _MODEL_CALL_PHASE:
         return None
+    if any(step > policy[-1].step for step in trace.manifest.missing_steps):
+        return None
     failed = [
-        call.failure
-        for call in trace.llm_messages(policy[-1].step)
-        if call.status == "failed" and call.failure is not None
+        call
+        for call in trace.call_metrics(policy[-1].step)
+        if call.status == "failed" and call.error is not None
     ]
     if not failed or failed[-1].error == ModelOutputTruncatedError.__name__:
         return None
@@ -728,7 +751,8 @@ class BenchmarkRunner:
                 break
             if self._token_limit is None:
                 continue
-            tokens += outcome.usage.tokens if outcome.usage is not None else 0
+            if outcome.usage is not None and outcome.usage.tokens is not None:
+                tokens += outcome.usage.tokens
             logger.info(
                 "BenchmarkRunner: %s recorded %s tokens; the sweep's total is %d of %d",
                 task_id,
@@ -829,11 +853,11 @@ class BenchmarkRunner:
             agent_id = self._agent_id or run.ids("agent")[0]
             runtime = AgentRuntime.for_agent(run, agent_id, env_id=self._env_id)
             runtime.prepare(task_id=task_id, loop_inputs=context.loop, env_context=context.env)
-            if self._token_limit is not None and not _writes_a_trace(run):
+            if self._token_limit is not None and not _records_usage(run):
                 raise ValueError(
                     "a token limit counts the tokens each task's trace records, and this "
-                    "configuration writes no trace (no hook exposes a run directory): add a "
-                    "trace_writer hook, or run without a token limit"
+                    "configuration writes no trace with metrics: add a trace_writer hook "
+                    "with recording.metrics enabled, or run without a token limit"
                 )
         except Exception as exc:
             raise PreflightError(task_id, exc) from exc

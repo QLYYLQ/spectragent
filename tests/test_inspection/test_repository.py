@@ -5,9 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from spectragent.core.llm.views import ChatInvokeCompletion
+from spectragent.core.trace.encoding import PendingLLMCall, encode_call_metrics
 from spectragent.core.trace.models import TraceConfig, TraceStatus
 from spectragent.core.trace.wal import WALWriter
 from spectragent.inspection import RepositoryError, open_repository
+from spectragent.schemas.recording import RecordingPlan
+from spectragent.schemas.step_record import StepRecord
 from tests._helpers.trace_builder import (
     PNG_BYTES,
     agent_result,
@@ -211,3 +215,31 @@ def test_different_judge_configurations_are_not_aggregated(tmp_path: Path) -> No
     report = open_repository(tmp_path).compare_groups(hashes[0], hashes[1], "judge")
     assert report["counts"]["incompatible_evaluator"] == 1
     assert report["counts"]["both_passed"] == 0
+
+
+def test_light_recording_stays_inspectable_and_declares_omitted_trajectory(tmp_path: Path) -> None:
+    wal = WALWriter(tmp_path, "light")
+    wal.init_run(TraceConfig(recording=RecordingPlan(trajectory=False, observations=False)))
+    pending = PendingLLMCall(None, capture_trajectory=False)
+    pending.complete(ChatInvokeCompletion(completion="done", usage=None))
+    wal.commit_step(2, StepRecord(step=2), call_metrics=[encode_call_metrics(2, 0, pending)])
+    wal.finalize(TraceStatus.COMPLETE)
+    repo = open_repository(tmp_path)
+    run = repo.run("light")
+    assert run["summary"]["total_steps"] == 1
+    assert run["summary"]["llm_calls"] == 1
+    assert run["summary"]["missing_steps"] == [0, 1]
+    assert run["summary"]["usage_complete"] is False
+    step = repo.step("light", 2)
+    assert step["calls"] == [] and step["fragments"] == {}
+    assert step["recording"]["trajectory"] is False
+    assert step["call_metrics"][0]["step"] == 2
+
+
+def test_disabled_statistics_are_not_shown_as_zero_calls(tmp_path: Path) -> None:
+    wal = WALWriter(tmp_path, "unmeasured")
+    wal.init_run(TraceConfig(recording=RecordingPlan(metrics=False)))
+    wal.finalize(TraceStatus.COMPLETE)
+    row = open_repository(tmp_path).list_runs()[0]
+    assert row["llm_calls"] is None and row["tokens"] is None
+    assert row["usage_measured"] is False

@@ -78,7 +78,7 @@ from spectragent.core.capabilities.browser.replay.replay_log import (
 )
 from spectragent.core.capabilities.browser.settle import PageSettle, recorded_settle
 from spectragent.core.trace.digest import TreeDigest, tree_digest
-from spectragent.core.trace.errors import TraceSchemaError
+from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.models import (
     CommittedFile,
     RecordedLLMCall,
@@ -256,6 +256,8 @@ class Run:
         """
         if step is None:
             return TRAILING
+        if not self.config.recording.trajectory:
+            return "(actions not recorded)"
         record = self.step(step)
         if record is not None and record.origin == "terminal":
             return TERMINAL
@@ -413,6 +415,7 @@ def empty_branch(run: Run) -> str | None:
     :data:`EMPTY_ENDED_BEFORE_DECISION` when there is no such step or it
     failed before the model was asked (restoration, observation, prompt).
     """
+    run.trace.require_recording("trajectory", "errors", consumer="branch action analysis")
     checkpoint = run.checkpoint or 0
     policy = [r for r in run.steps if r.origin == "policy" and r.step >= checkpoint]
     if any(record.actions for record in policy):
@@ -1197,11 +1200,14 @@ def branch_coverage(branch: RoleRuns) -> BranchCoverage:
     for run in branch.runs:
         try:
             decisions = after_checkpoint(run)
+            reason = empty_branch(run)
+        except RecordingScopeError as exc:
+            skipped[run.rel] = str(exc)
+            continue
         except EVIDENCE_ERRORS as exc:
             skipped[run.rel] = f"its replay log does not read back ({type(exc).__name__})"
             continue
         branches += 1
-        reason = empty_branch(run)
         if reason is not None:
             empty[reason] += 1
             continue
@@ -1278,9 +1284,10 @@ def _determinism(role: RoleRuns) -> tuple[Determinism, set[str]]:
             continue
         terminal = next((r.step for r in run.steps if r.origin == "terminal"), None)
         try:
+            run.trace.require_recording("trajectory", "observations", consumer="replay determinism")
             final = _screenshot_sha256(run, terminal)
             restored = _screenshot_sha256(run, branch.checkpoint_step)
-        except _UnreadableScreenshot as exc:
+        except (_UnreadableScreenshot, RecordingScopeError) as exc:
             skipped[run.rel] = str(exc)
             continue
         terminals.setdefault(
@@ -1531,6 +1538,9 @@ def privacy(chain: ChainRuns, planted: Sequence[Planted]) -> Privacy:
         for run in runs.runs:
             try:
                 calls = [request_texts(call) for call in recorded_calls(run.trace)]
+            except RecordingScopeError as exc:
+                skipped[run.pointer] = str(exc)
+                continue
             except (*EVIDENCE_ERRORS, OSError) as exc:
                 skipped[run.pointer] = (
                     f"a recorded model call does not read back ({type(exc).__name__})"
@@ -1568,6 +1578,8 @@ class TokenUse(_Model):
     calls: int
     calls_without_usage: list[str]
     skipped: dict[str, str]
+    #: Runs with readable subtotals but incomplete persisted measurement coverage.
+    incomplete: dict[str, str] = {}
 
 
 def token_use(runs: Iterable[Run], skipped: Mapping[str, str] | None = None) -> TokenUse:
@@ -1575,6 +1587,7 @@ def token_use(runs: Iterable[Run], skipped: Mapping[str, str] | None = None) -> 
     left_out = dict(skipped or {})
     counted = tokens = calls = 0
     without: list[str] = []
+    incomplete: dict[str, str] = {}
     for run in runs:
         try:
             usage = recorded_usage(run.trace)
@@ -1583,9 +1596,17 @@ def token_use(runs: Iterable[Run], skipped: Mapping[str, str] | None = None) -> 
                 f"a recorded model call does not read back ({type(exc).__name__})"
             )
             continue
+        if usage.tokens is None or usage.calls is None:
+            left_out[run.pointer] = "the recording plan did not select metrics"
+            continue
         counted += 1
         tokens += usage.tokens
         calls += usage.calls
+        if not usage.recording_complete:
+            detail = "recording coverage is incomplete; counts are known subtotals"
+            if usage.missing_steps:
+                detail += f" (missing steps: {', '.join(map(str, usage.missing_steps))})"
+            incomplete[run.pointer] = detail
         without += [f"{run.pointer}: {call.describe()}" for call in usage.without_usage]
     return TokenUse(
         runs=counted,
@@ -1593,6 +1614,7 @@ def token_use(runs: Iterable[Run], skipped: Mapping[str, str] | None = None) -> 
         calls=calls,
         calls_without_usage=without,
         skipped=dict(sorted(left_out.items())),
+        incomplete=dict(sorted(incomplete.items())),
     )
 
 
@@ -1769,7 +1791,15 @@ def sites(
         recorded = [run for run in record.runs if run.site == site]
         statuses = Counter(run.trace.manifest.status.value for run in recorded)
         outcomes = Counter(agent_outcome(run) for run in recorded)
-        failed0 = sum(1 for run in recorded if _failed_at_step0(run))
+        diagnosed = [
+            run
+            for run in recorded
+            if run.config.recording.errors and 0 not in run.trace.manifest.missing_steps
+        ]
+        for run in recorded:
+            if run not in diagnosed:
+                skipped[run.pointer] = "step errors were not recorded; failure counts omit this run"
+        failed0 = sum(1 for run in diagnosed if _failed_at_step0(run))
         branches = [run for run in chain.role("branch").runs if run.site == site]
         rate = restoration_rate(run.trace for run in branches)
         clean = counted = documents = others = rewrites = 0
@@ -1779,6 +1809,10 @@ def sites(
                     continue
                 try:
                     decisions = run.decisions
+                    acted = role != "branch" or empty_branch(run) is None
+                except RecordingScopeError as exc:
+                    skipped[run.pointer] = str(exc)
+                    continue
                 except EVIDENCE_ERRORS as exc:
                     skipped[run.pointer] = (
                         f"its replay log does not read back ({type(exc).__name__})"
@@ -1787,7 +1821,7 @@ def sites(
                 documents += sum(w for _s, e, w in decisions if e.diverged)
                 others += sum(w for _s, e, w in decisions if e.kind == "miss" and not e.diverged)
                 rewrites += sum(w for _s, e, w in decisions if e.callback_rewrite is not None)
-                if role == "branch" and empty_branch(run) is None:
+                if role == "branch" and acted:
                     counted += 1
                     clean += int(not any(e.diverged for _s, e, _w in after_checkpoint(run)))
         site_fidelity = fidelity.by_site.get(site)
@@ -1802,7 +1836,7 @@ def sites(
             record_status=_counts(statuses),
             record_outcome=_counts(outcomes),
             record_failed_at_step0=failed0,
-            record_model_failures=sum(1 for run in recorded if failed_on_model_call(run)),
+            record_model_failures=sum(1 for run in diagnosed if failed_on_model_call(run)),
             blocked=site in blocked,
             same_path=same_path,
             restoration=ratio(rate.ok, rate.total, empty="no restoration check on this site"),
@@ -1849,6 +1883,7 @@ class DuplicateBranches(_Model):
     rate: Ratio
     #: The first export's ``duplicates`` (its samples flagged ``duplicate_of``), when it exists.
     dataset_duplicates: int | None
+    skipped: dict[str, str] = {}
 
 
 def duplicate_branches(
@@ -1869,11 +1904,17 @@ def duplicate_branches(
             groups.setdefault(provenance.branch_group_id, []).append(run)
     duplicates = branches = not_compared = 0
     compared: list[Run] = []
+    skipped: dict[str, str] = {}
     for members in groups.values():
         seen: set[str] = set()
         for run in sorted(
             members, key=lambda r: r.config.branch.branch_index if r.config.branch else 0
         ):
+            try:
+                run.trace.require_recording("trajectory", consumer="duplicate branch analysis")
+            except RecordingScopeError as exc:
+                skipped[run.rel] = str(exc)
+                continue
             branches += 1
             record = run.step(run.checkpoint or 0)
             if record is None or not record.actions:
@@ -1896,6 +1937,7 @@ def duplicate_branches(
             empty="no branch whose checkpoint step ran an action" if branches else "no branch run",
         ),
         dataset_duplicates=dataset_manifest.duplicates if dataset_manifest is not None else None,
+        skipped=skipped,
     )
 
 
@@ -1982,6 +2024,7 @@ _CATEGORY_OF_KIND: dict[str, str] = {
     "step": "steps",
     "extra_index": "steps",
     "llm_call": "messages",
+    "call_metrics": "metrics",
     "output_schema": "messages",
     "prompt_image": "messages:images",
 }
@@ -2326,10 +2369,14 @@ def branch_document_misses(branch: RoleRuns) -> BranchDocumentMisses:
     for run in branch.runs:
         try:
             decisions = after_checkpoint(run)
+            empty = empty_branch(run)
+        except RecordingScopeError as exc:
+            skipped[run.rel] = str(exc)
+            continue
         except EVIDENCE_ERRORS as exc:
             skipped[run.rel] = f"its replay log does not read back ({type(exc).__name__})"
             continue
-        if empty_branch(run) is not None:
+        if empty is not None:
             continue
         counted.append(run)
         for _step, entry, weight in decisions:

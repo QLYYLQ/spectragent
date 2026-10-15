@@ -1,7 +1,7 @@
 """End-to-end acceptance for the run lifecycle and complete step records: a trace you can actually evaluate.
 
 Drives a real ``AgentRuntime`` with the real ``TraceWriter`` and
-``MetricsCollector``, then reads the result back through ``RunTrace`` —
+then reads the result back through ``RunTrace`` —
 the same way an Evaluator will. Every assertion here corresponds to
 something that was broken or absent on disk across all 14 legacy traces.
 """
@@ -21,7 +21,6 @@ from spectragent.core.capabilities.browser.observations import (
     ScreenshotObs,
 )
 from spectragent.core.environments._registrar import EnvironmentBase
-from spectragent.core.hooks.metrics_collector import MetricsCollector
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.llm.exceptions import (
     ModelOutputTruncatedError,
@@ -29,7 +28,7 @@ from spectragent.core.llm.exceptions import (
 )
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 from spectragent.core.loops import ReactLoop
-from spectragent.core.loops._loop_fragments import LOOP_FRAGMENT_KEYS
+from spectragent.core.loops._registrar import AgentLoopBase
 from spectragent.core.loops.errors import ParseError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.models import TraceStatus
@@ -96,6 +95,7 @@ class _Agent:
     exercises the binding, and cannot see it drop the prefix.
     """
 
+    __execution_limit_fields__ = frozenset()
     __wiring__ = {
         "action": ("action", ["done", "click"]),
         "observation": (
@@ -108,7 +108,7 @@ class _Agent:
         self._plan = plan
         self._i = 0
 
-    def build_react_prompt(self, obs):
+    async def build_react_prompt(self, obs, *, context):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out):
@@ -158,72 +158,39 @@ class _Memory:
         self.messages.clear()
 
 
-class _SlowLoop:
-    loop_id = "trace_e2e_slow"
-    __required_slots__: set[str] = set()
-    __optional_slots__: set[str] = set()
-    __requires_env__ = True
-    __loop_fragments__ = LOOP_FRAGMENT_KEYS
+class _SlowLoop(AgentLoopBase):
+    """An execution step that remains active until Runtime cancels it."""
 
-    def _validate_slots(self, agent):
-        pass
+    __abstract__ = True
+    __registry_key__ = "trace_e2e_slow"
 
-    def check_loop_inputs(self, inputs):
-        pass
+    async def _execute(self, agent, task, *, ctx, **kwargs):
+        return await ctx["step_executor"].execute_step(ctx, 0, task=task)
 
-    def weave(self, agent, **deps):
-        async def run(task, **kw):
-            await asyncio.sleep(100)
-
-        agent.run = run
-        return agent
+    async def execute_step(self, context, step_idx, *, task):
+        await asyncio.sleep(100)
 
 
-class _StallAfterLLMLoop:
-    """Gets an answer, then dies before surrendering the step.
+class _StallAfterLLMLoop(_SlowLoop):
+    """Gets an answer, then is cancelled before surrendering the step."""
 
-    The real timeout shape: ``around_ainvoke`` has already recorded a
-    prompt+completion when ``asyncio.wait_for`` cancels the loop, so
-    ``record_step`` — the commit point — is never reached.
-    """
+    __abstract__ = True
+    __registry_key__ = "trace_e2e_stall"
 
-    loop_id = "trace_e2e_stall"
-    __required_slots__: set[str] = set()
-    __optional_slots__: set[str] = set()
-    __requires_env__ = True
-    __loop_fragments__ = LOOP_FRAGMENT_KEYS
-
-    def _validate_slots(self, agent):
-        pass
-
-    def check_loop_inputs(self, inputs):
-        pass
-
-    def weave(self, agent, **deps):
-        llm = deps["llm"]
-
-        async def run(task, **kw):
-            await llm.ainvoke([{"role": "user", "content": task}])
-            await asyncio.sleep(100)  # e.g. an action that never returns
-
-        agent.run = run
-        return agent
+    async def execute_step(self, context, step_idx, *, task):
+        await context["llm"].ainvoke([{"role": "user", "content": task}])
+        await asyncio.sleep(100)
 
 
-class _CrashAfterLLMLoop(_StallAfterLLMLoop):
-    """Same window, closed by an exception instead of the timeout."""
+class _CrashAfterLLMLoop(_SlowLoop):
+    """Same unfinished-step window, closed by an execution exception."""
 
-    loop_id = "trace_e2e_crash"
+    __abstract__ = True
+    __registry_key__ = "trace_e2e_crash"
 
-    def weave(self, agent, **deps):
-        llm = deps["llm"]
-
-        async def run(task, **kw):
-            await llm.ainvoke([{"role": "user", "content": task}])
-            raise ValueError("could not parse that completion")
-
-        agent.run = run
-        return agent
+    async def execute_step(self, context, step_idx, *, task):
+        await context["llm"].ainvoke([{"role": "user", "content": task}])
+        raise ValueError("could not parse that completion")
 
 
 class _HangingLLM:
@@ -241,8 +208,7 @@ class _HangingLLM:
 
 def _run_with_hooks(tmp_path, *, plan, loop=None, hooks=None, llm=None, env=None, agent=None):
     writer = TraceWriter(trace_dir=str(tmp_path / "traces"))
-    # Declared in the order that used to zero out every result.json.
-    hook_list = hooks if hooks is not None else [writer, MetricsCollector()]
+    hook_list = hooks if hooks is not None else [writer]
     run = make_run(
         agent=agent or _Agent(plan),
         loop=loop or ReactLoop(max_steps=3),
@@ -711,12 +677,14 @@ class TestEveryCallOfAStepThroughTheRealLoop:
 
 
 class TestNoHooksConfigured:
-    """Usage must be real even with no hook at all — the documented path."""
+    """Disabled recording leaves usage and call counts explicitly unmeasured."""
 
-    async def test_loop_measures_usage_without_hooks(self, tmp_path):
+    async def test_no_recorder_leaves_usage_unmeasured(self, tmp_path):
         run, _ = _run_with_hooks(tmp_path, plan=["done"], hooks=[])
         result = await AgentRuntime.for_agent(run, AGENT_ID).execute(
             "find the price", task_id="t-1", timeout=10
         )
-        assert result.metrics.usage is not None
-        assert result.metrics.usage.total_tokens > 0
+        assert result.metrics.usage is None
+        assert result.metrics.llm_calls is None
+        assert result.metrics.usage_coverage is None
+        assert result.metrics.execution_ms is not None

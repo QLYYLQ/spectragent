@@ -213,7 +213,7 @@ Two guards keep it: the AST scan above, and the 19-row behaviour table at
 registered key and asserts `status_code == 422` and a usable `raw_output`.
 
 **A failing call must still be visible to hooks.** An exception fires no `after` advice,
-so both hooks also intercept `around` (defect F17):
+so the unified recording hook intercepts `around`:
 
 - `TraceWriter.around_ainvoke` (`hooks/trace_writer.py:303`, `Intercept` at `:92`) is
   the only place a call is recorded: registered before `proceed()`, then settled as
@@ -221,10 +221,10 @@ so both hooks also intercept `around` (defect F17):
   a step gets its own `messages/NNN_call_KK.json`, refused replies and truncations
   included — exactly the steps a researcher most wants to read — and LLM wall time
   accumulates in a `finally`.
-- `MetricsCollector.around_ainvoke` (`hooks/metrics_collector.py:126`) counts **only**
-  the failures the provider billed, `StructuredOutputValidationError` and
-  `ModelOutputTruncatedError` — a 429 or a dead socket carries no usage and no reply,
-  and staying invisible is the honest answer for a call that never happened.
+- The same invocation ledger counts every attempted call and retains provider-reported
+  usage, including billed failures. Missing usage stays missing and explicit zero stays
+  zero; independent lightweight call metrics are readable without full message files.
+
 
 The failure is recorded as a `CallFailure`: `{error, detail}`, plus `raw_output`,
 `partial_output`, `stop_reason` and `usage` only when the exception carries them

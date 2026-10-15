@@ -1,54 +1,17 @@
-"""TraceWriter — RuntimeHook for full WAL-based trace persistence.
+"""One run-owned fact ledger with bounded, execution-independent persistence.
 
-Two intercepts, one job each:
-
-- ``around`` on ``llm.ainvoke`` is the **only** place an LLM call is
-  recorded. The call is registered *before* ``proceed()`` — prompt,
-  requested reply schema, start time — and its outcome filled in after:
-  ``completed``, ``failed`` (an ``Exception``) or ``cancelled`` (a
-  ``BaseException`` such as ``CancelledError``). ``after`` advice never
-  sees a call that raised, and registering only in ``except Exception``
-  would lose the prompt of exactly the call a timeout or a Ctrl-C cut off.
-- ``after`` on ``loop.record_step`` is the **commit point**: the moment the
-  Loop surrenders a finished :class:`StepRecord`. Everything the step
-  consists of is known then — the observation the agent actually saw, every
-  LLM call it made, the actions and what they returned — and it goes to
-  disk in one ``WALWriter.commit_step``. Commit on ``llm.ainvoke`` would be
-  the wrong event twice over: it fires before the actions exist, and once
-  per call rather than once per step.
-
-A run that ends between a call and the step (timeout, cancellation, crash)
-never reaches that commit point, so run end commits whatever calls are still
-registered as *trailing* calls instead of dropping them.
-
-**The trace's own ledger.** The manifest says whether the trace is a
-complete record of the run — ``writing``, ``complete``, or ``incomplete``
-with the reason and the step it is complete through — never how the agent
-ended: that is ``result.json``. A step that cannot be recorded is a hole: the
-trace is incomplete from it on, and the run stops there unless the agent had
-already called done on that step. Nothing that fails at close-out is raised
-over the run's outcome (``docs/architecture_design.md`` §4.6, §5.4).
-
-**Environment evidence.** With a non-empty ``archive`` this hook is the
-run's archive consumer
-(:class:`~spectragent.core.archive.protocols.ArchiveConsumer`): at each
-commit point it pulls ``collect_archive()`` from the *raw* environment
-``on_run_start`` handed it, and the batch rides that step's commit under
-``env/``; once more at close-out (``docs/architecture_design.md`` §4.6,
-§5.2–§5.4). A collection that fails is a hole like any other — the archive
-was explicitly requested, and a silently incomplete one poisons replay and
-branching, so nothing is collected or committed as if it were whole after
-it. With an empty ``archive`` none of that exists: no environment reference
-is kept and no archive method is ever called.
-
-Registered via conscribe as hook_id="trace_writer". See
-``docs/architecture_design.md`` §4.6 and §5.4.
+Snapshots and segment handoff are blocking AOP work. WAL commits and retries
+belong to the recorder task; no failed write controls the Agent's next step.
 """
 
+import asyncio
 import logging
+import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, NamedTuple
 
@@ -65,7 +28,8 @@ from spectragent.core.archive import (
 )
 from spectragent.core.archive.privacy import RedactionLedger, redact_value
 from spectragent.core.hooks._registrar import HookBase
-from spectragent.core.step_recorder import RecordingFailedError
+from spectragent.core.llm.call_context import RunCallContext
+from spectragent.core.llm.views import ChatInvokeUsage
 from spectragent.core.trace.encoding import (
     EncodedOutputFormat,
     PendingLLMCall,
@@ -74,6 +38,7 @@ from spectragent.core.trace.encoding import (
     archive_step_path,
     check_relative_path,
     encode_archive_file,
+    encode_call_metrics,
     encode_llm_calls,
     encode_observation,
     encode_output_format,
@@ -86,207 +51,187 @@ from spectragent.core.trace.models import (
     TraceConfig,
     TraceNegotiation,
     TraceStatus,
+    recorded_prefix,
 )
 from spectragent.core.trace.redaction import redact_config, trace_safe
 from spectragent.core.trace.wal import WALWriter
+from spectragent.schemas.agent_result import AgentUsage
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.recording import (
+    ExecutionError,
+    RecordingHealth,
+    RecordingPlan,
+    RecordingProblem,
+    UsageCoverage,
+)
 from spectragent.schemas.restoration import BranchProvenance
-from spectragent.schemas.step_record import StepRecord
+from spectragent.schemas.step_record import StepRecord, TokenUsage
 
 logger = logging.getLogger(__name__)
-
-#: Run-record version table: capability id → (latest committed version, its
-#: sha256, the number of the collection it came from — see :class:`_Collected`).
 _RunVersions = dict[str, tuple[int, str, int]]
 
 
 class _Collected(NamedTuple):
-    """One collection's checked files, numbered in the order the collections happened.
-
-    The number is what keeps run records in capture order. Commits do not
-    follow it: a batch whose step commit failed is committed at close-out,
-    after batches collected later. A run record from such an owed batch is
-    older than one a later collection already committed, and committing it
-    as the next version would make the stale fingerprint the latest.
-    """
-
     number: int
     files: tuple[ArchiveFile, ...]
 
 
-class _TraceWriterReceptors:
-    """Annotation-only declaration of the ``archive`` receptor slot.
+@dataclass
+class RecordingSegment:
+    """A sealed execution segment; retries keep all original identities."""
 
-    ``ConfigComposer`` reads the *class* annotation to decide between list,
-    dict and single injection (``composer._slot_annotation``), and the
-    receptor must not be a dataclass field (``af-add-a-receptor`` §6) — so the
-    annotation lives on this plain mixin, the ``_BrowserReceptors`` shape.
+    step: int | None
+    record: StepRecord | None
+    fragments: list[Any]
+    calls: tuple[PendingLLMCall, ...]
+    archive: _Collected | None
+    capture_ms: float = 0.0
+    attempts: int = 0
+    content_committed: bool = False
+    timing_committed: bool = False
+    trailing_index: int | None = None
+    timing_index: int | None = None
+    work_ms: float = 0.0
+    archive_versions: _RunVersions | None = None
+    segment_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+
+@dataclass
+class RecordingStorage:
+    """One run's single-writer state, retained by an in-flight daemon I/O job.
+
+    A later execution owns a different instance. A timed-out system call can
+    therefore never discover or mutate the next execution's state.
     """
 
+    wal: WALWriter | None
+    config: TraceConfig | None
+    config_hash: str
+    plan: RecordingPlan
+    stopped: threading.Event
+    run_versions: _RunVersions = field(default_factory=dict)
+    unconfirmed_archive: list[tuple[int | None, str, _RunVersions]] = field(default_factory=list)
+
+
+class _TraceWriterReceptors:
     archive: list[ArchiverBase]
 
 
 class TraceWriter(_TraceWriterReceptors, HookBase):
-    """Full-trace WAL persistence hook.
-
-    At run start it writes the snapshot of *how the run was configured* —
-    identity, the redacted resolved config, the negotiation result — and
-    at each step it commits what the run *did*. The configuration half is
-    handed to it as values by ``AgentRuntime``: this hook derives nothing
-    about how the run was set up, it only chooses what of it to withhold.
-
-    Each LLM call is registered in ``around_ainvoke`` before it goes out
-    and committed with its step — every call of the step, in start order —
-    when the Loop hands over its ``StepRecord`` (``after_record_step``).
-    The ``around`` advice is also the only vantage point that sees a call's
-    start, its end and its failure, so it is where a step's model wait is
-    measured (:meth:`_stamp_timings`).
-
-    A run that dies before surrendering a step (timeout, cancellation,
-    crash) commits the calls it still holds as *trailing* calls at run end
-    (``WALWriter.commit_trailing``) instead of dropping them.
-
-    With a non-empty :attr:`archive` it also records environment evidence:
-    see the module docstring and ``docs/architecture_design.md`` §5.4.
-
-    The explicit constructor initializes recording state and exposes named
-    ``Annotated`` knobs. ``archive`` is a receptor wired from YAML; its
-    source annotation is on :class:`_TraceWriterReceptors`.
-
-    **YAML** (``docs/architecture_design.md`` §4.2.1, §5.4): the ``archive:``
-    list is the one switch for archiving. Written, it builds the archivers in
-    place; omitted, ``null`` or ``[]``, nothing is recorded. A top-level
-    ``archiver:`` section is refused at compose time, with a message naming
-    ``hook[trace_writer].archive`` (``ArchiverRegistrar.inline_only``).
-    """
+    """Collect once, persist selected facts, report write health separately."""
 
     __registry_key__ = "trace_writer"
-    # The run's archive is the trace hook's: what a run records is a per-run
-    # choice (the user's ruling of 2026-10-09, AGENTS.md §2.5), so the receptor is here, never on an agent.
     __wiring__: ClassVar[dict[str, Any]] = {"archive": "archiver"}
-    # Archiving has one switch (the user's ruling of 2026-10-13): the list is
-    # filled from this hook's own block or not at all, never adopted from a
-    # top-level ``archiver:`` section, which ``ConfigComposer`` therefore refuses.
     __intercepts__ = [
-        # The one recording point for LLM calls — see :meth:`around_ainvoke`.
         Intercept("ainvoke", role="llm", advice="around"),
-        Intercept("record_step", role="loop", advice="after"),
+        Intercept("execute_step", role="loop", advice="around"),
+        Intercept("observe_terminal", role="loop", advice="around"),
+        Intercept("record_step", role="loop", advice="around"),
     ]
-
-    # Serializing must happen after every enricher has finished mutating
-    # the result.
     priority = HookBase.PRIORITY_PERSIST
 
     def __init__(
         self,
         trace_dir: Annotated[
-            str,
-            trace_safe(
-                "output location — where this trace already is, not a credential",
-                default="traces",
-                description=(
-                    "Base directory for trace output. Each run lands in "
-                    "``<trace_dir>/<run_id>``. Relative paths resolve against "
-                    "the process working directory."
-                ),
-            ),
+            str, trace_safe("record output directory", default="traces")
         ] = "traces",
         record_secrets: Annotated[
             bool,
             Field(
                 default=False,
-                description=(
-                    "Record the resolved configuration verbatim, including "
-                    "api keys, CDP URLs carrying a token, session tokens and "
-                    "proxy credentials. Off by default: closed-set values and "
-                    "numbers are recorded as they are, a free-form string only "
-                    "when its field is marked trace-safe, every other one lands "
-                    'as ``"<omitted>"``. Turn it on for a local debugging run '
-                    "whose trace directory will not be shared — the trace "
-                    "records that you did (``config.secrets_recorded``)."
-                ),
+                description="Persist configured secrets verbatim; defaults to redaction.",
             ),
         ] = False,
+        recording: Annotated[
+            RecordingPlan | None,
+            Field(
+                description="Facts selected before capture and persisted; omitted channels are not damaged records.",
+            ),
+        ] = None,
+        pending_segments: Annotated[
+            int,
+            Field(
+                default=64,
+                ge=1,
+                description="Maximum sealed segments awaiting persistence; overflow reports lost coverage.",
+            ),
+        ] = 64,
+        write_retries: Annotated[
+            int,
+            Field(
+                default=2,
+                ge=0,
+                description="Additional background write attempts per sealed segment.",
+            ),
+        ] = 2,
+        retry_delay: Annotated[
+            float,
+            Field(
+                default=0.05,
+                ge=0,
+                description="Seconds between background write attempts; never awaited by execution.",
+            ),
+        ] = 0.05,
+        close_timeout: Annotated[
+            float,
+            Field(
+                default=5.0,
+                gt=0,
+                description="Maximum seconds lifecycle waits for the recording worker to drain.",
+            ),
+        ] = 5.0,
         archive: Annotated[
             list[ArchiverBase] | None,
             Field(
-                description=(
-                    "Environment evidence this run records (``browser.network``, "
-                    "``browser.storage``, ``browser.dom_raw``, ...), each archiver with its "
-                    "own knobs; evidence lands under env/ with each step. The one switch "
-                    "for archiving: omitted or null (the default) records nothing, and so "
-                    "does []. Archivers are listed only here; a top-level ``archiver:`` "
-                    "section is refused."
-                ),
+                default=None,
+                description="Selected environment archivers, constructed only in this receptor.",
             ),
         ] = None,
     ) -> None:
         super().__init__()
         self.trace_dir = trace_dir
         self.record_secrets = record_secrets
-        #: The archivers whose evidence this hook records — a receptor
-        #: (``__wiring__``), so YAML builds each one with its knobs. Non-empty
-        #: makes this hook the run's archive consumer.
-        self.archive: list[ArchiverBase] = list(archive or [])
+        self.recording = recording if recording is not None else RecordingPlan()
+        self.pending_segments = pending_segments
+        self.write_retries = write_retries
+        self.retry_delay = retry_delay
+        self.close_timeout = close_timeout
+        self.archive = list(archive or [])
+        self.wal: WALWriter | None = None
+        self.call_context = RunCallContext()
+        self.health = RecordingHealth()
+        self._reset()
 
-        # ── per-run state, reset by on_run_start ──────────────
-        self._wal: WALWriter | None = None
-        self._steps_written = 0
-        # The LLM calls registered since the last commit, in start order.
+    def _reset(self) -> None:
+        self._stop_writes = threading.Event()
         self._pending_calls: list[PendingLLMCall] = []
-        # Calls of the step in progress already committed as trailing calls,
-        # so a later commit of that step numbers its calls after them.
-        self._calls_flushed = 0
-        # Requested reply schemas, encoded once per class per run; ``None``
-        # for a class whose schema could not be generated.
+        self._call_numbers: dict[int, int] = {}
         self._output_formats: dict[Any, EncodedOutputFormat | None] = {}
-        # ``perf_counter`` at the last step boundary — run start, then every
-        # commit. ``None`` before the run starts, which is what makes an
-        # unmeasured step record ``duration_ms=None`` rather than 0.
-        self._step_started: float | None = None
-        # Model wait accumulated since the last commit, in milliseconds.
-        self._pending_llm_ms = 0.0
-        # ── the trace's own ledger ──
-        # The first step whose recording failed (collection, contract or
-        # commit), in plain words; later step failures follow from it.
-        self._hole: str | None = None
-        # What the close-out could not record, in the order it happened.
-        self._close_out_problems: list[str] = []
-        # Closed out (``on_run_end``, or an ``on_run_error`` standing in for
-        # it): once per run, never retried.
+        self._queue: asyncio.Queue[RecordingSegment] = asyncio.Queue(self.pending_segments)
+        self._worker: asyncio.Task[None] | None = None
+        self._closing = False
         self._closed = False
-
-        # ── archive state (only ever used with a non-empty archive) ──
-        # The *raw* environment the evidence is pulled from — never its AOP
-        # proxy, so no hook intercepts the pull. Released at close-out.
+        self._result: Any = None
+        self._config: TraceConfig | None = None
+        self._config_hash = ""
+        self._model = ""
+        self._run_id = ""
+        self._next_step = 0
+        self._started_steps: dict[int, float] = {}
+        self._capture_ms: dict[int, float] = {}
+        self._usage = AgentUsage()
+        self._coverage = UsageCoverage()
         self._env: Any = None
-        # The archiver keys this run bound, and the capabilities that hold
-        # them (the values of ``archive_bindings``).
         self._archive_keys: frozenset[str] = frozenset()
         self._archive_owners: frozenset[str] = frozenset()
-        # Batches a failed step commit left behind — handed over, so owed to
-        # the trace; committed as trailing at close-out.
-        self._pending_archive: list[_Collected] = []
-        # Collections handed over so far; numbers each batch in capture order.
         self._collections = 0
-        # Capability id → (latest committed run-record version, its sha256,
-        # the number of the collection it came from).
-        self._run_versions: _RunVersions = {}
-        # The collection failure that made the archive incomplete, and
-        # where it happened; from then on nothing is collected or committed
-        # as if the archive were whole.
-        self._archive_failure: BaseException | None = None
-        self._archive_failed_at = ""
-        # The close-out collection happened (or was attempted): at most once.
-        self._archive_closed = False
+        self._storage: RecordingStorage | None = None
+        self.health = RecordingHealth()
 
     def __repr__(self) -> str:
-        # ``getattr``: pyright cannot see ``__name__`` through conscribe's metaclass.
-        name = getattr(type(self), "__name__", "TraceWriter")
         return (
-            f"{name}(trace_dir={self.trace_dir!r}, "
-            f"record_secrets={self.record_secrets!r}, "
-            f"archive={[a.archiver_id for a in self.archive]!r})"
+            f"TraceWriter(trace_dir={self.trace_dir!r}, record_secrets={self.record_secrets!r}, "
+            f"archive={[item.archiver_id for item in self.archive]!r})"
         )
 
     @property
@@ -295,10 +240,11 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
 
     @property
     def run_dir(self) -> Path | None:
-        """Directory this run is being written to — the evaluator seam."""
-        return self._wal.run_dir if self._wal is not None else None
+        return self.wal.run_dir if self.wal is not None else None
 
-    # ── lifecycle hooks ───────────────────────────────────────
+    @property
+    def llm_calls(self) -> int | None:
+        return self._coverage.calls if self.recording.metrics else None
 
     async def on_run_start(
         self,
@@ -322,515 +268,674 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         task_setup: Mapping[str, Any] | None = None,
         branch: BranchProvenance | None = None,
         config_source: ConfigSource | None = None,
+        call_context: RunCallContext | None = None,
+        action_space: Any = None,
         **kwargs: Any,
     ) -> None:
-        """Open the trace: directory, config snapshot, initial manifest.
-
-        Everything here arrives as a value. This hook used to reconstruct
-        the run's identity by ``getattr``-ing ``agent_id`` / ``loop_id`` /
-        ``env_type`` off whatever objects it was handed, which made a
-        serializer responsible for *discovering* facts and left the
-        configuration itself — the thing the run was actually set up as —
-        recorded nowhere. ``AgentRuntime`` is the one component holding
-        the composed config and both negotiation results, so it resolves
-        them and passes them in; see
-        :meth:`spectragent.core.runtime.AgentRuntime.execute`.
-
-        The duck-typing did not vanish, it moved: identity is still read
-        off the live objects, by ``AgentRuntime._component_id``, once, in
-        the component that knows the run. That is why a run assembled
-        without the Composer still reports an ``agent_id`` while its
-        ``resolved_config`` is ``None``.
-
-        With a non-empty :attr:`archive`, three things are refused with a
-        ``RuntimeError`` — **before** ``init_run``, so a refusal leaves no
-        trace directory behind: no ``archive_negotiation``; a negotiation
-        whose ``active_archivers`` are not exactly this hook's archive; no
-        ``env``. Archivers are negotiated and bound by
-        ``AgentRuntime.prepare()``, and nothing else may stand in for that.
-        Then the raw *env* is kept until close-out. With an empty archive
-        no environment reference is kept at all.
-
-        Args:
-            env: The **raw** environment (never its AOP proxy) — what the
-                evidence is pulled from, when this hook archives.
-            task / task_id / benchmark / subset: Dataset identity — the
-                key an Evaluator joins the trace back to ground truth by.
-            run_id: Trace directory name. Generated when omitted.
-            config: Caller-curated extra context, recorded verbatim (see
-                :attr:`~spectragent.core.trace.models.TraceConfig.extra`).
-            agent_id / loop_id / env_type / llm_model: Component identity.
-            resolved_config: The composed, validated configuration —
-                ``ComposedRun.top_level_cfg``. Passed through field-level
-                redaction on the way to disk unless
-                :attr:`record_secrets` is set. The ``config_hash`` in the
-                manifest is computed from it *before* that redaction; the
-                recorded view cannot carry a sweep.
-            observation_negotiation / action_negotiation / archive_negotiation:
-                The negotiation results, recorded as
-                :class:`~spectragent.core.trace.models.TraceNegotiation`.
-                ``archive_negotiation`` is ``None`` when no hook archives.
-            env_evidence_privacy: The privacy markers the bound archivers
-                declared — provenance, recorded as given (sorted) — or
-                ``None`` when the run bound none (then not written).
-            task_setup: The environment setup context this task was started
-                with, recorded as a
-                :class:`~spectragent.core.trace.models.TaskSetupRecord` —
-                redacted by value with the shared privacy rules unless
-                :attr:`record_secrets` is set.
-            branch: Where a branch run came from, recorded as given
-                (:attr:`~spectragent.core.trace.models.TraceConfig.branch`);
-                ``None`` for every other run. Not part of the digest.
-            config_source: Explicit original YAML file identity, recorded as given.
-                Its path and byte digest are provenance, never effective settings.
-
-        Raises:
-            RuntimeError: The archive was not negotiated and bound (see above).
-        """
-        if self.archive:
-            self._refuse_an_unbound_archive(archive_negotiation, env)
-
-        resolved_run_id = run_id or str(uuid.uuid4())[:8]
-        base_dir = Path(self.trace_dir)
-
-        self._wal = WALWriter(base_dir, resolved_run_id)
-        self._steps_written = 0
-        self._pending_calls = []
-        self._calls_flushed = 0
-        self._output_formats = {}
-        self._step_started = time.perf_counter()
-        self._pending_llm_ms = 0.0
-        self._hole = None
-        self._close_out_problems = []
-        self._closed = False
-
-        self._env = env if self.archive else None
-        self._archive_keys = frozenset(a.archiver_id for a in self.archive)
-        self._archive_owners = (
-            frozenset(archive_negotiation.archive_bindings.values())
-            if self.archive
-            else frozenset()
-        )
-        self._pending_archive = []
-        self._collections = 0
-        self._run_versions = {}
-        self._archive_failure = None
-        self._archive_failed_at = ""
-        self._archive_closed = False
-
-        # Two views of the same object, and they are not interchangeable.
-        # ``resolved_full`` never reaches disk: it exists so the digest
-        # can cover the model name, a ``user_agent`` and every other
-        # unmarked free-form string a sweep varies, which the recorded view
-        # collapses into one ``"<omitted>"``. See ``configuration_digest``.
-        resolved_full = redact_config(resolved_config, record_secrets=True)
-        recorded = resolved_full if self.record_secrets else redact_config(resolved_config)
-
-        trace_config = TraceConfig(
-            agent_id=agent_id,
-            loop_id=loop_id,
-            env_type=env_type,
-            llm_model=llm_model,
-            benchmark=benchmark,
-            subset=subset,
-            task=task,
-            task_id=task_id,
-            extra=config if isinstance(config, dict) else {},
-            resolved=recorded,
-            negotiation=TraceNegotiation.from_results(
-                observation=observation_negotiation,
-                action=action_negotiation,
-                archive=archive_negotiation,
-            ),
-            secrets_recorded=bool(self.record_secrets),
-            env_evidence_privacy=(
-                sorted(set(env_evidence_privacy)) if env_evidence_privacy is not None else None
-            ),
-            task_setup=_task_setup_record(task_setup, record_secrets=self.record_secrets),
-            branch=branch,
-            config_source=config_source,
-        )
-        self._wal.init_run(
-            trace_config,
-            config_hash=trace_config.configuration_digest(resolved=resolved_full),
-        )
-        if self.record_secrets:
-            logger.warning(
-                "TraceWriter: record_secrets is on — %s contains credentials "
-                "verbatim and must not be shared.",
-                self._wal.run_dir,
-            )
-        logger.info("TraceWriter: initialized run %s at %s", resolved_run_id, self._wal.run_dir)
-
-    async def on_run_end(self, *, result: Any = None, env: Any = None, **kwargs: Any) -> None:
-        """Close the trace out: tail, what is owed, result.json, the trace's own status.
-
-        On every termination path, once. The close-out evidence collection
-        (archive only) runs at most once and never after a failed one; the
-        calls still registered and every batch owed are committed as
-        trailing, each on its own; ``result.json`` is written; the manifest
-        is closed ``complete`` or ``incomplete``
-        (``docs/architecture_design.md`` §4.6, §5.4).
-
-        Nothing that fails to be recorded here is raised. The run has ended
-        and its outcome is decided — it is in *result*, which this writes as
-        it is — so a failed close-out collection, an owed item the disk
-        refuses (dropped, not retried) or a ``result.json`` that cannot be
-        written makes the trace ``incomplete``, names the failure in
-        ``incomplete_reason`` and is logged; it never replaces the outcome.
-        A manifest that cannot be closed out at all (the disk stays full)
-        stays ``writing`` and is logged as an error.
-
-        A cancellation of the close-out collection is the one thing
-        re-raised, after the close-out: Ctrl-C, or a caller's own
-        ``asyncio.timeout``, must still see its cancellation
-        (``docs/architecture_design.md`` §4.2, "取消永远优先").
-        """
-        if self._wal is None or self._closed:
-            return
-        cancellation = await self._close_out(result)
-        logger.info(
-            "TraceWriter: closed out run at %s (%d steps)",
-            self._wal.run_dir,
-            self._steps_written,
-        )
-        if cancellation is not None:
-            raise cancellation
-
-    async def on_run_error(
-        self,
-        *,
-        error: BaseException | None = None,
-        partial_steps: Any = None,
-        env: Any = None,
-        **kwargs: Any,
-    ) -> None:
-        """Note the run's error; close the trace out only when ``on_run_end`` did not.
-
-        ``AgentRuntime`` dispatches this right after ``on_run_end``, which
-        has already closed the trace out: nothing is collected, committed or
-        retried again — what the close-out could not commit was dropped. A
-        driver that dispatches only this closes the trace out here, with no
-        result (so no ``result.json``, and the trace ``incomplete``), by the
-        same rules, the cancellation of the close-out collection included.
-        """
-        if self._wal is None:
-            return
-        cancellation = None if self._closed else await self._close_out(None)
-        logger.warning("TraceWriter: run errored after %d steps: %s", self._steps_written, error)
-        if cancellation is not None:
-            raise cancellation
-
-    async def _close_out(self, result: Any) -> BaseException | None:
-        """The close-out itself; returns a cancellation of the tail collection, raises nothing else.
-
-        In order: the close-out collection; the trailing commits (the calls
-        still registered, every owed batch, the tail — each its own commit,
-        so one the filesystem refuses costs only what it carried);
-        ``result.json`` when there is a result (none means none: a file
-        holding ``null`` would read as a result that fails to parse); then
-        the terminal status, attempted whatever happened before it. Every
-        recording failure becomes part of ``incomplete_reason`` instead of
-        an exception. What could not be committed is dropped: nothing
-        retries it (``docs/architecture_design.md`` §5.2).
-        """
-        wal = self._wal
-        assert wal is not None
-        self._closed = True
-        cancellation: BaseException | None = None
-        tail: _Collected | None = None
+        self._reset()
+        self.call_context = call_context if call_context is not None else RunCallContext()
+        self._run_id = run_id or str(uuid.uuid4())
+        self._model = llm_model
+        self.wal = None
         try:
-            tail = await self._collect_tail()
+            self.wal = WALWriter(Path(self.trace_dir), self._run_id)
+            if self.archive:
+                self._refuse_an_unbound_archive(archive_negotiation, env)
+                self._env = env
+                self._archive_keys = frozenset(a.archiver_id for a in self.archive)
+                self._archive_owners = frozenset(archive_negotiation.archive_bindings.values())
+            resolved_full = (
+                redact_config(resolved_config, record_secrets=True)
+                if resolved_config is not None
+                else {}
+            )
+            self._config = TraceConfig(
+                recording=self.recording,
+                agent_id=agent_id,
+                loop_id=loop_id,
+                env_type=env_type,
+                llm_model=llm_model,
+                benchmark=benchmark,
+                subset=subset,
+                task=task,
+                task_id=task_id,
+                extra=snapshot(config) if isinstance(config, Mapping) else {},
+                resolved=redact_config(resolved_config, record_secrets=self.record_secrets)
+                if resolved_config is not None
+                else {},
+                negotiation=TraceNegotiation.from_results(
+                    observation_negotiation, action_negotiation, archive_negotiation
+                ),
+                secrets_recorded=self.record_secrets,
+                env_evidence_privacy=sorted(set(env_evidence_privacy))
+                if env_evidence_privacy is not None
+                else None,
+                task_setup=_task_setup_record(task_setup, record_secrets=self.record_secrets),
+                branch=branch,
+                config_source=config_source,
+                **(
+                    {"action_space": action_space.model_copy(deep=True)}
+                    if action_space is not None
+                    else {}
+                ),
+            )
+            self._config_hash = self._config.configuration_digest(resolved=resolved_full)
+            await self._offload(self.wal.init_run, self._config, config_hash=self._config_hash)
         except Exception as exc:
-            self._close_out_failed(
-                f"the close-out evidence collection failed: {type(exc).__name__}: {exc}"
+            self._problem(None, "initialization", "initialize", exc)
+        self._storage = RecordingStorage(
+            self.wal, self._config, self._config_hash, self.recording, self._stop_writes
+        )
+        self._worker = asyncio.create_task(self._persist(), name=f"recording:{self._run_id}")
+
+    def _problem(
+        self,
+        step: int | None,
+        channel: str,
+        phase: str,
+        error: BaseException,
+        *,
+        segment_id: str | None = None,
+        call_ids: Sequence[str] = (),
+    ) -> None:
+        self.health.problems.append(
+            RecordingProblem(
+                step=step,
+                segment_id=segment_id,
+                call_ids=list(call_ids),
+                channel=channel,
+                phase=phase,
+                error=type(error).__name__,
+                detail=str(error) or type(error).__name__,
+                occurred_at=time.time(),
             )
-        except BaseException as exc:  # held: the close-out runs to its end first
-            cancellation = exc
-            self._close_out_failed("the close-out evidence collection was cancelled")
+        )
+        logger.warning("Recording %s failed at step %s: %s", phase, step, error)
+
+    async def around_execute_step(
+        self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any
+    ) -> Any:
+        scope = None
         try:
-            try:
-                self._flush_trailing(tail)
-            except Exception as exc:
-                self._close_out_failed(
-                    f"the close-out could not commit everything the trace was owed (what it "
-                    f"could not commit was dropped): {type(exc).__name__}: {exc}"
-                )
-            if result is None:
-                self._close_out_failed(
-                    "the run was closed out without a result, so result.json was not written"
-                )
-            else:
-                try:
-                    wal.write_result(result)
-                except Exception as exc:
-                    self._close_out_failed(
-                        f"result.json could not be written: {type(exc).__name__}: {exc}"
-                    )
+            step = int(kwargs.get("step_idx", args[1] if len(args) > 1 else self._next_step))
+            self._started_steps.setdefault(step, time.perf_counter())
+            attribution = self.call_context.current
+            scope = self.call_context.scope(attribution.caller, attribution.purpose, step)
+            scope.__enter__()
+        except Exception as exc:
+            scope = None
+            self._problem(None, "timing", "capture", exc)
+        try:
+            return await proceed()
         finally:
-            reason = self._incomplete_reason()
-            try:
-                wal.finalize(
-                    TraceStatus.INCOMPLETE if reason else TraceStatus.COMPLETE,
-                    incomplete_reason=reason,
-                )
-            except Exception as exc:
-                logger.error(
-                    "TraceWriter: the trace at %s could not be closed out and stays 'writing': "
-                    "%s: %s%s",
-                    wal.run_dir,
-                    type(exc).__name__,
-                    exc,
-                    f" (it was incomplete: {reason})" if reason else "",
-                    exc_info=exc,
-                )
-            finally:
-                # Closed out: no environment reference, and nothing owed is
-                # kept for a retry that is not made.
-                self._env = None
-                self._pending_calls.clear()
-                self._pending_archive.clear()
-        if reason:
-            logger.warning("TraceWriter: the trace at %s is incomplete: %s", wal.run_dir, reason)
-        return cancellation
+            if scope is not None:
+                try:
+                    scope.__exit__(None, None, None)
+                except Exception as exc:
+                    self._problem(None, "attribution", "capture", exc)
 
-    def _close_out_failed(self, reason: str) -> None:
-        """One thing the close-out could not record, for ``incomplete_reason``."""
-        logger.warning("TraceWriter: %s", reason)
-        self._close_out_problems.append(reason)
-
-    def _incomplete_reason(self) -> str | None:
-        """Why the trace is incomplete — the first lost step, then the close-out — or ``None``."""
-        reasons = [reason for reason in (self._hole, *self._close_out_problems) if reason]
-        return "; ".join(reasons) or None
-
-    # ── AOP intercept handlers ────────────────────────────────
+    async def around_observe_terminal(
+        self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any
+    ) -> Any:
+        try:
+            step = int(kwargs["step"])
+            self._started_steps.setdefault(step, time.perf_counter())
+        except Exception as exc:
+            self._problem(None, "timing", "capture", exc)
+        return await proceed()
 
     async def around_ainvoke(self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any) -> Any:
-        """Record one LLM call: registered before it goes out, settled when it ends.
-
-        Registration comes first so that the prompt is on record whatever
-        happens next. The outcome is one of three:
-
-        - **completed** — the reply, as ``RecordedCompletion``.
-        - **failed** — any ``Exception``, recorded with what it carried and
-          nothing invented: ``raw_output`` for a structured reply the
-          validator refused (the run *continues* past that one: the Loop
-          hands the model its own text back), ``partial_output`` for a
-          truncation, ``stop_reason`` and ``usage`` because a failed call is
-          billed. The prompt that caused a 429 or a timeout is worth having
-          too, so every exception is recorded, not only the recoverable one.
-        - **cancelled** — a ``BaseException``: ``CancelledError`` from the
-          run's timeout or from outside, which neither ``after`` advice nor
-          ``except Exception`` ever sees. Without this the prompt of the
-          call in flight when a run was cut off was lost.
-
-        The exception always propagates; this hook observes, it does not
-        swallow. One advice records the call from start to end, so nothing
-        has to correlate a ``before`` with an ``after`` — which would break
-        the day a Loop issues calls concurrently.
-
-        This is also the only place that can measure what the step spent
-        waiting on the model; the accumulator is in a ``finally`` because a
-        step whose LLM time went on a refused reply spent it all the same.
-        """
-        call = self._register_call(args, kwargs)
-        started = time.perf_counter()
+        pending: PendingLLMCall | None = None
+        capture_started = time.perf_counter()
+        call_step = self._next_step
+        try:
+            attribution = self.call_context.current
+            step = self._next_step if attribution.step is None else attribution.step
+            call_step = step
+            number = self._call_numbers.get(step, 0)
+            self._call_numbers[step] = number + 1
+            output = kwargs.get("output_format", args[1] if len(args) > 1 else None)
+            target = ctx.get("target")
+            model = str(target.model) if target is not None else self._model
+            pending = PendingLLMCall(
+                args[0] if args else kwargs.get("messages"),
+                output_format=self._output_format(output) if self.recording.trajectory else None,
+                capture_trajectory=self.recording.trajectory,
+                capture_metrics=self.recording.metrics,
+                capture_errors=self.recording.errors,
+                call_id=f"{self._run_id}:{step}:{number}",
+                step=step,
+                call=number,
+                caller=attribution.caller,
+                purpose=attribution.purpose,
+                model=model,
+            )
+            self._pending_calls.append(pending)
+        except Exception as exc:
+            self._problem(self._next_step, "calls", "capture", exc)
+        self._capture_ms[call_step] = (
+            self._capture_ms.get(call_step, 0) + (time.perf_counter() - capture_started) * 1000
+        )
+        settle_started: float | None = None
         try:
             result = await proceed()
-        except Exception as exc:
-            call.fail(exc)
-            raise
         except BaseException as exc:
-            call.cancel(exc)
+            settle_started = time.perf_counter()
+            if pending is not None:
+                try:
+                    pending.fail(exc) if isinstance(exc, Exception) else pending.cancel(exc)
+                except Exception as recording_error:
+                    self._problem(pending.step, "calls", "settle", recording_error)
             raise
+        else:
+            settle_started = time.perf_counter()
+            if pending is not None:
+                try:
+                    pending.complete(result)
+                except Exception as exc:
+                    self._problem(pending.step, "calls", "settle", exc)
+            return result
         finally:
-            self._pending_llm_ms += (time.perf_counter() - started) * 1000
-        call.complete(result)
+            if pending is not None and self.recording.metrics:
+                self._account(pending)
+            if settle_started is not None:
+                self._capture_ms[call_step] = (
+                    self._capture_ms.get(call_step, 0)
+                    + (time.perf_counter() - settle_started) * 1000
+                )
+
+    def _account(self, call: PendingLLMCall) -> None:
+        try:
+            self._coverage.calls += 1
+            usage = ChatInvokeUsage.model_validate(call.usage) if call.usage is not None else None
+            if usage is None:
+                self._coverage.missing_call_ids.append(call.call_id)
+            else:
+                self._coverage.reported_calls += 1
+            self._usage.add_llm_usage(usage, model=call.model, purpose=call.purpose)
+        except Exception as exc:
+            self._problem(call.step, "metrics", "account", exc)
+
+    async def around_record_step(
+        self, *, proceed: Any, args: tuple, kwargs: dict, **ctx: Any
+    ) -> Any:
+        try:
+            record = args[0] if args else kwargs["record"]
+            step = record.step
+            # This edge stops execution timing before sink and recording work.
+            started = self._started_steps.pop(step, None)
+            if self.recording.metrics and started is not None:
+                record.duration_ms = max(
+                    0, int((time.perf_counter() - started) * 1000 - self._capture_ms.get(step, 0))
+                )
+        except Exception as exc:
+            self._problem(None, "timing", "capture", exc)
+        result = await proceed()
+        await self.after_record_step(result, args=args, kwargs=kwargs, **ctx)
         return result
 
     async def after_record_step(
         self, result: Any, *, args: tuple, kwargs: dict, **ctx: Any
     ) -> None:
-        """Commit point: the observation, every call of the step, the step record, its evidence.
-
-        With an archive, the evidence is pulled here — after the timing
-        stamp, before the manifest commit — so what step *t*'s commit takes
-        belongs to step *t*.
-
-        A step that cannot be recorded — its collection raised, its batch
-        broke the contract, or the commit failed — is a hole: nothing of it
-        is committed, its calls stay registered for the trailing commit, and
-        the trace is incomplete, complete through the step before (the WAL
-        stops ``complete_through`` there). The run then stops on it: this
-        raises :class:`~spectragent.core.step_recorder.RecordingFailedError`
-        (the failure chained), so the run's result reads ``recording failed
-        at step t``. Not when the step's own record shows the run already
-        ended in success — the agent called done on it: raising would only
-        replace that outcome, so the failure is logged and the run ends as
-        the agent decided (``docs/architecture_design.md`` §4.6). A
-        cancellation of the collection is no recording failure and
-        propagates as it is — but the step it cut off is lost, so the trace
-        is incomplete from there too.
-        """
-        if self._wal is None:
-            return
-
-        record = args[0] if args else kwargs.get("record")
-        if record is None:
-            return
-        observation = kwargs.get("observation")
-        step = int(getattr(record, "step", self._steps_written))
-
-        self._stamp_timings(record)
-        pending = list(self._pending_calls)
+        """Seal synchronously; capture failure cannot retain calls for the next step."""
+        record = args[0] if args else kwargs["record"]
+        step = record.step
+        started = time.perf_counter()
+        calls = tuple(call for call in self._pending_calls if call.step == step)
+        self._pending_calls = [call for call in self._pending_calls if call.step != step]
+        self._next_step = max(self._next_step, step + 1)
+        self.health.expected_steps = max(self.health.expected_steps, step + 1)
         try:
-            batch = await self._step_archive(step) if self.archive else None
-            extra, versions = self._encode_archive(batch, step=step)
-            try:
-                self._wal.commit_step(
-                    step,
-                    record,
-                    fragments=encode_observation(step, observation),
-                    llm_calls=encode_llm_calls(step, pending, first_call=self._calls_flushed),
-                    extra_files=extra,
+            if self.recording.errors:
+                errors = []
+                if record.error:
+                    errors.append(
+                        ExecutionError(
+                            phase=record.error_phase,
+                            detail=record.error,
+                            occurred_at=record.timestamp,
+                        )
+                    )
+                for index, outcome in enumerate(record.action_results):
+                    if outcome.error or not outcome.success:
+                        errors.append(
+                            ExecutionError(
+                                phase="act",
+                                detail=outcome.error or "action reported failure",
+                                occurred_at=record.timestamp,
+                                action_index=index,
+                                action_name=record.actions[index].name
+                                if index < len(record.actions)
+                                else None,
+                            )
+                        )
+                record.execution_errors = errors
+            if self.recording.metrics:
+                usages = [
+                    ChatInvokeUsage.model_validate(call.usage)
+                    for call in calls
+                    if call.usage is not None
+                ]
+                record.action_count = len(record.action_results)
+                record.proposed_action_count = len(record.actions) + record.truncated_actions
+                record.token_usage = TokenUsage.combine(usages)
+                record.usage_coverage = UsageCoverage(
+                    calls=len(calls),
+                    reported_calls=len(usages),
+                    missing_call_ids=[call.call_id for call in calls if call.usage is None],
                 )
-            except BaseException:
-                # The capability has already forgotten the batch: it is owed
-                # to the trace, and run end commits it as trailing evidence.
-                if batch is not None and batch.files:
-                    self._pending_archive.append(batch)
-                raise
-        except Exception as exc:
-            self._step_not_recorded(record, step, exc)
-            return
-        except BaseException:
-            # A cancellation cut the recording off: no recording failed, but
-            # the step's record is lost all the same, so the trace is complete
-            # only through the step before. The cancellation goes on as it is.
-            if self._hole is None:
-                self._hole = f"recording step {step} was cut off by a cancellation"
-            raise
-        # Only once the commit succeeded: a run-record version, like a call,
-        # exists only if it reached disk.
-        self._run_versions = versions
-        # A call whose step failed to commit is still owed to the trace,
-        # and run end commits it as trailing.
-        del self._pending_calls[: len(pending)]
-        self._calls_flushed = 0
-
-        self._steps_written += 1
-        logger.debug(
-            "TraceWriter: committed step %d (%d LLM calls, %d archive files)",
-            step,
-            len(pending),
-            len(extra),
-        )
-
-    # ── internals ─────────────────────────────────────────────
-
-    def _step_not_recorded(self, record: Any, step: int, exc: Exception) -> None:
-        """Note the hole at *step*; stop the run with it unless the run already ended in success.
-
-        Only the first hole is the trace's reason: a step after it (a Loop
-        that swallowed the error and went on) fails because of it.
-
-        Raises:
-            RecordingFailedError: *record*'s step did not end the run in
-                success, so the run must stop here.
-        """
-        reason = f"recording failed at step {step}: {type(exc).__name__}: {exc}"
-        if self._hole is None:
-            self._hole = reason
-        if _ended_in_success(record):
-            logger.error(
-                "TraceWriter: %s; the agent called done on that step, so the run's outcome "
-                "stands and the trace is incomplete",
-                reason,
-                exc_info=exc,
+                record.llm_latency_ms = sum(call.latency_ms or 0 for call in calls)
+            sealed = (
+                record.model_copy(deep=True)
+                if self.recording.trajectory
+                else StepRecord(
+                    step=step,
+                    timestamp=record.timestamp,
+                    origin=record.origin,
+                    duration_ms=record.duration_ms if self.recording.metrics else None,
+                    llm_latency_ms=record.llm_latency_ms if self.recording.metrics else None,
+                    token_usage=record.token_usage.model_copy(deep=True)
+                    if self.recording.metrics and record.token_usage is not None
+                    else None,
+                    usage_coverage=record.usage_coverage.model_copy(deep=True)
+                    if self.recording.metrics and record.usage_coverage is not None
+                    else None,
+                    action_count=record.action_count if self.recording.metrics else None,
+                    proposed_action_count=record.proposed_action_count
+                    if self.recording.metrics
+                    else None,
+                    error_phase=record.error_phase if self.recording.errors else "",
+                    error=record.error if self.recording.errors else None,
+                    execution_errors=[
+                        error.model_copy(deep=True) for error in record.execution_errors
+                    ]
+                    if self.recording.errors
+                    else [],
+                )
             )
-            return
-        raise RecordingFailedError(step, exc) from exc
+            if not self.recording.errors:
+                sealed.error = None
+                sealed.error_phase = ""
+                sealed.execution_errors = []
+                for outcome in sealed.action_results:
+                    outcome.error = None
+            if not self.recording.metrics:
+                sealed.token_usage = None
+                sealed.usage_coverage = None
+                sealed.duration_ms = None
+                sealed.llm_latency_ms = None
+                sealed.action_count = None
+                sealed.proposed_action_count = None
+            fragments = (
+                encode_observation(step, kwargs.get("observation"))
+                if self.recording.observations
+                else []
+            )
+            batch = await self._collect() if self.archive else None
+            elapsed = (time.perf_counter() - started) * 1000 + self._capture_ms.pop(step, 0)
+            self._enqueue(RecordingSegment(step, sealed, fragments, calls, batch, elapsed))
+        except Exception as exc:
+            self._problem(step, "segment", "capture", exc)
+        except BaseException:
+            self._problem(step, "segment", "capture", RuntimeError("capture cancelled"))
+            raise
 
-    def _stamp_timings(self, record: Any) -> None:
-        """Write the step's wall clock and model wait onto its record.
+    async def _collect(self) -> _Collected:
+        files = self._checked(await self._env.collect_archive())
+        self._collections += 1
+        return _Collected(self._collections, files)
 
-        Measured here rather than in the Loop on purpose: timing is a
-        cross-cutting concern, and a Loop that timed itself would have to
-        be re-instrumented once per Loop. The two clocks are the only
-        ones a hook can see — the boundary between commits, and the
-        ``around`` advice on ``ainvoke`` — and both are reset here so the
-        next step measures itself, not the run so far.
-
-        A record that already carries a value keeps it: the Loop is
-        allowed to know better, and nothing here should overwrite a
-        measurement made closer to the work.
-
-        The archive pull happens *after* the stamp, so its time — like the
-        commit's I/O — is charged to the next step's ``duration_ms``.
-
-        Two things about this being a *mutation*, both honest limits
-        rather than guarantees:
-
-        - The object is the Loop's own ``StepRecord``, which is also the
-          payload of ``HistoryObs`` and therefore reachable from prompt
-          building. No shipped agent renders these fields (they enumerate
-          what they render), and a test pins that; an agent that dumps a
-          record wholesale would make its prompt depend on whether
-          ``trace_writer`` is in the ``hook:`` list, which is exactly the
-          non-transparency AOP exists to prevent.
-        - Nothing orders intercept handlers. ``priority`` orders
-          *lifecycle* dispatch only (``hooks/base.py``); the Weaver
-          indexes interceptors in hook-list order and ``core/aop/`` never
-          reads ``priority``. ``TraceWriter`` is today the only hook
-          intercepting ``record_step``, so the question does not arise —
-          but a second one reading ``record.duration_ms`` would see
-          ``None`` or a value purely by YAML order, silently. Treat these
-          fields as readable only after the commit point.
-        """
-        now = time.perf_counter()
-        if isinstance(record, StepRecord):
-            if record.duration_ms is None and self._step_started is not None:
-                record.duration_ms = int((now - self._step_started) * 1000)
-            if record.llm_latency_ms is None and self._pending_llm_ms:
-                record.llm_latency_ms = int(self._pending_llm_ms)
-        self._step_started = now
-        self._pending_llm_ms = 0.0
-
-    def _register_call(self, args: tuple, kwargs: dict) -> PendingLLMCall:
-        """Put a call on record before it goes out.
-
-        The prompt is ``ainvoke``'s first argument; the requested reply
-        model arrives as ``output_format`` (ReactLoop calls
-        ``llm.ainvoke(context, output_format=output_model)``). Neither is
-        validated — see :mod:`spectragent.core.trace.encoding`.
-        """
-        messages = args[0] if args else kwargs.get("messages")
-        output_format = kwargs.get("output_format", args[1] if len(args) > 1 else None)
-        call = PendingLLMCall(messages, self._output_format(output_format))
-        self._pending_calls.append(call)
-        return call
+    def _enqueue(self, segment: RecordingSegment) -> None:
+        try:
+            self._queue.put_nowait(segment)
+        except asyncio.QueueFull as exc:
+            self._problem(segment.step, "segment", "buffer", exc)
 
     def _output_format(self, output_format: Any) -> EncodedOutputFormat | None:
-        """The requested schema, generated once per reply model per run.
-
-        A model whose schema cannot be generated is recorded as no schema,
-        with a warning, rather than failing the call over the trace: the
-        provider builds its request from the same schema and reports that
-        failure itself.
-        """
         if output_format is None:
             return None
-        try:
+        if output_format in self._output_formats:
             return self._output_formats[output_format]
-        except KeyError:
-            pass
-        except TypeError:  # unhashable — not a class, so not worth caching
-            return _encode_output_format(output_format)
-        encoded = self._output_formats[output_format] = _encode_output_format(output_format)
+        try:
+            encoded = encode_output_format(output_format)
+        except Exception as exc:
+            step = self.call_context.current.step
+            self._problem(
+                self._next_step if step is None else step, "trajectory", "encode_schema", exc
+            )
+            return None
+        self._output_formats[output_format] = encoded
         return encoded
 
-    # ── archive internals ─────────────────────────────────────
+    def _commit(self, segment: RecordingSegment, storage: RecordingStorage) -> None:
+        stop_writes = storage.stopped
+        if stop_writes.is_set():
+            return
+        wal = storage.wal
+        if wal is None:
+            raise RuntimeError("recording storage could not be constructed")
+        if wal.manifest is None:
+            if storage.config is None:
+                raise RuntimeError("recording configuration could not be captured")
+            wal.init_run(storage.config, config_hash=storage.config_hash)
+        if stop_writes.is_set():
+            return
+        manifest = wal.reconcile()
+        if stop_writes.is_set():
+            return
+        assert manifest is not None
+        for candidate_step, candidate_id, versions in storage.unconfirmed_archive:
+            installed = (
+                any(entry.step == candidate_step for entry in manifest.steps)
+                if candidate_step is not None
+                else any(entry.segment_id == candidate_id for entry in manifest.trailing)
+            )
+            if installed:
+                self._accept_versions(storage, versions)
+        storage.unconfirmed_archive.clear()
+        if segment.step is not None:
+            segment.content_committed = segment.content_committed or any(
+                entry.step == segment.step for entry in manifest.steps
+            )
+        else:
+            segment.content_committed = any(
+                entry.segment_id == segment.segment_id for entry in manifest.trailing
+            )
+        segment.timing_committed = any(
+            entry.segment_id == f"{segment.segment_id}:timing" for entry in manifest.trailing
+        )
+        if segment.content_committed and segment.archive_versions is not None:
+            self._accept_versions(storage, segment.archive_versions)
+        started = time.perf_counter()
+        if not segment.content_committed:
+            if segment.step is None:
+                segment.trailing_index = len(manifest.trailing)
+            extra, versions = self._encode_archive(
+                segment.archive,
+                versions_table=storage.run_versions,
+                step=segment.step,
+                trailing=segment.trailing_index,
+            )
+            segment.archive_versions = versions
+            calls = []
+            metrics = []
+            for call in segment.calls:
+                if storage.plan.trajectory:
+                    calls.extend(encode_llm_calls(call.step, [call], first_call=call.call))
+                elif storage.plan.metrics or storage.plan.errors:
+                    metrics.append(encode_call_metrics(call.step, call.call, call))
+            try:
+                if segment.step is None:
+                    wal.commit_trailing(
+                        llm_calls=calls,
+                        call_metrics=metrics,
+                        extra_files=extra,
+                        segment_id=segment.segment_id,
+                    )
+                else:
+                    assert segment.record is not None
+                    wal.commit_step(
+                        segment.step,
+                        segment.record,
+                        fragments=segment.fragments,
+                        llm_calls=calls,
+                        call_metrics=metrics,
+                        extra_files=extra,
+                    )
+            finally:
+                current = wal.manifest
+                installed = current is not None and (
+                    any(entry.step == segment.step for entry in current.steps)
+                    if segment.step is not None
+                    else any(entry.segment_id == segment.segment_id for entry in current.trailing)
+                )
+                if not stop_writes.is_set():
+                    if installed:
+                        segment.content_committed = True
+                        self._accept_versions(storage, versions)
+                    elif versions:
+                        storage.unconfirmed_archive.append(
+                            (segment.step, segment.segment_id, versions)
+                        )
+                segment.work_ms += (time.perf_counter() - started) * 1000
+        if stop_writes.is_set():
+            return
+        if storage.plan.metrics and segment.step is not None and not segment.timing_committed:
+            from pydantic_core import to_json
+
+            current = wal.manifest
+            assert current is not None
+            if segment.timing_index is None:
+                segment.timing_index = len(current.trailing)
+            measurement = TraceFile(
+                f"recording/step_{segment.step:03d}.json",
+                to_json(
+                    {"step": segment.step, "recording_ms": segment.capture_ms + segment.work_ms}
+                ),
+                meta={"kind": "recording_timing", "step": segment.step},
+            )
+            try:
+                wal.commit_trailing(
+                    extra_files=[measurement], segment_id=f"{segment.segment_id}:timing"
+                )
+            finally:
+                current = wal.manifest
+                segment.timing_committed = current is not None and any(
+                    entry.segment_id == f"{segment.segment_id}:timing" for entry in current.trailing
+                )
+
+    @staticmethod
+    def _accept_versions(storage: RecordingStorage, versions: _RunVersions) -> None:
+        for owner, version in versions.items():
+            current = storage.run_versions.get(owner)
+            if current is None or current[2] < version[2]:
+                storage.run_versions[owner] = version
+
+    async def _offload(self, operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """A single awaited daemon job, never the event loop's default executor.
+
+        The recorder worker serializes jobs. A system call cannot be cancelled;
+        closeout stops subsequent writes and reports incomplete coverage. Daemon
+        ownership prevents asyncio.run() from adding an unbounded executor join.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Any] = loop.create_future()
+
+        def settle(value: Any, error: BaseException | None) -> None:
+            if not future.done():
+                if error is None:
+                    future.set_result(value)
+                else:
+                    future.set_exception(error)
+
+        def work() -> None:
+            try:
+                value, error = operation(*args, **kwargs), None
+            except BaseException as exc:
+                value, error = None, exc
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(settle, value, error)
+
+        threading.Thread(target=work, name=f"recording-io:{self._run_id}", daemon=True).start()
+        return await future
+
+    async def _persist(self) -> None:
+        storage = self._storage
+        assert storage is not None
+        while not self._closing or not self._queue.empty():
+            try:
+                segment = await asyncio.wait_for(self._queue.get(), timeout=0.05)
+            except TimeoutError:
+                continue
+            try:
+                await self._offload(self._commit, segment, storage)
+                for problem in self.health.problems:
+                    if (
+                        problem.phase == "initialize"
+                        and storage.wal is not None
+                        and storage.wal.manifest is not None
+                    ):
+                        problem.recovered = True
+                    if problem.segment_id == segment.segment_id and problem.phase == "commit":
+                        problem.recovered = True
+            except Exception as exc:
+                self._problem(
+                    segment.step,
+                    "segment",
+                    "commit",
+                    exc,
+                    segment_id=segment.segment_id,
+                    call_ids=[call.call_id for call in segment.calls],
+                )
+                if segment.attempts < self.write_retries:
+                    segment.attempts += 1
+                    await asyncio.sleep(self.retry_delay)
+                    self._enqueue(segment)
+            finally:
+                self._queue.task_done()
+        await self._finalize()
+
+    def _refresh_health(self) -> None:
+        manifest = self.wal.manifest if self.wal is not None else None
+        saved = {entry.step for entry in manifest.steps} if manifest is not None else set()
+        self.health.committed_steps = len(saved)
+        self.health.missing_steps = sorted(set(range(self.health.expected_steps)) - saved)
+        self.health.complete_through = recorded_prefix(saved, self.health.problems)
+        unresolved = [problem for problem in self.health.problems if not problem.recovered]
+        self.health.status = "incomplete" if self.health.missing_steps or unresolved else "complete"
+
+    def _enrich_result(self) -> None:
+        if self._result is None:
+            return
+        if self.recording.metrics:
+            self._result.metrics.usage = self._usage.model_copy(deep=True)
+            self._result.metrics.llm_calls = self._coverage.calls
+            self._result.metrics.usage_coverage = self._coverage.model_copy(deep=True)
+        self._result.metrics.recording_health = self.health.model_copy(deep=True)
+
+    async def _finalize(self) -> None:
+        if self._stop_writes.is_set():
+            return
+        self._refresh_health()
+        self._enrich_result()
+        wal = self.wal
+        if wal is None or wal.manifest is None:
+            self.health.status = "incomplete"
+            self._enrich_result()
+            return
+        try:
+            if self._result is None:
+                raise RuntimeError("execution closed without a result")
+            persisted_result = self._result
+            if not self.recording.trajectory:
+                persisted_result = self._result.model_copy(
+                    update={
+                        "action_history": [],
+                        "screenshots": [],
+                        "system_prompt": None,
+                        "agent_metadata": {},
+                        "config": {},
+                    }
+                )
+            if not self.recording.errors:
+                persisted_result = persisted_result.model_copy(update={"error": None})
+            await self._offload(wal.write_result, persisted_result)
+        except Exception as exc:
+            self._problem(None, "result", "closeout", exc)
+        self._refresh_health()
+        reason = "; ".join(
+            f"{problem.error}: {problem.detail}"
+            for problem in self.health.problems
+            if not problem.recovered
+        )
+        try:
+            await self._offload(
+                wal.finalize,
+                TraceStatus(self.health.status),
+                incomplete_reason=reason or None,
+                expected_steps=self.health.expected_steps,
+                recording_problems=self.health.problems,
+            )
+        except Exception as exc:
+            self._problem(None, "manifest", "closeout", exc)
+            self.health.status = "incomplete"
+        self._enrich_result()
+
+    async def flush(self, timeout: float | None = None) -> None:
+        """Wait boundedly for sealed segments, without ending this recording.
+
+        Intended for explicit inspection/checkpoint callers, never required by
+        a Loop's step handoff. Failures remain recording-health facts.
+        """
+        budget = self.close_timeout if timeout is None else timeout
+        if budget <= 0:
+            raise ValueError("recording flush timeout must be positive")
+        try:
+            await asyncio.wait_for(self._queue.join(), timeout=budget)
+        except TimeoutError as exc:
+            self._problem(None, "worker", "flush", exc)
+        self._refresh_health()
+
+    async def on_run_end(self, *, result: Any = None, env: Any = None, **kwargs: Any) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._result = result
+        cancellation: BaseException | None = None
+        close_clock = asyncio.get_running_loop()
+        close_started = close_clock.time()
+        calls, self._pending_calls = tuple(self._pending_calls), []
+        if calls:
+            self._enqueue(RecordingSegment(None, None, [], calls, None))
+        try:
+            batch = (
+                await asyncio.wait_for(self._collect(), timeout=self.close_timeout)
+                if self.archive
+                else None
+            )
+            if batch is not None and batch.files:
+                self._enqueue(RecordingSegment(None, None, [], (), batch))
+        except Exception as exc:
+            self._problem(None, "archive", "closeout", exc)
+        except BaseException as exc:
+            cancellation = exc
+            self._problem(None, "archive", "closeout", RuntimeError("closeout cancelled"))
+        self._closing = True
+        self._env = None
+        if self._worker is not None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._worker),
+                    timeout=max(0.001, self.close_timeout - (close_clock.time() - close_started)),
+                )
+            except TimeoutError as exc:
+                self._problem(None, "worker", "closeout", exc)
+                self._stop_writes.set()
+                self._worker.cancel()
+                await asyncio.gather(self._worker, return_exceptions=True)
+                self._refresh_health()
+                self._enrich_result()
+            except asyncio.CancelledError as exc:
+                cancellation = cancellation or exc
+                self._stop_writes.set()
+                self._worker.cancel()
+                await asyncio.gather(self._worker, return_exceptions=True)
+                self._problem(None, "worker", "closeout", RuntimeError("closeout cancelled"))
+                self._refresh_health()
+                self._enrich_result()
+            except Exception as exc:
+                self._problem(None, "worker", "closeout", exc)
+                self._refresh_health()
+                self._enrich_result()
+        else:
+            self._refresh_health()
+            self._enrich_result()
+        if cancellation is not None:
+            raise cancellation
+
+    async def on_run_error(self, *, error: BaseException | None = None, **kwargs: Any) -> None:
+        if not self._closed:
+            await self.on_run_end()
 
     def _refuse_an_unbound_archive(self, negotiation: Any, env: Any) -> None:
         """Refuse to record an archive ``AgentRuntime.prepare`` did not negotiate and bind."""
@@ -851,63 +956,6 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             f"negotiated and bound by AgentRuntime.prepare() before on_run_start; nothing "
             f"else may stand in for that."
         )
-
-    async def _step_archive(self, step: int) -> _Collected:
-        """Pull and check the evidence *step*'s commit takes.
-
-        Fail closed. Once a collection has failed — raised, or handed over
-        a batch that breaks the contract — the archive is incomplete, and a
-        Loop that swallowed that error does not get a later step committed
-        as if it were whole: this raises, naming where the archive broke,
-        without collecting again. Nor after the close-out collection — the
-        environment has been released by then.
-
-        A cancellation of the collection is not a collection failure: it
-        propagates, the step is not committed, and the close-out still
-        collects (``docs/architecture_design.md`` §4.6).
-        """
-        if self._archive_failure is not None:
-            raise RuntimeError(
-                f"TraceWriter cannot commit step {step}: the archive has been incomplete since "
-                f"the collection at {self._archive_failed_at} failed "
-                f"({type(self._archive_failure).__name__}: {self._archive_failure})"
-            ) from self._archive_failure
-        if self._archive_closed:
-            raise RuntimeError(
-                f"TraceWriter cannot commit step {step} with its evidence: the archive was "
-                f"closed out at run end"
-            )
-        try:
-            files = self._checked(await self._env.collect_archive())
-        except Exception as exc:
-            self._archive_failure = exc
-            self._archive_failed_at = f"step {step}"
-            raise
-        return self._numbered(files)
-
-    async def _collect_tail(self) -> _Collected | None:
-        """The close-out collection: at most once per run, and never after a failure.
-
-        ``None`` when there is none to make.
-        """
-        if not self.archive or self._archive_failure is not None or self._archive_closed:
-            return None
-        # Marked before the pull: whatever happens to it, there is no second
-        # one. (The environment is released at close-out too, but this flag
-        # is the rule — ``on_run_end`` then ``on_run_error`` collect once.)
-        self._archive_closed = True
-        try:
-            files = self._checked(await self._env.collect_archive())
-        except Exception as exc:
-            self._archive_failure = exc
-            self._archive_failed_at = "close-out"
-            raise
-        return self._numbered(files)
-
-    def _numbered(self, files: tuple[ArchiveFile, ...]) -> _Collected:
-        """*files*, handed over by the next collection in capture order."""
-        self._collections += 1
-        return _Collected(self._collections, files)
 
     def _checked(self, batch: Any) -> tuple[ArchiveFile, ...]:
         """A collected batch's files — or ``ArchiveContractError`` before any is written.
@@ -1010,6 +1058,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         self,
         batch: _Collected | None,
         *,
+        versions_table: _RunVersions,
         step: int | None = None,
         trailing: int | None = None,
     ) -> tuple[list[TraceFile], _RunVersions]:
@@ -1028,7 +1077,7 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
         files succeeded, so the versions are recomputed for every commit,
         each trailing one included.
         """
-        versions = dict(self._run_versions)
+        versions = dict(versions_table)
         extra: list[TraceFile] = []
         if batch is None:
             return extra, versions
@@ -1056,123 +1105,6 @@ class TraceWriter(_TraceWriterReceptors, HookBase):
             extra.append(encode_archive_file(item, run_version=version))
         return extra, versions
 
-    def _flush_trailing(self, tail: _Collected | None = None) -> None:
-        """Commit what belongs to no committed step: unfinished calls, owed evidence, the tail.
-
-        ``after_record_step`` is the only *commit* point, but it is not the
-        only *termination* point: a run can be cut off by the timeout or a
-        cancellation mid-call, or crash in parsing or action execution after
-        the reply came back. Dropping the registered calls there discards
-        precisely the exchange that says what the agent was doing when the
-        run died — and abnormal termination is the common case, not the
-        exception, in this project's real traces.
-
-        They are recorded under the step index that *would* have been next
-        and listed in ``manifest.trailing``, not as a step:
-        ``RunTrace.trailing_calls`` reads them back.
-
-        Each thing owed gets a ``commit_trailing`` of its own, in this order:
-        the calls still registered; every batch a failed step commit left
-        behind (more than one only for a driver that kept going after a
-        failed commit — two steps' batches can carry the same file name, so
-        each needs its own ``env/trailing/KK/``); *tail*, the close-out
-        collection, which is owed like any other batch from here on. A
-        commit that fails costs only what it carried, while everything else
-        is still committed — a batch the filesystem refuses no longer takes
-        the unfinished step's calls down with it. Once everything has been
-        tried, the first failure is raised — to the close-out, which makes it
-        part of the trace's ``incomplete_reason``.
-
-        What failed is not retried: the close-out happens once and then
-        drops whatever is still owed (``docs/architecture_design.md`` §5.2);
-        a disk that just refused a write would most likely refuse it again.
-        """
-        if self._wal is None:
-            return
-        if tail is not None and tail.files:
-            self._pending_archive.append(tail)
-        failures: list[Exception] = []
-        if self._pending_calls:
-            try:
-                self._commit_trailing(list(self._pending_calls), None)
-            except Exception as exc:  # the calls stay registered; the batches still go
-                failures.append(exc)
-        index = 0
-        while index < len(self._pending_archive):
-            try:
-                self._commit_trailing([], self._pending_archive[index])
-            except Exception as exc:  # not retried by AgentRuntime; the next batch still goes
-                failures.append(exc)
-                index += 1
-                continue
-            del self._pending_archive[index]
-        if not failures:
-            return
-        for later in failures[1:]:
-            logger.warning(
-                "TraceWriter: another trailing commit failed as well: %s: %s",
-                type(later).__name__,
-                later,
-            )
-        raise failures[0]
-
-    def _commit_trailing(self, calls: list[PendingLLMCall], batch: _Collected | None) -> None:
-        """One ``commit_trailing``: *calls* of the unfinished step, or *batch* at the next position.
-
-        The bookkeeping — calls removed from the registry, run-record
-        versions taken — happens only once the commit succeeded, so a
-        failed one leaves everything it carried owed.
-        """
-        wal = self._wal
-        if wal is None:
-            return
-        manifest = wal.manifest
-        # The step index the Loop was working on. Derived from the manifest
-        # rather than a local counter so it stays right for a Loop that
-        # numbers its steps from something other than 0.
-        step = manifest.last_step_completed + 1 if manifest is not None else self._steps_written
-        # The entry this commit appends — the ``KK`` of its extra index and
-        # of its ``env/trailing/KK/``.
-        position = len(manifest.trailing) if manifest is not None else 0
-        extra, versions = self._encode_archive(batch, trailing=position)
-        wal.commit_trailing(
-            llm_calls=encode_llm_calls(step, calls, first_call=self._calls_flushed),
-            extra_files=extra,
-        )
-        self._run_versions = versions
-        if extra:
-            logger.info(
-                "TraceWriter: committed %d archive file(s) as trailing entry %d",
-                len(extra),
-                position,
-            )
-        if not calls:
-            return
-        del self._pending_calls[: len(calls)]
-        self._calls_flushed += len(calls)
-        # No StepRecord exists for these, so the accumulated model wait has
-        # nowhere to land. Cleared rather than carried, so a driver that
-        # drains and keeps going does not attribute it to a later step.
-        self._pending_llm_ms = 0.0
-        logger.info(
-            "TraceWriter: committed %d LLM call(s) of unfinished step %d as trailing",
-            len(calls),
-            step,
-        )
-
-
-def _encode_output_format(output_format: Any) -> EncodedOutputFormat | None:
-    try:
-        return encode_output_format(output_format)
-    except Exception:  # the trace must never be what fails a call
-        logger.warning(
-            "TraceWriter: could not encode the JSON schema of output_format %r; "
-            "its calls are recorded without one",
-            output_format,
-            exc_info=True,
-        )
-        return None
-
 
 def _task_setup_record(context: Any, *, record_secrets: bool) -> TaskSetupRecord | None:
     """The setup context as the trace records it: snapshotted, then redacted.
@@ -1197,19 +1129,3 @@ def _task_setup_record(context: Any, *, record_secrets: bool) -> TaskSetupRecord
         return TaskSetupRecord(context=document, redactions=RedactionLedger())
     redacted, entries = redact_value(document)
     return TaskSetupRecord(context=redacted, redactions=RedactionLedger(entries=entries))
-
-
-def _ended_in_success(record: Any) -> bool:
-    """Whether *record*'s own step ended the run in success: the agent called done on it.
-
-    The one outcome a step's record decides before it is handed over — a
-    Loop builds its done result from the very action result this reads
-    (``ActionResult.is_done``). A failing ending is the Loop's to protect:
-    it hands that step over through ``ReactLoop._surrender_failing``, which
-    keeps the outcome and attaches the recording failure to it.
-    """
-    return (
-        isinstance(record, StepRecord)
-        and record.origin == "policy"
-        and any(result.is_done for result in record.action_results)
-    )

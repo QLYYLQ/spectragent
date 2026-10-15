@@ -390,7 +390,7 @@ Agent-Loop 分离是整个框架从「browser-only」走向「multi-scenario」�
 
 **AOP Weaver**：AgentRuntime 在驱动 Loop 之前，通过 Weaver 读取所有 hook 的 `__intercepts__` 声明，为 agent/env/llm 以及作为 loop 角色的 StepRecorder 构建 `AOPProxy` 包装对象。Loop 接收到的是 wrapped 依赖 — 调用方法时 hook handler 透明触发。Weaver 只包装有拦截器的方法，无拦截器的角色直接返回原始对象（零开销）。
 
-**拦截点覆盖**：不同 Hook 声明各自需要的方法。TraceWriter 只在 `around_ainvoke` 里记录 LLM 调用（`proceed()` 之前登记，结束时记为 completed / failed / cancelled），并在 `loop.record_step` 后写入完整 step；MetricsCollector 用 `after_ainvoke` 统计成功调用的 token，用 `around_ainvoke` 统计计费了的失败调用（2026-10-10 修订，见 M27 与 `architecture_design.md` §4.6）。对于尚无方法对应的语义事件（如 PlanExecuteLoop 的「规划完成」），将其建模为 Agent/Loop Protocol 方法（如 `agent.parse_plan()`），再由 Hook 声明拦截。
+**拦截点覆盖**：统一 TraceWriter 在 `around_ainvoke` 发起前分配调用身份，结束时记录成功、失败或取消及 provider 用量；步骤执行由公开边界计时，`record_step` 封存后交给有界后台 WAL 任务。记录故障独立于 Agent 控制流。尚无方法对应的语义事件先建模为公开 Protocol 方法，再声明 AOP 拦截。
 
 **YAML 驱动的 hook 配置**：hook 走 conscribe 注册表，通过 YAML 配置启用、参数化、设置 blocking 属性。
 
@@ -538,7 +538,7 @@ Resolver 模式使 Capability 内部按需提供 fragment。以 Browser 为例�
 |-------------------|------|
 | 超时控制 (asyncio.wait_for) | AgentRuntime.execute() |
 | 错误处理 (try/except) | AgentRuntime.execute() |
-| 指标收集 (token/cost) | MetricsCollector Hook (M11) |
+| 指标收集 (provider token) | 统一 TraceWriter 记录组件 (M11) |
 | Step 循环编排 (for step in range) | ReactLoop.run() (M09) |
 | 系统 prompt 构建 | Agent.build_react_prompt() |
 | LLM 调用 | Loop 内部 |
@@ -583,7 +583,7 @@ AgentRuntime 的设计类比是 Spring 的 `ApplicationContext` — 它不执行
 **与当前 BaseReactAgent 的差异**：
 - 当前 Agent 的 `step()` 方法内含 LLM 调用 — 分离后 LLM 调用由 Loop 驱动
 - 当前 Agent 的 `run()` 内含 observe + act — 分离后 Loop 调用 env.observe/env.act
-- 当前 Agent 内含 metrics 收集 — 分离后由 MetricsCollector Hook 通过 AOP 拦截 llm.ainvoke 自动收集
+- 当前 Agent 内含 metrics 收集 — 分离后由统一 TraceWriter 通过 AOP 拦截 llm.ainvoke 一次采集
 
 #### 设计思考
 
@@ -631,26 +631,9 @@ WAL 设计借鉴了数据库 WAL 的核心思想：每步确认持久化后才�
 
 #### 业务实现
 
-实现两个核心 RuntimeHook：`TraceWriter`（全量落盘，blocking=True）和 `MetricsCollector`（token 统计，blocking=True 但开销极低）。将当前散落在 `BaseReactAgent.run()` 中的 metrics 逻辑迁移到 Hook 中。
+统一 `TraceWriter` 采集模型调用、执行错误、步骤指标与所选完整内容；没有独立的 metrics hook 或 Loop 用量账。`recording` 计划在采集前裁剪，轻量指标也落盘。公开 `execute_step` / `record_step` / `observe_terminal` 边界负责分段与计时，`around_ainvoke` 是成功、失败、取消调用的唯一账本。
 
-#### 业务逻辑
-
-**TraceWriter**（AOP 拦截 + lifecycle 回调）：
-- `__intercepts__` = `[Intercept("ainvoke", role="llm", advice="after"), Intercept("ainvoke", role="llm", advice="around"), Intercept("record_step", role="loop", advice="after")]`
-- `on_run_start` — 创建 WALWriter + run 目录 + 写入 config 快照 + 初始化 manifest
-- `after_ainvoke(result, ...)` — 暂存一次成功的 LLM 调用；`around_ainvoke` 暂存抛异常的调用并测量等待时间
-- `after_record_step(result, ...)` — Loop 交出完整 StepRecord 后写入本步观测、所有 LLM 消息、动作及结果；调用 `WALWriter.commit_step()` 原子更新 manifest，这才是持久化提交点
-- `on_run_end` — 写入 result.json、处理尚未形成完整 step 的消息并更新最终状态
-- blocking=True — 必须确认落盘后 agent 才能继续下一步
-
-**2026-10-10 修订**：上面 TraceWriter 一节里的 `Intercept("ainvoke", role="llm", advice="after")` 和 `after_ainvoke(result, ...)` 一条是 M11 当时的形状，已被 M27 取代：TraceWriter 的 `__intercepts__` 只剩 `[Intercept("ainvoke", role="llm", advice="around"), Intercept("record_step", role="loop", advice="after")]`，每次 LLM 调用只在 `around_ainvoke` 里记录——`proceed()` 之前登记（prompt、请求的 `output_format`、开始时间），返回记 `completed`，抛 `Exception` 记 `failed`，抛 `BaseException` 记 `cancelled`，一律重抛；等待时间仍在它的 `finally` 里累加。`after` 看不到被取消的调用，把成功的调用放回 `after` 会丢掉被取消调用的 prompt，或者把一次调用记两遍。以 M27 条目和 `architecture_design.md` §4.6、§5.4 为准。下面 MetricsCollector 的 `after` + `around` 不变。
-
-**MetricsCollector**（AOP 拦截 + lifecycle 回调）：
-- `__intercepts__` = `[Intercept("ainvoke", role="llm", advice="after"), Intercept("ainvoke", role="llm", advice="around")]`
-- `after_ainvoke(result, ...)` — 从 ChatInvokeCompletion.usage 中提取 token usage
-- 按 model 分组累加 prompt_tokens / completion_tokens / cached_tokens
-- `on_run_end` — 将聚合的 AgentMetrics + AgentUsage 附加到 AgentResult
-- blocking=True 但实际操作仅是内存累加，开销可忽略
+`record_step` 先封存稳定身份的段；WAL 提交和有界补写由后台记录任务完成，不占用 Agent 的恢复等待链。所有记录错误只改变记录健康，不改真实执行结局。manifest 保留稀疏已提交索引、连续完整前缀、缺口与历史诊断。schema 和具体接口以 `architecture_design.md` §4.6、§5 为准。
 
 #### 设计思考
 

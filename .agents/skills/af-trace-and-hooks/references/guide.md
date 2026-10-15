@@ -7,518 +7,76 @@ Two halves that only look separate. Hooks are how anything gets *into* a trace; 
 trace is the only thing an evaluator is allowed to read. §4 is the judgement call —
 read it before you add a field.
 
-## 1. No emitter, no opt-in
+## 1. Public AOP boundaries
 
-A hook declares what it wants to see; nothing calls it. Two surfaces, and they are
-dispatched by two different components:
+Hooks declare `__intercepts__`; Loop code calls public methods, never a hook or emitter.
+Runtime dispatches `on_run_start/end/error` and wraps agent/environment/model/loop roles.
+The loop role can include both the execution strategy and StepSink. Audit their public
+methods as a union. `TraceWriter` is the single recording component; no separate metrics
+hook or Loop usage tally exists.
 
-| Surface | Declared as | Dispatched by |
-|---|---|---|
-| Lifecycle | `on_run_start` / `on_run_end` / `on_run_error` | `AgentRuntime._dispatch_lifecycle` (`core/runtime.py:881`), directly, in `priority` order — on every termination path, external cancellation included (§2) |
-| Method interception | `__intercepts__ = [Intercept("observe", role="env", advice="after")]` | `Weaver` → `AOPProxy` (`core/aop/weaver.py:105`, `core/aop/proxy.py:168`) |
+`execute_step` starts a step; `record_step` stops its execution clock and seals its facts.
+`observe_terminal` gives terminal observation its own boundary. `around_ainvoke` registers
+calls before invoking and settles success, failure and cancellation without changing the
+result or exception. Every recording error is isolated; actual execution errors propagate.
 
-`AgentRuntime.prepare` wraps four roles (`core/runtime.py:385-390`): `agent`, `env`,
-`llm`, and `loop` — the last being the `StepRecorder`. Loop code receives the wrapped
-objects and calls plain methods. `ReactLoop` contains no `emit()`, no hook reference,
-and no stopwatch.
+Keep handlers blocking for snapshot and handoff order. Bounded WAL persistence and retries
+belong to the recording worker, not to the Agent's execution wait chain. Do not set the
+whole hook `blocking=False`. Use declared `Annotated` configuration fields and regenerate
+with the one config generator after changing them.
 
-### The rule that keeps it that way
+## 2. One invocation ledger and explicit scope
 
-> **If a semantic event does not correspond to an existing method, model it as an
-> Agent/Loop Protocol method. Do not add an emitter sidechannel.**
+`RecordingPlan` selects metrics/errors/trajectory/observations independently; `archive` is
+the existing receptor for environment evidence. Plan selection happens before copying or
+encoding. Metrics-only must never snapshot prompts, replies, screenshots or DOM. Result
+persistence also omits trajectory fields in that mode.
 
-`core/step_recorder.py` is the worked example and is worth reading in full (it is 91
-lines). "A step finished" had no method, so the WAL used to fake it by intercepting
-`llm.ainvoke` — a call that is neither one-per-step nor aware of anything that happens
-after it, and which reconstructed a two-key skeleton `{step, llm_output}`. The fix was
-a Protocol (`StepSink.record_step`, `step_recorder.py:34`), a default in-memory
-implementation that does no I/O (`StepRecorder`, `:52`), and the Weaver wrapping it
-under `role="loop"`. `ReactLoop` calls `await recorder.record_step(record,
-observation=observation)` once (`core/loops/react.py:824`) and does not know anyone is
-listening. `TraceWriter` intercepts it; a run with no hooks behaves identically, just
-without files.
+`RunCallContext` is instantiated by Runtime per execution and explicitly distributed.
+Its task-local scope carries caller, purpose and step without any global ContextVar.
+Main decisions use `agent_decision`; prompt helpers use `prompt_helper`. Calls receive a
+stable run/step/call identity before invocation. Restore steps create no new model calls.
 
-The same move is available to you. Wanting a new event is almost always evidence that
-some component should expose a method it currently keeps in a local variable.
+`RecordedCallMetrics` stores provider usage and status independently of complete messages.
+Failure usage counts; missing usage stays missing. `TokenUsage.from_llm_usage/combine` is
+the shared step/online/offline counting rule. Preserve cache read/write/image counts and
+explicit zero. No recording means None; measured no calls means zero. Known subtotals
+must travel with `UsageCoverage`, including every missing call. Never estimate prices.
 
-### Adding a hook
+Step execution time excludes extra recording snapshot work. Capture, encoding and WAL
+work is associated with the original step; `recording_timing(step)` reads a later committed
+measurement, avoiding a self-referential final timing field. Runtime alone times
+`execution_ms`; task drivers own total elapsed time.
 
-1. Subclass `HookBase` (`core/hooks/_registrar.py:39`), set `__registry_key__`.
-   **Dataclass or hand-written `__init__`?** A hook with no `__wiring__` receptor may
-   stay a `@dataclass` with `Annotated` fields (`metrics` does). A hook that carries a
-   receptor must **not** be one: conscribe's metaclass reads
-   `inspect.signature(cls.__init__)` at class creation, before `@dataclass` has
-   synthesised anything, so a receptor that is a dataclass field looks unreceived and
-   gets a `WiredField` over its default (af-add-a-receptor §6). Hand-write `__init__`
-   with named `Annotated` params for the knobs, and give the receptor a class-level
-   annotation somewhere in the MRO (`archive: list[ArchiverBase]`; use `list[...]` for a
-   list receptor, because the Composer reads the *class* annotation, not the signature,
-   to choose list / dict / single injection; put it on a mixin when the class body uses
-   the name for something else). `TraceWriter` is the worked case (M28 dropped its
-   `@dataclass`). `HookBase` itself is `@dataclass(eq=False)`: a hook is a stateful
-   object compared by identity, and without it a hand-written subclass inherits a
-   field-less `__eq__` under which every two instances are "equal". Compare hooks with
-   `is`.
-2. Declare `__intercepts__`. `__init_subclass__` (`_registrar.py:122`) raises
-   `MissingHandlerError` at *class creation* if `{advice}_{method}` is missing — the
-   typo never reaches a run.
-3. Set `priority` from the class constants, not a number:
-   `PRIORITY_ENRICH=10` / `PRIORITY_DEFAULT=100` / `PRIORITY_PERSIST=900`
-   (`_registrar.py:117-120`). It is a plain `ClassVar`, deliberately not a YAML knob —
-   ordering is a property of what the hook does. `hook: [trace_writer, metrics]` with
-   no priority once wrote `total_tokens: 0` into every `result.json`.
-4. Declare `**kwargs: Any` on `on_run_start`. The `RuntimeHook` Protocol does
-   (`core/hooks/base.py:101`) because the payload grows; absorbing it is how a hook fails
-   a type-check instead of a run.
-5. Enable in YAML (`configs/browser_use_local.yaml:229`).
+## 3. WAL, immutable segments and reader contracts
 
-Three assembly-time checks fire before the first LLM call, all in `prepare()`:
-`weaver.raise_for_unclaimed_roles()` (`weaver.py:142`, a role nobody wrapped),
-`weaver.audit_intercepts()` (`weaver.py:162`, run **after** `loop.weave()` because
-`agent.run` does not exist until then — an intercept that can never fire), and
-`validate_advice_shape` (`proxy.py:109`, sync/async mismatch, `blocking=False` on a sync
-target or on `around`).
+A sealed segment keeps its original step, calls, observations, action results and handed
+over archive batch even when its commit fails. Only a genuinely unfinished step's calls
+are trailing. Retry waits are bounded and background-only; buffer exhaustion describes
+a lost range and does not stop Agent execution. Public `flush()` allows a bounded explicit
+inspection wait without closing the run; normal step handoff does not call it.
 
-### `blocking` means concurrency, and the corollary bites
+WAL validates paths first, durably writes contents and records, fsyncs distinct directories,
+then atomically replaces the manifest. Orphans remain invisible. If rename succeeds but
+a later fsync fails, reconcile actual disk state before any following write; never let
+old memory roll the manifest back. Deduplication and archive versions follow reconciled
+commits. Trailing segment IDs distinguish retries from reused list positions.
 
-`blocking=True` awaits inline; `blocking=False` spawns a background task. Error
-isolation is a *consequence*, not a second meaning (`core/hooks/base.py:37-72`).
+The manifest retains sparse committed steps, expected range, missing steps, continuous
+`complete_through`, and historical problems. Repaired holes can restore current complete
+status without erasing history. `result.json` records execution outcome; recording health
+never replaces it. Current format is 5 and result schema is 3.0, with no compatibility shim.
 
-**A `blocking=False` handler cannot contribute to the trace.** It finishes after the WAL
-commit point, so whatever it computes lands on no artifact. `trace_writer` and `metrics`
-are both blocking for that reason; `blocking=False` is only for side channels nothing
-downstream reads (the designed one is `live_monitor`). An archive consumer (a hook with a
-non-empty `archive`) that is not blocking is refused at `prepare()` by `negotiate_archive`
-(architecture §4.5), naming the hook; a hook that does not declare `blocking` is taken as
-blocking, as the weaver takes it.
+Readers only follow committed indexes and validated paths inside the run directory.
+`RunTrace.call_metrics` and `trailing_call_metrics` do not decode prompts or pictures.
+`require_recording()` distinguishes unselected scope from corruption. Viewing and totals
+can use saved steps after a gap; history-dependent branch/export consumers must remain
+within their verified complete prefix and require the relevant selected channels.
 
-## 2. `around` — the advice for calls that fail or never finish (defect F17)
-
-`after` does not fire when the target raises. Usually right; twice wrong.
-
-A structured reply that does not match the schema leaves `ainvoke` as
-`StructuredOutputValidationError` — and the run *continues*, because the Loop feeds the
-model its own text back and takes another step. With only `after`, the WAL grew steps
-with no message file at all, and precisely the steps a researcher most wants to read
-(the ones where the model got it wrong); `metrics` undercounted by one call and its
-tokens, so metrics and `result` disagreed, and the gap widened with every correction a
-run needed. That is F17 (`HANDOFF_260916_findings.md:67`, fixed in `cf45ee2`).
-
-The second is cancellation. `CancelledError` is a `BaseException`: neither `after` nor
-an `except Exception` ever sees it, so a call a timeout or a Ctrl-C cut off took its
-prompt with it, and that prompt is the one exchange that says what the agent was doing
-when the run died.
-
-The fix is `around`, with no fourth advice type (`docs/architecture_design.md` §4.6).
-The two hooks use it differently:
-
-- `TraceWriter.around_ainvoke` (`core/hooks/trace_writer.py:579`) is the **only** place
-  an LLM call is recorded; `TraceWriter` has no `after_ainvoke`. It registers the call
-  *before* `proceed()` (`_register_call`, `:725`: the prompt from `args[0]`, the
-  requested reply model from `kwargs["output_format"]`, the start time) and settles it
-  exactly once: `completed` on return, `failed` on any `Exception`, `cancelled` on a
-  `BaseException`. It always re-raises. One advice owns the call from start to end, so
-  nothing has to correlate an `after` with an in-flight record, a correlation that would
-  break the day a Loop issues calls concurrently. The prompt is a JSON snapshot taken at
-  registration (`PendingLLMCall`, `core/trace/encoding.py:444`): a memory that mutates a
-  message object afterwards cannot rewrite what the record says the model was asked.
-- `MetricsCollector.around_ainvoke` (`core/hooks/metrics_collector.py:126`) counts
-  **only** the failures the provider billed: `StructuredOutputValidationError` and
-  `ModelOutputTruncatedError`. A dead socket carries no usage and no reply; counting it
-  would invent a call that never happened. Its successes still flow through `after`
-  (`around`'s innermost link *is* the before/after chain, `proxy.py:471`
-  `_apply_around_chain`), so nothing is double-counted.
-
-A registered call whose step never commits (the run timed out, was cancelled or crashed
-between the call and `record_step`) is committed at run end as a *trailing* call
-(`_flush_trailing`, `trace_writer.py:984`; §3). That needs the runtime's half too:
-`AgentRuntime.execute` dispatches `on_run_end` / `on_run_error` on **every** termination
-path, and catches `asyncio.CancelledError` to close a cancelled run out with an
-`agent_done=ERROR`, `error="Execution cancelled"` result before re-raising it unchanged
-(`docs/architecture_design.md` §4.2). Before that, external cancellation reached no
-lifecycle callback at all: no `result.json`, a manifest stuck at `writing`, and the
-in-flight prompt lost however the hook recorded it.
-
-"Unchanged" holds even when the close-out itself fails. A blocking hook that raises
-while a cancelled run is being closed out is logged, and the `CancelledError` is still
-what the caller sees. (`TraceWriter` itself raises nothing at close-out: what it cannot
-record goes into the trace's own ledger, `incomplete` with the reason.) Letting the hook's
-`OSError` win turned Ctrl-C into an ordinary task failure: a sweep's `except Exception`
-recorded it and started the next task, and a caller's `asyncio.timeout` saw `OSError`
-instead of `TimeoutError`. A hook whose close-out *awaits* can be cancelled inside it,
-and then the same rule is the hook's own: `TraceWriter` holds a cancellation of its
-close-out collection, finishes the close-out (a flush or `result.json` failure under it
-becomes part of the trace's `incomplete_reason`), and re-raises the cancellation, in
-`on_run_end` and `on_run_error` alike.
-
-A guard's veto has the same precedence, kept by the runtime alone: a close-out
-that fails under a `RunAbort` (some blocking hook raising in `on_run_end`) is logged and
-attached to the veto as a note, and the `RunAbort` is what
-`execute` raises, `raise_on_error=False` or not, so the sweep still stops. The run's own
-timeout is not an outside cancellation and does not outrank the veto either. When it
-expires while the Loop is still recording the vetoed step (`TraceWriter` collecting the
-refused page's evidence, the first thing on the veto's way out that can take long), the
-cancellation carries the veto (`loops.errors.RunEnded`), and `execute` closes the run
-out as vetoed and raises the `RunAbort` with the timeout as a note; a terminal result
-the Loop had built (a dead browser) is returned instead of a timeout result. For a hook
-nothing changes but the ledger: the step is not committed (the trace is `incomplete`
-from it on — `recording step t was cut off by a cancellation`), its calls land as
-trailing and the close-out collection takes the evidence the cut-off one never did. It is still the
-reason `after_record_step` must never swallow a `CancelledError` (af-add-a-loop §3.3).
-
-On every other path a close-out failure propagates as it is,
-and the run is closed out **once**: the success path's `_finish` sits in the `try`'s
-`else`, so a hook raising in `on_run_end` is not mistaken for the run failing and
-dispatched a second `on_run_end`. When you write a blocking hook, its `on_run_end`
-failing is the caller's error, not a retry.
-
-### The discipline that came with it: never fabricate a reply
-
-A failed or cancelled call is recorded with a `CallFailure` (`core/trace/models.py:255`),
-built by `_failure` (`core/trace/encoding.py:417`) from what the exception carried and
-nothing else:
-
-```python
-{"error": type(exc).__name__, "detail": str(exc)}
-# + "raw_output"      the provider handed over text the validator refused
-# + "partial_output"  what a reply cut off at the token ceiling had generated
-# + "stop_reason", "usage"   a failed call is billed all the same
-# — each one only when the exception carries it
-```
-
-Not a stand-in `ChatInvokeCompletion`. Whoever reads the trace must be able to tell a
-reply the model wrote from one the framework invented, and a completion-shaped object
-with an error inside it reads as the former. `raw_output` appears for a schema mismatch
-(the provider handed over text) and not for a dead socket (it did not).
-`partial_output` is deliberately not `raw_output`: that name means "as the validator
-saw it", and nothing validated a truncated reply. Every truncation raise site passes it
-(`openai_base`, `anthropic_base` with serialised `tool_use` input, `google`), because the
-Loop aborts the step on truncation and this record is the only place the text survives.
-A call still in flight when its step commits or the run closes out is `cancelled` with
-no failure record at all: no exception reached the hook. Apply the same rule anywhere
-you record a failure: say it failed, say what came back, invent nothing.
-
-The reply schema a structured call asked for lands once per run, content-addressed, at
-`messages/output_formats/<sha256>.json`, and every call references it
-(`OutputFormatRef`). It is the *requested* schema (the reply model's
-`model_json_schema()`), not what the provider compiled and sent, so it is no evidence the
-schema was honoured. A class whose schema cannot be generated is recorded as
-`output_format: null` with a warning; the trace is never what fails a call.
-
-**An image a prompt sent inline is stored once per run** (user ruling 2026-10-14,
-format 4). A call record holds the whole prompt, and an agent that keeps every screenshot
-in its memory (UI-TARS) sends all of them on every call: a 12-step recording stored 78
-copies (32.9 MB) of 10 distinct screenshots (3.9 MB). `encode_llm_call` now runs the
-snapshot through `store_prompt_images`: the `url` of any object under an `image_url` key
-that is a base64 `data:` URL is replaced, in place, by a `PromptImageRef`
-(`{"stored_image": "messages/images/<sha256><suffix>", "prefix": "data:image/png;base64,"}`),
-and the record's `image_refs` lists where each one stands (keys and indices from
-`messages`; written only when there is one). The file holds the decoded image when
-re-encoding the bytes in standard base64 gives the payload back exactly, and the URL's own
-text (`.txt`, `prefix: null`) when it does not (line breaks, missing padding, another
-alphabet), so the round trip is lossless either way; a URL that is not even UTF-8 stays
-inline. The files ride `EncodedLLMCall.images` into the same commit as the record,
-content-addressed like the reply schemas: written by the first commit that carries one,
-listed once in `manifest.prompt_images`. It lives in the encoding layer only; the hook and
-the Loop know nothing of it, and it never raises (a prompt it cannot walk is recorded as
-it is). Reading is the inverse, in `RunTrace` (§3).
-
-**`around` is also the only place a hook can measure time** — `before`/`after` see one
-edge each and neither sees a call that raised. `around_ainvoke` accumulates into
-`_pending_llm_ms` in a `finally` (`trace_writer.py:618`), and `_stamp_timings`
-(`trace_writer.py:680`) writes `duration_ms` / `llm_latency_ms` onto the `StepRecord` at
-the commit point; each call record also carries its own `latency_ms`. To add a
-per-step measurement: put it on `StepRecord`
-(`schemas/step_record.py:77,81`) with `None` meaning "not measured", fill it in
-`_stamp_timings` from an `around` intercept, never in the Loop — then extend
-`test_run_configuration.py::test_the_stamp_does_not_reach_the_prompt` (`:367`), because
-`StepRecord` is also the payload of `HistoryObs` and is therefore prompt-reachable.
-
-Two honest limits, documented at `trace_writer.py:697-714`: `duration_ms` for step 0
-includes environment setup (`on_run_start` fires *before* `setup_environment` on purpose,
-so a setup failure still lands in a trace), and **nothing orders intercept handlers** —
-`priority` orders lifecycle dispatch only and `core/aop/` never reads it. Treat the
-timing fields as readable only after the commit point.
-
-## 3. WAL ordering is the commit protocol
-
-One commit per step: `WALWriter.commit_step(step, record, *, fragments, llm_calls,
-extra_files)` (`core/trace/wal.py:191`), in this order (`wal.py:7-16`):
-
-0. validate everything before writing a byte: path rules, content addresses, a step
-   not already committed (`_Plan`, `wal.py:347`);
-1. every content file (fragment JSON and artifacts, one record per LLM call, output
-   schemas and prompt images this run has not committed yet, extra files) through
-   `fsio.write_durable`
-   (`core/trace/fsio.py:104`): temp file → write and flush → `fsync(file)` →
-   `os.replace`, and **no** directory `fsync`;
-2. `steps/NNN.json`, plus `steps/NNN.extra.json` when the step carries extra files;
-3. `fsio.fsync_dir` (`fsio.py:79`) once per distinct directory, deepest first, plus the
-   parent of every directory on the way that is not yet known durable;
-4. **`manifest.json` atomic rewrite — the commit point** (`fsio.atomic_write`,
-   `fsio.py:153`).
-
-The per-file data `fsync` stays; only the directory `fsync` is batched. Renaming a file
-whose bytes never reached the disk lets a power loss leave the manifest listing an empty
-file, and then the commit point lies. One directory `fsync` covers every entry written
-under that directory, so batching costs no guarantee and saves an `fsync` per file on
-a step that carries hundreds of evidence files. Atomic is still not durable without it.
-
-The flush before the data `fsync` is just as load-bearing, and harder to see.
-`os.fdopen` buffers up to `st_blksize` (4 KiB on APFS and ext4), so an `fsync` issued
-before the flush (or ahead of the write) covers an empty file for everything smaller
-than that, which is most of a trace: step records, the early manifests, call records,
-verdicts. Their bytes reach the kernel at `close()`, after the `fsync`. The count and the
-order of `fsync` calls are identical either way, so a test that counts cannot tell;
-`test_fsio.py` and the 1000-file budget test record each file's size at the moment of
-its data `fsync`. Do the same in any test that claims a file is durable.
-
-Directory `fsync` errors are **not** swallowed (`fsio.py:29-36`): skipped only on
-Windows; only `EINVAL` / `ENOTSUP` / `EOPNOTSUPP` from the `fsync` itself are tolerated
-("this filesystem cannot"); everything else raises, `os.open` failing with `EMFILE` /
-`EACCES` / `ENOENT` included. The old helper returned silently on all of them.
-`TraceWriter` is blocking, so such an error ends the run; a manifest claiming a commit
-it is not sure of would be worse. `F_FULLFSYNC` is deliberately off; the `wal.py` module
-docstring has the measurement. TODO(linux): every `fsync` cost and the 1000-file commit
-budget were calibrated on macOS APFS only; ext4 and xfs have not been measured. The
-budget is asserted by the benchmark test alone and `SPECTRAGENT_WAL_COMMIT_BUDGET_S`
-overrides it; nothing enforces it at run time.
-
-A failure anywhere before the manifest rename raises with the manifest untouched (on
-disk and in the writer's memory), so what was written is an orphan and the same commit
-can be retried. Crash recovery reads the manifest and ignores orphans: a complete,
-parseable `steps/007.json` for a step the manifest never listed **did not happen**.
-
-"Not yet known durable" in step 3 is what keeps a retry honest. A directory's name is an
-entry in its parent, durable only once the parent is `fsync`-ed. The writer remembers
-which directories `init_run` or a *successful* commit made durable (`_durable_dirs`,
-updated after the manifest rewrite like everything else it remembers), and `fsync`-s the
-parent of every other directory a commit writes under. "Created by this call", which is
-what `write_durable` reports, is not enough: a failed attempt already created `env/` and
-`env/steps/000/`, the retry finds them present, and the manifest would then commit files
-under names a power loss can still take back. M28's run end, flushing evidence with
-`commit_trailing` after a step commit failed, is the same case.
-
-`init_run` (`wal.py:128`) is the run's first commit, by the same rule: `config.json`
-through `write_durable` (which creates the run directory, and `traces/` on a sweep's first
-run), the WAL's subdirectories, one directory `fsync` each for the run directory and the
-parent of every directory created on the way, and only then the first manifest. A run
-exists once its manifest does (`discover_traces` looks for nothing else), so a failure
-before it leaves no run, and a run that exists has its config. The `fsync` of `traces/`
-looks redundant next to the manifest's own `fsync` of the run directory, and is not: no
-later commit `fsync`-s a directory outside the run, so this is the only place the run's
-own name becomes durable. `test_wal_batch_commit.py::TestInitRun` pins the order and
-every failure before the manifest.
-
-Files get the permissions a plain write would: the temp file is created with
-`os.open(..., 0o666)`, which the kernel masks with the umask, and a file being replaced
-keeps its mode (set before a byte is written). `tempfile.mkstemp` forced `0o600`, so every
-trace file and verdict came out owner-only: a shared `--evals-dir` was unreadable to a
-teammate or a dashboard, and a re-score reset a mode set on purpose. Whether a trace is
-private is the umask's (or the directory's) decision; reading the umask would race other
-threads, because `os.umask` can only set it.
-
-**One module spells the layout.** `core/trace/encoding.py` decides every file name and
-every byte that goes in it (`fragment_path`, `call_path`, `encode_fragment`,
-`encode_llm_call`, …); `TraceWriter`, `RunTrace` and the test fixtures
-(`tests/_helpers/trace_builder.py`) all go through it, because hand-written fixtures are
-how test traces drifted from what production writes.
-
-The WAL checks the paths (`_Plan`, `wal.py:347-520`): POSIX relative with no empty, `.`
-or `..` segment (`encoding.check_relative_path`, which the reader applies too), on every
-channel, the names `encoding.py` decides included. A fragment file is named by its key, a
-`FragmentFailure`'s `fragment_id` is free text, and "under `observations/`" is a prefix
-test that `observations/000_x/../../../escaped.json` passes, so that check is not
-redundant with the directory rule. An extra file may not take a name the WAL owns
-(`manifest.json`, `config.json`, `result.json`, anything under
-`steps/`, `observations/`, `messages/`, `evals/`), judged by the first segment, so
-`result.json/evidence.txt` cannot turn the result into a directory the close-out then
-fails to write; a path is a file or a directory of the run, never both (`env/a` with
-`env/a/b`, in one commit or across two, and no file on a WAL directory such as
-`messages/output_formats` or `messages/images`), or the commit would die half-way with
-`NotADirectoryError`; a prompt image is content-addressed and directly under
-`messages/images/`, and no call record lives there or among the schemas;
-a committed path is immutable; a content-addressed path names its data's full sha256
-(whole, or sharded `ab/cdef…`) and is written once per run however many commits list it,
-since deduplication skips the write, never that check. All of these compare paths case-
-and normalization-insensitively, through one key (`encoding.fold_path`, Unicode canonical
-caseless matching), because macOS's APFS stores `A.txt`/`a.txt`, and `café` precomposed
-and decomposed, as one file.
-
-Two things that are files but not steps: `commit_trailing(*, llm_calls, extra_files)`
-(`wal.py:259`) commits the calls of a step the Loop never surrendered (timeout,
-cancellation, crash), and whatever a producer flushes at run end, by the same
-protocol, *without* a step record and without advancing `last_step_completed`:
-claiming a step would put an action-less phantom in the manifest. Each call appends one
-`manifest.trailing` entry. And `finalize(status, *, incomplete_reason=None)` closes the
-trace — `complete`, or `incomplete` with what failed to be recorded; a trace stuck at
-`writing` is one nothing downstream uses. `commit_step` keeps `complete_through`, the end
-of the gapless run of committed steps from 0, so it stops before the first hole.
-
-**Two ledgers.** `result.json` says how the agent ended (`agent_done`: done, max_steps,
-error, timeout, vetoed); the manifest says whether the trace is a complete record
-(`status`: `writing` / `complete` / `incomplete`, plus `incomplete_reason` and
-`complete_through`). A run that timed out has a complete trace when everything it did was
-recorded. Never derive one ledger from the other: a reader that wants "only clean
-successes" asks both (the branch loader and the export make the trace's ledger a hard
-condition and the agent's a filter, `agent_outcome`).
-
-Fragments and calls are few per step, so the manifest indexes them itself:
-`fragments: {key: {file, artifact, failed}}` and `llm_calls`. Extra files are not:
-they are listed in `steps/NNN.extra.json` (path, size, sha256, content_addressed,
-meta) and the manifest holds only that path. It is rewritten whole on every commit and
-read eagerly by every reader, so inlining a step's hundred evidence files would make it
-grow quadratically with the run. `failed: true` exists because a `FragmentFailure` has
-no discriminator in its JSON and validates silently as an empty `ScreenshotObs`,
-`DOMObs` or `BrowserMetaObs`; the flag is written by the one component that knew which
-it was.
-
-**Environment evidence rides the same commit** (`docs/architecture_design.md`
-§5.2–§5.4). When a run binds archivers, `TraceWriter.after_record_step` pulls
-`env.collect_archive()` *before* the manifest commit, checks the batch, and hands it to
-that step's `commit_step(..., extra_files=...)` through `encoding.encode_archive_file`.
-The layout, every name spelled in `encoding.py` (`archive_step_path`,
-`archive_trailing_path`, `archive_blob_path`, `archive_run_path`):
-
-```
-env/                                   # only when archivers were bound and something was collected
-├── run.<capability_id>.json           # a capability's run record (fingerprint …): version 0
-├── run.<capability_id>.<k>.json       # version k ≥ 1, written when the content changed
-├── blobs/sha256/<ab>/<rest>           # content-addressed files, written once per run
-├── steps/NNN/<archiver_id>/<name>     # what step NNN's commit took
-└── trailing/KK/<archiver_id>/<name>   # what the KK-th commit_trailing took
-```
-
-Every archive file's `ExtraFileRecord.meta["archive"]` is an `ArchiveMeta`
-(`archiver_id`, `name`, `media_type`, `scope`, `captured_at`, `cycle`, `ids`,
-`run_version`). A blob shared by ten steps is one file listed in ten indexes. A run
-record is never rewritten (a committed path is immutable), so a changed re-emission
-becomes the next version and an identical one is dropped. Versions keep **capture order**,
-not commit order: collections are numbered, and an owed batch committed at close-out
-after a later collection's record already landed does not commit its own, older record,
-because as the next version it would read back as the latest fingerprint.
-
-The close-out gives **every owed thing its own `commit_trailing`**, in order: the calls
-still registered; each batch a failed step commit left behind (two steps' batches can
-share a file name, so each needs its own `env/trailing/KK/`, where `KK` is the entry's
-position in `manifest.trailing`, the same number as `steps/trailing_KK.extra.json`); the
-tail collected at run end. A commit that fails costs only what it carried, and that item
-is dropped, not retried: the close-out happens once and then clears what is still owed,
-so the `on_run_error` that follows `on_run_end` redoes nothing (a write the disk just
-refused rarely succeeds a few milliseconds later). The rest still lands, so a batch no
-retry can write never takes the unfinished step's calls or the tail down with it. Nothing
-is raised at close-out — the run's outcome is decided by then: every failure goes into
-the trace's `incomplete_reason`, as does a step whose collection or commit failed (a
-hole, `recording failed at step t: ...`), whatever the result reports. A hole mid-run
-does raise — `RecordingFailedError` from `after_record_step`, so the run stops there —
-unless the agent called done on that very step (its outcome is kept). The WAL knows none of this; archive files are ordinary `TraceFile`s.
-
-Every batch, the tail included, is checked before the WAL sees it: bound archivers only
-(content-addressed bodies too), single-segment `archiver_id` and `name` of at most 255
-bytes of UTF-8, every indexed string UTF-8-encodable, paths unique under `fold_path`,
-`check_relative_path`. What becomes owed is therefore never a batch that would fail the
-same way at every retry.
-
-### The read side
-
-`RunTrace` (`core/trace/reader.py:104`) resolves **every** file through the manifest;
-the commit point is also the reader's only directory. No accessor probes a file name or
-globs a directory, so whatever the manifest does not list is invisible to all of them
-alike. The one exception is `evals()` (M31): verdicts are written *after* the run, by
-`EvaluationRunner`, and never enter the manifest, so it lists `evals/*.json`, with the
-same containment rule as every listed path. It used to be otherwise: `step()` went
-through the manifest while the observation, message and screenshot reads probed and
-globbed, so a frame written for a
-step that never committed was in the trace for one accessor and not another. Do not add
-an accessor that stats a path; `tests/test_core/test_trace/test_crash_window.py` holds
-every accessor to this, for a crash before the rename and for hand-planted orphans.
-
-**And it opens nothing outside the run directory.** The manifest and the extra indexes
-are data, and traces travel (§6): a crafted one could list `/home/me/.ssh/id_rsa` as
-step 0's screenshot, and `screenshots` handed that path to an image judge, which
-base64-encoded the file into its request. Every listed path now goes through `_listed`
-(`reader.py:550`) before anything opens it: the WAL's own rule
-(`encoding.check_relative_path`), then containment once symlinks are resolved
-(`(trace_dir / rel).resolve()` inside `trace_dir.resolve()`). The three names a run
-gives itself (`manifest.json`, `config.json`, `result.json`) must not lead out either.
-A violation is a `TraceSchemaError` whose `.path` is the file that *listed* the path;
-the file it points at is never opened. `ExtraFileRecord.path` is checked when the index
-is read, because `extra_files` hands those paths to callers. A symlink that stays inside
-the run reads normally. `test_reader_errors.py::TestAPathTheTraceListsStaysInsideIt` has
-a row per accessor; add one when you add an accessor.
-
-**No SQLite.** Trace schemas are heterogeneous and evolve; querying is lazy, typed
-accessors, and what comes back is the type that was written:
-
-| Accessor | Returns | Not there |
-|---|---|---|
-| `config` / `result` | `TraceConfig` / `AgentResult` | `result` is `None` when `result.json` is absent |
-| `step_records` / `step(idx)` / `step_count` | `StepRecord`s, in manifest order | `step` → `None` |
-| `observation_fragment(step, key)` | the class registered under the qualified key, rebuilt by `from_trace` — or the `FragmentFailure` recorded in its place | `None` |
-| `screenshot(step)` / `screenshots` | the bytes / every committed frame's `Path`, step order | `None` / skipped |
-| `llm_messages(step)` | every `RecordedLLMCall` of the step, start order, each prompt image put back where its reference stood (byte for byte what was written; every image's digest checked on every read, nothing cached) | `[]` |
-| `trailing_calls` | the calls of the step never surrendered, images put back alike | `[]` |
-| `extra_files(step)` / `trailing_extra_files` | `ExtraFileRecord`s | `[]` |
-| `read_extra(path)` / `output_schema(sha256)` | bytes / `dict`, checked against size and sha256 | `KeyError` |
-| `archive_files(step, archiver_id)` | that step's step-scoped `ArchiveRecord`s for the archiver (content-addressed ones included), index order | `[]` |
-| `iter_archive(archiver_id, *, include_trailing=False)` | `(step, ArchiveRecord)` in step order, then `(None, record)` per trailing batch when asked | nothing yielded |
-| `blob(sha256)` | bytes of a committed content-addressed archive file (`read_extra(archive_blob_path(sha256))`) | `KeyError` |
-| `archive_run_file(capability_id)` | the `ArchiveRecord` of the highest committed run-record version; bytes via `read_extra(record.path)` | `None` |
-| `archive_lines(path, model)` (M30) | each non-blank line of a committed line-delimited archive file (`index.jsonl`, `replay.jsonl`) validated as the caller's `model`, in file order; bytes via `read_extra`; a line that is not JSON or does not validate → `TraceSchemaError` naming the file and line. With the accessors above it is how `RunTrace` satisfies `core/archive/source.py`'s `ArchiveReader`, the replay's read side | `KeyError` |
-| `evals()` (M31) | `verdict_slug` → `EvalResult` for every `evals/<slug>.json`, sorted by slug and walked in sorted order (which bad file is named first does not depend on the file system's listing order); not cached (a verdict written later is seen); `evals/` or a file in it resolving outside the run → `TraceSchemaError`, as is a file that does not read as an `EvalResult` | `{}` |
-| `committed_files` / `read_committed(path)` (M33) | every listing of a committed file in commit order — the run's own three files, what the manifest lists, what each committed extra index lists (a shared blob once per commit that lists it), then the reply schemas and the prompt images (`kind="prompt_image"`, once each) — as `CommittedFile` (`kind`, `step`, `fragment`, the index entry, the `ArchiveRecord` when it is evidence), each path checked as it is listed; the bytes through that file's own accessor's checks. What consumers that account for a whole run (M33's storage and archive bytes) read instead of walking the manifest's fields themselves | `KeyError` (`read_committed`) |
-
-"Not there" and "not readable" never collapse. Anything the manifest lists that cannot
-be read — corrupt JSON, bytes that are not UTF-8, an empty file, a schema mismatch, a
-listed file missing on disk, bytes that disagree with their index — raises
-`TraceSchemaError` naming the file (`.path`), through one helper (`_parse` /
-`_read_model`, `reader.py:710-725`). It parses with `json.loads` after a strict UTF-8
-decode and validates in pydantic's Python mode, never `validate_json`: that parser
-refuses nesting past 200 levels while pydantic-core's serializer, the writer, emits up
-to ~254, so a DOM page about a hundred elements deep, or a deep structured reply,
-committed fine and could never be read back. `result.json` is the one file allowed to be
-absent, because nothing lists it: `None` means the run died before writing it, while a
-file that exists and does not parse raises, because "written by an older schema" and
-"never finished" are different facts. Other `OSError`s (permissions, I/O) propagate;
-they say nothing about the trace. An evaluation process may never have imported the module that registers a
-fragment class, so a registry miss runs `discover` over `spectragent.schemas` and
-`spectragent.core.capabilities` once before giving up (`_fragment_class`, `:635`).
-
-**The trace has a format version, and only the current one is read.**
-`TraceManifest.format_version` is 4 (the per-step index, the trace's own ledger, and
-prompt images stored once); a manifest without the field reads as 1. `RunTrace` refuses
-any other version at construction (`_require_current_format`, checked on the parsed JSON
-before the model validates it), config and result included: a format-2 `error` meant
-either "the agent failed" or "the trace is incomplete", and no reader can tell which; a
-format-3 call record held every image inline. No shim (AGENTS.md §0.4): an old trace
-means re-running the task.
-
-**A call record is read in two moves.** `_read_call` parses the JSON, then
-`restore_prompt_images` walks the record's `image_refs`: at each position it validates
-the `PromptImageRef` and puts back `prompt_image_text(ref, bytes)`, the bytes read through
-`_prompt_image_bytes` (listed in `manifest.prompt_images`, `_listed`, on disk, hashing to
-the digest in their name); only then does `RecordedLLMCall` validate it. Errors name the
-file at fault: the call record for an uncommitted image, a bad position or a bad reference;
-the image file when it is missing, does not match its hash, or is a `.txt` that is not
-UTF-8. Validating a stored record directly as `RecordedLLMCall` fails on purpose (an
-object stands where `url` wants a string): nobody gets a prompt with its images silently
-missing. Tests that encode a call without committing it read it back through
-`tests/_helpers/trace_builder.py::read_back`.
-
-**Steps have an origin (M31).** `StepRecord.origin` is `policy` (a step the run's own
-agent decided; every step of every older trace reads back as `policy`, which is right for
-them), `restored` (a branch run's prefix: a copy of the source run's step, with the live
-observation the restorer re-reached and its `restoration` check) or `terminal` (the
-observation after the run ended: no model call, no action). Both new fields are defaulted,
-so neither `AgentResult.schema_version` nor `format_version` moved (§4.4's BACKWARD rule).
-A reader that means "what the agent did" filters on `origin == "policy"`.
-`AgentMetrics.steps` already counts only those, and `TraceView.action_history` keeps the
-restored actions apart (`restored_action_history`, each labelled `[restored]`) while
-`screenshots` keeps every frame, the terminal one included. Neither field reaches a prompt
-(`HistoryObs` renders actions, results and replies only).
-
-On-disk layout, every file name and every record model: `docs/architecture_design.md`
-§5.3.
+Archive pull happens at the segment boundary, with raw environment and no step argument.
+Collection batch ownership is not action causality; preserve each event's capture time
+and IDs. Cross-batch references cannot point at uncommitted objects. Replay source reads
+are environment operations and must not be swallowed as current-run recording failures.
 
 ## 4. What belongs in a trace — the judgement
 

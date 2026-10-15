@@ -50,7 +50,7 @@ import json
 from collections.abc import Callable, Iterator
 from functools import cached_property
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from conscribe import discover
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -70,7 +70,7 @@ from spectragent.core.trace.encoding import (
     restore_prompt_images,
     sha256_hex,
 )
-from spectragent.core.trace.errors import TraceSchemaError
+from spectragent.core.trace.errors import RecordingScopeError, TraceSchemaError
 from spectragent.core.trace.models import (
     TRACE_FORMAT_VERSION,
     ArchiveMeta,
@@ -81,6 +81,7 @@ from spectragent.core.trace.models import (
     ExtraFileRecord,
     FragmentFiles,
     PromptImageRef,
+    RecordedCallMetrics,
     RecordedLLMCall,
     StepManifestEntry,
     TraceConfig,
@@ -94,6 +95,7 @@ from spectragent.schemas.observation._registrar import (
     fragment_field_name,
 )
 from spectragent.schemas.observation.failure import FragmentFailure
+from spectragent.schemas.recording import RecordingTiming
 from spectragent.schemas.step_record import StepRecord
 
 M = TypeVar("M", bound=BaseModel)
@@ -153,13 +155,23 @@ class RunTrace:
 
     @property
     def step_count(self) -> int:
-        """Number of completed steps — from the manifest, no I/O."""
-        return self._manifest.last_step_completed + 1
+        """Number of committed steps, including saved steps after a recording gap."""
+        return len(self._manifest.steps)
 
     @cached_property
     def config(self) -> TraceConfig:
         """The configuration snapshot (``config.json``)."""
         return _read_model(self._own_file(CONFIG_FILE), TraceConfig)
+
+    def require_recording(
+        self,
+        *channels: Literal["metrics", "errors", "trajectory", "observations"],
+        consumer: str,
+    ) -> None:
+        """Refuse omitted content without declaring an intentionally light recording damaged."""
+        missing = tuple(name for name in channels if not getattr(self.config.recording, name))
+        if missing:
+            raise RecordingScopeError(consumer, missing)
 
     @cached_property
     def result(self) -> AgentResult | None:
@@ -214,6 +226,7 @@ class RunTrace:
         Otherwise the class registered under *key* rebuilds the fragment from
         its JSON and its artifact (:meth:`FragmentBase.from_trace`).
         """
+        self.require_recording("observations", consumer="observation reading")
         entry = self._entries.get(step)
         files = entry.fragments.get(key) if entry is not None else None
         if files is None:
@@ -248,6 +261,7 @@ class RunTrace:
         fragment, or its capture failed — :meth:`observation_fragment` says
         why it failed.
         """
+        self.require_recording("observations", consumer="screenshot reading")
         entry = self._entries.get(step)
         files = self._screenshot_files(entry) if entry is not None else None
         if files is None or files.failed or files.artifact is None:
@@ -264,6 +278,7 @@ class RunTrace:
         manifest's fragment index: a frame for a step that never committed
         is not a frame of this run.
         """
+        self.require_recording("observations", consumer="screenshot reading")
         paths: list[Path] = []
         for entry in sorted(self._manifest.steps, key=lambda item: item.step):
             files = self._screenshot_files(entry)
@@ -280,7 +295,9 @@ class RunTrace:
         Parse retries, structured replies the validator refused (with
         ``raw_output``), truncations (with ``partial_output``) and calls cut
         off by a cancellation (prompt only) alike. ``[]`` when the step did
-        not commit — its calls, if it made any, are in :attr:`trailing_calls`.
+        not commit or never made a call. A sealed step whose commit failed
+        stays associated with its original step; only calls of a step the
+        loop never surrendered appear in :attr:`trailing_calls`.
         Each prompt holds its inline images again, exactly as they were sent.
 
         Raises:
@@ -288,6 +305,7 @@ class RunTrace:
                 or naming an image it refers to that is missing or does not
                 match its hash.
         """
+        self.require_recording("trajectory", consumer="model trajectory reading")
         entry = self._entries.get(step)
         if entry is None:
             return []
@@ -300,8 +318,25 @@ class RunTrace:
         Their prompts hold their inline images again, as :meth:`llm_messages`'
         do.
         """
+        self.require_recording("trajectory", consumer="model trajectory reading")
         return [
             self._read_call(rel) for entry in self._manifest.trailing for rel in entry.llm_calls
+        ]
+
+    def call_metrics(self, step: int) -> list[RecordedCallMetrics]:
+        """Calls' lightweight facts, without loading prompts, schemas, or images."""
+        entry = self._entries.get(step)
+        if entry is None:
+            return []
+        return [self._read_call_metrics(rel, step=step) for rel in entry.call_metrics]
+
+    @cached_property
+    def trailing_call_metrics(self) -> list[RecordedCallMetrics]:
+        """Lightweight facts of calls whose executing step was never surrendered."""
+        return [
+            self._read_call_metrics(rel)
+            for entry in self._manifest.trailing
+            for rel in entry.call_metrics
         ]
 
     def extra_files(self, step: int) -> list[ExtraFileRecord]:
@@ -320,6 +355,27 @@ class RunTrace:
             if entry.extra_index is not None
             for record in self._read_index(entry.extra_index).files
         ]
+
+    def recording_timing(self, step: int) -> float | None:
+        """Committed recording overhead for *step*, including its persistence.
+
+        The measurement is committed later as indexed extra evidence. It
+        never rewrites the step record or becomes the next step's duration.
+        """
+        for rel, (record, index) in self._extra_records.items():
+            if record.meta.get("kind") != "recording_timing" or record.meta.get("step") != step:
+                continue
+            path = self._listed(rel, listed_in=index)
+            timing = _parse(
+                path, self.read_extra(rel), RecordingTiming.model_validate, "RecordingTiming"
+            )
+            if timing.step != step:
+                raise TraceSchemaError(
+                    f"{path} records timing for step {timing.step}, but its index says step {step}",
+                    path=path,
+                )
+            return timing.recording_ms
+        return None
 
     def read_extra(self, path: str) -> bytes:
         """The bytes of a committed extra file, checked against its index entry.
@@ -398,11 +454,13 @@ class RunTrace:
                 if fragment.artifact is not None:
                     files.append(self._listing(fragment.artifact, "artifact", entry.step, key))
             files += [self._listing(rel, "llm_call", entry.step) for rel in entry.llm_calls]
+            files += [self._listing(rel, "call_metrics", entry.step) for rel in entry.call_metrics]
             if entry.extra_index is not None:
                 files.append(self._listing(entry.extra_index, "extra_index", entry.step))
                 files += self._extra_listings(entry.extra_index, entry.step)
         for trailing in self._manifest.trailing:
             files += [self._listing(rel, "llm_call", None) for rel in trailing.llm_calls]
+            files += [self._listing(rel, "call_metrics", None) for rel in trailing.call_metrics]
             if trailing.extra_index is not None:
                 files.append(self._listing(trailing.extra_index, "extra_index", None))
                 files += self._extra_listings(trailing.extra_index, None)
@@ -801,6 +859,17 @@ class RunTrace:
         if step is not None and call.step != step:
             raise TraceSchemaError(
                 f"{path} records a call of step {call.step}, but is committed with step {step}",
+                path=path,
+            )
+        return call
+
+    def _read_call_metrics(self, rel: str, *, step: int | None = None) -> RecordedCallMetrics:
+        path = self._listed(rel)
+        call = _read_model(path, RecordedCallMetrics)
+        if step is not None and call.step != step:
+            raise TraceSchemaError(
+                f"{path} records call metrics of step {call.step}, "
+                f"but is committed with step {step}",
                 path=path,
             )
         return call

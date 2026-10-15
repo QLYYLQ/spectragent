@@ -56,10 +56,10 @@ from spectragent.core.loops._loop_fragments import (
 )
 from spectragent.core.loops.errors import ParseError, UnrepresentableActionError
 from spectragent.core.loops.react import ReactLoop
-from spectragent.core.loops.restore.source import recorded_observation, recorded_step_info
 from spectragent.core.negotiation.observation import IncompatibleFragmentError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_observation, recorded_step_info
 from spectragent.export.canonical import ThoughtSource
 from spectragent.export.errors import (
     ExportConfigError,

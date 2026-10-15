@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.prompt import PromptContribution, RestoredHistory
-from spectragent.schemas.recording import UsageCoverage
+from spectragent.schemas.recording import ExecutionError, UsageCoverage
 from spectragent.schemas.restoration import RestorationCheck
 
 
@@ -35,7 +35,8 @@ class TokenUsage(BaseModel):
             return None
         prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
         completion = int(getattr(usage, "completion_tokens", 0) or 0)
-        total = int(getattr(usage, "total_tokens", 0) or 0) or (prompt + completion)
+        reported_total = getattr(usage, "total_tokens", None)
+        total = prompt + completion if reported_total is None else int(reported_total)
         return cls(
             prompt_tokens=prompt,
             completion_tokens=completion,
@@ -88,6 +89,7 @@ class StepRecord(BaseModel):
     # "llm", "act"). Empty on healthy steps.
     error_phase: str = ""
     error: str | None = None
+    execution_errors: list[ExecutionError] = Field(default_factory=list)
     # Wall clock, in milliseconds. ``None`` means *not measured*, the same
     # honest sentinel ``token_usage`` uses — a zero here would claim a
     # step that took no time.
@@ -98,11 +100,8 @@ class StepRecord(BaseModel):
     # timing would then be missing from every Loop nobody remembered to
     # instrument.
     #
-    # ``duration_ms`` partitions the run's wall clock across its steps —
-    # it is measured from the previous step's commit, so step 0 spans
-    # from run start and therefore *includes environment setup* (browser
-    # launch, container pull). That is the honest reading: it is what
-    # producing step 0 actually cost.
+    # Public execution-step entry to surrender, excluding capture work
+    # attributed to this step. It does not include setup or prior commits.
     duration_ms: int | None = None
     # Of that, the part spent waiting on the model — summed across every
     # LLM call the step made, including calls that raised (a refused
