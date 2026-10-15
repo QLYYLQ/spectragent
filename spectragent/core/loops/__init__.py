@@ -28,7 +28,6 @@ from spectragent.core.loops.validation import (
     IncompatibleError,
     IncompatibleLoopInputError,
     MissingEnvironmentError,
-    validate_compatibility,
 )
 
 __all__ = [
@@ -45,7 +44,6 @@ __all__ = [
     "UnrepresentableActionError",
     "carry_outcome",
     "carried_outcome",
-    "validate_compatibility",
     "IncompatibleCheckpointError",
     "IncompatibleError",
     "IncompatibleLoopInputError",

@@ -70,9 +70,9 @@ class Weaver:
         self._hooks = active_hooks
         self._index: dict[tuple[str, str], list[InterceptorEntry]] = {}
         self._claimed_roles: set[str] = set()
-        # {role: raw target} — the *unwrapped* object, so the audit can
-        # inspect it without going through the proxy it just built.
-        self._wrapped_targets: dict[str, Any] = {}
+        # A role may be served by several objects (Loop phases and its step
+        # sink, or main and helper models). Audit their combined surface.
+        self._wrapped_targets: dict[str, list[Any]] = {}
         self._background = background if background is not None else BackgroundTasks()
         self._build_index()
 
@@ -123,7 +123,7 @@ class Weaver:
             no interceptors apply.
         """
         self._claimed_roles.add(role)
-        self._wrapped_targets[role] = target
+        self._wrapped_targets.setdefault(role, []).append(target)
 
         method_interceptors: dict[str, list[InterceptorEntry]] = {}
         for (r, method), interceptors in self._index.items():
@@ -198,27 +198,29 @@ class Weaver:
             point = f"{role}.{method}"
             hook_ids = sorted({hook_id_of(h) for h, _, _ in interceptors})
 
-            target = self._wrapped_targets.get(role)
-            if target is None:
+            targets = [
+                target for target in self._wrapped_targets.get(role, []) if target is not None
+            ]
+            if not targets:
                 dead.append((point, hook_ids, f"this run has no {role!r} object to intercept"))
                 continue
 
-            original = static_target_method(target, method)
-            if original is MISSING:
-                dead.append(
-                    (point, hook_ids, f"{type(target).__name__} has no attribute {method!r}")
-                )
+            methods = [static_target_method(target, method) for target in targets]
+            originals = [original for original in methods if original is not MISSING]
+            if not originals:
+                names = ", ".join(type(target).__name__ for target in targets)
+                dead.append((point, hook_ids, f"{names} has no attribute {method!r}"))
                 continue
 
-            # Shape is only checkable on a real function. Anything else —
-            # a property, a Mock, a callable instance — exists, and
-            # guessing its await-ability would reject working setups.
-            if not (inspect.isfunction(original) or inspect.ismethod(original)):
-                continue
-            try:
-                validate_advice_shape(original, interceptors, method)
-            except UnsupportedAdviceError as exc:
-                dead.append((point, hook_ids, str(exc)))
+            # Every target that exposes this point must support its advice.
+            # Objects serving other methods of the role do not make it dead.
+            for original in originals:
+                if not (inspect.isfunction(original) or inspect.ismethod(original)):
+                    continue
+                try:
+                    validate_advice_shape(original, interceptors, method)
+                except UnsupportedAdviceError as exc:
+                    dead.append((point, hook_ids, str(exc)))
 
         if dead:
             raise DeadInterceptError(dead=dead)

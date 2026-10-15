@@ -24,7 +24,7 @@ the source and both values.
    for each ``k < t`` the recorded observation is rendered by the agent's own
    ``build_react_prompt`` and every recorded model call of the step is
    replayed through ``parse_react_output`` and ReAct's memory protocol
-   (``ReactLoop._remember_rejected`` / ``_cap_actions`` / ``_remember_reply``
+   (``ReactLoop.remember_rejected`` / ``cap_actions`` / ``remember_reply``
    — the same methods the live step uses). The replay checks itself: before
    each call the context must equal the recorded prompt, and after a step's
    last call the actions, the dropped count and the reply must equal the
@@ -33,7 +33,7 @@ the source and both values.
    each restored step is recorded (``origin="restored"``) as it arrives;
 4. the configured ``branch_instruction`` (``none`` by default) is written
    into memory, once; then the policy step decides on the restored, verified
-   observation of step *t* (``ReactLoop._run_step``), and ``continue_steps``
+   observation of step *t* (``ReactLoop.execute_step``), and ``continue_steps``
    more steps may follow;
 5. at the step budget's end the run ends with ``agent_done=max_steps``, and
    the terminal observation is recorded (``terminal_observation`` is on by
@@ -64,9 +64,8 @@ from spectragent.core.loops._registrar import LoopInput
 from spectragent.core.loops.errors import ParseError, RunAbort
 from spectragent.core.loops.react import (
     ReactLoop,
-    _model_name,
-    _serialize_llm_output,
-    _UsageTally,
+    ReactRun,
+    serialize_llm_output,
 )
 from spectragent.core.loops.restore import (
     RestorationContext,
@@ -78,16 +77,16 @@ from spectragent.core.loops.restore import (
 from spectragent.core.loops.restore.prefix_replay import (  # noqa: F401 — registration
     PrefixReplayRestorer,
 )
-from spectragent.core.loops.restore.source import first_difference, recorded_form
-from spectragent.core.loops.run import LoopRun
 from spectragent.core.loops.validation import IncompatibleCheckpointError
 from spectragent.core.trace.models import RecordedLLMCall, TraceNegotiation
+from spectragent.core.trace.reconstruction import first_difference, recorded_form
 from spectragent.core.trace.redaction import OMITTED
 from spectragent.core.trace.sources import not_closed_reason, past_complete_reason
 from spectragent.schemas.action import Action
 from spectragent.schemas.agent_result import AgentResult
 from spectragent.schemas.observation.dynamic_model import summarize_observation
 from spectragent.schemas.observation.fragments import StepInfoObs
+from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.restoration import Checkpoint, RestorationCheck
 from spectragent.schemas.step_record import StepRecord
 
@@ -138,7 +137,7 @@ BRANCH_INSTRUCTIONS: Mapping[str, str] = MappingProxyType(
 
 
 @dataclass(kw_only=True)
-class BranchRun(LoopRun):
+class BranchRun(ReactRun):
     """A branch run's books: a :class:`LoopRun` plus its source.
 
     Attributes:
@@ -160,6 +159,7 @@ class BranchRun(LoopRun):
     """
 
     source: SourceRun
+    is_branch: bool = True
     step_info: StepInfoObs | None = None
     action_names: frozenset[str] = frozenset()
     action_bindings: Mapping[str, str] = field(default_factory=dict)
@@ -265,7 +265,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             IncompatibleCheckpointError: The source cannot be branched by
                 this assembly — every problem at once.
         """
-        self._validate_slots(agent)
+        self.validate_slots(agent)
         inputs = deps.get("loop_inputs") or {}
         self.check_loop_inputs(inputs)
         source = SourceRun.open(inputs["checkpoint"])
@@ -419,8 +419,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             agent,
             task,
             ctx,
-            model_id=_model_name(ctx["llm"]),
-            usage=_UsageTally(),
+            step_executor=ctx.get("step_executor", self),
             source=source,
             step_info=source.step_info(t),
             action_names=frozenset(d.name for d in ctx.get("active_descriptors") or ()),
@@ -438,7 +437,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         for offset in range(budget):
             if offset == 0:
                 self._add_branch_instruction(run)
-            result = await self._run_step(
+            result = await run.step_executor.execute_step(
                 run,
                 t + offset,
                 observation=observation if offset == 0 else None,
@@ -446,9 +445,9 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             )
             if result is not None:
                 return result
-        return await self._with_terminal(
+        return await self.with_terminal(
             run,
-            self._build_result(
+            self.build_result(
                 run, agent_done="max_steps", env_status="success", answer=run.last_answer
             ),
         )
@@ -494,7 +493,9 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         memory = run.memory
         observation = source.observation(step, run.negotiated_obs)
         try:
-            new_msgs = agent.build_react_prompt(observation)
+            new_msgs = await agent.build_react_prompt(
+                observation, context=ReactPromptContext(step=step, phase="history", is_branch=True)
+            )
         except RunAbort as veto:
             await self._note_replay_veto(run, step, veto)
             raise
@@ -531,7 +532,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     ],
                 )
             reply = self._recorded_reply(source, call, output_model, step, index)
-            output_text = _serialize_llm_output(reply)
+            output_text = serialize_llm_output(reply)
             try:
                 actions = agent.parse_react_output(reply)
             except RunAbort as veto:
@@ -539,7 +540,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                 raise
             except ParseError as exc:
                 parse_failure = exc
-                self._remember_rejected(memory, output_text, exc)
+                self.remember_rejected(memory, output_text, exc)
                 continue
             parse_failure = None
 
@@ -550,8 +551,8 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             dropped: list[str] = []
         else:
             run.parse_error_streak = 0
-            kept, dropped = self._cap_actions(actions, step)
-            self._remember_reply(memory, output_text, dropped)
+            kept, dropped = self.cap_actions(actions, step)
+            self.remember_reply(memory, output_text, dropped)
         self._check_replayed_step(run, step, record, kept, dropped, output_text)
 
     def _recorded_reply(
@@ -648,7 +649,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             error=str(veto),
         )
         run.step_records.append(record)
-        await self._surrender_vetoed(run.recorder, record, None, veto)
+        await self.surrender_vetoed(run.recorder, record, None, veto)
 
     # 3. the environment
 
@@ -677,7 +678,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                     record = self._restore_failure(
                         run, exc.check.step, str(exc), exc.check, exc.observation
                     )
-                    return await self._end_failing(
+                    return await self.end_step(
                         run,
                         record,
                         exc.observation,
@@ -691,12 +692,12 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                         "BranchLoop: run aborted while restoring step %d: %s", step, veto
                     )
                     record = self._restore_failure(run, step, str(veto), None)
-                    await self._surrender_vetoed(run.recorder, record, None, veto)
+                    await self.surrender_vetoed(run.recorder, record, None, veto)
                     raise
                 except Exception as exc:
                     logger.exception("BranchLoop: restoring step %d failed", step)
                     record = self._restore_failure(run, step, f"{type(exc).__name__}: {exc}", None)
-                    return await self._end_failing(
+                    return await self.end_step(
                         run,
                         record,
                         None,
@@ -713,7 +714,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
                 record = self._restored_record(run, restored.step, restored.check)
                 run.step_records.append(record)
                 run.prev_step_record = record
-                await self._surrender(run.recorder, record, restored.observation)
+                await self.surrender(run.recorder, record, restored.observation)
                 step = restored.step + 1
         raise IncompatibleCheckpointError(
             run.source.name,
@@ -802,7 +803,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
             UserMessage(content=template.format(recorded_reply=record.llm_output))
         )
 
-    def _loop_fragment_builders(self, run: LoopRun, step_idx: int) -> dict[str, Any]:
+    def loop_fragment_builders(self, run: ReactRun, step_idx: int) -> dict[str, Any]:
         """ReAct's builders, with ``loop.step_info`` pinned to the source's.
 
         The policy step is told the step budget and the date the source
@@ -812,7 +813,7 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):
         """
         pinned = run.step_info if isinstance(run, BranchRun) else None
         if pinned is None:
-            return super()._loop_fragment_builders(run, step_idx)
+            return super().loop_fragment_builders(run, step_idx)
         max_steps, today = pinned_step_info(pinned, today_override=self.today_override)
         return loop_fragment_builders(
             task=run.task,
