@@ -398,6 +398,97 @@ def create_app() -> typer.Typer:
         )
         raise typer.Exit(code)
 
+    @config_app.command("template")
+    def config_template(
+        ctx: typer.Context,
+        source: Annotated[
+            Path | None,
+            typer.Option(
+                "--from",
+                exists=True,
+                dir_okay=False,
+                help="Expand an existing YAML selection, preserving values unless a flag replaces a component.",
+            ),
+        ] = None,
+        agent: str | None = typer.Option(
+            None, help="Agent registry key; new templates use browser_use."
+        ),
+        loop: str | None = typer.Option(None, help="Loop registry key; new templates use react."),
+        llm: str | None = typer.Option(None, help="Full LLM registry key, e.g. openai.direct."),
+        model: str | None = typer.Option(None, help="Model name; required for a new template."),
+        environment: str | None = typer.Option(
+            None, help="Environment registry key; new templates use browser."
+        ),
+        backend: str | None = typer.Option(
+            None, help="Browser provider registry key; new templates use local_chrome."
+        ),
+        record: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--record",
+                help="Repeat for metrics, errors, trajectory, observations; or use all/none for these four channels. New templates use metrics.",
+            ),
+        ] = None,
+        replayability: str | None = typer.Option(
+            None,
+            help="Replayability registry key (none/pinned). Network source and archive remain independent.",
+        ),
+        output_path: Annotated[
+            Path | None,
+            typer.Option(
+                "--output",
+                help="Write a new YAML file; by default write YAML to stdout. Existing files are refused.",
+            ),
+        ] = None,
+        json_output: bool = typer.Option(False, "--json"),
+    ) -> None:
+        """Write a fully expanded, commented YAML template without launching anything.
+
+        Without --from, select BrowserUse/ReAct, simple memory, a local browser,
+        instant input, BrowserUse DOM cleaning/text, live network, no pinning or
+        environment archive, and metrics only. Supply --model; no model is guessed.
+        --from supports any valid run skeleton, including archive/branch configs.
+        Required missing fields are errors. Task-specific checks use config check.
+        """
+        from spectragent.cli.config_templates import TemplateChoices, render_config_template
+
+        output = _output(ctx, json_output)
+        try:
+            raw = yaml.safe_load(source.read_text(encoding="utf-8")) if source else None
+            if source is not None and not isinstance(raw, dict):
+                raise ValueError("The configuration must be a YAML mapping")
+            template = render_config_template(
+                TemplateChoices(
+                    agent=agent,
+                    loop=loop,
+                    llm=llm,
+                    model=model,
+                    environment=environment,
+                    backend=backend,
+                    recording=tuple(record) if record is not None else None,
+                    replayability=replayability,
+                ),
+                raw,
+            )
+            if output_path is not None:
+                with output_path.open("x", encoding="utf-8") as stream:
+                    stream.write(template)
+            if output.json:
+                output.emit(
+                    {"yaml": template, "output_path": str(output_path) if output_path else None}
+                )
+            elif output_path is None:
+                sys.stdout.write(template)
+            else:
+                Console(stderr=True).print(Text(f"Wrote {output_path}"))
+        except Exception as exc:
+            error = _validation_error(exc)
+            if output.json:
+                output.emit({"error": error, "exit_code": 2})
+            else:
+                Console(stderr=True).print(Text(json.dumps(error, ensure_ascii=False)))
+            raise typer.Exit(2) from None
+
     @components_app.command("list")
     def components_list(
         ctx: typer.Context,
