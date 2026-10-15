@@ -372,7 +372,7 @@ class LexBenchBrowserEvaluator(LLMJudgeEvaluator):
             "scoring_items": _rubric_items(ref),
             "agent_answer": view.answer or "No answer provided",
             "steps_count": view.step_count or _UNKNOWN,
-            "execution_time": view.end_to_end_ms or _UNKNOWN,
+            "execution_time": view.execution_ms if view.execution_ms is not None else _UNKNOWN,
             "screenshot_count": screenshot_count,
         }
 

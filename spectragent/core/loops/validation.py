@@ -1,12 +1,11 @@
 """Compatibility validation — checks Agent satisfies Loop's required slots.
 
-Slot validation is implemented in ``AgentLoopBase._validate_slots()``.
+Slot validation is implemented in ``AgentLoopBase.validate_slots()``.
 This module provides the ``IncompatibleError`` type, the loop-input and
 checkpoint errors a Loop raises at assembly (``IncompatibleLoopInputError``,
 ``IncompatibleCheckpointError``), the error for a Loop that needs an
-environment the run lacks (``MissingEnvironmentError``), and a thin
-``validate_compatibility`` wrapper for callers that prefer a free-function
-interface.
+environment the run lacks (``MissingEnvironmentError``). Public slot validation
+is the Loop's ``validate_slots`` method; there is no forwarding wrapper.
 
 See docs/execution_dag.md M03 "兼容性验证".
 """
@@ -148,12 +147,3 @@ class IncompatibleCheckpointError(Exception):
             for name, (recorded, current) in sorted(self.mismatches.items())
         ]
         super().__init__(f"Cannot branch from {source}: " + "; ".join(lines))
-
-
-def validate_compatibility(agent: Any, loop: Any) -> None:
-    """Thin wrapper — delegates to ``loop._validate_slots(agent)``.
-
-    Raises:
-        IncompatibleError: If the agent is missing required slots.
-    """
-    loop._validate_slots(agent)

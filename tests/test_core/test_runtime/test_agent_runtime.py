@@ -9,9 +9,11 @@ import pytest
 from spectragent.core.capabilities._registrar import CapabilityBase
 from spectragent.core.environments._registrar import EnvironmentBase
 from spectragent.core.loops import ReactLoop
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.validation import IncompatibleError
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
 # ── Shared fixtures ───────────────────────────────────────────
@@ -37,9 +39,10 @@ class SimpleEnv(EnvironmentBase):
 class SimpleAgent:
     # Declare the action as required so runtime negotiation
     # keeps the ``done`` descriptor in the active set.
+    __execution_limit_fields__ = frozenset()
     __wiring__ = {"action": ("action", ["rt_simple_cap.done"])}
 
-    def build_react_prompt(self, obs):
+    async def build_react_prompt(self, obs, *, context: ReactPromptContext):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, llm_output):
@@ -59,6 +62,11 @@ class MockLLM:
 
     async def ainvoke(self, messages, **kwargs):
         return MockCompletion()
+
+    name = "test-model"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
 
 
 class MockMemory:
@@ -130,7 +138,7 @@ class _MockLoopBase:
     __optional_slots__: set[str] = set()
     __requires_env__ = True
 
-    def _validate_slots(self, agent):
+    def validate_slots(self, agent):
         pass
 
     def check_loop_inputs(self, inputs):
@@ -138,13 +146,16 @@ class _MockLoopBase:
 
     def weave(self, agent, **deps):
         self.ctx = deps
-        loop = self
+        loop: Any = self
 
         async def run(task, **kw):
             return await loop._execute(agent, task, **kw)
 
         agent.run = run
         return agent
+
+    def execution_limits(self):
+        return ExecutionLimits()
 
 
 class _SlowLoop(_MockLoopBase):
@@ -182,7 +193,7 @@ class _SpyLoop(_MockLoopBase):
             timestamp=datetime.now(UTC),
             env_status=EnvironmentStatus.SUCCESS,
             agent_done=AgentDoneStatus.DONE,
-            metrics=AgentMetrics(end_to_end_ms=0, steps=0, usage=AgentUsage()),
+            metrics=AgentMetrics(execution_ms=0, steps=0, usage=AgentUsage()),
         )
 
 
@@ -281,12 +292,14 @@ class TestSeedMessages:
         from spectragent.core.llm.messages import SystemMessage
 
         class SeedingAgent(SimpleAgent):
-            def prepare(self, task, action_descriptors, max_actions_per_step):
+            __execution_limit_fields__ = frozenset({"max_actions_per_step"})
+
+            def prepare(self, task, action_descriptors, execution_limits):
                 calls.append(
                     {
                         "task": task,
                         "names": sorted(d.name for d in action_descriptors),
-                        "max_actions_per_step": max_actions_per_step,
+                        "max_actions_per_step": execution_limits.max_actions_per_step,
                     }
                 )
                 return [SystemMessage(content=f"seed for {task}")]
@@ -400,9 +413,10 @@ class TestActionNegotiation:
         from spectragent.core.negotiation import IncompatibleActionError
 
         class NeedsBash:
+            __execution_limit_fields__ = frozenset()
             __wiring__ = {"action": ("action", ["sandbox.bash"])}
 
-            def build_react_prompt(self, obs):
+            async def build_react_prompt(self, obs, *, context: ReactPromptContext):
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, out):
@@ -465,9 +479,10 @@ class TestCompositeEnvNarrowing:
         seen: list[str] = []
 
         class FinishDoneAgent:
+            __execution_limit_fields__ = frozenset()
             __wiring__ = {"action": ("action", ["finish.done"])}
 
-            def build_react_prompt(self, obs):
+            async def build_react_prompt(self, obs, *, context: ReactPromptContext):
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, out):
@@ -488,9 +503,10 @@ class TestCompositeEnvNarrowing:
         from spectragent.core.negotiation import IncompatibleActionError
 
         class NeedsBash:
+            __execution_limit_fields__ = frozenset()
             __wiring__ = {"action": ("action", ["sandbox.bash"])}
 
-            def build_react_prompt(self, obs):
+            async def build_react_prompt(self, obs, *, context: ReactPromptContext):
                 return [{"role": "user", "content": "go"}]
 
             def parse_react_output(self, out):
@@ -587,3 +603,152 @@ class TestDescriptorContext:
         fragments = seen["fragments"]
         assert fragments == negotiated.active_fragments
         assert "loop.task" in negotiated.active_fragments
+
+
+async def test_action_snapshots_cannot_change_the_guard_or_recorded_contract():
+    class MutatingAgent(SimpleAgent):
+        def prepare(self, *, task, action_descriptors):
+            action_descriptors[0].params["changed"] = "changed"
+            action_descriptors.clear()
+            return []
+
+    loop = _SpyLoop("snapshot", [])
+    runtime = AgentRuntime.for_agent(_mk(MutatingAgent(), loop, _make_env()), AGENT_ID)
+    runtime.prepare()
+    snapshot = runtime.action_space
+    snapshot.descriptors[0].params["changed"] = "changed"
+    snapshot.descriptors.clear()
+    snapshot.action_bindings["done"] = "changed.action"
+    runtime.active_descriptors.clear()
+    runtime.seed_messages("t")
+    assert [item.name for item in runtime.action_space.descriptors] == ["rt_simple_cap.done"]
+    assert runtime.action_space.action_bindings["done"] == "rt_simple_cap.done"
+    assert "changed" not in runtime.action_space.descriptors[0].params
+    assert (await loop.ctx["act_fn"](Action(name="rt_simple_cap.done"))).is_done
+    rejected = await loop.ctx["act_fn"](Action(name="changed.action"))
+    assert not rejected.success
+    assert "not in the active action set" in rejected.error
+
+
+async def test_runtime_resolves_model_identity_once_and_shares_the_value():
+    class CountingModel(MockLLM):
+        reads = 0
+
+        @property
+        def model(self):
+            self.reads += 1
+            return "resolved-model"
+
+    class IdentityHook:
+        blocking = True
+        seen: dict[str, Any] = {}
+
+        async def on_run_start(self, **kwargs):
+            self.seen = kwargs
+
+    llm = CountingModel()
+    loop = _SpyLoop("identity", [])
+    hook = IdentityHook()
+    run = make_run(
+        agent=SimpleAgent(), loop=loop, env=_make_env(), llm=llm, memory=MockMemory(), hooks=[hook]
+    )
+    runtime = AgentRuntime.for_agent(run, AGENT_ID)
+    await runtime.execute("t", task_id="identity-task")
+    assert llm.reads == 1
+    assert hook.seen["identity"] is loop.ctx["identity"]
+    assert hook.seen["identity"].model_id == "resolved-model"
+    assert hook.seen["identity"].task_id == "identity-task"
+    assert hook.seen["llm_model"] == "resolved-model"
+
+
+async def test_helper_models_share_llm_interception_and_receive_a_fresh_run_context():
+    from spectragent.core.aop.advice import Intercept
+    from spectragent.core.hooks._registrar import HookBase
+
+    class PromptOwner(HookBase):
+        __intercepts__ = [Intercept("ainvoke", role="llm", advice="around")]
+
+        def __init__(self):
+            super().__init__()
+            self.helper_llms = [MockLLM()]
+            self.contexts = []
+            self.interceptions = 0
+
+        def bind_prompt_models(self, models, call_context):
+            self.models = models
+            self.contexts.append(call_context)
+
+        async def around_ainvoke(self, proceed, *args, **kwargs):
+            self.interceptions += 1
+            return await proceed()
+
+    owner = PromptOwner()
+    runtime = AgentRuntime.for_agent(
+        _mk(SimpleAgent(), _SpyLoop("helper", []), _make_env(), hooks=[owner]), AGENT_ID
+    )
+    runtime.prepare()
+    first = owner.contexts[-1]
+    await owner.models[0].ainvoke([])
+    assert owner.interceptions == 1
+    assert owner.helper_llms[0] is not owner.models[0]
+    runtime.prepare()
+    assert owner.contexts[-1] is not first
+    await owner.models[0].ainvoke([])
+    assert owner.interceptions == 2
+
+
+async def test_an_earlier_lifecycle_failure_cannot_skip_helper_model_cleanup():
+    from spectragent.core.hooks._registrar import HookBase
+
+    class Model(MockLLM):
+        def __init__(self):
+            self.calls = 0
+            self.closed = 0
+
+        async def ainvoke(self, messages, **kwargs):
+            self.calls += 1
+            return await super().ainvoke(messages, **kwargs)
+
+        async def aclose(self, *, timeout=5.0):
+            self.closed += 1
+            return ()
+
+    class EarlyFailure(HookBase):
+        priority = 0
+
+        async def on_run_end(self, **kwargs):
+            raise RuntimeError("earlier lifecycle failed")
+
+    class PromptOwner(HookBase):
+        priority = 100
+
+        def __init__(self, helper):
+            super().__init__()
+            self.helper_llms = [helper]
+            self.end_called = False
+
+        def bind_prompt_models(self, models, call_context):
+            self.models = models
+
+        async def on_run_start(self, **kwargs):
+            await self.models[0].ainvoke([])
+
+        async def on_run_end(self, **kwargs):
+            self.end_called = True
+            await self.helper_llms[0].aclose()
+
+    main, helper = Model(), Model()
+    owner = PromptOwner(helper)
+    run = make_run(
+        agent=SimpleAgent(),
+        loop=ReactLoop(),
+        env=_make_env(),
+        llm=main,
+        memory=MockMemory(),
+        hooks=[EarlyFailure(), owner],
+    )
+    with pytest.raises(RuntimeError, match="earlier lifecycle failed"):
+        await AgentRuntime.for_agent(run, AGENT_ID).execute("task")
+    assert (main.calls, helper.calls) == (1, 1)
+    assert not owner.end_called
+    assert (main.closed, helper.closed) == (1, 1)

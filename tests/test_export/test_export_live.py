@@ -37,9 +37,9 @@ import pytest
 from spectragent.agents.ui_tars import UITarsAgent
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.hooks.trace_writer import TraceWriter
-from spectragent.core.loops.restore.source import recorded_form
 from spectragent.core.runtime import AgentRuntime
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.export import canonicalise
 from spectragent.export.render import RenderedSample, StudentRenderer, TrajectoryStep
 from spectragent.export.translate.identity import IdentityTranslator
@@ -122,11 +122,13 @@ def _rendered(composer: ConfigComposer, trace: RunTrace) -> list[RenderedSample]
     )
     translator = IdentityTranslator()
     by_step = {s.step: translator.translate(s, trace).applied(s) for s in samples}
-    return renderer.render(
-        [
-            TrajectoryStep(trace, trace.run_id, record, by_step.get(record.step))
-            for record in trace.step_records
-        ]
+    return asyncio.run(
+        renderer.render(
+            [
+                TrajectoryStep(trace, trace.run_id, record, by_step.get(record.step))
+                for record in trace.step_records
+            ]
+        )
     )
 
 

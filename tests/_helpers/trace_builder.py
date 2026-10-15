@@ -209,7 +209,7 @@ def agent_result(**overrides: Any) -> AgentResult:
         "agent_reported_success": True,
         "answer": "42",
         "model_id": "gpt-4o-mini",
-        "metrics": AgentMetrics(end_to_end_ms=1234, steps=2, llm_calls=3),
+        "metrics": AgentMetrics(execution_ms=1234, steps=2, llm_calls=3),
     }
     fields.update(overrides)
     return AgentResult(**fields)

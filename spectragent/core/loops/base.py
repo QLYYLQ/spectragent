@@ -19,7 +19,11 @@ See docs/architecture_design.md §4.1 for the Agent-Loop separation design.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from collections.abc import Mapping
+from typing import Any, ClassVar, Protocol, runtime_checkable
+
+from spectragent.agents.memory.protocols import MessageProtocol
+from spectragent.core.loops.limits import ExecutionLimits
 
 
 @runtime_checkable
@@ -36,6 +40,23 @@ class AgentLoop(Protocol):
 
     loop_id: str
     id: str | None
+    __required_slots__: ClassVar[set[str]]
+    __optional_slots__: ClassVar[set[str]]
+    __required_message_protocols__: ClassVar[frozenset[MessageProtocol]]
+    __requires_env__: ClassVar[bool]
+    __loop_fragments__: ClassVar[frozenset[str]]
+
+    def validate_slots(self, agent: Any) -> None:
+        """Refuse an Agent missing one of this Loop's declared methods."""
+        ...
+
+    def check_loop_inputs(self, inputs: Mapping[str, Any]) -> None:
+        """Refuse unknown, missing or mistyped task inputs."""
+        ...
+
+    def execution_limits(self) -> ExecutionLimits:
+        """Declare the typed execution limits supplied to the Agent."""
+        ...
 
     def weave(
         self,

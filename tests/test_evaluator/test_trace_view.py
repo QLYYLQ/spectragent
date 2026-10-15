@@ -50,7 +50,7 @@ def _legacy_trace(traces_dir: Path, task_id: str = "t-old") -> Path:
                 "agent_done": "done",
                 "agent_success": True,
                 "answer": "42",
-                "metrics": {"end_to_end_ms": 1, "steps": 1},
+                "metrics": {"execution_ms": 1, "steps": 1},
             }
         ),
         "utf-8",
@@ -77,10 +77,10 @@ class TestTheProjectionReadsModels:
         It used to be ``AgentMetrics | None`` because the projection was
         rebuilding it from a dict that might not have carried the key.
         """
-        view = TraceView(RunTrace(write_trace(traces_dir, end_to_end_ms=777)))
+        view = TraceView(RunTrace(write_trace(traces_dir, execution_ms=777)))
 
-        assert view.metrics.end_to_end_ms == 777
-        assert view.end_to_end_ms == 777
+        assert view.metrics.execution_ms == 777
+        assert view.execution_ms == 777
 
     def test_metrics_cannot_be_edited_through_the_view(self, traces_dir):
         """``build_result`` hands these to a mutable ``EvalDetails``.

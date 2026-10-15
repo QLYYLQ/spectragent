@@ -30,6 +30,7 @@ output, and two exports of the same input are byte-identical.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import hashlib
 import json
@@ -209,7 +210,7 @@ class ExportRunner:
             thought_index_refs=exporter.thought_index_refs,
         )
         selection = self._select()
-        rendered = self._render(selection, renderer)
+        rendered = asyncio.run(self._render(selection, renderer))
         if not rendered:
             raise ExportEmptyError(_empty_counts(selection, renderer))
         rendered = _mark_duplicates(rendered)
@@ -274,7 +275,9 @@ class ExportRunner:
 
     # ── 2-4. canonical samples, translation, rendering ───────
 
-    def _render(self, selection: _Selection, renderer: StudentRenderer) -> list[RenderedSample]:
+    async def _render(
+        self, selection: _Selection, renderer: StudentRenderer
+    ) -> list[RenderedSample]:
         exporter = self.exporter
         translated: dict[str, dict[int, CanonicalStepSample]] = {}
 
@@ -322,7 +325,7 @@ class ExportRunner:
                     TrajectoryStep(source.trace, source.rel, record, own.get(record.step))
                     for record in source.trace.step_records
                 ]
-            rendered.extend(renderer.render(steps))
+            rendered.extend(await renderer.render(steps))
         return rendered
 
     # ── 5-7. format, validate, write ─────────────────────────

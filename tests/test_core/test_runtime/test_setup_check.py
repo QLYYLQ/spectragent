@@ -36,6 +36,7 @@ from spectragent.core.negotiation import (
     IncompatibleFragmentError,
 )
 from spectragent.core.runtime import AgentRuntime
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.archive_fakes import (
     CAPABILITY_ID,
     CONSUMER_HOOK_ID,
@@ -244,9 +245,13 @@ def teardown_module() -> None:
 class _TaskOnlyAgent:
     """Asks an environment for nothing: only the task, which the Loop builds."""
 
+    __execution_limit_fields__ = frozenset()
+
     __wiring__ = {"observation": ("observation", ["loop.task"])}
 
-    def build_react_prompt(self, obs: Any) -> list[dict[str, str]]:
+    async def build_react_prompt(
+        self, obs: Any, *, context: ReactPromptContext
+    ) -> list[dict[str, str]]:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out: Any) -> list[Any]:

@@ -24,12 +24,12 @@ from spectragent.core.loops import BranchLoop, ReactLoop
 from spectragent.core.loops.branch import BRANCH_INSTRUCTIONS
 from spectragent.core.loops.errors import RunAbort
 from spectragent.core.loops.restore import PrefixReplayRestorer
-from spectragent.core.loops.restore.source import recorded_form
 from spectragent.core.loops.validation import (
     IncompatibleCheckpointError,
     IncompatibleLoopInputError,
 )
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.core.trace.redaction import OMITTED
 from spectragent.schemas.observation.fragments import StepInfoObs
 from spectragent.schemas.restoration import BranchProvenance
@@ -149,7 +149,8 @@ class TestRecords:
             assert mine.observation_summary == theirs.observation_summary
             # The source's tokens are not this run's.
             assert theirs.token_usage is not None
-            assert mine.token_usage is None
+            assert mine.token_usage is not None and mine.token_usage.total_tokens == 0
+            assert mine.usage_coverage is not None and mine.usage_coverage.calls == 0
             assert mine.timestamp > theirs.timestamp
             # Re-measured by the recorder, not copied: no model call here.
             assert mine.llm_latency_ms in (None, 0)
@@ -378,11 +379,11 @@ class _VetoingAgent(BranchFakeAgent):
 
     veto_on_prompt: ClassVar[int] = 1
 
-    def build_react_prompt(self, obs: Any) -> list[Any]:
+    async def build_react_prompt(self, obs: Any, *, context) -> list[Any]:
         if self.prompts + 1 == self.veto_on_prompt:
             self.prompts += 1
             raise RunAbort("the page shows a captcha", source="prompt_guard")
-        return super().build_react_prompt(obs)
+        return await super().build_react_prompt(obs, context=context)
 
 
 class TestVetoes:
@@ -473,8 +474,8 @@ class _NarrowAgent(BranchFakeAgent):
         "action": ("action", ["click", "done"]),
     }
 
-    def build_react_prompt(self, obs: Any) -> list[Any]:
-        return super().build_react_prompt(obs)
+    async def build_react_prompt(self, obs: Any, *, context) -> list[Any]:
+        return await super().build_react_prompt(obs, context=context)
 
 
 class TestCheckpointCompatibility:
@@ -607,8 +608,8 @@ class TestCheckpointCompatibility:
         self, tmp_path: Path, source: Path
     ) -> None:
         class _Chatty(BranchFakeAgent):
-            def build_react_prompt(self, obs: Any) -> list[Any]:
-                messages = super().build_react_prompt(obs)
+            async def build_react_prompt(self, obs: Any, *, context) -> list[Any]:
+                messages = await super().build_react_prompt(obs, context=context)
                 messages[0].content += " (rendered differently)"
                 return messages
 

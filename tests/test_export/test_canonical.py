@@ -37,7 +37,7 @@ class TestExportableSteps:
             [
                 ExportStep(actions=[_click(1)]),  # 0: a sample
                 ExportStep(actions=[_click(2)], error_phase="act"),  # 1: failed
-                ExportStep(actions=[]),  # 2: parsed to nothing (or failed to parse)
+                ExportStep(actions=[]),  # 2: parsed to nothing
                 ExportStep(actions=[_click(3)], results=[]),  # 3: nothing executed
                 ExportStep(actions=[_click(4)]),  # 4: a sample
                 ExportStep(actions=[], origin="terminal"),  # 5: the terminal observation
@@ -48,6 +48,27 @@ class TestExportableSteps:
         assert [s.sample_id for s in samples] == ["run-a/s0", "run-a/s4"]
         assert samples[0].source_trace == "recorded/run-a"
         assert samples[1].history_steps == [0]
+
+    def test_parse_failure_and_successful_noop_are_distinct_and_both_excluded(
+        self, tmp_path: Path
+    ) -> None:
+        run = write_run(
+            tmp_path,
+            "parse-and-noop",
+            [
+                ExportStep(actions=[], llm_output="malformed reply", error_phase="parse"),
+                ExportStep(actions=[], llm_output='{"actions": []}'),
+                ExportStep(actions=[_click(1)]),
+            ],
+        )
+        trace = RunTrace(run)
+        failed, noop, _acted = trace.step_records
+        assert failed.error_phase == "parse"
+        assert noop.error_phase == ""
+        assert failed.actions == noop.actions == []
+        samples = canonicalise(trace, rel_path="recorded/parse-and-noop")
+        assert [sample.step for sample in samples] == [2]
+        assert samples[0].history_steps == []
 
     def test_an_orphan_step_file_is_not_a_step(self, tmp_path: Path) -> None:
         run = write_run(tmp_path, "run-b", [ExportStep(actions=[_click(1)])])

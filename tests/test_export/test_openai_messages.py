@@ -30,7 +30,7 @@ class MemoryStore:
         return f"images/{hashlib.sha256(data).hexdigest()}.png"
 
 
-def _rendered(composer: ConfigComposer, tmp_path: Path) -> list[RenderedSample]:
+async def _rendered(composer: ConfigComposer, tmp_path: Path) -> list[RenderedSample]:
     trace = RunTrace(
         write_ui_tars_run(
             tmp_path,
@@ -51,7 +51,7 @@ def _rendered(composer: ConfigComposer, tmp_path: Path) -> list[RenderedSample]:
         trace, rel_path="run-1", thought_source="teacher", teacher_cls=UITarsAgent
     )
     translator = IdentityTranslator()
-    return renderer.render(
+    return await renderer.render(
         [
             TrajectoryStep(trace, "run-1", record, translator.translate(s, trace).applied(s))
             for record, s in zip(trace.step_records, samples, strict=True)
@@ -59,10 +59,10 @@ def _rendered(composer: ConfigComposer, tmp_path: Path) -> list[RenderedSample]:
     )
 
 
-def test_a_record_is_the_context_and_the_weighted_target(
+async def test_a_record_is_the_context_and_the_weighted_target(
     composer: ConfigComposer, tmp_path: Path
 ) -> None:
-    _first, second = _rendered(composer, tmp_path)
+    _first, second = await _rendered(composer, tmp_path)
     store = MemoryStore()
     record = OpenAIMessagesExporter(student_run_config="s", output_dir="o").format(second, store)
     assert record.sample_id == "run-1/s1"
@@ -79,8 +79,8 @@ def test_a_record_is_the_context_and_the_weighted_target(
     assert record.record["messages"][2]["content"] == _first.target
 
 
-def test_images_become_stored_paths(composer: ConfigComposer, tmp_path: Path) -> None:
-    _first, second = _rendered(composer, tmp_path)
+async def test_images_become_stored_paths(composer: ConfigComposer, tmp_path: Path) -> None:
+    _first, second = await _rendered(composer, tmp_path)
     store = MemoryStore()
     record = OpenAIMessagesExporter(student_run_config="s", output_dir="o").format(second, store)
     parts = [
@@ -99,8 +99,10 @@ def test_images_become_stored_paths(composer: ConfigComposer, tmp_path: Path) ->
     assert "base64" not in str(record.record)
 
 
-def test_an_image_that_is_not_inline_is_refused(composer: ConfigComposer, tmp_path: Path) -> None:
-    first, _second = _rendered(composer, tmp_path)
+async def test_an_image_that_is_not_inline_is_refused(
+    composer: ConfigComposer, tmp_path: Path
+) -> None:
+    first, _second = await _rendered(composer, tmp_path)
     linked = UserMessage(
         content=[ContentPartImageParam(image_url=ImageURL(url="https://cdn.example.test/a.png"))]
     )

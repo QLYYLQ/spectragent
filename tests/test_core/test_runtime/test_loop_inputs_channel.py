@@ -25,6 +25,7 @@ from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.agent_result import AgentMetrics, AgentResult
+from spectragent.schemas.prompt import ReactPromptContext
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from tests._helpers.assembly import AGENT_ID, make_env, make_run
 
@@ -55,9 +56,10 @@ class _Env(EnvironmentBase):
 
 
 class _Agent:
+    __execution_limit_fields__ = frozenset()
     __wiring__ = {"action": ("action", ["loop_inputs_channel_cap.done"])}
 
-    def build_react_prompt(self, obs: Any) -> list[Any]:
+    async def build_react_prompt(self, obs: Any, *, context: ReactPromptContext) -> list[Any]:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, raw: Any) -> list[Action]:
@@ -73,6 +75,11 @@ class _LLM:
             usage = None
 
         return _C()
+
+    name = "test-model"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
 
 
 class _Memory:
@@ -105,12 +112,12 @@ class _ProbeLoop(AgentLoopBase):
     async def _execute(self, agent: Any, task: str, *, ctx: dict[str, Any], **kwargs: Any) -> Any:
         _SEEN.append(dict(ctx))
         return AgentResult(
-            task_id=ctx["task_id"],
+            task_id=ctx["identity"].task_id,
             task=task,
             timestamp=datetime.now(UTC),
             env_status=EnvironmentStatus.SUCCESS,
             agent_done=AgentDoneStatus.DONE,
-            metrics=AgentMetrics(end_to_end_ms=0, steps=0),
+            metrics=AgentMetrics(execution_ms=0, steps=0),
         )
 
 

@@ -237,7 +237,7 @@ class ReactLoop(AgentLoopBase):
         # deps 每次调用经 ctx 传入，不存在 self 上
         run = LoopRun.from_ctx(agent, task, ctx, ...)   # 一个 run 的依赖与账本（core/loops/run.py）
         for step_idx in range(self.max_steps):
-            result = await self._run_step(run, step_idx)   # observe → build_prompt → LLM → parse → act
+            result = await run.step_executor.execute_step(run, step_idx)   # observe → build_prompt → LLM → parse → act
             if result is not None:
                 return result
         ...
@@ -250,7 +250,7 @@ class ReactLoop(AgentLoopBase):
 | 可选 slot | 谁调用 | 何时校验 |
 |---|---|---|
 | `get_react_output_model()` | `ReactLoop` 自己（每次 LLM 调用的 `output_format`） | 不校验：没有就是文本调用 |
-| `prepare(task, action_descriptors, max_actions_per_step=...)` | `AgentRuntime`（种子消息，§4.2 `seed_messages`） | 不校验：没有就没有种子消息 |
+| `prepare(task, action_descriptors, execution_limits=...)` | `AgentRuntime`（种子消息，§4.2 `seed_messages`） | 不校验：没有就没有种子消息 |
 | `format_react_output(actions, *, thought=None) -> str` | 训练导出器（学生一侧，§4.15） | 只在导出组装学生时 |
 | `parse_react_thought(llm_output) -> tuple[str, str] \| None` | 训练导出器（teacher 一侧，`thought_source: teacher`） | 只在导出读 teacher 的 thought 时 |
 
@@ -258,7 +258,7 @@ class ReactLoop(AgentLoopBase):
 
 - **`format_react_output`** 是 `parse_react_output` 的逆：把一步的（已翻译、全限定名的）动作和可选的 thought 写成本 agent 的回复文本，正是这个 agent 在服务时会被要求写出的那种。它读本步的 agent 状态，所以调用顺序固定：`prepare` → 本步的 `build_react_prompt(obs)` → `format_react_output` → `parse_react_output`（UI-TARS 的点要用本步截图的网格换算）。确定性：同样的输入同样的文本。动作名或某个参数这个格式写不出来时抛 `UnrepresentableActionError(action_name, params, detail)`（`core/loops/errors.py`，`ParseError` 的对偶），绝不静默丢掉；导出器把它当成 `untranslatable` 的原因 `unrepresentable`（§4.15）。round-trip 的定义（§4.15 "round-trip"）对每个实现都成立，`tests/test_agents/test_format_react_output_round_trip.py` 对每个定义了它的已注册 agent 类逐一检查。v1 只有 `ui_tars` 实现它。
 - **`parse_react_thought`** 从一次录下的回复里读出 thought 及其来源字段，读不到返回 `None`。它是纯函数（只读传进来的回复，不读实例状态，所以写成 `@staticmethod`），导出器按源 trace 的 `agent_id` 从 `AgentRegistrar` 取 teacher 的类直接调用，不构造实例。`browser_use`：`thinking` > `next_goal` > `memory`（第一个非空的，记下是哪个字段；flash 模板只教 `memory`）；`ui_tars`：原生的 `Thought:`（到第一个 Action 行为止）；`skyvern`：每个动作的 `reasoning` 按顺序以换行连接。
-- **校验**：导出器组装学生之后先照常 `loop._validate_slots(agent)`（`prepare()` 已做），再查 `callable(getattr(agent, "format_react_output", None))`；`thought_source: teacher` 时对 teacher 的类查 `parse_react_thought`。缺了抛已有的 `IncompatibleError(agent_name, loop_id, missing_slots, needed_for=...)`。`needed_for` 是 M32 加的措辞参数：默认（运行装配）写 "required by loop 'react'"，导出写 "needed for training export (optional slots of loop 'react')"，不让一个可选 slot 的缺失读起来像 Loop 的必需 slot。
+- **校验**：导出器组装学生之后先照常 `loop.validate_slots(agent)`（`prepare()` 已做），再查 `callable(getattr(agent, "format_react_output", None))`；`thought_source: teacher` 时对 teacher 的类查 `parse_react_thought`。缺了抛已有的 `IncompatibleError(agent_name, loop_id, missing_slots, needed_for=...)`。`needed_for` 是 M32 加的措辞参数：默认（运行装配）写 "required by loop 'react'"，导出写 "needed for training export (optional slots of loop 'react')"，不让一个可选 slot 的缺失读起来像 Loop 的必需 slot。
 
 #### Loop 实现现状与规划
 
@@ -384,7 +384,7 @@ class ReactLoop(AgentLoopBase):
 | `llm.ainvoke` | around | 每次 LLM 调用：返回、抛异常或被取消 | TraceWriter 在 `proceed()` 之前登记这次调用，按结局记为 completed / failed / cancelled，并测量等待时间；MetricsCollector 补记计费了的失败回复（校验失败、截断） |
 | `loop.record_step` | after | Loop 交出完整 StepRecord 后 | TraceWriter 一次 `commit_step` 提交本步观测、全部 LLM 调用记录和 step record，manifest 原子重写即提交点 |
 | `env.act` | after | 每次 action 执行后 | 可选：action 级别追踪 |
-| `agent.build_react_prompt` | around | prompt 构建时 | 可选：prompt 审计（同步方法，`proceed()` 直接返回值而非 awaitable） |
+| `agent.build_react_prompt` | around | prompt 构建时 | 异步提示贡献与审计；`await proceed()`，显式 `ReactPromptContext` 描述历史与策略阶段 |
 
 > **与 emitter.dispatch() 的权衡**：AOP 方案让 Loop 代码完全干净（零横切逻辑），但只能拦截实际存在的方法调用。如果某些 Loop（如 PlanExecuteLoop）需要发出不对应任何方法调用的语义事件（如 `plan_generated`），可以将其建模为 agent Protocol 方法（如 `agent.parse_plan()`），AOP 自然覆盖。
 
@@ -408,25 +408,29 @@ class BranchLoop(ReactLoop):
 - **送达**：校验过的输入以只读映射放进 weave 的 deps（`ctx["loop_inputs"]`）。Loop 实例上不存任何东西。
 - **来源**：`TaskLoader.get_task_context(id)` 返回 `TaskContext{env, loop, branch}`（§4.10），`BenchmarkRunner` 把 `loop` 部分作为 `AgentRuntime.execute(loop_inputs=...)` 送进来。`prepare()` / `execute()` 原先那个把任意关键字原样转给 `weave` 的 `**kwargs` 通道已删除，由这条有类型的通道取代：拼错的关键字现在是 `TypeError`，不是 `ctx` 里一个没人读的键。
 
-#### 一个 run 与一步：`LoopRun`、`ReactLoop._run_step`（M31）
+#### 一个 run 与一步：执行状态与公开步骤边界
 
-`BranchLoop` 的策略步与继续步就是普通的 ReAct 步，所以 `ReactLoop._execute` 拆成三样（行为不变，原有的 `test_react_*.py` 一字不改地通过）：
+`LoopRun`（`core/loops/run.py`）只保存一次执行的依赖与执行事实：Runtime 解析一次的 `RunIdentity`、env、llm、memory、守卫动作入口、协商、步骤接收器、已交步骤、实际动作历史和答案。每次 `_execute` 新建，Loop 实例没有 `ctx`。模型调用数、token 账本和总时钟均不属于 Loop；`ReactRun` 在 ReAct 层保存连续解析失败状态，Branch 的 run 在其上扩展恢复状态。
 
-- **`LoopRun`**（`core/loops/run.py`，与 Loop 无关的一个 run 的状态）：从 `ctx` 取出的依赖（env、llm、memory、act_fn、negotiated_obs、task_id、step_recorder、model_id）与每个 Loop 都记的账：开始时刻、`step_records`、`action_history`、`llm_calls`、上一步的记录、目前最好的答案、连续解析失败的步数，以及 token 账本 `usage`。账本对象本身仍是 `react.py` 的 `_UsageTally`；它和 `_merge_token_usage`、`_parse_feedback`、`_build_result` 等现有私有工具的归属另有交接记录（`HANDOFF_261010_react_loop_layering.md`），M31 不搬它们，也不再往 `react.py` 加模块级私有工具。
-- **`ReactLoop._run_step(run, step_idx, *, observation=None, restoration=None)`**：一个 ReAct 步（observe → 填 loop 来源 fragment → `build_react_prompt` → LLM 与步内重问 → 解析 → 截断 → act → 交出 StepRecord）。返回终止的 `AgentResult`，或 `None` 表示继续；`RunAbort` 照原样上抛。给了 `observation` 就不再 observe（分叉的策略步用恢复器已经校验过的那次观测，再 observe 会开一个新 cycle）；给了 `restoration`，这一步写出的每条记录都带上它（§5.3）。
-- **ReAct 自己的 memory 协议是 `ReactLoop` 的方法**，在线的步与 `BranchLoop` 的重放只用这一份：`_cap_actions(actions, step_idx)`（按 `max_actions_per_step` 截断，返回保留的动作和被丢弃的动作名）、`_remember_rejected(memory, output_text, exc)`（被拒的回复作为 assistant 轮，再加 `_parse_feedback` 的 user 轮）、`_remember_reply(memory, output_text, dropped)`（解析成功的回复作为 assistant 轮，有动作被丢弃时再加截断提示）。训练导出的学生渲染（§4.15）写较早的 assistant 轮也走 `_remember_reply`（`dropped` 恒为空），是这份协议的第三个使用者，不是第二份拷贝。
-- **loop 来源 fragment 的 builder 是显式入参的纯函数**（M32）：`core/loops/_loop_fragments.py::loop_fragment_builders(*, task, step, max_steps, today, history, prev_step)`，返回四个 `loop.*` 的 builder 交给 `populate_loop_fragments`。`ReactLoop._loop_fragment_builders(run, step_idx)` 只是把本 run 的值（`self.max_steps`、`self._today_iso()`）交给它；`BranchLoop` 交源 run 第 t 步录下的 `max_steps` / `today`（`today_override` 仍优先），不再整个覆写 step_info 的 builder；导出器交源 trace 录下的（§4.15 "学生渲染"）。三处只有一份构造逻辑，它本来就该在与 Loop 无关的 `_loop_fragments.py` 里（`HANDOFF_261010_react_loop_layering.md` 3.6 的 B 类）；`today_override` / `max_steps` 两个旋钮不动。
+`AgentLoopBase` 提供通用的 `surrender`、`surrender_vetoed`、`end_step`、`build_result` 及终止观测的已定结局传递。所有路径通过 `self.surrender`，扩展 Loop 覆写同一个公开方法即可覆盖正常与失败交接。记录组件内部错误由该组件隔离，不能改变执行结局；外部取消仍原样传播，已定结果或否决由 `carry_outcome` 随取消传递。没有独立统计组件时，结果 usage、模型调用数均为 `None`。
 
-**步数只数策略步。** `AgentMetrics.steps` 数 `origin == "policy"` 的记录（§5.3），`max_steps` 也只数策略步；恢复出来的步与终止观测不占步数，也不进 `AgentResult.action_history`。
+`ReactLoop.execute_step(run, step_idx, *, observation=None, restoration=None)` 是公开的 ReAct 单步边界：observe → prompt → LLM 与步内重问 → parse → 动作截断 → act → 交出步骤。Runtime 给 run 的 `step_executor` 是 Loop 的 AOP 代理，驱动代码经此接口执行，记录层可围绕步骤和交出边界测量；Loop 不实现 stopwatch 或 emitter。已有观测直接用于检查点，不增加 observe cycle。解析重试耗尽的步骤写 `error_phase="parse"` 和原始解析错误；解析成功但没有动作仍是正常空动作步骤。
+
+ReAct 的公开 `cap_actions`、`remember_rejected`、`remember_reply`、`today_iso` 与 `loop_fragment_builders` 服务实时执行、分叉历史重建及冻结导出；相应旧私有入口删除，不转发。通用观测和消息读回在 `core/trace/reconstruction.py`，恢复层仅保留 `SourceRun` 分叉包装。通用读侧不反向依赖具体 Loop。
+
+**步数只数策略步。** `AgentMetrics.steps` 数 `origin == "policy"` 的记录，恢复步和终止观测不占预算、不加入 Agent 的动作历史，也不继承源运行 token。完整轨迹的步级用量由统一记录组件汇总本步全部调用后填写。
+
+**执行限制显式传递。** Loop 的 `execution_limits() -> ExecutionLimits` 是唯一来源；Agent 用 `__execution_limit_fields__` 声明消费字段（显式空集表示不适用），通过原有 `prepare(..., execution_limits=...)` 收到有类型的限制。Runtime 在 `prepare()` 检查提供与消费及显式参数是否匹配，失败先于 setup 和模型调用。未声明不能静默省略限制。Agent 自己决定系统提示和每轮提示的布局，Runtime 不拼领域提示。
 
 #### 终止观测：`terminal_observation`（M31）
 
 `ReactLoop.terminal_observation: bool = False`：run 结束之后再看一次世界，记成一条 `origin="terminal"` 的 StepRecord（不调 LLM、没有动作，步号接在最后一条记录之后）。这个开关是通用的：`online_mind2web` 按截图打分，最后一个动作之后的那张截图它同样用得上。
 
 - **何时**：done、`max_steps` 用尽、连续解析失败到上限，以及 `BranchLoop` 的步数预算用尽。**从不**在基础设施失败（`_abort`）、动作失败、恢复发散和任何 `RunAbort` 路径上。
-- **结果在前**：终止的 `AgentResult` 在决定结局时就建好，终止观测不改它的 `agent_done`、`env_status`、`answer` 与 `end_to_end_ms`（后者不含这次观测）；唯一的例外见下一条：交出终止记录失败时，失败的结局在 `error` 后附上原因。
-- **不致命**：observe 抛普通异常时记一条带 `error_phase="observe"` 的终止记录，run 的结局不变。guard 在这次 observe 上否决：先把这条终止记录作为被否决的一步交出，再上抛否决（否决优先于已经定下的结局，§4.2）。交出终止记录失败不顶替结局（与"记录失败不顶替 run 已经定下的结局"同一条规则，§4.6）：失败的结局在 `error` 后面附上原因，成功的结局只记日志，什么也不抛；trace 记为 `incomplete`（完整到最后一个策略步，原因写明，§4.6 "尾部失败不抛错"）；交出被取消切断时取消带着结局离开（`carry_outcome`）。
-- **分层**：observe 并建出终止记录是 `AgentLoopBase._observe_terminal(env, negotiated_obs, *, step)`（任何 Loop 可用，自己不交出记录）；交出与结局优先级用的是 `ReactLoop` 现有的交出方法。终止观测只有 env 来源的 fragment：没有 agent 看它，所以 loop 来源的 fragment 不填。
+- **结果在前**：终止的 `AgentResult` 在决定结局时就建好，终止观测不改它的 `agent_done`、`env_status`、`answer` 与 `execution_ms`（由 Runtime 在终止观测结束后填写，包含这次观测）。记录失败只改变记录健康，不改写此结果。
+- **不致命**：observe 抛普通异常时记一条带 `error_phase="observe"` 的终止记录，run 的结局不变。guard 在这次 observe 上否决时交出终止记录并上抛（否决优先于已定结果）。记录组件自身错误只进入记录健康；不会追加到执行错误、吞掉否决或替换答案。取消仍原样传播并携带已定结局。
+- **分层**：`AgentLoopBase.observe_terminal(env, negotiated_obs, *, step)` 公开捕获并构造终止记录；`observe_after_result(run, result)` 使用同一公开 `surrender` 完成交接与取消的结果传递。ReAct 的 `with_terminal` 仅决定是否启用。终止观测只填环境 fragment，没有 Agent 读取的 loop fragment。
+
 
 #### `BranchLoop`：从检查点分叉（M31）
 
@@ -451,8 +455,8 @@ class BranchLoop(_BranchLoopReceptors, ReactLoop):      # restorer 只在普通 
 
 **运行期（`_execute`）**：
 
-1. **种子消息**：runtime 已写入的 `agent.prepare` 种子消息（三个 browser agent 都只有一条 system 消息），必须与源 run 第 0 步第 0 次调用的 prompt 开头逐条相同，否则 `IncompatibleCheckpointError`（system prompt 里有任务、动作表与 `max_actions_per_step`）。比较的是 trace 记录的形状（`core/loops/restore/source.py::recorded_form`：活的消息走记录器同一条路，先做 JSON 快照，再按记录的消息类型读回），所以两边逐条相同当且仅当记录器会为两边写下同样的内容。
-2. **重建上下文（Option A）**：上下文从**源 trace** 重建，不从恢复出的观测重建，因为恢复出的页面里元素 index 是新的 backendNodeId、tab id 是新的 CDP targetId、截图是重拍的，从它们重建的 prompt 不可能与源 run 一致。对每个 k < t：读回录下的观测 obs_k（env 与 loop 来源的 fragment 都读，经 `from_trace` 还原成类型，组装成本次协商的 `NegotiatedObservation`），调 `build_react_prompt`，写进 memory；再按开始顺序重放第 k 步的**每一次**录下的 LLM 调用：取出 live 时交给解析器的那个回复（文本调用是录下的文本；结构化调用用 agent 的 `get_react_output_model()` 把录下的 JSON 还原成实例；被 schema 拒绝的调用是 `failure.raw_output`），经 `parse_react_output` 解析：`ParseError` 走 `_remember_rejected`，成功走 `_cap_actions` + `_remember_reply`。重放自己校验自己：每次调用之前，memory 的上下文必须与这次录下的调用的 `messages` 逐条相同；第 k 步最后一次调用之后，解析出的动作（按 `guarded_act` 的那条规则命名，即 `core/action_guard.py` 的 `resolve_action_name`，用本 run 守卫的动作名集合与绑定表：守卫解析得了的补全前缀，它拒绝的保持 agent 写的名字，源记录里留下的正是守卫给的名字；本 run 的守卫能代表源 run 的，因为 weave 已证明两边协商相同、种子检查已证明带着动作表的种子 prompt 相同）、被丢弃的个数、写进 memory 的回复文本必须等于源 StepRecord 的 `actions`、`truncated_actions`、`llm_output`，解析失败的步必须在源 run 里也是解析失败的步。任何一条不符都是 `IncompatibleCheckpointError`（这个 agent 复现不了这个检查点），发生在恢复环境之前。重放经过 agent 的 slot，所以 Skyvern 的 `_action_history`、browser_use / UI-TARS 的坐标网格这类 agent 自己的状态一并重建；连续解析失败的步数也由重放得出。
+1. **种子消息**：runtime 已写入的 `agent.prepare` 种子消息（三个 browser agent 都只有一条 system 消息），必须与源 run 第 0 步第 0 次调用的 prompt 开头逐条相同，否则 `IncompatibleCheckpointError`（system prompt 里有任务、动作表与 `max_actions_per_step`）。比较的是 trace 记录的形状（`core/trace/reconstruction.py::recorded_form`：活的消息走记录器同一条路，先做 JSON 快照，再按记录的消息类型读回），所以两边逐条相同当且仅当记录器会为两边写下同样的内容。
+2. **重建上下文（Option A）**：上下文从**源 trace** 重建，不从恢复出的观测重建，因为恢复出的页面里元素 index 是新的 backendNodeId、tab id 是新的 CDP targetId、截图是重拍的，从它们重建的 prompt 不可能与源 run 一致。对每个 k < t：读回录下的观测 obs_k（env 与 loop 来源的 fragment 都读，经 `from_trace` 还原成类型，组装成本次协商的 `NegotiatedObservation`），调 `build_react_prompt`，写进 memory；再按开始顺序重放第 k 步的**每一次**录下的 LLM 调用：取出 live 时交给解析器的那个回复（文本调用是录下的文本；结构化调用用 agent 的 `get_react_output_model()` 把录下的 JSON 还原成实例；被 schema 拒绝的调用是 `failure.raw_output`），经 `parse_react_output` 解析：`ParseError` 走 `remember_rejected`，成功走 `cap_actions` + `remember_reply`。重放自己校验自己：每次调用之前，memory 的上下文必须与这次录下的调用的 `messages` 逐条相同；第 k 步最后一次调用之后，解析出的动作（按 `guarded_act` 的那条规则命名，即 `core/action_guard.py` 的 `resolve_action_name`，用本 run 守卫的动作名集合与绑定表：守卫解析得了的补全前缀，它拒绝的保持 agent 写的名字，源记录里留下的正是守卫给的名字；本 run 的守卫能代表源 run 的，因为 weave 已证明两边协商相同、种子检查已证明带着动作表的种子 prompt 相同）、被丢弃的个数、写进 memory 的回复文本必须等于源 StepRecord 的 `actions`、`truncated_actions`、`llm_output`，解析失败的步必须在源 run 里也是解析失败的步。任何一条不符都是 `IncompatibleCheckpointError`（这个 agent 复现不了这个检查点），发生在恢复环境之前。重放经过 agent 的 slot，所以 Skyvern 的 `_action_history`、browser_use / UI-TARS 的坐标网格这类 agent 自己的状态一并重建；连续解析失败的步数也由重放得出。
 3. **恢复环境**：`async for restored in self.restorer.restore(RestorationContext(...))`：每个 k < t 交回一条 `RestoredStep(step=k, check, observation)`，Loop 把它记成 `origin="restored"` 的 StepRecord：内容是源 run 第 k 步记录的副本（动作、结果、回复、观测摘要照抄，所以策略步看到的 `loop.history` / `loop.action_result` 与源 run 第 t 步看到的相同），`restoration` 是这一步的校验结果，`token_usage` 置空，`duration_ms` / `llm_latency_ms` 由 TraceWriter 照常盖章，`timestamp` 是现在；交给 `record_step` 的是**恢复出的** live 观测（只有 env 来源的 fragment）。最后一条 `step == t`：经校验的 live obs_t 与它的校验结果。
 4. **策略步**：先把配置的 `branch_instruction` 写进 memory（`none` 什么都不写，见下文"teacher 采样"），然后 `_run_step(run, t, observation=obs_t, restoration=<obs_t 的校验结果>)`，即一个 ReAct 步。`loop.step_info` 的 `max_steps` 与 `today` 取自源 run 在第 t 步录下的 `loop.step_info`（设了 `today_override` 时 today 用它），所以 agent 看到的"第几步 / 共几步"与源 run 相同。
 5. **继续步**：再走至多 `continue_steps` 个 ReAct 步（`continue_steps: 0` 就是单步分叉，单步由配置值决定，没有写死在逻辑里）。策略步总数不超过 `max_steps`；预算用尽是 `agent_done=max_steps`。
@@ -516,7 +520,7 @@ class AgentRuntime:
         )
 
         # 1. Slot 校验：loop.__required_slots__ ⊆ agent 的 callable 方法
-        loop._validate_slots(agent)
+        loop.validate_slots(agent)
         # 1b. Loop 输入校验（M31，§4.1）：多的 / 缺的 / 类型不对 → IncompatibleLoopInputError
         loop.check_loop_inputs(loop_inputs or {})
         # 1c. Loop 要环境而这个 run 没有（§4.1 "Loop 的两条类级声明"）→ MissingEnvironmentError；
@@ -693,7 +697,11 @@ class AgentRuntime:
 
 **为什么两段式**：`prepare()` 是纯装配（slot 校验 → 协商 → setup 之前的检查 → AOP 织入 → loop weave），返回值就是一个 self-contained 的 agent —— 测试和需要细粒度控制的调用方可以直接 `await prepared_agent.run(task)`，跳过 timeout/lifecycle 包装。`execute()` 只是 prepare + 围绕 `agent.run` 加 timeout 和 lifecycle hook。两段都是独立的、零全局状态的 run 上下文，并行多个 run 互不干扰。
 
-**种子消息是 runtime 的公开方法（M32）。** `seed_messages(task) -> list[BaseMessage]`：在 `prepare()` 之后调用，调 prepared agent 的可选 slot `prepare(task=, action_descriptors=<本次收窄、守卫过的 descriptors>, **<Loop 的执行上限>)`（`_loop_policy_for` 只把 agent 签名里有的参数交过去），agent 没有 `prepare` 时返回 `[]`；不写 memory、不碰环境。`execute()` 清空 memory 后把它的结果写进去，行为不变，只是从内联代码抽成了方法。抽出来是因为有第二个调用方：训练导出的学生渲染（§4.15）需要与 live run **完全同一套**的装配（同样的协商、同样带 `fragments=` 收窄的 descriptors、同样的绑定表、同样的种子），而它只调 `prepare()` 与 `seed_messages()`，从不调 `execute()`、`setup_environment()`，也不调 LLM。`prepare()` 本来就不 setup 环境、不碰 LLM（`spectragent run --dry-run` 靠的也是这一点）；导出侧的哨兵测试（LLM 与 capability 的 setup 一调就抛）把它钉成契约。学生的装配不带任务上下文（`env_context=None`），setup 之前的检查照样运行：学生的运行配置（"把 `llm` 指向训练好的模型，跑同一个文件来评测"）必须是跑得起来的配置。
+**种子消息是 Runtime 的公开方法。** `seed_messages(task) -> list[BaseMessage]` 在 `prepare()` 之后调用 Agent 原有 `prepare(task=..., action_descriptors=..., execution_limits=...)`；是否需要限制已在装配时由显式消费声明检查，不按参数名称机会性传入。不写 memory、不碰环境、不调用模型，实时执行和冻结导出使用同一入口。
+
+**两种耗时。** `AgentMetrics.execution_ms` 由 Runtime 唯一计时：即将 setup 前开始，Loop 返回或执行路径结束、进入结束 lifecycle 之前停止；包括 setup、恢复、策略、终止观测及执行时正常记录等待，排除结束 hook、close-out 与 teardown。所有终止路径使用实测值，普通超时不填配置预算。`timeout` 仍只罩 `agent.run`。任务驱动的 `TaskOutcome.elapsed_ms` 包含任务加载、装配、完整收尾、释放资源与结果回读；不提前写进尚未收尾的 `result.json`。不宣称步骤 duration 之和等于 execution 或任务总耗时。
+
+**执行内模型资源收尾只有一个入口。** Runtime 在 `prepare()` 从主模型和 `PromptModelOwner.helper_llms` 明确收集本次执行的原始模型，织入后仍保留这一份资源清单；`execute` 最外层 `finally` 调 `close_models`，按对象去重并独立、有界地尝试全部关闭。普通结束 hook 失败不能跳过任何 helper。提示 Hook 提供和绑定领域依赖，不另在 `on_run_end` / `on_run_error` 关闭同一模型；独立 Python 使用通过 `model_session` 管理自己的执行边界。
 
 **setup 会拒绝的，`prepare()` 就拒绝（用户 2026-10-13 的裁决：两个开关的组合由 `prepare()` 校验，sweep 开跑前先过一次 `prepare()`）。** 能否运行由配置与任务数据决定的问题，都不留到 setup：
 
@@ -3304,7 +3312,7 @@ class ActionTranslator(Protocol):
 - **学生写不写得出来**：动作名经 `resolve_action_name(name, <学生守卫过的动作名>, <学生的 action_bindings>)` 解析不出来 → `no_counterpart`；一步的动作数超过学生 Loop 的 `max_actions_per_step` → `exceeds_action_budget`；`format_react_output` 抛 `UnrepresentableActionError` → `unrepresentable`。
 - **thought**：`thought_source: none` 时目标轮与历史轮都没有 thought。`thought_index_refs: drop`（默认）且学生协商出的 fragment 不含源 run 的 index 参数所依赖的 fragment（`param_fragments` 给出的那些，browser 上就是 `browser.dom`）时，含 `[123]` 这类 index 记号的 thought 被丢掉（样本保留、只是没有 thought），manifest 计数。
 - **不可译的步**（翻译器给的或渲染时判的）按翻译器的 `untranslatable` 处理。`drop_step`：这一步不是样本，当前段结束，下一个可渲染的步开新段（重新播种的上下文，同一个任务）；`truncate`：这条轨迹在这一步结束；`keep_as_text`：这一步不是样本，但它的观测轮照常进上下文，assistant 轮写成 `[not expressible: <reason>] <动作的 JSON>`（键排序），段不断；`fail`：抛 `UntranslatableActionError(sample_id, reason, detail)`。每个原因的丢弃数进 manifest（M33 的输入）。不可导出的步（上面）总是结束当前段。
-- **identity 导出的期望**：对 UI-TARS 录下的 run 用 `identity` 与同一份学生配置导出，第 k 个样本的上下文与源 run 第 k 步第 0 次调用的 `messages` 在 trace 的记录形态下（`core/loops/restore/source.py::recorded_form`）逐条相同，assistant 轮按解析结果相同；预期的差异只有：源 run 的解析重问轮与截断提示（学生上下文里从不写它们）、跳过或丢弃的步造成的分段、以及 assistant 轮的书写形式（学生的规范写法 vs 模型原文）。
+- **identity 导出的期望**：对 UI-TARS 录下的 run 用 `identity` 与同一份学生配置导出，第 k 个样本的上下文与源 run 第 k 步第 0 次调用的 `messages` 在 trace 的记录形态下（`core/trace/reconstruction.py::recorded_form`）逐条相同，assistant 轮按解析结果相同；预期的差异只有：源 run 的解析重问轮与截断提示（学生上下文里从不写它们）、跳过或丢弃的步造成的分段、以及 assistant 轮的书写形式（学生的规范写法 vs 模型原文）。
 
 #### round-trip（`parse(format(a)) == a` 做不到，按下面的定义）
 

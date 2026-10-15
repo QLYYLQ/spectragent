@@ -50,9 +50,11 @@ from spectragent.core.capabilities.browser.actions.wait import WaitAction
 from spectragent.core.capabilities.browser.capability import BrowserCapability
 from spectragent.core.capabilities.browser.observations import ScreenshotObs
 from spectragent.core.environments.browser import BrowserEnvironment
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.negotiation import extract_wiring
 from spectragent.core.negotiation.action import _action_rules
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import make_agent, make_env
 from tests.test_core.test_capabilities.test_browser_actions.conftest import (
     FakeCapability,
@@ -132,7 +134,7 @@ def harness() -> tuple[UITarsAgent, Any, dict[str, Any]]:
     return agent, guard, {"descriptors": descriptors, "scope": fake._scopes["sid_main"]}
 
 
-def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) -> str:
+async def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) -> str:
     """Prepare the agent with *variant* and show it one DPR-1 screenshot.
 
     ``Any`` because ``_VARIANTS`` is read off the disk at import time, so a
@@ -140,26 +142,33 @@ def _rendered(agent: UITarsAgent, descriptors: list[Any], variant: Any) -> str:
     equality is what ``test_prompt_tree`` asserts.
     """
     agent.prompt_template = variant
-    prompt = agent.prepare(task="t", action_descriptors=descriptors)[0].content
+    prompt = agent.prepare(
+        task="t",
+        execution_limits=ExecutionLimits(max_actions_per_step=1),
+        action_descriptors=descriptors,
+    )[0].content
     assert isinstance(prompt, str)
-    agent.build_react_prompt(
-        SimpleNamespace(
-            platform=SimpleNamespace(operating_system="macos"),
-            task=SimpleNamespace(user_request="t"),
-            screenshot=ScreenshotObs(
-                image_bytes=b"\x89PNG\r\n\x1a\n",
-                viewport_width=1280,
-                viewport_height=720,
-                image_width=1280,
-                image_height=720,
+    (
+        await agent.build_react_prompt(
+            SimpleNamespace(
+                platform=SimpleNamespace(operating_system="macos"),
+                task=SimpleNamespace(user_request="t"),
+                screenshot=ScreenshotObs(
+                    image_bytes=b"\x89PNG\r\n\x1a\n",
+                    viewport_width=1280,
+                    viewport_height=720,
+                    image_width=1280,
+                    image_height=720,
+                ),
             ),
+            context=ReactPromptContext(step=0, phase="policy"),
         )
     )
     return prompt
 
 
 class TestPromptVocabulary:
-    def test_every_variant_teaches_a_non_empty_vocabulary(self, harness) -> None:
+    async def test_every_variant_teaches_a_non_empty_vocabulary(self, harness) -> None:
         """Guards the guard: an empty scrape makes everything below vacuous.
 
         Both halves of empty count. ``_VARIANTS`` is globbed off disk, so
@@ -174,10 +183,10 @@ class TestPromptVocabulary:
             "is empty, so every loop in this file passes without running"
         )
         for variant in _VARIANTS:
-            calls = _TAUGHT_CALL.findall(_rendered(agent, extra["descriptors"], variant))
+            calls = _TAUGHT_CALL.findall(await _rendered(agent, extra["descriptors"], variant))
             assert len(calls) == len(extra["descriptors"]), variant
 
-    def test_the_prompt_teaches_the_negotiated_set_and_nothing_else(self, harness) -> None:
+    async def test_the_prompt_teaches_the_negotiated_set_and_nothing_else(self, harness) -> None:
         """One vocabulary, not two.
 
         The templates used to carry a hand-written ``# Output Format``
@@ -188,7 +197,7 @@ class TestPromptVocabulary:
         agent, _guard, extra = harness
         expected = {d.name.rsplit(".", 1)[-1] for d in extra["descriptors"]}
         for variant in _VARIANTS:
-            prompt = _rendered(agent, extra["descriptors"], variant)
+            prompt = await _rendered(agent, extra["descriptors"], variant)
             verbs = {c.split("(", 1)[0] for c in _TAUGHT_CALL.findall(prompt)}
             actions = {
                 agent.parse_react_output(f"Action: {_concrete(call)}")[0].name
@@ -197,7 +206,7 @@ class TestPromptVocabulary:
             assert actions == expected, variant
             assert verbs, variant
 
-    def test_the_prompt_carries_the_real_parameter_contract(self, harness) -> None:
+    async def test_the_prompt_carries_the_real_parameter_contract(self, harness) -> None:
         """``_build_system_prompt`` used to drop ``descriptor().params``.
 
         That is why the model was never told ``browser.type`` wanted
@@ -210,7 +219,7 @@ class TestPromptVocabulary:
         """
         agent, _guard, extra = harness
         for variant in _VARIANTS:
-            prompt = _rendered(agent, extra["descriptors"], variant)
+            prompt = await _rendered(agent, extra["descriptors"], variant)
             assert "# Coordinates" in prompt, variant
             assert "CSS px" not in prompt, variant
             for descriptor in extra["descriptors"]:
@@ -254,7 +263,7 @@ class TestPromptVocabulary:
         """
         agent, guard, extra = harness
         for variant in _VARIANTS:
-            prompt = _rendered(agent, extra["descriptors"], variant)
+            prompt = await _rendered(agent, extra["descriptors"], variant)
             for call in _TAUGHT_CALL.findall(prompt):
                 actions = agent.parse_react_output(f"Action: {_concrete(call)}")
                 assert len(actions) == 1, call
@@ -265,7 +274,7 @@ class TestPromptVocabulary:
     async def test_typing_carries_the_text_not_the_empty_string(self, harness) -> None:
         """The second, independent breakage: ``content`` vs ``text``."""
         agent, guard, extra = harness
-        _rendered(agent, extra["descriptors"], _VARIANTS[0])
+        (await _rendered(agent, extra["descriptors"], _VARIANTS[0]))
         actions = agent.parse_react_output("Action: type(content='hello world', point='(10, 20)')")
         result = await guard(actions[0])
         assert result.success
@@ -273,7 +282,7 @@ class TestPromptVocabulary:
         assert event.text == "hello world"
         assert (event.coordinate_x, event.coordinate_y) == (10, 20)
 
-    def test_no_mobile_only_verb_survives_in_any_template(self, harness) -> None:
+    async def test_no_mobile_only_verb_survives_in_any_template(self, harness) -> None:
         """``long_press`` / ``open_app`` / ``press_home`` / ``press_back``.
 
         All four are unimplementable on a browser and were taught by
@@ -282,6 +291,6 @@ class TestPromptVocabulary:
         """
         agent, _guard, extra = harness
         for variant in _VARIANTS:
-            prompt = _rendered(agent, extra["descriptors"], variant)
+            prompt = await _rendered(agent, extra["descriptors"], variant)
             for verb in ("long_press", "open_app", "press_home", "press_back"):
                 assert verb not in prompt, variant

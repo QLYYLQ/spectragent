@@ -33,8 +33,9 @@ from spectragent.agents._registrar import AgentBase
 from spectragent.agents.prompts import PromptEngine
 from spectragent.core.llm.messages import BaseMessage, SystemMessage, UserMessage
 from spectragent.core.loops.errors import ParseError
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import Action, ActionDescriptor
-from spectragent.schemas.prompt import PromptSnapshot
+from spectragent.schemas.prompt import PromptSnapshot, ReactPromptContext
 
 
 @dataclass
@@ -49,6 +50,8 @@ class SkyvernAgent(AgentBase):
     # which capability's ``click`` they mean is decided at negotiation.
     # No ``capability`` entry — it was read by nothing at runtime and
     # only pinned the generated config to one provider.
+    __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset({"max_actions_per_step"})
+
     __wiring__: ClassVar[dict[str, Any]] = {
         "agent_loop": ("agent_loop", ["react", "branch"]),
         # DOM is required, screenshot is optional (Skyvern is mostly
@@ -184,7 +187,7 @@ class SkyvernAgent(AgentBase):
         self,
         task: str,
         action_descriptors: list[ActionDescriptor],
-        max_actions_per_step: int = 1,
+        execution_limits: ExecutionLimits,
     ) -> list[BaseMessage]:
         """Pure builder: produce the seed messages for this run.
 
@@ -198,6 +201,9 @@ class SkyvernAgent(AgentBase):
         without it the prompt would invite a plan the loop silently cuts
         short.
         """
+        max_actions_per_step = execution_limits.max_actions_per_step
+        if max_actions_per_step is None:
+            raise ValueError("prepare requires the Loop's max_actions_per_step execution limit")
         self._action_descriptors = list(action_descriptors)
         self._action_history.clear()
         self._system_prompt_text, self._prompt_snapshot = self._build_system_prompt(
@@ -209,7 +215,9 @@ class SkyvernAgent(AgentBase):
 
     # ── ReactLoop slots ────────────────────────────────────────
 
-    def build_react_prompt(self, observation: Any) -> list[BaseMessage]:
+    async def build_react_prompt(
+        self, observation: Any, *, context: ReactPromptContext
+    ) -> list[BaseMessage]:
         """Pure builder: return the observation user-message for this step.
 
         Prefixes the page state with ``<user_request>`` (and ``<step_info>``
@@ -370,7 +378,7 @@ class SkyvernAgent(AgentBase):
         self,
         task: str,
         action_space: list[ActionDescriptor],
-        max_actions_per_step: int = 1,
+        max_actions_per_step: int,
     ) -> tuple[str, PromptSnapshot]:
         return self.render(
             self.prompt_template,

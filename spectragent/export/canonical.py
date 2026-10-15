@@ -46,9 +46,9 @@ def is_exportable(record: StepRecord) -> bool:
 
     ``origin == "policy"`` (a branch's restored prefix and every terminal
     observation are not decisions), no ``error_phase``, and at least one
-    executed action. A reply that failed to parse and one that parsed to no
-    action look the same on a ``StepRecord`` (M31's open question), and
-    neither is a sample.
+    executed action. A parse failure carries ``error_phase="parse"``; a
+    successfully parsed reply with no action has no parse error. Neither
+    is a sample.
     """
     return record.origin == "policy" and not record.error_phase and bool(executed_actions(record))
 

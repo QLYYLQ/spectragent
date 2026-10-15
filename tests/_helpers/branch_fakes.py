@@ -39,6 +39,7 @@ from spectragent.core.llm.messages import SystemMessage, UserMessage
 from spectragent.core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 from spectragent.core.loops import BranchLoop, ReactLoop
 from spectragent.core.loops.errors import ParseError, RunAbort
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.runtime import AgentRuntime
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.agent_result import AgentResult
@@ -214,7 +215,10 @@ class BranchFakeAgent:
         self.prompts = 0
 
     def prepare(
-        self, task: str, action_descriptors: list[ActionDescriptor], max_actions_per_step: int = 1
+        self,
+        task: str,
+        action_descriptors: list[ActionDescriptor],
+        execution_limits: ExecutionLimits,
     ) -> list[Any]:
         self.parsed_log = []
         names = ", ".join(sorted(d.name for d in action_descriptors))
@@ -222,12 +226,14 @@ class BranchFakeAgent:
             SystemMessage(
                 content=(
                     f"[{self.style}] task: {task}; actions: {names}; at most "
-                    f"{max_actions_per_step} per step"
+                    f"{execution_limits.max_actions_per_step} per step"
                 )
             )
         ]
 
-    def build_react_prompt(self, obs: Any) -> list[Any]:
+    __execution_limit_fields__ = frozenset({"max_actions_per_step"})
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list[Any]:
         self.prompts += 1
         info = obs.step_info
         history = [[a.name for a in item.actions] for item in obs.history.items]
@@ -298,6 +304,11 @@ class ScriptedLLM:
                 completion=output_format.model_validate(payload), usage=self.USAGE
             )
         return ChatInvokeCompletion(completion=reply, usage=self.USAGE)
+
+    name = "test-model"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
 
 
 class _MemoryEntry(BaseModel):

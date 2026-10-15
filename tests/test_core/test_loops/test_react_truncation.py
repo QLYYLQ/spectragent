@@ -97,7 +97,9 @@ class _Agent:
     def __init__(self) -> None:
         self.parse_calls = 0
 
-    def build_react_prompt(self, obs: Any) -> list:
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, llm_output: Any) -> list[Action]:
@@ -172,26 +174,23 @@ class TestTruncationEndsTheRun:
         assert result.env_status.value == "success"
 
 
-class TestTruncationIsStillBilled:
-    def test_the_tokens_reach_the_run_total(self) -> None:
-        """The most expensive call of the run must not be recorded as free."""
+class TestTruncationWithoutInstrumentation:
+    def test_loop_leaves_usage_unmeasured(self) -> None:
+        """Without a recording component, usage remains unmeasured."""
         llm, agent, env = _TruncatingLLM(), _Agent(), _FakeEnv()
         result = _run(llm, agent, env)
 
-        usage = result.metrics.usage
-        assert usage is not None, "a billed call was recorded as 'not measured'"
-        assert usage.total_completion_tokens == 8192
-        assert usage.total_prompt_cache_creation_tokens == 1500
+        assert result.metrics.usage is None
+        assert result.metrics.llm_calls is None
 
-    def test_the_step_record_carries_the_cost(self) -> None:
+    def test_step_preserves_failure_without_inventing_usage(self) -> None:
         llm, agent, env, recorder = _TruncatingLLM(), _Agent(), _FakeEnv(), _Recorder()
         _run(llm, agent, env, recorder)
 
         assert recorder.records, "the interrupted step never reached the trace"
         record = recorder.records[-1]
         assert record.error_phase == "llm"
-        assert record.token_usage is not None
-        assert record.token_usage.completion_tokens == 8192
+        assert record.token_usage is None
 
     def test_a_provider_reporting_nothing_stays_not_measured(self) -> None:
         """``None`` means unmeasured; a zero-filled total would be a false claim."""

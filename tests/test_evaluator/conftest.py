@@ -75,7 +75,7 @@ def write_trace(
     steps: int = 2,
     screenshots: list[bytes] | None = None,
     model_id: str = "test-model",
-    end_to_end_ms: int = 1234,
+    execution_ms: int = 1234,
     total_tokens: int = 90,
     origins: list[str] | None = None,
 ) -> Path:
@@ -148,7 +148,7 @@ def write_trace(
             model_id=model_id,
             action_history=[f"browser.click({{'index': {i}}})" for i in policy],
             metrics=AgentMetrics(
-                end_to_end_ms=end_to_end_ms,
+                execution_ms=execution_ms,
                 steps=len(policy),
                 llm_calls=len(policy),
                 usage=AgentUsage(

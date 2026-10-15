@@ -45,6 +45,7 @@ from spectragent.core.environments.browser import BrowserEnvironment
 from spectragent.core.llm.schema.gemini import fix_gemini_schema
 from spectragent.core.llm.schema.optimizer import SchemaOptimizer
 from spectragent.core.loops.errors import ParseError
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.core.loops.react import ReactLoop
 from spectragent.core.negotiation import (
     IncompatibleActionError,
@@ -53,6 +54,7 @@ from spectragent.core.negotiation import (
     negotiate_action,
     negotiate_observation,
 )
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.action_params import minimal_params
 from tests._helpers.assembly import make_agent, make_env
 
@@ -173,7 +175,11 @@ class _Run:
             bindings=self.actions.action_bindings,
         )
         self.descriptors = action_space.descriptors
-        self.agent.prepare(task="t", action_descriptors=self.descriptors)
+        self.agent.prepare(
+            task="t",
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+            action_descriptors=self.descriptors,
+        )
 
     @property
     def names(self) -> set[str]:
@@ -248,24 +254,28 @@ def test_vision_excludes_the_dom_derived_text_channel() -> None:
 # ── What reaches the model ────────────────────────────────────────────
 
 
-def test_dom_mode_renders_the_tree_and_shows_no_image() -> None:
+async def test_dom_mode_renders_the_tree_and_shows_no_image() -> None:
     run = _Run("dom")
-    messages = run.agent.build_react_prompt(_observation())
+    messages = await run.agent.build_react_prompt(
+        _observation(), context=ReactPromptContext(step=0, phase="policy")
+    )
     content = messages[0].content
     assert isinstance(content, str), "dom mode must not attach an image"
     assert "[3]<button>Submit</button>" in content
 
 
-def test_dom_vision_renders_the_tree_and_shows_the_image() -> None:
+async def test_dom_vision_renders_the_tree_and_shows_the_image() -> None:
     run = _Run("dom_vision")
-    (message,) = run.agent.build_react_prompt(_observation())
+    (message,) = await run.agent.build_react_prompt(
+        _observation(), context=ReactPromptContext(step=0, phase="policy")
+    )
     content = message.content
     assert isinstance(content, list)
     body = getattr(content[0], "text", "")
     assert "[3]<button>Submit</button>" in body
 
 
-def test_the_image_is_labelled_from_its_own_bytes() -> None:
+async def test_the_image_is_labelled_from_its_own_bytes() -> None:
     """A JPEG observation must not be shipped as ``data:image/png``.
 
     The capability can be configured to capture JPEG
@@ -276,8 +286,10 @@ def test_the_image_is_labelled_from_its_own_bytes() -> None:
 
     from spectragent.core.llm.messages import ContentPartImageParam
 
-    def image_of(observation: Any) -> ContentPartImageParam:
-        (message,) = run.agent.build_react_prompt(observation)
+    async def image_of(observation: Any) -> ContentPartImageParam:
+        (message,) = await run.agent.build_react_prompt(
+            observation, context=ReactPromptContext(step=0, phase="policy")
+        )
         content = message.content
         assert isinstance(content, list)
         return next(p for p in content if isinstance(p, ContentPartImageParam))
@@ -294,17 +306,17 @@ def test_the_image_is_labelled_from_its_own_bytes() -> None:
         viewport_height=720,
     )
 
-    jpeg = image_of(obs)
+    jpeg = await image_of(obs)
     assert jpeg.image_url.url.startswith("data:image/jpeg;base64,")
     assert jpeg.image_url.media_type == "image/jpeg"
 
     # ...and the PNG default is still labelled PNG.
-    png = image_of(_observation())
+    png = await image_of(_observation())
     assert png.image_url.url.startswith("data:image/png;base64,")
     assert png.image_url.media_type == "image/png"
 
 
-def test_vision_never_renders_the_dom_fragment_even_when_handed_one() -> None:
+async def test_vision_never_renders_the_dom_fragment_even_when_handed_one() -> None:
     """The invariant the whole mode exists for, at the fragment.
 
     A fragment can reach the agent that negotiation did not activate — a
@@ -317,7 +329,9 @@ def test_vision_never_renders_the_dom_fragment_even_when_handed_one() -> None:
     no provenance the renderer could filter on.
     """
     run = _Run("vision")
-    (message,) = run.agent.build_react_prompt(_observation(with_dom=True))
+    (message,) = await run.agent.build_react_prompt(
+        _observation(with_dom=True), context=ReactPromptContext(step=0, phase="policy")
+    )
     content = message.content
     assert isinstance(content, list)
     body = getattr(content[0], "text", "")
@@ -486,7 +500,12 @@ async def test_what_the_agent_emits_is_what_the_action_declares(mode: str) -> No
     the guard, and validate what arrives against the action's ``Params``.
     """
     run = _Run(mode)
-    run.agent.build_react_prompt(_observation(with_dom=(mode != "vision")))
+    (
+        await run.agent.build_react_prompt(
+            _observation(with_dom=(mode != "vision")),
+            context=ReactPromptContext(step=0, phase="policy"),
+        )
+    )
 
     routed: list[Any] = []
 
@@ -602,7 +621,7 @@ def test_the_strict_schema_carries_nothing_strict_refuses(mode: str) -> None:
 
 
 @pytest.mark.parametrize("mode", MODES)
-def test_the_per_run_schema_republishes_default_null_on_purpose(mode: str) -> None:
+async def test_the_per_run_schema_republishes_default_null_on_purpose(mode: str) -> None:
     """The ``default``-free guarantee is descriptor-level, and stops there.
 
     ``params_view`` strips ``default`` so a descriptor never states a value
@@ -635,7 +654,12 @@ def test_the_per_run_schema_republishes_default_null_on_purpose(mode: str) -> No
     assert optional_nulls, "no optional param — this test would prove nothing"
     # ...and the null never reaches the capability. Rendering a step first
     # is what a real run does, and it is what gives a point verb its grid.
-    run.agent.build_react_prompt(_observation(with_dom=(mode != "vision")))
+    (
+        await run.agent.build_react_prompt(
+            _observation(with_dom=(mode != "vision")),
+            context=ReactPromptContext(step=0, phase="policy"),
+        )
+    )
     verb, name = optional_nulls[0]
     descriptor = next(d for d in run.descriptors if d.name == verb)
     item = run.model.model_validate(

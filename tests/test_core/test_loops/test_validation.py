@@ -3,7 +3,7 @@
 import pytest
 
 from spectragent.core.loops._registrar import AgentLoopBase, AgentLoopRegistrar
-from spectragent.core.loops.validation import IncompatibleError, validate_compatibility
+from spectragent.core.loops.validation import IncompatibleError
 
 
 class _SlotLoop(AgentLoopBase):
@@ -32,26 +32,28 @@ def teardown_module():
 
 
 class TestValidateSlots:
-    """_validate_slots checks required slots on agent."""
+    """validate_slots checks required slots on agent."""
 
     def test_compatible_passes(self) -> None:
         class GoodAgent:
             agent_name = "good"
 
-            def build_react_prompt(self, observation):
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, observation, *, context):
                 return []
 
             def parse_react_output(self, llm_output):
                 return []
 
-        _SlotLoop()._validate_slots(GoodAgent())  # Should not raise
+        _SlotLoop().validate_slots(GoodAgent())  # Should not raise
 
     def test_incompatible_raises(self) -> None:
         class BadAgent:
             agent_name = "bad"
 
         with pytest.raises(IncompatibleError) as exc_info:
-            _SlotLoop()._validate_slots(BadAgent())
+            _SlotLoop().validate_slots(BadAgent())
 
         assert "bad" in str(exc_info.value)
         assert "test_slot_validation" in str(exc_info.value)
@@ -61,17 +63,19 @@ class TestValidateSlots:
         class AnyAgent:
             agent_name = "any"
 
-        _NoSlotLoop()._validate_slots(AnyAgent())  # Should not raise
+        _NoSlotLoop().validate_slots(AnyAgent())  # Should not raise
 
     def test_error_lists_missing_slots(self) -> None:
         class PartialAgent:
             agent_name = "partial"
 
-            def build_react_prompt(self, observation):
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, observation, *, context):
                 return []
 
         with pytest.raises(IncompatibleError) as exc_info:
-            _SlotLoop()._validate_slots(PartialAgent())
+            _SlotLoop().validate_slots(PartialAgent())
 
         assert "parse_react_output" in exc_info.value.missing_slots
 
@@ -79,7 +83,9 @@ class TestValidateSlots:
         class MinimalAgent:
             agent_name = "minimal"
 
-            def build_react_prompt(self, observation):
+            __execution_limit_fields__ = frozenset()
+
+            async def build_react_prompt(self, observation, *, context):
                 return []
 
             def parse_react_output(self, llm_output):
@@ -87,28 +93,7 @@ class TestValidateSlots:
 
             # get_react_output_model is optional — not implemented
 
-        _SlotLoop()._validate_slots(MinimalAgent())  # Should not raise
-
-
-class TestValidateCompatibilityWrapper:
-    """validate_compatibility() delegates to loop._validate_slots()."""
-
-    def test_delegates_to_loop(self) -> None:
-        class GoodAgent:
-            def build_react_prompt(self, observation):
-                return []
-
-            def parse_react_output(self, llm_output):
-                return []
-
-        validate_compatibility(GoodAgent(), _SlotLoop())  # Should not raise
-
-    def test_raises_on_missing(self) -> None:
-        class BadAgent:
-            agent_name = "bad"
-
-        with pytest.raises(IncompatibleError):
-            validate_compatibility(BadAgent(), _SlotLoop())
+        _SlotLoop().validate_slots(MinimalAgent())  # Should not raise
 
 
 class TestWording:
@@ -119,7 +104,7 @@ class TestWording:
             agent_name = "bad"
 
         with pytest.raises(IncompatibleError) as exc_info:
-            _SlotLoop()._validate_slots(BadAgent())
+            _SlotLoop().validate_slots(BadAgent())
         assert str(exc_info.value) == (
             "Agent 'bad' is missing slots required by loop 'test_slot_validation': "
             "build_react_prompt, parse_react_output"

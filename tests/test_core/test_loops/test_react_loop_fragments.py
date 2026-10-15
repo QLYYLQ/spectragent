@@ -106,7 +106,9 @@ class _CapturingAgent:
         self._calls = 0
         self._max = max_steps_until_done
 
-    def build_react_prompt(self, obs: Any) -> list:
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list:
         self.received.append(obs)
         return [{"role": "user", "content": "go"}]
 

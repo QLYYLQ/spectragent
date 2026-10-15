@@ -206,3 +206,53 @@ class TestBlockingVsNonBlocking:
 
         with pytest.raises(ValueError, match="hook failed"):
             asyncio.run(wrapped.observe())
+
+
+class TestRoleWithMultipleTargets:
+    async def test_loop_phase_and_step_sink_are_audited_together(self):
+        calls = []
+
+        class Loop:
+            async def execute_step(self):
+                calls.append("execute")
+
+        class Sink:
+            async def record_step(self):
+                calls.append("record")
+
+        class Hook:
+            hook_id = "step_boundaries"
+            blocking = True
+            __intercepts__ = [
+                Intercept("execute_step", role="loop", advice="before"),
+                Intercept("record_step", role="loop", advice="before"),
+            ]
+
+            async def before_execute_step(self, **ctx):
+                calls.append("before_execute")
+
+            async def before_record_step(self, **ctx):
+                calls.append("before_record")
+
+        weaver = Weaver([Hook()])
+        loop = weaver.wrap(Loop(), role="loop")
+        sink = weaver.wrap(Sink(), role="loop")
+        weaver.raise_for_unclaimed_roles()
+        weaver.audit_intercepts()
+        await loop.execute_step()
+        await sink.record_step()
+        assert calls == ["before_execute", "execute", "before_record", "record"]
+
+    def test_one_invalid_target_cannot_hide_behind_a_valid_target(self):
+        from spectragent.core.aop.errors import DeadInterceptError
+
+        class SynchronousModel:
+            def ainvoke(self, messages):
+                return "wrong shape"
+
+        hook = _MockHook("observer", [Intercept("ainvoke", role="llm", advice="after")])
+        weaver = Weaver([hook])
+        weaver.wrap(SynchronousModel(), role="llm")
+        weaver.wrap(_MockLLM(), role="llm")
+        with pytest.raises(DeadInterceptError):
+            weaver.audit_intercepts()

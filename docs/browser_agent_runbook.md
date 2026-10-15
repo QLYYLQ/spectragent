@@ -117,6 +117,8 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 
 本地配置默认打开可见的 Chrome 窗口。Chrome/Chromium 必须已安装；自动发现失败时设置 `CHROME_EXECUTABLE_PATH` 为可执行文件路径。`--start-url` 让 browser capability 在 agent 开始前打开页面，三个 agent 都能使用。它要写成一个完整的 `http://` 或 `https://` URL：只写主机名（`example.com`）、写别的协议头、写几个站点，`--dry-run` 就报错，消息点名这个起始页。`spectragent run` 会读取仓库根目录的 `.env`，也接受已导出的环境变量。`--dry-run` 会验证 YAML、实例化配置并执行 `AgentRuntime.prepare()` 的协商检查；不会启动 Chrome 或调用模型。
 
+每步动作上限由 `agent_loop.max_actions_per_step` 唯一决定。Runtime 将有类型的 `ExecutionLimits` 交给 Agent 原有 `prepare`，三个发货 Agent 用它构造自己的提示；消费声明或异步提示入口不匹配时，`--dry-run` 就拒绝。`metrics.execution_ms` 从环境 setup 前计到 Loop 结束（含分叉恢复、终止观测），不含结束 hook 与资源释放；任务表的 `elapsed_ms` 则包含完整收尾和结果回读。超时预算仍只覆盖 `agent.run`。
+
 ### 本地 Chrome 与外部端点的所有权
 
 本地 provider 连接前验证本次启动进程、CDP 端点与 profile；端口占用、启动退出或 profile 转交旧实例时明确拒绝，不接管旧 Chrome。正常结束、失败和取消均只清理本次进程与临时 profile。手工设置的持久 profile 不会删除。显式 `cdp_url` 仍可连接现有浏览器，结束时只清理 AF 的连接、订阅、bridge 和 scope，已有 tab、外部进程与 profile 保留；归档/pinned/replay 的协作限制照常检查。
@@ -135,7 +137,7 @@ uv run spectragent run --config configs/browser_use_local.yaml \
 
 三个文件中的 `llm` 都只是可编辑的 OpenAI 示例。运行 UI-TARS 专用模型时，把 `llm.model_type`、`model`、`provider`（必要时 `base_url`）改为该模型实际提供的 API；`coordinate_space` 要与它输出的坐标一致，值为 `screenshot_pixels` 或 `normalized_1000`。`prompt_template` 可选 `computer_use`、`grounding`、`mobile_use`。`ui_tars` 不请求 DOM，浏览器不会为这个 agent 提取 DOM。
 
-`model_type` 为 `openai`、`anthropic` 或 `google` 时，provider 每次请求新建一个 SDK 客户端，在这次请求返回前关掉它（请求失败或被取消也关），所以请求之间不复用连接。没关的客户端被垃圾回收时，SDK 迟到的关闭可能注销下一次请求的连接。那次模型调用就卡在建立连接上，超时设多长都要等满，换个任务顺序又不出现（在本机 loopback 模型端点上测到过）。按请求关闭避开了这种情况。`ollama` 与 `mistral` 的客户端仍交给回收，只会泄漏到被回收为止，不会这样卡住。
+模型客户端在一次任务或独立评测执行内惰性创建并复用，结束时由相应执行入口关闭。Runtime 统一清理主模型与显式绑定的提示辅助模型；独立 judge 由评测入口收尾。调用方注入的 HTTP transport 默认借用，框架不关闭它。成功、失败、超时和取消都走有界清理；清理异常单独报告，不改变已取得的模型回复、用量或原始错误。后一次执行重新创建自建 transport，prepare/dry-run 不打开连接。
 
 BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
 

@@ -1,7 +1,7 @@
 """StepRecorder — the seam where a Loop surrenders its finished StepRecord.
 
 A Loop already knows everything a trace needs: which actions it parsed,
-what they returned, how many tokens the step cost, what the agent saw.
+what they returned, and what the agent saw. The recording layer adds measured usage.
 Before this existed that knowledge died in a local variable, and the WAL
 reconstructed a two-key skeleton (``{step, llm_output}``) by intercepting
 ``llm.ainvoke`` — a call that is neither one-per-step nor aware of
@@ -27,33 +27,28 @@ from typing import Any, Protocol, runtime_checkable
 from spectragent.schemas.step_record import StepRecord
 
 
-class RecordingFailedError(Exception):
-    """A step the Loop handed over could not be recorded, and the run must stop there.
-
-    Raised out of ``record_step`` by a blocking hook that could not record
-    the step — ``TraceWriter`` when the step's evidence collection failed,
-    its batch broke the archiving contract, or the commit itself failed. The
-    hook's own failure is chained as ``__cause__``. The message is what the
-    run's result says when this ends it (``docs/architecture_design.md``
-    §4.6): ``recording failed at step <t>: <cause class>: <cause>``.
-
-    Not raised for a step whose outcome is already decided (the agent called
-    done on it): the run is over anyway, and raising would only replace that
-    outcome. The trace records the hole either way — it is ``incomplete``,
-    complete through the step before.
-
-    Attributes:
-        step: The step that was not recorded.
-    """
-
-    def __init__(self, step: int, cause: BaseException) -> None:
-        self.step = step
-        super().__init__(f"recording failed at step {step}: {type(cause).__name__}: {cause}")
-
-
 @runtime_checkable
 class StepSink(Protocol):
     """Contract for the object a Loop hands each completed step to."""
+
+    @property
+    def records(self) -> list[StepRecord]:
+        """A snapshot of surrendered execution records in order."""
+        ...
+
+    @property
+    def policy_step_count(self) -> int:
+        """The number of surrendered policy decisions."""
+        ...
+
+    @property
+    def last_observation(self) -> Any:
+        """Most recent surrendered observation, or None."""
+        ...
+
+    def clear(self) -> None:
+        """Start a fresh execution's in-memory record history."""
+        ...
 
     async def record_step(
         self,
@@ -70,10 +65,6 @@ class StepSink(Protocol):
                 is a different object from ``env.observe()``'s return
                 value. Optional so env-less loops can still record.
 
-        Raises:
-            RecordingFailedError: A hook could not record the step and the
-                run must stop (the woven sink raises it; this default one
-                never does).
         """
         ...
 

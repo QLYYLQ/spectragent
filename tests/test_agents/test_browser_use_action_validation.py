@@ -27,6 +27,7 @@ import spectragent.core.capabilities.browser.actions  # noqa: F401 — registers
 from spectragent.agents._action_union import UnsupportedParamsSchema, action_union
 from spectragent.agents.browser_use import BrowserUseAgent
 from spectragent.core.actions._registrar import ActionRegistrar
+from spectragent.core.loops.limits import ExecutionLimits
 from spectragent.schemas.action import ActionDescriptor
 
 
@@ -45,7 +46,11 @@ def _errors(exc: ValidationError) -> list[str]:
 class TestClosedUnion:
     def _model(self, *keys: str) -> Any:
         agent = BrowserUseAgent(flash_mode=True)
-        agent.prepare(task="t", action_descriptors=_descriptors(*keys))
+        agent.prepare(
+            task="t",
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+            action_descriptors=_descriptors(*keys),
+        )
         return agent.get_react_output_model()
 
     def test_accepts_the_fully_qualified_key(self) -> None:
@@ -151,7 +156,11 @@ class TestClosedUnion:
     def test_a_run_with_no_actions_is_refused_at_prepare(self) -> None:
         agent = BrowserUseAgent()
         with pytest.raises(ValueError, match="at least one negotiated action"):
-            agent.prepare(task="t", action_descriptors=[])
+            agent.prepare(
+                task="t",
+                execution_limits=ExecutionLimits(max_actions_per_step=1),
+                action_descriptors=[],
+            )
 
     def test_a_params_schema_outside_the_subset_fails_at_prepare(self) -> None:
         """Loud at ``prepare()``, not at the first LLM call."""
@@ -175,12 +184,20 @@ class TestClosedUnion:
 class TestReasoningFieldsFollowTheVariant:
     def test_flash_asks_only_for_memory_and_action(self) -> None:
         agent = BrowserUseAgent(flash_mode=True)
-        agent.prepare(task="t", action_descriptors=_descriptors("browser.done"))
+        agent.prepare(
+            task="t",
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+            action_descriptors=_descriptors("browser.done"),
+        )
         assert list(agent.get_react_output_model().model_fields) == ["memory", "action"]
 
     def test_thinking_variant_asks_for_the_full_set(self) -> None:
         agent = BrowserUseAgent(flash_mode=False, use_thinking=True)
-        agent.prepare(task="t", action_descriptors=_descriptors("browser.done"))
+        agent.prepare(
+            task="t",
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+            action_descriptors=_descriptors("browser.done"),
+        )
         assert list(agent.get_react_output_model().model_fields) == [
             "thinking",
             "evaluation_previous_goal",
@@ -193,7 +210,11 @@ class TestReasoningFieldsFollowTheVariant:
 
     def test_no_thinking_variant_drops_thinking(self) -> None:
         agent = BrowserUseAgent(flash_mode=False, use_thinking=False)
-        agent.prepare(task="t", action_descriptors=_descriptors("browser.done"))
+        agent.prepare(
+            task="t",
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+            action_descriptors=_descriptors("browser.done"),
+        )
         assert "thinking" not in agent.get_react_output_model().model_fields
 
 
@@ -202,7 +223,11 @@ class TestReasoningFieldsFollowTheVariant:
 
 class TestRenderActionList:
     def _render(self, agent: BrowserUseAgent, *keys: str) -> str:
-        seed = agent.prepare(task="t", action_descriptors=_descriptors(*keys))
+        seed = agent.prepare(
+            task="t",
+            execution_limits=ExecutionLimits(max_actions_per_step=1),
+            action_descriptors=_descriptors(*keys),
+        )
         return str(seed[0].content)
 
     def test_advertises_the_fully_qualified_name_and_the_descriptor_params(self) -> None:

@@ -28,8 +28,8 @@ from typing import Any
 import pytest
 
 from spectragent.core.llm.exceptions import StructuredOutputValidationError
-from spectragent.core.loops.restore.source import recorded_form
 from spectragent.core.trace.reader import RunTrace
+from spectragent.core.trace.reconstruction import recorded_form
 from spectragent.schemas.restoration import Checkpoint
 from tests._helpers.branch_browser import AgentKind, Outcome, branch_loop, drive, source_loop
 

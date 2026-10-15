@@ -2,7 +2,7 @@
 
 Each concrete Loop subclass declares ``__required_slots__`` and
 ``__optional_slots__`` to specify which agent methods it needs. The
-base class provides a universal ``_validate_slots`` check and a
+base class provides a universal ``validate_slots`` check and a
 ``weave`` method that patches ``agent.run`` with the Loop's execution
 logic.
 
@@ -16,12 +16,14 @@ See docs/execution_dag.md M03 for the registrar design.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Annotated, Any, ClassVar
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 from conscribe import create_registrar
 from pydantic import Field
@@ -29,10 +31,18 @@ from pydantic import Field
 from spectragent.agents.memory.protocols import MessageProtocol
 from spectragent.core.loops._loop_fragments import LOOP_FRAGMENT_KEYS
 from spectragent.core.loops.base import AgentLoop
-from spectragent.core.loops.errors import RunAbort
+from spectragent.core.loops.errors import RunAbort, carry_outcome
+from spectragent.core.loops.limits import ExecutionLimits
+from spectragent.core.loops.run import LoopRun
 from spectragent.core.loops.validation import IncompatibleError, IncompatibleLoopInputError
+from spectragent.schemas._types import AgentDoneStatus, EnvironmentStatus
+from spectragent.schemas.agent_result import AgentMetrics, AgentResult
 from spectragent.schemas.observation.dynamic_model import summarize_observation
 from spectragent.schemas.step_record import StepRecord
+
+if TYPE_CHECKING:
+    from spectragent.core.environments.base import Environment
+    from spectragent.core.step_recorder import StepSink
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +169,7 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
 
     # ── slot validation (shared by all loops) ────────────────
 
-    def _validate_slots(self, agent: Any) -> None:
+    def validate_slots(self, agent: Any) -> None:
         """Check that *agent* has all required callable slots.
 
         Raises:
@@ -224,12 +234,13 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
             IncompatibleError: the agent lacks a required slot.
             IncompatibleLoopInputError: the loop inputs do not fit.
         """
-        self._validate_slots(agent)
+        self.validate_slots(agent)
         loop_inputs = MappingProxyType(dict(deps.get("loop_inputs") or {}))
         self.check_loop_inputs(loop_inputs)
 
         ctx = dict(deps)
         ctx["loop_inputs"] = loop_inputs
+        ctx.setdefault("step_executor", self)
         loop = self
 
         async def run(task: str, **kw: Any) -> Any:
@@ -238,11 +249,107 @@ class AgentLoopBase(metaclass=AgentLoopRegistrar.Meta):
         agent.run = run  # instance-level monkey-patch
         return agent
 
+    def execution_limits(self) -> ExecutionLimits:
+        """Limits a consuming Agent must describe through its existing prompt inputs."""
+        return ExecutionLimits()
+
+    async def surrender(
+        self, recorder: StepSink | None, record: StepRecord, observation: Any
+    ) -> None:
+        """Hand execution facts to the step sink; recording failures are its responsibility.
+
+        This public extension point is used for normal, failed and vetoed steps.
+        The Loop neither inspects recorder health nor owns a persistence policy.
+        """
+        if recorder is not None:
+            await recorder.record_step(record, observation=observation)
+
+    async def surrender_vetoed(
+        self, recorder: StepSink | None, record: StepRecord, observation: Any, veto: RunAbort
+    ) -> None:
+        """Hand over a vetoed step without losing its outcome to cancellation."""
+        try:
+            await self.surrender(recorder, record, observation)
+        except asyncio.CancelledError as cancelled:
+            logger.warning(
+                "recording step %d was cut off by a cancellation; the run had already ended (the veto: %s)",
+                record.step,
+                veto,
+            )
+            carry_outcome(cancelled, veto)
+            raise
+
+    async def end_step(
+        self, run: LoopRun, record: StepRecord, observation: Any, **outcome: Any
+    ) -> AgentResult:
+        """Create the decided result before handing over its final step."""
+        result = self.build_result(run, **outcome)
+        try:
+            await self.surrender(run.recorder, record, observation)
+        except asyncio.CancelledError as cancelled:
+            carry_outcome(cancelled, result)
+            raise
+        return result
+
+    def build_result(
+        self,
+        run: LoopRun,
+        *,
+        agent_done: str,
+        env_status: str,
+        answer: str = "",
+        agent_reported_success: bool | None = None,
+        error: str | None = None,
+    ) -> AgentResult:
+        """Build an execution result; Runtime and instrumentation supply measurements."""
+        return AgentResult(
+            task_id=run.identity.task_id,
+            task=run.task,
+            timestamp=datetime.now(UTC),
+            env_status=EnvironmentStatus(env_status),
+            agent_done=AgentDoneStatus(agent_done),
+            agent_reported_success=agent_reported_success,
+            answer=answer,
+            error=error,
+            model_id=run.identity.model_id,
+            action_history=run.action_history,
+            metrics=AgentMetrics(steps=run.policy_steps),
+        )
+
+    async def observe_after_result(self, run: LoopRun, result: AgentResult) -> AgentResult:
+        """Observe after a decided outcome; keep it when observation is interrupted."""
+        step = run.step_records[-1].step + 1 if run.step_records else 0
+        try:
+            record, observation = await run.step_executor.observe_terminal(
+                run.env, run.negotiated_obs, step=step
+            )
+        except RunAbort as veto:
+            record = StepRecord(
+                step=step,
+                origin="terminal",
+                timestamp=time.time(),
+                error_phase="observe",
+                error=str(veto),
+            )
+            run.step_records.append(record)
+            await self.surrender_vetoed(run.recorder, record, None, veto)
+            raise
+        except asyncio.CancelledError as cancelled:
+            carry_outcome(cancelled, result)
+            raise
+        run.step_records.append(record)
+        try:
+            await self.surrender(run.recorder, record, observation)
+        except asyncio.CancelledError as cancelled:
+            carry_outcome(cancelled, result)
+            raise
+        return result
+
     # ── terminal observation (any loop may use it) ───────────
 
-    async def _observe_terminal(
+    async def observe_terminal(
         self,
-        env: Any,
+        env: Environment,
         negotiated_obs: Any,
         *,
         step: int,

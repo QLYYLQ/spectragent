@@ -239,6 +239,11 @@ class ScriptedTeacher:
             return ChatInvokeCompletion(completion=output_format.model_validate(reply), usage=None)
         return ChatInvokeCompletion(completion=reply, usage=None)
 
+    name = "test-model"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
+
 
 AgentKind = Literal["browser_use", "skyvern", "ui_tars"]
 
@@ -302,8 +307,8 @@ async def drive(
     built: list[Any] = []
     original = agent.build_react_prompt
 
-    def spy(observation: Any) -> Any:
-        messages = original(observation)
+    async def spy(observation: Any, *, context: Any) -> Any:
+        messages = await original(observation, context=context)
         snapshot = list(getattr(agent, "_action_history", []))
         built.append((messages, snapshot))
         return messages

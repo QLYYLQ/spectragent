@@ -151,7 +151,9 @@ class _Agent:
         "observation": ("observation", ["browser.browser_meta", "loop.task"]),
     }
 
-    def build_react_prompt(self, obs: Any) -> list[UserMessage]:
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list[UserMessage]:
         return [UserMessage(content=f"{obs.task.user_request} — now on {obs.browser_meta.url}")]
 
     def parse_react_output(self, out: Any) -> list[Action]:
@@ -313,7 +315,13 @@ async def _drive(agent_kind: str, *, reasoning: str | None) -> tuple[_Endpoint, 
     descriptors = [
         a.descriptor() for a in capability.actions if a.action_id in negotiated.active_actions
     ]
-    agent.memory.add_messages(agent.prepare(task="Find the answer", action_descriptors=descriptors))
+    agent.memory.add_messages(
+        agent.prepare(
+            task="Find the answer",
+            action_descriptors=descriptors,
+            execution_limits=ReactLoop().execution_limits(),
+        )
+    )
 
     endpoint = _Endpoint(replies_for(descriptors), reasoning=reasoning)
     llm = _Recording(endpoint.llm())

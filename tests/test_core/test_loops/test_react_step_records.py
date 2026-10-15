@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from spectragent.core.capabilities.browser.observations import BrowserMetaObs
-from spectragent.core.loops.react import ReactLoop, _UsageTally
+from spectragent.core.loops.react import ReactLoop
 from spectragent.core.step_recorder import StepRecorder
 from spectragent.schemas.action import Action, ActionResult
 from spectragent.schemas.observation import build_observation_model
@@ -91,7 +91,9 @@ class _Agent:
         self._plan = actions_per_step
         self._i = 0
 
-    def build_react_prompt(self, obs):
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs, *, context):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out):
@@ -157,8 +159,7 @@ class TestStepSurrender:
         assert [a.name for a in rec.actions] == ["browser.click"]
         assert rec.action_results[0].success is True
         assert rec.timestamp > 0
-        assert rec.token_usage is not None
-        assert rec.token_usage.total_tokens == 14
+        assert rec.token_usage is None
         # The observation handed over is the one the agent saw — loop
         # fragments populated, not env.observe's return value.
         assert isinstance(recorder.last_observation.task, TaskObs)
@@ -202,7 +203,7 @@ class TestStepSurrender:
 
 
 class TestUsageAccounting:
-    async def test_usage_accumulates_across_steps(self):
+    async def test_usage_is_not_measured_by_the_loop(self):
         active = frozenset({"browser.browser_meta"})
         loop = ReactLoop(max_steps=3)
         result = await loop._execute(
@@ -217,17 +218,10 @@ class TestUsageAccounting:
                 recorder=StepRecorder(),
             ),
         )
-        usage = result.metrics.usage
-        assert usage is not None
-        assert usage.by_model is not None
-        # Three calls, accumulated — with no hooks configured at all.
-        assert usage.total_tokens == 42
-        assert usage.total_prompt_tokens == 30
-        assert usage.entry_count == 3
-        assert usage.by_model["test-model"]["calls"] == 3
-        assert result.metrics.llm_calls == 3
+        assert result.metrics.usage is None
+        assert result.metrics.llm_calls is None
         assert result.metrics.steps == 3
-        assert result.model_id == "test-model"
+        assert result.model_id == ""
 
     async def test_unmeasured_usage_stays_none(self):
         """A provider that reports nothing must not look like zero cost."""
@@ -246,7 +240,7 @@ class TestUsageAccounting:
             ),
         )
         assert result.metrics.usage is None
-        assert result.metrics.llm_calls == 1
+        assert result.metrics.llm_calls is None
 
 
 class TestActionTruncation:
@@ -404,37 +398,122 @@ class TestAnswerSurvivesMaxSteps:
         assert result.agent_reported_success is None
 
 
-class TestUsageTally:
-    """The accumulator that holds "not measured" apart from "measured zero".
+class TestPublicExecutionBoundaries:
+    async def test_surrender_override_is_used_for_failed_and_healthy_steps(self):
+        seen: list[tuple[int, str]] = []
 
-    The distinction used to live in a second local, restated at each of the
-    seven call sites that report usage; one of them written as a bare total
-    would have made an uninstrumented run claim confident zeros.
-    """
+        class TrackingLoop(ReactLoop):
+            __abstract__ = True
 
-    def test_unmeasured_calls_still_leave_evidence(self) -> None:
-        """A provider reporting nothing must not erase the fact that it ran.
+            async def surrender(self, recorder, record, observation):
+                seen.append((record.step, record.error_phase))
+                await super().surrender(recorder, record, observation)
 
-        Subtle and otherwise invisible: with the totals suppressed, the only
-        trace of that first call is ``entry_count``, and it only becomes
-        observable once a *later* call does report usage. Folding the ``None``
-        in anyway is what keeps the two calls from looking like one.
-        """
-        tally = _UsageTally()
-        tally.add(None, model="m")
-        assert tally.snapshot() is None, "one unmeasured call is not a measured zero"
+        active = frozenset({"browser.browser_meta"})
+        for failed in (False, True):
+            result = await TrackingLoop(max_steps=1)._execute(
+                _Agent([[Action(name="browser.click")]]),
+                "t",
+                ctx=_ctx(
+                    env=_Env(active, boom=failed),
+                    llm=_LLM(),
+                    memory=_Memory(),
+                    act_fn=_act_ok(),
+                    negotiated=_Negotiated(active),
+                    recorder=StepRecorder(),
+                ),
+            )
+            assert result.agent_done == ("error" if failed else "done")
+        assert seen == [(0, ""), (0, "observe")]
 
-        tally.add(_Usage(), model="m")
-        snapshot = tally.snapshot()
-        assert snapshot is not None
-        assert snapshot.entry_count == 2
-        assert snapshot.total_tokens == 14
+    async def test_prompt_failure_preserves_generated_contributions(self):
+        import pytest
 
-    def test_nothing_measured_reports_nothing(self) -> None:
-        tally = _UsageTally()
-        for _ in range(3):
-            tally.add(None, model="m")
-        assert tally.snapshot() is None
+        from spectragent.schemas.prompt import PromptContribution
 
-    def test_a_fresh_tally_has_not_measured_anything(self) -> None:
-        assert _UsageTally().snapshot() is None
+        class BrokenPrompt(_Agent):
+            async def build_react_prompt(self, obs, *, context):
+                context.contributions.append(
+                    PromptContribution(
+                        source="fixture",
+                        text="remember the constraint",
+                    )
+                )
+                raise ValueError("prompt rendering failed")
+
+        active = frozenset({"browser.browser_meta"})
+        recorder = StepRecorder()
+        with pytest.raises(ValueError, match="prompt rendering failed"):
+            await ReactLoop(max_steps=1)._execute(
+                BrokenPrompt([[]]),
+                "t",
+                ctx=_ctx(
+                    env=_Env(active),
+                    llm=_LLM(),
+                    memory=_Memory(),
+                    act_fn=_act_ok(),
+                    negotiated=_Negotiated(active),
+                    recorder=recorder,
+                ),
+            )
+        assert recorder.records[0].error_phase == "prompt"
+        assert recorder.records[0].error == "prompt rendering failed"
+        assert recorder.records[0].prompt_contributions[0].text == "remember the constraint"
+
+    def test_sync_or_implicit_prompt_context_is_refused_before_execution(self):
+        import pytest
+
+        from spectragent.core.loops.validation import IncompatibleError
+
+        class SyncPrompt:
+            def parse_react_output(self, output):
+                return []
+
+            def build_react_prompt(self, obs, *, context):
+                return []
+
+        class ImplicitContext:
+            def parse_react_output(self, output):
+                return []
+
+            async def build_react_prompt(self, obs, **kwargs):
+                return []
+
+        for agent in (SyncPrompt(), ImplicitContext()):
+            with pytest.raises(IncompatibleError, match="async build_react_prompt"):
+                ReactLoop().validate_slots(agent)
+
+
+async def test_prompt_context_failure_preserves_the_original_error_and_veto():
+    import pytest
+
+    from spectragent.core.loops.errors import RunAbort
+
+    for failure in (ValueError("source context unreadable"), RunAbort("source refused")):
+
+        class BrokenContext(ReactLoop):
+            __abstract__ = True
+
+            def prompt_context(self, run, step_idx, *, problem=failure):
+                raise problem
+
+        active = frozenset({"browser.browser_meta"})
+        recorder, llm = StepRecorder(), _LLM()
+        with pytest.raises(type(failure)) as caught:
+            await BrokenContext(max_steps=1)._execute(
+                _Agent([[]]),
+                "t",
+                ctx=_ctx(
+                    env=_Env(active),
+                    llm=llm,
+                    memory=_Memory(),
+                    act_fn=_act_ok(),
+                    negotiated=_Negotiated(active),
+                    recorder=recorder,
+                ),
+            )
+        assert caught.value is failure
+        assert llm.calls == 0
+        assert recorder.records[0].error_phase == "prompt"
+        assert recorder.records[0].error == str(failure)
+        assert recorder.records[0].prompt_contributions == []

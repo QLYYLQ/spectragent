@@ -59,7 +59,9 @@ class _StepAgent:
         "observation": ("observation", ["task", "step_info"], ["history"]),
     }
 
-    def build_react_prompt(self, obs: Any) -> list[dict[str, str]]:
+    __execution_limit_fields__ = frozenset()
+
+    async def build_react_prompt(self, obs: Any, *, context) -> list[dict[str, str]]:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out: Any) -> list[Any]:

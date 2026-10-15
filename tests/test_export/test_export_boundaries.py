@@ -110,3 +110,13 @@ def test_no_model_is_about_money() -> None:
     sources = [PACKAGE / "schemas/sample.py", *sorted((PACKAGE / "export").rglob("*.py"))]
     found = {path.name: money_fields(path.read_text()) for path in sources}
     assert {name: fields for name, fields in found.items() if fields} == {}
+
+
+def test_export_reads_trace_context_without_restoration_dependencies() -> None:
+    offenders = {
+        module_name(path): sorted(
+            name for name in _imports(path) if _within(name, "spectragent.core.loops.restore")
+        )
+        for path in (PACKAGE / "export").rglob("*.py")
+    }
+    assert {module: names for module, names in offenders.items() if names} == {}

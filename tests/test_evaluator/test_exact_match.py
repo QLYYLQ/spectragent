@@ -90,12 +90,12 @@ async def test_the_verdict_names_the_settings_that_produced_it(traces_dir):
 
 async def test_agent_metrics_are_nested_not_flat_merged(traces_dir):
     """The agent's usage must not overwrite the evaluator's."""
-    trace = RunTrace(write_trace(traces_dir, end_to_end_ms=999, steps=3))
+    trace = RunTrace(write_trace(traces_dir, execution_ms=999, steps=3))
 
     details = (await ExactMatchEvaluator().evaluate(trace, _reference("42"))).evaluation_details
 
     assert details.agent_metrics is not None
-    assert details.agent_metrics.end_to_end_ms == 999
+    assert details.agent_metrics.execution_ms == 999
     assert details.agent_metrics.steps == 3
     assert details.agent_metrics.usage is not None
     assert details.agent_metrics.usage.total_tokens == 90
