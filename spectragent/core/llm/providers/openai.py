@@ -48,8 +48,8 @@ class ChatOpenAI(OpenAICompatBase):
             params["default_headers"] = self.default_headers
         if self.default_query:
             params["default_query"] = self.default_query
-        if self.http_client:
-            params["http_client"] = self.http_client
+        if self.http_transport is not None:
+            params["http_client"] = self.http_transport
         return AsyncOpenAI(**params)
 
     # ainvoke inherited from OpenAICompatBase — standard text + response_format

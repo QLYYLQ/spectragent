@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -152,8 +153,8 @@ class ClientResources:
         task.add_done_callback(_consume)
 
     async def aclose(self, *, timeout: float) -> tuple[ClientCleanupDiagnostic, ...]:
-        if timeout <= 0:
-            raise ValueError("Model cleanup timeout must be positive")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("Model cleanup timeout must be finite and positive")
         if self._close_task is None:
             self._closing = True
             self._close_task = asyncio.create_task(self._finish(timeout))
@@ -172,7 +173,7 @@ class ClientResources:
                     ClientCleanupDiagnostic(
                         self._model, key, "in_use", "A model call still uses this resource"
                     )
-                    for key, item in self._resources.items()
+                    for key, item in self._resources.copy().items()
                     if item.close is not None
                 )
                 if not diagnostics:

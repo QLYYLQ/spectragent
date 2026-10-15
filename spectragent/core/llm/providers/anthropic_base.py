@@ -250,23 +250,19 @@ class AnthropicCompatBase(ChatModelBase):
 
     @asynccontextmanager
     async def _request_client(self) -> AsyncIterator[AsyncAnthropic | AsyncAnthropicBedrock]:
-        """The client one request runs on, closed before the request returns.
+        """Reuse the execution's SDK, leaving injected HTTP transports to their owner.
 
-        :meth:`get_client` builds a new client and connection pool every
-        time. Left to the garbage collector, the SDK's ``__del__`` schedules
-        a late ``aclose()`` that unregisters a reused descriptor number from
-        the event loop's selector — the next model call's connect with it
-        (``docs/architecture_design.md`` §4.7; ``OpenAICompatBase._request_client``
-        has the mechanism).
-        An injected ``http_client`` belongs to whoever injected it and is
-        left open.
+        Both supported SDK constructors pass ``http_client`` through. Their
+        public ``close`` closes that transport, so borrowed wrappers are only
+        discarded when the execution ends.
         """
-        client = self.get_client()
-        try:
+        async with self.client_resources.use():
+            client = self.client_resources.get_or_create(
+                "sdk",
+                self.get_client,
+                close=None if self.http_client is not None else lambda sdk: sdk.close(),
+            )
             yield client
-        finally:
-            if self.http_client is None:
-                await client.close()
 
     def _get_usage(self, response: Message) -> ChatInvokeUsage:
         """Anthropic's three input counters, folded into one prompt total.

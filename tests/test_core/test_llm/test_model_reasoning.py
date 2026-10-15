@@ -289,7 +289,7 @@ def _mistral_reply(text: str, *, thinking: str | None) -> dict[str, Any]:
 
 
 def _on_sdk(chat: Any, wire: _Wire, sdk: str = "openai") -> Any:
-    """*chat* with the SDK client it builds per request pointed at *wire*."""
+    """*chat* with its execution SDK client pointed at *wire*."""
     from groq import AsyncGroq
     from openai import AsyncAzureOpenAI, AsyncOpenAI
 
@@ -818,7 +818,7 @@ async def test_blank_reasoning_records_none(case: _Case) -> None:
 async def test_the_browser_use_endpoint_records_none() -> None:
     chat = ChatBrowserUse(api_key="stub")
 
-    async def _request(_payload: dict[str, Any]) -> dict[str, Any]:
+    async def _request(_payload: dict[str, Any], _clients: Any) -> dict[str, Any]:
         return {"completion": _REPLY_TEXT, "usage": None}
 
     chat._make_request = _request  # type: ignore[method-assign]

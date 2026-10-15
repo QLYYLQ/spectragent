@@ -1,18 +1,15 @@
-"""A provider closes the client it built for a request before the request returns (arch §4.7).
+"""A provider reuses clients within an execution and explicitly releases them (arch §4.7).
 
-Each provider family builds a new SDK client — a connection pool — for a request. Left to
-the garbage collector it is not merely leaked: openai, anthropic, groq and google-genai
-clients schedule ``aclose()`` on the running loop from ``__del__``. When the collector
-reaches one in a reference cycle, the same pass closes its pooled socket, the next socket
-takes the freed descriptor number, and the late ``aclose()`` unregisters that *number* from
-the loop's selector — the next model call's connect callback with it, so that call never
-connects, whatever its timeout (the flywheel rehearsal: kettle → sign-in → drift, drift's step 1).
+Explicit teardown prevents SDK and HTTP transport finalizers from being the
+owner of pooled connections. A previously observed late-finalizer descriptor
+reuse regression is retained below as a real event-loop assertion; it does not
+assume every currently installed SDK wrapper has the same destructor.
 
 Each family's real SDK runs here against a loopback HTTP/1.1 keep-alive endpoint, with the
 collector off so nothing but the provider can close anything:
 
-- the connection a request opened is hung up by the time ``ainvoke`` returns, on success
-  and on an error reply alike;
+- multiple requests share a keep-alive connection until explicit execution cleanup;
+- cleanup closes owned connections on success and on an error reply alike;
 - the hang itself, provoked: the run holding the provider is dropped and collected, a new socket
   takes the lowest free descriptor number — the request's, had the collector freed it — and
   a reader registered on it must still fire after whatever the collection queued has run;
@@ -202,24 +199,29 @@ def _collector_off() -> Iterator[None]:
 
 
 @pytest.mark.parametrize("family", _FAMILIES, ids=_IDS)
-async def test_the_request_hangs_up_before_it_returns(family: _Family) -> None:
+async def test_execution_reuses_connection_until_explicit_cleanup(family: _Family) -> None:
     with _endpoint((200, family.reply)) as server, _collector_off():
         provider = family.build(_root(server))
         result = await provider.ainvoke([UserMessage(content="hi")])
         assert result.completion == "hi"
+        await provider.ainvoke([UserMessage(content="again")])
+        assert server._open == 1
+        assert server._hung_up == 0
+        assert await provider.aclose() == ()
         assert server.all_hung_up(timeout=5), (
-            f"{family.id}: the request's connection is still open after ainvoke returned — "
+            f"{family.id}: the execution's connection is still open after aclose returned — "
             "its client was left for the garbage collector to close"
         )
 
 
 @pytest.mark.parametrize("family", _FAMILIES, ids=_IDS)
-async def test_an_error_reply_hangs_up_too(family: _Family) -> None:
+async def test_error_execution_releases_its_connection(family: _Family) -> None:
     error = {"error": {"type": "invalid_request_error", "message": "bad request", "code": 400}}
     with _endpoint((400, error)) as server, _collector_off():
         provider = family.build(_root(server))
         with pytest.raises(ModelProviderError):
             await provider.ainvoke([UserMessage(content="hi")])
+        await provider.aclose()
         assert server.all_hung_up(timeout=5), (
             f"{family.id}: a failed request left its connection open"
         )
@@ -241,6 +243,7 @@ async def test_a_reused_descriptor_keeps_its_registration(family: _Family) -> No
         with _collector_off():
             run = _ComposedRun(family.build(_root(server)))
             await run.provider.ainvoke([UserMessage(content="hi")])
+            await run.provider.aclose()
             # The benchmark runner drops a task's composed run when the task ends; the
             # collector then finalizes whatever the provider left open, in one pass with
             # the SDK's ``__del__`` that queues ``aclose()``.
@@ -275,6 +278,8 @@ async def test_an_injected_http_client_is_left_to_its_owner(build: Callable[...,
             provider = build(_root(server), http_client=injected)
             await provider.ainvoke([UserMessage(content="hi")])
             await provider.ainvoke([UserMessage(content="again")])
+            await provider.aclose()
+            await provider.aclose()
             assert not injected.is_closed, "the provider closed a client it does not own"
         finally:
             await injected.aclose()

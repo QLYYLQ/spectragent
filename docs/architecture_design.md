@@ -1816,8 +1816,25 @@ provider 作者通过公开 `ChatModelBase.client_resources: ClientResources`（
 
 关闭失败、超时和未完成通过普通执行日志可见，并作为类型化诊断返回，完全没启用记录组件也能发现；它们不是模型请求
 失败、动作错误或重试理由。成功回复及 usage 不变，原调用异常不被覆盖，外部取消仍传播。重复清理不重复关闭已处理的
-资源，也不为清理创建客户端。`close_models(...)` 给 Runtime、judge 和辅助模型 owner 提供同一有界收尾入口；每个
+资源，也不为清理创建客户端；已有未完成诊断保留到新执行开始，不能把第二次清理的无操作冒充释放成功。`close_models(...)` 给 Runtime、judge 和辅助模型 owner 提供同一有界收尾入口；每个
 模型独立清理，不能让一个坏模型拦住其他模型。这里没有全局池、引用计数、多 agent 共享模型或私有 SDK 字段探测。
+
+已核实的 SDK 关闭合同（版本是本次验收环境，不是统一共享实现的假设）：
+
+| provider | 实际所有权与公开关闭入口 |
+|---|---|
+| OpenAI 系、Anthropic 系、Groq | OpenAI 2.29.0、Anthropic 0.86.0、Groq 1.1.1 的 `close()` 都关闭其 HTTPX transport；借用 transport 时只释放 wrapper 引用。Azure 自建 HTTPX 在 SDK 构造前登记，SDK 构造失败也收尾。DeepSeek/Cerebras 的 `client_params.http_client` 与字段注入统一解析，冲突拒绝。 |
+| Google | google-genai 1.68.0 的 `Client.close()` 与 `Client.aio.aclose()` 分别登记；SDK 明确保留 `HttpOptions.httpx_client` / `httpx_async_client` / `aiohttp_client` 的借用对象。嵌套 `client_args` / `async_client_args` 的 transport、mounts、connector 注入拒绝，提示改用明确客户端注入。 |
+| Mistral / browser_use | HTTPX 0.28.1 自建 `AsyncClient.aclose()`；Python 注入的 `http_client` 借用。Mistral 客户端构造失败后已创建的 transport 仍登记收尾。 |
+| Ollama | 要求 ollama >= 0.6.2，验收 0.6.3 的公开 `AsyncClient.close()`；0.6.1 无此入口。注入 `client_params.transport` / `mounts` 时，所有权包装仅转发公开 HTTP 请求，SDK 关闭不向借用 transport 转发。SDK 不支持的 `http_client` 明确拒绝。 |
+| Bedrock | boto3/botocore 1.42.72 的新建 client `close()`；Python 注入的 Session 本身借用，`session.client()` 创建的客户端仍由执行拥有。 |
+| OCI | OCI 2.168.2 的公开 `base_client.session.close()`；本 provider 实际创建的 principal signer 按具体 SDK 类型登记公开 session，逐项独立关闭。SDK 构造内部抛错且未交回对象的资源不可访问，不探私有字段，也不声称框架已释放它。 |
+
+同步 SDK 请求取消时线程可能仍在执行：`run_sync` 保留该请求的资源使用权直到线程实际返回，不能仅因 asyncio
+等待者取消就提前关闭 transport。Python 无法强制终止一个拒绝返回的 SDK 线程或拒绝取消的关闭协程；预算耗尽时
+报告 `in_use` / `timeout`、隔离该次资源，不能宣称强制释放成功。独立评测中 `EvaluationRunner.run` 是一次 judge
+批次，`evaluate_trace` 是一次单轨迹执行；`LLMJudgeEvaluator` 通过 `EvaluatorLifecycle.aclose` 显式释放自己的
+judge，不把评测伪装成 AgentRuntime 任务。直接调用 evaluator 的 Python 代码同样负责结束它的生命周期。
 
 **模型的推理：响应带回什么就记什么，不索取，不回喂。**（用户 2026-10-14 的裁决）响应里本来就带着的推理，provider
 填进 `ChatInvokeCompletion.thinking`；只以不透明形式返回的推理填进 `redacted_thinking`。每条返回路径（文本、

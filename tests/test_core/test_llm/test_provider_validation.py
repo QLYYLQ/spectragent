@@ -26,10 +26,9 @@ costing the run exactly what the scan exists to prevent. So the second
 half of this file drives every registered provider through a stub client
 that answers badly, and asserts on the type the *Loop* sees.
 
-The same cases carry one more thing every provider owes: the client it built
-for the request is closed before the request returns (arch §4.7 — left to the
-collector, an SDK client's late ``aclose()`` unregisters a reused descriptor
-from the event loop; ``test_request_clients.py`` runs the real SDKs).
+The factory-backed cases also verify execution-level reuse and explicit cleanup.
+The family lifecycle suites cover raw HTTP, synchronous SDKs and split resource
+ownership, with real SDK loopback evidence in ``test_request_clients.py``.
 """
 
 from __future__ import annotations
@@ -289,7 +288,7 @@ def _browser_use() -> Any:
 
     chat = ChatBrowserUse(model="bu-1-0", api_key="stub")
 
-    async def _request(_payload: dict) -> dict:
+    async def _request(_payload: dict, _clients: Any) -> dict:
         return {"completion": _BAD, "usage": None}
 
     chat._make_request = _request  # type: ignore[method-assign]
@@ -565,22 +564,16 @@ async def test_a_closed_union_output_format_compiles_on_every_provider(
     assert exc.value.raw_output
 
 
-# ── Row 3: the client a request builds is closed before it returns ──
+# ── Execution-owned client factories ───────────────────────────────
 
-#: Providers whose request does not run on a client from ``get_client``, and why.
-#: Every other case above doubles as a check that its request closes that client.
-_NO_REQUEST_CLIENT: dict[str, str] = {
-    "bedrock.default": "boto3 is synchronous: its client is not on the event loop",
-    "oci.default": "the OCI SDK is synchronous: its client is not on the event loop",
-    "browser_use.default": "``_make_request`` opens and closes its own ``httpx.AsyncClient``",
-    "mistral.default": "one plain-httpx client per instance, never closed — open (arch §4.7)",
-    "ollama.default": "the SDK has no close; one per request, never closed — open (arch §4.7)",
-}
-_CLIENT_CASES = [case for case in _CASES if case.key not in _NO_REQUEST_CLIENT]
-
-
-#: Modules whose requests may still use a client from ``get_client`` unclosed, and why.
-_UNCLOSED_GET_CLIENT = {"ollama.py": "ollama's AsyncClient has no close — open (arch §4.7)"}
+# These fixtures return closeable SDK fakes. The remaining fixtures bypass
+# transport creation entirely; their real ownership behavior is exercised in
+# test_compat_client_lifecycle.py and test_other_client_lifecycle.py.
+_FACTORY_CASES = [
+    case
+    for case in _CASES
+    if case.key.startswith(("openai.", "anthropic.", "google.")) and case.key != "openai.azure"
+]
 
 
 class _GetClientCalls(ast.NodeVisitor):
@@ -608,32 +601,28 @@ class _GetClientCalls(ast.NodeVisitor):
             isinstance(func, ast.Attribute)
             and func.attr == "get_client"
             and id(node) not in self.with_contexts
-            and "_request_client" not in self.functions
+            and "_create_execution_client" not in self.functions
         ):
             self.bare.append(node.lineno)
         self.generic_visit(node)
 
 
-def test_every_request_client_is_opened_where_it_is_closed() -> None:
+def test_requests_use_the_execution_client_cache() -> None:
     """Every request path, the text paths the behavioural row does not drive included."""
     offenders: list[str] = []
     for path in sorted(_PROVIDERS_DIR.glob("*.py")):
-        if path.name in _UNCLOSED_GET_CLIENT:
-            continue
         calls = _GetClientCalls()
         calls.visit(ast.parse(path.read_text(encoding="utf-8")))
         offenders.extend(f"{path.name}:{line}" for line in calls.bare)
     assert offenders == [], (
-        "These request paths take a client from get_client() outside _request_client() or "
-        "an `async with`, so nothing closes it before the request returns (arch §4.7):\n  "
-        + "\n  ".join(offenders)
+        "Request code must obtain SDK clients through the execution lifecycle cache "
+        "instead of constructing a client outside its owned factory:\n  " + "\n  ".join(offenders)
     )
-    for name in _UNCLOSED_GET_CLIENT:
-        assert (_PROVIDERS_DIR / name).exists(), f"stale exemption: {name}"
 
 
-def test_every_exemption_names_a_registered_provider() -> None:
-    assert set(_NO_REQUEST_CLIENT) <= set(LLMRegistrar.get_all())
+def test_every_registered_provider_implements_explicit_cleanup() -> None:
+    for key, provider in LLMRegistrar.get_all().items():
+        assert callable(getattr(provider, "aclose", None)), key
 
 
 def _closed_once(client: Any) -> bool:
@@ -642,8 +631,8 @@ def _closed_once(client: Any) -> bool:
     return client.closes == 1
 
 
-@pytest.mark.parametrize("case", _CLIENT_CASES, ids=[c.id for c in _CLIENT_CASES])
-async def test_a_request_closes_the_client_it_built(case: _Case) -> None:
+@pytest.mark.parametrize("case", _FACTORY_CASES, ids=[c.id for c in _FACTORY_CASES])
+async def test_execution_reuses_and_then_closes_its_client(case: _Case) -> None:
     provider = case.build()
     build = provider.get_client
     built: list[Any] = []
@@ -657,11 +646,13 @@ async def test_a_request_closes_the_client_it_built(case: _Case) -> None:
     with pytest.raises(StructuredOutputValidationError):
         await provider.ainvoke([UserMessage(content="hi")], _Shape)
 
-    assert built, "the request built no client through get_client"
-    assert all(_closed_once(client) for client in built), (
-        "a request returned with the client it built still open: closing it was left to "
-        "the garbage collector (arch §4.7)"
-    )
+    with pytest.raises(StructuredOutputValidationError):
+        await provider.ainvoke([UserMessage(content="again")], _Shape)
+    assert len(built) == 1
+    assert not _closed_once(built[0])
+    assert await provider.aclose() == ()
+    assert await provider.aclose() == ()
+    assert _closed_once(built[0])
 
 
 def test_the_groq_salvage_path_is_exempt_on_purpose() -> None:

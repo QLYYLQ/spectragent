@@ -252,7 +252,7 @@ class TestChatBrowserUse:
     async def test_request_type_defaults_and_is_configurable(self, monkeypatch) -> None:
         sent: list[dict] = []
 
-        async def _fake(payload):
+        async def _fake(payload, _clients):
             sent.append(payload)
             return {"completion": "ok"}
 
@@ -269,7 +269,7 @@ class TestChatBrowserUse:
     async def test_per_call_override_still_works(self, monkeypatch) -> None:
         sent: list[dict] = []
 
-        async def _fake(payload):
+        async def _fake(payload, _clients):
             sent.append(payload)
             return {"completion": "ok"}
 
@@ -279,7 +279,7 @@ class TestChatBrowserUse:
         assert sent[-1]["request_type"] == "one_off"
 
     async def test_structured_output_uses_pydantic_not_a_hardcoded_field(self, monkeypatch) -> None:
-        async def _fake(_payload):
+        async def _fake(_payload, _clients):
             return {"completion": {"memory": "m", "action": [{"kind": "a", "index": 7}]}}
 
         chat = self._chat()
@@ -296,7 +296,7 @@ class TestChatBrowserUse:
             memory: str
             steps: list[_ActionA]
 
-        async def _fake(_payload):
+        async def _fake(_payload, _clients):
             return {"completion": {"memory": "m", "steps": [{"kind": "a", "index": 1}]}}
 
         chat = self._chat()

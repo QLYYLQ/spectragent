@@ -2,6 +2,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, TypeVar, overload
 
+import httpx
 from ollama import AsyncClient as OllamaAsyncClient
 from ollama import Options
 from pydantic import BaseModel, Field
@@ -25,6 +26,19 @@ def _thinking(response: Any) -> str | None:
     ``think`` flag. Through :func:`~spectragent.core.llm.views.join_reasoning`.
     """
     return join_reasoning([getattr(getattr(response, "message", None), "thinking", None)])
+
+
+class _BorrowedTransport(httpx.AsyncBaseTransport):
+    """Let the SDK close its client without closing an injected transport."""
+
+    def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
+        self.transport = transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await self.transport.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        pass
 
 
 @dataclass
@@ -64,7 +78,17 @@ class ChatOllama(ChatModelBase):
         return detect_model_family(str(self.model))
 
     def get_client(self) -> OllamaAsyncClient:
-        return OllamaAsyncClient(host=self.host, timeout=self.timeout, **self.client_params or {})
+        params = dict(self.client_params or {})
+        if "http_client" in params:
+            raise ValueError("Ollama client_params does not support http_client injection")
+        if params.get("transport") is not None:
+            params["transport"] = _BorrowedTransport(params["transport"])
+        if params.get("mounts") is not None:
+            params["mounts"] = {
+                pattern: _BorrowedTransport(transport) if transport is not None else None
+                for pattern, transport in params["mounts"].items()
+            }
+        return OllamaAsyncClient(host=self.host, timeout=self.timeout, **params)
 
     @staticmethod
     def _get_usage(response: Any) -> ChatInvokeUsage | None:
@@ -154,39 +178,43 @@ class ChatOllama(ChatModelBase):
         )
 
         try:
-            if output_format is None:
-                response = await self.get_client().chat(
-                    model=self.model,
-                    messages=ollama_messages,
-                    options=self.ollama_options,
-                    **tool_kwargs,
+            async with self.client_resources.use():
+                client = self.client_resources.get_or_create(
+                    "ollama", self.get_client, close=lambda value: value.close()
                 )
-                return ChatInvokeCompletion(
-                    completion=response.message.content or "",
-                    thinking=_thinking(response),
-                    usage=self._get_usage(response),
-                    tool_calls=OllamaMessageSerializer.parse_tool_calls(response.message),
-                )
-            else:
-                # Flatten $ref/$defs: Ollama compiles `format` into a grammar and
-                # local backends do not resolve JSON-Schema references.
-                schema = SchemaOptimizer.create_optimized_json_schema(
-                    output_format, strict=self._use_strict_schema(output_format)
-                )
-                response = await self.get_client().chat(
-                    model=self.model,
-                    messages=ollama_messages,
-                    format=schema,
-                    options=self.ollama_options,
-                )
-                usage = self._get_usage(response)
-                return ChatInvokeCompletion(
-                    completion=self._validate_structured(
-                        output_format, response.message.content or "", usage=usage
-                    ),
-                    thinking=_thinking(response),
-                    usage=usage,
-                )
+                if output_format is None:
+                    response = await client.chat(
+                        model=self.model,
+                        messages=ollama_messages,
+                        options=self.ollama_options,
+                        **tool_kwargs,
+                    )
+                    return ChatInvokeCompletion(
+                        completion=response.message.content or "",
+                        thinking=_thinking(response),
+                        usage=self._get_usage(response),
+                        tool_calls=OllamaMessageSerializer.parse_tool_calls(response.message),
+                    )
+                else:
+                    # Flatten $ref/$defs: Ollama compiles `format` into a grammar and
+                    # local backends do not resolve JSON-Schema references.
+                    schema = SchemaOptimizer.create_optimized_json_schema(
+                        output_format, strict=self._use_strict_schema(output_format)
+                    )
+                    response = await client.chat(
+                        model=self.model,
+                        messages=ollama_messages,
+                        format=schema,
+                        options=self.ollama_options,
+                    )
+                    usage = self._get_usage(response)
+                    return ChatInvokeCompletion(
+                        completion=self._validate_structured(
+                            output_format, response.message.content or "", usage=usage
+                        ),
+                        thinking=_thinking(response),
+                        usage=usage,
+                    )
 
         except ModelProviderError:
             # StructuredOutputValidationError is one of these, and it is the

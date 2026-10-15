@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -56,8 +57,8 @@ async def close_models(
     cleanup exception is reported separately; cancellation of the caller propagates
     while already-started bounded cleanup continues. No client is opened here.
     """
-    if timeout <= 0:
-        raise ValueError("Model cleanup timeout must be positive")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Model cleanup timeout must be finite and positive")
 
     async def close_one(model: ModelClientLifecycle) -> tuple[ClientCleanupDiagnostic, ...]:
         name = model.name
@@ -101,8 +102,8 @@ async def close_models(
 @asynccontextmanager
 async def model_session(*models: ModelClientLifecycle, timeout: float = 5.0) -> AsyncIterator[None]:
     """A direct-Python execution: lazy reuse inside, explicit release on every exit."""
-    if timeout <= 0:
-        raise ValueError("Model cleanup timeout must be positive")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Model cleanup timeout must be finite and positive")
     try:
         yield
     finally:

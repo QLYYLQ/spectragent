@@ -24,7 +24,7 @@ from typing import Any
 
 from spectragent.core.trace.fsio import atomic_write
 from spectragent.core.trace.reader import RunTrace
-from spectragent.evaluator.base import BaseEvaluator
+from spectragent.evaluator.base import BaseEvaluator, EvaluatorLifecycle
 from spectragent.evaluator.summary import summarize
 from spectragent.evaluator.trace_view import TraceView
 from spectragent.schemas.eval_result import (
@@ -157,6 +157,23 @@ class EvaluationRunner:
         return str(slug) if slug else self.evaluator_id
 
     async def evaluate_trace(self, trace_dir: Path) -> EvalResult:
+        """Score one trace as one independent judge execution."""
+        try:
+            return await self._evaluate_trace(trace_dir)
+        finally:
+            await self.aclose()
+
+    async def aclose(self, *, timeout: float = 5.0) -> None:
+        """Release the resource-owning evaluator through its public contract."""
+        if isinstance(self._evaluator, EvaluatorLifecycle):
+            # Judge evaluators delegate to close_models, which isolates cleanup
+            # diagnostics from verdicts and preserves external cancellation.
+            try:
+                await self._evaluator.aclose(timeout=timeout)
+            except Exception:
+                logger.exception("Evaluator cleanup failed for %s", self.evaluator_id)
+
+    async def _evaluate_trace(self, trace_dir: Path) -> EvalResult:
         """Score one trace. Raises on anything that makes it unscorable."""
         trace = RunTrace(trace_dir)
         view = TraceView(trace)
@@ -223,69 +240,75 @@ class EvaluationRunner:
         it never masquerades as a graded wrong answer. Re-run the scoring
         pass and it turns into a real verdict — the trace is untouched.
         """
-        outcomes: list[EvaluationOutcome] = []
-        failures: dict[str, str] = {}
-        failure_details: dict[str, EvalDetails] = {}
-        for trace_dir in trace_dirs:
-            try:
-                result = await self.evaluate_trace(trace_dir)
-                outcomes.append(
-                    EvaluationOutcome(task_id=result.task_id, trace_dir=trace_dir, result=result)
-                )
-            except Exception as exc:
-                logger.exception("Evaluation failed for %s", trace_dir)
-                task_id = _task_id_or_dirname(trace_dir)
-                message = f"{type(exc).__name__}: {exc}"
-                failures[task_id] = message
-                details = getattr(exc, "details", None)
-                if isinstance(details, EvalDetails):
-                    failure_details[task_id] = details
-                else:
-                    details = None
+        try:
+            outcomes: list[EvaluationOutcome] = []
+            failures: dict[str, str] = {}
+            failure_details: dict[str, EvalDetails] = {}
+            for trace_dir in trace_dirs:
+                try:
+                    result = await self._evaluate_trace(trace_dir)
+                    outcomes.append(
+                        EvaluationOutcome(
+                            task_id=result.task_id, trace_dir=trace_dir, result=result
+                        )
+                    )
+                except Exception as exc:
+                    logger.exception("Evaluation failed for %s", trace_dir)
+                    task_id = _task_id_or_dirname(trace_dir)
+                    message = f"{type(exc).__name__}: {exc}"
+                    failures[task_id] = message
+                    details = getattr(exc, "details", None)
+                    if isinstance(details, EvalDetails):
+                        failure_details[task_id] = details
+                    else:
+                        details = None
+                    outcomes.append(
+                        EvaluationOutcome(
+                            task_id=task_id, trace_dir=trace_dir, error=message, details=details
+                        )
+                    )
+
+            # Which tasks owe a verdict and have none. With a declared split
+            # that is the split; without one it is the traces we were handed,
+            # so an unscorable trace cannot sit in the denominator as a task
+            # with no record at all.
+            expected = list(expected_task_ids or [])
+            scored = {o.task_id for o in outcomes if o.result is not None}
+            owed = (
+                [
+                    (task_id, failures.get(task_id), failure_details.get(task_id))
+                    for task_id in expected
+                    if task_id not in scored
+                ]
+                if expected
+                else [(o.task_id, o.error, o.details) for o in outcomes if o.result is None]
+            )
+            for task_id, reason, evidence in owed:
                 outcomes.append(
                     EvaluationOutcome(
-                        task_id=task_id, trace_dir=trace_dir, error=message, details=details
+                        task_id=task_id,
+                        result=self._unscored(
+                            task_id,
+                            benchmark,
+                            subset,
+                            reason=reason,
+                            evidence=evidence,
+                        ),
                     )
                 )
 
-        # Which tasks owe a verdict and have none. With a declared split
-        # that is the split; without one it is the traces we were handed,
-        # so an unscorable trace cannot sit in the denominator as a task
-        # with no record at all.
-        expected = list(expected_task_ids or [])
-        scored = {o.task_id for o in outcomes if o.result is not None}
-        owed = (
-            [
-                (task_id, failures.get(task_id), failure_details.get(task_id))
-                for task_id in expected
-                if task_id not in scored
-            ]
-            if expected
-            else [(o.task_id, o.error, o.details) for o in outcomes if o.result is None]
-        )
-        for task_id, reason, evidence in owed:
-            outcomes.append(
-                EvaluationOutcome(
-                    task_id=task_id,
-                    result=self._unscored(
-                        task_id,
-                        benchmark,
-                        subset,
-                        reason=reason,
-                        evidence=evidence,
-                    ),
-                )
+            report = EvaluationReport(
+                evaluator_id=self.evaluator_id,
+                benchmark=benchmark,
+                subset=subset,
+                outcomes=outcomes,
+                total_tasks=len(expected),
             )
+            self._persist_summary(report)
+            return report
 
-        report = EvaluationReport(
-            evaluator_id=self.evaluator_id,
-            benchmark=benchmark,
-            subset=subset,
-            outcomes=outcomes,
-            total_tasks=len(expected),
-        )
-        self._persist_summary(report)
-        return report
+        finally:
+            await self.aclose()
 
     # ── internals ───────────────────────────────────────────────────
 

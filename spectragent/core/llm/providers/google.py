@@ -2,8 +2,7 @@ import asyncio
 import json
 import logging
 import random
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, TypeVar, overload
 
@@ -14,6 +13,7 @@ from google.genai.types import MediaModality
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
+from spectragent.core.llm.client_resources import ClientResources
 from spectragent.core.llm.exceptions import ModelOutputTruncatedError, ModelProviderError
 from spectragent.core.llm.fences import strip_code_fence
 from spectragent.core.llm.messages import BaseMessage
@@ -208,6 +208,20 @@ class ChatGoogle(ChatModelBase):
         if http_options is None and self.base_url is not None:
             http_options = {"base_url": self.base_url}
 
+        if http_options is not None:
+            options = (
+                http_options.model_dump(exclude_none=True)
+                if isinstance(http_options, types.HttpOptions)
+                else http_options
+            )
+            for name in ("client_args", "async_client_args"):
+                arguments = options.get(name) or {}
+                if {"transport", "mounts", "connector"}.intersection(arguments):
+                    raise ValueError(
+                        f"Google http_options.{name} cannot borrow transports; "
+                        "inject httpx_client, httpx_async_client, or aiohttp_client directly"
+                    )
+
         base_params = {
             "api_key": self.api_key,
             "vertexai": self.vertexai,
@@ -219,32 +233,16 @@ class ChatGoogle(ChatModelBase):
         return {k: v for k, v in base_params.items() if v is not None}
 
     def get_client(self) -> genai.Client:
-        """A new client: one per request, closed by :meth:`_request_client`."""
+        """Build the SDK wrapper; its sync and async resources are independent."""
         return genai.Client(**self._get_client_params())
 
-    @asynccontextmanager
-    async def _request_client(self) -> AsyncIterator[genai.Client]:
-        """The client one request runs on, closed before the request returns.
-
-        This provider used to keep one client per instance and never close
-        it. google-genai's async client, collected unclosed while the loop
-        runs, schedules a late ``aclose()`` from ``__del__`` that unregisters
-        a reused descriptor number from the event loop's selector — another
-        socket's connect with it (``docs/architecture_design.md`` §4.7;
-        ``OpenAICompatBase._request_client`` has the mechanism). An instance is dropped at the end of every task
-        of a benchmark run, while the loop goes on to the next one.
-
-        Both halves are closed: ``aio.aclose()`` the async transport this
-        provider uses, ``close()`` the sync one the client builds with it.
-        A transport passed in ``http_options`` is its owner's: google-genai
-        leaves those open itself.
-        """
+    def _create_execution_client(self, clients: ClientResources) -> genai.Client:
         client = self.get_client()
-        try:
-            yield client
-        finally:
-            await client.aio.aclose()
-            client.close()
+        # Register the synchronous half first: if obtaining aio fails, it still
+        # belongs to this execution and must be attempted during cleanup.
+        clients.own("google.sync", client, close=lambda value: value.close())
+        clients.own("google.async", client.aio, close=lambda value: value.aclose())
+        return client
 
     @property
     def name(self) -> str:
@@ -570,37 +568,45 @@ class ChatGoogle(ChatModelBase):
             except Exception:
                 raise
 
-        assert self.max_retries >= 1
-        for attempt in range(self.max_retries):
-            try:
-                async with self._request_client() as client:
+        clients = self.client_resources
+        async with clients.use():
+            assert self.max_retries >= 1
+            for attempt in range(self.max_retries):
+                try:
+                    client = clients.get_or_create(
+                        "google", lambda: self._create_execution_client(clients), close=None
+                    )
                     return await _make_api_call(client)
-            except ModelProviderError as e:
-                if e.status_code in self.retryable_status_codes and attempt < self.max_retries - 1:
-                    delay = min(self.retry_base_delay * (2**attempt), self.retry_max_delay)
-                    jitter = random.uniform(0, delay * 0.1)
-                    await asyncio.sleep(delay + jitter)
-                    continue
-                raise
-            except Exception as e:
-                error_message = str(e)
-                status_code: int | None = None
-                if hasattr(e, "response"):
-                    resp_obj = getattr(e, "response", None)
-                    if resp_obj and hasattr(resp_obj, "status_code"):
-                        status_code = getattr(resp_obj, "status_code", None)
-                if "timeout" in error_message.lower() or "cancelled" in error_message.lower():
-                    status_code = 504 if isinstance(e, asyncio.CancelledError) else 408
-                elif "rate limit" in error_message.lower() or "429" in error_message.lower():
-                    status_code = 429
-                elif (
-                    "service unavailable" in error_message.lower() or "503" in error_message.lower()
-                ):
-                    status_code = 503
-                raise ModelProviderError(
-                    message=error_message,
-                    status_code=status_code or 502,
-                    model=self.name,
-                ) from e
+                except ModelProviderError as e:
+                    if (
+                        e.status_code in self.retryable_status_codes
+                        and attempt < self.max_retries - 1
+                    ):
+                        delay = min(self.retry_base_delay * (2**attempt), self.retry_max_delay)
+                        jitter = random.uniform(0, delay * 0.1)
+                        await asyncio.sleep(delay + jitter)
+                        continue
+                    raise
+                except Exception as e:
+                    error_message = str(e)
+                    status_code: int | None = None
+                    if hasattr(e, "response"):
+                        resp_obj = getattr(e, "response", None)
+                        if resp_obj and hasattr(resp_obj, "status_code"):
+                            status_code = getattr(resp_obj, "status_code", None)
+                    if "timeout" in error_message.lower() or "cancelled" in error_message.lower():
+                        status_code = 504 if isinstance(e, asyncio.CancelledError) else 408
+                    elif "rate limit" in error_message.lower() or "429" in error_message.lower():
+                        status_code = 429
+                    elif (
+                        "service unavailable" in error_message.lower()
+                        or "503" in error_message.lower()
+                    ):
+                        status_code = 503
+                    raise ModelProviderError(
+                        message=error_message,
+                        status_code=status_code or 502,
+                        model=self.name,
+                    ) from e
 
         raise RuntimeError("Retry loop completed without return or exception")

@@ -140,15 +140,25 @@ class ChatMistral(ChatModelBase):
         return headers
 
     def _client(self) -> httpx.AsyncClient:
-        if self.http_client:
+        if self.http_client is not None:
             return self.http_client
-        if not hasattr(self, "_cached_client"):
+
+        def create() -> httpx.AsyncClient:
             transport = httpx.AsyncHTTPTransport(retries=self.max_retries)
             client_args: dict[str, Any] = {"transport": transport}
             if self.timeout is not None:
                 client_args["timeout"] = self.timeout
-            self._cached_client = httpx.AsyncClient(**client_args)
-        return self._cached_client
+            try:
+                return httpx.AsyncClient(**client_args)
+            except BaseException:
+                self.client_resources.own(
+                    "mistral.transport", transport, close=lambda value: value.aclose()
+                )
+                raise
+
+        return self.client_resources.get_or_create(
+            "mistral", create, close=lambda value: value.aclose()
+        )
 
     def _serialize_messages(self, messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:
         raw: list[dict[str, Any]] = []
@@ -208,25 +218,26 @@ class ChatMistral(ChatModelBase):
         return response.text
 
     async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self._get_base_url()}/chat/completions"
-        response = await self._client().post(
-            url, headers=self._auth_headers(), json=payload, params=self._query_params()
-        )
-        if response.status_code >= 400:
-            message = self._parse_error(response)
-            if response.status_code == 429:
-                raise ModelRateLimitError(
+        async with self.client_resources.use():
+            url = f"{self._get_base_url()}/chat/completions"
+            response = await self._client().post(
+                url, headers=self._auth_headers(), json=payload, params=self._query_params()
+            )
+            if response.status_code >= 400:
+                message = self._parse_error(response)
+                if response.status_code == 429:
+                    raise ModelRateLimitError(
+                        message=message, status_code=response.status_code, model=self.name
+                    )
+                raise ModelProviderError(
                     message=message, status_code=response.status_code, model=self.name
                 )
-            raise ModelProviderError(
-                message=message, status_code=response.status_code, model=self.name
-            )
-        try:
-            return response.json()
-        except Exception as e:
-            raise ModelProviderError(
-                message=f"Failed to parse Mistral response: {e}", model=self.name
-            ) from e
+            try:
+                return response.json()
+            except Exception as e:
+                raise ModelProviderError(
+                    message=f"Failed to parse Mistral response: {e}", model=self.name
+                ) from e
 
     @overload
     async def ainvoke(

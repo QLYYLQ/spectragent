@@ -11,6 +11,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from spectragent.core.llm._registrar import ChatModelBase
+from spectragent.core.llm.client_resources import ClientResources
 from spectragent.core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from spectragent.core.llm.messages import BaseMessage
 from spectragent.core.llm.tools import ToolChoice, ToolDefinition
@@ -53,7 +54,7 @@ class ChatBrowserUse(ChatModelBase):
         request_type: Annotated[
             str, Field(description="Browser-use API request_type tag")
         ] = "browser_agent",
-        **kwargs,
+        http_client: httpx.AsyncClient | None = None,
     ):
         valid_models = ["bu-latest", "bu-1-0", "bu-2-0"]
         is_valid = model in valid_models or model.startswith("browser-use/")
@@ -73,6 +74,7 @@ class ChatBrowserUse(ChatModelBase):
         self.retry_base_delay = retry_base_delay
         self.retry_max_delay = retry_max_delay
         self.request_type = request_type
+        self.http_client = http_client
 
         if not self.api_key:
             raise ValueError(
@@ -139,36 +141,42 @@ class ChatBrowserUse(ChatModelBase):
         if output_format is not None:
             payload["output_format"] = output_format.model_json_schema()
 
-        last_error: Exception | None = None
-        for attempt in range(self.max_retries):
-            try:
-                result = await self._make_request(payload)
-                break
-            except httpx.HTTPStatusError as e:
-                last_error = e
-                if (
-                    e.response.status_code in RETRYABLE_STATUS_CODES
-                    and attempt < self.max_retries - 1
-                ):
-                    delay = min(self.retry_base_delay * (2**attempt), self.retry_max_delay)
-                    await asyncio.sleep(delay + random.uniform(0, delay * 0.1))
-                    continue
-                self._raise_http_error(e)
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
-                last_error = e
-                if attempt < self.max_retries - 1:
-                    delay = min(self.retry_base_delay * (2**attempt), self.retry_max_delay)
-                    await asyncio.sleep(delay + random.uniform(0, delay * 0.1))
-                    continue
-                raise ValueError(f"Failed to connect after {self.max_retries} attempts: {e}") from e
-            except Exception as e:
-                raise ValueError(f"Failed to connect to browser-use API: {e}") from e
-        else:
-            if last_error is not None:
-                if isinstance(last_error, httpx.HTTPStatusError):
-                    self._raise_http_error(last_error)
-                raise ValueError(f"Request failed after {self.max_retries} attempts: {last_error}")
-            raise RuntimeError("Retry loop completed without return or exception")
+        clients = self.client_resources
+        async with clients.use():
+            last_error: Exception | None = None
+            for attempt in range(self.max_retries):
+                try:
+                    result = await self._make_request(payload, clients)
+                    break
+                except httpx.HTTPStatusError as e:
+                    last_error = e
+                    if (
+                        e.response.status_code in RETRYABLE_STATUS_CODES
+                        and attempt < self.max_retries - 1
+                    ):
+                        delay = min(self.retry_base_delay * (2**attempt), self.retry_max_delay)
+                        await asyncio.sleep(delay + random.uniform(0, delay * 0.1))
+                        continue
+                    self._raise_http_error(e)
+                except (httpx.TimeoutException, httpx.ConnectError) as e:
+                    last_error = e
+                    if attempt < self.max_retries - 1:
+                        delay = min(self.retry_base_delay * (2**attempt), self.retry_max_delay)
+                        await asyncio.sleep(delay + random.uniform(0, delay * 0.1))
+                        continue
+                    raise ValueError(
+                        f"Failed to connect after {self.max_retries} attempts: {e}"
+                    ) from e
+                except Exception as e:
+                    raise ValueError(f"Failed to connect to browser-use API: {e}") from e
+            else:
+                if last_error is not None:
+                    if isinstance(last_error, httpx.HTTPStatusError):
+                        self._raise_http_error(last_error)
+                    raise ValueError(
+                        f"Request failed after {self.max_retries} attempts: {last_error}"
+                    )
+                raise RuntimeError("Retry loop completed without return or exception")
 
         usage = None
         if "usage" in result and result["usage"] is not None:
@@ -190,18 +198,24 @@ class ChatBrowserUse(ChatModelBase):
         # ``usage``, so ``thinking`` stays ``None`` (docs/architecture_design.md §4.7).
         return ChatInvokeCompletion(completion=completion, usage=usage)
 
-    async def _make_request(self, payload: dict) -> dict:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/v1/chat/completions",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
+    async def _make_request(self, payload: dict, clients: ClientResources) -> dict:
+        client = self.http_client
+        if client is None:
+            client = clients.get_or_create(
+                "browser_use",
+                lambda: httpx.AsyncClient(timeout=self.timeout),
+                close=lambda value: value.aclose(),
             )
-            response.raise_for_status()
-            return response.json()
+        response = await client.post(
+            f"{self.base_url}/v1/chat/completions",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        response.raise_for_status()
+        return response.json()
 
     def _raise_http_error(self, e: httpx.HTTPStatusError) -> None:
         try:

@@ -24,6 +24,8 @@ from typing import Any, ClassVar
 
 from conscribe import create_registrar
 
+from spectragent.core.llm.base import BaseChatModel
+from spectragent.core.llm.lifecycle import ClientCleanupDiagnostic, close_models
 from spectragent.core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -240,7 +242,7 @@ class LLMJudgeReceptors:
     ``None`` and failing three frames later.
     """
 
-    llm: Any
+    llm: BaseChatModel
 
 
 @dataclass
@@ -301,6 +303,10 @@ class LLMJudgeEvaluator(LLMJudgeReceptors, EvaluatorBase):
     _prompt_cache: dict[str, tuple[str, PromptRef]] = field(
         default_factory=dict, init=False, repr=False
     )
+
+    async def aclose(self, *, timeout: float = 5.0) -> tuple[ClientCleanupDiagnostic, ...]:
+        """End this evaluator's judge execution, without inspecting other owners."""
+        return await close_models([self.llm], timeout=timeout)
 
     # ── Judge invocation ────────────────────────────────────────────
 

@@ -267,3 +267,26 @@ def test_same_model_across_sequential_event_loops_uses_new_owned_resources() -> 
     asyncio.run(execute())
     assert seen[0] is not seen[1]
     assert [resource.closes for resource in seen] == [1, 1]
+
+
+async def test_repeated_cleanup_keeps_prior_failure_visible_until_new_execution() -> None:
+    model = _Model()
+    failed = _owned(model, _Resource(RuntimeError("resource stayed open")))
+    first = await model.aclose()
+    assert first[0].status == "failed"
+    assert await model.aclose() == first
+    assert failed.closes == 1
+    replacement = _owned(model, _Resource())
+    assert await model.aclose() == ()
+    assert replacement.closes == 1
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+async def test_invalid_cleanup_budget_does_not_discard_owned_resources(timeout: float) -> None:
+    model = _Model()
+    resource = _owned(model, _Resource())
+    with pytest.raises(ValueError, match="finite and positive"):
+        await model.aclose(timeout=timeout)
+    assert resource.closes == 0
+    assert await model.aclose() == ()
+    assert resource.closes == 1
