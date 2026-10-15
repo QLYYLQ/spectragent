@@ -11,6 +11,8 @@ from typing import Any
 import yaml
 
 from spectragent import GENERATED_DIR
+from spectragent.cli.configuration_errors import inspection_stage
+from spectragent.cli.configuration_provenance import explain_provenance
 from spectragent.cli.fingerprints import source_fingerprints
 from spectragent.core.composer import ConfigComposer
 from spectragent.core.registries import collect_registrars
@@ -29,30 +31,40 @@ def explain_config(
     replay_archive: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
-    registrars = collect_registrars()
-    composer = ConfigComposer(registrars=registrars)
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError("The configuration must be a YAML mapping")
-    run = composer.compose(raw)
+    with inspection_stage("yaml"):
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("The configuration must be a YAML mapping")
+    with inspection_stage("schema"):
+        registrars = collect_registrars()
+        composer = ConfigComposer(registrars=registrars)
+    with inspection_stage("validation"):
+        config = composer.top_level_type.model_validate(raw)
+    with inspection_stage("composition"):
+        run = composer.compose(config)
     agents = run.ids("agent")
     negotiation = None
     descriptors: list[dict[str, Any]] = []
     checked = "configuration"
     selected_agent = agent_id
-    context = task_context(start_url=start_url, replay_archive=replay_archive)
-    loop_inputs = None
-    if agents:
-        if selected_agent is None:
+    with inspection_stage("selection"):
+        context = task_context(start_url=start_url, replay_archive=replay_archive)
+        loop_inputs = None
+        if agents and selected_agent is None:
             if len(agents) != 1:
                 raise ValueError("Several agents are configured; select one with --agent-id")
             selected_agent = agents[0]
-        if task_id is not None:
+        if not agents and any((agent_id, env_id, start_url, replay_archive, task_id)):
+            raise ValueError("Agent or task options require an agent in the configuration")
+        if agents and task_id is not None:
             loader = run.single("task_loader")
             task = loader.get_task_context(task_id)
             context, loop_inputs = task.env, task.loop
-        runtime = AgentRuntime.for_agent(run, selected_agent, env_id=env_id)
-        runtime.prepare(env_context=context, loop_inputs=loop_inputs)
+    if agents:
+        assert selected_agent is not None
+        with inspection_stage("prepare"):
+            runtime = AgentRuntime.for_agent(run, selected_agent, env_id=env_id)
+            runtime.prepare(env_context=context, loop_inputs=loop_inputs)
         bound = TraceNegotiation.from_results(
             runtime.negotiated_observation,
             runtime.negotiated_actions,
@@ -63,8 +75,6 @@ def explain_config(
             descriptor.model_dump(mode="json") for descriptor in runtime.active_descriptors
         ]
         checked = "configuration_and_prepare"
-    elif any((agent_id, env_id, start_url, replay_archive, task_id)):
-        raise ValueError("Agent or task options require an agent in the configuration")
     full = redact_config(run.top_level_cfg, record_secrets=True)
     digest = hashlib.sha256(
         json.dumps(full, sort_keys=True, separators=(",", ":")).encode()
@@ -85,6 +95,8 @@ def explain_config(
         if stored.get(name) != fingerprints.get(name)
     )
     generated_status = "missing" if missing_files else "stale" if stale_layers else "current"
+    with inspection_stage("provenance"):
+        provenance = explain_provenance(run, registrars)
     return {
         "checked": checked,
         "launched": False,
@@ -124,6 +136,7 @@ def explain_config(
             for hook in run.hooks
         ],
         "resolved": redact_config(run.top_level_cfg),
+        "provenance": provenance,
     }
 
 

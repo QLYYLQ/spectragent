@@ -123,6 +123,11 @@ class TestAnInlineOnlyReceptor:
     ) -> None:
         run = composer.compose({"inl_owner": [{"owner_id": "keeper", **block}]})
         assert run.single("inl_owner").items == []
+        assert run.composition is not None
+        edge = run.composition.wiring[0]
+        assert (edge.source, edge.via, edge.targets) == ("owner_default", "retained", ())
+        origin = next(item for item in run.composition.inputs if item.path == "inl_owner[0].items")
+        assert origin.source == ("explicit" if "items" in block else "default")
 
     def test_left_out_never_adopts_what_another_owner_built_inline(
         self, composer: ConfigComposer
@@ -185,12 +190,19 @@ class TestAnOmittedReceptorWithNothingToAdopt:
             {"pool_item": [{"item_id": "blue"}], "inl_pooler": [{"owner_id": "pooler"}]}
         )
         assert [type(i) for i in run.single("inl_pooler").items] == [_Blue]
+        assert run.composition is not None
+        edge = run.composition.wiring[0]
+        assert (edge.source, edge.via) == ("pool", "setattr")
+        assert edge.targets[0].path == "pool_item[0]"
+        assert edge.targets[0].instance_id == "blue#0"
 
     def test_an_owner_without_a_default_gets_the_empty_container(
         self, pooling: ConfigComposer
     ) -> None:
         run = pooling.compose({"inl_pooler": [{"owner_id": "pooler"}]})
         assert run.single("inl_pooler").items == []
+        assert run.composition is not None
+        assert run.composition.wiring[0].source == "pool"
 
     def test_an_explicit_empty_list_is_kept(self, pooling: ConfigComposer) -> None:
         run = pooling.compose(
@@ -200,3 +212,6 @@ class TestAnOmittedReceptorWithNothingToAdopt:
             }
         )
         assert run.single("inl_pooler").items == []
+        assert run.composition is not None
+        assert run.composition.wiring[0].source == "empty"
+        assert run.composition.wiring[0].targets == ()

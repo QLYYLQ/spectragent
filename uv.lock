@@ -398,14 +398,14 @@ wheels = [
 
 [[package]]
 name = "conscribe"
-version = "2.0.0"
+version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a4/6b/4084b11f471efe1ff8daded5dece3d127b62c3ce0df3a6e0bd99610b427e/conscribe-2.0.0.tar.gz", hash = "sha256:c7ae08f7cfb8cc995fc8e248dd2a8b768204353f7fff1a9eeb62056749d19aa4", size = 377291, upload-time = "2026-10-14T11:31:19.205Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1f/3a/bdf8f9b94f67749153ac27dc42f531a10cd9b503ad1b1c92abca2e1f7a8b/conscribe-2.1.0.tar.gz", hash = "sha256:9a84977dda75e4a5c1fbbda2b4ccf38f5eb0bc6ea747cc652dc5321ce0bda955", size = 387676, upload-time = "2026-10-15T18:46:59.936Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/92/3963203f12bbd505087b5edc308007419071f9bc65f9b8af27f90bff2582/conscribe-2.0.0-py3-none-any.whl", hash = "sha256:b0c1359ece170aa4165aaa80ef30fcf397005c09c3159137c82a302464b63c5d", size = 406815, upload-time = "2026-10-14T11:31:15.577Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/27/bf6fd9c1c3f54d13de1c2172eb81c6795db5615f990c64ff5db701589d37/conscribe-2.1.0-py3-none-any.whl", hash = "sha256:70cae0216c44ab958591180cbd501ca95074354de9c193bf1617276e327ae10a", size = 417826, upload-time = "2026-10-15T18:46:58.336Z" },
 ]
 
 [[package]]
@@ -1847,7 +1847,7 @@ requires-dist = [
     { name = "browser-use-lite" },
     { name = "bubus", marker = "extra == 'comparison'", specifier = "==1.5.6" },
     { name = "cdp-use", marker = "extra == 'comparison'", specifier = "==1.4.5" },
-    { name = "conscribe", specifier = ">=2.0.0,<3" },
+    { name = "conscribe", specifier = ">=2.1.0,<3" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "google-genai", specifier = ">=1.65" },
     { name = "groq", specifier = ">=1.0" },

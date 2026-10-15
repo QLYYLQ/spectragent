@@ -107,6 +107,24 @@ def test_config_explain_uses_prepare_without_launching_or_exposing_secrets(
     assert "browser.click" in result["negotiation"]["active_actions"]
     assert result["resolved"]["agent"][0]["llm"]["api_key"] == "<omitted>"
     assert result["registry_fingerprints"]["agent"]
+    provenance = result["provenance"]
+    inputs = {entry["path"]: entry["source"] for entry in provenance["inputs"]}
+    assert inputs["agent[0].llm.api_key"] == "explicit"
+    assert "secret-config-inspection-sentinel" not in json.dumps(provenance)
+    agent_declaration = provenance["declarations"]["agent/browser_use"]
+    assert agent_declaration["fields"]["id"]["declared_on"].endswith("AgentBase")
+    assert agent_declaration["fields"]["use_thinking"]["declared_on"].endswith("BrowserUseAgent")
+    assert agent_declaration["mro"][0].endswith("BrowserUseAgent")
+    loop_wiring = agent_declaration["wiring"]["agent_loop"]
+    assert loop_wiring["winner"]["declared_on"].endswith("BrowserUseAgent")
+    assert any(d["disposition"] == "overridden" for d in loop_wiring["declarations"])
+    edges = {edge["path"]: edge for edge in provenance["wiring"]}
+    assert edges["agent[0].agent_loop"]["source"] == "inline"
+    assert edges["environment[0].capabilities[0].actions"]["source"] == "owner_default"
+    assert all(
+        action["instance_id"] is None and action["path"] is None
+        for action in edges["environment[0].capabilities[0].actions"]["targets"]
+    )
     assert sorted(tmp_path.iterdir()) == before
 
 
@@ -120,6 +138,7 @@ def test_config_validation_error_does_not_include_input_values(tmp_path, capsys)
     assert "secret-invalid-input-sentinel" not in captured.out + captured.err
     result = json.loads(captured.out)
     assert result["error"]["type"] == "ValidationError"
+    assert result["error"]["stage"] == "validation"
     assert any("api_key" in issue["location"] for issue in result["error"]["issues"])
 
 
@@ -131,6 +150,7 @@ def test_yaml_syntax_error_never_echoes_a_credential_line(tmp_path, capsys):
     assert "secret-malformed-yaml-sentinel" not in captured.out + captured.err
     error = json.loads(captured.out)["error"]
     assert error["message"] == "Invalid YAML syntax"
+    assert error["stage"] == "yaml"
     assert isinstance(error["line"], int) and isinstance(error["column"], int)
 
 
@@ -193,7 +213,39 @@ def test_human_explain_shows_negotiation_without_dumping_resolved_config(capsys)
     text = capsys.readouterr().out
     assert "Guarded actions:" in text and "browser.click" in text
     assert "trace_writer" in text and "record_step" in text
+    assert "Field inputs:" in text and "owner_default" in text
     assert '"resolved"' not in text
+
+
+def test_config_prepare_failure_exposes_the_existing_negotiation_contract(tmp_path, capsys):
+    raw = yaml.safe_load(Path("configs/browser_use_local.yaml").read_text())
+    raw["environment"][0]["capabilities"][0]["actions"] = []
+    path = tmp_path / "missing_actions.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    assert main(["config", "explain", str(path), "--json"]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["stage"] == "prepare"
+    assert error["contract"] == "actions"
+    assert error["missing"] and error["provided"] == []
+
+
+def test_composition_diagnosis_does_not_echo_constructor_exception_values():
+    from spectragent.cli.app import _validation_error
+    from spectragent.cli.configuration_errors import ConfigInspectionError
+    from spectragent.core.composer import InstantiationError
+    from spectragent.core.composition_evidence import CompositionIssue
+
+    cause = InstantiationError(
+        "secret-constructor-failure-sentinel",
+        issue=CompositionIssue(
+            "constructor_failed", "agent[0]", "Constructor refused config", "Check its contract"
+        ),
+    )
+    report = _validation_error(ConfigInspectionError("composition", cause))
+    assert report["stage"] == "composition"
+    assert report["issues"][0]["path"] == "agent[0]"
+    assert report["issues"][0]["code"] == "constructor_failed"
+    assert "secret-constructor-failure-sentinel" not in json.dumps(report)
 
 
 async def test_agent_done_and_incomplete_recording_remain_separate(tmp_path, monkeypatch, capsys):
