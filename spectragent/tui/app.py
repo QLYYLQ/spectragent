@@ -19,7 +19,7 @@ from textual.events import Print
 from textual.widgets import DataTable, Footer, Header, RichLog, Static, TabbedContent, TabPane
 
 from spectragent.monitoring.state import ProgressState
-from spectragent.tui.browser import _step_actions, _step_presentation, _terminal_value
+from spectragent.tui.presentation import step_actions, step_presentation, terminal_value
 
 T = TypeVar("T")
 
@@ -219,7 +219,7 @@ class MonitorApp(App[None], Generic[T]):
                 table.add_row(
                     str(row["step"]),
                     row["origin"],
-                    Text(_step_actions(row["detail"])),
+                    Text(step_actions(row["detail"])),
                     Text(str(row["error"] or "")),
                     key=str(row["step"]),
                 )
@@ -236,7 +236,7 @@ class MonitorApp(App[None], Generic[T]):
         detail = self.query_one("#details", RichLog)
         detail.clear()
         detail.write(
-            Text(json.dumps(_terminal_value(value), ensure_ascii=False, indent=2, default=str))
+            Text(json.dumps(terminal_value(value), ensure_ascii=False, indent=2, default=str))
         )
         self.set_focus(None)
         self.query_one("#views", TabbedContent).active = "detail_view"
@@ -260,7 +260,7 @@ class MonitorApp(App[None], Generic[T]):
         if row is not None:
             self._show_details(
                 {
-                    "observed_step": _step_presentation(row["detail"]),
+                    "observed_step": step_presentation(row["detail"]),
                     "persistence": "Use Inspect trace to verify committed evidence.",
                 }
             )
@@ -285,7 +285,7 @@ class MonitorApp(App[None], Generic[T]):
             self._show_details(
                 {
                     **result,
-                    "steps": [_step_presentation(record) for record in result.get("steps", [])],
+                    "steps": [step_presentation(record) for record in result.get("steps", [])],
                 }
             )
 

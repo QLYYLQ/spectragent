@@ -44,3 +44,20 @@ def test_task_that_fails_before_runtime_never_shows_previous_trace_or_steps():
     assert snapshot["steps"] == []
     assert snapshot["identity"] == {}
     assert snapshot["max_steps"] is None
+
+
+def test_nested_public_snapshot_cannot_mutate_monitor_state():
+    state = ProgressState()
+    state.start_task("one")
+    state.finish_task("one", {"details": {"values": ["saved"]}})
+    state.recorded(
+        StepRecord.model_validate(
+            {"step": 0, "actions": [{"name": "browser.click", "params": {"index": 7}}]}
+        )
+    )
+    snapshot = state.snapshot()
+    snapshot["tasks"][0]["details"]["values"].append("changed")
+    snapshot["steps"][0]["detail"]["actions"][0]["params"]["index"] = 99
+    fresh = state.snapshot()
+    assert fresh["tasks"][0]["details"]["values"] == ["saved"]
+    assert fresh["steps"][0]["detail"]["actions"][0]["params"]["index"] == 7

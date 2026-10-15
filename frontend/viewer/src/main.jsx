@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { startupRoute } from "./routing.js";
-import { actionLabel, restoredActionOutcome } from "./evidence.js";
+import { actionLabel, restoredActionOutcome, trailingCallCount, verdictLabel } from "./evidence.js";
 import "./styles.css";
 
 const number = (value) =>
@@ -100,10 +100,11 @@ function useRemote(url, revision) {
   });
   useEffect(() => {
     if (!url) {
-      setState({ data: null, error: null, loading: false });
+      setState({ data: null, error: null, loading: false, url });
       return;
     }
     const controller = new AbortController();
+    let active = true;
     setState((previous) =>
       previous.url === url && previous.data !== null
         ? { ...previous, error: null, loading: false }
@@ -120,14 +121,23 @@ function useRemote(url, revision) {
           );
         return data;
       })
-      .then((data) => setState({ data, error: null, loading: false, url }))
+      .then((data) => {
+        if (active) setState({ data, error: null, loading: false, url });
+      })
       .catch((error) => {
-        if (error.name !== "AbortError")
+        if (active && error.name !== "AbortError")
           setState({ data: null, error: error.message, loading: false, url });
       });
-    return () => controller.abort();
+    return () => {
+      active = false;
+      controller.abort();
+    };
   }, [url, revision]);
-  return state;
+  // Effects run after rendering. A new route must never render the previous
+  // request's evidence (or a null idle value) under its new identifiers.
+  return state.url === url
+    ? state
+    : { data: null, error: null, loading: Boolean(url), url };
 }
 
 function Badge({ value, kind = "" }) {
@@ -283,11 +293,7 @@ function Verdicts({ verdicts = [], evaluationError }) {
           <span className="verdict-name">{verdict.evaluator}</span>
           <Badge
             value={
-              verdict.predicted_label === 1
-                ? "success"
-                : verdict.predicted_label === 0
-                  ? "failure"
-                  : null
+              verdictLabel(verdict)
             }
           />
           <span className="muted small">{verdict.verdict_source}</span>
@@ -1093,7 +1099,7 @@ function Evaluations({ evaluations, error }) {
               <h3>{result.evaluator_id || slug}</h3>
             </div>
             <Badge
-              value={result.predicted_label === 1 ? "success" : "failure"}
+              value={verdictLabel(result)}
             />
           </div>
           <p className="muted small">
@@ -1444,7 +1450,7 @@ function RunDetail({ route, revision }) {
                     ? "Evaluations (!)"
                     : `Evaluations (${Object.keys(run.evaluations).length})`,
                 ],
-                ["trailing", `Trailing calls (${run.trailing_calls.length})`],
+                ["trailing", `Trailing calls (${number(trailingCallCount(run))})`],
                 [
                   "replay",
                   run.replay_log?.error
@@ -1486,10 +1492,23 @@ function RunDetail({ route, revision }) {
                   Calls committed at close-out, outside a committed step. They
                   are preserved evidence, not additional policy steps.
                 </p>
-                <Calls
-                  calls={run.trailing_calls}
-                  schemas={run.trailing_output_schemas}
-                />
+                {run.config.recording.trajectory ? (
+                  <Calls
+                    calls={run.trailing_calls}
+                    schemas={run.trailing_output_schemas}
+                  />
+                ) : (
+                  <>
+                    <Empty title="Model inputs and replies not recorded">
+                      The recording plan did not select the agent trajectory.
+                    </Empty>
+                    {run.config.recording.metrics ? (
+                      <JsonPanel title="Call metrics and errors" value={run.trailing_call_metrics} initialOpen />
+                    ) : (
+                      <p className="muted">Model calls not measured.</p>
+                    )}
+                  </>
+                )}
               </>
             )}
             {tab === "replay" && (
@@ -1702,7 +1721,13 @@ function EvidenceColumn({ summary, revision }) {
                   <p>{data.recording.observations ? "No committed screenshot" : "Observations not selected"}</p>
                 </div>
               )}
-              <StepActions record={data.record} />
+              {data.recording.trajectory ? (
+                <StepActions record={data.record} />
+              ) : (
+                <Empty title="Actions not recorded">
+                  The recording plan did not select the agent trajectory.
+                </Empty>
+              )}
               {data.record.error && (
                 <div className="notice error">{data.record.error}</div>
               )}

@@ -14,54 +14,10 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable, Footer, Header, Input, RichLog, Static
 
+from spectragent.tui.presentation import step_actions, step_presentation, terminal_value
+
 if TYPE_CHECKING:
     from spectragent.inspection.repository import RunRepository
-
-
-def _terminal_value(value: Any) -> Any:
-    """Keep image payloads out of terminal text while preserving all other details."""
-    if isinstance(value, str) and value.startswith("data:image/"):
-        return f"[inline image, {len(value):,} encoded characters; view in dashboard]"
-    if isinstance(value, dict):
-        return {key: _terminal_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_terminal_value(item) for item in value]
-    return value
-
-
-def _step_presentation(record: dict[str, Any]) -> dict[str, Any]:
-    """Name copied source facts separately from the restoration that actually ran."""
-    if record.get("origin") != "restored":
-        return record
-    check = record.get("restoration") or {}
-    return {
-        **{
-            key: value
-            for key, value in record.items()
-            if key not in {"actions", "action_results", "llm_output", "restoration"}
-        },
-        "source_actions": record.get("actions", []),
-        "source_action_results": record.get("action_results", []),
-        "source_model_reply": record.get("llm_output", ""),
-        "actual_restoration_actions": check.get("actions", []),
-        "restoration_check": {key: value for key, value in check.items() if key != "actions"},
-    }
-
-
-def _step_actions(record: dict[str, Any]) -> str:
-    names = ", ".join(action.get("name", "?") for action in record.get("actions", []))
-    if record.get("origin") != "restored":
-        return names
-    actual = []
-    for action in (record.get("restoration") or {}).get("actions", []):
-        executed = action.get("executed")
-        if executed is None:
-            actual.append(f"not executed ({action.get('failure') or 'no action'})")
-        else:
-            success = action.get("live_success")
-            result = "ok" if success is True else "failed" if success is False else "unknown result"
-            actual.append(f"{executed.get('name', '?')} ({result})")
-    return f"source: {names or '—'}; actual: {', '.join(actual) or 'no execution recorded'}"
 
 
 class BrowserApp(App[None]):
@@ -142,7 +98,7 @@ class BrowserApp(App[None]):
         content = self.query_one("#content", RichLog)
         content.clear()
         content.write(
-            Text(json.dumps(_terminal_value(value), indent=2, ensure_ascii=False, default=str))
+            Text(json.dumps(terminal_value(value), indent=2, ensure_ascii=False, default=str))
         )
 
     def action_refresh_runs(self) -> None:
@@ -260,7 +216,7 @@ class BrowserApp(App[None]):
             table.add_row(
                 str(record["step"]),
                 str(record.get("origin", "policy")),
-                Text(_step_actions(record)),
+                Text(step_actions(record)),
                 Text(str(record.get("error") or "")),
                 key=str(record["step"]),
             )
@@ -299,7 +255,7 @@ class BrowserApp(App[None]):
                 self._show({"error": str(exc)})
         else:
             if self._detail_is_current(key, generation):
-                self._show({**detail, "record": _step_presentation(detail["record"])})
+                self._show({**detail, "record": step_presentation(detail["record"])})
 
     def action_source(self) -> None:
         detail = self._run_detail
