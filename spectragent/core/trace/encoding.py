@@ -65,11 +65,12 @@ MESSAGES_DIR = "messages"
 OUTPUT_FORMATS_DIR = f"{MESSAGES_DIR}/output_formats"
 PROMPT_IMAGES_DIR = f"{MESSAGES_DIR}/images"
 EVALS_DIR = "evals"
+METRICS_DIR = "metrics"
 
 #: Names the WAL and this module decide. An extra file may not land on one:
 #: a producer that could write ``steps/007.json`` could forge a step.
 WAL_OWNED_FILES = frozenset({MANIFEST_FILE, CONFIG_FILE, RESULT_FILE})
-WAL_OWNED_DIRS = frozenset({STEPS_DIR, OBSERVATIONS_DIR, MESSAGES_DIR, EVALS_DIR})
+WAL_OWNED_DIRS = frozenset({STEPS_DIR, OBSERVATIONS_DIR, MESSAGES_DIR, EVALS_DIR, METRICS_DIR})
 
 
 def step_record_path(step: int) -> str:
@@ -290,6 +291,7 @@ class EncodedLLMCall:
     file: TraceFile
     output_format: TraceFile | None = None
     images: tuple[TraceFile, ...] = ()
+    metrics: TraceFile | None = None
 
 
 # ── observations ──────────────────────────────────────────────
@@ -427,7 +429,7 @@ def _usage(usage: Any) -> Any:
     return {name: snapshot(_attr(usage, name)) for name in ChatInvokeUsage.model_fields}
 
 
-def _completion(result: Any) -> dict[str, Any]:
+def _completion(result: Any, *, capture_metrics: bool = True) -> dict[str, Any]:
     """``RecordedCompletion``'s JSON form for what ``ainvoke`` returned.
 
     Read by attribute, which covers ``ChatInvokeCompletion`` and every
@@ -441,7 +443,7 @@ def _completion(result: Any) -> dict[str, Any]:
         "completion": snapshot(reply),
         "thinking": snapshot(_attr(result, "thinking")),
         "redacted_thinking": snapshot(_attr(result, "redacted_thinking")),
-        "usage": _usage(_attr(result, "usage")),
+        "usage": _usage(_attr(result, "usage")) if capture_metrics else None,
         "stop_reason": snapshot(_attr(result, "stop_reason")),
         "tool_calls": snapshot(_attr(result, "tool_calls") or []),
     }
@@ -504,6 +506,17 @@ class PendingLLMCall:
 
     messages: Any
     output_format: EncodedOutputFormat | None = None
+    capture_trajectory: bool = True
+    capture_metrics: bool = True
+    capture_errors: bool = True
+    call_id: str = ""
+    step: int = 0
+    call: int = 0
+    caller: str = "agent"
+    purpose: str = "agent_decision"
+    model: str = ""
+    ended_at: float = 0.0
+    usage: Any = None
     started_at: float = field(default_factory=time.time)
     status: CallStatus | None = None
     latency_ms: int | None = None
@@ -512,27 +525,44 @@ class PendingLLMCall:
     _started: float = field(default_factory=time.perf_counter, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.messages = snapshot(self.messages)
+        self.messages = snapshot(self.messages) if self.capture_trajectory else None
+        self._started = time.perf_counter()
+        self.started_at = time.time()
 
     def complete(self, result: Any) -> None:
         """The call returned *result*."""
         if self._settle("completed"):
-            self.completion = _completion(result)
+            self.usage = _usage(_attr(result, "usage")) if self.capture_metrics else None
+            if self.capture_trajectory:
+                self.completion = _completion(result, capture_metrics=self.capture_metrics)
 
     def fail(self, exc: BaseException) -> None:
         """The call raised *exc* — an ``Exception``: a refusal, a truncation, a dead socket."""
         if self._settle("failed"):
-            self.failure = _failure(exc)
+            self.usage = _usage(_attr(exc, "usage")) if self.capture_metrics else None
+            if self.capture_trajectory and self.capture_errors:
+                self.failure = _failure(exc)
+                if not self.capture_metrics:
+                    self.failure.pop("usage", None)
+            elif self.capture_errors:
+                self.failure = {"error": type(exc).__name__, "detail": _unknown(exc)}
 
     def cancel(self, exc: BaseException) -> None:
         """The call was cancelled — a ``BaseException`` (``CancelledError`` and its kin)."""
         if self._settle("cancelled"):
-            self.failure = _failure(exc)
+            self.usage = _usage(_attr(exc, "usage")) if self.capture_metrics else None
+            if self.capture_trajectory and self.capture_errors:
+                self.failure = _failure(exc)
+                if not self.capture_metrics:
+                    self.failure.pop("usage", None)
+            elif self.capture_errors:
+                self.failure = {"error": type(exc).__name__, "detail": _unknown(exc)}
 
     def _settle(self, status: CallStatus) -> bool:
         if self.status is not None:
             return False
         self.status = status
+        self.ended_at = time.time()
         self.latency_ms = _elapsed_ms(self._started)
         return True
 
@@ -578,6 +608,11 @@ def encode_llm_call(step: int, call: int, pending: PendingLLMCall) -> EncodedLLM
     record: dict[str, Any] = {
         "step": step,
         "call": call,
+        "call_id": pending.call_id or f"{step}:{call}",
+        "caller": pending.caller,
+        "purpose": pending.purpose,
+        "model": pending.model,
+        "ended_at": pending.ended_at,
         "status": pending.status or "cancelled",
         "started_at": pending.started_at,
         "latency_ms": latency,
@@ -595,7 +630,33 @@ def encode_llm_call(step: int, call: int, pending: PendingLLMCall) -> EncodedLLM
         file=TraceFile(call_path(step, call), data),
         output_format=pending.output_format.file if pending.output_format else None,
         images=stored.images,
+        metrics=(
+            encode_call_metrics(step, call, pending)
+            if pending.capture_metrics or pending.capture_errors
+            else None
+        ),
     )
+
+
+def encode_call_metrics(step: int, call: int, pending: PendingLLMCall) -> TraceFile:
+    """Encode the invocation ledger without touching messages, schema or images."""
+    failure = pending.failure or {}
+    value = {
+        "call_id": pending.call_id or f"{step}:{call}",
+        "step": step,
+        "call": call,
+        "caller": pending.caller,
+        "purpose": pending.purpose,
+        "model": pending.model,
+        "status": pending.status or "cancelled",
+        "started_at": pending.started_at,
+        "ended_at": pending.ended_at,
+        "latency_ms": pending.latency_ms or 0,
+        "usage": pending.usage,
+        "error": failure.get("error"),
+        "detail": failure.get("detail"),
+    }
+    return TraceFile(f"{METRICS_DIR}/{step:03d}_call_{call:02d}.json", to_json(value))
 
 
 def encode_llm_calls(

@@ -555,7 +555,7 @@ uv run python -m tests._helpers.flywheel_rehearsal --out <new dir>   # fixture r
 - The token limit (the user's ruling of 2026-10-14). `token_limit` is the tokens every run
   stage may use together, a number of at least 1 or `unlimited` (the default: the chain
   counts nothing and passes no limit, exactly as before). Tokens are counted from the call
-  records, never from `result.json`'s `metrics.usage`, so no metrics hook is needed:
+  records, never from `result.json`'s `metrics.usage`, without restoring full prompts or images:
   `core/trace/usage.py::recorded_usage` adds every committed step's calls and the trailing
   ones, a completed call's `completion.usage` and a failed call's `failure.usage`, each by
   the step record's rule (`TokenUsage.from_llm_usage`: `total_tokens`, else prompt plus
@@ -1043,16 +1043,16 @@ value on an existing one.
   (`TabRegistry`), so it is the same with or without the recorder, in recording, replay and
   branching. Each fragment of the capture carries `focus_moved` (`None` and left out of the
   trace JSON when nothing moved); agents never render it.
-- Keep execution and recording ledgers separate. Collection, encoding and WAL failures
-  affect recording health and committed evidence; they do not stop the Agent or replace
-  its answer, cancellation, veto or execution error. The recording component owns gap and
-  recovery handling. Loop code does not catch arbitrary hand-over exceptions or inspect
-  recorder health. Read manifests and completeness limits when selecting branch/export
-  evidence; a successful task can still have an incomplete trace. A real failed browser
-  operation remains an environment failure, independently of whether recording is enabled.
-  The `archive` network source never forwards a request to the network. That is the
-  source's own rule, not a framework law: a source that falls back to the network would be
-  a new network source.
+- Execution outcome and recording health are independent. A failed collection or WAL
+  commit loses only its declared segment/channel; later steps are still attempted and
+  the Agent continues by its execution policy. The manifest records actual missing
+  steps and the continuous complete prefix. Viewing and known usage subtotals may use
+  saved steps after holes; branch/export require their declared scope and complete
+  history. Unfinished calls remain trailing; sealed failed steps keep their identities.
+  Archive-source reads remain environment errors. Offline replay never forwards misses
+  to the live network.
+  Loop code neither inspects recorder health nor catches arbitrary handoff errors;
+  real execution errors, cancellation and vetoes keep their own propagation rules.
 - Privacy defaults (threat model "only me", the user's 2026-10-13 ruling: the trace and
   `env/` stay on the recording machine; the gates are the prompt sent to a model provider
   and dataset export): `Cookie`, `Authorization`, `Proxy-Authorization` and the names in

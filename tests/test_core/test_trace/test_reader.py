@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from spectragent.core.capabilities.browser.dom.models import DOMElementNode, DOMState
 from spectragent.core.capabilities.browser.observations import DOMObs, ScreenshotObs
 from spectragent.core.llm.messages import SystemMessage, UserMessage
-from spectragent.core.trace.encoding import sha256_hex
+from spectragent.core.trace.encoding import TraceFile, sha256_hex
 from spectragent.core.trace.errors import TraceSchemaError
 from spectragent.core.trace.models import TRACE_FORMAT_VERSION, TraceConfig, TraceStatus
 from spectragent.core.trace.reader import RunTrace
@@ -60,13 +60,23 @@ class TestRunTrace:
         # The agent timed out (result.json); the trace recorded all of it.
         assert trace.manifest.status == TraceStatus.COMPLETE
         assert trace.manifest.complete_through == 1
-        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 4
+        assert trace.manifest.format_version == TRACE_FORMAT_VERSION == 5
 
     def test_run_id(self, trace):
         assert trace.run_id == "run-test"
 
     def test_step_count(self, trace):
         assert trace.step_count == 2
+
+    def test_step_count_uses_committed_entries_after_a_gap(self, tmp_path):
+        wal = new_wal(tmp_path)
+        wal.commit_step(0, step_record(0))
+        wal.commit_step(2, step_record(2))
+        trace = RunTrace(wal.run_dir)
+        assert trace.step_count == 2
+        assert [record.step for record in trace.step_records] == [0, 2]
+        assert trace.step(1) is None
+        assert trace.step(2) is not None
 
     def test_config_lazy(self, trace):
         assert trace.config.agent_id == "test_agent"
@@ -467,6 +477,8 @@ class TestCommittedFiles:
             ("fragment", 0, "loop.task"),
             ("llm_call", 0, None),
             ("llm_call", 0, None),
+            ("call_metrics", 0, None),
+            ("call_metrics", 0, None),
             ("extra_index", 0, None),
             ("extra", 0, None),
             ("extra", 0, None),
@@ -477,11 +489,17 @@ class TestCommittedFiles:
             ("artifact", 1, "browser.screenshot"),
             ("fragment", 1, "loop.task"),
             ("llm_call", 1, None),
+            ("call_metrics", 1, None),
             ("extra_index", 1, None),
             ("extra", 1, None),
             ("extra", 1, None),
         ]
-        trailing = [("llm_call", None, None), ("extra_index", None, None), ("extra", None, None)]
+        trailing = [
+            ("llm_call", None, None),
+            ("call_metrics", None, None),
+            ("extra_index", None, None),
+            ("extra", None, None),
+        ]
         own = [("manifest", None, None), ("config", None, None), ("result", None, None)]
         last = [("output_schema", None, None)] + [("prompt_image", None, None)] * 3
         assert listed == own + step0 + step1 + trailing + last
@@ -581,10 +599,12 @@ class TestTheReaderGivesBackWhatTheWriterWasHanded:
         wal.write_result(
             agent_result(
                 metrics=AgentMetrics(
-                    end_to_end_ms=1234,
+                    execution_ms=1234,
                     steps=2,
                     llm_calls=2,
-                    usage=AgentUsage(total_prompt_tokens=20, total_completion_tokens=10),
+                    usage=AgentUsage(
+                        total_prompt_tokens=20, total_completion_tokens=10, total_tokens=30
+                    ),
                 )
             )
         )
@@ -598,8 +618,7 @@ class TestTheReaderGivesBackWhatTheWriterWasHanded:
         assert result.model_id == "gpt-4o-mini"
         assert result.metrics.steps == 2
         assert result.metrics.usage is not None
-        # Auto-filled by AgentUsage's validator — proves the nested model
-        # was re-validated on read, not just re-wrapped.
+        # The provider's recorded total survives independently of the subtotals.
         assert result.metrics.usage.total_tokens == 30
 
     def test_a_wrong_field_name_is_an_attribute_error_not_a_key_error(self, trace):
@@ -670,7 +689,7 @@ class TestUnreadableTracesSayWhy:
                 "agent_done": "done",
                 "agent_success": True,
                 "answer": "42",
-                "metrics": {"end_to_end_ms": 1, "steps": 1},
+                "metrics": {"execution_ms": 1, "steps": 1},
             },
         )
 
@@ -678,7 +697,7 @@ class TestUnreadableTracesSayWhy:
             _ = trace.result
 
         message = str(exc_info.value)
-        assert "predates AgentResult schema 2.1" in message
+        assert "predates AgentResult schema 3.0" in message
         assert "'2.0'" in message
         assert "result.json" in message
         # The confusing field-level noise stays out of it.
@@ -686,7 +705,7 @@ class TestUnreadableTracesSayWhy:
 
     def test_a_malformed_current_result_keeps_the_field_errors(self, tmp_path):
         """When the versions agree, pydantic's detail is the only clue."""
-        trace = self._trace_with_result(tmp_path, {"schema_version": "2.1", "task_id": "t-1"})
+        trace = self._trace_with_result(tmp_path, {"schema_version": "3.0", "task_id": "t-1"})
 
         with pytest.raises(TraceSchemaError) as exc_info:
             _ = trace.result
@@ -918,3 +937,21 @@ class TestEvals:
         manifest = (reference.run_dir / "manifest.json").read_text()
         assert "evals" not in manifest
         assert list(trace.evals()) == ["exact_match"]
+
+
+def test_recording_timing_reads_only_later_committed_extra_evidence(tmp_path: Path) -> None:
+    wal = new_wal(tmp_path)
+    wal.commit_step(0, step_record(0))
+    assert RunTrace(wal.run_dir).recording_timing(0) is None
+    timing = TraceFile(
+        "recording/step_000.json",
+        b'{"step":0,"recording_ms":12.5}',
+        meta={"kind": "recording_timing", "step": 0},
+    )
+    wal.commit_trailing(extra_files=[timing])
+    trace = RunTrace(wal.run_dir)
+    assert trace.recording_timing(0) == 12.5
+    record = trace.step(0)
+    assert record is not None
+    assert record.recording_ms is None
+    assert trace.recording_timing(1) is None

@@ -24,6 +24,12 @@ the manifest would then commit files under a name a power loss can take
 back. The writer therefore remembers which directories a *successful* commit
 made durable, and ``fsync``-s the parent of every other one it writes under.
 
+A failure after the manifest rename is different: that candidate may already
+be the committed index. The writer reads it back, updates its path and dedup
+state together, and reports the failed durability operation. If that read
+also fails, every later write waits for a successful reconciliation; an old
+in-memory manifest can never overwrite an installed candidate.
+
 Each file's data ``fsync`` is kept; only the directory ``fsync`` is batched.
 Renaming a file whose bytes never reached the disk lets a power loss leave
 the manifest listing an empty file, which would make the commit point lie.
@@ -46,7 +52,7 @@ never failed (``docs/architecture_design.md`` §5.2).
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Sequence, Set
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -57,6 +63,7 @@ from spectragent.core.trace.encoding import (
     EVALS_DIR,
     MANIFEST_FILE,
     MESSAGES_DIR,
+    METRICS_DIR,
     OBSERVATIONS_DIR,
     OUTPUT_FORMATS_DIR,
     PROMPT_IMAGES_DIR,
@@ -84,8 +91,10 @@ from spectragent.core.trace.models import (
     TraceManifest,
     TraceStatus,
     TrailingEntry,
+    recorded_prefix,
 )
 from spectragent.schemas.agent_result import AgentResult
+from spectragent.schemas.recording import RecordingProblem
 from spectragent.schemas.step_record import StepRecord
 
 
@@ -102,8 +111,9 @@ class WALWriter:
     made of ordinary extra files — this writer neither knows nor names
     them; ``encoding.encode_archive_file`` does.
 
-    Beyond the manifest it keeps four things in memory, all updated only
-    once a manifest rewrite has succeeded: every committed path (so a
+    Beyond the manifest it keeps four indexes in memory, all updated only
+    once a manifest rewrite has succeeded or its installation was verified:
+    every committed path (so a
     committed file can never be overwritten), every directory those paths
     run through (so no later path can turn one into a file, or a file into
     a directory), the content-addressed paths already on disk (so a blob
@@ -125,6 +135,7 @@ class WALWriter:
         self._committed_dirs: set[str] = set()
         self._committed_blobs: set[str] = set()
         self._durable_dirs: set[Path] = set()
+        self._pending_manifest: _ManifestUpdate | None = None
 
     @property
     def run_dir(self) -> Path:
@@ -132,6 +143,18 @@ class WALWriter:
 
     @property
     def manifest(self) -> TraceManifest | None:
+        return self._manifest
+
+    def reconcile(self) -> TraceManifest | None:
+        """Resolve a pending manifest replacement before making producer decisions.
+
+        A normal read of :attr:`manifest` is memory-only. After a failed
+        commit, producers that keep their own committed indexes use this
+        method before deciding whether a segment or archive version needs
+        another write. It reads only the attempted commit point and never
+        discovers content through orphan files.
+        """
+        self._reconcile_manifest()
         return self._manifest
 
     def init_run(self, config: TraceConfig, *, config_hash: str | None = None) -> None:
@@ -156,6 +179,10 @@ class WALWriter:
                 which cannot tell two runs apart that differ only in an
                 unmarked field.
         """
+        if self._pending_manifest is not None:
+            self._reconcile_manifest()
+        if self._manifest is not None:
+            raise RuntimeError("WALWriter already initialized")
         # The hash covers the *config* portion of the snapshot
         # (``TraceConfig.configuration_digest``), not these bytes: the file
         # also carries ``task`` and ``task_id``, so hashing it gave every
@@ -177,7 +204,7 @@ class WALWriter:
         # config.json first and durable, the manifest that makes the run
         # exist after it — never a manifest whose config is not there.
         directories = fsio.write_durable(self._run_dir / CONFIG_FILE, config_bytes)
-        own_dirs = (STEPS_DIR, OBSERVATIONS_DIR, MESSAGES_DIR, EVALS_DIR)
+        own_dirs = (STEPS_DIR, OBSERVATIONS_DIR, MESSAGES_DIR, METRICS_DIR, EVALS_DIR)
         for name in own_dirs:
             (self._run_dir / name).mkdir(exist_ok=True)
         # The run directory holds config.json and the subdirectories;
@@ -187,9 +214,6 @@ class WALWriter:
         # outside the run, so this is the only place the run's name is made
         # durable.
         _fsync_all(directories | {self._run_dir})
-        fsio.atomic_write(self._run_dir / MANIFEST_FILE, _manifest_bytes(manifest))
-
-        self._manifest = manifest
         self._committed = set()
         # The WAL's own directories, and the ones it creates on demand: no
         # file may ever take one of these names.
@@ -198,6 +222,7 @@ class WALWriter:
         }
         self._committed_blobs = set()
         self._durable_dirs = {self._run_dir / name for name in own_dirs}
+        self._write_manifest(manifest)
 
     def commit_step(
         self,
@@ -206,6 +231,7 @@ class WALWriter:
         *,
         fragments: Sequence[EncodedFragment] = (),
         llm_calls: Sequence[EncodedLLMCall] = (),
+        call_metrics: Iterable[TraceFile] = (),
         extra_files: Sequence[TraceFile] = (),
     ) -> None:
         """Commit one step; when this returns, it is durable.
@@ -216,6 +242,8 @@ class WALWriter:
             record: The step's ``StepRecord``, written to ``steps/NNN.json``.
             fragments: The step's observation, from ``encode_observation``.
             llm_calls: Every LLM call of the step, in start order.
+            call_metrics: Lightweight call facts. A full encoded call may
+                also carry them; identical files are indexed once.
             extra_files: Files the step carries beside its own records,
                 listed in ``steps/NNN.extra.json``.
 
@@ -223,18 +251,22 @@ class WALWriter:
             ValueError: A path breaks a rule of §5.2, a content-addressed
                 file is not at its digest, or the step is already
                 committed — before any byte is written.
-            OSError: Writing or ``fsync``-ing failed; the manifest is
-                unchanged.
+            OSError: Writing or ``fsync``-ing failed. If the manifest was
+                already replaced, it is reconciled before another write.
         """
         manifest = self._require_manifest()
+        if step < 0:
+            raise ValueError("step indices must be nonnegative")
         if record.step != step:
             raise ValueError(f"commit_step({step}) was handed the record of step {record.step}")
         if any(entry.step == step for entry in manifest.steps):
             raise ValueError(f"step {step} is already committed to {self._run_dir}")
 
-        plan = _Plan(self)
+        metrics = tuple(call_metrics)
+        plan = self._plan()
         plan.add_fragments(fragments)
         plan.add_calls(llm_calls)
+        plan.add_metrics(metrics)
         plan.add_extra(extra_files)
         plan.add_record(
             TraceFile(step_record_path(step), record.model_dump_json(indent=2).encode())
@@ -253,21 +285,23 @@ class WALWriter:
                 for item in fragments
             },
             llm_calls=[call.file.rel_path for call in llm_calls],
+            call_metrics=[item.rel_path for item in plan.metrics.values()],
             extra_index=extra_index,
         )
         # Complete through the end of the gapless run of committed steps from
         # 0: a step whose recording failed was never committed, so the trace
         # stops being whole there even if a later step commits.
         committed = {item.step for item in manifest.steps} | {step}
-        through = manifest.complete_through
-        while through + 1 in committed:
-            through += 1
+        expected_steps = max(manifest.expected_steps, step + 1)
+        through = recorded_prefix(committed, manifest.recording_problems)
         self._commit(
             plan,
             manifest.model_copy(
                 update={
-                    "steps": [*manifest.steps, entry],
+                    "steps": sorted([*manifest.steps, entry], key=lambda item: item.step),
                     "last_step_completed": max(manifest.last_step_completed, step),
+                    "expected_steps": expected_steps,
+                    "missing_steps": sorted(set(range(expected_steps)) - committed),
                     "complete_through": through,
                     "output_formats": [*manifest.output_formats, *plan.output_formats],
                     "prompt_images": [*manifest.prompt_images, *plan.prompt_images],
@@ -279,7 +313,9 @@ class WALWriter:
     def commit_trailing(
         self,
         *,
+        segment_id: str | None = None,
         llm_calls: Sequence[EncodedLLMCall] = (),
+        call_metrics: Iterable[TraceFile] = (),
         extra_files: Sequence[TraceFile] = (),
     ) -> None:
         """Commit files that belong to no committed step, by the same protocol.
@@ -291,18 +327,32 @@ class WALWriter:
         action-less phantom in the manifest. ``manifest.trailing`` gains one
         entry; its extra files are indexed in ``steps/trailing_KK.extra.json``.
         Committing nothing is a no-op.
+
+        A producer may pass its stable ``segment_id`` to distinguish an
+        installed segment from a later commit that reused its uncommitted
+        trailing position. A committed identity cannot be reused.
         """
         manifest = self._require_manifest()
-        if not llm_calls and not extra_files:
+        metrics = tuple(call_metrics)
+        if not llm_calls and not metrics and not extra_files:
             return
+        if segment_id is not None:
+            if not segment_id:
+                raise ValueError("segment_id must be nonempty when supplied")
+            if any(entry.segment_id == segment_id for entry in manifest.trailing):
+                raise ValueError(f"trailing segment {segment_id!r} is already committed")
 
-        plan = _Plan(self)
+        plan = self._plan()
         plan.add_calls(llm_calls)
+        plan.add_metrics(metrics)
         plan.add_extra(extra_files)
         extra_index = plan.add_extra_index(trailing_extra_index_path(len(manifest.trailing)))
 
         entry = TrailingEntry(
-            llm_calls=[call.file.rel_path for call in llm_calls], extra_index=extra_index
+            segment_id=segment_id,
+            llm_calls=[call.file.rel_path for call in llm_calls],
+            call_metrics=[item.rel_path for item in plan.metrics.values()],
+            extra_index=extra_index,
         )
         self._commit(
             plan,
@@ -321,12 +371,25 @@ class WALWriter:
         self._require_manifest()
         fsio.atomic_write(self._run_dir / RESULT_FILE, result.model_dump_json(indent=2).encode())
 
-    def finalize(self, status: TraceStatus, *, incomplete_reason: str | None = None) -> None:
+    def finalize(
+        self,
+        status: TraceStatus,
+        *,
+        incomplete_reason: str | None = None,
+        expected_steps: int | None = None,
+        recording_problems: Sequence[RecordingProblem] | None = None,
+    ) -> None:
         """Close the trace: ``complete``, or ``incomplete`` with what failed to be recorded.
 
         A trace left ``writing`` is one nothing downstream uses — an
         evaluator has no result to read, a branch or an export no step it
-        may take. ``complete_through`` is not set here: every commit keeps it.
+        may take. The continuous complete prefix is recomputed from the
+        committed steps and unresolved per-step channel failures.
+
+        ``expected_steps`` is the execution segment count, including those
+        never committed. Missing indices force an incomplete status. Past
+        ``recording_problems`` remain diagnostic after successful backfill;
+        supplying them replaces that history, omitting them preserves it.
 
         Raises:
             ValueError: *status* is ``writing``, or *incomplete_reason* is
@@ -335,16 +398,48 @@ class WALWriter:
         manifest = self._require_manifest()
         if status is TraceStatus.WRITING:
             raise ValueError("finalize() closes a trace; 'writing' is the state of an open one")
-        if (status is TraceStatus.INCOMPLETE) != bool(incomplete_reason):
+        expected_steps = manifest.expected_steps if expected_steps is None else expected_steps
+        if expected_steps < manifest.expected_steps:
+            raise ValueError("expected_steps cannot omit a step already committed")
+        committed = {entry.step for entry in manifest.steps}
+        missing_steps = sorted(set(range(expected_steps)) - committed)
+        problems = (
+            list(recording_problems)
+            if recording_problems is not None
+            else manifest.recording_problems
+        )
+        unresolved = [problem for problem in problems if not problem.recovered]
+        if (status is TraceStatus.COMPLETE and incomplete_reason) or (
+            status is TraceStatus.INCOMPLETE
+            and not incomplete_reason
+            and not missing_steps
+            and not unresolved
+        ):
             raise ValueError(
-                f"finalize({status.value!r}): an incomplete trace needs its reason and a "
-                f"complete one has none (got incomplete_reason={incomplete_reason!r})"
+                f"finalize({status.value!r}): an incomplete trace needs its reason or missing "
+                f"steps, and a complete one has no reason "
+                f"(got incomplete_reason={incomplete_reason!r})"
             )
+        if missing_steps:
+            status = TraceStatus.INCOMPLETE
+            gaps = f"steps not recorded: {', '.join(str(step) for step in missing_steps)}"
+            incomplete_reason = f"{incomplete_reason}; {gaps}" if incomplete_reason else gaps
+        if unresolved:
+            status = TraceStatus.INCOMPLETE
+            if not incomplete_reason:
+                incomplete_reason = "; ".join(
+                    f"{problem.channel}: {problem.error}: {problem.detail}"
+                    for problem in unresolved
+                )
         self._write_manifest(
             manifest.model_copy(
                 update={
                     "status": status,
                     "incomplete_reason": incomplete_reason or None,
+                    "expected_steps": expected_steps,
+                    "missing_steps": missing_steps,
+                    "complete_through": recorded_prefix(committed, problems),
+                    "recording_problems": problems,
                     "updated_at": datetime.now(UTC),
                 }
             )
@@ -353,13 +448,18 @@ class WALWriter:
     # ── internals ─────────────────────────────────────────────
 
     def _require_manifest(self) -> TraceManifest:
+        if self._pending_manifest is not None:
+            self._reconcile_manifest()
         if self._manifest is None:
             msg = "WALWriter not initialized — call init_run() first"
             raise RuntimeError(msg)
         return self._manifest
 
+    def _plan(self) -> _Plan:
+        return _Plan(self._run_dir, self._committed, self._committed_dirs, self._committed_blobs)
+
     def _commit(self, plan: _Plan, manifest: TraceManifest) -> None:
-        """Steps 1–4. Nothing in memory changes unless the manifest rewrite succeeded."""
+        """Steps 1–4; accepted manifests and their dedup state advance together."""
         directories: set[Path] = set()
         for item in plan.content:  # 1. content files
             directories |= fsio.write_durable(self._run_dir / item.rel_path, item.data)
@@ -375,22 +475,78 @@ class WALWriter:
         } - self._durable_dirs
         directories |= {directory.parent for directory in undurable}
         _fsync_all(directories)  # 3. each directory once
-        self._write_manifest(manifest)  # 4. commit point
-        self._committed |= plan.claimed
-        self._committed_dirs |= plan.dirs
-        self._committed_blobs |= plan.blobs
-        self._durable_dirs |= undurable
+        self._write_manifest(manifest, plan=plan, durable_dirs=undurable)  # 4. commit point
 
-    def _write_manifest(self, manifest: TraceManifest) -> None:
-        fsio.atomic_write(self._run_dir / MANIFEST_FILE, _manifest_bytes(manifest))
-        self._manifest = manifest
+    def _write_manifest(
+        self,
+        manifest: TraceManifest,
+        *,
+        plan: _Plan | None = None,
+        durable_dirs: Set[Path] = frozenset(),
+    ) -> None:
+        update = _ManifestUpdate(manifest, self._manifest, plan, durable_dirs)
+        self._pending_manifest = update
+        try:
+            fsio.atomic_write(self._run_dir / MANIFEST_FILE, _manifest_bytes(manifest))
+        except BaseException as exc:
+            # atomic_write can fail after rename, at the directory fsync.
+            # Such a commit is visible, although durability is uncertain.
+            # Never continue from the old in-memory index in that case.
+            try:
+                self._reconcile_manifest()
+            except Exception as recovery_error:
+                exc.add_note(f"manifest state could not be reconciled: {recovery_error}")
+            raise
+        self._accept_manifest(update)
+
+    def _reconcile_manifest(self) -> None:
+        update = self._pending_manifest
+        if update is None:
+            return
+        try:
+            actual = TraceManifest.model_validate_json((self._run_dir / MANIFEST_FILE).read_bytes())
+        except FileNotFoundError:
+            if update.previous is not None:
+                raise
+            actual = None
+        if actual == update.manifest:
+            self._accept_manifest(update)
+        elif actual == update.previous:
+            self._pending_manifest = None
+        else:
+            raise RuntimeError(
+                f"manifest of {self._run_dir} matches neither the previous nor attempted commit; "
+                "refusing to overwrite an unverified commit"
+            )
+
+    def _accept_manifest(self, update: _ManifestUpdate) -> None:
+        self._manifest = update.manifest
+        if update.plan is not None:
+            self._committed |= update.plan.claimed
+            self._committed_dirs |= update.plan.dirs
+            self._committed_blobs |= update.plan.blobs
+        self._durable_dirs |= update.durable_dirs
+        self._pending_manifest = None
+
+
+@dataclass(frozen=True)
+class _ManifestUpdate:
+    """A single attempted commit, retained until its disk state is known."""
+
+    manifest: TraceManifest
+    previous: TraceManifest | None
+    plan: _Plan | None
+    durable_dirs: Set[Path]
 
 
 @dataclass
 class _Plan:
     """One commit, validated and encoded before any byte is written."""
 
-    wal: WALWriter
+    run_dir: Path
+    committed: Set[str]
+    committed_dirs: Set[str]
+    committed_blobs: Set[str]
     content: list[TraceFile] = field(default_factory=list)
     records: list[TraceFile] = field(default_factory=list)
     #: Extra-file index entries, in the order the producer handed the files over.
@@ -405,6 +561,19 @@ class _Plan:
     output_formats: list[str] = field(default_factory=list)
     #: Prompt images this commit is the first to carry, by path.
     prompt_images: list[str] = field(default_factory=list)
+    #: One lightweight record per path, shared by implicit and explicit inputs.
+    metrics: dict[str, TraceFile] = field(default_factory=dict)
+
+    def add_metrics(self, files: Iterable[TraceFile]) -> None:
+        for item in files:
+            folded = fold_path(item.rel_path)
+            existing = self.metrics.get(folded)
+            if existing is not None:
+                if existing != item:
+                    raise ValueError(f"{item.rel_path!r}: conflicting call metrics in one commit")
+                continue
+            self._own(item, METRICS_DIR)
+            self.metrics[folded] = item
 
     def add_fragments(self, fragments: Iterable[EncodedFragment]) -> None:
         keys: set[str] = set()
@@ -418,6 +587,8 @@ class _Plan:
 
     def add_calls(self, calls: Iterable[EncodedLLMCall]) -> None:
         for call in calls:
+            if call.metrics is not None:
+                self.add_metrics((call.metrics,))
             for directory, holding in (
                 (OUTPUT_FORMATS_DIR, "schemas"),
                 (PROMPT_IMAGES_DIR, "stored prompt images"),
@@ -499,31 +670,31 @@ class _Plan:
         turn the run's close-out into an ``IsADirectoryError``.
         """
         folded = fold_path(rel_path)
-        if folded in self.wal._committed:
+        if folded in self.committed:
             raise ValueError(
-                f"{rel_path!r} is already committed to {self.wal.run_dir}: committed files are "
+                f"{rel_path!r} is already committed to {self.run_dir}: committed files are "
                 f"immutable (only a content-addressed file may be committed again)"
             )
         if folded in self.claimed:
             raise ValueError(f"{rel_path!r} appears twice in one commit")
-        if folded in self.wal._committed_dirs or folded in self.dirs:
+        if folded in self.committed_dirs or folded in self.dirs:
             raise ValueError(
-                f"{rel_path!r} is a directory of {self.wal.run_dir}: a path is a file or a "
+                f"{rel_path!r} is a directory of {self.run_dir}: a path is a file or a "
                 f"directory, never both"
             )
         ancestors = _ancestors(folded)
         for ancestor in ancestors:
-            if ancestor in self.wal._committed or ancestor in self.claimed:
+            if ancestor in self.committed or ancestor in self.claimed:
                 raise ValueError(
                     f"{rel_path!r} puts a directory where {ancestor!r} is a file of "
-                    f"{self.wal.run_dir}: a path is a file or a directory, never both"
+                    f"{self.run_dir}: a path is a file or a directory, never both"
                 )
         self.claimed.add(folded)
         self.dirs.update(ancestors)
 
     def _blob(self, item: TraceFile) -> bool:
         """Schedule a content-addressed file unless it is already on disk; True if new."""
-        if item.rel_path in self.wal._committed_blobs or item.rel_path in self.blobs:
+        if item.rel_path in self.committed_blobs or item.rel_path in self.blobs:
             return False
         self._claim(item.rel_path)
         self.blobs.add(item.rel_path)

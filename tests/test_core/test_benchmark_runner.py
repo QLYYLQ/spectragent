@@ -30,6 +30,7 @@ from spectragent.core.trace.wal import WALWriter
 from spectragent.schemas._types import AgentDoneStatus
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.config_source import ConfigSource
+from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.restoration import BranchProvenance, Checkpoint
 from spectragent.schemas.task import TaskContext
 from tests._helpers.assembly import make_env, make_run
@@ -72,9 +73,10 @@ class _Env(EnvironmentBase):
 
 
 class _Agent:
+    __execution_limit_fields__ = frozenset()
     __wiring__ = {"action": ("action", ["bench_runner_cap.done"])}
 
-    def build_react_prompt(self, obs):
+    async def build_react_prompt(self, obs, *, context):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out):
@@ -98,6 +100,10 @@ class _Completion:
 
 class _LLM:
     model = "test-model"
+    name = "test-model"
+
+    async def aclose(self, *, timeout=5.0):
+        return ()
 
     async def ainvoke(self, messages, **kw):
         return _Completion()
@@ -512,7 +518,7 @@ class _VetoingAgent(_Agent):
     def __init__(self, *, vetoes: bool) -> None:
         self._vetoes = vetoes
 
-    def build_react_prompt(self, obs):
+    async def build_react_prompt(self, obs, *, context):
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out):
@@ -572,6 +578,7 @@ class TestGuardVeto:
         summary = await runner.run()
 
         assert summary.was_aborted
+        assert summary.aborted is not None
         assert "t-2" in summary.aborted
         assert "risk-control page detected" in summary.aborted
         # The guard said stop, not destroy the evidence: t-1 finished before
@@ -723,10 +730,8 @@ class TestTheSummaryCountsThreeLedgers:
         (outcome,) = summary.outcomes
         assert outcome.agent_done == "done"  # the agent's ledger is unharmed
         assert outcome.trace_status == "incomplete"
-        assert outcome.trace_note == "result.json could not be written: OSError: disk full"
-        assert outcome.infrastructure_error == (
-            "the trace is incomplete: result.json could not be written: OSError: disk full"
-        )
+        assert outcome.trace_note == "OSError: disk full"
+        assert outcome.infrastructure_error == ("the trace is incomplete: OSError: disk full")
         assert summary.count_by_trace() == {"incomplete": 1}
         assert summary.failed == 1
 
@@ -1216,6 +1221,34 @@ class TestTheTokenLimit:
         compose, _writers = _limited_factory(tmp_path, trace=False)
         summary = await BenchmarkRunner(loader=_Loader(), compose=compose, timeout=10).run()
         assert summary.completed == 2
+
+    async def test_the_preflight_requires_selected_metrics_for_a_token_limit(self, tmp_path):
+        factory, writers = _limited_factory(tmp_path)
+
+        def compose():
+            run = factory()
+            run.hooks[0].recording = RecordingPlan(metrics=False)
+            return run
+
+        runner = BenchmarkRunner(loader=_Loader(), compose=compose, token_limit=15)
+        with pytest.raises(PreflightError, match="recording.metrics enabled"):
+            await runner.run()
+        assert writers[0].run_dir is None
+
+    async def test_a_token_limit_counts_light_recording_without_model_trajectory(self, tmp_path):
+        factory, _writers = _limited_factory(tmp_path)
+
+        def compose():
+            run = factory()
+            run.hooks[0].recording = RecordingPlan(trajectory=False, observations=False)
+            return run
+
+        summary = await BenchmarkRunner(
+            loader=_ThreeTaskLoader(), compose=compose, token_limit=15
+        ).run()
+        assert summary.tokens == 20 and summary.calls == 2
+        assert summary.token_limit_reached is not None
+        assert all(outcome.trace_status == "complete" for outcome in summary.outcomes)
 
     @pytest.mark.parametrize("limit", [0, -3, True, 2.5, "lots", None])
     def test_a_limit_is_a_number_of_at_least_one_or_unlimited(self, limit):

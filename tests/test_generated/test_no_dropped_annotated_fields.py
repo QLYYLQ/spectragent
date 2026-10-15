@@ -146,6 +146,11 @@ def test_the_init_check_reads_hand_written_inits() -> None:
         "trace_dir",
         "record_secrets",
         "archive",
+        "recording",
+        "pending_segments",
+        "write_retries",
+        "retry_delay",
+        "close_timeout",
     }
     layers = {layer for layer, _, _ in _registered_classes()}
     assert "archiver" in layers

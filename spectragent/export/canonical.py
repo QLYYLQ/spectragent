@@ -87,6 +87,7 @@ def canonicalise(
         TraceSchemaError: The trace cannot be read as committed (a file
             its manifest lists is damaged or missing).
     """
+    trace.require_recording("trajectory", "observations", consumer="training export")
     config = trace.config
     read_thought = _thought_reader(config.agent_id, config.loop_id, thought_source, teacher_cls)
     through = trace.manifest.complete_through

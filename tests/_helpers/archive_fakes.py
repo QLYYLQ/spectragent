@@ -68,6 +68,7 @@ from spectragent.core.hooks._registrar import HookBase
 from spectragent.core.loops import ReactLoop
 from spectragent.schemas.action import Action, ActionDescriptor, ActionResult
 from spectragent.schemas.observation._registrar import FragmentBase
+from spectragent.schemas.prompt import ReactPromptContext
 from tests._helpers.assembly import make_env, make_run
 
 #: The fake capability's registry key — the prefix of every key it provides.
@@ -686,6 +687,8 @@ with FAKES:
 class ContractArchiveAgent:
     """Takes ``keep_going_steps`` steps of ``keep_going``, then ``done``."""
 
+    __execution_limit_fields__: ClassVar[frozenset[str]] = frozenset()
+
     __wiring__ = {
         "action": ("action", ["done"], ["keep_going"]),
         "observation": ("observation", ["page", "loop.task"]),
@@ -695,9 +698,9 @@ class ContractArchiveAgent:
         self.keep_going_steps = keep_going_steps
         self.parsed = 0
 
-    __execution_limit_fields__ = frozenset()
-
-    async def build_react_prompt(self, obs: Any, *, context) -> list[dict[str, str]]:
+    async def build_react_prompt(
+        self, obs: Any, *, context: ReactPromptContext
+    ) -> list[dict[str, str]]:
         return [{"role": "user", "content": "go"}]
 
     def parse_react_output(self, out: Any) -> list[Action]:

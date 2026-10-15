@@ -53,15 +53,14 @@ capability fits):
    content-addressed body is written once.
 9. :func:`assert_crash_window_hides_uncommitted_evidence` — a commit that
    never reached its manifest leaves its evidence on disk and invisible;
-   hand-planted ``env/`` files are invisible; the evidence is still owed and
-   lands as trailing evidence at close-out, never under the crashed step.
+   hand-planted ``env/`` files are invisible. A failed sealed segment keeps
+   its original identity; later segments may commit beyond its explicit gap.
 10. :func:`assert_tail_lands_at_run_end` — evidence captured after the last
     commit point lands as trailing evidence at run end, claiming no step.
 11. :func:`assert_a_failed_collection_leaves_the_trace_incomplete` — a step
-    whose collection fails is not committed and stops the run
-    (``RecordingFailedError``), nothing is collected after it, and the trace
-    closes ``incomplete`` (complete through the step before) even when the run
-    reports success.
+    whose collection fails leaves an explicit gap without raising into
+    execution. Later collection is still attempted, and the trace closes
+    ``incomplete`` independently of the run's successful outcome.
 12. :func:`assert_empty_archive_costs_nothing` — a trace hook with no archive
     never touches the environment's archive surface and writes no ``env/``.
 13. :func:`assert_run_records_stay_per_capability` — beside another archiving
@@ -90,10 +89,8 @@ from spectragent.core.archive import (
     ArchiveProvenance,
     ArchiverBase,
 )
-from spectragent.core.environments.errors import ArchiveCollectionError
 from spectragent.core.hooks.trace_writer import TraceWriter
 from spectragent.core.negotiation import negotiate_archive
-from spectragent.core.step_recorder import RecordingFailedError
 from spectragent.core.trace import fsio
 from spectragent.core.trace.encoding import (
     ENV_DIR,
@@ -395,9 +392,9 @@ async def assert_files_carry_provenance(
 async def assert_a_broken_collection_raises(harness: ArchiveHarness) -> None:
     """A collection that cannot collect raises — never an empty batch that looks complete.
 
-    The archive was explicitly requested; the trace hook fails the run on a
-    raised collection (fail closed). An empty batch instead is a silent hole
-    nobody finds until replay.
+    The archive was explicitly requested; the trace hook records a collection
+    failure separately from execution. An empty batch instead is a silent
+    hole nobody finds until replay.
     """
     cap = harness.capability
     cap.bind_archivers(list(harness.archivers))
@@ -505,14 +502,13 @@ async def assert_steps_commit_and_read_back(
 async def assert_crash_window_hides_uncommitted_evidence(
     harness: ArchiveHarness, trace_root: Path
 ) -> None:
-    """Evidence of a commit that never reached its manifest did not happen — until it is owed.
+    """A failed sealed segment stays invisible; subsequent steps can still commit.
 
-    The manifest write of step 1 fails after its evidence was written. The
-    files are on disk and invisible to every archive accessor, as are files
-    planted under ``env/`` by hand. The batch was handed over, so it is owed:
-    the close-out commits it as trailing evidence, never under step 1.
+    Disable retries for this clause so a persistent failure exhausts its budget.
+    The orphan files remain invisible and must not be relabelled as trailing
+    evidence when execution goes on to the next step.
     """
-    recording = _Recording(harness, trace_root)
+    recording = _Recording(harness, trace_root, write_retries=0)
     run_dir = await recording.start()
     await recording.step(0)
     before = _archive_view(RunTrace(run_dir), harness)
@@ -521,16 +517,11 @@ async def assert_crash_window_hides_uncommitted_evidence(
     if harness.change_run_record is not None:
         harness.change_run_record()
     with _manifest_writes_fail():
-        failure = await _expect_raise(
-            recording.commit(1),
-            RecordingFailedError,
-            f"{harness.capability_id}: the commit of step 1 succeeded although its manifest "
-            f"write failed.",
-        )
-    assert isinstance(failure.__cause__, OSError), (
-        f"{harness.capability_id}: the failed manifest write surfaced as "
-        f"{type(failure.__cause__).__name__}, not the OSError behind the recording failure."
-    )
+        await recording.commit(1)
+    assert any(
+        problem.step == 1 and problem.phase == "commit" and problem.error == "OSError"
+        for problem in recording.writer.health.problems
+    ), "the failed write must be visible as recording health, not an execution exception"
     crashed = recording.spy.batches[-1]
     crashed_steps = [item for item in crashed.files if item.scope == "step"]
     assert crashed_steps, (
@@ -570,28 +561,29 @@ async def assert_crash_window_hides_uncommitted_evidence(
         _assert_not_committed(trace, path)
     _assert_no_blob(trace, planted_digest)
 
+    await recording.step(2)
     await recording.close()
     trace = RunTrace(run_dir)
+    assert [record.step for record in trace.step_records] == [0, 2]
+    assert trace.step_count == 2
+    assert trace.manifest.complete_through == 0
+    assert trace.manifest.status == TraceStatus.INCOMPLETE
+    assert trace.result is not None and trace.result.agent_done == agent_result().agent_done
     for key in harness.keys:
         assert trace.archive_files(1, key) == [], (
-            f"{harness.capability_id}: the evidence of step 1, whose commit failed, was "
-            f"attributed to step 1."
+            f"{harness.capability_id}: uncommitted evidence of step 1 became visible."
         )
-    owed = sorted(
-        (record.archiver_id, record.name, record.sha256)
-        for key in harness.keys
-        for step, record in trace.iter_archive(key, include_trailing=True)
-        if step is None
+        assert not [
+            record
+            for step, record in trace.iter_archive(key, include_trailing=True)
+            if step is None
+        ], "a sealed failed step must never be reassigned to close-out"
+    assert any(trace.archive_files(2, key) for key in harness.keys), (
+        "a failed earlier write must not disable later evidence collection or persistence"
     )
-    assert owed == sorted(
-        (item.archiver_id, item.name, sha256_hex(item.data)) for item in crashed_steps
-    ), (
-        f"{harness.capability_id}: the evidence the failed commit carried is owed to the trace "
-        f"and must land as trailing evidence at close-out."
-    )
-    if harness.change_run_record is not None and before["run_record"] is not None:
-        latest = trace.archive_run_file(harness.capability_id)
-        assert latest is not None and latest.run_version == before["run_record"][2] + 1
+    for path in planted_paths:
+        _assert_not_committed(trace, path)
+    _assert_no_blob(trace, planted_digest)
 
 
 async def assert_tail_lands_at_run_end(harness: ArchiveHarness, trace_root: Path) -> None:
@@ -647,14 +639,11 @@ async def assert_tail_lands_at_run_end(harness: ArchiveHarness, trace_root: Path
 async def assert_a_failed_collection_leaves_the_trace_incomplete(
     harness: ArchiveHarness, trace_root: Path
 ) -> None:
-    """A step whose collection fails is not committed, and the trace closes ``incomplete``.
+    """Collection errors leave gaps and diagnostics without stopping execution.
 
-    The run stops on that step (``RecordingFailedError``, the environment's
-    ``ArchiveCollectionError`` chained), and the trace is complete only through
-    the step before. Even when the run then reports success: an explicitly
-    requested archive with a hole in it is not a complete record of the run.
-    Nothing is collected after the failure — not for a later step, not for
-    the tail.
+    The capability is deliberately broken for the remainder of this run. Both
+    later steps and close-out must still attempt capture; none may pretend that
+    the missing evidence is a successfully collected empty archive.
     """
     recording = _Recording(harness, trace_root)
     run_dir = await recording.start()
@@ -663,35 +652,23 @@ async def assert_a_failed_collection_leaves_the_trace_incomplete(
 
     await harness.produce(1)
     harness.break_collect()
-    failure = await _expect_raise(
-        recording.commit(1),
-        Exception,
-        f"{harness.capability_id}: step 1 committed although its collection was broken.",
-    )
-    assert isinstance(failure, RecordingFailedError) and failure.step == 1, (
-        f"{harness.capability_id}: a broken collection surfaced as {type(failure).__name__}, "
-        f"not as the step's RecordingFailedError."
-    )
-    cause = failure.__cause__
-    assert isinstance(cause, ArchiveCollectionError), (
-        f"{harness.capability_id}: the recording failure chains {type(cause).__name__}, not "
-        f"the environment's ArchiveCollectionError."
-    )
-    assert harness.capability_id in cause.failures
+    await recording.commit(1)
+    failures = [problem for problem in recording.writer.health.problems if problem.step == 1]
+    assert failures and any(problem.error == "ArchiveCollectionError" for problem in failures)
+    assert any(harness.capability_id in problem.detail for problem in failures)
     trace = RunTrace(run_dir)
     assert trace.step(1) is None
     assert _archive_view(trace, harness) == before
 
     collected = recording.spy.calls
-    await recording.close()  # the run reports success; the trace must not
+    await recording.commit(2)
+    await recording.close()
     trace = RunTrace(run_dir)
-    assert trace.manifest.status == TraceStatus.INCOMPLETE, (
-        f"{harness.capability_id}: a run whose archive has a hole closed out as "
-        f"{trace.manifest.status.value}."
-    )
+    assert trace.manifest.status == TraceStatus.INCOMPLETE
     assert trace.manifest.complete_through == 0
-    assert "recording failed at step 1" in (trace.manifest.incomplete_reason or "")
-    assert recording.spy.calls == collected, "something was collected after the failure"
+    assert recording.writer.health.missing_steps == [1, 2]
+    assert recording.spy.calls == collected + 2, "later steps and close-out still collect"
+    assert trace.result is not None and trace.result.agent_done == agent_result().agent_done
     assert _archive_view(trace, harness)["evidence"] == before["evidence"]
 
 
@@ -902,11 +879,15 @@ class _Recording:
     record.
     """
 
-    def __init__(self, harness: ArchiveHarness, trace_root: Path) -> None:
+    def __init__(
+        self, harness: ArchiveHarness, trace_root: Path, *, write_retries: int = 2
+    ) -> None:
         self.harness = harness
         self.env = harness.environment()
         self.writer = TraceWriter(
-            trace_dir=str(trace_root / "traces"), archive=list(harness.archivers)
+            trace_dir=str(trace_root / "traces"),
+            archive=list(harness.archivers),
+            write_retries=write_retries,
         )
         self.negotiation = negotiate_archive([self.writer], self.env)
         self.env.bind_archivers(self.writer.archive)
@@ -930,8 +911,9 @@ class _Recording:
         return self.writer.run_dir
 
     async def commit(self, step: int) -> None:
-        """The commit point of *step* — ``after_record_step``, as the AOP proxy calls it."""
+        """Seal one step, then explicitly wait for persistence in this test harness."""
         await self.writer.after_record_step(None, args=(step_record(step),), kwargs={})
+        await self.writer.flush()
 
     async def step(self, step: int) -> None:
         """One step of activity the capability captures, then its commit point."""
@@ -985,16 +967,6 @@ def _manifest_writes_fail() -> Any:
 
     with mock.patch.object(fsio, "write_durable", write_durable):
         yield
-
-
-async def _expect_raise(
-    awaitable: Awaitable[Any], expected: type[BaseException], why: str
-) -> BaseException:
-    try:
-        await awaitable
-    except expected as exc:
-        return exc
-    raise AssertionError(why)
 
 
 #: Where hand-planted orphans go: a step, a trailing position and a run-record

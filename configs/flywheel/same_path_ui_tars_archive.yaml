@@ -63,7 +63,6 @@ hook:
       - archiver_id: browser.replay_log  # the replay log of every task
       - archiver_id: browser.storage
       - archiver_id: browser.dom_raw
-  - hook_id: metrics
 
 task_loader:
   - benchmark_name: trace_branches

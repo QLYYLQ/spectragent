@@ -32,6 +32,7 @@ from spectragent.core.trace.encoding import (
     EncodedLLMCall,
     PendingLLMCall,
     TraceFile,
+    encode_call_metrics,
     encode_llm_call,
 )
 from spectragent.core.trace.models import TraceStatus
@@ -79,6 +80,7 @@ from spectragent.flywheel.metrics import (
 )
 from spectragent.flywheel.report import NO_SPEC_LIMIT, build_report, render_markdown, report_json
 from spectragent.schemas.action import Action, ActionResult
+from spectragent.schemas.recording import RecordingPlan
 from spectragent.schemas.step_record import StepRecord
 from tests._helpers.flywheel_traces import (
     BIG,
@@ -966,10 +968,9 @@ class TestTokenUse:
             2,
             [],
         )
-        assert (uses["same_path"].runs, uses["same_path"].tokens) == (0, 0)
-        assert uses["same_path"].skipped == {
-            "traces/same_path/damaged": "a recorded model call does not read back (TraceSchemaError)"
-        }
+        # A damaged prompt does not erase its separately committed billing facts.
+        assert (uses["same_path"].runs, uses["same_path"].tokens) == (1, 15)
+        assert uses["same_path"].skipped == {}
         assert uses["branch"].skipped == {
             "traces/branch/broken": (
                 "not a readable trace: manifest.json does not read back (TraceSchemaError)"
@@ -981,38 +982,36 @@ class TestTokenUse:
 
     def test_the_report_counts_them_against_the_spec_s_limit(self, tmp_path: Path) -> None:
         layout = privacy_chain(tmp_path / "chain")
-        under = build_report(layout, evidence="live", token_limit=31).token_use
+        under = build_report(layout, evidence="live", token_limit=46).token_use
         assert (under.limit, under.tokens, under.limit_reached, under.reason) == (
-            31,
-            30,
+            46,
+            45,
             False,
             None,
         )
         assert "stopped at its token limit" not in render_markdown(
-            build_report(layout, evidence="live", token_limit=31)
+            build_report(layout, evidence="live", token_limit=46)
         )
 
-        reached = build_report(layout, evidence="live", token_limit=30)
+        reached = build_report(layout, evidence="live", token_limit=45)
         assert reached.token_use.limit_reached is True
         markdown = render_markdown(reached)
         assert (
-            "**The chain stopped at its token limit.** Its runs recorded 30 tokens, at or over "
-            "the limit of 30"
+            "**The chain stopped at its token limit.** Its runs recorded 45 tokens, at or over "
+            "the limit of 45"
         ) in markdown
-        assert "- limit: 30 tokens (reached); used: 30 tokens" in markdown
+        assert "- limit: 45 tokens (reached); used: 45 tokens" in markdown
         assert "- record: 30 tokens over 2 call(s) in 2 run(s); 0 call(s) reported no usage" in (
             markdown
         )
-        assert (
-            "  - skipped `traces/same_path/damaged`: a recorded model call does not read back"
-        ) in markdown
+        assert "- same_path: 15 tokens over 1 call(s) in 1 run(s)" in markdown
 
         unlimited = build_report(layout, evidence="live", token_limit="unlimited")
         assert (unlimited.token_use.limit, unlimited.token_use.limit_reached) == (
             "unlimited",
             False,
         )
-        assert "- limit: unlimited; used: 30 tokens" in render_markdown(unlimited)
+        assert "- limit: unlimited; used: 45 tokens" in render_markdown(unlimited)
 
         unknown = build_report(layout, evidence="live").token_use
         assert (unknown.limit, unknown.limit_reached, unknown.reason) == (
@@ -1208,3 +1207,29 @@ class TestDatasetSamples:
         layout = ChainLayout(root)
         with pytest.raises(DatasetFormatError, match=r"datasets/first/train.samples.jsonl line 2"):
             export_yield(layout, read_dataset_manifest(layout))
+
+
+def test_light_branch_metrics_do_not_fabricate_an_empty_trajectory(tmp_path: Path) -> None:
+    layout = empty_layout(tmp_path)
+    wal = WALWriter(layout.traces("branch"), "light")
+    declared = config(
+        task_id="task",
+        site="example.test",
+        loop="branch",
+        archived=False,
+        branch=provenance("source", 0, 0, "task"),
+    ).model_copy(update={"recording": RecordingPlan(trajectory=False, observations=False)})
+    wal.init_run(declared)
+    pending = PendingLLMCall(None, capture_trajectory=False)
+    pending.complete(ChatInvokeCompletion(completion="unused", usage=None))
+    wal.commit_step(0, StepRecord(step=0), call_metrics=[encode_call_metrics(0, 0, pending)])
+    wal.finalize(TraceStatus.COMPLETE)
+    report = build_report(layout, evidence="rehearsal")
+    cover = report.metrics.branch_coverage
+    assert cover.empty.total == 0 and cover.branches == 0
+    assert "did not select" in cover.skipped["light"]
+    assert report.sections.duplicate_branches.not_compared == 0
+    assert "light" in report.sections.duplicate_branches.skipped
+    assert report.token_use.roles["branch"].calls == 1
+    assert report.token_use.roles["branch"].calls_without_usage
+    assert "did not select" in report.metrics.privacy.skipped["traces/branch/light"]

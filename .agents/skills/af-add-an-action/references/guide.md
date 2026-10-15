@@ -310,12 +310,11 @@ the compiler rather than the params, that is `af-add-an-llm-provider`'s territor
   `web_search` follows). On the **Agent** it is part of the subject under test, and must
   be recorded and compared alongside the agent's main LLM. A leaderboard that hides
   which extraction model an agent shipped is lying.
-- Either way, the internal calls **must be attributed to the action** in the trace and
-  in token accounting. Today they cannot be: `AgentRuntime` wraps exactly four roles —
-  agent/env/llm/loop — and `MetricsCollector` intercepts `ainvoke` on the single
-  `role="llm"` object, which *is* `agent.llm`. An action's LLM lands either unwrapped
-  (invisible tokens) or wrapped as the agent's (right total, wrong subject), and neither
-  raises (doc §2.2).
+- Either way, internal calls must be attributed to the action in both trace and usage.
+  Unified recording now supports run-owned caller/purpose attribution for explicitly
+  supplied models, including prompt helpers. That does not implement general nested
+  action planning or automatically discover an action's model: keep this extension's
+  receptor and execution contract explicit.
 
 **That general form is deliberately not built.** Do not build it as a side effect of
 adding an action. It needs a fifth AOP role, a decision on `ActionBase.execute`'s

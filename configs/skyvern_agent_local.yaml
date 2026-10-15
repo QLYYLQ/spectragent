@@ -33,4 +33,3 @@ environment:
 hook:
   - hook_id: trace_writer
     trace_dir: traces
-  - hook_id: metrics

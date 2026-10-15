@@ -40,7 +40,6 @@ RUN_YAML: dict[str, Any] = {
     "environment": [{"env_type": "browser", "id": "browser_env"}],
     "hook": [
         {"hook_id": "trace_writer", "trace_dir": "traces", "archive": []},
-        {"hook_id": "metrics"},
     ],
 }
 BRANCH_YAML: dict[str, Any] = {
@@ -212,7 +211,7 @@ class TestThePaths:
         [
             (
                 "record",
-                {**RUN_YAML, "hook": [{"hook_id": "metrics"}]},
+                {**RUN_YAML, "hook": [{"hook_id": "live_monitor"}]},
                 "'hook' block with hook_id: trace_writer",
             ),
             (
@@ -456,6 +455,7 @@ class TestTheTokenLimit:
             "calls": 2,
             "calls_without_usage": [],
             "skipped": {},
+            "incomplete": {},
         }
         use = result.report.token_use
         assert (use.limit, use.tokens, use.limit_reached) == (100, 65, False)
@@ -481,6 +481,7 @@ class TestTheTokenLimit:
             "token_limit": 50,
             "stages_not_started": ["same_path", "branch", "export"],
             "calls_without_usage": [],
+            "recording_incomplete": {},
         }
         record = json.loads((tmp_path / "root" / "chain.json").read_text())
         assert record["stopped_by_token_limit"] == stop.record()

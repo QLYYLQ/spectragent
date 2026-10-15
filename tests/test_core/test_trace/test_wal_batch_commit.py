@@ -128,6 +128,7 @@ def _dirs_a_first_full_step_fsyncs(step: int = 0) -> set[str]:
         "observations",
         "messages",
         "messages/output_formats",
+        "metrics",
         "env",
         "env/steps",
         f"env/steps/{step:03d}",
@@ -187,7 +188,7 @@ class TestInitRun:
             ("write", "manifest.json"),
             ("fsync_dir", "."),
         ]
-        for name in ("steps", "observations", "messages", "evals"):
+        for name in ("steps", "observations", "messages", "metrics", "evals"):
             assert (wal.run_dir / name).is_dir(), name
 
     STAGES: dict[str, Callable[[str, str], bool]] = {
@@ -231,6 +232,7 @@ class TestOrdering:
             "observations/000_browser.screenshot.json",
             "observations/000_browser.browser_meta.json",
             "messages/000_call_00.json",
+            "metrics/000_call_00.json",
             f"messages/output_formats/{_schema_sha()}.json",
             "env/steps/000/browser.network/a.json",
             _a_full_step()["extra_files"][1].rel_path,
@@ -931,7 +933,14 @@ class TestTheManifestReferencesExtraFilesItDoesNotList:
 
         (entry,) = json.loads(_manifest_bytes(wal))["steps"]
 
-        assert set(entry) == {"step", "step_file", "fragments", "llm_calls", "extra_index"}
+        assert set(entry) == {
+            "step",
+            "step_file",
+            "fragments",
+            "llm_calls",
+            "call_metrics",
+            "extra_index",
+        }
         assert entry["extra_index"] == "steps/000.extra.json"
 
     def test_a_trailing_entry_too(self, tmp_path):
@@ -940,4 +949,4 @@ class TestTheManifestReferencesExtraFilesItDoesNotList:
 
         (entry,) = json.loads(_manifest_bytes(wal))["trailing"]
 
-        assert set(entry) == {"llm_calls", "extra_index"}
+        assert set(entry) == {"segment_id", "llm_calls", "call_metrics", "extra_index"}

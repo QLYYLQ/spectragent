@@ -173,9 +173,7 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
     metrics = result.metrics if result else None
     usage = recorded_usage(trace) if usage is None else usage
     evaluations, evaluation_error = _evaluations(trace)
-    calls = sum(len(entry.llm_calls) for entry in manifest.steps) + sum(
-        len(entry.llm_calls) for entry in manifest.trailing
-    )
+    calls = usage.calls
     return {
         "key": key,
         "run_id": trace.run_id,
@@ -195,6 +193,11 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
         "env_status": str(result.env_status) if result else None,
         "trace_status": manifest.status.value,
         "complete_through": manifest.complete_through,
+        "recording": _json(config.recording),
+        "missing_steps": manifest.missing_steps,
+        "recording_problems": _json(manifest.recording_problems),
+        "usage_measured": usage.measured,
+        "usage_complete": usage.complete,
         "policy_steps": sum(record.origin == "policy" for record in records),
         "total_steps": len(records),
         "llm_calls": calls,
@@ -202,7 +205,7 @@ def _summary(trace: RunTrace, key: str, usage: Any = None) -> dict[str, Any]:
         if not usage.calls or usage.calls > len(usage.without_usage)
         else None,
         "usage_missing": len(usage.without_usage),
-        "duration_ms": metrics.end_to_end_ms if metrics else None,
+        "execution_ms": metrics.execution_ms if metrics else None,
         "answer": result.answer if result else "",
         "error": result.error if result else None,
         "branch": _json(config.branch),
@@ -343,12 +346,16 @@ class _FileRepository:
                 steps.append(
                     {
                         **_json(record),
+                        "recording_ms": trace.recording_timing(entry.step),
                         "has_screenshot": bool(_has_screenshot(entry)),
                         "fragment_keys": list(entry.fragments),
-                        "call_count": len(entry.llm_calls),
+                        "call_count": len(entry.call_metrics)
+                        if trace.config.recording.metrics
+                        else None,
                     }
                 )
             execution = self._execution(trace)
+            trailing = trace.trailing_calls if trace.config.recording.trajectory else []
             return {
                 "summary": summary,
                 "config": _json(trace.config),
@@ -357,10 +364,11 @@ class _FileRepository:
                 "steps": steps,
                 "evaluations": _json(_evaluations(trace)[0]),
                 "evaluation_error": summary["evaluation_error"],
-                "trailing_calls": _json(trace.trailing_calls),
+                "trailing_calls": _json(trailing),
+                "trailing_call_metrics": _json(trace.trailing_call_metrics),
                 "trailing_output_schemas": {
                     call.output_format.sha256: trace.output_schema(call.output_format.sha256)
-                    for call in trace.trailing_calls
+                    for call in trailing
                     if call.output_format is not None
                 },
                 "usage": _json(usage),
@@ -426,18 +434,20 @@ class _FileRepository:
             if record is None:
                 raise FileNotFoundError(f"Run {key} has no committed step {index}")
             entry = next(entry for entry in trace.manifest.steps if entry.step == index)
-            calls = trace.llm_messages(index)
+            calls = trace.llm_messages(index) if trace.config.recording.trajectory else []
             schemas = {
                 call.output_format.sha256: trace.output_schema(call.output_format.sha256)
                 for call in calls
                 if call.output_format is not None
             }
             return {
-                "record": _json(record),
+                "record": {**_json(record), "recording_ms": trace.recording_timing(index)},
                 "fragments": {
                     name: _json(trace.observation_fragment(index, name)) for name in entry.fragments
                 },
                 "calls": _json(calls),
+                "call_metrics": _json(trace.call_metrics(index)),
+                "recording": _json(trace.config.recording),
                 "output_schemas": schemas,
                 "archive": _json(
                     [

@@ -49,3 +49,15 @@ class TraceSchemaError(RuntimeError):
         super().__init__(message)
         #: The file that could not be read, when there is one.
         self.path = path
+
+
+class RecordingScopeError(TraceSchemaError):
+    """Readable recording whose declared scope omitted content a consumer needs."""
+
+    def __init__(self, consumer: str, missing: tuple[str, ...]) -> None:
+        self.consumer = consumer
+        self.missing = missing
+        super().__init__(
+            f"{consumer} requires recording of {', '.join(missing)}; "
+            "the run's recording plan did not select that content"
+        )

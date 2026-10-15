@@ -1,36 +1,17 @@
-"""The model calls a run recorded and the tokens they reported, read back from its trace.
+"""Offline usage from the lightweight call ledger, independently of trajectory artifacts.
 
-``docs/architecture_design.md`` §4.2 ("sweep 的 token 上限") and §4.16 ("token 上限").
-
-**Which calls.** :func:`recorded_calls` is every call a run recorded: each
-committed step's, in manifest order and start order within the step, then the
-trailing calls of a step the Loop never surrendered. It is what the run sent
-its model (the flywheel's privacy measure searches these requests) and what
-the run was billed for.
-
-**How many tokens.** Each call record carries the usage its provider
-reported: a completed call in ``completion.usage``, a failed one in
-``failure.usage`` (a failed call is billed all the same, §5.4).
-:func:`recorded_usage` adds them up by the rule a step's ``TokenUsage`` uses
-(``TokenUsage.from_llm_usage``: the provider's ``total_tokens``, or prompt plus
-completion when it reported no total). A call whose provider reported no usage
-(a cancelled call, a call that failed before any reply, a provider that never
-reports usage) adds no tokens and is listed (:class:`CallWithoutUsage`), never
-folded into the total as a silent zero.
-
-Only ``RunTrace``'s accessors are read, so nothing here depends on a metrics
-hook: ``result.json``'s ``metrics.usage`` exists only when one is configured.
-``spectragent bench``'s token limit, the flywheel chain's and the flywheel
-report's ``token_use`` all count through :func:`recorded_usage`.
+The provider's reported subtotal, missing provider usage, and recording
+coverage are separate facts. A plan that did not select metrics returns
+``None`` for counts; a fully recorded run with no calls returns zero.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from spectragent.core.trace.models import RecordedLLMCall
+from spectragent.core.trace.models import RecordedCallMetrics, RecordedLLMCall, TraceStatus
 from spectragent.schemas.step_record import TokenUsage
 
 if TYPE_CHECKING:
@@ -63,11 +44,21 @@ class RunUsage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     #: The tokens of every call whose provider reported usage.
-    tokens: int = 0
+    tokens: int | None = 0
+    #: Known token subtotal, retaining provider cache and image counts.
+    usage: TokenUsage | None = Field(default_factory=TokenUsage)
     #: Every recorded call, the calls without usage included.
-    calls: int = 0
+    calls: int | None = 0
     #: The calls whose provider reported no usage, in the order they were recorded.
     without_usage: tuple[CallWithoutUsage, ...] = ()
+    #: Whether the recording plan selected usage measurement.
+    measured: bool = True
+    #: All expected recording content committed and the trace closed.
+    recording_complete: bool = True
+    #: The subtotal covers the whole run and every call reported usage.
+    complete: bool = True
+    #: Missing surrendered steps; saved steps after these gaps still contribute.
+    missing_steps: tuple[int, ...] = ()
 
 
 def recorded_calls(trace: RunTrace) -> list[RecordedLLMCall]:
@@ -83,20 +74,39 @@ def recorded_calls(trace: RunTrace) -> list[RecordedLLMCall]:
     return _committed_calls(trace) + list(trace.trailing_calls)
 
 
-def recorded_usage(trace: RunTrace) -> RunUsage:
-    """The tokens *trace*'s calls reported, and every call that reported none (module docstring).
+def recorded_usage(
+    trace: RunTrace, *, caller: str | None = None, purpose: str | None = None
+) -> RunUsage:
+    """Read usage facts only; optional attribution filters keep auxiliary calls distinguishable.
 
-    Raises:
-        TraceSchemaError: A call record, or an image it refers to, does not
-            read back.
+    No prompt, image, or step record is opened. Recording gaps retain the
+    known subtotal while ``complete`` reports the absent coverage.
     """
-    tokens = 0
+    missing = tuple(trace.manifest.missing_steps)
+    recording_complete = trace.manifest.status == TraceStatus.COMPLETE and not missing
+    if not trace.config.recording.metrics:
+        return RunUsage(
+            tokens=None,
+            usage=None,
+            calls=None,
+            measured=False,
+            complete=False,
+            recording_complete=recording_complete,
+            missing_steps=missing,
+        )
+    count = 0
+    reported: list[TokenUsage] = []
     without: list[CallWithoutUsage] = []
-    committed = _committed_calls(trace)
-    trailing = list(trace.trailing_calls)
+    committed = [call for entry in trace.manifest.steps for call in trace.call_metrics(entry.step)]
+    trailing = trace.trailing_call_metrics
     for calls, is_trailing in ((committed, False), (trailing, True)):
         for call in calls:
-            usage = reported_usage(call)
+            if caller is not None and call.caller != caller:
+                continue
+            if purpose is not None and call.purpose != purpose:
+                continue
+            count += 1
+            usage = TokenUsage.from_llm_usage(call.usage)
             if usage is None:
                 without.append(
                     CallWithoutUsage(
@@ -104,18 +114,27 @@ def recorded_usage(trace: RunTrace) -> RunUsage:
                     )
                 )
             else:
-                tokens += usage.total_tokens
+                reported.append(usage)
+    subtotal = TokenUsage.combine(reported)
     return RunUsage(
-        tokens=tokens, calls=len(committed) + len(trailing), without_usage=tuple(without)
+        tokens=subtotal.total_tokens,
+        usage=subtotal,
+        calls=count,
+        without_usage=tuple(without),
+        recording_complete=recording_complete,
+        complete=recording_complete and not without,
+        missing_steps=missing,
     )
 
 
-def reported_usage(call: RecordedLLMCall) -> TokenUsage | None:
+def reported_usage(call: RecordedLLMCall | RecordedCallMetrics) -> TokenUsage | None:
     """What *call*'s provider reported, by the step record's rule; ``None`` when it reported nothing.
 
     A completed call's ``completion.usage``, a failed or cancelled call's
     ``failure.usage``.
     """
+    if isinstance(call, RecordedCallMetrics):
+        return TokenUsage.from_llm_usage(call.usage)
     if call.completion is not None:
         usage = call.completion.usage
     elif call.failure is not None:

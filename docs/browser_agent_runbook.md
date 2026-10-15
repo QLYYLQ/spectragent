@@ -176,7 +176,7 @@ BrowserUseAgent 的 `agent[0].observation_mode` 可设为：
 ```yaml
 hook:
   - hook_id: ui_navigation_guard
-  # 保留原有 trace_writer（及其 archive 配置）、metrics 等 hook
+  # 保留原有 trace_writer（及其 recording/archive 配置）等 hook
 ```
 
 守卫在 `env.act` 执行前检查动作，拒绝策略直接 `browser.navigate` / `browser.create_tab`、地址栏/新空白 tab/新窗口快捷键（包括 Ctrl/Cmd/Meta+L、Alt+D、F6、Ctrl/Cmd+T/N 及常见别名，搜索地址栏的 Ctrl/Cmd+K/E 也拒绝），以及 `browser.type` / `browser.type_coordinate` 的整段 URL 或主机路径输入。给定起始 URL 由 setup 打开，不经过这个 hook，所以仍可启动；页面链接点击、后退/前进、切换已有 tab、普通编辑键（Ctrl+A/C/V 等）、选择、滚动、拖动和页面内普通输入继续允许。没有该 hook 的配置保持原行为。

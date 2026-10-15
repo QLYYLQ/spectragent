@@ -59,7 +59,7 @@ JSON_INPUTS: dict[str, tuple[str, Read, bytes]] = {
     "result": (
         "result.json",
         lambda d: _trace(d).result,
-        b'{"schema_version": "2.1", "task_id": "t"}',
+        b'{"schema_version": "3.0", "task_id": "t"}',
     ),
     "step via step()": ("steps/000.json", lambda d: _trace(d).step(0), b'{"step": "zero"}'),
     "step via step_records": (
@@ -408,7 +408,8 @@ class TestFormatVersions:
     """
 
     @pytest.mark.parametrize(
-        ("version", "named"), [(None, "1"), (1, "1"), (2, "2"), (3, "3"), ("4", "'4'")]
+        ("version", "named"),
+        [(None, "1"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), ("5", "'5'")],
     )
     def test_an_older_or_malformed_format_is_refused_at_construction(
         self, reference, version, named
@@ -436,8 +437,8 @@ class TestFormatVersions:
             _trace(reference.run_dir)
 
     def test_a_newer_format_is_refused_at_construction(self, reference):
-        path = _declare_format(reference.run_dir, 5)
-        with pytest.raises(TraceSchemaError, match="format version 5") as exc_info:
+        path = _declare_format(reference.run_dir, 6)
+        with pytest.raises(TraceSchemaError, match="format version 6") as exc_info:
             _trace(reference.run_dir)
         assert exc_info.value.path == path
         assert "the spectragent that wrote it" in str(exc_info.value)

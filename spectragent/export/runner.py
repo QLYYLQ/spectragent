@@ -312,18 +312,22 @@ class ExportRunner:
                     TrajectoryStep(origin.trace, origin.rel, record, prefix.get(record.step), False)
                     for record in origin.trace.step_records
                     if record.step < branch.checkpoint_step
+                    and record.step <= origin.trace.manifest.complete_through
                 ]
                 own = samples_of(source, verdicts_from=origin)
                 steps += [
                     TrajectoryStep(source.trace, source.rel, record, own.get(record.step))
                     for record in source.trace.step_records
-                    if record.origin == "policy" and record.step >= branch.checkpoint_step
+                    if record.origin == "policy"
+                    and record.step >= branch.checkpoint_step
+                    and record.step <= source.trace.manifest.complete_through
                 ]
             else:
                 own = samples_of(source)
                 steps += [
                     TrajectoryStep(source.trace, source.rel, record, own.get(record.step))
                     for record in source.trace.step_records
+                    if record.step <= source.trace.manifest.complete_through
                 ]
             rendered.extend(await renderer.render(steps))
         return rendered
